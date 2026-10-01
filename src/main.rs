@@ -1,4 +1,4 @@
-//! Steam Frame 0.5.0 eye bridge using the private version-4 shared-memory ABI.
+//! Steam Frame eye bridge using the private shared-memory ABI (version 4, and version 5 on SteamOS 0.4.3).
 
 mod capture;
 mod config;
@@ -24,8 +24,18 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::time::{Duration, Instant, SystemTime};
 
-const SHM_VERSION: u32 = 4;
-const SHM_SIZE: usize = 0x4f21a;
+const SHM_VERSION_V4: u32 = 4;
+const SHM_VERSION_V5: u32 = 5;
+/// Version 4 object. A version-5 object is 5 bytes longer, but its eye record still
+/// sits inside this prefix, so this is also how much of either object is mapped.
+const SHM_SIZE_V4: usize = 0x4f21a;
+/// Version 5 object, from SteamOS 0.4.3 (2026-10-02). Five bytes were inserted immediately before the eye record.
+const SHM_SIZE_V5: usize = 0x4f21f;
+/// Version 4: the eye record follows the control tail (`0x40 + 0x112`).
+const EYE_DATA_OFFSET_V4: usize = 0x152;
+/// Version 5 (SteamOS 0.4.3) inserts 5 bytes at the version-4 eye-record offset. On 2026-10-02, with tracking idle,
+/// they were `00 ff ff ff ff`. The record after them matches version 4.
+const EYE_DATA_OFFSET_V5: usize = 0x157;
 const SOURCE: &str = "/dev/shm/eye-server.mmap";
 const TIMEOUT: Duration = Duration::from_secs(1);
 // The eye server is waited on in slices this long, so the status file keeps updating while it is idle.
@@ -99,8 +109,6 @@ struct EyeServerMmap {
     metadata_mutex: [u8; 0x30],
     sequence: u32,
     metadata_requested: u32,
-    other_control_fields: [u8; 0x112],
-    eye_data: EyeDataMmap,
 }
 
 // The record is packed, so its timestamp and vectors are not naturally aligned.
@@ -126,7 +134,11 @@ const _: () = {
     assert!(offset_of!(EyeServerMmap, metadata_mutex) == 0x08);
     assert!(offset_of!(EyeServerMmap, sequence) == 0x38);
     assert!(offset_of!(EyeServerMmap, metadata_requested) == 0x3c);
-    assert!(offset_of!(EyeServerMmap, eye_data) == 0x152);
+    assert!(size_of::<EyeServerMmap>() == 0x40);
+    assert!(EYE_DATA_OFFSET_V4 == 0x40 + 0x112);
+    assert!(EYE_DATA_OFFSET_V5 == EYE_DATA_OFFSET_V4 + 5);
+    assert!(SHM_SIZE_V5 == SHM_SIZE_V4 + 5);
+    assert!(EYE_DATA_OFFSET_V5 + size_of::<EyeDataMmap>() <= SHM_SIZE_V4);
     assert!(offset_of!(EyeDataMmap, sample_time) == 0x05);
     assert!(offset_of!(EyeDataMmap, gaze_direction) == 0x0d);
     assert!(offset_of!(EyeDataMmap, gaze_covariance_diag) == 0x25);
@@ -136,7 +148,7 @@ const _: () = {
     assert!(offset_of!(EyeDataMmap, openness) == 0x79);
     assert!(offset_of!(EyeDataMmap, estimate_extra) == 0x81);
     assert!(size_of::<EyeDataMmap>() == 0xebc);
-    assert!(size_of::<EyeServerMmap>() <= SHM_SIZE);
+    assert!(EYE_DATA_OFFSET_V4 + size_of::<EyeDataMmap>() <= SHM_SIZE_V4);
     assert!(size_of::<libc::pthread_mutex_t>() <= 0x30);
     assert!(8 % align_of::<libc::pthread_mutex_t>() == 0);
 };
@@ -837,6 +849,7 @@ fn lid_to_etvr(vrcft: f32) -> f32 {
 struct EyeSource {
     map: MmapMut,
     inode: u64,
+    eye_offset: usize,
 }
 
 struct MutexGuard(*mut libc::pthread_mutex_t);
@@ -882,22 +895,33 @@ impl EyeSource {
     fn open() -> Result<Self, Box<dyn Error>> {
         let file = OpenOptions::new().read(true).write(true).open(SOURCE)?;
         let metadata = file.metadata()?;
-        if metadata.len() < SHM_SIZE as u64 {
+        // Both versions are at least this long, and the version-5 eye record still fits in it.
+        if metadata.len() < SHM_SIZE_V4 as u64 {
             return Err(format!("{SOURCE}: shared memory is too small").into());
         }
-        let map = unsafe { MmapOptions::new().len(SHM_SIZE).map_mut(&file)? };
-        let source = Self {
+        let map = unsafe { MmapOptions::new().len(SHM_SIZE_V4).map_mut(&file)? };
+        let mut source = Self {
             map,
             inode: metadata.ino(),
+            eye_offset: EYE_DATA_OFFSET_V4,
         };
         let layout = source.layout();
         let version = u32::from_le(unsafe { ptr::read_volatile(&raw const (*layout).version) });
-        if version != SHM_VERSION {
-            return Err(format!(
-                "unsupported eye shared-memory version {version}; expected {SHM_VERSION} (Frame 0.5.0)"
-            )
-            .into());
-        }
+        source.eye_offset = match version {
+            SHM_VERSION_V4 => EYE_DATA_OFFSET_V4,
+            SHM_VERSION_V5 => {
+                if metadata.len() < SHM_SIZE_V5 as u64 {
+                    return Err(format!("{SOURCE}: shared memory is too small").into());
+                }
+                EYE_DATA_OFFSET_V5
+            }
+            _ => {
+                return Err(format!(
+                    "unsupported eye shared-memory version {version}; expected {SHM_VERSION_V4} or {SHM_VERSION_V5}"
+                )
+                .into());
+            }
+        };
         if u32::from_le(unsafe { ptr::read_volatile(&raw const (*layout).initialized) }) != 1 {
             return Err("eye shared memory is not initialized".into());
         }
@@ -965,7 +989,7 @@ impl EyeSource {
 
         let guard = self.lock()?;
         let data = if unsafe { ptr::read_volatile(sequence_ptr) } != sequence {
-            let record_ptr = unsafe { &raw const (*self.layout()).eye_data };
+            let record_ptr = unsafe { self.map.as_ptr().add(self.eye_offset).cast::<EyeDataMmap>() };
             let record = unsafe { ptr::read_unaligned(record_ptr) };
             if record.producer_state == 1 {
                 Next::Sample(EyeData {
@@ -1902,6 +1926,58 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_5_eye_record_is_the_version_4_record_shifted_by_five_bytes() {
+        // /dev/shm/eye-server.mmap on SteamOS 0.4.3 (2026-10-02), from file offset 0x150. Tracking was idle: two
+        // reads 50 ms apart were identical, and openness is 0. The record at 0x157 still matches
+        // version 4 (producer state 1, a sane timestamp, unit gaze vectors).
+        let region: &[u8] = &[
+            0x70, 0x41, 0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00, 0x00, 0xda, 0x60, 0x26, 0xef,
+            0x3d, 0xf5, 0x8b, 0x40, 0x93, 0xef, 0xcf, 0xbc, 0xf2, 0x47, 0x0e, 0xbf, 0x5f, 0xb8, 0x54, 0xbf,
+            0x19, 0xc7, 0xec, 0xbe, 0xd2, 0x62, 0xfc, 0xbe, 0xde, 0xaa, 0x3c, 0xbf, 0xb9, 0xa7, 0xd7, 0x3c,
+            0xb0, 0x4e, 0xbf, 0x3b, 0xdd, 0xdb, 0xc6, 0x3c, 0x8c, 0x41, 0x67, 0x3b, 0xb0, 0x4e, 0xbf, 0x3b,
+            0x7f, 0xd9, 0x53, 0x3b, 0x91, 0x3a, 0x0e, 0xbd, 0x1b, 0x91, 0x90, 0xbd, 0x39, 0x23, 0xd8, 0xbd,
+            0xb0, 0x2d, 0xb7, 0xbc, 0xb0, 0xa0, 0xd2, 0xbd, 0x52, 0x9e, 0x7d, 0xbf, 0xdc, 0x30, 0xeb, 0xbe,
+            0xd0, 0xb1, 0xfa, 0xbe, 0x2c, 0x67, 0x3b, 0xbf, 0xb9, 0xa7, 0xd7, 0x3c, 0x2e, 0xfb, 0x31, 0x3d,
+            0xdd, 0xdb, 0xc6, 0x3c, 0x8c, 0x41, 0x67, 0x3b, 0x3c, 0x00, 0xdd, 0x3b, 0x7f, 0xd9, 0x53, 0x3b,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd4, 0xb4, 0xfe, 0x3d, 0x67, 0xb0, 0xa2, 0x3d,
+            0xd9, 0xd0, 0xd1, 0x3e, 0x3c, 0xcb, 0x4f, 0x3c, 0x91, 0x92, 0x5a, 0x39, 0xcd, 0x08, 0x21, 0x38,
+            0xf2, 0x8e, 0x50, 0x39, 0x5b, 0x35, 0x3c, 0x39, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let file_base = 0x150;
+        let prefix_at = EYE_DATA_OFFSET_V5 - file_base - 5;
+        assert_eq!(&region[prefix_at..prefix_at + 5], &[0x00, 0xff, 0xff, 0xff, 0xff]);
+        // The mapped record is 0xebc bytes, mostly reserved. Pad so the read stays inside the buffer.
+        let mut bytes = vec![0u8; (EYE_DATA_OFFSET_V4 - file_base) + size_of::<EyeDataMmap>()];
+        bytes[..region.len()].copy_from_slice(region);
+        let record = unsafe {
+            ptr::read_unaligned(bytes.as_ptr().add(EYE_DATA_OFFSET_V5 - file_base).cast::<EyeDataMmap>())
+        };
+        let at_v4 = unsafe {
+            ptr::read_unaligned(bytes.as_ptr().add(EYE_DATA_OFFSET_V4 - file_base).cast::<EyeDataMmap>())
+        };
+        // Copy packed fields out before comparing them. assert_eq would otherwise take a reference
+        // to a field that is not naturally aligned.
+        let producer_state = record.producer_state;
+        let sample_flag = record.sample_flag;
+        let sample_time = record.sample_time;
+        let openness = record.openness;
+        let gaze_direction = record.gaze_direction;
+        let pre_fusion_gaze = record.pre_fusion_gaze;
+        let at_v4_state = at_v4.producer_state;
+        assert_eq!(producer_state, 1);
+        assert_eq!(sample_flag, 0);
+        assert!((sample_time - 894.655).abs() < 0.001);
+        assert_eq!(openness, [0.0, 0.0]);
+        let norm = |v: [f32; 3]| v.iter().map(|value| value * value).sum::<f32>().sqrt();
+        for gaze in [gaze_direction, pre_fusion_gaze] {
+            for eye in gaze {
+                assert!((norm(eye) - 1.0).abs() < 0.01, "{eye:?} is not a unit vector");
+            }
+        }
+        assert_ne!(at_v4_state, 1);
+    }
 
     fn settings() -> Settings {
         Settings::default()

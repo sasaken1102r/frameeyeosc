@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 (2026-10-02)
+
+- SteamOS 0.4.3 (Beta) for Steam Frame moves the eye tracker's shared memory to version 5, so 0.6.0 exits on startup and systemd restarts it every 5 seconds. Version 4 is still read as before. Version 5 keeps the same header and the same eye record, with 5 bytes inserted immediately before the record, so it now starts at `0x157` instead of `0x152`. The file is 5 bytes longer (324127).
+
 ## 0.6.0 (2026-10-01)
 
 Fitting again when you put the headset back on, VRCFaceTracking with wide eyes, and a tidier panel.

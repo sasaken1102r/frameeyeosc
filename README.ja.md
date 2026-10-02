@@ -23,7 +23,7 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 
 - 開発者モードを有効にして SSH で入れる Steam Frame（設定 → システム → 開発者モードを有効化、開発者の項目でパスワードを設定）。SSH を有効にすると、同じネットワークにいてパスワードを知っている人は誰でもヘッドセットに入れるので、推測されにくいパスワードにしてください
 - Steam Link でストリーミングしている PC 版 VRChat（Action Menu → Options → OSC → Enabled）
-- VRCFaceTracking の目のパラメータ（`FT/v2/EyeLeftX`、`EyeLidLeft` など）を float で持つアバター。VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」のアバターには対応していません。`EyeTrackingActive` は bool で送ります。これを float で持つアバターは bool が届くと止まるので、送り方タブの「EyeTrackingActive の型」で［Float］を選んでください（`eye_tracking_active`）。［送らない］にすると送りません
+- VRCFaceTracking の目のパラメータ（`FT/v2/EyeLeftX`、`EyeLidLeft` など）を float で持つアバター。VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」のアバターには対応していません。`EyeTrackingActive` は bool で送ります。これを float で持つアバターは bool が届くと止まるので、送り方タブの「EyeTrackingActive の型」で［Float］を選んでください（`eye_tracking_active`）。［送らない］にすると送りません。これらのパラメータを持たないアバターは、VRChat 自身のアイトラッキング入力で目を動かせます（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)）
 - VRCFaceTracking（ETVR）モードで使うときは、PC に VRCFaceTracking と ETVR Tracking Module。LiveLink モードなら VRCFaceTracking と LiveLink モジュール
 
 ## インストール
@@ -121,6 +121,7 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.con
 | `port` | `--port`、`--target` | `null` | `null` は `vrchat` なら 9000、`etvr` なら 8889、`livelink` なら 11111 |
 | `prefix` | `--prefix` | `"/FT"` | パラメータ名の頭。`""` で頭なし |
 | `eye_tracking_active` | `--eye-tracking-active` | `"bool"` | VRChat モードで `EyeTrackingActive` をどう送るか: `"bool"`（true / false）、`"float"`（1.0 / 0.0。アバターによってはこちらが必要）、`"off"`（送らない。止めたときや目を見失ったときの 1 回の「無効」も送らない）。ETVR モードと LiveLink モードではもともと送らない |
+| `native_eyes` | `--native-eyes` | `false` | VRChat モードで、VRChat 自身のアイトラッキング入力（`/tracking/eye/*`）も送る。VRCFT のパラメータを持たないアバターの目が動く（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)） |
 | `raw` | `--raw` | `false` | スムージングしない。時間を使う処理（途切れ消し、視線を止める、品質チェック、閉じたまま保つ、真下で左右を止める）もしない |
 | `gaze_min_cutoff` | `--gaze-min-cutoff` | `0.3` | 下げるほど止まっている時の視線が安定（その分遅れる） |
 | `gaze_beta` | `--gaze-beta` | `1.5` | 上げるほど素早い視線の動きに遅れず付いていき、動いたあと早く落ち着く |
@@ -159,6 +160,24 @@ FRAMEEYEOSC_ARGS="--gaze-min-cutoff 0.3 --lid-sync 0.6"
 ```
 
 ここで指定した項目はファイルからは変えられず、パネルでは「コマンドで固定中」と出ます。すべてのオプション（別の設定ファイルを使う `--config` など）は `~/.local/bin/frameeyeosc --help` で確認できます。
+
+## VRChat のアイトラッキング入力
+
+`"native_eyes": true`（または `--native-eyes`）にすると、VRChat モードのとき、VRCFT のパラメータに加えて VRChat 自身のアイトラッキング入力も送ります。動くのはアバターの Avatar Descriptor の Eye Look に設定した目とまぶたなので、VRCFT のパラメータを持たないアバターでも、アニメーターに何も足さずに目が動きます。Eye Look を設定済みのアバターなら、アップロードし直す必要もありません。既定ではオフです。
+
+- `/tracking/eye/CenterVec`: 送っている視線（なめらかにして、合わせたあとのもの）を向きにしたもの。`independent_eyes` のときは `/tracking/eye/LeftRightVec`
+- `/tracking/eye/EyesClosedAmount`: 送っている左右のまぶたを平均した 1 つの値（0 で開く、1 で閉じる）。VRChat が受け取るのは両目で 1 つの値だけで、見開きはありません。ウインクは両目が半分閉じ、見開きはただ開いた目になります。これらを伝えたいときは VRCFT のパラメータを持つアバターを使ってください
+
+VRCFT 向けに作られたアバターには影響しません。`EyeTrackingActive` が true のあいだ、目はアニメーションに渡されて VRCFT のパラメータに従うので、この入力では何も変わりません。
+
+目を見失ったとき、送信を止めたとき、送り先を変えたときは、普通に開いて正面を見ている目を 1 回送ります。この入力には「無効」がなく、VRChat は自分のタイムアウトのあとで目を自動の動きに戻します。ETVR モードと LiveLink モードでは送りません。
+
+アバター側は、Unity で Eye Look を設定しておく必要があります（VRC Avatar Descriptor → Eye Look で［Enable］を押す）。視線は動くのにまばたきをしないときは、たいてい Eyelids が設定されていません:
+
+- Eyes: 「Transforms」に左右の目のボーン。「Rotation States」に、Looking Straight / Up / Down / Left / Right で目がどこまで回るか（プレビューで確かめられます）
+- Eyelids: 「Eyelid Type」を Blendshapes に（まぶたをボーンで動かすアバターは Bones）、「Eyelids Mesh」に顔のメッシュ、「Blink」に目を閉じるブレンドシェイプ（`vrc.blink`、`blink`、`Eye_Close` などの名前が多い）
+
+ここを変えたら、アバターをアップロードし直してください。
 
 ## 状態ファイル
 

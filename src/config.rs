@@ -96,6 +96,9 @@ pub struct Settings {
     /// Without a trailing slash; empty for no prefix.
     pub prefix: String,
     pub eye_tracking_active: ActiveType,
+    /// In VRChat mode, also send VRChat's own eye tracking input (/tracking/eye/*), which moves the eyes of
+    /// avatars without VRCFT parameters.
+    pub native_eyes: bool,
     /// How easily a fitted eye widens.
     pub lid_widen: Widen,
     /// The settings file has no `lid_widen` (written by 0.5.x or earlier, whose lid_scale_* did nothing for fitted
@@ -174,6 +177,7 @@ impl Default for Settings {
             port: None,
             prefix: "/FT".into(),
             eye_tracking_active: ActiveType::Bool,
+            native_eyes: false,
             lid_widen: Widen::Normal,
             scales_predate_fit: false,
             raw: false,
@@ -478,7 +482,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
             }
         )*};
     }
-    pin!(output, eye_tracking_active, lid_widen);
+    pin!(output, eye_tracking_active, native_eyes, lid_widen);
     // Given on the command line: this is 0.6.0 or later, whatever the file says
     if given.contains("lid_widen") {
         settings.scales_predate_fit = false;
@@ -900,6 +904,15 @@ mod tests {
         }
         let (_, asked) = parse(r#"{"gaze_capture": {"id": 1, "target": "a-very-long-target-name"}}"#).unwrap();
         assert_eq!(asked.capture.unwrap().target.chars().count(), MAX_TARGET_CHARS);
+    }
+
+    #[test]
+    fn native_eyes_are_off_until_asked_for() {
+        assert!(!merged("{}", &[]).unwrap().0.native_eyes);
+        assert!(merged(r#"{"native_eyes": true}"#, &[]).unwrap().0.native_eyes);
+        let (settings, locked) = merged(r#"{"native_eyes": false}"#, &["--native-eyes"]).unwrap();
+        assert!(settings.native_eyes);
+        assert_eq!(locked, ["native_eyes"]);
     }
 
     #[test]

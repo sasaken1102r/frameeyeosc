@@ -49,6 +49,7 @@ struct UiText {
     const char* rightEye;
     const char* noEyeData;          ///< no eye data
     const char* errorPrefix;        ///< before frameeyeosc's config_error
+    const char* sourceErrorPrefix;  ///< before frameeyeosc's source_error (the eye tracker can't be read)
     const char* errWrite;           ///< writing config.json failed
     const char* errConfigBroken;    ///< config.json can't be parsed
     const char* errAutostart;       ///< systemctl enable/disable failed

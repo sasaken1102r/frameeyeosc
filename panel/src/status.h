@@ -72,6 +72,7 @@ struct EyeStatus {
     std::string configPath;
     std::string calibrationPath;
     std::string configError;          ///< one line from frameeyeosc; empty if none
+    std::string sourceError;          ///< why frameeyeosc can't read the eye tracker (it keeps retrying); empty if it can
     std::vector<std::string> locked;  ///< config keys set on the command line
     JsonValue effective;              ///< the settings in effect (config keys)
     GazeCaptureStatus capture;        ///< the latest gaze capture

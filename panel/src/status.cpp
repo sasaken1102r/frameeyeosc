@@ -149,6 +149,7 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
     status.configPath = readText(root, "config_path");
     status.calibrationPath = readText(root, "calibration_path");
     status.configError = readText(root, "config_error");
+    status.sourceError = readText(root, "source_error");
     if (const JsonValue* locked = root.get("locked"); locked != nullptr && locked->isArray()) {
         for (const JsonValue& item : locked->items) {
             if (item.isString()) status.locked.push_back(item.text);

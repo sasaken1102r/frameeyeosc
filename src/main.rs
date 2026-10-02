@@ -26,6 +26,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 const SOURCE: &str = "/dev/shm/eye-server.mmap";
 const TIMEOUT: Duration = Duration::from_secs(1);
+// While the shared memory can't be opened, it is tried again this often.
+const REOPEN_INTERVAL: Duration = Duration::from_secs(1);
 // The eye server is waited on in slices this long, so the status file keeps updating while it is idle.
 const POLL: Duration = Duration::from_millis(100);
 // The status file's send rate counts the samples sent within this window.
@@ -90,6 +92,7 @@ const CAL_SCALE_RANGE: (f32, f32) = (0.75, 1.33);
 const CAL_SAVE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Where the eye record sits in one version of the shared memory, and how large that version's file is.
+#[derive(Debug)]
 struct ShmLayout {
     version: u32,
     eye_data: usize,
@@ -101,6 +104,44 @@ const SHM_LAYOUTS: &[ShmLayout] = &[
     ShmLayout { version: 4, eye_data: 0x152, size: 0x4f21a },
     ShmLayout { version: 5, eye_data: 0x157, size: 0x4f21f },
 ];
+
+#[derive(Debug, PartialEq)]
+enum LayoutError {
+    Unsupported(u32),
+    TooSmall,
+}
+
+impl std::fmt::Display for LayoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Self::Unsupported(version) => {
+                let known: Vec<String> = SHM_LAYOUTS.iter().map(|layout| layout.version.to_string()).collect();
+                write!(f, "unsupported eye shared-memory version {version}; expected {}", known.join(" or "))
+            }
+            Self::TooSmall => write!(f, "shared memory is too small"),
+        }
+    }
+}
+
+impl ShmLayout {
+    /// The layout for a file of this version and length.
+    fn find(version: u32, len: usize) -> Result<&'static Self, LayoutError> {
+        let layout = SHM_LAYOUTS
+            .iter()
+            .find(|layout| layout.version == version)
+            .ok_or(LayoutError::Unsupported(version))?;
+        if len < layout.size {
+            return Err(LayoutError::TooSmall);
+        }
+        Ok(layout)
+    }
+}
+
+/// The eye record at `offset`. Panics if the record would run past the end of `bytes`.
+fn read_eye_record(bytes: &[u8], offset: usize) -> EyeDataMmap {
+    let record = &bytes[offset..offset + size_of::<EyeDataMmap>()];
+    unsafe { ptr::read_unaligned(record.as_ptr().cast()) }
+}
 
 /// The control fields at the start of the shared memory, the same in every known version.
 #[repr(C)]
@@ -909,17 +950,10 @@ impl EyeSource {
         let map = unsafe { MmapOptions::new().len(len).map_mut(&file)? };
         let header: *const EyeServerHeader = map.as_ptr().cast();
         let version = u32::from_le(unsafe { ptr::read_volatile(&raw const (*header).version) });
-        let Some(shm) = SHM_LAYOUTS.iter().find(|layout| layout.version == version) else {
-            let known: Vec<String> = SHM_LAYOUTS.iter().map(|layout| layout.version.to_string()).collect();
-            return Err(format!(
-                "unsupported eye shared-memory version {version}; expected {}",
-                known.join(" or ")
-            )
-            .into());
-        };
-        if len < shm.size {
-            return Err(too_small().into());
-        }
+        let shm = ShmLayout::find(version, len).map_err(|error| match error {
+            LayoutError::TooSmall => too_small(),
+            error => error.to_string(),
+        })?;
         if u32::from_le(unsafe { ptr::read_volatile(&raw const (*header).initialized) }) != 1 {
             return Err("eye shared memory is not initialized".into());
         }
@@ -943,10 +977,6 @@ impl EyeSource {
         self.map.as_mut_ptr().cast()
     }
 
-    fn eye_data(&self) -> *const EyeDataMmap {
-        // In bounds: open() checked the file against this version's size, which covers the record.
-        unsafe { self.map.as_ptr().add(self.eye_data).cast() }
-    }
 
     fn lock(&mut self) -> io::Result<MutexGuard> {
         let mutex = unsafe { (&raw mut (*self.layout_mut()).metadata_mutex).cast() };
@@ -996,8 +1026,7 @@ impl EyeSource {
 
         let guard = self.lock()?;
         let data = if unsafe { ptr::read_volatile(sequence_ptr) } != sequence {
-            let record_ptr = self.eye_data();
-            let record = unsafe { ptr::read_unaligned(record_ptr) };
+            let record = read_eye_record(&self.map, self.eye_data);
             if record.producer_state == 1 {
                 Next::Sample(EyeData {
                     sample_time: record.sample_time,
@@ -1608,6 +1637,8 @@ struct Bridge {
     livelink_neutral: Option<Instant>,
     // Keeps the Live Link samples at or below LIVELINK_MAX_HZ.
     livelink_throttle: Throttle,
+    // Why the eye tracker's shared memory can't be read right now (missing, an unsupported version, ...).
+    source_error: Option<String>,
 }
 
 impl Bridge {
@@ -1794,6 +1825,7 @@ impl Bridge {
             config_path: self.config.path.as_deref(),
             calibration_path: self.calibration.path.as_deref(),
             config_error: self.config.error.as_deref(),
+            source_error: self.source_error.as_deref(),
             locked: &self.config.locked,
             effective: settings,
             gaze_capture: self.capture_result.as_ref(),
@@ -1890,37 +1922,52 @@ fn main() -> Result<(), Box<dyn Error>> {
         dots: dots::DotStream::new(status::status_path().parent().unwrap_or(Path::new("/tmp"))),
         livelink_neutral: None,
         livelink_throttle: Throttle::default(),
+        source_error: None,
     };
     let mut status_file = StatusFile::new(status::status_path());
-    let mut source = EyeSource::open()?;
-    eprintln!("Reading {SOURCE}");
-    // Whether the last attempt to reattach to a replaced shared memory failed, so it is logged once.
-    let mut reopen_failed = false;
+    // Until the shared memory can be read (SteamVR not started yet, an unsupported version, ...), keep running and
+    // retrying, and say why in the status file, so the panel can show it instead of "not running".
+    let mut source: Option<EyeSource> = None;
+    let mut next_open = Instant::now();
     loop {
         if let Some(reload) = bridge.config.poll() {
             bridge.apply(reload)?;
         }
         bridge.output.refresh();
-        match source.next(POLL)? {
-            Next::Sample(data) if data.is_finite() => bridge.on_sample(data)?,
-            // Short waits are normal; only a whole second without data means tracking stopped.
-            Next::Waiting if bridge.last_data.is_some_and(|last| last.elapsed() < TIMEOUT) => {}
-            next if bridge.active_since.is_some() => bridge.on_lost(&lost_reason(&next))?,
-            // Idle: if the eye server recreated its shared memory, our mapping would go silent forever.
-            // While the new one is missing or not set up yet, keep trying instead of exiting.
-            _ if source.is_stale() => match EyeSource::open() {
-                Ok(reopened) => {
-                    eprintln!("{SOURCE} was replaced; reattached");
-                    source = reopened;
-                    reopen_failed = false;
+        if source.is_none() && Instant::now() >= next_open {
+            match EyeSource::open() {
+                Ok(opened) => {
+                    eprintln!("Reading {SOURCE}");
+                    source = Some(opened);
+                    bridge.source_error = None;
                 }
-                Err(error) if !reopen_failed => {
-                    eprintln!("{SOURCE} was replaced and can't be opened yet ({error}); retrying");
-                    reopen_failed = true;
+                Err(error) => {
+                    let error = error.to_string();
+                    if bridge.source_error.as_ref() != Some(&error) {
+                        eprintln!("Can't read {SOURCE} ({error}); retrying every {} s", REOPEN_INTERVAL.as_secs());
+                    }
+                    bridge.source_error = Some(error);
+                    next_open = Instant::now() + REOPEN_INTERVAL;
                 }
-                Err(_) => {}
-            },
-            _ => {}
+            }
+        }
+        if let Some(open) = source.as_mut() {
+            match open.next(POLL)? {
+                Next::Sample(data) if data.is_finite() => bridge.on_sample(data)?,
+                // Short waits are normal; only a whole second without data means tracking stopped.
+                Next::Waiting if bridge.last_data.is_some_and(|last| last.elapsed() < TIMEOUT) => {}
+                next if bridge.active_since.is_some() => bridge.on_lost(&lost_reason(&next))?,
+                // Idle: if the eye server recreated its shared memory, our mapping would go silent forever.
+                // It is opened again above, retrying while the new one is missing or not set up yet.
+                _ if open.is_stale() => {
+                    eprintln!("{SOURCE} was replaced; reopening");
+                    source = None;
+                    next_open = Instant::now();
+                }
+                _ => {}
+            }
+        } else {
+            std::thread::sleep(POLL);
         }
         bridge.check_capture();
         bridge.keep_livelink_alive();
@@ -1933,6 +1980,102 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // /dev/shm/eye-server.mmap on the SteamOS beta (version 5, 2026-10-02) from file offset 0x150, while tracking at
+    // 91 Hz with the headset on: the 5 inserted bytes `00 ff ff ff ff` at 0x152, then the used part of the eye record
+    // at 0x157 (producer state 1, sample flag 1, sample time 2575.25 s, unit gaze vectors, both eyes open 1.0).
+    const V5_CAPTURE_AT: usize = 0x150;
+    const V5_CAPTURE: [u8; 168] = [
+        0xb4, 0x42, 0x00, 0xff, 0xff, 0xff, 0xff, 0x01, 0x00, 0x00, 0x00, 0x01, 0xda, 0x07, 0x71, 0x30,
+        0x81, 0x1e, 0xa4, 0x40, 0xba, 0x25, 0x9f, 0x3d, 0xa7, 0x40, 0x73, 0xbe, 0x00, 0xe0, 0x77, 0xbf,
+        0x18, 0xba, 0x4b, 0x3d, 0x39, 0xb0, 0x73, 0xbe, 0xb1, 0x51, 0x78, 0xbf, 0xe0, 0x47, 0xbc, 0x39,
+        0xb6, 0x69, 0x08, 0x3a, 0xe7, 0xbb, 0x8d, 0x39, 0x92, 0x72, 0xdd, 0x39, 0xb6, 0x69, 0x08, 0x3a,
+        0xda, 0x86, 0xac, 0x39, 0x88, 0x67, 0x12, 0x3e, 0xf3, 0x89, 0x08, 0xbf, 0x2b, 0x22, 0x0b, 0xc0,
+        0x67, 0x03, 0x9f, 0x3d, 0xe8, 0xe5, 0x6a, 0xbe, 0x63, 0x29, 0x78, 0xbf, 0x47, 0x87, 0x4b, 0x3d,
+        0x50, 0x73, 0x7c, 0xbe, 0x64, 0x88, 0x77, 0xbf, 0xe0, 0x47, 0xbc, 0x39, 0x79, 0x0b, 0x86, 0x3a,
+        0xe7, 0xbb, 0x8d, 0x39, 0x92, 0x72, 0xdd, 0x39, 0xc0, 0xdd, 0x8a, 0x3a, 0xda, 0x86, 0xac, 0x39,
+        0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x80, 0x3f, 0x75, 0x6f, 0xa7, 0x3d, 0x3f, 0x1a, 0xfc, 0xbb,
+        0x82, 0xdd, 0xb8, 0x3d, 0x10, 0x16, 0x09, 0x3d, 0x3b, 0xf8, 0xab, 0x37, 0xb0, 0x9b, 0x94, 0x37,
+        0xae, 0x57, 0xc9, 0x37, 0x74, 0x1f, 0x0f, 0x38,
+    ];
+
+    /// A whole version-5 file around the capture.
+    fn v5_file() -> Vec<u8> {
+        let mut bytes = vec![0; 0x4f21f];
+        bytes[0..4].copy_from_slice(&5u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+        bytes[V5_CAPTURE_AT..V5_CAPTURE_AT + V5_CAPTURE.len()].copy_from_slice(&V5_CAPTURE);
+        bytes
+    }
+
+    /// The same file as version 4 would have it: without the 5 inserted bytes.
+    fn v4_file() -> Vec<u8> {
+        let mut bytes = v5_file();
+        bytes.drain(0x152..0x157);
+        bytes[0..4].copy_from_slice(&4u32.to_le_bytes());
+        bytes
+    }
+
+    /// Reads a file the way EyeSource does: the layout from its version, then the record at that layout's offset.
+    fn read_file(bytes: &[u8]) -> EyeDataMmap {
+        let version = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let layout = ShmLayout::find(version, bytes.len()).unwrap();
+        read_eye_record(bytes, layout.eye_data)
+    }
+
+    // The packed record's fields, copied out so they can be compared without unaligned references.
+    fn record_fields(record: EyeDataMmap) -> (u32, u8, f64, [[f32; 3]; 2], [f32; 2]) {
+        (record.producer_state, record.sample_flag, record.sample_time, record.gaze_direction, record.openness)
+    }
+
+    #[test]
+    fn each_known_version_has_its_eye_record_offset() {
+        assert_eq!(ShmLayout::find(4, 0x4f21a).unwrap().eye_data, 0x152);
+        assert_eq!(ShmLayout::find(5, 0x4f21f).unwrap().eye_data, 0x157);
+        // A larger file is fine; only the part up to the record's end is read.
+        assert_eq!(ShmLayout::find(4, 0x50000).unwrap().eye_data, 0x152);
+    }
+
+    #[test]
+    fn a_file_shorter_than_its_version_is_refused() {
+        assert_eq!(ShmLayout::find(5, 0x4f21a).unwrap_err(), LayoutError::TooSmall);
+        assert_eq!(ShmLayout::find(4, 0x4f219).unwrap_err(), LayoutError::TooSmall);
+    }
+
+    #[test]
+    fn an_unknown_version_names_the_supported_ones() {
+        let error = ShmLayout::find(6, 0x50000).unwrap_err();
+        assert_eq!(error, LayoutError::Unsupported(6));
+        assert_eq!(error.to_string(), "unsupported eye shared-memory version 6; expected 4 or 5");
+        assert_eq!(ShmLayout::find(3, 0x50000).unwrap_err(), LayoutError::Unsupported(3));
+    }
+
+    #[test]
+    fn a_version_5_capture_decodes_at_its_offset() {
+        let (state, flag, time, gaze, openness) = record_fields(read_file(&v5_file()));
+        assert_eq!(state, 1);
+        assert_eq!(flag, 1);
+        assert!((time - 2575.2523).abs() < 0.001, "sample time {time}");
+        assert_eq!(openness, [1.0, 1.0]);
+        for eye in gaze {
+            let norm = eye.iter().map(|value| value * value).sum::<f32>().sqrt();
+            assert!((norm - 1.0).abs() < 0.001, "{eye:?} is not a unit vector");
+            assert!(eye[2] < -0.9, "{eye:?} does not look ahead (-Z)");
+        }
+    }
+
+    #[test]
+    fn version_4_and_5_files_read_the_same_record() {
+        assert_eq!(record_fields(read_file(&v4_file())), record_fields(read_file(&v5_file())));
+    }
+
+    #[test]
+    fn reading_version_5_at_the_version_4_offset_finds_no_samples() {
+        // What 0.6.0 did with only the version check changed: the producer state is read from the inserted bytes.
+        let record = read_eye_record(&v5_file(), 0x152);
+        let state = record.producer_state;
+        assert_ne!(state, 1);
+    }
 
     fn settings() -> Settings {
         Settings::default()
@@ -3058,6 +3201,7 @@ mod tests {
             dots: dots::DotStream::new(Path::new("/nonexistent")),
             livelink_neutral: None,
             livelink_throttle: Throttle::default(),
+        source_error: None,
         };
         bridge.output.refresh();
         bridge

@@ -33,6 +33,8 @@ pub struct Status<'a> {
     pub config_path: Option<&'a Path>,
     pub calibration_path: Option<&'a Path>,
     pub config_error: Option<&'a str>,
+    /// Why the eye tracker's shared memory can't be read (frameeyeosc keeps retrying); None while it can.
+    pub source_error: Option<&'a str>,
     pub locked: &'a [&'static str],
     pub effective: &'a Settings,
     /// The latest gaze capture the panel asked for.

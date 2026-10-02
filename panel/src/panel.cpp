@@ -1050,7 +1050,8 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
                  kTextMuted);
     }
 
-    // One red message at the bottom: the panel's own failure first, then frameeyeosc's config error
+    // One red message at the bottom: the panel's own failure first, then why frameeyeosc can't read the eye tracker,
+    // then its config error
     std::string message;
     if (m.panelErrorBroken) {
         message = t.errConfigBroken;
@@ -1060,6 +1061,8 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         message = t.errConfigBroken;
     } else if (m.autostart.writeFailed) {
         message = t.errAutostart;
+    } else if (s.running && !s.sourceError.empty()) {
+        message = std::string(t.sourceErrorPrefix) + s.sourceError;
     } else if (s.running && !s.configError.empty()) {
         message = std::string(t.errorPrefix) + s.configError;
     }

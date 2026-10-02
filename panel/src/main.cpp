@@ -94,6 +94,7 @@ struct Options {
     bool fakeTargetNull = false;
     bool fakeLocked = false;
     bool fakeConfigError = false;
+    bool fakeSourceError = false;
     bool fakeBroken = false;
     bool fakeWriteError = false;
     bool fakeCustom = false;
@@ -203,6 +204,7 @@ void printUsage() {
         "      --fake-slow-tracker  The eye tracker delivers only 15 samples a second\n"
         "      --fake-locked     Some keys locked by the command line\n"
         "      --fake-config-error  frameeyeosc reports a config error\n"
+        "      --fake-source-error  frameeyeosc can't read the eye tracker (an unsupported shared-memory version)\n"
         "      --fake-broken     config.json can't be parsed\n"
         "      --fake-write-error  The panel failed to write config.json\n"
         "      --fake-custom     Gaze smoothing values that match no preset\n"
@@ -342,6 +344,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeLocked = true;
         } else if (arg == "--fake-config-error") {
             options.fake = options.fakeConfigError = true;
+        } else if (arg == "--fake-source-error") {
+            options.fake = options.fakeSourceError = true;
         } else if (arg == "--fake-broken") {
             options.fake = options.fakeBroken = true;
         } else if (arg == "--fake-write-error") {
@@ -665,7 +669,7 @@ PanelModel fakeModel(const Options& options) {
         }
         s.trackerRate = options.fakeSlowTracker ? 15.0 : 89.6;
         s.rate = options.fakePaused ? 0.0 : s.trackerRate;
-        s.tracking = !options.fakeNoTracking;
+        s.tracking = !options.fakeNoTracking && !options.fakeSourceError;
         if (s.tracking) {
             s.hasRaw = true;
             s.openness = {{0.81, 0.79}};
@@ -697,6 +701,7 @@ PanelModel fakeModel(const Options& options) {
         s.configPath = options.configPath;
         s.calibrationPath = "/home/steamos/.config/frameeyeosc/calibration";
         if (options.fakeConfigError) s.configError = "lid_closed must be below lid_open";
+        if (options.fakeSourceError) s.sourceError = "unsupported eye shared-memory version 6; expected 4 or 5";
         s.effective = root;
         if (options.fakeLocked) {
             s.locked = {key::kOutput, key::kPort, key::kRaw, key::kLidOpen, key::kIndependentEyes, key::kGazeOffsetY};
@@ -907,8 +912,10 @@ int runPrint(const Options& options) {
                     status.scales.v[0], status.scales.v[1], status.learning ? "yes" : "no");
         std::string locked;
         for (const auto& name : status.locked) locked += " " + name;
-        std::printf("  locked:%s\n  config_error: %s\n  config_path: %s\n", locked.empty() ? " (none)" : locked.c_str(),
-                    status.configError.empty() ? "null" : status.configError.c_str(), status.configPath.c_str());
+        std::printf("  locked:%s\n  config_error: %s\n  source_error: %s\n  config_path: %s\n",
+                    locked.empty() ? " (none)" : locked.c_str(),
+                    status.configError.empty() ? "null" : status.configError.c_str(),
+                    status.sourceError.empty() ? "null" : status.sourceError.c_str(), status.configPath.c_str());
     }
     const Autostart autostart = readAutostart();
     std::printf("autostart (%s): %s\n", kServiceName,
@@ -940,7 +947,7 @@ std::string statusSignature(const EyeStatus& s) {
                   s.rawGazeEye[0].v[1], s.rawGazeEye[1].v[0], s.rawGazeEye[1].v[1], s.sentGazeEye[0].v[0],
                   s.sentGazeEye[0].v[1], s.sentGazeEye[1].v[0], s.sentGazeEye[1].v[1]);
     signature += eyes;
-    signature += "|" + s.configError + "|" + s.configPath + "|" + s.calibrationPath + "|";
+    signature += "|" + s.configError + "|" + s.sourceError + "|" + s.configPath + "|" + s.calibrationPath + "|";
     for (const auto& name : s.locked) signature += name + ",";
     if (s.effective.isObject()) signature += writeJson(s.effective);
     return signature;

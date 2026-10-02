@@ -41,6 +41,7 @@ UiText makeJapanese() {
     t.rightEye = "右目";
     t.noEyeData = "目のデータがありません";
     t.errorPrefix = "設定のエラー: ";
+    t.sourceErrorPrefix = "目のデータを読めません: ";
     t.errWrite = "設定を書けません: ";
     t.errConfigBroken = "設定ファイルが壊れています。「すべて既定に戻す」で作り直せます";
     t.errAutostart = "自動起動の切り替えに失敗（systemctl）";
@@ -397,6 +398,7 @@ UiText makeEnglish() {
     t.rightEye = "Right";
     t.noEyeData = "No eye data";
     t.errorPrefix = "Config error: ";
+    t.sourceErrorPrefix = "Can't read eye data: ";
     t.errWrite = "Can't save settings: ";
     t.errConfigBroken = "config.json is broken. \"Reset all\" makes a new one";
     t.errAutostart = "Autostart change failed (systemctl)";

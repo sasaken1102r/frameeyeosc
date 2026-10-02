@@ -23,7 +23,7 @@ This is a fork of [konsti219/frameeyeosc](https://github.com/konsti219/frameeyeo
 
 - A Steam Frame with Developer Mode on and SSH access (Settings > System > Developer Mode, then set a password under Developer). Choose a strong password: with SSH on, anyone on your network who knows it can log in to the headset.
 - PC VRChat streamed with Steam Link, OSC enabled in VRChat (Action Menu > Options > OSC > Enabled).
-- An avatar with VRCFaceTracking eye parameters (`FT/v2/EyeLeftX`, `EyeLidLeft`, ...) as floats. Avatars that pack parameters into binary bits are not supported when sending to VRChat directly. frameeyeosc also sends `EyeTrackingActive` as a bool; some avatars declare it as a float and stop tracking on a bool. For those, choose "Float" under "EyeTrackingActive type" on the Output tab (`eye_tracking_active`), or "Off" to not send it at all.
+- An avatar with VRCFaceTracking eye parameters (`FT/v2/EyeLeftX`, `EyeLidLeft`, ...) as floats. Avatars that pack parameters into binary bits are not supported when sending to VRChat directly. frameeyeosc also sends `EyeTrackingActive` as a bool; some avatars declare it as a float and stop tracking on a bool. For those, choose "Float" under "EyeTrackingActive type" on the Output tab (`eye_tracking_active`), or "Off" to not send it at all. Avatars set up for the OSC that SteamVR's Steam Link sends by itself (`LeftEyeX`, `RightEyeLid`, ...) work too: turn on "Steam Link names too" on the Output tab (see [Avatars made for Steam Link's OSC](#avatars-made-for-steam-links-osc)).
 - For the VRCFaceTracking (ETVR) mode: VRCFaceTracking on the PC with the ETVR Tracking Module. For the LiveLink mode: VRCFaceTracking with the LiveLink module.
 
 ## Install
@@ -93,7 +93,7 @@ From 0.4.0 on, the panel's "Update" button does the update. The panel's Advanced
 
 - The left column always shows what frameeyeosc is doing: sending or paused, where it sends to, messages per second, how many samples a second the eye tracker delivers (marked "low" below 60), both eyelids and the gaze (raw and sent), and a config error if there is one. While the "Track Dominant Eye Only" setting is on, the gaze title line says which eye the Frame tracks ("Frame setting: tracking the right eye only").
 - Basic: pause sending, where to send (three cards: VRChat directly, VRCFT (LiveLink), marked recommended, and VRCFT (ETVR), each saying whether wide eyes come through, how others see your eyes, and whether VRCFaceTracking is needed), language (Japanese / English), start with SteamVR, reset all, quit.
-- Output: target PC (automatic, fixed to the PC it sends to now, or typed: see below) and port. For VRChat directly also the parameter prefix and the EyeTrackingActive type; for LiveLink and ETVR what to set up in VRCFaceTracking on the PC instead.
+- Output: target PC (automatic, fixed to the PC it sends to now, or typed: see below) and port. For VRChat directly also the parameter prefix, the EyeTrackingActive type and whether to send Steam Link's parameter names too; for LiveLink and ETVR what to set up in VRCFaceTracking on the PC instead.
 - Gaze: smoothing on or off, light / medium / strong presets and the three filter values, deadzone, holding the gaze while blinking, per-eye gaze, skipping unreliable gaze, removing one-sample glitches.
 - Eye fit: one button that fits your gaze and eyelids in about 20 seconds (see [Eye fit](#eye-fit)), fitting straight ahead again, what to fit by itself when you put the headset on ("When put on": nothing, re-center, or re-center + tilt), the result with "Reset", and the values by hand under "Fine-tune".
 - Eyelids: auto calibration and its learned values, per-eye scales, the four openness marks drawn over each eye's live openness (blink and open wide to set them), left/right sync, keeping blinks visible (hold time and closing both eyes), eyelid smoothing. Once the eyes are fitted, "Widen" (Off / Less / Normal / More) takes the auto calibration's place, a line says whether an eye widens with the other one, and the marks fold away under "Fine-tune" (3 and 4 greyed there: they are for eyes without a fit). Where a relaxed open eye already reads 1.0 (SteamOS 0.4.3), that line says widening can't come through (see [Troubleshooting](#troubleshooting)).
@@ -121,6 +121,7 @@ Settings are in `~/.config/frameeyeosc/config.json`. The panel writes it, and yo
 | `port` | `--port`, `--target` | `null` | `null` = 9000 for `vrchat`, 8889 for `etvr`, 11111 for `livelink` |
 | `prefix` | `--prefix` | `"/FT"` | Parameter name prefix; `""` for none. Not used in LiveLink mode |
 | `eye_tracking_active` | `--eye-tracking-active` | `"bool"` | How `EyeTrackingActive` is sent in VRChat mode: `"bool"` (true / false), `"float"` (1.0 / 0.0; some avatars need it) or `"off"` (never, not even the one-time "not active" on pausing or losing tracking). ETVR and LiveLink modes never send it |
+| `steamlink_params` | `--steamlink-params` | `false` | In VRChat mode, also send the avatar parameters SteamVR's Steam Link sends from its own OSC (`LeftEyeX`, `RightEyeLid`, ...), for avatars made for those; see [Avatars made for Steam Link's OSC](#avatars-made-for-steam-links-osc). Never prefixed. ETVR and LiveLink modes ignore it |
 | `raw` | `--raw` | `false` | No smoothing, and none of the time-based steps (glitch removal, gaze holding, the quality check, blink hold, holding the sideways gaze far down) |
 | `gaze_min_cutoff` | `--gaze-min-cutoff` | `0.3` | Lower = steadier gaze at rest, more lag |
 | `gaze_beta` | `--gaze-beta` | `1.5` | Higher = follows fast eye movements with less lag, and settles sooner after one |
@@ -164,6 +165,26 @@ Whatever is set there can't be changed from the file, and the panel shows it as 
 
 frameeyeosc writes what it is doing to `$XDG_RUNTIME_DIR/frameeyeosc/status.json` (usually `/run/user/1000/frameeyeosc/status.json`) ten times a second: whether it is sending, the destination, messages per second, the eye tracker's samples per second (`tracker_rate`), the latest raw and sent values, the calibration, the settings in effect, which of them are locked by the command line, any config error, why the eye data can't be read if it can't (`source_error`), which eye the Frame tracks alone while the "Track Dominant Eye Only" setting is on (`dominant_eye`: `"left"` or `"right"`; `null` while it is off), whether a relaxed open eye reads 1.0 so widening can't come through (`openness_saturated`), and the latest eye fit measurement. The panel reads it. The folder is readable only by you, lives in memory, and is gone after a reboot. Only the latest values are kept.
 
+## Avatars made for Steam Link's OSC
+
+SteamVR's Steam Link (SteamVR 2.18) sends the Frame's eye tracking to VRChat by itself, under other names than VRCFaceTracking's: `LeftEyeX` instead of `FT/v2/EyeLeftX`, for example. An avatar set up for those doesn't move with frameeyeosc's VRCFaceTracking names. Turn on "Steam Link names too" on the Output tab (`"steamlink_params": true` or `--steamlink-params`) and frameeyeosc sends them as well, after the VRCFaceTracking ones and with each sample. VRChat ignores parameters an avatar doesn't have, so the other set does no harm. Only with "VRChat" as the output.
+
+They carry frameeyeosc's values (smoothed, with the eye fit, blink hold and so on), in Steam Link's conventions as measured on SteamVR 2.18.2:
+
+| Parameter | Type | Value |
+|---|---|---|
+| `LeftEyeX`, `RightEyeX` | float | The gaze sideways, 1 = 45° right (the same as `EyeLeftX`) |
+| `LeftEyeY`, `RightEyeY` | float | The gaze up or down, 1 = 45°, **positive down** (the opposite of `EyeLeftY`, as Steam Link sends it) |
+| `LeftEyeLid`, `RightEyeLid` | float | How closed the eye is: 0 open (relaxed open or widened), 1 shut (the opposite way round from `EyeLidLeft`) |
+| `LeftEyeLidExpandedSqueeze`, `RightEyeLidExpandedSqueeze` | float | 0.0 while the eye is more than half closed, else 0.8 |
+| `LeftEyeSqueezeToggle`, `RightEyeSqueezeToggle` | int | 1 while the eye is more than half closed, else 0 |
+| `LeftEyeWidenToggle`, `RightEyeWidenToggle` | int | Always 1, as Steam Link sends it |
+
+- Both eyes get the shared gaze, or each its own with "Move eyes separately" (Steam Link always sends the shared one).
+- The names are never prefixed: Steam Link sends them as `/avatar/parameters/LeftEyeX`, whatever `prefix` says.
+- Steam Link's `/tracking/eye/...` and `/sl/...` messages (VRChat's own eye tracking) aren't sent.
+- Keep Steam Link's own OSC output turned off, as described under Install: with both running, the same parameters come from two sources and fight over the avatar's eyes.
+
 ## VRCFaceTracking (ETVR) mode
 
 frameeyeosc can send in the format that the ETVR Tracking Module for VRCFaceTracking reads. VRCFaceTracking then drives the avatar, so the Frame's eyes can be combined with other trackers such as a mouth tracker. The ETVR Tracking Module is a third-party module ([EyeTrackVR/ETVRTrackingModule](https://github.com/EyeTrackVR/ETVRTrackingModule)); frameeyeosc is not part of it.
@@ -201,7 +222,7 @@ Notes:
 - The module doesn't smooth anything, so frameeyeosc's own smoothing settings apply as they are.
 - It is sent at up to 50 packets a second (always the newest sample): the module reads one packet every 10-16 ms, and sending every eye sample (90 or more a second) made the eyes lag more and more.
 - VRCFaceTracking keeps the last values it got. So when the eye data stops (the headset comes off) or you pause or switch the output, frameeyeosc sends relaxed open eyes looking straight ahead once. While sending is on without eye data, it repeats that twice a second: the module only starts if something arrives within 180 seconds of VRCFaceTracking loading it (if it gave up, reload the module in VRCFaceTracking). Paused, nothing is sent.
-- `prefix` and `eye_tracking_active` don't apply: VRCFaceTracking sends the avatar parameters.
+- `prefix`, `eye_tracking_active` and `steamlink_params` don't apply: VRCFaceTracking sends the avatar parameters.
 
 ## Eye fit
 

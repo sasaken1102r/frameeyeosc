@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Avatars made for the OSC that SteamVR's Steam Link sends by itself move with frameeyeosc too. Steam Link names its avatar parameters differently from VRCFaceTracking (`LeftEyeX` instead of `FT/v2/EyeLeftX`, `RightEyeLid` instead of `FT/v2/EyeLidRight`), so such an avatar didn't move. "Steam Link names too" on the Output tab (`steamlink_params`, `--steamlink-params`; off by default, VRChat mode only) also sends `LeftEyeX` / `LeftEyeY` / `RightEyeX` / `RightEyeY`, and for each eye `EyeLid`, `EyeLidExpandedSqueeze`, `EyeSqueezeToggle` and `EyeWidenToggle`, with frameeyeosc's processed values, never prefixed, after the VRCFaceTracking ones. They follow what Steam Link sent on SteamVR 2.18.2, captured next to a recording of the same eye data: X is the same as frameeyeosc's (1 = 45° right) and Y the opposite (positive is down: over 4,029 samples Steam Link's Y was frameeyeosc's raw Y turned over, off by 0.0003 on average); the eyelid is how closed the eye is (0 open, 1 shut; Steam Link sends 1 minus the Frame's openness), frameeyeosc's relaxed open and widened eyelids going out as 0; past half closed, `EyeLidExpandedSqueeze` 0.0 and `EyeSqueezeToggle` 1 (else 0.8 and 0); `EyeWidenToggle` always 1. The toggles are int, the rest float. Steam Link's `/tracking/eye/...` and `/sl/...` messages aren't sent. Thanks to @jelle619 (#6).
+
 ## 0.7.0 (2026-10-02)
 
 A softer gaze that settles where the eyes stop, fitted eyelids that stay open, no wide-eyed flash before a blink, frameeyeosc that waits for the eye tracker instead of exiting, and what SteamOS 0.4.3 changed. Measured by replaying two 60-minute VRChat recordings (2026-10-01 22:48, eyelid widening off, and 01:09, "More") and three recordings on SteamOS 0.4.3 (2026-10-02).

@@ -1,4 +1,4 @@
-//! Steam Frame 0.5.0 eye bridge using the private version-4 shared-memory ABI.
+//! Steam Frame eye bridge using the private shared-memory ABI (versions 4 and 5).
 
 mod capture;
 mod config;
@@ -24,8 +24,6 @@ use std::path::{Path, PathBuf};
 use std::ptr;
 use std::time::{Duration, Instant, SystemTime};
 
-const SHM_VERSION: u32 = 4;
-const SHM_SIZE: usize = 0x4f21a;
 const SOURCE: &str = "/dev/shm/eye-server.mmap";
 const TIMEOUT: Duration = Duration::from_secs(1);
 // The eye server is waited on in slices this long, so the status file keeps updating while it is idle.
@@ -91,16 +89,28 @@ const CAL_WARMUP_WEIGHT: f32 = 900.0;
 const CAL_SCALE_RANGE: (f32, f32) = (0.75, 1.33);
 const CAL_SAVE_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Where the eye record sits in one version of the shared memory, and how large that version's file is.
+struct ShmLayout {
+    version: u32,
+    eye_data: usize,
+    size: usize,
+}
+
+// Version 5 (SteamOS beta, 2026-10) inserts 5 bytes (constant `00 ff ff ff ff`) just before the eye record.
+const SHM_LAYOUTS: &[ShmLayout] = &[
+    ShmLayout { version: 4, eye_data: 0x152, size: 0x4f21a },
+    ShmLayout { version: 5, eye_data: 0x157, size: 0x4f21f },
+];
+
+/// The control fields at the start of the shared memory, the same in every known version.
 #[repr(C)]
-struct EyeServerMmap {
+struct EyeServerHeader {
     version: u32,
     initialized: u32,
     // The target glibc mutex slot is 48 bytes; host libc may define a smaller type.
     metadata_mutex: [u8; 0x30],
     sequence: u32,
     metadata_requested: u32,
-    other_control_fields: [u8; 0x112],
-    eye_data: EyeDataMmap,
 }
 
 // The record is packed, so its timestamp and vectors are not naturally aligned.
@@ -123,10 +133,10 @@ struct EyeDataMmap {
 }
 
 const _: () = {
-    assert!(offset_of!(EyeServerMmap, metadata_mutex) == 0x08);
-    assert!(offset_of!(EyeServerMmap, sequence) == 0x38);
-    assert!(offset_of!(EyeServerMmap, metadata_requested) == 0x3c);
-    assert!(offset_of!(EyeServerMmap, eye_data) == 0x152);
+    assert!(offset_of!(EyeServerHeader, metadata_mutex) == 0x08);
+    assert!(offset_of!(EyeServerHeader, sequence) == 0x38);
+    assert!(offset_of!(EyeServerHeader, metadata_requested) == 0x3c);
+    assert!(size_of::<EyeServerHeader>() == 0x40);
     assert!(offset_of!(EyeDataMmap, sample_time) == 0x05);
     assert!(offset_of!(EyeDataMmap, gaze_direction) == 0x0d);
     assert!(offset_of!(EyeDataMmap, gaze_covariance_diag) == 0x25);
@@ -136,7 +146,13 @@ const _: () = {
     assert!(offset_of!(EyeDataMmap, openness) == 0x79);
     assert!(offset_of!(EyeDataMmap, estimate_extra) == 0x81);
     assert!(size_of::<EyeDataMmap>() == 0xebc);
-    assert!(size_of::<EyeServerMmap>() <= SHM_SIZE);
+    let mut i = 0;
+    while i < SHM_LAYOUTS.len() {
+        let layout = &SHM_LAYOUTS[i];
+        assert!(layout.eye_data >= size_of::<EyeServerHeader>());
+        assert!(layout.eye_data + size_of::<EyeDataMmap>() <= layout.size);
+        i += 1;
+    }
     assert!(size_of::<libc::pthread_mutex_t>() <= 0x30);
     assert!(8 % align_of::<libc::pthread_mutex_t>() == 0);
 };
@@ -837,6 +853,8 @@ fn lid_to_etvr(vrcft: f32) -> f32 {
 struct EyeSource {
     map: MmapMut,
     inode: u64,
+    // Offset of the eye record for this file's version.
+    eye_data: usize,
 }
 
 struct MutexGuard(*mut libc::pthread_mutex_t);
@@ -882,26 +900,34 @@ impl EyeSource {
     fn open() -> Result<Self, Box<dyn Error>> {
         let file = OpenOptions::new().read(true).write(true).open(SOURCE)?;
         let metadata = file.metadata()?;
-        if metadata.len() < SHM_SIZE as u64 {
-            return Err(format!("{SOURCE}: shared memory is too small").into());
+        let too_small = || format!("{SOURCE}: shared memory is too small");
+        let len = usize::try_from(metadata.len()).map_err(|_| "shared memory is too large")?;
+        if len < size_of::<EyeServerHeader>() {
+            return Err(too_small().into());
         }
-        let map = unsafe { MmapOptions::new().len(SHM_SIZE).map_mut(&file)? };
-        let source = Self {
-            map,
-            inode: metadata.ino(),
-        };
-        let layout = source.layout();
-        let version = u32::from_le(unsafe { ptr::read_volatile(&raw const (*layout).version) });
-        if version != SHM_VERSION {
+        // The whole file is mapped: its version, and so how much of it is needed, is only known once mapped.
+        let map = unsafe { MmapOptions::new().len(len).map_mut(&file)? };
+        let header: *const EyeServerHeader = map.as_ptr().cast();
+        let version = u32::from_le(unsafe { ptr::read_volatile(&raw const (*header).version) });
+        let Some(shm) = SHM_LAYOUTS.iter().find(|layout| layout.version == version) else {
+            let known: Vec<String> = SHM_LAYOUTS.iter().map(|layout| layout.version.to_string()).collect();
             return Err(format!(
-                "unsupported eye shared-memory version {version}; expected {SHM_VERSION} (Frame 0.5.0)"
+                "unsupported eye shared-memory version {version}; expected {}",
+                known.join(" or ")
             )
             .into());
+        };
+        if len < shm.size {
+            return Err(too_small().into());
         }
-        if u32::from_le(unsafe { ptr::read_volatile(&raw const (*layout).initialized) }) != 1 {
+        if u32::from_le(unsafe { ptr::read_volatile(&raw const (*header).initialized) }) != 1 {
             return Err("eye shared memory is not initialized".into());
         }
-        Ok(source)
+        Ok(Self {
+            map,
+            inode: metadata.ino(),
+            eye_data: shm.eye_data,
+        })
     }
 
     /// True when the path now points at a different file (or none) than the one we mapped.
@@ -909,12 +935,17 @@ impl EyeSource {
         fs::metadata(SOURCE).map_or(true, |metadata| metadata.ino() != self.inode)
     }
 
-    fn layout(&self) -> *const EyeServerMmap {
+    fn layout(&self) -> *const EyeServerHeader {
         self.map.as_ptr().cast()
     }
 
-    fn layout_mut(&mut self) -> *mut EyeServerMmap {
+    fn layout_mut(&mut self) -> *mut EyeServerHeader {
         self.map.as_mut_ptr().cast()
+    }
+
+    fn eye_data(&self) -> *const EyeDataMmap {
+        // In bounds: open() checked the file against this version's size, which covers the record.
+        unsafe { self.map.as_ptr().add(self.eye_data).cast() }
     }
 
     fn lock(&mut self) -> io::Result<MutexGuard> {
@@ -965,7 +996,7 @@ impl EyeSource {
 
         let guard = self.lock()?;
         let data = if unsafe { ptr::read_volatile(sequence_ptr) } != sequence {
-            let record_ptr = unsafe { &raw const (*self.layout()).eye_data };
+            let record_ptr = self.eye_data();
             let record = unsafe { ptr::read_unaligned(record_ptr) };
             if record.producer_state == 1 {
                 Next::Sample(EyeData {

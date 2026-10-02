@@ -51,6 +51,8 @@ constexpr const char* kHost = "host";
 constexpr const char* kPort = "port";
 constexpr const char* kPrefix = "prefix";
 constexpr const char* kEyeTrackingActive = "eye_tracking_active";
+/** VRChat output: also send Steam Link's own avatar parameter names (LeftEyeX, RightEyeLid, ...; no prefix). */
+constexpr const char* kSteamlinkParams = "steamlink_params";
 constexpr const char* kRaw = "raw";
 constexpr const char* kGazeMinCutoff = "gaze_min_cutoff";
 constexpr const char* kGazeBeta = "gaze_beta";

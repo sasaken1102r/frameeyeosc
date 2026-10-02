@@ -570,6 +570,7 @@ PanelModel fakeModel(const Options& options) {
         root.set(key::kGazeHoldBelow, JsonValue::makeNumber(0.0));
         root.set(key::kPort, JsonValue::makeNumber(9001, true));
         root.set(key::kPrefix, JsonValue::makeString(""));
+        root.set(key::kSteamlinkParams, JsonValue::makeBool(true));
     }
     if (options.fakeBroken) m.config.error = "expected , or } between members (near character 212)";
     if (options.fakeIndependent) root.set(key::kIndependentEyes, JsonValue::makeBool(true));
@@ -722,13 +723,15 @@ PanelModel fakeModel(const Options& options) {
         s.opennessSaturated = options.fakeOpennessSaturated;
         s.effective = root;
         if (options.fakeLocked) {
-            s.locked = {key::kOutput, key::kPort, key::kRaw, key::kLidOpen, key::kIndependentEyes, key::kGazeOffsetY};
+            s.locked = {key::kOutput,          key::kPort,        key::kRaw,         key::kLidOpen,
+                        key::kIndependentEyes, key::kGazeOffsetY, key::kSteamlinkParams};
             s.effective.set(key::kOutput, JsonValue::makeString(kOutputVrchat));
             s.effective.set(key::kPort, JsonValue::makeNumber(9123, true));
             s.effective.set(key::kRaw, JsonValue::makeBool(true));
             s.effective.set(key::kLidOpen, JsonValue::makeNumber(0.78));
             s.effective.set(key::kIndependentEyes, JsonValue::makeBool(true));
             s.effective.set(key::kGazeOffsetY, JsonValue::makeNumber(-0.05));
+            s.effective.set(key::kSteamlinkParams, JsonValue::makeBool(true));
         }
     } else {
         s.readError = "no status file";

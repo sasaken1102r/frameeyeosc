@@ -9,6 +9,7 @@ README.md for the fields). Example:
                       "frame-jp-keyboard-{version}.tar.gz")
     answer = await updater.check()          # at start, then hourly: GitHub is asked at most daily
     if answer["status"] == "update-available" and answer.get("installable"):
+        summary = answer.get("notes_ja") or answer.get("notes", "")  # its summary on a Japanese screen ("" = none)
         await updater.install()             # after the user pressed the button; returns at once
     progress = await updater.state()        # poll while it runs: running / done / failed
 """
@@ -73,7 +74,9 @@ class Updater:
         return {**failed, "error": "script-failed", "message": "no answer from frame-update.sh"}
 
     async def check(self, force: bool = False) -> dict:
-        """Check for a newer release: {"status": "up-to-date" | "update-available" | "error", ...}."""
+        """Check for a newer release: {"status": "up-to-date" | "update-available" | "error", ...}.
+        "update-available" also has "notes" and "notes_ja": the release's summary in English and Japanese
+        (plain text on one line, "" if the release text has none)."""
         args = self._base() + (["--force"] if force else []) + ["check"]
         return await self._run(args, CHECK_TIMEOUT_SECONDS, {"status": "error"})
 

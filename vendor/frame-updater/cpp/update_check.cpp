@@ -247,7 +247,8 @@ bool skipValue(const std::string& text, size_t& i) {
 bool UpdateStatus::operator==(const UpdateStatus& o) const {
     return state == o.state && checking == o.checking && current == o.current && latest == o.latest &&
            url == o.url && installable == o.installable && reason == o.reason && step == o.step &&
-           version == o.version && error == o.error && message == o.message && checkedAt == o.checkedAt;
+           version == o.version && error == o.error && message == o.message && checkedAt == o.checkedAt &&
+           notes == o.notes && notesJa == o.notesJa;
 }
 
 std::map<std::string, std::string> parseFlatJson(const std::string& text) {
@@ -533,6 +534,8 @@ void UpdateChecker::recompute() {
         next.state = UpdateState::Available;
         next.installable = get(checkResult_, "installable") == "true";
         next.reason = get(checkResult_, "reason");
+        next.notes = get(checkResult_, "notes");
+        next.notesJa = get(checkResult_, "notes_ja");
     } else if (checkStatus == "error") {
         next.state = UpdateState::CheckFailed;
         next.error = get(checkResult_, "error");

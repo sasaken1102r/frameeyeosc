@@ -59,6 +59,8 @@ struct UpdateStatus {
     std::string error;         ///< CheckFailed / InstallFailed: error code (listed in strings.md)
     std::string message;       ///< English detail, for logs
     long long checkedAt = 0;   ///< when GitHub last answered (Unix time; 0 = never). A cached answer keeps its time
+    std::string notes;         ///< Available: the new release's summary, one line of plain text ("" if it has none)
+    std::string notesJa;       ///< Available: the same in Japanese, if the release text has a "日本語:" paragraph ("" if not)
 
     bool operator==(const UpdateStatus& other) const;
     bool operator!=(const UpdateStatus& other) const { return !(*this == other); }

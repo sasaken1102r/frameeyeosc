@@ -1426,11 +1426,14 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         // ...and VRChat's own eye tracking input, for avatars without VRCFT parameters
         {
             const bool locked = v.locked(key::kNativeEyes);
-            drawRowLabel(pen, t, y, kRowH, t.rowNativeEyes, t.hintNativeEyes, locked);
+            // The hint is too long for the label column: it goes under the control, like the example addresses above
+            drawRowLabel(pen, t, y, kRowH, t.rowNativeEyes, "", locked);
             drawSegmented(pen, kControlX, y + cy, 300, kControlH,
                           {{t.on, {PanelAction::SetBool, key::kNativeEyes, 1}},
                            {t.off, {PanelAction::SetBool, key::kNativeEyes, 0}}},
                           v.flag(key::kNativeEyes) ? 0 : 1, 21, locked);
+            pen.text(kControlX + 4, y + kRowH + 16, t.hintNativeEyes,
+                     fitSize(pen, t.hintNativeEyes, 15, 11, kControlW, false), kTextMuted);
         }
         return;
     }

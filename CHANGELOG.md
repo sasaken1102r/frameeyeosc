@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+Eye data at the full rate while Steam Link streams, and a way to tell who is slow when it isn't.
+
+- The eye data no longer drops to about half (46 a second instead of 90) when reading, processing and sending one sample takes longer than a frame (11.1 ms), as can happen while Steam Link's video fills the Wi-Fi. The eye tracker publishes a frame only if a sample was asked for by then, and clears the request with it (read off its own code). frameeyeosc asked for the next sample only once it had finished with the last one, so whenever that took longer than a frame, the eye tracker skipped the next one. It now asks for the next sample in the same lock that copies the current one out, and reads a sample published while it was busy at once instead of waiting for the one after. It still touches only the lock, the sequence and the request flag. In a test with a stand-in eye tracker that publishes 90 frames a second only when asked and wakes the reader 8 ms late, and a reader that takes 7 ms over each sample, 45 of 90 frames were read before and 90 of 90 now. This is the likely cause of the reports, not yet confirmed on those headsets.
+- Sending never waits for the network. The sockets don't block any more, so a datagram the network can't take at once (its send buffer is full) is dropped, not waited for, and the eye data keeps coming in. Drops aren't "sending failed"; the log says how many at most once a minute (`Dropped … datagrams to …`).
+- The status file says how well frameeyeosc keeps up: `missed_rate` (samples the eye tracker published in the last second that frameeyeosc didn't read), `max_processing_ms` (the longest it took over one sample in the last second, from reading it until ready for the next) and `dropped_rate` (datagrams dropped in the last second). While "Eye data" is low, the panel's left column says under it who was slow: "frameeyeosc can't keep up" when the samples it missed would have made 60 a second, or one sample took 1/60 s or longer, and "The Frame itself sends few" otherwise. After 10 seconds of a low rate frameeyeosc logs one line with these numbers (`Eye data has been low for 10 s: …`).
+
 ## 0.7.0 (2026-10-02)
 
 A softer gaze that settles where the eyes stop, fitted eyelids that stay open, no wide-eyed flash before a blink, frameeyeosc that waits for the eye tracker instead of exiting, and what SteamOS 0.4.3 changed. Measured by replaying two 60-minute VRChat recordings (2026-10-01 22:48, eyelid widening off, and 01:09, "More") and three recordings on SteamOS 0.4.3 (2026-10-02).

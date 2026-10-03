@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 (2026-10-03)
 
-Eye data at the full rate while Steam Link streams, and a way to tell who is slow when it isn't.
+Eye data at the full rate while Steam Link streams, no stray widening on SteamOS 0.4.3, and two opt-ins for avatars not made for VRCFaceTracking: Steam Link's parameter names and VRChat's own eye tracking.
 
 - The eye data no longer drops to about half (46 a second instead of 90) when reading, processing and sending one sample takes longer than a frame (11.1 ms), as can happen while Steam Link's video fills the Wi-Fi. The eye tracker publishes a frame only if a sample was asked for by then, and clears the request with it (read off its own code). frameeyeosc asked for the next sample only once it had finished with the last one, so whenever that took longer than a frame, the eye tracker skipped the next one. It now asks for the next sample in the same lock that copies the current one out, and reads a sample published while it was busy at once instead of waiting for the one after. It still touches only the lock, the sequence and the request flag. In a test with a stand-in eye tracker that publishes 90 frames a second only when asked and wakes the reader 8 ms late, and a reader that takes 7 ms over each sample, 45 of 90 frames were read before and 90 of 90 now. This is the likely cause of the reports, not yet confirmed on those headsets.
 - Sending never waits for the network. The sockets don't block any more, so a datagram the network can't take at once (its send buffer is full) is dropped, not waited for, and the eye data keeps coming in. Drops aren't "sending failed"; the log says how many at most once a minute (`Dropped … datagrams to …`).

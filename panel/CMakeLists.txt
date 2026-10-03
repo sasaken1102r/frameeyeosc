@@ -29,6 +29,7 @@ add_executable(frameeyeosc-panel
   src/main.cpp
   src/auto_recenter.cpp
   src/autostart.cpp
+  src/changelog.cpp
   src/command.cpp
   src/config.cpp
   src/draw.cpp
@@ -114,3 +115,10 @@ add_executable(text-test tests/text_test.cpp src/host_entry.cpp src/fit_text.cpp
 target_include_directories(text-test PRIVATE src)
 target_compile_options(text-test PRIVATE -Wall -Wextra)
 add_test(NAME text COMMAND text-test)
+
+# Reading the version history from CHANGELOG.md / CHANGELOG.ja.md (both formats, first sentences, markdown, the
+# English fallback): panel/build/changelog-test
+add_executable(changelog-test tests/changelog_test.cpp src/changelog.cpp)
+target_include_directories(changelog-test PRIVATE src)
+target_compile_options(changelog-test PRIVATE -Wall -Wextra)
+add_test(NAME changelog COMMAND changelog-test)

@@ -1,7 +1,8 @@
 // The developer tab "Eye capture": eyecam-rec (an eye-camera recorder outside this repo) writes its state to
 // $XDG_RUNTIME_DIR/eyecam/status.json about 10 times a second and takes "start" / "stop" / "calib wear" /
 // "calib user" on ctl.sock there. It also reads the eyelids from the eye cameras live, for frameeyeosc, once it is
-// calibrated for this wear (each time the headset is put on) and once for the user. The
+// calibrated for this wear, or (a newer eyecam-rec) once it has learned the relaxed eyes by itself, about 35 s after
+// the headset goes on; and once for the user. The
 // panel only reads that file and talks to that socket; it never creates anything in that folder and never runs the
 // recorder or its root helper. Everything here works without OpenVR and cairo (eyecam-test).
 #pragma once
@@ -35,6 +36,8 @@ constexpr const char* kCalibUserCommand = "calib user";
 /** calib_state's bits: calibrated for this wear (cleared when the headset comes off), and for the user. */
 constexpr int kCalibWearBit = 1;
 constexpr int kCalibUserBit = 2;
+/** calib_state's bit for a baseline eyecam-rec learned by itself for this wear (the relaxed eyes; newer eyecam-rec). */
+constexpr int kCalibAutoBit = 4;
 /** The command the user runs once over SSH to give the recorder the camera buffers (the panel only shows it). */
 constexpr const char* kGrabCommand = "sudo /home/steamos/eyecam-src/target/release/eyecam-grab";
 
@@ -92,11 +95,16 @@ struct Status {
     double totalS = 0.0;
     std::string sessionDir;
     std::string protocol;
-    int calibState = 0;            ///< kCalibWearBit | kCalibUserBit (0 when missing)
+    int calibState = 0;            ///< kCalibWearBit | kCalibUserBit | kCalibAutoBit (0 when missing)
     bool recalibSuggested = false; ///< drifted since the calibration: "calib wear" again
     bool live = false;             ///< the eyelids are read from the cameras live
     double liveMs = 0.0;           ///< how long one live frame took (ms; NaN when missing)
     std::string autoGrab;          ///< "auto_grab": how eyecam-rec takes the buffers by itself ("" when missing)
+    bool hasBaseline = false;      ///< "baseline" is there: an eyecam-rec that learns the relaxed eyes by itself
+    std::string baseline;          ///< "warming" (learning them) or "ready" ("" when missing)
+    double warmupRemainingS = 0.0; ///< seconds left of the learning, while warming (NaN when missing)
+    bool hasCalibSaved = false;    ///< "calib_saved" is there
+    bool calibSaved = false;       ///< a calibration for the wear was saved once (calib.json), so it never asks again
 };
 
 /** The recorder's reply to a command. */
@@ -268,10 +276,19 @@ Run followRun(Run last, const Status& status);
 bool isCalib(Run run);
 
 /**
+ * Whether eyecam-rec is learning the relaxed eyes for this wear (a newer eyecam-rec, "baseline": "warming").
+ * @param status the status
+ * @return true while warming
+ */
+bool baselineWarming(const Status& status);
+
+/**
  * The note on the first tab that asks for a calibration. Only while the eye capture tab shows, the recorder is
  * ready (idle or error), reads the cameras live, the cameras see the eyes (the headset is on), and frameeyeosc may
- * use the camera eyelids (camera_lids): then Calibrate while it isn't calibrated for this wear, else Recalibrate
- * while recalib_suggested. Never without eyecam-rec.
+ * use the camera eyelids (camera_lids). Then Calibrate while it isn't calibrated for this wear: with an eyecam-rec
+ * that learns the relaxed eyes by itself ("baseline" there) only if no wear calibration was ever saved
+ * (calib_saved), since the learned baseline does without one. Else Recalibrate while recalib_suggested. Never
+ * without eyecam-rec.
  * @param view the recorder
  * @param cameraLids the camera_lids setting
  * @return the note

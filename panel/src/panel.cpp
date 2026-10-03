@@ -3167,7 +3167,22 @@ void EyePanel::drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel&
     const bool busy = m.eyecam.busy;
     const double width = kInnerRight - kInnerX;
 
-    // The camera eyelids for frameeyeosc: the switch at the right, and under its title what frameeyeosc uses now
+    // The camera eyelids for frameeyeosc: the switch at the right, and under its title what frameeyeosc uses now.
+    // While eyecam-rec learns the relaxed eyes, it says so at the right of the section title (the layout stays put)
+    const bool warming = eyecam::baselineWarming(s);
+    if (warming) {
+        std::string text = t.eyecamWarming;
+        if (std::isfinite(s.warmupRemainingS)) {
+            char left[128];
+            std::snprintf(left, sizeof(left), t.eyecamWarmingFormat,
+                          static_cast<int>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)));
+            text = left;
+        }
+        const double size = fitSize(pen, text, 16, 12, width / 2, true);
+        const double tx = kInnerRight - pen.measure(text, size, true);
+        drawDot(pen.cr, tx - 13, y + 14, 5, kAccent);
+        pen.text(tx, y + 20, text, size, kText, true);
+    }
     y += drawSectionTitle(pen, y, t.eyecamSectionCamera);
     {
         const bool locked = v.locked(key::kCameraLids);
@@ -3176,7 +3191,7 @@ void EyePanel::drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel&
         const double sx = kInnerRight - sw;
         const double textW = sx - 16 - kInnerX;
         const EyeStatus& es = m.status;
-        const CameraUse use = cameraUse(es, on);
+        const CameraUse use = cameraUse(es, on, warming);
         std::string usage;
         switch (use) {
             case CameraUse::Both: usage = t.cameraUseBoth; break;
@@ -3186,6 +3201,7 @@ void EyePanel::drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel&
             case CameraUse::Valve: usage = t.cameraUseValve; break;
             case CameraUse::NotCalibrated: usage = formatText(t.cameraUseValveFormat, t.cameraWhyNotCalibrated); break;
             case CameraUse::NoCamera: usage = formatText(t.cameraUseValveFormat, t.cameraWhyNoCamera); break;
+            case CameraUse::Warming: usage = formatText(t.cameraUseValveFormat, t.cameraWhyWarming); break;
             case CameraUse::Error: usage = formatText(t.cameraUseValveFormat, es.camera.error); break;
             case CameraUse::Unknown: break;  // frameeyeosc not running, or one that doesn't say
         }
@@ -3217,12 +3233,15 @@ void EyePanel::drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel&
     {
         const bool wearDone = (s.calibState & eyecam::kCalibWearBit) != 0;
         const bool userDone = (s.calibState & eyecam::kCalibUserBit) != 0;
+        // A baseline learned by eyecam-rec itself counts for the wear too ("auto")
+        const bool wearAuto = !wearDone && (s.calibState & eyecam::kCalibAutoBit) != 0;
         double x = kInnerX;
         for (int i = 0; i < 2; ++i) {
-            const bool done = i == 0 ? wearDone : userDone;
+            const bool done = i == 0 ? wearDone || wearAuto : userDone;
+            const char* state = i == 0 && wearAuto ? t.eyecamCalibAuto : (done ? t.eyecamCalibDone : t.eyecamCalibNotYet);
             char chip[160];
             std::snprintf(chip, sizeof(chip), t.eyecamCalibChipFormat, i == 0 ? t.eyecamCalibWearChip : t.eyecamCalibUserChip,
-                          done ? t.eyecamCalibDone : t.eyecamCalibNotYet);
+                          state);
             const double size = 17;
             const double h = 34;
             const double mark = 22;
@@ -3237,23 +3256,29 @@ void EyePanel::drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel&
             pen.text(x + 14 + mark, centerBaseline(y + 6, h, size), chip, size, kText, true);
             x += w + 10;
         }
-        // What to do next (drift first: it is why the first tab asks)
-        const char* hint = !s.live              ? t.eyecamLiveOff
-                           : s.recalibSuggested ? t.eyecamCalibHintRecalib
-                           : !wearDone          ? t.eyecamCalibHintWear
-                           : !userDone          ? t.eyecamCalibHintUser
-                                                : t.eyecamCalibHintDone;
+        // What to do next (drift first: it is why the first tab asks). An eyecam-rec that learns the relaxed eyes by
+        // itself needs the wear calibration only to use the cameras at once, or after a drift
+        const bool learns = s.hasBaseline;
+        const char* hint = !s.live                         ? t.eyecamLiveOff
+                           : s.recalibSuggested            ? t.eyecamCalibHintRecalib
+                           : learns && wearDone && !userDone ? t.eyecamCalibHintUser
+                           : learns                        ? t.eyecamCalibHintOptional
+                           : !wearDone                     ? t.eyecamCalibHintWear
+                           : !userDone                     ? t.eyecamCalibHintUser
+                                                           : t.eyecamCalibHintDone;
         const bool notice = s.live && s.recalibSuggested;
         pen.text(kInnerX, y + 70, hint, fitSize(pen, hint, 16, 12, width, notice), notice ? kText : kTextMuted, notice);
         // The one to do next gets the accent
         const bool userNext = wearDone && !userDone && !s.recalibSuggested;
+        // (with a learned baseline, the wear calibration only stands out when the first tab would ask for it)
+        const bool wearNext = !userNext && (!learns || s.recalibSuggested || (!s.calibSaved && !wearDone));
         const bool userAllowed = eyecam::userCalibAllowed(s);
         const double gap = 16;
         const double bw = (width - gap) / 2;
         const double bh = 64;
         const double by = y + 84;
         drawButton(pen, kInnerX, by, bw, bh, t.eyecamCalibWear,
-                   {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy, !userNext, 22);
+                   {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy, wearNext, 22);
         drawButton(pen, kInnerX + bw + gap, by, bw, bh, t.eyecamCalibUser,
                    {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::User)}, !busy && userAllowed,
                    userNext, 22);

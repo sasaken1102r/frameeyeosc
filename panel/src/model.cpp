@@ -405,7 +405,7 @@ std::string updateNotes(const frame_updater::UpdateStatus& update, Language lang
     return update.notes;
 }
 
-CameraUse cameraUse(const EyeStatus& status, bool cameraLids) {
+CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming) {
     const CameraStatus& c = status.camera;
     if (!status.running || !c.known) return CameraUse::Unknown;
     if (c.used[0] && c.used[1]) return CameraUse::Both;
@@ -413,7 +413,8 @@ CameraUse cameraUse(const EyeStatus& status, bool cameraLids) {
     if (c.used[1]) return CameraUse::Right;
     if (!cameraLids) return CameraUse::Off;
     if (!c.present) return CameraUse::NoCamera;
-    if ((c.calibState & 1) == 0) return CameraUse::NotCalibrated;
+    // A baseline for this wear: calibrated (bit 0) or learned by eyecam-rec itself (bit 2)
+    if ((c.calibState & (1 | 4)) == 0) return warming ? CameraUse::Warming : CameraUse::NotCalibrated;
     if (!c.error.empty()) return CameraUse::Error;
     return CameraUse::Valve;
 }

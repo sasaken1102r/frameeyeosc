@@ -287,6 +287,7 @@ enum class CameraUse {
     Left,           ///< only the left eye (the right one: Valve's)
     Right,          ///< only the right eye
     NotCalibrated,  ///< Valve's values: not calibrated for this wear
+    Warming,        ///< Valve's values: eyecam-rec is still learning the relaxed eyes for this wear
     NoCamera,       ///< Valve's values: no live camera values reach frameeyeosc
     Error,          ///< Valve's values: frameeyeosc gives a reason (CameraStatus::error)
     Valve,          ///< Valve's values, for no reason given
@@ -294,13 +295,15 @@ enum class CameraUse {
 
 /**
  * Where the eyelids come from now. The camera values in use win over everything (camera_lids off but still used
- * means frameeyeosc hasn't caught up yet); otherwise why not: the setting, no camera values, no calibration for
- * this wear, frameeyeosc's own reason.
+ * means frameeyeosc hasn't caught up yet); otherwise why not: the setting, no camera values, no baseline for this
+ * wear (neither calibrated nor learned by itself: still learning it while eyecam-rec says so), frameeyeosc's own
+ * reason.
  * @param status frameeyeosc's status
  * @param cameraLids the camera_lids setting
+ * @param warming eyecam-rec is learning the relaxed eyes now (eyecam::baselineWarming)
  * @return the case
  */
-CameraUse cameraUse(const EyeStatus& status, bool cameraLids);
+CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming = false);
 
 /**
  * The new release's summary shown under the update row: the Japanese one on a Japanese panel when the release text

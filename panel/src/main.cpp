@@ -254,7 +254,10 @@ void printUsage() {
         "                        calib-error: a failed user calibration). Flags after it, each with \":\":\n"
         "                        unlocked (the cameras lost the eyes), nolight (recording without the light),\n"
         "                        user (calibrating / calib-error: the user's calibration; wear: this wear's),\n"
-        "                        calib=N (calib_state 0..3; default 0, 1 for a failed user calibration), recalib\n"
+        "                        calib=N (calib_state 0..7, bit 2 a baseline learned by itself; default 0, 1 for a\n"
+        "                        failed user calibration), warming=N (learning the relaxed eyes, N s left), ready\n"
+        "                        (learned them; both mark an eyecam-rec that learns by itself), saved (calib_saved),\n"
+        "                        recalib\n"
         "                        (recalib_suggested), nolive (not reading the cameras live), auto=VALUE\n"
         "                        (auto_grab: waiting while eyecam-rec takes the buffers by itself)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
@@ -284,6 +287,9 @@ struct FakeEyecam {
     bool recalib = false;   ///< recalib_suggested
     bool noLive = false;    ///< not reading the cameras live
     std::string autoGrab;   ///< auto_grab ("" = an eyecam-rec without it)
+    std::string baseline;   ///< "warming" or "ready" ("" = an eyecam-rec that doesn't learn the baseline by itself)
+    double warmupS = -1.0;  ///< warmup_remaining_s while warming (-1 = none)
+    bool saved = false;     ///< calib_saved
 };
 
 /**
@@ -326,7 +332,15 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.noLive = true;
         } else if (flag.rfind("auto=", 0) == 0 && flag.size() > 5) {
             fake.autoGrab = flag.substr(5);
-        } else if (flag.rfind("calib=", 0) == 0 && flag.size() == 7 && flag[6] >= '0' && flag[6] <= '3') {
+        } else if (flag.rfind("warming=", 0) == 0 && flag.size() > 8 &&
+                   flag.find_first_not_of("0123456789.", 8) == std::string::npos) {
+            fake.baseline = "warming";
+            fake.warmupS = std::atof(flag.c_str() + 8);
+        } else if (flag == "ready") {
+            fake.baseline = "ready";
+        } else if (flag == "saved") {
+            fake.saved = true;
+        } else if (flag.rfind("calib=", 0) == 0 && flag.size() == 7 && flag[6] >= '0' && flag[6] <= '7') {
             fake.calibState = flag[6] - '0';
         } else {
             return false;
@@ -732,7 +746,7 @@ eyecam::View fakeEyecam(const std::string& text) {
     s.mtime = unixNow();
     s.protocol = "default";
     const auto nan = std::numeric_limits<double>::quiet_NaN();
-    s.fpsL = s.fpsR = s.stepRemainingS = s.elapsedS = s.totalS = nan;
+    s.fpsL = s.fpsR = s.stepRemainingS = s.elapsedS = s.totalS = s.warmupRemainingS = nan;
     // The headset on, the cameras read live and not calibrated yet, unless the flags say otherwise
     s.locked = !fake.unlocked;
     s.live = !fake.noLive;
@@ -815,6 +829,14 @@ eyecam::View fakeEyecam(const std::string& text) {
     }
     if (fake.calibState >= 0) s.calibState = fake.calibState;
     s.recalibSuggested = fake.recalib;
+    // An eyecam-rec that learns the relaxed eyes by itself writes the baseline and calib_saved
+    if (!fake.baseline.empty()) {
+        s.hasBaseline = s.hasCalibSaved = true;
+        s.baseline = fake.baseline;
+        if (fake.warmupS >= 0) s.warmupRemainingS = fake.warmupS;
+    }
+    if (fake.saved) s.hasCalibSaved = true;
+    s.calibSaved = fake.saved;
     s.state = eyecam::parseState(s.stateText);
     view.visible = eyecam::tabVisible(s, unixNow());
     return view;

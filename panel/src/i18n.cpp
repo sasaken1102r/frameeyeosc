@@ -345,6 +345,7 @@ UiText makeJapanese() {
     t.cameraUseValveFormat = "Valve の値を使用中（%s）";
     t.cameraWhyNotCalibrated = "このかぶりの校正がまだ";
     t.cameraWhyNoCamera = "カメラの値が届いていない";
+    t.cameraWhyWarming = "基準を覚えてるところ";
     t.cameraPupilSuffix = "（瞳孔も）";
     t.eyecamSectionCalib = "目のカメラの校正";
     t.eyecamCalibWearChip = "かぶり";
@@ -352,6 +353,10 @@ UiText makeJapanese() {
     t.eyecamCalibChipFormat = "%s: %s";
     t.eyecamCalibDone = "済み";
     t.eyecamCalibNotYet = "まだ";
+    t.eyecamCalibAuto = "自動";
+    t.eyecamWarmingFormat = "普段の目を覚えてるよ（あと %d 秒）";
+    t.eyecamWarming = "普段の目を覚えてるよ";
+    t.eyecamCalibHintOptional = "かぶりの校正は、すぐ使いたいときやずれたときだけでOK";
     t.eyecamCalibHintWear = "かぶるたびに 18 秒の校正がいるよ。出てくる指示どおりに目を動かしてね";
     t.eyecamCalibHintUser = "ユーザー校正は、最初に一度だけやってね";
     t.eyecamCalibHintDone = "外してかぶり直したら、またかぶりの校正をしてね";
@@ -792,6 +797,7 @@ UiText makeEnglish() {
     t.cameraUseValveFormat = "Using Valve's values (%s)";
     t.cameraWhyNotCalibrated = "not calibrated for this wear";
     t.cameraWhyNoCamera = "no camera values";
+    t.cameraWhyWarming = "learning the baseline";
     t.cameraPupilSuffix = " (pupils too)";
     t.eyecamSectionCalib = "Eye camera calibration";
     t.eyecamCalibWearChip = "This wear";
@@ -799,6 +805,10 @@ UiText makeEnglish() {
     t.eyecamCalibChipFormat = "%s: %s";
     t.eyecamCalibDone = "done";
     t.eyecamCalibNotYet = "not yet";
+    t.eyecamCalibAuto = "auto";
+    t.eyecamWarmingFormat = "Learning your relaxed eyes (%d s left)";
+    t.eyecamWarming = "Learning your relaxed eyes";
+    t.eyecamCalibHintOptional = "Calibrate only to use it right away, or when it has drifted";
     t.eyecamCalibHintWear = "Needed each time you put the headset on: 18 s, following the instructions shown";
     t.eyecamCalibHintUser = "Do the user calibration once, the first time";
     t.eyecamCalibHintDone = "After taking the headset off, calibrate for the wear again";

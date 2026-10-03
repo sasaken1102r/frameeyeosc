@@ -478,6 +478,26 @@ void testCameraStatus() {
     CHECK(use("{\"present\": true, \"calib_state\": 3, \"used\": [false, false]}", false) == CameraUse::Off);
     CHECK(use("{\"present\": false, \"calib_state\": 0}", true) == CameraUse::NoCamera);
     CHECK(use("{\"present\": true, \"calib_state\": 2}", true) == CameraUse::NotCalibrated);
+    // A baseline eyecam-rec learned by itself (bit 2) is one too; while it learns, that is the reason
+    CHECK(use("{\"present\": true, \"calib_state\": 4}", true) == CameraUse::Valve);
+    CHECK(use("{\"present\": true, \"calib_state\": 6}", true) == CameraUse::Valve);
+    {
+        EyeStatus s = parseStatus("{\"pid\": 1, \"time\": 0, \"camera\": {\"present\": true, \"calib_state\": 2}}",
+                                  0, false);
+        CHECK(cameraUse(s, true, true) == CameraUse::Warming);
+        CHECK(cameraUse(s, true, false) == CameraUse::NotCalibrated);
+        // ...but the setting, no camera values or the cameras in use come first
+        CHECK(cameraUse(s, false, true) == CameraUse::Off);
+        s.camera.present = false;
+        CHECK(cameraUse(s, true, true) == CameraUse::NoCamera);
+        s.camera.present = true;
+        s.camera.used[0] = s.camera.used[1] = true;
+        CHECK(cameraUse(s, true, true) == CameraUse::Both);
+        // ...and a baseline already there isn't "learning"
+        s.camera.used[0] = s.camera.used[1] = false;
+        s.camera.calibState = 4;
+        CHECK(cameraUse(s, true, true) == CameraUse::Valve);
+    }
     CHECK(use("{\"present\": true, \"calib_state\": 1, \"error\": \"frames are stale\"}", true) == CameraUse::Error);
     CHECK(use("{\"present\": true, \"calib_state\": 1}", true) == CameraUse::Valve);
     // Still in use just after the switch went off (frameeyeosc hasn't read it yet): says what it does

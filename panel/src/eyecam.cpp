@@ -103,7 +103,7 @@ Status parseStatus(const std::string& text, double mtime) {
     Status status;
     status.mtime = mtime;
     status.fpsL = status.fpsR = kNaN;
-    status.stepRemainingS = status.elapsedS = status.totalS = status.liveMs = kNaN;
+    status.stepRemainingS = status.elapsedS = status.totalS = status.liveMs = status.warmupRemainingS = kNaN;
     JsonValue root;
     if (!parseJson(text, root, status.readError)) return status;
     if (!root.isObject()) {
@@ -136,6 +136,14 @@ Status parseStatus(const std::string& text, double mtime) {
     const JsonValue* live = root.get("live");
     status.live = live != nullptr && live->isBool() && live->boolean;
     status.liveMs = readNumber(root, "live_ms", kNaN);
+    // The relaxed eyes learned by itself (missing on an older eyecam-rec, which needs a calibration each wear)
+    const JsonValue* baseline = root.get("baseline");
+    status.hasBaseline = baseline != nullptr && baseline->isString();
+    status.baseline = readText(root, "baseline");
+    status.warmupRemainingS = readNumber(root, "warmup_remaining_s", kNaN);
+    const JsonValue* saved = root.get("calib_saved");
+    status.hasCalibSaved = saved != nullptr && saved->isBool();
+    status.calibSaved = status.hasCalibSaved && saved->boolean;
     return status;
 }
 
@@ -266,11 +274,17 @@ bool isCalib(Run run) {
     return run == Run::CalibWear || run == Run::CalibUser;
 }
 
+bool baselineWarming(const Status& status) {
+    return status.hasBaseline && status.baseline == "warming";
+}
+
 CalibPrompt calibPrompt(const View& view, bool cameraLids) {
     const Status& s = view.status;
     if (!view.visible || !cameraLids || !s.live || !s.locked) return CalibPrompt::None;
     if (s.state != State::Idle && s.state != State::Error) return CalibPrompt::None;
-    if ((s.calibState & kCalibWearBit) == 0) return CalibPrompt::Calibrate;
+    // A newer eyecam-rec learns the baseline by itself: it only asks while no wear calibration was ever saved
+    const bool needed = s.hasBaseline ? !s.calibSaved : true;
+    if ((s.calibState & kCalibWearBit) == 0 && needed) return CalibPrompt::Calibrate;
     return s.recalibSuggested ? CalibPrompt::Recalibrate : CalibPrompt::None;
 }
 
@@ -344,7 +358,12 @@ std::string signature(const View& view) {
                                             : std::string("-")) +
            "|" + rounded(progress, 0.002) + "|" + rounded(s.elapsedS, 1.0) + "|" + rounded(s.totalS, 1.0) + "|" +
            s.protocol + "|" + std::to_string(s.calibState) + std::to_string(s.recalibSuggested) +
-           std::to_string(s.live) + "|" + std::to_string(static_cast<int>(view.lastRun));
+           std::to_string(s.live) + "|" + std::to_string(static_cast<int>(view.lastRun)) + "|" +
+           std::to_string(s.hasBaseline) + s.baseline + "|" +
+           (std::isfinite(s.warmupRemainingS)
+                ? std::to_string(static_cast<long>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)))
+                : std::string("-")) +
+           "|" + std::to_string(s.hasCalibSaved) + std::to_string(s.calibSaved);
 }
 
 Control::~Control() {

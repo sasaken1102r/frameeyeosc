@@ -345,6 +345,7 @@ struct UiText {
     const char* cameraUseValveFormat;  ///< Valve's values, and why ("... (%s)")
     const char* cameraWhyNotCalibrated;  ///< ...not calibrated for this wear
     const char* cameraWhyNoCamera;     ///< ...no live camera values reach frameeyeosc
+    const char* cameraWhyWarming;      ///< ...eyecam-rec is still learning the relaxed eyes
     const char* cameraPupilSuffix;     ///< after "in use" when the pupils come from the cameras too
     // ...the calibrations (idle)
     const char* eyecamSectionCalib;    ///< the section title
@@ -353,6 +354,10 @@ struct UiText {
     const char* eyecamCalibChipFormat; ///< "%s: %s" (the chip's name, done / not yet)
     const char* eyecamCalibDone;
     const char* eyecamCalibNotYet;
+    const char* eyecamCalibAuto;       ///< the wear chip when eyecam-rec learned the baseline by itself
+    const char* eyecamWarmingFormat;   ///< by the cameras' title while learning the relaxed eyes ("... %d s left")
+    const char* eyecamWarming;         ///< ...the same without the seconds
+    const char* eyecamCalibHintOptional;  ///< the wear calibration is optional (an eyecam-rec that learns by itself)
     const char* eyecamCalibHintWear;   ///< not calibrated for this wear: needed each time the headset goes on
     const char* eyecamCalibHintUser;   ///< calibrated for this wear, never for the user: do it once
     const char* eyecamCalibHintDone;   ///< both done: again after the headset was off

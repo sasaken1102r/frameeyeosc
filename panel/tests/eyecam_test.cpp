@@ -128,6 +128,32 @@ void testParse() {
         CHECK(odd.calibState == 0 && !odd.recalibSuggested && !odd.live && std::isnan(odd.liveMs));
         CHECK(eyecam::parseStatus("{\"state\": \"idle\", \"calib_state\": -1}", kNow).calibState == 0);
         CHECK(eyecam::parseStatus("{\"state\": \"idle\", \"calib_state\": 3}", kNow).calibState == 3);
+        CHECK(eyecam::parseStatus("{\"state\": \"idle\", \"calib_state\": 7}", kNow).calibState == 7);
+    }
+    // The baseline learned by itself, and whether a wear calibration was ever saved (a newer eyecam-rec)
+    {
+        const Status warming = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"calib_state\": 0, \"baseline\": \"warming\", \"warmup_remaining_s\": 21.3, "
+            "\"calib_saved\": false}",
+            kNow);
+        CHECK(warming.hasBaseline && warming.baseline == "warming" && eyecam::baselineWarming(warming));
+        CHECK(std::fabs(warming.warmupRemainingS - 21.3) < 1e-9);
+        CHECK(warming.hasCalibSaved && !warming.calibSaved);
+        const Status ready = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"calib_state\": 4, \"baseline\": \"ready\", \"calib_saved\": true}", kNow);
+        CHECK(ready.hasBaseline && ready.baseline == "ready" && !eyecam::baselineWarming(ready));
+        CHECK(ready.calibState == eyecam::kCalibAutoBit);
+        CHECK(std::isnan(ready.warmupRemainingS));
+        CHECK(ready.hasCalibSaved && ready.calibSaved);
+        // An older eyecam-rec: none of them
+        const Status old = eyecam::parseStatus("{\"state\": \"idle\", \"calib_state\": 1}", kNow);
+        CHECK(!old.hasBaseline && old.baseline.empty() && !eyecam::baselineWarming(old));
+        CHECK(std::isnan(old.warmupRemainingS) && !old.hasCalibSaved && !old.calibSaved);
+        // Odd types are missing
+        const Status odd = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"baseline\": 1, \"warmup_remaining_s\": \"5\", \"calib_saved\": \"yes\"}",
+            kNow);
+        CHECK(!odd.hasBaseline && std::isnan(odd.warmupRemainingS) && !odd.hasCalibSaved && !odd.calibSaved);
     }
 
     // Only a state: the rest missing (NaN numbers, no step)
@@ -590,6 +616,32 @@ void testCalib() {
     }
     CHECK(prompt(Status(), true, false) == CalibPrompt::None);
 
+    // An eyecam-rec that learns the relaxed eyes by itself ("baseline" there): it only asks while no wear
+    // calibration was ever saved, whatever bit 2 says
+    const std::string learns = ", \"baseline\": \"ready\", \"calib_saved\": ";
+    CHECK(prompt(calibStatus("idle", 0, learns + "false"), true) == CalibPrompt::Calibrate);
+    CHECK(prompt(calibStatus("idle", 4, learns + "false"), true) == CalibPrompt::Calibrate);
+    CHECK(prompt(calibStatus("error", 0, learns + "false"), true) == CalibPrompt::Calibrate);
+    CHECK(prompt(calibStatus("idle", 0, learns + "true"), true) == CalibPrompt::None);
+    CHECK(prompt(calibStatus("idle", 4, learns + "true"), true) == CalibPrompt::None);
+    CHECK(prompt(calibStatus("idle", 6, learns + "true"), true) == CalibPrompt::None);
+    CHECK(prompt(calibStatus("idle", 1, learns + "false"), true) == CalibPrompt::None);
+    // ...calib_saved missing counts as never saved
+    CHECK(prompt(calibStatus("idle", 0, ", \"baseline\": \"warming\""), true) == CalibPrompt::Calibrate);
+    CHECK(prompt(calibStatus("idle", 0, ", \"baseline\": \"warming\", \"calib_saved\": true"), true) ==
+          CalibPrompt::None);
+    // ...and drift still asks to calibrate again
+    CHECK(prompt(calibStatus("idle", 4, learns + "true, \"recalib_suggested\": true"), true) ==
+          CalibPrompt::Recalibrate);
+    CHECK(prompt(calibStatus("idle", 5, learns + "true, \"recalib_suggested\": true"), true) ==
+          CalibPrompt::Recalibrate);
+    // ...with the same conditions as before
+    CHECK(prompt(calibStatus("idle", 0, learns + "false"), false) == CalibPrompt::None);
+    CHECK(prompt(calibStatus("calibrating", 0, learns + "false"), true) == CalibPrompt::None);
+    // An older eyecam-rec (no baseline) keeps asking each wear, even with calib_saved alone
+    CHECK(prompt(calibStatus("idle", 0, ", \"calib_saved\": true"), true) == CalibPrompt::Calibrate);
+    CHECK(prompt(calibStatus("idle", 4), true) == CalibPrompt::Calibrate);
+
     // The light warning closes when a calibration starts (from the note on the first tab, or elsewhere)
     {
         eyecam::StartConfirm confirm;
@@ -617,6 +669,20 @@ void testCalib() {
         b = a;
         b.lastRun = Run::CalibUser;
         CHECK(eyecam::signature(b) != base);
+        // ...the baseline, its seconds left (whole ones, as shown), calib_saved
+        b = a;
+        b.status.hasBaseline = true;
+        b.status.baseline = "warming";
+        CHECK(eyecam::signature(b) != base);
+        eyecam::View c = b;
+        b.status.warmupRemainingS = 20.4;
+        c.status.warmupRemainingS = 20.1;
+        SAME(eyecam::signature(b), eyecam::signature(c));
+        c.status.warmupRemainingS = 19.9;
+        CHECK(eyecam::signature(b) != eyecam::signature(c));
+        b = a;
+        b.status.hasCalibSaved = b.status.calibSaved = true;
+        CHECK(eyecam::signature(b) != base);
         // (live_ms alone doesn't redraw: it isn't shown)
         b = a;
         b.status.liveMs = 9.0;
@@ -637,12 +703,15 @@ void testCalibText() {
               t.eyecamCalibWear, t.eyecamCalibUser, t.eyecamCalibUserNeedsWear, t.eyecamSectionRecord,
               t.eyecamCalibWearTitle, t.eyecamCalibUserTitle, t.eyecamCalibWaiting, t.eyecamCalibErrorTitle,
               t.eyecamCalibRetry, t.calibPromptText, t.calibPromptButton, t.recalibPromptText,
-              t.recalibPromptButton, t.eyecamIdleHint}) {
+              t.recalibPromptButton, t.eyecamIdleHint, t.cameraWhyWarming, t.eyecamCalibAuto, t.eyecamWarmingFormat,
+              t.eyecamWarming, t.eyecamCalibHintOptional}) {
             CHECK(text != nullptr && text[0] != '\0');
         }
         // One %s each
         CHECK(std::string(t.cameraUseValveFormat).find("%s") != std::string::npos);
         CHECK(std::string(t.eyecamCalibChipFormat).find("%s: %s") != std::string::npos);
+        CHECK(std::string(t.eyecamWarmingFormat).find("%d") != std::string::npos);
+        CHECK(std::string(t.eyecamWarmingFormat).find("%s") == std::string::npos);
     }
     // The 18 s goes on the button and the note
     CHECK(std::string(uiText(Language::Ja).eyecamCalibWear).find("18") != std::string::npos);

@@ -170,7 +170,9 @@ FRAMEEYEOSC_ARGS="--gaze-min-cutoff 0.3 --lid-sync 0.6"
 
 VRCFT 向けに作られたアバターには影響しません。`EyeTrackingActive` が true のあいだ、目はアニメーションに渡されて VRCFT のパラメータに従うので、この入力では何も変わりません。
 
-目を見失ったとき、送信を止めたとき、送り先を変えたときは、普通に開いて正面を見ている目を 1 回送ります。この入力には「無効」がなく、VRChat は自分のタイムアウトのあとで目を自動の動きに戻します。ETVR モードと LiveLink モードでは送りません。
+目を見失ったとき、送信を止めたとき、送り先を変えたときは、普通に開いて正面を見ている目を 1 回送ります。この入力には「無効」がなく、VRChat は自分のタイムアウトのあとで目を自動の動きに戻します。
+
+frameeyeosc がこれを送るのは VRChat モードのときだけです。ETVR モードと LiveLink モードでは要りません。VRCFT の目のパラメータを持たないアバターには、VRCFaceTracking 自身が VRChat のアイトラッキング入力を送ります。
 
 アバター側は、Unity で Eye Look を設定しておく必要があります（VRC Avatar Descriptor → Eye Look で［Enable］を押す）。視線は動くのにまばたきをしないときは、たいてい Eyelids が設定されていません:
 

@@ -2004,7 +2004,7 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
             .map(|(suffix, value)| (format!("{prefix}/v2/{suffix}"), OscType::Float(value))),
     );
     if settings.output == OutputKind::Vrchat && settings.steamlink_params {
-        messages.extend(steamlink_messages(sample));
+        messages.extend(steamlink_messages(sample.gaze, sample.lids));
     }
     messages
 }
@@ -2020,9 +2020,9 @@ fn steamlink_closed(lid: f32) -> f32 {
 /// (+ is down). Its eyelid is how closed the eye is; the squeeze and widen values follow from that as Steam Link
 /// works them out (it always sends WidenToggle 1). Each eye's gaze is its own with "move eyes separately", like
 /// the VRCFT ones.
-fn steamlink_messages(sample: &Sample) -> Vec<(String, OscType)> {
-    let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
-    let [closed_left, closed_right] = sample.lids.map(steamlink_closed);
+fn steamlink_messages(gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, OscType)> {
+    let [left_x, left_y, right_x, right_y, _, _] = gaze;
+    let [closed_left, closed_right] = lids.map(steamlink_closed);
     let param = |name: &str, value: OscType| (format!("/avatar/parameters/{name}"), value);
     let mut messages = vec![
         param("LeftEyeX", OscType::Float(left_x)),
@@ -2098,6 +2098,23 @@ fn native_messages(settings: &Settings, gaze: [f32; 6], lids: [f32; 2]) -> Vec<(
         (look.0.into(), look.1),
         ("/tracking/eye/EyesClosedAmount".into(), floats(&[(1.0 - open).clamp(0.0, 1.0)])),
     ]
+}
+
+/// Where Steam Link's avatar parameters are being sent to, if anywhere. When this changes while eye tracking runs,
+/// the old destination gets relaxed open eyes looking ahead (see `send_steamlink_neutral`).
+fn steamlink_stream(settings: &Settings) -> Option<(&str, u16)> {
+    (settings.sending && settings.output == OutputKind::Vrchat && settings.steamlink_params)
+        .then(|| (settings.host.as_str(), settings.port()))
+}
+
+/// Relaxed open eyes looking straight ahead, as Steam Link's avatar parameters. Avatars made for Steam Link's OSC
+/// have no `EyeTrackingActive` to fall back on, and VRChat keeps the last values, so the eyes would otherwise stay
+/// where they were (shut, if tracking was lost in a blink).
+fn send_steamlink_neutral(output: &mut Output) -> Result<(), Box<dyn Error>> {
+    for (addr, arg) in steamlink_messages([0.0; 6], [LID_RELAXED; 2]) {
+        output.send(addr, vec![arg])?;
+    }
+    Ok(())
 }
 
 /// Where VRChat's own eye tracking input is being sent to, if anywhere. When this changes while eye tracking
@@ -2251,6 +2268,10 @@ impl Bridge {
         if self.active_since.is_some() && stream.is_some() && stream != vrchat_stream(&settings) {
             send_inactive(&mut self.output, &self.settings)?;
         }
+        let stream = steamlink_stream(&self.settings);
+        if self.active_since.is_some() && stream.is_some() && stream != steamlink_stream(&settings) {
+            send_steamlink_neutral(&mut self.output)?;
+        }
         let stream = native_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != native_stream(&settings) {
             send_native_neutral(&mut self.output, &self.settings)?;
@@ -2354,6 +2375,9 @@ impl Bridge {
         eprintln!("Eye tracking stopped ({reason})");
         if vrchat_stream(&self.settings).is_some() {
             send_inactive(&mut self.output, &self.settings)?;
+        }
+        if steamlink_stream(&self.settings).is_some() {
+            send_steamlink_neutral(&mut self.output)?;
         }
         if native_stream(&self.settings).is_some() {
             send_native_neutral(&mut self.output, &self.settings)?;
@@ -4185,6 +4209,51 @@ mod tests {
     }
 
     #[test]
+    fn steamlink_names_go_out_only_in_vrchat_mode_when_turned_on() {
+        let on = Settings {
+            steamlink_params: true,
+            ..settings()
+        };
+        assert!(steamlink_stream(&settings()).is_none());
+        assert_eq!(steamlink_stream(&on), Some(("auto", 9000)));
+        assert!(steamlink_stream(&Settings { sending: false, ..on.clone() }).is_none());
+        for output in [OutputKind::Etvr, OutputKind::LiveLink] {
+            assert!(steamlink_stream(&Settings { output, ..on.clone() }).is_none());
+        }
+        assert_ne!(steamlink_stream(&on), steamlink_stream(&Settings { port: Some(9001), ..on.clone() }));
+    }
+
+    #[test]
+    fn losing_tracking_leaves_the_steamlink_eyes_open_and_ahead() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
+        output.refresh();
+        send_steamlink_neutral(&mut output).unwrap();
+        let mut received = Vec::new();
+        for _ in 0..12 {
+            let mut buffer = [0u8; 256];
+            let size = listener.recv(&mut buffer).unwrap();
+            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
+            let OscPacket::Message(message) = packet else { panic!("not a message") };
+            received.push((message.addr, message.args));
+        }
+        let value = |name: &str| {
+            received
+                .iter()
+                .find(|(addr, _)| addr == &format!("/avatar/parameters/{name}"))
+                .map(|(_, args)| args.clone())
+                .unwrap()
+        };
+        for name in ["LeftEyeX", "LeftEyeY", "RightEyeX", "RightEyeY", "LeftEyeLid", "RightEyeLid"] {
+            assert_eq!(value(name), [OscType::Float(0.0)], "{name}");
+        }
+        assert_eq!(value("LeftEyeSqueezeToggle"), [OscType::Int(0)]);
+        assert_eq!(value("RightEyeLidExpandedSqueeze"), [OscType::Float(0.8)]);
+    }
+
+    #[test]
     fn empty_prefix_sends_bare_names() {
         let messages = sent(&Settings {
             prefix: String::new(),
@@ -4258,7 +4327,7 @@ mod tests {
             lids: [0.15, 0.0],
             ..sample()
         };
-        let messages = steamlink_messages(&shut);
+        let messages = steamlink_messages(shut.gaze, shut.lids);
         let value = |name: &str| {
             messages
                 .iter()

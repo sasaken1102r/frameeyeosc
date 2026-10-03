@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The panel's Advanced tab has a "Version history" button next to the version: it lists every version, newest first, as a row with its date and summary, and opens one at a time to show the summary and what changed (on an English panel, each change's first sentence; on a Japanese panel, the Japanese changelog, falling back to English for a version it doesn't have). The installed version opens first. The thumbstick or touchpad scrolls the list (`VREvent_ScrollSmooth`, asked for only while the list is shown), and so do the ▲ / ▼ buttons on its right. `install.sh` now installs `CHANGELOG.md` and `CHANGELOG.ja.md` to `~/.local/share/frameeyeosc/` for it, and the release tarball carries `CHANGELOG.ja.md`.
+
 ## 0.7.1 (2026-10-03)
 
 Eye data at the full rate while Steam Link streams, no stray widening on SteamOS 0.4.3, and two opt-ins for avatars not made for VRCFaceTracking: Steam Link's parameter names and VRChat's own eye tracking.

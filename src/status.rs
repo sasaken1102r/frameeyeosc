@@ -26,6 +26,15 @@ pub struct Status<'a> {
     /// Samples from the eye tracker in the last second (sent or not): about 90-136 while streaming,
     /// and it has been seen at 15. None until tracking has run for a second (the count is still filling).
     pub tracker_rate: Option<f32>,
+    /// Samples the eye server published in the last second that frameeyeosc did not read, because it was still busy
+    /// with the one before. None like tracker_rate.
+    pub missed_rate: Option<f32>,
+    /// The longest frameeyeosc took over one sample in the last second, in ms: from reading it until ready to read the
+    /// next (processing, sending, this file). Longer than a frame (11.1 ms at 90 a second), samples can be missed.
+    /// None like tracker_rate.
+    pub max_processing_ms: Option<f32>,
+    /// Datagrams dropped in the last second because the network could not take them at once (sending never waits).
+    pub dropped_rate: f32,
     pub tracking: bool,
     pub raw: Option<RawValues>,
     pub sent: Option<SentValues>,

@@ -123,6 +123,14 @@ const CAL_SETTLE: Duration = Duration::from_secs(20);
 const CAL_WARMUP_WEIGHT: f32 = 900.0;
 const CAL_SCALE_RANGE: (f32, f32) = (0.75, 1.33);
 const CAL_SAVE_INTERVAL: Duration = Duration::from_secs(60);
+// A jump in the eye server's sequence larger than this (10 s at 90 a second) is it starting over, not samples missed.
+const MAX_MISSED_JUMP: u32 = 900;
+// The panel shows the eye data rate in red below this. Held below it for LOW_RATE_LOG_AFTER, it is logged with the
+// numbers that tell whether frameeyeosc or the eye tracker was the slow one.
+const LOW_TRACKER_RATE: f32 = 60.0;
+const LOW_RATE_LOG_AFTER: Duration = Duration::from_secs(10);
+// At most one line this often about datagrams dropped because the network could not take them at once.
+const DROP_LOG_INTERVAL: Duration = Duration::from_secs(60);
 
 // The start of the shared memory, the same in every version read here. frameeyeosc only touches these fields and the
 // sample record: it locks metadata_mutex, waits on and reads sequence, and sets metadata_requested to 1 (the eye
@@ -1004,6 +1012,11 @@ struct EyeSource {
     path: PathBuf,
     inode: u64,
     layout: ShmLayout,
+    // The sequence of the last record read (before the first, the one there when first asked), so a sample published
+    // while the one before was being processed is read at once; None until the first call.
+    last_sequence: Option<u32>,
+    // Samples the eye server published that were not read (the sequence moved on by more than one), since take_missed.
+    missed: u32,
 }
 
 struct MutexGuard(*mut libc::pthread_mutex_t);
@@ -1073,6 +1086,8 @@ impl EyeSource {
             path: path.to_owned(),
             inode: metadata.ino(),
             layout,
+            last_sequence: None,
+            missed: 0,
         };
         let control = source.control();
         let version = u32::from_le(unsafe { ptr::read_volatile(&raw const (*control).version) });
@@ -1141,14 +1156,28 @@ impl EyeSource {
 
     /// Wait up to `timeout` for the eye server's next sample. The server writes the record and bumps the sequence
     /// while holding metadata_mutex, and the record is copied out under the same mutex, so it is never torn.
+    ///
+    /// The eye server publishes a frame only if a sample was requested by then, and clears the request with it (read
+    /// off its publish routine). So the next sample is requested in the same lock that copies this one out, and one
+    /// published while this one is processed and sent is read at once on the next call. Requesting it only when the
+    /// next call started lost every other frame (90 -> 45 a second) whenever waking up, processing and sending took
+    /// longer than a frame (11.1 ms). The first call after opening still waits for a new sample rather than return the
+    /// one already there.
     fn next(&mut self, timeout: Duration) -> io::Result<Next> {
         // Rewritten as another version: nothing is written to it (not even the lock), and is_stale() has it reopened.
         if self.version_changed() {
             return Ok(Next::Stopped);
         }
-        let guard = self.lock()?;
         let sequence_ptr = unsafe { &raw const (*self.control()).sequence };
+        let guard = self.lock()?;
         let sequence = unsafe { ptr::read_volatile(sequence_ptr) };
+        let seen = *self.last_sequence.get_or_insert(sequence);
+        if sequence != seen {
+            // Published while the last sample was being processed
+            let next = self.take(sequence);
+            drop(guard);
+            return Ok(next);
+        }
         let request_ptr = unsafe { &raw mut (*self.control_mut()).metadata_requested };
         unsafe { ptr::write_volatile(request_ptr, 1) };
         drop(guard);
@@ -1162,7 +1191,7 @@ impl EyeSource {
                 libc::SYS_futex,
                 sequence_ptr,
                 libc::FUTEX_WAIT,
-                sequence,
+                seen,
                 &timespec as *const libc::timespec,
             )
         };
@@ -1177,15 +1206,34 @@ impl EyeSource {
         }
 
         let guard = self.lock()?;
-        let data = if unsafe { ptr::read_volatile(sequence_ptr) } != sequence {
-            // The layout's record offset lies within the mapping (checked at compile time against its size).
-            let record_ptr = unsafe { self.map.as_ptr().add(self.layout.eye_data) }.cast::<EyeDataMmap>();
-            decode(unsafe { ptr::read_unaligned(record_ptr) })
-        } else {
-            Next::Waiting
-        };
+        let sequence = unsafe { ptr::read_volatile(sequence_ptr) };
+        let next = if sequence != seen { self.take(sequence) } else { Next::Waiting };
         drop(guard);
-        Ok(data)
+        Ok(next)
+    }
+
+    /// Copy out the record the eye server published as `sequence`, and request the next sample. Called with
+    /// metadata_mutex held.
+    fn take(&mut self, sequence: u32) -> Next {
+        // The layout's record offset lies within the mapping (checked at compile time against its size).
+        let record_ptr = unsafe { self.map.as_ptr().add(self.layout.eye_data) }.cast::<EyeDataMmap>();
+        let record = unsafe { ptr::read_unaligned(record_ptr) };
+        let request_ptr = unsafe { &raw mut (*self.control_mut()).metadata_requested };
+        unsafe { ptr::write_volatile(request_ptr, 1) };
+        if let Some(last) = self.last_sequence {
+            let jump = sequence.wrapping_sub(last);
+            // A larger jump (or one back) is the sequence starting over, not samples gone by
+            if (2..=MAX_MISSED_JUMP).contains(&jump) {
+                self.missed = self.missed.saturating_add(jump - 1);
+            }
+        }
+        self.last_sequence = Some(sequence);
+        decode(record)
+    }
+
+    /// The samples the eye server published that were not read, since the last call.
+    fn take_missed(&mut self) -> u32 {
+        std::mem::take(&mut self.missed)
     }
 }
 
@@ -1451,12 +1499,60 @@ impl SendHealth {
     }
 }
 
+/// Datagrams dropped because the network could not take them at once (the socket's send buffer was full, say while
+/// Steam Link's video fills the Wi-Fi). Sending never waits, so a busy network can't hold up reading the eye tracker;
+/// a dropped datagram is counted, and logged at most once every DROP_LOG_INTERVAL.
+#[derive(Default)]
+struct Drops {
+    // When each drop of the last RATE_WINDOW happened.
+    times: VecDeque<Instant>,
+    // Drops not logged yet, and when the first of them happened.
+    unlogged: u32,
+    first_unlogged: Option<Instant>,
+    last_logged: Option<Instant>,
+}
+
+impl Drops {
+    /// Count a dropped datagram to `addr`; returns the line to log, if one is due.
+    fn record(&mut self, now: Instant, addr: SocketAddr) -> Option<String> {
+        self.times.push_back(now);
+        self.prune(now);
+        self.unlogged += 1;
+        let first = *self.first_unlogged.get_or_insert(now);
+        if self.last_logged.is_some_and(|last| now.duration_since(last) < DROP_LOG_INTERVAL) {
+            return None;
+        }
+        self.last_logged = Some(now);
+        self.first_unlogged = None;
+        let count = std::mem::take(&mut self.unlogged);
+        Some(format!(
+            "Dropped {count} datagram{} to {addr} over {:.0} s: the network was too busy to take {} at once \
+             (said at most once a minute)",
+            if count == 1 { "" } else { "s" },
+            now.duration_since(first).as_secs_f32(),
+            if count == 1 { "it" } else { "them" },
+        ))
+    }
+
+    /// Drops in the last RATE_WINDOW.
+    fn per_second(&self, now: Instant) -> f32 {
+        self.times.iter().filter(|time| now.duration_since(**time) < RATE_WINDOW).count() as f32
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while self.times.front().is_some_and(|time| now.duration_since(*time) >= RATE_WINDOW) {
+            self.times.pop_front();
+        }
+    }
+}
+
 /// UDP sender that re-resolves its target periodically and reconnects when it changes.
 struct Output {
     target: Target,
     socket: Option<(UdpSocket, SocketAddr)>,
     last_resolve: Option<Instant>,
     health: SendHealth,
+    drops: Drops,
     // Why the socket to the target could not be set up, or the host could not be looked up, so each
     // is logged once per reason.
     connect_error: Option<String>,
@@ -1470,6 +1566,7 @@ impl Output {
             socket: None,
             last_resolve: None,
             health: SendHealth::default(),
+            drops: Drops::default(),
             connect_error: None,
             resolve_error: None,
         }
@@ -1562,9 +1659,18 @@ impl Output {
         let Some((socket, target)) = &self.socket else {
             return;
         };
-        let result = socket.send(datagram);
-        if let Some(line) = self.health.record(Instant::now(), *target, &result) {
+        let (target, result) = (*target, socket.send(datagram));
+        if let Some(line) = self.note(Instant::now(), target, &result) {
             eprintln!("{line}");
+        }
+    }
+
+    /// Note how sending one datagram to `target` went; returns the line to log, if any. A datagram the network could
+    /// not take at once is dropped and counted, which is not a failure to send.
+    fn note(&mut self, now: Instant, target: SocketAddr, result: &io::Result<usize>) -> Option<String> {
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.drops.record(now, target),
+            _ => self.health.record(now, target, result),
         }
     }
 }
@@ -1574,10 +1680,12 @@ fn per_second(times: &VecDeque<Instant>) -> f32 {
     times.iter().filter(|time| time.elapsed() < RATE_WINDOW).count() as f32
 }
 
-/// A UDP socket connected to `addr` (connecting only sets where packets go; it fails without a route).
+/// A UDP socket connected to `addr` (connecting only sets where packets go; it fails without a route). It never
+/// blocks: a datagram the network can't take at once is dropped (see Drops) rather than holding up the eye data.
 fn connect(addr: SocketAddr) -> io::Result<UdpSocket> {
     let socket = UdpSocket::bind(if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
     socket.connect(addr)?;
+    socket.set_nonblocking(true)?;
     Ok(socket)
 }
 
@@ -1951,6 +2059,59 @@ fn lost_reason(next: &Next) -> String {
     }
 }
 
+/// How well frameeyeosc keeps up with the eye tracker, to tell apart the two reasons the eye data rate can be low:
+/// frameeyeosc too slow to take each sample (samples published but not read, or long over one), or the eye tracker
+/// itself delivering few.
+#[derive(Default)]
+struct Pace {
+    // Samples the eye server published and frameeyeosc did not read, as noticed over the last RATE_WINDOW.
+    missed: VecDeque<(Instant, u32)>,
+    // How long each sample of the last RATE_WINDOW took, from reading it until ready to read the next (processing,
+    // sending, the status file).
+    busy: VecDeque<(Instant, Duration)>,
+    // Since when the eye data rate has been below LOW_TRACKER_RATE, and whether that was logged.
+    low_since: Option<Instant>,
+    low_logged: bool,
+}
+
+impl Pace {
+    /// Note the samples missed before the one just read.
+    fn add_missed(&mut self, now: Instant, missed: u32) {
+        if missed > 0 {
+            self.missed.push_back((now, missed));
+        }
+        self.prune(now);
+    }
+
+    /// Note how long one sample took.
+    fn add_busy(&mut self, now: Instant, busy: Duration) {
+        self.busy.push_back((now, busy));
+        self.prune(now);
+    }
+
+    /// Samples missed in the last RATE_WINDOW.
+    fn missed_rate(&self, now: Instant) -> f32 {
+        let recent = self.missed.iter().filter(|(time, _)| now.duration_since(*time) < RATE_WINDOW);
+        recent.map(|(_, missed)| *missed as f32).sum()
+    }
+
+    /// The longest one sample took in the last RATE_WINDOW, in ms (0 without samples), to 0.1 ms.
+    fn max_busy_ms(&self, now: Instant) -> f32 {
+        let recent = self.busy.iter().filter(|(time, _)| now.duration_since(*time) < RATE_WINDOW);
+        let longest = recent.map(|(_, busy)| *busy).max().unwrap_or_default();
+        (longest.as_secs_f32() * 10_000.0).round() / 10.0
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while self.missed.front().is_some_and(|(time, _)| now.duration_since(*time) >= RATE_WINDOW) {
+            self.missed.pop_front();
+        }
+        while self.busy.front().is_some_and(|(time, _)| now.duration_since(*time) >= RATE_WINDOW) {
+            self.busy.pop_front();
+        }
+    }
+}
+
 /// Everything the main loop keeps between samples.
 struct Bridge {
     config: Config,
@@ -1974,6 +2135,8 @@ struct Bridge {
     livelink_neutral: Option<Instant>,
     // Keeps the Live Link samples at or below LIVELINK_MAX_HZ.
     livelink_throttle: Throttle,
+    // Whether frameeyeosc keeps up with the eye tracker.
+    pace: Pace,
 }
 
 impl Bridge {
@@ -2098,6 +2261,36 @@ impl Bridge {
         Ok(())
     }
 
+    /// Samples from the eye tracker in the last second; None until tracking has run for a second.
+    fn tracker_rate(&self) -> Option<f32> {
+        self.active_since
+            .is_some_and(|since| since.elapsed() >= RATE_WINDOW)
+            .then(|| per_second(&self.received))
+    }
+
+    /// Returns the line to log once the eye data rate has stayed below LOW_TRACKER_RATE for LOW_RATE_LOG_AFTER (once
+    /// each time it goes low), with the numbers that tell who was slow.
+    fn check_low_rate(&mut self, now: Instant) -> Option<String> {
+        let Some(rate) = self.tracker_rate().filter(|rate| *rate < LOW_TRACKER_RATE) else {
+            self.pace.low_since = None;
+            self.pace.low_logged = false;
+            return None;
+        };
+        let since = *self.pace.low_since.get_or_insert(now);
+        if self.pace.low_logged || now.duration_since(since) < LOW_RATE_LOG_AFTER {
+            return None;
+        }
+        self.pace.low_logged = true;
+        Some(format!(
+            "Eye data has been low for {} s: {rate:.0} samples/s; in the last second {:.0} published samples were \
+             missed, the slowest sample took {:.1} ms, and {:.0} datagrams were dropped",
+            LOW_RATE_LOG_AFTER.as_secs(),
+            self.pace.missed_rate(now),
+            self.pace.max_busy_ms(now),
+            self.output.drops.per_second(now),
+        ))
+    }
+
     /// Relaxed open eyes looking straight ahead, to VRCFT's LiveLink module.
     fn send_livelink_neutral(&mut self) {
         self.output.send_datagram(&livelink::packet(livelink::time_of_day(SystemTime::now()), &livelink::neutral()));
@@ -2117,6 +2310,11 @@ impl Bridge {
     /// `source_error`: why the eye tracker's shared memory can't be read, if it can't; `dominant_eye`: the eye the
     /// Frame tracks alone, if "Track Dominant Eye Only" is on.
     fn status<'a>(&'a self, source_error: Option<&'a str>, dominant_eye: Option<DominantEye>) -> Status<'a> {
+        let now = Instant::now();
+        let tracker_rate = self.tracker_rate();
+        let missed_rate = tracker_rate.map(|_| self.pace.missed_rate(now));
+        let max_processing_ms = tracker_rate.map(|_| self.pace.max_busy_ms(now));
+        let dropped_rate = self.output.drops.per_second(now);
         let settings = &self.settings;
         let pair = |values: [f32; 6], first: usize| status::round([values[first], values[first + 1]]);
         Status {
@@ -2129,10 +2327,10 @@ impl Bridge {
             target_mode: if settings.host == "auto" { "auto" } else { "fixed" },
             target: self.output.addr().map(|addr| addr.to_string()),
             rate: per_second(&self.sent),
-            tracker_rate: self
-                .active_since
-                .is_some_and(|since| since.elapsed() >= RATE_WINDOW)
-                .then(|| per_second(&self.received)),
+            tracker_rate,
+            missed_rate,
+            max_processing_ms,
+            dropped_rate,
             tracking: self.active_since.is_some(),
             raw: self.latest.as_ref().map(|sample| RawValues {
                 openness: status::round(sample.openness),
@@ -2265,12 +2463,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         dots: dots::DotStream::new(status::status_path().parent().unwrap_or(Path::new("/tmp"))),
         livelink_neutral: None,
         livelink_throttle: Throttle::default(),
+        pace: Pace::default(),
     };
     let mut status_file = StatusFile::new(status::status_path());
     // Until the shared memory can be read, frameeyeosc keeps running and trying again, and the status file says why,
     // so the panel shows the reason instead of "not running". Config reloads, the status file and the LiveLink
     // keepalive go on meanwhile.
     let mut eye = EyeReader::new(Path::new(SOURCE), Instant::now());
+    // When the last sample was read, until ready to read the next one.
+    let mut busy_since: Option<Instant> = None;
     loop {
         if let Some(reload) = bridge.config.poll() {
             bridge.apply(reload)?;
@@ -2279,9 +2480,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         if let Some(line) = eye.open_if_due(Instant::now()) {
             eprintln!("{line}");
         }
+        if let Some(since) = busy_since.take() {
+            bridge.pace.add_busy(Instant::now(), since.elapsed());
+        }
         match eye.source.as_mut() {
             Some(source) => match source.next(POLL)? {
-                Next::Sample(data) if data.is_finite() => bridge.on_sample(data)?,
+                Next::Sample(data) if data.is_finite() => {
+                    let now = Instant::now();
+                    busy_since = Some(now);
+                    bridge.pace.add_missed(now, source.take_missed());
+                    bridge.on_sample(data)?;
+                }
                 // Short waits are normal; only a whole second without data means tracking stopped.
                 Next::Waiting if bridge.last_data.is_some_and(|last| last.elapsed() < TIMEOUT) => {}
                 next if bridge.active_since.is_some() => bridge.on_lost(&lost_reason(&next))?,
@@ -2300,6 +2509,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         bridge.keep_livelink_alive();
         if status_file.due() {
             if let Some(line) = eye.refresh_dominant_eye() {
+                eprintln!("{line}");
+            }
+            if let Some(line) = bridge.check_low_rate(Instant::now()) {
                 eprintln!("{line}");
             }
             status_file.write(&bridge.status(eye.error.as_deref(), eye.dominant_eye));
@@ -3217,6 +3429,42 @@ mod tests {
     }
 
     #[test]
+    fn sending_never_blocks_and_a_full_buffer_drops_quietly() {
+        // The socket never blocks
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = connect(listener.local_addr().unwrap()).unwrap();
+        let flags = unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&socket), libc::F_GETFL) };
+        assert_ne!(flags & libc::O_NONBLOCK, 0);
+
+        // A datagram the network can't take at once is dropped and counted: one line, then at most one a minute with
+        // how many since, and never "sending failed"
+        let addr: SocketAddr = "192.0.2.1:9000".parse().unwrap();
+        let mut output = Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9000 });
+        let full = || Err(io::Error::from(io::ErrorKind::WouldBlock));
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let line = output.note(at(0), addr, &full()).unwrap();
+        assert_eq!(
+            line,
+            "Dropped 1 datagram to 192.0.2.1:9000 over 0 s: the network was too busy to take it at once \
+             (said at most once a minute)"
+        );
+        for i in 1..=200 {
+            assert_eq!(output.note(at(i * 100), addr, &full()), None);
+        }
+        assert_eq!(output.drops.per_second(at(20_000)), 10.0);
+        assert_eq!(output.health.failing, None);
+        // Sending works in between: nothing to say
+        assert_eq!(output.note(at(20_050), addr, &Ok(20)), None);
+        let line = output.note(at(60_000), addr, &full()).unwrap();
+        assert!(line.starts_with("Dropped 201 datagrams to 192.0.2.1:9000 over 60 s: "), "{line}");
+        assert_eq!(output.note(at(60_100), addr, &full()), None);
+        assert_eq!(output.drops.per_second(at(70_000)), 0.0);
+        // A real failure is still one
+        assert!(output.note(at(70_000), addr, &Err(io::Error::from(io::ErrorKind::NetworkUnreachable))).is_some());
+    }
+
+    #[test]
     fn the_rate_counts_the_last_second() {
         let now = Instant::now();
         let times: VecDeque<Instant> = [now - Duration::from_millis(1500), now - Duration::from_millis(900), now]
@@ -3552,6 +3800,7 @@ mod tests {
             dots: dots::DotStream::new(Path::new("/nonexistent")),
             livelink_neutral: None,
             livelink_throttle: Throttle::default(),
+            pace: Pace::default(),
         };
         bridge.output.refresh();
         bridge
@@ -4083,6 +4332,144 @@ mod tests {
         assert_eq!(reader.open_if_due(at(5)), Some(line));
     }
 
+    /// Publish a sample through the eye server's `server` mapping the way the eye server does, without the lock: write
+    /// the record, bump the sequence, clear the request. The caller wakes the readers.
+    fn publish(server: &mut [u8], eye_data: usize, seed: f32) {
+        write_record(server, eye_data, 1, seed);
+        let base = server.as_mut_ptr();
+        unsafe {
+            let sequence = base.add(0x38).cast::<u32>();
+            ptr::write_volatile(sequence, ptr::read_volatile(sequence).wrapping_add(1));
+            ptr::write_volatile(base.add(0x3c).cast::<u32>(), 0);
+        }
+    }
+
+    fn wake(server: &mut [u8]) {
+        unsafe { libc::syscall(libc::SYS_futex, server.as_mut_ptr().add(0x38), libc::FUTEX_WAKE, i32::MAX) };
+    }
+
+    #[test]
+    fn a_sample_published_while_busy_is_read_at_once_and_skips_are_counted() {
+        let layout = SHM_LAYOUTS[1];
+        // A record is already there when frameeyeosc starts (sequence 5, nothing requested)
+        let mut bytes = vec![0u8; layout.size];
+        bytes[0..4].copy_from_slice(&5u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+        bytes[0x38..0x3c].copy_from_slice(&5u32.to_le_bytes());
+        write_record(&mut bytes, layout.eye_data, 1, 0.1);
+        let shm = FakeShm::with("pipeline", &bytes);
+        let mut source = EyeSource::open_at(&shm.path).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&shm.path).unwrap();
+        let mut server = unsafe { MmapOptions::new().len(layout.size).map_mut(&file).unwrap() };
+
+        // The first call doesn't return the stale record; it requests a sample and waits for a new one.
+        assert!(matches!(source.next(Duration::from_millis(10)).unwrap(), Next::Waiting));
+        assert_eq!(server[0x3c], 1);
+        publish(&mut server, layout.eye_data, 0.2);
+        wake(&mut server);
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(data) if data == record_sample(0.2)));
+        // The next one is requested in the same lock the sample was read in, before the next call
+        assert_eq!(server[0x3c], 1);
+        assert_eq!(source.take_missed(), 0);
+
+        // Published while that sample was processed (nobody woken, as when the wake came before the next wait): read at
+        // once, without waiting for the one after
+        publish(&mut server, layout.eye_data, 0.3);
+        let start = Instant::now();
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(data) if data == record_sample(0.3)));
+        assert!(start.elapsed() < Duration::from_millis(500), "{:?}", start.elapsed());
+        assert_eq!(server[0x3c], 1);
+
+        // Two published while busy (another client asked for them too): the newer is read, the older counted as missed
+        publish(&mut server, layout.eye_data, 0.4);
+        publish(&mut server, layout.eye_data, 0.5);
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(data) if data == record_sample(0.5)));
+        assert_eq!(source.take_missed(), 1);
+        assert_eq!(source.take_missed(), 0);
+        // Nothing new: waits again
+        assert!(matches!(source.next(Duration::from_millis(10)).unwrap(), Next::Waiting));
+
+        // The sequence starting over (a jump back, or one too large) is not counted as missed
+        unsafe { ptr::write_volatile(server.as_mut_ptr().add(0x38).cast::<u32>(), 2) };
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(_)));
+        unsafe { ptr::write_volatile(server.as_mut_ptr().add(0x38).cast::<u32>(), 2 + MAX_MISSED_JUMP + 1) };
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(_)));
+        assert_eq!(source.take_missed(), 0);
+
+        // Only the lock, the request and nothing else was written: the file is what the test wrote, with the request set
+        let mut expected = bytes.clone();
+        write_record(&mut expected, layout.eye_data, 1, 0.5);
+        expected[0x38..0x3c].copy_from_slice(&(2 + MAX_MISSED_JUMP + 1).to_le_bytes());
+        expected[0x3c] = 1;
+        drop(server);
+        assert_eq!(shm.bytes(), expected);
+    }
+
+    /// Run the eye server as read off its disassembly for `frames` frames of 11.1 ms (90 a second), next to a reader
+    /// that takes `processing` over each sample; returns (samples read, samples the server published). Each frame the
+    /// server locks metadata_mutex and, only if a sample was requested by then, writes the record, bumps the sequence
+    /// and clears the request; then it unlocks and wakes the readers, `wake_delay` late (the reader's thread woken late,
+    /// as on a busy headset).
+    fn run_paced(frames: u32, wake_delay: Duration, processing: Duration) -> (u32, u32) {
+        let layout = SHM_LAYOUTS[1];
+        let shm = FakeShm::new("paced", 5, layout.size);
+        let mut source = EyeSource::open_at(&shm.path).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&shm.path).unwrap();
+        let mut server = unsafe { MmapOptions::new().len(layout.size).map_mut(&file).unwrap() };
+        // The mutex is a process-private one in this file, so the server locks it at the reader's own address
+        let mutex = unsafe { source.map.as_mut_ptr().add(0x08) } as usize;
+        let frame = Duration::from_secs(1) / 90;
+        let publisher = std::thread::spawn(move || {
+            let mutex = mutex as *mut libc::pthread_mutex_t;
+            let start = Instant::now();
+            let mut published = 0;
+            for i in 1..=frames {
+                if let Some(wait) = (start + frame * i).checked_duration_since(Instant::now()) {
+                    std::thread::sleep(wait);
+                }
+                assert_eq!(unsafe { libc::pthread_mutex_lock(mutex) }, 0);
+                let requested = unsafe { ptr::read_volatile(server.as_ptr().add(0x3c).cast::<u32>()) } != 0;
+                if requested {
+                    publish(&mut server, layout.eye_data, i as f32);
+                    published += 1;
+                }
+                unsafe { libc::pthread_mutex_unlock(mutex) };
+                if requested {
+                    std::thread::sleep(wake_delay);
+                    wake(&mut server);
+                }
+            }
+            published
+        });
+        let mut read = 0;
+        loop {
+            match source.next(Duration::from_millis(100)).unwrap() {
+                Next::Sample(_) => {
+                    read += 1;
+                    std::thread::sleep(processing);
+                }
+                Next::Waiting if publisher.is_finished() => break,
+                Next::Waiting => {}
+                Next::Stopped => panic!("stopped"),
+            }
+        }
+        let published = publisher.join().unwrap();
+        assert_eq!(source.take_missed(), 0, "the only reader misses nothing the server published");
+        (read, published)
+    }
+
+    #[test]
+    fn a_reader_slower_than_a_frame_still_gets_every_sample() {
+        // 8 ms to wake up and 7 ms over each sample: 15 ms from one sample being published to the reader asking for the
+        // next, more than a frame. Asking only then, the server skipped every other frame (about 45 of 90 read); asked
+        // for while the sample is copied out, every frame is published and read.
+        let frames = 90;
+        let (read, published) = run_paced(frames, Duration::from_millis(8), Duration::from_millis(7));
+        eprintln!("read {read} of {frames} frames ({published} published)");
+        assert_eq!(read, published);
+        assert!(read >= frames * 85 / 100, "read {read} of {frames} frames");
+    }
+
     #[test]
     fn a_replaced_or_rewritten_shared_memory_is_stale_and_left_alone() {
         let shm = FakeShm::new("stale", 5, 0x4f21f);
@@ -4198,6 +4585,65 @@ mod tests {
         assert_eq!(source.dominant_eye(), Some(None));
         drop(source);
         assert_eq!(shm4.bytes(), v4);
+    }
+
+    #[test]
+    fn status_says_whether_frameeyeosc_keeps_up() {
+        let mut bridge = test_bridge(settings());
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        // Not tracking: nothing to tell yet, and no drops
+        assert!(json["missed_rate"].is_null() && json["max_processing_ms"].is_null());
+        assert_eq!(json["dropped_rate"], 0.0);
+
+        let now = Instant::now();
+        bridge.active_since = Some(now - Duration::from_secs(5));
+        bridge.received.extend((0..46).map(|i| now - Duration::from_millis(20 * i)));
+        bridge.pace.add_missed(now - Duration::from_millis(1500), 30);
+        bridge.pace.add_missed(now - Duration::from_millis(300), 1);
+        bridge.pace.add_missed(now, 43);
+        bridge.pace.add_missed(now, 0);
+        bridge.pace.add_busy(now - Duration::from_millis(1200), Duration::from_millis(40));
+        bridge.pace.add_busy(now - Duration::from_millis(500), Duration::from_micros(15_240));
+        bridge.pace.add_busy(now, Duration::from_millis(2));
+        let addr: SocketAddr = "192.0.2.1:9000".parse().unwrap();
+        for ms in [1500, 400, 20] {
+            bridge.output.drops.record(now - Duration::from_millis(ms), addr);
+        }
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(json["tracker_rate"], 46.0);
+        assert_eq!(json["missed_rate"], 44.0);
+        assert_eq!(json["max_processing_ms"].as_f64().unwrap() as f32, 15.2);
+        assert_eq!(json["dropped_rate"], 2.0);
+    }
+
+    #[test]
+    fn a_rate_low_for_ten_seconds_is_logged_once_with_its_numbers() {
+        let mut bridge = test_bridge(settings());
+        let start = Instant::now();
+        bridge.active_since = Some(start - Duration::from_secs(5));
+        bridge.received.extend((0..46).map(|i| start - Duration::from_millis(20 * i)));
+        assert_eq!(bridge.check_low_rate(start), None);
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(9)), None);
+        let at = start + Duration::from_secs(10);
+        bridge.pace.add_missed(at, 44);
+        bridge.pace.add_busy(at, Duration::from_micros(15_240));
+        let line = bridge.check_low_rate(at).unwrap();
+        assert_eq!(
+            line,
+            "Eye data has been low for 10 s: 46 samples/s; in the last second 44 published samples were missed, \
+             the slowest sample took 15.2 ms, and 0 datagrams were dropped"
+        );
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(20)), None);
+        // Fine again, then low again: logged again after another 10 s
+        bridge.received.extend((0..44).map(|_| start));
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(21)), None);
+        bridge.received.truncate(46);
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(22)), None);
+        assert!(bridge.check_low_rate(start + Duration::from_secs(32)).is_some());
+        // Not tracking: no rate, nothing to say
+        bridge.active_since = None;
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(50)), None);
+        assert_eq!(bridge.pace.low_since, None);
     }
 
     #[test]

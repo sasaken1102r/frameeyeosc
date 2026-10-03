@@ -91,7 +91,7 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.con
 | **まぶた** | **詳細** |
 | ![まぶたのタブ](docs/images/panel-lids-ja_2026-10-01_02-00-00.png) | ![詳細のタブ](docs/images/panel-advanced-ja_2026-10-01_02-00-00.png) |
 
-- 左の列には、いつでも今の状態が出ます: 送信中か止めているか、送り先、毎秒の送信回数、目のデータが毎秒何回来ているか（60 未満は赤で「少なめ」）、左右のまぶたと視線（生の値と送った値）、設定のエラー。「Track Dominant Eye Only」の設定がオンのあいだは、視線の見出しの行に、Frame がどちらの目で追っているかが出ます（「Frame の設定: 右目だけで追っています」）
+- 左の列には、いつでも今の状態が出ます: 送信中か止めているか、送り先、毎秒の送信回数、目のデータが毎秒何回来ているか（60 未満は赤で「少なめ」。その下に、遅いのが本体か Frame か）、左右のまぶたと視線（生の値と送った値）、設定のエラー。「Track Dominant Eye Only」の設定がオンのあいだは、視線の見出しの行に、Frame がどちらの目で追っているかが出ます（「Frame の設定: 右目だけで追っています」）
 - 基本: 送信の一時停止、送り先（3 枚のカード: VRChat に直接・VRCFT（LiveLink、おすすめ）・VRCFT（ETVR）。それぞれ見開きが届くか、ほかの人からの見え方、VRCFaceTracking が要るかを表示）、言語（日本語 / English）、SteamVR と一緒に起動、すべて既定に戻す、アプリを終了
 - 送り方: 送り先の PC（自動、今送っている PC で固定、または入力。下を参照）とポート。VRChat に直接のときはパラメーター名の頭と EyeTrackingActive の型、LiveLink と ETVR のときは PC の VRCFaceTracking で準備すること
 - 視線: スムージングのオン / オフ、なめらかさの弱 / 中 / 強と 3 つの値、見つめている時の遊び、まばたき中は視線を止める、左右の目を別々に動かす、不確かな視線を使わない、一瞬の途切れを消す
@@ -162,7 +162,7 @@ FRAMEEYEOSC_ARGS="--gaze-min-cutoff 0.3 --lid-sync 0.6"
 
 ## 状態ファイル
 
-frameeyeosc は 1 秒に 10 回、今の様子を `$XDG_RUNTIME_DIR/frameeyeosc/status.json`（ふつうは `/run/user/1000/frameeyeosc/status.json`）に書きます。中身は、送信中か、送り先、毎秒の送信回数、目のトラッカーから毎秒届くサンプルの数（`tracker_rate`）、最新の生の値と送った値、キャリブレーション、今効いている設定、コマンドで固定中の項目、設定のエラー、目のデータを読めないときはその理由（`source_error`）、「Track Dominant Eye Only」の設定がオンのあいだ Frame が追っている目（`dominant_eye`: `"left"` か `"right"`。オフなら `null`）、ふつうに開いた目が 1.0 と読まれて見開きが届かないかどうか（`openness_saturated`）、最後の目合わせの測定です。パネルはこれを読んで表示します。フォルダは本人しか読めず、メモリの上にあって再起動すると消えます。残るのは最新の値だけです。
+frameeyeosc は 1 秒に 10 回、今の様子を `$XDG_RUNTIME_DIR/frameeyeosc/status.json`（ふつうは `/run/user/1000/frameeyeosc/status.json`）に書きます。中身は、送信中か、送り先、毎秒の送信回数、目のトラッカーから毎秒届くサンプルの数（`tracker_rate`）、frameeyeosc がそれに追いついているか（`missed_rate`: 直近 1 秒に目のトラッカーが出したのに読めなかった数、`max_processing_ms`: 直近 1 秒でサンプル 1 つにいちばん長くかかった時間、`dropped_rate`: 直近 1 秒にネットワークが混んでいて捨てた送信の数）、最新の生の値と送った値、キャリブレーション、今効いている設定、コマンドで固定中の項目、設定のエラー、目のデータを読めないときはその理由（`source_error`）、「Track Dominant Eye Only」の設定がオンのあいだ Frame が追っている目（`dominant_eye`: `"left"` か `"right"`。オフなら `null`）、ふつうに開いた目が 1.0 と読まれて見開きが届かないかどうか（`openness_saturated`）、最後の目合わせの測定です。パネルはこれを読んで表示します。フォルダは本人しか読めず、メモリの上にあって再起動すると消えます。残るのは最新の値だけです。
 
 ## VRCFaceTracking（ETVR）モード
 
@@ -231,7 +231,8 @@ frameeyeosc は、VRCFaceTracking の LiveLink モジュールに Live Link Face
 - ログ: `journalctl --user -u frameeyeosc -f`（パネルは `journalctl --user -u frameeyeosc-panel -f`）
 - `No Steam Link connection found; waiting for one`: Steam Link がまだつながっていません。または送り先の PC を固定してください
 - `Can't send OSC to ... yet (Network is unreachable)` や `Sending OSC to ... failed (...)`: ネットワークがまだつながっていない（起動直後の Wi-Fi など）か、PC に届きません。frameeyeosc は動き続けて送り直し、送れるようになると `... works again` と出ます
-- 目を合わせると最初の点でサンプルが足りずに止まる、または左の列の「目のデータ」が少なめ: 目のトラッカーからのデータがふだんより少ない状態です。そのとき出ていた回数と、PC から Steam Link で送っていたかどうかを知らせてください
+- 左の列の「目のデータ」が少なめ（赤、毎秒 60 未満。90 のはずが 46 や 15 のことがありました）、または目を合わせると最初の点でサンプルが足りずに止まる: 回数の下の行に、どちらが遅いかが出ます。「本体の処理が追いついていません」なら、目のトラッカーが出したサンプルを frameeyeosc が読みそびれたか、1 つに時間がかかりすぎています。「Frame から届く数が少なめです」なら、目のトラッカーから届く数そのものが少なく、frameeyeosc は全部読めています。少なめが 10 秒続くと、数字を 1 行ログに残します（`journalctl --user -u frameeyeosc` に `Eye data has been low for 10 s: …`）。その行と、PC から Steam Link で送っていたかどうかを知らせてください
+- ログに `Dropped … datagrams to … the network was too busy to take them at once`: ネットワーク（Steam Link の映像でいっぱいの Wi-Fi など）が送る速さに追いつかなかったので、その分を捨てました。frameeyeosc は送り終わるのを待たないので、目のデータは止まらずに届きます。この行は 1 分に 1 回までです
 - ログに `Sending OSC to ...` と出ているのにアバターが反応しない: VRChat の OSC が有効かを確認したうえで、Windows のファイアウォールを確認してください。VRChat の受信許可は「パブリック」だけになっていることが多く、「プライベート」の家のネットワークから届く OSC は止められます。許可の対象が `launch.exe` ではなく `VRChat.exe` になっているかにも注意してください。範囲をしぼって許可するには（管理者の PowerShell で）:
   ```powershell
   New-NetFirewallRule -DisplayName "VRChat OSC (LAN UDP 9000)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 9000 -RemoteAddress LocalSubnet -Program "C:\Program Files (x86)\Steam\steamapps\common\VRChat\VRChat.exe" -Profile Private,Public

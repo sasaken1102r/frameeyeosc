@@ -682,6 +682,9 @@ PanelModel fakeModel(const Options& options) {
                        (etvr ? "8889" : options.fakeLivelink ? "11111" : (options.fakeCustom ? "9001" : "9000"));
         }
         s.trackerRate = options.fakeSlowTracker ? 15.0 : 89.6;
+        s.missedRate = 0;
+        s.maxProcessingMs = 1.4;
+        s.droppedRate = 0;
         s.rate = options.fakePaused ? 0.0 : s.trackerRate;
         s.tracking = !options.fakeNoTracking && !options.fakeSourceError;
         if (s.tracking) {
@@ -937,6 +940,8 @@ int runPrint(const Options& options) {
         std::printf("  dominant_eye: %s, openness_saturated: %s\n",
                     status.dominantEye.empty() ? "null" : status.dominantEye.c_str(),
                     status.opennessSaturated ? "true" : "false");
+        std::printf("  eye data %.0f/s, missed %.0f/s, longest sample %.1f ms, dropped %.0f/s\n", status.trackerRate,
+                    status.missedRate, status.maxProcessingMs, status.droppedRate);
     }
     const Autostart autostart = readAutostart();
     std::printf("autostart (%s): %s\n", kServiceName,
@@ -963,6 +968,7 @@ std::string statusSignature(const EyeStatus& s) {
                   s.scales.v[0], s.scales.v[1], s.lidsVrcft.v[0], s.lidsVrcft.v[1], s.learning, s.calibrationEnabled,
                   static_cast<int>((s.time - s.started) / 60));
     std::string signature = text;
+    signature += "|" + std::to_string(static_cast<int>(trackerRateCause(s)));
     char eyes[128];
     std::snprintf(eyes, sizeof(eyes), "|%.2f %.2f %.2f %.2f|%.2f %.2f %.2f %.2f", s.rawGazeEye[0].v[0],
                   s.rawGazeEye[0].v[1], s.rawGazeEye[1].v[0], s.rawGazeEye[1].v[1], s.sentGazeEye[0].v[0],

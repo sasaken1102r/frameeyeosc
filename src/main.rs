@@ -277,6 +277,10 @@ struct Args {
     /// need it), or not at all
     #[arg(long, value_enum, default_value_t = ActiveType::Bool)]
     eye_tracking_active: ActiveType,
+    /// In VRChat mode, also send the avatar parameters SteamVR's Steam Link OSC sends (LeftEyeX, RightEyeLid, ...;
+    /// no prefix), for avatars made for it
+    #[arg(long)]
+    steamlink_params: bool,
     /// How easily an eye with an eye fit widens: off, low, normal or high (eyes without one use --lid-widen-start
     /// and --lid-wide)
     #[arg(long, value_enum, default_value_t = Widen::Normal)]
@@ -1970,8 +1974,9 @@ fn livelink_packet(sample: &Sample, time: f64) -> Vec<u8> {
     livelink::packet(time, &livelink::shapes(lids, [left_x, left_y, right_x, right_y]))
 }
 
-/// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set. The ETVR Tracking Module
-/// gets per-eye values only: EyeX/EyeY switch it to a single-eye mode that reads an eyelid we do not send.
+/// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set, and with `steamlink_params` Steam Link's
+/// names after it. The ETVR Tracking Module gets per-eye values only: EyeX/EyeY switch it to a single-eye mode that
+/// reads an eyelid we do not send.
 fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> {
     let prefix = format!("/avatar/parameters{}", settings.prefix);
     let [left_x, left_y, right_x, right_y, x, y] = sample.gaze;
@@ -1984,7 +1989,7 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
         ("EyeLidLeft", lid_left),
         ("EyeLidRight", lid_right),
     ];
-    let mut messages = Vec::with_capacity(9);
+    let mut messages = Vec::with_capacity(21);
     if settings.output == OutputKind::Vrchat {
         messages.extend(active_message(settings, true));
         values.extend([("EyeX", x), ("EyeY", y)]);
@@ -1994,6 +1999,42 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
             .into_iter()
             .map(|(suffix, value)| (format!("{prefix}/v2/{suffix}"), OscType::Float(value))),
     );
+    if settings.output == OutputKind::Vrchat && settings.steamlink_params {
+        messages.extend(steamlink_messages(sample));
+    }
+    messages
+}
+
+/// How closed an eye is the way Steam Link sends it (0 open, 1 shut), from a VRCFT eyelid: 0.75 (relaxed open) and
+/// anything widened above it are 0, and 0.75..0 closes it evenly to 1.
+fn steamlink_closed(lid: f32) -> f32 {
+    (1.0 - lid / LID_RELAXED).clamp(0.0, 1.0)
+}
+
+/// The avatar parameters SteamVR's Steam Link sends from its own OSC (measured on SteamVR 2.18.2), in its order and
+/// without a prefix, for avatars made for it. Its X is ours (±1 = ±45°, + right), but its Y is ours turned over
+/// (+ is down). Its eyelid is how closed the eye is; the squeeze and widen values follow from that as Steam Link
+/// works them out (it always sends WidenToggle 1). Each eye's gaze is its own with "move eyes separately", like
+/// the VRCFT ones.
+fn steamlink_messages(sample: &Sample) -> Vec<(String, OscType)> {
+    let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
+    let [closed_left, closed_right] = sample.lids.map(steamlink_closed);
+    let param = |name: &str, value: OscType| (format!("/avatar/parameters/{name}"), value);
+    let mut messages = vec![
+        param("LeftEyeX", OscType::Float(left_x)),
+        param("LeftEyeY", OscType::Float(-left_y)),
+        param("RightEyeX", OscType::Float(right_x)),
+        param("RightEyeY", OscType::Float(-right_y)),
+    ];
+    for (eye, closed) in [("Right", closed_right), ("Left", closed_left)] {
+        let shut = closed > 0.5;
+        messages.extend([
+            param(&format!("{eye}EyeLid"), OscType::Float(closed)),
+            param(&format!("{eye}EyeLidExpandedSqueeze"), OscType::Float(if shut { 0.0 } else { 0.8 })),
+            param(&format!("{eye}EyeSqueezeToggle"), OscType::Int(i32::from(shut))),
+            param(&format!("{eye}EyeWidenToggle"), OscType::Int(1)),
+        ]);
+    }
     messages
 }
 
@@ -3985,6 +4026,129 @@ mod tests {
         });
         assert_eq!(messages[0].0, "/avatar/parameters/EyeTrackingActive");
         assert_eq!(messages[1].0, "/avatar/parameters/v2/EyeLeftX");
+    }
+
+    fn steamlink() -> Settings {
+        Settings {
+            steamlink_params: true,
+            ..settings()
+        }
+    }
+
+    #[test]
+    fn steamlink_names_are_off_by_default() {
+        assert!(!Settings::default().steamlink_params);
+        let messages = sent(&settings());
+        assert_eq!(messages.len(), 9);
+        assert!(messages.iter().all(|(addr, _)| addr.starts_with("/avatar/parameters/FT/")));
+    }
+
+    #[test]
+    fn steamlink_names_come_after_the_vrcft_ones_as_steam_link_sends_them() {
+        let messages = sent(&steamlink());
+        // The VRCFT ones are unchanged
+        assert_eq!(messages[..9], sent(&settings())[..]);
+        // sample(): gaze left (0.1, 0.2), right (0.3, 0.4); eyelids 0.375 (half closed) and 0.75 (relaxed open)
+        let f = OscType::Float;
+        let i = OscType::Int;
+        let expected = [
+            ("LeftEyeX", f(0.1)),
+            ("LeftEyeY", f(-0.2)),
+            ("RightEyeX", f(0.3)),
+            ("RightEyeY", f(-0.4)),
+            ("RightEyeLid", f(0.0)),
+            ("RightEyeLidExpandedSqueeze", f(0.8)),
+            ("RightEyeSqueezeToggle", i(0)),
+            ("RightEyeWidenToggle", i(1)),
+            ("LeftEyeLid", f(0.5)),
+            ("LeftEyeLidExpandedSqueeze", f(0.8)),
+            ("LeftEyeSqueezeToggle", i(0)),
+            ("LeftEyeWidenToggle", i(1)),
+        ]
+        .map(|(name, value)| (format!("/avatar/parameters/{name}"), value));
+        assert_eq!(messages[9..], expected);
+        // On the wire: the toggles are int32, the rest float32, one value each
+        for (addr, value) in &messages[9..] {
+            let bytes = encoder::encode(&OscPacket::Message(OscMessage {
+                addr: addr.clone(),
+                args: vec![value.clone()],
+            }))
+            .unwrap();
+            let tag = if addr.ends_with("Toggle") { b",i\0\0" } else { b",f\0\0" };
+            assert!(bytes.windows(4).any(|window| window == tag), "{addr}");
+        }
+    }
+
+    #[test]
+    fn steamlink_eyelids_are_how_closed_the_eye_is() {
+        // Relaxed open and widened: open; shut: 1; in between, evenly
+        assert_eq!(steamlink_closed(0.75), 0.0);
+        assert_eq!(steamlink_closed(1.0), 0.0);
+        assert_eq!(steamlink_closed(0.0), 1.0);
+        assert_eq!(steamlink_closed(0.375), 0.5);
+        assert!((steamlink_closed(0.15) - 0.8).abs() < 1e-6);
+        // Over half closed: squeezed, as Steam Link sends it
+        let shut = Sample {
+            lids: [0.15, 0.0],
+            ..sample()
+        };
+        let messages = steamlink_messages(&shut);
+        let value = |name: &str| {
+            messages
+                .iter()
+                .find(|(addr, _)| addr == &format!("/avatar/parameters/{name}"))
+                .map(|(_, value)| value.clone())
+                .unwrap()
+        };
+        assert_eq!(value("RightEyeLid"), OscType::Float(1.0));
+        assert_eq!(value("RightEyeLidExpandedSqueeze"), OscType::Float(0.0));
+        assert_eq!(value("RightEyeSqueezeToggle"), OscType::Int(1));
+        assert_eq!(value("LeftEyeSqueezeToggle"), OscType::Int(1));
+        assert_eq!(value("LeftEyeLidExpandedSqueeze"), OscType::Float(0.0));
+        assert_eq!(value("LeftEyeWidenToggle"), OscType::Int(1));
+    }
+
+    #[test]
+    fn steamlink_names_ignore_the_prefix_and_other_outputs() {
+        for prefix in ["", "/Custom"] {
+            let messages = sent(&Settings {
+                prefix: prefix.into(),
+                ..steamlink()
+            });
+            assert_eq!(messages[9].0, "/avatar/parameters/LeftEyeX");
+            assert_eq!(messages[20].0, "/avatar/parameters/LeftEyeWidenToggle");
+        }
+        let etvr = Settings {
+            output: OutputKind::Etvr,
+            ..steamlink()
+        };
+        assert_eq!(sent(&etvr), sent(&Settings { output: OutputKind::Etvr, ..settings() }));
+    }
+
+    #[test]
+    fn steamlink_names_go_out_with_each_sample() {
+        // A real socket: one datagram per message, the Steam Link names among them
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
+        output.refresh();
+        for (addr, arg) in osc_messages(&steamlink(), &sample()) {
+            output.send(addr, vec![arg]).unwrap();
+        }
+        let mut buffer = [0u8; 256];
+        let mut received = Vec::new();
+        while let Ok(size) = listener.recv(&mut buffer) {
+            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
+            let OscPacket::Message(message) = packet else { panic!("not a message") };
+            received.push((message.addr, message.args));
+            if received.len() == 21 {
+                break;
+            }
+        }
+        assert_eq!(received.len(), 21);
+        assert!(received.contains(&("/avatar/parameters/RightEyeY".into(), vec![OscType::Float(-0.4)])));
+        assert!(received.contains(&("/avatar/parameters/LeftEyeSqueezeToggle".into(), vec![OscType::Int(0)])));
     }
 
     #[test]

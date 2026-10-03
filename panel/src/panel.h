@@ -320,7 +320,7 @@ private:
     double drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& view, double y);
 
     /**
-     * The Output tab: the target PC and port, then the VRChat-only rows (parameter prefix, EyeTrackingActive type),
+     * The Output tab: the target PC and port, then the VRChat-only rows (parameter prefix, EyeTrackingActive type, Steam Link's names),
      * or what to set up in VRCFT for LiveLink and ETVR.
      * @param pen drawing tools
      * @param t texts

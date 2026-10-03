@@ -96,6 +96,9 @@ pub struct Settings {
     /// Without a trailing slash; empty for no prefix.
     pub prefix: String,
     pub eye_tracking_active: ActiveType,
+    /// With the VRChat output, also send the avatar parameters Steam Link's own OSC sends (LeftEyeX, RightEyeLid,
+    /// ...), without the prefix. Ignored by the other outputs.
+    pub steamlink_params: bool,
     /// How easily a fitted eye widens.
     pub lid_widen: Widen,
     /// The settings file has no `lid_widen` (written by 0.5.x or earlier, whose lid_scale_* did nothing for fitted
@@ -174,6 +177,7 @@ impl Default for Settings {
             port: None,
             prefix: "/FT".into(),
             eye_tracking_active: ActiveType::Bool,
+            steamlink_params: false,
             lid_widen: Widen::Normal,
             scales_predate_fit: false,
             raw: false,
@@ -478,7 +482,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
             }
         )*};
     }
-    pin!(output, eye_tracking_active, lid_widen);
+    pin!(output, eye_tracking_active, steamlink_params, lid_widen);
     // Given on the command line: this is 0.6.0 or later, whatever the file says
     if given.contains("lid_widen") {
         settings.scales_predate_fit = false;
@@ -758,6 +762,16 @@ mod tests {
         assert!(merged(r#"{"eye_tracking_active": "int"}"#, &[]).is_err());
         let (settings, locked) = merged(r#"{"eye_tracking_active": "off"}"#, &["--eye-tracking-active", "float"]).unwrap();
         assert_eq!((settings.eye_tracking_active, locked), (ActiveType::Float, vec!["eye_tracking_active"]));
+    }
+
+    #[test]
+    fn steamlink_params_come_from_the_file_or_the_command_line() {
+        assert!(!merged("{}", &[]).unwrap().0.steamlink_params);
+        assert!(merged(r#"{"steamlink_params": true}"#, &[]).unwrap().0.steamlink_params);
+        assert!(merged(r#"{"steamlink_params": "yes"}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"steamlink_params": false}"#, &["--steamlink-params"]).unwrap();
+        assert!(settings.steamlink_params);
+        assert_eq!(locked, ["steamlink_params"]);
     }
 
     #[test]

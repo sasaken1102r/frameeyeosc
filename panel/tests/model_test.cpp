@@ -363,6 +363,29 @@ void testTrackerRateCause() {
     CHECK(trackerRateCause(s) == TrackerRateCause::None && s.droppedRate == 0);
 }
 
+/** steamlink_params (the Output tab's "Steam Link names" toggle): off by default, read from config.json, and
+ *  frameeyeosc's own value while --steamlink-params locks it. */
+void testSteamlinkParams() {
+    const SettingSpec* spec = findSetting(key::kSteamlinkParams);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 0);
+    PanelModel m;
+    m.config.exists = true;
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(!SettingsView(m).flag(key::kSteamlinkParams));
+    // A new config.json has it, off
+    CHECK(spec != nullptr && defaultValue(*spec).isBool() && !defaultValue(*spec).boolean);
+    m.config.root.set(key::kSteamlinkParams, JsonValue::makeBool(true));
+    CHECK(SettingsView(m).flag(key::kSteamlinkParams) && !SettingsView(m).locked(key::kSteamlinkParams));
+    // Not a bool: the default
+    m.config.root.set(key::kSteamlinkParams, JsonValue::makeString("yes"));
+    CHECK(!SettingsView(m).flag(key::kSteamlinkParams));
+    // Locked by frameeyeosc's command line: its value, whatever the file says
+    m.config.root.set(key::kSteamlinkParams, JsonValue::makeBool(false));
+    m.status = parseStatus(
+        "{\"pid\": 1, \"locked\": [\"steamlink_params\"], \"effective\": {\"steamlink_params\": true}}", 0, false);
+    CHECK(SettingsView(m).locked(key::kSteamlinkParams) && SettingsView(m).flag(key::kSteamlinkParams));
+}
+
 }  // namespace
 
 /**
@@ -381,6 +404,7 @@ int main() {
     testTrackerRateCause();
     testGazePresets();
     testMigrateGazePresets();
+    testSteamlinkParams();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

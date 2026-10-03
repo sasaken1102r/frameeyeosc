@@ -87,6 +87,9 @@ UiText makeJapanese() {
     t.rowActiveType = "EyeTrackingActive の型";
     t.hintActiveType = "アバターによっては Float が必要";
     t.activeOff = "送らない";
+    t.rowSteamlink = "Steam Link の名前も送る";
+    t.hintSteamlink = "Steam Link 向けのアバター用";
+    t.steamlinkNoPrefix = "（頭はつけない）";
     t.rowTarget = "送り先の PC";
     t.hintTarget = "自動 = Steam Link の相手";
     t.targetAuto = "自動";
@@ -450,6 +453,9 @@ UiText makeEnglish() {
     t.rowActiveType = "EyeTrackingActive type";
     t.hintActiveType = "Some avatars need Float";
     t.activeOff = "Off";
+    t.rowSteamlink = "Steam Link names too";
+    t.hintSteamlink = "For Steam Link avatars";
+    t.steamlinkNoPrefix = " (never prefixed)";
     t.rowTarget = "Target PC";
     t.hintTarget = "Auto = the Steam Link PC";
     t.targetAuto = "Auto";

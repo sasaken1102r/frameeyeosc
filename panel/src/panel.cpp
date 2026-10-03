@@ -1409,6 +1409,19 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
                            {t.activeOff, {PanelAction::SetActiveType, key::kEyeTrackingActive, 2}}},
                           selected, 19, locked);
         }
+        y += kRowH + kRowGap;
+        // ...and, for avatars made for Steam Link's own OSC, its names too (never with the prefix)
+        {
+            const bool locked = v.locked(key::kSteamlinkParams);
+            drawRowLabel(pen, t, y, kRowH, t.rowSteamlink, t.hintSteamlink, locked);
+            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                          {{t.on, {PanelAction::SetBool, key::kSteamlinkParams, 1}},
+                           {t.off, {PanelAction::SetBool, key::kSteamlinkParams, 0}}},
+                          v.flag(key::kSteamlinkParams) ? 0 : 1, 20, locked);
+            const std::string example = std::string(t.prefixExample) + "/avatar/parameters/LeftEyeX" + t.steamlinkNoPrefix;
+            pen.text(kControlX + 4, y + kRowH + 16, example, fitSize(pen, example, 15, 11, kControlW, false),
+                     kTextMuted);
+        }
         return;
     }
 

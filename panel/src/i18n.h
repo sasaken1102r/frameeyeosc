@@ -91,6 +91,9 @@ struct UiText {
     const char* rowActiveType;      ///< how EyeTrackingActive is sent
     const char* hintActiveType;
     const char* activeOff;
+    const char* rowSteamlink;       ///< also send the avatar parameters Steam Link's own OSC sends
+    const char* hintSteamlink;
+    const char* steamlinkNoPrefix;  ///< after its example address: the prefix is never added
     const char* rowTarget;
     const char* hintTarget;
     const char* targetAuto;

@@ -335,6 +335,8 @@ gh release create v0.4.0 --title v0.4.0 --notes-file notes.md
 gh release upload v0.4.0 dist/frameeyeosc-0.4.0-steamframe-aarch64.tar.gz dist/SHA256SUMS
 ```
 
+リリースのたびに、パネルに出す短い日本語の更新履歴 `CHANGELOG.ja.md` にもその版の節を足します。見出しは `CHANGELOG.md` と同じにし、要約は `CHANGELOG.md` の `日本語:` の段落と同じにして、そのあとに変更点をやさしい言葉で並べます。
+
 目の処理を実データで調整するときは、アイトラッカーの生の値を記録してから再生します（記録中は何も送らないので、サービスと並べて動かせます）。再生すると、今の設定と、同じ設定から 0.4.0 の処理を外したものの指標を並べて出します。設定はいつもどおり `config.json` とオプションから読みます。記録は個人のデータなので、リポジトリに入れないでください。
 
 ```sh

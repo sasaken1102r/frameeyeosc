@@ -335,6 +335,8 @@ gh release create v0.4.0 --title v0.4.0 --notes-file notes.md
 gh release upload v0.4.0 dist/frameeyeosc-0.4.0-steamframe-aarch64.tar.gz dist/SHA256SUMS
 ```
 
+Each release also adds its section to `CHANGELOG.ja.md`, the short Japanese changelog the panel shows: the same heading as in `CHANGELOG.md`, the `日本語:` paragraph as its summary, then the changes in plain words.
+
 To tune the eye processing against real data, record the eye tracker's raw samples (nothing is sent while recording, so it can run next to the service), then replay the file. The replay prints a few numbers for the current settings next to the same settings with the 0.4.0 steps turned off; settings come from `config.json` and options as usual. Recordings are personal data, so keep them out of the repository.
 
 ```sh

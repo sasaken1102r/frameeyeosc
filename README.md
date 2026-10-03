@@ -75,7 +75,7 @@ To remove it: `./install.sh --uninstall` (removes the panel too; add `--purge` t
 
 #### Updating from the panel (0.4.0 and later)
 
-From 0.4.0 on, the panel's "Update" button does the update. The panel's Advanced page shows the installed version. At start and then at most once a day, the panel asks GitHub whether a newer release exists. That holds while checks succeed: after a failed check it tries again an hour later. "Check now" asks right away. When a newer release exists, "Update" downloads it, checks it against the release's `SHA256SUMS`, and runs its `install.sh` with the options of your last install (kept in `~/.config/frameeyeosc/install-args`). frameeyeosc and the panel restart on the new version. If anything fails before `install.sh` runs, nothing changes; the log is in `~/.cache/frameeyeosc/update.log`. Turn "Check for updates" off to stop the daily check (the "Check now" button still works). The update itself only runs when you press the button.
+From 0.4.0 on, the panel's "Update" button does the update. The panel's Advanced page shows the installed version. At start and then at most once a day, the panel asks GitHub whether a newer release exists. That holds while checks succeed: after a failed check it tries again an hour later. "Check now" asks right away. When a newer release exists, the Advanced page shows its summary under the version row (in Japanese on a Japanese panel when the release has one), and "Update" downloads it, checks it against the release's `SHA256SUMS`, and runs its `install.sh` with the options of your last install (kept in `~/.config/frameeyeosc/install-args`). frameeyeosc and the panel restart on the new version. If anything fails before `install.sh` runs, nothing changes; the log is in `~/.cache/frameeyeosc/update.log`. Turn "Check for updates" off to stop the daily check (the "Check now" button still works). The update itself only runs when you press the button.
 
 `SHA256SUMS` is a checksum file from the same release, not a signature. It catches a corrupted or incomplete download. It can't catch a release that was replaced on GitHub, because the checksum would be replaced along with it.
 
@@ -328,7 +328,7 @@ scripts/package.sh   # builds dist/frameeyeosc-<version>-steamframe-aarch64.tar.
 
 `vendor/frame-updater/` is a copy of the update checker shared by my Steam Frame apps. Don't edit it here: `scripts/package.sh` stops if it differs from what the copy's `MANIFEST.sha256` records.
 
-To publish a release, attach both files. The panel's "Update" button refuses releases without `SHA256SUMS` and asks for a manual update instead:
+To publish a release, attach both files. The panel's "Update" button refuses releases without `SHA256SUMS` and asks for a manual update instead. The release notes are the version's section of `CHANGELOG.md` (without its heading): it starts with a one-paragraph English summary, then a paragraph starting with `日本語: ` with the Japanese summary, then the list. A panel running an older version (0.7.1 or later) shows the summary while that release is available, the Japanese one on a Japanese panel, without markdown and cut at 300 characters:
 
 ```sh
 gh release create v0.4.0 --title v0.4.0 --notes-file notes.md

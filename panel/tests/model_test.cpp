@@ -328,6 +328,41 @@ void testDominantEyeAndSaturation() {
     CHECK(parseStatus("{\"pid\": 1, \"dominant_eye\": \"both\"}", 0, false).dominantEye.empty());
 }
 
+/** status.json's missed_rate, max_processing_ms and dropped_rate, and who was slow while the eye data rate is low. */
+void testTrackerRateCause() {
+    const auto status = [](const std::string& fields) {
+        EyeStatus s = parseStatus("{\"pid\": 1, \"time\": 0, \"tracking\": true, " + fields + "}", 0, false);
+        return s;
+    };
+    EyeStatus s = status("\"tracker_rate\": 46, \"missed_rate\": 44, \"max_processing_ms\": 15.2, \"dropped_rate\": 3");
+    CHECK(s.running && s.trackerRate == 46 && s.missedRate == 44 && s.maxProcessingMs == 15.2 && s.droppedRate == 3);
+    // Missed samples that would have made the rate high enough: frameeyeosc was slow
+    CHECK(trackerRateCause(s) == TrackerRateCause::Here);
+    // So is one sample taking longer than a rate of 60 a second leaves for it
+    s = status("\"tracker_rate\": 46, \"missed_rate\": 0, \"max_processing_ms\": 17, \"dropped_rate\": 0");
+    CHECK(trackerRateCause(s) == TrackerRateCause::Here);
+    // Nothing missed and quick: the eye tracker itself delivered few
+    s = status("\"tracker_rate\": 15, \"missed_rate\": 0, \"max_processing_ms\": 1.4, \"dropped_rate\": 120");
+    CHECK(trackerRateCause(s) == TrackerRateCause::Tracker);
+    s = status("\"tracker_rate\": 46, \"missed_rate\": 3, \"max_processing_ms\": 12, \"dropped_rate\": 0");
+    CHECK(trackerRateCause(s) == TrackerRateCause::Tracker);
+    // Not low, not tracking, or not running: nothing to say
+    s = status("\"tracker_rate\": 89, \"missed_rate\": 0, \"max_processing_ms\": 30, \"dropped_rate\": 0");
+    CHECK(trackerRateCause(s) == TrackerRateCause::None);
+    s.trackerRate = 15;
+    s.tracking = false;
+    CHECK(trackerRateCause(s) == TrackerRateCause::None);
+    s.tracking = true;
+    s.running = false;
+    CHECK(trackerRateCause(s) == TrackerRateCause::None);
+    // From a frameeyeosc before these numbers (or before a second of tracking): can't be told
+    s = status("\"tracker_rate\": 15");
+    CHECK(std::isnan(s.missedRate) && std::isnan(s.maxProcessingMs) && std::isnan(s.droppedRate));
+    CHECK(trackerRateCause(s) == TrackerRateCause::None);
+    s = status("\"tracker_rate\": 15, \"missed_rate\": null, \"max_processing_ms\": null, \"dropped_rate\": 0");
+    CHECK(trackerRateCause(s) == TrackerRateCause::None && s.droppedRate == 0);
+}
+
 }  // namespace
 
 /**
@@ -343,6 +378,7 @@ int main() {
     testMigrateLidScales();
     testSourceError();
     testDominantEyeAndSaturation();
+    testTrackerRateCause();
     testGazePresets();
     testMigrateGazePresets();
     if (gFailures == 0) std::printf("model-test: all passed\n");

@@ -31,6 +31,8 @@ UiText makeJapanese() {
     t.rateFormat = "毎秒 %.0f 回";
     t.trackerRateLabel = "目のデータ";
     t.trackerRateLowHint = "少なめ";
+    t.trackerRateSlowHere = "本体の処理が追いついていません";
+    t.trackerRateSlowTracker = "Frame から届く数が少なめです";
     t.lidsTitle = "まぶた";
     t.legendRaw = "生の値";
     t.legendSent = "送った値";
@@ -392,6 +394,8 @@ UiText makeEnglish() {
     t.rateFormat = "%.0f /s";
     t.trackerRateLabel = "Eye data";
     t.trackerRateLowHint = "low";
+    t.trackerRateSlowHere = "frameeyeosc can't keep up";
+    t.trackerRateSlowTracker = "The Frame itself sends few";
     t.lidsTitle = "Eyelids";
     t.legendRaw = "Raw";
     t.legendSent = "Sent";

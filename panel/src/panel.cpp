@@ -40,7 +40,6 @@ constexpr double kControlX = kInnerX + kLabelW + 14;
 constexpr double kControlW = kInnerRight - kControlX;
 constexpr double kRowTop = 116;
 /** Below this many samples a second from the eye tracker, the left column marks the rate as low. */
-constexpr double kLowTrackerRate = 60;
 constexpr double kRowH = 64;
 constexpr double kRowGap = 2;
 constexpr double kCaptionRowH = 84;
@@ -896,7 +895,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         std::snprintf(rate, sizeof(rate), t.rateFormat, s.rate);
         pen.text(x1, 228, s.running ? std::string(rate) : std::string("—"), 17, kText, true, true);
     }
-    // How fast the eye tracker delivers samples, sent or not: it has been seen at 15 a second instead of 90+
+    // How fast the eye tracker delivers samples, sent or not: it has been seen at 15 and 46 a second instead of 90+
     pen.text(x0, 250, t.trackerRateLabel, 15, kTextMuted, true);
     {
         const bool known = s.running && s.tracking && std::isfinite(s.trackerRate);
@@ -907,29 +906,37 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
                                        : std::string("—");
         pen.text(x1, 250, text, 17, low ? kDanger : kText, true, true);
     }
+    // While it is low, a line under it says who was slow: frameeyeosc or the eye tracker. The eyelids make room for it
+    // (they move down into the space above the gaze)
+    const TrackerRateCause cause = trackerRateCause(s);
+    const double dy = cause == TrackerRateCause::None ? 0 : 14;
+    if (cause != TrackerRateCause::None) {
+        const char* line = cause == TrackerRateCause::Here ? t.trackerRateSlowHere : t.trackerRateSlowTracker;
+        pen.text(x1, 269, line, fitSize(pen, line, 14, 11, x1 - x0, false), kTextMuted, false, true);
+    }
     pen.color(kDivider);
     cairo_set_line_width(cr, 1);
-    cairo_move_to(cr, x0, 262.5);
-    cairo_line_to(cr, x1, 262.5);
+    cairo_move_to(cr, x0, 262.5 + dy);
+    cairo_line_to(cr, x1, 262.5 + dy);
     cairo_stroke(cr);
 
     // Eyelids: a thin gray bar for the raw value, a thick accent bar for the sent value
     const bool live = s.running && s.tracking;
-    pen.text(x0, 282, t.lidsTitle, 15, kTextMuted, true);
+    pen.text(x0, 282 + dy, t.lidsTitle, 15, kTextMuted, true);
     {
         const double sentW = pen.measure(t.legendSent, 14, false);
         const double rawW = pen.measure(t.legendRaw, 14, false);
         double lx = x1 - sentW;
-        pen.text(lx, 282, t.legendSent, 14, kText);
+        pen.text(lx, 282 + dy, t.legendSent, 14, kText);
         lx -= 26;
-        fillRounded(pen, lx, 272, 20, 10, 3, kAccent);
+        fillRounded(pen, lx, 272 + dy, 20, 10, 3, kAccent);
         lx -= 18 + rawW;
-        pen.text(lx, 282, t.legendRaw, 14, kText);
+        pen.text(lx, 282 + dy, t.legendRaw, 14, kText);
         lx -= 26;
-        fillRounded(pen, lx, 274, 20, 6, 2, kTextMuted);
+        fillRounded(pen, lx, 274 + dy, 20, 6, 2, kTextMuted);
     }
     for (int eye = 0; eye < 2; ++eye) {
-        const double top = 296 + eye * 48;
+        const double top = 296 + dy + eye * 48;
         pen.text(x0, top + 26, eye == 0 ? t.left : t.right, 18, kText, true);
         const double barX = x0 + 30;
         const double barW = x1 - 58 - barX;

@@ -1,7 +1,7 @@
 // Tests for the panel's shared rules (model.cpp): what an eye fit writes and what "Reset" clears, which re-wear fit
-// auto_recenter asks for, the output types behind the destination cards, the gaze presets and their migration, and
-// status.json's source_error, dominant_eye and openness_saturated. Built with the panel as model-test; exits non-zero
-// on failure.
+// auto_recenter asks for, the output types behind the destination cards, the gaze presets and their migration,
+// status.json's source_error, dominant_eye and openness_saturated, and which summary of a new release is shown. Built
+// with the panel as model-test; exits non-zero on failure.
 #include "model.h"
 
 #include <algorithm>
@@ -328,6 +328,113 @@ void testDominantEyeAndSaturation() {
     CHECK(parseStatus("{\"pid\": 1, \"dominant_eye\": \"both\"}", 0, false).dominantEye.empty());
 }
 
+/** status.json's missed_rate, max_processing_ms and dropped_rate, and who was slow while the eye data rate is low. */
+void testTrackerRateCause() {
+    const auto status = [](const std::string& fields) {
+        EyeStatus s = parseStatus("{\"pid\": 1, \"time\": 0, \"tracking\": true, " + fields + "}", 0, false);
+        return s;
+    };
+    EyeStatus s = status("\"tracker_rate\": 46, \"missed_rate\": 44, \"max_processing_ms\": 15.2, \"dropped_rate\": 3");
+    CHECK(s.running && s.trackerRate == 46 && s.missedRate == 44 && s.maxProcessingMs == 15.2 && s.droppedRate == 3);
+    // Missed samples that would have made the rate high enough: frameeyeosc was slow
+    CHECK(trackerRateCause(s) == TrackerRateCause::Here);
+    // So is one sample taking longer than a rate of 60 a second leaves for it
+    s = status("\"tracker_rate\": 46, \"missed_rate\": 0, \"max_processing_ms\": 17, \"dropped_rate\": 0");
+    CHECK(trackerRateCause(s) == TrackerRateCause::Here);
+    // Nothing missed and quick: the eye tracker itself delivered few
+    s = status("\"tracker_rate\": 15, \"missed_rate\": 0, \"max_processing_ms\": 1.4, \"dropped_rate\": 120");
+    CHECK(trackerRateCause(s) == TrackerRateCause::Tracker);
+    s = status("\"tracker_rate\": 46, \"missed_rate\": 3, \"max_processing_ms\": 12, \"dropped_rate\": 0");
+    CHECK(trackerRateCause(s) == TrackerRateCause::Tracker);
+    // Not low, not tracking, or not running: nothing to say
+    s = status("\"tracker_rate\": 89, \"missed_rate\": 0, \"max_processing_ms\": 30, \"dropped_rate\": 0");
+    CHECK(trackerRateCause(s) == TrackerRateCause::None);
+    s.trackerRate = 15;
+    s.tracking = false;
+    CHECK(trackerRateCause(s) == TrackerRateCause::None);
+    s.tracking = true;
+    s.running = false;
+    CHECK(trackerRateCause(s) == TrackerRateCause::None);
+    // From a frameeyeosc before these numbers (or before a second of tracking): can't be told
+    s = status("\"tracker_rate\": 15");
+    CHECK(std::isnan(s.missedRate) && std::isnan(s.maxProcessingMs) && std::isnan(s.droppedRate));
+    CHECK(trackerRateCause(s) == TrackerRateCause::None);
+    s = status("\"tracker_rate\": 15, \"missed_rate\": null, \"max_processing_ms\": null, \"dropped_rate\": 0");
+    CHECK(trackerRateCause(s) == TrackerRateCause::None && s.droppedRate == 0);
+}
+
+/** steamlink_params (the Output tab's "Steam Link names" toggle): off by default, read from config.json, and
+ *  frameeyeosc's own value while --steamlink-params locks it. */
+void testSteamlinkParams() {
+    const SettingSpec* spec = findSetting(key::kSteamlinkParams);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 0);
+    PanelModel m;
+    m.config.exists = true;
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(!SettingsView(m).flag(key::kSteamlinkParams));
+    // A new config.json has it, off
+    CHECK(spec != nullptr && defaultValue(*spec).isBool() && !defaultValue(*spec).boolean);
+    m.config.root.set(key::kSteamlinkParams, JsonValue::makeBool(true));
+    CHECK(SettingsView(m).flag(key::kSteamlinkParams) && !SettingsView(m).locked(key::kSteamlinkParams));
+    // Not a bool: the default
+    m.config.root.set(key::kSteamlinkParams, JsonValue::makeString("yes"));
+    CHECK(!SettingsView(m).flag(key::kSteamlinkParams));
+    // Locked by frameeyeosc's command line: its value, whatever the file says
+    m.config.root.set(key::kSteamlinkParams, JsonValue::makeBool(false));
+    m.status = parseStatus(
+        "{\"pid\": 1, \"locked\": [\"steamlink_params\"], \"effective\": {\"steamlink_params\": true}}", 0, false);
+    CHECK(SettingsView(m).locked(key::kSteamlinkParams) && SettingsView(m).flag(key::kSteamlinkParams));
+}
+
+/** native_eyes (the Output tab's "VRChat's own eye tracking" toggle): off by default, read from config.json, and
+ *  frameeyeosc's own value while --native-eyes locks it. */
+void testNativeEyes() {
+    const SettingSpec* spec = findSetting(key::kNativeEyes);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 0);
+    PanelModel m;
+    m.config.exists = true;
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(!SettingsView(m).flag(key::kNativeEyes));
+    // A new config.json has it, off (so "Reset all" clears it too)
+    CHECK(spec != nullptr && defaultValue(*spec).isBool() && !defaultValue(*spec).boolean);
+    m.config.root.set(key::kNativeEyes, JsonValue::makeBool(true));
+    CHECK(SettingsView(m).flag(key::kNativeEyes) && !SettingsView(m).locked(key::kNativeEyes));
+    // Not a bool: the default
+    m.config.root.set(key::kNativeEyes, JsonValue::makeString("yes"));
+    CHECK(!SettingsView(m).flag(key::kNativeEyes));
+    // Locked by frameeyeosc's command line: its value, whatever the file says
+    m.config.root.set(key::kNativeEyes, JsonValue::makeBool(false));
+    m.status = parseStatus(
+        "{\"pid\": 1, \"locked\": [\"native_eyes\"], \"effective\": {\"native_eyes\": true}}", 0, false);
+    CHECK(SettingsView(m).locked(key::kNativeEyes) && SettingsView(m).flag(key::kNativeEyes));
+}
+
+/** The new release's summary under the update row: Japanese on a Japanese panel when the release has it, else
+ *  English, and nothing unless a newer release is available. */
+void testUpdateNotes() {
+    frame_updater::UpdateStatus u;
+    u.state = frame_updater::UpdateState::Available;
+    u.notes = "Faster eye data.";
+    u.notesJa = "目のデータが速くなる。";
+    CHECK(updateNotes(u, Language::Ja) == "目のデータが速くなる。");
+    CHECK(updateNotes(u, Language::En) == "Faster eye data.");
+    // No Japanese paragraph in the release text: English on both
+    u.notesJa.clear();
+    CHECK(updateNotes(u, Language::Ja) == "Faster eye data.");
+    // No release text at all: nothing
+    u.notes.clear();
+    CHECK(updateNotes(u, Language::Ja).empty() && updateNotes(u, Language::En).empty());
+    // Only while an update is available (not while it installs, or once installed)
+    u.notes = "Faster eye data.";
+    u.notesJa = "目のデータが速くなる。";
+    for (const auto state : {frame_updater::UpdateState::Unknown, frame_updater::UpdateState::UpToDate,
+                             frame_updater::UpdateState::Installing, frame_updater::UpdateState::Installed,
+                             frame_updater::UpdateState::CheckFailed, frame_updater::UpdateState::InstallFailed}) {
+        u.state = state;
+        CHECK(updateNotes(u, Language::Ja).empty() && updateNotes(u, Language::En).empty());
+    }
+}
+
 }  // namespace
 
 /**
@@ -343,8 +450,12 @@ int main() {
     testMigrateLidScales();
     testSourceError();
     testDominantEyeAndSaturation();
+    testTrackerRateCause();
     testGazePresets();
     testMigrateGazePresets();
+    testSteamlinkParams();
+    testNativeEyes();
+    testUpdateNotes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

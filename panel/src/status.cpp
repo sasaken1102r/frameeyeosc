@@ -117,6 +117,9 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
     status.target = readText(root, "target");
     status.rate = readNumber(root, "rate", 0);
     status.trackerRate = readNumber(root, "tracker_rate", NAN);
+    status.missedRate = readNumber(root, "missed_rate", NAN);
+    status.maxProcessingMs = readNumber(root, "max_processing_ms", NAN);
+    status.droppedRate = readNumber(root, "dropped_rate", NAN);
     status.tracking = readBool(root, "tracking");
 
     if (const JsonValue* raw = root.get("raw"); raw != nullptr && raw->isObject()) {
@@ -202,6 +205,17 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
     if (checkPid) alive = status.pid > 0 && (::kill(status.pid, 0) == 0 || errno == EPERM);
     status.running = fresh && alive;
     return status;
+}
+
+TrackerRateCause trackerRateCause(const EyeStatus& s) {
+    if (!s.running || !s.tracking || !std::isfinite(s.trackerRate) || s.trackerRate >= kLowTrackerRate) {
+        return TrackerRateCause::None;
+    }
+    if (!std::isfinite(s.missedRate) || !std::isfinite(s.maxProcessingMs)) return TrackerRateCause::None;
+    if (s.trackerRate + s.missedRate >= kLowTrackerRate || s.maxProcessingMs >= 1000 / kLowTrackerRate) {
+        return TrackerRateCause::Here;
+    }
+    return TrackerRateCause::Tracker;
 }
 
 EyeStatus readStatus(const std::string& path, double now) {

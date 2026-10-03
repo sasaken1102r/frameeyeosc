@@ -23,7 +23,7 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 
 - 開発者モードを有効にして SSH で入れる Steam Frame（設定 → システム → 開発者モードを有効化、開発者の項目でパスワードを設定）。SSH を有効にすると、同じネットワークにいてパスワードを知っている人は誰でもヘッドセットに入れるので、推測されにくいパスワードにしてください
 - Steam Link でストリーミングしている PC 版 VRChat（Action Menu → Options → OSC → Enabled）
-- VRCFaceTracking の目のパラメータ（`FT/v2/EyeLeftX`、`EyeLidLeft` など）を float で持つアバター。VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」のアバターには対応していません。`EyeTrackingActive` は bool で送ります。これを float で持つアバターは bool が届くと止まるので、送り方タブの「EyeTrackingActive の型」で［Float］を選んでください（`eye_tracking_active`）。［送らない］にすると送りません
+- VRCFaceTracking の目のパラメータ（`FT/v2/EyeLeftX`、`EyeLidLeft` など）を float で持つアバター。VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」のアバターには対応していません。`EyeTrackingActive` は bool で送ります。これを float で持つアバターは bool が届くと止まるので、送り方タブの「EyeTrackingActive の型」で［Float］を選んでください（`eye_tracking_active`）。［送らない］にすると送りません。SteamVR の Steam Link が自分で送る OSC（`LeftEyeX`、`RightEyeLid` など）に合わせて作ったアバターも、送り方タブの「Steam Link の名前も送る」をオンにすれば動きます（[Steam Link の OSC 向けのアバター](#steam-link-の-osc-向けのアバター)）。これらのパラメータを持たないアバターは、VRChat 自身のアイトラッキング入力で目を動かせます（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)）
 - VRCFaceTracking（ETVR）モードで使うときは、PC に VRCFaceTracking と ETVR Tracking Module。LiveLink モードなら VRCFaceTracking と LiveLink モジュール
 
 ## インストール
@@ -75,7 +75,7 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.con
 
 #### パネルから更新する（0.4.0 から）
 
-0.4.0 からは、パネルの「更新する」で更新できます。パネルの「詳細」に、入っている版が出ます。パネルは起動時と、その後 1 日 1 回まで、GitHub に新しい版がないか確かめます。1 日 1 回なのは確認がうまくいっている間で、失敗したときは 1 時間後にもう一度確かめます。「今すぐ確かめる」を押すとその場で確かめます。新しい版があれば「更新する」で、ダウンロードしてリリースの `SHA256SUMS` と照らし合わせ、前回と同じオプション（`~/.config/frameeyeosc/install-args` に残っています）でその `install.sh` を実行します。本体とパネルは新しい版で起動し直します。`install.sh` を実行する前に失敗したときは何も変わりません。ログは `~/.cache/frameeyeosc/update.log` です。毎日の確認は「新しい版の確認」をオフにすると止まります（「今すぐ確かめる」は使えます）。更新そのものは、ボタンを押したときにしか行いません。
+0.4.0 からは、パネルの「更新する」で更新できます。パネルの「詳細」に、入っている版が出ます。パネルは起動時と、その後 1 日 1 回まで、GitHub に新しい版がないか確かめます。1 日 1 回なのは確認がうまくいっている間で、失敗したときは 1 時間後にもう一度確かめます。「今すぐ確かめる」を押すとその場で確かめます。新しい版があれば、詳細のバージョンの行の下にその版の要約が出ます（日本語の要約があるリリースなら、日本語の画面ではそちら）。「更新する」で、ダウンロードしてリリースの `SHA256SUMS` と照らし合わせ、前回と同じオプション（`~/.config/frameeyeosc/install-args` に残っています）でその `install.sh` を実行します。本体とパネルは新しい版で起動し直します。`install.sh` を実行する前に失敗したときは何も変わりません。ログは `~/.cache/frameeyeosc/update.log` です。毎日の確認は「新しい版の確認」をオフにすると止まります（「今すぐ確かめる」は使えます）。更新そのものは、ボタンを押したときにしか行いません。
 
 `SHA256SUMS` は同じリリースに付いているチェックサムで、署名ではありません。ダウンロードが壊れていたり途中で切れていたりするのは見つけられますが、GitHub 上でリリースごと差し替えられたものは見つけられません（チェックサムも一緒に差し替わるため）。
 
@@ -91,9 +91,9 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.con
 | **まぶた** | **詳細** |
 | ![まぶたのタブ](docs/images/panel-lids-ja_2026-10-01_02-00-00.png) | ![詳細のタブ](docs/images/panel-advanced-ja_2026-10-01_02-00-00.png) |
 
-- 左の列には、いつでも今の状態が出ます: 送信中か止めているか、送り先、毎秒の送信回数、目のデータが毎秒何回来ているか（60 未満は赤で「少なめ」）、左右のまぶたと視線（生の値と送った値）、設定のエラー。「Track Dominant Eye Only」の設定がオンのあいだは、視線の見出しの行に、Frame がどちらの目で追っているかが出ます（「Frame の設定: 右目だけで追っています」）
+- 左の列には、いつでも今の状態が出ます: 送信中か止めているか、送り先、毎秒の送信回数、目のデータが毎秒何回来ているか（60 未満は赤で「少なめ」。その下に、遅いのが本体か Frame か）、左右のまぶたと視線（生の値と送った値）、設定のエラー。「Track Dominant Eye Only」の設定がオンのあいだは、視線の見出しの行に、Frame がどちらの目で追っているかが出ます（「Frame の設定: 右目だけで追っています」）
 - 基本: 送信の一時停止、送り先（3 枚のカード: VRChat に直接・VRCFT（LiveLink、おすすめ）・VRCFT（ETVR）。それぞれ見開きが届くか、ほかの人からの見え方、VRCFaceTracking が要るかを表示）、言語（日本語 / English）、SteamVR と一緒に起動、すべて既定に戻す、アプリを終了
-- 送り方: 送り先の PC（自動、今送っている PC で固定、または入力。下を参照）とポート。VRChat に直接のときはパラメーター名の頭と EyeTrackingActive の型、LiveLink と ETVR のときは PC の VRCFaceTracking で準備すること
+- 送り方: 送り先の PC（自動、今送っている PC で固定、または入力。下を参照）とポート。VRChat に直接のときはパラメーター名の頭、EyeTrackingActive の型、Steam Link の名前も送るか、VRChat 標準の目も動かすか、LiveLink と ETVR のときは PC の VRCFaceTracking で準備すること
 - 視線: スムージングのオン / オフ、なめらかさの弱 / 中 / 強と 3 つの値、見つめている時の遊び、まばたき中は視線を止める、左右の目を別々に動かす、不確かな視線を使わない、一瞬の途切れを消す
 - 目を合わせる: ボタン 1 つで視線とまぶたを約 20 秒で合わせる（[目を合わせる](#目を合わせる) を参照）、正面の合わせ直し、被ったときに自動で合わせ直すもの（「被ったとき」: 何もしない・正面だけ・正面と傾き）、結果と［元に戻す］、「細かく直す」の中で値を手で直す
 - まぶた: 自動キャリブレーションと覚えた値、左右の倍率、左右の今の開き具合の上に重ねた 4 つの目盛り（目を閉じたり見開いたりしながら合わせる）、左右をそろえる強さ、まばたきを届ける（閉じたまま保つ時間・両目で閉じる）、まぶたのなめらかさ。目を合わせたあとは、自動キャリブレーションの代わりに「見開きやすさ」（しない / 控えめ / ふつう / 出やすい）が出て、片目がもう片方に合わせて見開くときはその 1 行も出ます。目盛りは「細かく直す」の中にたたみます（③④は目を合わせていない目のためのものなので灰色）。ふつうに開いた目がもう 1.0 と読まれる SteamOS（0.4.3）では、その 1 行が「見開きは届きません」になります（[うまく動かないとき](#うまく動かないとき) を参照）
@@ -121,6 +121,8 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.con
 | `port` | `--port`、`--target` | `null` | `null` は `vrchat` なら 9000、`etvr` なら 8889、`livelink` なら 11111 |
 | `prefix` | `--prefix` | `"/FT"` | パラメータ名の頭。`""` で頭なし |
 | `eye_tracking_active` | `--eye-tracking-active` | `"bool"` | VRChat モードで `EyeTrackingActive` をどう送るか: `"bool"`（true / false）、`"float"`（1.0 / 0.0。アバターによってはこちらが必要）、`"off"`（送らない。止めたときや目を見失ったときの 1 回の「無効」も送らない）。ETVR モードと LiveLink モードではもともと送らない |
+| `steamlink_params` | `--steamlink-params` | `false` | VRChat モードで、SteamVR の Steam Link が自分の OSC で送るアバターのパラメータ（`LeftEyeX`、`RightEyeLid` など）も送る。それに合わせて作ったアバター用（[Steam Link の OSC 向けのアバター](#steam-link-の-osc-向けのアバター)）。頭（`prefix`）は付けない。ETVR モードと LiveLink モードでは使わない |
+| `native_eyes` | `--native-eyes` | `false` | VRChat モードで、VRChat 自身のアイトラッキング入力（`/tracking/eye/*`）も送る。VRCFT のパラメータを持たないアバターの目が動く（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)）。送り方タブにスイッチがある |
 | `raw` | `--raw` | `false` | スムージングしない。時間を使う処理（途切れ消し、視線を止める、品質チェック、閉じたまま保つ、真下で左右を止める）もしない |
 | `gaze_min_cutoff` | `--gaze-min-cutoff` | `0.3` | 下げるほど止まっている時の視線が安定（その分遅れる） |
 | `gaze_beta` | `--gaze-beta` | `1.5` | 上げるほど素早い視線の動きに遅れず付いていき、動いたあと早く落ち着く |
@@ -160,9 +162,51 @@ FRAMEEYEOSC_ARGS="--gaze-min-cutoff 0.3 --lid-sync 0.6"
 
 ここで指定した項目はファイルからは変えられず、パネルでは「コマンドで固定中」と出ます。すべてのオプション（別の設定ファイルを使う `--config` など）は `~/.local/bin/frameeyeosc --help` で確認できます。
 
+## VRChat のアイトラッキング入力
+
+`"native_eyes": true`（または `--native-eyes`）にすると、VRChat モードのとき、VRCFT のパラメータに加えて VRChat 自身のアイトラッキング入力も送ります。動くのはアバターの Avatar Descriptor の Eye Look に設定した目とまぶたなので、VRCFT のパラメータを持たないアバターでも、アニメーターに何も足さずに目が動きます。Eye Look を設定済みのアバターなら、アップロードし直す必要もありません。既定ではオフです。送り方タブの「VRChat 標準の目も動かす」で切り替えられます（送り先が「VRChat」のとき）。
+
+- `/tracking/eye/CenterVec`: 送っている視線（なめらかにして、合わせたあとのもの）を向きにしたもの。`independent_eyes` のときは `/tracking/eye/LeftRightVec`
+- `/tracking/eye/EyesClosedAmount`: 送っている左右のまぶたを平均した 1 つの値（0 で開く、1 で閉じる）。VRChat が受け取るのは両目で 1 つの値だけで、見開きはありません。ウインクは両目が半分閉じ、見開きはただ開いた目になります。これらを伝えたいときは VRCFT のパラメータを持つアバターを使ってください
+
+VRCFT 向けに作られたアバターでどうなるかは、そのアバターのアニメーター（Tracking Control の Eyes & Eyelids）しだいです。たいていは `EyeTrackingActive` が true のあいだ目がアニメーションに渡され、VRCFT のパラメータに従ったままです。ただ、Eye Look の Eyelids も設定してあるアバターでは、まぶたが 2 倍閉じることがあります。そのアバターでは `native_eyes` をオフにしてください（送り方タブの同じスイッチです）。
+
+これをオンにするときは、SteamVR 自身の Steam Link の OSC はオフのままにしてください。同じ `/tracking/eye/*` に送るので、2 つがぶつかります。
+
+目を見失ったとき、送信を止めたとき、送り先を変えたときは、普通に開いて正面を見ている目を 1 回送ります。この入力には「無効」がなく、VRChat は自分のタイムアウトのあとで目を自動の動きに戻します。
+
+frameeyeosc がこれを送るのは VRChat モードのときだけです。ETVR モードと LiveLink モードでは要りません。VRCFT の目のパラメータを持たないアバターには、VRCFaceTracking 自身が VRChat のアイトラッキング入力を送ります。
+
+アバター側は、Unity で Eye Look を設定しておく必要があります（VRC Avatar Descriptor → Eye Look で［Enable］を押す）。視線は動くのにまばたきをしないときは、たいてい Eyelids が設定されていません:
+
+- Eyes: 「Transforms」に左右の目のボーン。「Rotation States」に、Looking Straight / Up / Down / Left / Right で目がどこまで回るか（プレビューで確かめられます）
+- Eyelids: 「Eyelid Type」を Blendshapes に（まぶたをボーンで動かすアバターは Bones）、「Eyelids Mesh」に顔のメッシュ、「Blink」に目を閉じるブレンドシェイプ（`vrc.blink`、`blink`、`Eye_Close` などの名前が多い）
+
+ここを変えたら、アバターをアップロードし直してください。
+
 ## 状態ファイル
 
-frameeyeosc は 1 秒に 10 回、今の様子を `$XDG_RUNTIME_DIR/frameeyeosc/status.json`（ふつうは `/run/user/1000/frameeyeosc/status.json`）に書きます。中身は、送信中か、送り先、毎秒の送信回数、目のトラッカーから毎秒届くサンプルの数（`tracker_rate`）、最新の生の値と送った値、キャリブレーション、今効いている設定、コマンドで固定中の項目、設定のエラー、目のデータを読めないときはその理由（`source_error`）、「Track Dominant Eye Only」の設定がオンのあいだ Frame が追っている目（`dominant_eye`: `"left"` か `"right"`。オフなら `null`）、ふつうに開いた目が 1.0 と読まれて見開きが届かないかどうか（`openness_saturated`）、最後の目合わせの測定です。パネルはこれを読んで表示します。フォルダは本人しか読めず、メモリの上にあって再起動すると消えます。残るのは最新の値だけです。
+frameeyeosc は 1 秒に 10 回、今の様子を `$XDG_RUNTIME_DIR/frameeyeosc/status.json`（ふつうは `/run/user/1000/frameeyeosc/status.json`）に書きます。中身は、送信中か、送り先、毎秒の送信回数、目のトラッカーから毎秒届くサンプルの数（`tracker_rate`）、frameeyeosc がそれに追いついているか（`missed_rate`: 直近 1 秒に目のトラッカーが出したのに読めなかった数、`max_processing_ms`: 直近 1 秒でサンプル 1 つにいちばん長くかかった時間、`dropped_rate`: 直近 1 秒にネットワークが混んでいて捨てた送信の数）、最新の生の値と送った値、キャリブレーション、今効いている設定、コマンドで固定中の項目、設定のエラー、目のデータを読めないときはその理由（`source_error`）、「Track Dominant Eye Only」の設定がオンのあいだ Frame が追っている目（`dominant_eye`: `"left"` か `"right"`。オフなら `null`）、ふつうに開いた目が 1.0 と読まれて見開きが届かないかどうか（`openness_saturated`）、最後の目合わせの測定です。パネルはこれを読んで表示します。フォルダは本人しか読めず、メモリの上にあって再起動すると消えます。残るのは最新の値だけです。
+
+## Steam Link の OSC 向けのアバター
+
+SteamVR の Steam Link（SteamVR 2.18）は、Frame の視線とまぶたを自分でも VRChat に送っています。名前は VRCFaceTracking のものと違い、たとえば `FT/v2/EyeLeftX` ではなく `LeftEyeX` です。こちらに合わせて作ったアバターは、frameeyeosc の VRCFaceTracking の名前では動きません。送り方タブの「Steam Link の名前も送る」をオン（`"steamlink_params": true` または `--steamlink-params`）にすると、frameeyeosc がこの名前でも送ります。VRCFaceTracking の名前のあとに、毎回いっしょに送ります。アバターにないパラメータは VRChat が無視するので、もう片方を送っても困りません。送り先が「VRChat」のときだけです。
+
+中身は frameeyeosc の値（なめらかにして、目を合わせた結果やまばたきの保持なども入ったもの）で、SteamVR 2.18.2 で測った Steam Link の決まりに合わせています。
+
+| パラメータ | 型 | 値 |
+|---|---|---|
+| `LeftEyeX`、`RightEyeX` | float | 視線の左右。1 = 右に 45°（`EyeLeftX` と同じ） |
+| `LeftEyeY`、`RightEyeY` | float | 視線の上下。1 = 45°、**下がプラス**（Steam Link が送るとおりで、`EyeLeftY` とは逆） |
+| `LeftEyeLid`、`RightEyeLid` | float | 目がどれだけ閉じているか。0 開いている（普通に開いた目と見開き）、1 閉じている（`EyeLidLeft` とは向きが逆） |
+| `LeftEyeLidExpandedSqueeze`、`RightEyeLidExpandedSqueeze` | float | 半分より閉じているあいだ 0.0、ほかは 0.8 |
+| `LeftEyeSqueezeToggle`、`RightEyeSqueezeToggle` | int | 半分より閉じているあいだ 1、ほかは 0 |
+| `LeftEyeWidenToggle`、`RightEyeWidenToggle` | int | いつも 1（Steam Link が送るとおり） |
+
+- 視線は左右の目で同じもの、「左右の目を別々に動かす」がオンならそれぞれの目のものです（Steam Link はいつも同じものを送ります）
+- 名前に頭は付けません。`prefix` が何でも、Steam Link と同じ `/avatar/parameters/LeftEyeX` で送ります
+- Steam Link の `/tracking/eye/...` と `/sl/...`（VRChat 自身のアイトラッキング用）は送りません
+- Steam Link の OSC 送信は、インストールのところに書いたとおり OFF のままにしてください。両方が動いていると、同じパラメータを 2 か所から受け取って、アバターの目を取り合ってしまいます
 
 ## VRCFaceTracking（ETVR）モード
 
@@ -201,7 +245,7 @@ frameeyeosc は、VRCFaceTracking の LiveLink モジュールに Live Link Face
 - モジュールは何もなめらかにしないので、frameeyeosc のなめらかさの設定がそのまま効きます
 - 送るのは 1 秒に 50 回まで（いつもいちばん新しい値）です。モジュールは 10〜16 ms に 1 つしか読まないので、目のデータを全部（毎秒 90 回以上）送ると、どんどん遅れていきました
 - VRCFaceTracking は最後に受け取った値を持ち続けます。なので目のデータが止まったとき（ヘッドセットを外したとき）や、送信を止めたとき・送り先の種類を変えたときは、普通に開いて正面を見た目を 1 回送ります。送信中で目のデータがない間は、それを 1 秒に 2 回送り続けます。モジュールは VRCFaceTracking が読み込んでから 180 秒以内に何か届かないと動き出さないためです（あきらめてしまったら VRCFaceTracking でモジュールを読み込み直してください）。一時停止中は何も送りません
-- `prefix` と `eye_tracking_active` は関係ありません。アバターのパラメータは VRCFaceTracking が送ります
+- `prefix`、`eye_tracking_active`、`steamlink_params` は関係ありません。アバターのパラメータは VRCFaceTracking が送ります
 
 ## 目を合わせる
 
@@ -231,13 +275,14 @@ frameeyeosc は、VRCFaceTracking の LiveLink モジュールに Live Link Face
 - ログ: `journalctl --user -u frameeyeosc -f`（パネルは `journalctl --user -u frameeyeosc-panel -f`）
 - `No Steam Link connection found; waiting for one`: Steam Link がまだつながっていません。または送り先の PC を固定してください
 - `Can't send OSC to ... yet (Network is unreachable)` や `Sending OSC to ... failed (...)`: ネットワークがまだつながっていない（起動直後の Wi-Fi など）か、PC に届きません。frameeyeosc は動き続けて送り直し、送れるようになると `... works again` と出ます
-- 目を合わせると最初の点でサンプルが足りずに止まる、または左の列の「目のデータ」が少なめ: 目のトラッカーからのデータがふだんより少ない状態です。そのとき出ていた回数と、PC から Steam Link で送っていたかどうかを知らせてください
+- 左の列の「目のデータ」が少なめ（赤、毎秒 60 未満。90 のはずが 46 や 15 のことがありました）、または目を合わせると最初の点でサンプルが足りずに止まる: 回数の下の行に、どちらが遅いかが出ます。「本体の処理が追いついていません」なら、目のトラッカーが出したサンプルを frameeyeosc が読みそびれたか、1 つに時間がかかりすぎています。「Frame から届く数が少なめです」なら、目のトラッカーから届く数そのものが少なく、frameeyeosc は全部読めています。少なめが 10 秒続くと、数字を 1 行ログに残します（`journalctl --user -u frameeyeosc` に `Eye data has been low for 10 s: …`）。その行と、PC から Steam Link で送っていたかどうかを知らせてください
+- ログに `Dropped … datagrams to … the network was too busy to take them at once`: ネットワーク（Steam Link の映像でいっぱいの Wi-Fi など）が送る速さに追いつかなかったので、その分を捨てました。frameeyeosc は送り終わるのを待たないので、目のデータは止まらずに届きます。この行は 1 分に 1 回までです
 - ログに `Sending OSC to ...` と出ているのにアバターが反応しない: VRChat の OSC が有効かを確認したうえで、Windows のファイアウォールを確認してください。VRChat の受信許可は「パブリック」だけになっていることが多く、「プライベート」の家のネットワークから届く OSC は止められます。許可の対象が `launch.exe` ではなく `VRChat.exe` になっているかにも注意してください。範囲をしぼって許可するには（管理者の PowerShell で）:
   ```powershell
   New-NetFirewallRule -DisplayName "VRChat OSC (LAN UDP 9000)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 9000 -RemoteAddress LocalSubnet -Program "C:\Program Files (x86)\Steam\steamapps\common\VRChat\VRChat.exe" -Profile Private,Public
   ```
   「プライベート」と「パブリック」の両方にしてあるのは、家のネットワークは「プライベート」のことが多い一方で、付属の無線アダプタは Windows では別のネットワークとして見え、たいてい「パブリック」になっているからです
-- SteamOS 0.4.3 で目が見開かず、まぶたタブに「開き具合が 1.0 で頭打ち」と出る: SteamOS 0.4.3 から、Frame はふつうに開いた目を上限の 1.000 と読みます（ある人の左目は、両目を開いているあいだ、それまで中央値 0.754、0.4.3 では 1.000 が 75〜93%）。それより上がないので、見開きを読み取れません。frameeyeosc は版ではなく読んだ値から判断し（両目を開いている直近 1 分で、どちらかの目が 1.000 のサンプルが半分を超える。[状態ファイル](#状態ファイル) の `openness_saturated`）、まぶたタブにそう出します。のちの SteamOS で変われば、表示は自然に消えます。そのあいだはどのまぶたも「普通に開いた」より上では送らないので、目を合わせていない目（1.000 が目盛り④より先になる）がずっと見開いて見えることもありません。まばたきと閉じるのは今までどおりで、「見開きやすさ」の設定も、また見開きが届くようになったときのためにそのまま残ります
+- SteamOS 0.4.3 で目が見開かず、まぶたタブに「開き具合が 1.0 で頭打ち」と出る: SteamOS 0.4.3 から、Frame はふつうに開いた目を上限の 1.000 と読みます（ある人の左目は、両目を開いているあいだ、それまで中央値 0.754、0.4.3 では 1.000 が 75〜93%）。それより上がないので、見開きを読み取れません。frameeyeosc は版ではなく読んだ値から判断し（両目を開いている直近 1 分で、どちらかの目が 1.000 のサンプルが半分を超える。[状態ファイル](#状態ファイル) の `openness_saturated`）、まぶたタブにそう出します。のちの SteamOS で変われば、表示は自然に消えます（アップデートの再起動のあとなど、次に frameeyeosc が起動したときから。見る向きで割合が上下するので、一度そう判断したら frameeyeosc が動いているあいだはそのままです）。そのあいだはどのまぶたも「普通に開いた」より上では送らないので、目を合わせていない目（1.000 が目盛り④より先になる）がずっと見開いて見えることもありません。まばたきと閉じるのは今までどおりで、「見開きやすさ」の設定も、また見開きが届くようになったときのためにそのまま残ります
 - 両目がいつも同じ向きを見る、片目の視線がもう片方の目についていく: 「Track Dominant Eye Only」の設定（VR Settings > General の詳細。SteamOS 0.4.3）がオンです。Frame はその目だけを追い、両目にその目の視線を渡します（まぶたはそれぞれの目のまま）。パネルの左の列にも出ます（「Frame の設定: 右目だけで追っています」）。両目を追うには、この設定をオフにしてください。frameeyeosc はこの設定を読むだけで、変えません
 - パネルに「目のデータを読めません: …」と出る: frameeyeosc は動いていますが、アイトラッキングのデータを読めていません。1 秒ごとに読み直します（理由は `journalctl --user -u frameeyeosc` にも 1 回だけ出ます）。ヘッドセットの起動直後（`… No such file or directory`）なら問題ありません。アイトラッキングがまだ起動していないだけです。「unsupported eye shared-memory version」なら、SteamOS の更新で frameeyeosc が読む形式が変わっています（[免責事項](#免責事項) を参照）
 - ヘッドセットを外していると何も動かない: 正常です。Frame は被っている間しか目を追いません
@@ -283,7 +328,7 @@ scripts/package.sh   # 両方入った dist/frameeyeosc-<version>-steamframe-aar
 
 `vendor/frame-updater/` は、私の Steam Frame 用アプリで共通の更新の仕組みのコピーです。ここでは書き換えないでください。`MANIFEST.sha256` と違っていると `scripts/package.sh` が止まります。
 
-リリースを公開するときは、2 つとも添付します。`SHA256SUMS` が無いリリースは、パネルの「更新する」では入れず、手で更新してもらう表示になります:
+リリースを公開するときは、2 つとも添付します。`SHA256SUMS` が無いリリースは、パネルの「更新する」では入れず、手で更新してもらう表示になります。リリースの本文は `CHANGELOG.md` のその版の節（見出しを除く）です。節は英語の要約 1 段落で始め、次に `日本語: ` で始まる日本語の要約の段落、そのあとに箇条書きを置きます。古い版のパネル（0.7.1 から）は、その版が出ているあいだ、要約を出します（日本語の画面では日本語の段落。マークダウンを外し、300 文字まで）:
 
 ```sh
 gh release create v0.4.0 --title v0.4.0 --notes-file notes.md

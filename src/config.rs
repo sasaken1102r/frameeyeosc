@@ -96,6 +96,12 @@ pub struct Settings {
     /// Without a trailing slash; empty for no prefix.
     pub prefix: String,
     pub eye_tracking_active: ActiveType,
+    /// With the VRChat output, also send the avatar parameters Steam Link's own OSC sends (LeftEyeX, RightEyeLid,
+    /// ...), without the prefix. Ignored by the other outputs.
+    pub steamlink_params: bool,
+    /// In VRChat mode, also send VRChat's own eye tracking input (/tracking/eye/*), which moves the eyes of
+    /// avatars without VRCFT parameters.
+    pub native_eyes: bool,
     /// How easily a fitted eye widens.
     pub lid_widen: Widen,
     /// The settings file has no `lid_widen` (written by 0.5.x or earlier, whose lid_scale_* did nothing for fitted
@@ -174,6 +180,8 @@ impl Default for Settings {
             port: None,
             prefix: "/FT".into(),
             eye_tracking_active: ActiveType::Bool,
+            steamlink_params: false,
+            native_eyes: false,
             lid_widen: Widen::Normal,
             scales_predate_fit: false,
             raw: false,
@@ -478,7 +486,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
             }
         )*};
     }
-    pin!(output, eye_tracking_active, lid_widen);
+    pin!(output, eye_tracking_active, steamlink_params, native_eyes, lid_widen);
     // Given on the command line: this is 0.6.0 or later, whatever the file says
     if given.contains("lid_widen") {
         settings.scales_predate_fit = false;
@@ -761,6 +769,16 @@ mod tests {
     }
 
     #[test]
+    fn steamlink_params_come_from_the_file_or_the_command_line() {
+        assert!(!merged("{}", &[]).unwrap().0.steamlink_params);
+        assert!(merged(r#"{"steamlink_params": true}"#, &[]).unwrap().0.steamlink_params);
+        assert!(merged(r#"{"steamlink_params": "yes"}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"steamlink_params": false}"#, &["--steamlink-params"]).unwrap();
+        assert!(settings.steamlink_params);
+        assert_eq!(locked, ["steamlink_params"]);
+    }
+
+    #[test]
     fn missing_keys_keep_defaults_and_unknown_keys_are_ignored() {
         let (settings, asked) =
             parse(r#"{"version": 1, "language": "en", "lid_open": 0.85, "port": 9001, "extra": [1]}"#)
@@ -900,6 +918,15 @@ mod tests {
         }
         let (_, asked) = parse(r#"{"gaze_capture": {"id": 1, "target": "a-very-long-target-name"}}"#).unwrap();
         assert_eq!(asked.capture.unwrap().target.chars().count(), MAX_TARGET_CHARS);
+    }
+
+    #[test]
+    fn native_eyes_are_off_until_asked_for() {
+        assert!(!merged("{}", &[]).unwrap().0.native_eyes);
+        assert!(merged(r#"{"native_eyes": true}"#, &[]).unwrap().0.native_eyes);
+        let (settings, locked) = merged(r#"{"native_eyes": false}"#, &["--native-eyes"]).unwrap();
+        assert!(settings.native_eyes);
+        assert_eq!(locked, ["native_eyes"]);
     }
 
     #[test]

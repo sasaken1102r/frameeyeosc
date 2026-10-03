@@ -39,6 +39,8 @@ struct UiText {
     const char* rateFormat;         ///< "%.0f /s"
     const char* trackerRateLabel;   ///< samples from the eye tracker per second (label; the value uses rateFormat)
     const char* trackerRateLowHint;  ///< shown when it is low
+    const char* trackerRateSlowHere;     ///< the line below a low rate: frameeyeosc was too slow to take the samples
+    const char* trackerRateSlowTracker;  ///< the line below a low rate: the eye tracker itself delivered few
     const char* lidsTitle;          ///< eyelids heading
     const char* legendRaw;          ///< raw value (legend)
     const char* legendSent;         ///< sent value (legend)
@@ -89,6 +91,11 @@ struct UiText {
     const char* rowActiveType;      ///< how EyeTrackingActive is sent
     const char* hintActiveType;
     const char* activeOff;
+    const char* rowSteamlink;       ///< also send the avatar parameters Steam Link's own OSC sends
+    const char* hintSteamlink;
+    const char* steamlinkNoPrefix;  ///< after its example address: the prefix is never added
+    const char* rowNativeEyes;      ///< also send VRChat's own eye tracking input (/tracking/eye/*)
+    const char* hintNativeEyes;
     const char* rowTarget;
     const char* hintTarget;
     const char* targetAuto;

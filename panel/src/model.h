@@ -272,3 +272,12 @@ std::string formatSetting(const std::string& name, double value);
  * @return the host, or "" if there is none
  */
 std::string hostOfTarget(const std::string& target);
+
+/**
+ * The new release's summary shown under the update row: the Japanese one on a Japanese panel when the release text
+ * has one, otherwise the English one.
+ * @param update the update status
+ * @param language the panel's language
+ * @return the text, or "" when no newer release is available or it has no summary
+ */
+std::string updateNotes(const frame_updater::UpdateStatus& update, Language language);

@@ -96,14 +96,16 @@ const WIDEN_RESET_BELOW: f32 = 0.5;
 // sent widened all the time, so while it is saturated no eyelid goes out above relaxed open (see process). Told from
 // the readings, not from a version, for that, the status file and the panel: over the last SATURATION_WINDOW seconds
 // of samples with both eyes at SATURATION_OPEN or more, more than SATURATION_ON of them with either eye at
-// SATURATED_READING or more turn it on, and fewer than SATURATION_OFF turn it off again; with fewer than
-// SATURATION_MIN_SAMPLES such samples it stays as it was. On two 60-minute recordings
-// before 0.4.3 that share was 0-30.5% (a median 3.1% and 4.5%), on three after it 50.4-99.5% (on from 6.7 s in).
+// SATURATED_READING or more turn it on; with fewer than SATURATION_MIN_SAMPLES such samples it waits. On two
+// 60-minute recordings before 0.4.3 that share was 0-30.5% (a median 3.1% and 4.5%), on three after it 50.4-99.5% (on
+// from 6.7 s in). Once on it stays on while frameeyeosc runs, through the eye server starting over: it is how this eye
+// tracker reads (a SteamOS update that changes it comes with a reboot), while the share drifts with where you look.
+// One 37-minute 0.4.3 recording dipped to 13%, and each dip below the 40% that used to turn it off again let a relaxed
+// eye, reading 1.000 while looking up, through as widened.
 const SATURATION_WINDOW: i64 = 60;
 const SATURATION_OPEN: f32 = 0.6;
 const SATURATED_READING: f32 = 0.999;
 const SATURATION_ON: f64 = 0.5;
-const SATURATION_OFF: f64 = 0.4;
 const SATURATION_MIN_SAMPLES: u32 = 600;
 // How often the Steam Link PC is looked up again, to follow reconnects over another network.
 const RESOLVE_INTERVAL: Duration = Duration::from_secs(5);
@@ -121,6 +123,14 @@ const CAL_SETTLE: Duration = Duration::from_secs(20);
 const CAL_WARMUP_WEIGHT: f32 = 900.0;
 const CAL_SCALE_RANGE: (f32, f32) = (0.75, 1.33);
 const CAL_SAVE_INTERVAL: Duration = Duration::from_secs(60);
+// A jump in the eye server's sequence larger than this (10 s at 90 a second) is it starting over, not samples missed.
+const MAX_MISSED_JUMP: u32 = 900;
+// The panel shows the eye data rate in red below this. Held below it for LOW_RATE_LOG_AFTER, it is logged with the
+// numbers that tell whether frameeyeosc or the eye tracker was the slow one.
+const LOW_TRACKER_RATE: f32 = 60.0;
+const LOW_RATE_LOG_AFTER: Duration = Duration::from_secs(10);
+// At most one line this often about datagrams dropped because the network could not take them at once.
+const DROP_LOG_INTERVAL: Duration = Duration::from_secs(60);
 
 // The start of the shared memory, the same in every version read here. frameeyeosc only touches these fields and the
 // sample record: it locks metadata_mutex, waits on and reads sequence, and sets metadata_requested to 1 (the eye
@@ -267,6 +277,14 @@ struct Args {
     /// need it), or not at all
     #[arg(long, value_enum, default_value_t = ActiveType::Bool)]
     eye_tracking_active: ActiveType,
+    /// In VRChat mode, also send the avatar parameters SteamVR's Steam Link OSC sends (LeftEyeX, RightEyeLid, ...;
+    /// no prefix), for avatars made for it
+    #[arg(long)]
+    steamlink_params: bool,
+    /// In VRChat mode, also send VRChat's own eye tracking input (/tracking/eye/*), which moves the eyes of
+    /// avatars without VRCFT parameters
+    #[arg(long)]
+    native_eyes: bool,
     /// How easily an eye with an eye fit widens: off, low, normal or high (eyes without one use --lid-widen-start
     /// and --lid-wide)
     #[arg(long, value_enum, default_value_t = Widen::Normal)]
@@ -1002,6 +1020,11 @@ struct EyeSource {
     path: PathBuf,
     inode: u64,
     layout: ShmLayout,
+    // The sequence of the last record read (before the first, the one there when first asked), so a sample published
+    // while the one before was being processed is read at once; None until the first call.
+    last_sequence: Option<u32>,
+    // Samples the eye server published that were not read (the sequence moved on by more than one), since take_missed.
+    missed: u32,
 }
 
 struct MutexGuard(*mut libc::pthread_mutex_t);
@@ -1071,6 +1094,8 @@ impl EyeSource {
             path: path.to_owned(),
             inode: metadata.ino(),
             layout,
+            last_sequence: None,
+            missed: 0,
         };
         let control = source.control();
         let version = u32::from_le(unsafe { ptr::read_volatile(&raw const (*control).version) });
@@ -1139,14 +1164,28 @@ impl EyeSource {
 
     /// Wait up to `timeout` for the eye server's next sample. The server writes the record and bumps the sequence
     /// while holding metadata_mutex, and the record is copied out under the same mutex, so it is never torn.
+    ///
+    /// The eye server publishes a frame only if a sample was requested by then, and clears the request with it (read
+    /// off its publish routine). So the next sample is requested in the same lock that copies this one out, and one
+    /// published while this one is processed and sent is read at once on the next call. Requesting it only when the
+    /// next call started lost every other frame (90 -> 45 a second) whenever waking up, processing and sending took
+    /// longer than a frame (11.1 ms). The first call after opening still waits for a new sample rather than return the
+    /// one already there.
     fn next(&mut self, timeout: Duration) -> io::Result<Next> {
         // Rewritten as another version: nothing is written to it (not even the lock), and is_stale() has it reopened.
         if self.version_changed() {
             return Ok(Next::Stopped);
         }
-        let guard = self.lock()?;
         let sequence_ptr = unsafe { &raw const (*self.control()).sequence };
+        let guard = self.lock()?;
         let sequence = unsafe { ptr::read_volatile(sequence_ptr) };
+        let seen = *self.last_sequence.get_or_insert(sequence);
+        if sequence != seen {
+            // Published while the last sample was being processed
+            let next = self.take(sequence);
+            drop(guard);
+            return Ok(next);
+        }
         let request_ptr = unsafe { &raw mut (*self.control_mut()).metadata_requested };
         unsafe { ptr::write_volatile(request_ptr, 1) };
         drop(guard);
@@ -1160,7 +1199,7 @@ impl EyeSource {
                 libc::SYS_futex,
                 sequence_ptr,
                 libc::FUTEX_WAIT,
-                sequence,
+                seen,
                 &timespec as *const libc::timespec,
             )
         };
@@ -1175,15 +1214,34 @@ impl EyeSource {
         }
 
         let guard = self.lock()?;
-        let data = if unsafe { ptr::read_volatile(sequence_ptr) } != sequence {
-            // The layout's record offset lies within the mapping (checked at compile time against its size).
-            let record_ptr = unsafe { self.map.as_ptr().add(self.layout.eye_data) }.cast::<EyeDataMmap>();
-            decode(unsafe { ptr::read_unaligned(record_ptr) })
-        } else {
-            Next::Waiting
-        };
+        let sequence = unsafe { ptr::read_volatile(sequence_ptr) };
+        let next = if sequence != seen { self.take(sequence) } else { Next::Waiting };
         drop(guard);
-        Ok(data)
+        Ok(next)
+    }
+
+    /// Copy out the record the eye server published as `sequence`, and request the next sample. Called with
+    /// metadata_mutex held.
+    fn take(&mut self, sequence: u32) -> Next {
+        // The layout's record offset lies within the mapping (checked at compile time against its size).
+        let record_ptr = unsafe { self.map.as_ptr().add(self.layout.eye_data) }.cast::<EyeDataMmap>();
+        let record = unsafe { ptr::read_unaligned(record_ptr) };
+        let request_ptr = unsafe { &raw mut (*self.control_mut()).metadata_requested };
+        unsafe { ptr::write_volatile(request_ptr, 1) };
+        if let Some(last) = self.last_sequence {
+            let jump = sequence.wrapping_sub(last);
+            // A larger jump (or one back) is the sequence starting over, not samples gone by
+            if (2..=MAX_MISSED_JUMP).contains(&jump) {
+                self.missed = self.missed.saturating_add(jump - 1);
+            }
+        }
+        self.last_sequence = Some(sequence);
+        decode(record)
+    }
+
+    /// The samples the eye server published that were not read, since the last call.
+    fn take_missed(&mut self) -> u32 {
+        std::mem::take(&mut self.missed)
     }
 }
 
@@ -1270,8 +1328,6 @@ impl Saturation {
             let share = f64::from(self.saturated) / f64::from(self.open);
             if share > SATURATION_ON {
                 self.on = true;
-            } else if share < SATURATION_OFF {
-                self.on = false;
             }
         }
     }
@@ -1451,12 +1507,60 @@ impl SendHealth {
     }
 }
 
+/// Datagrams dropped because the network could not take them at once (the socket's send buffer was full, say while
+/// Steam Link's video fills the Wi-Fi). Sending never waits, so a busy network can't hold up reading the eye tracker;
+/// a dropped datagram is counted, and logged at most once every DROP_LOG_INTERVAL.
+#[derive(Default)]
+struct Drops {
+    // When each drop of the last RATE_WINDOW happened.
+    times: VecDeque<Instant>,
+    // Drops not logged yet, and when the first of them happened.
+    unlogged: u32,
+    first_unlogged: Option<Instant>,
+    last_logged: Option<Instant>,
+}
+
+impl Drops {
+    /// Count a dropped datagram to `addr`; returns the line to log, if one is due.
+    fn record(&mut self, now: Instant, addr: SocketAddr) -> Option<String> {
+        self.times.push_back(now);
+        self.prune(now);
+        self.unlogged += 1;
+        let first = *self.first_unlogged.get_or_insert(now);
+        if self.last_logged.is_some_and(|last| now.duration_since(last) < DROP_LOG_INTERVAL) {
+            return None;
+        }
+        self.last_logged = Some(now);
+        self.first_unlogged = None;
+        let count = std::mem::take(&mut self.unlogged);
+        Some(format!(
+            "Dropped {count} datagram{} to {addr} over {:.0} s: the network was too busy to take {} at once \
+             (said at most once a minute)",
+            if count == 1 { "" } else { "s" },
+            now.duration_since(first).as_secs_f32(),
+            if count == 1 { "it" } else { "them" },
+        ))
+    }
+
+    /// Drops in the last RATE_WINDOW.
+    fn per_second(&self, now: Instant) -> f32 {
+        self.times.iter().filter(|time| now.duration_since(**time) < RATE_WINDOW).count() as f32
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while self.times.front().is_some_and(|time| now.duration_since(*time) >= RATE_WINDOW) {
+            self.times.pop_front();
+        }
+    }
+}
+
 /// UDP sender that re-resolves its target periodically and reconnects when it changes.
 struct Output {
     target: Target,
     socket: Option<(UdpSocket, SocketAddr)>,
     last_resolve: Option<Instant>,
     health: SendHealth,
+    drops: Drops,
     // Why the socket to the target could not be set up, or the host could not be looked up, so each
     // is logged once per reason.
     connect_error: Option<String>,
@@ -1470,6 +1574,7 @@ impl Output {
             socket: None,
             last_resolve: None,
             health: SendHealth::default(),
+            drops: Drops::default(),
             connect_error: None,
             resolve_error: None,
         }
@@ -1562,9 +1667,18 @@ impl Output {
         let Some((socket, target)) = &self.socket else {
             return;
         };
-        let result = socket.send(datagram);
-        if let Some(line) = self.health.record(Instant::now(), *target, &result) {
+        let (target, result) = (*target, socket.send(datagram));
+        if let Some(line) = self.note(Instant::now(), target, &result) {
             eprintln!("{line}");
+        }
+    }
+
+    /// Note how sending one datagram to `target` went; returns the line to log, if any. A datagram the network could
+    /// not take at once is dropped and counted, which is not a failure to send.
+    fn note(&mut self, now: Instant, target: SocketAddr, result: &io::Result<usize>) -> Option<String> {
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => self.drops.record(now, target),
+            _ => self.health.record(now, target, result),
         }
     }
 }
@@ -1574,10 +1688,12 @@ fn per_second(times: &VecDeque<Instant>) -> f32 {
     times.iter().filter(|time| time.elapsed() < RATE_WINDOW).count() as f32
 }
 
-/// A UDP socket connected to `addr` (connecting only sets where packets go; it fails without a route).
+/// A UDP socket connected to `addr` (connecting only sets where packets go; it fails without a route). It never
+/// blocks: a datagram the network can't take at once is dropped (see Drops) rather than holding up the eye data.
 fn connect(addr: SocketAddr) -> io::Result<UdpSocket> {
     let socket = UdpSocket::bind(if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
     socket.connect(addr)?;
+    socket.set_nonblocking(true)?;
     Ok(socket)
 }
 
@@ -1862,8 +1978,9 @@ fn livelink_packet(sample: &Sample, time: f64) -> Vec<u8> {
     livelink::packet(time, &livelink::shapes(lids, [left_x, left_y, right_x, right_y]))
 }
 
-/// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set. The ETVR Tracking Module
-/// gets per-eye values only: EyeX/EyeY switch it to a single-eye mode that reads an eyelid we do not send.
+/// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set, and with `steamlink_params` Steam Link's
+/// names after it. The ETVR Tracking Module gets per-eye values only: EyeX/EyeY switch it to a single-eye mode that
+/// reads an eyelid we do not send.
 fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> {
     let prefix = format!("/avatar/parameters{}", settings.prefix);
     let [left_x, left_y, right_x, right_y, x, y] = sample.gaze;
@@ -1876,7 +1993,7 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
         ("EyeLidLeft", lid_left),
         ("EyeLidRight", lid_right),
     ];
-    let mut messages = Vec::with_capacity(9);
+    let mut messages = Vec::with_capacity(21);
     if settings.output == OutputKind::Vrchat {
         messages.extend(active_message(settings, true));
         values.extend([("EyeX", x), ("EyeY", y)]);
@@ -1886,6 +2003,42 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
             .into_iter()
             .map(|(suffix, value)| (format!("{prefix}/v2/{suffix}"), OscType::Float(value))),
     );
+    if settings.output == OutputKind::Vrchat && settings.steamlink_params {
+        messages.extend(steamlink_messages(sample.gaze, sample.lids));
+    }
+    messages
+}
+
+/// How closed an eye is the way Steam Link sends it (0 open, 1 shut), from a VRCFT eyelid: 0.75 (relaxed open) and
+/// anything widened above it are 0, and 0.75..0 closes it evenly to 1.
+fn steamlink_closed(lid: f32) -> f32 {
+    (1.0 - lid / LID_RELAXED).clamp(0.0, 1.0)
+}
+
+/// The avatar parameters SteamVR's Steam Link sends from its own OSC (measured on SteamVR 2.18.2), in its order and
+/// without a prefix, for avatars made for it. Its X is ours (±1 = ±45°, + right), but its Y is ours turned over
+/// (+ is down). Its eyelid is how closed the eye is; the squeeze and widen values follow from that as Steam Link
+/// works them out (it always sends WidenToggle 1). Each eye's gaze is its own with "move eyes separately", like
+/// the VRCFT ones.
+fn steamlink_messages(gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, OscType)> {
+    let [left_x, left_y, right_x, right_y, _, _] = gaze;
+    let [closed_left, closed_right] = lids.map(steamlink_closed);
+    let param = |name: &str, value: OscType| (format!("/avatar/parameters/{name}"), value);
+    let mut messages = vec![
+        param("LeftEyeX", OscType::Float(left_x)),
+        param("LeftEyeY", OscType::Float(-left_y)),
+        param("RightEyeX", OscType::Float(right_x)),
+        param("RightEyeY", OscType::Float(-right_y)),
+    ];
+    for (eye, closed) in [("Right", closed_right), ("Left", closed_left)] {
+        let shut = closed > 0.5;
+        messages.extend([
+            param(&format!("{eye}EyeLid"), OscType::Float(closed)),
+            param(&format!("{eye}EyeLidExpandedSqueeze"), OscType::Float(if shut { 0.0 } else { 0.8 })),
+            param(&format!("{eye}EyeSqueezeToggle"), OscType::Int(i32::from(shut))),
+            param(&format!("{eye}EyeWidenToggle"), OscType::Int(1)),
+        ]);
+    }
     messages
 }
 
@@ -1913,6 +2066,72 @@ fn vrchat_stream(settings: &Settings) -> Option<(&str, u16, &str, ActiveType)> {
     (settings.sending && settings.output == OutputKind::Vrchat).then(|| {
         (settings.host.as_str(), settings.port(), settings.prefix.as_str(), settings.eye_tracking_active)
     })
+}
+
+/// Unit vector in VRChat's HMD space (Unity: +X right, +Y up, +Z forward) for a gaze pair in -1..1; the inverse
+/// of `gaze_angles`, so 1 is 45°.
+fn gaze_vector([x, y]: [f32; 2]) -> [f32; 3] {
+    let quarter = std::f32::consts::FRAC_PI_4;
+    let (right, up) = ((x * quarter).tan(), (y * quarter).tan());
+    let length = (right * right + up * up + 1.0).sqrt();
+    [right / length, up / length, 1.0 / length]
+}
+
+/// VRChat's own eye tracking input for the gaze and VRCFT eyelids as sent: it drives the avatar descriptor's Eye
+/// Look on any avatar. What it does to an avatar built for VRCFT depends on that avatar's animator (Tracking Control
+/// for Eyes & Eyelids): most hand their eyes to animation while EyeTrackingActive is true and keep following the
+/// VRCFT parameters, but one that also has Eyelids set up in Eye Look can close its eyelids twice as far (turn
+/// native_eyes off for it). SteamVR's own Steam Link OSC sends these same addresses, so it should stay off. Each eye's
+/// gaze is its own with "move eyes separately", else the combined one.
+fn native_messages(settings: &Settings, gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
+    let floats = |values: &[f32]| -> Vec<OscType> { values.iter().copied().map(OscType::Float).collect() };
+    let [left_x, left_y, right_x, right_y, x, y] = gaze;
+    let look = if settings.independent_eyes {
+        let [left, right] = [[left_x, left_y], [right_x, right_y]].map(gaze_vector);
+        ("/tracking/eye/LeftRightVec", floats(&[left, right].concat()))
+    } else {
+        ("/tracking/eye/CenterVec", floats(&gaze_vector([x, y])))
+    };
+    // One value for both eyes, 0 open to 1 closed; VRChat has nothing for widening or winks.
+    let open = (lids[0] + lids[1]) / 2.0 / 0.75;
+    vec![
+        (look.0.into(), look.1),
+        ("/tracking/eye/EyesClosedAmount".into(), floats(&[(1.0 - open).clamp(0.0, 1.0)])),
+    ]
+}
+
+/// Where Steam Link's avatar parameters are being sent to, if anywhere. When this changes while eye tracking runs,
+/// the old destination gets relaxed open eyes looking ahead (see `send_steamlink_neutral`).
+fn steamlink_stream(settings: &Settings) -> Option<(&str, u16)> {
+    (settings.sending && settings.output == OutputKind::Vrchat && settings.steamlink_params)
+        .then(|| (settings.host.as_str(), settings.port()))
+}
+
+/// Relaxed open eyes looking straight ahead, as Steam Link's avatar parameters. Avatars made for Steam Link's OSC
+/// have no `EyeTrackingActive` to fall back on, and VRChat keeps the last values, so the eyes would otherwise stay
+/// where they were (shut, if tracking was lost in a blink).
+fn send_steamlink_neutral(output: &mut Output) -> Result<(), Box<dyn Error>> {
+    for (addr, arg) in steamlink_messages([0.0; 6], [LID_RELAXED; 2]) {
+        output.send(addr, vec![arg])?;
+    }
+    Ok(())
+}
+
+/// Where VRChat's own eye tracking input is being sent to, if anywhere. When this changes while eye tracking
+/// runs, the old destination gets relaxed open eyes looking ahead (see `send_native_neutral`).
+fn native_stream(settings: &Settings) -> Option<(&str, u16)> {
+    (settings.sending && settings.output == OutputKind::Vrchat && settings.native_eyes)
+        .then(|| (settings.host.as_str(), settings.port()))
+}
+
+/// Relaxed open eyes looking straight ahead, as VRChat's own eye tracking input. VRChat has no "not active" for
+/// it and keeps the last values until its own timeout hands the eyes back to its automatic eye movement, so the
+/// eyes would otherwise stay where they were (shut, if tracking was lost in a blink) until then.
+fn send_native_neutral(output: &mut Output, settings: &Settings) -> Result<(), Box<dyn Error>> {
+    for (addr, args) in native_messages(settings, [0.0; 6], [0.75; 2]) {
+        output.send(addr, args)?;
+    }
+    Ok(())
 }
 
 /// Lets a packet through at most once per interval, on a steady beat that neither bursts nor drifts: the next one is
@@ -1951,6 +2170,59 @@ fn lost_reason(next: &Next) -> String {
     }
 }
 
+/// How well frameeyeosc keeps up with the eye tracker, to tell apart the two reasons the eye data rate can be low:
+/// frameeyeosc too slow to take each sample (samples published but not read, or long over one), or the eye tracker
+/// itself delivering few.
+#[derive(Default)]
+struct Pace {
+    // Samples the eye server published and frameeyeosc did not read, as noticed over the last RATE_WINDOW.
+    missed: VecDeque<(Instant, u32)>,
+    // How long each sample of the last RATE_WINDOW took, from reading it until ready to read the next (processing,
+    // sending, the status file).
+    busy: VecDeque<(Instant, Duration)>,
+    // Since when the eye data rate has been below LOW_TRACKER_RATE, and whether that was logged.
+    low_since: Option<Instant>,
+    low_logged: bool,
+}
+
+impl Pace {
+    /// Note the samples missed before the one just read.
+    fn add_missed(&mut self, now: Instant, missed: u32) {
+        if missed > 0 {
+            self.missed.push_back((now, missed));
+        }
+        self.prune(now);
+    }
+
+    /// Note how long one sample took.
+    fn add_busy(&mut self, now: Instant, busy: Duration) {
+        self.busy.push_back((now, busy));
+        self.prune(now);
+    }
+
+    /// Samples missed in the last RATE_WINDOW.
+    fn missed_rate(&self, now: Instant) -> f32 {
+        let recent = self.missed.iter().filter(|(time, _)| now.duration_since(*time) < RATE_WINDOW);
+        recent.map(|(_, missed)| *missed as f32).sum()
+    }
+
+    /// The longest one sample took in the last RATE_WINDOW, in ms (0 without samples), to 0.1 ms.
+    fn max_busy_ms(&self, now: Instant) -> f32 {
+        let recent = self.busy.iter().filter(|(time, _)| now.duration_since(*time) < RATE_WINDOW);
+        let longest = recent.map(|(_, busy)| *busy).max().unwrap_or_default();
+        (longest.as_secs_f32() * 10_000.0).round() / 10.0
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while self.missed.front().is_some_and(|(time, _)| now.duration_since(*time) >= RATE_WINDOW) {
+            self.missed.pop_front();
+        }
+        while self.busy.front().is_some_and(|(time, _)| now.duration_since(*time) >= RATE_WINDOW) {
+            self.busy.pop_front();
+        }
+    }
+}
+
 /// Everything the main loop keeps between samples.
 struct Bridge {
     config: Config,
@@ -1974,6 +2246,8 @@ struct Bridge {
     livelink_neutral: Option<Instant>,
     // Keeps the Live Link samples at or below LIVELINK_MAX_HZ.
     livelink_throttle: Throttle,
+    // Whether frameeyeosc keeps up with the eye tracker.
+    pace: Pace,
 }
 
 impl Bridge {
@@ -1993,6 +2267,14 @@ impl Bridge {
         let stream = vrchat_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != vrchat_stream(&settings) {
             send_inactive(&mut self.output, &self.settings)?;
+        }
+        let stream = steamlink_stream(&self.settings);
+        if self.active_since.is_some() && stream.is_some() && stream != steamlink_stream(&settings) {
+            send_steamlink_neutral(&mut self.output)?;
+        }
+        let stream = native_stream(&self.settings);
+        if self.active_since.is_some() && stream.is_some() && stream != native_stream(&settings) {
+            send_native_neutral(&mut self.output, &self.settings)?;
         }
         let stream = livelink_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != livelink_stream(&settings) {
@@ -2038,6 +2320,11 @@ impl Bridge {
             } else {
                 for (addr, arg) in osc_messages(&self.settings, &sample) {
                     self.output.send(addr, vec![arg])?;
+                }
+                if native_stream(&self.settings).is_some() {
+                    for (addr, args) in native_messages(&self.settings, sample.gaze, sample.lids) {
+                        self.output.send(addr, args)?;
+                    }
                 }
                 true
             };
@@ -2089,6 +2376,12 @@ impl Bridge {
         if vrchat_stream(&self.settings).is_some() {
             send_inactive(&mut self.output, &self.settings)?;
         }
+        if steamlink_stream(&self.settings).is_some() {
+            send_steamlink_neutral(&mut self.output)?;
+        }
+        if native_stream(&self.settings).is_some() {
+            send_native_neutral(&mut self.output, &self.settings)?;
+        }
         if livelink_stream(&self.settings).is_some() {
             self.send_livelink_neutral();
         }
@@ -2096,6 +2389,36 @@ impl Bridge {
         self.active_since = None;
         self.latest = None;
         Ok(())
+    }
+
+    /// Samples from the eye tracker in the last second; None until tracking has run for a second.
+    fn tracker_rate(&self) -> Option<f32> {
+        self.active_since
+            .is_some_and(|since| since.elapsed() >= RATE_WINDOW)
+            .then(|| per_second(&self.received))
+    }
+
+    /// Returns the line to log once the eye data rate has stayed below LOW_TRACKER_RATE for LOW_RATE_LOG_AFTER (once
+    /// each time it goes low), with the numbers that tell who was slow.
+    fn check_low_rate(&mut self, now: Instant) -> Option<String> {
+        let Some(rate) = self.tracker_rate().filter(|rate| *rate < LOW_TRACKER_RATE) else {
+            self.pace.low_since = None;
+            self.pace.low_logged = false;
+            return None;
+        };
+        let since = *self.pace.low_since.get_or_insert(now);
+        if self.pace.low_logged || now.duration_since(since) < LOW_RATE_LOG_AFTER {
+            return None;
+        }
+        self.pace.low_logged = true;
+        Some(format!(
+            "Eye data has been low for {} s: {rate:.0} samples/s; in the last second {:.0} published samples were \
+             missed, the slowest sample took {:.1} ms, and {:.0} datagrams were dropped",
+            LOW_RATE_LOG_AFTER.as_secs(),
+            self.pace.missed_rate(now),
+            self.pace.max_busy_ms(now),
+            self.output.drops.per_second(now),
+        ))
     }
 
     /// Relaxed open eyes looking straight ahead, to VRCFT's LiveLink module.
@@ -2117,6 +2440,11 @@ impl Bridge {
     /// `source_error`: why the eye tracker's shared memory can't be read, if it can't; `dominant_eye`: the eye the
     /// Frame tracks alone, if "Track Dominant Eye Only" is on.
     fn status<'a>(&'a self, source_error: Option<&'a str>, dominant_eye: Option<DominantEye>) -> Status<'a> {
+        let now = Instant::now();
+        let tracker_rate = self.tracker_rate();
+        let missed_rate = tracker_rate.map(|_| self.pace.missed_rate(now));
+        let max_processing_ms = tracker_rate.map(|_| self.pace.max_busy_ms(now));
+        let dropped_rate = self.output.drops.per_second(now);
         let settings = &self.settings;
         let pair = |values: [f32; 6], first: usize| status::round([values[first], values[first + 1]]);
         Status {
@@ -2129,10 +2457,10 @@ impl Bridge {
             target_mode: if settings.host == "auto" { "auto" } else { "fixed" },
             target: self.output.addr().map(|addr| addr.to_string()),
             rate: per_second(&self.sent),
-            tracker_rate: self
-                .active_since
-                .is_some_and(|since| since.elapsed() >= RATE_WINDOW)
-                .then(|| per_second(&self.received)),
+            tracker_rate,
+            missed_rate,
+            max_processing_ms,
+            dropped_rate,
             tracking: self.active_since.is_some(),
             raw: self.latest.as_ref().map(|sample| RawValues {
                 openness: status::round(sample.openness),
@@ -2265,12 +2593,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         dots: dots::DotStream::new(status::status_path().parent().unwrap_or(Path::new("/tmp"))),
         livelink_neutral: None,
         livelink_throttle: Throttle::default(),
+        pace: Pace::default(),
     };
     let mut status_file = StatusFile::new(status::status_path());
     // Until the shared memory can be read, frameeyeosc keeps running and trying again, and the status file says why,
     // so the panel shows the reason instead of "not running". Config reloads, the status file and the LiveLink
     // keepalive go on meanwhile.
     let mut eye = EyeReader::new(Path::new(SOURCE), Instant::now());
+    // When the last sample was read, until ready to read the next one.
+    let mut busy_since: Option<Instant> = None;
     loop {
         if let Some(reload) = bridge.config.poll() {
             bridge.apply(reload)?;
@@ -2279,9 +2610,17 @@ fn main() -> Result<(), Box<dyn Error>> {
         if let Some(line) = eye.open_if_due(Instant::now()) {
             eprintln!("{line}");
         }
+        if let Some(since) = busy_since.take() {
+            bridge.pace.add_busy(Instant::now(), since.elapsed());
+        }
         match eye.source.as_mut() {
             Some(source) => match source.next(POLL)? {
-                Next::Sample(data) if data.is_finite() => bridge.on_sample(data)?,
+                Next::Sample(data) if data.is_finite() => {
+                    let now = Instant::now();
+                    busy_since = Some(now);
+                    bridge.pace.add_missed(now, source.take_missed());
+                    bridge.on_sample(data)?;
+                }
                 // Short waits are normal; only a whole second without data means tracking stopped.
                 Next::Waiting if bridge.last_data.is_some_and(|last| last.elapsed() < TIMEOUT) => {}
                 next if bridge.active_since.is_some() => bridge.on_lost(&lost_reason(&next))?,
@@ -2300,6 +2639,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         bridge.keep_livelink_alive();
         if status_file.due() {
             if let Some(line) = eye.refresh_dominant_eye() {
+                eprintln!("{line}");
+            }
+            if let Some(line) = bridge.check_low_rate(Instant::now()) {
                 eprintln!("{line}");
             }
             status_file.write(&bridge.status(eye.error.as_deref(), eye.dominant_eye));
@@ -3217,6 +3559,42 @@ mod tests {
     }
 
     #[test]
+    fn sending_never_blocks_and_a_full_buffer_drops_quietly() {
+        // The socket never blocks
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let socket = connect(listener.local_addr().unwrap()).unwrap();
+        let flags = unsafe { libc::fcntl(std::os::fd::AsRawFd::as_raw_fd(&socket), libc::F_GETFL) };
+        assert_ne!(flags & libc::O_NONBLOCK, 0);
+
+        // A datagram the network can't take at once is dropped and counted: one line, then at most one a minute with
+        // how many since, and never "sending failed"
+        let addr: SocketAddr = "192.0.2.1:9000".parse().unwrap();
+        let mut output = Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9000 });
+        let full = || Err(io::Error::from(io::ErrorKind::WouldBlock));
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        let line = output.note(at(0), addr, &full()).unwrap();
+        assert_eq!(
+            line,
+            "Dropped 1 datagram to 192.0.2.1:9000 over 0 s: the network was too busy to take it at once \
+             (said at most once a minute)"
+        );
+        for i in 1..=200 {
+            assert_eq!(output.note(at(i * 100), addr, &full()), None);
+        }
+        assert_eq!(output.drops.per_second(at(20_000)), 10.0);
+        assert_eq!(output.health.failing, None);
+        // Sending works in between: nothing to say
+        assert_eq!(output.note(at(20_050), addr, &Ok(20)), None);
+        let line = output.note(at(60_000), addr, &full()).unwrap();
+        assert!(line.starts_with("Dropped 201 datagrams to 192.0.2.1:9000 over 60 s: "), "{line}");
+        assert_eq!(output.note(at(60_100), addr, &full()), None);
+        assert_eq!(output.drops.per_second(at(70_000)), 0.0);
+        // A real failure is still one
+        assert!(output.note(at(70_000), addr, &Err(io::Error::from(io::ErrorKind::NetworkUnreachable))).is_some());
+    }
+
+    #[test]
     fn the_rate_counts_the_last_second() {
         let now = Instant::now();
         let times: VecDeque<Instant> = [now - Duration::from_millis(1500), now - Duration::from_millis(900), now]
@@ -3552,6 +3930,7 @@ mod tests {
             dots: dots::DotStream::new(Path::new("/nonexistent")),
             livelink_neutral: None,
             livelink_throttle: Throttle::default(),
+            pace: Pace::default(),
         };
         bridge.output.refresh();
         bridge
@@ -3728,6 +4107,152 @@ mod tests {
         assert!(receive(&listener).is_some());
     }
 
+    fn close(a: &[f32], b: &[f32]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5)
+    }
+
+    fn native(settings: &Settings, sample: &Sample) -> Vec<(String, Vec<f32>)> {
+        native_messages(settings, sample.gaze, sample.lids)
+            .into_iter()
+            .map(|(addr, args)| {
+                let values = args.into_iter().map(|arg| match arg {
+                    OscType::Float(value) => value,
+                    other => panic!("not a float: {other:?}"),
+                });
+                (addr, values.collect())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gaze_vector_undoes_gaze_angles() {
+        // Frame space: -Z forward. Looking right and up.
+        let frame = [0.3, 0.2, -0.9];
+        let length = (0.3f32 * 0.3 + 0.2 * 0.2 + 0.9 * 0.9).sqrt();
+        let unity = [0.3 / length, 0.2 / length, 0.9 / length];
+        assert!(close(&gaze_vector(gaze_angles(frame)), &unity));
+        assert!(close(&gaze_vector([0.0, 0.0]), &[0.0, 0.0, 1.0]));
+        // 1.0 is 45° to the right.
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(close(&gaze_vector([1.0, 0.0]), &[half, 0.0, half]));
+    }
+
+    #[test]
+    fn native_eyes_send_the_combined_gaze_and_one_eyelid() {
+        let messages = native(&settings(), &sample());
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].0, "/tracking/eye/CenterVec");
+        assert!(close(&messages[0].1, &gaze_vector([0.5, 0.6])));
+        assert_eq!(messages[1].0, "/tracking/eye/EyesClosedAmount");
+        // Lids 0.375 and 0.75 (VRCFT) average to 0.5625, three quarters of relaxed open.
+        assert!(close(&messages[1].1, &[0.25]));
+    }
+
+    #[test]
+    fn native_eyes_send_each_eye_when_independent() {
+        let independent = Settings {
+            independent_eyes: true,
+            ..settings()
+        };
+        let messages = native(&independent, &sample());
+        assert_eq!(messages[0].0, "/tracking/eye/LeftRightVec");
+        assert!(close(&messages[0].1, &[gaze_vector([0.1, 0.2]), gaze_vector([0.3, 0.4])].concat()));
+    }
+
+    #[test]
+    fn native_eyelids_ignore_widening() {
+        let with_lids = |lids| native(&settings(), &Sample { lids, ..sample() })[1].1.clone();
+        assert!(close(&with_lids([1.0; 2]), &[0.0]));
+        assert!(close(&with_lids([0.75; 2]), &[0.0]));
+        assert!(close(&with_lids([0.0; 2]), &[1.0]));
+    }
+
+    #[test]
+    fn native_eyes_go_out_only_in_vrchat_mode_when_turned_on() {
+        let on = Settings {
+            native_eyes: true,
+            ..settings()
+        };
+        // Off by default: nothing changes for avatars that follow the VRCFT parameters
+        assert!(native_stream(&settings()).is_none());
+        assert_eq!(native_stream(&on), Some(("auto", 9000)));
+        assert!(native_stream(&Settings { sending: false, ..on.clone() }).is_none());
+        for output in [OutputKind::Etvr, OutputKind::LiveLink] {
+            assert!(native_stream(&Settings { output, ..on.clone() }).is_none());
+        }
+        // Moving the stream ends the old one (it gets its own last neutral eyes)
+        assert_ne!(native_stream(&on), native_stream(&Settings { port: Some(9001), ..on.clone() }));
+        assert_eq!(native_stream(&on), native_stream(&Settings { lid_open: 0.85, ..on.clone() }));
+    }
+
+    #[test]
+    fn losing_tracking_leaves_the_native_eyes_open_and_ahead() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
+        output.refresh();
+        send_native_neutral(&mut output, &settings()).unwrap();
+        let receive = || {
+            let mut buffer = [0u8; 256];
+            let size = listener.recv(&mut buffer).unwrap();
+            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
+            let OscPacket::Message(message) = packet else { panic!("not a message") };
+            message
+        };
+        let look = receive();
+        assert_eq!(look.addr, "/tracking/eye/CenterVec");
+        assert_eq!(look.args, [OscType::Float(0.0), OscType::Float(0.0), OscType::Float(1.0)]);
+        let lids = receive();
+        assert_eq!(lids.addr, "/tracking/eye/EyesClosedAmount");
+        assert_eq!(lids.args, [OscType::Float(0.0)]);
+    }
+
+    #[test]
+    fn steamlink_names_go_out_only_in_vrchat_mode_when_turned_on() {
+        let on = Settings {
+            steamlink_params: true,
+            ..settings()
+        };
+        assert!(steamlink_stream(&settings()).is_none());
+        assert_eq!(steamlink_stream(&on), Some(("auto", 9000)));
+        assert!(steamlink_stream(&Settings { sending: false, ..on.clone() }).is_none());
+        for output in [OutputKind::Etvr, OutputKind::LiveLink] {
+            assert!(steamlink_stream(&Settings { output, ..on.clone() }).is_none());
+        }
+        assert_ne!(steamlink_stream(&on), steamlink_stream(&Settings { port: Some(9001), ..on.clone() }));
+    }
+
+    #[test]
+    fn losing_tracking_leaves_the_steamlink_eyes_open_and_ahead() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
+        output.refresh();
+        send_steamlink_neutral(&mut output).unwrap();
+        let mut received = Vec::new();
+        for _ in 0..12 {
+            let mut buffer = [0u8; 256];
+            let size = listener.recv(&mut buffer).unwrap();
+            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
+            let OscPacket::Message(message) = packet else { panic!("not a message") };
+            received.push((message.addr, message.args));
+        }
+        let value = |name: &str| {
+            received
+                .iter()
+                .find(|(addr, _)| addr == &format!("/avatar/parameters/{name}"))
+                .map(|(_, args)| args.clone())
+                .unwrap()
+        };
+        for name in ["LeftEyeX", "LeftEyeY", "RightEyeX", "RightEyeY", "LeftEyeLid", "RightEyeLid"] {
+            assert_eq!(value(name), [OscType::Float(0.0)], "{name}");
+        }
+        assert_eq!(value("LeftEyeSqueezeToggle"), [OscType::Int(0)]);
+        assert_eq!(value("RightEyeLidExpandedSqueeze"), [OscType::Float(0.8)]);
+    }
+
     #[test]
     fn empty_prefix_sends_bare_names() {
         let messages = sent(&Settings {
@@ -3736,6 +4261,129 @@ mod tests {
         });
         assert_eq!(messages[0].0, "/avatar/parameters/EyeTrackingActive");
         assert_eq!(messages[1].0, "/avatar/parameters/v2/EyeLeftX");
+    }
+
+    fn steamlink() -> Settings {
+        Settings {
+            steamlink_params: true,
+            ..settings()
+        }
+    }
+
+    #[test]
+    fn steamlink_names_are_off_by_default() {
+        assert!(!Settings::default().steamlink_params);
+        let messages = sent(&settings());
+        assert_eq!(messages.len(), 9);
+        assert!(messages.iter().all(|(addr, _)| addr.starts_with("/avatar/parameters/FT/")));
+    }
+
+    #[test]
+    fn steamlink_names_come_after_the_vrcft_ones_as_steam_link_sends_them() {
+        let messages = sent(&steamlink());
+        // The VRCFT ones are unchanged
+        assert_eq!(messages[..9], sent(&settings())[..]);
+        // sample(): gaze left (0.1, 0.2), right (0.3, 0.4); eyelids 0.375 (half closed) and 0.75 (relaxed open)
+        let f = OscType::Float;
+        let i = OscType::Int;
+        let expected = [
+            ("LeftEyeX", f(0.1)),
+            ("LeftEyeY", f(-0.2)),
+            ("RightEyeX", f(0.3)),
+            ("RightEyeY", f(-0.4)),
+            ("RightEyeLid", f(0.0)),
+            ("RightEyeLidExpandedSqueeze", f(0.8)),
+            ("RightEyeSqueezeToggle", i(0)),
+            ("RightEyeWidenToggle", i(1)),
+            ("LeftEyeLid", f(0.5)),
+            ("LeftEyeLidExpandedSqueeze", f(0.8)),
+            ("LeftEyeSqueezeToggle", i(0)),
+            ("LeftEyeWidenToggle", i(1)),
+        ]
+        .map(|(name, value)| (format!("/avatar/parameters/{name}"), value));
+        assert_eq!(messages[9..], expected);
+        // On the wire: the toggles are int32, the rest float32, one value each
+        for (addr, value) in &messages[9..] {
+            let bytes = encoder::encode(&OscPacket::Message(OscMessage {
+                addr: addr.clone(),
+                args: vec![value.clone()],
+            }))
+            .unwrap();
+            let tag = if addr.ends_with("Toggle") { b",i\0\0" } else { b",f\0\0" };
+            assert!(bytes.windows(4).any(|window| window == tag), "{addr}");
+        }
+    }
+
+    #[test]
+    fn steamlink_eyelids_are_how_closed_the_eye_is() {
+        // Relaxed open and widened: open; shut: 1; in between, evenly
+        assert_eq!(steamlink_closed(0.75), 0.0);
+        assert_eq!(steamlink_closed(1.0), 0.0);
+        assert_eq!(steamlink_closed(0.0), 1.0);
+        assert_eq!(steamlink_closed(0.375), 0.5);
+        assert!((steamlink_closed(0.15) - 0.8).abs() < 1e-6);
+        // Over half closed: squeezed, as Steam Link sends it
+        let shut = Sample {
+            lids: [0.15, 0.0],
+            ..sample()
+        };
+        let messages = steamlink_messages(shut.gaze, shut.lids);
+        let value = |name: &str| {
+            messages
+                .iter()
+                .find(|(addr, _)| addr == &format!("/avatar/parameters/{name}"))
+                .map(|(_, value)| value.clone())
+                .unwrap()
+        };
+        assert_eq!(value("RightEyeLid"), OscType::Float(1.0));
+        assert_eq!(value("RightEyeLidExpandedSqueeze"), OscType::Float(0.0));
+        assert_eq!(value("RightEyeSqueezeToggle"), OscType::Int(1));
+        assert_eq!(value("LeftEyeSqueezeToggle"), OscType::Int(1));
+        assert_eq!(value("LeftEyeLidExpandedSqueeze"), OscType::Float(0.0));
+        assert_eq!(value("LeftEyeWidenToggle"), OscType::Int(1));
+    }
+
+    #[test]
+    fn steamlink_names_ignore_the_prefix_and_other_outputs() {
+        for prefix in ["", "/Custom"] {
+            let messages = sent(&Settings {
+                prefix: prefix.into(),
+                ..steamlink()
+            });
+            assert_eq!(messages[9].0, "/avatar/parameters/LeftEyeX");
+            assert_eq!(messages[20].0, "/avatar/parameters/LeftEyeWidenToggle");
+        }
+        let etvr = Settings {
+            output: OutputKind::Etvr,
+            ..steamlink()
+        };
+        assert_eq!(sent(&etvr), sent(&Settings { output: OutputKind::Etvr, ..settings() }));
+    }
+
+    #[test]
+    fn steamlink_names_go_out_with_each_sample() {
+        // A real socket: one datagram per message, the Steam Link names among them
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
+        output.refresh();
+        for (addr, arg) in osc_messages(&steamlink(), &sample()) {
+            output.send(addr, vec![arg]).unwrap();
+        }
+        let mut buffer = [0u8; 256];
+        let mut received = Vec::new();
+        while let Ok(size) = listener.recv(&mut buffer) {
+            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
+            let OscPacket::Message(message) = packet else { panic!("not a message") };
+            received.push((message.addr, message.args));
+            if received.len() == 21 {
+                break;
+            }
+        }
+        assert_eq!(received.len(), 21);
+        assert!(received.contains(&("/avatar/parameters/RightEyeY".into(), vec![OscType::Float(-0.4)])));
+        assert!(received.contains(&("/avatar/parameters/LeftEyeSqueezeToggle".into(), vec![OscType::Int(0)])));
     }
 
     #[test]
@@ -4083,6 +4731,144 @@ mod tests {
         assert_eq!(reader.open_if_due(at(5)), Some(line));
     }
 
+    /// Publish a sample through the eye server's `server` mapping the way the eye server does, without the lock: write
+    /// the record, bump the sequence, clear the request. The caller wakes the readers.
+    fn publish(server: &mut [u8], eye_data: usize, seed: f32) {
+        write_record(server, eye_data, 1, seed);
+        let base = server.as_mut_ptr();
+        unsafe {
+            let sequence = base.add(0x38).cast::<u32>();
+            ptr::write_volatile(sequence, ptr::read_volatile(sequence).wrapping_add(1));
+            ptr::write_volatile(base.add(0x3c).cast::<u32>(), 0);
+        }
+    }
+
+    fn wake(server: &mut [u8]) {
+        unsafe { libc::syscall(libc::SYS_futex, server.as_mut_ptr().add(0x38), libc::FUTEX_WAKE, i32::MAX) };
+    }
+
+    #[test]
+    fn a_sample_published_while_busy_is_read_at_once_and_skips_are_counted() {
+        let layout = SHM_LAYOUTS[1];
+        // A record is already there when frameeyeosc starts (sequence 5, nothing requested)
+        let mut bytes = vec![0u8; layout.size];
+        bytes[0..4].copy_from_slice(&5u32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+        bytes[0x38..0x3c].copy_from_slice(&5u32.to_le_bytes());
+        write_record(&mut bytes, layout.eye_data, 1, 0.1);
+        let shm = FakeShm::with("pipeline", &bytes);
+        let mut source = EyeSource::open_at(&shm.path).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&shm.path).unwrap();
+        let mut server = unsafe { MmapOptions::new().len(layout.size).map_mut(&file).unwrap() };
+
+        // The first call doesn't return the stale record; it requests a sample and waits for a new one.
+        assert!(matches!(source.next(Duration::from_millis(10)).unwrap(), Next::Waiting));
+        assert_eq!(server[0x3c], 1);
+        publish(&mut server, layout.eye_data, 0.2);
+        wake(&mut server);
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(data) if data == record_sample(0.2)));
+        // The next one is requested in the same lock the sample was read in, before the next call
+        assert_eq!(server[0x3c], 1);
+        assert_eq!(source.take_missed(), 0);
+
+        // Published while that sample was processed (nobody woken, as when the wake came before the next wait): read at
+        // once, without waiting for the one after
+        publish(&mut server, layout.eye_data, 0.3);
+        let start = Instant::now();
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(data) if data == record_sample(0.3)));
+        assert!(start.elapsed() < Duration::from_millis(500), "{:?}", start.elapsed());
+        assert_eq!(server[0x3c], 1);
+
+        // Two published while busy (another client asked for them too): the newer is read, the older counted as missed
+        publish(&mut server, layout.eye_data, 0.4);
+        publish(&mut server, layout.eye_data, 0.5);
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(data) if data == record_sample(0.5)));
+        assert_eq!(source.take_missed(), 1);
+        assert_eq!(source.take_missed(), 0);
+        // Nothing new: waits again
+        assert!(matches!(source.next(Duration::from_millis(10)).unwrap(), Next::Waiting));
+
+        // The sequence starting over (a jump back, or one too large) is not counted as missed
+        unsafe { ptr::write_volatile(server.as_mut_ptr().add(0x38).cast::<u32>(), 2) };
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(_)));
+        unsafe { ptr::write_volatile(server.as_mut_ptr().add(0x38).cast::<u32>(), 2 + MAX_MISSED_JUMP + 1) };
+        assert!(matches!(source.next(Duration::from_secs(1)).unwrap(), Next::Sample(_)));
+        assert_eq!(source.take_missed(), 0);
+
+        // Only the lock, the request and nothing else was written: the file is what the test wrote, with the request set
+        let mut expected = bytes.clone();
+        write_record(&mut expected, layout.eye_data, 1, 0.5);
+        expected[0x38..0x3c].copy_from_slice(&(2 + MAX_MISSED_JUMP + 1).to_le_bytes());
+        expected[0x3c] = 1;
+        drop(server);
+        assert_eq!(shm.bytes(), expected);
+    }
+
+    /// Run the eye server as read off its disassembly for `frames` frames of 11.1 ms (90 a second), next to a reader
+    /// that takes `processing` over each sample; returns (samples read, samples the server published). Each frame the
+    /// server locks metadata_mutex and, only if a sample was requested by then, writes the record, bumps the sequence
+    /// and clears the request; then it unlocks and wakes the readers, `wake_delay` late (the reader's thread woken late,
+    /// as on a busy headset).
+    fn run_paced(frames: u32, wake_delay: Duration, processing: Duration) -> (u32, u32) {
+        let layout = SHM_LAYOUTS[1];
+        let shm = FakeShm::new("paced", 5, layout.size);
+        let mut source = EyeSource::open_at(&shm.path).unwrap();
+        let file = OpenOptions::new().read(true).write(true).open(&shm.path).unwrap();
+        let mut server = unsafe { MmapOptions::new().len(layout.size).map_mut(&file).unwrap() };
+        // The mutex is a process-private one in this file, so the server locks it at the reader's own address
+        let mutex = unsafe { source.map.as_mut_ptr().add(0x08) } as usize;
+        let frame = Duration::from_secs(1) / 90;
+        let publisher = std::thread::spawn(move || {
+            let mutex = mutex as *mut libc::pthread_mutex_t;
+            let start = Instant::now();
+            let mut published = 0;
+            for i in 1..=frames {
+                if let Some(wait) = (start + frame * i).checked_duration_since(Instant::now()) {
+                    std::thread::sleep(wait);
+                }
+                assert_eq!(unsafe { libc::pthread_mutex_lock(mutex) }, 0);
+                let requested = unsafe { ptr::read_volatile(server.as_ptr().add(0x3c).cast::<u32>()) } != 0;
+                if requested {
+                    publish(&mut server, layout.eye_data, i as f32);
+                    published += 1;
+                }
+                unsafe { libc::pthread_mutex_unlock(mutex) };
+                if requested {
+                    std::thread::sleep(wake_delay);
+                    wake(&mut server);
+                }
+            }
+            published
+        });
+        let mut read = 0;
+        loop {
+            match source.next(Duration::from_millis(100)).unwrap() {
+                Next::Sample(_) => {
+                    read += 1;
+                    std::thread::sleep(processing);
+                }
+                Next::Waiting if publisher.is_finished() => break,
+                Next::Waiting => {}
+                Next::Stopped => panic!("stopped"),
+            }
+        }
+        let published = publisher.join().unwrap();
+        assert_eq!(source.take_missed(), 0, "the only reader misses nothing the server published");
+        (read, published)
+    }
+
+    #[test]
+    fn a_reader_slower_than_a_frame_still_gets_every_sample() {
+        // 8 ms to wake up and 7 ms over each sample: 15 ms from one sample being published to the reader asking for the
+        // next, more than a frame. Asking only then, the server skipped every other frame (about 45 of 90 read); asked
+        // for while the sample is copied out, every frame is published and read.
+        let frames = 90;
+        let (read, published) = run_paced(frames, Duration::from_millis(8), Duration::from_millis(7));
+        eprintln!("read {read} of {frames} frames ({published} published)");
+        assert_eq!(read, published);
+        assert!(read >= frames * 85 / 100, "read {read} of {frames} frames");
+    }
+
     #[test]
     fn a_replaced_or_rewritten_shared_memory_is_stale_and_left_alone() {
         let shm = FakeShm::new("stale", 5, 0x4f21f);
@@ -4201,6 +4987,65 @@ mod tests {
     }
 
     #[test]
+    fn status_says_whether_frameeyeosc_keeps_up() {
+        let mut bridge = test_bridge(settings());
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        // Not tracking: nothing to tell yet, and no drops
+        assert!(json["missed_rate"].is_null() && json["max_processing_ms"].is_null());
+        assert_eq!(json["dropped_rate"], 0.0);
+
+        let now = Instant::now();
+        bridge.active_since = Some(now - Duration::from_secs(5));
+        bridge.received.extend((0..46).map(|i| now - Duration::from_millis(20 * i)));
+        bridge.pace.add_missed(now - Duration::from_millis(1500), 30);
+        bridge.pace.add_missed(now - Duration::from_millis(300), 1);
+        bridge.pace.add_missed(now, 43);
+        bridge.pace.add_missed(now, 0);
+        bridge.pace.add_busy(now - Duration::from_millis(1200), Duration::from_millis(40));
+        bridge.pace.add_busy(now - Duration::from_millis(500), Duration::from_micros(15_240));
+        bridge.pace.add_busy(now, Duration::from_millis(2));
+        let addr: SocketAddr = "192.0.2.1:9000".parse().unwrap();
+        for ms in [1500, 400, 20] {
+            bridge.output.drops.record(now - Duration::from_millis(ms), addr);
+        }
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(json["tracker_rate"], 46.0);
+        assert_eq!(json["missed_rate"], 44.0);
+        assert_eq!(json["max_processing_ms"].as_f64().unwrap() as f32, 15.2);
+        assert_eq!(json["dropped_rate"], 2.0);
+    }
+
+    #[test]
+    fn a_rate_low_for_ten_seconds_is_logged_once_with_its_numbers() {
+        let mut bridge = test_bridge(settings());
+        let start = Instant::now();
+        bridge.active_since = Some(start - Duration::from_secs(5));
+        bridge.received.extend((0..46).map(|i| start - Duration::from_millis(20 * i)));
+        assert_eq!(bridge.check_low_rate(start), None);
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(9)), None);
+        let at = start + Duration::from_secs(10);
+        bridge.pace.add_missed(at, 44);
+        bridge.pace.add_busy(at, Duration::from_micros(15_240));
+        let line = bridge.check_low_rate(at).unwrap();
+        assert_eq!(
+            line,
+            "Eye data has been low for 10 s: 46 samples/s; in the last second 44 published samples were missed, \
+             the slowest sample took 15.2 ms, and 0 datagrams were dropped"
+        );
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(20)), None);
+        // Fine again, then low again: logged again after another 10 s
+        bridge.received.extend((0..44).map(|_| start));
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(21)), None);
+        bridge.received.truncate(46);
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(22)), None);
+        assert!(bridge.check_low_rate(start + Duration::from_secs(32)).is_some());
+        // Not tracking: no rate, nothing to say
+        bridge.active_since = None;
+        assert_eq!(bridge.check_low_rate(start + Duration::from_secs(50)), None);
+        assert_eq!(bridge.pace.low_since, None);
+    }
+
+    #[test]
     fn status_says_which_eye_is_tracked_alone_and_whether_openness_is_saturated() {
         let mut bridge = test_bridge(settings());
         let json = serde_json::to_value(bridge.status(None, None)).unwrap();
@@ -4287,7 +5132,7 @@ mod tests {
     }
 
     #[test]
-    fn widening_is_capped_only_while_saturated() {
+    fn widening_is_capped_once_saturated() {
         let settings = Settings {
             lid_calibration: false,
             ..settings()
@@ -4303,11 +5148,9 @@ mod tests {
         let on = after.iter().position(|(_, saturated)| *saturated).unwrap();
         assert!(on > 0 && after[on - 1].0.iter().all(|lid| *lid > 0.95), "{on} {:?}", after[on - 1]);
         assert!(after[on..].iter().all(|(lids, _)| lids.iter().all(|lid| *lid <= LID_RELAXED)));
-        // Widening is back by itself once the minute reads below 1.000 again, after WIDEN_SUSTAIN
+        // And it stays capped once the minute reads below 1.000 again: the share drifts with where you look
         let back = lids_over(&settings, &mut smoother, 120.0, 70.0, |_| [0.995, 0.995]);
-        let off = back.iter().position(|(_, saturated)| !*saturated).unwrap();
-        assert!(back[off..off + 20].iter().all(|(lids, _)| lids.iter().all(|lid| *lid <= LID_RELAXED)), "{off} {:?}", &back[off - 2..off + 25]);
-        assert!(back.last().unwrap().0.iter().all(|lid| *lid > 0.95), "{:?}", back.last());
+        assert!(back.iter().all(|(lids, saturated)| *saturated && lids.iter().all(|lid| *lid <= LID_RELAXED)));
     }
 
     #[test]
@@ -4330,17 +5173,18 @@ mod tests {
         let mut one_eye = Saturation::default();
         feed(&mut one_eye, 0.0, 20.0, |i| if i % 10 < 3 { [0.2, 0.2] } else { [0.95, 1.0] });
         assert!(one_eye.on);
-        // Between the two shares it stays as it was, below the lower one it goes off again, as the old samples leave
-        // the minute
+        // Once on it stays on, however low the share drifts as the old samples leave the minute (looking down a while)
         feed(&mut one_eye, 20.0, 120.0, |i| if i % 20 < 9 { [1.0, 1.0] } else { [0.8, 0.8] });
         assert!(one_eye.on, "45% saturated");
-        feed(&mut one_eye, 140.0, 61.0, |i| if i % 10 < 3 { [1.0, 1.0] } else { [0.8, 0.8] });
-        assert!(!one_eye.on, "30% saturated");
-        // With the headset off nothing comes in and it stays; a clock that starts over starts the count over
-        feed(&mut one_eye, 5.0, 5.0, |_| [1.0, 1.0]);
-        assert!(!one_eye.on && one_eye.open == 450, "{}", one_eye.open);
-        feed(&mut one_eye, 10.0, 2.0, |_| [1.0, 1.0]);
-        assert!(one_eye.on);
+        feed(&mut one_eye, 140.0, 61.0, |i| if i % 10 < 1 { [1.0, 1.0] } else { [0.8, 0.8] });
+        assert!(one_eye.on, "10% saturated");
+        // A clock that starts over starts the count over, and it stays on through that too
+        feed(&mut one_eye, 5.0, 5.0, |_| [0.8, 0.8]);
+        assert!(one_eye.on && one_eye.open == 450, "{}", one_eye.open);
+        // Off until more than half the minute reads 1.000
+        let mut fresh = Saturation::default();
+        feed(&mut fresh, 0.0, 61.0, |i| if i % 20 < 9 { [1.0, 1.0] } else { [0.8, 0.8] });
+        assert!(!fresh.on, "45% saturated");
     }
 
     #[test]

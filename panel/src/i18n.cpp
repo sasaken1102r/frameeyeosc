@@ -31,6 +31,8 @@ UiText makeJapanese() {
     t.rateFormat = "毎秒 %.0f 回";
     t.trackerRateLabel = "目のデータ";
     t.trackerRateLowHint = "少なめ";
+    t.trackerRateSlowHere = "本体の処理が追いついていません";
+    t.trackerRateSlowTracker = "Frame から届く数が少なめです";
     t.lidsTitle = "まぶた";
     t.legendRaw = "生の値";
     t.legendSent = "送った値";
@@ -85,6 +87,11 @@ UiText makeJapanese() {
     t.rowActiveType = "EyeTrackingActive の型";
     t.hintActiveType = "アバターによっては Float が必要";
     t.activeOff = "送らない";
+    t.rowSteamlink = "Steam Link の名前も送る";
+    t.hintSteamlink = "Steam Link 向けのアバター用";
+    t.steamlinkNoPrefix = "（頭はつけない）";
+    t.rowNativeEyes = "VRChat 標準の目も動かす";
+    t.hintNativeEyes = "VRCFT 用の値がないアバター用。まぶたが閉じすぎたらオフに";
     t.rowTarget = "送り先の PC";
     t.hintTarget = "自動 = Steam Link の相手";
     t.targetAuto = "自動";
@@ -392,6 +399,8 @@ UiText makeEnglish() {
     t.rateFormat = "%.0f /s";
     t.trackerRateLabel = "Eye data";
     t.trackerRateLowHint = "low";
+    t.trackerRateSlowHere = "frameeyeosc can't keep up";
+    t.trackerRateSlowTracker = "The Frame itself sends few";
     t.lidsTitle = "Eyelids";
     t.legendRaw = "Raw";
     t.legendSent = "Sent";
@@ -446,6 +455,11 @@ UiText makeEnglish() {
     t.rowActiveType = "EyeTrackingActive type";
     t.hintActiveType = "Some avatars need Float";
     t.activeOff = "Off";
+    t.rowSteamlink = "Steam Link names too";
+    t.hintSteamlink = "For Steam Link avatars";
+    t.steamlinkNoPrefix = " (never prefixed)";
+    t.rowNativeEyes = "VRChat's own eyes too";
+    t.hintNativeEyes = "For avatars without VRCFT parameters. Turn off if eyelids close too far";
     t.rowTarget = "Target PC";
     t.hintTarget = "Auto = the Steam Link PC";
     t.targetAuto = "Auto";

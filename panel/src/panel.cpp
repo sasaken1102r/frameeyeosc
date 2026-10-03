@@ -40,7 +40,6 @@ constexpr double kControlX = kInnerX + kLabelW + 14;
 constexpr double kControlW = kInnerRight - kControlX;
 constexpr double kRowTop = 116;
 /** Below this many samples a second from the eye tracker, the left column marks the rate as low. */
-constexpr double kLowTrackerRate = 60;
 constexpr double kRowH = 64;
 constexpr double kRowGap = 2;
 constexpr double kCaptionRowH = 84;
@@ -896,7 +895,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         std::snprintf(rate, sizeof(rate), t.rateFormat, s.rate);
         pen.text(x1, 228, s.running ? std::string(rate) : std::string("—"), 17, kText, true, true);
     }
-    // How fast the eye tracker delivers samples, sent or not: it has been seen at 15 a second instead of 90+
+    // How fast the eye tracker delivers samples, sent or not: it has been seen at 15 and 46 a second instead of 90+
     pen.text(x0, 250, t.trackerRateLabel, 15, kTextMuted, true);
     {
         const bool known = s.running && s.tracking && std::isfinite(s.trackerRate);
@@ -907,29 +906,37 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
                                        : std::string("—");
         pen.text(x1, 250, text, 17, low ? kDanger : kText, true, true);
     }
+    // While it is low, a line under it says who was slow: frameeyeosc or the eye tracker. The eyelids make room for it
+    // (they move down into the space above the gaze)
+    const TrackerRateCause cause = trackerRateCause(s);
+    const double dy = cause == TrackerRateCause::None ? 0 : 14;
+    if (cause != TrackerRateCause::None) {
+        const char* line = cause == TrackerRateCause::Here ? t.trackerRateSlowHere : t.trackerRateSlowTracker;
+        pen.text(x1, 269, line, fitSize(pen, line, 14, 11, x1 - x0, false), kTextMuted, false, true);
+    }
     pen.color(kDivider);
     cairo_set_line_width(cr, 1);
-    cairo_move_to(cr, x0, 262.5);
-    cairo_line_to(cr, x1, 262.5);
+    cairo_move_to(cr, x0, 262.5 + dy);
+    cairo_line_to(cr, x1, 262.5 + dy);
     cairo_stroke(cr);
 
     // Eyelids: a thin gray bar for the raw value, a thick accent bar for the sent value
     const bool live = s.running && s.tracking;
-    pen.text(x0, 282, t.lidsTitle, 15, kTextMuted, true);
+    pen.text(x0, 282 + dy, t.lidsTitle, 15, kTextMuted, true);
     {
         const double sentW = pen.measure(t.legendSent, 14, false);
         const double rawW = pen.measure(t.legendRaw, 14, false);
         double lx = x1 - sentW;
-        pen.text(lx, 282, t.legendSent, 14, kText);
+        pen.text(lx, 282 + dy, t.legendSent, 14, kText);
         lx -= 26;
-        fillRounded(pen, lx, 272, 20, 10, 3, kAccent);
+        fillRounded(pen, lx, 272 + dy, 20, 10, 3, kAccent);
         lx -= 18 + rawW;
-        pen.text(lx, 282, t.legendRaw, 14, kText);
+        pen.text(lx, 282 + dy, t.legendRaw, 14, kText);
         lx -= 26;
-        fillRounded(pen, lx, 274, 20, 6, 2, kTextMuted);
+        fillRounded(pen, lx, 274 + dy, 20, 6, 2, kTextMuted);
     }
     for (int eye = 0; eye < 2; ++eye) {
-        const double top = 296 + eye * 48;
+        const double top = 296 + dy + eye * 48;
         pen.text(x0, top + 26, eye == 0 ? t.left : t.right, 18, kText, true);
         const double barX = x0 + 30;
         const double barW = x1 - 58 - barX;
@@ -1401,6 +1408,32 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
                            {"Float", {PanelAction::SetActiveType, key::kEyeTrackingActive, 1}},
                            {t.activeOff, {PanelAction::SetActiveType, key::kEyeTrackingActive, 2}}},
                           selected, 19, locked);
+        }
+        y += kRowH + kRowGap;
+        // ...and, for avatars made for Steam Link's own OSC, its names too (never with the prefix)
+        {
+            const bool locked = v.locked(key::kSteamlinkParams);
+            drawRowLabel(pen, t, y, kRowH, t.rowSteamlink, t.hintSteamlink, locked);
+            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                          {{t.on, {PanelAction::SetBool, key::kSteamlinkParams, 1}},
+                           {t.off, {PanelAction::SetBool, key::kSteamlinkParams, 0}}},
+                          v.flag(key::kSteamlinkParams) ? 0 : 1, 20, locked);
+            const std::string example = std::string(t.prefixExample) + "/avatar/parameters/LeftEyeX" + t.steamlinkNoPrefix;
+            pen.text(kControlX + 4, y + kRowH + 16, example, fitSize(pen, example, 15, 11, kControlW, false),
+                     kTextMuted);
+        }
+        y += kRowH + 24;
+        // ...and VRChat's own eye tracking input, for avatars without VRCFT parameters
+        {
+            const bool locked = v.locked(key::kNativeEyes);
+            // The hint is too long for the label column: it goes under the control, like the example addresses above
+            drawRowLabel(pen, t, y, kRowH, t.rowNativeEyes, "", locked);
+            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                          {{t.on, {PanelAction::SetBool, key::kNativeEyes, 1}},
+                           {t.off, {PanelAction::SetBool, key::kNativeEyes, 0}}},
+                          v.flag(key::kNativeEyes) ? 0 : 1, 21, locked);
+            pen.text(kControlX + 4, y + kRowH + 16, t.hintNativeEyes,
+                     fitSize(pen, t.hintNativeEyes, 15, 11, kControlW, false), kTextMuted);
         }
         return;
     }
@@ -2154,8 +2187,7 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
     double y = kRowTop - 6;
 
     // Version, new release check and install, and the automatic check
-    drawUpdateRow(pen, t, m.update, v.flag(key::kUpdateCheck), y);
-    y += kUpdateRowH + 10;
+    y += drawUpdateRow(pen, t, m.update, updateNotes(m.update, m.language), v.flag(key::kUpdateCheck), y) + 10;
 
     y += drawSectionTitle(pen, y, t.sectionTools);
     // The debug gaze dots (a head-locked dot where the sent gaze points)
@@ -2292,14 +2324,10 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
     }
 }
 
-void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u, bool checkOn,
-                              double y) {
+double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u,
+                               const std::string& notes, bool checkOn, double y) {
     using frame_updater::UpdateState;
-    const double h = kUpdateRowH;
     const std::string current = bareVersion(u.current);
-    std::string hint = "v" + current;
-    if (u.checkedAt > 0) hint += formatText(t.checkedFormat, checkedText(u.checkedAt));
-    drawRowLabel(pen, t, y, h, t.rowVersion, hint, false);
 
     /** A button at the right end of the row. */
     struct RowButton {
@@ -2357,11 +2385,37 @@ void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_update
         secondary = t.updateChecking;
     }
 
+    // The texts, wrapped to at most four lines, left of the buttons
+    const double bw = 170;
+    const double left = kInnerRight - bw - 12;
+    const double textW = (buttons.empty() ? kInnerRight : left) - kControlX;
+    const double primarySize = 17;
+    const double secondarySize = 14;
+    const size_t maxLines = 4;
+    const std::vector<std::string> primaryLines =
+        primary.empty() ? std::vector<std::string>() : wrapText(pen, primary, primarySize, true, textW, secondary.empty() ? 4 : 3);
+    const std::vector<std::string> secondaryLines =
+        secondary.empty() || primaryLines.size() >= maxLines
+            ? std::vector<std::string>()
+            : wrapText(pen, secondary, secondarySize, false, textW, maxLines - primaryLines.size());
+    const double primaryStep = 22;
+    const double secondaryStep = 20;
+    const double textBlock = primaryLines.size() * primaryStep + secondaryLines.size() * secondaryStep;
+
+    // The texts get four lines' room above the chip; with the new release's summary under the row, only what they
+    // need (at least a button's height), so the summary fits on the tab
+    const double chipH = 34;
+    const double textH = notes.empty() ? kUpdateRowH - chipH - 6 : std::max(kControlH + 8, textBlock + 12);
+    const double h = textH + 4 + chipH + 2;  // kUpdateRowH without a summary
+    const double chipY = y + h - chipH - 2;
+
+    std::string hint = "v" + current;
+    if (u.checkedAt > 0) hint += formatText(t.checkedFormat, checkedText(u.checkedAt));
+    drawRowLabel(pen, t, y, h, t.rowVersion, hint, false);
+
     // Buttons at the right end; two are stacked so the texts keep their width
     const double gap = 8;
-    const double bw = 170;
     const double bh = buttons.size() > 1 ? (h - gap) / 2 : kControlH;
-    const double left = kInnerRight - bw - 12;
     for (size_t i = 0; i < buttons.size(); ++i) {
         const RowButton& b = buttons[i];
         const double bx = kInnerRight - bw;
@@ -2383,8 +2437,6 @@ void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_update
 
     // The automatic check, as a chip at the bottom of the text column: "Check at start and daily  On"; pressing it
     // switches it
-    const double chipH = 34;
-    const double chipY = y + h - chipH - 2;
     {
         const PanelHit hit {PanelAction::SetBool, key::kUpdateCheck, checkOn ? 0 : 1};
         const std::string state = checkOn ? t.on : t.off;
@@ -2404,21 +2456,8 @@ void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_update
         addButton(hit, kControlX, chipY, chipW, chipH);
     }
 
-    // The texts, wrapped to at most four lines and centered above the chip
-    const double textW = (buttons.empty() ? kInnerRight : left) - kControlX;
-    const double textH = chipY - y - 4;
-    const double primarySize = 17;
-    const double secondarySize = 14;
-    const size_t maxLines = 4;
-    const std::vector<std::string> primaryLines =
-        primary.empty() ? std::vector<std::string>() : wrapText(pen, primary, primarySize, true, textW, secondary.empty() ? 4 : 3);
-    const std::vector<std::string> secondaryLines =
-        secondary.empty() || primaryLines.size() >= maxLines
-            ? std::vector<std::string>()
-            : wrapText(pen, secondary, secondarySize, false, textW, maxLines - primaryLines.size());
-    const double primaryStep = 22;
-    const double secondaryStep = 20;
-    double baseline = y + (textH - primaryLines.size() * primaryStep - secondaryLines.size() * secondaryStep) / 2;
+    // The texts, centered above the chip
+    double baseline = y + (textH - textBlock) / 2;
     for (const std::string& line : primaryLines) {
         baseline += primaryStep;
         pen.text(kControlX, baseline - 6, line, primarySize, error ? kDanger : kText, true);
@@ -2427,6 +2466,18 @@ void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_update
         baseline += secondaryStep;
         pen.text(kControlX, baseline - 5, line, secondarySize, kTextMuted);
     }
+
+    // The new release's summary (from its release notes) across the row, up to three lines
+    if (notes.empty()) return h;
+    const double notesSize = 15;
+    const double notesStep = 20;
+    const std::vector<std::string> notesLines = wrapText(pen, notes, notesSize, false, kInnerRight - kInnerX, 3);
+    baseline = y + h + 10;
+    for (const std::string& line : notesLines) {
+        baseline += notesStep;
+        pen.text(kInnerX, baseline - 5, line, notesSize, kText);
+    }
+    return h + 14 + notesLines.size() * notesStep;
 }
 
 void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {

@@ -27,7 +27,7 @@
 # FRAME_UPDATE_ALLOW_INSECURE=1 (allow http:// and any host), FRAME_UPDATE_CHECK_TTL (86400),
 # FRAME_UPDATE_ERROR_TTL (3600).
 
-FRAME_UPDATE_VERSION=0.1.0
+FRAME_UPDATE_VERSION=0.2.0
 
 api_base=${FRAME_UPDATE_API_URL:-https://api.github.com}
 insecure=${FRAME_UPDATE_ALLOW_INSECURE:-0}
@@ -189,7 +189,8 @@ download() { # url file max-seconds
 }
 
 # Ask GitHub for the latest release. Sets rel_tag rel_page rel_draft rel_pre rel_asset_url
-# rel_sums_url rel_asset_name. On failure sets err_code/err_msg and returns 1.
+# rel_sums_url rel_asset_name, and rel_notes / rel_notes_ja (its summary and the Japanese one, from
+# the release text; may be empty). On failure sets err_code/err_msg and returns 1.
 fetch_release() {
     rel_url="$api_base/repos/$repo/releases/latest"
     if ! url_allowed "$rel_url"; then
@@ -229,7 +230,64 @@ fetch_release() {
     fi
     _fields=$(python3 - "$_json" "$asset_pattern" <<'EOF'
 import json
+import re
 import sys
+
+NOTES_MAX = 300
+JA_PREFIX = re.compile(r"(?:日本語|japanese)\s*[:：]\s*", re.IGNORECASE)
+SKIPPED = re.compile(r"([-*+]|\d+[.)])(\s|$)|#|```|~~~|\||<!--|>")
+
+
+def plain(text):
+    """Markdown to plain text on one line: code marks, links, bold and italics go, the words stay."""
+    # Escaped marks (\*) are kept aside as private-use characters until the end
+    text = re.sub(r"\\([\\`*_{}\[\]()#+\-.!|<>~])", lambda m: chr(0xE000 + ord(m.group(1))), text)
+    parts = re.split(r"`+", text)
+    for i in range(0, len(parts), 2):  # outside code spans
+        part = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", parts[i])
+        part = re.sub(r"<((?:https?://|mailto:)[^>]*)>", r"\1", part)
+        part = re.sub(r"(\*\*|__|~~)(?=\S)(.+?)(?<=\S)\1", r"\2", part)
+        parts[i] = re.sub(r"(?<![\w*])\*(?=\S)(.+?)(?<=\S)\*(?![\w*])", r"\1", part)
+    text = re.sub("[-]", lambda m: chr(ord(m.group(0)) - 0xE000), "".join(parts))
+    return " ".join("".join(c if c >= " " and c != "\x7f" else " " for c in text).split())
+
+
+def cap(text):
+    """At most NOTES_MAX characters: cut at a space if there is one near the end (else at a character) and add …"""
+    if len(text) <= NOTES_MAX:
+        return text
+    cut = text[:NOTES_MAX - 1]
+    space = cut.rfind(" ")
+    if space >= NOTES_MAX * 2 // 3:
+        cut = cut[:space]
+    return cut.rstrip(" ,.;:、。，．") + "…"
+
+
+def notes_of(body):
+    """The summary (the first paragraph that isn't a list, a heading or the Japanese one) and the Japanese one."""
+    notes = notes_ja = ""
+    if not isinstance(body, str):
+        return notes, notes_ja
+    for paragraph in re.split(r"\n[ \t]*\n", body.replace("\r\n", "\n").replace("\r", "\n")):
+        lines = [line.strip() for line in paragraph.strip().split("\n")]
+        if not lines[0] or SKIPPED.match(lines[0]):
+            continue
+        # A list that starts right under the text, without a blank line, isn't part of it
+        for i, line in enumerate(lines):
+            if i > 0 and SKIPPED.match(line):
+                lines = lines[:i]
+                break
+        text = plain(" ".join(lines))
+        prefix = JA_PREFIX.match(text)
+        if prefix:
+            if not notes_ja:
+                notes_ja = cap(text[prefix.end():].strip())
+        elif not notes:
+            notes = cap(text)
+        if notes and notes_ja:
+            break
+    return notes, notes_ja
+
 
 try:
     with open(sys.argv[1], encoding="utf-8") as f:
@@ -249,7 +307,13 @@ try:
     for value in fields:
         if not isinstance(value, str) or any(c in value for c in "\r\n\"\\"):
             raise ValueError(value)
-    print("\n".join(fields))
+    # The notes only add to the answer: a body that can't be read leaves them empty
+    try:
+        fields += notes_of(release.get("body"))
+    except Exception:
+        fields += ["", ""]
+    # UTF-8 whatever the locale (the notes may be Japanese)
+    sys.stdout.buffer.write(("\n".join(fields) + "\n").encode("utf-8"))
 except Exception as error:  # anything unexpected in the answer
     print(error, file=sys.stderr)
     sys.exit(1)
@@ -270,6 +334,8 @@ EOF
     rel_asset_url=$(printf '%s\n' "$_fields" | sed -n 5p)
     rel_sums_url=$(printf '%s\n' "$_fields" | sed -n 6p)
     rel_asset_name=$(printf '%s\n' "$_fields" | sed -n 7p)
+    rel_notes=$(printf '%s\n' "$_fields" | sed -n 8p)
+    rel_notes_ja=$(printf '%s\n' "$_fields" | sed -n 9p)
     return 0
 }
 
@@ -321,6 +387,8 @@ report_check() { # cached(true/false)
                     _extra=',"installable":true'
                 fi
             fi
+            # The new release's summary, and the Japanese one if its text has one ("" if not)
+            _extra="$_extra,\"notes\":\"$(json_str "$check_file" notes)\",\"notes_ja\":\"$(json_str "$check_file" notes_ja)\""
         fi
     fi
     printf '{"status":"%s","current":"%s","latest":"%s","url":"%s"%s,"cached":%s,"checked_at":%s}\n' \
@@ -332,7 +400,9 @@ cmd_check() {
     mkdir -p "$cache_dir" || usage_error "cannot create $cache_dir"
     clear_stale_done
     _source="$(json_safe "$api_base/repos/$repo/releases/latest") $(json_safe "$asset_pattern")"
-    if [ "$force" != 1 ] && [ -f "$check_file" ] && [ "$(json_str "$check_file" source)" = "$_source" ]; then
+    # An answer kept by frame-update 0.1.0 has no notes: ask GitHub again once
+    if [ "$force" != 1 ] && [ -f "$check_file" ] && [ "$(json_str "$check_file" source)" = "$_source" ] &&
+        { [ -n "$(json_str "$check_file" error)" ] || grep -q '"notes":' "$check_file"; }; then
         _checked=$(json_raw "$check_file" checked_at)
         _age=$(($(now) - ${_checked:-0}))
         _ttl=$check_ttl
@@ -350,8 +420,9 @@ cmd_check() {
         _has_sums=false
         [ -z "$rel_asset_url" ] || _has_asset=true
         [ -z "$rel_sums_url" ] || _has_sums=true
-        printf '{"source":"%s","latest":"%s","url":"%s","has_asset":%s,"has_sums":%s,"checked_at":%s}\n' \
-            "$_source" "$_latest" "$(json_safe "$rel_page")" "$_has_asset" "$_has_sums" "$(now)" >"$_tmp"
+        printf '{"source":"%s","latest":"%s","url":"%s","has_asset":%s,"has_sums":%s,"notes":"%s","notes_ja":"%s","checked_at":%s}\n' \
+            "$_source" "$_latest" "$(json_safe "$rel_page")" "$_has_asset" "$_has_sums" \
+            "$(json_safe "$rel_notes")" "$(json_safe "$rel_notes_ja")" "$(now)" >"$_tmp"
     else
         log "check failed: $err_msg"
         printf '{"source":"%s","error":"%s","message":"%s","checked_at":%s}\n' \

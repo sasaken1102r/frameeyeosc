@@ -8,6 +8,9 @@
 #include <string>
 #include <vector>
 
+/** The eye data rate (samples a second) the panel shows in red ("low") below. */
+constexpr double kLowTrackerRate = 60;
+
 /** A pair of numbers (left and right, or x and y). NaN when missing. */
 struct Pair {
     double v[2];
@@ -50,6 +53,9 @@ struct EyeStatus {
     std::string target;     ///< "IP:PORT"; empty while the Steam Link PC is not found
     double rate = 0.0;      ///< samples sent in the last second
     double trackerRate = NAN;  ///< samples from the eye tracker in the last second (NaN before 0.5.3)
+    double missedRate = NAN;   ///< samples the eye tracker published in the last second that frameeyeosc did not read
+    double maxProcessingMs = NAN;  ///< the longest frameeyeosc took over one sample in the last second (ms)
+    double droppedRate = NAN;  ///< datagrams dropped in the last second because the network was too busy
     bool tracking = false;  ///< eye data is coming in
 
     bool hasRaw = false;
@@ -86,6 +92,21 @@ struct EyeStatus {
      */
     bool isLocked(const std::string& name) const;
 };
+
+/** Who was slow while the eye data rate is low. */
+enum class TrackerRateCause {
+    None,     ///< the rate is not low, or can't be told (no tracking, or a frameeyeosc before these numbers)
+    Here,     ///< frameeyeosc was too slow to take the samples the eye tracker published
+    Tracker,  ///< the eye tracker itself delivered few
+};
+
+/**
+ * Who was slow while the eye data rate is low. frameeyeosc was, if the samples it missed would have made the rate
+ * high enough, or if it took longer over one sample than a rate high enough leaves for each.
+ * @param s the status
+ * @return the cause (None while the rate is not low)
+ */
+TrackerRateCause trackerRateCause(const EyeStatus& s);
 
 /**
  * The default place of status.json ($XDG_RUNTIME_DIR/frameeyeosc, or /run/user/<uid>/frameeyeosc).

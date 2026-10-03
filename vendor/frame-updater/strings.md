@@ -33,6 +33,14 @@
 | `updateDismiss` | `Installed` / `InstallFailed` を閉じる | 閉じる | Close |
 | `updateLogHint` | 失敗したときの補足 | くわしくは ~/.cache/<アプリ>/update.log | Details: ~/.cache/<app>/update.log |
 
+## 新しい版の要約（`UpdateStatus::notes` / `notesJa`、0.2.0 から）
+
+`Available` のとき、更新の行の下に新しい版の要約を出す（リリースの本文から frame-update.sh が取る。訳さずにそのまま出す）。
+
+- 日本語の画面で `notesJa` が空でなければ `notesJa`、ほかは `notes`
+- どちらも空なら何も出さない（前置きの文言も出さない）
+- 折り返して 3 行まで（あふれたら最後の行を `…` で切る）
+
 ## 更新中の手順（`UpdateStatus::step`）
 
 | step | 日本語 | English |

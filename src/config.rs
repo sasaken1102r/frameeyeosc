@@ -102,6 +102,10 @@ pub struct Settings {
     /// In VRChat mode, also send VRChat's own eye tracking input (/tracking/eye/*), which moves the eyes of
     /// avatars without VRCFT parameters.
     pub native_eyes: bool,
+    /// Use eyecam-rec's eye-camera values (see eyecam_live) while they are fresh: each eye's eyelid from relaxed open
+    /// up (widening) and squint once the camera is calibrated for this wear, and its pupil. Closing stays the eye
+    /// server's.
+    pub camera_lids: bool,
     /// How easily a fitted eye widens.
     pub lid_widen: Widen,
     /// The settings file has no `lid_widen` (written by 0.5.x or earlier, whose lid_scale_* did nothing for fitted
@@ -182,6 +186,7 @@ impl Default for Settings {
             eye_tracking_active: ActiveType::Bool,
             steamlink_params: false,
             native_eyes: false,
+            camera_lids: true,
             lid_widen: Widen::Normal,
             scales_predate_fit: false,
             raw: false,
@@ -536,6 +541,10 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
     if given.contains("no_despike") {
         settings.despike = !args.no_despike;
         locked.push("despike");
+    }
+    if given.contains("no_camera_lids") {
+        settings.camera_lids = !args.no_camera_lids;
+        locked.push("camera_lids");
     }
     pin!(
         blink_sync_below,
@@ -927,6 +936,16 @@ mod tests {
         let (settings, locked) = merged(r#"{"native_eyes": false}"#, &["--native-eyes"]).unwrap();
         assert!(settings.native_eyes);
         assert_eq!(locked, ["native_eyes"]);
+    }
+
+    #[test]
+    fn camera_lids_are_on_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.camera_lids);
+        assert!(!merged(r#"{"camera_lids": false}"#, &[]).unwrap().0.camera_lids);
+        assert!(merged(r#"{"camera_lids": 1}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"camera_lids": true}"#, &["--no-camera-lids"]).unwrap();
+        assert!(!settings.camera_lids);
+        assert_eq!(locked, ["camera_lids"]);
     }
 
     #[test]

@@ -183,7 +183,7 @@ fn replay(samples: &[EyeData], settings: &Settings, mut calibration: LidCalibrat
             }
             last = Some(time);
             let settled = time - *since.get_or_insert(time) >= CAL_SETTLE.as_secs_f64();
-            step(settings, &mut smoother, &mut calibration, data, settled)
+            step(settings, &mut smoother, &mut calibration, data, settled, None)
         })
         .collect()
 }

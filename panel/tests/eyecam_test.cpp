@@ -169,7 +169,7 @@ void testText() {
         {"close", "目を閉じて", "Close your eyes"},         {"squint", "目を細めて", "Squint"},
         {"look_up", "上を見て", "Look up"},                 {"look_down", "下を見て", "Look down"},
         {"bright", "明るい画面を見て", "Look at the bright screen"},
-        {"dark", "暗い画面を見て", "Look at the dark screen"}, {"end", "おわり", "Done"},
+        {"dark", "暗い画面を見て", "Look at the dark screen"}, {"end", "おわり", "Done"}, {"lead_in", "もうすぐ始まるよ", "Get ready"},
     };
     for (const auto& step : kSteps) {
         CHECK(eyecam::parseStep(step.label) != eyecam::Step::Unknown);

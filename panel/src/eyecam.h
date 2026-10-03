@@ -32,7 +32,7 @@ enum class State {
 };
 
 /** One step's instruction ("step_label"). */
-enum class Step { Normal, Widen, Close, Squint, LookUp, LookDown, Bright, Dark, End, Unknown };
+enum class Step { LeadIn, Normal, Widen, Close, Squint, LookUp, LookDown, Bright, Dark, End, Unknown };
 
 /** The full-view overlay during the bright and dark steps. */
 enum class Fill { None, Bright, Dark };

@@ -328,6 +328,7 @@ struct UiText {
     const char* eyecamStepBright;
     const char* eyecamStepDark;
     const char* eyecamStepEnd;
+    const char* eyecamStepLeadIn;  ///< the countdown before the first step
     const char* rowPrefix;
     const char* prefixNone;
     const char* prefixExample;      ///< "e.g." before an OSC address

@@ -86,7 +86,7 @@ Step parseStep(const std::string& label) {
         const char* label;
         Step step;
     } kSteps[] = {
-        {"normal", Step::Normal}, {"widen", Step::Widen},       {"close", Step::Close},
+        {"lead_in", Step::LeadIn}, {"normal", Step::Normal}, {"widen", Step::Widen},       {"close", Step::Close},
         {"squint", Step::Squint}, {"look_up", Step::LookUp},   {"look_down", Step::LookDown},
         {"bright", Step::Bright}, {"dark", Step::Dark},         {"end", Step::End},
     };
@@ -167,6 +167,7 @@ Fill fillFor(const Status& status, double now) {
 
 std::string instruction(const UiText& t, const std::string& label) {
     switch (parseStep(label)) {
+        case Step::LeadIn: return t.eyecamStepLeadIn;
         case Step::Normal: return t.eyecamStepNormal;
         case Step::Widen: return t.eyecamStepWiden;
         case Step::Close: return t.eyecamStepClose;

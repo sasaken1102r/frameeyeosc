@@ -326,6 +326,7 @@ UiText makeJapanese() {
     t.eyecamStepBright = "明るい画面を見て";
     t.eyecamStepDark = "暗い画面を見て";
     t.eyecamStepEnd = "おわり";
+    t.eyecamStepLeadIn = "もうすぐ始まるよ";
     t.rowPrefix = "パラメーター名の頭";
     t.prefixNone = "なし";
     t.prefixExample = "例: ";
@@ -729,6 +730,7 @@ UiText makeEnglish() {
     t.eyecamStepBright = "Look at the bright screen";
     t.eyecamStepDark = "Look at the dark screen";
     t.eyecamStepEnd = "Done";
+    t.eyecamStepLeadIn = "Get ready";
     t.rowPrefix = "Parameter prefix";
     t.prefixNone = "None";
     t.prefixExample = "e.g. ";

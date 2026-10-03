@@ -171,7 +171,9 @@ With `"native_eyes": true` (or `--native-eyes`), frameeyeosc in VRChat mode also
 
 Avatars built for VRCFT are not affected: while `EyeTrackingActive` is true they hand their eyes to animation and follow the VRCFT parameters, so the native input changes nothing for them.
 
-When tracking stops, sending is paused or the output changes, relaxed open eyes looking ahead are sent once; VRChat has no "not active" for this input and returns the eyes to its automatic eye movement after its own timeout. The ETVR and LiveLink modes never send it.
+When tracking stops, sending is paused or the output changes, relaxed open eyes looking ahead are sent once; VRChat has no "not active" for this input and returns the eyes to its automatic eye movement after its own timeout.
+
+frameeyeosc sends this only in VRChat mode. In the ETVR and LiveLink modes there is no need: VRCFaceTracking itself sends VRChat's eye tracking input to avatars that have no VRCFT eye parameters.
 
 The avatar needs Eye Look set up in Unity (VRC Avatar Descriptor > Eye Look, with "Enable" pressed). If the eyes follow your gaze but never blink, Eyelids is usually what is missing:
 

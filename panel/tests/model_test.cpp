@@ -386,6 +386,29 @@ void testSteamlinkParams() {
     CHECK(SettingsView(m).locked(key::kSteamlinkParams) && SettingsView(m).flag(key::kSteamlinkParams));
 }
 
+/** native_eyes (the Output tab's "VRChat's own eye tracking" toggle): off by default, read from config.json, and
+ *  frameeyeosc's own value while --native-eyes locks it. */
+void testNativeEyes() {
+    const SettingSpec* spec = findSetting(key::kNativeEyes);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 0);
+    PanelModel m;
+    m.config.exists = true;
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(!SettingsView(m).flag(key::kNativeEyes));
+    // A new config.json has it, off (so "Reset all" clears it too)
+    CHECK(spec != nullptr && defaultValue(*spec).isBool() && !defaultValue(*spec).boolean);
+    m.config.root.set(key::kNativeEyes, JsonValue::makeBool(true));
+    CHECK(SettingsView(m).flag(key::kNativeEyes) && !SettingsView(m).locked(key::kNativeEyes));
+    // Not a bool: the default
+    m.config.root.set(key::kNativeEyes, JsonValue::makeString("yes"));
+    CHECK(!SettingsView(m).flag(key::kNativeEyes));
+    // Locked by frameeyeosc's command line: its value, whatever the file says
+    m.config.root.set(key::kNativeEyes, JsonValue::makeBool(false));
+    m.status = parseStatus(
+        "{\"pid\": 1, \"locked\": [\"native_eyes\"], \"effective\": {\"native_eyes\": true}}", 0, false);
+    CHECK(SettingsView(m).locked(key::kNativeEyes) && SettingsView(m).flag(key::kNativeEyes));
+}
+
 }  // namespace
 
 /**
@@ -405,6 +428,7 @@ int main() {
     testGazePresets();
     testMigrateGazePresets();
     testSteamlinkParams();
+    testNativeEyes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

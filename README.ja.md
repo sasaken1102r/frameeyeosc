@@ -122,7 +122,7 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.con
 | `prefix` | `--prefix` | `"/FT"` | パラメータ名の頭。`""` で頭なし |
 | `eye_tracking_active` | `--eye-tracking-active` | `"bool"` | VRChat モードで `EyeTrackingActive` をどう送るか: `"bool"`（true / false）、`"float"`（1.0 / 0.0。アバターによってはこちらが必要）、`"off"`（送らない。止めたときや目を見失ったときの 1 回の「無効」も送らない）。ETVR モードと LiveLink モードではもともと送らない |
 | `steamlink_params` | `--steamlink-params` | `false` | VRChat モードで、SteamVR の Steam Link が自分の OSC で送るアバターのパラメータ（`LeftEyeX`、`RightEyeLid` など）も送る。それに合わせて作ったアバター用（[Steam Link の OSC 向けのアバター](#steam-link-の-osc-向けのアバター)）。頭（`prefix`）は付けない。ETVR モードと LiveLink モードでは使わない |
-| `native_eyes` | `--native-eyes` | `false` | VRChat モードで、VRChat 自身のアイトラッキング入力（`/tracking/eye/*`）も送る。VRCFT のパラメータを持たないアバターの目が動く（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)） |
+| `native_eyes` | `--native-eyes` | `false` | VRChat モードで、VRChat 自身のアイトラッキング入力（`/tracking/eye/*`）も送る。VRCFT のパラメータを持たないアバターの目が動く（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)）。送り方タブにスイッチがある |
 | `raw` | `--raw` | `false` | スムージングしない。時間を使う処理（途切れ消し、視線を止める、品質チェック、閉じたまま保つ、真下で左右を止める）もしない |
 | `gaze_min_cutoff` | `--gaze-min-cutoff` | `0.3` | 下げるほど止まっている時の視線が安定（その分遅れる） |
 | `gaze_beta` | `--gaze-beta` | `1.5` | 上げるほど素早い視線の動きに遅れず付いていき、動いたあと早く落ち着く |
@@ -164,12 +164,12 @@ FRAMEEYEOSC_ARGS="--gaze-min-cutoff 0.3 --lid-sync 0.6"
 
 ## VRChat のアイトラッキング入力
 
-`"native_eyes": true`（または `--native-eyes`）にすると、VRChat モードのとき、VRCFT のパラメータに加えて VRChat 自身のアイトラッキング入力も送ります。動くのはアバターの Avatar Descriptor の Eye Look に設定した目とまぶたなので、VRCFT のパラメータを持たないアバターでも、アニメーターに何も足さずに目が動きます。Eye Look を設定済みのアバターなら、アップロードし直す必要もありません。既定ではオフです。
+`"native_eyes": true`（または `--native-eyes`）にすると、VRChat モードのとき、VRCFT のパラメータに加えて VRChat 自身のアイトラッキング入力も送ります。動くのはアバターの Avatar Descriptor の Eye Look に設定した目とまぶたなので、VRCFT のパラメータを持たないアバターでも、アニメーターに何も足さずに目が動きます。Eye Look を設定済みのアバターなら、アップロードし直す必要もありません。既定ではオフです。送り方タブの「VRChat 本体の目の機能でも送る」で切り替えられます（送り先が「VRChat」のとき）。
 
 - `/tracking/eye/CenterVec`: 送っている視線（なめらかにして、合わせたあとのもの）を向きにしたもの。`independent_eyes` のときは `/tracking/eye/LeftRightVec`
 - `/tracking/eye/EyesClosedAmount`: 送っている左右のまぶたを平均した 1 つの値（0 で開く、1 で閉じる）。VRChat が受け取るのは両目で 1 つの値だけで、見開きはありません。ウインクは両目が半分閉じ、見開きはただ開いた目になります。これらを伝えたいときは VRCFT のパラメータを持つアバターを使ってください
 
-VRCFT 向けに作られたアバターでどうなるかは、そのアバターのアニメーター（Tracking Control の Eyes & Eyelids）しだいです。たいていは `EyeTrackingActive` が true のあいだ目がアニメーションに渡され、VRCFT のパラメータに従ったままです。ただ、Eye Look の Eyelids も設定してあるアバターでは、まぶたが 2 倍閉じることがあります。そのアバターでは `native_eyes` をオフにしてください。
+VRCFT 向けに作られたアバターでどうなるかは、そのアバターのアニメーター（Tracking Control の Eyes & Eyelids）しだいです。たいていは `EyeTrackingActive` が true のあいだ目がアニメーションに渡され、VRCFT のパラメータに従ったままです。ただ、Eye Look の Eyelids も設定してあるアバターでは、まぶたが 2 倍閉じることがあります。そのアバターでは `native_eyes` をオフにしてください（送り方タブの同じスイッチです）。
 
 これをオンにするときは、SteamVR 自身の Steam Link の OSC はオフのままにしてください。同じ `/tracking/eye/*` に送るので、2 つがぶつかります。
 

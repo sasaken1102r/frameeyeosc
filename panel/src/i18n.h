@@ -94,6 +94,8 @@ struct UiText {
     const char* rowSteamlink;       ///< also send the avatar parameters Steam Link's own OSC sends
     const char* hintSteamlink;
     const char* steamlinkNoPrefix;  ///< after its example address: the prefix is never added
+    const char* rowNativeEyes;      ///< also send VRChat's own eye tracking input (/tracking/eye/*)
+    const char* hintNativeEyes;
     const char* rowTarget;
     const char* hintTarget;
     const char* targetAuto;

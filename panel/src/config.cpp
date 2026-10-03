@@ -146,6 +146,7 @@ const std::vector<SettingSpec>& settingSpecs() {
         {key::kPrefix, SettingType::String, 0, "/FT", 0, 0, 0, 0},
         {key::kEyeTrackingActive, SettingType::String, 0, "bool", 0, 0, 0, 0},
         {key::kSteamlinkParams, SettingType::Bool, 0, "", 0, 1, 1, 0},
+        {key::kNativeEyes, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kRaw, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kGazeMinCutoff, SettingType::Number, 0.3, "", 0.05, 5.0, 0.05, 2},
         {key::kGazeBeta, SettingType::Number, 1.5, "", 0.0, 10.0, 0.1, 2},

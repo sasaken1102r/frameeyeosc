@@ -1422,6 +1422,16 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
             pen.text(kControlX + 4, y + kRowH + 16, example, fitSize(pen, example, 15, 11, kControlW, false),
                      kTextMuted);
         }
+        y += kRowH + 24;
+        // ...and VRChat's own eye tracking input, for avatars without VRCFT parameters
+        {
+            const bool locked = v.locked(key::kNativeEyes);
+            drawRowLabel(pen, t, y, kRowH, t.rowNativeEyes, t.hintNativeEyes, locked);
+            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                          {{t.on, {PanelAction::SetBool, key::kNativeEyes, 1}},
+                           {t.off, {PanelAction::SetBool, key::kNativeEyes, 0}}},
+                          v.flag(key::kNativeEyes) ? 0 : 1, 21, locked);
+        }
         return;
     }
 

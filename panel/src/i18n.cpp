@@ -90,6 +90,8 @@ UiText makeJapanese() {
     t.rowSteamlink = "Steam Link の名前も送る";
     t.hintSteamlink = "Steam Link 向けのアバター用";
     t.steamlinkNoPrefix = "（頭はつけない）";
+    t.rowNativeEyes = "VRChat 本体の目の機能でも送る";
+    t.hintNativeEyes = "VRCFT 用の値がないアバター用。まぶたが閉じすぎたらオフに";
     t.rowTarget = "送り先の PC";
     t.hintTarget = "自動 = Steam Link の相手";
     t.targetAuto = "自動";
@@ -456,6 +458,8 @@ UiText makeEnglish() {
     t.rowSteamlink = "Steam Link names too";
     t.hintSteamlink = "For Steam Link avatars";
     t.steamlinkNoPrefix = " (never prefixed)";
+    t.rowNativeEyes = "VRChat's own eye tracking too";
+    t.hintNativeEyes = "For avatars without VRCFT parameters. Turn off if eyelids close too far";
     t.rowTarget = "Target PC";
     t.hintTarget = "Auto = the Steam Link PC";
     t.targetAuto = "Auto";

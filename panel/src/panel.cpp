@@ -3009,6 +3009,13 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, 
     } else switch (s.state) {
         case State::WaitingFds: {
             centered(y + 70, t.eyecamWaitingTitle, 32, 20, kText, true);
+            if (!eyecam::needsManualGrab(s)) {
+                // eyecam-rec takes the buffers by itself; its message says what it is waiting for
+                const double baseline = wrappedCentered(y + 122, t.eyecamAutoGrabHint, 20, kText, false, 2);
+                if (!s.message.empty()) wrappedCentered(baseline + 44, s.message, 18, kTextMuted, false, 2);
+                messageShown = true;
+                break;
+            }
             double baseline = wrappedCentered(y + 122, t.eyecamWaitingHint, 20, kText, false, 2);
             // The command, in a box of its own so it reads as something to type
             const double boxY = baseline - 4;

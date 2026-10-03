@@ -255,7 +255,8 @@ void printUsage() {
         "                        unlocked (the cameras lost the eyes), nolight (recording without the light),\n"
         "                        user (calibrating / calib-error: the user's calibration; wear: this wear's),\n"
         "                        calib=N (calib_state 0..3; default 0, 1 for a failed user calibration), recalib\n"
-        "                        (recalib_suggested), nolive (not reading the cameras live)\n"
+        "                        (recalib_suggested), nolive (not reading the cameras live), auto=VALUE\n"
+        "                        (auto_grab: waiting while eyecam-rec takes the buffers by itself)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
         "                        them (off: camera_lids off)\n"
         "  --eyecam-fill-png PATH  Draw the eye capture's full-view light (with --language) to a PNG\n"
@@ -282,6 +283,7 @@ struct FakeEyecam {
     int calibState = -1;    ///< calib_state (-1 = the state's default)
     bool recalib = false;   ///< recalib_suggested
     bool noLive = false;    ///< not reading the cameras live
+    std::string autoGrab;   ///< auto_grab ("" = an eyecam-rec without it)
 };
 
 /**
@@ -322,6 +324,8 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.recalib = true;
         } else if (flag == "nolive") {
             fake.noLive = true;
+        } else if (flag.rfind("auto=", 0) == 0 && flag.size() > 5) {
+            fake.autoGrab = flag.substr(5);
         } else if (flag.rfind("calib=", 0) == 0 && flag.size() == 7 && flag[6] >= '0' && flag[6] <= '3') {
             fake.calibState = flag[6] - '0';
         } else {
@@ -736,7 +740,9 @@ eyecam::View fakeEyecam(const std::string& text) {
     s.calibState = 0;
     if (state == "waiting") {
         s.stateText = "waiting_fds";
-        s.message = "eyecam-grab からカメラのバッファを待っています";
+        s.message = fake.autoGrab.empty() ? "eyecam-grab からカメラのバッファを待っています"
+                                          : "アイトラッカーが始まるのを待ってるよ";
+        s.autoGrab = fake.autoGrab;
         s.locked = false;
         s.live = false;
     } else if (state == "idle" || state == "confirm") {

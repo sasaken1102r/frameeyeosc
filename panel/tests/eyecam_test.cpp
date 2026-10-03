@@ -649,6 +649,28 @@ void testCalibText() {
     CHECK(std::string(uiText(Language::En).calibPromptText).find("18") != std::string::npos);
 }
 
+void testAutoGrab() {
+    // The sudo command shows only while eyecam-rec can't take the buffers by itself
+    Status s;
+    for (const char* grab : {"", "missing", "no_cap", "unsafe: group-writable"}) {
+        s.autoGrab = grab;
+        CHECK(eyecam::needsManualGrab(s));
+    }
+    for (const char* grab : {"waiting_tracker", "trying", "ok", "failed: no eye tracker"}) {
+        s.autoGrab = grab;
+        CHECK(!eyecam::needsManualGrab(s));
+    }
+    // Read from the file; an older eyecam-rec writes none
+    const std::string json = R"({"version":1,"state":"waiting_fds","auto_grab":"waiting_tracker","updated_unix":)" +
+                             std::to_string(kNow) + "}";
+    SAME(eyecam::parseStatus(json, kNow).autoGrab, "waiting_tracker");
+    SAME(eyecam::parseStatus(fullStatus("idle", ""), kNow).autoGrab, "");
+    for (const Language language : {Language::Ja, Language::En}) {
+        const char* hint = uiText(language).eyecamAutoGrabHint;
+        CHECK(hint != nullptr && hint[0] != '\0');
+    }
+}
+
 void testReply() {
     eyecam::Reply r = eyecam::parseReply("ok\n", "start");
     CHECK(r.ok && r.error.empty());
@@ -913,6 +935,7 @@ int main() {
     testHideAtOnce();
     testCalib();
     testCalibText();
+    testAutoGrab();
     testReply();
     testReadFile();
     testControl();

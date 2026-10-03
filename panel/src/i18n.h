@@ -305,6 +305,7 @@ struct UiText {
     const char* eyecamWaitingTitle;    ///< waiting_fds: waiting for the camera buffers...
     const char* eyecamWaitingHint;     ///< ...run this once from the PC over SSH...
     const char* eyecamWaitingNote;     ///< ...it asks for the password; the panel never runs it
+    const char* eyecamAutoGrabHint;    ///< waiting_fds while eyecam-rec takes the buffers by itself: no command needed
     const char* eyecamIdleHint;        ///< idle, by the start button: what happens after starting
     const char* eyecamStart;           ///< the big button that sends "start"
     const char* eyecamSearching;       ///< searching: looking for the eyes

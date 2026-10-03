@@ -96,6 +96,7 @@ struct Status {
     bool recalibSuggested = false; ///< drifted since the calibration: "calib wear" again
     bool live = false;             ///< the eyelids are read from the cameras live
     double liveMs = 0.0;           ///< how long one live frame took (ms; NaN when missing)
+    std::string autoGrab;          ///< "auto_grab": how eyecam-rec takes the buffers by itself ("" when missing)
 };
 
 /** The recorder's reply to a command. */
@@ -395,5 +396,14 @@ private:
      */
     void finish(const Reply& reply);
 };
+
+/**
+ * Whether waiting_fds needs the user to run eyecam-grab with sudo: eyecam-rec can't take the buffers by itself
+ * ("auto_grab" missing, no_cap or unsafe: ..., or an eyecam-rec without it). Otherwise it is waiting for the eye
+ * tracker or retrying on its own, and the command would only confuse.
+ * @param s the status as read
+ * @return true to show the sudo command
+ */
+bool needsManualGrab(const Status& s);
 
 }  // namespace eyecam

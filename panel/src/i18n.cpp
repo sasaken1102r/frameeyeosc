@@ -303,6 +303,7 @@ UiText makeJapanese() {
     t.eyecamWaitingTitle = "カメラの準備を待っています";
     t.eyecamWaitingHint = "PC から SSH で Frame に入り、次のコマンドを一度だけ実行してください";
     t.eyecamWaitingNote = "パスワードを聞かれます。パネルからは実行しません";
+    t.eyecamAutoGrabHint = "自動で準備しています。SteamVR の視線トラッキングが始まると使えるようになります";
     t.eyecamIdleHint = "始めると指示がここに大きく出て、ステップごとに音でも合図します";
     t.eyecamStart = "撮影開始";
     t.eyecamSearching = "目を探しています…";
@@ -749,6 +750,7 @@ UiText makeEnglish() {
     t.eyecamWaitingTitle = "Waiting for the cameras";
     t.eyecamWaitingHint = "From the PC, SSH into the Frame and run this once:";
     t.eyecamWaitingNote = "It asks for the password. The panel never runs it.";
+    t.eyecamAutoGrabHint = "Getting them ready by itself. They work once SteamVR's eye tracking starts.";
     t.eyecamIdleHint = "Once started, each step's instruction shows here, and a beep marks every step";
     t.eyecamStart = "Start recording";
     t.eyecamSearching = "Looking for the eyes…";

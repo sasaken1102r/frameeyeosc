@@ -116,6 +116,7 @@ Status parseStatus(const std::string& text, double mtime) {
     // A file without a state is still the recorder's: shown as an unknown state, not as no recorder
     if (status.state == State::Missing) status.state = State::Unknown;
     status.message = readText(root, "message");
+    status.autoGrab = readText(root, "auto_grab");
     const JsonValue* locked = root.get("locked");
     status.locked = locked != nullptr && locked->isBool() && locked->boolean;
     status.fpsL = readNumber(root, "fps_l", kNaN);
@@ -439,6 +440,11 @@ bool Control::poll(double now) {
         return true;
     }
     return false;
+}
+
+bool needsManualGrab(const Status& s) {
+    const std::string& grab = s.autoGrab;
+    return grab.empty() || grab == "missing" || grab == "no_cap" || grab.rfind("unsafe", 0) == 0;
 }
 
 }  // namespace eyecam

@@ -246,9 +246,10 @@ void printUsage() {
         "                 failed-noresult  A made-up eye fit (Eye fit tab)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
-        "      --fake-eyecam waiting|idle|searching|recording:LABEL[:unlocked]|error  A made-up eyecam-rec for the developer tab\n"
-        "                        \"Eye capture\" (LABEL: normal, widen, close, squint, look_up, look_down, bright,\n"
-        "                        dark, end)\n"
+        "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL[:unlocked][:nolight]|error  A made-up\n"
+        "                        eyecam-rec for the developer tab \"Eye capture\" (confirm: idle with the light\n"
+        "                        warning open; LABEL: lead_in, normal, widen, close, squint, look_up, look_down,\n"
+        "                        bright, dark, end; nolight: the protocol without the light)\n"
         "  --eyecam-fill-png PATH  Draw the eye capture's full-view light (with --language) to a PNG\n"
         "      --eyecam-fill bright|dark  Which one (default bright)\n"
         "  --eyecam-dir DIR      eyecam-rec's folder: status.json and ctl.sock (default $XDG_RUNTIME_DIR/eyecam)\n"
@@ -261,6 +262,31 @@ void printUsage() {
         "  --version             Print the version\n"
         "  --config PATH         Config file (default ~/.config/frameeyeosc/config.json)\n"
         "  --status PATH         Status file (default $XDG_RUNTIME_DIR/frameeyeosc/status.json)\n");
+}
+
+/**
+ * The step label of --fake-eyecam recording:LABEL[:unlocked][:nolight], without its flags.
+ * @param text what follows "recording:"
+ * @param unlocked set if :unlocked was there (the cameras lost the eyes)
+ * @param noLight set if :nolight was there (the protocol without the light)
+ * @return the label
+ */
+std::string fakeRecordingLabel(const std::string& text, bool& unlocked, bool& noLight) {
+    std::string label = text;
+    const auto strip = [&label](const std::string& suffix) {
+        if (label.size() <= suffix.size() || label.compare(label.size() - suffix.size(), suffix.size(), suffix) != 0) {
+            return false;
+        }
+        label.resize(label.size() - suffix.size());
+        return true;
+    };
+    unlocked = noLight = false;
+    for (bool found = true; found;) {
+        found = false;
+        if (strip(":unlocked")) found = unlocked = true;
+        if (strip(":nolight")) found = noLight = true;
+    }
+    return label;
 }
 
 /**
@@ -468,12 +494,17 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--fake-eyecam" && hasNext) {
             options.fakeEyecam = argv[++i];
             const std::string& state = options.fakeEyecam;
-            // recording:LABEL, or recording:LABEL:unlocked for the cameras having lost the eyes
-            std::string label = state.rfind("recording:", 0) == 0 ? state.substr(10) : "";
-            if (label.size() > 9 && label.compare(label.size() - 9, 9, ":unlocked") == 0) label.resize(label.size() - 9);
+            // recording:LABEL, with :unlocked for the cameras having lost the eyes, :nolight for the protocol
+            // without the light
+            bool unlocked = false;
+            bool noLight = false;
+            const std::string label =
+                state.rfind("recording:", 0) == 0 ? fakeRecordingLabel(state.substr(10), unlocked, noLight) : "";
             const bool recording = eyecam::parseStep(label) != eyecam::Step::Unknown;
-            if (state != "waiting" && state != "idle" && state != "searching" && state != "error" && !recording) {
-                std::fprintf(stderr, "--fake-eyecam must be waiting, idle, searching, recording:LABEL or error: %s\n",
+            if (state != "waiting" && state != "idle" && state != "confirm" && state != "searching" &&
+                state != "error" && !recording) {
+                std::fprintf(stderr,
+                             "--fake-eyecam must be waiting, idle, confirm, searching, recording:LABEL or error: %s\n",
                              state.c_str());
                 return false;
             }
@@ -640,7 +671,8 @@ frame_updater::UpdateStatus fakeUpdate(const std::string& state, const std::stri
 
 /**
  * A made-up eyecam-rec for --fake-eyecam, written just now (so its tab shows).
- * @param state waiting, idle, searching, recording:<label> or error
+ * @param state waiting, idle, confirm (idle; the caller opens the light warning), searching,
+ *              recording:<label>[:unlocked][:nolight] or error
  * @return the view
  */
 eyecam::View fakeEyecam(const std::string& state) {
@@ -654,7 +686,7 @@ eyecam::View fakeEyecam(const std::string& state) {
     if (state == "waiting") {
         s.stateText = "waiting_fds";
         s.message = "eyecam-grab からカメラのバッファを待っています";
-    } else if (state == "idle") {
+    } else if (state == "idle" || state == "confirm") {
         s.stateText = "idle";
     } else if (state == "searching") {
         s.stateText = "searching";
@@ -672,9 +704,10 @@ eyecam::View fakeEyecam(const std::string& state) {
         static const char* const kLabels[] = {"normal",    "widen",  "close", "squint", "look_up",
                                               "look_down", "bright", "dark",  "end"};
         s.stateText = "recording";
-        s.stepLabel = state.substr(10);
-        const bool unlocked = s.stepLabel.size() > 9 && s.stepLabel.compare(s.stepLabel.size() - 9, 9, ":unlocked") == 0;
-        if (unlocked) s.stepLabel.resize(s.stepLabel.size() - 9);
+        bool unlocked = false;
+        bool noLight = false;
+        s.stepLabel = fakeRecordingLabel(state.substr(10), unlocked, noLight);
+        if (noLight) s.protocol = eyecam::kNoLightProtocol;
         s.stepCount = static_cast<int>(std::size(kLabels));
         s.stepIndex = static_cast<int>(std::find(std::begin(kLabels), std::end(kLabels), s.stepLabel) -
                                        std::begin(kLabels));
@@ -981,6 +1014,7 @@ int runDumpPng(const Options& options) {
             if (!options.historyOpen.empty()) panel.setHistoryRow(options.historyOpen);
             if (options.historyScroll >= 0) panel.setHistoryScroll(options.historyScroll);
         }
+        if (options.fakeEyecam == "confirm") panel.openEyecamConfirm(model.eyecam.status.state);
         if (options.previewQuit) panel.armQuitForPreview();
         if (options.previewReset) panel.armResetForPreview();
         if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
@@ -1005,7 +1039,7 @@ int runDumpPng(const Options& options) {
                 applyHit(hit, model, panel, idleAutostart, updater.get(), nullptr, nullptr, nullptr, &eyecamControl);
             }
             // Wait for eyecam-rec's reply, and show the folder as it is after it
-            if (hit.action == PanelAction::EyecamStart || hit.action == PanelAction::EyecamStop) {
+            if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop) {
                 while (eyecamControl.busy()) {
                     eyecamControl.poll(nowSeconds());
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1572,7 +1606,8 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::HostCancel:
         case PanelAction::HistoryClose:
         case PanelAction::HistoryRow:
-        case PanelAction::HistoryScroll: return;
+        case PanelAction::HistoryScroll:
+        case PanelAction::EyecamStart: return;
         case PanelAction::HistoryOpen:
             loadHistory(model);
             return;
@@ -1597,11 +1632,15 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             change = [host](JsonValue& root) { root.set(key::kHost, JsonValue::makeString(host)); };
             break;
         }
-        case PanelAction::EyecamStart:
+        case PanelAction::EyecamChoose:
         case PanelAction::EyecamStop: {
-            // One line to its socket; the reply is read by the loop (eyecam::Control never waits)
+            // One line to its socket ("start" or "start widen_nolight" from the light warning, or "stop"); the reply
+            // is read by the loop (eyecam::Control never waits)
             if (eyecamControl == nullptr) return;
-            const std::string command = hit.action == PanelAction::EyecamStart ? "start" : "stop";
+            const std::string command = hit.action == PanelAction::EyecamStop
+                                            ? std::string("stop")
+                                            : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
+            if (command.empty()) return;
             const std::string socket = model.eyecamDir + "/ctl.sock";
             std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
             if (!eyecamControl->send(socket, command, nowSeconds()) && !eyecamControl->busy()) {
@@ -1879,6 +1918,9 @@ int runOverlay(const Options& options) {
     std::vector<uint8_t> fillImage;
     std::string fillDrawn;          // what fillImage shows ("bright|<text>"), "" before the first
     std::string fillSent;           // what the overlay was last sent, "" to send again
+    eyecam::Light light;            // the light as shown: which one, and its alpha as it fades in and out
+    eyecam::Fill lightWanted = eyecam::Fill::None;  // the one fillFor wanted last time (to log a fade-out once)
+    bool lightMoving = false;       // fading in or out: the loop runs every display frame
     // The debug gaze dots: their socket, the three dot images (drawn once), which image each overlay has
     gaze_dots::Receiver dots;
     std::vector<uint8_t> dotImages[3];
@@ -2168,9 +2210,10 @@ int runOverlay(const Options& options) {
         }
 
         // The developer tab "Eye capture" while eyecam-rec runs, dashboard open or closed: its status file read often
-        // while it runs (once a second otherwise, to notice it), the reply to "start" / "stop", and the full-view
-        // light during the bright and dark steps, hidden as soon as the step changes, recording ends or the file
-        // goes stale (and destroyed with the other overlays at shutdown)
+        // while it runs (once a second otherwise, to notice it), the reply to "start" / "stop", the light warning
+        // before a start, and the full-view light during the bright and dark steps: faded in and, when its step ends,
+        // out; hidden at once when recording ends, "stop" is sent, the file goes stale or the tab goes (and destroyed
+        // with the other overlays at shutdown)
         {
             const bool running = model.eyecam.visible || vr.fillShown() || eyecamControl.busy();
             if (nowSeconds() >= lastEyecamRead + (running ? kEyecamReadSec : kEyecamIdleReadSec)) {
@@ -2203,32 +2246,48 @@ int runOverlay(const Options& options) {
                 drawnEyecam = signature;
                 dirty = true;
             }
-            const eyecam::Fill fill = eyecam::fillFor(s, now);
-            if (fill == eyecam::Fill::None) {
+            // The light fades in and out on a step change while recording goes on; anything else (stale file, tab
+            // gone, recording over, "stop" sent) takes it away at once
+            if (panel.syncEyecam(model.eyecam)) dirty = true;
+            const eyecam::Fill wanted = eyecam::fillFor(s, now);
+            const bool hideNow = eyecam::hideLightAtOnce(model.eyecam, now);
+            const eyecam::Light before = light;
+            light = eyecam::stepLight(light, wanted, hideNow, nowSeconds());
+            if (light.fill == eyecam::Fill::None) {
                 if (vr.fillShown()) {
                     vr.hideFill();
-                    std::fprintf(stderr, "[eyecam] light off (%s)\n",
-                                 !shown ? "tab gone" : eyecam::age(s, now) > eyecam::kOverlayStaleSec
-                                                           ? "status file stale"
-                                                           : "step changed");
+                    const char* why = "faded out";
+                    if (hideNow) {
+                        why = !shown                                          ? "tab gone"
+                              : eyecam::age(s, now) > eyecam::kOverlayStaleSec ? "status file stale"
+                              : s.state != eyecam::State::Recording           ? "not recording"
+                                                                              : "stop sent";
+                    }
+                    std::fprintf(stderr, "[eyecam] light off (%s)\n", why);
                 }
                 fillSent.clear();
             } else {
-                const bool bright = fill == eyecam::Fill::Bright;
-                const std::string label = eyecam::instruction(uiText(model.language), s.stepLabel);
+                if (before.fill == light.fill && wanted != light.fill && lightWanted == light.fill) {
+                    std::fprintf(stderr, "[eyecam] light fading out (step changed)\n");
+                }
+                const bool bright = light.fill == eyecam::Fill::Bright;
+                // The light's own step (while it fades out, the status already has the next one)
+                const std::string label = eyecam::instruction(uiText(model.language), bright ? "bright" : "dark");
                 const std::string key = std::string(bright ? "bright|" : "dark|") + label;
                 if (key != fillDrawn) {
                     renderFill(fonts, bright, label, fillImage);
                     fillDrawn = key;
                 }
                 const bool fresh = key != fillSent;
-                if (vr.showFill(fresh ? fillImage.data() : nullptr, kFillImageSize)) {
-                    if (fresh) std::fprintf(stderr, "[eyecam] light on: %s\n", bright ? "bright" : "dark");
+                if (vr.showFill(fresh ? fillImage.data() : nullptr, kFillImageSize, light.alpha)) {
+                    if (fresh) std::fprintf(stderr, "[eyecam] light on: %s, fading in\n", bright ? "bright" : "dark");
                     fillSent = key;
                 } else {
                     fillSent.clear();
                 }
             }
+            lightWanted = wanted;
+            lightMoving = eyecam::lightFading(light, wanted);
         }
 
         // Draw only while visible, and only when something changed
@@ -2241,14 +2300,18 @@ int runOverlay(const Options& options) {
                 vr.logOverlayState("after the first draw");
             }
         }
-        // The IP keypad doesn't stay open behind a closed dashboard
-        if (!visible && wasVisible) panel.closeHostEntry();
+        // The IP keypad and the eye capture's light warning don't stay open behind a closed dashboard
+        if (!visible && wasVisible) {
+            panel.closeHostEntry();
+            panel.closeEyecamConfirm();
+        }
         wasVisible = visible;
         // Every display frame while the fit's target or the debug dots are up: with the target, paced by the
         // compositor itself (a fixed sleep plus the loop's work fell behind the display, and the ring stuttered)
         // (the dots only while packets arrive: with none for kStaleSec, the usual slow poll)
         const bool dotsLive = dots.isOpen() && nowSeconds() - lastDotAt <= gaze_dots::kStaleSec;
-        const bool everyFrame = fit.active() || dotsLive;
+        // (and while the eye capture's light fades, so its alpha steps are small)
+        const bool everyFrame = fit.active() || dotsLive || lightMoving;
         // While eyecam-rec runs, as often as with the panel open, so the light follows its steps closely
         const bool eyecamLive = model.eyecam.visible || vr.fillShown() || eyecamControl.busy();
         if (!(targetUp && vr.waitFrameSync(kFrameSyncTimeoutMs))) {

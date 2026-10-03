@@ -64,7 +64,9 @@ enum class PanelAction {
     HistoryClose,      ///< back to the Advanced tab (handled inside the panel)
     HistoryRow,        ///< open version row arg, or close it if it is open (handled inside the panel)
     HistoryScroll,     ///< scroll the version history a third of its height, arg -1 up / 1 down (handled inside)
-    EyecamStart,       ///< eye capture tab: send "start" to eyecam-rec (the caller talks to its socket)
+    EyecamStart,       ///< eye capture tab: open the light warning before a start (handled inside the panel)
+    EyecamChoose,      ///< a button in the light warning: arg = eyecam::StartChoice (the panel returns only the two
+                       ///< starts; the caller sends eyecam::startCommand to eyecam-rec's socket)
     EyecamStop,        ///< eye capture tab: send "stop"
 };
 
@@ -197,6 +199,26 @@ public:
     bool hostEntryOpen() const { return hostEntryOpen_; }
 
     /**
+     * Open the light warning on the eye capture tab, as its start button does (for --fake-eyecam confirm).
+     * @param state the recorder's state (only idle and error open it)
+     */
+    void openEyecamConfirm(eyecam::State state);
+
+    /**
+     * Follow eyecam-rec: the light warning closes once its state leaves the one it was opened in, or the tab is
+     * gone or not the one shown. Called every loop (render does it too).
+     * @param view the recorder as read
+     * @return true if the warning closed (redraw)
+     */
+    bool syncEyecam(const eyecam::View& view);
+
+    /** Close the light warning (the dashboard closed). */
+    void closeEyecamConfirm() { eyecamConfirm_.close(); }
+
+    /** @return true while the light warning shows */
+    bool eyecamConfirmOpen() const { return eyecamConfirm_.isOpen(); }
+
+    /**
      * Open the version history on the Advanced tab, with the installed version's row open (the newest one if the
      * changelog doesn't have it) and scrolled to the top. Choosing another tab closes it.
      */
@@ -308,6 +330,8 @@ private:
     double historyMaxScroll_ = 0.0;     ///< as far as it can scroll (from the last draw)
     double historyViewH_ = 0.0;         ///< the height it is shown in (from the last draw)
     bool eyecamTab_ = false;            ///< the eye capture tab is in the tab row (eyecam-rec runs)
+    eyecam::State eyecamState_ = eyecam::State::Missing;  ///< the recorder's state as last seen (its start button)
+    eyecam::StartConfirm eyecamConfirm_;  ///< the light warning before a start
 
     /**
      * Find the usable button at a point.
@@ -471,12 +495,24 @@ private:
      * The eye capture tab (developer): what eyecam-rec is doing, in large type to read in the headset. Waiting for
      * the camera buffers: the command to run over SSH. Idle: a big "Start". Searching: the fps. Recording: the
      * step's instruction, the seconds left, the step number, a progress bar over the whole run, the fps and
-     * "Stop". Error: the message and "Start again". The recorder's message and a failed command's reply under it.
+     * "Stop" (and "No light" by the step number for the protocol without the light). Error: the message and "Start
+     * again". "Start" and "Start again" open the light warning in its place (drawEyecamConfirm). The recorder's
+     * message and a failed command's reply under it.
      * @param pen drawing tools
      * @param t texts
      * @param model the model (its eyecam view)
      */
     void drawEyecam(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * The light warning before a start: a red "Light warning" title with a warning sign, the warning in a red box,
+     * "Start with light" / "Start without light" and "Cancel".
+     * @param pen drawing tools
+     * @param t texts
+     * @param view the recorder (a command on its way greys out the two starts)
+     * @param y the top under the section title
+     */
+    void drawEyecamConfirm(const Pen& pen, const UiText& t, const eyecam::View& view, double y);
 
     /**
      * The recommendation prompt over everything (only its buttons stay usable).

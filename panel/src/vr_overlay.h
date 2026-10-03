@@ -160,9 +160,10 @@ public:
      * needed; destroyed by shutdown().
      * @param rgba a new image, non-premultiplied RGBA; nullptr keeps the last one
      * @param size its edge length (px)
+     * @param alpha how opaque (0..1, SetOverlayAlpha; set before it is first shown, so it never flashes up)
      * @return true if it is shown
      */
-    bool showFill(const uint8_t* rgba, int size);
+    bool showFill(const uint8_t* rgba, int size, double alpha);
 
     /** Hide the full-view overlay (nothing happens if it isn't shown). */
     void hideFill();
@@ -226,6 +227,7 @@ private:
     uint64_t fillHandle_ = 0;         ///< the eye capture's full-view overlay (0 until first needed)
     bool fillShown_ = false;
     bool fillFailed_ = false;         ///< creating it failed; not tried again
+    float fillAlpha_ = -1.0f;         ///< the alpha last set on it (-1 = not set yet)
     int panelHeight_ = 0;
     bool panelScroll_ = false;      ///< the panel asked for scroll events
     int scrollLogs_ = 0;            ///< scroll events logged so far (the first few, to tune the speed)

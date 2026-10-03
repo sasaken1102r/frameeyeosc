@@ -651,6 +651,14 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::HostCancel:
             closeHostEntry();
             return {};
+        case PanelAction::EyecamStart:
+            // Never straight to the light: the warning first, with a start without it
+            openEyecamConfirm(eyecamState_);
+            return {};
+        case PanelAction::EyecamChoose:
+            if (!eyecamConfirm_.isOpen()) return {};
+            // "Cancel" only closes it
+            return eyecamConfirm_.choose(static_cast<eyecam::StartChoice>(hit.arg)).empty() ? PanelHit {} : hit;
         case PanelAction::Quit:
             // A single accidental press never quits
             if (quitArmed_ && now <= quitArmedUntil_) return hit;
@@ -715,6 +723,16 @@ void EyePanel::openHostEntry(const std::string& text) {
     hostEntryError_.clear();
     hover_ = {};
     pressed_ = {};
+}
+
+void EyePanel::openEyecamConfirm(eyecam::State state) {
+    eyecamState_ = state;
+    if (eyecamConfirm_.open(state)) std::fprintf(stderr, "[eyecam] light warning shown\n");
+}
+
+bool EyePanel::syncEyecam(const eyecam::View& view) {
+    eyecamState_ = view.status.state;
+    return eyecamConfirm_.sync(view.status.state, view.visible && tab_ == PanelTab::Eyecam);
 }
 
 void EyePanel::closeHostEntry() {
@@ -2942,8 +2960,12 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
     double y = kRowTop - 6;
     y += drawSectionTitle(pen, y, t.eyecamTitle);
 
-    bool messageShown = false;
-    switch (s.state) {
+    // The light warning takes the place of idle's and error's views while it is open (the recorder's message too:
+    // it is about the run before)
+    bool messageShown = eyecamConfirm_.isOpen();
+    if (eyecamConfirm_.isOpen()) {
+        drawEyecamConfirm(pen, t, view, y);
+    } else switch (s.state) {
         case State::WaitingFds: {
             centered(y + 70, t.eyecamWaitingTitle, 32, 20, kText, true);
             double baseline = wrappedCentered(y + 122, t.eyecamWaitingHint, 20, kText, false, 2);
@@ -2976,11 +2998,21 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
         }
         case State::Recording: {
             // The step number (left) and the fps (right), small
+            double stepRight = kInnerX;
             if (s.stepCount > 0) {
                 char step[64];
                 const int shown = std::max(1, std::min(s.stepIndex + 1, s.stepCount));
                 std::snprintf(step, sizeof(step), t.eyecamStepFormat, shown, s.stepCount);
-                pen.text(kInnerX, y + 22, step, 22, kTextMuted, true);
+                stepRight = kInnerX + pen.text(kInnerX, y + 22, step, 22, kTextMuted, true) + 14;
+            }
+            // A run without the bright and dark steps says so beside it
+            if (eyecam::withoutLight(s)) {
+                const double size = 18;
+                const double w = pen.measure(t.eyecamNoLight, size, true) + 24;
+                const double h = 30;
+                fillRounded(pen, stepRight, y + 1, w, h, h / 2, kControl);
+                strokeRounded(pen, stepRight, y + 1, w, h, h / 2, kBorder, 2);
+                textCentered(pen, stepRight + w / 2, centerBaseline(y + 1, h, size), t.eyecamNoLight, size, kText, true);
             }
             pen.text(kInnerRight, y + 22, fpsLine, fitSize(pen, fpsLine, 18, 12, width / 2, false), kTextMuted, false,
                      true);
@@ -3058,6 +3090,80 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
     }
 }
 
+void EyePanel::drawEyecamConfirm(const Pen& pen, const UiText& t, const eyecam::View& view, double y) {
+    using eyecam::StartChoice;
+    const double cx = (kInnerX + kInnerRight) / 2;
+    const double width = kInnerRight - kInnerX;
+
+    // The title in red, after a red warning sign (a triangle with "!"), centered together
+    const std::string title = t.eyecamLightTitle;
+    const double titleSize = fitSize(pen, title, 36, 20, width - 80, true);
+    const double sign = 42;
+    const double signH = sign * 0.88;
+    const double gap = 14;
+    const double left = cx - (sign + gap + pen.measure(title, titleSize, true)) / 2;
+    const double titleBaseline = y + 56;
+    const double signTop = titleBaseline - titleSize * 0.36 - signH / 2 - 2;
+    pen.color(kDanger);
+    cairo_new_path(pen.cr);
+    cairo_move_to(pen.cr, left + sign / 2, signTop);
+    cairo_line_to(pen.cr, left + sign, signTop + signH);
+    cairo_line_to(pen.cr, left, signTop + signH);
+    cairo_close_path(pen.cr);
+    cairo_fill(pen.cr);
+    textCentered(pen, left + sign / 2, signTop + signH - 6, "!", 26, kOnAccent, true);
+    pen.text(left + sign + gap, titleBaseline, title, titleSize, kDanger, true);
+
+    // The warning in a red box: "\n" breaks a line, "\n\n" starts a paragraph, and each line wraps if it must
+    const double textSize = 22;
+    const double lineH = textSize * 1.42;
+    const double padX = 24;
+    const double padY = 20;
+    std::vector<std::string> lines;
+    std::vector<bool> paragraphStart;  // a line that starts a paragraph after the first gets a little more space
+    const std::string text = t.eyecamLightWarning;
+    bool newParagraph = false;
+    size_t from = 0;
+    while (from <= text.size()) {
+        const size_t end = std::min(text.find('\n', from), text.size());
+        if (end == from) newParagraph = true;
+        const std::vector<std::string> wrapped = wrapText(pen, text.substr(from, end - from), textSize, false,
+                                                          width - padX * 2, 4);
+        for (size_t i = 0; i < wrapped.size(); ++i) {
+            paragraphStart.push_back(i == 0 && newParagraph && !lines.empty());
+            lines.push_back(wrapped[i]);
+            newParagraph = false;
+        }
+        from = end + 1;
+    }
+    const double paragraphGap = 8;
+    double textH = textSize;
+    for (size_t i = 1; i < lines.size(); ++i) textH += lineH + (paragraphStart[i] ? paragraphGap : 0);
+    const double boxY = y + 84;
+    const double boxH = padY * 2 + textH + 4;
+    fillRounded(pen, kInnerX, boxY, width, boxH, 16, kDangerTint);
+    strokeRounded(pen, kInnerX, boxY, width, boxH, 16, kDanger, 2);
+    double baseline = boxY + padY + textSize;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i > 0) baseline += lineH + (paragraphStart[i] ? paragraphGap : 0);
+        pen.text(kInnerX + padX, baseline, lines[i], textSize, kText);
+    }
+
+    // With the light, without it (side by side, the same weight: neither is the "default"), and cancel under them
+    const bool usable = !view.busy;
+    const double rowY = boxY + boxH + 24;
+    const double gapX = 20;
+    const double bw = (width - gapX) / 2;
+    const double bh = 76;
+    drawButton(pen, kInnerX, rowY, bw, bh, t.eyecamStartWithLight,
+               {PanelAction::EyecamChoose, nullptr, static_cast<int>(StartChoice::WithLight)}, usable, false, 28);
+    drawButton(pen, kInnerX + bw + gapX, rowY, bw, bh, t.eyecamStartNoLight,
+               {PanelAction::EyecamChoose, nullptr, static_cast<int>(StartChoice::WithoutLight)}, usable, false, 28);
+    const double cw = 240;
+    drawButton(pen, cx - cw / 2, rowY + bh + 16, cw, 56, t.eyecamCancel,
+               {PanelAction::EyecamChoose, nullptr, static_cast<int>(StartChoice::Cancel)}, true, false, 24);
+}
+
 void EyePanel::render(const PanelModel& model) {
     const Pen pen {cr_, &fonts_};
     const UiText& t = uiText(model.language);
@@ -3074,6 +3180,7 @@ void EyePanel::render(const PanelModel& model) {
     // The developer tab comes and goes with eyecam-rec; once it is gone, its page goes back to the first tab
     eyecamTab_ = model.eyecam.visible;
     if (!eyecamTab_ && tab_ == PanelTab::Eyecam) tab_ = PanelTab::Basic;
+    syncEyecam(model.eyecam);
 
     drawStatus(pen, t, model);
     drawTabs(pen, t);

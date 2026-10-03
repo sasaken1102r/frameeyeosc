@@ -327,6 +327,15 @@ UiText makeJapanese() {
     t.eyecamStepDark = "暗い画面を見て";
     t.eyecamStepEnd = "おわり";
     t.eyecamStepLeadIn = "もうすぐ始まるよ";
+    t.eyecamLightTitle = "光の注意";
+    t.eyecamLightWarning =
+        "明るい画面・暗い画面の段では、\n視界全体が白・黒に切り替わります。\n\n"
+        "光過敏性てんかんの心配がある人は、光なしで撮ってください。\n\n"
+        "途中で気分が悪くなったら、［中止］を押して\nHMD を外してください。";
+    t.eyecamStartWithLight = "光ありで始める";
+    t.eyecamStartNoLight = "光なしで始める";
+    t.eyecamCancel = "やめる";
+    t.eyecamNoLight = "光なし";
     t.rowPrefix = "パラメーター名の頭";
     t.prefixNone = "なし";
     t.prefixExample = "例: ";
@@ -731,6 +740,15 @@ UiText makeEnglish() {
     t.eyecamStepDark = "Look at the dark screen";
     t.eyecamStepEnd = "Done";
     t.eyecamStepLeadIn = "Get ready";
+    t.eyecamLightTitle = "Light warning";
+    t.eyecamLightWarning =
+        "During the bright and dark steps your whole view turns white or black.\n\n"
+        "If you might be sensitive to light (photosensitive epilepsy), record without light.\n\n"
+        "If you feel unwell, press Stop and take the headset off.";
+    t.eyecamStartWithLight = "Start with light";
+    t.eyecamStartNoLight = "Start without light";
+    t.eyecamCancel = "Cancel";
+    t.eyecamNoLight = "No light";
     t.rowPrefix = "Parameter prefix";
     t.prefixNone = "None";
     t.prefixExample = "e.g. ";

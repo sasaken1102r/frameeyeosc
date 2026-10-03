@@ -329,6 +329,12 @@ struct UiText {
     const char* eyecamStepDark;
     const char* eyecamStepEnd;
     const char* eyecamStepLeadIn;  ///< the countdown before the first step
+    const char* eyecamLightTitle;      ///< the light warning before a start: its red title
+    const char* eyecamLightWarning;    ///< ...the warning ("\n" breaks a line, "\n\n" between paragraphs)
+    const char* eyecamStartWithLight;  ///< ...sends "start"
+    const char* eyecamStartNoLight;    ///< ...sends "start widen_nolight"
+    const char* eyecamCancel;          ///< ...back without starting
+    const char* eyecamNoLight;         ///< by the step number while recording without the light
     const char* rowPrefix;
     const char* prefixNone;
     const char* prefixExample;      ///< "e.g." before an OSC address

@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
@@ -489,7 +490,7 @@ void VrOverlay::hideDot(int index) {
     dotShown_[index] = false;
 }
 
-bool VrOverlay::showFill(const uint8_t* rgba, int size) {
+bool VrOverlay::showFill(const uint8_t* rgba, int size, double alpha) {
     if (!connected_ || fillFailed_) return false;
     vr::IVROverlay* overlay = vr::VROverlay();
     std::string message;
@@ -511,10 +512,22 @@ bool VrOverlay::showFill(const uint8_t* rgba, int size) {
                      overlay->SetOverlayTransformTrackedDeviceRelative(handle, vr::k_unTrackedDeviceIndex_Hmd,
                                                                        &transform));
         std::fprintf(stderr, "[VR] fill overlay %.1f m ahead, %.1f m wide\n", kFillDistanceM, kFillWidthM);
+        fillAlpha_ = -1.0f;
     }
     if (rgba != nullptr && !fillTexture_.update(fillHandle_, rgba, message)) {
         std::fprintf(stderr, "[VR] can't send the fill: %s\n", message.c_str());
         return false;
+    }
+    // The alpha before ShowOverlay: a fade-in starts from clear, never from the last alpha
+    const float a = static_cast<float>(std::clamp(alpha, 0.0, 1.0));
+    if (a != fillAlpha_) {
+        // Every step of a fade (logged only when it fails)
+        if (checkOverlay("SetOverlayAlpha(fill)", overlay->SetOverlayAlpha(fillHandle_, a))) {
+            fillAlpha_ = a;
+        } else {
+            fillAlpha_ = -1.0f;
+            if (!fillShown_) return false;  // never shown at an alpha that wasn't set
+        }
     }
     if (!fillShown_) {
         if (!checkOverlay("ShowOverlay(fill)", overlay->ShowOverlay(fillHandle_))) return false;

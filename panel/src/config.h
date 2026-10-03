@@ -55,6 +55,8 @@ constexpr const char* kEyeTrackingActive = "eye_tracking_active";
 constexpr const char* kSteamlinkParams = "steamlink_params";
 /** VRChat output: also send VRChat's own eye tracking input (/tracking/eye/*), for avatars without VRCFT parameters. */
 constexpr const char* kNativeEyes = "native_eyes";
+/** Eyelids (and squint) from the eye cameras where eyecam-rec reads them live and is calibrated (default on). */
+constexpr const char* kCameraLids = "camera_lids";
 constexpr const char* kRaw = "raw";
 constexpr const char* kGazeMinCutoff = "gaze_min_cutoff";
 constexpr const char* kGazeBeta = "gaze_beta";

@@ -83,6 +83,8 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"new release notice text (accent tint)", kText, kAccentTint, ContrastKind::Text},
         {"destination card lines (card; chosen or hovered ones use body text)", kTextMuted, kControl, ContrastKind::Text},
         {"chosen destination card text (accent tint)", kText, kAccentTint, ContrastKind::Text},
+        {"eye camera calibration: done chip, calibration chip, the first tab's note (accent tint)", kText, kAccentTint,
+         ContrastKind::Text},
         {"update check chip \"On\" (pill)", kAccent, kControl, ContrastKind::Text},
         {"update check chip \"On\" (hovered)", kAccent, kControlHover, ContrastKind::Text},
         // Controls (WCAG 1.4.11)
@@ -92,6 +94,9 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"selected tab fill and notch (panel background)", kAccent, kBg, ContrastKind::Ui},
         {"learning dot, tab notch (card)", kAccent, kCard, ContrastKind::Ui},
         {"new release notice outline and dot (accent tint)", kAccent, kAccentTint, ContrastKind::Ui},
+        {"eye camera calibration: chip outline and check, the note's button (accent tint)", kAccent, kAccentTint,
+         ContrastKind::Ui},
+        {"eye camera calibration: \"not yet\" ring (pill)", kTextMuted, kControl, ContrastKind::Ui},
         {"quit / reset outline (card)", kDanger, kCard, ContrastKind::Ui},
         {"- / + signs", kText, kControl, ContrastKind::Ui},
         {"- / + signs (hovered)", kText, kControlHover, ContrastKind::Ui},

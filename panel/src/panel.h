@@ -68,6 +68,8 @@ enum class PanelAction {
     EyecamChoose,      ///< a button in the light warning: arg = eyecam::StartChoice (the panel returns only the two
                        ///< starts; the caller sends eyecam::startCommand to eyecam-rec's socket)
     EyecamStop,        ///< eye capture tab: send "stop"
+    EyecamCalib,       ///< a calibration: arg = eyecam::Calib (the panel shows the eye capture tab; the caller sends
+                       ///< eyecam::calibCommand)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -493,16 +495,42 @@ private:
 
     /**
      * The eye capture tab (developer): what eyecam-rec is doing, in large type to read in the headset. Waiting for
-     * the camera buffers: the command to run over SSH. Idle: a big "Start". Searching: the fps. Recording: the
-     * step's instruction, the seconds left, the step number, a progress bar over the whole run, the fps and
-     * "Stop" (and "No light" by the step number for the protocol without the light). Error: the message and "Start
-     * again". "Start" and "Start again" open the light warning in its place (drawEyecamConfirm). The recorder's
-     * message and a failed command's reply under it.
+     * the camera buffers: the command to run over SSH. Idle: drawEyecamIdle. Searching: the fps. Recording and
+     * calibrating: the step's instruction, the seconds left, the step number, a progress bar over the whole run, the
+     * fps and "Stop" (and "No light" by the step number for the protocol without the light; the calibration's name
+     * there while calibrating). Error: the message and "Start again" ("Calibrate again" after a calibration).
+     * "Start" and "Start again" open the light warning in its place (drawEyecamConfirm). The recorder's message and
+     * a failed command's reply under it.
      * @param pen drawing tools
      * @param t texts
      * @param model the model (its eyecam view)
+     * @param view the settings shown
      */
-    void drawEyecam(const Pen& pen, const UiText& t, const PanelModel& model);
+    void drawEyecam(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The eye capture tab while eyecam-rec is ready: the camera_lids switch with what frameeyeosc uses now, the
+     * calibrations (done or not, a hint, "Calibrate (18 s)" and "User calibration (once)"), and the recording's
+     * start.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (its eyecam view, frameeyeosc's camera status)
+     * @param view the settings shown (camera_lids)
+     * @param y the top
+     */
+    void drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view, double y);
+
+    /**
+     * The note on the first tab asking for a calibration of the eye cameras (eyecam::calibPrompt), with a button
+     * that starts it and shows the eye capture tab.
+     * @param pen drawing tools
+     * @param t texts
+     * @param prompt which note
+     * @param busy a command to eyecam-rec waits for its reply (the button greys out)
+     * @param y the top
+     * @return the height used
+     */
+    double drawCalibPrompt(const Pen& pen, const UiText& t, eyecam::CalibPrompt prompt, bool busy, double y);
 
     /**
      * The light warning before a start: a red "Light warning" title with a warning sign, the warning in a red box,

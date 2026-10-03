@@ -1,5 +1,6 @@
 // The eye capture tab's logic: reading eyecam-rec's status.json, when the tab and the full-view overlay show (and how
-// it fades), the light warning before a start, the step texts, and its control socket.
+// it fades), the light warning before a start, the calibrations (and the note asking for one), the step texts, and
+// its control socket.
 #include "eyecam.h"
 
 #include "json.h"
@@ -77,6 +78,7 @@ State parseState(const std::string& text) {
     if (text == "idle") return State::Idle;
     if (text == "searching") return State::Searching;
     if (text == "recording") return State::Recording;
+    if (text == "calibrating") return State::Calibrating;
     if (text == "error") return State::Error;
     if (text == "stopped") return State::Stopped;
     return State::Unknown;
@@ -101,7 +103,7 @@ Status parseStatus(const std::string& text, double mtime) {
     Status status;
     status.mtime = mtime;
     status.fpsL = status.fpsR = kNaN;
-    status.stepRemainingS = status.elapsedS = status.totalS = kNaN;
+    status.stepRemainingS = status.elapsedS = status.totalS = status.liveMs = kNaN;
     JsonValue root;
     if (!parseJson(text, root, status.readError)) return status;
     if (!root.isObject()) {
@@ -126,6 +128,13 @@ Status parseStatus(const std::string& text, double mtime) {
     status.totalS = readNumber(root, "total_s", kNaN);
     status.sessionDir = readText(root, "session_dir");
     status.protocol = readText(root, "protocol");
+    // Bits beyond the two known ones are kept, but only the two are used
+    status.calibState = std::max(0, readInt(root, "calib_state", 0));
+    const JsonValue* recalib = root.get("recalib_suggested");
+    status.recalibSuggested = recalib != nullptr && recalib->isBool() && recalib->boolean;
+    const JsonValue* live = root.get("live");
+    status.live = live != nullptr && live->isBool() && live->boolean;
+    status.liveMs = readNumber(root, "live_ms", kNaN);
     return status;
 }
 
@@ -219,6 +228,51 @@ std::string startCommand(StartChoice choice) {
     return std::string();
 }
 
+std::string calibCommand(Calib calib) {
+    return calib == Calib::User ? kCalibUserCommand : kCalibWearCommand;
+}
+
+bool userCalibAllowed(const Status& status) {
+    return (status.calibState & kCalibWearBit) != 0;
+}
+
+Run runOfCommand(const std::string& command) {
+    if (command == kCalibWearCommand) return Run::CalibWear;
+    if (command == kCalibUserCommand) return Run::CalibUser;
+    if (command == kStartCommand || command.rfind(std::string(kStartCommand) + " ", 0) == 0) return Run::Recording;
+    return Run::None;
+}
+
+Run followRun(Run last, const Status& status) {
+    switch (status.state) {
+        case State::Searching:
+        case State::Recording: return Run::Recording;
+        case State::Calibrating:
+            switch (parseStep(status.stepLabel)) {
+                case Step::Squint:
+                case Step::LookUp:
+                case Step::LookDown: return Run::CalibUser;
+                case Step::Close:
+                case Step::Normal:
+                case Step::Widen: return Run::CalibWear;
+                default: return isCalib(last) ? last : Run::CalibWear;
+            }
+        default: return last;
+    }
+}
+
+bool isCalib(Run run) {
+    return run == Run::CalibWear || run == Run::CalibUser;
+}
+
+CalibPrompt calibPrompt(const View& view, bool cameraLids) {
+    const Status& s = view.status;
+    if (!view.visible || !cameraLids || !s.live || !s.locked) return CalibPrompt::None;
+    if (s.state != State::Idle && s.state != State::Error) return CalibPrompt::None;
+    if ((s.calibState & kCalibWearBit) == 0) return CalibPrompt::Calibrate;
+    return s.recalibSuggested ? CalibPrompt::Recalibrate : CalibPrompt::None;
+}
+
 bool StartConfirm::open(State state) {
     if (state != State::Idle && state != State::Error) return false;
     open_ = true;
@@ -288,7 +342,8 @@ std::string signature(const View& view) {
            (std::isfinite(s.stepRemainingS) ? std::to_string(static_cast<long>(std::ceil(s.stepRemainingS - 1e-9)))
                                             : std::string("-")) +
            "|" + rounded(progress, 0.002) + "|" + rounded(s.elapsedS, 1.0) + "|" + rounded(s.totalS, 1.0) + "|" +
-           s.protocol;
+           s.protocol + "|" + std::to_string(s.calibState) + std::to_string(s.recalibSuggested) +
+           std::to_string(s.live) + "|" + std::to_string(static_cast<int>(view.lastRun));
 }
 
 Control::~Control() {

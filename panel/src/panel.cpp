@@ -655,6 +655,12 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             // Never straight to the light: the warning first, with a start without it
             openEyecamConfirm(eyecamState_);
             return {};
+        case PanelAction::EyecamCalib:
+            // From the first tab's note too: the calibration's steps show on the eye capture tab
+            if (eyecamTab_) tab_ = PanelTab::Eyecam;
+            historyOpen_ = false;
+            eyecamConfirm_.close();
+            return hit;
         case PanelAction::EyecamChoose:
             if (!eyecamConfirm_.isOpen()) return {};
             // "Cancel" only closes it
@@ -1300,9 +1306,38 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
         textCentered(pen, x + w / 2, centerBaseline(y, kControlH, size), label, size, armed ? kOnAccent : kText, true);
         addButton(hit, x, y, w, kControlH);
     }
-    y += kControlH + 28;
+    y += kControlH;
+    // The eye cameras want a calibration (only with eyecam-rec running): a note with its button
+    const eyecam::CalibPrompt prompt = eyecam::calibPrompt(m.eyecam, v.flag(key::kCameraLids));
+    if (prompt != eyecam::CalibPrompt::None) y += 14 + drawCalibPrompt(pen, t, prompt, m.eyecam.busy, y + 14);
+    y += 28;
     const std::vector<std::string> lines = wrapText(pen, t.footer, 15, false, kInnerRight - kInnerX, 2);
-    for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
+    // (all of it, or none: under the note, a second line would leave the card)
+    if (y + (lines.size() - 1) * 22 <= kContentY + kContentH - 14) {
+        for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
+    }
+}
+
+double EyePanel::drawCalibPrompt(const Pen& pen, const UiText& t, eyecam::CalibPrompt prompt, bool busy, double y) {
+    const bool again = prompt == eyecam::CalibPrompt::Recalibrate;
+    const std::string text = again ? t.recalibPromptText : t.calibPromptText;
+    const std::string label = again ? t.recalibPromptButton : t.calibPromptButton;
+    // Like the update notice in the left column: an accent tint, a dot, the text, and the button at the right
+    const double x0 = kInnerX;
+    const double x1 = kInnerRight;
+    const double h = 60;
+    fillRounded(pen, x0, y, x1 - x0, h, 20, kAccentTint);
+    strokeRounded(pen, x0, y, x1 - x0, h, 20, kAccent, 2);
+    drawDot(pen.cr, x0 + 24, y + h / 2, 6, kAccent);
+    const double bh = 42;
+    const double bw = std::max(150.0, pen.measure(label, 19, true) + 44);
+    const double bx = x1 - 10 - bw;
+    const double textX = x0 + 42;
+    const double size = fitSize(pen, text, 19, 13, bx - 14 - textX, true);
+    pen.text(textX, centerBaseline(y, h, size), text, size, kText, true);
+    drawButton(pen, bx, y + (h - bh) / 2, bw, bh, label,
+               {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy, true, 19);
+    return h;
 }
 
 double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& v, double y) {
@@ -2918,7 +2953,7 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
     }
 }
 
-void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) {
+void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
     using eyecam::State;
     const eyecam::View& view = m.eyecam;
     const eyecam::Status& s = view.status;
@@ -2956,9 +2991,15 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
     const std::string fpsLine = fps;
     const bool stopUsable = !view.busy;
     const bool startUsable = !view.busy;
+    // A calibration running, or the one that just failed
+    const bool calibRun = s.state == State::Calibrating || (s.state == State::Error && eyecam::isCalib(view.lastRun));
+    const eyecam::Calib calib = view.lastRun == eyecam::Run::CalibUser ? eyecam::Calib::User : eyecam::Calib::Wear;
 
     double y = kRowTop - 6;
-    y += drawSectionTitle(pen, y, t.eyecamTitle);
+    // (idle has a title over each of its sections)
+    if (s.state != State::Idle || eyecamConfirm_.isOpen()) {
+        y += drawSectionTitle(pen, y, calibRun ? t.eyecamSectionCalib : t.eyecamTitle);
+    }
 
     // The light warning takes the place of idle's and error's views while it is open (the recorder's message too:
     // it is about the run before)
@@ -2980,12 +3021,7 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
             break;
         }
         case State::Idle: {
-            centered(y + 76, t.eyecamIdleTitle, 34, 20, kText, true);
-            wrappedCentered(y + 122, t.eyecamIdleHint, 19, kTextMuted, false, 2);
-            const double w = 440;
-            const double h = 116;
-            drawButton(pen, cx - w / 2, y + 190, w, h, t.eyecamStart, {PanelAction::EyecamStart, nullptr, 0},
-                       startUsable, true, 42);
+            drawEyecamIdle(pen, t, m, v, y);
             break;
         }
         case State::Searching: {
@@ -2996,7 +3032,18 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
                        stopUsable, false, 26);
             break;
         }
-        case State::Recording: {
+        case State::Recording:
+        case State::Calibrating: {
+            const bool calibrating = s.state == State::Calibrating;
+            // A calibration waits for the video before its first step
+            if (calibrating && s.stepLabel.empty()) {
+                centered(y + 130, t.eyecamCalibWaiting, 44, 24, kText, true);
+                if (!s.locked) centered(y + 190, t.eyecamNotLocked, 32, 18, kDanger, true);
+                const double w = 240;
+                drawButton(pen, cx - w / 2, y + 250, w, 68, t.eyecamStop, {PanelAction::EyecamStop, nullptr, 0},
+                           stopUsable, false, 26);
+                break;
+            }
             // The step number (left) and the fps (right), small
             double stepRight = kInnerX;
             if (s.stepCount > 0) {
@@ -3005,8 +3052,18 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
                 std::snprintf(step, sizeof(step), t.eyecamStepFormat, shown, s.stepCount);
                 stepRight = kInnerX + pen.text(kInnerX, y + 22, step, 22, kTextMuted, true) + 14;
             }
+            // A calibration says which one beside it, in the accent: this is no recording
+            if (calibrating) {
+                const std::string name = calib == eyecam::Calib::User ? t.eyecamCalibUserTitle : t.eyecamCalibWearTitle;
+                const double size = 18;
+                const double w = pen.measure(name, size, true) + 24;
+                const double h = 30;
+                fillRounded(pen, stepRight, y + 1, w, h, h / 2, kAccentTint);
+                strokeRounded(pen, stepRight, y + 1, w, h, h / 2, kAccent, 2);
+                textCentered(pen, stepRight + w / 2, centerBaseline(y + 1, h, size), name, size, kText, true);
+            }
             // A run without the bright and dark steps says so beside it
-            if (eyecam::withoutLight(s)) {
+            else if (eyecam::withoutLight(s)) {
                 const double size = 18;
                 const double w = pen.measure(t.eyecamNoLight, size, true) + 24;
                 const double h = 30;
@@ -3048,14 +3105,22 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
             break;
         }
         case State::Error: {
-            centered(y + 76, t.eyecamErrorTitle, 34, 20, kDanger, true);
+            centered(y + 76, calibRun ? t.eyecamCalibErrorTitle : t.eyecamErrorTitle, 34, 20, kDanger, true);
+            // (eyecam-rec's reason, in Japanese only)
             if (!s.message.empty()) {
                 wrappedCentered(y + 130, s.message, 24, kText, false, 3);
                 messageShown = true;
             }
             const double w = 400;
-            drawButton(pen, cx - w / 2, y + 250, w, 96, t.eyecamRetry, {PanelAction::EyecamStart, nullptr, 0},
-                       startUsable, true, 36);
+            if (calibRun) {
+                // The same calibration again (the user's only while this wear's is still there)
+                const bool usable = startUsable && (calib == eyecam::Calib::Wear || eyecam::userCalibAllowed(s));
+                drawButton(pen, cx - w / 2, y + 250, w, 96, t.eyecamCalibRetry,
+                           {PanelAction::EyecamCalib, nullptr, static_cast<int>(calib)}, usable, true, 36);
+            } else {
+                drawButton(pen, cx - w / 2, y + 250, w, 96, t.eyecamRetry, {PanelAction::EyecamStart, nullptr, 0},
+                           startUsable, true, 36);
+            }
             break;
         }
         default: {
@@ -3087,6 +3152,125 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
     for (auto line = lines.rbegin(); line != lines.rend(); ++line) {
         textCentered(pen, cx, baseline, line->text, line->size, line->color, line->bold);
         baseline -= line->size * 1.4;
+    }
+}
+
+void EyePanel::drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double y) {
+    const eyecam::Status& s = m.eyecam.status;
+    const bool busy = m.eyecam.busy;
+    const double width = kInnerRight - kInnerX;
+
+    // The camera eyelids for frameeyeosc: the switch at the right, and under its title what frameeyeosc uses now
+    y += drawSectionTitle(pen, y, t.eyecamSectionCamera);
+    {
+        const bool locked = v.locked(key::kCameraLids);
+        const bool on = v.flag(key::kCameraLids);
+        const double sw = 220;
+        const double sx = kInnerRight - sw;
+        const double textW = sx - 16 - kInnerX;
+        const EyeStatus& es = m.status;
+        const CameraUse use = cameraUse(es, on);
+        std::string usage;
+        switch (use) {
+            case CameraUse::Both: usage = t.cameraUseBoth; break;
+            case CameraUse::Left: usage = t.cameraUseLeft; break;
+            case CameraUse::Right: usage = t.cameraUseRight; break;
+            case CameraUse::Off:
+            case CameraUse::Valve: usage = t.cameraUseValve; break;
+            case CameraUse::NotCalibrated: usage = formatText(t.cameraUseValveFormat, t.cameraWhyNotCalibrated); break;
+            case CameraUse::NoCamera: usage = formatText(t.cameraUseValveFormat, t.cameraWhyNoCamera); break;
+            case CameraUse::Error: usage = formatText(t.cameraUseValveFormat, es.camera.error); break;
+            case CameraUse::Unknown: break;  // frameeyeosc not running, or one that doesn't say
+        }
+        const bool inUse = use == CameraUse::Both || use == CameraUse::Left || use == CameraUse::Right;
+        if (inUse && (es.camera.pupilUsed[0] || es.camera.pupilUsed[1])) usage += t.cameraPupilSuffix;
+        // The title by the switch, or above the line when there is one
+        const double titleSize = fitSize(pen, t.rowCameraLids, 20, 14, textW, true);
+        const double titleBaseline = usage.empty() ? centerBaseline(y + 6, kControlH, titleSize) : y + 26;
+        const double titleRight = kInnerX + pen.text(kInnerX, titleBaseline, t.rowCameraLids, titleSize, kText, true);
+        // Locked by the command line: said after the title, so the line under it stays whole
+        if (locked) {
+            drawLock(pen, titleRight + 14, titleBaseline, 16, kTextMuted);
+            pen.text(titleRight + 34, titleBaseline, t.locked,
+                     fitSize(pen, t.locked, 15, 11, kInnerX + textW - titleRight - 34, false), kTextMuted);
+        }
+        if (!usage.empty()) {
+            const std::string shown = ellipsize(pen, usage, 16, inUse, textW, false);
+            pen.text(kInnerX, y + 52, shown, 16, inUse ? kText : kTextMuted, inUse);
+        }
+        drawSegmented(pen, sx, y + 6, sw, kControlH,
+                      {{t.on, {PanelAction::SetBool, key::kCameraLids, 1}},
+                       {t.off, {PanelAction::SetBool, key::kCameraLids, 0}}},
+                      on ? 0 : 1, 20, locked);
+        y += 80;
+    }
+
+    // The calibrations: done or not, what to do next, and their buttons
+    y += drawSectionTitle(pen, y, t.eyecamSectionCalib);
+    {
+        const bool wearDone = (s.calibState & eyecam::kCalibWearBit) != 0;
+        const bool userDone = (s.calibState & eyecam::kCalibUserBit) != 0;
+        double x = kInnerX;
+        for (int i = 0; i < 2; ++i) {
+            const bool done = i == 0 ? wearDone : userDone;
+            char chip[160];
+            std::snprintf(chip, sizeof(chip), t.eyecamCalibChipFormat, i == 0 ? t.eyecamCalibWearChip : t.eyecamCalibUserChip,
+                          done ? t.eyecamCalibDone : t.eyecamCalibNotYet);
+            const double size = 17;
+            const double h = 34;
+            const double mark = 22;
+            const double w = pen.measure(chip, size, true) + 28 + mark;
+            fillRounded(pen, x, y + 6, w, h, h / 2, done ? kAccentTint : kControl);
+            strokeRounded(pen, x, y + 6, w, h, h / 2, done ? kAccent : kBorder, 2);
+            if (done) {
+                drawCheck(pen.cr, x + 14 + mark / 2 - 2, y + 6 + h / 2, 14, kAccent);
+            } else {
+                drawRing(pen.cr, x + 14 + mark / 2 - 3, y + 6 + h / 2, 6, 2, kTextMuted);
+            }
+            pen.text(x + 14 + mark, centerBaseline(y + 6, h, size), chip, size, kText, true);
+            x += w + 10;
+        }
+        // What to do next (drift first: it is why the first tab asks)
+        const char* hint = !s.live              ? t.eyecamLiveOff
+                           : s.recalibSuggested ? t.eyecamCalibHintRecalib
+                           : !wearDone          ? t.eyecamCalibHintWear
+                           : !userDone          ? t.eyecamCalibHintUser
+                                                : t.eyecamCalibHintDone;
+        const bool notice = s.live && s.recalibSuggested;
+        pen.text(kInnerX, y + 70, hint, fitSize(pen, hint, 16, 12, width, notice), notice ? kText : kTextMuted, notice);
+        // The one to do next gets the accent
+        const bool userNext = wearDone && !userDone && !s.recalibSuggested;
+        const bool userAllowed = eyecam::userCalibAllowed(s);
+        const double gap = 16;
+        const double bw = (width - gap) / 2;
+        const double bh = 64;
+        const double by = y + 84;
+        drawButton(pen, kInnerX, by, bw, bh, t.eyecamCalibWear,
+                   {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy, !userNext, 22);
+        drawButton(pen, kInnerX + bw + gap, by, bw, bh, t.eyecamCalibUser,
+                   {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::User)}, !busy && userAllowed,
+                   userNext, 22);
+        if (!userAllowed) {
+            textCentered(pen, kInnerX + bw + gap + bw / 2, by + bh + 22, t.eyecamCalibUserNeedsWear,
+                         fitSize(pen, t.eyecamCalibUserNeedsWear, 15, 11, bw, false), kTextMuted, false);
+        }
+        y += 184;
+    }
+
+    // The recording (developer): its start opens the light warning, as before
+    y += drawSectionTitle(pen, y, t.eyecamSectionRecord);
+    {
+        const double bw = 230;
+        const double bh = 60;
+        drawButton(pen, kInnerX, y + 6, bw, bh, t.eyecamStart, {PanelAction::EyecamStart, nullptr, 0}, !busy, false,
+                   24);
+        const double hintX = kInnerX + bw + 20;
+        const std::vector<std::string> lines = wrapText(pen, t.eyecamIdleHint, 15, false, kInnerRight - hintX, 2);
+        double baseline = y + 6 + bh / 2 + 5 - (lines.size() - 1) * 10.5;
+        for (const std::string& line : lines) {
+            pen.text(hintX, baseline, line, 15, kTextMuted);
+            baseline += 21;
+        }
     }
 }
 
@@ -3192,7 +3376,7 @@ void EyePanel::render(const PanelModel& model) {
         case PanelTab::EyeFit: drawEyeFit(pen, t, model, view); break;
         case PanelTab::Lids: drawLids(pen, t, model, view); break;
         case PanelTab::Advanced: drawAdvanced(pen, t, model, view); break;
-        case PanelTab::Eyecam: drawEyecam(pen, t, model); break;
+        case PanelTab::Eyecam: drawEyecam(pen, t, model, view); break;
     }
     if (promptOpen()) drawPrompt(pen, t);
     if (hostEntryOpen_) drawHostEntry(pen, t);

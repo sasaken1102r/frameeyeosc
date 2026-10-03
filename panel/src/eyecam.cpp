@@ -1,5 +1,5 @@
-// The eye capture tab's logic: reading eyecam-rec's status.json, when the tab and the full-view overlay show, the
-// step texts, and its control socket.
+// The eye capture tab's logic: reading eyecam-rec's status.json, when the tab and the full-view overlay show (and how
+// it fades), the light warning before a start, the step texts, and its control socket.
 #include "eyecam.h"
 
 #include "json.h"
@@ -9,6 +9,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
@@ -165,6 +166,77 @@ Fill fillFor(const Status& status, double now) {
     }
 }
 
+bool hideLightAtOnce(const View& view, double now) {
+    const Status& s = view.status;
+    return !tabVisible(s, now) || s.state != State::Recording || age(s, now) > kOverlayStaleSec ||
+           (view.busy && view.busyCommand == "stop");
+}
+
+Light stepLight(const Light& light, Fill wanted, bool hideNow, double now) {
+    Light next = light;
+    next.at = now;
+    if (hideNow) {
+        next.fill = Fill::None;
+        next.alpha = 0.0;
+        return next;
+    }
+    // Nothing up: the wanted one (if any) starts from fully clear
+    if (light.fill == Fill::None) {
+        next.fill = wanted;
+        next.alpha = 0.0;
+        return next;
+    }
+    const double dt = std::max(0.0, now - light.at);
+    if (light.fill == wanted) {
+        // A stalled loop never makes it jump: at most kMaxFadeInStepSec's worth of brightness at a time
+        next.alpha = std::min(1.0, light.alpha + std::min(dt, kMaxFadeInStepSec) / kFadeInSec);
+        return next;
+    }
+    // Not wanted any more (its step ended, or the other color is next): out first
+    next.alpha = std::max(0.0, light.alpha - dt / kFadeOutSec);
+    if (next.alpha <= 0.0) {
+        next.fill = wanted;
+        next.alpha = 0.0;
+    }
+    return next;
+}
+
+bool lightFading(const Light& light, Fill wanted) {
+    if (light.fill != wanted) return true;
+    return wanted != Fill::None && light.alpha < 1.0;
+}
+
+bool withoutLight(const Status& status) {
+    return status.protocol == kNoLightProtocol;
+}
+
+std::string startCommand(StartChoice choice) {
+    switch (choice) {
+        case StartChoice::WithLight: return kStartCommand;
+        case StartChoice::WithoutLight: return std::string(kStartCommand) + " " + kNoLightProtocol;
+        case StartChoice::Cancel: break;
+    }
+    return std::string();
+}
+
+bool StartConfirm::open(State state) {
+    if (state != State::Idle && state != State::Error) return false;
+    open_ = true;
+    openedIn_ = state;
+    return true;
+}
+
+bool StartConfirm::sync(State state, bool tabShown) {
+    if (!open_ || (tabShown && state == openedIn_)) return false;
+    open_ = false;
+    return true;
+}
+
+std::string StartConfirm::choose(StartChoice choice) {
+    open_ = false;
+    return startCommand(choice);
+}
+
 std::string instruction(const UiText& t, const std::string& label) {
     switch (parseStep(label)) {
         case Step::LeadIn: return t.eyecamStepLeadIn;
@@ -215,7 +287,8 @@ std::string signature(const View& view) {
            std::to_string(s.stepCount) + "|" + s.stepLabel + "|" +
            (std::isfinite(s.stepRemainingS) ? std::to_string(static_cast<long>(std::ceil(s.stepRemainingS - 1e-9)))
                                             : std::string("-")) +
-           "|" + rounded(progress, 0.002) + "|" + rounded(s.elapsedS, 1.0) + "|" + rounded(s.totalS, 1.0);
+           "|" + rounded(progress, 0.002) + "|" + rounded(s.elapsedS, 1.0) + "|" + rounded(s.totalS, 1.0) + "|" +
+           s.protocol;
 }
 
 Control::~Control() {

@@ -1,7 +1,8 @@
 // Tests for the eye capture tab's logic (eyecam.cpp): reading eyecam-rec's status.json (every state, missing and odd
 // fields), when the tab shows (stale, stopped, missing), the step texts in both languages, when the full-view light
-// shows, and the control socket against a stand-in recorder in a temporary folder (never the real one). Built with
-// the panel as eyecam-test; exits non-zero on failure.
+// shows and how it fades (and when it goes at once), the light warning before a start and the commands it sends, and
+// the control socket against a stand-in recorder in a temporary folder (never the real one). Built with the panel as
+// eyecam-test; exits non-zero on failure.
 #include "eyecam.h"
 
 #include <sys/socket.h>
@@ -208,6 +209,251 @@ void testFill() {
           Fill::None);
 }
 
+void testConfirm() {
+    using eyecam::StartChoice;
+    using eyecam::StartConfirm;
+    // The commands each button sends
+    SAME(eyecam::startCommand(StartChoice::WithLight), "start");
+    SAME(eyecam::startCommand(StartChoice::WithoutLight), "start widen_nolight");
+    SAME(eyecam::startCommand(StartChoice::Cancel), "");
+
+    // idle -> the warning -> each button
+    const struct {
+        StartChoice choice;
+        const char* command;
+    } kChoices[] = {{StartChoice::WithLight, "start"},
+                    {StartChoice::WithoutLight, "start widen_nolight"},
+                    {StartChoice::Cancel, ""}};
+    for (const auto& item : kChoices) {
+        StartConfirm confirm;
+        CHECK(!confirm.isOpen());
+        CHECK(confirm.open(State::Idle));
+        CHECK(confirm.isOpen());
+        CHECK(!confirm.sync(State::Idle, true));  // stays while idle and shown
+        CHECK(confirm.isOpen());
+        SAME(confirm.choose(item.choice), item.command);
+        CHECK(!confirm.isOpen());  // every button closes it: back to idle's view
+    }
+    // The retry in error goes through it too
+    {
+        StartConfirm confirm;
+        CHECK(confirm.open(State::Error));
+        CHECK(!confirm.sync(State::Error, true));
+        SAME(confirm.choose(StartChoice::WithoutLight), "start widen_nolight");
+    }
+    // Only idle and error open it
+    for (const State state : {State::Missing, State::WaitingFds, State::Searching, State::Recording, State::Stopped,
+                              State::Unknown}) {
+        StartConfirm confirm;
+        CHECK(!confirm.open(state));
+        CHECK(!confirm.isOpen());
+    }
+    // It closes by itself once the state leaves the one it was opened in (another start from elsewhere, the
+    // recorder failing, ...), even if it comes back
+    for (const State state : {State::Searching, State::Recording, State::Error, State::WaitingFds, State::Stopped,
+                              State::Missing}) {
+        StartConfirm confirm;
+        confirm.open(State::Idle);
+        CHECK(confirm.sync(state, true));
+        CHECK(!confirm.isOpen());
+        CHECK(!confirm.sync(State::Idle, true));  // closed already: nothing more
+        CHECK(!confirm.isOpen());
+    }
+    {
+        StartConfirm confirm;
+        confirm.open(State::Error);
+        CHECK(confirm.sync(State::Idle, true));  // error -> idle is a change too
+        CHECK(!confirm.isOpen());
+    }
+    // ...and when the tab hides (eyecam-rec's tab gone, another tab chosen, the dashboard closed)
+    {
+        StartConfirm confirm;
+        confirm.open(State::Idle);
+        CHECK(confirm.sync(State::Idle, false));
+        CHECK(!confirm.isOpen());
+        confirm.open(State::Idle);
+        confirm.close();
+        CHECK(!confirm.isOpen());
+    }
+}
+
+void testNoLight() {
+    CHECK(!eyecam::withoutLight(eyecam::parseStatus(fullStatus("recording", "widen"), kNow)));  // "default"
+    const std::string noLight = "{\"state\": \"recording\", \"step_label\": \"widen\", \"protocol\": \"widen_nolight\"}";
+    CHECK(eyecam::withoutLight(eyecam::parseStatus(noLight, kNow)));
+    CHECK(!eyecam::withoutLight(eyecam::parseStatus("{\"state\": \"recording\", \"protocol\": \"widen\"}", kNow)));
+    CHECK(!eyecam::withoutLight(eyecam::parseStatus("{\"state\": \"recording\"}", kNow)));
+    // The note redraws the panel when the protocol changes
+    eyecam::View a;
+    eyecam::View b;
+    a.status = eyecam::parseStatus(fullStatus("recording", "widen"), kNow);
+    b.status = a.status;
+    b.status.protocol = eyecam::kNoLightProtocol;
+    CHECK(eyecam::withoutLight(b.status));
+    CHECK(eyecam::signature(a) != eyecam::signature(b));
+}
+
+/**
+ * Step a light along at a fixed rate.
+ * @param light the light (changed)
+ * @param wanted what fillFor says
+ * @param from monotonic seconds to start at (light.at should be there)
+ * @param seconds how long
+ * @param dt the loop's period
+ * @return the time it got to
+ */
+double run(eyecam::Light& light, Fill wanted, double from, double seconds, double dt) {
+    double t = from;
+    const int steps = static_cast<int>(std::lround(seconds / dt));
+    for (int i = 0; i < steps; ++i) {
+        t += dt;
+        light = eyecam::stepLight(light, wanted, false, t);
+    }
+    return t;
+}
+
+void testFade() {
+    using eyecam::Light;
+    const double dt = 1.0 / 90;
+    CHECK(std::fabs(eyecam::kFadeInSec - 0.7) < 1e-9);
+    CHECK(std::fabs(eyecam::kFadeOutSec - 0.5) < 1e-9);
+
+    // Nothing wanted, nothing shown
+    Light light;
+    light = eyecam::stepLight(light, Fill::None, false, 100.0);
+    CHECK(light.fill == Fill::None && light.alpha == 0.0 && light.at == 100.0);
+    CHECK(!eyecam::lightFading(light, Fill::None));
+
+    // Bright wanted: up at once, but clear; then 0 -> 1 over 0.7 s, never jumping
+    light = eyecam::stepLight(light, Fill::Bright, false, 100.0);
+    CHECK(light.fill == Fill::Bright && light.alpha == 0.0);
+    CHECK(eyecam::lightFading(light, Fill::Bright));
+    double t = 100.0;
+    double last = 0.0;
+    double biggestStep = 0.0;
+    while (t < 100.0 + 0.35 - 1e-9) {
+        t += dt;
+        light = eyecam::stepLight(light, Fill::Bright, false, t);
+        biggestStep = std::max(biggestStep, light.alpha - last);
+        CHECK(light.alpha >= last);
+        last = light.alpha;
+    }
+    CHECK(std::fabs(light.alpha - 0.5) < 0.02);  // halfway at 0.35 s
+    CHECK(biggestStep < 0.02);
+    t = run(light, Fill::Bright, t, 0.3, dt);
+    CHECK(light.alpha > 0.9 && light.alpha < 1.0);  // not yet at 0.65 s
+    t = run(light, Fill::Bright, t, 0.06, dt);
+    CHECK(light.alpha == 1.0);  // full at 0.7 s, and it stays there
+    CHECK(!eyecam::lightFading(light, Fill::Bright));
+    t = run(light, Fill::Bright, t, 5.0, dt);
+    CHECK(light.fill == Fill::Bright && light.alpha == 1.0);
+
+    // The same however often it is called (up to kMaxFadeInStepSec apart)
+    for (const double period : {0.035, 0.07}) {
+        Light slow = eyecam::stepLight(Light(), Fill::Dark, false, 0.0);
+        run(slow, Fill::Dark, 0.0, 0.35, period);
+        CHECK(std::fabs(slow.alpha - 0.5) < 0.01);
+    }
+    // A stalled loop (2 s between two calls) never makes it jump to full
+    {
+        Light stalled = eyecam::stepLight(Light(), Fill::Bright, false, 0.0);
+        stalled = eyecam::stepLight(stalled, Fill::Bright, false, 2.0);
+        CHECK(stalled.alpha <= eyecam::kMaxFadeInStepSec / eyecam::kFadeInSec + 1e-9);
+        // nor a clock going backwards
+        const Light back = eyecam::stepLight(stalled, Fill::Bright, false, 1.0);
+        CHECK(back.alpha == stalled.alpha);
+    }
+
+    // The step ends while recording goes on: 1 -> 0 over 0.5 s, then gone
+    {
+        Light out = light;
+        double u = run(out, Fill::None, t, 0.25, dt);
+        CHECK(out.fill == Fill::Bright && std::fabs(out.alpha - 0.5) < 0.03);
+        CHECK(eyecam::lightFading(out, Fill::None));
+        u = run(out, Fill::None, u, 0.2, dt);
+        CHECK(out.fill == Fill::Bright && out.alpha > 0.0 && out.alpha < 0.15);
+        run(out, Fill::None, u, 0.07, dt);
+        CHECK(out.fill == Fill::None && out.alpha == 0.0);
+        CHECK(!eyecam::lightFading(out, Fill::None));
+    }
+    // Bright straight to dark: never white to black at once; bright fades out, then dark fades in from clear
+    {
+        Light swap = light;
+        double u = t;
+        bool sawDark = false;
+        double darkFrom = 0.0;
+        double brightGone = 0.0;
+        for (int i = 0; i < 200; ++i) {
+            u += dt;
+            const Light before = swap;
+            swap = eyecam::stepLight(swap, Fill::Dark, false, u);
+            if (swap.fill == Fill::Dark && !sawDark) {
+                sawDark = true;
+                darkFrom = swap.alpha;
+                brightGone = u - t;
+                CHECK(before.fill == Fill::Bright && before.alpha < 0.05);  // bright was nearly clear
+            }
+        }
+        CHECK(sawDark);
+        CHECK(darkFrom == 0.0);
+        CHECK(brightGone > 0.45 && brightGone < 0.55);
+        CHECK(swap.fill == Fill::Dark && swap.alpha == 1.0);  // and dark is full 0.7 s later
+        // Dark back to bright mid fade-in: dark fades out from where it got to
+        Light back = eyecam::stepLight(Light(), Fill::Dark, false, 0.0);
+        double v = run(back, Fill::Dark, 0.0, 0.35, dt);
+        const double reached = back.alpha;
+        v = run(back, Fill::Bright, v, 0.1, dt);
+        CHECK(back.fill == Fill::Dark && back.alpha < reached);
+        // (0.31 left of 0.5 s: out in about 0.15 s, then bright from clear for the rest)
+        run(back, Fill::Bright, v, 0.3, dt);
+        CHECK(back.fill == Fill::Bright);
+        CHECK(back.alpha > 0.0 && back.alpha < 0.25);
+    }
+    // Hidden at once, from full or mid-fade, whatever is wanted
+    for (const Fill wanted : {Fill::None, Fill::Bright, Fill::Dark}) {
+        const Light gone = eyecam::stepLight(light, wanted, true, t + dt);
+        CHECK(gone.fill == Fill::None && gone.alpha == 0.0);
+    }
+}
+
+void testHideAtOnce() {
+    const auto view = [](const std::string& state, const std::string& label, double age) {
+        eyecam::View v;
+        v.status = eyecam::parseStatus(fullStatus(state, label), kNow - age);
+        v.visible = eyecam::tabVisible(v.status, kNow);
+        return v;
+    };
+    // Recording, fresh: a step change fades (bright, dark, and the steps after them)
+    for (const char* label : {"bright", "dark", "normal", "end", "lead_in"}) {
+        CHECK(!eyecam::hideLightAtOnce(view("recording", label, 0.1), kNow));
+    }
+    // The status file more than a second old, or long gone stale (the tab gone)
+    CHECK(!eyecam::hideLightAtOnce(view("recording", "bright", 0.99), kNow));
+    CHECK(eyecam::hideLightAtOnce(view("recording", "bright", 1.1), kNow));
+    CHECK(eyecam::hideLightAtOnce(view("recording", "dark", 10.0), kNow));
+    // Recording no longer running: stopped, failed, back to idle, the recorder gone
+    for (const char* state : {"idle", "error", "stopped", "searching", "waiting_fds", "something_new"}) {
+        CHECK(eyecam::hideLightAtOnce(view(state, "bright", 0.1), kNow));
+    }
+    CHECK(eyecam::hideLightAtOnce(eyecam::View(), kNow));
+    // "Stop" pressed: gone before the recorder even answers
+    {
+        eyecam::View v = view("recording", "bright", 0.1);
+        v.busy = true;
+        v.busyCommand = "stop";
+        CHECK(eyecam::hideLightAtOnce(v, kNow));
+        v.busyCommand = "start";
+        CHECK(!eyecam::hideLightAtOnce(v, kNow));
+    }
+    // So, along a run: dark fading in, then the status goes stale -> off in one step
+    eyecam::Light light = eyecam::stepLight(eyecam::Light(), Fill::Dark, false, 0.0);
+    run(light, Fill::Dark, 0.0, 0.3, 0.01);
+    CHECK(light.fill == Fill::Dark && light.alpha > 0.3);
+    const eyecam::View stale = view("recording", "dark", 1.5);
+    light = eyecam::stepLight(light, eyecam::fillFor(stale.status, kNow), eyecam::hideLightAtOnce(stale, kNow), 0.31);
+    CHECK(light.fill == Fill::None && light.alpha == 0.0);
+}
+
 void testReply() {
     eyecam::Reply r = eyecam::parseReply("ok\n", "start");
     CHECK(r.ok && r.error.empty());
@@ -383,6 +629,16 @@ void testControl() {
         CHECK(control.reply().ok);
         SAME(recorder.received(), "start");
     }
+    // The light warning's "Start without light": the protocol goes with the command, on the same line
+    {
+        FakeRecorder recorder(socket, "ok\n");
+        eyecam::Control control;
+        CHECK(control.send(socket, eyecam::startCommand(eyecam::StartChoice::WithoutLight), monotonic()));
+        waitReply(control);
+        CHECK(control.reply().ok);
+        SAME(control.reply().command, "start widen_nolight");
+        SAME(recorder.received(), "start widen_nolight");
+    }
     // "err <reason>"
     {
         FakeRecorder recorder(socket, "err not idle\n");
@@ -435,6 +691,10 @@ int main() {
     testVisible();
     testText();
     testFill();
+    testConfirm();
+    testNoLight();
+    testFade();
+    testHideAtOnce();
     testReply();
     testReadFile();
     testControl();

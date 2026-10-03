@@ -16,6 +16,16 @@ constexpr double kVisibleSec = 5.0;
 constexpr double kOverlayStaleSec = 1.0;
 /** The longest wait for the recorder's one-line reply (s). */
 constexpr double kReplyTimeoutSec = 2.0;
+/** The full-view light fades in over this long (s) when it appears, so the view never jumps to white or black. */
+constexpr double kFadeInSec = 0.7;
+/** ...and out over this long (s) when its step ends while recording goes on (also before the other color). */
+constexpr double kFadeOutSec = 0.5;
+/** At most this much time (s) counts toward one fade-in step, so a stalled loop never makes the light jump up. */
+constexpr double kMaxFadeInStepSec = 0.1;
+/** "start" alone records eyecam-rec's default protocol (widen, with the bright and dark steps). */
+constexpr const char* kStartCommand = "start";
+/** The protocol without the bright and dark steps, for anyone who may be sensitive to light. */
+constexpr const char* kNoLightProtocol = "widen_nolight";
 /** The command the user runs once over SSH to give the recorder the camera buffers (the panel only shows it). */
 constexpr const char* kGrabCommand = "sudo /home/steamos/eyecam-src/target/release/eyecam-grab";
 
@@ -36,6 +46,9 @@ enum class Step { LeadIn, Normal, Widen, Close, Squint, LookUp, LookDown, Bright
 
 /** The full-view overlay during the bright and dark steps. */
 enum class Fill { None, Bright, Dark };
+
+/** A button in the light warning shown before a start. */
+enum class StartChoice { WithLight, WithoutLight, Cancel };
 
 /** status.json as read. Numbers missing from it are NaN (steps -1). */
 struct Status {
@@ -134,6 +147,97 @@ bool tabVisible(const Status& status, double now);
  * @return what to show
  */
 Fill fillFor(const Status& status, double now);
+
+/**
+ * Whether the full-view light has to go at once, without fading: the status file is more than kOverlayStaleSec old
+ * (or can't be read), the tab is gone, the recorder isn't recording any more (stopped, failed, ...), or "stop" is on
+ * its way. Fading is only for a step that ends while the recording goes on.
+ * @param view the view (its status, and the command waiting for its reply)
+ * @param now Unix seconds
+ * @return true to hide it now
+ */
+bool hideLightAtOnce(const View& view, double now);
+
+/** The full-view light as shown: which one, and how opaque. */
+struct Light {
+    Fill fill = Fill::None;  ///< None = hidden
+    double alpha = 0.0;      ///< 0..1 (the overlay's alpha)
+    double at = 0.0;         ///< when it was worked out (monotonic seconds)
+};
+
+/**
+ * The light a moment later. The wanted one fades in (alpha 0 -> 1 over kFadeInSec); one no longer wanted fades out
+ * (to 0 over kFadeOutSec), and only then is the next one (bright <-> dark) put up, from 0. hideNow drops it at once.
+ * Alpha moves by the time since light.at, so it is the same however often this is called.
+ * @param light the light as last worked out
+ * @param wanted what fillFor says now
+ * @param hideNow hideLightAtOnce
+ * @param now monotonic seconds
+ * @return the light to show now
+ */
+Light stepLight(const Light& light, Fill wanted, bool hideNow, double now);
+
+/**
+ * Whether the light is still on its way in or out (the loop runs faster then).
+ * @param light the light
+ * @param wanted what fillFor says now
+ * @return true while fading
+ */
+bool lightFading(const Light& light, Fill wanted);
+
+/**
+ * Whether a recording runs without the full-view light (its protocol is kNoLightProtocol).
+ * @param status the status
+ * @return true without light
+ */
+bool withoutLight(const Status& status);
+
+/**
+ * The command a button in the light warning sends.
+ * @param choice the button
+ * @return "start", "start widen_nolight", or "" for Cancel (nothing to send)
+ */
+std::string startCommand(StartChoice choice);
+
+/**
+ * The light warning before a start: the start button (idle) and the retry button (error) open it instead of
+ * starting; its buttons start with or without the light, or close it. It closes by itself once the recorder's state
+ * is no longer the one it was opened in, or the tab is hidden.
+ */
+class StartConfirm {
+public:
+    /**
+     * Open it (only in idle or error).
+     * @param state the recorder's state now
+     * @return true if it opened
+     */
+    bool open(State state);
+
+    /**
+     * Close it if the state left the one it was opened in, or the tab isn't on screen.
+     * @param state the recorder's state now
+     * @param tabShown the eye capture tab is there and is the one shown
+     * @return true if it closed in this call (redraw)
+     */
+    bool sync(State state, bool tabShown);
+
+    /**
+     * A button in it was pressed: it closes.
+     * @param choice the button
+     * @return the command to send ("" = none)
+     */
+    std::string choose(StartChoice choice);
+
+    /** Close it. */
+    void close() { open_ = false; }
+
+    /** @return true while it shows */
+    bool isOpen() const { return open_; }
+
+private:
+    bool open_ = false;
+    State openedIn_ = State::Missing;
+};
 
 /**
  * The instruction for a step, in the panel's language.

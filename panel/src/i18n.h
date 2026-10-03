@@ -65,6 +65,7 @@ struct UiText {
     const char* tabGazeFit;
     const char* tabLids;
     const char* tabAdvanced;
+    const char* tabEyecam;          ///< the developer tab, only while eyecam-rec runs
 
     // Shared
     const char* on;
@@ -298,6 +299,35 @@ struct UiText {
     const char* historyTitle;       ///< the version history's title
     const char* historyClose;       ///< its button back to the Advanced tab
     const char* historyMissing;     ///< no CHANGELOG.md (or CHANGELOG.ja.md) was found
+
+    // Eye capture tab (developer; eyecam-rec's state and controls)
+    const char* eyecamTitle;           ///< the title over the tab
+    const char* eyecamWaitingTitle;    ///< waiting_fds: waiting for the camera buffers...
+    const char* eyecamWaitingHint;     ///< ...run this once from the PC over SSH...
+    const char* eyecamWaitingNote;     ///< ...it asks for the password; the panel never runs it
+    const char* eyecamIdleTitle;       ///< idle: ready...
+    const char* eyecamIdleHint;        ///< ...what happens after starting
+    const char* eyecamStart;           ///< the big button that sends "start"
+    const char* eyecamSearching;       ///< searching: looking for the eyes
+    const char* eyecamStop;            ///< the button that sends "stop"
+    const char* eyecamErrorTitle;      ///< error: the heading over the recorder's message
+    const char* eyecamRetry;           ///< error: start again
+    const char* eyecamUnknownFormat;   ///< a state this panel doesn't know ("State: %s")
+    const char* eyecamFpsFormat;       ///< "fps  L %s / R %s"
+    const char* eyecamLocked;          ///< after the fps while "locked" is true
+    const char* eyecamRemainingFormat; ///< seconds left of the step ("%d s left")
+    const char* eyecamStepFormat;      ///< "Step %d of %d"
+    const char* eyecamSending;         ///< a command waits for its reply
+    const char* eyecamReplyFailedFormat;  ///< the last command failed ("Couldn't %s: %s")
+    const char* eyecamStepNormal;      ///< the instruction of each step label
+    const char* eyecamStepWiden;
+    const char* eyecamStepClose;
+    const char* eyecamStepSquint;
+    const char* eyecamStepLookUp;
+    const char* eyecamStepLookDown;
+    const char* eyecamStepBright;
+    const char* eyecamStepDark;
+    const char* eyecamStepEnd;
     const char* rowPrefix;
     const char* prefixNone;
     const char* prefixExample;      ///< "e.g." before an OSC address

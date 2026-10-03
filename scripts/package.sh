@@ -26,6 +26,7 @@ panel/build/auto-recenter-test
 panel/build/recorder-test
 panel/build/model-test
 panel/build/changelog-test
+panel/build/eyecam-test
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT

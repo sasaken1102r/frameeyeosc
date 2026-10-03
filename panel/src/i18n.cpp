@@ -56,6 +56,7 @@ UiText makeJapanese() {
     t.tabGazeFit = "目を合わせる";
     t.tabLids = "まぶた";
     t.tabAdvanced = "詳細";
+    t.tabEyecam = "目の撮影";
 
     t.on = "オン";
     t.off = "オフ";
@@ -297,6 +298,34 @@ UiText makeJapanese() {
     t.historyTitle = "更新履歴";
     t.historyClose = "閉じる";
     t.historyMissing = "更新履歴が見つかりません";
+
+    t.eyecamTitle = "目の撮影（開発用）";
+    t.eyecamWaitingTitle = "カメラの準備を待っています";
+    t.eyecamWaitingHint = "PC から SSH で Frame に入り、次のコマンドを一度だけ実行してください";
+    t.eyecamWaitingNote = "パスワードを聞かれます。パネルからは実行しません";
+    t.eyecamIdleTitle = "準備ができました";
+    t.eyecamIdleHint = "始めると指示がここに大きく出て、ステップごとに音でも合図します";
+    t.eyecamStart = "撮影開始";
+    t.eyecamSearching = "目を探しています…";
+    t.eyecamStop = "中止";
+    t.eyecamErrorTitle = "撮影できませんでした";
+    t.eyecamRetry = "もう一度撮影";
+    t.eyecamUnknownFormat = "状態: %s";
+    t.eyecamFpsFormat = "fps  左 %s / 右 %s";
+    t.eyecamLocked = "ロック中";
+    t.eyecamRemainingFormat = "あと %d 秒";
+    t.eyecamStepFormat = "ステップ %d / %d";
+    t.eyecamSending = "送っています…";
+    t.eyecamReplyFailedFormat = "%s が失敗: %s";
+    t.eyecamStepNormal = "普通に開けて";
+    t.eyecamStepWiden = "見開いて！";
+    t.eyecamStepClose = "目を閉じて";
+    t.eyecamStepSquint = "目を細めて";
+    t.eyecamStepLookUp = "上を見て";
+    t.eyecamStepLookDown = "下を見て";
+    t.eyecamStepBright = "明るい画面を見て";
+    t.eyecamStepDark = "暗い画面を見て";
+    t.eyecamStepEnd = "おわり";
     t.rowPrefix = "パラメーター名の頭";
     t.prefixNone = "なし";
     t.prefixExample = "例: ";
@@ -428,6 +457,7 @@ UiText makeEnglish() {
     t.tabGazeFit = "Eye fit";
     t.tabLids = "Eyelids";
     t.tabAdvanced = "Advanced";
+    t.tabEyecam = "Eye capture";
 
     t.on = "On";
     t.off = "Off";
@@ -671,6 +701,34 @@ UiText makeEnglish() {
     t.historyTitle = "Version history";
     t.historyClose = "Close";
     t.historyMissing = "Version history not found";
+
+    t.eyecamTitle = "Eye capture (developer)";
+    t.eyecamWaitingTitle = "Waiting for the cameras";
+    t.eyecamWaitingHint = "From the PC, SSH into the Frame and run this once:";
+    t.eyecamWaitingNote = "It asks for the password. The panel never runs it.";
+    t.eyecamIdleTitle = "Ready";
+    t.eyecamIdleHint = "Once started, each step's instruction shows here, and a beep marks every step";
+    t.eyecamStart = "Start recording";
+    t.eyecamSearching = "Looking for the eyes…";
+    t.eyecamStop = "Stop";
+    t.eyecamErrorTitle = "Recording failed";
+    t.eyecamRetry = "Start again";
+    t.eyecamUnknownFormat = "State: %s";
+    t.eyecamFpsFormat = "fps  L %s / R %s";
+    t.eyecamLocked = "Locked";
+    t.eyecamRemainingFormat = "%d s left";
+    t.eyecamStepFormat = "Step %d of %d";
+    t.eyecamSending = "Sending…";
+    t.eyecamReplyFailedFormat = "%s failed: %s";
+    t.eyecamStepNormal = "Open normally";
+    t.eyecamStepWiden = "Open wide!";
+    t.eyecamStepClose = "Close your eyes";
+    t.eyecamStepSquint = "Squint";
+    t.eyecamStepLookUp = "Look up";
+    t.eyecamStepLookDown = "Look down";
+    t.eyecamStepBright = "Look at the bright screen";
+    t.eyecamStepDark = "Look at the dark screen";
+    t.eyecamStepEnd = "Done";
     t.rowPrefix = "Parameter prefix";
     t.prefixNone = "None";
     t.prefixExample = "e.g. ";

@@ -38,6 +38,17 @@ struct GazeCaptureStatus {
     double rate = NAN;         ///< the tracker's rate over the capture (samples a second)
 };
 
+/** The eye cameras as frameeyeosc uses them ("camera"; from eyecam-rec, only while it runs). */
+struct CameraStatus {
+    bool known = false;             ///< "camera" is an object (null or missing: no eyecam-rec, or an older frameeyeosc)
+    bool present = false;           ///< eyecam-rec's live values reach frameeyeosc
+    int calibState = 0;             ///< eyecam-rec's calib_state as frameeyeosc sees it (bit 0 this wear, bit 1 user)
+    bool recalibSuggested = false;
+    bool used[2] = {false, false};       ///< the cameras drive this eye's eyelid and squint now (left, right)
+    bool pupilUsed[2] = {false, false};  ///< ...and its pupil
+    std::string error;              ///< why not, in frameeyeosc's words ("" = none)
+};
+
 /** What the panel knows about frameeyeosc from status.json. */
 struct EyeStatus {
     bool present = false;   ///< the file was read and parsed
@@ -68,6 +79,9 @@ struct EyeStatus {
     Pair sentGaze {};        ///< gaze sent, x / y
     Pair rawGazeEye[2] {};   ///< each eye's own gaze before smoothing (left, right), x / y
     Pair sentGazeEye[2] {};  ///< each eye's gaze as sent (the combined one unless independent_eyes)
+    Pair squint {};          ///< squint sent from the eye cameras, left / right (NaN while not sent)
+    double pupilDilation = NAN;  ///< pupil dilation sent from the eye cameras (NaN while not sent)
+    CameraStatus camera;     ///< the eye cameras
 
     bool calibrationEnabled = false;
     Pair relaxed {};         ///< learned relaxed openness per eye (NaN = not learned)

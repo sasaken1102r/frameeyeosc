@@ -279,6 +279,29 @@ std::string formatSetting(const std::string& name, double value);
  */
 std::string hostOfTarget(const std::string& target);
 
+/** Where the eyelids come from, as frameeyeosc reports it (the eye capture tab's line under camera_lids). */
+enum class CameraUse {
+    Unknown,        ///< frameeyeosc isn't running, or doesn't report the cameras (no eyecam-rec, or older)
+    Off,            ///< camera_lids is off: Valve's values
+    Both,           ///< the cameras drive both eyes
+    Left,           ///< only the left eye (the right one: Valve's)
+    Right,          ///< only the right eye
+    NotCalibrated,  ///< Valve's values: not calibrated for this wear
+    NoCamera,       ///< Valve's values: no live camera values reach frameeyeosc
+    Error,          ///< Valve's values: frameeyeosc gives a reason (CameraStatus::error)
+    Valve,          ///< Valve's values, for no reason given
+};
+
+/**
+ * Where the eyelids come from now. The camera values in use win over everything (camera_lids off but still used
+ * means frameeyeosc hasn't caught up yet); otherwise why not: the setting, no camera values, no calibration for
+ * this wear, frameeyeosc's own reason.
+ * @param status frameeyeosc's status
+ * @param cameraLids the camera_lids setting
+ * @return the case
+ */
+CameraUse cameraUse(const EyeStatus& status, bool cameraLids);
+
 /**
  * The new release's summary shown under the update row: the Japanese one on a Japanese panel when the release text
  * has one, otherwise the English one.

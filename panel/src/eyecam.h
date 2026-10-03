@@ -1,5 +1,7 @@
 // The developer tab "Eye capture": eyecam-rec (an eye-camera recorder outside this repo) writes its state to
-// $XDG_RUNTIME_DIR/eyecam/status.json about 10 times a second and takes "start" / "stop" on ctl.sock there. The
+// $XDG_RUNTIME_DIR/eyecam/status.json about 10 times a second and takes "start" / "stop" / "calib wear" /
+// "calib user" on ctl.sock there. It also reads the eyelids from the eye cameras live, for frameeyeosc, once it is
+// calibrated for this wear (each time the headset is put on) and once for the user. The
 // panel only reads that file and talks to that socket; it never creates anything in that folder and never runs the
 // recorder or its root helper. Everything here works without OpenVR and cairo (eyecam-test).
 #pragma once
@@ -26,6 +28,13 @@ constexpr double kMaxFadeInStepSec = 0.1;
 constexpr const char* kStartCommand = "start";
 /** The protocol without the bright and dark steps, for anyone who may be sensitive to light. */
 constexpr const char* kNoLightProtocol = "widen_nolight";
+/** The calibration for this wear (18 s): needed each time the headset is put on. */
+constexpr const char* kCalibWearCommand = "calib wear";
+/** The user's own calibration (18 s): once, after a calibration for this wear. */
+constexpr const char* kCalibUserCommand = "calib user";
+/** calib_state's bits: calibrated for this wear (cleared when the headset comes off), and for the user. */
+constexpr int kCalibWearBit = 1;
+constexpr int kCalibUserBit = 2;
 /** The command the user runs once over SSH to give the recorder the camera buffers (the panel only shows it). */
 constexpr const char* kGrabCommand = "sudo /home/steamos/eyecam-src/target/release/eyecam-grab";
 
@@ -36,6 +45,7 @@ enum class State {
     Idle,        ///< "idle": ready to start
     Searching,   ///< "searching": started, looking for the eyes
     Recording,   ///< "recording": going through the steps
+    Calibrating, ///< "calibrating": a calibration ("calib wear" / "calib user"), also while it waits for the video
     Error,       ///< "error"
     Stopped,     ///< "stopped": the recorder exited
     Unknown,     ///< any other text
@@ -49,6 +59,19 @@ enum class Fill { None, Bright, Dark };
 
 /** A button in the light warning shown before a start. */
 enum class StartChoice { WithLight, WithoutLight, Cancel };
+
+/** A calibration (no light warning: it has no bright or dark steps). */
+enum class Calib { Wear, User };
+
+/** What eyecam-rec ran last, to tell a failed calibration from a failed recording. */
+enum class Run { None, Recording, CalibWear, CalibUser };
+
+/** The note on the first tab that asks for a calibration. */
+enum class CalibPrompt {
+    None,
+    Calibrate,    ///< the headset is on, the cameras are read live, but not calibrated for this wear
+    Recalibrate,  ///< calibrated, but it drifted since (recalib_suggested)
+};
 
 /** status.json as read. Numbers missing from it are NaN (steps -1). */
 struct Status {
@@ -69,12 +92,16 @@ struct Status {
     double totalS = 0.0;
     std::string sessionDir;
     std::string protocol;
+    int calibState = 0;            ///< kCalibWearBit | kCalibUserBit (0 when missing)
+    bool recalibSuggested = false; ///< drifted since the calibration: "calib wear" again
+    bool live = false;             ///< the eyelids are read from the cameras live
+    double liveMs = 0.0;           ///< how long one live frame took (ms; NaN when missing)
 };
 
 /** The recorder's reply to a command. */
 struct Reply {
     bool ok = false;
-    std::string command;  ///< "start" / "stop"
+    std::string command;  ///< "start" / "stop" / "calib wear" / ...
     std::string error;    ///< "err <reason>"'s reason, or what went wrong talking to it (English); "" when ok
 };
 
@@ -86,6 +113,7 @@ struct View {
     std::string busyCommand;
     bool hasReply = false;  ///< a command was answered (or failed) since the panel started
     Reply reply;            ///< the last one
+    Run lastRun = Run::None;  ///< what ran last (followRun / runOfCommand)
 };
 
 /**
@@ -198,6 +226,56 @@ bool withoutLight(const Status& status);
  * @return "start", "start widen_nolight", or "" for Cancel (nothing to send)
  */
 std::string startCommand(StartChoice choice);
+
+/**
+ * The command for a calibration.
+ * @param calib which one
+ * @return "calib wear" or "calib user"
+ */
+std::string calibCommand(Calib calib);
+
+/**
+ * Whether a calibration for the user can start: only after one for this wear (eyecam-rec says no otherwise).
+ * @param status the status
+ * @return true if calibrated for this wear
+ */
+bool userCalibAllowed(const Status& status);
+
+/**
+ * The run a command starts, if the recorder takes it.
+ * @param command the command as sent
+ * @return Recording for "start ...", CalibWear / CalibUser for the calibrations, None for anything else
+ */
+Run runOfCommand(const std::string& command);
+
+/**
+ * What ran last, after reading the status: recording (searching too) is a recording; calibrating is a calibration,
+ * for the user while its steps (squint, look_up, look_down) show, for this wear while its own (close, normal, widen)
+ * show, and otherwise (the countdown, the wait for the video) the one already known (a calibration for this wear
+ * if none). Other states keep the last one, so an error after a calibration is still the calibration's.
+ * @param last what ran last until now
+ * @param status the status
+ * @return what ran last
+ */
+Run followRun(Run last, const Status& status);
+
+/**
+ * Whether a run is a calibration.
+ * @param run the run
+ * @return true for CalibWear and CalibUser
+ */
+bool isCalib(Run run);
+
+/**
+ * The note on the first tab that asks for a calibration. Only while the eye capture tab shows, the recorder is
+ * ready (idle or error), reads the cameras live, the cameras see the eyes (the headset is on), and frameeyeosc may
+ * use the camera eyelids (camera_lids): then Calibrate while it isn't calibrated for this wear, else Recalibrate
+ * while recalib_suggested. Never without eyecam-rec.
+ * @param view the recorder
+ * @param cameraLids the camera_lids setting
+ * @return the note
+ */
+CalibPrompt calibPrompt(const View& view, bool cameraLids);
 
 /**
  * The light warning before a start: the start button (idle) and the retry button (error) open it instead of

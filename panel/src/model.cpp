@@ -404,3 +404,16 @@ std::string updateNotes(const frame_updater::UpdateStatus& update, Language lang
     if (language == Language::Ja && !update.notesJa.empty()) return update.notesJa;
     return update.notes;
 }
+
+CameraUse cameraUse(const EyeStatus& status, bool cameraLids) {
+    const CameraStatus& c = status.camera;
+    if (!status.running || !c.known) return CameraUse::Unknown;
+    if (c.used[0] && c.used[1]) return CameraUse::Both;
+    if (c.used[0]) return CameraUse::Left;
+    if (c.used[1]) return CameraUse::Right;
+    if (!cameraLids) return CameraUse::Off;
+    if (!c.present) return CameraUse::NoCamera;
+    if ((c.calibState & 1) == 0) return CameraUse::NotCalibrated;
+    if (!c.error.empty()) return CameraUse::Error;
+    return CameraUse::Valve;
+}

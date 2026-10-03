@@ -305,8 +305,7 @@ struct UiText {
     const char* eyecamWaitingTitle;    ///< waiting_fds: waiting for the camera buffers...
     const char* eyecamWaitingHint;     ///< ...run this once from the PC over SSH...
     const char* eyecamWaitingNote;     ///< ...it asks for the password; the panel never runs it
-    const char* eyecamIdleTitle;       ///< idle: ready...
-    const char* eyecamIdleHint;        ///< ...what happens after starting
+    const char* eyecamIdleHint;        ///< idle, by the start button: what happens after starting
     const char* eyecamStart;           ///< the big button that sends "start"
     const char* eyecamSearching;       ///< searching: looking for the eyes
     const char* eyecamStop;            ///< the button that sends "stop"
@@ -335,6 +334,44 @@ struct UiText {
     const char* eyecamStartNoLight;    ///< ...sends "start widen_nolight"
     const char* eyecamCancel;          ///< ...back without starting
     const char* eyecamNoLight;         ///< by the step number while recording without the light
+    // ...the eye cameras for frameeyeosc (idle): the camera_lids switch and what frameeyeosc uses now
+    const char* eyecamSectionCamera;   ///< the section title
+    const char* rowCameraLids;         ///< the camera_lids switch
+    const char* cameraUseBoth;         ///< the cameras drive both eyes
+    const char* cameraUseLeft;         ///< ...only the left one
+    const char* cameraUseRight;        ///< ...only the right one
+    const char* cameraUseValve;        ///< Valve's values (camera_lids off, or no reason given)
+    const char* cameraUseValveFormat;  ///< Valve's values, and why ("... (%s)")
+    const char* cameraWhyNotCalibrated;  ///< ...not calibrated for this wear
+    const char* cameraWhyNoCamera;     ///< ...no live camera values reach frameeyeosc
+    const char* cameraPupilSuffix;     ///< after "in use" when the pupils come from the cameras too
+    // ...the calibrations (idle)
+    const char* eyecamSectionCalib;    ///< the section title
+    const char* eyecamCalibWearChip;   ///< the chip for the calibration for this wear...
+    const char* eyecamCalibUserChip;   ///< ...and for the user's
+    const char* eyecamCalibChipFormat; ///< "%s: %s" (the chip's name, done / not yet)
+    const char* eyecamCalibDone;
+    const char* eyecamCalibNotYet;
+    const char* eyecamCalibHintWear;   ///< not calibrated for this wear: needed each time the headset goes on
+    const char* eyecamCalibHintUser;   ///< calibrated for this wear, never for the user: do it once
+    const char* eyecamCalibHintDone;   ///< both done: again after the headset was off
+    const char* eyecamCalibHintRecalib;  ///< recalib_suggested: it drifted, calibrate again
+    const char* eyecamLiveOff;         ///< eyecam-rec doesn't read the cameras live (nothing to calibrate for)
+    const char* eyecamCalibWear;       ///< the button: "calib wear"
+    const char* eyecamCalibUser;       ///< the button: "calib user"
+    const char* eyecamCalibUserNeedsWear;  ///< under it while it can't be pressed
+    const char* eyecamSectionRecord;   ///< the section title over the recording's start
+    // ...while calibrating, and after a failed calibration
+    const char* eyecamCalibWearTitle;  ///< the title while calibrating for this wear
+    const char* eyecamCalibUserTitle;  ///< ...for the user
+    const char* eyecamCalibWaiting;    ///< calibrating, before the first step (waiting for the video)
+    const char* eyecamCalibErrorTitle; ///< error after a calibration: the heading over the recorder's message
+    const char* eyecamCalibRetry;      ///< ...the same calibration again
+    // The note on the first tab asking for a calibration (eyecam::calibPrompt)
+    const char* calibPromptText;       ///< not calibrated for this wear
+    const char* calibPromptButton;
+    const char* recalibPromptText;     ///< recalib_suggested
+    const char* recalibPromptButton;
     const char* rowPrefix;
     const char* prefixNone;
     const char* prefixExample;      ///< "e.g." before an OSC address

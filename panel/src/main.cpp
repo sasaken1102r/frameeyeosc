@@ -117,7 +117,8 @@ struct Options {
     std::string fakeFit;          ///< a made-up eye fit state (see printUsage)
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
-    std::string fakeEyecam;       ///< a made-up eyecam-rec state: waiting, idle, searching, recording:<label>, error
+    std::string fakeEyecam;       ///< a made-up eyecam-rec state (see printUsage and parseFakeEyecam)
+    std::string fakeCamera;       ///< --fake-camera: the eye cameras as frameeyeosc reports them (see printUsage)
     std::string eyecamDir;        ///< --eyecam-dir: eyecam-rec's folder (status.json, ctl.sock) instead of the default
     std::string fillPngPath;      ///< --eyecam-fill-png: the eye capture's full-view light image
     std::string fillKind = "bright";  ///< --eyecam-fill bright|dark
@@ -246,10 +247,17 @@ void printUsage() {
         "                 failed-noresult  A made-up eye fit (Eye fit tab)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
-        "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL[:unlocked][:nolight]|error  A made-up\n"
-        "                        eyecam-rec for the developer tab \"Eye capture\" (confirm: idle with the light\n"
-        "                        warning open; LABEL: lead_in, normal, widen, close, squint, look_up, look_down,\n"
-        "                        bright, dark, end; nolight: the protocol without the light)\n"
+        "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
+        "                        A made-up eyecam-rec for the developer tab \"Eye capture\" (confirm: idle with the\n"
+        "                        light warning open; LABEL: lead_in, normal, widen, close, squint, look_up,\n"
+        "                        look_down, bright, dark, end; calibrating without a label: waiting for the video;\n"
+        "                        calib-error: a failed user calibration). Flags after it, each with \":\":\n"
+        "                        unlocked (the cameras lost the eyes), nolight (recording without the light),\n"
+        "                        user (calibrating / calib-error: the user's calibration; wear: this wear's),\n"
+        "                        calib=N (calib_state 0..3; default 0, 1 for a failed user calibration), recalib\n"
+        "                        (recalib_suggested), nolive (not reading the cameras live)\n"
+        "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
+        "                        them (off: camera_lids off)\n"
         "  --eyecam-fill-png PATH  Draw the eye capture's full-view light (with --language) to a PNG\n"
         "      --eyecam-fill bright|dark  Which one (default bright)\n"
         "  --eyecam-dir DIR      eyecam-rec's folder: status.json and ctl.sock (default $XDG_RUNTIME_DIR/eyecam)\n"
@@ -264,29 +272,63 @@ void printUsage() {
         "  --status PATH         Status file (default $XDG_RUNTIME_DIR/frameeyeosc/status.json)\n");
 }
 
+/** --fake-eyecam, taken apart. */
+struct FakeEyecam {
+    std::string state;      ///< waiting, idle, confirm, searching, recording, calibrating, error, calib-error
+    std::string label;      ///< recording's and calibrating's step label ("" = none)
+    bool unlocked = false;  ///< the cameras lost the eyes
+    bool noLight = false;   ///< the recording runs without the light
+    int calibUser = -1;     ///< 1 = the user's calibration, 0 = this wear's, -1 = from the label
+    int calibState = -1;    ///< calib_state (-1 = the state's default)
+    bool recalib = false;   ///< recalib_suggested
+    bool noLive = false;    ///< not reading the cameras live
+};
+
 /**
- * The step label of --fake-eyecam recording:LABEL[:unlocked][:nolight], without its flags.
- * @param text what follows "recording:"
- * @param unlocked set if :unlocked was there (the cameras lost the eyes)
- * @param noLight set if :nolight was there (the protocol without the light)
- * @return the label
+ * Take --fake-eyecam apart: STATE[:LABEL][:flag]..., where a label only follows recording (which needs one) and
+ * calibrating.
+ * @param text the option's value
+ * @param fake where to write
+ * @return false if something in it is unknown
  */
-std::string fakeRecordingLabel(const std::string& text, bool& unlocked, bool& noLight) {
-    std::string label = text;
-    const auto strip = [&label](const std::string& suffix) {
-        if (label.size() <= suffix.size() || label.compare(label.size() - suffix.size(), suffix.size(), suffix) != 0) {
+bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
+    fake = FakeEyecam();
+    std::vector<std::string> parts;
+    for (size_t from = 0;;) {
+        const size_t colon = text.find(':', from);
+        parts.push_back(text.substr(from, colon == std::string::npos ? std::string::npos : colon - from));
+        if (colon == std::string::npos) break;
+        from = colon + 1;
+    }
+    fake.state = parts[0];
+    static const char* const kStates[] = {"waiting", "idle",        "confirm", "searching",
+                                          "recording", "calibrating", "error",   "calib-error"};
+    if (std::find(std::begin(kStates), std::end(kStates), fake.state) == std::end(kStates)) return false;
+    size_t next = 1;
+    const bool takesLabel = fake.state == "recording" || fake.state == "calibrating";
+    if (takesLabel && next < parts.size() && eyecam::parseStep(parts[next]) != eyecam::Step::Unknown) {
+        fake.label = parts[next++];
+    }
+    if (fake.state == "recording" && fake.label.empty()) return false;
+    for (; next < parts.size(); ++next) {
+        const std::string& flag = parts[next];
+        if (flag == "unlocked") {
+            fake.unlocked = true;
+        } else if (flag == "nolight") {
+            fake.noLight = true;
+        } else if (flag == "user" || flag == "wear") {
+            fake.calibUser = flag == "user" ? 1 : 0;
+        } else if (flag == "recalib") {
+            fake.recalib = true;
+        } else if (flag == "nolive") {
+            fake.noLive = true;
+        } else if (flag.rfind("calib=", 0) == 0 && flag.size() == 7 && flag[6] >= '0' && flag[6] <= '3') {
+            fake.calibState = flag[6] - '0';
+        } else {
             return false;
         }
-        label.resize(label.size() - suffix.size());
-        return true;
-    };
-    unlocked = noLight = false;
-    for (bool found = true; found;) {
-        found = false;
-        if (strip(":unlocked")) found = unlocked = true;
-        if (strip(":nolight")) found = noLight = true;
     }
-    return label;
+    return true;
 }
 
 /**
@@ -493,19 +535,21 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = true;
         } else if (arg == "--fake-eyecam" && hasNext) {
             options.fakeEyecam = argv[++i];
-            const std::string& state = options.fakeEyecam;
-            // recording:LABEL, with :unlocked for the cameras having lost the eyes, :nolight for the protocol
-            // without the light
-            bool unlocked = false;
-            bool noLight = false;
-            const std::string label =
-                state.rfind("recording:", 0) == 0 ? fakeRecordingLabel(state.substr(10), unlocked, noLight) : "";
-            const bool recording = eyecam::parseStep(label) != eyecam::Step::Unknown;
-            if (state != "waiting" && state != "idle" && state != "confirm" && state != "searching" &&
-                state != "error" && !recording) {
+            FakeEyecam fake;
+            if (!parseFakeEyecam(options.fakeEyecam, fake)) {
                 std::fprintf(stderr,
-                             "--fake-eyecam must be waiting, idle, confirm, searching, recording:LABEL or error: %s\n",
-                             state.c_str());
+                             "--fake-eyecam must be waiting, idle, confirm, searching, recording:LABEL, "
+                             "calibrating[:LABEL], error or calib-error, with known flags: %s\n",
+                             options.fakeEyecam.c_str());
+                return false;
+            }
+            options.fake = true;
+        } else if (arg == "--fake-camera" && hasNext) {
+            options.fakeCamera = argv[++i];
+            static const char* const kCameras[] = {"both", "left", "right", "uncalibrated", "absent", "error", "off"};
+            if (std::find(std::begin(kCameras), std::end(kCameras), options.fakeCamera) == std::end(kCameras)) {
+                std::fprintf(stderr, "--fake-camera must be both, left, right, uncalibrated, absent, error or off: %s\n",
+                             options.fakeCamera.c_str());
                 return false;
             }
             options.fake = true;
@@ -671,11 +715,13 @@ frame_updater::UpdateStatus fakeUpdate(const std::string& state, const std::stri
 
 /**
  * A made-up eyecam-rec for --fake-eyecam, written just now (so its tab shows).
- * @param state waiting, idle, confirm (idle; the caller opens the light warning), searching,
- *              recording:<label>[:unlocked][:nolight] or error
+ * @param text the option (see parseFakeEyecam; confirm is idle, and the caller opens the light warning)
  * @return the view
  */
-eyecam::View fakeEyecam(const std::string& state) {
+eyecam::View fakeEyecam(const std::string& text) {
+    FakeEyecam fake;
+    parseFakeEyecam(text, fake);
+    const std::string& state = fake.state;
     eyecam::View view;
     eyecam::Status& s = view.status;
     s.present = true;
@@ -683,9 +729,16 @@ eyecam::View fakeEyecam(const std::string& state) {
     s.protocol = "default";
     const auto nan = std::numeric_limits<double>::quiet_NaN();
     s.fpsL = s.fpsR = s.stepRemainingS = s.elapsedS = s.totalS = nan;
+    // The headset on, the cameras read live and not calibrated yet, unless the flags say otherwise
+    s.locked = !fake.unlocked;
+    s.live = !fake.noLive;
+    s.liveMs = s.live ? 4.2 : nan;
+    s.calibState = 0;
     if (state == "waiting") {
         s.stateText = "waiting_fds";
         s.message = "eyecam-grab からカメラのバッファを待っています";
+        s.locked = false;
+        s.live = false;
     } else if (state == "idle" || state == "confirm") {
         s.stateText = "idle";
     } else if (state == "searching") {
@@ -699,15 +752,50 @@ eyecam::View fakeEyecam(const std::string& state) {
         view.hasReply = true;
         view.reply.command = "start";
         view.reply.error = "not idle";
+    } else if (state == "calib-error") {
+        // eyecam-rec's reason is Japanese only
+        const bool wear = fake.calibUser == 0;
+        s.stateText = "error";
+        s.message = wear ? "右目: 目を閉じても目の開きが変わっていない（もう一度、しっかり閉じてね）"
+                         : "左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）";
+        s.calibState = wear ? 0 : eyecam::kCalibWearBit;
+        view.lastRun = wear ? eyecam::Run::CalibWear : eyecam::Run::CalibUser;
+    } else if (state == "calibrating") {
+        // At that step of the calibration: this wear's (18 s) or the user's (18 s)
+        static const struct {
+            const char* label;
+            double seconds;
+        } kWear[] = {{"lead_in", 3}, {"close", 2}, {"normal", 5}, {"widen", 3}, {"normal", 2}, {"widen", 3}},
+          kUser[] = {{"lead_in", 3}, {"squint", 5}, {"look_up", 5}, {"look_down", 5}};
+        const eyecam::Step step = eyecam::parseStep(fake.label);
+        const bool user = fake.calibUser == 1 ||
+                          (fake.calibUser < 0 && (step == eyecam::Step::Squint || step == eyecam::Step::LookUp ||
+                                                  step == eyecam::Step::LookDown));
+        s.stateText = "calibrating";
+        s.calibState = user ? eyecam::kCalibWearBit : 0;
+        view.lastRun = user ? eyecam::Run::CalibUser : eyecam::Run::CalibWear;
+        s.stepLabel = fake.label;
+        if (!fake.label.empty()) {
+            const auto* steps = user ? kUser : kWear;
+            const int count = user ? static_cast<int>(std::size(kUser)) : static_cast<int>(std::size(kWear));
+            s.stepCount = count;
+            s.stepIndex = 0;
+            double before = 0.0;
+            s.totalS = 0.0;
+            for (int i = 0; i < count; ++i) s.totalS += steps[i].seconds;
+            while (s.stepIndex < count - 1 && steps[s.stepIndex].label != fake.label) before += steps[s.stepIndex++].seconds;
+            s.stepRemainingS = 1.4;
+            s.elapsedS = before + steps[s.stepIndex].seconds - s.stepRemainingS;
+            s.fpsL = 30.0;
+            s.fpsR = 29.9;
+        }
     } else {
         // recording:<label>, at that step of the default run (9 steps, 120 s)
         static const char* const kLabels[] = {"normal",    "widen",  "close", "squint", "look_up",
                                               "look_down", "bright", "dark",  "end"};
         s.stateText = "recording";
-        bool unlocked = false;
-        bool noLight = false;
-        s.stepLabel = fakeRecordingLabel(state.substr(10), unlocked, noLight);
-        if (noLight) s.protocol = eyecam::kNoLightProtocol;
+        s.stepLabel = fake.label;
+        if (fake.noLight) s.protocol = eyecam::kNoLightProtocol;
         s.stepCount = static_cast<int>(std::size(kLabels));
         s.stepIndex = static_cast<int>(std::find(std::begin(kLabels), std::end(kLabels), s.stepLabel) -
                                        std::begin(kLabels));
@@ -716,9 +804,11 @@ eyecam::View fakeEyecam(const std::string& state) {
         s.elapsedS = s.stepIndex * 13.0 + 9.6;
         s.fpsL = 30.0;
         s.fpsR = 29.9;
-        s.locked = !unlocked;
         s.sessionDir = "/home/steamos/eyecam/2026-10-03_12-00-00";
+        view.lastRun = eyecam::Run::Recording;
     }
+    if (fake.calibState >= 0) s.calibState = fake.calibState;
+    s.recalibSuggested = fake.recalib;
     s.state = eyecam::parseState(s.stateText);
     view.visible = eyecam::tabVisible(s, unixNow());
     return view;
@@ -917,10 +1007,27 @@ PanelModel fakeModel(const Options& options) {
         }
         s.dominantEye = options.fakeDominantEye;
         s.opennessSaturated = options.fakeOpennessSaturated;
+        if (!options.fakeCamera.empty()) {
+            const std::string& camera = options.fakeCamera;
+            CameraStatus& c = s.camera;
+            c.known = true;
+            c.present = camera != "absent";
+            c.calibState = camera == "uncalibrated" ? 0 : (camera == "error" ? 1 : 3);
+            c.used[0] = camera == "both" || camera == "left";
+            c.used[1] = camera == "both" || camera == "right";
+            c.pupilUsed[0] = c.pupilUsed[1] = camera == "both";
+            if (camera == "error") c.error = "camera frames are stale";
+            if (camera == "off") root.set(key::kCameraLids, JsonValue::makeBool(false));
+            if (c.used[0] || c.used[1]) {
+                s.squint = {{c.used[0] ? 0.12 : NAN, c.used[1] ? 0.08 : NAN}};
+                if (camera == "both") s.pupilDilation = 0.46;
+            }
+        }
         s.effective = root;
         if (options.fakeLocked) {
             s.locked = {key::kOutput,          key::kPort,        key::kRaw,         key::kLidOpen,
-                        key::kIndependentEyes, key::kGazeOffsetY, key::kSteamlinkParams, key::kNativeEyes};
+                        key::kIndependentEyes, key::kGazeOffsetY, key::kSteamlinkParams, key::kNativeEyes,
+                        key::kCameraLids};
             s.effective.set(key::kOutput, JsonValue::makeString(kOutputVrchat));
             s.effective.set(key::kPort, JsonValue::makeNumber(9123, true));
             s.effective.set(key::kRaw, JsonValue::makeBool(true));
@@ -929,6 +1036,7 @@ PanelModel fakeModel(const Options& options) {
             s.effective.set(key::kGazeOffsetY, JsonValue::makeNumber(-0.05));
             s.effective.set(key::kSteamlinkParams, JsonValue::makeBool(true));
             s.effective.set(key::kNativeEyes, JsonValue::makeBool(true));
+            s.effective.set(key::kCameraLids, JsonValue::makeBool(true));
         }
     } else {
         s.readError = "no status file";
@@ -999,6 +1107,7 @@ int runDumpPng(const Options& options) {
             model.eyecamDir = options.eyecamDir;
             model.eyecam.status = eyecam::readStatus(model.eyecamDir);
             model.eyecam.visible = eyecam::tabVisible(model.eyecam.status, unixNow());
+            model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
         }
         if (!options.language.empty()) parseLanguage(options.language, model.language);
         model.changelogDirs =
@@ -1014,7 +1123,7 @@ int runDumpPng(const Options& options) {
             if (!options.historyOpen.empty()) panel.setHistoryRow(options.historyOpen);
             if (options.historyScroll >= 0) panel.setHistoryScroll(options.historyScroll);
         }
-        if (options.fakeEyecam == "confirm") panel.openEyecamConfirm(model.eyecam.status.state);
+        if (options.fakeEyecam.rfind("confirm", 0) == 0) panel.openEyecamConfirm(model.eyecam.status.state);
         if (options.previewQuit) panel.armQuitForPreview();
         if (options.previewReset) panel.armResetForPreview();
         if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
@@ -1039,7 +1148,8 @@ int runDumpPng(const Options& options) {
                 applyHit(hit, model, panel, idleAutostart, updater.get(), nullptr, nullptr, nullptr, &eyecamControl);
             }
             // Wait for eyecam-rec's reply, and show the folder as it is after it
-            if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop) {
+            if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop ||
+                hit.action == PanelAction::EyecamCalib) {
                 while (eyecamControl.busy()) {
                     eyecamControl.poll(nowSeconds());
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -1047,8 +1157,12 @@ int runDumpPng(const Options& options) {
                 const eyecam::Reply& r = eyecamControl.reply();
                 std::printf("eyecam: %s -> %s%s\n", r.command.c_str(), r.ok ? "ok" : "err ", r.error.c_str());
                 syncEyecamControl(model.eyecam, eyecamControl);
+                if (r.ok && eyecam::runOfCommand(r.command) != eyecam::Run::None) {
+                    model.eyecam.lastRun = eyecam::runOfCommand(r.command);
+                }
                 model.eyecam.status = eyecam::readStatus(model.eyecamDir);
                 model.eyecam.visible = eyecam::tabVisible(model.eyecam.status, unixNow());
+                model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
             }
             panel.pointerUp();
             if (updater) {
@@ -1218,6 +1332,10 @@ std::string statusSignature(const EyeStatus& s) {
                   s.rawGazeEye[0].v[1], s.rawGazeEye[1].v[0], s.rawGazeEye[1].v[1], s.sentGazeEye[0].v[0],
                   s.sentGazeEye[0].v[1], s.sentGazeEye[1].v[0], s.sentGazeEye[1].v[1]);
     signature += eyes;
+    const CameraStatus& c = s.camera;
+    signature += "|" + std::to_string(c.known) + std::to_string(c.present) + std::to_string(c.calibState) +
+                 std::to_string(c.recalibSuggested) + std::to_string(c.used[0]) + std::to_string(c.used[1]) +
+                 std::to_string(c.pupilUsed[0]) + std::to_string(c.pupilUsed[1]) + c.error;
     signature += "|" + s.configError + "|" + s.sourceError + "|" + s.dominantEye + "|" +
                  (s.opennessSaturated ? "saturated" : "") + "|" + s.configPath + "|" + s.calibrationPath + "|";
     for (const auto& name : s.locked) signature += name + ",";
@@ -1633,13 +1751,15 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             break;
         }
         case PanelAction::EyecamChoose:
-        case PanelAction::EyecamStop: {
-            // One line to its socket ("start" or "start widen_nolight" from the light warning, or "stop"); the reply
-            // is read by the loop (eyecam::Control never waits)
+        case PanelAction::EyecamStop:
+        case PanelAction::EyecamCalib: {
+            // One line to its socket ("start" or "start widen_nolight" from the light warning, "stop", or a
+            // calibration); the reply is read by the loop (eyecam::Control never waits)
             if (eyecamControl == nullptr) return;
-            const std::string command = hit.action == PanelAction::EyecamStop
-                                            ? std::string("stop")
-                                            : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
+            const std::string command =
+                hit.action == PanelAction::EyecamStop    ? std::string("stop")
+                : hit.action == PanelAction::EyecamCalib ? eyecam::calibCommand(static_cast<eyecam::Calib>(hit.arg))
+                                                         : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
             if (command.empty()) return;
             const std::string socket = model.eyecamDir + "/ctl.sock";
             std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
@@ -2219,6 +2339,7 @@ int runOverlay(const Options& options) {
             if (nowSeconds() >= lastEyecamRead + (running ? kEyecamReadSec : kEyecamIdleReadSec)) {
                 lastEyecamRead = nowSeconds();
                 model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+                model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
             }
             const double now = unixNow();
             const eyecam::Status& s = model.eyecam.status;
@@ -2231,6 +2352,10 @@ int runOverlay(const Options& options) {
             if (eyecamControl.poll(nowSeconds())) {
                 const eyecam::Reply& r = eyecamControl.reply();
                 std::fprintf(stderr, "[eyecam] %s -> %s%s\n", r.command.c_str(), r.ok ? "ok" : "err ", r.error.c_str());
+                // A run it took (a calibration's error then reads as the calibration's)
+                if (r.ok && eyecam::runOfCommand(r.command) != eyecam::Run::None) {
+                    model.eyecam.lastRun = eyecam::runOfCommand(r.command);
+                }
             }
             syncEyecamControl(model.eyecam, eyecamControl);
             const std::string state = shown ? s.stateText + " " + std::to_string(s.stepIndex) + " " + s.stepLabel : "";

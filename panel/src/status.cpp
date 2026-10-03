@@ -98,7 +98,7 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
     EyeStatus status;
     for (Pair* pair : {&status.openness, &status.opennessScaled, &status.gaze, &status.lids, &status.lidsVrcft,
                        &status.sentGaze, &status.relaxed, &status.scales, &status.rawGazeEye[0],
-                       &status.rawGazeEye[1], &status.sentGazeEye[0], &status.sentGazeEye[1]}) {
+                       &status.rawGazeEye[1], &status.sentGazeEye[0], &status.sentGazeEye[1], &status.squint}) {
         *pair = readPair(nullptr);
     }
     JsonValue root;
@@ -137,6 +137,29 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
         status.sentGaze = readPair(sent->get("gaze"));
         status.sentGazeEye[0] = readPair(sent->get("gaze_left"));
         status.sentGazeEye[1] = readPair(sent->get("gaze_right"));
+        status.squint = readPair(sent->get("squint"));
+        status.pupilDilation = readNumber(*sent, "pupil_dilation", NAN);
+    }
+    if (const JsonValue* camera = root.get("camera"); camera != nullptr && camera->isObject()) {
+        CameraStatus& c = status.camera;
+        c.known = true;
+        c.present = readBool(*camera, "present");
+        const double calib = readNumber(*camera, "calib_state", 0);
+        c.calibState = std::isfinite(calib) && calib >= 0 && calib <= 255 ? static_cast<int>(calib) : 0;
+        c.recalibSuggested = readBool(*camera, "recalib_suggested");
+        /**
+         * A [left, right] pair of booleans (anything else in it is false).
+         */
+        const auto readEyes = [&camera](const char* name, bool* flags) {
+            const JsonValue* list = camera->get(name);
+            if (list == nullptr || !list->isArray()) return;
+            for (size_t eye = 0; eye < 2 && eye < list->items.size(); ++eye) {
+                flags[eye] = list->items[eye].isBool() && list->items[eye].boolean;
+            }
+        };
+        readEyes("used", c.used);
+        readEyes("pupil_used", c.pupilUsed);
+        c.error = readText(*camera, "error");
     }
     if (const JsonValue* cal = root.get("calibration"); cal != nullptr && cal->isObject()) {
         status.calibrationEnabled = readBool(*cal, "enabled");

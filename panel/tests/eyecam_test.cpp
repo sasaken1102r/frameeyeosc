@@ -1,8 +1,9 @@
 // Tests for the eye capture tab's logic (eyecam.cpp): reading eyecam-rec's status.json (every state, missing and odd
 // fields), when the tab shows (stale, stopped, missing), the step texts in both languages, when the full-view light
-// shows and how it fades (and when it goes at once), the light warning before a start and the commands it sends, and
-// the control socket against a stand-in recorder in a temporary folder (never the real one). Built with the panel as
-// eyecam-test; exits non-zero on failure.
+// shows and how it fades (and when it goes at once), the light warning before a start and the commands it sends, the
+// calibrations (their commands, what ran last, the first tab's note asking for one), and the control socket against
+// a stand-in recorder in a temporary folder (never the real one). Built with the panel as eyecam-test; exits non-zero
+// on failure.
 #include "eyecam.h"
 
 #include <sys/socket.h>
@@ -82,7 +83,7 @@ void testParse() {
         State state;
     } kStates[] = {{"waiting_fds", State::WaitingFds}, {"idle", State::Idle},   {"searching", State::Searching},
                    {"recording", State::Recording},    {"error", State::Error}, {"stopped", State::Stopped},
-                   {"paused", State::Unknown}};
+                   {"calibrating", State::Calibrating}, {"paused", State::Unknown}};
     for (const auto& item : kStates) {
         const Status s = eyecam::parseStatus(fullStatus(item.text, "normal"), kNow);
         CHECK(s.present);
@@ -104,6 +105,30 @@ void testParse() {
     CHECK(std::fabs(s.elapsedS - 81.5) < 1e-9 && std::fabs(s.totalS - 120) < 1e-9);
     SAME(s.sessionDir, "/home/steamos/eyecam/s1");
     SAME(s.protocol, "default");
+    // (no calibration fields: an eyecam-rec before them)
+    CHECK(s.calibState == 0 && !s.recalibSuggested && !s.live && std::isnan(s.liveMs));
+
+    // The calibration and live fields
+    {
+        const Status c = eyecam::parseStatus(
+            "{\"state\": \"calibrating\", \"locked\": true, \"step_index\": 2, \"step_count\": 6, "
+            "\"step_label\": \"normal\", \"step_remaining_s\": 4.5, \"calib_state\": 2, "
+            "\"recalib_suggested\": true, \"live\": true, \"live_ms\": 3.75}",
+            kNow);
+        CHECK(c.present && c.state == State::Calibrating);
+        CHECK(c.locked && c.stepIndex == 2 && c.stepCount == 6);
+        SAME(c.stepLabel, "normal");
+        CHECK(c.calibState == 2 && c.recalibSuggested && c.live);
+        CHECK(std::fabs(c.liveMs - 3.75) < 1e-9);
+        // Odd types are missing; a negative calib_state is none
+        const Status odd = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"calib_state\": \"3\", \"recalib_suggested\": 1, \"live\": \"on\", "
+            "\"live_ms\": null}",
+            kNow);
+        CHECK(odd.calibState == 0 && !odd.recalibSuggested && !odd.live && std::isnan(odd.liveMs));
+        CHECK(eyecam::parseStatus("{\"state\": \"idle\", \"calib_state\": -1}", kNow).calibState == 0);
+        CHECK(eyecam::parseStatus("{\"state\": \"idle\", \"calib_state\": 3}", kNow).calibState == 3);
+    }
 
     // Only a state: the rest missing (NaN numbers, no step)
     {
@@ -150,7 +175,7 @@ void testVisible() {
     CHECK(eyecam::tabVisible(idle, kNow - 1.0));
     CHECK(!eyecam::tabVisible(idle, kNow - 60.0));
     // Every running state shows it; "stopped" and a missing or broken file don't
-    for (const char* state : {"waiting_fds", "searching", "recording", "error", "something_new"}) {
+    for (const char* state : {"waiting_fds", "searching", "recording", "calibrating", "error", "something_new"}) {
         CHECK(eyecam::tabVisible(eyecam::parseStatus(std::string("{\"state\": \"") + state + "\"}", kNow), kNow));
     }
     CHECK(!eyecam::tabVisible(eyecam::parseStatus("{\"state\": \"stopped\"}", kNow), kNow));
@@ -194,8 +219,8 @@ void testFill() {
     for (const char* label : {"normal", "widen", "close", "squint", "look_up", "look_down", "end", "", "white"}) {
         CHECK(at("recording", label, 0.1) == Fill::None);
     }
-    // Not recording (a label left over from the last run)
-    for (const char* state : {"idle", "searching", "error", "stopped", "waiting_fds"}) {
+    // Not recording (a label left over from the last run); a calibration has no light at all
+    for (const char* state : {"idle", "searching", "error", "stopped", "waiting_fds", "calibrating"}) {
         CHECK(at(state, "bright", 0.1) == Fill::None);
         CHECK(at(state, "dark", 0.1) == Fill::None);
     }
@@ -431,8 +456,8 @@ void testHideAtOnce() {
     CHECK(!eyecam::hideLightAtOnce(view("recording", "bright", 0.99), kNow));
     CHECK(eyecam::hideLightAtOnce(view("recording", "bright", 1.1), kNow));
     CHECK(eyecam::hideLightAtOnce(view("recording", "dark", 10.0), kNow));
-    // Recording no longer running: stopped, failed, back to idle, the recorder gone
-    for (const char* state : {"idle", "error", "stopped", "searching", "waiting_fds", "something_new"}) {
+    // Recording no longer running: stopped, failed, back to idle, calibrating, the recorder gone
+    for (const char* state : {"idle", "error", "stopped", "searching", "waiting_fds", "calibrating", "something_new"}) {
         CHECK(eyecam::hideLightAtOnce(view(state, "bright", 0.1), kNow));
     }
     CHECK(eyecam::hideLightAtOnce(eyecam::View(), kNow));
@@ -452,6 +477,176 @@ void testHideAtOnce() {
     const eyecam::View stale = view("recording", "dark", 1.5);
     light = eyecam::stepLight(light, eyecam::fillFor(stale.status, kNow), eyecam::hideLightAtOnce(stale, kNow), 0.31);
     CHECK(light.fill == Fill::None && light.alpha == 0.0);
+}
+
+/**
+ * A status as eyecam-rec writes it while ready (or in another state).
+ * @param state the state
+ * @param calibState calib_state
+ * @param extra more members, each starting with ", "
+ * @return the status
+ */
+Status calibStatus(const std::string& state, int calibState, const std::string& extra = "") {
+    return eyecam::parseStatus("{\"state\": \"" + state + "\", \"locked\": true, \"live\": true, \"calib_state\": " +
+                                   std::to_string(calibState) + extra + "}",
+                               kNow);
+}
+
+void testCalib() {
+    using eyecam::Calib;
+    using eyecam::CalibPrompt;
+    using eyecam::Run;
+    // The commands
+    SAME(eyecam::calibCommand(Calib::Wear), "calib wear");
+    SAME(eyecam::calibCommand(Calib::User), "calib user");
+    // The user's needs this wear's first (bit 0); the user's own bit alone isn't enough
+    for (int bits = 0; bits <= 3; ++bits) {
+        CHECK(eyecam::userCalibAllowed(calibStatus("idle", bits)) == ((bits & 1) != 0));
+    }
+
+    // The run a command starts
+    CHECK(eyecam::runOfCommand("calib wear") == Run::CalibWear);
+    CHECK(eyecam::runOfCommand("calib user") == Run::CalibUser);
+    CHECK(eyecam::runOfCommand("start") == Run::Recording);
+    CHECK(eyecam::runOfCommand("start widen_nolight") == Run::Recording);
+    for (const char* other : {"stop", "live on", "live off", "calib", "calib other", "started", ""}) {
+        CHECK(eyecam::runOfCommand(other) == Run::None);
+    }
+    CHECK(eyecam::isCalib(Run::CalibWear) && eyecam::isCalib(Run::CalibUser));
+    CHECK(!eyecam::isCalib(Run::Recording) && !eyecam::isCalib(Run::None));
+
+    // What ran last, following the status
+    const auto step = [](const std::string& state, const std::string& label) {
+        return eyecam::parseStatus("{\"state\": \"" + state + "\", \"step_label\": \"" + label + "\"}", kNow);
+    };
+    for (const char* label : {"squint", "look_up", "look_down"}) {
+        CHECK(eyecam::followRun(Run::None, step("calibrating", label)) == Run::CalibUser);
+        CHECK(eyecam::followRun(Run::CalibWear, step("calibrating", label)) == Run::CalibUser);
+    }
+    for (const char* label : {"close", "normal", "widen"}) {
+        CHECK(eyecam::followRun(Run::CalibUser, step("calibrating", label)) == Run::CalibWear);
+    }
+    // The countdown and the wait for the video: the calibration known, else this wear's
+    for (const char* label : {"lead_in", ""}) {
+        CHECK(eyecam::followRun(Run::CalibUser, step("calibrating", label)) == Run::CalibUser);
+        CHECK(eyecam::followRun(Run::CalibWear, step("calibrating", label)) == Run::CalibWear);
+        CHECK(eyecam::followRun(Run::None, step("calibrating", label)) == Run::CalibWear);
+        CHECK(eyecam::followRun(Run::Recording, step("calibrating", label)) == Run::CalibWear);
+    }
+    CHECK(eyecam::followRun(Run::CalibUser, step("recording", "normal")) == Run::Recording);
+    CHECK(eyecam::followRun(Run::CalibWear, step("searching", "")) == Run::Recording);
+    // Other states keep it: an error after a calibration is the calibration's
+    for (const char* state : {"idle", "error", "waiting_fds", "stopped"}) {
+        for (const Run run : {Run::None, Run::Recording, Run::CalibWear, Run::CalibUser}) {
+            CHECK(eyecam::followRun(run, step(state, "")) == run);
+        }
+    }
+    // Along a user calibration that fails: sent -> countdown -> its steps -> error
+    {
+        Run run = eyecam::runOfCommand("calib user");
+        run = eyecam::followRun(run, step("calibrating", "lead_in"));
+        CHECK(run == Run::CalibUser);
+        run = eyecam::followRun(run, step("calibrating", "look_down"));
+        run = eyecam::followRun(run, step("error", ""));
+        CHECK(run == Run::CalibUser);
+        // ...then a recording
+        run = eyecam::followRun(run, step("searching", ""));
+        run = eyecam::followRun(run, step("error", ""));
+        CHECK(run == Run::Recording);
+    }
+
+    // The first tab's note
+    const auto prompt = [](const Status& status, bool cameraLids, bool visible = true) {
+        eyecam::View view;
+        view.status = status;
+        view.visible = visible;
+        return eyecam::calibPrompt(view, cameraLids);
+    };
+    CHECK(prompt(calibStatus("idle", 0), true) == CalibPrompt::Calibrate);
+    CHECK(prompt(calibStatus("idle", 2), true) == CalibPrompt::Calibrate);  // the user's only: still this wear's
+    CHECK(prompt(calibStatus("error", 0), true) == CalibPrompt::Calibrate);
+    CHECK(prompt(calibStatus("idle", 1), true) == CalibPrompt::None);
+    CHECK(prompt(calibStatus("idle", 3), true) == CalibPrompt::None);
+    CHECK(prompt(calibStatus("idle", 1, ", \"recalib_suggested\": true"), true) == CalibPrompt::Recalibrate);
+    CHECK(prompt(calibStatus("idle", 3, ", \"recalib_suggested\": true"), true) == CalibPrompt::Recalibrate);
+    // Not calibrated wins over drifted
+    CHECK(prompt(calibStatus("idle", 0, ", \"recalib_suggested\": true"), true) == CalibPrompt::Calibrate);
+    // None of it: camera_lids off, the tab hidden (no eyecam-rec, or a stale one), the headset off, not live,
+    // busy running something
+    CHECK(prompt(calibStatus("idle", 0), false) == CalibPrompt::None);
+    CHECK(prompt(calibStatus("idle", 0), true, false) == CalibPrompt::None);
+    {
+        Status off = calibStatus("idle", 0);
+        off.locked = false;
+        CHECK(prompt(off, true) == CalibPrompt::None);
+        off = calibStatus("idle", 0);
+        off.live = false;
+        CHECK(prompt(off, true) == CalibPrompt::None);
+    }
+    CHECK(prompt(eyecam::parseStatus("{\"state\": \"idle\", \"locked\": true}", kNow), true) == CalibPrompt::None);
+    for (const char* state : {"calibrating", "recording", "searching", "waiting_fds", "stopped", "something_new"}) {
+        CHECK(prompt(calibStatus(state, 0), true) == CalibPrompt::None);
+        CHECK(prompt(calibStatus(state, 1, ", \"recalib_suggested\": true"), true) == CalibPrompt::None);
+    }
+    CHECK(prompt(Status(), true, false) == CalibPrompt::None);
+
+    // The light warning closes when a calibration starts (from the note on the first tab, or elsewhere)
+    {
+        eyecam::StartConfirm confirm;
+        confirm.open(State::Idle);
+        CHECK(confirm.sync(State::Calibrating, true));
+        CHECK(!confirm.isOpen());
+        CHECK(!confirm.open(State::Calibrating));
+    }
+
+    // The tab redraws when the calibration's state, the drift, live or the last run change
+    {
+        eyecam::View a;
+        a.status = calibStatus("idle", 0);
+        a.visible = true;
+        const std::string base = eyecam::signature(a);
+        eyecam::View b = a;
+        b.status.calibState = 1;
+        CHECK(eyecam::signature(b) != base);
+        b = a;
+        b.status.recalibSuggested = true;
+        CHECK(eyecam::signature(b) != base);
+        b = a;
+        b.status.live = false;
+        CHECK(eyecam::signature(b) != base);
+        b = a;
+        b.lastRun = Run::CalibUser;
+        CHECK(eyecam::signature(b) != base);
+        // (live_ms alone doesn't redraw: it isn't shown)
+        b = a;
+        b.status.liveMs = 9.0;
+        SAME(eyecam::signature(b), base);
+    }
+}
+
+void testCalibText() {
+    // Every text the calibration adds is there in both languages (the table has no check of its own)
+    for (const Language language : {Language::Ja, Language::En}) {
+        const UiText& t = uiText(language);
+        for (const char* text :
+             {t.eyecamSectionCamera, t.rowCameraLids, t.cameraUseBoth, t.cameraUseLeft, t.cameraUseRight,
+              t.cameraUseValve, t.cameraUseValveFormat, t.cameraWhyNotCalibrated, t.cameraWhyNoCamera,
+              t.cameraPupilSuffix, t.eyecamSectionCalib, t.eyecamCalibWearChip, t.eyecamCalibUserChip,
+              t.eyecamCalibChipFormat, t.eyecamCalibDone, t.eyecamCalibNotYet, t.eyecamCalibHintWear,
+              t.eyecamCalibHintUser, t.eyecamCalibHintDone, t.eyecamCalibHintRecalib, t.eyecamLiveOff,
+              t.eyecamCalibWear, t.eyecamCalibUser, t.eyecamCalibUserNeedsWear, t.eyecamSectionRecord,
+              t.eyecamCalibWearTitle, t.eyecamCalibUserTitle, t.eyecamCalibWaiting, t.eyecamCalibErrorTitle,
+              t.eyecamCalibRetry, t.calibPromptText, t.calibPromptButton, t.recalibPromptText,
+              t.recalibPromptButton, t.eyecamIdleHint}) {
+            CHECK(text != nullptr && text[0] != '\0');
+        }
+        // One %s each
+        CHECK(std::string(t.cameraUseValveFormat).find("%s") != std::string::npos);
+        CHECK(std::string(t.eyecamCalibChipFormat).find("%s: %s") != std::string::npos);
+    }
+    // The 18 s goes on the button and the note
+    CHECK(std::string(uiText(Language::Ja).eyecamCalibWear).find("18") != std::string::npos);
+    CHECK(std::string(uiText(Language::En).calibPromptText).find("18") != std::string::npos);
 }
 
 void testReply() {
@@ -639,6 +834,27 @@ void testControl() {
         SAME(control.reply().command, "start widen_nolight");
         SAME(recorder.received(), "start widen_nolight");
     }
+    // A calibration: the command as one line
+    {
+        FakeRecorder recorder(socket, "ok\n");
+        eyecam::Control control;
+        CHECK(control.send(socket, eyecam::calibCommand(eyecam::Calib::Wear), monotonic()));
+        waitReply(control);
+        CHECK(control.reply().ok);
+        SAME(recorder.received(), "calib wear");
+        CHECK(eyecam::runOfCommand(control.reply().command) == eyecam::Run::CalibWear);
+    }
+    // ...and the recorder's Japanese reason when it says no
+    {
+        FakeRecorder recorder(socket, "err 先に calib wear をしてね\n");
+        eyecam::Control control;
+        CHECK(control.send(socket, eyecam::calibCommand(eyecam::Calib::User), monotonic()));
+        waitReply(control);
+        CHECK(!control.reply().ok);
+        SAME(control.reply().command, "calib user");
+        SAME(control.reply().error, "先に calib wear をしてね");
+        SAME(recorder.received(), "calib user");
+    }
     // "err <reason>"
     {
         FakeRecorder recorder(socket, "err not idle\n");
@@ -695,6 +911,8 @@ int main() {
     testNoLight();
     testFade();
     testHideAtOnce();
+    testCalib();
+    testCalibText();
     testReply();
     testReadFile();
     testControl();

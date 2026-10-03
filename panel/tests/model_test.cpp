@@ -409,6 +409,83 @@ void testNativeEyes() {
     CHECK(SettingsView(m).locked(key::kNativeEyes) && SettingsView(m).flag(key::kNativeEyes));
 }
 
+/** camera_lids (the eye capture tab's "Eyelids from the eye cameras"): on by default, read from config.json, and
+ *  frameeyeosc's own value while its command line locks it. */
+void testCameraLids() {
+    const SettingSpec* spec = findSetting(key::kCameraLids);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 1);
+    PanelModel m;
+    m.config.root = JsonValue();
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(SettingsView(m).flag(key::kCameraLids));
+    m.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
+    CHECK(!SettingsView(m).flag(key::kCameraLids) && !SettingsView(m).locked(key::kCameraLids));
+    // Not a boolean: the default
+    m.config.root.set(key::kCameraLids, JsonValue::makeString("no"));
+    CHECK(SettingsView(m).flag(key::kCameraLids));
+    m.config.root.set(key::kCameraLids, JsonValue::makeBool(true));
+    m.status = parseStatus(
+        "{\"pid\": 1, \"locked\": [\"camera_lids\"], \"effective\": {\"camera_lids\": false}}", 0, false);
+    CHECK(SettingsView(m).locked(key::kCameraLids) && !SettingsView(m).flag(key::kCameraLids));
+}
+
+/** frameeyeosc's "camera" and the camera values sent, and what the eye capture tab says about them. */
+void testCameraStatus() {
+    // An older frameeyeosc, or none of it: unknown, nothing sent from the cameras
+    {
+        const EyeStatus s = parseStatus("{\"pid\": 1, \"time\": 0, \"sent\": {\"lids\": [0.7, 0.7]}}", 0, false);
+        CHECK(s.running && !s.camera.known);
+        CHECK(std::isnan(s.squint.v[0]) && std::isnan(s.squint.v[1]) && std::isnan(s.pupilDilation));
+        CHECK(cameraUse(s, true) == CameraUse::Unknown);
+        const EyeStatus none = parseStatus("{\"pid\": 1, \"time\": 0, \"camera\": null}", 0, false);
+        CHECK(!none.camera.known && cameraUse(none, true) == CameraUse::Unknown);
+    }
+    // Everything
+    const EyeStatus s = parseStatus(
+        "{\"pid\": 1, \"time\": 0, \"sent\": {\"squint\": [0.25, 0.5], \"pupil_dilation\": 0.4}, "
+        "\"camera\": {\"present\": true, \"calib_state\": 3, \"recalib_suggested\": true, \"used\": [true, true], "
+        "\"pupil_used\": [true, false], \"error\": null}}",
+        0, false);
+    CHECK(s.camera.known && s.camera.present && s.camera.calibState == 3 && s.camera.recalibSuggested);
+    CHECK(s.camera.used[0] && s.camera.used[1] && s.camera.pupilUsed[0] && !s.camera.pupilUsed[1]);
+    CHECK(s.camera.error.empty());
+    CHECK(s.squint.v[0] == 0.25 && s.squint.v[1] == 0.5 && s.pupilDilation == 0.4);
+    CHECK(cameraUse(s, true) == CameraUse::Both);
+    // squint and pupil_dilation null while the cameras don't drive them
+    {
+        const EyeStatus off = parseStatus(
+            "{\"pid\": 1, \"time\": 0, \"sent\": {\"squint\": null, \"pupil_dilation\": null}}", 0, false);
+        CHECK(std::isnan(off.squint.v[0]) && std::isnan(off.pupilDilation));
+    }
+    // Odd values are missing
+    {
+        const EyeStatus odd = parseStatus(
+            "{\"pid\": 1, \"time\": 0, \"camera\": {\"present\": 1, \"calib_state\": \"3\", \"used\": [1, true], "
+            "\"pupil_used\": true, \"error\": 5}}",
+            0, false);
+        CHECK(odd.camera.known && !odd.camera.present && odd.camera.calibState == 0);
+        CHECK(!odd.camera.used[0] && odd.camera.used[1] && !odd.camera.pupilUsed[0] && odd.camera.error.empty());
+    }
+
+    // What the line says
+    const auto use = [](const std::string& camera, bool cameraLids, bool running = true) {
+        EyeStatus s = parseStatus("{\"pid\": 1, \"time\": 0, \"camera\": " + camera + "}", 0, false);
+        s.running = running;
+        return cameraUse(s, cameraLids);
+    };
+    CHECK(use("{\"present\": true, \"calib_state\": 3, \"used\": [true, false]}", true) == CameraUse::Left);
+    CHECK(use("{\"present\": true, \"calib_state\": 3, \"used\": [false, true]}", true) == CameraUse::Right);
+    CHECK(use("{\"present\": true, \"calib_state\": 3, \"used\": [false, false]}", false) == CameraUse::Off);
+    CHECK(use("{\"present\": false, \"calib_state\": 0}", true) == CameraUse::NoCamera);
+    CHECK(use("{\"present\": true, \"calib_state\": 2}", true) == CameraUse::NotCalibrated);
+    CHECK(use("{\"present\": true, \"calib_state\": 1, \"error\": \"frames are stale\"}", true) == CameraUse::Error);
+    CHECK(use("{\"present\": true, \"calib_state\": 1}", true) == CameraUse::Valve);
+    // Still in use just after the switch went off (frameeyeosc hasn't read it yet): says what it does
+    CHECK(use("{\"present\": true, \"calib_state\": 3, \"used\": [true, true]}", false) == CameraUse::Both);
+    // frameeyeosc not running: unknown
+    CHECK(use("{\"present\": true, \"calib_state\": 3, \"used\": [true, true]}", true, false) == CameraUse::Unknown);
+}
+
 /** The new release's summary under the update row: Japanese on a Japanese panel when the release has it, else
  *  English, and nothing unless a newer release is available. */
 void testUpdateNotes() {
@@ -455,6 +532,8 @@ int main() {
     testMigrateGazePresets();
     testSteamlinkParams();
     testNativeEyes();
+    testCameraLids();
+    testCameraStatus();
     testUpdateNotes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

@@ -59,6 +59,11 @@ enum class PanelAction {
     HostKey,           ///< a keypad key: arg = '0'-'9', '.' or host_entry::kBackspace (handled inside the panel)
     HostOk,            ///< use the typed host (the caller checks and writes it)
     HostCancel,        ///< close the keypad (handled inside the panel)
+    HistoryOpen,       ///< open the version history on the Advanced tab (the panel opens it; the caller reads the
+                       ///< changelog)
+    HistoryClose,      ///< back to the Advanced tab (handled inside the panel)
+    HistoryRow,        ///< open version row arg, or close it if it is open (handled inside the panel)
+    HistoryScroll,     ///< scroll the version history a third of its height, arg -1 up / 1 down (handled inside)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -189,6 +194,40 @@ public:
     /** @return true while the keypad is open */
     bool hostEntryOpen() const { return hostEntryOpen_; }
 
+    /**
+     * Open the version history on the Advanced tab, with the installed version's row open (the newest one if the
+     * changelog doesn't have it) and scrolled to the top. Choosing another tab closes it.
+     */
+    void openHistory();
+
+    /** Close the version history (the Advanced tab shows its rows again). */
+    void closeHistory() { historyOpen_ = false; }
+
+    /** @return true while the version history is open */
+    bool historyOpen() const { return historyOpen_; }
+
+    /**
+     * For --history-open: open this version's row instead (without scrolling to it).
+     * @param version "0.5.0"
+     */
+    void setHistoryRow(const std::string& version);
+
+    /**
+     * For --history-scroll: how far the version history is scrolled (kept within the list when drawn).
+     * @param px px from the top of the list
+     */
+    void setHistoryScroll(double px);
+
+    /** @return true while the panel wants the controller's scroll events (the version history is shown) */
+    bool wantsScroll() const { return historyOpen_ && tab_ == PanelTab::Advanced; }
+
+    /**
+     * Scroll the version history (the thumbstick or touchpad; ignored while it is not shown or a prompt is open).
+     * @param dy px; positive moves the list up (shows what is further down)
+     * @return true if it moved (redraw needed)
+     */
+    bool scroll(double dy);
+
     /** @return what is typed */
     const std::string& hostEntryText() const { return hostEntryText_; }
 
@@ -257,6 +296,15 @@ private:
     bool hostEntryOpen_ = false;  ///< the keypad for the target PC is open
     std::string hostEntryText_;   ///< what is typed in it
     std::string hostEntryError_;  ///< why it can't be used, shown under it
+    bool historyOpen_ = false;          ///< the version history is shown on the Advanced tab
+    bool historyRowPending_ = false;    ///< open the installed version's row at the next draw
+    bool historyScrollSet_ = false;     ///< --history-scroll gave the scroll; don't move it to the open row
+    bool historyReveal_ = false;        ///< scroll the open row into view at the next draw
+    std::string historyRow_;            ///< the version whose row is open ("" = none)
+    std::vector<std::string> historyVersions_;  ///< the rows as last drawn (HistoryRow's arg is an index)
+    double historyScroll_ = 0.0;        ///< px the list is scrolled
+    double historyMaxScroll_ = 0.0;     ///< as far as it can scroll (from the last draw)
+    double historyViewH_ = 0.0;         ///< the height it is shown in (from the last draw)
 
     /**
      * Find the usable button at a point.
@@ -405,6 +453,15 @@ private:
      * @param view the settings shown
      */
     void drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The version history in place of the Advanced tab: a title row with "Close", one row per version (newest
+     * first; the open one shows its summary and items), clipped to the card and scrolled, and ▲ / ▼ on the right.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (the changelog, and the installed version)
+     */
+    void drawHistory(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
      * The recommendation prompt over everything (only its buttons stay usable).

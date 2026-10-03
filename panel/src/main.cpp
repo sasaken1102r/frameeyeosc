@@ -76,6 +76,10 @@ struct Options {
     bool fitDetails = false;      ///< --fit-details: "Fine-tune" open on the Eye fit tab
     int fitDetailsPage = 0;       ///< --fit-details lids: its eyelid page
     bool lidMarks = false;        ///< --lid-marks: the lid marks open on the Eyelids tab
+    bool history = false;         ///< --history: the version history open (on the Advanced tab)
+    std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
+    double historyScroll = -1.0;  ///< --history-scroll: px it is scrolled (-1 = as opened)
+    std::string changelogDir;     ///< --changelog-dir: read CHANGELOG*.md from here only
     std::string language;         ///< for --dump-png: overrides the config language (ja / en)
     PanelTab tab = PanelTab::Basic;
     bool previewQuit = false;
@@ -197,6 +201,11 @@ void printUsage() {
         "      --tab basic|output|gaze|eyefit|lids|advanced  Draw this tab\n"
         "      --fit-details [gaze|lids]  Open \"Fine-tune\" on the Eye fit tab (default: its gaze page)\n"
         "      --lid-marks       Show the lid marks on the Eyelids tab although the eyes are fitted\n"
+        "      --history         Open the version history (Advanced tab)\n"
+        "      --history-open VERSION  ...with this version's row open instead of the installed one\n"
+        "      --history-scroll PX  ...scrolled this far (kept within the list)\n"
+        "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
+        "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
         "      --preview-quit    Show \"press again to quit\"\n"
         "      --preview-reset   Show \"press again to reset\"\n"
         "      --preview-update-prompt  Show the \"update to ...?\" question (with --fake-update available)\n"
@@ -287,6 +296,16 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.targetBench = std::max(0, std::min(100000, std::atoi(argv[++i])));
         } else if (arg == "--lid-marks") {
             options.lidMarks = true;
+        } else if (arg == "--history") {
+            options.history = true;
+        } else if (arg == "--history-open" && hasNext) {
+            options.history = true;
+            options.historyOpen = argv[++i];
+        } else if (arg == "--history-scroll" && hasNext) {
+            options.history = true;
+            options.historyScroll = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--changelog-dir" && hasNext) {
+            options.changelogDir = argv[++i];
         } else if (arg == "--fit-details") {
             options.fitDetails = true;
             if (hasNext && (std::string(argv[i + 1]) == "gaze" || std::string(argv[i + 1]) == "lids")) {
@@ -802,6 +821,17 @@ void settleUpdater(frame_updater::UpdateChecker& updater, bool enabled) {
 }
 
 /**
+ * Read the version history for the panel's language (when it is opened, and again if the language changes while
+ * it is open).
+ * @param model the model (its changelogDirs; history is written)
+ */
+void loadHistory(PanelModel& model) {
+    model.history = changelog::load(model.changelogDirs, model.language == Language::Ja);
+    std::fprintf(stderr, "[history] %zu versions from %s\n", model.history.entries.size(),
+                 model.history.found ? model.history.dir.c_str() : "nowhere (no CHANGELOG.md found)");
+}
+
+/**
  * --dump-png / --thumbnail-png: draw without OpenVR and save PNGs.
  * @param options the command line
  * @return exit code
@@ -822,11 +852,19 @@ int runDumpPng(const Options& options) {
             model.language = configLanguage(model.config);
         }
         if (!options.language.empty()) parseLanguage(options.language, model.language);
+        model.changelogDirs =
+            options.changelogDir.empty() ? changelog::defaultDirs() : std::vector<std::string> {options.changelogDir};
         EyePanel panel(fonts);
         panel.setTab(options.tab);
         panel.setFitDetails(options.fitDetails);
         panel.setFitDetailsPage(options.fitDetailsPage);
         panel.setLidMarks(options.lidMarks);
+        if (options.history) {
+            loadHistory(model);
+            panel.openHistory();
+            if (!options.historyOpen.empty()) panel.setHistoryRow(options.historyOpen);
+            if (options.historyScroll >= 0) panel.setHistoryScroll(options.historyScroll);
+        }
         if (options.previewQuit) panel.armQuitForPreview();
         if (options.previewReset) panel.armResetForPreview();
         if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
@@ -1393,7 +1431,13 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::FitDetailsPage:
         case PanelAction::LidMarks:
         case PanelAction::HostKey:
-        case PanelAction::HostCancel: return;
+        case PanelAction::HostCancel:
+        case PanelAction::HistoryClose:
+        case PanelAction::HistoryRow:
+        case PanelAction::HistoryScroll: return;
+        case PanelAction::HistoryOpen:
+            loadHistory(model);
+            return;
         case PanelAction::HostEnter: {
             // Start from the IP address set now (a host name can only be changed in config.json)
             const std::string host = view.text(key::kHost);
@@ -1601,6 +1645,8 @@ int runOverlay(const Options& options) {
     PanelModel model;
     model.configPath = options.configPath;
     model.statusPath = options.statusPath;
+    model.changelogDirs =
+        options.changelogDir.empty() ? changelog::defaultDirs() : std::vector<std::string> {options.changelogDir};
     model.config = readConfigFile(model.configPath);
     model.language = configLanguage(model.config);
     std::fprintf(stderr, "[start] config %s, status %s\n", model.configPath.c_str(), model.statusPath.c_str());
@@ -1745,6 +1791,10 @@ int runOverlay(const Options& options) {
                 migrateConfig(model);
                 lastStamp = configStamp(model.configPath);
                 model.language = configLanguage(model.config);
+                // The version history follows the language
+                if (panel.historyOpen() && model.history.japanese != (model.language == Language::Ja)) {
+                    loadHistory(model);
+                }
                 dirty = true;
             }
         }
@@ -1766,9 +1816,12 @@ int runOverlay(const Options& options) {
                 }
                 case PointerInput::Type::Up: dirty |= panel.pointerUp(); break;
                 case PointerInput::Type::Leave: dirty |= panel.pointerLeave(); break;
+                case PointerInput::Type::Scroll: dirty |= panel.scroll(input.y); break;
             }
         }
         if (userQuit) break;
+        // The thumbstick scrolls the panel only while the version history is shown
+        vr.setPanelScroll(panel.wantsScroll());
         dirty |= panel.tick(nowSeconds());
         const uint64_t autostartVersion = autostart.snapshot(model.autostart);
         if (autostartVersion != drawnAutostart) {

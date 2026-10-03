@@ -47,6 +47,16 @@ constexpr double kControlH = 52;
 constexpr double kUpdateRowH = 138;  ///< the version row (four lines of text and the update check chip)
 /** The raw openness range drawn in the lid mark bars. */
 constexpr double kLidScaleMax = 1.2;
+// The version history (in place of the Advanced tab): a title row, then the rows, scrolled within the card
+constexpr double kHistoryTitleY = kContentY + 14;  ///< the title row's top
+constexpr double kHistoryTitleH = 48;
+constexpr double kHistoryViewTop = kHistoryTitleY + kHistoryTitleH + 18;  ///< the scrolled area, below the title row
+constexpr double kHistoryViewBottom = kContentY + kContentH - 16;
+constexpr double kHistoryBarW = 44;      ///< the ▲ / ▼ column at the right edge
+constexpr double kHistoryHeaderH = 56;   ///< a row's header (the whole row while it is folded)
+constexpr double kHistoryRowGap = 8;
+constexpr double kHistoryTextSize = 16;  ///< the summary and items (the hints are 15)
+constexpr double kHistoryLineStep = 23;
 
 /**
  * The largest text size (down to a minimum) that fits a width.
@@ -203,8 +213,10 @@ std::vector<std::string> wrapText(const Pen& pen, const std::string& text, doubl
         for (size_t i = next; i <= u; ++i) line += units[i];
         lineStart = next;
         if (lines.size() == maxLines) {
-            // Out of lines: put the rest on the last line and cut it with "…"
+            // Out of lines: put the rest on the last line and cut it with "…" (the space trimmed off the line goes
+            // back between it and the rest)
             std::string rest = lines.back();
+            if (next > 0 && units[next - 1].back() == ' ') rest += ' ';
             for (size_t r = next; r < units.size(); ++r) rest += units[r];
             lines.back() = ellipsize(pen, rest, size, bold, maxWidth, false);
             return lines;
@@ -602,6 +614,26 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
     switch (hit.action) {
         case PanelAction::Tab:
             tab_ = static_cast<PanelTab>(hit.arg);
+            historyOpen_ = false;
+            return {};
+        case PanelAction::HistoryOpen:
+            // The caller reads the changelog
+            openHistory();
+            return hit;
+        case PanelAction::HistoryClose:
+            closeHistory();
+            return {};
+        case PanelAction::HistoryRow:
+            if (hit.arg >= 0 && hit.arg < static_cast<int>(historyVersions_.size())) {
+                const std::string& version = historyVersions_[hit.arg];
+                // One row open at a time: opening one closes the other; the open one closes
+                historyRow_ = version == historyRow_ ? std::string() : version;
+                historyRowPending_ = false;
+                historyReveal_ = !historyRow_.empty();
+            }
+            return {};
+        case PanelAction::HistoryScroll:
+            scroll(hit.arg * historyViewH_ / 3);
             return {};
         case PanelAction::FitDetails:
             fitDetails_ = !fitDetails_;
@@ -690,6 +722,36 @@ void EyePanel::closeHostEntry() {
     hostEntryError_.clear();
     hover_ = {};
     pressed_ = {};
+}
+
+void EyePanel::openHistory() {
+    tab_ = PanelTab::Advanced;
+    historyOpen_ = true;
+    historyRowPending_ = true;
+    historyScrollSet_ = false;
+    historyReveal_ = false;
+    historyScroll_ = 0.0;
+}
+
+void EyePanel::setHistoryRow(const std::string& version) {
+    historyRow_ = version;
+    historyRowPending_ = false;
+    historyReveal_ = false;
+}
+
+void EyePanel::setHistoryScroll(double px) {
+    historyScroll_ = std::max(0.0, px);
+    historyScrollSet_ = true;
+    historyReveal_ = false;
+}
+
+bool EyePanel::scroll(double dy) {
+    if (!wantsScroll() || promptOpen() || hostEntryOpen_) return false;
+    const double next = std::max(0.0, std::min(historyMaxScroll_, historyScroll_ + dy));
+    if (std::fabs(next - historyScroll_) < 1e-3) return false;
+    historyScroll_ = next;
+    historyReveal_ = false;
+    return true;
 }
 
 void EyePanel::showUpdatePrompt(const std::string& version) {
@@ -2183,6 +2245,10 @@ double EyePanel::drawSectionTitle(const Pen& pen, double y, const std::string& t
 }
 
 void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+    if (historyOpen_) {
+        drawHistory(pen, t, m);
+        return;
+    }
     const EyeStatus& s = m.status;
     double y = kRowTop - 6;
 
@@ -2411,7 +2477,19 @@ double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_upda
 
     std::string hint = "v" + current;
     if (u.checkedAt > 0) hint += formatText(t.checkedFormat, checkedText(u.checkedAt));
-    drawRowLabel(pen, t, y, h, t.rowVersion, hint, false);
+    drawRowLabel(pen, t, y, textH + 4, t.rowVersion, hint, false);
+
+    // "Version history" under the label, on the chip's line
+    {
+        const PanelHit hit {PanelAction::HistoryOpen, nullptr, 0};
+        const double size = fitSize(pen, t.historyButton, 16, 12, kLabelW - 28, true);
+        const double w = std::min(kLabelW, pen.measure(t.historyButton, size, true) + 32);
+        const int pointer = pointerState(hit);
+        fillRounded(pen, kInnerX, chipY, w, chipH, chipH / 2, pointer > 0 ? kControlHover : kControl);
+        strokeRounded(pen, kInnerX, chipY, w, chipH, chipH / 2, kBorder, 2);
+        textCentered(pen, kInnerX + w / 2, centerBaseline(chipY, chipH, size), t.historyButton, size, kText, true);
+        addButton(hit, kInnerX, chipY, w, chipH);
+    }
 
     // Buttons at the right end; two are stacked so the texts keep their width
     const double gap = 8;
@@ -2478,6 +2556,194 @@ double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_upda
         pen.text(kInnerX, baseline - 5, line, notesSize, kText);
     }
     return h + 14 + notesLines.size() * notesStep;
+}
+
+void EyePanel::drawHistory(const Pen& pen, const UiText& t, const PanelModel& m) {
+    cairo_t* cr = pen.cr;
+    const std::vector<changelog::Entry>& entries = m.history.entries;
+
+    // The title row: the title, and "Close" back to the Advanced tab
+    const double closeW = 150;
+    const double titleSize = fitSize(pen, t.historyTitle, 22, 16, kInnerRight - closeW - 20 - kInnerX, true);
+    pen.text(kInnerX, centerBaseline(kHistoryTitleY, kHistoryTitleH, titleSize), t.historyTitle, titleSize, kText, true);
+    drawButton(pen, kInnerRight - closeW, kHistoryTitleY + 2, closeW, kHistoryTitleH - 4, t.historyClose,
+               {PanelAction::HistoryClose, nullptr, 0}, true, false);
+    pen.color(kDivider);
+    cairo_set_line_width(cr, 1);
+    cairo_move_to(cr, kInnerX, kHistoryTitleY + kHistoryTitleH + 9.5);
+    cairo_line_to(cr, kInnerRight, kHistoryTitleY + kHistoryTitleH + 9.5);
+    cairo_stroke(cr);
+
+    const double viewTop = kHistoryViewTop;
+    const double viewBottom = kHistoryViewBottom;
+    const double viewH = viewBottom - viewTop;
+    const double barX = kInnerRight - kHistoryBarW;
+    const double rowX = kInnerX;
+    const double rowW = barX - 14 - rowX;
+    const double padX = 18;
+    const double textX = rowX + padX;
+    const double textW = rowW - padX * 2;
+    const double bulletIndent = 20;
+    historyViewH_ = viewH;
+    historyVersions_.clear();
+    for (const changelog::Entry& entry : entries) historyVersions_.push_back(entry.version);
+    if (entries.empty()) {
+        historyScroll_ = 0.0;
+        historyMaxScroll_ = 0.0;
+        textCentered(pen, (kInnerX + kInnerRight) / 2, viewTop + 80, t.historyMissing, 18, kTextMuted, false);
+        return;
+    }
+
+    // Right after opening: the installed version's row, else the newest
+    if (historyRowPending_) {
+        historyRowPending_ = false;
+        const std::string installed = bareVersion(m.update.current);
+        const bool listed = std::find(historyVersions_.begin(), historyVersions_.end(), installed) != historyVersions_.end();
+        historyRow_ = listed ? installed : historyVersions_.front();
+        historyReveal_ = !historyScrollSet_;
+    }
+    const auto found = std::find(historyVersions_.begin(), historyVersions_.end(), historyRow_);
+    const int open = found == historyVersions_.end() ? -1 : static_cast<int>(found - historyVersions_.begin());
+
+    // The open row's text: the whole summary, and the items (English ones are first sentences, up to two lines)
+    std::vector<std::string> summaryLines;
+    std::vector<std::vector<std::string>> bulletLines;
+    double openH = kHistoryHeaderH;
+    if (open >= 0) {
+        const changelog::Entry& entry = entries[open];
+        if (!entry.summary.empty()) {
+            summaryLines = wrapText(pen, entry.summary, kHistoryTextSize, false, textW, 20);
+            openH += summaryLines.size() * kHistoryLineStep + 8;
+        }
+        for (const std::string& bullet : entry.bullets) {
+            bulletLines.push_back(
+                wrapText(pen, bullet, kHistoryTextSize, false, textW - bulletIndent, entry.japanese ? 20 : 2));
+            openH += bulletLines.back().size() * kHistoryLineStep + 5;
+        }
+        openH += 10;
+    }
+
+    // Where each row is in the list, how far it can scroll, and the open row brought into view
+    std::vector<double> rowTop;
+    double contentH = 0;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        rowTop.push_back(contentH);
+        contentH += (static_cast<int>(i) == open ? openH : kHistoryHeaderH) + kHistoryRowGap;
+    }
+    contentH -= kHistoryRowGap;
+    historyMaxScroll_ = std::max(0.0, contentH - viewH);
+    if (historyReveal_ && open >= 0) {
+        // As much of the row as fits, never past its header
+        const double top = rowTop[open];
+        if (top + openH > historyScroll_ + viewH) historyScroll_ = std::min(top, top + openH - viewH);
+        if (top < historyScroll_) historyScroll_ = top;
+    }
+    historyReveal_ = false;
+    historyScroll_ = std::max(0.0, std::min(historyMaxScroll_, historyScroll_));
+
+    // The rows, clipped to the area under the title row
+    cairo_save(cr);
+    cairo_rectangle(cr, rowX - 2, viewTop, rowW + 4, viewH);
+    cairo_clip(cr);
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const changelog::Entry& entry = entries[i];
+        const bool isOpen = static_cast<int>(i) == open;
+        const double h = isOpen ? openH : kHistoryHeaderH;
+        const double y = viewTop + rowTop[i] - historyScroll_;
+        if (y + h < viewTop || y > viewBottom) continue;
+        const PanelHit hit {PanelAction::HistoryRow, nullptr, static_cast<int>(i)};
+        const int pointer = pointerState(hit);
+        if (isOpen) {
+            fillRounded(pen, rowX, y, rowW, h, 14, kAccentTint);
+            if (pointer > 0) fillRounded(pen, rowX + 4, y + 4, rowW - 8, kHistoryHeaderH - 8, 10, kControlHover);
+            strokeRounded(pen, rowX, y, rowW, h, 14, kAccent, 2);
+        } else {
+            fillRounded(pen, rowX, y, rowW, h, 14, pointer > 0 ? kControlHover : kControl);
+            strokeRounded(pen, rowX, y, rowW, h, 14, kBorder, 2);
+        }
+        // A triangle pointing right (folded) or down (open)
+        const double cx = textX + 5;
+        const double cy = y + kHistoryHeaderH / 2;
+        pen.color(kText);
+        if (isOpen) {
+            cairo_move_to(cr, cx - 7, cy - 4);
+            cairo_line_to(cr, cx + 7, cy - 4);
+            cairo_line_to(cr, cx, cy + 5);
+        } else {
+            cairo_move_to(cr, cx - 4, cy - 7);
+            cairo_line_to(cr, cx + 5, cy);
+            cairo_line_to(cr, cx - 4, cy + 7);
+        }
+        cairo_close_path(cr);
+        cairo_fill(cr);
+        // "0.7.1 · 10/3", then (folded) the summary on the rest of the line
+        const std::string header = entry.date.empty() ? entry.version : entry.version + " · " + entry.date;
+        const double headerX = textX + 22;
+        const double baseline = centerBaseline(y, kHistoryHeaderH, 18);
+        const double headerW = pen.text(headerX, baseline, header, 18, kText, true);
+        if (!isOpen) {
+            // No summary paragraph: the first item stands in
+            const std::string line = !entry.summary.empty() ? entry.summary
+                                     : !entry.bullets.empty() ? entry.bullets.front()
+                                                              : std::string();
+            const double x = headerX + headerW + 18;
+            const double room = rowX + rowW - padX - x;
+            if (!line.empty() && room > 40) {
+                pen.text(x, centerBaseline(y, kHistoryHeaderH, kHistoryTextSize),
+                         ellipsize(pen, line, kHistoryTextSize, false, room, false), kHistoryTextSize,
+                         pointer > 0 ? kText : kTextMuted);
+            }
+        } else {
+            double top = y + kHistoryHeaderH - 4;
+            for (const std::string& line : summaryLines) {
+                top += kHistoryLineStep;
+                pen.text(textX, top - 6, line, kHistoryTextSize, kText);
+            }
+            if (!summaryLines.empty()) top += 8;
+            for (const std::vector<std::string>& lines : bulletLines) {
+                for (size_t l = 0; l < lines.size(); ++l) {
+                    top += kHistoryLineStep;
+                    if (l == 0) drawDot(cr, textX + 6, top - 11, 3.5, kAccent);
+                    pen.text(textX + bulletIndent, top - 6, lines[l], kHistoryTextSize, kText);
+                }
+                top += 5;
+            }
+        }
+        // Only the part of the header that shows can be pressed
+        const double hitTop = std::max(y, viewTop);
+        const double hitBottom = std::min(y + kHistoryHeaderH, viewBottom);
+        if (hitBottom - hitTop > 4) addButton(hit, rowX, hitTop, rowW, hitBottom - hitTop);
+    }
+    cairo_restore(cr);
+
+    // ▲ / ▼ at the right edge (a third of the view per press), with where the view is between them
+    const double barCx = barX + kHistoryBarW / 2;
+    const auto arrow = [&](int direction, double by) {
+        const PanelHit hit {PanelAction::HistoryScroll, nullptr, direction};
+        const bool can = direction < 0 ? historyScroll_ > 0.5 : historyScroll_ < historyMaxScroll_ - 0.5;
+        const int pointer = can ? pointerState(hit) : 0;
+        fillRounded(pen, barX, by, kHistoryBarW, kHistoryBarW, 14,
+                    pointer == 2 ? kAccentPressed : (pointer == 1 ? kControlHover : kControl));
+        strokeRounded(pen, barX, by, kHistoryBarW, kHistoryBarW, 14, can ? kBorder : kDivider, 2);
+        pen.color(pointer == 2 ? kOnAccent : (can ? kText : kTextDisabled));
+        const double cy = by + kHistoryBarW / 2;
+        cairo_move_to(cr, barCx - 9, cy - direction * 5);
+        cairo_line_to(cr, barCx + 9, cy - direction * 5);
+        cairo_line_to(cr, barCx, cy + direction * 6);
+        cairo_close_path(cr);
+        cairo_fill(cr);
+        addButton(hit, barX, by, kHistoryBarW, kHistoryBarW, can);
+    };
+    arrow(-1, viewTop);
+    arrow(1, viewBottom - kHistoryBarW);
+    const double trackTop = viewTop + kHistoryBarW + 10;
+    const double trackH = viewBottom - kHistoryBarW - 10 - trackTop;
+    fillRounded(pen, barCx - 3, trackTop, 6, trackH, 3, kControl);
+    if (historyMaxScroll_ > 0) {
+        const double thumbH = std::max(36.0, trackH * viewH / contentH);
+        const double thumbY = trackTop + (trackH - thumbH) * historyScroll_ / historyMaxScroll_;
+        fillRounded(pen, barCx - 3, thumbY, 6, thumbH, 3, kBorder);
+    }
 }
 
 void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {

@@ -293,6 +293,10 @@ UiText makeJapanese() {
     t.sectionTools = "調べる道具";
     t.sectionFiles = "ファイルと本体";
     t.updateCheckChip = "起動時と 1 日 1 回確認";
+    t.historyButton = "更新履歴";
+    t.historyTitle = "更新履歴";
+    t.historyClose = "閉じる";
+    t.historyMissing = "更新履歴が見つかりません";
     t.rowPrefix = "パラメーター名の頭";
     t.prefixNone = "なし";
     t.prefixExample = "例: ";
@@ -663,6 +667,10 @@ UiText makeEnglish() {
     t.sectionTools = "Diagnostics";
     t.sectionFiles = "Files and process";
     t.updateCheckChip = "Check at start and daily";
+    t.historyButton = "Version history";
+    t.historyTitle = "Version history";
+    t.historyClose = "Close";
+    t.historyMissing = "Version history not found";
     t.rowPrefix = "Parameter prefix";
     t.prefixNone = "None";
     t.prefixExample = "e.g. ";

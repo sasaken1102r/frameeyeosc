@@ -7,9 +7,12 @@
 #include <string>
 #include <vector>
 
-/** A pointer action on the dashboard panel (coordinates are px, origin at the image's top-left). */
+/**
+ * A pointer action on the dashboard panel (coordinates are px, origin at the image's top-left). For Scroll, y is
+ * how far to scroll in px (positive shows what is further down) and x is 0.
+ */
 struct PointerInput {
-    enum class Type { Move, Down, Up, Leave };
+    enum class Type { Move, Down, Up, Leave, Scroll };
     Type type;
     double x = 0.0;
     double y = 0.0;
@@ -82,6 +85,13 @@ public:
      * Open the dashboard and show this app's panel (IVROverlay::ShowDashboard).
      */
     void showPanel();
+
+    /**
+     * Ask for the controller's scroll events on the panel (VROverlayFlags_SendVRSmoothScrollEvents), only while
+     * something on it scrolls, so the other tabs get the dashboard's usual input. Logged when it changes.
+     * @param on whether to get them
+     */
+    void setPanelScroll(bool on);
 
     /**
      * Whether the SteamVR dashboard is open (showing any overlay, not only this panel).
@@ -197,6 +207,8 @@ private:
     double dotWidth_[2] = {0.0, 0.0};  ///< the width last set (m)
     bool dotFailed_ = false;          ///< creating one failed; not tried again
     int panelHeight_ = 0;
+    bool panelScroll_ = false;      ///< the panel asked for scroll events
+    int scrollLogs_ = 0;            ///< scroll events logged so far (the first few, to tune the speed)
     int vrserverPid_ = -1;
     std::string lastPanelError_;
 

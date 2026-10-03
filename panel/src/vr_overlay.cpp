@@ -26,6 +26,11 @@ constexpr const char* kDashboardName = "Eye";
 constexpr float kDashboardWidthM = 2.8f;
 // On shutdown, how long to wait after clearing the overlay before VR_Shutdown (about 36 frames at 90Hz)
 constexpr int kShutdownWaitMs = 400;
+// Scrolling the panel (the version history): px per unit of the scroll events' ydelta. Not measured on the Frame
+// yet; the first few events are logged to tune them
+constexpr double kSmoothScrollPx = 120.0;   ///< VREvent_ScrollSmooth (a continuous delta)
+constexpr double kDiscreteScrollPx = 80.0;  ///< VREvent_ScrollDiscrete (one notch)
+constexpr int kScrollLogCount = 12;
 // The eye fit's target: an ordinary (not dashboard) overlay fixed to the headset
 constexpr const char* kTargetKey = "sasaken.frameeyeosc-panel.target";
 constexpr const char* kTargetName = "Eye target";
@@ -212,6 +217,15 @@ VrOverlay::ConnectResult VrOverlay::connect(int width, int height, std::string& 
     return ConnectResult::Ok;
 }
 
+void VrOverlay::setPanelScroll(bool on) {
+    if (!connected_ || dashboardHandle_ == 0 || on == panelScroll_) return;
+    panelScroll_ = on;
+    const vr::EVROverlayError error =
+        vr::VROverlay()->SetOverlayFlag(dashboardHandle_, vr::VROverlayFlags_SendVRSmoothScrollEvents, on);
+    std::fprintf(stderr, "[VR] SetOverlayFlag(SendVRSmoothScrollEvents, %s) -> %s\n", on ? "true" : "false",
+                 overlayErrorName(error));
+}
+
 void VrOverlay::shutdown() {
     if (!connected_) return;
     vr::IVROverlay* overlay = vr::VROverlay();
@@ -288,6 +302,21 @@ VrEvents VrOverlay::pollEvents() {
                     }
                     break;
                 case vr::VREvent_FocusLeave: result.pointer.push_back({PointerInput::Type::Leave, 0, 0}); break;
+                // The thumbstick or touchpad while scroll events are on (setPanelScroll). A positive ydelta is
+                // scrolling up, like a mouse wheel turned away
+                case vr::VREvent_ScrollSmooth:
+                case vr::VREvent_ScrollDiscrete: {
+                    const bool smooth = event.eventType == vr::VREvent_ScrollSmooth;
+                    const double dy = -event.data.scroll.ydelta * (smooth ? kSmoothScrollPx : kDiscreteScrollPx);
+                    if (scrollLogs_ < kScrollLogCount) {
+                        ++scrollLogs_;
+                        std::fprintf(stderr, "[VR] scroll %s: ydelta %.3f, viewportscale %.3f -> %.1f px\n",
+                                     smooth ? "smooth" : "discrete", event.data.scroll.ydelta,
+                                     event.data.scroll.viewportscale, dy);
+                    }
+                    if (dy != 0.0) result.pointer.push_back({PointerInput::Type::Scroll, 0, dy});
+                    break;
+                }
                 // The dashboard icon bar's "close" (VROverlayFlags_EnableControlBarClose).
                 // This is distinct from SteamVR's own shutdown (VRSystem's VREvent_Quit)
                 case vr::VREvent_OverlayClosed:

@@ -294,6 +294,10 @@ struct UiText {
     const char* sectionTools;       ///< section titles: the gaze dots and the eye log...
     const char* sectionFiles;       ///< ...and the file locations and the process
     const char* updateCheckChip;    ///< the automatic update check, as a chip in the version row ("... On")
+    const char* historyButton;      ///< the version row's button that opens the version history
+    const char* historyTitle;       ///< the version history's title
+    const char* historyClose;       ///< its button back to the Advanced tab
+    const char* historyMissing;     ///< no CHANGELOG.md (or CHANGELOG.ja.md) was found
     const char* rowPrefix;
     const char* prefixNone;
     const char* prefixExample;      ///< "e.g." before an OSC address

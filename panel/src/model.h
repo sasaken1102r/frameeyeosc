@@ -3,6 +3,7 @@
 #pragma once
 
 #include "autostart.h"
+#include "changelog.h"
 #include "config.h"
 #include "gaze_fit.h"
 #include "i18n.h"
@@ -26,6 +27,8 @@ struct PanelModel {
     frame_updater::UpdateStatus update;  ///< new-release check and install (see frame-updater)
     gaze_fit::View fit;          ///< the eye fit session (Eye fit tab)
     recorder::View recording;    ///< the eye log (Advanced tab, and a mark in the left column while it records)
+    std::vector<std::string> changelogDirs;  ///< where to look for CHANGELOG.md (changelog::defaultDirs)
+    changelog::History history;  ///< the version history, read when it is opened
 };
 
 /**

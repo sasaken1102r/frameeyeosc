@@ -131,6 +131,9 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 ./build/text-test                                # テンキーで打った送り先の IP の確認と、目合わせの失敗の文（日本語・英語）のテスト
 ./build/sounds-test                              # 目合わせの音の WAV と、どの場面でどの音かのテスト（鳴らさない）
 ./build/changelog-test                           # 更新履歴の読み方（英語と日本語の形、「日本語:」を飛ばす、最初の文、マークダウン、英語で補う）のテスト
+./build/eyecam-test                              # 目の撮影タブ（状態ファイル、出す・消す条件、指示の文、全面の光、/tmp の偽ソケット）のテスト
+./build/frameeyeosc-panel --dump-png out/eyecam_2026-10-03_00-00-00.png --fake-eyecam recording:widen --tab eyecam
+./build/frameeyeosc-panel --eyecam-fill-png out/fill_2026-10-03_00-00-00.png --eyecam-fill dark --language en
 ./build/frameeyeosc-panel --play-sound open      # 音を 1 つ鳴らして聞く（pop / pip / buzz / tick / open / done / fail）
 ./build/frameeyeosc-panel --dot-png out/dot_2026-09-28_00-00-00.png --dot-kind left
 ./build/frameeyeosc-panel --version               # 版（Cargo.toml から）
@@ -145,8 +148,18 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 - `--update-live` を付けると本物の更新の仕組みを動かす: 最初に確認し、`--click` のあとは始まった確認や更新が終わるまで待ってから描く。更新は本当に行われるので、偽の GitHub（`FRAME_UPDATE_API_URL`・`FRAME_UPDATE_ALLOW_INSECURE=1`）と別の `HOME` で試す
 - 更新履歴は `--history` で開き、`--history-open 版` でその版の行を開き、`--history-scroll px` でスクロールして描く（どちらも `--history` を含む。スクロールは中身の範囲に収める）。変更履歴は上の場所から探す。`--changelog-dir DIR` でそのフォルダだけを見る（無いフォルダなら「見つかりません」の見た目）。`--fake` とも一緒に使える
 - `--click X,Y`（何回でも）は、描く前にその座標を押したことにする。当たり判定と設定ファイルの書き込みをヘッドセットなしで確かめる用（`--fake` とは一緒に使えない。`--config` の設定ファイルを本当に書き換えるので、試すときは別の場所を指定する）
+- 目の撮影タブ（下）は `--fake-eyecam waiting|idle|searching|recording:ラベル|error` と `--tab eyecam` で描く（ラベルは normal・widen・close・squint・look_up・look_down・bright・dark・end。recording は 9 ステップ・120 秒のうちのそのステップの数字が入る。error は失敗した返事も出す）。`--eyecam-fill-png PATH`（`--eyecam-fill bright|dark`、`--language`）で全面の光の画像。`--eyecam-dir DIR` で eyecam-rec のフォルダ（`status.json` と `ctl.sock`）を別の場所にする。`--fake` なしの `--dump-png` はそこを読み、`--click` で［撮影開始］／［中止］を押すとそのソケットに本当に送って返事を待つ（試すときは一時フォルダに偽の `status.json` とソケットを置く。本物の `/run/user/1000/eyecam/` には何も作らない）
 - `--probe` は Background 型でつなぐだけで、オーバーレイも Vulkan も作らない。`FindOverlay`・名前・幅・閉じるボタン・表示中か・`GetOverlayTextureSize` を出す
 - `contrib/icons/frameeyeosc-panel-{48,128,256}.png` は `--thumbnail-png` で書き出したもの（ダッシュボードのサムネイルと同じ絵）
+
+### 目の撮影タブ（開発用、eyecam-rec）
+
+目のカメラの録画ツール eyecam-rec（このリポジトリの外）が動いている間だけ、タブの列の最後に「目の撮影」（Eye capture）が出る。ふつうに使う人には出ない。
+
+- **出る条件**: `$XDG_RUNTIME_DIR/eyecam/status.json`（無ければ `/run/user/<uid>/eyecam/`）があり、`state` が `stopped` でなく、5 秒以内に書かれている（ファイルの更新時刻）。消えたら、このタブを見ていたときは「基本」に戻る。読むのは動いている間 0.1 秒おき、それ以外は 1 秒に 1 回（ファイルが無ければ開けないだけ）。ダッシュボードが閉じていても読む
+- **状態ごとの表示**（大きな字。ヘッドセットの中で読む）: `waiting_fds` は PC から SSH で一度だけ実行するコマンド `sudo /home/steamos/eyecam-src/target/release/eyecam-grab` を出すだけ（パネルは sudo も eyecam-grab も実行しない）。`idle` は大きな［撮影開始］。`searching` は「目を探しています…」と左右の fps と［中止］。`recording` はそのステップの指示をとても大きく（普通に開けて・見開いて！・目を閉じて・目を細めて・上を見て・下を見て・明るい画面を見て・暗い画面を見て・おわり）、ステップの残り秒、「ステップ i / n」（`step_index` は 0 から数えるものとして +1 で出す）、全体の進み具合のバー（`elapsed_s / total_s`）、fps、［中止］。`error` はメッセージと［もう一度撮影］。`message` は空でなければいつも下に出し、送ったコマンドの返事が `err` ならそれも赤で出す。ステップの音は eyecam-rec が鳴らすので、パネルは鳴らさない
+- **操作**: ［撮影開始］は `ctl.sock`（unix stream）に `start`、［中止］は `stop` を 1 行送る。ノンブロッキングでつないで送り、返事（`ok` か `err 理由`）はループで読む。2 秒で返事が無ければあきらめる。つながらないときもその理由を出す。描画のループは待たない
+- **全面の光**: `recording` で `step_label` が `bright` か `dark` の間だけ、ダッシュボードとは別のオーバーレイ（`sasaken.frameeyeosc-panel.eyecam-fill`）を出す。ヘッドセットに固定（`SetOverlayTransformTrackedDeviceRelative`、HMD）で正面 0.9 m、幅 4 m の正方形（左右・上下とも約 131°）、真っ白か真っ黒で、真ん中に指示を薄く出す（1024 px 四方、ステップか言語が変わったときだけ描き直す）。ステップが変わる・録画が終わる・状態ファイルが 1 秒より古くなる・タブが消えるのどれでも、その周（0.1 秒以内）で隠す。パネルの終了時（どの終わり方でも）は真っ先に隠し、終了処理で `DestroyOverlay` する。プロセスが落ちたときは SteamVR が消す
 
 ## ＋（プログラムを起動）から使う
 
@@ -200,7 +213,7 @@ systemctl --user daemon-reload
 - 外部コマンドは `systemctl --user` と `/bin/sh ~/.local/share/frameeyeosc/frame-update.sh`、目を合わせるときの音の `pw-play`（無ければ `paplay`、`aplay`。どれも無ければ鳴らさない。`/usr/bin`・`/bin` を先に探し、PATH の空や相対のフォルダは使わない）だけ。音は `posix_spawn` で出力を捨てて起動し、待たずにループで片付ける（同時に 2 つまで）。音量や PipeWire / WirePlumber の設定には触らない。どちらも固定の引数で呼び、コマンドの文字列を組み立ててシェルに渡すことはしない。`systemctl` は 2 秒（enable / disable は 5 秒）、更新の確認は 90 秒で終わらなければ SIGKILL、どの場合も `waitpid` で片付ける
 - 更新のスクリプトが書くのは `~/.cache/frameeyeosc/` だけ。新しい版を入れるのは［更新する］を押して確認したときだけ
 - `systemctl` はワーカースレッドで実行する（ポインターへの応答 33 ms おきを止めない）。SIGTERM・SIGINT・SIGUSR1 はメインスレッドで受ける
-- パネルを閉じている間は描かない。読むのは更新の状態ファイル（`~/.cache/frameeyeosc/update-state.json`、1 秒に 2 回ほど）だけで、実行するコマンドは更新の確認（起動時と 1 時間ごと）だけ。ほかはイベントを 0.25 秒おきに見るだけ。例外は自分で始めた目合わせの間だけ（上を参照）
+- パネルを閉じている間は描かない。読むのは更新の状態ファイル（`~/.cache/frameeyeosc/update-state.json`、1 秒に 2 回ほど）と eyecam-rec の `status.json`（1 秒に 1 回。動いている間は 0.1 秒おき）だけで、実行するコマンドは更新の確認（起動時と 1 時間ごと）だけ。ほかはイベントを 0.25 秒おきに見るだけ。例外は自分で始めた目合わせの間だけ（上を参照）
 - 目合わせの目印は、ダッシュボードが閉じている間だけ出す。ダッシュボードが開いたら、その場で隠して止める
 
 負荷（2026-09-27 に Frame で実測、`/proc/<pid>/stat` と `/proc/<pid>/io`）:
@@ -234,6 +247,7 @@ systemctl --user daemon-reload
 | `src/model.*` | 表示に使う値の組み立て（コマンドで固定中なら `effective`）、なめらかさの 3 段階、おすすめ設定、目盛りの順番 |
 | `src/config.*` | `config.json` の項目の表（型・既定値・範囲・刻み）、読み書き（一時ファイル → fsync → rename） |
 | `src/status.*` | `status.json` の読み込みと、本体が動いているかの判断 |
+| `src/eyecam.*` | 目の撮影タブ（開発用）: eyecam-rec の `status.json` の読み込み、タブと全面の光を出す条件、指示の文、`ctl.sock` への送信 |
 | `src/autostart.*` | `systemctl --user` で自動起動を読む・切り替えるワーカースレッド |
 | `src/command.*` | fork＋execvp・パイプ・タイムアウト・waitpid |
 | `src/theme.*` | 色の定義と WCAG のコントラスト比（`--contrast-report`） |

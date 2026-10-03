@@ -314,7 +314,7 @@ struct UiText {
     const char* eyecamRetry;           ///< error: start again
     const char* eyecamUnknownFormat;   ///< a state this panel doesn't know ("State: %s")
     const char* eyecamFpsFormat;       ///< "fps  L %s / R %s"
-    const char* eyecamLocked;          ///< after the fps while "locked" is true
+    const char* eyecamNotLocked;       ///< while recording without camera frames (headset off): put it on
     const char* eyecamRemainingFormat; ///< seconds left of the step ("%d s left")
     const char* eyecamStepFormat;      ///< "Step %d of %d"
     const char* eyecamSending;         ///< a command waits for its reply

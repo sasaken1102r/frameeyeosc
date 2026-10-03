@@ -312,7 +312,7 @@ UiText makeJapanese() {
     t.eyecamRetry = "もう一度撮影";
     t.eyecamUnknownFormat = "状態: %s";
     t.eyecamFpsFormat = "fps  左 %s / 右 %s";
-    t.eyecamLocked = "ロック中";
+    t.eyecamNotLocked = "HMD をかぶってください";
     t.eyecamRemainingFormat = "あと %d 秒";
     t.eyecamStepFormat = "ステップ %d / %d";
     t.eyecamSending = "送っています…";
@@ -715,7 +715,7 @@ UiText makeEnglish() {
     t.eyecamRetry = "Start again";
     t.eyecamUnknownFormat = "State: %s";
     t.eyecamFpsFormat = "fps  L %s / R %s";
-    t.eyecamLocked = "Locked";
+    t.eyecamNotLocked = "Put the headset on";
     t.eyecamRemainingFormat = "%d s left";
     t.eyecamStepFormat = "Step %d of %d";
     t.eyecamSending = "Sending…";

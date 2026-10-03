@@ -246,7 +246,7 @@ void printUsage() {
         "                 failed-noresult  A made-up eye fit (Eye fit tab)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
-        "      --fake-eyecam waiting|idle|searching|recording:LABEL|error  A made-up eyecam-rec for the developer tab\n"
+        "      --fake-eyecam waiting|idle|searching|recording:LABEL[:unlocked]|error  A made-up eyecam-rec for the developer tab\n"
         "                        \"Eye capture\" (LABEL: normal, widen, close, squint, look_up, look_down, bright,\n"
         "                        dark, end)\n"
         "  --eyecam-fill-png PATH  Draw the eye capture's full-view light (with --language) to a PNG\n"
@@ -468,8 +468,10 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--fake-eyecam" && hasNext) {
             options.fakeEyecam = argv[++i];
             const std::string& state = options.fakeEyecam;
-            const bool recording = state.rfind("recording:", 0) == 0 &&
-                                   eyecam::parseStep(state.substr(10)) != eyecam::Step::Unknown;
+            // recording:LABEL, or recording:LABEL:unlocked for the cameras having lost the eyes
+            std::string label = state.rfind("recording:", 0) == 0 ? state.substr(10) : "";
+            if (label.size() > 9 && label.compare(label.size() - 9, 9, ":unlocked") == 0) label.resize(label.size() - 9);
+            const bool recording = eyecam::parseStep(label) != eyecam::Step::Unknown;
             if (state != "waiting" && state != "idle" && state != "searching" && state != "error" && !recording) {
                 std::fprintf(stderr, "--fake-eyecam must be waiting, idle, searching, recording:LABEL or error: %s\n",
                              state.c_str());
@@ -671,6 +673,8 @@ eyecam::View fakeEyecam(const std::string& state) {
                                               "look_down", "bright", "dark",  "end"};
         s.stateText = "recording";
         s.stepLabel = state.substr(10);
+        const bool unlocked = s.stepLabel.size() > 9 && s.stepLabel.compare(s.stepLabel.size() - 9, 9, ":unlocked") == 0;
+        if (unlocked) s.stepLabel.resize(s.stepLabel.size() - 9);
         s.stepCount = static_cast<int>(std::size(kLabels));
         s.stepIndex = static_cast<int>(std::find(std::begin(kLabels), std::end(kLabels), s.stepLabel) -
                                        std::begin(kLabels));
@@ -679,7 +683,7 @@ eyecam::View fakeEyecam(const std::string& state) {
         s.elapsedS = s.stepIndex * 13.0 + 9.6;
         s.fpsL = 30.0;
         s.fpsR = 29.9;
-        s.locked = true;
+        s.locked = !unlocked;
         s.sessionDir = "/home/steamos/eyecam/2026-10-03_12-00-00";
     }
     s.state = eyecam::parseState(s.stateText);

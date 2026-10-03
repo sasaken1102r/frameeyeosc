@@ -2935,7 +2935,7 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
     };
     char fps[160];
     std::snprintf(fps, sizeof(fps), t.eyecamFpsFormat, number(s.fpsL).c_str(), number(s.fpsR).c_str());
-    const std::string fpsLine = std::string(fps) + (s.locked ? std::string("  ·  ") + t.eyecamLocked : "");
+    const std::string fpsLine = fps;
     const bool stopUsable = !view.busy;
     const bool startUsable = !view.busy;
 
@@ -2986,8 +2986,11 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
                      true);
             // The instruction, as large as it fits
             centered(y + 150, eyecam::instruction(t, s.stepLabel), 96, 36, kText, true);
-            // The seconds left of the step
-            if (std::isfinite(s.stepRemainingS)) {
+            // The seconds left of the step; while the cameras lost the eyes (the headset came off; the time runs on),
+            // a call to put it back on in their place
+            if (!s.locked) {
+                centered(y + 226, t.eyecamNotLocked, 40, 20, kDanger, true);
+            } else if (std::isfinite(s.stepRemainingS)) {
                 char left[64];
                 std::snprintf(left, sizeof(left), t.eyecamRemainingFormat,
                               static_cast<int>(std::ceil(std::max(0.0, s.stepRemainingS) - 1e-9)));

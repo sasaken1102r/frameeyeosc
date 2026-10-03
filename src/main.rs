@@ -96,14 +96,16 @@ const WIDEN_RESET_BELOW: f32 = 0.5;
 // sent widened all the time, so while it is saturated no eyelid goes out above relaxed open (see process). Told from
 // the readings, not from a version, for that, the status file and the panel: over the last SATURATION_WINDOW seconds
 // of samples with both eyes at SATURATION_OPEN or more, more than SATURATION_ON of them with either eye at
-// SATURATED_READING or more turn it on, and fewer than SATURATION_OFF turn it off again; with fewer than
-// SATURATION_MIN_SAMPLES such samples it stays as it was. On two 60-minute recordings
-// before 0.4.3 that share was 0-30.5% (a median 3.1% and 4.5%), on three after it 50.4-99.5% (on from 6.7 s in).
+// SATURATED_READING or more turn it on; with fewer than SATURATION_MIN_SAMPLES such samples it waits. On two
+// 60-minute recordings before 0.4.3 that share was 0-30.5% (a median 3.1% and 4.5%), on three after it 50.4-99.5% (on
+// from 6.7 s in). Once on it stays on while frameeyeosc runs, through the eye server starting over: it is how this eye
+// tracker reads (a SteamOS update that changes it comes with a reboot), while the share drifts with where you look.
+// One 37-minute 0.4.3 recording dipped to 13%, and each dip below the 40% that used to turn it off again let a relaxed
+// eye, reading 1.000 while looking up, through as widened.
 const SATURATION_WINDOW: i64 = 60;
 const SATURATION_OPEN: f32 = 0.6;
 const SATURATED_READING: f32 = 0.999;
 const SATURATION_ON: f64 = 0.5;
-const SATURATION_OFF: f64 = 0.4;
 const SATURATION_MIN_SAMPLES: u32 = 600;
 // How often the Steam Link PC is looked up again, to follow reconnects over another network.
 const RESOLVE_INTERVAL: Duration = Duration::from_secs(5);
@@ -1270,8 +1272,6 @@ impl Saturation {
             let share = f64::from(self.saturated) / f64::from(self.open);
             if share > SATURATION_ON {
                 self.on = true;
-            } else if share < SATURATION_OFF {
-                self.on = false;
             }
         }
     }
@@ -4287,7 +4287,7 @@ mod tests {
     }
 
     #[test]
-    fn widening_is_capped_only_while_saturated() {
+    fn widening_is_capped_once_saturated() {
         let settings = Settings {
             lid_calibration: false,
             ..settings()
@@ -4303,11 +4303,9 @@ mod tests {
         let on = after.iter().position(|(_, saturated)| *saturated).unwrap();
         assert!(on > 0 && after[on - 1].0.iter().all(|lid| *lid > 0.95), "{on} {:?}", after[on - 1]);
         assert!(after[on..].iter().all(|(lids, _)| lids.iter().all(|lid| *lid <= LID_RELAXED)));
-        // Widening is back by itself once the minute reads below 1.000 again, after WIDEN_SUSTAIN
+        // And it stays capped once the minute reads below 1.000 again: the share drifts with where you look
         let back = lids_over(&settings, &mut smoother, 120.0, 70.0, |_| [0.995, 0.995]);
-        let off = back.iter().position(|(_, saturated)| !*saturated).unwrap();
-        assert!(back[off..off + 20].iter().all(|(lids, _)| lids.iter().all(|lid| *lid <= LID_RELAXED)), "{off} {:?}", &back[off - 2..off + 25]);
-        assert!(back.last().unwrap().0.iter().all(|lid| *lid > 0.95), "{:?}", back.last());
+        assert!(back.iter().all(|(lids, saturated)| *saturated && lids.iter().all(|lid| *lid <= LID_RELAXED)));
     }
 
     #[test]
@@ -4330,17 +4328,18 @@ mod tests {
         let mut one_eye = Saturation::default();
         feed(&mut one_eye, 0.0, 20.0, |i| if i % 10 < 3 { [0.2, 0.2] } else { [0.95, 1.0] });
         assert!(one_eye.on);
-        // Between the two shares it stays as it was, below the lower one it goes off again, as the old samples leave
-        // the minute
+        // Once on it stays on, however low the share drifts as the old samples leave the minute (looking down a while)
         feed(&mut one_eye, 20.0, 120.0, |i| if i % 20 < 9 { [1.0, 1.0] } else { [0.8, 0.8] });
         assert!(one_eye.on, "45% saturated");
-        feed(&mut one_eye, 140.0, 61.0, |i| if i % 10 < 3 { [1.0, 1.0] } else { [0.8, 0.8] });
-        assert!(!one_eye.on, "30% saturated");
-        // With the headset off nothing comes in and it stays; a clock that starts over starts the count over
-        feed(&mut one_eye, 5.0, 5.0, |_| [1.0, 1.0]);
-        assert!(!one_eye.on && one_eye.open == 450, "{}", one_eye.open);
-        feed(&mut one_eye, 10.0, 2.0, |_| [1.0, 1.0]);
-        assert!(one_eye.on);
+        feed(&mut one_eye, 140.0, 61.0, |i| if i % 10 < 1 { [1.0, 1.0] } else { [0.8, 0.8] });
+        assert!(one_eye.on, "10% saturated");
+        // A clock that starts over starts the count over, and it stays on through that too
+        feed(&mut one_eye, 5.0, 5.0, |_| [0.8, 0.8]);
+        assert!(one_eye.on && one_eye.open == 450, "{}", one_eye.open);
+        // Off until more than half the minute reads 1.000
+        let mut fresh = Saturation::default();
+        feed(&mut fresh, 0.0, 61.0, |i| if i % 20 < 9 { [1.0, 1.0] } else { [0.8, 0.8] });
+        assert!(!fresh.on, "45% saturated");
     }
 
     #[test]

@@ -169,7 +169,9 @@ FRAMEEYEOSC_ARGS="--gaze-min-cutoff 0.3 --lid-sync 0.6"
 - `/tracking/eye/CenterVec`: 送っている視線（なめらかにして、合わせたあとのもの）を向きにしたもの。`independent_eyes` のときは `/tracking/eye/LeftRightVec`
 - `/tracking/eye/EyesClosedAmount`: 送っている左右のまぶたを平均した 1 つの値（0 で開く、1 で閉じる）。VRChat が受け取るのは両目で 1 つの値だけで、見開きはありません。ウインクは両目が半分閉じ、見開きはただ開いた目になります。これらを伝えたいときは VRCFT のパラメータを持つアバターを使ってください
 
-VRCFT 向けに作られたアバターには影響しません。`EyeTrackingActive` が true のあいだ、目はアニメーションに渡されて VRCFT のパラメータに従うので、この入力では何も変わりません。
+VRCFT 向けに作られたアバターでどうなるかは、そのアバターのアニメーター（Tracking Control の Eyes & Eyelids）しだいです。たいていは `EyeTrackingActive` が true のあいだ目がアニメーションに渡され、VRCFT のパラメータに従ったままです。ただ、Eye Look の Eyelids も設定してあるアバターでは、まぶたが 2 倍閉じることがあります。そのアバターでは `native_eyes` をオフにしてください。
+
+これをオンにするときは、SteamVR 自身の Steam Link の OSC はオフのままにしてください。同じ `/tracking/eye/*` に送るので、2 つがぶつかります。
 
 目を見失ったとき、送信を止めたとき、送り先を変えたときは、普通に開いて正面を見ている目を 1 回送ります。この入力には「無効」がなく、VRChat は自分のタイムアウトのあとで目を自動の動きに戻します。
 

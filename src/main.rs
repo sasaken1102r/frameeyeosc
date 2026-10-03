@@ -2078,9 +2078,11 @@ fn gaze_vector([x, y]: [f32; 2]) -> [f32; 3] {
 }
 
 /// VRChat's own eye tracking input for the gaze and VRCFT eyelids as sent: it drives the avatar descriptor's Eye
-/// Look on any avatar. Avatars built for VRCFT hand their eyes to animation while EyeTrackingActive is true, so
-/// they keep following the VRCFT parameters and this changes nothing for them. Each eye's gaze is its own with
-/// "move eyes separately", else the combined one.
+/// Look on any avatar. What it does to an avatar built for VRCFT depends on that avatar's animator (Tracking Control
+/// for Eyes & Eyelids): most hand their eyes to animation while EyeTrackingActive is true and keep following the
+/// VRCFT parameters, but one that also has Eyelids set up in Eye Look can close its eyelids twice as far (turn
+/// native_eyes off for it). SteamVR's own Steam Link OSC sends these same addresses, so it should stay off. Each eye's
+/// gaze is its own with "move eyes separately", else the combined one.
 fn native_messages(settings: &Settings, gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
     let floats = |values: &[f32]| -> Vec<OscType> { values.iter().copied().map(OscType::Float).collect() };
     let [left_x, left_y, right_x, right_y, x, y] = gaze;

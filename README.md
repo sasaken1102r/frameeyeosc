@@ -169,7 +169,9 @@ With `"native_eyes": true` (or `--native-eyes`), frameeyeosc in VRChat mode also
 - `/tracking/eye/CenterVec`: the gaze as sent (smoothed, fitted), as a direction; `/tracking/eye/LeftRightVec` with `independent_eyes`.
 - `/tracking/eye/EyesClosedAmount`: both eyelids as sent, averaged into one value (0 open, 1 closed). VRChat takes one value for both eyes and nothing for widening, so a wink closes both eyes halfway and widened eyes are just open. Use an avatar with VRCFT parameters for those.
 
-Avatars built for VRCFT are not affected: while `EyeTrackingActive` is true they hand their eyes to animation and follow the VRCFT parameters, so the native input changes nothing for them.
+What it does to an avatar built for VRCFT depends on that avatar's animator (Tracking Control for Eyes & Eyelids). Most of them hand their eyes to animation while `EyeTrackingActive` is true and keep following the VRCFT parameters. An avatar that also has Eyelids set up under Eye Look, though, can close its eyelids twice as far; turn `native_eyes` off for it.
+
+Keep SteamVR's own Steam Link OSC off while this is on: it sends the same `/tracking/eye/*` addresses, and the two would fight.
 
 When tracking stops, sending is paused or the output changes, relaxed open eyes looking ahead are sent once; VRChat has no "not active" for this input and returns the eyes to its automatic eye movement after its own timeout.
 

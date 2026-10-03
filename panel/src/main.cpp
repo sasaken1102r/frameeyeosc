@@ -254,7 +254,7 @@ void printUsage() {
         "                        calib-error: a failed user calibration). Flags after it, each with \":\":\n"
         "                        unlocked (the cameras lost the eyes), nolight (recording without the light),\n"
         "                        user (calibrating / calib-error: the user's calibration; wear: this wear's),\n"
-        "                        calib=N (calib_state 0..3; default 0, 1 for calib-error), recalib\n"
+        "                        calib=N (calib_state 0..3; default 0, 1 for a failed user calibration), recalib\n"
         "                        (recalib_suggested), nolive (not reading the cameras live)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
         "                        them (off: camera_lids off)\n"

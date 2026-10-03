@@ -89,6 +89,14 @@ updater="$here/frame-update.sh"
 if [[ -f "$updater" ]]; then
     install -Dm755 "$updater" "$share_dir/frame-update.sh"
 fi
+# The changelogs, for the panel's version history (next to install.sh in the tarball and in a checkout)
+for changelog in CHANGELOG.md CHANGELOG.ja.md; do
+    if [[ -f "$here/$changelog" ]]; then
+        install -Dm644 "$here/$changelog" "$share_dir/$changelog"
+    else
+        rm -f "$share_dir/$changelog"
+    fi
+done
 
 if $with_panel; then
     # A running panel keeps its old binary until it restarts; the file is only replaced

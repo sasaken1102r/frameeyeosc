@@ -25,12 +25,13 @@ panel/build/text-test
 panel/build/auto-recenter-test
 panel/build/recorder-test
 panel/build/model-test
+panel/build/changelog-test
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/frameeyeosc/icons"
 cp target/release/frameeyeosc install.sh contrib/frameeyeosc.service contrib/frameeyeosc.env.example \
-    LICENSE THIRD_PARTY_LICENSES.md README.md README.ja.md CHANGELOG.md "$stage/frameeyeosc/"
+    LICENSE THIRD_PARTY_LICENSES.md README.md README.ja.md CHANGELOG.md CHANGELOG.ja.md "$stage/frameeyeosc/"
 cp panel/build/frameeyeosc-panel panel/contrib/frameeyeosc-panel.service panel/contrib/frameeyeosc-panel.desktop \
     "$stage/frameeyeosc/"
 cp panel/contrib/icons/frameeyeosc-panel-{48,128,256}.png "$stage/frameeyeosc/icons/"

@@ -3007,9 +3007,12 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) 
             }
             const std::string times = clock(s.elapsedS) + " / " + clock(s.totalS);
             pen.text(kInnerX, barY + barH + 26, times, 18, kTextMuted);
-            const double w = 220;
-            drawButton(pen, cx - w / 2, barY + barH + 44, w, 62, t.eyecamStop, {PanelAction::EyecamStop, nullptr, 0},
-                       stopUsable, false, 26);
+            // Nothing left to stop at the end (eyecam-rec answers "err" to it): no button
+            if (eyecam::parseStep(s.stepLabel) != eyecam::Step::End) {
+                const double w = 220;
+                drawButton(pen, cx - w / 2, barY + barH + 44, w, 62, t.eyecamStop,
+                           {PanelAction::EyecamStop, nullptr, 0}, stopUsable, false, 26);
+            }
             break;
         }
         case State::Error: {

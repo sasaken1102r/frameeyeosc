@@ -64,6 +64,8 @@ enum class PanelAction {
     HistoryClose,      ///< back to the Advanced tab (handled inside the panel)
     HistoryRow,        ///< open version row arg, or close it if it is open (handled inside the panel)
     HistoryScroll,     ///< scroll the version history a third of its height, arg -1 up / 1 down (handled inside)
+    EyecamStart,       ///< eye capture tab: send "start" to eyecam-rec (the caller talks to its socket)
+    EyecamStop,        ///< eye capture tab: send "stop"
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -78,8 +80,8 @@ struct PanelHit {
     bool operator!=(const PanelHit& other) const { return !(*this == other); }
 };
 
-/** The tabs, in the order they are shown. */
-enum class PanelTab { Basic, Output, Gaze, EyeFit, Lids, Advanced };
+/** The tabs, in the order they are shown. Eyecam (developer) only shows while eyecam-rec runs. */
+enum class PanelTab { Basic, Output, Gaze, EyeFit, Lids, Advanced, Eyecam };
 
 /**
  * Draws the panel image and finds the button under the laser pointer.
@@ -161,7 +163,7 @@ public:
      */
     void setTab(PanelTab tab) { tab_ = tab; }
 
-    /** @return the tab shown */
+    /** @return the tab shown (Eyecam falls back to Basic at the next draw once its tab is gone) */
     PanelTab tab() const { return tab_; }
 
     /**
@@ -305,6 +307,7 @@ private:
     double historyScroll_ = 0.0;        ///< px the list is scrolled
     double historyMaxScroll_ = 0.0;     ///< as far as it can scroll (from the last draw)
     double historyViewH_ = 0.0;         ///< the height it is shown in (from the last draw)
+    bool eyecamTab_ = false;            ///< the eye capture tab is in the tab row (eyecam-rec runs)
 
     /**
      * Find the usable button at a point.
@@ -341,7 +344,7 @@ private:
     void drawStatus(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
-     * The tab row.
+     * The tab row (the eye capture tab last, only while eyecamTab_).
      * @param pen drawing tools
      * @param t texts
      */
@@ -432,9 +435,10 @@ private:
      * @param hit what it does
      * @param usable whether it can be pressed
      * @param accent accent fill
+     * @param textSize the label's size (smaller if it doesn't fit)
      */
     void drawButton(const Pen& pen, double x, double y, double w, double h, const std::string& label,
-                    const PanelHit& hit, bool usable, bool accent);
+                    const PanelHit& hit, bool usable, bool accent, double textSize = 19);
 
     /**
      * The Eyelids tab.
@@ -462,6 +466,17 @@ private:
      * @param model the model (the changelog, and the installed version)
      */
     void drawHistory(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * The eye capture tab (developer): what eyecam-rec is doing, in large type to read in the headset. Waiting for
+     * the camera buffers: the command to run over SSH. Idle: a big "Start". Searching: the fps. Recording: the
+     * step's instruction, the seconds left, the step number, a progress bar over the whole run, the fps and
+     * "Stop". Error: the message and "Start again". The recorder's message and a failed command's reply under it.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (its eyecam view)
+     */
+    void drawEyecam(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
      * The recommendation prompt over everything (only its buttons stay usable).

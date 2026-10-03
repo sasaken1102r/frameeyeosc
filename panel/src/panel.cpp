@@ -1186,9 +1186,10 @@ void EyePanel::drawUpdateNotice(const Pen& pen, const UiText& t, const frame_upd
 }
 
 void EyePanel::drawTabs(const Pen& pen, const UiText& t) {
-    // In PanelTab order
-    const char* labels[] = {t.tabBasic, t.tabOutput, t.tabGaze, t.tabGazeFit, t.tabLids, t.tabAdvanced};
-    const int count = static_cast<int>(std::size(labels));
+    // In PanelTab order (the developer tab last, only while eyecam-rec runs)
+    std::vector<const char*> labels = {t.tabBasic, t.tabOutput, t.tabGaze, t.tabGazeFit, t.tabLids, t.tabAdvanced};
+    if (eyecamTab_) labels.push_back(t.tabEyecam);
+    const int count = static_cast<int>(labels.size());
     const double gap = 8;
     const double pad = 16;
     const double room = kRight - kRightX - gap * (count - 1);
@@ -1647,7 +1648,7 @@ void EyePanel::drawGaze(const Pen& pen, const UiText& t, const PanelModel& m, co
 }
 
 void EyePanel::drawButton(const Pen& pen, double x, double y, double w, double h, const std::string& label,
-                           const PanelHit& hit, bool usable, bool accent) {
+                           const PanelHit& hit, bool usable, bool accent, double textSize) {
     const int pointer = usable ? pointerState(hit) : 0;
     const bool filled = accent && usable;
     if (filled) {
@@ -1656,7 +1657,7 @@ void EyePanel::drawButton(const Pen& pen, double x, double y, double w, double h
         fillRounded(pen, x, y, w, h, h / 2, pointer > 0 ? kControlHover : kControl);
         strokeRounded(pen, x, y, w, h, h / 2, usable ? kBorder : kDivider, 2);
     }
-    const double size = fitSize(pen, label, 19, 12, w - 24, true);
+    const double size = fitSize(pen, label, textSize, 12, w - 24, true);
     const Color color = filled ? kOnAccent : (usable ? kText : kTextDisabled);
     textCentered(pen, x + w / 2, centerBaseline(y, h, size), label, size, color, true);
     addButton(hit, x, y, w, h, usable);
@@ -2899,6 +2900,158 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
     }
 }
 
+void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m) {
+    using eyecam::State;
+    const eyecam::View& view = m.eyecam;
+    const eyecam::Status& s = view.status;
+    const double cx = (kInnerX + kInnerRight) / 2;
+    const double width = kInnerRight - kInnerX;
+    const double bottom = kContentY + kContentH - 20;
+    // Centered lines, as large as fit
+    const auto centered = [&](double baseline, const std::string& text, double size, double minSize, Color c,
+                              bool bold) {
+        textCentered(pen, cx, baseline, text, fitSize(pen, text, size, minSize, width, bold), c, bold);
+    };
+    const auto wrappedCentered = [&](double baseline, const std::string& text, double size, Color c, bool bold,
+                                     size_t maxLines) {
+        for (const std::string& line : wrapText(pen, text, size, bold, width, maxLines)) {
+            textCentered(pen, cx, baseline, line, size, c, bold);
+            baseline += size * 1.4;
+        }
+        return baseline;
+    };
+    const auto number = [](double value) {
+        if (!std::isfinite(value)) return std::string("—");
+        char text[32];
+        std::snprintf(text, sizeof(text), "%.1f", value);
+        return std::string(text);
+    };
+    const auto clock = [](double seconds) {
+        if (!std::isfinite(seconds) || seconds < 0) return std::string("—");
+        const long whole = std::lround(std::floor(seconds));
+        char text[32];
+        std::snprintf(text, sizeof(text), "%ld:%02ld", whole / 60, whole % 60);
+        return std::string(text);
+    };
+    char fps[160];
+    std::snprintf(fps, sizeof(fps), t.eyecamFpsFormat, number(s.fpsL).c_str(), number(s.fpsR).c_str());
+    const std::string fpsLine = std::string(fps) + (s.locked ? std::string("  ·  ") + t.eyecamLocked : "");
+    const bool stopUsable = !view.busy;
+    const bool startUsable = !view.busy;
+
+    double y = kRowTop - 6;
+    y += drawSectionTitle(pen, y, t.eyecamTitle);
+
+    bool messageShown = false;
+    switch (s.state) {
+        case State::WaitingFds: {
+            centered(y + 70, t.eyecamWaitingTitle, 32, 20, kText, true);
+            double baseline = wrappedCentered(y + 122, t.eyecamWaitingHint, 20, kText, false, 2);
+            // The command, in a box of its own so it reads as something to type
+            const double boxY = baseline - 4;
+            const double boxH = 72;
+            fillRounded(pen, kInnerX, boxY, width, boxH, 16, kControl);
+            strokeRounded(pen, kInnerX, boxY, width, boxH, 16, kBorder, 2);
+            const double size = fitSize(pen, eyecam::kGrabCommand, 24, 12, width - 36, true);
+            textCentered(pen, cx, centerBaseline(boxY, boxH, size), eyecam::kGrabCommand, size, kAccent, true);
+            wrappedCentered(boxY + boxH + 40, t.eyecamWaitingNote, 18, kTextMuted, false, 2);
+            break;
+        }
+        case State::Idle: {
+            centered(y + 76, t.eyecamIdleTitle, 34, 20, kText, true);
+            wrappedCentered(y + 122, t.eyecamIdleHint, 19, kTextMuted, false, 2);
+            const double w = 440;
+            const double h = 116;
+            drawButton(pen, cx - w / 2, y + 190, w, h, t.eyecamStart, {PanelAction::EyecamStart, nullptr, 0},
+                       startUsable, true, 42);
+            break;
+        }
+        case State::Searching: {
+            centered(y + 130, t.eyecamSearching, 52, 24, kText, true);
+            centered(y + 190, fpsLine, 24, 14, kTextMuted, false);
+            const double w = 240;
+            drawButton(pen, cx - w / 2, y + 250, w, 68, t.eyecamStop, {PanelAction::EyecamStop, nullptr, 0},
+                       stopUsable, false, 26);
+            break;
+        }
+        case State::Recording: {
+            // The step number (left) and the fps (right), small
+            if (s.stepCount > 0) {
+                char step[64];
+                const int shown = std::max(1, std::min(s.stepIndex + 1, s.stepCount));
+                std::snprintf(step, sizeof(step), t.eyecamStepFormat, shown, s.stepCount);
+                pen.text(kInnerX, y + 22, step, 22, kTextMuted, true);
+            }
+            pen.text(kInnerRight, y + 22, fpsLine, fitSize(pen, fpsLine, 18, 12, width / 2, false), kTextMuted, false,
+                     true);
+            // The instruction, as large as it fits
+            centered(y + 150, eyecam::instruction(t, s.stepLabel), 96, 36, kText, true);
+            // The seconds left of the step
+            if (std::isfinite(s.stepRemainingS)) {
+                char left[64];
+                std::snprintf(left, sizeof(left), t.eyecamRemainingFormat,
+                              static_cast<int>(std::ceil(std::max(0.0, s.stepRemainingS) - 1e-9)));
+                centered(y + 226, left, 44, 20, kAccent, true);
+            }
+            // The whole run: a bar, and the time so far against the total
+            const double barY = y + 262;
+            const double barH = 22;
+            fillRounded(pen, kInnerX, barY, width, barH, barH / 2, kControl);
+            strokeRounded(pen, kInnerX, barY, width, barH, barH / 2, kBorder, 2);
+            if (std::isfinite(s.elapsedS) && std::isfinite(s.totalS) && s.totalS > 0) {
+                const double done = std::clamp(s.elapsedS / s.totalS, 0.0, 1.0);
+                if (done > 0) fillRounded(pen, kInnerX, barY, std::max(barH, width * done), barH, barH / 2, kAccent);
+            }
+            const std::string times = clock(s.elapsedS) + " / " + clock(s.totalS);
+            pen.text(kInnerX, barY + barH + 26, times, 18, kTextMuted);
+            const double w = 220;
+            drawButton(pen, cx - w / 2, barY + barH + 44, w, 62, t.eyecamStop, {PanelAction::EyecamStop, nullptr, 0},
+                       stopUsable, false, 26);
+            break;
+        }
+        case State::Error: {
+            centered(y + 76, t.eyecamErrorTitle, 34, 20, kDanger, true);
+            if (!s.message.empty()) {
+                wrappedCentered(y + 130, s.message, 24, kText, false, 3);
+                messageShown = true;
+            }
+            const double w = 400;
+            drawButton(pen, cx - w / 2, y + 250, w, 96, t.eyecamRetry, {PanelAction::EyecamStart, nullptr, 0},
+                       startUsable, true, 36);
+            break;
+        }
+        default: {
+            centered(y + 90, formatText(t.eyecamUnknownFormat, s.stateText), 30, 18, kText, true);
+            break;
+        }
+    }
+
+    // At the bottom: the recorder's message, a command on its way, and a command that failed
+    struct Line {
+        std::string text;
+        double size;
+        Color color;
+        bool bold;
+    };
+    std::vector<Line> lines;
+    if (!s.message.empty() && !messageShown) {
+        for (const std::string& line : wrapText(pen, s.message, 20, false, width, 2)) lines.push_back({line, 20, kText, false});
+    }
+    if (view.busy) {
+        lines.push_back({t.eyecamSending, 18, kTextMuted, false});
+    } else if (view.hasReply && !view.reply.ok) {
+        char failed[512];
+        std::snprintf(failed, sizeof(failed), t.eyecamReplyFailedFormat, view.reply.command.c_str(),
+                      view.reply.error.c_str());
+        for (const std::string& line : wrapText(pen, failed, 18, true, width, 2)) lines.push_back({line, 18, kDanger, true});
+    }
+    double baseline = bottom;
+    for (auto line = lines.rbegin(); line != lines.rend(); ++line) {
+        textCentered(pen, cx, baseline, line->text, line->size, line->color, line->bold);
+        baseline -= line->size * 1.4;
+    }
+}
+
 void EyePanel::render(const PanelModel& model) {
     const Pen pen {cr_, &fonts_};
     const UiText& t = uiText(model.language);
@@ -2912,6 +3065,10 @@ void EyePanel::render(const PanelModel& model) {
     cairo_restore(cr_);
     fillRounded(pen, 0, 0, kWidth, kHeight, 24, kBg);
 
+    // The developer tab comes and goes with eyecam-rec; once it is gone, its page goes back to the first tab
+    eyecamTab_ = model.eyecam.visible;
+    if (!eyecamTab_ && tab_ == PanelTab::Eyecam) tab_ = PanelTab::Basic;
+
     drawStatus(pen, t, model);
     drawTabs(pen, t);
     drawCard(pen, kRightX, kContentY, kRight - kRightX, kContentH, 20, kCard, kDivider, 1);
@@ -2922,6 +3079,7 @@ void EyePanel::render(const PanelModel& model) {
         case PanelTab::EyeFit: drawEyeFit(pen, t, model, view); break;
         case PanelTab::Lids: drawLids(pen, t, model, view); break;
         case PanelTab::Advanced: drawAdvanced(pen, t, model, view); break;
+        case PanelTab::Eyecam: drawEyecam(pen, t, model); break;
     }
     if (promptOpen()) drawPrompt(pen, t);
     if (hostEntryOpen_) drawHostEntry(pen, t);

@@ -28,7 +28,7 @@ struct VrEvents {
 /**
  * Wraps the connection to OpenVR as an overlay app.
  * Never changes SteamVR settings; only creates and shows a dashboard panel, and during an eye fit a small target
- * overlay fixed to the headset.
+ * overlay fixed to the headset (and the debug gaze dots, and the eye capture's full-view light, each its own overlay).
  * Images are sent as Vulkan textures via SetOverlayTexture rather than SetOverlayRaw.
  */
 class VrOverlay {
@@ -154,6 +154,23 @@ public:
     void hideDot(int index);
 
     /**
+     * Show the eye capture's full-view overlay: an overlay of its own (not on the dashboard, and nothing shared with
+     * the panel's), fixed to the headset straight ahead (kFillDistanceM) and wide enough to fill the view
+     * (kFillWidthM), white or black during the recorder's bright and dark steps. Created the first time it is
+     * needed; destroyed by shutdown().
+     * @param rgba a new image, non-premultiplied RGBA; nullptr keeps the last one
+     * @param size its edge length (px)
+     * @return true if it is shown
+     */
+    bool showFill(const uint8_t* rgba, int size);
+
+    /** Hide the full-view overlay (nothing happens if it isn't shown). */
+    void hideFill();
+
+    /** @return true while the full-view overlay is shown */
+    bool fillShown() const { return fillShown_; }
+
+    /**
      * Send the dashboard thumbnail image (once, right after connecting).
      * @param rgba non-premultiplied RGBA
      * @param size side length in px
@@ -206,6 +223,9 @@ private:
     bool dotShown_[2] = {false, false};
     double dotWidth_[2] = {0.0, 0.0};  ///< the width last set (m)
     bool dotFailed_ = false;          ///< creating one failed; not tried again
+    uint64_t fillHandle_ = 0;         ///< the eye capture's full-view overlay (0 until first needed)
+    bool fillShown_ = false;
+    bool fillFailed_ = false;         ///< creating it failed; not tried again
     int panelHeight_ = 0;
     bool panelScroll_ = false;      ///< the panel asked for scroll events
     int scrollLogs_ = 0;            ///< scroll events logged so far (the first few, to tune the speed)
@@ -217,6 +237,7 @@ private:
     OverlayTexture thumbnailTexture_;
     OverlayTexture targetTexture_;
     OverlayTexture dotTextures_[2];
+    OverlayTexture fillTexture_;
 
     /**
      * Scan /proc once to find the vrserver PID.

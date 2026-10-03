@@ -135,6 +135,23 @@ bool TargetPainter::paint(const FontSet& fonts, gaze_fit::TargetStyle style, con
     return true;
 }
 
+void renderFill(const FontSet& fonts, bool bright, const std::string& label, std::vector<uint8_t>& rgba,
+                const std::string& pngPath) {
+    const int size = kFillImageSize;
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
+    cairo_t* cr = cairo_create(surface);
+    const Pen pen {cr, &fonts};
+    pen.color(bright ? kFillBright : kFillDark);
+    cairo_paint(cr);
+    // The instruction, about 5 degrees tall in the middle of the view
+    centeredText(pen, size / 2.0, size / 2.0 + 14, label, 40, size * 0.5, bright ? kFillBrightText : kFillDarkText);
+    cairo_surface_flush(surface);
+    surfaceToRgba(surface, rgba);
+    if (!pngPath.empty()) cairo_surface_write_to_png(surface, pngPath.c_str());
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+}
+
 void renderGazeDot(DotKind kind, std::vector<uint8_t>& rgba, const std::string& pngPath) {
     const int size = kDotImageSize;
     cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);

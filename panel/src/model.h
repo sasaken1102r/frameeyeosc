@@ -5,6 +5,7 @@
 #include "autostart.h"
 #include "changelog.h"
 #include "config.h"
+#include "eyecam.h"
 #include "gaze_fit.h"
 #include "i18n.h"
 #include "recorder.h"
@@ -29,6 +30,8 @@ struct PanelModel {
     recorder::View recording;    ///< the eye log (Advanced tab, and a mark in the left column while it records)
     std::vector<std::string> changelogDirs;  ///< where to look for CHANGELOG.md (changelog::defaultDirs)
     changelog::History history;  ///< the version history, read when it is opened
+    eyecam::View eyecam;         ///< eyecam-rec, for the developer tab "Eye capture" (only shown while it runs)
+    std::string eyecamDir;       ///< its folder (status.json and ctl.sock; eyecam::defaultDir or --eyecam-dir)
 };
 
 /**

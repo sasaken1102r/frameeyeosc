@@ -56,6 +56,13 @@ constexpr Color kSuccessTint = blendColor(kSuccess, kCard, 0.15);
 constexpr Color kDanger = hexColor(0xf85149);     ///< errors, not running
 constexpr Color kDangerTint = blendColor(kDanger, kCard, 0.15);
 constexpr Color kQuitFill = blendColor(kDanger, kCard, 0.12);  ///< quit / reset buttons (quiet)
+// ---- The eye capture's full-view overlay (a light stimulus, not UI) ----
+// Pure white and black for the bright and dark steps, and the instruction on them on purpose faint, so it barely
+// changes how bright the view is. Not in the contrast report: it isn't meant to be easy to read.
+constexpr Color kFillBright = hexColor(0xffffff);
+constexpr Color kFillBrightText = hexColor(0xc4c4c4);
+constexpr Color kFillDark = hexColor(0x000000);
+constexpr Color kFillDarkText = hexColor(0x3c3c3c);
 
 /** How a pair is checked. */
 enum class ContrastKind {

@@ -398,3 +398,9 @@ std::string hostOfTarget(const std::string& target) {
     const size_t colon = target.find_last_of(':');
     return colon == std::string::npos ? target : target.substr(0, colon);
 }
+
+std::string updateNotes(const frame_updater::UpdateStatus& update, Language language) {
+    if (update.state != frame_updater::UpdateState::Available) return "";
+    if (language == Language::Ja && !update.notesJa.empty()) return update.notesJa;
+    return update.notes;
+}

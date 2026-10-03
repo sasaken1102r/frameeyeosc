@@ -2187,8 +2187,7 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
     double y = kRowTop - 6;
 
     // Version, new release check and install, and the automatic check
-    drawUpdateRow(pen, t, m.update, v.flag(key::kUpdateCheck), y);
-    y += kUpdateRowH + 10;
+    y += drawUpdateRow(pen, t, m.update, updateNotes(m.update, m.language), v.flag(key::kUpdateCheck), y) + 10;
 
     y += drawSectionTitle(pen, y, t.sectionTools);
     // The debug gaze dots (a head-locked dot where the sent gaze points)
@@ -2325,14 +2324,10 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
     }
 }
 
-void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u, bool checkOn,
-                              double y) {
+double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u,
+                               const std::string& notes, bool checkOn, double y) {
     using frame_updater::UpdateState;
-    const double h = kUpdateRowH;
     const std::string current = bareVersion(u.current);
-    std::string hint = "v" + current;
-    if (u.checkedAt > 0) hint += formatText(t.checkedFormat, checkedText(u.checkedAt));
-    drawRowLabel(pen, t, y, h, t.rowVersion, hint, false);
 
     /** A button at the right end of the row. */
     struct RowButton {
@@ -2390,11 +2385,37 @@ void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_update
         secondary = t.updateChecking;
     }
 
+    // The texts, wrapped to at most four lines, left of the buttons
+    const double bw = 170;
+    const double left = kInnerRight - bw - 12;
+    const double textW = (buttons.empty() ? kInnerRight : left) - kControlX;
+    const double primarySize = 17;
+    const double secondarySize = 14;
+    const size_t maxLines = 4;
+    const std::vector<std::string> primaryLines =
+        primary.empty() ? std::vector<std::string>() : wrapText(pen, primary, primarySize, true, textW, secondary.empty() ? 4 : 3);
+    const std::vector<std::string> secondaryLines =
+        secondary.empty() || primaryLines.size() >= maxLines
+            ? std::vector<std::string>()
+            : wrapText(pen, secondary, secondarySize, false, textW, maxLines - primaryLines.size());
+    const double primaryStep = 22;
+    const double secondaryStep = 20;
+    const double textBlock = primaryLines.size() * primaryStep + secondaryLines.size() * secondaryStep;
+
+    // The texts get four lines' room above the chip; with the new release's summary under the row, only what they
+    // need (at least a button's height), so the summary fits on the tab
+    const double chipH = 34;
+    const double textH = notes.empty() ? kUpdateRowH - chipH - 6 : std::max(kControlH + 8, textBlock + 12);
+    const double h = textH + 4 + chipH + 2;  // kUpdateRowH without a summary
+    const double chipY = y + h - chipH - 2;
+
+    std::string hint = "v" + current;
+    if (u.checkedAt > 0) hint += formatText(t.checkedFormat, checkedText(u.checkedAt));
+    drawRowLabel(pen, t, y, h, t.rowVersion, hint, false);
+
     // Buttons at the right end; two are stacked so the texts keep their width
     const double gap = 8;
-    const double bw = 170;
     const double bh = buttons.size() > 1 ? (h - gap) / 2 : kControlH;
-    const double left = kInnerRight - bw - 12;
     for (size_t i = 0; i < buttons.size(); ++i) {
         const RowButton& b = buttons[i];
         const double bx = kInnerRight - bw;
@@ -2416,8 +2437,6 @@ void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_update
 
     // The automatic check, as a chip at the bottom of the text column: "Check at start and daily  On"; pressing it
     // switches it
-    const double chipH = 34;
-    const double chipY = y + h - chipH - 2;
     {
         const PanelHit hit {PanelAction::SetBool, key::kUpdateCheck, checkOn ? 0 : 1};
         const std::string state = checkOn ? t.on : t.off;
@@ -2437,21 +2456,8 @@ void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_update
         addButton(hit, kControlX, chipY, chipW, chipH);
     }
 
-    // The texts, wrapped to at most four lines and centered above the chip
-    const double textW = (buttons.empty() ? kInnerRight : left) - kControlX;
-    const double textH = chipY - y - 4;
-    const double primarySize = 17;
-    const double secondarySize = 14;
-    const size_t maxLines = 4;
-    const std::vector<std::string> primaryLines =
-        primary.empty() ? std::vector<std::string>() : wrapText(pen, primary, primarySize, true, textW, secondary.empty() ? 4 : 3);
-    const std::vector<std::string> secondaryLines =
-        secondary.empty() || primaryLines.size() >= maxLines
-            ? std::vector<std::string>()
-            : wrapText(pen, secondary, secondarySize, false, textW, maxLines - primaryLines.size());
-    const double primaryStep = 22;
-    const double secondaryStep = 20;
-    double baseline = y + (textH - primaryLines.size() * primaryStep - secondaryLines.size() * secondaryStep) / 2;
+    // The texts, centered above the chip
+    double baseline = y + (textH - textBlock) / 2;
     for (const std::string& line : primaryLines) {
         baseline += primaryStep;
         pen.text(kControlX, baseline - 6, line, primarySize, error ? kDanger : kText, true);
@@ -2460,6 +2466,18 @@ void EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_update
         baseline += secondaryStep;
         pen.text(kControlX, baseline - 5, line, secondarySize, kTextMuted);
     }
+
+    // The new release's summary (from its release notes) across the row, up to three lines
+    if (notes.empty()) return h;
+    const double notesSize = 15;
+    const double notesStep = 20;
+    const std::vector<std::string> notesLines = wrapText(pen, notes, notesSize, false, kInnerRight - kInnerX, 3);
+    baseline = y + h + 10;
+    for (const std::string& line : notesLines) {
+        baseline += notesStep;
+        pen.text(kInnerX, baseline - 5, line, notesSize, kText);
+    }
+    return h + 14 + notesLines.size() * notesStep;
 }
 
 void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {

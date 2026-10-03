@@ -1,7 +1,7 @@
 // Tests for the panel's shared rules (model.cpp): what an eye fit writes and what "Reset" clears, which re-wear fit
-// auto_recenter asks for, the output types behind the destination cards, the gaze presets and their migration, and
-// status.json's source_error, dominant_eye and openness_saturated. Built with the panel as model-test; exits non-zero
-// on failure.
+// auto_recenter asks for, the output types behind the destination cards, the gaze presets and their migration,
+// status.json's source_error, dominant_eye and openness_saturated, and which summary of a new release is shown. Built
+// with the panel as model-test; exits non-zero on failure.
 #include "model.h"
 
 #include <algorithm>
@@ -409,6 +409,32 @@ void testNativeEyes() {
     CHECK(SettingsView(m).locked(key::kNativeEyes) && SettingsView(m).flag(key::kNativeEyes));
 }
 
+/** The new release's summary under the update row: Japanese on a Japanese panel when the release has it, else
+ *  English, and nothing unless a newer release is available. */
+void testUpdateNotes() {
+    frame_updater::UpdateStatus u;
+    u.state = frame_updater::UpdateState::Available;
+    u.notes = "Faster eye data.";
+    u.notesJa = "目のデータが速くなる。";
+    CHECK(updateNotes(u, Language::Ja) == "目のデータが速くなる。");
+    CHECK(updateNotes(u, Language::En) == "Faster eye data.");
+    // No Japanese paragraph in the release text: English on both
+    u.notesJa.clear();
+    CHECK(updateNotes(u, Language::Ja) == "Faster eye data.");
+    // No release text at all: nothing
+    u.notes.clear();
+    CHECK(updateNotes(u, Language::Ja).empty() && updateNotes(u, Language::En).empty());
+    // Only while an update is available (not while it installs, or once installed)
+    u.notes = "Faster eye data.";
+    u.notesJa = "目のデータが速くなる。";
+    for (const auto state : {frame_updater::UpdateState::Unknown, frame_updater::UpdateState::UpToDate,
+                             frame_updater::UpdateState::Installing, frame_updater::UpdateState::Installed,
+                             frame_updater::UpdateState::CheckFailed, frame_updater::UpdateState::InstallFailed}) {
+        u.state = state;
+        CHECK(updateNotes(u, Language::Ja).empty() && updateNotes(u, Language::En).empty());
+    }
+}
+
 }  // namespace
 
 /**
@@ -429,6 +455,7 @@ int main() {
     testMigrateGazePresets();
     testSteamlinkParams();
     testNativeEyes();
+    testUpdateNotes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

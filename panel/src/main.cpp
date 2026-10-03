@@ -103,6 +103,7 @@ struct Options {
     bool fakeOpennessSaturated = false;  ///< --fake-openness-saturated: a relaxed open eye reads 1.0
     std::string fakePrompt;       ///< vrchat / etvr / livelink
     std::string fakeUpdate;       ///< a made-up update state (see printUsage)
+    std::string fakeUpdateNotes;  ///< --fake-update-notes: the new release's summary ("both", "en" or "long")
     std::string fakeFit;          ///< a made-up eye fit state (see printUsage)
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
@@ -217,6 +218,8 @@ void printUsage() {
         "      --fake-autostart on|off|missing|unknown\n"
         "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed\n"
         "                        A made-up update state (the version row on the Advanced tab)\n"
+        "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
+        "                        English and Japanese, English only, or both cut at 300 characters\n"
         "      --fake-fit waiting|waiting-center|waiting-tilt|running|running-closed|done|done-center|done-tilt|\n"
         "                 fitted|fitted-gaze|\n"
         "                 failed-unsteady|failed-notclosed|failed-movement|failed-lidrange|failed-cancelled|\n"
@@ -399,6 +402,13 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 return false;
             }
             options.fake = true;
+        } else if (arg == "--fake-update-notes" && hasNext) {
+            options.fakeUpdateNotes = argv[++i];
+            if (options.fakeUpdateNotes != "both" && options.fakeUpdateNotes != "en" && options.fakeUpdateNotes != "long") {
+                std::fprintf(stderr, "--fake-update-notes must be both, en or long: %s\n", options.fakeUpdateNotes.c_str());
+                return false;
+            }
+            options.fake = true;
         } else if (arg == "--fake-widen" && hasNext) {
             options.fakeWiden = argv[++i];
             if (std::find(std::begin(kLidWidenModes), std::end(kLidWidenModes), options.fakeWiden) ==
@@ -507,9 +517,10 @@ frame_updater::UpdaterConfig updaterConfig() {
 /**
  * A made-up update state for --fake-update.
  * @param state the state name
+ * @param notes --fake-update-notes: "both", "en", "long" or "" (no summary)
  * @return the status
  */
-frame_updater::UpdateStatus fakeUpdate(const std::string& state) {
+frame_updater::UpdateStatus fakeUpdate(const std::string& state, const std::string& notes) {
     using frame_updater::UpdateState;
     frame_updater::UpdateStatus u;
     u.current = FRAMEEYEOSC_VERSION;
@@ -526,6 +537,25 @@ frame_updater::UpdateStatus fakeUpdate(const std::string& state) {
         u.latest = "9.9.9";
         u.installable = state == "available";
         if (!u.installable) u.reason = "no-checksums";
+        // What frame-update.sh takes from the release text (0.7.1's CHANGELOG section)
+        if (notes == "both" || notes == "en") {
+            u.notes = "Eye data at the full rate while Steam Link streams, no stray widening on SteamOS 0.4.3, and two "
+                      "opt-ins for avatars not made for VRCFaceTracking: Steam Link's parameter names and VRChat's own "
+                      "eye tracking.";
+        }
+        if (notes == "both") {
+            u.notesJa = "Steam Link で配信中でも目のデータが全部届くように。SteamOS 0.4.3 で勝手に見開かないように。"
+                        "VRCFaceTracking 用じゃないアバター向けに、Steam Link の名前で送る機能と、VRChat 標準の目も動かす"
+                        "機能を追加。";
+        }
+        if (notes == "long") {
+            // As long as frame-update.sh lets them be (300 characters with the "…")
+            std::string en;
+            while (en.size() < 299) en += "A very long summary that goes on and on. ";
+            u.notes = en.substr(0, 299) + "…";
+            for (int i = 0; i < 299; ++i) u.notesJa += "長";
+            u.notesJa += "…";
+        }
     } else if (state == "installing") {
         u.state = UpdateState::Installing;
         u.step = "download";
@@ -744,7 +774,7 @@ PanelModel fakeModel(const Options& options) {
     m.autostart.autostart = options.fakeAutostart;
     m.language = configLanguage(m.config);
     if (options.fakeWriteError) m.panelError = "rename failed: Read-only file system";
-    m.update = fakeUpdate(options.fakeUpdate);
+    m.update = fakeUpdate(options.fakeUpdate, options.fakeUpdateNotes);
     if (options.fakeUpdate.empty()) m.update.state = frame_updater::UpdateState::UpToDate;
     return m;
 }

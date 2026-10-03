@@ -422,14 +422,17 @@ private:
 
     /**
      * The version row and its button (Advanced tab): the running version, the check result, install progress, and
-     * the switch for the automatic check as a chip under the texts.
+     * the switch for the automatic check as a chip under the texts, and the new release's summary under all that.
      * @param pen drawing tools
      * @param t texts
      * @param u the update status
+     * @param notes the new release's summary in the panel's language ("" = none; see updateNotes)
      * @param checkOn whether the automatic check (update_check) is on
      * @param y row top
+     * @return the row's height
      */
-    void drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u, bool checkOn, double y);
+    double drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u,
+                         const std::string& notes, bool checkOn, double y);
 
     /**
      * A notice at the bottom of the status column while a new release is available, installing or installed.

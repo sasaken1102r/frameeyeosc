@@ -7,7 +7,8 @@
 //!   0   u32  magic (MAGIC, "EYCM")       4   u32  version (VERSION)    8   u32  struct size (at least STRUCT_SIZE)
 //!   12  u32  writer pid                  16  u64  writer start (CLOCK_MONOTONIC ns)
 //!   24  u32  seq (odd while being written; see read_consistent)
-//!   28  u32  calibration: bit 0 calibrated for this wear (`calib wear`), bit 1 for this user (`calib user`)
+//!   28  u32  calibration: bit 0 calibrated for this wear (`calib wear`), bit 1 for this user (`calib user`),
+//!            bit 2 a baseline learned for this wear from the relaxed face
 //!   32  u64  time (CLOCK_MONOTONIC ns)    40  u64  camera time         48  u32  recalibration suggested
 //!   52  u32  live (1 while processing)    56  the left eye             128 the right eye
 //! Each eye (72 bytes):
@@ -31,6 +32,8 @@ const VERSION: u32 = 1;
 const STRUCT_SIZE: usize = 200;
 const SEQ: usize = 24;
 const EYES: [usize; 2] = [56, 128];
+// The calibration bits that give this wear a baseline: calibrated (`calib wear`), or learned by itself.
+const CALIB_BASELINE: u32 = 1 | 4;
 // An eye's values are used while captured at most this long before they are read (9 frames at 90 Hz), and not more
 // than CLOCK_AHEAD_NS after (the two clocks are the same; this allows for rounding).
 const FRESH_NS: u64 = 100_000_000;
@@ -171,12 +174,13 @@ impl Live {
         self.fresh.contains(&true)
     }
 
-    /// Whether each eye's eyelid and squint can be used: fresh, and calibrated for this wear. Without that wear
-    /// calibration, up to 53% of the frames read widened when the eye is not.
+    /// Whether each eye's eyelid and squint can be used: fresh, and with a baseline for this wear, either calibrated
+    /// (calib_state bit 0) or learned by eyecam-rec from the relaxed face (bit 2, about 35 s after putting it on).
+    /// Without either, up to 53% of the frames read widened when the eye is not.
     pub fn lids_usable(&self) -> [bool; 2] {
         [0, 1].map(|eye| {
             let Eye { lid, squint, .. } = self.eyes[eye];
-            self.fresh[eye] && self.calib_state & 1 != 0 && lid.is_finite() && squint.is_finite()
+            self.fresh[eye] && self.calib_state & CALIB_BASELINE != 0 && lid.is_finite() && squint.is_finite()
         })
     }
 
@@ -510,7 +514,7 @@ pub mod tests {
     #[test]
     fn eyelids_need_a_wear_calibration_and_pupils_only_fresh_values() {
         let live = |calib_state: u32, eyes: [TestEye; 2]| Live::new(&parse(&live_bytes(1, calib_state, true, eyes)).unwrap(), NOW);
-        for (calib_state, lids) in [(0, false), (1, true), (2, false), (3, true)] {
+        for (calib_state, lids) in [(0, false), (1, true), (2, false), (3, true), (4, true), (6, true)] {
             let values = live(calib_state, eyes(0.9));
             assert_eq!(values.lids_usable(), [lids; 2], "{calib_state}");
             assert_eq!(values.pupil_usable(), [true; 2], "{calib_state}");

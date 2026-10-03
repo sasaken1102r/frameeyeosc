@@ -164,7 +164,7 @@ FRAMEEYEOSC_ARGS="--gaze-min-cutoff 0.3 --lid-sync 0.6"
 
 ## VRChat のアイトラッキング入力
 
-`"native_eyes": true`（または `--native-eyes`）にすると、VRChat モードのとき、VRCFT のパラメータに加えて VRChat 自身のアイトラッキング入力も送ります。動くのはアバターの Avatar Descriptor の Eye Look に設定した目とまぶたなので、VRCFT のパラメータを持たないアバターでも、アニメーターに何も足さずに目が動きます。Eye Look を設定済みのアバターなら、アップロードし直す必要もありません。既定ではオフです。送り方タブの「VRChat 本体の目の機能でも送る」で切り替えられます（送り先が「VRChat」のとき）。
+`"native_eyes": true`（または `--native-eyes`）にすると、VRChat モードのとき、VRCFT のパラメータに加えて VRChat 自身のアイトラッキング入力も送ります。動くのはアバターの Avatar Descriptor の Eye Look に設定した目とまぶたなので、VRCFT のパラメータを持たないアバターでも、アニメーターに何も足さずに目が動きます。Eye Look を設定済みのアバターなら、アップロードし直す必要もありません。既定ではオフです。送り方タブの「VRChat 標準の目も動かす」で切り替えられます（送り先が「VRChat」のとき）。
 
 - `/tracking/eye/CenterVec`: 送っている視線（なめらかにして、合わせたあとのもの）を向きにしたもの。`independent_eyes` のときは `/tracking/eye/LeftRightVec`
 - `/tracking/eye/EyesClosedAmount`: 送っている左右のまぶたを平均した 1 つの値（0 で開く、1 で閉じる）。VRChat が受け取るのは両目で 1 つの値だけで、見開きはありません。ウインクは両目が半分閉じ、見開きはただ開いた目になります。これらを伝えたいときは VRCFT のパラメータを持つアバターを使ってください

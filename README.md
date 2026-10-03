@@ -164,7 +164,7 @@ Whatever is set there can't be changed from the file, and the panel shows it as 
 
 ## Native VRChat eye tracking
 
-With `"native_eyes": true` (or `--native-eyes`), frameeyeosc in VRChat mode also sends VRChat's own eye tracking input next to the VRCFT parameters. It moves the eyes and eyelids set up under Eye Look in the avatar descriptor, so avatars without VRCFT parameters follow your eyes too, with nothing added to the animator, and an avatar that already has Eye Look set up needs no re-upload. It is off by default; switch it on the Output tab ("VRChat's own eye tracking too", with "VRChat" as the output).
+With `"native_eyes": true` (or `--native-eyes`), frameeyeosc in VRChat mode also sends VRChat's own eye tracking input next to the VRCFT parameters. It moves the eyes and eyelids set up under Eye Look in the avatar descriptor, so avatars without VRCFT parameters follow your eyes too, with nothing added to the animator, and an avatar that already has Eye Look set up needs no re-upload. It is off by default; switch it on the Output tab ("VRChat's own eyes too", with "VRChat" as the output).
 
 - `/tracking/eye/CenterVec`: the gaze as sent (smoothed, fitted), as a direction; `/tracking/eye/LeftRightVec` with `independent_eyes`.
 - `/tracking/eye/EyesClosedAmount`: both eyelids as sent, averaged into one value (0 open, 1 closed). VRChat takes one value for both eyes and nothing for widening, so a wink closes both eyes halfway and widened eyes are just open. Use an avatar with VRCFT parameters for those.

@@ -281,6 +281,10 @@ struct Args {
     /// no prefix), for avatars made for it
     #[arg(long)]
     steamlink_params: bool,
+    /// In VRChat mode, also send VRChat's own eye tracking input (/tracking/eye/*), which moves the eyes of
+    /// avatars without VRCFT parameters
+    #[arg(long)]
+    native_eyes: bool,
     /// How easily an eye with an eye fit widens: off, low, normal or high (eyes without one use --lid-widen-start
     /// and --lid-wide)
     #[arg(long, value_enum, default_value_t = Widen::Normal)]
@@ -2064,6 +2068,53 @@ fn vrchat_stream(settings: &Settings) -> Option<(&str, u16, &str, ActiveType)> {
     })
 }
 
+/// Unit vector in VRChat's HMD space (Unity: +X right, +Y up, +Z forward) for a gaze pair in -1..1; the inverse
+/// of `gaze_angles`, so 1 is 45°.
+fn gaze_vector([x, y]: [f32; 2]) -> [f32; 3] {
+    let quarter = std::f32::consts::FRAC_PI_4;
+    let (right, up) = ((x * quarter).tan(), (y * quarter).tan());
+    let length = (right * right + up * up + 1.0).sqrt();
+    [right / length, up / length, 1.0 / length]
+}
+
+/// VRChat's own eye tracking input for the gaze and VRCFT eyelids as sent: it drives the avatar descriptor's Eye
+/// Look on any avatar. Avatars built for VRCFT hand their eyes to animation while EyeTrackingActive is true, so
+/// they keep following the VRCFT parameters and this changes nothing for them. Each eye's gaze is its own with
+/// "move eyes separately", else the combined one.
+fn native_messages(settings: &Settings, gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
+    let floats = |values: &[f32]| -> Vec<OscType> { values.iter().copied().map(OscType::Float).collect() };
+    let [left_x, left_y, right_x, right_y, x, y] = gaze;
+    let look = if settings.independent_eyes {
+        let [left, right] = [[left_x, left_y], [right_x, right_y]].map(gaze_vector);
+        ("/tracking/eye/LeftRightVec", floats(&[left, right].concat()))
+    } else {
+        ("/tracking/eye/CenterVec", floats(&gaze_vector([x, y])))
+    };
+    // One value for both eyes, 0 open to 1 closed; VRChat has nothing for widening or winks.
+    let open = (lids[0] + lids[1]) / 2.0 / 0.75;
+    vec![
+        (look.0.into(), look.1),
+        ("/tracking/eye/EyesClosedAmount".into(), floats(&[(1.0 - open).clamp(0.0, 1.0)])),
+    ]
+}
+
+/// Where VRChat's own eye tracking input is being sent to, if anywhere. When this changes while eye tracking
+/// runs, the old destination gets relaxed open eyes looking ahead (see `send_native_neutral`).
+fn native_stream(settings: &Settings) -> Option<(&str, u16)> {
+    (settings.sending && settings.output == OutputKind::Vrchat && settings.native_eyes)
+        .then(|| (settings.host.as_str(), settings.port()))
+}
+
+/// Relaxed open eyes looking straight ahead, as VRChat's own eye tracking input. VRChat has no "not active" for
+/// it and keeps the last values until its own timeout hands the eyes back to its automatic eye movement, so the
+/// eyes would otherwise stay where they were (shut, if tracking was lost in a blink) until then.
+fn send_native_neutral(output: &mut Output, settings: &Settings) -> Result<(), Box<dyn Error>> {
+    for (addr, args) in native_messages(settings, [0.0; 6], [0.75; 2]) {
+        output.send(addr, args)?;
+    }
+    Ok(())
+}
+
 /// Lets a packet through at most once per interval, on a steady beat that neither bursts nor drifts: the next one is
 /// due an interval after the last one was due, or after now if the samples paused for longer than that.
 #[derive(Default)]
@@ -2198,6 +2249,10 @@ impl Bridge {
         if self.active_since.is_some() && stream.is_some() && stream != vrchat_stream(&settings) {
             send_inactive(&mut self.output, &self.settings)?;
         }
+        let stream = native_stream(&self.settings);
+        if self.active_since.is_some() && stream.is_some() && stream != native_stream(&settings) {
+            send_native_neutral(&mut self.output, &self.settings)?;
+        }
         let stream = livelink_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != livelink_stream(&settings) {
             self.send_livelink_neutral();
@@ -2242,6 +2297,11 @@ impl Bridge {
             } else {
                 for (addr, arg) in osc_messages(&self.settings, &sample) {
                     self.output.send(addr, vec![arg])?;
+                }
+                if native_stream(&self.settings).is_some() {
+                    for (addr, args) in native_messages(&self.settings, sample.gaze, sample.lids) {
+                        self.output.send(addr, args)?;
+                    }
                 }
                 true
             };
@@ -2292,6 +2352,9 @@ impl Bridge {
         eprintln!("Eye tracking stopped ({reason})");
         if vrchat_stream(&self.settings).is_some() {
             send_inactive(&mut self.output, &self.settings)?;
+        }
+        if native_stream(&self.settings).is_some() {
+            send_native_neutral(&mut self.output, &self.settings)?;
         }
         if livelink_stream(&self.settings).is_some() {
             self.send_livelink_neutral();
@@ -4016,6 +4079,107 @@ mod tests {
         bridge.livelink_neutral = Some(Instant::now() - LIVELINK_IDLE_INTERVAL);
         bridge.keep_livelink_alive();
         assert!(receive(&listener).is_some());
+    }
+
+    fn close(a: &[f32], b: &[f32]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-5)
+    }
+
+    fn native(settings: &Settings, sample: &Sample) -> Vec<(String, Vec<f32>)> {
+        native_messages(settings, sample.gaze, sample.lids)
+            .into_iter()
+            .map(|(addr, args)| {
+                let values = args.into_iter().map(|arg| match arg {
+                    OscType::Float(value) => value,
+                    other => panic!("not a float: {other:?}"),
+                });
+                (addr, values.collect())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn gaze_vector_undoes_gaze_angles() {
+        // Frame space: -Z forward. Looking right and up.
+        let frame = [0.3, 0.2, -0.9];
+        let length = (0.3f32 * 0.3 + 0.2 * 0.2 + 0.9 * 0.9).sqrt();
+        let unity = [0.3 / length, 0.2 / length, 0.9 / length];
+        assert!(close(&gaze_vector(gaze_angles(frame)), &unity));
+        assert!(close(&gaze_vector([0.0, 0.0]), &[0.0, 0.0, 1.0]));
+        // 1.0 is 45° to the right.
+        let half = std::f32::consts::FRAC_1_SQRT_2;
+        assert!(close(&gaze_vector([1.0, 0.0]), &[half, 0.0, half]));
+    }
+
+    #[test]
+    fn native_eyes_send_the_combined_gaze_and_one_eyelid() {
+        let messages = native(&settings(), &sample());
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].0, "/tracking/eye/CenterVec");
+        assert!(close(&messages[0].1, &gaze_vector([0.5, 0.6])));
+        assert_eq!(messages[1].0, "/tracking/eye/EyesClosedAmount");
+        // Lids 0.375 and 0.75 (VRCFT) average to 0.5625, three quarters of relaxed open.
+        assert!(close(&messages[1].1, &[0.25]));
+    }
+
+    #[test]
+    fn native_eyes_send_each_eye_when_independent() {
+        let independent = Settings {
+            independent_eyes: true,
+            ..settings()
+        };
+        let messages = native(&independent, &sample());
+        assert_eq!(messages[0].0, "/tracking/eye/LeftRightVec");
+        assert!(close(&messages[0].1, &[gaze_vector([0.1, 0.2]), gaze_vector([0.3, 0.4])].concat()));
+    }
+
+    #[test]
+    fn native_eyelids_ignore_widening() {
+        let with_lids = |lids| native(&settings(), &Sample { lids, ..sample() })[1].1.clone();
+        assert!(close(&with_lids([1.0; 2]), &[0.0]));
+        assert!(close(&with_lids([0.75; 2]), &[0.0]));
+        assert!(close(&with_lids([0.0; 2]), &[1.0]));
+    }
+
+    #[test]
+    fn native_eyes_go_out_only_in_vrchat_mode_when_turned_on() {
+        let on = Settings {
+            native_eyes: true,
+            ..settings()
+        };
+        // Off by default: nothing changes for avatars that follow the VRCFT parameters
+        assert!(native_stream(&settings()).is_none());
+        assert_eq!(native_stream(&on), Some(("auto", 9000)));
+        assert!(native_stream(&Settings { sending: false, ..on.clone() }).is_none());
+        for output in [OutputKind::Etvr, OutputKind::LiveLink] {
+            assert!(native_stream(&Settings { output, ..on.clone() }).is_none());
+        }
+        // Moving the stream ends the old one (it gets its own last neutral eyes)
+        assert_ne!(native_stream(&on), native_stream(&Settings { port: Some(9001), ..on.clone() }));
+        assert_eq!(native_stream(&on), native_stream(&Settings { lid_open: 0.85, ..on.clone() }));
+    }
+
+    #[test]
+    fn losing_tracking_leaves_the_native_eyes_open_and_ahead() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
+        output.refresh();
+        send_native_neutral(&mut output, &settings()).unwrap();
+        let receive = || {
+            let mut buffer = [0u8; 256];
+            let size = listener.recv(&mut buffer).unwrap();
+            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
+            let OscPacket::Message(message) = packet else { panic!("not a message") };
+            message
+        };
+        let look = receive();
+        assert_eq!(look.addr, "/tracking/eye/CenterVec");
+        assert_eq!(look.args, [OscType::Float(0.0), OscType::Float(0.0), OscType::Float(1.0)]);
+        let lids = receive();
+        assert_eq!(lids.addr, "/tracking/eye/EyesClosedAmount");
+        assert_eq!(lids.args, [OscType::Float(0.0)]);
     }
 
     #[test]

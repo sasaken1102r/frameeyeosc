@@ -361,7 +361,7 @@ UiText makeJapanese() {
     t.setupStepPassword = "パスワードを決める";
     t.setupStepTool = "道具を入れる";
     t.setupStepToolAgain = "道具を入れ直す";
-    t.setupToolUpdated = "道具が新しくなったよ。入れ直してね";
+    t.setupToolUpdated = "道具が新しくなったよ、入れ直してね";
     t.setupStepLearn = "目の動きを覚える";
     t.setupStepDone = "完了";
     t.setupLaterTool = "Konsole でパスワードを打つだけ";

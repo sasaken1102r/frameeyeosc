@@ -1359,7 +1359,9 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     const bool failure = m.panelErrorBroken || !m.panelError.empty() || !m.config.error.empty() ||
                          m.autostart.writeFailed || (s.running && (!s.sourceError.empty() || !s.configError.empty()));
     const eyecam::SetupScreen setup = eyecam::setupScreen(m.eyecam);
-    const bool nextCard = m.eyecam.visible && setup != eyecam::SetupScreen::Camera && setup != eyecam::SetupScreen::Done;
+    const bool nextCard = m.eyecam.visible &&
+                          ((setup != eyecam::SetupScreen::Camera && setup != eyecam::SetupScreen::Done) ||
+                           eyecam::toolNotice(m.eyecam.status, m.eyecam.password) != eyecam::ToolNotice::None);
     const bool readyCard = m.eyecam.visible && m.eyecam.readyNotice;
     const bool setupCard = !failure && (nextCard || readyCard);
     // Each eye's own pad while the eyes move separately; one pad for the shared gaze otherwise
@@ -1451,8 +1453,29 @@ void EyePanel::drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel
         return;
     }
     // What to do next, as a button to the eye cameras tab
-    // An update brought a new tool: (2) again
-    const bool outdated = m.eyecam.status.grabOutdated;
+    // Set up, with an outdated or too old tool: install it again (from the usual page; the cameras may be stopped)
+    const eyecam::ToolNotice notice = eyecam::toolNotice(m.eyecam.status, m.eyecam.password);
+    if (notice != eyecam::ToolNotice::None && (screen == SetupScreen::Done || screen == SetupScreen::Camera)) {
+        const bool tooOld = notice == eyecam::ToolNotice::TooOld;
+        const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)};
+        const bool usable = tab_ != PanelTab::Eyecam;
+        const int pointer = usable ? pointerState(hit) : 0;
+        const Color edge = tooOld ? kDanger : kAccent;
+        fillRounded(pen, x0, y, w, h, 16, pointer > 0 ? kControlHover : (tooOld ? kDangerTint : kCard));
+        strokeRounded(pen, x0, y, w, h, 16, edge, 2);
+        const double textW = w - 48;
+        pen.text(x0 + 18, y + 23, t.nextTitle, fitSize(pen, t.nextTitle, 14, 10, textW, true), edge, true);
+        pen.text(x0 + 18, y + 48, t.setupStepToolAgain, fitSize(pen, t.setupStepToolAgain, 18, 12, textW, true), kText,
+                 true);
+        const char* sub = tooOld ? t.nextToolTooOld : t.nextToolOutdated;
+        pen.text(x0 + 18, y + 70, sub, fitSize(pen, sub, 14, 10, textW, false), tooOld ? kText : kTextMuted);
+        drawChevron(pen, x1 - 22, y + h / 2, 14, 2.5, edge);
+        addButton(hit, x0, y, w, h, usable);
+        return;
+    }
+    // Not set up, the tool outdated or too old: (2) again
+    const eyecam::Tool tool = eyecam::toolState(m.eyecam.status);
+    const bool outdated = tool == eyecam::Tool::Outdated || tool == eyecam::Tool::TooOld;
     const char* names[3] = {t.setupStepPassword, outdated ? t.setupStepToolAgain : t.setupStepTool, t.setupStepLearn};
     const char* numbers[3] = {"①", "②", "③"};
     const int step = screen == SetupScreen::Pass ? 0 : screen == SetupScreen::Check ? 1 : 2;
@@ -3716,8 +3739,9 @@ void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, e
     const double padX = 22;
     const double rowStep = 43;
     const double firstY = 174;
-    // An update brought a new tool: (2) again
-    const bool outdated = m.eyecam.status.grabOutdated;
+    // The tool outdated or too old: (2) again
+    const eyecam::Tool tool = eyecam::toolState(m.eyecam.status);
+    const bool outdated = tool == eyecam::Tool::Outdated || tool == eyecam::Tool::TooOld;
     const char* names[4] = {t.setupStepPassword, outdated ? t.setupStepToolAgain : t.setupStepTool, t.setupStepLearn,
                             t.setupStepDone};
     const char* later[4] = {"", outdated ? t.setupToolUpdated : t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone};
@@ -3893,9 +3917,11 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             break;
         }
         case SetupScreen::Check: {
-            // An update brought a new tool: the same, to do again (it says so under the title)
-            title(s.grabOutdated ? t.setupStepToolAgain : t.setupStepTool, t.setupCheckPill, kAccent);
-            if (s.grabOutdated) para(t.setupToolUpdated, 17, kAccent, true, 34, 26, 2);
+            // An outdated or too old tool: the same, to do again (it says so under the title)
+            const eyecam::Tool tool = eyecam::toolState(s);
+            const bool again = tool == eyecam::Tool::Outdated || tool == eyecam::Tool::TooOld;
+            title(again ? t.setupStepToolAgain : t.setupStepTool, t.setupCheckPill, kAccent);
+            if (again) para(t.setupToolUpdated, 17, kAccent, true, 34, 26, 2);
             // How: the Konsole button, Enter, the password (typed in already)
             y += 36;
             if (draw) drawTerminalIcon(pen, x0, y - 6, kText);
@@ -4320,6 +4346,38 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         cairo_line_to(cr, kInnerRight, at + 0.5);
         cairo_stroke(cr);
     };
+
+    // The tool to install again (set up): outdated but working, or below the safety floor with the cameras stopped.
+    // The same Konsole as the checklist's (2); it goes by itself once eyecam-rec stops saying so
+    const eyecam::ToolNotice notice = eyecam::toolNotice(s, view.password);
+    if (notice != eyecam::ToolNotice::None) {
+        const bool tooOld = notice == eyecam::ToolNotice::TooOld;
+        const Color edge = tooOld ? kDanger : kAccent;
+        const double bh = 44;
+        const double bw = pen.measure(t.setupCheckButton, 17, true) + 64;
+        const double bx = kInnerRight - 14 - bw;
+        const double textX = kInnerX + 52;
+        const std::vector<std::string> lines =
+            wrapText(pen, tooOld ? t.toolNoticeTooOld : t.toolNoticeOutdated, 16, true, bx - 16 - textX, 3);
+        const bool failed = !view.spawnError.empty();
+        const double textH = lines.size() * 22 + (failed ? 20 : 0);
+        const double boxH = std::max(bh + 20, textH + 22);
+        fillRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 14, tooOld ? kDangerTint : kAccentTint);
+        strokeRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 14, edge, 2);
+        drawInfoIcon(pen, kInnerX + 26, y + boxH / 2, edge);
+        double baseline = y + (boxH - textH) / 2 + 16;
+        for (const std::string& line : lines) {
+            pen.text(textX, baseline, line, 16, kText, true);
+            baseline += 22;
+        }
+        if (failed) {
+            pen.text(textX, baseline - 2, ellipsize(pen, view.spawnError, 13, true, bx - 16 - textX, false), 13, kDanger,
+                     true);
+        }
+        drawIconButton(pen, bx, y + (boxH - bh) / 2, bw, bh, t.setupCheckButton, {PanelAction::SetupKonsole, nullptr, 0},
+                       true, true, 17, ButtonIcon::Terminal);
+        y += boxH + 6;
+    }
 
     // Now: what drives the eyelids, and whether the relaxed eyes are learned (its line is also the bottom sentence's
     // last case)

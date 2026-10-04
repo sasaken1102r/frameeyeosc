@@ -655,6 +655,7 @@ void testCalibText() {
               t.eyecamSensitivity, t.eyecamSensitivityDull, t.eyecamSensitivitySharp, t.setupTitle, t.setupOptional,
               t.setupOneLeft, t.setupAllDone, t.setupStepPassword, t.setupStepTool, t.setupStepLearn, t.setupStepDone,
               t.setupStepToolAgain, t.setupToolUpdated, t.eyecamStorageNote, t.eyecamStorageRow,
+              t.toolNoticeOutdated, t.toolNoticeTooOld, t.nextToolOutdated, t.nextToolTooOld,
               t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone, t.setupPasswordLabel, t.setupPasswordSet,
               t.setupAutoChecked, t.setupToolLabel, t.setupToolDone, t.setupLearnLabel, t.setupLearnDone,
               t.setupPassPill, t.setupPassBody, t.setupPassWhere, t.setupPassPath1, t.setupPassPath2,
@@ -948,29 +949,83 @@ void testSetupStep() {
     CHECK(eyecam::setupStep(setupStatus("waiting_fds", ", \"has_buffers\": false"), PasswordState::NotSet) ==
           SetupStep::Password);
 
-    // An update brought a new eyecam-grab (grab_outdated): not in, whatever else says so, so a user who is set up
-    // and using the cameras gets (2) again; (3) stays done
-    const std::string inUse = ", \"auto_grab\": \"ok\", \"has_buffers\": true, \"setup_done\": true";
-    for (const char* state : {"idle", "searching", "recording", "calibrating", "waiting_fds", "error"}) {
-        const Status st = setupStatus(state, inUse + ", \"grab_outdated\": true");
-        CHECK(st.grabOutdated);
+    // The tool's state: current, outdated (an update brought a newer one, the old still works), too old (below the
+    // safety floor, not started), missing
+    using eyecam::Tool;
+    using eyecam::ToolNotice;
+    const std::string working = ", \"auto_grab\": \"ok\", \"has_buffers\": true";
+    CHECK(eyecam::toolState(setupStatus("idle", working)) == Tool::Current);
+    CHECK(eyecam::toolState(setupStatus("idle", working + ", \"grab_outdated\": true")) == Tool::Outdated);
+    // ...the buffers alone (an eyecam-rec without auto_grab, as the fakes write it) are enough to be outdated, not
+    // missing
+    CHECK(eyecam::toolState(setupStatus("idle", ", \"has_buffers\": true, \"grab_outdated\": true")) == Tool::Outdated);
+    CHECK(eyecam::toolState(setupStatus("waiting_fds", ", \"auto_grab\": \"missing\", \"grab_outdated\": true")) ==
+          Tool::Missing);
+    // ...too_old wins over everything else it says (eyecam-rec writes grab_outdated true with it)
+    for (const char* state : {"waiting_fds", "idle", "error"}) {
+        const Status st =
+            setupStatus(state, ", \"auto_grab\": \"too_old\", \"has_buffers\": true, \"grab_outdated\": true");
+        CHECK(eyecam::toolState(st) == Tool::TooOld);
         CHECK(!eyecam::toolInstalled(st));
         CHECK(eyecam::needsManualGrab(st));
-        CHECK(eyecam::setupComplete(st));
-        CHECK(eyecam::setupStep(st, PasswordState::Set) == SetupStep::Tool);
-        CHECK(eyecam::setupStep(st, PasswordState::Unknown) == SetupStep::Tool);
-        eyecam::View view;
-        view.status = st;
-        view.password = PasswordState::Set;
-        CHECK(eyecam::setupScreen(view) == eyecam::SetupScreen::Check);
     }
+    // ...outdated still works: installed, no sudo command while waiting
+    CHECK(eyecam::toolInstalled(
+        setupStatus("waiting_fds", ", \"auto_grab\": \"waiting_tracker\", \"grab_outdated\": true")));
+    CHECK(!eyecam::needsManualGrab(setupStatus("waiting_fds", ", \"auto_grab\": \"trying\", \"grab_outdated\": true")));
+
+    // Set up: the usual page, with a notice (no going back to (2)); not set up: (2) "again" for both
+    struct Case {
+        const char* extra;
+        Tool tool;
+    };
+    const Case cases[] = {
+        {", \"auto_grab\": \"ok\", \"has_buffers\": true", Tool::Current},
+        {", \"auto_grab\": \"ok\", \"has_buffers\": true, \"grab_outdated\": true", Tool::Outdated},
+        {", \"auto_grab\": \"too_old\", \"grab_outdated\": true", Tool::TooOld},
+    };
+    for (const Case& c : cases) {
+        const char* state = c.tool == Tool::TooOld ? "waiting_fds" : "idle";
+        for (const PasswordState password : {PasswordState::Unknown, PasswordState::Set, PasswordState::NotSet}) {
+            const Status setUp = setupStatus(state, std::string(c.extra) + ", \"setup_done\": true");
+            CHECK(eyecam::toolState(setUp) == c.tool);
+            CHECK(eyecam::setupStep(setUp, password) == SetupStep::Done);
+            const ToolNotice notice = eyecam::toolNotice(setUp, password);
+            CHECK(notice == (c.tool == Tool::Current    ? ToolNotice::None
+                             : c.tool == Tool::Outdated ? ToolNotice::Outdated
+                                                        : ToolNotice::TooOld));
+            eyecam::View view;
+            view.status = setUp;
+            view.password = password;
+            CHECK(eyecam::setupScreen(view) == eyecam::SetupScreen::Camera);
+
+            const Status notSetUp = setupStatus(state, std::string(c.extra) + ", \"setup_done\": false");
+            const SetupStep step = eyecam::setupStep(notSetUp, password);
+            if (c.tool == Tool::Current) {
+                CHECK(step == SetupStep::Learn);
+            } else {
+                CHECK(step == (password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool));
+            }
+            // ...the checklist asks there, not a notice
+            CHECK(eyecam::toolNotice(notSetUp, password) == ToolNotice::None);
+        }
+    }
+    // A missing tool when set up: back to (2), no notice
+    const Status gone = setupStatus("waiting_fds", ", \"auto_grab\": \"missing\", \"setup_done\": true");
+    CHECK(eyecam::setupStep(gone, PasswordState::Set) == SetupStep::Tool);
+    CHECK(eyecam::toolNotice(gone, PasswordState::Set) == ToolNotice::None);
+    // The notice goes by itself once eyecam-rec says the tool is current again (install_grab.sh ran)
+    CHECK(eyecam::toolNotice(setupStatus("idle", working + ", \"setup_done\": true, \"grab_outdated\": false"),
+                             PasswordState::Set) == ToolNotice::None);
     // ...false, missing (an eyecam-rec before it) or not a bool: as before
+    const std::string inUse = working + ", \"setup_done\": true";
     for (const char* extra :
          {", \"grab_outdated\": false", "", ", \"grab_outdated\": 1", ", \"grab_outdated\": \"true\""}) {
         const Status st = setupStatus("idle", inUse + extra);
         CHECK(!st.grabOutdated);
-        CHECK(eyecam::toolInstalled(st));
+        CHECK(eyecam::toolState(st) == Tool::Current);
         CHECK(eyecam::setupStep(st, PasswordState::Set) == SetupStep::Done);
+        CHECK(eyecam::toolNotice(st, PasswordState::Set) == ToolNotice::None);
     }
 }
 

@@ -368,6 +368,10 @@ UiText makeJapanese() {
     t.setupStepTool = "道具を入れる";
     t.setupStepToolAgain = "道具を入れ直す";
     t.setupToolUpdated = "道具が新しくなったよ、入れ直してね";
+    t.toolNoticeOutdated = "道具が新しくなったよ、入れ直してね（今の道具のままでも動くよ）";
+    t.toolNoticeTooOld = "安全のため、道具を入れ直してね。入れ直すまでカメラは止まってて、まぶたは Valve の値だけで送ってるよ";
+    t.nextToolOutdated = "今の道具のままでも動くよ";
+    t.nextToolTooOld = "入れ直すまでカメラは止まってるよ";
     t.setupStepLearn = "目の動きを覚える";
     t.setupStepDone = "完了";
     t.setupLaterTool = "Konsole でパスワードを打つだけ";
@@ -986,6 +990,12 @@ UiText makeEnglish() {
     t.setupStepTool = "Install the tool";
     t.setupStepToolAgain = "Install the tool again";
     t.setupToolUpdated = "The tool was updated. Install it again";
+    t.toolNoticeOutdated = "The tool was updated. Install it again (the current one still works)";
+    t.toolNoticeTooOld =
+        "For safety, install the tool again. Until then the cameras are stopped and the eyelids go out on Valve's "
+        "values only";
+    t.nextToolOutdated = "The current one still works";
+    t.nextToolTooOld = "The cameras are stopped until then";
     t.setupStepLearn = "Learn your eye movements";
     t.setupStepDone = "Done";
     t.setupLaterTool = "Just type your password in Konsole";

@@ -300,6 +300,34 @@ void testPupilBitsRow(const FontSet& fonts) {
     CHECK(hits(panel, PanelAction::SetActiveType).size() == 3);
 }
 
+void testToolNotice(const FontSet& fonts) {
+    // Set up, the tool outdated (still works) or too old (the cameras stopped): the usual page with a card and its
+    // Konsole button, and the left column's card to the tab; neither once the tool is current again
+    EyePanel panel(fonts);
+    for (const char* grab : {"outdated", "too_old", "current"}) {
+        PanelModel m = modelWith(Lids::Both);
+        eyecam::Status& e = m.eyecam.status;
+        const bool current = std::string(grab) == "current";
+        e.grabOutdated = !current;
+        if (std::string(grab) == "too_old") {
+            e.autoGrab = "too_old";
+            e.state = eyecam::State::WaitingFds;
+            e.stateText = "waiting_fds";
+            e.hasBuffers = false;
+        }
+        panel.setTab(PanelTab::Eyecam);
+        panel.render(m);
+        // The page, not the checklist: its rows are there either way
+        CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);
+        CHECK(hits(panel, PanelAction::SetupKonsole).size() == (current ? 0u : 1u));
+        if (!current) CHECK(hits(panel, PanelAction::SetupKonsole)[0].hit.arg == 0);  // install_grab.sh, not passwd
+        // From another tab, the left column's card leads to the eye cameras tab
+        panel.setTab(PanelTab::Basic);
+        panel.render(m);
+        CHECK(pointsTo(panel, PanelTab::Eyecam) == !current);
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -308,6 +336,7 @@ int main() {
     testSliderMoved(fonts);
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);
+    testToolNotice(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

@@ -370,6 +370,10 @@ struct UiText {
     const char* setupStepTool;  ///< step (2)
     const char* setupStepToolAgain;  ///< ...when an update brought a new tool (grab_outdated)
     const char* setupToolUpdated;  ///< ...the line under its title, and in the left column
+    const char* toolNoticeOutdated;  ///< set up, the tool outdated: the usual page's card
+    const char* toolNoticeTooOld;    ///< set up, the tool below the safety floor: the usual page's card (stronger)
+    const char* nextToolOutdated;    ///< ...the left column's card, under "install again"
+    const char* nextToolTooOld;
     const char* setupStepLearn;  ///< step (3)
     const char* setupStepDone;  ///< step (4)
     const char* setupLaterTool;  ///< a step still to come, after its name

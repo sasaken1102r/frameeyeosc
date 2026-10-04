@@ -84,6 +84,21 @@ enum class PasswordState {
     NotSet,
 };
 
+/** How the camera tool (eyecam-grab, installed with sudo) stands. */
+enum class Tool {
+    Missing,   ///< not installed (or not usable: no capability, unsafe)
+    TooOld,    ///< installed, but older than eyecam's safety floor: eyecam-rec doesn't start it, the cameras wait
+    Outdated,  ///< installed and working, but an update brought a newer one (grab_outdated)
+    Current,   ///< installed, working and up to date
+};
+
+/** What the usual page (and the left column) asks of a set-up user about the tool. */
+enum class ToolNotice {
+    None,
+    Outdated,  ///< install it again when convenient: the one installed still works
+    TooOld,    ///< install it again: until then the cameras are stopped (Valve's values only)
+};
+
 /** The setup's steps, in order; the current one is the first not met. */
 enum class SetupStep {
     Password,  ///< (1) a SteamOS password, needed once for (2)
@@ -411,17 +426,37 @@ bool baselineWarming(const Status& status);
 const std::string& shownMessage(const Status& status, Language language);
 
 /**
- * Whether the camera tool is in, from this status alone: eyecam-rec holds the buffers (has_buffers, or a state that only
- * comes after it has them: idle, searching, recording, calibrating), or auto_grab says the tool is there ("ok",
- * "trying", "waiting_tracker", "failed: ..."; not "missing", "no_cap", "unsafe: ..."). Without auto_grab (an older
- * eyecam-rec) only the buffers say so. A failed calibration's error still has has_buffers and auto_grab (eyecam-rec
- * writes every field in every state), so it stays in. An outdated one (grab_outdated: an update brought a new
- * eyecam-grab) counts as not in, whatever else says so, so the setup asks for it again. needsManualGrab is its
- * opposite.
+ * How the camera tool stands, from this status alone:
+ * - TooOld: auto_grab "too_old" (below eyecam's safety floor; eyecam-rec doesn't start it), whatever else it says.
+ * - Missing: not installed. Installed means eyecam-rec holds the buffers (has_buffers, or a state that only comes after
+ *   it has them: idle, searching, recording, calibrating) or auto_grab says the tool is there ("ok", "trying",
+ *   "waiting_tracker", "failed: ..."; not "missing", "no_cap", "unsafe: ..."). Without auto_grab (an older eyecam-rec)
+ *   only the buffers say so. A failed calibration's error still has has_buffers and auto_grab (eyecam-rec writes every
+ *   field in every state), so it stays installed.
+ * - Outdated: installed and working, with grab_outdated (an update brought a newer one).
+ * - Current: installed and working.
  * @param status the status
- * @return true if installed
+ * @return the tool's state
+ */
+Tool toolState(const Status& status);
+
+/**
+ * Whether the camera tool is installed and works (Outdated or Current): what eyecam-rec can take the buffers with.
+ * needsManualGrab is its opposite.
+ * @param status the status
+ * @return true if it works
  */
 bool toolInstalled(const Status& status);
+
+/**
+ * What a set-up user is asked about the tool, on the usual page and in the left column: an outdated tool (still
+ * working) or one below the safety floor (the cameras stopped) once the setup step is Done; nothing otherwise (before
+ * that the checklist's (2) asks, as "install again"). Goes away by itself once eyecam-rec stops saying so.
+ * @param status the status
+ * @param password the password check
+ * @return the notice
+ */
+ToolNotice toolNotice(const Status& status, PasswordState password);
 
 /**
  * Whether the setup is complete: setup_done. An older eyecam-rec doesn't write it; then the setup counts as done
@@ -433,10 +468,13 @@ bool toolInstalled(const Status& status);
 bool setupComplete(const Status& status);
 
 /**
- * The current step, from this status and password check alone: the first one not met. The tool not in is (1) only
- * while the password is known to be missing, else (2), even when set up (an eyecam-rec without auto_grab can't say,
- * so set up is Done there); the tool in is Done when complete, else (3), whatever the password check says (it was
- * needed to install it).
+ * The current step, from this status and password check alone: the first one not met.
+ * - Set up (setupComplete): Done while the tool is there at all, outdated or too old included (the usual page asks for
+ *   it then, see toolNotice); a missing one goes back to (1) / (2). An eyecam-rec without auto_grab can't say, so set
+ *   up is Done there.
+ * - Not set up: (2) is met only by a Current tool (an outdated or too old one is asked for again there); then (3),
+ *   whatever the password check says (it was needed to install it). Without it, (1) only while the password is known
+ *   to be missing, else (2).
  * @param status the status
  * @param password the password check
  * @return the step
@@ -647,9 +685,8 @@ private:
 };
 
 /**
- * Whether waiting_fds needs the user to run eyecam-grab with sudo: the tool is not in (toolInstalled, the same rule:
- * "auto_grab" missing, no_cap or unsafe: ..., or an eyecam-rec without it). Otherwise it is waiting for the eye
- * tracker or retrying on its own, and the command would only confuse.
+ * Whether waiting_fds needs the user to run eyecam-grab with sudo: the tool is missing or too old (not toolInstalled).
+ * Otherwise it is waiting for the eye tracker or retrying on its own, and the command would only confuse.
  * @param s the status as read
  * @return true to show the sudo command
  */

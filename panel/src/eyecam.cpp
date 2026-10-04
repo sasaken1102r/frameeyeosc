@@ -300,20 +300,36 @@ const std::string& shownMessage(const Status& status, Language language) {
     return language == Language::En && !status.messageEn.empty() ? status.messageEn : status.message;
 }
 
-bool toolInstalled(const Status& status) {
-    // Installed, but older than the one this update brought: to be installed again
-    if (status.grabOutdated) return false;
+Tool toolState(const Status& status) {
+    const std::string& grab = status.autoGrab;
+    // Below the safety floor: eyecam-rec won't start it, whatever it held before
+    if (grab == "too_old") return Tool::TooOld;
+    bool installed = status.hasBuffers;
     switch (status.state) {
         case State::Idle:
         case State::Searching:
         case State::Recording:
-        case State::Calibrating: return true;
+        case State::Calibrating: installed = true; break;
         default: break;
     }
-    if (status.hasBuffers) return true;
     // auto_grab names what eyecam-rec found; without it (an older eyecam-rec) only the buffers say so
-    const std::string& grab = status.autoGrab;
-    return !grab.empty() && grab != "missing" && grab != "no_cap" && grab.rfind("unsafe", 0) != 0;
+    if (!grab.empty() && grab != "missing" && grab != "no_cap" && grab.rfind("unsafe", 0) != 0) installed = true;
+    if (!installed) return Tool::Missing;
+    return status.grabOutdated ? Tool::Outdated : Tool::Current;
+}
+
+bool toolInstalled(const Status& status) {
+    const Tool tool = toolState(status);
+    return tool == Tool::Outdated || tool == Tool::Current;
+}
+
+ToolNotice toolNotice(const Status& status, PasswordState password) {
+    if (setupStep(status, password) != SetupStep::Done) return ToolNotice::None;
+    switch (toolState(status)) {
+        case Tool::Outdated: return ToolNotice::Outdated;
+        case Tool::TooOld: return ToolNotice::TooOld;
+        default: return ToolNotice::None;
+    }
 }
 
 bool setupComplete(const Status& status) {
@@ -323,11 +339,13 @@ bool setupComplete(const Status& status) {
 }
 
 SetupStep setupStep(const Status& status, PasswordState password) {
-    const bool tool = toolInstalled(status);
-    // Set up needs the tool too (without it the cameras stop at the next SteamVR start); an eyecam-rec without
-    // auto_grab can't tell (eyecam-grab was always run by hand), so there being set up is enough
-    if (setupComplete(status) && (tool || status.autoGrab.empty())) return SetupStep::Done;
-    if (tool) return SetupStep::Learn;
+    const Tool tool = toolState(status);
+    // Set up needs the tool there (without it the cameras stop at the next SteamVR start); an outdated or too old one
+    // is asked for on the usual page instead. An eyecam-rec without auto_grab can't tell (eyecam-grab was always run
+    // by hand), so there being set up is enough
+    if (setupComplete(status) && (tool != Tool::Missing || status.autoGrab.empty())) return SetupStep::Done;
+    // The checklist's (2) is met only by a current tool
+    if (tool == Tool::Current) return SetupStep::Learn;
     return password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
 }
 

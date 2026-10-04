@@ -22,6 +22,8 @@ pub struct Status<'a> {
     pub output: OutputKind,
     pub target_mode: &'static str,
     pub target: Option<String>,
+    /// Where the eye camera's pupils go straight to VRChat in LiveLink mode (see pupils_to_vrchat); None otherwise.
+    pub pupil_target: Option<String>,
     pub rate: f32,
     /// Samples from the eye tracker in the last second (sent or not): about 90-136 while streaming,
     /// and it has been seen at 15. None until tracking has run for a second (the count is still filling).
@@ -77,7 +79,7 @@ pub struct SentValues {
     pub gaze_right: [f32; 2],
     /// Each eye's squint (0 for an eye whose squint is not sent); None while no squint goes out (VRChat only).
     pub squint: Option<[f32; 2]>,
-    /// The pupil dilation; None while it does not go out (VRChat only).
+    /// The pupil dilation; None while it does not go out (to VRChat, directly or next to LiveLink).
     pub pupil_dilation: Option<f32>,
 }
 

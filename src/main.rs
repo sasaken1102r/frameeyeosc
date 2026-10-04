@@ -377,6 +377,9 @@ struct Args {
     /// Don't use eyecam-rec's eye-camera values (widening and squint from relaxed open up, pupils)
     #[arg(long)]
     no_camera_lids: bool,
+    /// In LiveLink mode, don't send the eye camera's pupils straight to VRChat (port 9000 of the target's host)
+    #[arg(long)]
+    no_pupils_to_vrchat: bool,
     /// Where eyecam-rec's eye-camera values are read from [default: $XDG_RUNTIME_DIR/eyecam/live]
     #[arg(long, value_name = "PATH")]
     eyecam_live: Option<PathBuf>,
@@ -2126,19 +2129,58 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
 /// eyes whose pupil is used, and the combined diameter (the mean of those). Nothing for an eye the camera's values are
 /// not used for: see squint_release for the squint it leaves behind.
 fn camera_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
-    let named = |names: [&'static str; 3], values: [Option<f32>; 2]| {
-        let [left, right] = values;
-        [left, right, mean(values)]
-            .into_iter()
-            .zip(names)
-            .filter_map(|(value, name)| Some((name, value?)))
-            .collect::<Vec<_>>()
-    };
-    let diameter = camera.pupil_diameter.map(|mm| mm.map(|mm| (mm / PUPIL_MM_PER_UNIT).min(1.0)));
-    let mut params = named(["EyeSquintLeft", "EyeSquintRight", "EyeSquint"], camera.squint);
-    params.extend(mean(camera.pupil_dilation).map(|dilation| ("PupilDilation", dilation)));
-    params.extend(named(["PupilDiameterLeft", "PupilDiameterRight", "PupilDiameter"], diameter));
+    let mut params = per_eye_params(["EyeSquintLeft", "EyeSquintRight", "EyeSquint"], camera.squint);
+    params.extend(pupil_params(camera));
     params
+}
+
+/// The pupil part of camera_params: the dilation and each eye's pupil diameter (in cm, 0..1) for the eyes whose pupil
+/// is used, and the combined diameter.
+fn pupil_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
+    let diameter = camera.pupil_diameter.map(|mm| mm.map(|mm| (mm / PUPIL_MM_PER_UNIT).min(1.0)));
+    let mut params: Vec<_> = mean(camera.pupil_dilation).map(|dilation| ("PupilDilation", dilation)).into_iter().collect();
+    params.extend(per_eye_params(["PupilDiameterLeft", "PupilDiameterRight", "PupilDiameter"], diameter));
+    params
+}
+
+/// The left, right and combined (`names`) of per-eye values, for the eyes that have one; the combined one is their
+/// mean.
+fn per_eye_params(names: [&'static str; 3], values: [Option<f32>; 2]) -> Vec<(&'static str, f32)> {
+    let [left, right] = values;
+    [left, right, mean(values)]
+        .into_iter()
+        .zip(names)
+        .filter_map(|(value, name)| Some((name, value?)))
+        .collect()
+}
+
+/// In LiveLink mode, the eye camera's pupils as VRChat avatar parameters (the ones `--output vrchat` sends, with the
+/// prefix), to go straight to VRChat next to the Live Link packets: VRCFT's LiveLink module has no pupils of its own
+/// (it gives a fixed 5 mm, which VRCFT sends once, as it only sends a parameter when it changes, so these don't
+/// fight it). Only pupils: the eyelids and gaze go through VRCFT. Nothing when no eye's pupil is used.
+fn pupil_messages(settings: &Settings, camera: &CameraValues) -> Vec<(String, OscType)> {
+    let prefix = format!("/avatar/parameters{}/v2", settings.prefix);
+    pupil_params(camera)
+        .into_iter()
+        .map(|(name, value)| (format!("{prefix}/{name}"), OscType::Float(value)))
+        .collect()
+}
+
+/// Where the eye camera's pupils go straight to VRChat, if anywhere: in LiveLink mode with pupils_to_vrchat, VRChat's
+/// OSC port (9000) on the LiveLink target's host. VRCFT runs next to VRChat, so that host is VRChat's PC: the Steam
+/// Link PC with "auto", else the host typed. The LiveLink port setting is VRCFT's, not VRChat's.
+fn pupil_stream(settings: &Settings) -> Option<(&str, u16)> {
+    (settings.sending && settings.output == OutputKind::LiveLink && settings.pupils_to_vrchat)
+        .then(|| (settings.host.as_str(), OutputKind::Vrchat.default_port()))
+}
+
+/// The target of pupil_stream (also while it is off, so it is ready when it comes on).
+fn pupil_target(settings: &Settings) -> Target {
+    let port = OutputKind::Vrchat.default_port();
+    match Target::of(settings) {
+        Target::Fixed { host, .. } => Target::Fixed { host, port },
+        Target::SteamLink { .. } => Target::SteamLink { port },
+    }
 }
 
 /// The mean of the values there are, if any.
@@ -2409,6 +2451,9 @@ struct Bridge {
     camera_live: Option<Live>,
     // Which eyes' squint went out to VRChat with the last sample, so it can be set back to 0 when it stops.
     squint_out: [bool; 2],
+    // In LiveLink mode, the eye camera's pupils straight to VRChat (see pupil_stream): a sender of its own, so the
+    // Live Link rate and drops stay the LiveLink module's.
+    pupil_output: Output,
 }
 
 impl Bridge {
@@ -2445,6 +2490,8 @@ impl Bridge {
             self.send_livelink_neutral();
         }
         self.output.set_target(Target::of(&settings));
+        // Nothing to set back when the pupils stop going there: they just hold
+        self.pupil_output.set_target(pupil_target(&settings));
         self.smoother.configure(&settings);
         if reset_calibration {
             eprintln!("Starting eyelid calibration over");
@@ -2481,6 +2528,12 @@ impl Bridge {
                 let ready = self.livelink_throttle.ready(now, interval);
                 if ready {
                     self.output.send_datagram(&livelink_packet(&sample, livelink::time_of_day(SystemTime::now())));
+                    // At the same pace
+                    if pupil_stream(&self.settings).is_some() {
+                        for (addr, arg) in pupil_messages(&self.settings, &sample.camera) {
+                            self.pupil_output.send(addr, vec![arg])?;
+                        }
+                    }
                 }
                 ready
             } else {
@@ -2640,6 +2693,7 @@ impl Bridge {
         let settings = &self.settings;
         let pair = |values: [f32; 6], first: usize| status::round([values[first], values[first + 1]]);
         let vrchat = settings.output == OutputKind::Vrchat;
+        let pupils = pupil_stream(settings).is_some();
         let camera = self.latest.as_ref().map(|sample| sample.camera).unwrap_or_default();
         let live = self.camera_live.as_ref();
         Status {
@@ -2651,6 +2705,7 @@ impl Bridge {
             output: settings.output,
             target_mode: if settings.host == "auto" { "auto" } else { "fixed" },
             target: self.output.addr().map(|addr| addr.to_string()),
+            pupil_target: self.pupil_output.addr().filter(|_| pupils).map(|addr| addr.to_string()),
             rate: per_second(&self.sent),
             tracker_rate,
             missed_rate,
@@ -2672,7 +2727,7 @@ impl Bridge {
                 gaze_right: pair(sample.gaze, 2),
                 squint: (vrchat && camera.squint != [None; 2])
                     .then(|| status::round(camera.squint.map(|squint| squint.unwrap_or(0.0)))),
-                pupil_dilation: mean(camera.pupil_dilation).filter(|_| vrchat).map(status::round_one),
+                pupil_dilation: mean(camera.pupil_dilation).filter(|_| vrchat || pupils).map(status::round_one),
             }),
             calibration: CalibrationStatus {
                 enabled: settings.lid_calibration,
@@ -2798,6 +2853,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         calibration.path = None;
         return replay::run(&input, output.as_deref(), &settings, &calibration);
     }
+    let pupil_output = Output::new(pupil_target(&settings));
     let mut bridge = Bridge {
         output: Output::new(Target::of(&settings)),
         smoother: Smoother::new(&settings),
@@ -2819,6 +2875,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         camera: LiveReader::new(camera_path, Instant::now()),
         camera_live: None,
         squint_out: [false; 2],
+        pupil_output,
     };
     let mut status_file = StatusFile::new(status::status_path());
     // Until the shared memory can be read, frameeyeosc keeps running and trying again, and the status file says why,
@@ -2832,6 +2889,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             bridge.apply(reload)?;
         }
         bridge.output.refresh();
+        if pupil_stream(&bridge.settings).is_some() {
+            bridge.pupil_output.refresh();
+        }
         if let Some(line) = eye.open_if_due(Instant::now()) {
             eprintln!("{line}");
         }
@@ -4162,6 +4222,8 @@ mod tests {
             camera: LiveReader::new(PathBuf::from("/nonexistent"), Instant::now()),
             camera_live: None,
             squint_out: [false; 2],
+            // Never VRChat's port on this machine in a test: a test that wants the pupils points it at its own listener
+            pupil_output: Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9 }),
         };
         bridge.output.refresh();
         bridge
@@ -5722,6 +5784,129 @@ mod tests {
             ..settings()
         };
         assert_eq!(osc_messages(&bare, &Sample { camera, ..sample() })[9].0, "/avatar/parameters/v2/EyeSquintLeft");
+    }
+
+    #[test]
+    fn livelink_mode_sends_the_pupils_alone_to_vrchat() {
+        let camera = CameraValues {
+            squint: [Some(0.3); 2],
+            pupil_dilation: [Some(0.5), Some(0.7)],
+            pupil_diameter: [Some(4.0), Some(12.0)],
+        };
+        let livelink = Settings {
+            output: OutputKind::LiveLink,
+            ..settings()
+        };
+        let messages = pupil_messages(&livelink, &camera);
+        let addrs: Vec<&str> = messages.iter().map(|(addr, _)| addr.as_str()).collect();
+        assert_eq!(
+            addrs,
+            [
+                "/avatar/parameters/FT/v2/PupilDilation",
+                "/avatar/parameters/FT/v2/PupilDiameterLeft",
+                "/avatar/parameters/FT/v2/PupilDiameterRight",
+                "/avatar/parameters/FT/v2/PupilDiameter",
+            ]
+        );
+        // The same values the VRChat-direct path sends, nothing else
+        let direct = osc_messages(&settings(), &Sample { camera, ..sample() });
+        assert!(messages.iter().all(|message| direct.contains(message)));
+        assert!(messages.iter().all(|(addr, _)| !addr.contains("EyeLid") && !addr.contains("EyeSquint")));
+        assert!(pupil_messages(&livelink, &CameraValues { pupil_dilation: [None; 2], pupil_diameter: [None; 2], ..camera }).is_empty());
+        let bare = Settings {
+            prefix: String::new(),
+            ..livelink.clone()
+        };
+        assert_eq!(pupil_messages(&bare, &camera)[0].0, "/avatar/parameters/v2/PupilDilation");
+        // Only in LiveLink mode, while sending, with the setting on; to port 9000 of the LiveLink target's host
+        assert_eq!(pupil_stream(&livelink), Some(("auto", 9000)));
+        assert!(pupil_stream(&settings()).is_none());
+        assert!(pupil_stream(&Settings { output: OutputKind::Etvr, ..livelink.clone() }).is_none());
+        assert!(pupil_stream(&Settings { sending: false, ..livelink.clone() }).is_none());
+        assert!(pupil_stream(&Settings { pupils_to_vrchat: false, ..livelink.clone() }).is_none());
+        assert!(pupil_target(&livelink) == Target::SteamLink { port: 9000 });
+        let fixed = Settings {
+            host: "192.168.0.60".into(),
+            port: Some(11112),
+            ..livelink.clone()
+        };
+        assert!(pupil_target(&fixed) == Target::Fixed { host: "192.168.0.60".into(), port: 9000 });
+        assert_eq!(pupil_stream(&fixed), Some(("192.168.0.60", 9000)));
+    }
+
+    #[test]
+    fn livelink_mode_sends_the_pupils_next_to_each_packet() {
+        use eyecam_live::tests::{TempDir, TestEye, live_bytes, write_live};
+        let dir = TempDir::new("pupils");
+        let path = dir.0.join("live");
+        let write = || {
+            let now = eyecam_live::monotonic_ns();
+            let mut eyes = [TestEye::at(now, 0.9, 0.2); 2];
+            eyes[1].pupil_mm = 5.0;
+            write_live(&path, &live_bytes(7, 1, true, eyes));
+        };
+        let livelink_listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let vrchat_listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let live = Settings {
+            output: OutputKind::LiveLink,
+            host: "127.0.0.1".into(),
+            port: Some(livelink_listener.local_addr().unwrap().port()),
+            lid_calibration: false,
+            ..settings()
+        };
+        let mut bridge = test_bridge(live.clone());
+        bridge.camera = LiveReader::new(path.clone(), Instant::now());
+        // Standing in for VRChat's 9000
+        let vrchat_port = vrchat_listener.local_addr().unwrap().port();
+        bridge.pupil_output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port: vrchat_port });
+        bridge.pupil_output.refresh();
+        // No pupils yet: the Live Link packet alone
+        bridge.on_sample(reading(0, [0.0, 0.0], [0.8; 2])).unwrap();
+        assert!(receive(&livelink_listener).is_some());
+        assert!(osc_received(&vrchat_listener).is_empty());
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(json["pupil_target"], format!("127.0.0.1:{vrchat_port}"));
+        assert!(json["sent"]["pupil_dilation"].is_null());
+        // With them: the four pupil parameters, and nothing of the eyelids or gaze
+        write();
+        // (looked for again at once, rather than a second later)
+        bridge.camera = LiveReader::new(path.clone(), Instant::now());
+        bridge.livelink_throttle = Throttle::default();
+        bridge.on_sample(reading(1, [0.0, 0.0], [0.8; 2])).unwrap();
+        assert!(livelink::tests::module_eyes(&receive(&livelink_listener).unwrap()).is_some());
+        let received = osc_received(&vrchat_listener);
+        let addrs: Vec<&str> = received.iter().map(|(addr, _)| addr.as_str()).collect();
+        assert_eq!(addrs.len(), 4, "{addrs:?}");
+        assert!(addrs.iter().all(|addr| addr.starts_with("/avatar/parameters/FT/v2/Pupil")), "{addrs:?}");
+        assert_eq!(param(&received, "/avatar/parameters/FT/v2/PupilDiameterRight"), Some(0.5));
+        assert!((param(&received, "/avatar/parameters/FT/v2/PupilDiameter").unwrap() - 0.45).abs() < 1e-6);
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(json["sent"]["pupil_dilation"], 0.5);
+        assert!(json["sent"]["squint"].is_null());
+        // Held back with the Live Link packet by the throttle: two samples at once, one packet and one set of pupils
+        write();
+        bridge.on_sample(reading(2, [0.0, 0.0], [0.8; 2])).unwrap();
+        bridge.on_sample(reading(3, [0.0, 0.0], [0.8; 2])).unwrap();
+        assert!(receive(&livelink_listener).is_some() && receive(&livelink_listener).is_none());
+        assert_eq!(osc_received(&vrchat_listener).len(), 4);
+        // Turned off: nothing more, and nothing to set back
+        let off = Settings {
+            pupils_to_vrchat: false,
+            ..live.clone()
+        };
+        bridge.apply(reload(&off)).unwrap();
+        bridge.pupil_output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port: vrchat_port });
+        bridge.pupil_output.refresh();
+        receive(&livelink_listener);
+        write();
+        bridge.livelink_throttle = Throttle::default();
+        bridge.on_sample(reading(4, [0.0, 0.0], [0.8; 2])).unwrap();
+        assert!(receive(&livelink_listener).is_some());
+        assert!(osc_received(&vrchat_listener).is_empty());
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert!(json["pupil_target"].is_null() && json["sent"]["pupil_dilation"].is_null());
+        bridge.on_lost("test").unwrap();
+        assert!(osc_received(&vrchat_listener).is_empty());
     }
 
     #[test]

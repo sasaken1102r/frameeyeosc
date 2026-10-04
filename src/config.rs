@@ -106,6 +106,9 @@ pub struct Settings {
     /// up (widening) and squint once the camera is calibrated for this wear, and its pupil. Closing stays the eye
     /// server's.
     pub camera_lids: bool,
+    /// In LiveLink mode, also send the eye camera's pupils (only those) straight to VRChat over OSC, on port 9000 of
+    /// the LiveLink target's host: VRCFT's LiveLink module has no pupils. Ignored by the other outputs.
+    pub pupils_to_vrchat: bool,
     /// How easily a fitted eye widens.
     pub lid_widen: Widen,
     /// The settings file has no `lid_widen` (written by 0.5.x or earlier, whose lid_scale_* did nothing for fitted
@@ -187,6 +190,7 @@ impl Default for Settings {
             steamlink_params: false,
             native_eyes: false,
             camera_lids: true,
+            pupils_to_vrchat: true,
             lid_widen: Widen::Normal,
             scales_predate_fit: false,
             raw: false,
@@ -545,6 +549,10 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
     if given.contains("no_camera_lids") {
         settings.camera_lids = !args.no_camera_lids;
         locked.push("camera_lids");
+    }
+    if given.contains("no_pupils_to_vrchat") {
+        settings.pupils_to_vrchat = !args.no_pupils_to_vrchat;
+        locked.push("pupils_to_vrchat");
     }
     pin!(
         blink_sync_below,
@@ -946,6 +954,16 @@ mod tests {
         let (settings, locked) = merged(r#"{"camera_lids": true}"#, &["--no-camera-lids"]).unwrap();
         assert!(!settings.camera_lids);
         assert_eq!(locked, ["camera_lids"]);
+    }
+
+    #[test]
+    fn pupils_go_to_vrchat_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.pupils_to_vrchat);
+        assert!(!merged(r#"{"pupils_to_vrchat": false}"#, &[]).unwrap().0.pupils_to_vrchat);
+        assert!(merged(r#"{"pupils_to_vrchat": "no"}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"pupils_to_vrchat": true}"#, &["--no-pupils-to-vrchat"]).unwrap();
+        assert!(!settings.pupils_to_vrchat);
+        assert_eq!(locked, ["pupils_to_vrchat"]);
     }
 
     #[test]

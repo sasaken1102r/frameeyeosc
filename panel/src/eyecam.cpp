@@ -120,6 +120,8 @@ Status parseStatus(const std::string& text, double mtime) {
     status.message = readText(root, "message");
     status.messageEn = readText(root, "message_en");
     status.autoGrab = readText(root, "auto_grab");
+    const JsonValue* outdated = root.get("grab_outdated");
+    status.grabOutdated = outdated != nullptr && outdated->isBool() && outdated->boolean;
     const JsonValue* locked = root.get("locked");
     status.locked = locked != nullptr && locked->isBool() && locked->boolean;
     status.fpsL = readNumber(root, "fps_l", kNaN);
@@ -299,6 +301,8 @@ const std::string& shownMessage(const Status& status, Language language) {
 }
 
 bool toolInstalled(const Status& status) {
+    // Installed, but older than the one this update brought: to be installed again
+    if (status.grabOutdated) return false;
     switch (status.state) {
         case State::Idle:
         case State::Searching:
@@ -539,7 +543,7 @@ std::string signature(const View& view) {
                 : std::string("-")) +
            "|" + std::to_string(s.hasCalibSaved) + std::to_string(s.calibSaved) + "|" +
            rounded(s.widenSensitivity, 0.01) + "|" + std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
-           std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.autoGrab + "|" +
+           std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.autoGrab + std::to_string(s.grabOutdated) + "|" +
            std::to_string(static_cast<int>(view.password)) + std::to_string(static_cast<int>(view.flow.result())) +
            std::to_string(static_cast<int>(view.flow.calibResult())) +
            std::to_string(view.readyNotice) + "|" + view.spawnError;

@@ -1451,13 +1451,15 @@ void EyePanel::drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel
         return;
     }
     // What to do next, as a button to the eye cameras tab
-    const char* names[3] = {t.setupStepPassword, t.setupStepTool, t.setupStepLearn};
+    // An update brought a new tool: (2) again
+    const bool outdated = m.eyecam.status.grabOutdated;
+    const char* names[3] = {t.setupStepPassword, outdated ? t.setupStepToolAgain : t.setupStepTool, t.setupStepLearn};
     const char* numbers[3] = {"①", "②", "③"};
     const int step = screen == SetupScreen::Pass ? 0 : screen == SetupScreen::Check ? 1 : 2;
     std::string sub;
     switch (screen) {
         case SetupScreen::Pass: sub = t.nextPass; break;
-        case SetupScreen::Check: sub = t.setupLaterTool; break;
+        case SetupScreen::Check: sub = outdated ? t.setupToolUpdated : t.setupLaterTool; break;
         case SetupScreen::Learn: {
             const eyecam::Status& s = m.eyecam.status;
             if (std::isfinite(s.stepRemainingS) && !s.stepLabel.empty()) {
@@ -3679,8 +3681,11 @@ void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, e
     const double padX = 22;
     const double rowStep = 43;
     const double firstY = 174;
-    const char* names[4] = {t.setupStepPassword, t.setupStepTool, t.setupStepLearn, t.setupStepDone};
-    const char* later[4] = {"", t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone};
+    // An update brought a new tool: (2) again
+    const bool outdated = m.eyecam.status.grabOutdated;
+    const char* names[4] = {t.setupStepPassword, outdated ? t.setupStepToolAgain : t.setupStepTool, t.setupStepLearn,
+                            t.setupStepDone};
+    const char* later[4] = {"", outdated ? t.setupToolUpdated : t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone};
     const char* doneLabels[3] = {t.setupPasswordLabel, t.setupToolLabel, t.setupLearnLabel};
     const char* doneValues[3] = {t.setupPasswordSet, t.setupToolDone, t.setupLearnDone};
 
@@ -3853,7 +3858,9 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             break;
         }
         case SetupScreen::Check: {
-            title(t.setupStepTool, t.setupCheckPill, kAccent);
+            // An update brought a new tool: the same, to do again (it says so under the title)
+            title(s.grabOutdated ? t.setupStepToolAgain : t.setupStepTool, t.setupCheckPill, kAccent);
+            if (s.grabOutdated) para(t.setupToolUpdated, 17, kAccent, true, 34, 26, 2);
             // How: the Konsole button, Enter, the password (typed in already)
             y += 36;
             if (draw) drawTerminalIcon(pen, x0, y - 6, kText);

@@ -149,6 +149,8 @@ struct Status {
     bool live = false;             ///< the eyelids are read from the cameras live
     double liveMs = 0.0;           ///< how long one live frame took (ms; NaN when missing)
     std::string autoGrab;          ///< "auto_grab": how eyecam-rec takes the buffers by itself ("" when missing)
+    bool grabOutdated = false;     ///< "grab_outdated": the installed eyecam-grab (root's copy) differs from the one
+                                   ///< bundled with eyecam-rec, so an update brought a new one (false when missing)
     bool hasBaseline = false;      ///< "baseline" is there: an eyecam-rec that learns the relaxed eyes by itself
     std::string baseline;          ///< "warming" (learning them) or "ready" ("" when missing)
     double warmupRemainingS = 0.0; ///< seconds left of the learning, while warming (NaN when missing)
@@ -413,7 +415,9 @@ const std::string& shownMessage(const Status& status, Language language);
  * comes after it has them: idle, searching, recording, calibrating), or auto_grab says the tool is there ("ok",
  * "trying", "waiting_tracker", "failed: ..."; not "missing", "no_cap", "unsafe: ..."). Without auto_grab (an older
  * eyecam-rec) only the buffers say so. A failed calibration's error still has has_buffers and auto_grab (eyecam-rec
- * writes every field in every state), so it stays in. needsManualGrab is its opposite.
+ * writes every field in every state), so it stays in. An outdated one (grab_outdated: an update brought a new
+ * eyecam-grab) counts as not in, whatever else says so, so the setup asks for it again. needsManualGrab is its
+ * opposite.
  * @param status the status
  * @return true if installed
  */

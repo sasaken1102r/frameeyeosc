@@ -360,6 +360,8 @@ UiText makeJapanese() {
     t.setupAllDone = "ぜんぶ済んだよ";
     t.setupStepPassword = "パスワードを決める";
     t.setupStepTool = "道具を入れる";
+    t.setupStepToolAgain = "道具を入れ直す";
+    t.setupToolUpdated = "道具が新しくなったよ。入れ直してね";
     t.setupStepLearn = "目の動きを覚える";
     t.setupStepDone = "完了";
     t.setupLaterTool = "Konsole でパスワードを打つだけ";
@@ -968,6 +970,8 @@ UiText makeEnglish() {
     t.setupAllDone = "All done";
     t.setupStepPassword = "Set a password";
     t.setupStepTool = "Install the tool";
+    t.setupStepToolAgain = "Install the tool again";
+    t.setupToolUpdated = "The tool was updated. Install it again";
     t.setupStepLearn = "Learn your eye movements";
     t.setupStepDone = "Done";
     t.setupLaterTool = "Just type your password in Konsole";

@@ -263,7 +263,8 @@ void printUsage() {
         "                        failed user calibration), warming=N (learning the relaxed eyes, N s left), ready\n"
         "                        (learned them; both mark an eyecam-rec that learns by itself), saved (calib_saved),\n"
         "                        recalib (recalib_suggested), nolive (not reading the cameras live), auto=VALUE\n"
-        "                        (auto_grab), sens=V (widen_sensitivity 0..1), buffers (has_buffers), setup /\n"
+        "                        (auto_grab), outdated (grab_outdated: an update brought a new tool), sens=V\n"
+        "                        (widen_sensitivity 0..1), buffers (has_buffers), setup /\n"
         "                        nosetup (setup_done true / false; without either, an eyecam-rec before it),\n"
         "                        widen=measured|default (last_calib_widen), done / fail (the setup's calibration\n"
         "                        just ended: the checklist's done screen, or widening on the standard values),\n"
@@ -299,6 +300,7 @@ struct FakeEyecam {
     bool recalib = false;   ///< recalib_suggested
     bool noLive = false;    ///< not reading the cameras live
     std::string autoGrab;   ///< auto_grab ("" = an eyecam-rec without it)
+    bool outdated = false;  ///< grab_outdated
     std::string baseline;   ///< "warming" or "ready" ("" = an eyecam-rec that doesn't learn the baseline by itself)
     double warmupS = -1.0;  ///< warmup_remaining_s while warming (-1 = none)
     bool saved = false;     ///< calib_saved
@@ -359,6 +361,8 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.message = flag == "msg" ? 1 : 2;
         } else if (flag == "buffers") {
             fake.buffers = true;
+        } else if (flag == "outdated") {
+            fake.outdated = true;
         } else if (flag == "setup" || flag == "nosetup") {
             fake.setup = flag == "setup" ? 1 : 0;
         } else if (flag == "widen=measured" || flag == "widen=default") {
@@ -888,6 +892,7 @@ eyecam::View fakeEyecam(const std::string& text) {
         s.widenSensitivity = fake.sens;
     }
     if (!fake.autoGrab.empty()) s.autoGrab = fake.autoGrab;
+    s.grabOutdated = fake.outdated;
     if (fake.message > 0) {
         s.message = "校正できた（かぶり）";
         s.messageEn = fake.message == 1 ? "Calibrated (this wear)" : "";

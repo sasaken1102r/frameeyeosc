@@ -362,6 +362,8 @@ struct UiText {
     const char* setupAllDone;  ///< ...when done (green)
     const char* setupStepPassword;  ///< step (1)
     const char* setupStepTool;  ///< step (2)
+    const char* setupStepToolAgain;  ///< ...when an update brought a new tool (grab_outdated)
+    const char* setupToolUpdated;  ///< ...the line under its title, and in the left column
     const char* setupStepLearn;  ///< step (3)
     const char* setupStepDone;  ///< step (4)
     const char* setupLaterTool;  ///< a step still to come, after its name

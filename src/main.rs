@@ -2714,9 +2714,10 @@ extern "C" fn stop_recording(_: libc::c_int) {
 }
 
 /// Write every sample the eye server produces to `path` until stopped (Ctrl+C, SIGINT or SIGTERM: the file is then
-/// complete up to the stop). Nothing is sent, and the status and calibration files are left alone, so this can run
-/// next to the installed service (the panel's "Eye log" runs it).
-fn record(path: &Path) -> Result<(), Box<dyn Error>> {
+/// complete up to the stop), with eyecam-rec's eye-camera values from `camera_path` as read with each sample (only
+/// read, like the live loop does). Nothing is sent, and the status and calibration files are left alone, so this can
+/// run next to the installed service (the panel's "Eye log" runs it).
+fn record(path: &Path, camera_path: &Path) -> Result<(), Box<dyn Error>> {
     // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
@@ -2733,16 +2734,30 @@ fn record(path: &Path) -> Result<(), Box<dyn Error>> {
         source.layout.version,
         path.display()
     );
+    // Says in the log whether there are eye-camera values, from which eyecam-rec, and when that changes
+    let mut camera = LiveReader::new(camera_path.to_owned(), Instant::now());
     let mut last_flush = Instant::now();
     let mut reported = 0;
     loop {
         if STOP_RECORDING.load(std::sync::atomic::Ordering::Relaxed) {
             recorder.flush()?;
-            eprintln!("Stopped: {} samples in {}", recorder.count, path.display());
+            eprintln!(
+                "Stopped: {} samples in {} ({} with eye-camera values)",
+                recorder.count,
+                path.display(),
+                recorder.camera_count
+            );
             return Ok(());
         }
+        if let Some(line) = camera.check(Instant::now()) {
+            eprintln!("{line}");
+        }
         match source.next(POLL)? {
-            Next::Sample(data) => recorder.write(&data)?,
+            Next::Sample(data) => {
+                let now_ns = eyecam_live::monotonic_ns();
+                let live = camera.read(now_ns);
+                recorder.write(&data, live.as_ref().map(|live| (live, now_ns)))?;
+            }
             Next::Waiting | Next::Stopped if source.is_stale() => {
                 eprintln!("{SOURCE} was replaced; reopening");
                 source = EyeSource::open()?;
@@ -2765,7 +2780,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let matches = Args::command().get_matches();
     let args = Args::from_arg_matches(&matches)?;
     if let Some(path) = &args.record {
-        return record(path);
+        return record(path, &args.eyecam_live.clone().unwrap_or_else(eyecam_live::live_path));
     }
     if args.target != "auto" && config::split_target(&args.target).is_none() {
         return Err("--target must be HOST:PORT or auto".into());
@@ -5420,18 +5435,19 @@ mod tests {
     }
 
     /// eyecam-rec's values as read: both eyes fresh and calibrated for this wear, at eyelid `lid` with `squint`.
-    fn camera(lid: f32, squint: f32) -> Live {
+    pub(crate) fn camera(lid: f32, squint: f32) -> Live {
         let eye = eyecam_live::Eye {
-            time_ns: 0,
             valid: true,
             lid,
             squint,
             pupil_mm: 4.0,
             pupil_dilation: 0.5,
+            ..Default::default()
         };
         Live {
             calib_state: 1,
             recalib_suggested: false,
+            live: true,
             eyes: [eye; 2],
             fresh: [true; 2],
         }

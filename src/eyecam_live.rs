@@ -60,15 +60,18 @@ pub fn monotonic_ns() -> u64 {
     time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
 }
 
-/// One eye's values, as far as frameeyeosc uses them.
+/// One eye's values, as far as frameeyeosc uses or records them.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Eye {
     pub time_ns: u64,
     pub valid: bool,
+    pub closed: bool,
     pub lid: f32,
+    pub wide: f32,
     pub squint: f32,
     pub pupil_mm: f32,
     pub pupil_dilation: f32,
+    pub confidence: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -115,10 +118,13 @@ fn parse(bytes: &[u8; STRUCT_SIZE]) -> Result<Record, String> {
         eyes: EYES.map(|eye| Eye {
             time_ns: u64_at(bytes, eye),
             valid: u32_at(bytes, eye + 24) == 1,
+            closed: u32_at(bytes, eye + 28) == 1,
             lid: f32_at(bytes, eye + 32),
+            wide: f32_at(bytes, eye + 36),
             squint: f32_at(bytes, eye + 40),
             pupil_mm: f32_at(bytes, eye + 48),
             pupil_dilation: f32_at(bytes, eye + 52),
+            confidence: f32_at(bytes, eye + 56),
         }),
     })
 }
@@ -147,6 +153,8 @@ fn read_consistent<T>(seq: impl Fn() -> u32, copy: impl Fn() -> T) -> Option<T> 
 pub struct Live {
     pub calib_state: u32,
     pub recalib_suggested: bool,
+    /// eyecam-rec is processing.
+    pub live: bool,
     pub eyes: [Eye; 2],
     /// Whether each eye's values are new enough to use: eyecam-rec processing, the eye valid, and captured at most
     /// FRESH_NS before they were read.
@@ -164,6 +172,7 @@ impl Live {
         Self {
             calib_state: record.calib_state,
             recalib_suggested: record.recalib_suggested,
+            live: record.live,
             eyes: record.eyes,
             fresh,
         }
@@ -180,8 +189,13 @@ impl Live {
     pub fn lids_usable(&self) -> [bool; 2] {
         [0, 1].map(|eye| {
             let Eye { lid, squint, .. } = self.eyes[eye];
-            self.fresh[eye] && self.calib_state & CALIB_BASELINE != 0 && lid.is_finite() && squint.is_finite()
+            self.fresh[eye] && self.baseline() && lid.is_finite() && squint.is_finite()
         })
+    }
+
+    /// Whether this wear has a baseline: calibrated (calib_state bit 0) or learned by eyecam-rec (bit 2).
+    pub fn baseline(&self) -> bool {
+        self.calib_state & CALIB_BASELINE != 0
     }
 
     /// Whether each eye's pupil can be used: fresh (no calibration needed).
@@ -347,22 +361,29 @@ pub mod tests {
     pub struct TestEye {
         pub time_ns: u64,
         pub valid: bool,
+        pub closed: bool,
         pub lid: f32,
+        pub wide: f32,
         pub squint: f32,
         pub pupil_mm: f32,
         pub pupil_dilation: f32,
+        pub confidence: f32,
     }
 
     impl TestEye {
-        /// Valid, captured `now_ns`, relaxed open, with the given squint.
+        /// Valid, captured `now_ns`, at eyelid `lid` (widened by as much as it is above relaxed open), with the given
+        /// squint.
         pub fn at(now_ns: u64, lid: f32, squint: f32) -> Self {
             Self {
                 time_ns: now_ns,
                 valid: true,
+                closed: false,
                 lid,
+                wide: ((lid - 0.75) / 0.25).max(0.0),
                 squint,
                 pupil_mm: 4.0,
                 pupil_dilation: 0.5,
+                confidence: 0.9,
             }
         }
     }
@@ -382,10 +403,13 @@ pub mod tests {
         for (eye, base) in eyes.iter().zip(EYES) {
             put(base, &eye.time_ns.to_le_bytes());
             put(base + 24, &u32::from(eye.valid).to_le_bytes());
+            put(base + 28, &u32::from(eye.closed).to_le_bytes());
             put(base + 32, &eye.lid.to_le_bytes());
+            put(base + 36, &eye.wide.to_le_bytes());
             put(base + 40, &eye.squint.to_le_bytes());
             put(base + 48, &eye.pupil_mm.to_le_bytes());
             put(base + 52, &eye.pupil_dilation.to_le_bytes());
+            put(base + 56, &eye.confidence.to_le_bytes());
         }
         bytes
     }
@@ -426,7 +450,21 @@ pub mod tests {
         let record = parse(&live_bytes(4242, 3, true, eyes(0.9))).unwrap();
         assert_eq!(record.writer, (4242, 4_242_000));
         assert_eq!((record.calib_state, record.recalib_suggested, record.live), (3, false, true));
-        assert_eq!(record.eyes[0], Eye { time_ns: NOW, valid: true, lid: 0.9, squint: 0.2, pupil_mm: 4.0, pupil_dilation: 0.5 });
+        let expected = Eye {
+            time_ns: NOW,
+            valid: true,
+            closed: false,
+            lid: 0.9,
+            wide: (0.9 - 0.75) / 0.25,
+            squint: 0.2,
+            pupil_mm: 4.0,
+            pupil_dilation: 0.5,
+            confidence: 0.9,
+        };
+        assert_eq!(record.eyes[0], expected);
+        let mut shut = eyes(0.1);
+        shut[1].closed = true;
+        assert_eq!(parse(&live_bytes(1, 1, true, shut)).unwrap().eyes.map(|eye| eye.closed), [false, true]);
         assert_eq!((record.eyes[1].time_ns, record.eyes[1].squint), (NOW - 20_000_000, 0.4));
         let mut bytes = live_bytes(1, 1, true, eyes(0.9));
         bytes[48] = 1;

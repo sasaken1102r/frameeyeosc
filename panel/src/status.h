@@ -82,6 +82,7 @@ struct EyeStatus {
     Pair squint {};          ///< squint sent from the eye cameras, left / right (NaN while not sent)
     double pupilDilation = NAN;  ///< pupil dilation sent from the eye cameras (NaN while not sent)
     CameraStatus camera;     ///< the eye cameras
+    std::string pupilTarget; ///< where the pupils go straight to VRChat in LiveLink mode ("host:9000"; "" = nowhere)
 
     bool calibrationEnabled = false;
     Pair relaxed {};         ///< learned relaxed openness per eye (NaN = not learned)

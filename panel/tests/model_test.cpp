@@ -430,6 +430,53 @@ void testCameraLids() {
 }
 
 /** frameeyeosc's "camera" and the camera values sent, and what the eye capture tab says about them. */
+/** pupils_to_vrchat (the Output tab's "Send pupils straight to VRChat"): on by default, read from config.json and
+ *  written back, frameeyeosc's own value while --no-pupils-to-vrchat locks it, and shown only for LiveLink with the eye
+ *  cameras. */
+void testPupilsToVrchat() {
+    const SettingSpec* spec = findSetting(key::kPupilsToVrchat);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 1);
+    CHECK(defaultValue(*spec).isBool() && defaultValue(*spec).boolean);
+    PanelModel m;
+    m.config.root = JsonValue();
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(SettingsView(m).flag(key::kPupilsToVrchat));
+    m.config.root.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
+    CHECK(!SettingsView(m).flag(key::kPupilsToVrchat) && !SettingsView(m).locked(key::kPupilsToVrchat));
+    // Round trip through the JSON text, as the panel writes and reads config.json
+    {
+        JsonValue back;
+        std::string error;
+        CHECK(parseJson(writeJson(m.config.root), back, error));
+        ConfigFile file;
+        file.root = back;
+        CHECK(!file.flag(key::kPupilsToVrchat));
+        back.set(key::kPupilsToVrchat, JsonValue::makeBool(true));
+        CHECK(parseJson(writeJson(back), file.root, error));
+        CHECK(file.flag(key::kPupilsToVrchat));
+    }
+    // Not a boolean: the default
+    m.config.root.set(key::kPupilsToVrchat, JsonValue::makeString("no"));
+    CHECK(SettingsView(m).flag(key::kPupilsToVrchat));
+    // Locked by --no-pupils-to-vrchat: frameeyeosc's value
+    m.config.root.set(key::kPupilsToVrchat, JsonValue::makeBool(true));
+    m.status = parseStatus(
+        "{\"pid\": 1, \"locked\": [\"pupils_to_vrchat\"], \"effective\": {\"pupils_to_vrchat\": false}, "
+        "\"pupil_target\": null}",
+        0, false);
+    CHECK(SettingsView(m).locked(key::kPupilsToVrchat) && !SettingsView(m).flag(key::kPupilsToVrchat));
+    CHECK(m.status.pupilTarget.empty());
+    // Where they go, from status.json
+    CHECK(parseStatus("{\"pid\": 1, \"pupil_target\": \"192.168.0.60:9000\"}", 0, false).pupilTarget ==
+          "192.168.0.60:9000");
+    // Shown only for LiveLink with the eye cameras
+    CHECK(pupilsRowShown(kOutputLivelink, true));
+    CHECK(!pupilsRowShown(kOutputLivelink, false));
+    CHECK(!pupilsRowShown(kOutputVrchat, true));
+    CHECK(!pupilsRowShown(kOutputEtvr, true));
+    CHECK(!pupilsRowShown("", true));
+}
+
 /** The bottom sentence of the eye cameras' page, for every case, in its order. */
 void testCameraLine() {
     // The cameras in use come first, whatever else is going on
@@ -628,6 +675,7 @@ int main() {
     testLidsFromCameras();
     testWarmingShown();
     testCameraLine();
+    testPupilsToVrchat();
     testUpdateNotes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

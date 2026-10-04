@@ -1809,6 +1809,24 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         return;
     }
 
+    // LiveLink with the eye cameras: their pupils straight to VRChat (the LiveLink module has none). The hint and where
+    // they go now under the control, like the VRChat rows' examples
+    if (livelink && pupilsRowShown(output, m.eyecam.visible)) {
+        const bool locked = v.locked(key::kPupilsToVrchat);
+        const bool on = v.flag(key::kPupilsToVrchat);
+        // (where they go now under its title, once frameeyeosc says)
+        const std::string target =
+            on && s.running && !s.pupilTarget.empty() ? formatText(t.pupilsTargetFormat, s.pupilTarget) : std::string();
+        drawRowLabel(pen, t, y, kRowH, t.rowPupils, target, locked);
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                      {{t.on, {PanelAction::SetBool, key::kPupilsToVrchat, 1}},
+                       {t.off, {PanelAction::SetBool, key::kPupilsToVrchat, 0}}},
+                      on ? 0 : 1, 21, locked);
+        pen.text(kControlX + 4, y + kRowH + 16, t.hintPupils, fitSize(pen, t.hintPupils, 15, 11, kControlW, false),
+                 kTextMuted);
+        y += kRowH + 24;
+    }
+
     // LiveLink and ETVR: what to set up in VRCFT on the PC (nothing else is set here)
     const double boxX = kInnerX;
     const double boxW = kInnerRight - kInnerX;

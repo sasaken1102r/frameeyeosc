@@ -314,6 +314,15 @@ CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming = fal
  */
 bool warmingShown(bool warming, CameraUse use);
 
+/**
+ * Whether the Output tab shows "Send pupils straight to VRChat": only for LiveLink (whose module has no pupils), and
+ * only with the eye cameras (their tab shows: eyecam-rec runs), which are where the pupils come from.
+ * @param output the "output" setting
+ * @param eyeCameras the eye cameras tab shows (eyecam::View::visible)
+ * @return true to show it
+ */
+bool pupilsRowShown(const std::string& output, bool eyeCameras);
+
 /** The sentence at the bottom of the eye cameras' page (eyecam-rec idle, set up). */
 enum class CameraLine {
     BothVrchat,  ///< the cameras drive both eyes, sent to VRChat

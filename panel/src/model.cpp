@@ -440,3 +440,7 @@ CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool 
     if (!locked) return CameraLine::PutOn;
     return CameraLine::Reason;
 }
+
+bool pupilsRowShown(const std::string& output, bool eyeCameras) {
+    return output == kOutputLivelink && eyeCameras;
+}

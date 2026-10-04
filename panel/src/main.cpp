@@ -101,6 +101,7 @@ struct Options {
     bool fakeSlowTracker = false; ///< --fake-slow-tracker: the eye tracker delivers 15 samples a second
     bool fakeEtvr = false;
     bool fakeLivelink = false;
+    bool fakePupilsOff = false;   ///< --fake-pupils-off: pupils_to_vrchat off
     bool fakeFixed = false;
     bool fakeTargetNull = false;
     bool fakeLocked = false;
@@ -228,6 +229,7 @@ void printUsage() {
         "                        Each --fake-* below implies --fake\n"
         "      --fake-not-running / --fake-paused / --fake-no-tracking / --fake-etvr / --fake-livelink / --fake-fixed\n"
         "      --fake-target-null  Auto target not found yet\n"
+        "      --fake-pupils-off  pupils_to_vrchat off (the Output tab's row for LiveLink with the eye cameras)\n"
         "      --fake-slow-tracker  The eye tracker delivers only 15 samples a second\n"
         "      --fake-locked     Some keys locked by the command line\n"
         "      --fake-config-error  frameeyeosc reports a config error\n"
@@ -495,6 +497,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeEtvr = true;
         } else if (arg == "--fake-livelink") {
             options.fake = options.fakeLivelink = true;
+        } else if (arg == "--fake-pupils-off") {
+            options.fake = options.fakePupilsOff = true;
         } else if (arg == "--fake-fixed") {
             options.fake = options.fakeFixed = true;
         } else if (arg == "--fake-target-null") {
@@ -929,6 +933,7 @@ PanelModel fakeModel(const Options& options) {
     JsonValue& root = m.config.root;
     if (options.fakeEtvr) root.set(key::kOutput, JsonValue::makeString(kOutputEtvr));
     if (options.fakeLivelink) root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+    if (options.fakePupilsOff) root.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
     if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
     if (!options.fakeWiden.empty()) root.set(key::kLidWiden, JsonValue::makeString(options.fakeWiden));
     if (options.fakePaused) root.set(key::kSending, JsonValue::makeBool(false));
@@ -1095,6 +1100,8 @@ PanelModel fakeModel(const Options& options) {
             s.sourceError = "unsupported eye shared-memory version 6; supported: 4, 5";
         }
         s.dominantEye = options.fakeDominantEye;
+        // LiveLink: the pupils go straight to VRChat on the same PC (while the setting is on)
+        if (options.fakeLivelink && m.config.flag(key::kPupilsToVrchat)) s.pupilTarget = "192.168.0.60:9000";
         s.opennessSaturated = options.fakeOpennessSaturated;
         if (!options.fakeCamera.empty()) {
             const std::string& camera = options.fakeCamera;
@@ -1116,8 +1123,8 @@ PanelModel fakeModel(const Options& options) {
         if (options.fakeLocked) {
             s.locked = {key::kOutput,          key::kPort,        key::kRaw,         key::kLidOpen,
                         key::kIndependentEyes, key::kGazeOffsetY, key::kSteamlinkParams, key::kNativeEyes,
-                        key::kCameraLids};
-            s.effective.set(key::kOutput, JsonValue::makeString(kOutputVrchat));
+                        key::kCameraLids, key::kPupilsToVrchat};
+            s.effective.set(key::kOutput, JsonValue::makeString(options.fakeLivelink ? kOutputLivelink : kOutputVrchat));
             s.effective.set(key::kPort, JsonValue::makeNumber(9123, true));
             s.effective.set(key::kRaw, JsonValue::makeBool(true));
             s.effective.set(key::kLidOpen, JsonValue::makeNumber(0.78));
@@ -1126,6 +1133,7 @@ PanelModel fakeModel(const Options& options) {
             s.effective.set(key::kSteamlinkParams, JsonValue::makeBool(true));
             s.effective.set(key::kNativeEyes, JsonValue::makeBool(true));
             s.effective.set(key::kCameraLids, JsonValue::makeBool(true));
+            s.effective.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
         }
     } else {
         s.readError = "no status file";
@@ -1447,6 +1455,7 @@ std::string statusSignature(const EyeStatus& s) {
     signature += "|" + std::to_string(c.known) + std::to_string(c.present) + std::to_string(c.calibState) +
                  std::to_string(c.recalibSuggested) + std::to_string(c.used[0]) + std::to_string(c.used[1]) +
                  std::to_string(c.pupilUsed[0]) + std::to_string(c.pupilUsed[1]) + c.error;
+    signature += "|" + s.pupilTarget;
     signature += "|" + s.configError + "|" + s.sourceError + "|" + s.dominantEye + "|" +
                  (s.opennessSaturated ? "saturated" : "") + "|" + s.configPath + "|" + s.calibrationPath + "|";
     for (const auto& name : s.locked) signature += name + ",";

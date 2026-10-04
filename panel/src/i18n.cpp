@@ -91,6 +91,9 @@ UiText makeJapanese() {
     t.rowSteamlink = "Steam Link の名前も送る";
     t.hintSteamlink = "Steam Link 向けのアバター用";
     t.steamlinkNoPrefix = "（頭はつけない）";
+    t.rowPupils = "瞳孔は VRChat に直接送る";
+    t.hintPupils = "LiveLink では瞳孔が送れないので、瞳孔だけ VRChat へ";
+    t.pupilsTargetFormat = "送り先: %s";
     t.rowNativeEyes = "VRChat 標準の目も動かす";
     t.hintNativeEyes = "VRCFT 用の値がないアバター用。まぶたが閉じすぎたらオフに";
     t.rowTarget = "送り先の PC";
@@ -655,6 +658,9 @@ UiText makeEnglish() {
     t.rowSteamlink = "Steam Link names too";
     t.hintSteamlink = "For Steam Link avatars";
     t.steamlinkNoPrefix = " (never prefixed)";
+    t.rowPupils = "Send pupils straight to VRChat";
+    t.hintPupils = "LiveLink has no pupils, so they go to VRChat directly";
+    t.pupilsTargetFormat = "To %s";
     t.rowNativeEyes = "VRChat's own eyes too";
     t.hintNativeEyes = "For avatars without VRCFT parameters. Turn off if eyelids close too far";
     t.rowTarget = "Target PC";

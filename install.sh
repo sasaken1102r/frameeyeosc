@@ -223,9 +223,9 @@ fi
 if $with_eyecam; then
     cat <<EOF
 
-The eye-camera tool is in $eyecam_dir and runs as eyecam.service. Until the eye cameras are set up
-(the panel's "Eye cameras" tab, which asks you to run "sudo $eyecam_dir/install_grab.sh" once),
-it only waits. Logs: journalctl --user -u eyecam -f
+The eye-camera tool is in $eyecam_dir and runs as eyecam.service.
+Until the eye cameras are set up on the panel's "Eye cameras" tab (it asks you to run
+install_grab.sh there once, with sudo), it only waits. Logs: journalctl --user -u eyecam -f
 EOF
 fi
 cat <<EOF

@@ -644,6 +644,27 @@ void testCameraLine() {
     }
 }
 
+/** "Learned your relaxed eyes" only while camera values arrive; the "When..." box's rows always fit above the
+ *  bottom sentence. */
+void testLearnedAndHelpRows() {
+    for (const CameraUse use : {CameraUse::Unknown, CameraUse::Off, CameraUse::Both, CameraUse::Left, CameraUse::Right,
+                                CameraUse::NotCalibrated, CameraUse::Error, CameraUse::Valve}) {
+        CHECK(learnedShown(true, true, use));
+        CHECK(!learnedShown(true, false, use));  // eyecam-rec not reading the cameras (waiting for the tool)
+        CHECK(!learnedShown(false, true, use));
+    }
+    CHECK(!learnedShown(true, true, CameraUse::NoCamera));  // the headset off: no values reach frameeyeosc
+    // Rows: as many as fit, the box never past its bottom
+    CHECK(helpBoxHeight(3) == 130 && helpBoxHeight(1) == 70);
+    for (double space = 0; space < 200; space += 1) {
+        const int rows = helpRows(100, 100 + space);
+        CHECK(rows >= 0 && rows <= 3);
+        if (rows > 0) CHECK(100 + helpBoxHeight(rows) <= 100 + space);
+        if (rows < 3) CHECK(100 + helpBoxHeight(rows + 1) > 100 + space);
+    }
+    CHECK(helpRows(100, 169) == 0 && helpRows(100, 170) == 1 && helpRows(100, 230) == 3);
+}
+
 /** "Learning your relaxed eyes (N s left)" only while it can move: not without camera values (the headset off). */
 void testWarmingShown() {
     for (const CameraUse use : {CameraUse::Unknown, CameraUse::Off, CameraUse::Both, CameraUse::Left, CameraUse::Right,
@@ -807,6 +828,7 @@ int main() {
     testCameraLine();
     testPupilsToVrchat();
     testPupilBits();
+    testLearnedAndHelpRows();
     testUpdateNotes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

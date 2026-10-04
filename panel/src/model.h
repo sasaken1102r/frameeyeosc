@@ -334,6 +334,29 @@ CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming = fal
 bool warmingShown(bool warming, CameraUse use);
 
 /**
+ * Whether the eye cameras' page shows "learned your relaxed eyes": once learned, and only while camera values arrive,
+ * as for warmingShown (eyecam-rec reading the cameras live, and frameeyeosc getting their values). Otherwise the "Now"
+ * row says the cameras aren't read, and a green "learned" next to it would contradict it.
+ * @param learned eyecam-rec has a baseline for this wear (ready, or calib_state bit 0 or 2) and isn't learning now
+ * @param live eyecam-rec reads the cameras live ("live")
+ * @param use what drives the eyelids (cameraUse)
+ * @return true to show it
+ */
+bool learnedShown(bool learned, bool live, CameraUse use);
+
+/**
+ * How many rows of the eye cameras' "When..." box fit between `top` and `bottom` (0: leave the box out). The box is
+ * 40 px plus 30 per row; `bottom` is where it must end (the caller keeps its gap to what is under it).
+ * @param top the box's top
+ * @param bottom the lowest its bottom may be
+ * @return 0..3
+ */
+int helpRows(double top, double bottom);
+
+/** The "When..." box's height for this many rows (helpRows). */
+double helpBoxHeight(int rows);
+
+/**
  * Whether the Output tab shows "Send pupils straight to VRChat": only for LiveLink (whose module has no pupils), and
  * only with the eye cameras (their tab shows: eyecam-rec runs), which are where the pupils come from.
  * @param output the "output" setting

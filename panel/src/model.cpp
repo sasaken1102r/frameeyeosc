@@ -479,6 +479,20 @@ bool warmingShown(bool warming, CameraUse use) {
     return warming && use != CameraUse::NoCamera;
 }
 
+bool learnedShown(bool learned, bool live, CameraUse use) {
+    return learned && live && use != CameraUse::NoCamera;
+}
+
+double helpBoxHeight(int rows) {
+    return 40 + rows * 30;
+}
+
+int helpRows(double top, double bottom) {
+    int rows = 3;
+    while (rows > 0 && top + helpBoxHeight(rows) > bottom) --rows;
+    return rows;
+}
+
 CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool vrchat) {
     switch (use) {
         case CameraUse::Both: return vrchat ? CameraLine::BothVrchat : CameraLine::Both;

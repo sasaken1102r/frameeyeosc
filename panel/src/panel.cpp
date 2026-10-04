@@ -4407,8 +4407,9 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
                               static_cast<int>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)));
                 pill = left;
             }
-        } else if (!warming &&
-                   (s.baseline == "ready" || (s.calibState & (eyecam::kCalibWearBit | eyecam::kCalibAutoBit)) != 0)) {
+        } else if (learnedShown(!warming && (s.baseline == "ready" ||
+                                             (s.calibState & (eyecam::kCalibWearBit | eyecam::kCalibAutoBit)) != 0),
+                                s.live, use)) {
             pill = t.camLearned;
             learned = true;
         }
@@ -4556,13 +4557,15 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         baseline -= 24;
     }
 
-    // "When...": what to do about widening, in a box down to the lines above (rows that don't fit are left out)
+    // "When...": what to do about widening, in a box down to the lines above with a gap of at least 10 px over their
+    // letters (rows that don't fit are left out, the box too if none does). `baseline` is now one line above the top
+    // line's baseline: that line's letters start about 14 px above its own baseline
     const double boxTop = y + 8;
-    const double boxBottom = lines.empty() ? bottom + 2 : baseline + 4;
+    const double boxBottom = lines.empty() ? bottom + 2 : baseline + 24 - 14 - 10;
     const double rowStep = 30;
-    const int rows = std::min(3, static_cast<int>(std::floor((boxBottom - boxTop - 52) / rowStep)) + 1);
+    const int rows = helpRows(boxTop, boxBottom);
     if (rows < 1) return;
-    const double boxH = 48 + rows * rowStep - 8;
+    const double boxH = helpBoxHeight(rows);
     fillRounded(pen, kInnerX, boxTop, width, boxH, 12, kBg);
     drawInfoIcon(pen, kInnerX + 28, boxTop + 24, kAccent);
     pen.text(kInnerX + 46, boxTop + 30, t.camHelpTitle, 17, kText, true);

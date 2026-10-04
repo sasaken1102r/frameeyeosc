@@ -24,7 +24,7 @@ The way the eye-camera tool finds the eye camera frames is ported from Curtis En
 
 ## Compared with Steam Link's own OSC
 
-https://github.com/user-attachments/assets/6b538815-2ddb-47e3-a617-c16b14a4dbd8
+https://github.com/user-attachments/assets/200526ab-4733-4072-8230-8d83ea14653d
 
 SteamVR's Steam Link can send eye tracking over OSC by itself (`LeftEyeX`, `LeftEyeLid`, ...). Compared on the same eye recording (SteamVR 2.18.2):
 

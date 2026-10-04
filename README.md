@@ -8,6 +8,8 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 
 This is a fork of [konsti219/frameeyeosc](https://github.com/konsti219/frameeyeosc). The Frame's public APIs only give you a combined gaze direction. konsti219 found that the eye tracker also measures how open each eye is and keeps it in an internal shared-memory object (`/dev/shm/eye-server.mmap`), and that is where this tool reads it from.
 
+The way the eye-camera tool finds the eye camera frames is ported from Curtis English's [FrameEyeCameraFeed](https://github.com/Curtis-VL/FrameEyeCameraFeed) (MIT); thank you.
+
 ## What this fork adds
 
 - It finds your PC on its own by sending to whichever PC Steam Link is streaming from. With the bundled wireless adapter that's the adapter's direct link, so your home network doesn't matter.
@@ -24,7 +26,7 @@ This is a fork of [konsti219/frameeyeosc](https://github.com/konsti219/frameeyeo
 
 - A Steam Frame with Developer Mode on and SSH access (Settings > System > Developer Mode, then set a password under Developer). Choose a strong password: with SSH on, anyone on your network who knows it can log in to the headset.
 - PC VRChat streamed with Steam Link, OSC enabled in VRChat (Action Menu > Options > OSC > Enabled).
-- An avatar with VRCFaceTracking eye parameters (`FT/v2/EyeLeftX`, `EyeLidLeft`, ...) as floats. Avatars that pack parameters into binary bits are not supported when sending to VRChat directly. frameeyeosc also sends `EyeTrackingActive` as a bool; some avatars declare it as a float and stop tracking on a bool. For those, choose "Float" under "EyeTrackingActive type" on the Output tab (`eye_tracking_active`), or "Off" to not send it at all. Avatars set up for the OSC that SteamVR's Steam Link sends by itself (`LeftEyeX`, `RightEyeLid`, ...) work too: turn on "Steam Link names too" on the Output tab (see [Avatars made for Steam Link's OSC](#avatars-made-for-steam-links-osc)). Avatars without these parameters can follow your eyes through VRChat's own eye tracking input instead (see [Native VRChat eye tracking](#native-vrchat-eye-tracking)).
+- An avatar with VRCFaceTracking eye parameters (`FT/v2/EyeLeftX`, `EyeLidLeft`, ...) as floats. Avatars that pack parameters into binary bits are not supported when sending to VRChat directly, except for the eye cameras' pupils (see [Pupils on avatars with bit parameters](#pupils-on-avatars-with-bit-parameters)). frameeyeosc also sends `EyeTrackingActive` as a bool; some avatars declare it as a float and stop tracking on a bool. For those, choose "Float" under "EyeTrackingActive type" on the Output tab (`eye_tracking_active`), or "Off" to not send it at all. Avatars set up for the OSC that SteamVR's Steam Link sends by itself (`LeftEyeX`, `RightEyeLid`, ...) work too: turn on "Steam Link names too" on the Output tab (see [Avatars made for Steam Link's OSC](#avatars-made-for-steam-links-osc)). Avatars without these parameters can follow your eyes through VRChat's own eye tracking input instead (see [Native VRChat eye tracking](#native-vrchat-eye-tracking)).
 - For the VRCFaceTracking (ETVR) mode: VRCFaceTracking on the PC with the ETVR Tracking Module. For the LiveLink mode: VRCFaceTracking with the LiveLink module.
 
 ## Install
@@ -344,7 +346,7 @@ eyecam-rec maps the buffers read-only and opens Valve's eye data read-only too. 
 
 ## Known issues
 
-- Avatars that use binary (bit-packed) VRCFT parameters are not supported when sending to VRChat directly. In the ETVR and LiveLink modes, the avatar side is up to VRCFaceTracking; use the LiveLink mode for widened eyes.
+- Avatars that use binary (bit-packed) VRCFT parameters are not supported when sending to VRChat directly, except for the eye cameras' pupils (`pupil_bits`). In the ETVR and LiveLink modes, the avatar side is up to VRCFaceTracking; use the LiveLink mode for widened eyes.
 
 ## Privacy
 

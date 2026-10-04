@@ -8,6 +8,8 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 
 [konsti219/frameeyeosc](https://github.com/konsti219/frameeyeosc) をフォークしたものです。Steam Frame のまぶたのデータは公開 API からは取れないのですが、元のプロジェクトが内部の共有メモリ（`/dev/shm/eye-server.mmap`）から読めることを見つけてくれたおかげで、このツールを作ることができました。
 
+目のカメラの映像の取り出し方は、Curtis English さんの [FrameEyeCameraFeed](https://github.com/Curtis-VL/FrameEyeCameraFeed)（MIT）を参考にさせてもらいました。
+
 ## このフォークで足したもの
 
 - 送り先の PC は自動で見つけます。Steam Link でつないでいる PC に送るので、アドレスを調べて設定する必要はありません。付属の無線アダプタを使っているときはその直通回線で送るので、家のネットワークの状態にも左右されません
@@ -24,7 +26,7 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 
 - 開発者モードを有効にして SSH で入れる Steam Frame（設定 → システム → 開発者モードを有効化、開発者の項目でパスワードを設定）。SSH を有効にすると、同じネットワークにいてパスワードを知っている人は誰でもヘッドセットに入れるので、推測されにくいパスワードにしてください
 - Steam Link でストリーミングしている PC 版 VRChat（Action Menu → Options → OSC → Enabled）
-- VRCFaceTracking の目のパラメータ（`FT/v2/EyeLeftX`、`EyeLidLeft` など）を float で持つアバター。VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」のアバターには対応していません。`EyeTrackingActive` は bool で送ります。これを float で持つアバターは bool が届くと止まるので、送り方タブの「EyeTrackingActive の型」で［Float］を選んでください（`eye_tracking_active`）。［送らない］にすると送りません。SteamVR の Steam Link が自分で送る OSC（`LeftEyeX`、`RightEyeLid` など）に合わせて作ったアバターも、送り方タブの「Steam Link の名前も送る」をオンにすれば動きます（[Steam Link の OSC 向けのアバター](#steam-link-の-osc-向けのアバター)）。これらのパラメータを持たないアバターは、VRChat 自身のアイトラッキング入力で目を動かせます（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)）
+- VRCFaceTracking の目のパラメータ（`FT/v2/EyeLeftX`、`EyeLidLeft` など）を float で持つアバター。VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」のアバターには対応していません（目のカメラの瞳孔だけは対応しています。[ビットで受け取るアバターの瞳孔](#ビットで受け取るアバターの瞳孔)）。`EyeTrackingActive` は bool で送ります。これを float で持つアバターは bool が届くと止まるので、送り方タブの「EyeTrackingActive の型」で［Float］を選んでください（`eye_tracking_active`）。［送らない］にすると送りません。SteamVR の Steam Link が自分で送る OSC（`LeftEyeX`、`RightEyeLid` など）に合わせて作ったアバターも、送り方タブの「Steam Link の名前も送る」をオンにすれば動きます（[Steam Link の OSC 向けのアバター](#steam-link-の-osc-向けのアバター)）。これらのパラメータを持たないアバターは、VRChat 自身のアイトラッキング入力で目を動かせます（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)）
 - VRCFaceTracking（ETVR）モードで使うときは、PC に VRCFaceTracking と ETVR Tracking Module。LiveLink モードなら VRCFaceTracking と LiveLink モジュール
 
 ## インストール
@@ -344,7 +346,7 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 
 ## 既知の問題
 
-- VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」の VRCFT アバターには対応していません。ETVR モードと LiveLink モードでは、アバター側は VRCFaceTracking しだいです。見開きも伝えたいときは LiveLink モードを使ってください
+- VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」の VRCFT アバターには対応していません（目のカメラの瞳孔だけは `pupil_bits` で対応）。ETVR モードと LiveLink モードでは、アバター側は VRCFaceTracking しだいです。見開きも伝えたいときは LiveLink モードを使ってください
 
 ## プライバシー
 

@@ -8,7 +8,8 @@
 # Without --with-panel an installed panel is left as it is, so frameeyeosc can be updated on its own.
 # The release tarball also carries eyecam, the eye-camera tool. It is installed to ~/.local/lib/eyecam and runs as a
 # user service that waits until the eye cameras are set up from the panel. That setup asks the user to run
-# install_grab.sh once with sudo, in a Konsole the panel opens; this script never runs sudo.
+# install_grab.sh once with sudo, in a Konsole the panel opens; this script never runs sudo. The service is enabled on
+# the first install only: one the user turned off (systemctl --user disable eyecam) stays off through updates.
 #
 # FRAMEEYEOSC_NO_SYSTEMCTL=1 skips every systemctl call (for trying the script with HOME pointed at a scratch
 # folder: systemctl --user would still act on the real user session).
@@ -133,8 +134,11 @@ for changelog in CHANGELOG.md CHANGELOG.ja.md; do
 done
 # The eye-camera tool (the release tarball's eyecam/; a repository checkout has only its source, so it is skipped)
 with_eyecam=false
+# Its first install: the service is enabled and started only then (see below)
+eyecam_fresh=false
 if [[ -x "$here/eyecam/eyecam-rec" ]]; then
     with_eyecam=true
+    [[ -e "$unit_dir/$eyecam_unit" ]] || eyecam_fresh=true
     mkdir -p "$eyecam_dir" "$unit_dir"
     # A running eyecam-rec keeps its old file: each file is written next to it and renamed over it
     for file in eyecam-rec eyecam-grab install_grab.sh; do
@@ -147,7 +151,9 @@ if [[ -x "$here/eyecam/eyecam-rec" ]]; then
             rm -f "$file"
         fi
     done
-    for file in "$here"/eyecam/protocol_*.txt "$here/eyecam/NOTICE"; do
+    # (SHA256SUMS: what install_grab.sh's printed sha256 should match; see README)
+    for file in "$here"/eyecam/protocol_*.txt "$here/eyecam/NOTICE" "$here/eyecam/SHA256SUMS"; do
+        [[ -f "$file" ]] || continue
         install -m644 "$file" "$eyecam_dir/.$(basename "$file").new"
         mv -f "$eyecam_dir/.$(basename "$file").new" "$eyecam_dir/$(basename "$file")"
     done
@@ -186,10 +192,20 @@ mv "$install_args.tmp" "$install_args"
 systemctl --user daemon-reload
 systemctl --user enable "$unit"
 systemctl --user restart "$unit"
+# eyecam: enabled and started on its first install only (without the eye cameras set up it only waits, until
+# install_grab.sh has been run once). Later, one the user turned off stays off; one running restarts on the new
+# binary; one stopped by hand stays stopped
+eyecam_off=false
 if $with_eyecam; then
-    # Without the eye cameras set up, eyecam-rec only waits (until install_grab.sh has been run once)
-    systemctl --user enable "$eyecam_unit"
-    systemctl --user restart "$eyecam_unit"
+    if $eyecam_fresh; then
+        systemctl --user enable "$eyecam_unit"
+        systemctl --user restart "$eyecam_unit"
+    else
+        case "$(systemctl --user is-enabled "$eyecam_unit" 2>/dev/null)" in
+            disabled | masked) eyecam_off=true ;;
+            *) systemctl --user try-restart "$eyecam_unit" ;;
+        esac
+    fi
 fi
 if $with_panel; then
     # Starts with SteamVR from its next start (the panel's "Start with SteamVR" turns this off).
@@ -226,7 +242,11 @@ if $with_eyecam; then
 The eye-camera tool is in $eyecam_dir and runs as eyecam.service.
 Until the eye cameras are set up on the panel's "Eye cameras" tab (it asks you to run
 install_grab.sh there once, with sudo), it only waits. Logs: journalctl --user -u eyecam -f
+To stop it for good: systemctl --user disable --now eyecam (updates leave it off).
 EOF
+    if $eyecam_off; then
+        echo "eyecam.service is turned off, and was left off. To turn it on again: systemctl --user enable --now eyecam"
+    fi
 fi
 cat <<EOF
 

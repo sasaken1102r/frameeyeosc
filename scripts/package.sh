@@ -47,6 +47,9 @@ cp vendor/frame-updater/frame-update.sh "$stage/frameeyeosc/"
 mkdir -p "$stage/frameeyeosc/eyecam"
 cp "$eyecam_target/release/eyecam-rec" "$eyecam_target/release/eyecam-grab" tools/eyecam/install_grab.sh \
     tools/eyecam/protocol_*.txt tools/eyecam/eyecam.service tools/eyecam/NOTICE "$stage/frameeyeosc/eyecam/"
+# What install_grab.sh's printed sha256 should match (the README says where to look). Not dist/SHA256SUMS: the
+# updater reads that one
+(cd "$stage/frameeyeosc/eyecam" && sha256sum eyecam-grab eyecam-rec install_grab.sh >SHA256SUMS)
 mkdir -p dist
 tar -C "$stage" -czf "dist/$name.tar.gz" frameeyeosc
 # The panel's update button only installs releases that carry this file (attach it to the release too)

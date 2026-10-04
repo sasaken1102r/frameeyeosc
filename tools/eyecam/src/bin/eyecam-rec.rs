@@ -365,6 +365,7 @@ impl StatusFile {
         let _guard = self.write_lock.lock().unwrap();
         let json = {
             let mut s = status.lock().unwrap();
+            s.grab_outdated = eyecam::autograb::bundled_grab().is_some_and(|b| eyecam::autograb::grab_outdated(&b));
             if let Some(l) = &self.live {
                 s.calib_state = l.calib_state.load(Ordering::Relaxed);
                 s.recalib_suggested = l.recalib_suggested.load(Ordering::Relaxed);

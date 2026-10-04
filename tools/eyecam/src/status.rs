@@ -17,6 +17,9 @@ pub struct Status {
     /// The automatic eyecam-grab: "" (not tried), missing, no_cap, unsafe: ..., waiting_tracker, trying, ok,
     /// failed: ...
     pub auto_grab: String,
+    /// The installed eyecam-grab differs from the one shipped beside eyecam-rec (an update brought a new one):
+    /// install_grab.sh has to be run again. False when either is missing.
+    pub grab_outdated: bool,
     pub locked: bool,
     pub fps: [f64; 2],
     pub step_index: i64,
@@ -59,6 +62,7 @@ impl Default for Status {
             message: String::new(),
             has_buffers: false,
             auto_grab: String::new(),
+            grab_outdated: false,
             locked: false,
             fps: [0.0; 2],
             step_index: -1,
@@ -101,7 +105,7 @@ impl Status {
     /// One line of JSON. `updated_unix` (wall clock seconds) lets a reader tell a live daemon from a stale file.
     pub fn to_json(&self, updated_unix: f64, pid: u32) -> String {
         format!(
-            "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
+            "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"last_session_aborted\":{},\"calib_state\":{},\
 \"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"setup_done\":{},\"last_calib_widen\":{},\"live\":{},\"live_ms\":{},\"pid\":{pid},\"updated_unix\":{}}}",
@@ -110,6 +114,7 @@ impl Status {
             json_str(&crate::message_en::message_en(&self.message)),
             self.has_buffers,
             json_str(&self.auto_grab),
+            self.grab_outdated,
             self.locked,
             num(self.fps[0]),
             num(self.fps[1]),

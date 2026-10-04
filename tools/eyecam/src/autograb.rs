@@ -114,6 +114,44 @@ pub fn find() -> State {
     PATHS.iter().map(|p| check(Path::new(p))).find(|s| *s != State::Missing).unwrap_or(State::Missing)
 }
 
+/// Size and modification time of a file, to notice when it changes without reading it.
+fn stamp(path: &Path) -> Option<(u64, i64, i64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.len(), m.mtime(), m.mtime_nsec()))
+}
+
+type OutdatedKey = (PathBuf, (u64, i64, i64), PathBuf, (u64, i64, i64));
+static OUTDATED: std::sync::Mutex<Option<(OutdatedKey, bool)>> = std::sync::Mutex::new(None);
+
+/// Whether the installed copy (the first of PATHS that exists) differs from `bundled`, the eyecam-grab shipped
+/// beside eyecam-rec: an update brought a new eyecam-grab and install_grab.sh has to be run again. False when
+/// either is missing. The files are compared byte for byte, again only after one of them changed.
+pub fn grab_outdated(bundled: &Path) -> bool {
+    let Some(installed) = PATHS.iter().map(Path::new).find(|p| std::fs::symlink_metadata(p).is_ok()) else {
+        return false;
+    };
+    let (Some(si), Some(sb)) = (stamp(installed), stamp(bundled)) else { return false };
+    let key = (installed.to_path_buf(), si, bundled.to_path_buf(), sb);
+    let mut cache = OUTDATED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, v)) = cache.as_ref()
+        && *k == key
+    {
+        return *v;
+    }
+    let differs = match (std::fs::read(installed), std::fs::read(bundled)) {
+        (Ok(a), Ok(b)) => a != b,
+        _ => false,
+    };
+    *cache = Some((key, differs));
+    differs
+}
+
+/// The eyecam-grab shipped beside this executable (~/.local/lib/eyecam/eyecam-grab), if there is one.
+pub fn bundled_grab() -> Option<PathBuf> {
+    let p = std::env::current_exe().ok()?.parent()?.join("eyecam-grab");
+    p.is_file().then_some(p)
+}
+
 /// Whether Valve's eye tracker is running as this user (its /proc entry is readable to us).
 pub fn eyetracking_running() -> bool {
     let Ok(dir) = std::fs::read_dir("/proc") else { return false };
@@ -126,6 +164,11 @@ pub fn eyetracking_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_bundled_copy_is_not_outdated() {
+        assert!(!grab_outdated(Path::new("/nonexistent/eyecam-grab")));
+    }
 
     fn caps(magic: u32, permitted: u32) -> Vec<u8> {
         let mut v = Vec::new();

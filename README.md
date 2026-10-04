@@ -22,15 +22,22 @@ The way the eye-camera tool finds the eye camera frames is ported from Curtis En
 - It can send in the format the ETVR Tracking Module for VRCFaceTracking reads (see [VRCFaceTracking (ETVR) mode](#vrcfacetracking-etvr-mode)), or as Live Link Face packets for VRCFaceTracking's LiveLink module, which also carries widened eyes (see [VRCFaceTracking (LiveLink) mode](#vrcfacetracking-livelink-mode)).
 - Optionally it also uses the Frame's eye cameras, through eyecam, a tool that comes with it: widened eyes come through again on SteamOS 0.4.3, and squints and pupil size are sent too. It takes a one-time setup on the panel (see [Eye cameras](#eye-cameras)).
 
-## What Steam Link's own OSC can't do
+## Compared with Steam Link's own OSC
 
 https://github.com/user-attachments/assets/6b538815-2ddb-47e3-a617-c16b14a4dbd8
 
-SteamVR's Steam Link can send eye tracking over OSC by itself (`LeftEyeX`, `LeftEyeLid`, ...). With the eye cameras set up, frameeyeosc also sends what it can't:
+SteamVR's Steam Link can send eye tracking over OSC by itself (`LeftEyeX`, `LeftEyeLid`, ...). Compared on the same eye recording (SteamVR 2.18.2):
 
-- **Widened eyes**: Steam Link sends how closed each eye is, but no widening (its `WidenToggle` is always 1), and on SteamOS 0.4.3 Valve's openness tops out at relaxed open. frameeyeosc reads widening from the eye camera images.
-- **Pupil size**: measured from the eye camera images, so the avatar's pupils get smaller in bright places and bigger in the dark (`v2/PupilDilation`, `PupilDiameter*`; also as bits with `pupil_bits`).
-- **Squints**, after the optional user calibration (`v2/EyeSquint*`).
+| | frameeyeosc 0.7.2 | SteamVR's own OSC |
+|---|---|---|
+| Gaze | Can move each eye on its own ("move eyes separately"; eyes converge on near things) | One gaze for both eyes |
+| Gaze smoothing | One Euro smoothing, strength selectable | None (raw values) |
+| Eyelids | Each eye's relaxed open lined up; blinks held, left/right synced | Raw openness turned over (in 1/254 steps) |
+| Blinks and winks | Yes | Yes |
+| Widened eyes | Yes, with the eye cameras (SteamOS 0.4.3 too) | No |
+| Pupil size | Yes, with the eye cameras: smaller in bright places, bigger in the dark | No |
+| Squints | Yes, with the eye cameras after the optional user calibration | No |
+| Setup | Install on the Frame (the eye cameras also take a one-time sudo step) | Nothing to install: a SteamVR setting and a VRCFaceTracking module |
 
 The video shows the avatar's eyes in VRChat with the eye cameras in use. See [Eye cameras](#eye-cameras) for the setup.
 

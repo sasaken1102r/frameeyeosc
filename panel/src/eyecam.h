@@ -142,9 +142,10 @@ struct Status {
 };
 
 /**
- * The setup's calibration as the panel follows it: when a calibration that began before the setup was complete ends,
- * it says how (Done once, so the checklist can show its last screen; Fail while widening fell back to the standard
- * values). "このまま進む" (proceed) accepts that fallback for this run of the panel.
+ * The setup's calibration as the panel follows it: when a calibration that began before the setup was complete ends
+ * with the setup complete, it says how (Done once, so the checklist can show its last screen; Fail while widening fell
+ * back to the standard values). That is all it keeps: whether the tool is in and the setup is done are read from each
+ * status, so a removed tool or a setup_done gone back to false shows the checklist again at once (and drops a result).
  */
 class SetupFlow {
 public:
@@ -155,20 +156,17 @@ public:
      */
     void follow(const Status& status, double now);
 
-    /** "使いはじめる" or "このまま進む": on to the usual page. */
+    /** "使いはじめる" or "このまま進む": on to the usual page (eyecam-rec says setup_done after either). */
     void proceed();
 
     /** The dashboard closed: the checklist's done screen is not shown again. */
     void closed();
 
-    /** @return how the setup's calibration ended (None once it is dismissed or another one starts) */
+    /**
+     * @return how the setup's calibration ended (None once it is dismissed, another one starts, or the setup is no
+     * longer complete)
+     */
     SetupResult result() const { return result_; }
-
-    /** @return true once the standard widening values were accepted ("このまま進む") */
-    bool accepted() const { return accepted_; }
-
-    /** @return true once the tool was seen installed (an error after it says nothing about the tool) */
-    bool toolSeen() const { return toolSeen_; }
 
     /**
      * Whether the left column's "ready" notice shows: for kReadyNoticeSec after the setup was done.
@@ -185,8 +183,6 @@ private:
     bool calibrating_ = false;     ///< it was calibrating at the last one
     bool setupCalib_ = false;      ///< ...and that calibration is the setup's
     bool completeBefore_ = false;  ///< the setup was complete before it
-    bool accepted_ = false;
-    bool toolSeen_ = false;
     SetupResult result_ = SetupResult::None;
     double doneAt_ = -1e9;
 };
@@ -380,9 +376,11 @@ bool baselineWarming(const Status& status);
 const std::string& shownMessage(const Status& status, Language language);
 
 /**
- * Whether the camera tool is in: eyecam-rec says auto_grab "ok" or has_buffers, or it is in a state that only comes
- * after it has the buffers (idle, searching, recording, calibrating; also an older eyecam-rec without those fields).
- * An error says nothing either way (SetupFlow::toolSeen remembers it).
+ * Whether the camera tool is in, from this status alone: eyecam-rec holds the buffers (has_buffers, or a state that only
+ * comes after it has them: idle, searching, recording, calibrating), or auto_grab says the tool is there ("ok",
+ * "trying", "waiting_tracker", "failed: ..."; not "missing", "no_cap", "unsafe: ..."). Without auto_grab (an older
+ * eyecam-rec) only the buffers say so. A failed calibration's error still has has_buffers and auto_grab (eyecam-rec
+ * writes every field in every state), so it stays in. needsManualGrab is its opposite.
  * @param status the status
  * @return true if installed
  */
@@ -398,16 +396,14 @@ bool toolInstalled(const Status& status);
 bool setupComplete(const Status& status);
 
 /**
- * The current step: the first one not met. Complete (or the standard widening accepted) is Done; the tool in (or seen in
- * before) is (3) whatever the password check says (it was needed to install it); otherwise (1) only while the
- * password is known to be missing, else (2).
+ * The current step, from this status and password check alone: the first one not met. Complete is Done; the tool in
+ * is (3) whatever the password check says (it was needed to install it); otherwise (1) only while the password is
+ * known to be missing, else (2).
  * @param status the status
  * @param password the password check
- * @param accepted the standard widening values were accepted (SetupFlow::accepted)
- * @param toolSeen the tool was seen installed in this run of the panel (SetupFlow::toolSeen)
  * @return the step
  */
-SetupStep setupStep(const Status& status, PasswordState password, bool accepted, bool toolSeen = false);
+SetupStep setupStep(const Status& status, PasswordState password);
 
 /**
  * What the eye cameras' tab shows: how the setup's calibration ended while that is still to be shown, else the
@@ -589,8 +585,8 @@ private:
 };
 
 /**
- * Whether waiting_fds needs the user to run eyecam-grab with sudo: eyecam-rec can't take the buffers by itself
- * ("auto_grab" missing, no_cap or unsafe: ..., or an eyecam-rec without it). Otherwise it is waiting for the eye
+ * Whether waiting_fds needs the user to run eyecam-grab with sudo: the tool is not in (toolInstalled, the same rule:
+ * "auto_grab" missing, no_cap or unsafe: ..., or an eyecam-rec without it). Otherwise it is waiting for the eye
  * tracker or retrying on its own, and the command would only confuse.
  * @param s the status as read
  * @return true to show the sudo command

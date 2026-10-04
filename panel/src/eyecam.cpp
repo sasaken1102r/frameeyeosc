@@ -296,14 +296,17 @@ const std::string& shownMessage(const Status& status, Language language) {
 }
 
 bool toolInstalled(const Status& status) {
-    if (status.hasBuffers || status.autoGrab == "ok") return true;
     switch (status.state) {
         case State::Idle:
         case State::Searching:
         case State::Recording:
         case State::Calibrating: return true;
-        default: return false;
+        default: break;
     }
+    if (status.hasBuffers) return true;
+    // auto_grab names what eyecam-rec found; without it (an older eyecam-rec) only the buffers say so
+    const std::string& grab = status.autoGrab;
+    return !grab.empty() && grab != "missing" && grab != "no_cap" && grab.rfind("unsafe", 0) != 0;
 }
 
 bool setupComplete(const Status& status) {
@@ -312,9 +315,9 @@ bool setupComplete(const Status& status) {
     return (status.calibState & (kCalibWearBit | kCalibAutoBit)) != 0 || status.calibSaved;
 }
 
-SetupStep setupStep(const Status& status, PasswordState password, bool accepted, bool toolSeen) {
-    if (accepted || setupComplete(status)) return SetupStep::Done;
-    if (toolSeen || toolInstalled(status)) return SetupStep::Learn;
+SetupStep setupStep(const Status& status, PasswordState password) {
+    if (setupComplete(status)) return SetupStep::Done;
+    if (toolInstalled(status)) return SetupStep::Learn;
     return password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
 }
 
@@ -322,7 +325,7 @@ SetupScreen setupScreen(const View& view) {
     const Status& s = view.status;
     if (view.flow.result() == SetupResult::Fail) return SetupScreen::Fail;
     if (view.flow.result() == SetupResult::Done) return SetupScreen::Done;
-    switch (setupStep(s, view.password, view.flow.accepted(), view.flow.toolSeen())) {
+    switch (setupStep(s, view.password)) {
         case SetupStep::Password: return SetupScreen::Pass;
         case SetupStep::Tool: return SetupScreen::Check;
         case SetupStep::Learn:
@@ -336,7 +339,6 @@ SetupScreen setupScreen(const View& view) {
 
 void SetupFlow::follow(const Status& status, double now) {
     const bool complete = setupComplete(status);
-    if (toolInstalled(status)) toolSeen_ = true;
     if (status.state == State::Calibrating) {
         if (!calibrating_) {
             // A new calibration: the setup's if the setup wasn't complete before it (or, joined midway, now)
@@ -345,12 +347,12 @@ void SetupFlow::follow(const Status& status, double now) {
             result_ = SetupResult::None;
         }
     } else {
-        if (calibrating_ && setupCalib_ && status.state == State::Idle) {
-            // It ended well: widening fell back to the standard values, or it is done (measured, or complete
-            // with an eyecam-rec that doesn't say)
+        if (calibrating_ && setupCalib_ && status.state == State::Idle && complete) {
+            // It ended well (eyecam-rec says setup_done after it): widening fell back to the standard values, or it
+            // is done (measured, or an eyecam-rec that doesn't say)
             if (status.lastCalibWiden == "default") {
                 result_ = SetupResult::Fail;
-            } else if (status.lastCalibWiden == "measured" || complete) {
+            } else {
                 result_ = SetupResult::Done;
                 doneAt_ = now;
             }
@@ -359,11 +361,15 @@ void SetupFlow::follow(const Status& status, double now) {
         setupCalib_ = false;
         completeBefore_ = complete;
     }
+    // Not complete (any more, e.g. calib.json removed): nothing of an earlier calibration is shown
+    if (!complete) {
+        result_ = SetupResult::None;
+        doneAt_ = -1e9;
+    }
     seen_ = true;
 }
 
 void SetupFlow::proceed() {
-    if (result_ == SetupResult::Fail) accepted_ = true;
     result_ = SetupResult::None;
 }
 
@@ -487,7 +493,7 @@ std::string signature(const View& view) {
            rounded(s.widenSensitivity, 0.01) + "|" + std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
            std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.autoGrab + "|" +
            std::to_string(static_cast<int>(view.password)) + std::to_string(static_cast<int>(view.flow.result())) +
-           std::to_string(view.flow.accepted()) + std::to_string(view.readyNotice) + "|" + view.spawnError;
+           std::to_string(view.readyNotice) + "|" + view.spawnError;
 }
 
 Control::~Control() {
@@ -586,8 +592,7 @@ bool Control::poll(double now) {
 }
 
 bool needsManualGrab(const Status& s) {
-    const std::string& grab = s.autoGrab;
-    return grab.empty() || grab == "missing" || grab == "no_cap" || grab.rfind("unsafe", 0) == 0;
+    return !toolInstalled(s);
 }
 
 }  // namespace eyecam

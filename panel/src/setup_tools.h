@@ -62,8 +62,9 @@ bool spawnDetached(const std::vector<std::string>& argv, std::string& error);
 
 /**
  * "steamos-passwd --has-password" in the background (it only reads: passwd with no input, and whether it asks for
- * the current password), checked again every kPasswordCheckSec while wanted. Exit 0 = set, another exit = not set;
- * no steamos-passwd, or no answer in kPasswordTimeoutSec = unknown.
+ * the current password), checked again every kPasswordCheckSec while wanted, and forgotten (unknown) while not, so it
+ * is checked afresh when it is wanted again. Exit 0 = set, another exit = not set; no steamos-passwd, or no answer in
+ * kPasswordTimeoutSec = unknown.
  */
 class PasswordCheck {
 public:

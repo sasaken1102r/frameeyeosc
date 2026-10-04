@@ -124,7 +124,11 @@ bool PasswordCheck::tick(bool wanted, double now) {
             pid_ = -1;
             state_ = eyecam::PasswordState::Unknown;
         }
-    } else if (wanted && now >= nextAt_) {
+    } else if (!wanted) {
+        // Not kept while it doesn't matter: when the step comes back (the tool removed), it is checked again at once
+        state_ = eyecam::PasswordState::Unknown;
+        nextAt_ = now;
+    } else if (now >= nextAt_) {
         nextAt_ = now + kPasswordCheckSec;
         if (!inPath("steamos-passwd")) {
             state_ = eyecam::PasswordState::Unknown;

@@ -886,7 +886,8 @@ eyecam::View fakeEyecam(const std::string& text) {
         s.message = "校正できた（かぶり）";
         s.messageEn = fake.message == 1 ? "Calibrated (this wear)" : "";
     }
-    s.hasBuffers = fake.buffers;
+    // A failed calibration keeps the buffers (eyecam-rec writes has_buffers in every state)
+    s.hasBuffers = fake.buffers || state == "calib-error";
     s.hasSetupDone = fake.setup >= 0;
     s.setupDone = fake.setup == 1;
     s.lastCalibWiden = fake.result == "fail" ? "default" : (fake.result == "done" ? "measured" : fake.widen);
@@ -899,7 +900,8 @@ eyecam::View fakeEyecam(const std::string& text) {
         calibrating.hasSetupDone = true;
         calibrating.setupDone = false;
         view.flow.follow(calibrating, nowSeconds());
-        if (fake.result == "done") s.hasSetupDone = s.setupDone = true;
+        // eyecam-rec says setup_done after either (the standard widening is saved too)
+        s.hasSetupDone = s.setupDone = true;
         view.flow.follow(s, nowSeconds());
         view.readyNotice = view.flow.readyNotice(nowSeconds());
         view.lastRun = eyecam::Run::CalibWear;

@@ -852,15 +852,30 @@ void testSetupParse() {
 void testSetupStep() {
     using eyecam::PasswordState;
     using eyecam::SetupStep;
-    // The tool: auto_grab "ok", has_buffers, or a state past the buffers
-    CHECK(eyecam::toolInstalled(setupStatus("waiting_fds", ", \"auto_grab\": \"ok\"")));
+    // The tool: auto_grab saying it is there, has_buffers, or a state past the buffers
+    for (const char* grab : {"ok", "trying", "waiting_tracker", "failed: x", "failed: timeout"}) {
+        const Status st = setupStatus("waiting_fds", std::string(", \"auto_grab\": \"") + grab + "\"");
+        CHECK(eyecam::toolInstalled(st));
+        CHECK(!eyecam::needsManualGrab(st));
+        // ...also in an error (taking the buffers failed)
+        CHECK(eyecam::toolInstalled(setupStatus("error", std::string(", \"auto_grab\": \"") + grab + "\"")));
+    }
     CHECK(eyecam::toolInstalled(setupStatus("waiting_fds", ", \"has_buffers\": true")));
     for (const char* state : {"idle", "searching", "recording", "calibrating"}) {
         CHECK(eyecam::toolInstalled(setupStatus(state)));
     }
     for (const char* grab : {"missing", "no_cap", "unsafe: group-writable", ""}) {
-        CHECK(!eyecam::toolInstalled(setupStatus("waiting_fds", std::string(", \"auto_grab\": \"") + grab + "\"")));
+        const Status st = setupStatus("waiting_fds", std::string(", \"auto_grab\": \"") + grab + "\"");
+        CHECK(!eyecam::toolInstalled(st));
+        CHECK(eyecam::needsManualGrab(st));
+        CHECK(!eyecam::toolInstalled(setupStatus("error", std::string(", \"auto_grab\": \"") + grab + "\"")));
     }
+    // A failed calibration's error: eyecam-rec still writes has_buffers and auto_grab
+    CHECK(eyecam::toolInstalled(
+        setupStatus("error", ", \"has_buffers\": true, \"auto_grab\": \"ok\", \"setup_done\": false")));
+    CHECK(eyecam::toolInstalled(setupStatus("error", ", \"has_buffers\": true, \"auto_grab\": \"missing\"")));
+    // An older eyecam-rec (no auto_grab): only the buffers say so
+    CHECK(eyecam::toolInstalled(setupStatus("error", ", \"has_buffers\": true")));
     CHECK(!eyecam::toolInstalled(setupStatus("error")));
     CHECK(!eyecam::toolInstalled(setupStatus("waiting_fds")));
 
@@ -875,43 +890,40 @@ void testSetupStep() {
     CHECK(eyecam::setupComplete(setupStatus("idle", ", \"calib_saved\": true")));
     CHECK(!eyecam::setupComplete(setupStatus("idle", ", \"calib_saved\": false")));
 
-    // The step for every combination of password, tool, setup done and accepted
+    // The step for every combination of password, tool and setup done
     const PasswordState passwords[3] = {PasswordState::Unknown, PasswordState::Set, PasswordState::NotSet};
     for (const PasswordState password : passwords) {
         for (int tool = 0; tool < 2; ++tool) {
             for (int done = 0; done < 2; ++done) {
-                for (int accepted = 0; accepted < 2; ++accepted) {
-                    const Status st = setupStatus(tool ? "idle" : "waiting_fds",
-                                                  std::string(", \"auto_grab\": \"") + (tool ? "ok" : "missing") +
-                                                      "\", \"setup_done\": " + (done ? "true" : "false"));
-                    const SetupStep step = eyecam::setupStep(st, password, accepted != 0);
-                    const SetupStep want = done || accepted ? SetupStep::Done
-                                           : tool           ? SetupStep::Learn
-                                           : password == PasswordState::NotSet ? SetupStep::Password
-                                                                               : SetupStep::Tool;
-                    CHECK(step == want);
-                }
+                const Status st = setupStatus(tool ? "idle" : "waiting_fds",
+                                              std::string(", \"auto_grab\": \"") + (tool ? "ok" : "missing") +
+                                                  "\", \"setup_done\": " + (done ? "true" : "false"));
+                const SetupStep step = eyecam::setupStep(st, password);
+                const SetupStep want = done ? SetupStep::Done
+                                       : tool ? SetupStep::Learn
+                                       : password == PasswordState::NotSet ? SetupStep::Password
+                                                                           : SetupStep::Tool;
+                CHECK(step == want);
             }
         }
     }
-    // The tool seen before (in this run) stays in through an error that doesn't say
-    CHECK(eyecam::setupStep(setupStatus("error"), PasswordState::Set, false, true) == SetupStep::Learn);
-    CHECK(eyecam::setupStep(setupStatus("error"), PasswordState::Set, false, false) == SetupStep::Tool);
-    {
-        eyecam::SetupFlow flow;
-        CHECK(!flow.toolSeen());
-        flow.follow(setupStatus("waiting_fds", ", \"auto_grab\": \"missing\""), 0.0);
-        CHECK(!flow.toolSeen());
-        flow.follow(setupStatus("idle"), 1.0);
-        CHECK(flow.toolSeen());
-        flow.follow(setupStatus("error"), 2.0);
-        CHECK(flow.toolSeen());
-    }
+    // A failed setup calibration (error, the buffers still held) stays at (3); an error that says nothing is (2)
+    CHECK(eyecam::setupStep(setupStatus("error", ", \"has_buffers\": true, \"auto_grab\": \"ok\""),
+                            PasswordState::Set) == SetupStep::Learn);
+    CHECK(eyecam::setupStep(setupStatus("error"), PasswordState::Set) == SetupStep::Tool);
     // An older eyecam-rec in use (bits) is never sent back, whatever the password says
-    CHECK(eyecam::setupStep(setupStatus("waiting_fds", ", \"calib_state\": 4"), PasswordState::NotSet, false) ==
+    CHECK(eyecam::setupStep(setupStatus("waiting_fds", ", \"calib_state\": 4"), PasswordState::NotSet) ==
           SetupStep::Done);
-    // ...one that isn't yet goes through it like a new one
-    CHECK(eyecam::setupStep(setupStatus("idle", ", \"calib_state\": 2"), PasswordState::Set, false) == SetupStep::Learn);
+    CHECK(eyecam::setupStep(setupStatus("waiting_fds", ", \"calib_state\": 1"), PasswordState::NotSet) ==
+          SetupStep::Done);
+    CHECK(eyecam::setupStep(setupStatus("waiting_fds", ", \"calib_saved\": true"), PasswordState::NotSet) ==
+          SetupStep::Done);
+    // ...one that isn't yet goes through it like a new one, the tool told by its buffers
+    CHECK(eyecam::setupStep(setupStatus("idle", ", \"calib_state\": 2"), PasswordState::Set) == SetupStep::Learn);
+    CHECK(eyecam::setupStep(setupStatus("waiting_fds", ", \"has_buffers\": false"), PasswordState::Set) ==
+          SetupStep::Tool);
+    CHECK(eyecam::setupStep(setupStatus("waiting_fds", ", \"has_buffers\": false"), PasswordState::NotSet) ==
+          SetupStep::Password);
 }
 
 void testSetupFlow() {
@@ -941,17 +953,16 @@ void testSetupFlow() {
         CHECK(view.flow.readyNotice(100.0) && view.flow.readyNotice(111.0) && !view.flow.readyNotice(113.0));
         view.flow.proceed();
         CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
-        CHECK(!view.flow.accepted());
         // ...also when the dashboard closes instead
         eyecam::View closed = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
                                       setupStatus("idle", done + ", \"last_calib_widen\": \"measured\"")});
         closed.flow.closed();
         CHECK(eyecam::setupScreen(closed) == SetupScreen::Camera);
     }
-    // Standard widening: the question, until "continue" (the page, accepted for this run) or once more
+    // Standard widening (eyecam-rec says setup_done with it): the question, until "continue" (the page) or once more
     {
         eyecam::View view = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
-                                    setupStatus("idle", notDone + ", \"last_calib_widen\": \"default\"")});
+                                    setupStatus("idle", done + ", \"last_calib_widen\": \"default\"")});
         CHECK(view.flow.result() == SetupResult::Fail);
         CHECK(eyecam::setupScreen(view) == SetupScreen::Fail);
         CHECK(!view.flow.readyNotice(100.0));
@@ -959,30 +970,32 @@ void testSetupFlow() {
         CHECK(eyecam::setupScreen(view) == SetupScreen::Fail);
         eyecam::View again = view;
         view.flow.proceed();
-        CHECK(view.flow.accepted());
         CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
-        // once more: calibrating again clears it, and a measured one ends it well
-        again.status = setupStatus("calibrating", notDone);
+        // once more: calibrating again clears it (now a calibration after the setup: no screen after it)
+        again.status = setupStatus("calibrating", done);
         again.flow.follow(again.status, 200.0);
         CHECK(again.flow.result() == SetupResult::None);
-        CHECK(eyecam::setupScreen(again) == SetupScreen::Learn);
         again.status = setupStatus("idle", done + ", \"last_calib_widen\": \"measured\"");
         again.flow.follow(again.status, 220.0);
-        CHECK(eyecam::setupScreen(again) == SetupScreen::Done);
-        // ...even when eyecam-rec already says setup_done with the standard widening
-        eyecam::View doneDefault = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
-                                           setupStatus("idle", done + ", \"last_calib_widen\": \"default\"")});
-        CHECK(eyecam::setupScreen(doneDefault) == SetupScreen::Fail);
+        CHECK(eyecam::setupScreen(again) == SetupScreen::Camera);
+        // An eyecam-rec that says the standard widening without setup_done: not set up, back to the button
+        eyecam::View notSaved = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                        setupStatus("idle", notDone + ", \"last_calib_widen\": \"default\"")});
+        CHECK(notSaved.flow.result() == SetupResult::None);
+        CHECK(eyecam::setupScreen(notSaved) == SetupScreen::Wait);
     }
-    // Failed: the checklist's error (and again), never a result; also from an eyecam-rec that doesn't say the tool
-    // is in while in error
+    // Failed: the checklist's error (and again), never a result. An older eyecam-rec that writes neither has_buffers
+    // nor auto_grab says nothing of the tool in an error: (2), as nothing is remembered from before it
     {
         eyecam::View old = follow({setupStatus("idle"), setupStatus("calibrating"), setupStatus("error")});
+        CHECK(eyecam::setupScreen(old) == SetupScreen::Check);
+        old.status = setupStatus("error", ", \"has_buffers\": true");
         CHECK(eyecam::setupScreen(old) == SetupScreen::Error);
     }
     {
-        eyecam::View view = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
-                                    setupStatus("error", notDone)});
+        const std::string held = notDone + ", \"has_buffers\": true";
+        eyecam::View view = follow({setupStatus("idle", held), setupStatus("calibrating", held),
+                                    setupStatus("error", held)});
         CHECK(view.flow.result() == SetupResult::None);
         CHECK(eyecam::setupScreen(view) == SetupScreen::Error);
         // (an error after a recording isn't the calibration's: back to the button)
@@ -1031,6 +1044,86 @@ void testSetupFlow() {
         view.status = setupStatus("calibrating", notDone);
         CHECK(eyecam::setupScreen(view) == SetupScreen::Learn);
         view.status = setupStatus("recording", done);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+    }
+    // Nothing sticks: each status decides the step (the rehearsal: set up, then the tool removed and eyecam-rec
+    // restarted without calib.json)
+    {
+        const std::string removed =
+            ", \"has_buffers\": false, \"auto_grab\": \"missing\", \"setup_done\": false, \"calib_state\": 0";
+        eyecam::View view = follow({setupStatus("idle", notDone + ", \"has_buffers\": true"),
+                                    setupStatus("calibrating", notDone + ", \"has_buffers\": true"),
+                                    setupStatus("idle", done + ", \"has_buffers\": true, \"last_calib_widen\": "
+                                                               "\"measured\", \"calib_state\": 5")});
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Done);
+        view.flow.proceed();
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+        // eyecam-rec restarted without the tool: (2), not the page nor (3)
+        view.status = setupStatus("waiting_fds", removed);
+        view.flow.follow(view.status, 300.0);
+        view.lastRun = eyecam::Run::None;
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Check);
+        view.password = eyecam::PasswordState::NotSet;
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Pass);
+        view.password = eyecam::PasswordState::Set;
+        // ...the tool installed again: (3) while it waits for the tracker, tries, or after a failed try
+        for (const char* grab : {"waiting_tracker", "trying", "failed: x", "ok"}) {
+            view.status = setupStatus("waiting_fds", ", \"has_buffers\": false, \"setup_done\": false, "
+                                                     "\"auto_grab\": \"" + std::string(grab) + "\"");
+            view.flow.follow(view.status, 310.0);
+            CHECK(eyecam::setupScreen(view) == SetupScreen::Wait);
+        }
+        // ...and gone again
+        view.status = setupStatus("waiting_fds", removed);
+        view.flow.follow(view.status, 320.0);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Check);
+    }
+    // setup_done back to false (calib.json removed) while the done screen or the page shows: the checklist again
+    {
+        eyecam::View view = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                    setupStatus("idle", done + ", \"last_calib_widen\": \"measured\"")});
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Done);
+        CHECK(view.flow.readyNotice(100.0));
+        view.status = setupStatus("idle", notDone);
+        view.flow.follow(view.status, 101.0);
+        CHECK(view.flow.result() == SetupResult::None);
+        CHECK(!view.flow.readyNotice(101.0));
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Wait);
+        // ...done again by eyecam-rec alone (no calibration seen): the page, without a done screen
+        view.status = setupStatus("idle", done);
+        view.flow.follow(view.status, 102.0);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+        // ...the standard widening answered with "continue", then setup_done gone: the checklist, not the page
+        eyecam::View fail = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                    setupStatus("idle", done + ", \"last_calib_widen\": \"default\"")});
+        CHECK(eyecam::setupScreen(fail) == SetupScreen::Fail);
+        fail.flow.proceed();
+        CHECK(eyecam::setupScreen(fail) == SetupScreen::Camera);
+        fail.status = setupStatus("idle", notDone + ", \"last_calib_widen\": \"default\"");
+        fail.flow.follow(fail.status, 130.0);
+        CHECK(eyecam::setupScreen(fail) == SetupScreen::Wait);
+        // ...and a Fail still on screen goes too
+        eyecam::View failShown = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                         setupStatus("idle", done + ", \"last_calib_widen\": \"default\"")});
+        failShown.status = setupStatus("idle", notDone);
+        failShown.flow.follow(failShown.status, 140.0);
+        CHECK(eyecam::setupScreen(failShown) == SetupScreen::Wait);
+    }
+    // An older eyecam-rec: its fallback decides each time too (the baseline lost: the checklist again)
+    {
+        eyecam::View view;
+        view.password = eyecam::PasswordState::Set;
+        view.status = setupStatus("idle", ", \"calib_state\": 4");
+        view.flow.follow(view.status, 100.0);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+        view.status = setupStatus("idle", ", \"calib_state\": 0");
+        view.flow.follow(view.status, 101.0);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Wait);
+        view.status = setupStatus("waiting_fds", ", \"calib_state\": 0");
+        view.flow.follow(view.status, 102.0);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Check);
+        view.status = setupStatus("waiting_fds", ", \"calib_saved\": true");
+        view.flow.follow(view.status, 103.0);
         CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
     }
     // The protocol the chips show: a countdown, then these five

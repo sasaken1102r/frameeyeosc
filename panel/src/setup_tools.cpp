@@ -1,6 +1,8 @@
 // The eye cameras' setup outside the panel: Konsole and Chromium started on their own, and the password check.
 #include "setup_tools.h"
 
+#include "recorder.h"
+
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
@@ -58,15 +60,36 @@ std::vector<std::string> videoArgv(const std::string& url) {
     return {"flatpak", "run", "org.chromium.Chromium", url};
 }
 
-bool spawnDetached(const std::vector<std::string>& argv, std::string& error) {
-    if (argv.empty()) {
+std::vector<std::string> detachedArgv(const std::vector<std::string>& argv, bool systemdRun,
+                                      bool (*set)(const char* name)) {
+    if (!systemdRun) return argv;
+    std::vector<std::string> out = {"systemd-run", "--user", "--collect", "--quiet"};
+    for (const char* name : kSpawnEnvironment) {
+        if (set(name)) {
+            out.push_back("-E");
+            out.push_back(name);
+        }
+    }
+    out.push_back("--");
+    out.insert(out.end(), argv.begin(), argv.end());
+    return out;
+}
+
+double nextPasswordWait(double last, bool changed) {
+    return changed ? kPasswordCheckSec : std::min(kPasswordCheckMaxSec, std::max(kPasswordCheckSec, last * 2));
+}
+
+bool spawnDetached(const std::vector<std::string>& program, std::string& error) {
+    if (program.empty()) {
         error = "nothing to run";
         return false;
     }
-    if (!inPath(argv[0])) {
-        error = argv[0] + " not found";
+    if (!inPath(program[0])) {
+        error = program[0] + " not found";
         return false;
     }
+    const std::vector<std::string> argv =
+        detachedArgv(program, inPath("systemd-run"), [](const char* name) { return std::getenv(name) != nullptr; });
     // Everything the children need, made before forking (only async-signal-safe calls after it)
     std::vector<char*> args;
     for (const std::string& arg : argv) args.push_back(const_cast<char*>(arg.c_str()));
@@ -88,6 +111,8 @@ bool spawnDetached(const std::vector<std::string>& argv, std::string& error) {
             ::dup2(null, 2);
             if (null > 2) ::close(null);
         }
+        // Nothing else of the panel's (its lock file, sockets, the GPU) goes along
+        recorder::cloexecFrom3();
         ::execvp(args[0], args.data());
         ::_exit(127);
     }
@@ -115,9 +140,14 @@ bool PasswordCheck::tick(bool wanted, double now) {
         const pid_t done = ::waitpid(pid_, &status, WNOHANG);
         if (done == pid_) {
             pid_ = -1;
-            state_ = WIFEXITED(status) && WEXITSTATUS(status) == 0 ? eyecam::PasswordState::Set
-                     : WIFEXITED(status) && WEXITSTATUS(status) != 127 ? eyecam::PasswordState::NotSet
-                                                                       : eyecam::PasswordState::Unknown;
+            const eyecam::PasswordState found = WIFEXITED(status) && WEXITSTATUS(status) == 0 ? eyecam::PasswordState::Set
+                                                 : WIFEXITED(status) && WEXITSTATUS(status) != 127
+                                                     ? eyecam::PasswordState::NotSet
+                                                     : eyecam::PasswordState::Unknown;
+            // The same answer again: ask less often
+            wait_ = nextPasswordWait(wait_, found != state_);
+            nextAt_ = startedAt_ + wait_;
+            state_ = found;
         } else if (now >= startedAt_ + kPasswordTimeoutSec) {
             ::kill(pid_, SIGKILL);
             ::waitpid(pid_, nullptr, 0);
@@ -128,8 +158,9 @@ bool PasswordCheck::tick(bool wanted, double now) {
         // Not kept while it doesn't matter: when the step comes back (the tool removed), it is checked again at once
         state_ = eyecam::PasswordState::Unknown;
         nextAt_ = now;
+        wait_ = kPasswordCheckSec;
     } else if (now >= nextAt_) {
-        nextAt_ = now + kPasswordCheckSec;
+        nextAt_ = now + wait_;
         if (!inPath("steamos-passwd")) {
             state_ = eyecam::PasswordState::Unknown;
         } else {

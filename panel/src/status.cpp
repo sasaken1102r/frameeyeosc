@@ -63,7 +63,8 @@ bool readBool(const JsonValue& object, const char* name) {
  */
 std::string readText(const JsonValue& object, const char* name) {
     const JsonValue* value = object.get(name);
-    return value != nullptr && value->isString() ? value->text : std::string();
+    // (drawn as it is: never anything cairo can't take)
+    return value != nullptr && value->isString() ? validUtf8(value->text) : std::string();
 }
 
 }  // namespace
@@ -182,7 +183,7 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
     status.opennessSaturated = readBool(root, "openness_saturated");
     if (const JsonValue* locked = root.get("locked"); locked != nullptr && locked->isArray()) {
         for (const JsonValue& item : locked->items) {
-            if (item.isString()) status.locked.push_back(item.text);
+            if (item.isString()) status.locked.push_back(validUtf8(item.text));
         }
     }
     if (const JsonValue* effective = root.get("effective"); effective != nullptr && effective->isObject()) {

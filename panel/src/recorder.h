@@ -12,6 +12,14 @@
 
 namespace recorder {
 
+/**
+ * In a child between fork and exec: mark every descriptor from 3 up close-on-exec, however high, so nothing of the
+ * panel's (its lock file, sockets, the GPU) reaches the program it starts. Marked rather than closed, so a pipe that
+ * reports a failed exec stays open until the exec. close_range (Linux 5.11+); otherwise the descriptors listed in
+ * /proc/self/fd, read with getdents64 (only async-signal-safe calls).
+ */
+void cloexecFrom3();
+
 /** A recording stops by itself after this long (about 140 MB at 2.3 MB a minute). */
 constexpr double kMaxSec = 60 * 60;
 /** After SIGINT, the child gets this long to write out and exit before it is killed. */

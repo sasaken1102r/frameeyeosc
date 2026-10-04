@@ -6,6 +6,7 @@
 // recorder in a temporary folder (never the real one; nothing is started). Built with the panel as eyecam-test; exits non-zero
 // on failure.
 #include "eyecam.h"
+#include "json.h"
 #include "setup_tools.h"
 
 #include <sys/socket.h>
@@ -1564,6 +1565,26 @@ void testSetupTools() {
     // Never sudo or passwd run by the panel itself: they are only typed in
     for (const auto& argv : {install, passwd, english}) CHECK(argv[0] == "konsole");
     SAME(setup_tools::kShownInstallCommand, "sudo ~/.local/lib/eyecam/install_grab.sh");
+    // Started through systemd-run, outside the panel's service (it outlives a panel restart), with the display taken
+    // along; without systemd-run, as it is
+    const auto someSet = [](const char* name) { return std::string(name) == "DISPLAY" || std::string(name) == "LANG"; };
+    const std::vector<std::string> wrapped = setup_tools::detachedArgv(install, true, someSet);
+    const std::vector<std::string> head = {"systemd-run", "--user", "--collect", "--quiet", "-E", "DISPLAY",
+                                           "-E",          "LANG",   "--"};
+    CHECK(wrapped.size() == head.size() + install.size());
+    CHECK(std::equal(head.begin(), head.end(), wrapped.begin()));
+    CHECK(std::equal(install.begin(), install.end(), wrapped.begin() + head.size()));
+    CHECK(setup_tools::detachedArgv(install, false, someSet) == install);
+    const auto noneSet = [](const char*) { return false; };
+    CHECK(setup_tools::detachedArgv(passwd, true, noneSet).size() == passwd.size() + 5);
+    // The password is asked for less and less often while the answer stays the same: 4 s, 8, 16, 30, 30; at once 4
+    // again when it changes
+    double wait = setup_tools::kPasswordCheckSec;
+    for (const double expected : {8.0, 16.0, 30.0, 30.0}) {
+        wait = setup_tools::nextPasswordWait(wait, false);
+        CHECK(wait == expected);
+    }
+    CHECK(setup_tools::nextPasswordWait(wait, true) == setup_tools::kPasswordCheckSec);
     // The video: Chromium through flatpak, never xdg-open; and none yet (its button stays hidden)
     const std::vector<std::string> video = setup_tools::videoArgv("https://example.com/v");
     CHECK(video.size() == 4);
@@ -1826,6 +1847,53 @@ void testControl() {
  * Run the tests.
  * @return 0 if all passed
  */
+void testUtf8() {
+    // Valid text stays as it is
+    SAME(validUtf8("校正できた ok"), "校正できた ok");
+    SAME(validUtf8(""), "");
+    const std::string bad = "\xEF\xBF\xBD";
+    // A cut character, a stray continuation byte, an overlong form, a surrogate, past U+10FFFF, 0xFF: replaced
+    SAME(validUtf8(std::string("ab\xE6\xA0")), "ab" + bad + bad);
+    SAME(validUtf8(std::string("\x80x")), bad + "x");
+    SAME(validUtf8(std::string("\xC0\xAF")), bad + bad);
+    SAME(validUtf8(std::string("\xED\xA0\x80")), bad + bad + bad);
+    SAME(validUtf8(std::string("\xF4\x90\x80\x80")), bad + bad + bad + bad);
+    SAME(validUtf8(std::string("\xFF")), bad);
+    SAME(validUtf8(std::string("\xF0\x9F\x98\x80")), "\xF0\x9F\x98\x80");  // a 4-byte one is fine
+    // Cut on a boundary: "校" is 3 bytes
+    const std::string ja = "校正";
+    CHECK(utf8Prefix(ja, 4) == 3);
+    CHECK(utf8Prefix(ja, 3) == 3);
+    CHECK(utf8Prefix(ja, 2) == 0);
+    CHECK(utf8Prefix(ja, 99) == ja.size());
+    CHECK(utf8Prefix("abc", 2) == 2);
+    // status.json's texts and a reply come out valid
+    const Status s = eyecam::parseStatus("{\"state\": \"error\", \"message\": \"\xE6\xA0\", \"message_en\": \"x\xFF\", "
+                                         "\"step_label\": \"\xC3\"}",
+                                         kNow);
+    CHECK(s.present);
+    SAME(s.message, bad + bad);
+    SAME(s.messageEn, "x" + bad);
+    SAME(s.stepLabel, bad);
+    SAME(eyecam::parseReply(std::string("err \xE6\xA0\xA1\xE6"), "start").error, "\xE6\xA0\xA1" + bad);
+    // A status file too large isn't read
+    const std::string dir = tempDir();
+    {
+        std::ofstream big(dir + "/status.json", std::ios::binary);
+        big << "{\"state\": \"idle\", \"message\": \"" << std::string(eyecam::kMaxStatusBytes, 'a') << "\"}";
+    }
+    const Status tooBig = eyecam::readStatus(dir);
+    CHECK(!tooBig.present);
+    SAME(tooBig.readError, "status.json is too large");
+    {
+        std::ofstream small(dir + "/status.json", std::ios::binary | std::ios::trunc);
+        small << "{\"state\": \"idle\", \"message\": \"\xE6\xA0\"}";
+    }
+    const Status read = eyecam::readStatus(dir);
+    CHECK(read.present);
+    SAME(read.message, bad + bad);
+}
+
 int main() {
     testParse();
     testVisible();
@@ -1848,6 +1916,7 @@ int main() {
     testPageCalib();
     testSetupTools();
     testReply();
+    testUtf8();
     testReadFile();
     testControl();
     if (gFailures > 0) {

@@ -139,6 +139,9 @@ enum class PageScreen {
     Result,       ///< ...that ended: SetupFlow::calibResult
 };
 
+/** The most of status.json that is read (eyecam-rec writes one line of well under 2 KB). */
+constexpr size_t kMaxStatusBytes = 64 * 1024;
+
 /** status.json as read. Numbers missing from it are NaN (steps -1). */
 struct Status {
     bool present = false;    ///< the file was read and parsed as an object

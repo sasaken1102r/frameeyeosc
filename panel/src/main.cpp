@@ -2643,8 +2643,9 @@ int runOverlay(const Options& options) {
             // The setup: the password (only while it may still be needed: at (1) or (2), the tool not in), how its
             // calibration ended, and the short "ready" in the left column after it
             {
-                const bool wanted =
-                    shown && eyecam::setupStep(s, eyecam::PasswordState::Unknown) == eyecam::SetupStep::Tool;
+                // (only while the panel shows on the dashboard: nobody reads it otherwise)
+                const bool wanted = visible && shown &&
+                                    eyecam::setupStep(s, eyecam::PasswordState::Unknown) == eyecam::SetupStep::Tool;
                 if (passwordCheck.tick(wanted, nowSeconds())) {
                     std::fprintf(stderr, "[setup] password: %s\n",
                                  passwordCheck.state() == eyecam::PasswordState::Set      ? "set"

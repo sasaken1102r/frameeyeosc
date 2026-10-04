@@ -157,7 +157,8 @@ add_test(NAME changelog COMMAND changelog-test)
 # The eye cameras tab (eyecam-rec): its status file, the setup checklist, when the tab and the full-view light show,
 # the step texts, the setup's Konsole command lines, and the control socket against a stand-in recorder in /tmp:
 # panel/build/eyecam-test
-add_executable(eyecam-test tests/eyecam_test.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/setup_tools.cpp)
+add_executable(eyecam-test tests/eyecam_test.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/setup_tools.cpp
+  src/recorder.cpp)
 target_include_directories(eyecam-test PRIVATE src)
 target_compile_options(eyecam-test PRIVATE -Wall -Wextra)
 target_link_libraries(eyecam-test PRIVATE Threads::Threads)

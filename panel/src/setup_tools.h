@@ -22,8 +22,17 @@ constexpr const char* kShownInstallCommand = "sudo ~/.local/lib/eyecam/install_g
 constexpr const char* kPasswdCommand = "passwd";
 /** The setup video. None yet: while it is empty, its button and the line under it don't show. */
 constexpr const char* kVideoUrl = "";
-/** How often the password is checked again while the setup may need it (s). */
+/** How often the password is checked again while the setup may need it, at first (s)... */
 constexpr double kPasswordCheckSec = 4.0;
+/** ...doubling while it stays the same, up to this (s). */
+constexpr double kPasswordCheckMaxSec = 30.0;
+/**
+ * What a program started through systemd-run takes along from the panel's environment (only those set): the display
+ * and session Konsole needs. The rest comes from the user's systemd, as for the panel itself.
+ */
+constexpr const char* kSpawnEnvironment[] = {"DISPLAY",         "WAYLAND_DISPLAY", "XAUTHORITY",
+                                             "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP",
+                                             "DBUS_SESSION_BUS_ADDRESS", "LANG", "LC_ALL"};
 /** The longest a password check may take before it counts as unknown (s). */
 constexpr double kPasswordTimeoutSec = 5.0;
 
@@ -52,8 +61,22 @@ std::vector<std::string> setupKonsoleArgv(int button, Language language);
 std::vector<std::string> videoArgv(const std::string& url);
 
 /**
- * Start a program and leave it: its own session, stdin / stdout / stderr on /dev/null, the panel's environment
- * (DISPLAY: the window shows in the headset), and never waited for (it is reparented to init, so no zombie).
+ * The command line that starts a program outside the panel's own service: through "systemd-run --user --collect" as
+ * a transient unit of its own, so it outlives a panel restart (the panel is a systemd user service: its cgroup goes
+ * with it) while the user types a password into Konsole, taking along the variables of kSpawnEnvironment that are set
+ * (-E NAME takes the value from systemd-run's environment). Without systemd-run, the program as it is.
+ * @param argv the program and its arguments
+ * @param systemdRun systemd-run can be used
+ * @param set whether a variable is set in the panel's environment
+ * @return the command line
+ */
+std::vector<std::string> detachedArgv(const std::vector<std::string>& argv, bool systemdRun,
+                                      bool (*set)(const char* name));
+
+/**
+ * Start a program and leave it (detachedArgv: through systemd-run when there is one): its own session, stdin / stdout /
+ * stderr on /dev/null, no other descriptor of the panel's, the panel's environment (DISPLAY: the window shows in the
+ * headset), and never waited for (it is reparented to init, so no zombie).
  * @param argv the program and its arguments (looked up in PATH)
  * @param error why it couldn't start (not found, fork failed)
  * @return true if started
@@ -61,10 +84,20 @@ std::vector<std::string> videoArgv(const std::string& url);
 bool spawnDetached(const std::vector<std::string>& argv, std::string& error);
 
 /**
+ * How long until the password is checked again: kPasswordCheckSec after it changed (or at first), else twice the last
+ * wait, up to kPasswordCheckMaxSec.
+ * @param last the last wait (s)
+ * @param changed the check's answer differs from the one before
+ * @return the next wait (s)
+ */
+double nextPasswordWait(double last, bool changed);
+
+/**
  * "steamos-passwd --has-password" in the background (it only reads: passwd with no input, and whether it asks for
- * the current password), checked again every kPasswordCheckSec while wanted, and forgotten (unknown) while not, so it
- * is checked afresh when it is wanted again. Exit 0 = set, another exit = not set; no steamos-passwd, or no answer in
- * kPasswordTimeoutSec = unknown.
+ * the current password), checked while wanted (the panel open on the dashboard at the setup's (1) or (2)): at once, then
+ * every kPasswordCheckSec, waiting longer while the answer stays the same (nextPasswordWait, up to
+ * kPasswordCheckMaxSec). Forgotten (unknown) while not wanted, so it is checked afresh when it is wanted again. Exit 0 =
+ * set, another exit = not set; no steamos-passwd, or no answer in kPasswordTimeoutSec = unknown.
  */
 class PasswordCheck {
 public:
@@ -88,6 +121,7 @@ private:
     pid_t pid_ = -1;
     double startedAt_ = 0.0;
     double nextAt_ = 0.0;
+    double wait_ = kPasswordCheckSec;  ///< until the check after the one running or done
     eyecam::PasswordState state_ = eyecam::PasswordState::Unknown;
 };
 

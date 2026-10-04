@@ -61,7 +61,8 @@ int readInt(const JsonValue& object, const char* name, int fallback) {
  */
 std::string readText(const JsonValue& object, const char* name) {
     const JsonValue* value = object.get(name);
-    return value != nullptr && value->isString() ? value->text : std::string();
+    // (drawn as it is: never anything cairo can't take)
+    return value != nullptr && value->isString() ? validUtf8(value->text) : std::string();
 }
 
 }  // namespace
@@ -174,9 +175,16 @@ Status readStatus(const std::string& dir) {
     struct stat info {};
     double mtime = 0.0;
     if (::stat(path.c_str(), &info) == 0) mtime = info.st_mtim.tv_sec + info.st_mtim.tv_nsec / 1e9;
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return parseStatus(buffer.str(), mtime);
+    // At most kMaxStatusBytes (eyecam-rec writes one short line): a bigger file isn't eyecam-rec's
+    std::string text(kMaxStatusBytes + 1, '\0');
+    file.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<size_t>(file.gcount()));
+    if (text.size() > kMaxStatusBytes) {
+        Status status = parseStatus("", mtime);
+        status.readError = "status.json is too large";
+        return status;
+    }
+    return parseStatus(text, mtime);
 }
 
 double age(const Status& status, double now) {
@@ -549,7 +557,8 @@ std::string instruction(const UiText& t, const std::string& label) {
 }
 
 Reply parseReply(const std::string& line, const std::string& command) {
-    std::string text = line;
+    // (its reason is drawn: valid UTF-8 only)
+    std::string text = validUtf8(line);
     while (!text.empty() && (text.back() == '\n' || text.back() == '\r' || text.back() == ' ')) text.pop_back();
     Reply reply;
     reply.command = command;
@@ -661,7 +670,7 @@ bool Control::poll(double now) {
                 return true;
             }
             if (received_.size() > kMaxReply) {
-                finish(parseReply(received_.substr(0, 80), command_));
+                finish(parseReply(received_.substr(0, utf8Prefix(received_, 80)), command_));
                 return true;
             }
             continue;

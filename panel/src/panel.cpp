@@ -4001,32 +4001,43 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
                             : use == CameraUse::Warming ? std::string(t.cameraUseValve)
                                                         : cameraUseText(t, use, es);
         if (state.empty()) state = "—";
-        // The pill: learning them now (with the seconds), or learned
+        // The pill: learning them now (with the seconds; not while no camera values come), or learned
         std::string pill;
         bool learned = false;
-        if (warming) {
+        if (warmingShown(warming, use)) {
             if (std::isfinite(s.warmupRemainingS)) {
                 char left[128];
                 std::snprintf(left, sizeof(left), t.eyecamWarmingFormat,
                               static_cast<int>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)));
                 pill = left;
             }
-        } else if (s.baseline == "ready" || (s.calibState & (eyecam::kCalibWearBit | eyecam::kCalibAutoBit)) != 0) {
+        } else if (!warming &&
+                   (s.baseline == "ready" || (s.calibState & (eyecam::kCalibWearBit | eyecam::kCalibAutoBit)) != 0)) {
             pill = t.camLearned;
             learned = true;
         }
+        // Laid out from the card's right edge: the pill's width first (at most a little over half the row), then the
+        // line in what is left (smaller, then cut with "…"), so nothing goes past the card
         const double pillH = 32;
         const double textX = kControlX + 20;
         const double pillPad = learned ? 46 : 28;
-        const double pillSize = pill.empty() ? 15 : fitSize(pen, pill, 15, 11, (kInnerRight - textX) * 0.55 - pillPad, false);
-        const double pillW = pill.empty() ? 0 : pen.measure(pill, pillSize, false) + pillPad;
+        std::string pillText = pill;
+        double pillSize = 15;
+        if (!pill.empty()) {
+            const double maxPillText = (kInnerRight - textX) * 0.55 - pillPad;
+            pillSize = fitSize(pen, pill, 15, 11, maxPillText, false);
+            pillText = ellipsize(pen, pill, pillSize, false, maxPillText, false);
+        }
+        const double pillW = pill.empty() ? 0 : pen.measure(pillText, pillSize, false) + pillPad;
         const double room = kInnerRight - textX - (pill.empty() ? 0 : pillW + 14);
         const double size = fitSize(pen, state, 19, 13, room, inUse);
+        state = ellipsize(pen, state, size, inUse, room, false);
         drawDot(cr, kControlX + 6, y + h / 2, 5.5, inUse ? kSuccess : kTextMuted);
         const double textRight = textX + pen.text(textX, centerBaseline(y, h, size), state, size, inUse ? kText : kTextMuted,
                                                   inUse);
         if (!pill.empty()) {
-            const double px = textRight + 14;
+            // (right after the line; it was given room for that)
+            const double px = std::min(textRight + 14, kInnerRight - pillW);
             const double py = y + (h - pillH) / 2;
             fillRounded(pen, px, py, pillW, pillH, pillH / 2, learned ? kSuccessTint : kAccentTint);
             double tx = px + 14;
@@ -4034,7 +4045,7 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
                 drawCheck(cr, px + 22, py + pillH / 2, 15, kSuccess);
                 tx = px + 36;
             }
-            pen.text(tx, centerBaseline(py, pillH, pillSize), pill, pillSize, learned ? kSuccess : kText);
+            pen.text(tx, centerBaseline(py, pillH, pillSize), pillText, pillSize, learned ? kSuccess : kText);
         }
         y += h;
         divider(y);

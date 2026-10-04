@@ -422,3 +422,7 @@ CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming) {
 bool lidsFromCameras(const EyeStatus& status) {
     return status.running && status.camera.used[0] && status.camera.used[1];
 }
+
+bool warmingShown(bool warming, CameraUse use) {
+    return warming && use != CameraUse::NoCamera;
+}

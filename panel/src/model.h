@@ -306,6 +306,15 @@ enum class CameraUse {
 CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming = false);
 
 /**
+ * Whether the eye cameras' page shows "learning your relaxed eyes (N s left)": while eyecam-rec learns them, but not
+ * while frameeyeosc gets no camera values (the headset is off: the countdown doesn't move then).
+ * @param warming eyecam-rec is learning the relaxed eyes (eyecam::baselineWarming)
+ * @param use what drives the eyelids (cameraUse)
+ * @return true to show it
+ */
+bool warmingShown(bool warming, CameraUse use);
+
+/**
  * Whether the eye cameras drive both eyelids now (frameeyeosc's camera.used): then widening is their sensitivity, and
  * the Eyelids tab shows that in Widen's place.
  * @param status frameeyeosc's status

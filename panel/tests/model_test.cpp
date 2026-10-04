@@ -430,6 +430,22 @@ void testCameraLids() {
 }
 
 /** frameeyeosc's "camera" and the camera values sent, and what the eye capture tab says about them. */
+/** "Learning your relaxed eyes (N s left)" only while it can move: not without camera values (the headset off). */
+void testWarmingShown() {
+    for (const CameraUse use : {CameraUse::Unknown, CameraUse::Off, CameraUse::Both, CameraUse::Left, CameraUse::Right,
+                                CameraUse::NotCalibrated, CameraUse::Warming, CameraUse::Error, CameraUse::Valve}) {
+        CHECK(warmingShown(true, use));
+        CHECK(!warmingShown(false, use));
+    }
+    CHECK(!warmingShown(true, CameraUse::NoCamera));
+    CHECK(!warmingShown(false, CameraUse::NoCamera));
+    // frameeyeosc without camera values while eyecam-rec warms up: the reason says so, the countdown doesn't show
+    EyeStatus s = parseStatus("{\"pid\": 1, \"time\": 0, \"camera\": {\"present\": false, \"calib_state\": 0}}",
+                              0, false);
+    CHECK(cameraUse(s, true, true) == CameraUse::NoCamera);
+    CHECK(!warmingShown(true, cameraUse(s, true, true)));
+}
+
 /** The Eyelids tab shows the cameras' widening in Widen's place only while both eyes are on the cameras. */
 void testLidsFromCameras() {
     const auto status = [](const std::string& used, bool running = true) {
@@ -571,6 +587,7 @@ int main() {
     testCameraLids();
     testCameraStatus();
     testLidsFromCameras();
+    testWarmingShown();
     testUpdateNotes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

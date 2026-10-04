@@ -129,7 +129,7 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.loc
 | `eye_tracking_active` | `--eye-tracking-active` | `"bool"` | VRChat モードで `EyeTrackingActive` をどう送るか: `"bool"`（true / false）、`"float"`（1.0 / 0.0。アバターによってはこちらが必要）、`"off"`（送らない。止めたときや目を見失ったときの 1 回の「無効」も送らない）。ETVR モードと LiveLink モードではもともと送らない |
 | `steamlink_params` | `--steamlink-params` | `false` | VRChat モードで、SteamVR の Steam Link が自分の OSC で送るアバターのパラメータ（`LeftEyeX`、`RightEyeLid` など）も送る。それに合わせて作ったアバター用（[Steam Link の OSC 向けのアバター](#steam-link-の-osc-向けのアバター)）。頭（`prefix`）は付けない。ETVR モードと LiveLink モードでは使わない |
 | `native_eyes` | `--native-eyes` | `false` | VRChat モードで、VRChat 自身のアイトラッキング入力（`/tracking/eye/*`）も送る。VRCFT のパラメータを持たないアバターの目が動く（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)）。送り方タブにスイッチがある |
-| `camera_lids` | `--no-camera-lids` | `true` | 準備が済んでいれば、目のカメラの値を使う（[目のカメラ](#目のカメラ)）: 普通に開いた目から上のまぶた（見開き）、目を細めた動き、瞳孔の大きさ。`false` で Valve の値だけ。パネルが動いていれば、eyecam-rec にも映像からの計算を止めさせる（`live off`。eyecam 自体は動き続ける。[止める・取り除く](#止める取り除く)）。目のカメラタブの「カメラで瞼を取る」 |
+| `camera_lids` | `--no-camera-lids` | `true` | 準備が済んでいれば、目のカメラの値を使う（[目のカメラ](#目のカメラ)）: 普通に開いた目から上のまぶた（見開き）、目を細めた動き、瞳孔の大きさ。`false` で Valve の値だけ。frameeyeosc が eyecam-rec にも映像からの計算を止めさせる（`live off`。eyecam 自体は動き続ける。[止める・取り除く](#止める取り除く)）。目のカメラタブの「カメラで瞼を取る」 |
 | `pupils_to_vrchat` | `--no-pupils-to-vrchat` | `true` | LiveLink モードで、目のカメラの瞳孔の大きさを VRChat に直接送る（同じ PC のポート 9000）。LiveLink モジュールは瞳孔を運ばないため。ほかのモードでは関係ない |
 | `pupil_bits` | `--pupil-bits` | `0` | 目のカメラの瞳孔を VRChat に送るとき、開き具合をこの個数の bool のパラメータ（`v2/PupilDilation1`、`2`、`4`、`8`）でも送る。ビットで受け取るアバター用。`0` で小数だけ。1〜4。[ビットで受け取るアバターの瞳孔](#ビットで受け取るアバターの瞳孔) を参照。送り方タブの「瞳孔の受け取り方」 |
 | `raw` | `--raw` | `false` | スムージングしない。時間を使う処理（途切れ消し、視線を止める、品質チェック、閉じたまま保つ、真下で左右を止める）もしない |
@@ -297,7 +297,7 @@ Frame には、目ごとに赤外線のカメラが付いています。frameeye
 最初に一度だけ、パネルの「目のカメラ」タブで準備します。チェックリストになっていて、できたところから自動で次に進みます。
 
 1. パスワードを決める: SteamOS にまだパスワードがないときだけです（2 で使うため）。Steam の設定 → 開発者 → ユーザーパスワードを変更、または［Konsole で passwd を開く］
-2. 道具を入れる: ［Konsole で開く］を押すと、`sudo ~/.local/lib/eyecam/install_grab.sh` が入力された Konsole が開きます。Enter を押して、SteamOS のパスワードを打ちます（SSH なら同じ 1 行を打ちます）。パネルが自分で sudo を実行することはありません。そのあと、`install_grab.sh` が出す、入れた eyecam-grab の sha256 を確かめてください（[入れた道具を確かめる](#入れた道具を確かめる)）。更新で新しい道具が届いたときは、目のカメラタブ（と左の列）に「道具が新しくなったよ、入れ直してね」と出ます。そこから同じ［Konsole で開く］で入れ直してください。それまでも今の道具のままで動きます。ただし eyecam が安全のために古い道具を使わないと決めたとき（安全のための下限より古いとき）だけは、入れ直すまでカメラが止まり、まぶたは Valve の値だけで送ります。お知らせにもそう出ます。準備が済む前なら、この段階が「道具を入れ直す」としてまた出ます
+2. 道具を入れる: ［Konsole で開く］を押すと、`sudo ~/.local/lib/eyecam/install_grab.sh` が入力された Konsole が開きます。Enter を押して、SteamOS のパスワードを打ちます（SSH なら同じ 1 行を打ちます）。パネルが自分で sudo を実行することはありません。パスワードを打つ前に、Konsole のコマンドの上に出る sha256 を、リリースノートの値と比べてください（[入れる前に道具を確かめる](#入れる前に道具を確かめる)）。更新で新しい道具が届いたときは、目のカメラタブ（と左の列）に「道具が新しくなったよ、入れ直してね」と出ます。そこから同じ［Konsole で開く］で入れ直してください。それまでも今の道具のままで動きます。ただし eyecam が安全のために古い道具を使わないと決めたとき（安全のための下限より古いとき）だけは、入れ直すまでカメラが止まり、まぶたは Valve の値だけで送ります。お知らせにもそう出ます。準備が済む前なら、この段階が「道具を入れ直す」としてまた出ます
 3. 目の動きを覚える: HMD をかぶって両目が見えている状態で［覚えはじめる］を押し、画面の指示どおりに 18 秒目を動かします（閉じる・ふつうに開ける・見開く…。切り替わるたびにピッと鳴ります）。見開きだけうまく取れなかったときは、標準の値のまま進めて、あとで校正し直せます
 
 済んだあとのタブでは、いまどの値でまぶたを動かしているかと、カメラを止めるスイッチ（「カメラで瞼を取る」、`camera_lids`）、違和感があるときの「目のカメラの校正（18秒）」、目を細めた動きを送るのに要る「ユーザー校正（最初に 1 回）」（18 秒: 細める・上を見る・下を見る）が出ます。見開きの出やすさは、まぶたタブの「見開きの出やすさ」で変えます。
@@ -320,19 +320,19 @@ SteamOS では、ほかのプログラムからカメラのバッファを受け
 
 eyecam-rec は、受け取ったバッファも Valve の目のデータも読み取り専用で開きます。root で動くことはありません。くわしくは [tools/eyecam/README.md](tools/eyecam/README.md) にあります。
 
-### 入れた道具を確かめる
+### 入れる前に道具を確かめる
 
-`install_grab.sh` が写すのは `~/.local/lib/eyecam/eyecam-grab` で、このフォルダーはあなたのユーザーで動くプログラムならどれでも書き換えられます。なので、権限を付けたのがリリースのファイルそのものか確かめてください。`install_grab.sh` は入れたファイルの sha256 を出します（「インストールした」のすぐ上の、`/home/.eyecam/eyecam-grab` で終わる行）。それを、リリースの tar.gz の中の `eyecam/SHA256SUMS` の `eyecam-grab` の行と比べます:
+`install_grab.sh` が写すのは `~/.local/lib/eyecam/eyecam-grab` で、このフォルダーはあなたのユーザーで動くプログラムならどれでも書き換えられます。なので、権限を付ける前に、リリースのファイルそのものか確かめてください。その sha256 が、GitHub のリリースノート（入れた・更新した版のもの）にある `eyecam-grab` の sha256 と同じなら大丈夫です。
 
-```sh
-tar -xzOf frameeyeosc-*-steamframe-aarch64.tar.gz frameeyeosc/eyecam/SHA256SUMS
-```
+- ［Konsole で開く］で開く Konsole には、Enter を押してパスワードを打つ前に、コマンドの上に出ます
+- SSH なら、`sudo ~/.local/lib/eyecam/install_grab.sh` の前に `sha256sum ~/.local/lib/eyecam/eyecam-grab` を実行します
+- `install_grab.sh` も同じ値を（「入れるファイル:」のあとに）もう一度出し、最後に入れたコピーの値も出します
 
-tar.gz は GitHub のリリースから取ってください（tar.gz 自体のチェックサムは、そのリリースの `SHA256SUMS` にあります）。同じ一覧は `~/.local/lib/eyecam/SHA256SUMS` にも入りますが、同じ書き換えられるフォルダーにあるので、信じるのはリリースのほうです。違っていたら、道具を取り除いて（`sudo ~/.local/lib/eyecam/install_grab.sh --uninstall`）、frameeyeosc を入れ直してください。
+違っていたら、パスワードは打たずに Konsole を閉じて、リリースから frameeyeosc を入れ直してください。もう入れてしまっていたら、先に `sudo ~/.local/lib/eyecam/install_grab.sh --uninstall` で取り除きます。
 
 ### 止める・取り除く
 
-- カメラを使うのをやめるには、目のカメラタブの「カメラで瞼を取る」をオフにします（`"camera_lids": false`）。Valve の値だけを送るようになり、パネルは eyecam-rec にも映像から目の値を出すのをやめさせます（`live off`。パネルが動いているあいだは、eyecam-rec が再起動するたびに言い直します）。eyecam-rec 自体は動き続け、カメラのバッファを持ったまま、状態ファイルを書きます
+- カメラを使うのをやめるには、目のカメラタブの「カメラで瞼を取る」をオフにします（`"camera_lids": false`）。Valve の値だけを送るようになり、frameeyeosc が eyecam-rec にも映像から目の値を出すのをやめさせます（`live off`。eyecam-rec が再起動するたびに言い直します）。そのあいだ、校正のボタンは押せません。eyecam-rec 自体は動き続け、カメラのバッファを持ったまま、状態ファイルを書きます
 - eyecam を完全に止めるには: `systemctl --user disable --now eyecam`。更新してもオフのままです（`install.sh` が eyecam.service を有効にするのは初めて入れたときだけで、そのあとは動いていれば再起動するだけです）。また使うときは `systemctl --user enable --now eyecam`
 - 権限の付いたコピーを取り除くには: `sudo ~/.local/lib/eyecam/install_grab.sh --uninstall`。`./install.sh --uninstall` は `~/.local/lib/eyecam` を消すので、その前にやってください（あとからでも、コピーが残っていれば、消すための `sudo rm` のコマンドを出します）
 - `./install.sh --uninstall` は frameeyeosc と一緒に eyecam も取り除き、`--purge` を付けると設定と校正（`~/.config/eyecam`）も消します。`~/eyecam` の校正のファイルと開発用の録画（[プライバシー](#プライバシー)）は残すので、要らなければ自分で消してください

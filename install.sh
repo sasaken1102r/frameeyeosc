@@ -151,9 +151,7 @@ if [[ -x "$here/eyecam/eyecam-rec" ]]; then
             rm -f "$file"
         fi
     done
-    # (SHA256SUMS: what install_grab.sh's printed sha256 should match; see README)
-    for file in "$here"/eyecam/protocol_*.txt "$here/eyecam/NOTICE" "$here/eyecam/SHA256SUMS"; do
-        [[ -f "$file" ]] || continue
+    for file in "$here"/eyecam/protocol_*.txt "$here/eyecam/NOTICE"; do
         install -m644 "$file" "$eyecam_dir/.$(basename "$file").new"
         mv -f "$eyecam_dir/.$(basename "$file").new" "$eyecam_dir/$(basename "$file")"
     done

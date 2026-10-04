@@ -418,3 +418,7 @@ CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming) {
     if (!c.error.empty()) return CameraUse::Error;
     return CameraUse::Valve;
 }
+
+bool lidsFromCameras(const EyeStatus& status) {
+    return status.running && status.camera.used[0] && status.camera.used[1];
+}

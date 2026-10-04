@@ -306,6 +306,14 @@ enum class CameraUse {
 CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming = false);
 
 /**
+ * Whether the eye cameras drive both eyelids now (frameeyeosc's camera.used): then widening is their sensitivity, and
+ * the Eyelids tab shows that in Widen's place.
+ * @param status frameeyeosc's status
+ * @return true while it runs and both eyes are on the cameras
+ */
+bool lidsFromCameras(const EyeStatus& status);
+
+/**
  * The new release's summary shown under the update row: the Japanese one on a Japanese panel when the release text
  * has one, otherwise the English one.
  * @param update the update status

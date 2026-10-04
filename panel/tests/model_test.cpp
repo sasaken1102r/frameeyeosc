@@ -430,6 +430,22 @@ void testCameraLids() {
 }
 
 /** frameeyeosc's "camera" and the camera values sent, and what the eye capture tab says about them. */
+/** The Eyelids tab shows the cameras' widening in Widen's place only while both eyes are on the cameras. */
+void testLidsFromCameras() {
+    const auto status = [](const std::string& used, bool running = true) {
+        EyeStatus s = parseStatus("{\"pid\": 1, \"time\": 0, \"camera\": {\"present\": true, \"calib_state\": 5, "
+                                  "\"used\": " + used + "}}", 0, false);
+        s.running = running;
+        return s;
+    };
+    CHECK(lidsFromCameras(status("[true, true]")));
+    CHECK(!lidsFromCameras(status("[true, false]")));
+    CHECK(!lidsFromCameras(status("[false, true]")));
+    CHECK(!lidsFromCameras(status("[false, false]")));
+    CHECK(!lidsFromCameras(status("[true, true]", false)));  // frameeyeosc not running
+    CHECK(!lidsFromCameras(parseStatus("{\"pid\": 1, \"time\": 0}", 0, false)));  // no camera (older)
+}
+
 void testCameraStatus() {
     // An older frameeyeosc, or none of it: unknown, nothing sent from the cameras
     {
@@ -554,6 +570,7 @@ int main() {
     testNativeEyes();
     testCameraLids();
     testCameraStatus();
+    testLidsFromCameras();
     testUpdateNotes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

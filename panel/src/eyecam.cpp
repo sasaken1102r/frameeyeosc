@@ -149,6 +149,13 @@ Status parseStatus(const std::string& text, double mtime) {
     // The widening sensitivity (missing on an older eyecam-rec: no slider)
     status.widenSensitivity = readNumber(root, "widen_sensitivity", kNaN);
     status.hasWidenSensitivity = std::isfinite(status.widenSensitivity);
+    // The setup (missing on an older eyecam-rec: see setupComplete and toolInstalled)
+    const JsonValue* buffers = root.get("has_buffers");
+    status.hasBuffers = buffers != nullptr && buffers->isBool() && buffers->boolean;
+    const JsonValue* setup = root.get("setup_done");
+    status.hasSetupDone = setup != nullptr && setup->isBool();
+    status.setupDone = status.hasSetupDone && setup->boolean;
+    status.lastCalibWiden = readText(root, "last_calib_widen");
     return status;
 }
 
@@ -283,21 +290,84 @@ bool baselineWarming(const Status& status) {
     return status.hasBaseline && status.baseline == "warming";
 }
 
-CalibPrompt calibPrompt(const View& view, bool cameraLids) {
-    const Status& s = view.status;
-    if (!view.visible || !cameraLids || !s.live || !s.locked) return CalibPrompt::None;
-    if (s.state != State::Idle && s.state != State::Error) return CalibPrompt::None;
-    // A newer eyecam-rec learns the baseline by itself: it only asks while no wear calibration was ever saved
-    const bool needed = s.hasBaseline ? !s.calibSaved : true;
-    if ((s.calibState & kCalibWearBit) == 0 && needed) return CalibPrompt::Calibrate;
-    return s.recalibSuggested ? CalibPrompt::Recalibrate : CalibPrompt::None;
+bool toolInstalled(const Status& status) {
+    if (status.hasBuffers || status.autoGrab == "ok") return true;
+    switch (status.state) {
+        case State::Idle:
+        case State::Searching:
+        case State::Recording:
+        case State::Calibrating: return true;
+        default: return false;
+    }
 }
 
-bool calibOffer(const View& view, bool cameraLids) {
+bool setupComplete(const Status& status) {
+    if (status.hasSetupDone) return status.setupDone;
+    // An eyecam-rec before setup_done: any baseline, or a wear calibration saved once, means it is in use already
+    return (status.calibState & (kCalibWearBit | kCalibAutoBit)) != 0 || status.calibSaved;
+}
+
+SetupStep setupStep(const Status& status, PasswordState password, bool accepted, bool toolSeen) {
+    if (accepted || setupComplete(status)) return SetupStep::Done;
+    if (toolSeen || toolInstalled(status)) return SetupStep::Learn;
+    return password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
+}
+
+SetupScreen setupScreen(const View& view) {
     const Status& s = view.status;
-    if (!view.visible || !cameraLids || !s.live) return false;
-    if (s.state != State::Idle && s.state != State::Error) return false;
-    return calibPrompt(view, cameraLids) == CalibPrompt::None;
+    if (view.flow.result() == SetupResult::Fail) return SetupScreen::Fail;
+    if (view.flow.result() == SetupResult::Done) return SetupScreen::Done;
+    switch (setupStep(s, view.password, view.flow.accepted(), view.flow.toolSeen())) {
+        case SetupStep::Password: return SetupScreen::Pass;
+        case SetupStep::Tool: return SetupScreen::Check;
+        case SetupStep::Learn:
+            if (s.state == State::Calibrating) return SetupScreen::Learn;
+            if (s.state == State::Error && isCalib(view.lastRun)) return SetupScreen::Error;
+            return SetupScreen::Wait;
+        case SetupStep::Done: break;
+    }
+    return SetupScreen::Camera;
+}
+
+void SetupFlow::follow(const Status& status, double now) {
+    const bool complete = setupComplete(status);
+    if (toolInstalled(status)) toolSeen_ = true;
+    if (status.state == State::Calibrating) {
+        if (!calibrating_) {
+            // A new calibration: the setup's if the setup wasn't complete before it (or, joined midway, now)
+            calibrating_ = true;
+            setupCalib_ = !(seen_ ? completeBefore_ : complete);
+            result_ = SetupResult::None;
+        }
+    } else {
+        if (calibrating_ && setupCalib_ && status.state == State::Idle) {
+            // It ended well: widening fell back to the standard values, or it is done (measured, or complete
+            // with an eyecam-rec that doesn't say)
+            if (status.lastCalibWiden == "default") {
+                result_ = SetupResult::Fail;
+            } else if (status.lastCalibWiden == "measured" || complete) {
+                result_ = SetupResult::Done;
+                doneAt_ = now;
+            }
+        }
+        calibrating_ = false;
+        setupCalib_ = false;
+        completeBefore_ = complete;
+    }
+    seen_ = true;
+}
+
+void SetupFlow::proceed() {
+    if (result_ == SetupResult::Fail) accepted_ = true;
+    result_ = SetupResult::None;
+}
+
+void SetupFlow::closed() {
+    if (result_ == SetupResult::Done) result_ = SetupResult::None;
+}
+
+bool SetupFlow::readyNotice(double now) const {
+    return now >= doneAt_ && now < doneAt_ + kReadyNoticeSec;
 }
 
 std::string sensitivityCommand(double value) {
@@ -409,7 +479,10 @@ std::string signature(const View& view) {
                 ? std::to_string(static_cast<long>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)))
                 : std::string("-")) +
            "|" + std::to_string(s.hasCalibSaved) + std::to_string(s.calibSaved) + "|" +
-           rounded(s.widenSensitivity, 0.01);
+           rounded(s.widenSensitivity, 0.01) + "|" + std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
+           std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.autoGrab + "|" +
+           std::to_string(static_cast<int>(view.password)) + std::to_string(static_cast<int>(view.flow.result())) +
+           std::to_string(view.flow.accepted()) + std::to_string(view.readyNotice) + "|" + view.spawnError;
 }
 
 Control::~Control() {

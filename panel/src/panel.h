@@ -72,6 +72,10 @@ enum class PanelAction {
                        ///< eyecam::calibCommand)
     EyecamSensitivity, ///< the widening sensitivity slider: pressed and dragged inside the panel; the caller takes
                        ///< the value with takeSensitivity / sensitivityDragging
+    SetupKonsole,      ///< the eye cameras' setup: open a Konsole with the command typed in (arg 0 = the tool's install,
+                       ///< 1 = passwd; the caller starts it, never from --dump-png)
+    SetupVideo,        ///< ...open the setup video (only shown with a video URL)
+    SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -86,8 +90,11 @@ struct PanelHit {
     bool operator!=(const PanelHit& other) const { return !(*this == other); }
 };
 
-/** The tabs, in the order they are shown. Eyecam (developer) only shows while eyecam-rec runs. */
+/** The tabs. Eyecam (the eye cameras) only shows while eyecam-rec runs, before Advanced. */
 enum class PanelTab { Basic, Output, Gaze, EyeFit, Lids, Advanced, Eyecam };
+
+/** An icon before a button's label. */
+enum class ButtonIcon { None, Terminal, Play };
 
 /**
  * Draws the panel image and finds the button under the laser pointer.
@@ -205,7 +212,7 @@ public:
     bool hostEntryOpen() const { return hostEntryOpen_; }
 
     /**
-     * Open the light warning on the eye capture tab, as its start button does (for --fake-eyecam confirm).
+     * Open the light warning on the Advanced tab, as its recording's start button does (for --fake-eyecam confirm).
      * @param state the recorder's state (only idle and error open it)
      */
     void openEyecamConfirm(eyecam::State state);
@@ -536,13 +543,8 @@ private:
     void drawHistory(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
-     * The eye capture tab (developer): what eyecam-rec is doing, in large type to read in the headset. Waiting for
-     * the camera buffers: the command to run over SSH. Idle: drawEyecamIdle. Searching: the fps. Recording and
-     * calibrating: the step's instruction, the seconds left, the step number, a progress bar over the whole run, the
-     * fps and "Stop" (and "No light" by the step number for the protocol without the light; the calibration's name
-     * there while calibrating). Error: the message and "Start again" ("Calibrate again" after a calibration).
-     * "Start" and "Start again" open the light warning in its place (drawEyecamConfirm). The recorder's message and
-     * a failed command's reply under it.
+     * The eye cameras tab: the setup checklist until it is done (drawSetup), then their page (drawCameraPage); a
+     * calibration from that page and its failure show as drawRun.
      * @param pen drawing tools
      * @param t texts
      * @param model the model (its eyecam view)
@@ -551,39 +553,98 @@ private:
     void drawEyecam(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
 
     /**
-     * The eye capture tab while eyecam-rec is ready: the camera_lids switch with what frameeyeosc uses now, the
-     * calibrations (done or not, a hint, "Calibrate (18 s)" and "User calibration (once)"), and the recording's
-     * start.
+     * What eyecam-rec runs, in large type to read in the headset: the light warning before a recording, searching,
+     * recording and calibrating (the step's instruction, the seconds left, the step number, a progress bar, the fps
+     * and "Stop"; "No light" or the calibration's name by the step number), and a failed calibration or recording
+     * with "again". The recorder's message and a failed command's reply under it. (The recording's on the Advanced
+     * tab, the calibrations' on the eye cameras tab.)
      * @param pen drawing tools
      * @param t texts
-     * @param model the model (its eyecam view, frameeyeosc's camera status)
-     * @param view the settings shown (camera_lids)
-     * @param y the top
+     * @param model the model (its eyecam view)
      */
-    void drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view, double y);
+    void drawRun(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
-     * The note on the first tab asking for a calibration of the eye cameras (eyecam::calibPrompt), with a button
-     * that starts it and shows the eye capture tab.
+     * The setup checklist: (1) a password, (2) the tool, (3) the eye movements, (4) done. Steps done in a row each
+     * (green), the current one in a card (setupCard), those to come muted under it.
      * @param pen drawing tools
      * @param t texts
-     * @param prompt which note
-     * @param busy a command to eyecam-rec waits for its reply (the button greys out)
-     * @param y the top
-     * @return the height used
+     * @param model the model
+     * @param screen which one (not Camera)
      */
-    double drawCalibPrompt(const Pen& pen, const UiText& t, eyecam::CalibPrompt prompt, bool busy, double y);
+    void drawSetup(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen);
 
     /**
-     * The quiet line in the note's place (eyecam::calibOffer): a muted question and a plain button that starts the
-     * calibration for this wear and shows the eye capture tab.
+     * The current step's card in the checklist, measured (draw false) or drawn.
      * @param pen drawing tools
      * @param t texts
-     * @param busy a command to eyecam-rec waits for its reply (the button greys out)
-     * @param y the top
-     * @return the height used
+     * @param model the model
+     * @param screen which step and how
+     * @param x0 its text's left
+     * @param x1 its text's right
+     * @param top its top
+     * @param draw draw it (else only measure)
+     * @return its height
      */
-    double drawCalibOffer(const Pen& pen, const UiText& t, bool busy, double y);
+    double setupCard(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen, double x0,
+                     double x1, double top, bool draw);
+
+    /**
+     * The eye cameras' usual page: what drives the eyelids now, camera_lids, the widening sensitivity, a calibration
+     * when something feels off, the user's own (optional), and what to do when.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     */
+    void drawCameraPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The widening sensitivity slider: dull at the left, sensitive and the value at the right; held, it shows its own
+     * value (and after it is let go of, until status.json has it).
+     * @param pen drawing tools
+     * @param t texts
+     * @param s eyecam-rec's status (its value)
+     * @param x0 left
+     * @param x1 right
+     * @param y top
+     * @param h height
+     */
+    void drawSensitivitySlider(const Pen& pen, const UiText& t, const eyecam::Status& s, double x0, double x1, double y,
+                               double h);
+
+    /**
+     * A button with an icon before its label (centered together).
+     * @param pen drawing tools
+     * @param x left
+     * @param y top
+     * @param w width
+     * @param h height
+     * @param label the label
+     * @param hit what it does
+     * @param usable whether it can be pressed
+     * @param accent accent fill
+     * @param textSize the label's size (smaller if it doesn't fit)
+     * @param icon the icon
+     */
+    void drawIconButton(const Pen& pen, double x, double y, double w, double h, const std::string& label,
+                        const PanelHit& hit, bool usable, bool accent, double textSize, ButtonIcon icon);
+
+    /**
+     * At the bottom of the status column while the eye cameras aren't set up: what to do next (a button to their
+     * tab); right after the setup, that they are ready (green, for a short while).
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param screen the eye cameras' screen (eyecam::setupScreen)
+     * @param x0 left
+     * @param x1 right
+     */
+    void drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen,
+                         double x0, double x1);
+
+
+
 
     /**
      * The light warning before a start: a red "Light warning" title with a warning sign, the warning in a red box,

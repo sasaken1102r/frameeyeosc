@@ -12,6 +12,7 @@
 #include "model.h"
 #include "panel.h"
 #include "recorder.h"
+#include "setup_tools.h"
 #include "sounds.h"
 #include "status.h"
 #include "target.h"
@@ -119,6 +120,7 @@ struct Options {
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
     std::string fakeEyecam;       ///< a made-up eyecam-rec state (see printUsage and parseFakeEyecam)
     std::string fakeCamera;       ///< --fake-camera: the eye cameras as frameeyeosc reports them (see printUsage)
+    std::string fakePassword = "set";  ///< --fake-password: the setup's password check
     double sensitivityDrag = -1;  ///< --sensitivity-drag: the slider as if dragged there (-1 = not)
     std::string eyecamDir;        ///< --eyecam-dir: eyecam-rec's folder (status.json, ctl.sock) instead of the default
     std::string fillPngPath;      ///< --eyecam-fill-png: the eye capture's full-view light image
@@ -249,19 +251,22 @@ void printUsage() {
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
         "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
-        "                        A made-up eyecam-rec for the developer tab \"Eye capture\" (confirm: idle with the\n"
-        "                        light warning open; LABEL: lead_in, normal, widen, close, squint, look_up,\n"
-        "                        look_down, bright, dark, end; calibrating without a label: waiting for the video;\n"
-        "                        calib-error: a failed user calibration). Flags after it, each with \":\":\n"
-        "                        unlocked (the cameras lost the eyes), nolight (recording without the light),\n"
+        "                        A made-up eyecam-rec for the eye cameras tab (confirm: idle with the recording's\n"
+        "                        light warning open, on the Advanced tab; LABEL: lead_in, normal, widen, close,\n"
+        "                        squint, look_up, look_down, bright, dark, end; calibrating without a label: waiting\n"
+        "                        for the video; calib-error: a failed user calibration). Flags after it, each with\n"
+        "                        \":\": unlocked (the cameras lost the eyes), nolight (recording without the light),\n"
         "                        user (calibrating / calib-error: the user's calibration; wear: this wear's),\n"
         "                        calib=N (calib_state 0..7, bit 2 a baseline learned by itself; default 0, 1 for a\n"
         "                        failed user calibration), warming=N (learning the relaxed eyes, N s left), ready\n"
         "                        (learned them; both mark an eyecam-rec that learns by itself), saved (calib_saved),\n"
-        "                        recalib, sens=V (widen_sensitivity 0..1)\n"
-        "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with --fake-eyecam idle:sens=...)\n"
-        "                        (recalib_suggested), nolive (not reading the cameras live), auto=VALUE\n"
-        "                        (auto_grab: waiting while eyecam-rec takes the buffers by itself)\n"
+        "                        recalib (recalib_suggested), nolive (not reading the cameras live), auto=VALUE\n"
+        "                        (auto_grab), sens=V (widen_sensitivity 0..1), buffers (has_buffers), setup /\n"
+        "                        nosetup (setup_done true / false; without either, an eyecam-rec before it),\n"
+        "                        widen=measured|default (last_calib_widen), done / fail (the setup's calibration\n"
+        "                        just ended: the checklist's done screen, or widening on the standard values)\n"
+        "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
+        "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
         "                        them (off: camera_lids off)\n"
         "  --eyecam-fill-png PATH  Draw the eye capture's full-view light (with --language) to a PNG\n"
@@ -293,6 +298,10 @@ struct FakeEyecam {
     double warmupS = -1.0;  ///< warmup_remaining_s while warming (-1 = none)
     bool saved = false;     ///< calib_saved
     double sens = -1.0;     ///< widen_sensitivity (-1 = an eyecam-rec without it)
+    bool buffers = false;   ///< has_buffers
+    int setup = -1;         ///< setup_done: 1 / 0 (-1 = an eyecam-rec before it)
+    std::string widen;      ///< last_calib_widen ("" = none)
+    std::string result;     ///< "done" / "fail": the setup's calibration just ended that way ("" = no)
 };
 
 /**
@@ -339,6 +348,14 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
                    flag.find_first_not_of("0123456789.", 8) == std::string::npos) {
             fake.baseline = "warming";
             fake.warmupS = std::atof(flag.c_str() + 8);
+        } else if (flag == "buffers") {
+            fake.buffers = true;
+        } else if (flag == "setup" || flag == "nosetup") {
+            fake.setup = flag == "setup" ? 1 : 0;
+        } else if (flag == "widen=measured" || flag == "widen=default") {
+            fake.widen = flag.substr(6);
+        } else if (flag == "done" || flag == "fail") {
+            fake.result = flag;
         } else if (flag == "ready") {
             fake.baseline = "ready";
         } else if (flag == "saved") {
@@ -565,6 +582,13 @@ bool parseOptions(int argc, char** argv, Options& options) {
                              "--fake-eyecam must be waiting, idle, confirm, searching, recording:LABEL, "
                              "calibrating[:LABEL], error or calib-error, with known flags: %s\n",
                              options.fakeEyecam.c_str());
+                return false;
+            }
+            options.fake = true;
+        } else if (arg == "--fake-password" && hasNext) {
+            options.fakePassword = argv[++i];
+            if (options.fakePassword != "set" && options.fakePassword != "unset" && options.fakePassword != "unknown") {
+                std::fprintf(stderr, "--fake-password must be set, unset or unknown: %s\n", options.fakePassword.c_str());
                 return false;
             }
             options.fake = true;
@@ -849,8 +873,25 @@ eyecam::View fakeEyecam(const std::string& text) {
         s.hasWidenSensitivity = true;
         s.widenSensitivity = fake.sens;
     }
+    if (!fake.autoGrab.empty()) s.autoGrab = fake.autoGrab;
+    s.hasBuffers = fake.buffers;
+    s.hasSetupDone = fake.setup >= 0;
+    s.setupDone = fake.setup == 1;
+    s.lastCalibWiden = fake.result == "fail" ? "default" : (fake.result == "done" ? "measured" : fake.widen);
     s.state = eyecam::parseState(s.stateText);
     view.visible = eyecam::tabVisible(s, unixNow());
+    // The setup's calibration that just ended: followed as the loop would, from calibrating to this status
+    if (!fake.result.empty()) {
+        eyecam::Status calibrating = s;
+        calibrating.state = eyecam::State::Calibrating;
+        calibrating.hasSetupDone = true;
+        calibrating.setupDone = false;
+        view.flow.follow(calibrating, nowSeconds());
+        if (fake.result == "done") s.hasSetupDone = s.setupDone = true;
+        view.flow.follow(s, nowSeconds());
+        view.readyNotice = view.flow.readyNotice(nowSeconds());
+        view.lastRun = eyecam::Run::CalibWear;
+    }
     return view;
 }
 
@@ -1083,6 +1124,9 @@ PanelModel fakeModel(const Options& options) {
     }
     m.eyecamDir = options.eyecamDir;
     if (!options.fakeEyecam.empty()) m.eyecam = fakeEyecam(options.fakeEyecam);
+    m.eyecam.password = options.fakePassword == "unset"   ? eyecam::PasswordState::NotSet
+                        : options.fakePassword == "unknown" ? eyecam::PasswordState::Unknown
+                                                            : eyecam::PasswordState::Set;
     m.autostart.autostart = options.fakeAutostart;
     m.language = configLanguage(m.config);
     if (options.fakeWriteError) m.panelError = "rename failed: Read-only file system";
@@ -1786,6 +1830,35 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::HistoryScroll:
         case PanelAction::EyecamStart:
         case PanelAction::EyecamSensitivity: return;  // the loop sends the slider's value
+        case PanelAction::SetupProceed:
+            std::fprintf(stderr, "[setup] on to the eye cameras' page\n");
+            model.eyecam.flow.proceed();
+            return;
+        case PanelAction::SetupKonsole:
+        case PanelAction::SetupVideo: {
+            // Konsole with the command typed in (the user presses Enter and types the password: the panel never runs
+            // sudo or passwd), or the video in Chromium. Only in VR: --dump-png (vr null) only says what it would run
+            const std::vector<std::string> argv =
+                hit.action == PanelAction::SetupVideo
+                    ? setup_tools::videoArgv(setup_tools::kVideoUrl)
+                    : setup_tools::konsoleArgv(hit.arg == 1 ? setup_tools::kPasswdCommand : setup_tools::kInstallCommand,
+                                               model.language);
+            std::string line;
+            for (const std::string& arg : argv) line += (line.empty() ? "" : " | ") + arg;
+            if (vr == nullptr) {
+                std::printf("setup: would start %s\n", line.c_str());
+                return;
+            }
+            std::string error;
+            if (setup_tools::spawnDetached(argv, error)) {
+                std::fprintf(stderr, "[setup] started %s\n", line.c_str());
+                model.eyecam.spawnError.clear();
+            } else {
+                std::fprintf(stderr, "[setup] couldn't start %s: %s\n", argv[0].c_str(), error.c_str());
+                model.eyecam.spawnError = argv[0] + ": " + error;
+            }
+            return;
+        }
         case PanelAction::HistoryOpen:
             loadHistory(model);
             return;
@@ -2093,6 +2166,7 @@ int runOverlay(const Options& options) {
     // bright and dark steps (the picture drawn, and the one the overlay has)
     eyecam::Control eyecamControl;
     eyecam::SensitivitySender sensitivitySender;  // the widening sensitivity slider's value on its way
+    setup_tools::PasswordCheck passwordCheck;     // the eye cameras' setup: is there a SteamOS password
     double lastEyecamRead = -1e9;
     std::string drawnEyecam;
     std::string loggedEyecam;
@@ -2445,6 +2519,25 @@ int runOverlay(const Options& options) {
                 }
             }
             syncEyecamControl(model.eyecam, eyecamControl);
+            // The setup: the password (only while it may still be needed: not set up, the tool not in), how its
+            // calibration ended, and the short "ready" in the left column after it
+            {
+                const bool wanted = shown && !eyecam::setupComplete(s) && !eyecam::toolInstalled(s);
+                if (passwordCheck.tick(wanted, nowSeconds())) {
+                    std::fprintf(stderr, "[setup] password: %s\n",
+                                 passwordCheck.state() == eyecam::PasswordState::Set      ? "set"
+                                 : passwordCheck.state() == eyecam::PasswordState::NotSet ? "not set"
+                                                                                           : "unknown");
+                }
+                model.eyecam.password = passwordCheck.state();
+                const eyecam::SetupResult before = model.eyecam.flow.result();
+                model.eyecam.flow.follow(s, nowSeconds());
+                if (model.eyecam.flow.result() != before && model.eyecam.flow.result() != eyecam::SetupResult::None) {
+                    std::fprintf(stderr, "[setup] calibration ended: %s\n",
+                                 model.eyecam.flow.result() == eyecam::SetupResult::Done ? "done" : "standard widening");
+                }
+                model.eyecam.readyNotice = model.eyecam.flow.readyNotice(nowSeconds());
+            }
             const std::string state = shown ? s.stateText + " " + std::to_string(s.stepIndex) + " " + s.stepLabel : "";
             if (state != loggedEyecam) {
                 if (shown) {
@@ -2516,6 +2609,8 @@ int runOverlay(const Options& options) {
         if (!visible && wasVisible) {
             panel.closeHostEntry();
             panel.closeEyecamConfirm();
+            // ...nor the setup's done screen ("next time it shows the usual page")
+            model.eyecam.flow.closed();
         }
         wasVisible = visible;
         // Every display frame while the fit's target or the debug dots are up: with the target, paced by the

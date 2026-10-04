@@ -43,6 +43,7 @@ add_executable(frameeyeosc-panel
   src/model.cpp
   src/panel.cpp
   src/recorder.cpp
+  src/setup_tools.cpp
   src/sounds.cpp
   src/status.cpp
   src/target.cpp
@@ -124,9 +125,10 @@ target_include_directories(changelog-test PRIVATE src)
 target_compile_options(changelog-test PRIVATE -Wall -Wextra)
 add_test(NAME changelog COMMAND changelog-test)
 
-# The eye capture tab (developer, eyecam-rec): its status file, when the tab and the full-view light show, the step
-# texts, and the control socket against a stand-in recorder in /tmp: panel/build/eyecam-test
-add_executable(eyecam-test tests/eyecam_test.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp)
+# The eye cameras tab (eyecam-rec): its status file, the setup checklist, when the tab and the full-view light show,
+# the step texts, the setup's Konsole command lines, and the control socket against a stand-in recorder in /tmp:
+# panel/build/eyecam-test
+add_executable(eyecam-test tests/eyecam_test.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/setup_tools.cpp)
 target_include_directories(eyecam-test PRIVATE src)
 target_compile_options(eyecam-test PRIVATE -Wall -Wextra)
 target_link_libraries(eyecam-test PRIVATE Threads::Threads)

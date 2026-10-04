@@ -5,6 +5,7 @@
 #include "fit_text.h"
 #include "host_entry.h"
 #include "recorder.h"
+#include "setup_tools.h"
 #include "theme.h"
 
 #include <cairo.h>
@@ -474,6 +475,139 @@ std::string twoDecimals(double value) {
 }
 
 /**
+ * A small terminal: a rounded box with ">_" (the Konsole buttons).
+ * @param pen drawing tools
+ * @param x left
+ * @param cy center y
+ * @param c color
+ */
+void drawTerminalIcon(const Pen& pen, double x, double cy, Color c) {
+    cairo_t* cr = pen.cr;
+    strokeRounded(pen, x, cy - 8, 20, 16, 3, c, 1.8);
+    pen.color(c);
+    cairo_set_line_width(cr, 1.8);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    cairo_move_to(cr, x + 5, cy - 3);
+    cairo_line_to(cr, x + 8.5, cy);
+    cairo_line_to(cr, x + 5, cy + 3);
+    cairo_move_to(cr, x + 10.5, cy + 3.5);
+    cairo_line_to(cr, x + 15, cy + 3.5);
+    cairo_stroke(cr);
+}
+
+/**
+ * A play sign: a triangle outline (the video and "start" buttons).
+ * @param pen drawing tools
+ * @param x left
+ * @param cy center y
+ * @param c color
+ */
+void drawPlayIcon(const Pen& pen, double x, double cy, Color c) {
+    cairo_t* cr = pen.cr;
+    pen.color(c);
+    cairo_set_line_width(cr, 2);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    cairo_move_to(cr, x + 2, cy - 7);
+    cairo_line_to(cr, x + 14, cy);
+    cairo_line_to(cr, x + 2, cy + 7);
+    cairo_close_path(cr);
+    cairo_stroke(cr);
+}
+
+/**
+ * An eye: an almond outline and its pupil (whether the cameras see each eye).
+ * @param pen drawing tools
+ * @param cx center x
+ * @param cy center y
+ * @param c color
+ */
+void drawEyeIcon(const Pen& pen, double cx, double cy, Color c) {
+    cairo_t* cr = pen.cr;
+    pen.color(c);
+    cairo_set_line_width(cr, 2);
+    cairo_new_path(cr);
+    cairo_move_to(cr, cx - 10, cy);
+    cairo_curve_to(cr, cx - 5, cy - 7, cx + 5, cy - 7, cx + 10, cy);
+    cairo_curve_to(cr, cx + 5, cy + 7, cx - 5, cy + 7, cx - 10, cy);
+    cairo_close_path(cr);
+    cairo_stroke(cr);
+    drawDot(cr, cx, cy, 2.8, c);
+}
+
+/**
+ * A camera: a rounded body, a lens and a bump on top (the eye cameras).
+ * @param pen drawing tools
+ * @param cx center x
+ * @param cy center y
+ * @param c color
+ */
+void drawCameraIcon(const Pen& pen, double cx, double cy, Color c) {
+    cairo_t* cr = pen.cr;
+    strokeRounded(pen, cx - 10, cy - 6, 20, 14, 3, c, 1.8);
+    pen.color(c);
+    cairo_set_line_width(cr, 1.8);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy + 1, 3.6, 0, 2 * M_PI);
+    cairo_stroke(cr);
+    cairo_move_to(cr, cx - 4, cy - 6);
+    cairo_line_to(cr, cx - 2.5, cy - 9);
+    cairo_line_to(cr, cx + 2.5, cy - 9);
+    cairo_line_to(cr, cx + 4, cy - 6);
+    cairo_stroke(cr);
+}
+
+/**
+ * An "i" in a circle (the "when..." box).
+ * @param pen drawing tools
+ * @param cx center x
+ * @param cy center y
+ * @param c color
+ */
+void drawInfoIcon(const Pen& pen, double cx, double cy, Color c) {
+    cairo_t* cr = pen.cr;
+    pen.color(c);
+    cairo_set_line_width(cr, 1.8);
+    cairo_new_sub_path(cr);
+    cairo_arc(cr, cx, cy, 8, 0, 2 * M_PI);
+    cairo_stroke(cr);
+    drawDot(cr, cx, cy - 3.6, 1.3, c);
+    cairo_move_to(cr, cx, cy - 0.5);
+    cairo_line_to(cr, cx, cy + 4);
+    cairo_stroke(cr);
+}
+
+/**
+ * A chevron pointing right (between the calibration's step chips, and on the left column's "next" card).
+ * @param pen drawing tools
+ * @param cx center x
+ * @param cy center y
+ * @param size its height
+ * @param width line width
+ * @param c color
+ */
+void drawChevron(const Pen& pen, double cx, double cy, double size, double width, Color c) {
+    cairo_t* cr = pen.cr;
+    pen.color(c);
+    cairo_set_line_width(cr, width);
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    cairo_move_to(cr, cx - size / 4, cy - size / 2);
+    cairo_line_to(cr, cx + size / 4, cy);
+    cairo_line_to(cr, cx - size / 4, cy + size / 2);
+    cairo_stroke(cr);
+}
+
+/**
+ * What drives the eyelids now, as the eye cameras' page says it.
+ * @param t texts
+ * @param use the case (cameraUse)
+ * @param s frameeyeosc's status (the cameras' own reason, and the pupils)
+ * @return the line ("" while it isn't known)
+ */
+std::string cameraUseText(const UiText& t, CameraUse use, const EyeStatus& s);
+
+/**
  * A printf into a std::string.
  * @param format the format (one string argument)
  * @param value the argument
@@ -482,6 +616,25 @@ std::string twoDecimals(double value) {
 std::string formatText(const char* format, const std::string& value) {
     char text[256];
     std::snprintf(text, sizeof(text), format, value.c_str());
+    return text;
+}
+
+std::string cameraUseText(const UiText& t, CameraUse use, const EyeStatus& s) {
+    std::string text;
+    switch (use) {
+        case CameraUse::Both: text = t.cameraUseBoth; break;
+        case CameraUse::Left: text = t.cameraUseLeft; break;
+        case CameraUse::Right: text = t.cameraUseRight; break;
+        case CameraUse::Off:
+        case CameraUse::Valve: text = t.cameraUseValve; break;
+        case CameraUse::NotCalibrated: text = formatText(t.cameraUseValveFormat, t.cameraWhyNotCalibrated); break;
+        case CameraUse::NoCamera: text = formatText(t.cameraUseValveFormat, t.cameraWhyNoCamera); break;
+        case CameraUse::Warming: text = formatText(t.cameraUseValveFormat, t.cameraWhyWarming); break;
+        case CameraUse::Error: text = formatText(t.cameraUseValveFormat, s.camera.error); break;
+        case CameraUse::Unknown: break;  // frameeyeosc not running, or one that doesn't say
+    }
+    const bool inUse = use == CameraUse::Both || use == CameraUse::Left || use == CameraUse::Right;
+    if (inUse && (s.camera.pupilUsed[0] || s.camera.pupilUsed[1])) text += t.cameraPupilSuffix;
     return text;
 }
 
@@ -682,7 +835,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             openEyecamConfirm(eyecamState_);
             return {};
         case PanelAction::EyecamCalib:
-            // From the first tab's note too: the calibration's steps show on the eye capture tab
+            // Its steps show on the eye cameras tab
             if (eyecamTab_) tab_ = PanelTab::Eyecam;
             historyOpen_ = false;
             eyecamConfirm_.close();
@@ -782,7 +935,7 @@ void EyePanel::openEyecamConfirm(eyecam::State state) {
 
 bool EyePanel::syncEyecam(const eyecam::View& view) {
     eyecamState_ = view.status.state;
-    return eyecamConfirm_.sync(view.status.state, view.visible && tab_ == PanelTab::Eyecam);
+    return eyecamConfirm_.sync(view.status.state, view.visible && tab_ == PanelTab::Advanced);
 }
 
 void EyePanel::closeHostEntry() {
@@ -1052,7 +1205,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
 
     // Eyelids: a thin gray bar for the raw value, a thick accent bar for the sent value
     const bool live = s.running && s.tracking;
-    pen.text(x0, 282 + dy, t.lidsTitle, 15, kTextMuted, true);
+    const double lidsTitleRight = x0 + pen.text(x0, 282 + dy, t.lidsTitle, 15, kTextMuted, true);
     {
         const double sentW = pen.measure(t.legendSent, 14, false);
         const double rawW = pen.measure(t.legendRaw, 14, false);
@@ -1064,6 +1217,19 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         pen.text(lx, 282 + dy, t.legendRaw, 14, kText);
         lx -= 26;
         fillRounded(pen, lx, 274 + dy, 20, 6, 2, kTextMuted);
+        // Where they come from, after the title: Valve's values, or the eye cameras (as frameeyeosc says)
+        const char* from = nullptr;
+        switch (cameraUse(s, SettingsView(m).flag(key::kCameraLids))) {
+            case CameraUse::Both: from = t.lidsFromCamera; break;
+            case CameraUse::Left: from = t.lidsFromCameraLeft; break;
+            case CameraUse::Right: from = t.lidsFromCameraRight; break;
+            case CameraUse::Unknown: from = s.running ? t.lidsFromValve : nullptr; break;
+            default: from = t.lidsFromValve; break;
+        }
+        if (from != nullptr) {
+            const double fx = lidsTitleRight + 8;
+            pen.text(fx, 282 + dy, from, fitSize(pen, from, 13, 10, lx - 12 - fx, false), kTextMuted);
+        }
     }
     for (int eye = 0; eye < 2; ++eye) {
         const double top = 296 + dy + eye * 48;
@@ -1151,6 +1317,14 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         }
         return hasSent;
     };
+    // The eye cameras' setup at the bottom (what to do next, or that it is done) makes the gaze pads smaller; an error
+    // message there wins over it
+    const bool failure = m.panelErrorBroken || !m.panelError.empty() || !m.config.error.empty() ||
+                         m.autostart.writeFailed || (s.running && (!s.sourceError.empty() || !s.configError.empty()));
+    const eyecam::SetupScreen setup = eyecam::setupScreen(m.eyecam);
+    const bool nextCard = m.eyecam.visible && setup != eyecam::SetupScreen::Camera && setup != eyecam::SetupScreen::Done;
+    const bool readyCard = m.eyecam.visible && m.eyecam.readyNotice;
+    const bool setupCard = !failure && (nextCard || readyCard);
     // Each eye's own pad while the eyes move separately; one pad for the shared gaze otherwise
     const bool perEye = SettingsView(m).flag(key::kIndependentEyes);
     if (perEye) {
@@ -1169,7 +1343,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
             lx -= 14;
             drawRing(cr, lx, 425, 6, 2, kText);
         }
-        const double box = 132;
+        const double box = setupCard ? 100 : 132;
         const char* labels[2] = {t.leftEye, t.rightEye};
         const Color colors[2] = {kDotLeft, kDotRight};
         for (int eye = 0; eye < 2; ++eye) {
@@ -1178,10 +1352,10 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
             pen.text(bx + 2, 456, labels[eye], 15, kText, true);
             const bool hasSent = gazePad(bx, 464, box, s.rawGazeEye[eye], s.sentGazeEye[eye], colors[eye]);
             const std::string xy = hasSent ? xyText(s.sentGazeEye[eye]) : "—";
-            pen.text(bx + 2, 618, xy, fitSize(pen, xy, 14, 10, box, false), kTextMuted);
+            pen.text(bx + 2, 464 + box + 20, xy, fitSize(pen, xy, 14, 10, box, false), kTextMuted);
         }
     } else {
-        const double box = 164;
+        const double box = setupCard ? 132 : 164;
         const double bx = x0;
         const double by = 444;
         gazePad(bx, by, box, s.gaze, s.sentGaze, kAccent);
@@ -1217,9 +1391,64 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     if (!message.empty()) {
         const std::vector<std::string> lines = wrapText(pen, message, 15, true, x1 - x0, 2);
         for (size_t i = 0; i < lines.size(); ++i) pen.text(x0, 636 + i * 22, lines[i], 15, kDanger, true);
+    } else if (setupCard) {
+        drawSetupNotice(pen, t, m, setup, x0, x1);
     } else {
         drawUpdateNotice(pen, t, m.update, x0, x1);
     }
+}
+
+void EyePanel::drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel& m, eyecam::SetupScreen screen,
+                               double x0, double x1) {
+    using eyecam::SetupScreen;
+    const double h = 80;
+    const double y = 670 - h;
+    const double w = x1 - x0;
+    // Right after the setup: it is ready (green, for a short while)
+    if (m.eyecam.readyNotice && (screen == SetupScreen::Done || screen == SetupScreen::Camera)) {
+        fillRounded(pen, x0, y, w, h, 16, kSuccessTint);
+        strokeRounded(pen, x0, y, w, h, 16, kSuccess, 1.5);
+        drawCheck(pen.cr, x0 + 26, y + h / 2, 20, kSuccess);
+        pen.text(x0 + 50, y + 35, t.readyTitle, fitSize(pen, t.readyTitle, 18, 12, w - 62, true), kSuccess, true);
+        pen.text(x0 + 50, y + 59, t.readyNote, fitSize(pen, t.readyNote, 14, 10, w - 62, false), kText);
+        return;
+    }
+    // What to do next, as a button to the eye cameras tab
+    const char* names[3] = {t.setupStepPassword, t.setupStepTool, t.setupStepLearn};
+    const char* numbers[3] = {"①", "②", "③"};
+    const int step = screen == SetupScreen::Pass ? 0 : screen == SetupScreen::Check ? 1 : 2;
+    std::string sub;
+    switch (screen) {
+        case SetupScreen::Pass: sub = t.nextPass; break;
+        case SetupScreen::Check: sub = t.setupLaterTool; break;
+        case SetupScreen::Learn: {
+            const eyecam::Status& s = m.eyecam.status;
+            if (std::isfinite(s.stepRemainingS) && !s.stepLabel.empty()) {
+                char text[160];
+                std::snprintf(text, sizeof(text), t.nextLearnFormat,
+                              static_cast<int>(std::ceil(std::max(0.0, s.stepRemainingS) - 1e-9)));
+                sub = text;
+            } else {
+                sub = t.setupWaitHint2;
+            }
+            break;
+        }
+        case SetupScreen::Fail: sub = t.nextFail; break;
+        case SetupScreen::Error: sub = t.nextError; break;
+        default: sub = t.nextWait; break;
+    }
+    const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)};
+    const bool usable = tab_ != PanelTab::Eyecam;
+    const int pointer = usable ? pointerState(hit) : 0;
+    fillRounded(pen, x0, y, w, h, 16, pointer > 0 ? kControlHover : kCard);
+    strokeRounded(pen, x0, y, w, h, 16, kAccent, 2);
+    const double textW = w - 48;
+    pen.text(x0 + 18, y + 23, t.nextTitle, fitSize(pen, t.nextTitle, 14, 10, textW, true), kAccent, true);
+    const std::string title = std::string(numbers[step]) + " " + names[step];
+    pen.text(x0 + 18, y + 48, title, fitSize(pen, title, 18, 12, textW, true), kText, true);
+    pen.text(x0 + 18, y + 70, sub, fitSize(pen, sub, 14, 10, textW, false), kTextMuted);
+    drawChevron(pen, x1 - 22, y + h / 2, 14, 2.5, kAccent);
+    addButton(hit, x0, y, w, h, usable);
 }
 
 void EyePanel::drawUpdateNotice(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u, double x0,
@@ -1254,9 +1483,20 @@ void EyePanel::drawUpdateNotice(const Pen& pen, const UiText& t, const frame_upd
 }
 
 void EyePanel::drawTabs(const Pen& pen, const UiText& t) {
-    // In PanelTab order (the developer tab last, only while eyecam-rec runs)
-    std::vector<const char*> labels = {t.tabBasic, t.tabOutput, t.tabGaze, t.tabGazeFit, t.tabLids, t.tabAdvanced};
-    if (eyecamTab_) labels.push_back(t.tabEyecam);
+    // The eye cameras (only while eyecam-rec runs) before Advanced
+    std::vector<PanelTab> tabs = {PanelTab::Basic, PanelTab::Output, PanelTab::Gaze, PanelTab::EyeFit, PanelTab::Lids};
+    if (eyecamTab_) tabs.push_back(PanelTab::Eyecam);
+    tabs.push_back(PanelTab::Advanced);
+    std::vector<const char*> labels;
+    for (const PanelTab tab : tabs) {
+        labels.push_back(tab == PanelTab::Basic    ? t.tabBasic
+                         : tab == PanelTab::Output ? t.tabOutput
+                         : tab == PanelTab::Gaze   ? t.tabGaze
+                         : tab == PanelTab::EyeFit ? t.tabGazeFit
+                         : tab == PanelTab::Lids   ? t.tabLids
+                         : tab == PanelTab::Eyecam ? t.tabEyecam
+                                                   : t.tabAdvanced);
+    }
     const int count = static_cast<int>(labels.size());
     const double gap = 8;
     const double pad = 16;
@@ -1274,8 +1514,8 @@ void EyePanel::drawTabs(const Pen& pen, const UiText& t) {
     double x = kRightX;
     for (int i = 0; i < count; ++i) {
         const double w = pen.measure(labels[i], size, true) + pad * 2 + extra;
-        const PanelHit hit {PanelAction::Tab, nullptr, i};
-        const bool selected = static_cast<int>(tab_) == i;
+        const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(tabs[i])};
+        const bool selected = tab_ == tabs[i];
         const int pointer = pointerState(hit);
         if (selected) {
             // The chosen tab: accent fill, bold text and a notch pointing at the content
@@ -1350,57 +1590,9 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
         textCentered(pen, x + w / 2, centerBaseline(y, kControlH, size), label, size, armed ? kOnAccent : kText, true);
         addButton(hit, x, y, w, kControlH);
     }
-    y += kControlH;
-    // The eye cameras want a calibration (only with eyecam-rec running): a note with its button
-    const eyecam::CalibPrompt prompt = eyecam::calibPrompt(m.eyecam, v.flag(key::kCameraLids));
-    if (prompt != eyecam::CalibPrompt::None) {
-        y += 14 + drawCalibPrompt(pen, t, prompt, m.eyecam.busy, y + 14);
-    } else if (eyecam::calibOffer(m.eyecam, v.flag(key::kCameraLids))) {
-        // ...or, quieter, a way to calibrate when widening looks wrong
-        y += 14 + drawCalibOffer(pen, t, m.eyecam.busy, y + 14);
-    }
-    y += 28;
+    y += kControlH + 28;
     const std::vector<std::string> lines = wrapText(pen, t.footer, 15, false, kInnerRight - kInnerX, 2);
-    // (all of it, or none: under the note, a second line would leave the card)
-    if (y + (lines.size() - 1) * 22 <= kContentY + kContentH - 14) {
-        for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
-    }
-}
-
-double EyePanel::drawCalibOffer(const Pen& pen, const UiText& t, bool busy, double y) {
-    // No box: a muted question right before a plain button, both at the right, lower than the note
-    const double h = 44;
-    const double bh = 40;
-    const double bw = std::max(150.0, pen.measure(t.calibOfferButton, 17, true) + 40);
-    const double bx = kInnerRight - bw;
-    const double size = fitSize(pen, t.calibOfferText, 17, 12, bx - 16 - kInnerX, false);
-    pen.text(bx - 16 - pen.measure(t.calibOfferText, size, false), centerBaseline(y, h, size), t.calibOfferText, size,
-             kTextMuted, false);
-    drawButton(pen, bx, y + (h - bh) / 2, bw, bh, t.calibOfferButton,
-               {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy, false, 17);
-    return h;
-}
-
-double EyePanel::drawCalibPrompt(const Pen& pen, const UiText& t, eyecam::CalibPrompt prompt, bool busy, double y) {
-    const bool again = prompt == eyecam::CalibPrompt::Recalibrate;
-    const std::string text = again ? t.recalibPromptText : t.calibPromptText;
-    const std::string label = again ? t.recalibPromptButton : t.calibPromptButton;
-    // Like the update notice in the left column: an accent tint, a dot, the text, and the button at the right
-    const double x0 = kInnerX;
-    const double x1 = kInnerRight;
-    const double h = 60;
-    fillRounded(pen, x0, y, x1 - x0, h, 20, kAccentTint);
-    strokeRounded(pen, x0, y, x1 - x0, h, 20, kAccent, 2);
-    drawDot(pen.cr, x0 + 24, y + h / 2, 6, kAccent);
-    const double bh = 42;
-    const double bw = std::max(150.0, pen.measure(label, 19, true) + 44);
-    const double bx = x1 - 10 - bw;
-    const double textX = x0 + 42;
-    const double size = fitSize(pen, text, 19, 13, bx - 14 - textX, true);
-    pen.text(textX, centerBaseline(y, h, size), text, size, kText, true);
-    drawButton(pen, bx, y + (h - bh) / 2, bw, bh, label,
-               {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy, true, 19);
-    return h;
+    for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
 }
 
 double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& v, double y) {
@@ -2132,8 +2324,29 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
     // marks fold away behind "Fine-tune"
     const WidenState widen = widenState(v);
     const bool anyFitted = widen.fitted[0] || widen.fitted[1];
+    // Both eyelids from the eye cameras: their widening is the cameras' sensitivity, so its row only points there
+    const bool fromCameras = lidsFromCameras(s);
 
-    if (anyFitted) {
+    if (fromCameras) {
+        drawRowLabel(pen, t, y, kRowH, t.lidsCamRow, t.lidsCamRowHint, false);
+        const double boxY = y + 4;
+        const double boxH = kRowH - 8;
+        fillRounded(pen, kControlX, boxY, kControlW, boxH, 12, kBg);
+        drawCameraIcon(pen, kControlX + 24, boxY + boxH / 2, kSuccess);
+        const double bh = 40;
+        const double bw = std::max(150.0, pen.measure(t.lidsCamButton, 17, true) + 56);
+        const double bx = kControlX + kControlW - 10 - bw;
+        const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)};
+        drawButton(pen, bx, boxY + (boxH - bh) / 2, bw, bh, std::string(t.lidsCamButton) + "  →", hit, eyecamTab_,
+                   false, 17);
+        const double textX = kControlX + 46;
+        const double textW = bx - 12 - textX;
+        const double size = std::min(fitSize(pen, t.lidsCamText1, 16, 11, textW, false),
+                                     fitSize(pen, t.lidsCamText2, 16, 11, textW, false));
+        const double mid = boxY + boxH / 2;
+        textCentered(pen, textX + textW / 2, mid - 3, t.lidsCamText1, size, kText, false);
+        textCentered(pen, textX + textW / 2, mid + size + 1, t.lidsCamText2, size, kText, false);
+    } else if (anyFitted) {
         const bool locked = v.locked(key::kLidWiden);
         drawRowLabel(pen, t, y, kRowH, t.rowWiden, t.hintWiden, locked);
         std::vector<Option> options;
@@ -2210,11 +2423,12 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
         }
     }
     y += kRowH + kRowGap;
-    // Fitted: a line saying what decides the eyelids (or that an eye follows the other one), and "Fine-tune" to open
-    // the marks
-    const bool showMarks = !anyFitted || lidMarksOpen_;
-    const double marksShift = anyFitted ? 8 : 0;
-    if (anyFitted) {
+    // Fitted, or both eyelids from the eye cameras: a line saying what decides the eyelids (or that an eye follows the
+    // other one), and "Fine-tune" to open the marks
+    const bool fold = anyFitted || fromCameras;
+    const bool showMarks = !fold || lidMarksOpen_;
+    const double marksShift = fold ? 8 : 0;
+    if (fold) {
         const double bw = 150;
         const std::string label = std::string(t.fitDetails) + (lidMarksOpen_ ? "  ▲" : "  ▼");
         drawButton(pen, kInnerRight - bw, y, bw, 28, label, {PanelAction::LidMarks, nullptr, 0}, true, false);
@@ -2231,12 +2445,9 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
             note = t.opennessSaturated;
             notice = true;
         }
-        // Eyes on the eye cameras widen by eyecam-rec's own sensitivity, not by this setting (both of them: that
-        // wins over the cap above, which then doesn't matter)
-        const bool cameraBoth = s.running && s.camera.used[0] && s.camera.used[1];
-        const bool cameraAny = s.running && (s.camera.used[0] || s.camera.used[1]);
-        if (cameraBoth || (cameraAny && !(s.running && s.opennessSaturated))) {
-            note = t.lidWidenCameraNote;
+        // (the cameras widen by their own sensitivity: the widening marks and that cap don't matter then)
+        if (fromCameras) {
+            note = lidMarksOpen_ ? t.lidsCamMarksOpen : t.lidsCamMarks;
             notice = false;
         }
         pen.text(kInnerX, y + 18, note, fitSize(pen, note, 15, 11, kInnerRight - bw - 12 - kInnerX, notice),
@@ -2245,7 +2456,7 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
     // The raw openness of each eye with the four marks laid over it
     {
         const double top = y + marksShift;
-        if (!anyFitted) {
+        if (!fold) {
             // Marks 3 and 4 widen these eyes, which can't happen while the openness tops out at 1.0
             const bool saturated = s.running && s.opennessSaturated;
             const char* title = saturated ? t.opennessSaturated : t.marksTitle;
@@ -2302,7 +2513,7 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
             double high = 0;
             lidMarkBounds(marks[i], v, low, high);
             const double value = v.number(marks[i]);
-            const bool usable = !(anyFitted && i >= 2);
+            const bool usable = !((anyFitted || fromCameras) && i >= 2);
             drawStepper(pen, x, y + 28, w, kControlH, marks[i], value, formatSetting(marks[i], value), usable,
                         v.locked(marks[i]), low, high);
         }
@@ -2357,6 +2568,12 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
                         v.locked(keys[i]));
         }
     }
+    // While the cameras drive the eyelids: where Widen went
+    if (fromCameras) {
+        const double bottom = kContentY + kContentH - 22;
+        pen.text(kInnerX, bottom, t.lidsCamNote, fitSize(pen, t.lidsCamNote, 15, 11, kInnerRight - kInnerX, false),
+                 kTextMuted);
+    }
 }
 
 double EyePanel::drawSectionTitle(const Pen& pen, double y, const std::string& title) {
@@ -2374,8 +2591,17 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         drawHistory(pen, t, m);
         return;
     }
+    // The developer recording: its light warning, and its steps while it runs, in the tab's place
+    const eyecam::State recording = m.eyecam.status.state;
+    if (eyecamConfirm_.isOpen() ||
+        (m.eyecam.visible && (recording == eyecam::State::Searching || recording == eyecam::State::Recording))) {
+        drawRun(pen, t, m);
+        return;
+    }
     const EyeStatus& s = m.status;
     double y = kRowTop - 6;
+    // With eyecam-rec running, the developer section at the bottom: the rows above get a little tighter
+    const bool dev = m.eyecam.visible;
 
     // Version, new release check and install, and the automatic check
     y += drawUpdateRow(pen, t, m.update, updateNotes(m.update, m.language), v.flag(key::kUpdateCheck), y) + 10;
@@ -2383,7 +2609,7 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
     y += drawSectionTitle(pen, y, t.sectionTools);
     // The debug gaze dots (a head-locked dot where the sent gaze points)
     {
-        const double h = 60;
+        const double h = dev ? 56 : 60;
         const bool locked = v.locked(key::kGazeDebugDots);
         const bool on = v.flag(key::kGazeDebugDots);
         const double top = y + (h - kControlH) / 2;
@@ -2404,7 +2630,7 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         const double distance = v.number(key::kGazeDebugDotsDistanceM);
         drawStepper(pen, stepperX, top, stepperW, kControlH, key::kGazeDebugDotsDistanceM, distance,
                     formatSetting(key::kGazeDebugDotsDistanceM, distance) + " m", on, false);
-        y += h + 8;
+        y += h + (dev ? 4 : 8);
     }
     // The eye log: record the raw eye data to a file, from now until "Stop" (or 60 minutes)
     {
@@ -2439,12 +2665,12 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
             pen.text(textX, baseline, line, 14, color, bold);
             baseline += 18;
         }
-        y += h + 10;
+        y += h + (dev ? 4 : 10);
     }
 
     y += drawSectionTitle(pen, y, t.sectionFiles);
     // Read-only rows in smaller type: the title (muted) on the left, the text on the right
-    const double infoH = 28;
+    const double infoH = dev ? 22 : 28;
     const double infoSize = 15;
     const auto infoRow = [&](const std::string& title, const std::string& value, bool keepEnd) {
         const double baseline = y + infoH / 2 + infoSize * 0.36;
@@ -2512,6 +2738,29 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         pen.text(kInnerX, baseline + 20, t.hintLockedList, fitSize(pen, t.hintLockedList, 13, 10, kLabelW, false),
                  kTextMuted);
         for (size_t i = 0; i < lines.size(); ++i) pen.text(kControlX, baseline + i * 22, lines[i], infoSize, kText);
+        y += infoH + 26;
+    }
+    // Developer: eyecam-rec's eye recording (its start opens the light warning; a failed one says why)
+    if (dev) {
+        const eyecam::Status& es = m.eyecam.status;
+        y += drawSectionTitle(pen, y, t.devTitle);
+        const double h = 40;
+        const bool failed = es.state == eyecam::State::Error && m.eyecam.lastRun == eyecam::Run::Recording;
+        const bool ready = es.state == eyecam::State::Idle || es.state == eyecam::State::Error;
+        drawRowLabel(pen, t, y, h, t.devRecord, t.devRecordHint, false);
+        const double bw = 160;
+        drawButton(pen, kControlX, y + (h - 38) / 2, bw, 38, failed ? t.eyecamRetry : t.eyecamStart,
+                   {PanelAction::EyecamStart, nullptr, 0}, ready && !m.eyecam.busy, false);
+        if (failed) {
+            const double textX = kControlX + bw + 14;
+            const std::string why = es.message.empty() ? std::string(t.eyecamErrorTitle) : es.message;
+            const std::vector<std::string> lines = wrapText(pen, why, 14, true, kInnerRight - textX, 2);
+            double baseline = y + h / 2 - (lines.size() - 1) * 9 + 5;
+            for (const std::string& line : lines) {
+                pen.text(textX, baseline, line, 14, kDanger, true);
+                baseline += 18;
+            }
+        }
     }
 }
 
@@ -3024,7 +3273,7 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
     }
 }
 
-void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
     using eyecam::State;
     const eyecam::View& view = m.eyecam;
     const eyecam::Status& s = view.status;
@@ -3067,10 +3316,7 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, 
     const eyecam::Calib calib = view.lastRun == eyecam::Run::CalibUser ? eyecam::Calib::User : eyecam::Calib::Wear;
 
     double y = kRowTop - 6;
-    // (idle has a title over each of its sections)
-    if (s.state != State::Idle || eyecamConfirm_.isOpen()) {
-        y += drawSectionTitle(pen, y, calibRun ? t.eyecamSectionCalib : t.eyecamTitle);
-    }
+    y += drawSectionTitle(pen, y, calibRun ? t.tabEyecam : t.eyecamTitle);
 
     // The light warning takes the place of idle's and error's views while it is open (the recorder's message too:
     // it is about the run before)
@@ -3078,30 +3324,6 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, 
     if (eyecamConfirm_.isOpen()) {
         drawEyecamConfirm(pen, t, view, y);
     } else switch (s.state) {
-        case State::WaitingFds: {
-            centered(y + 70, t.eyecamWaitingTitle, 32, 20, kText, true);
-            if (!eyecam::needsManualGrab(s)) {
-                // eyecam-rec takes the buffers by itself; its message says what it is waiting for
-                const double baseline = wrappedCentered(y + 122, t.eyecamAutoGrabHint, 20, kText, false, 2);
-                if (!s.message.empty()) wrappedCentered(baseline + 44, s.message, 18, kTextMuted, false, 2);
-                messageShown = true;
-                break;
-            }
-            double baseline = wrappedCentered(y + 122, t.eyecamWaitingHint, 20, kText, false, 2);
-            // The command, in a box of its own so it reads as something to type
-            const double boxY = baseline - 4;
-            const double boxH = 72;
-            fillRounded(pen, kInnerX, boxY, width, boxH, 16, kControl);
-            strokeRounded(pen, kInnerX, boxY, width, boxH, 16, kBorder, 2);
-            const double size = fitSize(pen, eyecam::kGrabCommand, 24, 12, width - 36, true);
-            textCentered(pen, cx, centerBaseline(boxY, boxH, size), eyecam::kGrabCommand, size, kAccent, true);
-            wrappedCentered(boxY + boxH + 40, t.eyecamWaitingNote, 18, kTextMuted, false, 2);
-            break;
-        }
-        case State::Idle: {
-            drawEyecamIdle(pen, t, m, v, y);
-            break;
-        }
         case State::Searching: {
             centered(y + 130, t.eyecamSearching, 52, 24, kText, true);
             centered(y + 190, fpsLine, 24, 14, kTextMuted, false);
@@ -3233,184 +3455,682 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, 
     }
 }
 
-void EyePanel::drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double y) {
+void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
     const eyecam::Status& s = m.eyecam.status;
-    const bool busy = m.eyecam.busy;
-    const double width = kInnerRight - kInnerX;
-
-    // The camera eyelids for frameeyeosc: the switch at the right, and under its title what frameeyeosc uses now.
-    // While eyecam-rec learns the relaxed eyes, it says so at the right of the section title (the layout stays put)
-    const bool warming = eyecam::baselineWarming(s);
-    if (warming) {
-        std::string text = t.eyecamWarming;
-        if (std::isfinite(s.warmupRemainingS)) {
-            char left[128];
-            std::snprintf(left, sizeof(left), t.eyecamWarmingFormat,
-                          static_cast<int>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)));
-            text = left;
-        }
-        const double size = fitSize(pen, text, 16, 12, width / 2, true);
-        const double tx = kInnerRight - pen.measure(text, size, true);
-        drawDot(pen.cr, tx - 13, y + 14, 5, kAccent);
-        pen.text(tx, y + 20, text, size, kText, true);
+    const eyecam::SetupScreen screen = eyecam::setupScreen(m.eyecam);
+    if (screen != eyecam::SetupScreen::Camera) {
+        drawSetup(pen, t, m, screen);
+        return;
     }
-    y += drawSectionTitle(pen, y, t.eyecamSectionCamera);
+    // Set up: a calibration from the page, and its failure, show as they always have
+    if (s.state == eyecam::State::Calibrating ||
+        (s.state == eyecam::State::Error && eyecam::isCalib(m.eyecam.lastRun))) {
+        drawRun(pen, t, m);
+        return;
+    }
+    drawCameraPage(pen, t, m, v);
+}
+
+void EyePanel::drawIconButton(const Pen& pen, double x, double y, double w, double h, const std::string& label,
+                              const PanelHit& hit, bool usable, bool accent, double textSize, ButtonIcon icon) {
+    const int pointer = usable ? pointerState(hit) : 0;
+    const bool filled = accent && usable;
+    if (filled) {
+        fillRounded(pen, x, y, w, h, h / 2, pointer == 2 ? kAccentPressed : kAccent);
+    } else {
+        fillRounded(pen, x, y, w, h, h / 2, pointer > 0 ? kControlHover : kControl);
+        strokeRounded(pen, x, y, w, h, h / 2, usable ? kBorder : kDivider, 2);
+    }
+    const Color color = filled ? kOnAccent : (usable ? kText : kTextDisabled);
+    const double iconW = icon == ButtonIcon::None ? 0 : 28;
+    const double size = fitSize(pen, label, textSize, 12, w - 32 - iconW, true);
+    const double contentW = iconW + pen.measure(label, size, true);
+    const double left = x + (w - contentW) / 2;
+    if (icon == ButtonIcon::Terminal) drawTerminalIcon(pen, left, y + h / 2, color);
+    if (icon == ButtonIcon::Play) drawPlayIcon(pen, left + 2, y + h / 2, color);
+    pen.text(left + iconW, centerBaseline(y, h, size), label, size, color, true);
+    addButton(hit, x, y, w, h, usable);
+}
+
+void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, eyecam::SetupScreen screen) {
+    using eyecam::SetupScreen;
+    cairo_t* cr = pen.cr;
+    const bool done = screen == SetupScreen::Done;
+    // The current step: (1), (2), (3), or past them all
+    const int current = screen == SetupScreen::Pass ? 0 : screen == SetupScreen::Check ? 1 : done ? 3 : 2;
+
+    // The title, and at its right how far it is
+    pen.text(kInnerX, 138, t.setupTitle, fitSize(pen, t.setupTitle, 19, 14, 450, true), kText, true);
     {
-        const bool locked = v.locked(key::kCameraLids);
+        const char* note = done ? t.setupAllDone : current == 2 ? t.setupOneLeft : t.setupOptional;
+        const double size = fitSize(pen, note, done ? 15 : 14, 11, 240, done);
+        pen.text(kInnerRight - pen.measure(note, size, done), 137, note, size, done ? kSuccess : kTextMuted, done);
+    }
+
+    const double circleX = kInnerX + 20;
+    const double radius = 17;
+    const double cardX = kInnerX + 52;
+    const double cardRight = kInnerRight - 2;
+    const double padX = 22;
+    const double rowStep = 43;
+    const double firstY = 174;
+    const char* names[4] = {t.setupStepPassword, t.setupStepTool, t.setupStepLearn, t.setupStepDone};
+    const char* later[4] = {"", t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone};
+    const char* doneLabels[3] = {t.setupPasswordLabel, t.setupToolLabel, t.setupLearnLabel};
+    const char* doneValues[3] = {t.setupPasswordSet, t.setupToolDone, t.setupLearnDone};
+
+    // The steps done in a row each, the current one in a card, those still to come under it
+    const double cardTop = firstY - 17 + rowStep * current;
+    const double cardH = setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, false);
+    const double cardBottom = cardTop + cardH;
+    const int laterCount = done ? 0 : 3 - current;
+    const double lastY = laterCount > 0 ? cardBottom + 28 + rowStep * (laterCount - 1) : cardBottom - 20;
+    pen.color(kDivider);
+    cairo_set_line_width(cr, 2);
+    cairo_move_to(cr, circleX, firstY);
+    cairo_line_to(cr, circleX, lastY);
+    cairo_stroke(cr);
+    for (int i = 0; i < current; ++i) {
+        const double cy = firstY + rowStep * i;
+        drawDot(cr, circleX, cy, radius, kSuccess);
+        drawCheck(cr, circleX, cy, 18, kBg);
+        double x = circleX + 32;
+        x += pen.text(x, cy + 6, doneLabels[i], 17, kText);
+        x += pen.text(x, cy + 6, doneValues[i], 17, kSuccess, true);
+        if (i == 0) pen.text(x + 14, cy + 6, t.setupAutoChecked, 14, kTextMuted);
+    }
+    const double markY = cardTop + 34;
+    if (done) {
+        drawDot(cr, circleX, markY, radius, kSuccess);
+        drawCheck(cr, circleX, markY, 18, kBg);
+    } else {
+        drawDot(cr, circleX, markY, radius, kAccent);
+        textCentered(pen, circleX, markY + 6, std::to_string(current + 1), 16, kOnAccent, true);
+    }
+    strokeRounded(pen, cardX, cardTop, cardRight - cardX, cardH, 14, done ? kSuccess : kAccent, 2);
+    setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, true);
+    for (int k = 0; k < laterCount; ++k) {
+        const int i = current + 1 + k;
+        const double cy = cardBottom + 28 + rowStep * k;
+        drawDot(cr, circleX, cy, radius, kCard);
+        drawRing(cr, circleX, cy, radius - 1, 2, kBorder);
+        textCentered(pen, circleX, cy + 6, std::to_string(i + 1), 16, kTextMuted, true);
+        const double nameRight = circleX + 32 + pen.text(circleX + 32, cy + 6, names[i], 17, kTextMuted);
+        pen.text(nameRight + 14, cy + 6, later[i], 14, kTextMuted);
+    }
+}
+
+double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m, eyecam::SetupScreen screen,
+                           double x0, double x1, double top, bool draw) {
+    using eyecam::SetupScreen;
+    using eyecam::State;
+    cairo_t* cr = pen.cr;
+    const eyecam::View& view = m.eyecam;
+    const eyecam::Status& s = view.status;
+    const double w = x1 - x0;
+    const bool busy = view.busy;
+    double y = top;  // the last baseline (or bottom) laid out
+    // Measured on the first call (draw false), drawn on the second, the same way
+    const auto text = [&](double x, double baseline, const std::string& str, double size, Color c, bool bold) {
+        return draw ? pen.text(x, baseline, str, size, c, bold) : pen.measure(str, size, bold);
+    };
+    // The title, with a pill at the right saying what it waits for
+    const auto title = [&](const char* name, const char* pillText, Color dot) {
+        double pillW = 0;
+        if (pillText != nullptr) {
+            const double size = 14;
+            const double h = 30;
+            pillW = pen.measure(pillText, size, false) + 40;
+            if (draw) {
+                fillRounded(pen, x1 - pillW, top + 19, pillW, h, h / 2, kControl);
+                drawDot(cr, x1 - pillW + 17, top + 34, 4, dot);
+                pen.text(x1 - pillW + 29, centerBaseline(top + 19, h, size), pillText, size, kText);
+            }
+        }
+        text(x0, top + 42, name, fitSize(pen, name, 22, 15, w - pillW - 16, true), kText, true);
+        y = top + 42;
+    };
+    // A paragraph under what came before (wrapped)
+    const auto para = [&](const std::string& str, double size, Color c, bool bold, double advance, double step,
+                          size_t maxLines) {
+        bool first = true;
+        for (const std::string& line : wrapText(pen, str, size, bold, w, maxLines)) {
+            y += first ? advance : step;
+            first = false;
+            text(x0, y, line, size, c, bold);
+        }
+    };
+    // Rows of a muted label and its text (wrapped next to it)
+    const auto labelWidth = [&](std::initializer_list<const char*> labels) {
+        double width = 0;
+        for (const char* label : labels) width = std::max(width, pen.measure(label, 15, true));
+        return std::max(100.0, width + 18);
+    };
+    const auto row = [&](const char* label, const std::string& value, double labelW, double advance) {
+        y += advance;
+        text(x0, y, label, 15, kTextMuted, true);
+        bool first = true;
+        for (const std::string& line : wrapText(pen, value, 16, false, w - labelW, 2)) {
+            if (!first) y += 24;
+            first = false;
+            text(x0 + labelW, y, line, 16, kText, false);
+        }
+    };
+    // A box (the dark background) from top to top + h
+    const auto box = [&](double boxTop, double h) {
+        if (draw) fillRounded(pen, x0, boxTop, w, h, 10, kBg);
+    };
+    const bool hasVideo = setup_tools::kVideoUrl[0] != '\0';
+    // The video button at the right of a button row, and the line under it (only with a video)
+    const auto video = [&](double by, double bh) {
+        if (!hasVideo) return by + bh;
+        const double vw = pen.measure(t.setupVideo, 18, true) + 72;
+        if (draw) {
+            drawIconButton(pen, x1 - vw, by, vw, bh, t.setupVideo, {PanelAction::SetupVideo, nullptr, 0}, true, false,
+                           18, ButtonIcon::Play);
+            const std::string note = std::string(t.setupVideoNote) + setup_tools::kVideoUrl;
+            const double size = fitSize(pen, note, 14, 10, w, false);
+            pen.text(x1 - pen.measure(note, size, false), by + bh + 22, note, size, kTextMuted);
+        }
+        return by + bh + 28;
+    };
+
+    switch (screen) {
+        case SetupScreen::Pass: {
+            title(t.setupStepPassword, t.setupPassPill, kAccent);
+            para(t.setupPassBody, 17, kText, false, 37, 27, 3);
+            const double labelW = labelWidth({t.setupPassWhere, t.setupPassKonsole, t.setupPassMemo});
+            // Where in the settings: the path as chips
+            y += 40;
+            text(x0, y, t.setupPassWhere, 15, kTextMuted, true);
+            double cx = x0 + labelW;
+            const char* path[3] = {t.setupPassPath1, t.setupPassPath2, t.setupPassPath3};
+            for (int i = 0; i < 3; ++i) {
+                const double chipW = pen.measure(path[i], 16, false) + 24;
+                if (draw) {
+                    fillRounded(pen, cx, y - 21, chipW, 30, 6, kControl);
+                    pen.text(cx + 12, y, path[i], 16, kText);
+                    if (i < 2) drawChevron(pen, cx + chipW + 13, y - 6, 10, 1.8, kTextMuted);
+                }
+                cx += chipW + 26;
+            }
+            row(t.setupPassKonsole, t.setupPassKonsoleHow, labelW, 34);
+            row(t.setupPassMemo, t.setupPassMemoText, labelW, 30);
+            const double by = y + 22;
+            const double bh = 46;
+            const double bw = pen.measure(t.setupPassButton, 18, true) + 72;
+            if (draw) {
+                drawIconButton(pen, x0, by, bw, bh, t.setupPassButton, {PanelAction::SetupKonsole, nullptr, 1}, true,
+                               false, 18, ButtonIcon::Terminal);
+            }
+            y = video(by, bh);
+            break;
+        }
+        case SetupScreen::Check: {
+            title(t.setupStepTool, t.setupCheckPill, kAccent);
+            // How: the Konsole button, Enter, the password (typed in already)
+            y += 36;
+            if (draw) drawTerminalIcon(pen, x0, y - 6, kText);
+            const double flowRight = x0 + 28 + text(x0 + 28, y, t.setupCheckFlow, 17, kText, true);
+            text(flowRight + 12, y, t.setupCheckTyped, 14, kTextMuted, false);
+            // The command, to see (and to type over SSH)
+            const double boxTop = y + 14;
+            const double boxH = 56;
+            if (draw) {
+                fillRounded(pen, x0, boxTop, w, boxH, 10, kBg);
+                strokeRounded(pen, x0, boxTop, w, boxH, 10, kBorder, 1.5);
+                const double size = fitSize(pen, setup_tools::kShownInstallCommand, 21, 13, w - 36, false);
+                pen.text(x0 + 18, centerBaseline(boxTop, boxH, size), setup_tools::kShownInstallCommand, size, kText);
+            }
+            y = boxTop + boxH;
+            const double labelW = labelWidth({t.setupCheckWhat, t.setupCheckPassword, t.setupCheckSsh});
+            row(t.setupCheckWhat, t.setupCheckWhatText, labelW, 32);
+            row(t.setupCheckPassword, t.setupCheckPasswordText, labelW, 26);
+            row(t.setupCheckSsh, t.setupCheckSshText, labelW, 26);
+            const double by = y + 18;
+            const double bh = 46;
+            const double bw = pen.measure(t.setupCheckButton, 18, true) + 72;
+            if (draw) {
+                drawIconButton(pen, x0, by, bw, bh, t.setupCheckButton, {PanelAction::SetupKonsole, nullptr, 0}, true,
+                               true, 18, ButtonIcon::Terminal);
+            }
+            y = video(by, bh);
+            break;
+        }
+        case SetupScreen::Wait: {
+            title(t.setupStepLearn, t.setupWaitPill, kAccent);
+            y += 50;
+            text(x0, y, t.setupWaitTitle, fitSize(pen, t.setupWaitTitle, 26, 16, w, true), kText, true);
+            // What it needs: the camera video, and each eye seen
+            const bool video = s.state == State::Idle || s.state == State::Calibrating || s.state == State::Searching ||
+                               s.state == State::Recording;
+            const double boxTop = y + 18;
+            const double boxH = 126;
+            box(boxTop, boxH);
+            const double valueX = x0 + 210;
+            for (int i = 0; i < 3; ++i) {
+                const double baseline = boxTop + 38 + i * 35;
+                const bool ok = i == 0 ? video : s.locked;
+                if (draw) {
+                    if (i == 0) {
+                        if (ok) {
+                            drawCheck(cr, x0 + 28, baseline - 6, 16, kSuccess);
+                        } else {
+                            drawRing(cr, x0 + 28, baseline - 6, 6, 2, kTextMuted);
+                        }
+                    } else {
+                        drawEyeIcon(pen, x0 + 28, baseline - 6, i == 1 ? kDotLeft : kDotRight);
+                    }
+                }
+                const char* label = i == 0 ? t.setupWaitVideo : i == 1 ? t.leftEye : t.rightEye;
+                const char* value = i == 0 ? (ok ? t.setupWaitVideoOk : t.setupWaitVideoNo)
+                                           : (ok ? t.setupWaitEyeOk : t.setupWaitEyeNo);
+                text(x0 + 50, baseline, label, 17, kTextMuted, false);
+                text(valueX, baseline, value, 17, ok ? kSuccess : kTextMuted, ok);
+            }
+            y = boxTop + boxH;
+            // Only while both eyes are seen and eyecam-rec is ready
+            const double by = y + 14;
+            const double bh = 46;
+            const double bw = std::max(186.0, pen.measure(t.setupWaitButton, 18, true) + 76);
+            const bool usable = s.locked && (s.state == State::Idle || s.state == State::Error) && !busy;
+            if (draw) {
+                drawIconButton(pen, x0, by, bw, bh, t.setupWaitButton,
+                               {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, usable,
+                               true, 18, ButtonIcon::Play);
+                const double hx = x0 + bw + 18;
+                pen.text(hx, by + 19, t.setupWaitHint1, fitSize(pen, t.setupWaitHint1, 15, 11, x1 - hx, false),
+                         kTextMuted);
+                pen.text(hx, by + 41, t.setupWaitHint2, fitSize(pen, t.setupWaitHint2, 15, 11, x1 - hx, false),
+                         kTextMuted);
+            }
+            y = by + bh;
+            para(t.setupWaitFoot, 14, kTextMuted, false, 30, 20, 2);
+            break;
+        }
+        case SetupScreen::Learn: {
+            title(t.setupStepLearn, t.setupLearnPill, kAccent);
+            // The instruction, large, in the accent (and what it means, beside it, for widening)
+            const eyecam::Step step = eyecam::parseStep(s.stepLabel);
+            const std::string instruction = s.stepLabel.empty() ? t.eyecamCalibWaiting : eyecam::instruction(t, s.stepLabel);
+            y += 58;
+            const double size = fitSize(pen, instruction, 40, 22, w * 0.7, true);
+            const double right = x0 + text(x0, y, instruction, size, kAccent, true);
+            if (step == eyecam::Step::Widen) text(right + 18, y, t.setupLearnWidenHint, 17, kTextMuted, false);
+            // The steps as chips (eyecam-rec's protocol for "calib wear": a countdown, then these)
+            const int count = static_cast<int>(std::size(eyecam::kCalibWearSteps));
+            if (s.stepCount == count + 1) {
+                y += 40;
+                const double h = 32;
+                double cx = x0;
+                for (int i = 0; i < count; ++i) {
+                    const eyecam::Step chip = eyecam::parseStep(eyecam::kCalibWearSteps[i]);
+                    const char* label = chip == eyecam::Step::Close    ? t.setupChipClose
+                                        : chip == eyecam::Step::Widen ? t.setupChipWiden
+                                                                      : t.setupChipNormal;
+                    const bool past = i < s.stepIndex - 1;
+                    const bool now = i == s.stepIndex - 1;
+                    const double check = past ? 22 : 0;
+                    const double chipW = pen.measure(label, 16, now) + 26 + check;
+                    if (draw) {
+                        if (now) {
+                            fillRounded(pen, cx, y - 22, chipW, h, h / 2, kAccent);
+                        } else if (past) {
+                            fillRounded(pen, cx, y - 22, chipW, h, h / 2, kControl);
+                            drawCheck(cr, cx + 19, y - 6, 14, kSuccess);
+                        } else {
+                            strokeRounded(pen, cx, y - 22, chipW, h, h / 2, kDivider, 1.5);
+                        }
+                        pen.text(cx + 13 + check, y - 1, label, 16, now ? kOnAccent : (past ? kTextMuted : kTextMuted),
+                                 now);
+                        if (i + 1 < count) drawChevron(pen, cx + chipW + 11, y - 6, 10, 1.8, kBorder);
+                    }
+                    cx += chipW + 22;
+                }
+            }
+            // The seconds left of this step (or the call to put the headset back on), and the whole run
+            const double boxTop = y + 18;
+            const double boxH = 98;
+            box(boxTop, boxH);
+            if (draw) {
+                const double bx = x0 + 18;
+                const double br = x1 - 18;
+                const double baseline = boxTop + 56;
+                if (!s.locked) {
+                    pen.text(bx, baseline, t.eyecamNotLocked, fitSize(pen, t.eyecamNotLocked, 26, 14, br - bx, true),
+                             kDanger, true);
+                } else if (std::isfinite(s.stepRemainingS)) {
+                    const int left = static_cast<int>(std::ceil(std::max(0.0, s.stepRemainingS) - 1e-9));
+                    double lx = bx;
+                    if (t.setupLeftBefore[0] != '\0') lx += pen.text(lx, baseline, t.setupLeftBefore, 17, kTextMuted) + 14;
+                    lx += pen.text(lx, baseline, std::to_string(left), 40, kAccent, true) + 14;
+                    pen.text(lx, baseline, t.setupLeftAfter, 17, kTextMuted);
+                }
+                if (s.stepCount > 1 && std::isfinite(s.totalS)) {
+                    char line[160];
+                    std::snprintf(line, sizeof(line), t.setupLearnStepFormat, std::max(1, s.stepIndex),
+                                  s.stepCount - 1, static_cast<int>(std::lround(s.totalS)));
+                    pen.text(br, baseline, line, 15, kTextMuted, false, true);
+                }
+                const double barY = boxTop + 70;
+                fillRounded(pen, bx, barY, br - bx, 12, 6, kControl);
+                if (std::isfinite(s.elapsedS) && std::isfinite(s.totalS) && s.totalS > 0) {
+                    const double doneShare = std::clamp(s.elapsedS / s.totalS, 0.0, 1.0);
+                    if (doneShare > 0) fillRounded(pen, bx, barY, std::max(12.0, (br - bx) * doneShare), 12, 6, kAccent);
+                }
+            }
+            y = boxTop + boxH;
+            const double by = y + 12;
+            const double bh = 46;
+            const double bw = std::max(96.0, pen.measure(t.setupStop, 18, true) + 44);
+            if (draw) {
+                pen.text(x0, by + 29, t.setupLearnFoot, fitSize(pen, t.setupLearnFoot, 15, 11, w - bw - 16, false),
+                         kTextMuted);
+                drawButton(pen, x1 - bw, by, bw, bh, t.setupStop, {PanelAction::EyecamStop, nullptr, 0}, !busy, false,
+                           18);
+            }
+            y = by + bh;
+            break;
+        }
+        case SetupScreen::Fail:
+        case SetupScreen::Error: {
+            const bool failed = screen == SetupScreen::Error;
+            title(t.setupStepLearn, failed ? t.setupErrorPill : t.setupFailPill, failed ? kDanger : kTextMuted);
+            y += 50;
+            const char* big = failed ? t.eyecamCalibErrorTitle : t.setupFailTitle;
+            text(x0, y, big, fitSize(pen, big, 26, 16, w, true), failed ? kDanger : kText, true);
+            if (failed) {
+                // eyecam-rec's reason, in Japanese only
+                if (!s.message.empty()) para(s.message, 17, kText, false, 38, 26, 3);
+            } else {
+                para(t.setupFailBody, 17, kText, false, 38, 26, 2);
+                // What it learned, and the standard values for widening
+                const double boxTop = y + 18;
+                const double boxH = 104;
+                box(boxTop, boxH);
+                const char* labels[3] = {t.setupFailClosed, t.setupFailNormal, t.setupFailWiden};
+                for (int i = 0; i < 3; ++i) {
+                    const double baseline = boxTop + 30 + i * 30;
+                    if (draw) {
+                        if (i < 2) {
+                            drawCheck(cr, x0 + 28, baseline - 6, 15, kSuccess);
+                        } else {
+                            pen.color(kTextMuted);
+                            cairo_set_line_width(cr, 2);
+                            cairo_move_to(cr, x0 + 22, baseline - 6);
+                            cairo_line_to(cr, x0 + 34, baseline - 6);
+                            cairo_stroke(cr);
+                        }
+                    }
+                    text(x0 + 48, baseline, labels[i], 17, kTextMuted, false);
+                    text(x0 + 178, baseline, i < 2 ? t.setupLearnDone : t.setupFailWidenValue, 17,
+                         i < 2 ? kSuccess : kText, true);
+                }
+                y = boxTop + boxH;
+            }
+            const double by = y + (failed ? 22 : 12);
+            const double bh = 46;
+            double bx = x0;
+            if (!failed) {
+                const double pw = pen.measure(t.setupFailProceed, 18, true) + 48;
+                if (draw) {
+                    drawButton(pen, bx, by, pw, bh, t.setupFailProceed, {PanelAction::SetupProceed, nullptr, 0}, true,
+                               true, 18);
+                }
+                bx += pw + 10;
+            }
+            const double aw = pen.measure(t.setupAgain, 18, true) + (failed ? 76 : 48);
+            if (draw) {
+                drawIconButton(pen, bx, by, aw, bh, t.setupAgain,
+                               {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy,
+                               failed, 18, failed ? ButtonIcon::Play : ButtonIcon::None);
+                const char* note = failed ? (s.locked ? "" : t.setupWaitFoot) : t.setupFailLater;
+                const double nx = bx + aw + 14;
+                if (note[0] != '\0') {
+                    const std::vector<std::string> lines = wrapText(pen, note, 15, false, x1 - nx, 2);
+                    double baseline = by + bh / 2 + 5 - (lines.size() - 1) * 10;
+                    for (const std::string& line : lines) {
+                        pen.text(nx, baseline, line, 15, kTextMuted);
+                        baseline += 20;
+                    }
+                }
+            }
+            y = by + bh;
+            break;
+        }
+        case SetupScreen::Done: {
+            y = top + 50;
+            text(x0, y, t.setupDoneTitle, fitSize(pen, t.setupDoneTitle, 26, 16, w, true), kText, true);
+            para(t.setupDoneBody, 17, kText, false, 44, 28, 3);
+            // If something is off later: where to go
+            const double boxTop = y + 18;
+            const double boxH = 112;
+            box(boxTop, boxH);
+            text(x0 + 18, boxTop + 28, t.setupDoneHelp, 14, kTextMuted, true);
+            const double colX = x0 + 18 + std::max(240.0, std::max(pen.measure(t.setupDoneHelp1, 16, false),
+                                                                    pen.measure(t.setupDoneHelp2, 16, false)) + 20);
+            text(x0 + 18, boxTop + 60, t.setupDoneHelp1, 16, kTextMuted, false);
+            text(colX, boxTop + 60, t.setupDoneHelp1Do, 16, kText, true);
+            text(x0 + 18, boxTop + 90, t.setupDoneHelp2, 16, kTextMuted, false);
+            text(colX, boxTop + 90, t.setupDoneHelp2Do, 16, kText, true);
+            y = boxTop + boxH;
+            const double by = y + 14;
+            const double bh = 46;
+            const double bw = pen.measure(t.setupDoneButton, 18, true) + 56;
+            if (draw) {
+                drawButton(pen, x0, by, bw, bh, t.setupDoneButton, {PanelAction::SetupProceed, nullptr, 0}, true, true,
+                           18);
+                const double nx = x0 + bw + 14;
+                pen.text(nx, by + 29, t.setupDoneNote, fitSize(pen, t.setupDoneNote, 15, 11, x1 - nx, false),
+                         kTextMuted);
+            }
+            y = by + bh;
+            break;
+        }
+        case SetupScreen::Camera: break;
+    }
+    // The setup's Konsole that didn't open
+    if (!view.spawnError.empty() && (screen == SetupScreen::Pass || screen == SetupScreen::Check)) {
+        y += 24;
+        text(x0, y, ellipsize(pen, view.spawnError, 14, true, w, false), 14, kDanger, true);
+    }
+    return y - top + 22;
+}
+
+void EyePanel::drawSensitivitySlider(const Pen& pen, const UiText& t, const eyecam::Status& s, double x0, double x1,
+                                     double y, double h) {
+    const double file = std::clamp(s.widenSensitivity, 0.0, 1.0);
+    // Its own value while held, and after it is let go of until the file has it
+    if (sensHeld_ && std::fabs(file - sensValue_) < 0.005) sensHeld_ = false;
+    const double value = sensDragging_ || sensHeld_ ? sensValue_ : file;
+    const double mid = y + h / 2;
+    const double endSize = 15;
+    const double dullW = pen.measure(t.eyecamSensitivityDull, endSize, false);
+    const double sharpW = pen.measure(t.eyecamSensitivitySharp, endSize, false);
+    // The value at the right end, in a fixed width so the track doesn't move with it
+    char number[16];
+    std::snprintf(number, sizeof(number), "%.2f", value);
+    const double valueW = pen.measure("0.00", 18, true);
+    pen.text(x1, centerBaseline(y, h, 18), number, 18, kText, true, true);
+    pen.text(x0, centerBaseline(y, h, endSize), t.eyecamSensitivityDull, endSize, kTextMuted);
+    const double sharpX = x1 - valueW - 22 - sharpW;
+    pen.text(sharpX, centerBaseline(y, h, endSize), t.eyecamSensitivitySharp, endSize, kTextMuted);
+    const double trackX = x0 + dullW + 22;
+    const double trackW = sharpX - 22 - trackX;
+    sensTrackX_ = trackX;
+    sensTrackW_ = trackW;
+    const double trackH = 10;
+    fillRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kControl);
+    strokeRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kBorder, 1.5);
+    if (value > 0) fillRounded(pen, trackX, mid - trackH / 2, std::max(trackH, trackW * value), trackH, trackH / 2, kAccent);
+    // The knob: larger while held or under the pointer, with a card-colored edge so it stands off the track
+    const PanelHit hit {PanelAction::EyecamSensitivity, nullptr, 0};
+    const double r = sensDragging_ || pointerState(hit) > 0 ? 14 : 12;
+    drawDot(pen.cr, trackX + trackW * value, mid, r + 3, kCard);
+    drawDot(pen.cr, trackX + trackW * value, mid, r, kAccent);
+    addButton(hit, trackX - 18, y, trackW + 36, h);
+}
+
+void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+    cairo_t* cr = pen.cr;
+    const eyecam::View& view = m.eyecam;
+    const eyecam::Status& s = view.status;
+    const EyeStatus& es = m.status;
+    const bool busy = view.busy;
+    const bool ready = s.state == eyecam::State::Idle || s.state == eyecam::State::Error;
+    double y = kRowTop - 8;
+    // A thin line under each row
+    const auto divider = [&](double at) {
+        pen.color(kDivider);
+        cairo_set_line_width(cr, 1);
+        cairo_move_to(cr, kInnerX, at + 0.5);
+        cairo_line_to(cr, kInnerRight, at + 0.5);
+        cairo_stroke(cr);
+    };
+
+    // Now: what drives the eyelids, and whether the relaxed eyes are learned
+    {
+        const double h = 64;
+        drawRowLabel(pen, t, y, h, t.camRowState, t.camRowStateHint, false);
         const bool on = v.flag(key::kCameraLids);
-        const double sw = 220;
-        const double sx = kInnerRight - sw;
-        const double textW = sx - 16 - kInnerX;
-        const EyeStatus& es = m.status;
+        const bool warming = eyecam::baselineWarming(s);
         const CameraUse use = cameraUse(es, on, warming);
-        std::string usage;
-        switch (use) {
-            case CameraUse::Both: usage = t.cameraUseBoth; break;
-            case CameraUse::Left: usage = t.cameraUseLeft; break;
-            case CameraUse::Right: usage = t.cameraUseRight; break;
-            case CameraUse::Off:
-            case CameraUse::Valve: usage = t.cameraUseValve; break;
-            case CameraUse::NotCalibrated: usage = formatText(t.cameraUseValveFormat, t.cameraWhyNotCalibrated); break;
-            case CameraUse::NoCamera: usage = formatText(t.cameraUseValveFormat, t.cameraWhyNoCamera); break;
-            case CameraUse::Warming: usage = formatText(t.cameraUseValveFormat, t.cameraWhyWarming); break;
-            case CameraUse::Error: usage = formatText(t.cameraUseValveFormat, es.camera.error); break;
-            case CameraUse::Unknown: break;  // frameeyeosc not running, or one that doesn't say
-        }
         const bool inUse = use == CameraUse::Both || use == CameraUse::Left || use == CameraUse::Right;
-        if (inUse && (es.camera.pupilUsed[0] || es.camera.pupilUsed[1])) usage += t.cameraPupilSuffix;
-        // The title by the switch, or above the line when there is one
-        const double titleSize = fitSize(pen, t.rowCameraLids, 20, 14, textW, true);
-        const double titleBaseline = usage.empty() ? centerBaseline(y + 6, kControlH, titleSize) : y + 26;
-        const double titleRight = kInnerX + pen.text(kInnerX, titleBaseline, t.rowCameraLids, titleSize, kText, true);
-        // Locked by the command line: said after the title, so the line under it stays whole
-        if (locked) {
-            drawLock(pen, titleRight + 14, titleBaseline, 16, kTextMuted);
-            pen.text(titleRight + 34, titleBaseline, t.locked,
-                     fitSize(pen, t.locked, 15, 11, kInnerX + textW - titleRight - 34, false), kTextMuted);
+        // (while learning, the pill says so: the line itself stays short)
+        std::string state = !s.live                     ? std::string(t.eyecamLiveOff)
+                            : use == CameraUse::Warming ? std::string(t.cameraUseValve)
+                                                        : cameraUseText(t, use, es);
+        if (state.empty()) state = "—";
+        // The pill: learning them now (with the seconds), or learned
+        std::string pill;
+        bool learned = false;
+        if (warming) {
+            if (std::isfinite(s.warmupRemainingS)) {
+                char left[128];
+                std::snprintf(left, sizeof(left), t.eyecamWarmingFormat,
+                              static_cast<int>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)));
+                pill = left;
+            }
+        } else if (s.baseline == "ready" || (s.calibState & (eyecam::kCalibWearBit | eyecam::kCalibAutoBit)) != 0) {
+            pill = t.camLearned;
+            learned = true;
         }
-        if (!usage.empty()) {
-            const std::string shown = ellipsize(pen, usage, 16, inUse, textW, false);
-            pen.text(kInnerX, y + 52, shown, 16, inUse ? kText : kTextMuted, inUse);
+        const double pillH = 32;
+        const double textX = kControlX + 20;
+        const double pillPad = learned ? 46 : 28;
+        const double pillSize = pill.empty() ? 15 : fitSize(pen, pill, 15, 11, (kInnerRight - textX) * 0.55 - pillPad, false);
+        const double pillW = pill.empty() ? 0 : pen.measure(pill, pillSize, false) + pillPad;
+        const double room = kInnerRight - textX - (pill.empty() ? 0 : pillW + 14);
+        const double size = fitSize(pen, state, 19, 13, room, inUse);
+        drawDot(cr, kControlX + 6, y + h / 2, 5.5, inUse ? kSuccess : kTextMuted);
+        const double textRight = textX + pen.text(textX, centerBaseline(y, h, size), state, size, inUse ? kText : kTextMuted,
+                                                  inUse);
+        if (!pill.empty()) {
+            const double px = textRight + 14;
+            const double py = y + (h - pillH) / 2;
+            fillRounded(pen, px, py, pillW, pillH, pillH / 2, learned ? kSuccessTint : kAccentTint);
+            double tx = px + 14;
+            if (learned) {
+                drawCheck(cr, px + 22, py + pillH / 2, 15, kSuccess);
+                tx = px + 36;
+            }
+            pen.text(tx, centerBaseline(py, pillH, pillSize), pill, pillSize, learned ? kSuccess : kText);
         }
-        drawSegmented(pen, sx, y + 6, sw, kControlH,
+        y += h;
+        divider(y);
+    }
+    // The camera eyelids for frameeyeosc
+    {
+        const double h = 68;
+        const bool locked = v.locked(key::kCameraLids);
+        drawRowLabel(pen, t, y, h, t.rowCameraLids, t.camRowLidsHint, locked);
+        drawSegmented(pen, kControlX, y + (h - kControlH) / 2, 246, kControlH,
                       {{t.on, {PanelAction::SetBool, key::kCameraLids, 1}},
                        {t.off, {PanelAction::SetBool, key::kCameraLids, 0}}},
-                      on ? 0 : 1, 20, locked);
-        y += 76;
+                      v.flag(key::kCameraLids) ? 0 : 1, 20, locked);
+        y += h;
+        divider(y);
     }
-    // The widening sensitivity (only from an eyecam-rec that has it): dull at the left, sensitive at the right
+    // The widening sensitivity (only from an eyecam-rec that has it)
     if (s.hasWidenSensitivity) {
-        const double file = std::clamp(s.widenSensitivity, 0.0, 1.0);
-        // Its own value while held, and after it is let go of until the file has it
-        if (sensHeld_ && std::fabs(file - sensValue_) < 0.005) sensHeld_ = false;
-        const double value = sensDragging_ || sensHeld_ ? sensValue_ : file;
-        const double rowH = 48;
-        const double mid = y + rowH / 2;
-        const double labelSize = fitSize(pen, t.eyecamSensitivity, 18, 14, 230, true);
-        const double labelRight = kInnerX + pen.text(kInnerX, centerBaseline(y, rowH, labelSize), t.eyecamSensitivity,
-                                                     labelSize, kText, true);
-        // The value after it, in a fixed width so the track doesn't move with it
-        char number[16];
-        std::snprintf(number, sizeof(number), "%.2f", value);
-        pen.text(labelRight + 10, centerBaseline(y, rowH, 15), number, 15, kTextMuted);
-        const double endSize = 15;
-        const double dullX = labelRight + 10 + pen.measure("0.00", 15, false) + 22;
-        const double dullW = pen.measure(t.eyecamSensitivityDull, endSize, false);
-        const double sharpW = pen.measure(t.eyecamSensitivitySharp, endSize, false);
-        pen.text(dullX, centerBaseline(y, rowH, endSize), t.eyecamSensitivityDull, endSize, kTextMuted);
-        pen.text(kInnerRight - sharpW, centerBaseline(y, rowH, endSize), t.eyecamSensitivitySharp, endSize, kTextMuted);
-        const double trackX = dullX + dullW + 26;
-        const double trackW = kInnerRight - sharpW - 26 - trackX;
-        sensTrackX_ = trackX;
-        sensTrackW_ = trackW;
-        const double trackH = 10;
-        fillRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kControl);
-        strokeRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kBorder, 1.5);
-        if (value > 0) fillRounded(pen, trackX, mid - trackH / 2, std::max(trackH, trackW * value), trackH, trackH / 2, kAccent);
-        // The knob: larger while held or under the pointer, with a card-colored edge so it stands off the track
-        const PanelHit hit {PanelAction::EyecamSensitivity, nullptr, 0};
-        const double r = sensDragging_ || pointerState(hit) > 0 ? 14 : 12;
-        drawDot(pen.cr, trackX + trackW * value, mid, r + 3, kCard);
-        drawDot(pen.cr, trackX + trackW * value, mid, r, kAccent);
-        addButton(hit, trackX - 18, y, trackW + 36, rowH);
-        y += rowH + 8;
+        const double h = 66;
+        drawRowLabel(pen, t, y, h, t.eyecamSensitivity, t.camRowSensitivityHint, false);
+        drawSensitivitySlider(pen, t, s, kControlX, kInnerRight, y + 8, h - 16);
+        y += h;
+        divider(y);
+    }
+    // A calibration when something feels off, and the user's own (optional, for squinting)
+    for (int i = 0; i < 2; ++i) {
+        const bool user = i == 1;
+        const double h = user ? 60 : 68;
+        drawRowLabel(pen, t, y, h, user ? t.camRowUser : t.camRowCalib, user ? t.camRowUserHint : t.camRowCalibHint,
+                     false);
+        const double bw = 264;
+        const double bh = user ? 42 : 46;
+        const bool allowed = !user || eyecam::userCalibAllowed(s);
+        drawButton(pen, kControlX, y + (h - bh) / 2, bw, bh, user ? t.camUserButton : t.camCalibButton,
+                   {PanelAction::EyecamCalib, nullptr, static_cast<int>(user ? eyecam::Calib::User : eyecam::Calib::Wear)},
+                   ready && allowed && !busy, false, user ? 17 : 18);
+        const double sx = kControlX + bw + 16;
+        const double sw = kInnerRight - sx;
+        if (allowed) {
+            const char* first = user ? t.camUserSide1 : t.camCalibSide1;
+            const char* second = user ? t.camUserSide2 : t.camCalibSide2;
+            pen.text(sx, y + h / 2 - 3, first, fitSize(pen, first, 15, 11, sw, false), kTextMuted);
+            pen.text(sx, y + h / 2 + 17, second, fitSize(pen, second, 15, 11, sw, false), kTextMuted);
+        } else {
+            pen.text(sx, centerBaseline(y, h, 15), t.camUserNeedsCalib, fitSize(pen, t.camUserNeedsCalib, 15, 11, sw, false),
+                     kTextMuted);
+        }
+        y += h;
+        if (!user) divider(y);
     }
 
-    // The calibrations: done or not, what to do next, and their buttons
-    y += drawSectionTitle(pen, y, t.eyecamSectionCalib);
-    {
-        const bool wearDone = (s.calibState & eyecam::kCalibWearBit) != 0;
-        const bool userDone = (s.calibState & eyecam::kCalibUserBit) != 0;
-        // A baseline learned by eyecam-rec itself counts for the wear too ("auto")
-        const bool wearAuto = !wearDone && (s.calibState & eyecam::kCalibAutoBit) != 0;
-        double x = kInnerX;
-        for (int i = 0; i < 2; ++i) {
-            const bool done = i == 0 ? wearDone || wearAuto : userDone;
-            const char* state = i == 0 && wearAuto ? t.eyecamCalibAuto : (done ? t.eyecamCalibDone : t.eyecamCalibNotYet);
-            char chip[160];
-            std::snprintf(chip, sizeof(chip), t.eyecamCalibChipFormat, i == 0 ? t.eyecamCalibWearChip : t.eyecamCalibUserChip,
-                          state);
-            const double size = 17;
-            const double h = 34;
-            const double mark = 22;
-            const double w = pen.measure(chip, size, true) + 28 + mark;
-            fillRounded(pen, x, y + 6, w, h, h / 2, done ? kAccentTint : kControl);
-            strokeRounded(pen, x, y + 6, w, h, h / 2, done ? kAccent : kBorder, 2);
-            if (done) {
-                drawCheck(pen.cr, x + 14 + mark / 2 - 2, y + 6 + h / 2, 14, kAccent);
-            } else {
-                drawRing(pen.cr, x + 14 + mark / 2 - 3, y + 6 + h / 2, 6, 2, kTextMuted);
-            }
-            pen.text(x + 14 + mark, centerBaseline(y + 6, h, size), chip, size, kText, true);
-            x += w + 10;
-        }
-        // What to do next (drift first: it is why the first tab asks). An eyecam-rec that learns the relaxed eyes by
-        // itself needs the wear calibration only to use the cameras at once, or after a drift
-        const bool learns = s.hasBaseline;
-        const char* hint = !s.live                         ? t.eyecamLiveOff
-                           : s.recalibSuggested            ? t.eyecamCalibHintRecalib
-                           : learns && wearDone && !userDone ? t.eyecamCalibHintUser
-                           : learns                        ? t.eyecamCalibHintOptional
-                           : !wearDone                     ? t.eyecamCalibHintWear
-                           : !userDone                     ? t.eyecamCalibHintUser
-                                                           : t.eyecamCalibHintDone;
-        const bool notice = s.live && s.recalibSuggested;
-        pen.text(kInnerX, y + 70, hint, fitSize(pen, hint, 16, 12, width, notice), notice ? kText : kTextMuted, notice);
-        // The one to do next gets the accent
-        const bool userNext = wearDone && !userDone && !s.recalibSuggested;
-        // (with a learned baseline, the wear calibration only stands out when the first tab would ask for it)
-        const bool wearNext = !userNext && (!learns || s.recalibSuggested || (!s.calibSaved && !wearDone));
-        const bool userAllowed = eyecam::userCalibAllowed(s);
-        const double gap = 16;
-        const double bw = (width - gap) / 2;
-        const double bh = 64;
-        const double by = y + 84;
-        drawButton(pen, kInnerX, by, bw, bh, t.eyecamCalibWear,
-                   {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy, wearNext, 22);
-        drawButton(pen, kInnerX + bw + gap, by, bw, bh, t.eyecamCalibUser,
-                   {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::User)}, !busy && userAllowed,
-                   userNext, 22);
-        if (!userAllowed) {
-            textCentered(pen, kInnerX + bw + gap + bw / 2, by + bh + 22, t.eyecamCalibUserNeedsWear,
-                         fitSize(pen, t.eyecamCalibUserNeedsWear, 15, 11, bw, false), kTextMuted, false);
-        }
-        y += 178;
+    // At the bottom: eyecam-rec's message, a command on its way, and a command that failed
+    struct Line {
+        std::string text;
+        Color color;
+        bool bold;
+    };
+    const double width = kInnerRight - kInnerX;
+    std::vector<Line> lines;
+    if (!s.message.empty()) {
+        for (const std::string& line : wrapText(pen, s.message, 17, false, width, 2)) lines.push_back({line, kText, false});
+    }
+    if (view.busy) {
+        lines.push_back({t.eyecamSending, kTextMuted, false});
+    } else if (view.hasReply && !view.reply.ok) {
+        char failed[512];
+        std::snprintf(failed, sizeof(failed), t.eyecamReplyFailedFormat, view.reply.command.c_str(),
+                      view.reply.error.c_str());
+        for (const std::string& line : wrapText(pen, failed, 17, true, width, 2)) lines.push_back({line, kDanger, true});
+    }
+    const double bottom = kContentY + kContentH - 14;
+    double baseline = bottom;
+    for (auto line = lines.rbegin(); line != lines.rend(); ++line) {
+        textCentered(pen, (kInnerX + kInnerRight) / 2, baseline, line->text, 17, line->color, line->bold);
+        baseline -= 24;
     }
 
-    // The recording (developer): its start opens the light warning, as before
-    y += drawSectionTitle(pen, y, t.eyecamSectionRecord);
-    {
-        const double bw = 230;
-        const double bh = 60;
-        drawButton(pen, kInnerX, y + 6, bw, bh, t.eyecamStart, {PanelAction::EyecamStart, nullptr, 0}, !busy, false,
-                   24);
-        const double hintX = kInnerX + bw + 20;
-        const std::vector<std::string> lines = wrapText(pen, t.eyecamIdleHint, 15, false, kInnerRight - hintX, 2);
-        double baseline = y + 6 + bh / 2 + 5 - (lines.size() - 1) * 10.5;
-        for (const std::string& line : lines) {
-            pen.text(hintX, baseline, line, 15, kTextMuted);
-            baseline += 21;
-        }
+    // "When...": what to do about widening, in a box down to the lines above (rows that don't fit are left out)
+    const double boxTop = y + 8;
+    const double boxBottom = lines.empty() ? bottom + 2 : baseline + 4;
+    const double rowStep = 30;
+    const int rows = std::min(4, static_cast<int>(std::floor((boxBottom - boxTop - 52) / rowStep)) + 1);
+    if (rows < 1) return;
+    const double boxH = 48 + rows * rowStep - 8;
+    fillRounded(pen, kInnerX, boxTop, width, boxH, 12, kBg);
+    drawInfoIcon(pen, kInnerX + 28, boxTop + 24, kAccent);
+    pen.text(kInnerX + 46, boxTop + 30, t.camHelpTitle, 17, kText, true);
+    const char* situations[4] = {t.camHelp1, t.camHelp2, t.camHelp3, t.camHelp4};
+    const char* remedies[4] = {t.camHelp1Do, t.camHelp2Do, t.camHelp3Do, t.camHelp4Do};
+    double colW = 0;
+    for (const char* situation : situations) colW = std::max(colW, pen.measure(situation, 16, false));
+    const double colX = kInnerX + 20 + std::max(250.0, colW + 24);
+    for (int i = 0; i < rows; ++i) {
+        const double rowBaseline = boxTop + 62 + i * rowStep;
+        pen.text(kInnerX + 20, rowBaseline, situations[i], 16, kTextMuted);
+        pen.text(colX, rowBaseline, remedies[i], fitSize(pen, remedies[i], 16, 11, kInnerRight - 16 - colX, false), kText);
     }
 }
 

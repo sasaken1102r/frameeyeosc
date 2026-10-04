@@ -1,10 +1,11 @@
-// The developer tab "Eye capture": eyecam-rec (an eye-camera recorder outside this repo) writes its state to
+// The eye cameras tab: eyecam-rec (an eye-camera recorder outside this repo) writes its state to
 // $XDG_RUNTIME_DIR/eyecam/status.json about 10 times a second and takes "start" / "stop" / "calib wear" /
-// "calib user" on ctl.sock there. It also reads the eyelids from the eye cameras live, for frameeyeosc, once it is
-// calibrated for this wear, or (a newer eyecam-rec) once it has learned the relaxed eyes by itself, about 35 s after
-// the headset goes on; and once for the user. The
-// panel only reads that file and talks to that socket; it never creates anything in that folder and never runs the
-// recorder or its root helper. Everything here works without OpenVR and cairo (eyecam-test).
+// "calib user" / "set widen_sensitivity" on ctl.sock there. It reads the eyelids from the eye cameras live, for
+// frameeyeosc, once it has a baseline for this wear (calibrated, or learned from the relaxed eyes by itself). Until the
+// first setup is done the tab is a checklist (a password, the camera tool, the first calibration); the developer
+// recording is on the Advanced tab. The panel only reads that file and talks to that socket; it never creates
+// anything in that folder and never runs the recorder or its root helper. Everything here works without OpenVR and
+// cairo (eyecam-test).
 #pragma once
 
 #include "i18n.h"
@@ -40,8 +41,6 @@ constexpr int kCalibUserBit = 2;
 constexpr int kCalibAutoBit = 4;
 /** How often at most the widening sensitivity is sent while its slider is dragged (s); it is sent again on release. */
 constexpr double kSensitivitySendSec = 0.3;
-/** The command the user runs once over SSH to give the recorder the camera buffers (the panel only shows it). */
-constexpr const char* kGrabCommand = "sudo /home/steamos/eyecam-src/target/release/eyecam-grab";
 
 /** The recorder's state ("state" in status.json). */
 enum class State {
@@ -71,12 +70,38 @@ enum class Calib { Wear, User };
 /** What eyecam-rec ran last, to tell a failed calibration from a failed recording. */
 enum class Run { None, Recording, CalibWear, CalibUser };
 
-/** The note on the first tab that asks for a calibration. */
-enum class CalibPrompt {
-    None,
-    Calibrate,    ///< the headset is on, the cameras are read live, but not calibrated for this wear
-    Recalibrate,  ///< calibrated, but it drifted since (recalib_suggested)
+/** The steps of "calib wear" after its countdown, as the setup checklist shows them (eyecam-rec's protocol). */
+constexpr const char* kCalibWearSteps[] = {"close", "normal", "widen", "normal", "widen"};
+
+/** Whether the SteamOS user has a password ("steamos-passwd --has-password"; the setup's first step). */
+enum class PasswordState {
+    Unknown,  ///< not checked yet, or it can't be (not SteamOS)
+    Set,
+    NotSet,
 };
+
+/** The setup's steps, in order; the current one is the first not met. */
+enum class SetupStep {
+    Password,  ///< (1) a SteamOS password, needed once for (2)
+    Tool,      ///< (2) the camera tool (eyecam-grab) installed with sudo
+    Learn,     ///< (3) the first calibration ("calib wear")
+    Done,      ///< (4) set up: the eye cameras' usual page
+};
+
+/** What the eye cameras' tab shows. */
+enum class SetupScreen {
+    Pass,    ///< the checklist at (1)
+    Check,   ///< ...at (2)
+    Wait,    ///< ...at (3), before its button
+    Learn,   ///< ...at (3), calibrating
+    Error,   ///< ...at (3), the calibration failed
+    Fail,    ///< ...at (3), calibrated but widening fell back to the standard values ("このまま進む" / again)
+    Done,    ///< the checklist done, right after the setup's calibration (once)
+    Camera,  ///< the usual page (set up)
+};
+
+/** How the setup's calibration ended, for the screen after it. */
+enum class SetupResult { None, Done, Fail };
 
 /** status.json as read. Numbers missing from it are NaN (steps -1). */
 struct Status {
@@ -109,6 +134,60 @@ struct Status {
     bool calibSaved = false;       ///< a calibration for the wear was saved once (calib.json), so it never asks again
     bool hasWidenSensitivity = false;  ///< "widen_sensitivity" is there (the slider shows only then)
     double widenSensitivity = 0.0;     ///< 0 dull (rarely widens by itself) .. 1 sensitive (NaN when missing)
+    bool hasBuffers = false;       ///< "has_buffers": eyecam-rec holds the camera buffers (false when missing)
+    bool hasSetupDone = false;     ///< "setup_done" is there (a newer eyecam-rec)
+    bool setupDone = false;        ///< the setup's calibration was done once
+    std::string lastCalibWiden;    ///< "last_calib_widen": "measured" / "default" ("" when missing)
+};
+
+/**
+ * The setup's calibration as the panel follows it: when a calibration that began before the setup was complete ends,
+ * it says how (Done once, so the checklist can show its last screen; Fail while widening fell back to the standard
+ * values). "このまま進む" (proceed) accepts that fallback for this run of the panel.
+ */
+class SetupFlow {
+public:
+    /**
+     * Follow eyecam-rec (each time its status is read).
+     * @param status the status
+     * @param now monotonic seconds (when Done began, for the left column's short notice)
+     */
+    void follow(const Status& status, double now);
+
+    /** "使いはじめる" or "このまま進む": on to the usual page. */
+    void proceed();
+
+    /** The dashboard closed: the checklist's done screen is not shown again. */
+    void closed();
+
+    /** @return how the setup's calibration ended (None once it is dismissed or another one starts) */
+    SetupResult result() const { return result_; }
+
+    /** @return true once the standard widening values were accepted ("このまま進む") */
+    bool accepted() const { return accepted_; }
+
+    /** @return true once the tool was seen installed (an error after it says nothing about the tool) */
+    bool toolSeen() const { return toolSeen_; }
+
+    /**
+     * Whether the left column's "ready" notice shows: for kReadyNoticeSec after the setup was done.
+     * @param now monotonic seconds
+     * @return true while it shows
+     */
+    bool readyNotice(double now) const;
+
+    /** How long the left column says the eye cameras are ready (s). */
+    static constexpr double kReadyNoticeSec = 12.0;
+
+private:
+    bool seen_ = false;            ///< a status was followed
+    bool calibrating_ = false;     ///< it was calibrating at the last one
+    bool setupCalib_ = false;      ///< ...and that calibration is the setup's
+    bool completeBefore_ = false;  ///< the setup was complete before it
+    bool accepted_ = false;
+    bool toolSeen_ = false;
+    SetupResult result_ = SetupResult::None;
+    double doneAt_ = -1e9;
 };
 
 /** The recorder's reply to a command. */
@@ -127,6 +206,10 @@ struct View {
     bool hasReply = false;  ///< a command was answered (or failed) since the panel started
     Reply reply;            ///< the last one
     Run lastRun = Run::None;  ///< what ran last (followRun / runOfCommand)
+    PasswordState password = PasswordState::Unknown;  ///< the setup's first step, checked by the panel
+    SetupFlow flow;           ///< the setup's calibration
+    bool readyNotice = false; ///< the left column says "ready" (flow.readyNotice, set by the loop)
+    std::string spawnError;   ///< why a Konsole for the setup didn't open ("" = none)
 };
 
 /**
@@ -287,27 +370,42 @@ bool isCalib(Run run);
 bool baselineWarming(const Status& status);
 
 /**
- * The note on the first tab that asks for a calibration. Only while the eye capture tab shows, the recorder is
- * ready (idle or error), reads the cameras live, the cameras see the eyes (the headset is on), and frameeyeosc may
- * use the camera eyelids (camera_lids). Then Calibrate while it isn't calibrated for this wear: with an eyecam-rec
- * that learns the relaxed eyes by itself ("baseline" there) only if no wear calibration was ever saved
- * (calib_saved), since the learned baseline does without one. Else Recalibrate while recalib_suggested. Never
- * without eyecam-rec.
- * @param view the recorder
- * @param cameraLids the camera_lids setting
- * @return the note
+ * Whether the camera tool is in: eyecam-rec says auto_grab "ok" or has_buffers, or it is in a state that only comes
+ * after it has the buffers (idle, searching, recording, calibrating; also an older eyecam-rec without those fields).
+ * An error says nothing either way (SetupFlow::toolSeen remembers it).
+ * @param status the status
+ * @return true if installed
  */
-CalibPrompt calibPrompt(const View& view, bool cameraLids);
+bool toolInstalled(const Status& status);
 
 /**
- * The quiet line in the note's place on the first tab, for a calibration when widening looks wrong: while the eye
- * capture tab shows, the recorder is ready (idle or error) and reads the cameras live, frameeyeosc may use the camera
- * eyelids (camera_lids), and the note itself isn't showing. Never without eyecam-rec.
- * @param view the recorder
- * @param cameraLids the camera_lids setting
- * @return true to show it
+ * Whether the setup is complete: setup_done. An older eyecam-rec doesn't write it; then the setup counts as done
+ * once there is any baseline (calib_state bit 0 or 2) or a saved wear calibration (calib_saved), so a user who already
+ * uses the cameras is never sent back through the checklist.
+ * @param status the status
+ * @return true if complete
  */
-bool calibOffer(const View& view, bool cameraLids);
+bool setupComplete(const Status& status);
+
+/**
+ * The current step: the first one not met. Complete (or the standard widening accepted) is Done; the tool in (or seen in
+ * before) is (3) whatever the password check says (it was needed to install it); otherwise (1) only while the
+ * password is known to be missing, else (2).
+ * @param status the status
+ * @param password the password check
+ * @param accepted the standard widening values were accepted (SetupFlow::accepted)
+ * @param toolSeen the tool was seen installed in this run of the panel (SetupFlow::toolSeen)
+ * @return the step
+ */
+SetupStep setupStep(const Status& status, PasswordState password, bool accepted, bool toolSeen = false);
+
+/**
+ * What the eye cameras' tab shows: how the setup's calibration ended while that is still to be shown, else the
+ * current step (at (3): calibrating, the calibration's error, or the button), else the usual page.
+ * @param view the recorder (its status, password check, flow and last run)
+ * @return the screen
+ */
+SetupScreen setupScreen(const View& view);
 
 /**
  * The command that sets the widening sensitivity (eyecam-rec takes it in every state, applies it at once and keeps

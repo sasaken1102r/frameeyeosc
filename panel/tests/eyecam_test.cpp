@@ -1,10 +1,12 @@
 // Tests for the eye capture tab's logic (eyecam.cpp): reading eyecam-rec's status.json (every state, missing and odd
 // fields), when the tab shows (stale, stopped, missing), the step texts in both languages, when the full-view light
 // shows and how it fades (and when it goes at once), the light warning before a start and the commands it sends, the
-// calibrations (their commands, what ran last, the first tab's note asking for one), and the control socket against
-// a stand-in recorder in a temporary folder (never the real one). Built with the panel as eyecam-test; exits non-zero
+// calibrations (their commands, what ran last), the setup checklist (its step for every combination, how the setup's
+// calibration ends, the screens, the Konsole command lines it starts), and the control socket against a stand-in
+// recorder in a temporary folder (never the real one; nothing is started). Built with the panel as eyecam-test; exits non-zero
 // on failure.
 #include "eyecam.h"
+#include "setup_tools.h"
 
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -21,8 +23,10 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -520,7 +524,6 @@ Status calibStatus(const std::string& state, int calibState, const std::string& 
 
 void testCalib() {
     using eyecam::Calib;
-    using eyecam::CalibPrompt;
     using eyecam::Run;
     // The commands
     SAME(eyecam::calibCommand(Calib::Wear), "calib wear");
@@ -581,101 +584,7 @@ void testCalib() {
         CHECK(run == Run::Recording);
     }
 
-    // The first tab's note
-    const auto prompt = [](const Status& status, bool cameraLids, bool visible = true) {
-        eyecam::View view;
-        view.status = status;
-        view.visible = visible;
-        return eyecam::calibPrompt(view, cameraLids);
-    };
-    CHECK(prompt(calibStatus("idle", 0), true) == CalibPrompt::Calibrate);
-    CHECK(prompt(calibStatus("idle", 2), true) == CalibPrompt::Calibrate);  // the user's only: still this wear's
-    CHECK(prompt(calibStatus("error", 0), true) == CalibPrompt::Calibrate);
-    CHECK(prompt(calibStatus("idle", 1), true) == CalibPrompt::None);
-    CHECK(prompt(calibStatus("idle", 3), true) == CalibPrompt::None);
-    CHECK(prompt(calibStatus("idle", 1, ", \"recalib_suggested\": true"), true) == CalibPrompt::Recalibrate);
-    CHECK(prompt(calibStatus("idle", 3, ", \"recalib_suggested\": true"), true) == CalibPrompt::Recalibrate);
-    // Not calibrated wins over drifted
-    CHECK(prompt(calibStatus("idle", 0, ", \"recalib_suggested\": true"), true) == CalibPrompt::Calibrate);
-    // None of it: camera_lids off, the tab hidden (no eyecam-rec, or a stale one), the headset off, not live,
-    // busy running something
-    CHECK(prompt(calibStatus("idle", 0), false) == CalibPrompt::None);
-    CHECK(prompt(calibStatus("idle", 0), true, false) == CalibPrompt::None);
-    {
-        Status off = calibStatus("idle", 0);
-        off.locked = false;
-        CHECK(prompt(off, true) == CalibPrompt::None);
-        off = calibStatus("idle", 0);
-        off.live = false;
-        CHECK(prompt(off, true) == CalibPrompt::None);
-    }
-    CHECK(prompt(eyecam::parseStatus("{\"state\": \"idle\", \"locked\": true}", kNow), true) == CalibPrompt::None);
-    for (const char* state : {"calibrating", "recording", "searching", "waiting_fds", "stopped", "something_new"}) {
-        CHECK(prompt(calibStatus(state, 0), true) == CalibPrompt::None);
-        CHECK(prompt(calibStatus(state, 1, ", \"recalib_suggested\": true"), true) == CalibPrompt::None);
-    }
-    CHECK(prompt(Status(), true, false) == CalibPrompt::None);
-
-    // An eyecam-rec that learns the relaxed eyes by itself ("baseline" there): it only asks while no wear
-    // calibration was ever saved, whatever bit 2 says
-    const std::string learns = ", \"baseline\": \"ready\", \"calib_saved\": ";
-    CHECK(prompt(calibStatus("idle", 0, learns + "false"), true) == CalibPrompt::Calibrate);
-    CHECK(prompt(calibStatus("idle", 4, learns + "false"), true) == CalibPrompt::Calibrate);
-    CHECK(prompt(calibStatus("error", 0, learns + "false"), true) == CalibPrompt::Calibrate);
-    CHECK(prompt(calibStatus("idle", 0, learns + "true"), true) == CalibPrompt::None);
-    CHECK(prompt(calibStatus("idle", 4, learns + "true"), true) == CalibPrompt::None);
-    CHECK(prompt(calibStatus("idle", 6, learns + "true"), true) == CalibPrompt::None);
-    CHECK(prompt(calibStatus("idle", 1, learns + "false"), true) == CalibPrompt::None);
-    // ...calib_saved missing counts as never saved
-    CHECK(prompt(calibStatus("idle", 0, ", \"baseline\": \"warming\""), true) == CalibPrompt::Calibrate);
-    CHECK(prompt(calibStatus("idle", 0, ", \"baseline\": \"warming\", \"calib_saved\": true"), true) ==
-          CalibPrompt::None);
-    // ...and drift still asks to calibrate again
-    CHECK(prompt(calibStatus("idle", 4, learns + "true, \"recalib_suggested\": true"), true) ==
-          CalibPrompt::Recalibrate);
-    CHECK(prompt(calibStatus("idle", 5, learns + "true, \"recalib_suggested\": true"), true) ==
-          CalibPrompt::Recalibrate);
-    // ...with the same conditions as before
-    CHECK(prompt(calibStatus("idle", 0, learns + "false"), false) == CalibPrompt::None);
-    CHECK(prompt(calibStatus("calibrating", 0, learns + "false"), true) == CalibPrompt::None);
-    // The quiet line in the note's place: only while the note doesn't show, with the same recorder conditions
-    // (the headset on or not)
-    const auto offer = [](const Status& status, bool cameraLids, bool visible = true) {
-        eyecam::View view;
-        view.status = status;
-        view.visible = visible;
-        return eyecam::calibOffer(view, cameraLids);
-    };
-    CHECK(offer(calibStatus("idle", 4, learns + "true"), true));
-    CHECK(offer(calibStatus("idle", 0, learns + "true"), true));
-    CHECK(offer(calibStatus("error", 5, learns + "true"), true));
-    CHECK(offer(calibStatus("idle", 1), true));  // an older eyecam-rec, calibrated
-    {
-        Status off = calibStatus("idle", 4, learns + "true");
-        off.locked = false;
-        CHECK(offer(off, true));
-    }
-    // ...never with the note (Calibrate or Recalibrate) up
-    CHECK(!offer(calibStatus("idle", 0, learns + "false"), true));
-    CHECK(!offer(calibStatus("idle", 0), true));
-    CHECK(!offer(calibStatus("idle", 4, learns + "true, \"recalib_suggested\": true"), true));
-    // ...nor without eyecam-rec, its tab, camera_lids, live, or while it runs something
-    CHECK(!offer(calibStatus("idle", 4, learns + "true"), false));
-    CHECK(!offer(calibStatus("idle", 4, learns + "true"), true, false));
-    CHECK(!offer(Status(), true, false));
-    {
-        Status off = calibStatus("idle", 4, learns + "true");
-        off.live = false;
-        CHECK(!offer(off, true));
-    }
-    for (const char* state : {"calibrating", "recording", "searching", "waiting_fds", "stopped", "something_new"}) {
-        CHECK(!offer(calibStatus(state, 4, learns + "true"), true));
-    }
-    // An older eyecam-rec (no baseline) keeps asking each wear, even with calib_saved alone
-    CHECK(prompt(calibStatus("idle", 0, ", \"calib_saved\": true"), true) == CalibPrompt::Calibrate);
-    CHECK(prompt(calibStatus("idle", 4), true) == CalibPrompt::Calibrate);
-
-    // The light warning closes when a calibration starts (from the note on the first tab, or elsewhere)
+    // The light warning closes when a calibration starts (from the eye cameras tab, or elsewhere)
     {
         eyecam::StartConfirm confirm;
         confirm.open(State::Idle);
@@ -724,32 +633,65 @@ void testCalib() {
 }
 
 void testCalibText() {
-    // Every text the calibration adds is there in both languages (the table has no check of its own)
+    // Every text the eye cameras add is there in both languages (the table has no check of its own)
     for (const Language language : {Language::Ja, Language::En}) {
         const UiText& t = uiText(language);
         for (const char* text :
-             {t.eyecamSectionCamera, t.rowCameraLids, t.cameraUseBoth, t.cameraUseLeft, t.cameraUseRight,
-              t.cameraUseValve, t.cameraUseValveFormat, t.cameraWhyNotCalibrated, t.cameraWhyNoCamera,
-              t.cameraPupilSuffix, t.eyecamSectionCalib, t.eyecamCalibWearChip, t.eyecamCalibUserChip,
-              t.eyecamCalibChipFormat, t.eyecamCalibDone, t.eyecamCalibNotYet, t.eyecamCalibHintWear,
-              t.eyecamCalibHintUser, t.eyecamCalibHintDone, t.eyecamCalibHintRecalib, t.eyecamLiveOff,
-              t.eyecamCalibWear, t.eyecamCalibUser, t.eyecamCalibUserNeedsWear, t.eyecamSectionRecord,
-              t.eyecamCalibWearTitle, t.eyecamCalibUserTitle, t.eyecamCalibWaiting, t.eyecamCalibErrorTitle,
-              t.eyecamCalibRetry, t.calibPromptText, t.calibPromptButton, t.recalibPromptText,
-              t.recalibPromptButton, t.eyecamIdleHint, t.cameraWhyWarming, t.eyecamCalibAuto, t.eyecamWarmingFormat,
-              t.eyecamWarming, t.eyecamCalibHintOptional, t.calibOfferText, t.calibOfferButton,
-              t.eyecamSensitivity, t.eyecamSensitivityDull, t.eyecamSensitivitySharp, t.lidWidenCameraNote}) {
+             {t.rowCameraLids, t.cameraUseBoth, t.cameraUseLeft, t.cameraUseRight, t.cameraUseValve,
+              t.cameraUseValveFormat, t.cameraWhyNotCalibrated, t.cameraWhyNoCamera, t.cameraPupilSuffix,
+              t.cameraWhyWarming, t.eyecamWarmingFormat, t.eyecamLiveOff, t.eyecamCalibWearTitle,
+              t.eyecamCalibUserTitle, t.eyecamCalibWaiting, t.eyecamCalibErrorTitle, t.eyecamCalibRetry,
+              t.eyecamSensitivity, t.eyecamSensitivityDull, t.eyecamSensitivitySharp, t.setupTitle, t.setupOptional,
+              t.setupOneLeft, t.setupAllDone, t.setupStepPassword, t.setupStepTool, t.setupStepLearn, t.setupStepDone,
+              t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone, t.setupPasswordLabel, t.setupPasswordSet,
+              t.setupAutoChecked, t.setupToolLabel, t.setupToolDone, t.setupLearnLabel, t.setupLearnDone,
+              t.setupPassPill, t.setupPassBody, t.setupPassWhere, t.setupPassPath1, t.setupPassPath2,
+              t.setupPassPath3, t.setupPassKonsole, t.setupPassKonsoleHow, t.setupPassMemo, t.setupPassMemoText,
+              t.setupPassButton, t.setupVideo, t.setupVideoNote, t.setupCheckPill, t.setupCheckFlow,
+              t.setupCheckTyped, t.setupCheckWhat, t.setupCheckWhatText, t.setupCheckPassword,
+              t.setupCheckPasswordText, t.setupCheckSsh, t.setupCheckSshText, t.setupCheckButton, t.setupWaitPill,
+              t.setupWaitTitle, t.setupWaitVideo, t.setupWaitVideoOk, t.setupWaitVideoNo, t.setupWaitEyeOk,
+              t.setupWaitEyeNo, t.setupWaitButton, t.setupWaitHint1, t.setupWaitHint2, t.setupWaitFoot,
+              t.setupLearnPill, t.setupLearnWidenHint, t.setupChipClose, t.setupChipNormal, t.setupChipWiden,
+              t.setupLeftAfter, t.setupLearnStepFormat, t.setupLearnFoot, t.setupStop, t.setupErrorPill,
+              t.setupAgain, t.setupFailPill, t.setupFailTitle, t.setupFailBody, t.setupFailClosed, t.setupFailNormal,
+              t.setupFailWiden, t.setupFailWidenValue, t.setupFailProceed, t.setupFailLater, t.setupDoneTitle,
+              t.setupDoneBody, t.setupDoneHelp, t.setupDoneHelp1, t.setupDoneHelp1Do, t.setupDoneHelp2,
+              t.setupDoneHelp2Do, t.setupDoneButton, t.setupDoneNote, t.nextTitle, t.nextPass, t.nextWait,
+              t.nextLearnFormat, t.nextFail, t.nextError, t.readyTitle, t.readyNote, t.lidsFromValve,
+              t.lidsFromCamera, t.lidsFromCameraLeft, t.lidsFromCameraRight, t.camRowState, t.camRowStateHint,
+              t.camLearned, t.camRowLidsHint, t.camRowSensitivityHint, t.camRowCalib, t.camRowCalibHint,
+              t.camCalibButton, t.camCalibSide1, t.camCalibSide2, t.camRowUser, t.camRowUserHint, t.camUserButton,
+              t.camUserSide1, t.camUserSide2, t.camUserNeedsCalib, t.camHelpTitle, t.camHelp1, t.camHelp1Do,
+              t.camHelp2, t.camHelp2Do, t.camHelp3, t.camHelp3Do, t.camHelp4, t.camHelp4Do, t.lidsCamRow,
+              t.lidsCamRowHint, t.lidsCamText1, t.lidsCamText2, t.lidsCamButton, t.lidsCamNote, t.lidsCamMarks,
+              t.lidsCamMarksOpen, t.devTitle,
+              t.devRecord, t.devRecordHint, t.tabEyecam}) {
             CHECK(text != nullptr && text[0] != '\0');
         }
-        // One %s each
+        CHECK(t.setupLeftBefore != nullptr);  // (empty in English: "7 s left")
+        // The formats: one %s, or the numbers they are given
         CHECK(std::string(t.cameraUseValveFormat).find("%s") != std::string::npos);
-        CHECK(std::string(t.eyecamCalibChipFormat).find("%s: %s") != std::string::npos);
         CHECK(std::string(t.eyecamWarmingFormat).find("%d") != std::string::npos);
         CHECK(std::string(t.eyecamWarmingFormat).find("%s") == std::string::npos);
+        CHECK(std::string(t.nextLearnFormat).find("%d") != std::string::npos);
+        char line[200];
+        std::snprintf(line, sizeof(line), t.setupLearnStepFormat, 3, 5, 18);
+        CHECK(std::string(line).find('3') != std::string::npos && std::string(line).find("18") != std::string::npos);
     }
-    // The 18 s goes on the button and the note
-    CHECK(std::string(uiText(Language::Ja).eyecamCalibWear).find("18") != std::string::npos);
-    CHECK(std::string(uiText(Language::En).calibPromptText).find("18") != std::string::npos);
+    // The mocks' wording (案D, as the user wrote it)
+    const UiText& ja = uiText(Language::Ja);
+    SAME(ja.tabEyecam, "目のカメラ");
+    SAME(ja.setupTitle, "目のカメラの準備（最初の一度だけ）");
+    SAME(ja.camCalibButton, "目のカメラの校正（18秒）");
+    SAME(ja.camUserButton, "ユーザー校正（最初に 1 回）");
+    SAME(ja.setupWaitButton, "覚えはじめる");
+    SAME(ja.setupFailProceed, "このまま進む");
+    SAME(ja.setupAgain, "もう一度（18秒）");
+    SAME(ja.nextTitle, "次にやること・目のカメラ");
+    SAME(ja.readyTitle, "目のカメラ：準備できたよ");
+    // "かぶりの校正" is gone from every text
+    CHECK(std::string(ja.eyecamCalibWearTitle).find("かぶり") == std::string::npos);
 }
 
 void testAutoGrab() {
@@ -768,10 +710,6 @@ void testAutoGrab() {
                              std::to_string(kNow) + "}";
     SAME(eyecam::parseStatus(json, kNow).autoGrab, "waiting_tracker");
     SAME(eyecam::parseStatus(fullStatus("idle", ""), kNow).autoGrab, "");
-    for (const Language language : {Language::Ja, Language::En}) {
-        const char* hint = uiText(language).eyecamAutoGrabHint;
-        CHECK(hint != nullptr && hint[0] != '\0');
-    }
 }
 
 void testSensitivity() {
@@ -848,6 +786,262 @@ void testSensitivity() {
         CHECK(sender.next(false, 40.01, command));
         SAME(command, "set widen_sensitivity 0.90");
     }
+}
+
+/**
+ * A status as a newer eyecam-rec writes it during the setup.
+ * @param state the state
+ * @param extra more members, each starting with ", "
+ * @return the status
+ */
+Status setupStatus(const std::string& state, const std::string& extra = "") {
+    return eyecam::parseStatus("{\"state\": \"" + state + "\", \"locked\": true, \"live\": true" + extra + "}", kNow);
+}
+
+void testSetupParse() {
+    const Status s = setupStatus("idle", ", \"has_buffers\": true, \"setup_done\": false, \"last_calib_widen\": \"default\"");
+    CHECK(s.hasBuffers && s.hasSetupDone && !s.setupDone);
+    SAME(s.lastCalibWiden, "default");
+    const Status done = setupStatus("idle", ", \"setup_done\": true, \"last_calib_widen\": \"measured\"");
+    CHECK(done.hasSetupDone && done.setupDone);
+    SAME(done.lastCalibWiden, "measured");
+    // An older eyecam-rec: none of them; odd types are missing
+    const Status old = setupStatus("idle");
+    CHECK(!old.hasBuffers && !old.hasSetupDone && !old.setupDone && old.lastCalibWiden.empty());
+    const Status odd = setupStatus("idle", ", \"has_buffers\": 1, \"setup_done\": \"yes\", \"last_calib_widen\": 3");
+    CHECK(!odd.hasBuffers && !odd.hasSetupDone && !odd.setupDone && odd.lastCalibWiden.empty());
+    // ...and they redraw the tab
+    eyecam::View a;
+    a.status = setupStatus("idle", ", \"setup_done\": false");
+    eyecam::View b = a;
+    b.status.setupDone = true;
+    CHECK(eyecam::signature(a) != eyecam::signature(b));
+    b = a;
+    b.password = eyecam::PasswordState::NotSet;
+    CHECK(eyecam::signature(a) != eyecam::signature(b));
+    b = a;
+    b.readyNotice = true;
+    CHECK(eyecam::signature(a) != eyecam::signature(b));
+}
+
+void testSetupStep() {
+    using eyecam::PasswordState;
+    using eyecam::SetupStep;
+    // The tool: auto_grab "ok", has_buffers, or a state past the buffers
+    CHECK(eyecam::toolInstalled(setupStatus("waiting_fds", ", \"auto_grab\": \"ok\"")));
+    CHECK(eyecam::toolInstalled(setupStatus("waiting_fds", ", \"has_buffers\": true")));
+    for (const char* state : {"idle", "searching", "recording", "calibrating"}) {
+        CHECK(eyecam::toolInstalled(setupStatus(state)));
+    }
+    for (const char* grab : {"missing", "no_cap", "unsafe: group-writable", ""}) {
+        CHECK(!eyecam::toolInstalled(setupStatus("waiting_fds", std::string(", \"auto_grab\": \"") + grab + "\"")));
+    }
+    CHECK(!eyecam::toolInstalled(setupStatus("error")));
+    CHECK(!eyecam::toolInstalled(setupStatus("waiting_fds")));
+
+    // Complete: setup_done when it is there, whatever calib_state says
+    CHECK(eyecam::setupComplete(setupStatus("idle", ", \"setup_done\": true")));
+    CHECK(!eyecam::setupComplete(setupStatus("idle", ", \"setup_done\": false, \"calib_state\": 7, \"calib_saved\": true")));
+    // ...an older eyecam-rec: any baseline (bit 0 or 2) or a saved wear calibration
+    for (int bits = 0; bits <= 7; ++bits) {
+        CHECK(eyecam::setupComplete(setupStatus("idle", ", \"calib_state\": " + std::to_string(bits))) ==
+              ((bits & 5) != 0));
+    }
+    CHECK(eyecam::setupComplete(setupStatus("idle", ", \"calib_saved\": true")));
+    CHECK(!eyecam::setupComplete(setupStatus("idle", ", \"calib_saved\": false")));
+
+    // The step for every combination of password, tool, setup done and accepted
+    const PasswordState passwords[3] = {PasswordState::Unknown, PasswordState::Set, PasswordState::NotSet};
+    for (const PasswordState password : passwords) {
+        for (int tool = 0; tool < 2; ++tool) {
+            for (int done = 0; done < 2; ++done) {
+                for (int accepted = 0; accepted < 2; ++accepted) {
+                    const Status st = setupStatus(tool ? "idle" : "waiting_fds",
+                                                  std::string(", \"auto_grab\": \"") + (tool ? "ok" : "missing") +
+                                                      "\", \"setup_done\": " + (done ? "true" : "false"));
+                    const SetupStep step = eyecam::setupStep(st, password, accepted != 0);
+                    const SetupStep want = done || accepted ? SetupStep::Done
+                                           : tool           ? SetupStep::Learn
+                                           : password == PasswordState::NotSet ? SetupStep::Password
+                                                                               : SetupStep::Tool;
+                    CHECK(step == want);
+                }
+            }
+        }
+    }
+    // The tool seen before (in this run) stays in through an error that doesn't say
+    CHECK(eyecam::setupStep(setupStatus("error"), PasswordState::Set, false, true) == SetupStep::Learn);
+    CHECK(eyecam::setupStep(setupStatus("error"), PasswordState::Set, false, false) == SetupStep::Tool);
+    {
+        eyecam::SetupFlow flow;
+        CHECK(!flow.toolSeen());
+        flow.follow(setupStatus("waiting_fds", ", \"auto_grab\": \"missing\""), 0.0);
+        CHECK(!flow.toolSeen());
+        flow.follow(setupStatus("idle"), 1.0);
+        CHECK(flow.toolSeen());
+        flow.follow(setupStatus("error"), 2.0);
+        CHECK(flow.toolSeen());
+    }
+    // An older eyecam-rec in use (bits) is never sent back, whatever the password says
+    CHECK(eyecam::setupStep(setupStatus("waiting_fds", ", \"calib_state\": 4"), PasswordState::NotSet, false) ==
+          SetupStep::Done);
+    // ...one that isn't yet goes through it like a new one
+    CHECK(eyecam::setupStep(setupStatus("idle", ", \"calib_state\": 2"), PasswordState::Set, false) == SetupStep::Learn);
+}
+
+void testSetupFlow() {
+    using eyecam::SetupResult;
+    using eyecam::SetupScreen;
+    const std::string notDone = ", \"auto_grab\": \"ok\", \"setup_done\": false";
+    const std::string done = ", \"auto_grab\": \"ok\", \"setup_done\": true";
+    /**
+     * The view as the loop has it after following these statuses (at 100 s).
+     */
+    const auto follow = [](std::initializer_list<Status> statuses, eyecam::Run lastRun = eyecam::Run::CalibWear) {
+        eyecam::View view;
+        view.password = eyecam::PasswordState::Set;
+        view.lastRun = lastRun;
+        for (const Status& st : statuses) {
+            view.status = st;
+            view.flow.follow(st, 100.0);
+        }
+        return view;
+    };
+    // Measured: the checklist's done screen once, the ready notice a while, then the page
+    {
+        eyecam::View view = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                    setupStatus("idle", done + ", \"last_calib_widen\": \"measured\"")});
+        CHECK(view.flow.result() == SetupResult::Done);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Done);
+        CHECK(view.flow.readyNotice(100.0) && view.flow.readyNotice(111.0) && !view.flow.readyNotice(113.0));
+        view.flow.proceed();
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+        CHECK(!view.flow.accepted());
+        // ...also when the dashboard closes instead
+        eyecam::View closed = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                      setupStatus("idle", done + ", \"last_calib_widen\": \"measured\"")});
+        closed.flow.closed();
+        CHECK(eyecam::setupScreen(closed) == SetupScreen::Camera);
+    }
+    // Standard widening: the question, until "continue" (the page, accepted for this run) or once more
+    {
+        eyecam::View view = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                    setupStatus("idle", notDone + ", \"last_calib_widen\": \"default\"")});
+        CHECK(view.flow.result() == SetupResult::Fail);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Fail);
+        CHECK(!view.flow.readyNotice(100.0));
+        view.flow.closed();  // a closed dashboard doesn't answer it
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Fail);
+        eyecam::View again = view;
+        view.flow.proceed();
+        CHECK(view.flow.accepted());
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+        // once more: calibrating again clears it, and a measured one ends it well
+        again.status = setupStatus("calibrating", notDone);
+        again.flow.follow(again.status, 200.0);
+        CHECK(again.flow.result() == SetupResult::None);
+        CHECK(eyecam::setupScreen(again) == SetupScreen::Learn);
+        again.status = setupStatus("idle", done + ", \"last_calib_widen\": \"measured\"");
+        again.flow.follow(again.status, 220.0);
+        CHECK(eyecam::setupScreen(again) == SetupScreen::Done);
+        // ...even when eyecam-rec already says setup_done with the standard widening
+        eyecam::View doneDefault = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                           setupStatus("idle", done + ", \"last_calib_widen\": \"default\"")});
+        CHECK(eyecam::setupScreen(doneDefault) == SetupScreen::Fail);
+    }
+    // Failed: the checklist's error (and again), never a result; also from an eyecam-rec that doesn't say the tool
+    // is in while in error
+    {
+        eyecam::View old = follow({setupStatus("idle"), setupStatus("calibrating"), setupStatus("error")});
+        CHECK(eyecam::setupScreen(old) == SetupScreen::Error);
+    }
+    {
+        eyecam::View view = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                    setupStatus("error", notDone)});
+        CHECK(view.flow.result() == SetupResult::None);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Error);
+        // (an error after a recording isn't the calibration's: back to the button)
+        view.lastRun = eyecam::Run::Recording;
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Wait);
+    }
+    // Stopped ("やめる"): back to the button, nothing to show
+    {
+        const eyecam::View view = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                          setupStatus("idle", notDone)});
+        CHECK(view.flow.result() == SetupResult::None);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Wait);
+    }
+    // A calibration after the setup ("when something feels off") shows no checklist screen at all
+    {
+        const eyecam::View view = follow({setupStatus("idle", done), setupStatus("calibrating", done),
+                                          setupStatus("idle", done + ", \"last_calib_widen\": \"default\"")});
+        CHECK(view.flow.result() == SetupResult::None);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+    }
+    // An older eyecam-rec (no setup_done, no last_calib_widen): done once a baseline is there after it
+    {
+        const eyecam::View view = follow({setupStatus("idle", ", \"calib_state\": 0"),
+                                          setupStatus("calibrating", ", \"calib_state\": 0"),
+                                          setupStatus("idle", ", \"calib_state\": 1")});
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Done);
+    }
+    // Joined midway (the panel started while it calibrated)
+    {
+        const eyecam::View view = follow({setupStatus("calibrating", notDone),
+                                          setupStatus("idle", done + ", \"last_calib_widen\": \"measured\"")});
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Done);
+    }
+    // The screens before (3)
+    {
+        eyecam::View view;
+        view.status = setupStatus("waiting_fds", ", \"auto_grab\": \"missing\", \"setup_done\": false");
+        view.password = eyecam::PasswordState::NotSet;
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Pass);
+        view.password = eyecam::PasswordState::Set;
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Check);
+        view.password = eyecam::PasswordState::Unknown;
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Check);
+        view.status = setupStatus("idle", notDone);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Wait);
+        view.status = setupStatus("calibrating", notDone);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Learn);
+        view.status = setupStatus("recording", done);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+    }
+    // The protocol the chips show: a countdown, then these five
+    CHECK(std::size(eyecam::kCalibWearSteps) == 5);
+    SAME(eyecam::kCalibWearSteps[2], "widen");
+}
+
+void testSetupTools() {
+    // Konsole with the command typed in: the spec's line, exactly
+    const std::vector<std::string> install = setup_tools::konsoleArgv(setup_tools::kInstallCommand, Language::Ja);
+    CHECK(install.size() == 5);
+    SAME(install[0], "konsole");
+    SAME(install[1], "-e");
+    SAME(install[2], "bash");
+    SAME(install[3], "-c");
+    SAME(install[4],
+         "echo \"Enter を押すと実行するよ（パスワードを聞かれるよ）\"; read -e -p \"$ \" -i \"sudo "
+         "$HOME/.local/lib/eyecam/install_grab.sh\" c && eval \"$c\"; echo; read -p \"Enter で閉じるよ\" _");
+    // ...passwd the same way
+    const std::vector<std::string> passwd = setup_tools::konsoleArgv(setup_tools::kPasswdCommand, Language::Ja);
+    SAME(passwd[4], "echo \"Enter を押すと実行するよ（パスワードを聞かれるよ）\"; read -e -p \"$ \" -i \"passwd\" c && "
+                    "eval \"$c\"; echo; read -p \"Enter で閉じるよ\" _");
+    // ...in English too, with the same command
+    const std::vector<std::string> english = setup_tools::konsoleArgv(setup_tools::kInstallCommand, Language::En);
+    CHECK(english[4].find("-i \"sudo $HOME/.local/lib/eyecam/install_grab.sh\" c && eval \"$c\"") != std::string::npos);
+    CHECK(english[4].find("Press Enter") != std::string::npos);
+    // Never sudo or passwd run by the panel itself: they are only typed in
+    for (const auto& argv : {install, passwd, english}) CHECK(argv[0] == "konsole");
+    SAME(setup_tools::kShownInstallCommand, "sudo ~/.local/lib/eyecam/install_grab.sh");
+    // The video: Chromium through flatpak, never xdg-open; and none yet (its button stays hidden)
+    const std::vector<std::string> video = setup_tools::videoArgv("https://example.com/v");
+    CHECK(video.size() == 4);
+    SAME(video[0], "flatpak");
+    SAME(video[2], "org.chromium.Chromium");
+    SAME(video[3], "https://example.com/v");
+    SAME(setup_tools::kVideoUrl, "");
 }
 
 void testReply() {
@@ -1116,6 +1310,10 @@ int main() {
     testCalibText();
     testAutoGrab();
     testSensitivity();
+    testSetupParse();
+    testSetupStep();
+    testSetupFlow();
+    testSetupTools();
     testReply();
     testReadFile();
     testControl();

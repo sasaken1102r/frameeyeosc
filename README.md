@@ -18,6 +18,7 @@ This is a fork of [konsti219/frameeyeosc](https://github.com/konsti219/frameeyeo
 - It runs as a service that starts with SteamVR and restarts if it stops.
 - Settings live in a file that is picked up while running, and an optional panel on the SteamVR dashboard changes them from inside the headset.
 - It can send in the format the ETVR Tracking Module for VRCFaceTracking reads (see [VRCFaceTracking (ETVR) mode](#vrcfacetracking-etvr-mode)), or as Live Link Face packets for VRCFaceTracking's LiveLink module, which also carries widened eyes (see [VRCFaceTracking (LiveLink) mode](#vrcfacetracking-livelink-mode)).
+- Optionally it also uses the Frame's eye cameras, through eyecam, a tool that comes with it: widened eyes come through again on SteamOS 0.4.3, and squints and pupil size are sent too. It takes a one-time setup on the panel (see [Eye cameras](#eye-cameras)).
 
 ## Requirements
 
@@ -61,7 +62,9 @@ cd frameeyeosc
 ./install.sh --with-panel  # frameeyeosc and the dashboard panel
 ```
 
-No sudo is needed. Everything goes into your home directory (`~/.local/bin`, `~/.config`, `~/.local/share`), so SteamOS updates don't remove it. Run the same command again to update. Without `--with-panel` an installed panel is left as it is.
+No sudo is needed. Everything goes into your home directory (`~/.local/bin`, `~/.local/lib/eyecam`, `~/.config`, `~/.local/share`), so SteamOS updates don't remove it. Run the same command again to update. Without `--with-panel` an installed panel is left as it is.
+
+The release also installs eyecam, the eye-camera tool, to `~/.local/lib/eyecam` and starts it as a user service (`eyecam.service`). Until you set up the eye cameras on the panel (see [Eye cameras](#eye-cameras)) it only waits, and nothing changes. That setup is the only step that asks for sudo, once, and you run it yourself; `install.sh` never does.
 
 After that, turn off Steam Link's own OSC output on your PC (SteamVR settings > Steam Link > OSC). Steam Link sends its own unsmoothed eye data to VRChat, and with both running, two sources fight over the avatar's eyes. This is needed in the ETVR and LiveLink modes too, where VRCFaceTracking drives the avatar's eyes.
 
@@ -93,12 +96,12 @@ From 0.4.0 on, the panel's "Update" button does the update. The panel's Advanced
 
 - The left column always shows what frameeyeosc is doing: sending or paused, where it sends to, messages per second, how many samples a second the eye tracker delivers (marked "low" below 60, with a line under it saying whether frameeyeosc or the Frame was the slow one), both eyelids and the gaze (raw and sent), and a config error if there is one. While the "Track Dominant Eye Only" setting is on, the gaze title line says which eye the Frame tracks ("Frame setting: tracking the right eye only").
 - Basic: pause sending, where to send (three cards: VRChat directly, VRCFT (LiveLink), marked recommended, and VRCFT (ETVR), each saying whether wide eyes come through, how others see your eyes, and whether VRCFaceTracking is needed), language (Japanese / English), start with SteamVR, reset all, quit.
-- Output: target PC (automatic, fixed to the PC it sends to now, or typed: see below) and port. For VRChat directly also the parameter prefix, the EyeTrackingActive type, whether to send Steam Link's parameter names too and whether to move VRChat's own eyes too; for LiveLink and ETVR what to set up in VRCFaceTracking on the PC instead.
+- Output: target PC (automatic, fixed to the PC it sends to now, or typed: see below) and port. For VRChat directly also the parameter prefix, the EyeTrackingActive type, whether to send Steam Link's parameter names too and whether to move VRChat's own eyes too; for LiveLink and ETVR what to set up in VRCFaceTracking on the PC instead. With LiveLink and the eye cameras, also "Send pupils straight to VRChat" (`pupils_to_vrchat`).
 - Gaze: smoothing on or off, light / medium / strong presets and the three filter values, deadzone, holding the gaze while blinking, per-eye gaze, skipping unreliable gaze, removing one-sample glitches.
 - Eye fit: one button that fits your gaze and eyelids in about 20 seconds (see [Eye fit](#eye-fit)), fitting straight ahead again, what to fit by itself when you put the headset on ("When put on": nothing, re-center, or re-center + tilt), the result with "Reset", and the values by hand under "Fine-tune".
-- Eyelids: auto calibration and its learned values, per-eye scales, the four openness marks drawn over each eye's live openness (blink and open wide to set them), left/right sync, keeping blinks visible (hold time and closing both eyes), eyelid smoothing. Once the eyes are fitted, "Widen" (Off / Less / Normal / More) takes the auto calibration's place, a line says whether an eye widens with the other one, and the marks fold away under "Fine-tune" (3 and 4 greyed there: they are for eyes without a fit). Where a relaxed open eye already reads 1.0 (SteamOS 0.4.3), that line says widening can't come through (see [Troubleshooting](#troubleshooting)).
-- Advanced: the version with checking for and installing updates (and the automatic check on or off) and "Version history" (each version's summary and changes, newest first; one opens at a time, and the thumbstick or ▲ / ▼ scrolls), diagnostics (showing gaze dots and their distance, recording the eye log: see below), and files and process (file locations, frameeyeosc's PID, options locked by the command line).
-- Eye capture: a developer tab that only appears while eyecam-rec, a separate eye-camera recorder, is running (see [panel/README.md](panel/README.md)).
+- Eyelids: where the eyelids come from now (the eye cameras, one eye camera and Valve's values, or Valve's values), "How easily widening shows" (one slider from Dull to Sensitive: with the eye cameras it sets their widening sensitivity; with Valve's values it picks Off / Less / Normal / More (`lid_widen`) for eyes with an eye fit; greyed out, with a button to the Eye cameras tab, on SteamOS 0.4.3 without the eye cameras, where a relaxed open eye already reads 1.0), making blinks visible (hold time), blinking both eyes together (`blink_sync_below`), eyelid smoothing (light / medium / strong), and how strongly both lids are synced (`lid_sync`). "More" opens the rest: the auto calibration and its learned values, per-eye scales, the four openness marks drawn over each eye's live openness (blink and open wide to set them; 3 and 4 greyed for fitted eyes and eyes on the cameras), and the two smoothing values.
+- Eye cameras: shown while eyecam runs. Until they are set up, the setup checklist (see [Eye cameras](#eye-cameras)); then what drives the eyelids now, "Eyelids from the eye cameras" on or off, "Calibrate the cameras (18 s)" for when something feels off, the optional "User calibration (once)" for squints, and what to do when.
+- Advanced: the version with checking for and installing updates (and the automatic check on or off) and "Version history" (each version's summary and changes, newest first; one opens at a time, and the thumbstick or ▲ / ▼ scrolls), diagnostics (showing gaze dots and their distance, recording the eye log: see below), and files and process (file locations, frameeyeosc's PID, options locked by the command line). While eyecam runs, also "Developer": an eye-camera recording for tuning the eye processing (see [panel/README.md](panel/README.md)).
 
 The panel writes `config.json` and reads the status file. To pick its default language, it also reads the `language` line of Steam's `~/.steam/registry.vdf` once at startup (read only). For updates it runs `~/.local/share/frameeyeosc/frame-update.sh` (see above). Closing it, quitting it, or not installing it doesn't stop frameeyeosc. While it isn't open on the dashboard it draws nothing. Besides running the update check, the only thing it reads then is the update state file (`~/.cache/frameeyeosc/update-state.json`), about twice a second. The exceptions are an eye fit (it then also reads the status file and shows the dot with the dashboard closed, until the fit is over) and the debug gaze dots while they're switched on (it then listens on their socket and moves the dots about 90 times a second while samples arrive, and reads the status file and checks `config.json` for changes 10 times a second), and "When put on" while the gaze is fitted (it then reads the status file every 0.5 s while the dashboard is closed, to notice the headset being put on). Its "Start with SteamVR" switch enables or disables its systemd user unit (`frameeyeosc-panel.service`). Build notes and debugging options are in [panel/README.md](panel/README.md) (Japanese).
 
@@ -120,10 +123,12 @@ Settings are in `~/.config/frameeyeosc/config.json`. The panel writes it, and yo
 | `output` | `--output` | `"vrchat"` | `"vrchat"` sends avatar parameters to VRChat, `"etvr"` sends to VRCFaceTracking's ETVR Tracking Module, `"livelink"` sends Live Link Face packets to VRCFaceTracking's LiveLink module |
 | `host` | `--target` | `"auto"` | `"auto"` = the PC Steam Link is streaming from, else an IP address or host name without a port |
 | `port` | `--port`, `--target` | `null` | `null` = 9000 for `vrchat`, 8889 for `etvr`, 11111 for `livelink` |
-| `prefix` | `--prefix` | `"/FT"` | Parameter name prefix; `""` for none. Not used in LiveLink mode |
+| `prefix` | `--prefix` | `"/FT"` | Parameter name prefix; `""` for none. In LiveLink mode only used for the pupils sent straight to VRChat (`pupils_to_vrchat`) |
 | `eye_tracking_active` | `--eye-tracking-active` | `"bool"` | How `EyeTrackingActive` is sent in VRChat mode: `"bool"` (true / false), `"float"` (1.0 / 0.0; some avatars need it) or `"off"` (never, not even the one-time "not active" on pausing or losing tracking). ETVR and LiveLink modes never send it |
 | `steamlink_params` | `--steamlink-params` | `false` | In VRChat mode, also send the avatar parameters SteamVR's Steam Link sends from its own OSC (`LeftEyeX`, `RightEyeLid`, ...), for avatars made for those; see [Avatars made for Steam Link's OSC](#avatars-made-for-steam-links-osc). Never prefixed. ETVR and LiveLink modes ignore it |
 | `native_eyes` | `--native-eyes` | `false` | In VRChat mode, also send VRChat's own eye tracking input (`/tracking/eye/*`), which moves the eyes of avatars without VRCFT parameters (see [Native VRChat eye tracking](#native-vrchat-eye-tracking)); a switch on the Output tab |
+| `camera_lids` | `--no-camera-lids` | `true` | Use the eye cameras' values (see [Eye cameras](#eye-cameras)) once they are set up: the eyelid from relaxed open up (widening), squints and pupil size. `false` = Valve's values only. "Eyelids from the eye cameras" on the Eye cameras tab |
+| `pupils_to_vrchat` | `--no-pupils-to-vrchat` | `true` | In LiveLink mode, send the eye cameras' pupil size straight to VRChat (port 9000 on the same PC), since the LiveLink module carries no pupils. Other modes ignore it |
 | `raw` | `--raw` | `false` | No smoothing, and none of the time-based steps (glitch removal, gaze holding, the quality check, blink hold, holding the sideways gaze far down) |
 | `gaze_min_cutoff` | `--gaze-min-cutoff` | `0.3` | Lower = steadier gaze at rest, more lag |
 | `gaze_beta` | `--gaze-beta` | `1.5` | Higher = follows fast eye movements with less lag, and settles sooner after one |
@@ -187,7 +192,7 @@ After changing these the avatar has to be uploaded again.
 
 ## Status file
 
-frameeyeosc writes what it is doing to `$XDG_RUNTIME_DIR/frameeyeosc/status.json` (usually `/run/user/1000/frameeyeosc/status.json`) ten times a second: whether it is sending, the destination, messages per second, the eye tracker's samples per second (`tracker_rate`), how well frameeyeosc keeps up with them (`missed_rate`: samples the eye tracker published in the last second that frameeyeosc didn't read; `max_processing_ms`: the longest it took over one sample in the last second; `dropped_rate`: datagrams dropped in the last second because the network was too busy), the latest raw and sent values, the calibration, the settings in effect, which of them are locked by the command line, any config error, why the eye data can't be read if it can't (`source_error`), which eye the Frame tracks alone while the "Track Dominant Eye Only" setting is on (`dominant_eye`: `"left"` or `"right"`; `null` while it is off), whether a relaxed open eye reads 1.0 so widening can't come through (`openness_saturated`), and the latest eye fit measurement. The panel reads it. The folder is readable only by you, lives in memory, and is gone after a reboot. Only the latest values are kept.
+frameeyeosc writes what it is doing to `$XDG_RUNTIME_DIR/frameeyeosc/status.json` (usually `/run/user/1000/frameeyeosc/status.json`) ten times a second: whether it is sending, the destination, messages per second, the eye tracker's samples per second (`tracker_rate`), how well frameeyeosc keeps up with them (`missed_rate`: samples the eye tracker published in the last second that frameeyeosc didn't read; `max_processing_ms`: the longest it took over one sample in the last second; `dropped_rate`: datagrams dropped in the last second because the network was too busy), the latest raw and sent values, the calibration, the settings in effect, which of them are locked by the command line, any config error, why the eye data can't be read if it can't (`source_error`), which eye the Frame tracks alone while the "Track Dominant Eye Only" setting is on (`dominant_eye`: `"left"` or `"right"`; `null` while it is off), whether a relaxed open eye reads 1.0 so widening can't come through (`openness_saturated`), the eye cameras (`camera`: whether their values arrive, `used` / `pupil_used` for each eye, or why they can't be read; `null` while eyecam isn't running), where pupils go in LiveLink mode (`pupil_target`), and the latest eye fit measurement. The panel reads it. The folder is readable only by you, lives in memory, and is gone after a reboot. Only the latest values are kept.
 
 ## Avatars made for Steam Link's OSC
 
@@ -242,11 +247,12 @@ frameeyeosc can also send Live Link Face packets (the format of Epic's Live Link
 
 Notes:
 
-- Each eye's eyelid, widening and gaze are sent (the ARKit shapes EyeBlink and EyeWide, and the eye's yaw and pitch). VRCFaceTracking's eyelid then comes out the same as in VRChat mode (0 closed, 0.75 relaxed, 1 widened), and so does the gaze. Squint, mouth, brows and head are sent as 0.
+- Each eye's eyelid, widening and gaze are sent (the ARKit shapes EyeBlink and EyeWide, and the eye's yaw and pitch). VRCFaceTracking's eyelid then comes out the same as in VRChat mode (0 closed, 0.75 relaxed, 1 widened), and so does the gaze. Squint, mouth, brows and head are sent as 0. With the eye cameras, the eyelid and widening include theirs.
+- The LiveLink module carries no pupils. With the eye cameras, frameeyeosc sends their pupil size straight to VRChat on the same PC (port 9000, the same `v2/Pupil…` parameters as in VRChat mode, with `prefix`, up to 50 times a second); turn it off with "Send pupils straight to VRChat" on the Output tab (`pupils_to_vrchat`).
 - The module doesn't smooth anything, so frameeyeosc's own smoothing settings apply as they are.
 - It is sent at up to 50 packets a second (always the newest sample): the module reads one packet every 10-16 ms, and sending every eye sample (90 or more a second) made the eyes lag more and more.
 - VRCFaceTracking keeps the last values it got. So when the eye data stops (the headset comes off) or you pause or switch the output, frameeyeosc sends relaxed open eyes looking straight ahead once. While sending is on without eye data, it repeats that twice a second: the module only starts if something arrives within 180 seconds of VRCFaceTracking loading it (if it gave up, reload the module in VRCFaceTracking). Paused, nothing is sent.
-- `prefix`, `eye_tracking_active` and `steamlink_params` don't apply: VRCFaceTracking sends the avatar parameters.
+- `eye_tracking_active` and `steamlink_params` don't apply, and `prefix` only to the pupils above: VRCFaceTracking sends the avatar parameters.
 
 ## Eye fit
 
@@ -271,6 +277,46 @@ The dot is fixed to the headset 2 m ahead and only shows while the dashboard is 
 
 Eyelid calibration is automatic. For the first 20 seconds after you put the headset on nothing is learned; after that each eye's relaxed openness is picked up within about 10 seconds and then follows slowly (the last ~10 minutes count most), so a short squint barely moves it. The result is saved every minute to `~/.config/frameeyeosc/calibration` and reused next time. To start over, press Reset in the panel (or increase `calibration_reset`).
 
+## Eye cameras
+
+The Frame has an infrared camera for each eye. eyecam, a tool that comes with frameeyeosc, reads their video while SteamVR's eye tracking runs and works out from it how open each eye is, whether it is widened or squinted, and the pupil size. frameeyeosc mixes that into what it sends. It is optional: without it, frameeyeosc sends Valve's values as before.
+
+What it adds:
+
+- Widened eyes, also on SteamOS 0.4.3, where Valve's openness can't show them (see [Troubleshooting](#troubleshooting)). From relaxed open up, the eyelid comes from the camera; closing, half-closed eyes and blinks still come from Valve's values. Each eye on its own: an eye the camera can't use right now gets Valve's values.
+- Squints (`v2/EyeSquintLeft` / `EyeSquintRight` / `EyeSquint`, VRChat mode), after the optional user calibration below.
+- Pupil size (`v2/PupilDilation` and `v2/PupilDiameterLeft` / `PupilDiameterRight` / `PupilDiameter`) in VRChat mode, and straight to VRChat in LiveLink mode (see [VRCFaceTracking (LiveLink) mode](#vrcfacetracking-livelink-mode)). The ETVR mode sends neither squints nor pupils.
+
+Once set up, there is nothing to do each time you put the headset on: it learns your relaxed eyes from about 35 seconds of wearing it with your eyes open, looking ahead as usual, and uses Valve's values until then. Putting the headset back on starts that over.
+
+### Setting it up
+
+The eye cameras need a one-time setup on the panel's "Eye cameras" tab. It is a checklist that moves on by itself as each step is met:
+
+1. Set a password: only if SteamOS has none yet, because step 2 needs it. Steam settings > Developer > Change user password, or "Open passwd in Konsole".
+2. Install the tool: "Open in Konsole" opens a Konsole window with `sudo ~/.local/lib/eyecam/install_grab.sh` typed in. Press Enter and type your SteamOS password (over SSH, type the same line). The panel never runs sudo itself. When an update brings a new version of the tool, this step comes back as "Install the tool again"; do it the same way.
+3. Learn your eye movements: with the headset on and both eyes seen, press "Start learning" and move your eyes as the screen says for 18 seconds (close, open normally, open wide, ...; a beep marks each change). If only the widening couldn't be measured, you can carry on with standard values and calibrate again later.
+
+After that, the tab shows what drives the eyelids now and has a switch to turn the cameras off ("Eyelids from the eye cameras", `camera_lids`), "Calibrate the cameras (18 s)" for when something feels off, and "User calibration (once)" (18 seconds: squint, look up, look down), which squints need. How easily the eyes widen is set on the Eyelids tab ("How easily widening shows").
+
+### Why sudo, and what it installs
+
+SteamOS lets no program take the camera buffers out of the eye tracker, even one running as the same user, unless it has a capability (`CAP_SYS_PTRACE`). So `install_grab.sh` copies one small program, `eyecam-grab`, to `/home/.eyecam/eyecam-grab` and gives that one file this capability. The file and its folder belong to root, so they can't be changed without sudo, and a changed file would lose the capability. They are under `/home` because SteamOS updates keep that partition. No service runs as root, and sudoers isn't changed. `eyecam-rec`, the part that keeps running, runs as you (`eyecam.service`, a user service) and starts `eyecam-grab` when the eye tracker runs.
+
+What `eyecam-grab` does (about 200 lines, `tools/eyecam/src/bin/eyecam-grab.rs`):
+
+- It finds Valve's eye tracker by its exact program path, running as user 1000 (and stops if there is none or more than one), picks only its eye-camera buffers (`udmabuf`), duplicates those file descriptors, and hands them to eyecam-rec's socket after checking it belongs to user 1000. Then it exits.
+- It never stops, attaches to, signals, or reads or writes the memory of the eye tracker. It doesn't read or map the buffers itself, writes no files, and doesn't stay running.
+- Programs with a capability run in secure mode (`LD_PRELOAD` and the like have no effect), and it reads neither environment variables nor its own user ID. Anyone on the headset can run it, but all it can do is hand those buffers to eyecam-rec.
+
+eyecam-rec maps the buffers read-only and opens Valve's eye data read-only too. It never runs as root. More, in Japanese: [tools/eyecam/README.md](tools/eyecam/README.md).
+
+### Turning it off and removing it
+
+- To stop using the cameras, turn off "Eyelids from the eye cameras" on the Eye cameras tab (`"camera_lids": false`). frameeyeosc then sends Valve's values only.
+- To remove the copy that has the capability: `sudo ~/.local/lib/eyecam/install_grab.sh --uninstall`. Run it before `./install.sh --uninstall`, which removes `~/.local/lib/eyecam` (if the copy is still there, it prints the `sudo rm` commands that remove it).
+- `./install.sh --uninstall` removes eyecam together with frameeyeosc, and `--purge` also deletes its settings and calibration (`~/.config/eyecam`). The calibration captures in `~/eyecam` (see [Privacy](#privacy)) are left for you to delete.
+
 ## Troubleshooting
 
 - Logs: `journalctl --user -u frameeyeosc -f` (the panel: `journalctl --user -u frameeyeosc-panel -f`)
@@ -284,7 +330,7 @@ Eyelid calibration is automatic. For the first 20 seconds after you put the head
   ```
   The rule covers both profiles because the bundled wireless adapter shows up in Windows as its own network, usually with the "Public" profile, while a home network is often "Private".
 - The panel says "Can't read eye data: …": frameeyeosc is running but can't read the eye tracker, and tries again every second (the reason is also logged once, in `journalctl --user -u frameeyeosc`). Right after the headset boots (`… No such file or directory`) this is harmless: the eye tracker isn't up yet. "unsupported eye shared-memory version" means a SteamOS update changed what frameeyeosc reads; see the [Disclaimer](#disclaimer).
-- The eyes never widen on SteamOS 0.4.3, and the Eyelids tab says the openness tops out at 1.0: since SteamOS 0.4.3 the Frame reads a relaxed open eye as 1.000, the highest it goes (one user's left eye, both eyes open: a median 0.754 before, 1.000 after, 75-93% of the time), so there is nothing above it to widen by. frameeyeosc tells this from the readings, not from the version (over the last minute with both eyes open, more than half the samples with an eye at 1.000; `openness_saturated` in the [status file](#status-file)), so the note goes away by itself if a later SteamOS changes it (from the next frameeyeosc start, such as after the update's reboot: once on, it stays on while frameeyeosc runs, because the share drifts with where you look). Meanwhile no eyelid is sent above relaxed open, so an eye without a fit (whose 1.000 would land past mark 4) doesn't look wide all the time either; blinks and closing work as before, and "Widen" keeps its setting for when widening can come through again.
+- The eyes never widen on SteamOS 0.4.3, and the Eyelids tab says the openness tops out at 1.0: since SteamOS 0.4.3 the Frame reads a relaxed open eye as 1.000, the highest it goes (one user's left eye, both eyes open: a median 0.754 before, 1.000 after, 75-93% of the time), so there is nothing above it to widen by. frameeyeosc tells this from the readings, not from the version (over the last minute with both eyes open, more than half the samples with an eye at 1.000; `openness_saturated` in the [status file](#status-file)), so the note goes away by itself if a later SteamOS changes it (from the next frameeyeosc start, such as after the update's reboot: once on, it stays on while frameeyeosc runs, because the share drifts with where you look). Meanwhile no eyelid is sent above relaxed open, so an eye without a fit (whose 1.000 would land past mark 4) doesn't look wide all the time either; blinks and closing work as before, and "Widen" keeps its setting for when widening can come through again. Eyes on the [eye cameras](#eye-cameras) widen regardless: their widening comes from the camera.
 - Both eyes look the same way, or one eye's gaze seems to follow the other: the "Track Dominant Eye Only" setting (VR Settings > General, advanced; SteamOS 0.4.3) is on. The Frame then tracks that eye alone and gives both eyes its gaze (the eyelids stay each eye's own). The left column of the panel says so ("Frame setting: tracking the right eye only"); turn the setting off to track both eyes. frameeyeosc only reads this setting, it never changes it.
 - Nothing moves while the headset is off your face: expected, the Frame only tracks while worn.
 - The panel says "frameeyeosc is not running": check `systemctl --user status frameeyeosc`. Changes made in the panel are still saved and apply once it runs.
@@ -303,8 +349,9 @@ Eyelid calibration is automatic. For the first 20 seconds after you put the head
   - from the update check and updates, in `~/.cache/frameeyeosc/`: `update-check.json` (GitHub's last answer), `update-state.json` (progress of the last update), `update.log` (log of the last update), the `update/` work folder (emptied after each run, except for the copy of the update script it keeps), and the `update.lock/` folder while a check or update runs
 
   - from the panel, in `$XDG_RUNTIME_DIR/frameeyeosc/` (in memory, gone after a reboot): the eye fit's sound files in `sounds/`, written at start
+  - from eyecam (the eye cameras): its settings and calibration in `~/.config/eyecam/` (`settings.json` with the widening sensitivity, `calib.json` with what the calibrations measured), and in `$XDG_RUNTIME_DIR/eyecam/` (in memory) its status file, its control socket and the eye values frameeyeosc reads. Each calibration (the setup's and later ones, also one that failed or was stopped) is also kept in `~/eyecam/calib_YYYY-MM-DD_HH-MM-SS/`: the eye-camera video of those 18 seconds, about 0.5 GB, with the values worked out from it. The developer eye recording on the Advanced tab goes to `~/eyecam/rec_…/` (about 2.5 GB for its 85 seconds). Nothing of it leaves the headset; delete them when you no longer need them
 
-  No eye data is stored, except that each eye fit measurement (an average gaze direction, how much it spread, and each eye's average openness) is logged as one line to the systemd journal, and the eyelid readings of a fit are kept in `config.json`. The latest eye values are in the status file, which is in memory, readable only by you, and overwritten ten times a second; no history is kept.
+  Apart from eyecam's calibration captures and recordings above, no eye data is stored, except that each eye fit measurement (an average gaze direction, how much it spread, and each eye's average openness) is logged as one line to the systemd journal, and the eyelid readings of a fit are kept in `config.json`. The latest eye values are in the status file, which is in memory, readable only by you, and overwritten ten times a second; no history is kept.
 - The OSC messages are unencrypted, so other devices on the same network could read them.
 - With "Show gaze dots" on, the gaze being sent also goes to the panel over a Unix socket (`gaze-dots.sock` in the status folder). It stays on the headset and isn't stored.
 
@@ -312,7 +359,8 @@ Eyelid calibration is automatic. For the first 20 seconds after you put the head
 
 - Use at your own risk. The changes in this fork were made with Claude Opus 5.5, an AI model. I've tested them with unit tests and on my own Steam Frame, but I can't take responsibility for what happens on yours, so please read the code and check it yourself before you run it. The software comes with no warranty (see [LICENSE](LICENSE)).
 - It reads the eye tracker's private, undocumented shared-memory layout (versions 4 and 5; 5 came with SteamOS 0.4.3). A SteamOS update can change that layout. If it does, frameeyeosc can't send eye data until it is updated. It keeps running meanwhile and tries again every second, and the panel shows "Can't read eye data: unsupported eye shared-memory version …".
-- It needs no root and doesn't change any SteamOS files or settings. The only thing it writes is a "send me the next sample" flag in the eye tracker's shared memory, and it takes the lock there the same way the tracker's own clients do. The panel only writes frameeyeosc's settings file.
+- frameeyeosc needs no root and doesn't change any SteamOS files or settings. The only thing it writes is a "send me the next sample" flag in the eye tracker's shared memory, and it takes the lock there the same way the tracker's own clients do. The panel only writes frameeyeosc's settings file and sends commands to eyecam-rec; for the eye cameras' setup it also opens Konsole and checks whether SteamOS has a password (`steamos-passwd --has-password`, which only reads). The optional eye cameras need one sudo step, which you run yourself: it puts one root-owned program with one capability in `/home/.eyecam` (see [Eye cameras](#eye-cameras)).
+- eyecam reads the eye cameras' video from buffers the eye tracker uses internally, which are undocumented too. A SteamOS update can stop that; frameeyeosc then sends Valve's values.
 - Reading Valve's undocumented internal data may conflict with the Steam Subscriber Agreement, which restricts reverse engineering. Decide for yourself whether you're comfortable with that before using it.
 - This is an unofficial project with no affiliation with or endorsement from Valve Corporation, VRChat Inc., the VRCFaceTracking project or the EyeTrackVR project. Steam, Steam Frame, SteamVR and Steam Link are trademarks of Valve Corporation, and VRChat is a trademark of VRChat Inc. The names are used here only to say what this works with.
 
@@ -349,10 +397,12 @@ frameeyeosc --replay ~/eyes.csv --blink-hold-ms 120 --replay-out ~/processed.csv
 
 The panel can make the same recording while you play: "Eye log" on the Advanced tab starts it and turns into "Stop 1:23"; the left column shows "Recording 1:23" in red meanwhile. It stops by itself after 60 minutes, and when the panel exits. The files go to `~/.local/share/frameeyeosc/recordings/`: `eyes_YYYY-MM-DD_HH-MM-SS.csv` (about 2.3 MB a minute), the `config.json` in use as `eyes_….config.json`, and the recorder's messages as `eyes_….log`. Nothing leaves the headset; delete them when you no longer need them.
 
+While eyecam runs, each row of a recording also has the eye cameras' values at the end (`cam_l_*` / `cam_r_*`: whether they were fresh and valid, closed, eyelid, widening, squint, pupil in mm and as dilation, confidence and age, then `cam_calib_state` and `cam_live`; empty while there are none). Older recordings and readers keep working. A replay of such a recording mixes them in as frameeyeosc does, and its report adds how often camera values were there and how often an eye went out widened with and without them.
+
 ## License
 
-MIT. See [LICENSE](LICENSE); the original work is by konsti219. `vendor/frame-updater/` is not third-party code: it is sasaken1102r's own update checker, shared by their Steam Frame apps and copied here under this repository's MIT license. Licenses of the bundled Rust crates and of the OpenVR SDK header used by the panel are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+MIT. See [LICENSE](LICENSE); the original work is by konsti219. `vendor/frame-updater/` is not third-party code: it is sasaken1102r's own update checker, shared by their Steam Frame apps and copied here under this repository's MIT license. `tools/eyecam/` is sasaken1102r's own too, under the same license; it ports parts of Curtis English's FrameEyeCameraFeed (MIT, see [tools/eyecam/NOTICE](tools/eyecam/NOTICE)). Licenses of the bundled Rust crates, of the OpenVR SDK header used by the panel and FrameEyeCameraFeed's notice are in [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md). Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## Thanks
 
-Thanks to konsti219 for frameeyeosc and for finding where the Frame keeps its eyelid data. This fork is built on that work.
+Thanks to konsti219 for frameeyeosc and for finding where the Frame keeps its eyelid data. This fork is built on that work. Thanks also to Curtis English, whose FrameEyeCameraFeed showed how to find the eye cameras' frames; eyecam builds on it.

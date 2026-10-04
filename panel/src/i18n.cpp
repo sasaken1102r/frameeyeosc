@@ -95,7 +95,7 @@ UiText makeJapanese() {
     t.hintPupils = "LiveLink では瞳孔が送れないので、瞳孔だけ VRChat へ";
     t.pupilsTargetFormat = "送り先: %s";
     t.rowPupilBits = "瞳孔の受け取り方";
-    t.pupilBitsFloat = "小数（ふつう）";
+    t.pupilBitsFloat = "小数";
     t.hintPupilBits = "アバターに PupilDilation1・2・4… があるときは、その個数を選んでね（1・2・4 なら 3）";
     t.hintPupilBitsOff = "いまは瞳孔を VRChat に直接送っていないので効かないよ";
     t.rowNativeEyes = "VRChat 標準の目も動かす";
@@ -334,6 +334,8 @@ UiText makeJapanese() {
         "明るい画面・暗い画面の段では、\n視界全体が白・黒に切り替わります。\n\n"
         "光過敏性てんかんの心配がある人は、光なしで撮ってください。\n\n"
         "途中で気分が悪くなったら、［中止］を押して\nHMD を外してください。";
+    t.eyecamStorageNote = "撮影すると ~/eyecam/rec_日時/ に目の映像が残るよ（1 回で約 2.5 GB）。いらなくなったら消してね";
+    t.eyecamStorageRow = "目の映像が ~/eyecam/rec_日時/ に残るよ（1 回で約 2.5 GB）";
     t.eyecamStartWithLight = "光ありで始める";
     t.eyecamStartNoLight = "光なしで始める";
     t.eyecamCancel = "やめる";
@@ -707,7 +709,7 @@ UiText makeEnglish() {
     t.hintPupils = "LiveLink has no pupils, so they go to VRChat directly";
     t.pupilsTargetFormat = "To %s";
     t.rowPupilBits = "How the avatar takes pupils";
-    t.pupilBitsFloat = "Float (usual)";
+    t.pupilBitsFloat = "Float";
     t.hintPupilBits = "If the avatar has PupilDilation1, 2, 4…, pick how many (1, 2, 4 → 3)";
     t.hintPupilBitsOff = "No effect now: the pupils don't go straight to VRChat";
     t.rowNativeEyes = "VRChat's own eyes too";
@@ -948,6 +950,10 @@ UiText makeEnglish() {
         "During the bright and dark steps your whole view turns white or black.\n\n"
         "If you might be sensitive to light (photosensitive epilepsy), record without light.\n\n"
         "If you feel unwell, press Stop and take the headset off.";
+    t.eyecamStorageNote =
+        "Recording keeps eye video in ~/eyecam/rec_<date>/ (about 2.5 GB each time). Delete it when you no longer "
+        "need it.";
+    t.eyecamStorageRow = "Keeps eye video in ~/eyecam/rec_<date>/ (about 2.5 GB each time)";
     t.eyecamStartWithLight = "Start with light";
     t.eyecamStartNoLight = "Start without light";
     t.eyecamCancel = "Cancel";

@@ -654,7 +654,7 @@ void testCalibText() {
               t.eyecamCalibUserTitle, t.eyecamCalibWaiting, t.eyecamCalibErrorTitle, t.eyecamCalibRetry,
               t.eyecamSensitivity, t.eyecamSensitivityDull, t.eyecamSensitivitySharp, t.setupTitle, t.setupOptional,
               t.setupOneLeft, t.setupAllDone, t.setupStepPassword, t.setupStepTool, t.setupStepLearn, t.setupStepDone,
-              t.setupStepToolAgain, t.setupToolUpdated,
+              t.setupStepToolAgain, t.setupToolUpdated, t.eyecamStorageNote, t.eyecamStorageRow,
               t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone, t.setupPasswordLabel, t.setupPasswordSet,
               t.setupAutoChecked, t.setupToolLabel, t.setupToolDone, t.setupLearnLabel, t.setupLearnDone,
               t.setupPassPill, t.setupPassBody, t.setupPassWhere, t.setupPassPath1, t.setupPassPath2,

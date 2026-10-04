@@ -332,6 +332,8 @@ struct UiText {
     const char* eyecamStepEnd;
     const char* eyecamStepLeadIn;  ///< the countdown before the first step
     const char* eyecamLightTitle;      ///< the light warning before a start: its red title
+    const char* eyecamStorageNote;     ///< ...under it: where the video goes, how big, and to delete it
+    const char* eyecamStorageRow;      ///< the same, shorter, next to the recording's button
     const char* eyecamLightWarning;    ///< ...the warning ("\n" breaks a line, "\n\n" between paragraphs)
     const char* eyecamStartWithLight;  ///< ...sends "start"
     const char* eyecamStartNoLight;    ///< ...sends "start widen_nolight"

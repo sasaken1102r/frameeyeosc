@@ -2919,7 +2919,16 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         const double bw = 160;
         drawButton(pen, kControlX, y + (h - 38) / 2, bw, 38, failed ? t.eyecamRetry : t.eyecamStart,
                    {PanelAction::EyecamStart, nullptr, 0}, ready && !m.eyecam.busy, false);
-        if (failed) {
+        if (!failed) {
+            // Where the video goes, before anyone starts one
+            const double textX = kControlX + bw + 14;
+            const std::vector<std::string> lines = wrapText(pen, t.eyecamStorageRow, 13, false, kInnerRight - textX, 2);
+            double baseline = y + h / 2 - (lines.size() - 1) * 8.5 + 5;
+            for (const std::string& line : lines) {
+                pen.text(textX, baseline, line, 13, kTextMuted);
+                baseline += 17;
+            }
+        } else {
             const double textX = kControlX + bw + 14;
             const std::string& message = eyecam::shownMessage(es, m.language);
             const std::string why = message.empty() ? std::string(t.eyecamErrorTitle) : message;
@@ -4570,9 +4579,17 @@ void EyePanel::drawEyecamConfirm(const Pen& pen, const UiText& t, const eyecam::
         pen.text(kInnerX + padX, baseline, lines[i], textSize, kText);
     }
 
+    // Where the video goes and how big it is (it stays until the user deletes it)
+    const double noteSize = 17;
+    double noteBaseline = boxY + boxH + 10;
+    for (const std::string& line : wrapText(pen, t.eyecamStorageNote, noteSize, false, width, 2)) {
+        noteBaseline += noteSize * 1.4;
+        pen.text(kInnerX + 4, noteBaseline, line, noteSize, kText);
+    }
+
     // With the light, without it (side by side, the same weight: neither is the "default"), and cancel under them
     const bool usable = !view.busy;
-    const double rowY = boxY + boxH + 24;
+    const double rowY = noteBaseline + 18;
     const double gapX = 20;
     const double bw = (width - gapX) / 2;
     const double bh = 76;

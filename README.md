@@ -315,6 +315,10 @@ Once set up, there is nothing to do each time you put the headset on: it learns 
 
 ### Setting it up
 
+https://github.com/user-attachments/assets/516ad2bb-7d03-4690-a3b8-b649ffb19ede
+
+(The panel in the video is in Japanese; it follows your language setting on the Basic tab. The password entry is cut from the video.)
+
 The eye cameras need a one-time setup on the panel's "Eye cameras" tab. It is a checklist that moves on by itself as each step is met:
 
 1. Set a password: only if SteamOS has none yet, because step 2 needs it. Steam settings > Developer > Change user password, or "Open passwd in Konsole".

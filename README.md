@@ -329,6 +329,8 @@ scripts/package.sh   # builds dist/frameeyeosc-<version>-steamframe-aarch64.tar.
 
 `vendor/frame-updater/` is a copy of the update checker shared by my Steam Frame apps. Don't edit it here: `scripts/package.sh` stops if it differs from what the copy's `MANIFEST.sha256` records.
 
+`tools/eyecam/` is a copy of eyecam, the eye-camera tool (`eyecam-rec` and `eyecam-grab`), which is developed on its own branch. Don't edit it here either; to update it, check out that directory from the commit to take and commit it with the commit's hash in the message: `git rm -rq tools/eyecam && git checkout <commit> -- tools/eyecam` (the `git rm` drops files the new version no longer has). It has its own `Cargo.toml` and `Cargo.lock` and is not part of the root Cargo build; `scripts/package.sh` builds and tests it separately.
+
 To publish a release, attach both files. The panel's "Update" button refuses releases without `SHA256SUMS` and asks for a manual update instead. The release notes are the version's section of `CHANGELOG.md` (without its heading): it starts with a one-paragraph English summary, then a paragraph starting with `日本語: ` with the Japanese summary, then the list. A panel running an older version (0.7.1 or later) shows the summary while that release is available, the Japanese one on a Japanese panel, without markdown and cut at 300 characters:
 
 ```sh

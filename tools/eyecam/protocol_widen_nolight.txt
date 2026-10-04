@@ -1,0 +1,18 @@
+# eyecam cue protocol: `seconds label` per line. Beeps: lead_in = 1 short (high), normal = 1 short,
+# widen = 2 short, close = 3 short, squint = 1 long (mid), look_up = 1 long (high), look_down = 1 long (low),
+# bright = 2 short (high), dark = 2 short (low); end = 2 long (low).
+# Lead-in (a countdown on the panel) so the first real step does not start the instant recording does.
+3 lead_in
+2 close
+5 normal
+5 widen
+2 close
+5 normal
+5 widen
+2 close
+5 normal
+5 widen
+5 squint
+5 look_up
+5 look_down
+5 normal

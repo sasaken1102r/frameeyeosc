@@ -329,6 +329,8 @@ scripts/package.sh   # 両方入った dist/frameeyeosc-<version>-steamframe-aar
 
 `vendor/frame-updater/` は、私の Steam Frame 用アプリで共通の更新の仕組みのコピーです。ここでは書き換えないでください。`MANIFEST.sha256` と違っていると `scripts/package.sh` が止まります。
 
+`tools/eyecam/` は、目のカメラのツール eyecam（`eyecam-rec` と `eyecam-grab`）のコピーです。eyecam は別のブランチで作っているので、これもここでは書き換えないでください。更新するときは、取り込みたいコミットからこのフォルダーを取り出して（`git rm -rq tools/eyecam && git checkout <コミット> -- tools/eyecam`。先の `git rm` で、新しい版でなくなったファイルも消える）、メッセージにそのコミットのハッシュを書いてコミットします。`Cargo.toml` と `Cargo.lock` は別で、ルートの Cargo のビルドには入りません。`scripts/package.sh` が別にビルドしてテストします。
+
 リリースを公開するときは、2 つとも添付します。`SHA256SUMS` が無いリリースは、パネルの「更新する」では入れず、手で更新してもらう表示になります。リリースの本文は `CHANGELOG.md` のその版の節（見出しを除く）です。節は英語の要約 1 段落で始め、次に `日本語: ` で始まる日本語の要約の段落、そのあとに箇条書きを置きます。古い版のパネル（0.7.1 から）は、その版が出ているあいだ、要約を出します（日本語の画面では日本語の段落。マークダウンを外し、300 文字まで）:
 
 ```sh

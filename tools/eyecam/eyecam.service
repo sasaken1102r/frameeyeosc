@@ -1,0 +1,16 @@
+[Unit]
+Description=eyecam: Steam Frame eye camera recorder and live eye processing
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=@PREFIX@/eyecam-rec --serve
+Restart=on-failure
+RestartSec=5
+Nice=10
+# eyecam-rec closes a running recording and writes state "stopped" on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

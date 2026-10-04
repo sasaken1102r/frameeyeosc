@@ -1,0 +1,20 @@
+[package]
+name = "eyecam"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Standalone: not part of the frameeyeosc package or any workspace.
+[workspace]
+
+[dependencies]
+libc = "0.2"
+
+[[bin]]
+name = "eyecam-grab"
+path = "src/bin/eyecam-grab.rs"
+
+[[bin]]
+name = "eyecam-rec"
+path = "src/bin/eyecam-rec.rs"

@@ -12,6 +12,7 @@ use eyecam::mem::Arena;
 use eyecam::ring::{self, Clock, FRAME_BYTES, HEADER_BYTES, HEIGHT, Ring, STRIDE, WIDTH};
 use eyecam::shm::{self, Sample, Shm};
 use eyecam::livesvc::{self, CollectKind, Msg};
+use eyecam::settings::{self, Settings};
 use eyecam::status::{self, CalibKind, Command, Status};
 use eyecam::{now_raw, proto};
 use std::error::Error;
@@ -358,6 +359,8 @@ struct StatusFile {
     path: PathBuf,
     write_lock: Mutex<()>,
     live: Option<Arc<livesvc::Shared>>,
+    /// settings.json, for `dev` (edited by hand, so it is followed while running).
+    settings: Mutex<settings::Watch>,
 }
 
 impl StatusFile {
@@ -366,6 +369,7 @@ impl StatusFile {
         let json = {
             let mut s = status.lock().unwrap();
             s.grab_outdated = eyecam::autograb::bundled_grab().is_some_and(|b| eyecam::autograb::grab_outdated(&b));
+            s.dev = self.settings.lock().unwrap().get().dev;
             if let Some(l) = &self.live {
                 s.calib_state = l.calib_state.load(Ordering::Relaxed);
                 s.recalib_suggested = l.recalib_suggested.load(Ordering::Relaxed);
@@ -415,7 +419,12 @@ impl Daemon {
             Err(e) => return Err(format!("{}: {e}", dir.display()).into()),
         }
         fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
-        let file = Arc::new(StatusFile { path: dir.join(status::STATUS_FILE), write_lock: Mutex::new(()), live });
+        let file = Arc::new(StatusFile {
+            path: dir.join(status::STATUS_FILE),
+            write_lock: Mutex::new(()),
+            live,
+            settings: Mutex::new(settings::Watch::new(settings::path())),
+        });
         let listener = bind_private(&dir.join(status::CTL_FILE), "another eyecam-rec --serve is already running")?;
         listener.0.set_nonblocking(true)?;
         let status = Arc::new(Mutex::new(Status::default()));
@@ -501,7 +510,9 @@ fn ctl_loop(
 /// without waiting for the main thread. The fake daemon (no live engine) shows it but saves nothing.
 fn set_widen_sensitivity(v: f64, status: &Mutex<Status>, file: &StatusFile) -> String {
     if let Some(l) = &file.live {
-        if let Err(e) = (eyecam::settings::Settings { widen_sensitivity: v }).save(&eyecam::settings::path()) {
+        // Keep the rest of the file (`dev`) as it is.
+        let path = settings::path();
+        if let Err(e) = (Settings { widen_sensitivity: v, ..Settings::load(&path) }).save(&path) {
             return format!("err 保存できなかった: {e}");
         }
         l.set_widen_sensitivity(v);
@@ -542,7 +553,7 @@ fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx:
 fn serve(args: &Args) -> Result<()> {
     let shared = Arc::new(livesvc::Shared::default());
     if !args.fake {
-        shared.set_widen_sensitivity(eyecam::settings::Settings::load(&eyecam::settings::path()).widen_sensitivity);
+        shared.set_widen_sensitivity(Settings::load(&settings::path()).widen_sensitivity);
     }
     let daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()))?;
     eprintln!(
@@ -1704,7 +1715,10 @@ fn record(
         },
     };
 
-    // Session files. Calibrations are saved the same way (calib_*), so a failed one can be looked at and replayed.
+    // Session files. Calibrations are saved the same way (calib_*) but, unless `dev` is on in settings.json, without
+    // any eye images (no eye_*.raw, headers.bin, lock_dump.bin): only the small text files, among them the
+    // calib_result.json that the widen history is rebuilt from. With `dev` a failed one can be looked at and replayed.
+    let images = recording || Settings::load(&settings::path()).dev;
     let mut shm = match Shm::open() {
         Ok(s) => {
             eprintln!("reading Valve samples from {} (version {}, read-only)", shm::PATH, s.version);
@@ -1717,10 +1731,13 @@ fn record(
     };
     let d = args.out.join(format!("{}_{}", if recording { "rec" } else { "calib" }, local_stamp()));
     fs::create_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
-    let mut session = Some(Session::create(&d, args.full_width)?);
+    let mut session = Some(Session::create(&d, args.full_width, images)?);
     let mut m = OpenOptions::new().create(true).append(true).open(d.join("meta.txt"))?;
     write_meta(&mut m, args, &b.header, &ring, &b.arenas, shm.as_ref(), prox.read(), protocol, "lock")?;
-    dump_ring(&d.join("lock_dump.bin"), &b.arenas[ring.arena], &ring, &mut m)?;
+    writeln!(m, "images={}", if images { "kept" } else { "none (calibration without dev: no eye_*.raw, headers.bin, lock_dump.bin)" })?;
+    if images {
+        dump_ring(&d.join("lock_dump.bin"), &b.arenas[ring.arena], &ring, &mut m)?;
+    }
     eprintln!("{} into {}", if recording { "recording" } else { "calibrating" }, d.display());
     let mut meta = Some(m);
     let dir = Some(d);
@@ -2045,8 +2062,8 @@ impl SlotStates {
 }
 
 struct Session {
-    eyes: [BufWriter<File>; 2],
-    headers: BufWriter<File>,
+    /// The eye images (eye_L.raw, eye_R.raw, headers.bin); None for a calibration without `dev`.
+    images: Option<([BufWriter<File>; 2], BufWriter<File>)>,
     frames: BufWriter<File>,
     valve: BufWriter<File>,
     full_width: bool,
@@ -2057,7 +2074,8 @@ struct Session {
 }
 
 impl Session {
-    fn create(dir: &Path, full_width: bool) -> Result<Self> {
+    /// `images`: also write eye_L.raw, eye_R.raw and headers.bin (otherwise only frames.csv and valve.csv).
+    fn create(dir: &Path, full_width: bool, images: bool) -> Result<Self> {
         let open = |name: &str| -> Result<BufWriter<File>> {
             Ok(BufWriter::with_capacity(1 << 20, File::create(dir.join(name))?))
         };
@@ -2065,9 +2083,9 @@ impl Session {
         writeln!(frames, "index,eye,eye_index,slot,t_cam,t_raw,t_copy,valve_seq")?;
         let mut valve = open("valve.csv")?;
         writeln!(valve, "{}", Sample::CSV_HEADER)?;
+        let images = if images { Some(([open("eye_L.raw")?, open("eye_R.raw")?], open("headers.bin")?)) } else { None };
         Ok(Self {
-            eyes: [open("eye_L.raw")?, open("eye_R.raw")?],
-            headers: open("headers.bin")?,
+            images,
             frames,
             valve,
             full_width,
@@ -2089,18 +2107,20 @@ impl Session {
         buf: &[u8],
     ) -> Result<()> {
         let (header, frame) = buf.split_at(HEADER_BYTES);
-        if self.full_width {
-            self.eyes[eye].write_all(frame)?;
-            self.bytes += frame.len() as u64;
-        } else {
-            self.row.clear();
-            for r in 0..HEIGHT {
-                self.row.extend_from_slice(&frame[r * STRIDE..r * STRIDE + WIDTH]);
+        if let Some((eyes, headers)) = self.images.as_mut() {
+            if self.full_width {
+                eyes[eye].write_all(frame)?;
+                self.bytes += frame.len() as u64;
+            } else {
+                self.row.clear();
+                for r in 0..HEIGHT {
+                    self.row.extend_from_slice(&frame[r * STRIDE..r * STRIDE + WIDTH]);
+                }
+                eyes[eye].write_all(&self.row)?;
+                self.bytes += self.row.len() as u64;
             }
-            self.eyes[eye].write_all(&self.row)?;
-            self.bytes += self.row.len() as u64;
+            headers.write_all(header)?;
         }
-        self.headers.write_all(header)?;
         let label = ["L", "R"][eye];
         let seq = valve_seq.map_or(String::new(), |s| s.to_string());
         // The header starts with the camera's timestamp, u64 nanoseconds of CLOCK_MONOTONIC_RAW.
@@ -2121,10 +2141,12 @@ impl Session {
     }
 
     fn flush(&mut self) -> Result<()> {
-        for w in &mut self.eyes {
-            w.flush()?;
+        if let Some((eyes, headers)) = self.images.as_mut() {
+            for w in eyes {
+                w.flush()?;
+            }
+            headers.flush()?;
         }
-        self.headers.flush()?;
         self.frames.flush()?;
         self.valve.flush()?;
         Ok(())
@@ -2478,9 +2500,10 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("eyecam-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let mut session = Session::create(&dir, false).unwrap();
+        let mut session = Session::create(&dir, false, true).unwrap();
         session.write_frame(1, 1, t_first, 1.0025, Some(42), &buf).unwrap();
         session.flush().unwrap();
+        drop(session);
         let raw = fs::read(dir.join("eye_R.raw")).unwrap();
         assert_eq!(raw.len(), WIDTH * HEIGHT);
         assert!(raw.iter().enumerate().all(|(i, &v)| v == ((i / WIDTH + i % WIDTH) % 251) as u8));
@@ -2489,6 +2512,20 @@ mod tests {
         let row: Vec<&str> = csv.lines().nth(1).unwrap().split(',').collect();
         assert_eq!(row, ["0", "R", "0", "1", "1234.500000000", "1.000000000", "1.002500000", "42"]);
         assert_eq!(row.len(), csv.lines().next().unwrap().split(',').count());
+        fs::remove_dir_all(&dir).unwrap();
+
+        // A calibration without dev: the same frames.csv row, but no file with image pixels.
+        fs::create_dir_all(&dir).unwrap();
+        let mut session = Session::create(&dir, false, false).unwrap();
+        session.write_frame(1, 1, t_first, 1.0025, Some(42), &buf).unwrap();
+        session.flush().unwrap();
+        assert_eq!(session.bytes, 0);
+        drop(session);
+        let mut names: Vec<String> =
+            fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        assert_eq!(names, ["frames.csv", "valve.csv"]);
+        assert_eq!(fs::read_to_string(dir.join("frames.csv")).unwrap(), csv);
         fs::remove_dir_all(&dir).unwrap();
         drop(arena);
         drop(mem);

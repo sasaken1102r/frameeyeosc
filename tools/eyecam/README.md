@@ -117,7 +117,7 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
  "step_index":2,"step_count":17,"step_label":"normal","step_remaining_s":3.412,"elapsed_s":6.588,"total_s":84.500,
  "session_dir":"/home/steamos/eyecam/rec_2026-10-04_10-00-00","protocol":"widen","prox":31.000,
  "last_session_aborted":false,"calib_state":6,"recalib_suggested":false,"baseline":"ready","warmup_remaining_s":0.000,
- "calib_saved":true,"widen_sensitivity":0.500,"live":true,"live_ms":1.05,
+ "calib_saved":true,"widen_sensitivity":0.500,"dev":false,"live":true,"live_ms":1.05,
  "pid":1234,"updated_unix":1791100000.123}
 ```
 
@@ -149,6 +149,7 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
 | `setup_done` | bool | 成功した `calib wear` が一度でもある（見開きが取れなかった部分成功も含む）= パネルの最初の準備が済んだ。calib.json の `setup_done` に保存され、ずっと残る（このフィールドがない古い calib.json は、見開きの履歴があれば true） |
 | `last_calib_widen` | string | この起動での直近の `calib wear` の見開き: `measured`（測れた）/ `default`（取れなかったので履歴の中央値の幅を使った）/ `""`（まだしていない、または失敗した） |
 | `widen_sensitivity` | number | 見開きの感度 0〜1（`set widen_sensitivity`。既定 0.5）。どの state でも入っている |
+| `dev` | bool | 開発者モード（settings.json の `"dev": true`、既定 false）。true のときだけ校正のたびの目の映像（`eye_L.raw` など）も残す（下の「settings.json」）。録画（`start`）はこれに関係なく誰でも使える。settings.json を手で書き換えると、再起動しなくても次の書き直しで反映される |
 | `live` | bool | ライブ処理がオン（バッファを持っていて `live on`）|
 | `live_ms` | number | ライブ処理の 1 フレーム（片目）あたりの時間、直近 1 秒の平均（ms） |
 | `pid` | int | デーモンのプロセス ID |
@@ -199,7 +200,7 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 `calib wear` / `calib user` も本物と同じ段を実時間で `calibrating` して、終わると `calib_state` が立つ（wear 前の `calib user` は断る）。
 `baseline` は `idle` になってから 30 秒 `warming`（`warmup_remaining_s` が減っていく）→ `ready`（`calib_state` に 4）。
 `calib_saved` は fake の `calib wear` が終わると true（そのときは `baseline` もすぐ `ready`）。
-`set widen_sensitivity` は status.json の `widen_sensitivity` に出るだけで、settings.json には書かない。
+`set widen_sensitivity` は status.json の `widen_sensitivity` に出るだけで、settings.json には書かない（`dev` だけは本物と同じく settings.json から読んで出す）。
 共有メモリ `live` は作らない。
 終了すると `state: "stopped"` を書く。`--run-dir` を省くと本物と同じ `/run/user/1000/eyecam/` を使う（本物の `--serve` と同時には動かせない）。
 
@@ -301,6 +302,23 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 - 校正セッション 5 本での食い違い（比べたペアのうち）: 前 0.0 / 0.2 / 0.8 / 3.6 / 2.4% → 後 0.0 / 0.9 / 0.2 / 0.0 / 0.0%
   （食い違いは、まばたきのあとや段の切り替わりなど、まぶたが瞳にかかる瞬間に集中していた）
 
+### settings.json
+
+`~/.config/eyecam/settings.json`。なければ既定値。知らないキーは無視し、範囲外・型ちがいの値は既定値になる。
+
+```json
+{
+  "version": 1,
+  "widen_sensitivity": 0.5,
+  "dev": false
+}
+```
+
+- `widen_sensitivity`: 見開きの感度 0〜1（パネルの `set widen_sensitivity` が書く。下の「見開きの感度」）。書くときは `dev` はそのまま残す
+- `dev`: 開発者モード（既定 false）。**手で書き換える**（ctl のコマンドはない）。true のときだけ、校正（`calib wear` / `calib user`）でも
+  録画と同じく目の映像（`eye_L.raw`, `eye_R.raw`, `headers.bin`, `lock_dump.bin`）を残す。status.json の `dev` に出る。
+  起動中に書き換えても、status.json には次の書き直しで、校正には次の校正から効く
+
 ### 校正
 
 | コマンド | 段（ビープも録画と同じ） | 長さ | わかること |
@@ -321,11 +339,14 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
   `user.warnings` に残る（問題のない録画でも 4 本中 2 本でこうなったため）
 - 瞳孔の範囲は校正の段に入れていない。bright と dark の段がある録画（`start widen` など）を最後まで録ると、その間の瞳孔から
   （明るいときの 5 パーセンタイル〜暗いときの 95 パーセンタイル）保存する
-- **校正のたびに（失敗しても、止めても）録画と同じ形式で `~/eyecam/calib_YYYY-MM-DD_HH-MM-SS/` に保存する**（約 0.5 GB / 回）。
-  加えて `calib_result.json`（`ok`・`message`・目ごとの中間値: 虹彩の半径、普段/見開きの skin_up と見開きの幅、普段/閉じの開き、
+- **校正のたびに（失敗しても、止めても）`~/eyecam/calib_YYYY-MM-DD_HH-MM-SS/` に保存する。ただし目の映像は残さない**:
+  ふだんは小さなテキストだけ（`calib_result.json`, `calib_samples.csv`, `cues.csv`, `frames.csv`, `valve.csv`, `meta.txt`。合わせて 1 MB ほど）で、
+  `eye_L.raw`, `eye_R.raw`, `headers.bin`, `lock_dump.bin` は最初から書かない（meta.txt に `images=none …`）。
+  settings.json で `"dev": true` のときだけ、録画と同じ形式で映像も残す（約 0.5 GB / 回、meta.txt に `images=kept`）。
+  中身は `calib_result.json`（`ok`・`message`・目ごとの中間値: 虹彩の半径、普段/見開きの skin_up と見開きの幅、普段/閉じの開き、
   瞳が見えたフレーム数、user なら細めの深さや下を見たときの開きの比、それぞれのしきい値・できた校正の値）と
   `calib_samples.csv`（当てはめに使った各フレーム: 目・時刻・段・瞳の有無・skin_up・開き・瞳孔・視線・下まぶた・R）。
-  `eyecam-rec --replay ~/eyecam/calib_… --out x.csv` でそのまま流し直せる。serve のログにも目ごとの見開きの幅としきい値が 1 行ずつ出る
+  `dev` で残した校正は `eyecam-rec --replay ~/eyecam/calib_… --out x.csv` でそのまま流し直せる。serve のログにも目ごとの見開きの幅としきい値が 1 行ずつ出る
 - 保存先: `~/.config/eyecam/calib.json`（user の校正、最後のかぶりの校正、`history`: 成功した `calib wear` ごとの目ごとの見開きの幅 `step`・
   閉じた開き `gap`（虹彩の半径の単位）・虹彩の半径 `r_px`。新しい 100 回分）。`history` がない calib.json は、起動したときに
   `~/eyecam/calib_*/calib_result.json`（成功した wear のもの）から作って保存する（なければ最後のかぶりの校正を 1 件目にする）。
@@ -539,6 +560,9 @@ dark の合図で暗い画面（暗いシーン、ダッシュボードを閉じ
 | `meta.txt` | ロック時の状態（バッファ、スロット位置、どのスロットがどの目か、スロットごとの枠合わせ、プロトコル、Valve の shm 版など）と終了時の集計。最後まで録れなかったとき（stop、Ctrl-C、映像が戻らない、ディスク不足、トラッカー終了）は `aborted=1`、最後まで録れたら `aborted=0` |
 | `lock_dump.bin` | ロックした瞬間のリング周辺の生メモリ（約 2 MB）。枠合わせやヘッダの形をあとで検証する用 |
 | `calib_result.json`, `calib_samples.csv` | 校正のときだけ（`calib_YYYY-MM-DD_HH-MM-SS/`）。「ライブ処理 › 校正」参照 |
+
+**プライバシー**: 目の映像（`eye_L.raw`, `eye_R.raw`）とそれを含みうる生データ（`headers.bin`, `lock_dump.bin`）が残るのは、自分で始めた録画（`start`）だけ。
+校正は settings.json で `"dev": true` にしていない限り映像を書かず、小さなテキスト（結果の値・フレームの時刻・Valve の推定値）だけを残す。
 
 時刻はぜんぶ CLOCK_MONOTONIC_RAW の秒。Valve の `sample_time` も、カメラの `t_cam` も同じ時計なので、そのまま突き合わせられる
 （`t_cam` はスロットが書き換わり始めてから約 6.5 ms 後の値。読み終えるのはその約 4 ms 後）。

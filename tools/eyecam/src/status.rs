@@ -45,6 +45,8 @@ pub struct Status {
     pub calib_saved: bool,
     /// 0 (strictest) .. 1 (most sensitive), `set widen_sensitivity`.
     pub widen_sensitivity: f64,
+    /// Developer mode (`"dev": true` in settings.json, edited by hand): calibrations also keep their eye images.
+    pub dev: bool,
     /// A `calib wear` has succeeded at least once (kept in calib.json): the panel's first-time setup is done.
     pub setup_done: bool,
     /// The last `calib wear` of this run: "measured" (widen caught), "default" (not caught: the usual step), or "".
@@ -81,6 +83,7 @@ impl Default for Status {
             warmup_remaining_s: crate::live::WARMUP_S,
             calib_saved: false,
             widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY,
+            dev: false,
             setup_done: false,
             last_calib_widen: "",
             live: false,
@@ -108,7 +111,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"setup_done\":{},\"last_calib_widen\":{},\"live\":{},\"live_ms\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"live\":{},\"live_ms\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -134,6 +137,7 @@ impl Status {
             num(self.warmup_remaining_s),
             self.calib_saved,
             num(self.widen_sensitivity),
+            self.dev,
             self.setup_done,
             json_str(self.last_calib_widen),
             self.live,
@@ -247,5 +251,7 @@ mod tests {
         let status = Status { message: "録画中".into(), ..Status::default() };
         assert!(status.to_json(1.5, 7).contains("\"message\":\"録画中\",\"message_en\":\"Recording\","));
         assert!(json.ends_with("\"updated_unix\":1.500}"));
+        assert!(json.contains("\"widen_sensitivity\":0.500,\"dev\":false,\"setup_done\":false,"));
+        assert!(Status { dev: true, ..Status::default() }.to_json(1.5, 7).contains(",\"dev\":true,"));
     }
 }

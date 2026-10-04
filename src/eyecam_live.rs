@@ -20,8 +20,8 @@
 //! crash writes nothing, so only the capture time tells the values are old.
 
 use memmap2::{Mmap, MmapOptions};
-use std::fs::{self, File};
-use std::os::unix::fs::MetadataExt;
+use std::fs::{self, OpenOptions};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering, fence};
@@ -29,6 +29,9 @@ use std::time::{Duration, Instant};
 
 const MAGIC: u32 = 0x4D43_5945;
 const VERSION: u32 = 1;
+// The writer's side of the contract: the file is created at its full size and never shrunk or truncated in place (a
+// mapped page past the end would crash the reader with SIGBUS); to replace it, eyecam-rec writes a new file and renames
+// it over this one, which the reader notices by its inode (LiveReader::check). It is a regular file of this user's.
 const STRUCT_SIZE: usize = 200;
 const SEQ: usize = 24;
 const EYES: [usize; 2] = [56, 128];
@@ -227,9 +230,23 @@ impl Mapped {
 }
 
 /// Map the file read-only and check its header. Err says whether it could be opened at all, and why it can't be used.
+/// Opened without blocking and without following a symlink, and only a regular file of this user's is used: a FIFO in
+/// its place would otherwise hold up the eye-data loop on open, and someone else's file isn't eyecam-rec's. Anything
+/// else is closed again (dropped) and tried again at the next check.
 fn open(path: &Path) -> Result<(Mapped, Record), (bool, String)> {
-    let file = File::open(path).map_err(|error| (false, error.to_string()))?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|error| (false, error.to_string()))?;
     let metadata = file.metadata().map_err(|error| (true, error.to_string()))?;
+    if !metadata.is_file() {
+        return Err((true, "not a regular file".to_owned()));
+    }
+    let uid = unsafe { libc::getuid() };
+    if metadata.uid() != uid {
+        return Err((true, format!("owned by uid {}, not by this user ({uid})", metadata.uid())));
+    }
     if metadata.len() < STRUCT_SIZE as u64 {
         return Err((true, format!("too small ({} bytes)", metadata.len())));
     }
@@ -616,6 +633,35 @@ pub mod tests {
         fs::remove_file(&path).unwrap();
         assert!(reader.check(start + Duration::from_secs(8)).unwrap().contains("No such file"));
         assert!(!reader.opened());
+    }
+
+    #[test]
+    fn only_a_regular_file_is_opened_and_never_waited_for() {
+        let dir = TempDir::new("kinds");
+        let start = Instant::now();
+        // A FIFO in its place: refused at once (a blocking open would wait for a writer forever)
+        let fifo = dir.0.join("fifo");
+        let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let mut reader = LiveReader::new(fifo, start);
+        let line = reader.check(start).unwrap();
+        assert!(line.contains("not a regular file"), "{line}");
+        assert!(reader.read(NOW).is_none());
+        // A symlink to a good file: not followed
+        let real = dir.0.join("real");
+        write_live(&real, &live_bytes(10, 1, true, eyes(0.9)));
+        let link = dir.0.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let mut reader = LiveReader::new(link, start);
+        assert!(reader.check(start).unwrap().starts_with("No eye-camera values from"));
+        assert!(!reader.opened() && reader.read(NOW).is_none());
+        // A directory: not a regular file either
+        let mut reader = LiveReader::new(dir.0.clone(), start);
+        assert!(reader.check(start).unwrap().contains("not a regular file"));
+        // The good file itself: read
+        let mut reader = LiveReader::new(real, start);
+        assert!(reader.check(start).unwrap().starts_with("Reading eye-camera values from"));
+        assert_eq!(reader.read(NOW).unwrap().eyes[0].lid, 0.9);
     }
 
     #[test]

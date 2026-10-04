@@ -2936,7 +2936,7 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         const eyecam::Status& es = m.eyecam.status;
         y += drawSectionTitle(pen, y, t.devTitle);
         const double h = 40;
-        const bool failed = es.state == eyecam::State::Error && m.eyecam.lastRun == eyecam::Run::Recording;
+        const bool failed = eyecam::errorShown(m.eyecam, true);
         const bool ready = es.state == eyecam::State::Idle || es.state == eyecam::State::Error;
         drawRowLabel(pen, t, y, h, t.devRecord, t.devRecordHint, false);
         const double bw = 160;
@@ -2952,10 +2952,15 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
                 baseline += 17;
             }
         } else {
+            // Why it failed, and "Back" at the right (dismissed in the panel only, as on the eye cameras tab)
+            const double backW = pen.measure(t.eyecamBack, 16, true) + 40;
+            drawButton(pen, kInnerRight - backW, y + (h - 38) / 2, backW, 38, t.eyecamBack,
+                       {PanelAction::EyecamBack, nullptr, 0}, true, false, 16);
             const double textX = kControlX + bw + 14;
+            const double textRight = kInnerRight - backW - 12;
             const std::string& message = eyecam::shownMessage(es, m.language);
             const std::string why = message.empty() ? std::string(t.eyecamErrorTitle) : message;
-            const std::vector<std::string> lines = wrapText(pen, why, 14, true, kInnerRight - textX, 2);
+            const std::vector<std::string> lines = wrapText(pen, why, 14, true, textRight - textX, 2);
             double baseline = y + h / 2 - (lines.size() - 1) * 9 + 5;
             for (const std::string& line : lines) {
                 pen.text(textX, baseline, line, 14, kDanger, true);
@@ -3612,16 +3617,33 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
                 wrappedCentered(y + 130, eyecam::shownMessage(s, m.language), 24, kText, false, 3);
                 messageShown = true;
             }
+            // The way on, and "Back" beside it (the error is dismissed in the panel only: eyecam-rec stays in "error"
+            // until the next command, and the tab would show it again on every visit)
             const double w = 400;
+            const double backW = 200;
+            const double gap = 20;
+            const double bh = 88;
+            const double left = cx - (w + gap + backW) / 2;
+            const double by = y + 262;
             if (calibRun) {
-                // The same calibration again (the user's only while this wear's is still there)
-                const bool usable = startUsable && (calib == eyecam::Calib::Wear || eyecam::userCalibAllowed(s));
-                drawButton(pen, cx - w / 2, y + 250, w, 96, t.eyecamCalibRetry,
-                           {PanelAction::EyecamCalib, nullptr, static_cast<int>(calib)}, usable, true, 36);
+                // The same calibration again; the user's only while this wear's is still there. Put back on since
+                // (bit 0 gone), it can't be: say so, and offer this wear's calibration instead
+                const bool userBlocked = calib == eyecam::Calib::User && !eyecam::userCalibAllowed(s);
+                if (userBlocked) {
+                    centered(by - 22, t.eyecamUserNeedsWear, 22, 14, kAccent, true);
+                    drawButton(pen, left, by, w, bh, t.camCalibButton,
+                               {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, startUsable,
+                               true, 28);
+                } else {
+                    drawButton(pen, left, by, w, bh, t.eyecamCalibRetry,
+                               {PanelAction::EyecamCalib, nullptr, static_cast<int>(calib)}, startUsable, true, 34);
+                }
             } else {
-                drawButton(pen, cx - w / 2, y + 250, w, 96, t.eyecamRetry, {PanelAction::EyecamStart, nullptr, 0},
-                           startUsable, true, 36);
+                drawButton(pen, left, by, w, bh, t.eyecamRetry, {PanelAction::EyecamStart, nullptr, 0}, startUsable,
+                           true, 34);
             }
+            drawButton(pen, left + w + gap, by, backW, bh, t.eyecamBack, {PanelAction::EyecamBack, nullptr, 0}, true,
+                       false, 28);
             break;
         }
         default: {
@@ -4139,14 +4161,22 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                 bx += pw + 10;
             }
             const double aw = pen.measure(t.setupAgain, 18, true) + (failed ? 76 : 48);
+            // A failed one: "Back" at the right, to the step's button (eyecam-rec stays in "error" until the next
+            // command)
+            const double backW = failed ? pen.measure(t.eyecamBack, 18, true) + 48 : 0;
             if (draw) {
                 drawIconButton(pen, bx, by, aw, bh, t.setupAgain,
                                {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy,
                                failed, 18, failed ? ButtonIcon::Play : ButtonIcon::None);
+                if (failed) {
+                    drawButton(pen, x1 - backW, by, backW, bh, t.eyecamBack, {PanelAction::EyecamBack, nullptr, 0},
+                               true, false, 18);
+                }
                 const char* note = failed ? (s.locked ? "" : t.setupWaitFoot) : t.setupFailLater;
                 const double nx = bx + aw + 14;
+                const double noteRight = failed ? x1 - backW - 14 : x1;
                 if (note[0] != '\0') {
-                    const std::vector<std::string> lines = wrapText(pen, note, 15, false, x1 - nx, 2);
+                    const std::vector<std::string> lines = wrapText(pen, note, 15, false, noteRight - nx, 2);
                     double baseline = by + bh / 2 + 5 - (lines.size() - 1) * 10;
                     for (const std::string& line : lines) {
                         pen.text(nx, baseline, line, 15, kTextMuted);

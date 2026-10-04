@@ -300,6 +300,171 @@ void testPupilBitsRow(const FontSet& fonts) {
     CHECK(hits(panel, PanelAction::SetActiveType).size() == 3);
 }
 
+/**
+ * Whether the screen as last drawn offers a way out: a usable control besides the tab row (the tab buttons are at the
+ * top; the left column's card to a tab counts).
+ * @param panel the panel
+ * @return true if there is one
+ */
+bool hasWayOut(const EyePanel& panel) {
+    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+        if (area.hit.action != PanelAction::Tab || area.y > 100) return true;
+    }
+    return false;
+}
+
+/**
+ * eyecam-rec in a state, set up (or not) as modelWith makes it, with these fields.
+ * @param state the state ("error", "calibrating", ...)
+ * @param setUp setup_done
+ * @return the model
+ */
+PanelModel eyecamIn(const char* state, bool setUp = true) {
+    PanelModel m = modelWith(Lids::Both);
+    eyecam::Status& e = m.eyecam.status;
+    e.stateText = state;
+    e.state = eyecam::parseState(state);
+    e.setupDone = setUp;
+    e.locked = true;  // the headset on, both eyes seen (the setup's (3) waits for that, with nothing else to press)
+    return m;
+}
+
+void testErrorBack(const FontSet& fonts) {
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Eyecam);
+    // A failed user calibration, the headset taken off since (calib_state lost bit 0): not a dead end any more. No
+    // grey "Calibrate again", but this wear's calibration and "Back"
+    PanelModel m = eyecamIn("error");
+    m.eyecam.lastRun = eyecam::Run::CalibUser;
+    m.eyecam.status.message = "右目: 下を見ても目の開きが変わっていない";
+    m.eyecam.status.calibState = eyecam::kCalibAutoBit;
+    panel.render(m);
+    std::vector<EyePanel::HitArea> calib = hits(panel, PanelAction::EyecamCalib);
+    CHECK(calib.size() == 1);
+    if (calib.size() == 1) CHECK(calib[0].hit.arg == static_cast<int>(eyecam::Calib::Wear));
+    CHECK(hits(panel, PanelAction::EyecamBack).size() == 1);
+    // ...with bit 0 still there: the user's again, and "Back"
+    m.eyecam.status.calibState = eyecam::kCalibWearBit | eyecam::kCalibAutoBit;
+    panel.render(m);
+    calib = hits(panel, PanelAction::EyecamCalib);
+    CHECK(calib.size() == 1);
+    if (calib.size() == 1) CHECK(calib[0].hit.arg == static_cast<int>(eyecam::Calib::User));
+    CHECK(hits(panel, PanelAction::EyecamBack).size() == 1);
+    // ..."Back" pressed (the loop calls dismissError): the page
+    m.eyecam.flow.dismissError(m.eyecam.lastRun, m.eyecam.status);
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamBack).empty());
+    CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);
+
+    // The recording's error on the Advanced tab: "Start again" and "Back"; after "Back", "Start recording" alone
+    PanelModel rec = eyecamIn("error");
+    rec.eyecam.lastRun = eyecam::Run::Recording;
+    rec.eyecam.status.message = "右のカメラの映像が 3 秒届きません";
+    panel.setTab(PanelTab::Advanced);
+    panel.render(rec);
+    CHECK(hits(panel, PanelAction::EyecamStart).size() == 1);
+    CHECK(hits(panel, PanelAction::EyecamBack).size() == 1);
+    rec.eyecam.flow.dismissError(rec.eyecam.lastRun, rec.eyecam.status);
+    panel.render(rec);
+    CHECK(hits(panel, PanelAction::EyecamStart).size() == 1);
+    CHECK(hits(panel, PanelAction::EyecamBack).empty());
+}
+
+void testWayOut(const FontSet& fonts) {
+    // Every screen of the eye cameras tab and of the Advanced tab's recording offers a usable control
+    struct Screen {
+        const char* name;
+        PanelModel model;
+        PanelTab tab;
+    };
+    std::vector<Screen> screens;
+    const auto add = [&](const char* name, PanelModel m, PanelTab tab = PanelTab::Eyecam) {
+        screens.push_back({name, m, tab});
+    };
+    add("page", eyecamIn("idle"));
+    add("page, waiting for the tool", eyecamIn("waiting_fds"));
+    {
+        PanelModel m = eyecamIn("calibrating");
+        m.eyecam.lastRun = eyecam::Run::CalibWear;
+        m.eyecam.status.stepLabel = "close";
+        m.eyecam.status.stepIndex = 1;
+        m.eyecam.status.stepCount = 6;
+        add("page, calibrating", m);
+        m.eyecam.status.stepLabel.clear();
+        add("page, calibrating, waiting for the video", m);
+    }
+    for (const eyecam::Run run : {eyecam::Run::CalibWear, eyecam::Run::CalibUser}) {
+        for (const int bits : {eyecam::kCalibAutoBit, eyecam::kCalibWearBit | eyecam::kCalibAutoBit}) {
+            PanelModel m = eyecamIn("error");
+            m.eyecam.lastRun = run;
+            m.eyecam.status.calibState = bits;
+            add("page, calibration error", m);
+            m.eyecam.busy = true;  // a command on its way: the retry waits, "Back" doesn't
+            add("page, calibration error, busy", m);
+        }
+    }
+    {
+        PanelModel m = eyecamIn("idle", false);
+        m.eyecam.password = eyecam::PasswordState::NotSet;
+        m.eyecam.status.autoGrab = "missing";
+        m.eyecam.status.hasBuffers = false;
+        m.eyecam.status.state = eyecam::State::WaitingFds;
+        m.eyecam.status.stateText = "waiting_fds";
+        add("setup (1)", m);
+        m.eyecam.password = eyecam::PasswordState::Set;
+        add("setup (2)", m);
+    }
+    add("setup (3)", eyecamIn("idle", false));
+    {
+        PanelModel m = eyecamIn("calibrating", false);
+        m.eyecam.lastRun = eyecam::Run::CalibWear;
+        m.eyecam.status.stepLabel = "widen";
+        m.eyecam.status.stepIndex = 3;
+        m.eyecam.status.stepCount = 6;
+        add("setup (3), calibrating", m);
+        PanelModel e = eyecamIn("error", false);
+        e.eyecam.lastRun = eyecam::Run::CalibWear;
+        add("setup (3), error", e);
+        // The setup's calibration ending: widening on the standard values, or done
+        for (const char* widen : {"default", "measured"}) {
+            PanelModel r = eyecamIn("idle", true);
+            eyecam::Status before = r.eyecam.status;
+            before.state = eyecam::State::Calibrating;
+            before.setupDone = false;
+            r.eyecam.flow.follow(before, 0.0);
+            r.eyecam.status.lastCalibWiden = widen;
+            r.eyecam.flow.follow(r.eyecam.status, 1.0);
+            add("setup's result", r);
+        }
+    }
+    {
+        PanelModel m = eyecamIn("error");
+        m.eyecam.lastRun = eyecam::Run::Recording;
+        add("Advanced, recording error", m, PanelTab::Advanced);
+        PanelModel s = eyecamIn("searching");
+        add("Advanced, searching", s, PanelTab::Advanced);
+        PanelModel r = eyecamIn("recording");
+        r.eyecam.status.stepLabel = "widen";
+        r.eyecam.status.stepIndex = 1;
+        r.eyecam.status.stepCount = 9;
+        add("Advanced, recording", r, PanelTab::Advanced);
+    }
+    EyePanel panel(fonts);
+    for (const Screen& screen : screens) {
+        panel.setTab(screen.tab);
+        panel.render(screen.model);
+        if (!hasWayOut(panel)) {
+            ++gFailures;
+            std::fprintf(stderr, "FAILED: no usable control on \"%s\"\n", screen.name);
+        }
+    }
+    // The light warning, too
+    panel.setTab(PanelTab::Advanced);
+    panel.openEyecamConfirm(eyecam::State::Idle);
+    panel.render(eyecamIn("idle"));
+    CHECK(hasWayOut(panel));
+}
+
 void testToolNotice(const FontSet& fonts) {
     // Set up, the tool outdated (still works) or too old (the cameras stopped): the usual page with a card and its
     // Konsole button, and the left column's card to the tab; neither once the tool is current again
@@ -337,6 +502,8 @@ int main() {
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);
     testToolNotice(fonts);
+    testErrorBack(fonts);
+    testWayOut(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

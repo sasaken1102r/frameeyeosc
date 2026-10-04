@@ -655,7 +655,8 @@ void testCalibText() {
               t.eyecamSensitivity, t.eyecamSensitivityDull, t.eyecamSensitivitySharp, t.setupTitle, t.setupOptional,
               t.setupOneLeft, t.setupAllDone, t.setupStepPassword, t.setupStepTool, t.setupStepLearn, t.setupStepDone,
               t.setupStepToolAgain, t.setupToolUpdated, t.eyecamStorageNote, t.eyecamStorageRow,
-              t.toolNoticeOutdated, t.toolNoticeTooOld, t.nextToolOutdated, t.nextToolTooOld,
+              t.toolNoticeOutdated, t.toolNoticeTooOld, t.nextToolOutdated, t.nextToolTooOld, t.eyecamBack,
+              t.eyecamUserNeedsWear,
               t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone, t.setupPasswordLabel, t.setupPasswordSet,
               t.setupAutoChecked, t.setupToolLabel, t.setupToolDone, t.setupLearnLabel, t.setupLearnDone,
               t.setupPassPill, t.setupPassBody, t.setupPassWhere, t.setupPassPath1, t.setupPassPath2,
@@ -1027,6 +1028,74 @@ void testSetupStep() {
         CHECK(eyecam::setupStep(st, PasswordState::Set) == SetupStep::Done);
         CHECK(eyecam::toolNotice(st, PasswordState::Set) == ToolNotice::None);
     }
+}
+
+void testErrorBack() {
+    using eyecam::PageScreen;
+    using eyecam::SetupScreen;
+    // A failed user calibration on the usual page: shown until "Back", then the page
+    eyecam::View view;
+    view.password = eyecam::PasswordState::Set;
+    view.lastRun = eyecam::Run::CalibUser;
+    const std::string setUp = ", \"auto_grab\": \"ok\", \"has_buffers\": true, \"setup_done\": true";
+    const Status failed = setupStatus("error", setUp + ", \"calib_state\": 5, \"message\": \"右目: 下を見ても\"");
+    view.status = failed;
+    view.flow.follow(failed, 0.0);
+    CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+    CHECK(eyecam::pageScreen(view) == PageScreen::Error);
+    CHECK(eyecam::errorShown(view, false) && !eyecam::errorShown(view, true));
+    view.flow.dismissError(view.lastRun, view.status);
+    CHECK(eyecam::pageScreen(view) == PageScreen::Page);
+    // ...it stays dismissed while eyecam-rec keeps writing that error (the headset taken off: calib_state 5 -> 4)
+    const Status putBack = setupStatus("error", setUp + ", \"calib_state\": 4, \"message\": \"右目: 下を見ても\"");
+    view.status = putBack;
+    view.flow.follow(putBack, 1.0);
+    CHECK(eyecam::pageScreen(view) == PageScreen::Page);
+    // ...another message is another error: shown again
+    const Status other = setupStatus("error", setUp + ", \"calib_state\": 4, \"message\": \"左目: 細めが浅い\"");
+    view.status = other;
+    view.flow.follow(other, 2.0);
+    CHECK(eyecam::pageScreen(view) == PageScreen::Error);
+    view.flow.dismissError(view.lastRun, view.status);
+    CHECK(eyecam::pageScreen(view) == PageScreen::Page);
+    // ...and so is another run with the same words
+    view.lastRun = eyecam::Run::CalibWear;
+    CHECK(eyecam::pageScreen(view) == PageScreen::Error);
+    view.lastRun = eyecam::Run::CalibUser;
+    CHECK(eyecam::pageScreen(view) == PageScreen::Page);
+    // ...and the same error after eyecam-rec has left "error" (calibrated again and failed the same way)
+    const Status calibrating = setupStatus("calibrating", setUp + ", \"calib_state\": 5");
+    view.status = calibrating;
+    view.flow.follow(calibrating, 3.0);
+    view.status = other;
+    view.flow.follow(other, 4.0);
+    CHECK(eyecam::pageScreen(view) == PageScreen::Error);
+    // Back on an error that isn't one does nothing
+    eyecam::SetupFlow idleFlow;
+    const Status idle = setupStatus("idle", setUp);
+    idleFlow.dismissError(eyecam::Run::CalibWear, idle);
+    CHECK(!idleFlow.errorDismissed(eyecam::Run::CalibWear, idle));
+
+    // Not set up: the checklist's (3) error, then (3)'s button after "Back"
+    eyecam::View setup;
+    setup.password = eyecam::PasswordState::Set;
+    setup.lastRun = eyecam::Run::CalibWear;
+    setup.status = setupStatus("error", ", \"auto_grab\": \"ok\", \"has_buffers\": true, \"setup_done\": false, "
+                                        "\"message\": \"右目: 目を閉じても\"");
+    setup.flow.follow(setup.status, 0.0);
+    CHECK(eyecam::setupScreen(setup) == SetupScreen::Error);
+    setup.flow.dismissError(setup.lastRun, setup.status);
+    CHECK(eyecam::setupScreen(setup) == SetupScreen::Wait);
+
+    // A recording's error (the Advanced tab's row): the same
+    eyecam::View recording;
+    recording.lastRun = eyecam::Run::Recording;
+    recording.status = setupStatus("error", setUp + ", \"message\": \"右のカメラの映像が 3 秒届きません\"");
+    recording.flow.follow(recording.status, 0.0);
+    CHECK(eyecam::errorShown(recording, true) && !eyecam::errorShown(recording, false));
+    CHECK(eyecam::pageScreen(recording) == PageScreen::Page);  // not a calibration's: the page as before
+    recording.flow.dismissError(recording.lastRun, recording.status);
+    CHECK(!eyecam::errorShown(recording, true));
 }
 
 void testSetupFlow() {
@@ -1774,6 +1843,7 @@ int main() {
     testSetupParse();
     testSetupStep();
     testSetupFlow();
+    testErrorBack();
     testCalibChips();
     testPageCalib();
     testSetupTools();

@@ -205,6 +205,23 @@ public:
     /** The panel sent "stop" (the calibration running now ends without a result). */
     void stopSent();
 
+    /**
+     * "Back" on a failed calibration's or recording's error: that error is no longer shown (eyecam-rec stays in
+     * "error" until the next command, so without this the tab would show it on every visit). It is tied to the
+     * error's identity, its run and message: a different one shows again, and so does any error after eyecam-rec
+     * has left "error" (follow forgets the dismissal then).
+     * @param run the run that failed (View::lastRun)
+     * @param status the status showing the error
+     */
+    void dismissError(Run run, const Status& status);
+
+    /**
+     * @param run the run that failed (View::lastRun)
+     * @param status the status
+     * @return true if this error was dismissed with "Back"
+     */
+    bool errorDismissed(Run run, const Status& status) const;
+
     /** @return how the last calibration from the usual page ended (None once dismissed or no longer idle) */
     CalibResult calibResult() const { return calibResult_; }
 
@@ -235,7 +252,9 @@ private:
     SetupResult result_ = SetupResult::None;
     CalibResult calibResult_ = CalibResult::None;
     double doneAt_ = -1e9;
+    std::string dismissed_;        ///< the error "Back" dismissed (errorKey), "" = none
 };
+
 
 /** The recorder's reply to a command. */
 struct Reply {
@@ -258,6 +277,15 @@ struct View {
     bool readyNotice = false; ///< the left column says "ready" (flow.readyNotice, set by the loop)
     std::string spawnError;   ///< why a Konsole for the setup didn't open ("" = none)
 };
+
+/**
+ * Whether the view shows an error the user hasn't dismissed: eyecam-rec in "error" after this run (a calibration's or a
+ * recording's), not dismissed with "Back".
+ * @param view the recorder
+ * @param recording true for a recording's error, false for a calibration's
+ * @return true to show it
+ */
+bool errorShown(const View& view, bool recording);
 
 /**
  * The recorder's folder: $XDG_RUNTIME_DIR/eyecam, or /run/user/<uid>/eyecam without it (e.g. over SSH).

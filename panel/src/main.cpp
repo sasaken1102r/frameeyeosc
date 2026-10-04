@@ -827,6 +827,7 @@ eyecam::View fakeEyecam(const std::string& text) {
     } else if (state == "error") {
         s.stateText = "error";
         s.message = "右のカメラの映像が 3 秒届きません";
+        view.lastRun = eyecam::Run::Recording;
         // A failed command too, to see where it goes
         view.hasReply = true;
         view.reply.command = "start";
@@ -1985,6 +1986,10 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             change = [host](JsonValue& root) { root.set(key::kHost, JsonValue::makeString(host)); };
             break;
         }
+        case PanelAction::EyecamBack:
+            std::fprintf(stderr, "[eyecam] error dismissed: %s\n", model.eyecam.status.message.c_str());
+            model.eyecam.flow.dismissError(model.eyecam.lastRun, model.eyecam.status);
+            return;
         case PanelAction::EyecamChoose:
         case PanelAction::EyecamStop:
         case PanelAction::EyecamCalib: {

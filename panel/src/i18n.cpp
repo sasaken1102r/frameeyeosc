@@ -369,6 +369,8 @@ UiText makeJapanese() {
     t.setupStepToolAgain = "道具を入れ直す";
     t.setupToolUpdated = "道具が新しくなったよ、入れ直してね";
     t.toolNoticeOutdated = "道具が新しくなったよ、入れ直してね（今の道具のままでも動くよ）";
+    t.eyecamBack = "戻る";
+    t.eyecamUserNeedsWear = "かぶり直したので、先に目のカメラの校正（18秒）をしてね";
     t.toolNoticeTooOld = "安全のため、道具を入れ直してね。入れ直すまでカメラは止まってて、まぶたは Valve の値だけで送ってるよ";
     t.nextToolOutdated = "今の道具のままでも動くよ";
     t.nextToolTooOld = "入れ直すまでカメラは止まってるよ";
@@ -991,6 +993,8 @@ UiText makeEnglish() {
     t.setupStepToolAgain = "Install the tool again";
     t.setupToolUpdated = "The tool was updated. Install it again";
     t.toolNoticeOutdated = "The tool was updated. Install it again (the current one still works)";
+    t.eyecamBack = "Back";
+    t.eyecamUserNeedsWear = "You put the headset back on, so run the eye camera calibration (18 s) first";
     t.toolNoticeTooOld =
         "For safety, install the tool again. Until then the cameras are stopped and the eyelids go out on Valve's "
         "values only";

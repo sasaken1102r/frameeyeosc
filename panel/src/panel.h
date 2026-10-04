@@ -83,6 +83,8 @@ enum class PanelAction {
                        ///< 1 = passwd; the caller starts it, never from --dump-png)
     SetupVideo,        ///< ...open the setup video (only shown with a video URL)
     SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
+    EyecamBack,        ///< "Back" on a failed calibration's or recording's error: dismiss it in the panel only
+                       ///< (SetupFlow::dismissError; eyecam-rec stays in "error" until the next command)
 };
 
 /** A button: its action, the config key it changes and an argument. */

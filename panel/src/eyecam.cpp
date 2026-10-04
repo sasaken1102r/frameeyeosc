@@ -365,7 +365,7 @@ Calib calibOf(Run run) {
 PageScreen pageScreen(const View& view) {
     const Status& s = view.status;
     if (s.state == State::Calibrating) return PageScreen::Calibrating;
-    if (s.state == State::Error && isCalib(view.lastRun)) return PageScreen::Error;
+    if (errorShown(view, false)) return PageScreen::Error;
     if (view.flow.calibResult() != CalibResult::None) return PageScreen::Result;
     return PageScreen::Page;
 }
@@ -379,7 +379,7 @@ SetupScreen setupScreen(const View& view) {
         case SetupStep::Tool: return SetupScreen::Check;
         case SetupStep::Learn:
             if (s.state == State::Calibrating) return SetupScreen::Learn;
-            if (s.state == State::Error && isCalib(view.lastRun)) return SetupScreen::Error;
+            if (errorShown(view, false)) return SetupScreen::Error;
             return SetupScreen::Wait;
         case SetupStep::Done: break;
     }
@@ -430,6 +430,8 @@ void SetupFlow::follow(const Status& status, double now) {
     }
     // The page's result belongs to the idle right after its run (a recording, an error, a restart: gone)
     if (status.state != State::Idle) calibResult_ = CalibResult::None;
+    // A dismissed error is that one error: once eyecam-rec has left it, the next one shows, the same words or not
+    if (status.state != State::Error) dismissed_.clear();
     seen_ = true;
 }
 
@@ -445,6 +447,33 @@ void SetupFlow::closed() {
 
 void SetupFlow::stopSent() {
     if (calibrating_) stopSent_ = true;
+}
+
+namespace {
+
+/**
+ * Which error this is: its run and its message (both languages).
+ * @param run the run that failed
+ * @param status the status
+ * @return the key
+ */
+std::string errorKey(Run run, const Status& status) {
+    return std::to_string(static_cast<int>(run)) + "\n" + status.message + "\n" + status.messageEn;
+}
+
+}  // namespace
+
+void SetupFlow::dismissError(Run run, const Status& status) {
+    if (status.state == State::Error) dismissed_ = errorKey(run, status);
+}
+
+bool SetupFlow::errorDismissed(Run run, const Status& status) const {
+    return status.state == State::Error && !dismissed_.empty() && dismissed_ == errorKey(run, status);
+}
+
+bool errorShown(const View& view, bool recording) {
+    const bool run = recording ? view.lastRun == Run::Recording : isCalib(view.lastRun);
+    return view.status.state == State::Error && run && !view.flow.errorDismissed(view.lastRun, view.status);
 }
 
 bool SetupFlow::readyNotice(double now) const {

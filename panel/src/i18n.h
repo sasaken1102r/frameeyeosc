@@ -371,6 +371,8 @@ struct UiText {
     const char* setupStepToolAgain;  ///< ...when an update brought a new tool (grab_outdated)
     const char* setupToolUpdated;  ///< ...the line under its title, and in the left column
     const char* toolNoticeOutdated;  ///< set up, the tool outdated: the usual page's card
+    const char* eyecamBack;          ///< "Back" on a calibration's or recording's error
+    const char* eyecamUserNeedsWear; ///< a failed user calibration that can't be retried (the headset put back on)
     const char* toolNoticeTooOld;    ///< set up, the tool below the safety floor: the usual page's card (stronger)
     const char* nextToolOutdated;    ///< ...the left column's card, under "install again"
     const char* nextToolTooOld;

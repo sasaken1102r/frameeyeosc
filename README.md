@@ -22,6 +22,18 @@ The way the eye-camera tool finds the eye camera frames is ported from Curtis En
 - It can send in the format the ETVR Tracking Module for VRCFaceTracking reads (see [VRCFaceTracking (ETVR) mode](#vrcfacetracking-etvr-mode)), or as Live Link Face packets for VRCFaceTracking's LiveLink module, which also carries widened eyes (see [VRCFaceTracking (LiveLink) mode](#vrcfacetracking-livelink-mode)).
 - Optionally it also uses the Frame's eye cameras, through eyecam, a tool that comes with it: widened eyes come through again on SteamOS 0.4.3, and squints and pupil size are sent too. It takes a one-time setup on the panel (see [Eye cameras](#eye-cameras)).
 
+## What Steam Link's own OSC can't do
+
+https://github.com/user-attachments/assets/6b538815-2ddb-47e3-a617-c16b14a4dbd8
+
+SteamVR's Steam Link can send eye tracking over OSC by itself (`LeftEyeX`, `LeftEyeLid`, ...). With the eye cameras set up, frameeyeosc also sends what it can't:
+
+- **Widened eyes**: Steam Link sends how closed each eye is, but no widening (its `WidenToggle` is always 1), and on SteamOS 0.4.3 Valve's openness tops out at relaxed open. frameeyeosc reads widening from the eye camera images.
+- **Pupil size**: measured from the eye camera images, so the avatar's pupils get smaller in bright places and bigger in the dark (`v2/PupilDilation`, `PupilDiameter*`; also as bits with `pupil_bits`).
+- **Squints**, after the optional user calibration (`v2/EyeSquint*`).
+
+The video shows the avatar's eyes in VRChat with the eye cameras in use. See [Eye cameras](#eye-cameras) for the setup.
+
 ## Requirements
 
 - A Steam Frame with Developer Mode on and SSH access (Settings > System > Developer Mode, then set a password under Developer). Choose a strong password: with SSH on, anyone on your network who knows it can log in to the headset.

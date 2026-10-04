@@ -22,6 +22,18 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 - VRCFaceTracking 用の ETVR Tracking Module が読む形式でも送れます（[VRCFaceTracking（ETVR）モード](#vrcfacetrackingetvrモード)）。VRCFaceTracking の LiveLink モジュール向けに Live Link Face の形式でも送れて、こちらは見開きも伝わります（[VRCFaceTracking（LiveLink）モード](#vrcfacetrackinglivelinkモード)）
 - 使いたい人は、Frame の目のカメラも使えます（一緒に入る道具 eyecam を使います）。SteamOS 0.4.3 でも見開きが届くようになり、目を細めた動きと瞳孔の大きさも送れます。パネルで最初に一度だけ準備がいります（[目のカメラ](#目のカメラ)）
 
+## Steam Link 標準の OSC ではできないこと
+
+https://github.com/user-attachments/assets/c10236ed-a395-4bd1-8971-87446f293d12
+
+SteamVR の Steam Link は、自分でもアイトラッキングを OSC で送れます（`LeftEyeX`、`LeftEyeLid` など）。目のカメラを準備すると、frameeyeosc はそれではできないことも送ります。
+
+- **見開き**: Steam Link が送るのは目の閉じ具合だけで、見開きは送りません（`WidenToggle` はいつも 1）。SteamOS 0.4.3 では Valve の開き具合も普段の開きで頭打ちになります。frameeyeosc は目のカメラの映像から見開きを読み取ります
+- **瞳孔の大きさ**: 目のカメラの映像から測るので、明るいところではアバターの瞳孔が小さく、暗いところでは大きくなります（`v2/PupilDilation`、`PupilDiameter*`。`pupil_bits` でビットでも送れます）
+- **目を細めた動き**: ユーザー校正（しなくてもよい）のあとに送ります（`v2/EyeSquint*`）
+
+動画は、目のカメラを使っているときの VRChat のアバターの目です。準備のしかたは [目のカメラ](#目のカメラ) を見てください。
+
 ## 必要なもの
 
 - 開発者モードを有効にして SSH で入れる Steam Frame（設定 → システム → 開発者モードを有効化、開発者の項目でパスワードを設定）。SSH を有効にすると、同じネットワークにいてパスワードを知っている人は誰でもヘッドセットに入れるので、推測されにくいパスワードにしてください

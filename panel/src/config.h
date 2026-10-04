@@ -55,6 +55,15 @@ constexpr const char* kEyeTrackingActive = "eye_tracking_active";
 constexpr const char* kSteamlinkParams = "steamlink_params";
 /** VRChat output: also send VRChat's own eye tracking input (/tracking/eye/*), for avatars without VRCFT parameters. */
 constexpr const char* kNativeEyes = "native_eyes";
+/** LiveLink output: send the eye cameras' pupils straight to VRChat (the LiveLink module has none; default on). */
+constexpr const char* kPupilsToVrchat = "pupils_to_vrchat";
+/**
+ * Wherever the pupils go to VRChat: also send the dilation as this many bool parameters (PupilDilation1, 2, 4, 8) for
+ * avatars that take it bit-packed; 0 (the default) sends the float only.
+ */
+constexpr const char* kPupilBits = "pupil_bits";
+/** Eyelids (and squint) from the eye cameras where eyecam-rec reads them live and is calibrated (default on). */
+constexpr const char* kCameraLids = "camera_lids";
 constexpr const char* kRaw = "raw";
 constexpr const char* kGazeMinCutoff = "gaze_min_cutoff";
 constexpr const char* kGazeBeta = "gaze_beta";
@@ -244,3 +253,11 @@ double stepValue(const SettingSpec& spec, double current, int direction, double 
  * @return the rounded value
  */
 double roundToDecimals(const SettingSpec& spec, double value);
+
+/**
+ * A value onto a setting's step grid, within its range (a slider's position).
+ * @param spec the setting
+ * @param value the value
+ * @return the value on the grid
+ */
+double snapValue(const SettingSpec& spec, double value);

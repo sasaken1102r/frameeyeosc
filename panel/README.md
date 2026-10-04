@@ -25,12 +25,17 @@ frameeyeosc の設定を、Steam Frame を被ったまま SteamVR のダッシ�
 | タブ | 項目 |
 |---|---|
 | 基本 | 送信（送る / 止める）、送り先（3 枚のカード: VRChat に直接 / VRCFT（LiveLink）「おすすめ」 / VRCFT（ETVR）。それぞれ 3 行で 見開き・同期・VRCFT が要るか。選んだカードは太い枠と左上の ✓、コマンドで固定中は灰色）、言語（日本語 / English）、SteamVR と一緒に起動（オン / オフ）、すべて既定に戻す、アプリを終了 |
-| 送り方 | 送り先の PC（自動 / 今の相手で固定 / IP を入力。手で決めた host は 3 つ目に「手動 192.168.1.20」と出る）、ポート（− / ＋、既定に戻す。ヒントに送り先の種類の既定）。VRChat に直接のときだけ パラメーター名の頭（/FT / なし、送るアドレスの例）、EyeTrackingActive の型（Bool / Float / 送らない、`eye_tracking_active`）、Steam Link の名前も送る（オン / オフ、`steamlink_params`。Steam Link の OSC 向けのアバター用。送るアドレスの例に「頭はつけない」）、VRChat 標準の目も動かす（オン / オフ、`native_eyes`。VRCFT 用の値がないアバター用）。LiveLink / ETVR のときは「PC の VRCFT で準備すること」の 3 手順と注記 |
+| 送り方 | 送り先の PC（自動 / 今の相手で固定 / IP を入力。手で決めた host は 3 つ目に「手動 192.168.1.20」と出る）、ポート（− / ＋、既定に戻す。ヒントに送り先の種類の既定）。VRChat に直接のときだけ パラメーター名の頭（/FT / なし、送るアドレスの例）、EyeTrackingActive の型（Bool / Float / 送らない、`eye_tracking_active`）、Steam Link の名前も送る（オン / オフ、`steamlink_params`。Steam Link の OSC 向けのアバター用。送るアドレスの例に「頭はつけない」）、VRChat 標準の目も動かす（オン / オフ、`native_eyes`。VRCFT 用の値がないアバター用）。LiveLink / ETVR のときは「PC の VRCFT で準備すること」の 3 手順と注記。目のカメラがあるときは、LiveLink なら「瞳孔は VRChat に直接送る」（`pupils_to_vrchat`）、VRChat に直接と LiveLink なら「瞳孔の受け取り方」（小数 / 1 / 2 / 3 / 4、`pupil_bits`。PupilDilation1・2・4・8 の bool も送る個数。瞳孔を直接送っていないとき＝LiveLink で `pupils_to_vrchat` がオフか `camera_lids` がオフのときは灰色で押せない） |
 | 視線 | スムージング（オン / オフ）、なめらかさ（弱 / 中 / 強）、細かく変える（止まっている時・速い動き・変化の感度の 3 つを − / ＋）、見つめている時の遊び（角度も表示）、まばたき中は視線を止める（オン / オフとしきい値）、左右の目を別々に動かす（Frame が片目だけで追っているあいだは、ヒントが「片目だけ追跡中は両目が同じ向き」になる）、不確かな視線を使わない（オン / オフと上限）、一瞬の途切れを消す（オン / オフ） |
 | 目を合わせる | ［目を合わせる］（合わせたあとは［もう一度合わせる］）と小さい［正面だけ合わせ直す］（「被ったとき」が正面と傾きのときは［正面と傾きを合わせ直す］）、「被ったとき」の行（何もしない / 正面だけ / 正面と傾き、`auto_recenter`。既定は正面だけ）、今どうなっているか（始め方・ダッシュボードを閉じると始まります［やめる］・測っています・結果［元に戻す］・失敗の理由）、［♪ 音を鳴らす: オン / オフ］、「細かく直す」（開閉。［視線 / まぶた］で切り替え。視線: 正面の位置・動く幅、真下で左右を止める角度、目ごとの左右の正面の位置・動く幅。まぶた: 目ごとの読んだ値 閉じ / 上 / 正面 / 下 の − / ＋） |
-| まぶた | 自動キャリブレーション（オン / オフ、覚えた値、覚えている最中か、リセット。目を合わせたあとは代わりに「見開きやすさ」: しない / 控えめ / ふつう / 出やすい、`lid_widen`）、左右の倍率（自動 / 固定と左右の − / ＋。目を合わせた目では合わせたあとの微調整で、ヒントも「目を合わせたあとの微調整」になる）、生の値の棒と 4 つの目盛りの線、目盛り ①閉じ ②普通 ③見開き始め ④見開き最大 の − / ＋（目を合わせたあとは 1 行の説明か「左目は右目に合わせて見開きます」と［細かく直す］にたたみ（ふつうに開いた目が 1.0 と読まれる SteamOS では、その 1 行が「この SteamOS では開き具合が 1.0 で頭打ちのため、見開きは届きません」になる。状態ファイルの `openness_saturated`。目を合わせていない目では、目盛りの見出しの代わりに同じ 1 行）、棒だけ出す。開くと③④は灰色。`--lid-marks` で開いて、`--fake-widen off|low|normal|high` で見開きやすさを変えて描く）、左右をそろえる強さ、まばたきを届ける（閉じたまま保つ ms と両目で閉じるしきい値の − / ＋）、まぶたのなめらかさ |
-| 詳細 | バージョン（今の版と最後に確かめた時刻、［今すぐ確かめる］／新しい版があれば［更新する］、確認を 1 回はさむ。更新に失敗したら［もう一度］［閉じる］。その下に「起動時と 1 日 1 回確認 オン / オフ」のチップ、押すと切り替わる。新しい版があるときは、さらにその下にその版の要約を 3 行まで。日本語の画面ではリリースの「日本語:」の段落、無ければ英語の要約。要約の無いリリースなら何も出さない）、「調べる道具」: 視線の点を表示（デバッグ用、オン / オフ）と点の距離（0.3〜2.0 m、0.1 m 刻み。1.2 m くらいより奥だと開いたダッシュボードに隠れる。点がオフの間は灰色）、目のログ、「ファイルと本体」（小さい字）: 設定ファイル・キャリブレーション・状態ファイルの場所、本体の PID と動いている時間、コマンドで固定中の項目と今の値 |
+| まぶた | 見た目の調整を全部ここに（案E）。上から: 「いまのまぶた」の帯（目のカメラ（左・右）/ 目のカメラ（左）＋ Valve（右）/ Valve の値。右に「切り替えは「目のカメラ」タブで」か「目のカメラは準備してないよ」）、「見開きの出やすさ」のスライダー 1 本（鈍い ↔ 敏感。両目がカメラなら eyecam-rec の `widen_sensitivity` を `set widen_sensitivity` で送る。片目だけカメラなら同じく感度を送り、Valve の目には近い `lid_widen` の段階も一緒に書く。Valve の値なら `lid_widen` の 4 段階（しない / 控えめ / ふつう / 出やすい）で、押した所に近い止まり位置へ。目を合わせていない目があると下に「目を合わせていない目は、細かく直すの目盛りで決まるよ」。ふつうに開いた目が 1.0 と読まれる SteamOS（`openness_saturated`）でカメラが無いときは灰色にして、「Valve の値だけだと見開きが出ない」の箱と［目のカメラへ］）、まばたきを届ける（保持 ms の − / ＋）、まばたきを両目でそろえる（`blink_sync_below` の − / ＋、0 でオフ）、まぶたのなめらかさ（弱 / 中 / 強。中 = 本体の既定値、どれにも合わなければカスタム）、左右をそろえる強さ（`lid_sync` のスライダー、0.05 刻み）、そのほか［細かく直す ▼］。開くと行の代わりに、自動キャリブレーション（目を合わせていない目で、カメラでないとき）、左右の倍率、生の値の棒と 4 つの目盛り（③④は目を合わせた目とカメラのときは灰色）、なめらかさの 2 つの値（止まっている時・速い動き）。`--lid-marks` で開いて描く |
+| 目のカメラ | eyecam-rec が動いているあいだだけ出る（「詳細」の前。出る条件は下の「目の撮影」と同じ）。準備が済むまでは準備のチェックリスト（いまの段階は、満たしていない最初のもの。毎回 status.json とパスワードの確認だけで決める）: ① パスワードを決める（SteamOS にパスワードが無いと分かっているときだけ。`steamos-passwd --has-password` を裏で数秒おきに確かめる。読むだけ。［Konsole で passwd を開く］）② 道具を入れる（［Konsole で開く］で `sudo $HOME/.local/lib/eyecam/install_grab.sh` が入力済みの Konsole を開くだけ。Enter とパスワードは本人で、パネルは sudo も passwd も実行しない。`auto_grab` が ok / trying / waiting_tracker / failed: … か、バッファを持っていれば入っている扱い。`auto_grab` が `too_old`（eyecam の安全のための下限より古く、起動されない）なら入っていない扱い。`grab_outdated` が true（更新で新しい道具が届いた）か too_old なら、見出しを「道具を入れ直す」、その下に「道具が新しくなったよ、入れ直してね」）③ 目の動きを覚える（両目が見えているときだけ［覚えはじめる］で `calib wear`。18 秒の間、ステップのチップ・残り秒・［やめる］をカードの中に出す。見開きだけ取れなかったら［このまま進む］［もう一度（18秒）］）④ 完了（「使いはじめる」）。セットアップ済みでも道具が無くなれば ② に戻り、直れば校正し直さずにふだんの画面へ。道具が古いだけなら ② には戻さず、ふだんの画面のいちばん上にお知らせのカードと［Konsole で開く］（`grab_outdated`: 「道具が新しくなったよ、入れ直してね（今の道具のままでも動くよ）」、`too_old`: 赤いカードで「安全のため、道具を入れ直してね。入れ直すまでカメラは止まってて、まぶたは Valve の値だけで送ってるよ」）、左の列にも同じお知らせ（押すとこのタブ）。eyecam-rec が言わなくなれば自然に消える（`eyecam::toolState` / `toolNotice`。`--fake-eyecam …:outdated`、`waiting:auto=too_old:setup:outdated` で描く）。左の列には、準備が済むまで「次にやること・目のカメラ」、済んだ直後に緑の「目のカメラ：準備できたよ」。済んだあとのふだんの画面: いまの状態（両目・片目・Valve の値とその理由）、カメラで瞼を取る（`camera_lids`）、違和感があるときの［目のカメラの校正（18秒）］、細めも送るときの［ユーザー校正（最初に 1 回）］（どちらも ③ と同じカードで進み、終わると結果のカード）、こんなときは。見開きの出やすさは「まぶた」タブ。`--fake-eyecam` と `--fake-password`、`--fake-camera` で描く |
+| 詳細 | バージョン（今の版と最後に確かめた時刻、［今すぐ確かめる］／新しい版があれば［更新する］、確認を 1 回はさむ。更新に失敗したら［もう一度］［閉じる］。その下に「起動時と 1 日 1 回確認 オン / オフ」のチップ、押すと切り替わる。新しい版があるときは、さらにその下にその版の要約を 3 行まで。日本語の画面ではリリースの「日本語:」の段落、無ければ英語の要約。要約の無いリリースなら何も出さない）、［更新履歴］（バージョンの見出しの下、チップの左。下を参照）、「調べる道具」: 視線の点を表示（デバッグ用、オン / オフ）と点の距離（0.3〜2.0 m、0.1 m 刻み。1.2 m くらいより奥だと開いたダッシュボードに隠れる。点がオフの間は灰色）、目のログ、「ファイルと本体」（小さい字）: 設定ファイル・キャリブレーション・状態ファイルの場所、本体の PID と動いている時間、コマンドで固定中の項目と今の値。eyecam-rec が動いているあいだは「開発用」の「目の撮影」（［撮影開始］で下の光の注意。ボタンの右に「目の映像が ~/eyecam/rec_日時/ に残るよ（1 回で約 2.5 GB）」） |
 
+- 更新履歴（`changelog.{h,cpp}`）: 詳細タブの中身と入れ替わって開く。上に「更新履歴」と［閉じる］、その下に版ごとの行を新しい順に並べる。たたんだ行は「0.7.1 · 10/3」とその版の要約を 1 行（はみ出す分は …。要約の段落が無い版は最初の項目）。開くのは 1 行だけで、別の行を押すと前の行は閉じ、開いた行をもう一度押すと閉じる。開いた行は要約の全文と項目を折り返して出す。開いたときは入っている版の行（変更履歴に無ければいちばん新しい版）が開いている。ほかのタブを押すと閉じる
+  - 読むもの: 英語の画面は `CHANGELOG.md`、日本語の画面は `CHANGELOG.ja.md`（その版が無ければ `CHANGELOG.md` の英語）。どちらも `## X.Y.Z (YYYY-MM-DD)` の節だけを読み（`## Unreleased` などは飛ばす）、段落と `- ` の項目に分け、バッククォート・リンク（文字だけ残す）・太字を外す。英語は「日本語:」で始まる段落を飛ばした最初の段落を要約にし、項目は最初の文だけ（最初の「. 」か「。」まで。e.g. / i.e. / vs. では切らない）を 2 行まで。日本語は書いてあるまま
+  - 探す場所（最初に `CHANGELOG.md` があったフォルダから両方を読む。日本語の画面で `CHANGELOG.md` がどこにも無ければ `CHANGELOG.ja.md` だけのフォルダ）: パネルの実行ファイルと同じフォルダ（配布の tar.gz）→ `…/panel/build` から動かしたときはそのリポジトリ → `~/.local/share/frameeyeosc/`（`install.sh` と `contrib/install-panel.sh` が置く）。開くたびに読み直す。見つからなければ「更新履歴が見つかりません」
+  - スクロール: 開いている間だけ、パネルのオーバーレイに `VROverlayFlags_SendVRSmoothScrollEvents` を付け（閉じたら外す）、`VREvent_ScrollSmooth`（と、来たときは `VREvent_ScrollDiscrete`）でスクロールする。`ydelta` 1 あたり 120 px（Discrete は 1 段 80 px）、正の値が上へ。速さと向きは実機でまだ確かめていないので、最初の 12 回は `[VR] scroll smooth: ydelta …` とログに出す。右の ▲ / ▼ は 1 回で見えている高さの 1/3。スクロールは中身の範囲で止まり、行を開いたときはその行（入りきらなければ見出し）が見える位置まで動く。行は見えている範囲で切り取り、押せるのも見えている部分だけ
 - まぶたタブの棒は、目を開け閉めしながら目盛りの線を今の値に合わせるためのもの。棒の範囲は 0〜1.2
 - 目盛りは「閉じ < 普通 ≦ 見開き始め ≦ 見開き最大」の順を崩さないよう、− / ＋ で動ける範囲を制限している
 - なめらかさの 弱 / 中 / 強 は、視線の 3 つの値の組み合わせ（中 = 本体の既定値）
@@ -63,6 +68,7 @@ frameeyeosc の設定を、Steam Frame を被ったまま SteamVR のダッシ�
 | 設定 `config.json` | `$XDG_CONFIG_HOME/frameeyeosc/config.json`（無ければ `~/.config/frameeyeosc/config.json`） | 読んで書く（書くのはパネルだけ） |
 | 状態 `status.json` | `$XDG_RUNTIME_DIR/frameeyeosc/status.json`（無ければ `/run/user/<uid>/frameeyeosc/status.json`） | 読むだけ |
 | 更新 | `~/.local/share/frameeyeosc/frame-update.sh`、`~/.cache/frameeyeosc/`（`update-check.json`・`update-state.json`・`update.log`） | スクリプトを動かし、状態ファイルを読む |
+| 変更履歴 `CHANGELOG.md`・`CHANGELOG.ja.md` | パネルの隣、開発ビルドならリポジトリ、`~/.local/share/frameeyeosc/`（上の「更新履歴」を参照） | 更新履歴を開いたときに読むだけ |
 
 - 書き方: 同じフォルダの `config.json.tmp` に書く → `fsync` → `rename`（→ フォルダも `fsync`）。読み込んだ JSON の中身を書き換えて書き戻すので、パネルが知らないキーも消えない。ファイルが無いときは、全部の項目を既定値で書いたファイルを作る
 - 設定ファイルが壊れた JSON のときは、ふつうのボタンでは書かない（中身を失わないため）。「設定ファイルが壊れています」と赤で出る。「すべて既定に戻す」だけは、壊れたファイルを `config.json.broken` に写してから既定値で作り直す
@@ -116,6 +122,8 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 ./build/frameeyeosc-panel --dump-png out/t_2026-09-27_00-00-00.png --config /tmp/t/config.json --click 883,148
 ./build/frameeyeosc-panel --thumbnail-png out/thumbnail_2026-09-27_00-00-00.png --thumbnail-size 256
 ./build/frameeyeosc-panel --dump-png out/update_2026-09-27_00-00-00.png --fake-update available --tab advanced
+./build/frameeyeosc-panel --dump-png out/history_2026-10-03_00-00-00.png --fake --history --language en   # 更新履歴（入っている版が開く）
+./build/frameeyeosc-panel --dump-png out/history_2026-10-03_00-00-01.png --fake --history-open 0.5.0 --history-scroll 200
 ./build/frameeyeosc-panel --dump-png out/fit_2026-09-28_00-00-00.png --tab eyefit --fake-fit fitted --fit-details   # 目を合わせるタブの各状態
 ./build/frameeyeosc-panel --dump-png out/eyes_2026-09-28_00-00-00.png --tab gaze --fake-independent   # 左の列の視線を目ごとに
 ./build/frameeyeosc-panel --target-png out/target_2026-09-28_00-00-00.png --target-style close --target-seconds 2 --target-bench 900
@@ -123,6 +131,11 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 ./build/gaze-dots-test                           # 視線の点のデータ・位置・ソケットのテスト（OpenVR なし）
 ./build/text-test                                # テンキーで打った送り先の IP の確認と、目合わせの失敗の文（日本語・英語）のテスト
 ./build/sounds-test                              # 目合わせの音の WAV と、どの場面でどの音かのテスト（鳴らさない）
+./build/changelog-test                           # 更新履歴の読み方（英語と日本語の形、「日本語:」を飛ばす、最初の文、マークダウン、英語で補う）のテスト
+./build/eyecam-test                              # 目の撮影タブ（状態ファイル、出す・消す条件、指示の文、全面の光とそのフェード、光の注意と送るコマンド、/tmp の偽ソケット）のテスト
+./build/frameeyeosc-panel --dump-png out/eyecam_2026-10-03_00-00-00.png --fake-eyecam recording:widen --tab eyecam
+./build/frameeyeosc-panel --dump-png out/eyecam-confirm_2026-10-04_00-00-00.png --fake-eyecam confirm --tab eyecam
+./build/frameeyeosc-panel --eyecam-fill-png out/fill_2026-10-03_00-00-00.png --eyecam-fill dark --language en
 ./build/frameeyeosc-panel --play-sound open      # 音を 1 つ鳴らして聞く（pop / pip / buzz / tick / open / done / fail）
 ./build/frameeyeosc-panel --dot-png out/dot_2026-09-28_00-00-00.png --dot-kind left
 ./build/frameeyeosc-panel --version               # 版（Cargo.toml から）
@@ -135,9 +148,23 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 - `--fake` か `--fake-*` を付けると、ファイルを読まずに作り物の状態で描く: `--fake-not-running`・`--fake-paused`・`--fake-no-tracking`・`--fake-etvr`・`--fake-livelink`・`--fake-fixed`・`--fake-target-null`・`--fake-locked`・`--fake-config-error`・`--fake-source-error`・`--fake-dominant-eye left|right`・`--fake-openness-saturated`・`--fake-broken`・`--fake-write-error`・`--fake-custom`・`--fake-prompt vrchat|etvr|livelink`・`--fake-autostart on|off|missing|unknown`。`--preview-quit`・`--preview-reset` で「もう一度押すと〜」の見た目
 - 更新の見た目は `--fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed`。`--preview-update-prompt`（`--fake-update available` と一緒に）で更新の確認。`--fake-update-notes both|en|long`（`available`・`manual` と一緒に）で新しい版の要約: 英語と日本語、英語だけ、どちらも 300 文字の長さ
 - `--update-live` を付けると本物の更新の仕組みを動かす: 最初に確認し、`--click` のあとは始まった確認や更新が終わるまで待ってから描く。更新は本当に行われるので、偽の GitHub（`FRAME_UPDATE_API_URL`・`FRAME_UPDATE_ALLOW_INSECURE=1`）と別の `HOME` で試す
+- 更新履歴は `--history` で開き、`--history-open 版` でその版の行を開き、`--history-scroll px` でスクロールして描く（どちらも `--history` を含む。スクロールは中身の範囲に収める）。変更履歴は上の場所から探す。`--changelog-dir DIR` でそのフォルダだけを見る（無いフォルダなら「見つかりません」の見た目）。`--fake` とも一緒に使える
 - `--click X,Y`（何回でも）は、描く前にその座標を押したことにする。当たり判定と設定ファイルの書き込みをヘッドセットなしで確かめる用（`--fake` とは一緒に使えない。`--config` の設定ファイルを本当に書き換えるので、試すときは別の場所を指定する）
+- 目の撮影タブ（下）は `--fake-eyecam waiting|idle|confirm|searching|recording:ラベル|error` と `--tab eyecam` で描く（`confirm` は idle で光の注意を開いたところ。`recording:ラベル:unlocked` でカメラが目を見失ったとき＝「HMD をかぶってください」、`recording:ラベル:nolight` で光なしのプロトコル＝「光なし」。ラベルは lead_in・normal・widen・close・squint・look_up・look_down・bright・dark・end。recording は 9 ステップ・120 秒のうちのそのステップの数字が入る。error は失敗した返事も出す）。`--eyecam-fill-png PATH`（`--eyecam-fill bright|dark`、`--language`）で全面の光の画像。`--eyecam-dir DIR` で eyecam-rec のフォルダ（`status.json` と `ctl.sock`）を別の場所にする。`--fake` なしの `--dump-png` はそこを読み、`--click` で［撮影開始］→［光ありで始める］／［光なしで始める］や［中止］を押すとそのソケットに本当に送って返事を待つ（試すときは一時フォルダに偽の `status.json` とソケットを置く。本物の `/run/user/1000/eyecam/` には何も作らない）
 - `--probe` は Background 型でつなぐだけで、オーバーレイも Vulkan も作らない。`FindOverlay`・名前・幅・閉じるボタン・表示中か・`GetOverlayTextureSize` を出す
 - `contrib/icons/frameeyeosc-panel-{48,128,256}.png` は `--thumbnail-png` で書き出したもの（ダッシュボードのサムネイルと同じ絵）
+
+### 目の撮影（開発用、eyecam-rec）
+
+目のカメラの録画ツール eyecam-rec（`tools/eyecam`）が動いている間だけ出る。今は自分のタブではなく、「詳細」タブの「開発用」の行と、「目のカメラ」タブ（上の表）に分かれている。下の「タブ」は、その行と撮影中の画面のこと。
+
+- **出る条件**: `$XDG_RUNTIME_DIR/eyecam/status.json`（無ければ `/run/user/<uid>/eyecam/`）があり、`state` が `stopped` でなく、5 秒以内に書かれている（ファイルの更新時刻）。消えたら、このタブを見ていたときは「基本」に戻る。読むのは動いている間 0.1 秒おき、それ以外は 1 秒に 1 回（ファイルが無ければ開けないだけ）。ダッシュボードが閉じていても読む
+- **状態ごとの表示**（大きな字。ヘッドセットの中で読む）: `waiting_fds`（道具待ち）はここには出さず、目のカメラタブが扱う（道具が無ければ準備の ② で、一度だけ実行するコマンド `sudo $HOME/.local/lib/eyecam/install_grab.sh` を入力済みの Konsole を開くだけ。パネルは sudo も eyecam-grab も実行しない）。`idle` は大きな［撮影開始］。`searching` は「目を探しています…」と左右の fps と［中止］。`recording` はそのステップの指示をとても大きく（普通に開けて・見開いて！・目を閉じて・目を細めて・上を見て・下を見て・明るい画面を見て・暗い画面を見て・おわり）、ステップの残り秒、「ステップ i / n」（`step_index` は 0 から数えるものとして +1 で出す。`protocol` が `widen_nolight` のときはその横に「光なし」）、全体の進み具合のバー（`elapsed_s / total_s`）、fps、［中止］。`error` はメッセージと［もう一度撮影］。`message` は空でなければいつも下に出し、送ったコマンドの返事が `err` ならそれも赤で出す。ステップの音は eyecam-rec が鳴らすので、パネルは鳴らさない
+- **光の注意**: ［撮影開始］（と `error` の［もう一度撮影］）はすぐには始めず、タブの中に赤い「光の注意」（警告の三角と赤い枠）を出す: 「明るい画面・暗い画面の段では、視界全体が白・黒に切り替わります。光過敏性てんかんの心配がある人は、光なしで撮ってください。途中で気分が悪くなったら、［中止］を押して HMD を外してください。」。箱の下に「撮影すると ~/eyecam/rec_日時/ に目の映像が残るよ（1 回で約 2.5 GB）。いらなくなったら消してね」。ボタンは［光ありで始める］（`start`）・［光なしで始める］（`start widen_nolight`。明るい・暗いの段が無いプロトコル）・［やめる］（元の画面に戻る）。どちらの始めるも同じ見た目で、どちらかを勧めない。開いたときの状態（idle か error）から変わったとき、eyecam-rec のタブが消えたとき、別のタブを選んだとき、ダッシュボードを閉じたときは閉じる（`eyecam::StartConfirm`）
+- **操作**: 光の注意の始めるボタンは `ctl.sock`（unix stream）に `start` か `start widen_nolight`、［中止］は `stop` を 1 行送る。ノンブロッキングでつないで送り、返事（`ok` か `err 理由`）はループで読む。2 秒で返事が無ければあきらめる。つながらないときもその理由を出す。描画のループは待たない
+- **全面の光**: `recording` で `step_label` が `bright` か `dark` の間だけ、ダッシュボードとは別のオーバーレイ（`sasaken.frameeyeosc-panel.eyecam-fill`）を出す。ヘッドセットに固定（`SetOverlayTransformTrackedDeviceRelative`、HMD）で正面 0.9 m、幅 4 m の正方形（左右・上下とも約 131°）、真っ白か真っ黒で、真ん中に指示を薄く出す（1024 px 四方、ステップか言語が変わったときだけ描き直す）
+  - **フェード**: 出るときは `SetOverlayAlpha` を 0 から 1 へ 0.7 秒かけて上げる（0 にしてから `ShowOverlay`）。録画が続いたままステップが変わったときは 0.5 秒かけて 0 へ下げてから隠す。明るい↔暗いが続くときも白から黒へ一気に変えず、今の光を 0.5 秒で消してから次の光を 0.7 秒で出す。アルファは前の周からの経過時間で動かす（`eyecam::stepLight`。1 回に進める時間は 0.1 秒まで、なのでループが詰まっても一気に明るくならない）。フェードの間はループを表示のフレームごと（約 90 Hz）に回す
+  - **すぐ隠す**: 状態ファイルが 1 秒より古い・タブが消えた・録画していない（止まった・失敗した・idle に戻った）・［中止］を送った（返事を待たずに）のどれかなら、フェードせずにその周で隠す（`eyecam::hideLightAtOnce`）。パネルの終了時（どの終わり方でも）は真っ先に隠し、終了処理で `DestroyOverlay` する。プロセスが落ちたときは SteamVR が消す
 
 ## ＋（プログラムを起動）から使う
 
@@ -152,6 +179,7 @@ sh contrib/install-panel.sh
 - `~/.local/bin/frameeyeosc-panel`（systemd のサービスもこれを使う）
 - `~/.local/share/applications/frameeyeosc-panel.desktop`（`Exec` を実行ファイルの絶対パスにしたもの）
 - `~/.local/share/icons/hicolor/{48x48,128x128,256x256}/apps/frameeyeosc-panel.png`
+- `~/.local/share/frameeyeosc/CHANGELOG.md`・`CHANGELOG.ja.md`（リポジトリにあれば。更新履歴が読む）
 - `~/.config/systemd/user/frameeyeosc-panel.service`（置いて `daemon-reload` するだけ。enable はしない）
 
 常駐を終わらせたいときは、ダッシュボードの「Eye」アイコンにホバーして「閉じる」、またはパネルの「アプリを終了」（どちらも終了コード 3）。
@@ -186,11 +214,15 @@ systemctl --user daemon-reload
 
 ## 守っていること
 
+- eyecam-rec の `status.json`（64 KB まで）と `ctl.sock` の返事の文字列は、描く前に正しい UTF-8 にする（壊れたバイトは U+FFFD。切るときは文字の境目で）。eyecam-rec に送るのは決まったコマンドだけ（`start`、`stop`、`calib wear` / `calib user`、`set widen_sensitivity 0.00`〜`1.00`）。`live on` / `live off`（camera_lids に合わせる）は本体の frameeyeosc が送る
 - 書くのは設定ファイル（と、壊れていたときの `config.json.broken`）だけ。ほかに作るのは、視線の点がオンの間の `gaze-dots.sock`（状態ファイルのフォルダ、閉じるときに消す）と、起動時に書く目合わせの音 `sounds/*.wav`（状態ファイルのフォルダ、7 つ）だけ。アイトラッキングの共有メモリ・カメラ・GPIO・sysfs・`/persist` には触らない。sudo を使わない
-- 外部コマンドは `systemctl --user` と `/bin/sh ~/.local/share/frameeyeosc/frame-update.sh`、目を合わせるときの音の `pw-play`（無ければ `paplay`、`aplay`。どれも無ければ鳴らさない。`/usr/bin`・`/bin` を先に探し、PATH の空や相対のフォルダは使わない）だけ。音は `posix_spawn` で出力を捨てて起動し、待たずにループで片付ける（同時に 2 つまで）。音量や PipeWire / WirePlumber の設定には触らない。どちらも固定の引数で呼び、コマンドの文字列を組み立ててシェルに渡すことはしない。`systemctl` は 2 秒（enable / disable は 5 秒）、更新の確認は 90 秒で終わらなければ SIGKILL、どの場合も `waitpid` で片付ける
+- 外部コマンドは `systemctl --user` と `/bin/sh ~/.local/share/frameeyeosc/frame-update.sh`、目を合わせるときの音の `pw-play`（無ければ `paplay`、`aplay`。どれも無ければ鳴らさない。`/usr/bin`・`/bin` を先に探し、PATH の空や相対のフォルダは使わない）、目のカメラの準備の 3 つだけ:
+  - `konsole -e bash -c '<script>'`（準備の ①・② のボタンを押したときだけ）。`<script>` はコードの中の定数（`setup_tools::kInstallCommand` = `sudo $HOME/.local/lib/eyecam/install_grab.sh`、`kPasswdCommand` = `passwd`）と、パネルの言語の案内（これも定数）だけから組み立てる。道具を入れるほうは、プロンプトの前に `/usr/bin/sha256sum "$HOME/.local/lib/eyecam/eyecam-grab"` で入れるファイルの sha256 を出す（リリースノートの値と比べてもらう）。状態ファイルや設定から来た文字列は入らない。Konsole は入力済みで開くだけで、Enter とパスワードは本人（パネルは sudo も passwd も実行しない）。`systemd-run --user --collect` で別の一時ユニットとして起動し（パネルが再起動しても閉じない。DISPLAY などの変数だけ `-E` で渡す）、無ければ直接。どちらも stdin / stdout / stderr を捨て、3 以上の fd は渡さず、待たない
+  - `steamos-passwd --has-password`（読むだけ。パネルがダッシュボードに出ていて準備が ①・② のあいだだけ。答えが同じあいだは 4 → 30 秒と間をあける。5 秒で答えなければ SIGKILL）
+  - `flatpak run org.chromium.Chromium <動画の URL>`（準備の動画のボタン。URL がまだ無いので、今は出さず、起動もしない）音は `posix_spawn` で出力を捨てて起動し、待たずにループで片付ける（同時に 2 つまで）。音量や PipeWire / WirePlumber の設定には触らない。どちらも固定の引数で呼び、コマンドの文字列を組み立ててシェルに渡すことはしない。`systemctl` は 2 秒（enable / disable は 5 秒）、更新の確認は 90 秒で終わらなければ SIGKILL、どの場合も `waitpid` で片付ける
 - 更新のスクリプトが書くのは `~/.cache/frameeyeosc/` だけ。新しい版を入れるのは［更新する］を押して確認したときだけ
 - `systemctl` はワーカースレッドで実行する（ポインターへの応答 33 ms おきを止めない）。SIGTERM・SIGINT・SIGUSR1 はメインスレッドで受ける
-- パネルを閉じている間は描かない。読むのは更新の状態ファイル（`~/.cache/frameeyeosc/update-state.json`、1 秒に 2 回ほど）だけで、実行するコマンドは更新の確認（起動時と 1 時間ごと）だけ。ほかはイベントを 0.25 秒おきに見るだけ。例外は自分で始めた目合わせの間だけ（上を参照）
+- パネルを閉じている間は描かない。読むのは更新の状態ファイル（`~/.cache/frameeyeosc/update-state.json`、1 秒に 2 回ほど）と eyecam-rec の `status.json`（1 秒に 1 回。動いている間は 0.1 秒おき）だけで、実行するコマンドは更新の確認（起動時と 1 時間ごと）だけ。ほかはイベントを 0.25 秒おきに見るだけ。例外は自分で始めた目合わせの間だけ（上を参照）
 - 目合わせの目印は、ダッシュボードが閉じている間だけ出す。ダッシュボードが開いたら、その場で隠して止める
 
 負荷（2026-09-27 に Frame で実測、`/proc/<pid>/stat` と `/proc/<pid>/io`）:
@@ -224,6 +256,7 @@ systemctl --user daemon-reload
 | `src/model.*` | 表示に使う値の組み立て（コマンドで固定中なら `effective`）、なめらかさの 3 段階、おすすめ設定、目盛りの順番 |
 | `src/config.*` | `config.json` の項目の表（型・既定値・範囲・刻み）、読み書き（一時ファイル → fsync → rename） |
 | `src/status.*` | `status.json` の読み込みと、本体が動いているかの判断 |
+| `src/eyecam.*` | 目の撮影タブ（開発用）: eyecam-rec の `status.json` の読み込み、タブと全面の光を出す条件と光のフェード、光の注意（始める前の確認と送るコマンド）、指示の文、`ctl.sock` への送信 |
 | `src/autostart.*` | `systemctl --user` で自動起動を読む・切り替えるワーカースレッド |
 | `src/command.*` | fork＋execvp・パイプ・タイムアウト・waitpid |
 | `src/theme.*` | 色の定義と WCAG のコントラスト比（`--contrast-report`） |

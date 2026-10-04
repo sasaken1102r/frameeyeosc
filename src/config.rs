@@ -24,6 +24,8 @@ const GAZE_ROLL_RANGE: std::ops::RangeInclusive<f32> = -20.0..=20.0;
 const LID_FIT_MIN_RANGE: f32 = 0.1;
 // A gaze capture's target name is only echoed back, so it is kept short.
 const MAX_TARGET_CHARS: usize = 16;
+// The most bits pupil_bits sends the pupil dilation as (PupilDilation1 .. PupilDilation8).
+pub const MAX_PUPIL_BITS: u8 = 4;
 // A gaze capture lasts this long (sample time) unless the request says otherwise...
 pub const CAPTURE_SECONDS: f64 = 2.0;
 // ...within these limits...
@@ -102,6 +104,17 @@ pub struct Settings {
     /// In VRChat mode, also send VRChat's own eye tracking input (/tracking/eye/*), which moves the eyes of
     /// avatars without VRCFT parameters.
     pub native_eyes: bool,
+    /// Use eyecam-rec's eye-camera values (see eyecam_live) while they are fresh: each eye's eyelid from relaxed open
+    /// up (widening) and squint once the camera is calibrated for this wear, and its pupil. Closing stays the eye
+    /// server's.
+    pub camera_lids: bool,
+    /// In LiveLink mode, also send the eye camera's pupils (only those) straight to VRChat over OSC, on port 9000 of
+    /// the LiveLink target's host: VRCFT's LiveLink module has no pupils. Ignored by the other outputs.
+    pub pupils_to_vrchat: bool,
+    /// How the pupil dilation goes to VRChat besides the float: 0 = only the float, 1..=4 = also as that many bool
+    /// parameters (PupilDilation1, 2, 4, 8), for avatars that take it bit-packed the way VRCFT does. One value for
+    /// every avatar: the headset can't see which parameters the avatar has.
+    pub pupil_bits: u8,
     /// How easily a fitted eye widens.
     pub lid_widen: Widen,
     /// The settings file has no `lid_widen` (written by 0.5.x or earlier, whose lid_scale_* did nothing for fitted
@@ -182,6 +195,9 @@ impl Default for Settings {
             eye_tracking_active: ActiveType::Bool,
             steamlink_params: false,
             native_eyes: false,
+            camera_lids: true,
+            pupils_to_vrchat: true,
+            pupil_bits: 0,
             lid_widen: Widen::Normal,
             scales_predate_fit: false,
             raw: false,
@@ -342,6 +358,9 @@ impl Settings {
         if !scales.iter().flatten().all(|scale| *scale > 0.0) {
             return Err("lid_scale_left/right must be positive".into());
         }
+        if self.pupil_bits > MAX_PUPIL_BITS {
+            return Err(format!("pupil_bits must be 0 (a float only) to {MAX_PUPIL_BITS}"));
+        }
         if self.lid_sync < 0.0 {
             return Err("lid_sync must be non-negative".into());
         }
@@ -486,7 +505,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
             }
         )*};
     }
-    pin!(output, eye_tracking_active, steamlink_params, native_eyes, lid_widen);
+    pin!(output, eye_tracking_active, steamlink_params, native_eyes, lid_widen, pupil_bits);
     // Given on the command line: this is 0.6.0 or later, whatever the file says
     if given.contains("lid_widen") {
         settings.scales_predate_fit = false;
@@ -536,6 +555,14 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
     if given.contains("no_despike") {
         settings.despike = !args.no_despike;
         locked.push("despike");
+    }
+    if given.contains("no_camera_lids") {
+        settings.camera_lids = !args.no_camera_lids;
+        locked.push("camera_lids");
+    }
+    if given.contains("no_pupils_to_vrchat") {
+        settings.pupils_to_vrchat = !args.no_pupils_to_vrchat;
+        locked.push("pupils_to_vrchat");
     }
     pin!(
         blink_sync_below,
@@ -927,6 +954,40 @@ mod tests {
         let (settings, locked) = merged(r#"{"native_eyes": false}"#, &["--native-eyes"]).unwrap();
         assert!(settings.native_eyes);
         assert_eq!(locked, ["native_eyes"]);
+    }
+
+    #[test]
+    fn camera_lids_are_on_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.camera_lids);
+        assert!(!merged(r#"{"camera_lids": false}"#, &[]).unwrap().0.camera_lids);
+        assert!(merged(r#"{"camera_lids": 1}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"camera_lids": true}"#, &["--no-camera-lids"]).unwrap();
+        assert!(!settings.camera_lids);
+        assert_eq!(locked, ["camera_lids"]);
+    }
+
+    #[test]
+    fn pupil_bits_are_0_to_4() {
+        assert_eq!(merged("{}", &[]).unwrap().0.pupil_bits, 0);
+        for bits in 0..=4 {
+            assert_eq!(merged(&format!(r#"{{"pupil_bits": {bits}}}"#), &[]).unwrap().0.pupil_bits, bits);
+        }
+        for bad in ["5", "-1", "2.5", "\"3\"", "true"] {
+            assert!(merged(&format!(r#"{{"pupil_bits": {bad}}}"#), &[]).is_err(), "{bad}");
+        }
+        let (settings, locked) = merged(r#"{"pupil_bits": 1}"#, &["--pupil-bits", "3"]).unwrap();
+        assert_eq!((settings.pupil_bits, locked), (3, vec!["pupil_bits"]));
+        assert!(Args::command().try_get_matches_from(["frameeyeosc", "--pupil-bits", "5"]).is_err());
+    }
+
+    #[test]
+    fn pupils_go_to_vrchat_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.pupils_to_vrchat);
+        assert!(!merged(r#"{"pupils_to_vrchat": false}"#, &[]).unwrap().0.pupils_to_vrchat);
+        assert!(merged(r#"{"pupils_to_vrchat": "no"}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"pupils_to_vrchat": true}"#, &["--no-pupils-to-vrchat"]).unwrap();
+        assert!(!settings.pupils_to_vrchat);
+        assert_eq!(locked, ["pupils_to_vrchat"]);
     }
 
     #[test]

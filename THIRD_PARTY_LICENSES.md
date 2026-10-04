@@ -1,8 +1,9 @@
 # Third-party licenses
 
-Third-party code included in frameeyeosc and frameeyeosc-panel. frameeyeosc includes the Rust
-standard library and the Rust crates below; frameeyeosc-panel is built with the OpenVR SDK header.
-Their license notices follow.
+Third-party code included in frameeyeosc, frameeyeosc-panel and the bundled eye-camera tool
+eyecam (eyecam-rec and eyecam-grab, from tools/eyecam). frameeyeosc and eyecam include the Rust
+standard library and the Rust crates below; frameeyeosc-panel is built with the OpenVR SDK header;
+eyecam ports parts of FrameEyeCameraFeed. Their license notices follow.
 
 frameeyeosc-panel also links at run time to libraries that come with SteamOS and SteamVR (cairo,
 FreeType, the Vulkan loader, libopenvr_api). They are not bundled, so they are not listed here.
@@ -332,6 +333,38 @@ DEALINGS IN THE SOFTWARE.
 ```
 
 ## libc 0.2.189
+
+License: MIT OR Apache-2.0
+
+```
+Copyright (c) The Rust Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+## libc 0.2.190
 
 License: MIT OR Apache-2.0
 
@@ -844,4 +877,39 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
 ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+## FrameEyeCameraFeed (ported in eyecam)
+
+License: MIT. eyecam's notice (tools/eyecam/NOTICE, also in the release tarball as eyecam/NOTICE):
+
+```
+eyecam ports parts of FrameEyeCameraFeed (https://github.com/Curtis-VL/FrameEyeCameraFeed), framestream.c:
+the eye-frame ring discovery (src/ring.rs), the cache-maintenance / fingerprint approach (src/mem.rs), the way
+the shared buffers are taken from the eye tracker (src/bin/eyecam-grab.rs: pidfd_open + pidfd_getfd, choosing the
+DMA-BUFs by `exp_name: udmabuf` in fdinfo, and skipping the same buffer by its inode), and the per-slot change
+tracking that tells whether the ring is live (SlotStates and ring_is_live in src/bin/eyecam-rec.rs).
+Those parts are used under the following license.
+
+MIT License
+
+Copyright (c) 2026 Curtis English
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```

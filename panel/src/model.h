@@ -3,7 +3,9 @@
 #pragma once
 
 #include "autostart.h"
+#include "changelog.h"
 #include "config.h"
+#include "eyecam.h"
 #include "gaze_fit.h"
 #include "i18n.h"
 #include "recorder.h"
@@ -26,6 +28,10 @@ struct PanelModel {
     frame_updater::UpdateStatus update;  ///< new-release check and install (see frame-updater)
     gaze_fit::View fit;          ///< the eye fit session (Eye fit tab)
     recorder::View recording;    ///< the eye log (Advanced tab, and a mark in the left column while it records)
+    std::vector<std::string> changelogDirs;  ///< where to look for CHANGELOG.md (changelog::defaultDirs)
+    changelog::History history;  ///< the version history, read when it is opened
+    eyecam::View eyecam;         ///< eyecam-rec, for the developer tab "Eye capture" (only shown while it runs)
+    std::string eyecamDir;       ///< its folder (status.json and ctl.sock; eyecam::defaultDir or --eyecam-dir)
 };
 
 /**
@@ -218,6 +224,25 @@ const GazePreset* gazePresets();
  */
 int matchingGazePreset(const SettingsView& view);
 
+/** An eyelid smoothing preset (the two One Euro values). */
+struct LidPreset {
+    double minCutoff;
+    double beta;
+};
+
+/**
+ * The three eyelid smoothing presets: light, medium (= the defaults), strong.
+ * @return the presets
+ */
+const LidPreset* lidPresets();
+
+/**
+ * Which eyelid preset the current values match.
+ * @param view the settings
+ * @return 0..2, or -1 for custom values
+ */
+int matchingLidPreset(const SettingsView& view);
+
 /** One key and the value to write. */
 struct SettingChange {
     const char* key;
@@ -272,6 +297,163 @@ std::string formatSetting(const std::string& name, double value);
  * @return the host, or "" if there is none
  */
 std::string hostOfTarget(const std::string& target);
+
+/** Where the eyelids come from, as frameeyeosc reports it (the eye capture tab's line under camera_lids). */
+enum class CameraUse {
+    Unknown,        ///< frameeyeosc isn't running, or doesn't report the cameras (no eyecam-rec, or older)
+    Off,            ///< camera_lids is off: Valve's values
+    Both,           ///< the cameras drive both eyes
+    Left,           ///< only the left eye (the right one: Valve's)
+    Right,          ///< only the right eye
+    NotCalibrated,  ///< Valve's values: not calibrated for this wear
+    Warming,        ///< Valve's values: eyecam-rec is still learning the relaxed eyes for this wear
+    NoCamera,       ///< Valve's values: no live camera values reach frameeyeosc
+    Error,          ///< Valve's values: frameeyeosc gives a reason (CameraStatus::error)
+    Valve,          ///< Valve's values, for no reason given
+};
+
+/**
+ * Where the eyelids come from now. The camera values in use win over everything (camera_lids off but still used
+ * means frameeyeosc hasn't caught up yet); otherwise why not: the setting, no camera values, no baseline for this
+ * wear (neither calibrated nor learned by itself: still learning it while eyecam-rec says so), frameeyeosc's own
+ * reason.
+ * @param status frameeyeosc's status
+ * @param cameraLids the camera_lids setting
+ * @param warming eyecam-rec is learning the relaxed eyes now (eyecam::baselineWarming)
+ * @return the case
+ */
+CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming = false);
+
+/**
+ * Whether the eye cameras' page shows "learning your relaxed eyes (N s left)": while eyecam-rec learns them, but not
+ * while frameeyeosc gets no camera values (the headset is off: the countdown doesn't move then).
+ * @param warming eyecam-rec is learning the relaxed eyes (eyecam::baselineWarming)
+ * @param use what drives the eyelids (cameraUse)
+ * @return true to show it
+ */
+bool warmingShown(bool warming, CameraUse use);
+
+/**
+ * Whether the eye cameras' page shows "learned your relaxed eyes": once learned, and only while camera values arrive,
+ * as for warmingShown (eyecam-rec reading the cameras live, and frameeyeosc getting their values). Otherwise the "Now"
+ * row says the cameras aren't read, and a green "learned" next to it would contradict it.
+ * @param learned eyecam-rec has a baseline for this wear (ready, or calib_state bit 0 or 2) and isn't learning now
+ * @param live eyecam-rec reads the cameras live ("live")
+ * @param use what drives the eyelids (cameraUse)
+ * @return true to show it
+ */
+bool learnedShown(bool learned, bool live, CameraUse use);
+
+/**
+ * How many rows of the eye cameras' "When..." box fit between `top` and `bottom` (0: leave the box out). The box is
+ * 40 px plus 30 per row; `bottom` is where it must end (the caller keeps its gap to what is under it).
+ * @param top the box's top
+ * @param bottom the lowest its bottom may be
+ * @return 0..3
+ */
+int helpRows(double top, double bottom);
+
+/** The "When..." box's height for this many rows (helpRows). */
+double helpBoxHeight(int rows);
+
+/**
+ * Whether the Output tab shows "Send pupils straight to VRChat": only for LiveLink (whose module has no pupils), and
+ * only with the eye cameras (their tab shows: eyecam-rec runs), which are where the pupils come from.
+ * @param output the "output" setting
+ * @param eyeCameras the eye cameras tab shows (eyecam::View::visible)
+ * @return true to show it
+ */
+bool pupilsRowShown(const std::string& output, bool eyeCameras);
+
+/** How the Output tab shows "How the avatar takes pupils" (pupil_bits). */
+enum class PupilBitsRow {
+    Hidden,  ///< not there: no eye cameras, or ETVR (no pupils go to VRChat)
+    Greyed,  ///< there, but the pupils don't go straight to VRChat now (pupils_to_vrchat or camera_lids off)
+    Usable,  ///< there and in effect
+};
+
+/**
+ * How the Output tab shows "How the avatar takes pupils" (pupil_bits): wherever the pupils go to VRChat straight from
+ * frameeyeosc, so with the eye cameras, for VRChat directly and for LiveLink (under "Send pupils straight to VRChat").
+ * Greyed while they don't go there: camera_lids off (no camera values at all), or LiveLink with pupils_to_vrchat off.
+ * @param output the "output" setting
+ * @param eyeCameras the eye cameras tab shows (eyecam::View::visible)
+ * @param cameraLids camera_lids
+ * @param pupilsToVrchat pupils_to_vrchat
+ * @return how it shows
+ */
+PupilBitsRow pupilBitsRow(const std::string& output, bool eyeCameras, bool cameraLids, bool pupilsToVrchat);
+
+/** The sentence at the bottom of the eye cameras' page (eyecam-rec idle, set up). */
+enum class CameraLine {
+    BothVrchat,  ///< the cameras drive both eyes, sent to VRChat
+    Both,        ///< ...to another receiver (VRCFT)
+    Left,        ///< only the left eye (the right one: Valve's values)
+    Right,       ///< only the right eye
+    Warming,     ///< learning the relaxed eyes (camera values arriving)
+    PutOn,       ///< the headset is off: the cameras start once it is on
+    Off,         ///< camera_lids off: Valve's values only
+    Reason,      ///< anything else: the same reason as the "Now" row
+};
+
+/**
+ * The sentence at the bottom of the eye cameras' page, from the same things as its "Now" row, so the two never
+ * disagree: the cameras in use first (both eyes, or one), then the setting off, then (with the cameras read live)
+ * learning the relaxed eyes, the headset off (the eyes not seen), and otherwise the row's own reason.
+ * @param use what drives the eyelids (cameraUse)
+ * @param warming eyecam-rec is learning the relaxed eyes (eyecam::baselineWarming)
+ * @param live eyecam-rec reads the cameras live
+ * @param locked eyecam-rec's cameras see the eyes
+ * @param vrchat the output is VRChat itself (not VRCFT)
+ * @return the sentence
+ */
+CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool vrchat);
+
+/**
+ * Whether the eye cameras drive both eyelids now (frameeyeosc's camera.used): then widening is their sensitivity, and
+ * the Eyelids tab shows that in Widen's place.
+ * @param status frameeyeosc's status
+ * @return true while it runs and both eyes are on the cameras
+ */
+bool lidsFromCameras(const EyeStatus& status);
+
+/** What the Eyelids tab's one widening slider ("見開きの出やすさ") drives. */
+enum class WidenControl {
+    Camera,     ///< the cameras drive both eyelids: eyecam-rec's widen_sensitivity
+    Mixed,      ///< one eye on the cameras: their sensitivity, and lid_widen's nearest level for the other (Valve) eye
+    Valve,      ///< Valve's values: lid_widen's four levels (stops at 0, 1/3, 2/3, 1)
+    Saturated,  ///< Valve's values on a SteamOS that caps openness at 1.0, no camera: nothing to drive (greyed)
+};
+
+/** The widening slider as the Eyelids tab shows it. */
+struct WidenSlider {
+    WidenControl control = WidenControl::Valve;
+    bool unfittedNote = false;  ///< an eye on Valve's values has no eye fit: its widening is marks 3 and 4 instead
+};
+
+/**
+ * What the widening slider drives now, from where the eyelids come from (frameeyeosc's camera.used) and the eye fit:
+ * the cameras for both eyes, for one (and lid_widen for the other), lid_widen alone, or, with no camera on a SteamOS
+ * whose openness tops out at 1.0, nothing.
+ * @param view the settings (the eye fit, for the note)
+ * @param status frameeyeosc's status
+ * @return the slider
+ */
+WidenSlider widenSlider(const SettingsView& view, const EyeStatus& status);
+
+/**
+ * The lid_widen level nearest a slider position (its four stops).
+ * @param value 0..1
+ * @return 0 (off) .. 3 (high)
+ */
+int widenLevelAt(double value);
+
+/**
+ * The slider position of a lid_widen level.
+ * @param level 0..3
+ * @return 0..1
+ */
+double widenStop(int level);
 
 /**
  * The new release's summary shown under the update row: the Japanese one on a Japanese panel when the release text

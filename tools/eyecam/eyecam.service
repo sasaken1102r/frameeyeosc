@@ -1,0 +1,20 @@
+[Unit]
+Description=eyecam: Steam Frame eye camera recorder and live eye processing
+After=default.target
+# A failure that keeps coming back stops after 10 tries in 5 minutes instead of restarting every 5 s forever
+# (eyecam-rec waits for the headset and the eye tracker by itself; it only exits on a real error).
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+ExecStart=@PREFIX@/eyecam-rec --serve
+Restart=on-failure
+RestartSec=5
+Nice=10
+# eyecam-rec closes a running recording and writes state "stopped" on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

@@ -147,6 +147,9 @@ const std::vector<SettingSpec>& settingSpecs() {
         {key::kEyeTrackingActive, SettingType::String, 0, "bool", 0, 0, 0, 0},
         {key::kSteamlinkParams, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kNativeEyes, SettingType::Bool, 0, "", 0, 1, 1, 0},
+        {key::kCameraLids, SettingType::Bool, 1, "", 0, 1, 1, 0},
+        {key::kPupilsToVrchat, SettingType::Bool, 1, "", 0, 1, 1, 0},
+        {key::kPupilBits, SettingType::Integer, 0, "", 0, 4, 1, 0},
         {key::kRaw, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kGazeMinCutoff, SettingType::Number, 0.3, "", 0.05, 5.0, 0.05, 2},
         {key::kGazeBeta, SettingType::Number, 1.5, "", 0.0, 10.0, 0.1, 2},
@@ -324,6 +327,11 @@ bool resetConfigFile(const std::string& path, std::string& error) {
 double roundToDecimals(const SettingSpec& spec, double value) {
     const double scale = std::pow(10.0, spec.decimals);
     return std::round(value * scale) / scale;
+}
+
+double snapValue(const SettingSpec& spec, double value) {
+    const double snapped = spec.min + std::round((value - spec.min) / spec.step) * spec.step;
+    return roundToDecimals(spec, std::fmin(spec.max, std::fmax(spec.min, snapped)));
 }
 
 double stepValue(const SettingSpec& spec, double current, int direction, double low, double high) {

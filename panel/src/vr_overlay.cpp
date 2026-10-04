@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
@@ -26,6 +27,11 @@ constexpr const char* kDashboardName = "Eye";
 constexpr float kDashboardWidthM = 2.8f;
 // On shutdown, how long to wait after clearing the overlay before VR_Shutdown (about 36 frames at 90Hz)
 constexpr int kShutdownWaitMs = 400;
+// Scrolling the panel (the version history): px per unit of the scroll events' ydelta. Not measured on the Frame
+// yet; the first few events are logged to tune them
+constexpr double kSmoothScrollPx = 120.0;   ///< VREvent_ScrollSmooth (a continuous delta)
+constexpr double kDiscreteScrollPx = 80.0;  ///< VREvent_ScrollDiscrete (one notch)
+constexpr int kScrollLogCount = 12;
 // The eye fit's target: an ordinary (not dashboard) overlay fixed to the headset
 constexpr const char* kTargetKey = "sasaken.frameeyeosc-panel.target";
 constexpr const char* kTargetName = "Eye target";
@@ -35,6 +41,13 @@ constexpr float kTargetWidthM = 0.3f;
 // The debug gaze dots: small plain overlays of their own, like frame-perf-overlay's panel (no sort order, no
 // dashboard flags: with those, the dashboard hid them even at 1 m); their width and distance: gaze_dots.h
 constexpr const char* kDotKeys[2] = {"sasaken.frameeyeosc-panel.dot0", "sasaken.frameeyeosc-panel.dot1"};
+// The eye capture's full-view overlay: a plain overlay like the dots (no sort order, no flags), fixed to the headset
+// 0.9 m ahead, closer than the dashboard (about 1.35 m) so it shows over that too, and 4 m wide (square): about 131
+// degrees across and as much up and down, more than the headset shows
+constexpr const char* kFillKey = "sasaken.frameeyeosc-panel.eyecam-fill";
+constexpr const char* kFillName = "Eye capture light";
+constexpr double kFillDistanceM = 0.9;
+constexpr float kFillWidthM = 4.0f;
 // IPDs outside this range (m) are taken as a failed read
 constexpr double kIpdMin = 0.045;
 constexpr double kIpdMax = 0.085;
@@ -212,6 +225,15 @@ VrOverlay::ConnectResult VrOverlay::connect(int width, int height, std::string& 
     return ConnectResult::Ok;
 }
 
+void VrOverlay::setPanelScroll(bool on) {
+    if (!connected_ || dashboardHandle_ == 0 || on == panelScroll_) return;
+    panelScroll_ = on;
+    const vr::EVROverlayError error =
+        vr::VROverlay()->SetOverlayFlag(dashboardHandle_, vr::VROverlayFlags_SendVRSmoothScrollEvents, on);
+    std::fprintf(stderr, "[VR] SetOverlayFlag(SendVRSmoothScrollEvents, %s) -> %s\n", on ? "true" : "false",
+                 overlayErrorName(error));
+}
+
 void VrOverlay::shutdown() {
     if (!connected_) return;
     vr::IVROverlay* overlay = vr::VROverlay();
@@ -231,6 +253,10 @@ void VrOverlay::shutdown() {
         logShutdownStep("HideOverlay(dot)", overlay->HideOverlay(handle));
         logShutdownStep("ClearOverlayTexture(dot)", overlay->ClearOverlayTexture(handle));
     }
+    if (fillHandle_ != 0) {
+        logShutdownStep("HideOverlay(fill)", overlay->HideOverlay(fillHandle_));
+        logShutdownStep("ClearOverlayTexture(fill)", overlay->ClearOverlayTexture(fillHandle_));
+    }
     // 2) Destroy the overlays (the thumbnail goes away along with the panel)
     if (dashboardHandle_ != 0) logShutdownStep("DestroyOverlay(panel)", overlay->DestroyOverlay(dashboardHandle_));
     if (targetHandle_ != 0) logShutdownStep("DestroyOverlay(target)", overlay->DestroyOverlay(targetHandle_));
@@ -239,6 +265,9 @@ void VrOverlay::shutdown() {
         handle = 0;
     }
     dotShown_[0] = dotShown_[1] = false;
+    if (fillHandle_ != 0) logShutdownStep("DestroyOverlay(fill)", overlay->DestroyOverlay(fillHandle_));
+    fillHandle_ = 0;
+    fillShown_ = false;
     dashboardHandle_ = 0;
     thumbnailHandle_ = 0;
     targetHandle_ = 0;
@@ -256,6 +285,7 @@ void VrOverlay::shutdown() {
 
     // 5) Destroy the Vulkan images and device
     for (OverlayTexture& texture : dotTextures_) texture.destroy();
+    fillTexture_.destroy();
     targetTexture_.destroy();
     thumbnailTexture_.destroy();
     panelTexture_.destroy();
@@ -288,6 +318,21 @@ VrEvents VrOverlay::pollEvents() {
                     }
                     break;
                 case vr::VREvent_FocusLeave: result.pointer.push_back({PointerInput::Type::Leave, 0, 0}); break;
+                // The thumbstick or touchpad while scroll events are on (setPanelScroll). A positive ydelta is
+                // scrolling up, like a mouse wheel turned away
+                case vr::VREvent_ScrollSmooth:
+                case vr::VREvent_ScrollDiscrete: {
+                    const bool smooth = event.eventType == vr::VREvent_ScrollSmooth;
+                    const double dy = -event.data.scroll.ydelta * (smooth ? kSmoothScrollPx : kDiscreteScrollPx);
+                    if (scrollLogs_ < kScrollLogCount) {
+                        ++scrollLogs_;
+                        std::fprintf(stderr, "[VR] scroll %s: ydelta %.3f, viewportscale %.3f -> %.1f px\n",
+                                     smooth ? "smooth" : "discrete", event.data.scroll.ydelta,
+                                     event.data.scroll.viewportscale, dy);
+                    }
+                    if (dy != 0.0) result.pointer.push_back({PointerInput::Type::Scroll, 0, dy});
+                    break;
+                }
                 // The dashboard icon bar's "close" (VROverlayFlags_EnableControlBarClose).
                 // This is distinct from SteamVR's own shutdown (VRSystem's VREvent_Quit)
                 case vr::VREvent_OverlayClosed:
@@ -443,6 +488,58 @@ void VrOverlay::hideDot(int index) {
     if (!connected_ || index < 0 || index > 1 || dotHandles_[index] == 0 || !dotShown_[index]) return;
     checkOverlay("HideOverlay(dot)", vr::VROverlay()->HideOverlay(dotHandles_[index]));
     dotShown_[index] = false;
+}
+
+bool VrOverlay::showFill(const uint8_t* rgba, int size, double alpha) {
+    if (!connected_ || fillFailed_) return false;
+    vr::IVROverlay* overlay = vr::VROverlay();
+    std::string message;
+    if (fillHandle_ == 0) {
+        vr::VROverlayHandle_t handle = vr::k_ulOverlayHandleInvalid;
+        const vr::EVROverlayError error = overlay->CreateOverlay(kFillKey, kFillName, &handle);
+        std::fprintf(stderr, "[VR] CreateOverlay(%s) -> %s\n", kFillKey, overlayErrorName(error));
+        if (error != vr::VROverlayError_None || !fillTexture_.create(vulkan_, size, size, message)) {
+            if (!message.empty()) std::fprintf(stderr, "[Vulkan] can't create the fill texture: %s\n", message.c_str());
+            if (error == vr::VROverlayError_None) overlay->DestroyOverlay(handle);
+            fillFailed_ = true;
+            return false;
+        }
+        fillHandle_ = handle;
+        checkOverlay("SetOverlayWidthInMeters(fill)", overlay->SetOverlayWidthInMeters(handle, kFillWidthM));
+        // Straight ahead, facing the eyes, moving with the head
+        const vr::HmdMatrix34_t transform = headRelativeTransform(0.0, 0.0, kFillDistanceM);
+        checkOverlay("SetOverlayTransformTrackedDeviceRelative(fill)",
+                     overlay->SetOverlayTransformTrackedDeviceRelative(handle, vr::k_unTrackedDeviceIndex_Hmd,
+                                                                       &transform));
+        std::fprintf(stderr, "[VR] fill overlay %.1f m ahead, %.1f m wide\n", kFillDistanceM, kFillWidthM);
+        fillAlpha_ = -1.0f;
+    }
+    if (rgba != nullptr && !fillTexture_.update(fillHandle_, rgba, message)) {
+        std::fprintf(stderr, "[VR] can't send the fill: %s\n", message.c_str());
+        return false;
+    }
+    // The alpha before ShowOverlay: a fade-in starts from clear, never from the last alpha
+    const float a = static_cast<float>(std::clamp(alpha, 0.0, 1.0));
+    if (a != fillAlpha_) {
+        // Every step of a fade (logged only when it fails)
+        if (checkOverlay("SetOverlayAlpha(fill)", overlay->SetOverlayAlpha(fillHandle_, a))) {
+            fillAlpha_ = a;
+        } else {
+            fillAlpha_ = -1.0f;
+            if (!fillShown_) return false;  // never shown at an alpha that wasn't set
+        }
+    }
+    if (!fillShown_) {
+        if (!checkOverlay("ShowOverlay(fill)", overlay->ShowOverlay(fillHandle_))) return false;
+        fillShown_ = true;
+    }
+    return true;
+}
+
+void VrOverlay::hideFill() {
+    if (!connected_ || fillHandle_ == 0 || !fillShown_) return;
+    checkOverlay("HideOverlay(fill)", vr::VROverlay()->HideOverlay(fillHandle_));
+    fillShown_ = false;
 }
 
 bool VrOverlay::submitThumbnail(const uint8_t* rgba, int size) {

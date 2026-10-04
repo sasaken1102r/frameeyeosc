@@ -3,6 +3,8 @@
 mod capture;
 mod config;
 mod dots;
+mod eyecam_ctl;
+mod eyecam_live;
 mod livelink;
 mod replay;
 mod status;
@@ -10,9 +12,10 @@ mod status;
 use capture::{Capture, CaptureResult, CaptureState};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use config::{ActiveType, Config, LidFit, OutputKind, Reload, Settings, Widen};
+use eyecam_live::{Live, LiveReader};
 use memmap2::{MmapMut, MmapOptions};
 use rosc::{OscMessage, OscPacket, OscType, encoder};
-use status::{CalibrationStatus, RawValues, SentValues, Status, StatusFile};
+use status::{CalibrationStatus, CameraStatus, RawValues, SentValues, Status, StatusFile};
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
 use std::fs::{self, OpenOptions};
@@ -22,6 +25,8 @@ use std::mem::{align_of, offset_of, size_of};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 const SOURCE: &str = "/dev/shm/eye-server.mmap";
@@ -107,6 +112,16 @@ const SATURATION_OPEN: f32 = 0.6;
 const SATURATED_READING: f32 = 0.999;
 const SATURATION_ON: f64 = 0.5;
 const SATURATION_MIN_SAMPLES: u32 = 600;
+// The eye camera's squint and pupil (see eyecam_live) are smoothed per eye sample (~90 Hz) by these shares of each
+// new value: the squint settles within a few samples (a time constant of about 25 ms), the pupil, which wobbles from
+// frame to frame and changes slowly, over about 10 (105 ms). The camera's eyelid is not: the eyelid filter takes it.
+const CAMERA_SQUINT_ALPHA: f32 = 0.35;
+const CAMERA_PUPIL_ALPHA: f32 = 0.1;
+// The pupil diameter goes out in cm (VRCFT's PupilDiameter, 0..1).
+const PUPIL_MM_PER_UNIT: f32 = 10.0;
+// The pupil dilation's bits (pupil_bits) go out only when they change, and all of them again this often, since a
+// datagram can be lost.
+const PUPIL_BITS_RESEND: Duration = Duration::from_secs(1);
 // How often the Steam Link PC is looked up again, to follow reconnects over another network.
 const RESOLVE_INTERVAL: Duration = Duration::from_secs(5);
 // Eyelid auto calibration keeps a decaying histogram of each eye's open readings (0.005 wide bins).
@@ -285,6 +300,10 @@ struct Args {
     /// avatars without VRCFT parameters
     #[arg(long)]
     native_eyes: bool,
+    /// Also send the pupil dilation to VRChat as this many bool parameters (PupilDilation1, 2, 4, 8), for avatars
+    /// that take it bit-packed; 0 sends only the float
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=4))]
+    pupil_bits: u8,
     /// How easily an eye with an eye fit widens: off, low, normal or high (eyes without one use --lid-widen-start
     /// and --lid-wide)
     #[arg(long, value_enum, default_value_t = Widen::Normal)]
@@ -365,6 +384,15 @@ struct Args {
     /// Turn off the 3-sample median that drops one-sample dropouts in gaze and openness
     #[arg(long)]
     no_despike: bool,
+    /// Don't use eyecam-rec's eye-camera values (widening and squint from relaxed open up, pupils)
+    #[arg(long)]
+    no_camera_lids: bool,
+    /// In LiveLink mode, don't send the eye camera's pupils straight to VRChat (port 9000 of the target's host)
+    #[arg(long)]
+    no_pupils_to_vrchat: bool,
+    /// Where eyecam-rec's eye-camera values are read from [default: $XDG_RUNTIME_DIR/eyecam/live]
+    #[arg(long, value_name = "PATH")]
+    eyecam_live: Option<PathBuf>,
     /// Close both eyes when one is closed and the other is below this (VRCFT units); winks pass. 0 disables
     #[arg(long, default_value_t = 0.35)]
     blink_sync_below: f32,
@@ -511,6 +539,8 @@ struct Smoother {
     // Whether the openness is saturated, so nothing above relaxed open is widening. Not reset with the filters: it
     // belongs to the eye tracker, not to one stretch of tracking.
     saturation: Saturation,
+    // The eye camera's squint and pupils, smoothed.
+    camera: CameraSmoother,
 }
 
 impl Smoother {
@@ -529,6 +559,7 @@ impl Smoother {
             wide_since: [None; 2],
             wide_last: [f64::NEG_INFINITY; 2],
             saturation: Saturation::default(),
+            camera: CameraSmoother::default(),
         }
     }
 
@@ -626,13 +657,16 @@ impl Smoother {
         self.down_hold_x = None;
         self.wide_since = [None; 2];
         self.wide_last = [f64::NEG_INFINITY; 2];
+        self.camera = CameraSmoother::default();
     }
 
-    /// Keep the filtered eyelids, and the eyelid filters themselves, at or below relaxed open.
-    fn cap_lids(&mut self, lids: &mut [f32; 2]) {
-        for (lid, filter) in lids.iter_mut().zip(&mut self.lids) {
-            *lid = lid.min(LID_RELAXED);
-            filter.value = filter.value.map(|value| value.min(LID_RELAXED));
+    /// Keep the `capped` filtered eyelids, and their eyelid filters themselves, at or below relaxed open.
+    fn cap_lids(&mut self, lids: &mut [f32; 2], capped: [bool; 2]) {
+        for ((lid, filter), capped) in lids.iter_mut().zip(&mut self.lids).zip(capped) {
+            if capped {
+                *lid = lid.min(LID_RELAXED);
+                filter.value = filter.value.map(|value| value.min(LID_RELAXED));
+            }
         }
     }
 
@@ -695,6 +729,72 @@ impl Smoother {
 
 fn median3(a: f32, b: f32, c: f32) -> f32 {
     a.max(b).min(a.min(b).max(c))
+}
+
+/// What the eye camera adds to one sample (see eyecam_live): each eye's squint while the camera drives its eyelid,
+/// and its pupil while that is used; None for an eye whose values are not.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct CameraValues {
+    squint: [Option<f32>; 2],
+    pupil_dilation: [Option<f32>; 2],
+    // In mm.
+    pupil_diameter: [Option<f32>; 2],
+}
+
+/// Per-eye smoothing of the eye camera's squint and pupils. An eye whose values are not used starts over, so one that
+/// comes back after a gap starts from its new value instead of from before the gap.
+#[derive(Clone, Copy, Default)]
+struct CameraSmoother {
+    squint: [Option<f32>; 2],
+    pupil_dilation: [Option<f32>; 2],
+    pupil_diameter: [Option<f32>; 2],
+}
+
+impl CameraSmoother {
+    /// Each eye's camera eyelid while it may be used (see Live::lids_usable; None otherwise, and always without
+    /// `camera_lids`), and the squint and pupils to send, smoothed unless `smooth` is false (--raw).
+    fn take(&mut self, settings: &Settings, camera: Option<&Live>, smooth: bool) -> ([Option<f32>; 2], CameraValues) {
+        let camera = camera.filter(|_| settings.camera_lids);
+        let lids_usable = camera.map_or([false; 2], Live::lids_usable);
+        let pupil_usable = camera.map_or([false; 2], Live::pupil_usable);
+        let mut values = CameraValues::default();
+        let mut lids = [None; 2];
+        for eye in 0..2 {
+            let read = camera.map(|camera| camera.eyes[eye]).unwrap_or_default();
+            let (lid_used, pupil_used) = (lids_usable[eye], pupil_usable[eye]);
+            lids[eye] = lid_used.then_some(read.lid);
+            let squint = read.squint.clamp(0.0, 1.0);
+            values.squint[eye] = smoothed(&mut self.squint[eye], lid_used, squint, CAMERA_SQUINT_ALPHA, smooth);
+            let dilation = read.pupil_dilation.clamp(0.0, 1.0);
+            values.pupil_dilation[eye] =
+                smoothed(&mut self.pupil_dilation[eye], pupil_used, dilation, CAMERA_PUPIL_ALPHA, smooth);
+            let diameter = read.pupil_mm.max(0.0);
+            values.pupil_diameter[eye] =
+                smoothed(&mut self.pupil_diameter[eye], pupil_used, diameter, CAMERA_PUPIL_ALPHA, smooth);
+        }
+        (lids, values)
+    }
+}
+
+/// An exponential moving average kept in `state`, taking `alpha` of each new `value`: None (and started over) while
+/// not `used`, the value itself without `smooth`.
+fn smoothed(state: &mut Option<f32>, used: bool, value: f32, alpha: f32, smooth: bool) -> Option<f32> {
+    *state = match *state {
+        _ if !used => None,
+        Some(last) if smooth => Some(last + alpha * (value - last)),
+        _ => Some(value),
+    };
+    *state
+}
+
+/// An eyelid from the eye server (VRCFT `valve`), with the eye camera's (`camera`, while it may be used): from relaxed
+/// open up, the camera's, which sees widening the eye server can't (see SATURATION_WINDOW); below it, the eye
+/// server's, which catches closing and blinks faster and more reliably.
+fn mix_lid(valve: f32, camera: Option<f32>) -> f32 {
+    match camera {
+        Some(camera) if valve >= LID_RELAXED => camera.clamp(LID_RELAXED, 1.0),
+        _ => valve,
+    }
 }
 
 /// Learns each eye's relaxed openness while in use, so a face that opens one eye less than the
@@ -1829,6 +1929,8 @@ struct Sample {
     // it now; a gaze capture judges its samples itself (capture::usable).
     #[cfg_attr(not(test), allow(dead_code))]
     gaze_held: bool,
+    // The eye camera's squint and pupils, for the eyes they are used for.
+    camera: CameraValues,
 }
 
 /// Per-eye multipliers as lid_inputs applies them. An unfitted eye: the fixed one, else the learned one, else 1.
@@ -1852,13 +1954,15 @@ fn lid_scales(settings: &Settings, calibration: &LidCalibration) -> [f32; 2] {
     })
 }
 
-/// Let the eyelid calibration learn from a sample once `settled`, then work the sample through.
+/// Let the eyelid calibration learn from a sample once `settled`, then work the sample through, with the eye camera's
+/// values as read for it (None without them).
 fn step(
     settings: &Settings,
     smoother: &mut Smoother,
     calibration: &mut LidCalibration,
     data: &EyeData,
     settled: bool,
+    camera: Option<&Live>,
 ) -> Sample {
     // Openness read while the gaze is unreliable is suspect too, so it does not teach the calibration.
     // Fitted eyes do not use it.
@@ -1869,10 +1973,17 @@ fn step(
     {
         calibration.observe(data.openness);
     }
-    process(settings, smoother, lid_scales(settings, calibration), data)
+    process(settings, smoother, lid_scales(settings, calibration), data, camera)
 }
 
-fn process(settings: &Settings, smoother: &mut Smoother, scales: [f32; 2], data: &EyeData) -> Sample {
+/// Work one eye-server sample through, with the eye camera's values as read for it (`camera`; None without them).
+fn process(
+    settings: &Settings,
+    smoother: &mut Smoother,
+    scales: [f32; 2],
+    data: &EyeData,
+    camera: Option<&Live>,
+) -> Sample {
     // Judged in --raw too (for the status file), though raw eyelids are never capped
     smoother.saturation.add(data);
     let saturated = smoother.saturation.on;
@@ -1881,20 +1992,24 @@ fn process(settings: &Settings, smoother: &mut Smoother, scales: [f32; 2], data:
     let raw_gaze = [left[0], left[1], right[0], right[1], x, y];
     let reliable = gaze_quality(data, settings.gaze_quality_limit);
     let blink_stages = settings.blink_hold_ms > 0.0 || settings.blink_sync_below > 0.0;
-    let (gaze, lids, gaze_held, openness_scaled) = if settings.raw {
+    let (gaze, lids, gaze_held, openness_scaled, camera) = if settings.raw {
+        let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
         let corrected = correct_gaze(raw_gaze, settings);
         let gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes);
         let openness_scaled = lid_inputs(data.openness, corrected[5], scales, settings);
         let mapped = openness_scaled.map(|openness| lid_to_vrcft(openness, settings));
+        let mixed = [0, 1].map(|eye| mix_lid(mapped[eye], camera_lids[eye]));
         let shut = sync_blinks(mapped.map(|lid| lid <= 0.0), mapped, settings.blink_sync_below);
-        let mut lids = sync_lids(mapped, settings.lid_sync);
+        let mut lids = sync_lids(mixed, settings.lid_sync);
         if blink_stages {
             shut_lids(&mut lids, shut);
         }
         let shut_eyes = data.openness.iter().any(|openness| *openness < settings.gaze_hold_below);
-        (gaze, lids, shut_eyes, openness_scaled)
+        (gaze, lids, shut_eyes, openness_scaled, camera)
     } else {
         let dt = smoother.advance(data.sample_time);
+        // After advance(), which starts the smoothing over after a gap
+        let (camera_lids, camera) = smoother.camera.take(settings, camera, true);
         // Before anything else, so the filters see the gaze the way it will be sent.
         let open = data.openness.iter().all(|openness| *openness >= settings.gaze_hold_below);
         let trusted = reliable.map(|reliable| reliable && open);
@@ -1923,23 +2038,31 @@ fn process(settings: &Settings, smoother: &mut Smoother, scales: [f32; 2], data:
         };
         smoother.lid_vertical = Some(vertical);
         let mapped = lid_inputs(openness, vertical, scales, settings).map(|openness| lid_to_vrcft(openness, settings));
-        // While the openness is saturated, nothing above relaxed open is widening. Capped before the widen sustain and
-        // the filter, so the filter rests at relaxed open (a closing eye starts closing at once) and a widen starts over
-        // once it isn't saturated any more; and the filter itself right after it, for the sample it turns on while a
-        // widen is still in the filter. The filter and lid_sync only average, so nothing goes above it meanwhile.
-        // Closing, half-closed and blinks are below relaxed open and untouched.
-        let mut lids = if saturated { mapped.map(|lid| lid.min(LID_RELAXED)) } else { mapped };
+        // From relaxed open up, an eye the camera sees takes the camera's eyelid; a closing one stays the eye server's
+        let mixed = [0, 1].map(|eye| mix_lid(mapped[eye], camera_lids[eye]));
+        // While the openness is saturated, nothing above relaxed open is widening, except where the camera says so.
+        // Capped before the widen sustain and the filter, so the filter rests at relaxed open (a closing eye starts
+        // closing at once) and a widen starts over once it isn't saturated any more; and the filter itself right after
+        // it, for the sample it turns on (or the camera stops) while a widen is still in the filter. The filter only
+        // averages, so nothing goes above it meanwhile; lid_sync could lift a capped eye toward the other eye's camera
+        // widening, so it is capped again after that. Closing, half-closed and blinks are below relaxed open and
+        // untouched. The widen sustain applies to the camera's widening too.
+        let capped = camera_lids.map(|camera| saturated && camera.is_none());
+        let mut lids = [0, 1].map(|eye| if capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
         lids = smoother.sustain_widen(data.sample_time, lids);
         smoother.filter(dt, &mut gaze, &mut lids, hold);
-        if saturated {
-            smoother.cap_lids(&mut lids);
-        }
+        smoother.cap_lids(&mut lids, capped);
         let mut lids = sync_lids(lids, settings.lid_sync);
+        for (lid, capped) in lids.iter_mut().zip(capped) {
+            if capped {
+                *lid = lid.min(LID_RELAXED);
+            }
+        }
         if blink_stages {
             let shut = smoother.hold_shut(data.sample_time, mapped.map(|lid| lid <= 0.0), mapped, settings);
             shut_lids(&mut lids, shut);
         }
-        (gaze, lids, hold[2], lid_inputs(data.openness, vertical, scales, settings))
+        (gaze, lids, hold[2], lid_inputs(data.openness, vertical, scales, settings), camera)
     };
     Sample {
         openness: data.openness,
@@ -1949,6 +2072,7 @@ fn process(settings: &Settings, smoother: &mut Smoother, scales: [f32; 2], data:
         lids,
         reliable,
         gaze_held,
+        camera,
     }
 }
 
@@ -1978,9 +2102,9 @@ fn livelink_packet(sample: &Sample, time: f64) -> Vec<u8> {
     livelink::packet(time, &livelink::shapes(lids, [left_x, left_y, right_x, right_y]))
 }
 
-/// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set, and with `steamlink_params` Steam Link's
-/// names after it. The ETVR Tracking Module gets per-eye values only: EyeX/EyeY switch it to a single-eye mode that
-/// reads an eyelid we do not send.
+/// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set with the eye camera's squint and pupils (see
+/// camera_params), and with `steamlink_params` Steam Link's names after it. The ETVR Tracking Module gets per-eye
+/// values only: EyeX/EyeY switch it to a single-eye mode that reads an eyelid we do not send.
 fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> {
     let prefix = format!("/avatar/parameters{}", settings.prefix);
     let [left_x, left_y, right_x, right_y, x, y] = sample.gaze;
@@ -1997,6 +2121,7 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
     if settings.output == OutputKind::Vrchat {
         messages.extend(active_message(settings, true));
         values.extend([("EyeX", x), ("EyeY", y)]);
+        values.extend(camera_params(&sample.camera));
     }
     messages.extend(
         values
@@ -2007,6 +2132,144 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
         messages.extend(steamlink_messages(sample.gaze, sample.lids));
     }
     messages
+}
+
+/// The eye camera's values as VRCFT v2 parameters: each eye's squint while the camera drives its eyelid, and the
+/// combined squint (the mean of those eyes); the pupil dilation and each eye's pupil diameter (in cm, 0..1) for the
+/// eyes whose pupil is used, and the combined diameter (the mean of those). Nothing for an eye the camera's values are
+/// not used for: see squint_release for the squint it leaves behind.
+fn camera_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
+    let mut params = per_eye_params(["EyeSquintLeft", "EyeSquintRight", "EyeSquint"], camera.squint);
+    params.extend(pupil_params(camera));
+    params
+}
+
+/// The pupil part of camera_params: the dilation and each eye's pupil diameter (in cm, 0..1) for the eyes whose pupil
+/// is used, and the combined diameter.
+fn pupil_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
+    let diameter = camera.pupil_diameter.map(|mm| mm.map(|mm| (mm / PUPIL_MM_PER_UNIT).min(1.0)));
+    let mut params: Vec<_> = pupil_dilation(camera).map(|dilation| ("PupilDilation", dilation)).into_iter().collect();
+    params.extend(per_eye_params(["PupilDiameterLeft", "PupilDiameterRight", "PupilDiameter"], diameter));
+    params
+}
+
+/// The pupil dilation that goes out (PupilDilation, and its bits): the mean of the eyes whose pupil is used.
+fn pupil_dilation(camera: &CameraValues) -> Option<f32> {
+    mean(camera.pupil_dilation)
+}
+
+/// A value 0..1 as `bits` bools the way VRCFT's BinaryBaseParameter makes them (VRCFaceTracking.Core, OSC/DataTypes/
+/// BinaryBaseParameter.cs, ProcessBinary): above 0.99999 every bit is set, else bit k of (int)(value * 2^bits).
+/// Negative values give no bits: pupils are never negative, so there is no Negative parameter.
+fn binary_bits(value: f32, bits: u8) -> Vec<bool> {
+    let all = value > 0.99999;
+    // as i64 truncates toward zero like C#'s (int), and saturates instead of overflowing
+    let big = if value > 0.0 { (value * f32::from(1u8 << bits)) as i64 } else { 0 };
+    (0..bits).map(|k| all || (big >> k) & 1 == 1).collect()
+}
+
+/// The pupil dilation as bool parameters, for avatars that take it bit-packed (pupil_bits): PupilDilation1, 2, 4
+/// and 8 under the same prefix as the float, next to it wherever pupils go to VRChat. Only the bits that changed go
+/// out, and all of them again every PUPIL_BITS_RESEND. When the pupils stop, nothing is sent: the avatar holds them,
+/// like the floats.
+#[derive(Default)]
+struct PupilBits {
+    // The bits as they last went out, and when all of them last did.
+    sent: Vec<bool>,
+    sent_all: Option<Instant>,
+}
+
+impl PupilBits {
+    /// The messages for this sample's dilation (None: no eye's pupil is used).
+    fn messages(&mut self, settings: &Settings, dilation: Option<f32>, now: Instant) -> Vec<(String, OscType)> {
+        let Some(dilation) = dilation.filter(|_| settings.pupil_bits > 0) else {
+            return Vec::new();
+        };
+        let bits = binary_bits(dilation, settings.pupil_bits);
+        let all = bits.len() != self.sent.len()
+            || self.sent_all.is_none_or(|at| now.saturating_duration_since(at) >= PUPIL_BITS_RESEND);
+        let prefix = format!("/avatar/parameters{}/v2/PupilDilation", settings.prefix);
+        let messages = bits
+            .iter()
+            .enumerate()
+            .filter(|&(k, bit)| all || self.sent[k] != *bit)
+            .map(|(k, &bit)| (format!("{prefix}{}", 1u8 << k), OscType::Bool(bit)))
+            .collect();
+        if all {
+            self.sent_all = Some(now);
+        }
+        self.sent = bits;
+        messages
+    }
+
+    /// Send all of them with the next sample (the settings or the target changed).
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// The left, right and combined (`names`) of per-eye values, for the eyes that have one; the combined one is their
+/// mean.
+fn per_eye_params(names: [&'static str; 3], values: [Option<f32>; 2]) -> Vec<(&'static str, f32)> {
+    let [left, right] = values;
+    [left, right, mean(values)]
+        .into_iter()
+        .zip(names)
+        .filter_map(|(value, name)| Some((name, value?)))
+        .collect()
+}
+
+/// In LiveLink mode, the eye camera's pupils as VRChat avatar parameters (the ones `--output vrchat` sends, with the
+/// prefix), to go straight to VRChat next to the Live Link packets: VRCFT's LiveLink module has no pupils of its own
+/// (it gives a fixed 5 mm, which VRCFT sends once, as it only sends a parameter when it changes, so these don't
+/// fight it). Only pupils: the eyelids and gaze go through VRCFT. Nothing when no eye's pupil is used.
+fn pupil_messages(settings: &Settings, camera: &CameraValues) -> Vec<(String, OscType)> {
+    let prefix = format!("/avatar/parameters{}/v2", settings.prefix);
+    pupil_params(camera)
+        .into_iter()
+        .map(|(name, value)| (format!("{prefix}/{name}"), OscType::Float(value)))
+        .collect()
+}
+
+/// Where the eye camera's pupils go straight to VRChat, if anywhere: in LiveLink mode with pupils_to_vrchat, VRChat's
+/// OSC port (9000) on the LiveLink target's host. VRCFT runs next to VRChat, so that host is VRChat's PC: the Steam
+/// Link PC with "auto", else the host typed. The LiveLink port setting is VRCFT's, not VRChat's.
+fn pupil_stream(settings: &Settings) -> Option<(&str, u16)> {
+    (settings.sending && settings.output == OutputKind::LiveLink && settings.pupils_to_vrchat)
+        .then(|| (settings.host.as_str(), OutputKind::Vrchat.default_port()))
+}
+
+/// The target of pupil_stream (also while it is off, so it is ready when it comes on).
+fn pupil_target(settings: &Settings) -> Target {
+    let port = OutputKind::Vrchat.default_port();
+    match Target::of(settings) {
+        Target::Fixed { host, .. } => Target::Fixed { host, port },
+        Target::SteamLink { .. } => Target::SteamLink { port },
+    }
+}
+
+/// The mean of the values there are, if any.
+fn mean(values: [Option<f32>; 2]) -> Option<f32> {
+    match values {
+        [Some(left), Some(right)] => Some((left + right) / 2.0),
+        [one, None] | [None, one] => one,
+    }
+}
+
+/// Squint 0 for each eye whose squint went out (`out`) but does not with this sample (`squint`), and for the combined
+/// one once no eye's does: VRChat keeps a parameter's last value, so the avatar would otherwise stay squinting.
+fn squint_release(settings: &Settings, out: [bool; 2], squint: [Option<f32>; 2]) -> Vec<(String, OscType)> {
+    let stopped = [0, 1].map(|eye| out[eye] && squint[eye].is_none());
+    let names = [
+        ("EyeSquintLeft", stopped[0]),
+        ("EyeSquintRight", stopped[1]),
+        ("EyeSquint", out.contains(&true) && squint == [None; 2]),
+    ];
+    names
+        .into_iter()
+        .filter(|(_, stopped)| *stopped)
+        .map(|(name, _)| (format!("/avatar/parameters{}/v2/{name}", settings.prefix), OscType::Float(0.0)))
+        .collect()
 }
 
 /// How closed an eye is the way Steam Link sends it (0 open, 1 shut), from a VRCFT eyelid: 0.75 (relaxed open) and
@@ -2248,6 +2511,16 @@ struct Bridge {
     livelink_throttle: Throttle,
     // Whether frameeyeosc keeps up with the eye tracker.
     pace: Pace,
+    // eyecam-rec's live eye-camera values, and the newest read of them.
+    camera: LiveReader,
+    camera_live: Option<Live>,
+    // Which eyes' squint went out to VRChat with the last sample, so it can be set back to 0 when it stops.
+    squint_out: [bool; 2],
+    // In LiveLink mode, the eye camera's pupils straight to VRChat (see pupil_stream): a sender of its own, so the
+    // Live Link rate and drops stay the LiveLink module's.
+    pupil_output: Output,
+    // The pupil dilation's bits that went out (pupil_bits), wherever pupils go to VRChat.
+    pupil_bits: PupilBits,
 }
 
 impl Bridge {
@@ -2268,6 +2541,9 @@ impl Bridge {
         if self.active_since.is_some() && stream.is_some() && stream != vrchat_stream(&settings) {
             send_inactive(&mut self.output, &self.settings)?;
         }
+        if self.squint_out.contains(&true) && stream != vrchat_stream(&settings) {
+            self.release_squint()?;
+        }
         let stream = steamlink_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != steamlink_stream(&settings) {
             send_steamlink_neutral(&mut self.output)?;
@@ -2281,6 +2557,10 @@ impl Bridge {
             self.send_livelink_neutral();
         }
         self.output.set_target(Target::of(&settings));
+        // Nothing to set back when the pupils stop going there: they just hold
+        self.pupil_output.set_target(pupil_target(&settings));
+        // All the bits again with the next sample, wherever they go now and however many
+        self.pupil_bits.reset();
         self.smoother.configure(&settings);
         if reset_calibration {
             eprintln!("Starting eyelid calibration over");
@@ -2304,7 +2584,9 @@ impl Bridge {
         }
         let since = *self.active_since.get_or_insert(now);
         let settled = since.elapsed() >= CAL_SETTLE;
-        let sample = step(&self.settings, &mut self.smoother, &mut self.calibration, &data, settled);
+        self.read_camera();
+        let camera = self.camera_live.as_ref();
+        let sample = step(&self.settings, &mut self.smoother, &mut self.calibration, &data, settled, camera);
         if self.settings.lid_calibration && settled {
             self.calibration.save_if_due();
         }
@@ -2315,11 +2597,27 @@ impl Bridge {
                 let ready = self.livelink_throttle.ready(now, interval);
                 if ready {
                     self.output.send_datagram(&livelink_packet(&sample, livelink::time_of_day(SystemTime::now())));
+                    // At the same pace
+                    if pupil_stream(&self.settings).is_some() {
+                        let bits = self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now);
+                        for (addr, arg) in pupil_messages(&self.settings, &sample.camera).into_iter().chain(bits) {
+                            self.pupil_output.send(addr, vec![arg])?;
+                        }
+                    }
                 }
                 ready
             } else {
                 for (addr, arg) in osc_messages(&self.settings, &sample) {
                     self.output.send(addr, vec![arg])?;
+                }
+                if self.settings.output == OutputKind::Vrchat {
+                    for (addr, arg) in self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now) {
+                        self.output.send(addr, vec![arg])?;
+                    }
+                    for (addr, arg) in squint_release(&self.settings, self.squint_out, sample.camera.squint) {
+                        self.output.send(addr, vec![arg])?;
+                    }
+                    self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
                 }
                 if native_stream(&self.settings).is_some() {
                     for (addr, args) in native_messages(&self.settings, sample.gaze, sample.lids) {
@@ -2376,6 +2674,9 @@ impl Bridge {
         if vrchat_stream(&self.settings).is_some() {
             send_inactive(&mut self.output, &self.settings)?;
         }
+        if self.squint_out.contains(&true) {
+            self.release_squint()?;
+        }
         if steamlink_stream(&self.settings).is_some() {
             send_steamlink_neutral(&mut self.output)?;
         }
@@ -2389,6 +2690,23 @@ impl Bridge {
         self.active_since = None;
         self.latest = None;
         Ok(())
+    }
+
+    /// Set the squint that went out back to 0 (see squint_release), where it went with the current settings.
+    fn release_squint(&mut self) -> Result<(), Box<dyn Error>> {
+        for (addr, arg) in squint_release(&self.settings, self.squint_out, [None; 2]) {
+            self.output.send(addr, vec![arg])?;
+        }
+        self.squint_out = [false; 2];
+        Ok(())
+    }
+
+    /// Check on eyecam-rec's live file when due (logging what changed), and read its newest values.
+    fn read_camera(&mut self) {
+        if let Some(line) = self.camera.check(Instant::now()) {
+            eprintln!("{line}");
+        }
+        self.camera_live = self.camera.read(eyecam_live::monotonic_ns());
     }
 
     /// Samples from the eye tracker in the last second; None until tracking has run for a second.
@@ -2447,6 +2765,10 @@ impl Bridge {
         let dropped_rate = self.output.drops.per_second(now);
         let settings = &self.settings;
         let pair = |values: [f32; 6], first: usize| status::round([values[first], values[first + 1]]);
+        let vrchat = settings.output == OutputKind::Vrchat;
+        let pupils = pupil_stream(settings).is_some();
+        let camera = self.latest.as_ref().map(|sample| sample.camera).unwrap_or_default();
+        let live = self.camera_live.as_ref();
         Status {
             version: 1,
             pid: std::process::id(),
@@ -2456,6 +2778,7 @@ impl Bridge {
             output: settings.output,
             target_mode: if settings.host == "auto" { "auto" } else { "fixed" },
             target: self.output.addr().map(|addr| addr.to_string()),
+            pupil_target: self.pupil_output.addr().filter(|_| pupils).map(|addr| addr.to_string()),
             rate: per_second(&self.sent),
             tracker_rate,
             missed_rate,
@@ -2475,6 +2798,9 @@ impl Bridge {
                 gaze: pair(sample.gaze, 4),
                 gaze_left: pair(sample.gaze, 0),
                 gaze_right: pair(sample.gaze, 2),
+                squint: (vrchat && camera.squint != [None; 2])
+                    .then(|| status::round(camera.squint.map(|squint| squint.unwrap_or(0.0)))),
+                pupil_dilation: mean(camera.pupil_dilation).filter(|_| vrchat || pupils).map(status::round_one),
             }),
             calibration: CalibrationStatus {
                 enabled: settings.lid_calibration,
@@ -2493,6 +2819,14 @@ impl Bridge {
             source_error,
             dominant_eye: dominant_eye.map(DominantEye::name),
             openness_saturated: self.smoother.saturation.on,
+            camera: self.camera.opened().then(|| CameraStatus {
+                present: live.is_some_and(Live::present),
+                calib_state: live.map_or(0, |live| live.calib_state),
+                recalib_suggested: live.is_some_and(|live| live.recalib_suggested),
+                used: camera.squint.map(|squint| squint.is_some()),
+                pupil_used: camera.pupil_dilation.map(|dilation| dilation.is_some()),
+                error: self.camera.error(),
+            }),
             locked: &self.config.locked,
             effective: settings,
             gaze_capture: self.capture_result.as_ref(),
@@ -2508,9 +2842,10 @@ extern "C" fn stop_recording(_: libc::c_int) {
 }
 
 /// Write every sample the eye server produces to `path` until stopped (Ctrl+C, SIGINT or SIGTERM: the file is then
-/// complete up to the stop). Nothing is sent, and the status and calibration files are left alone, so this can run
-/// next to the installed service (the panel's "Eye log" runs it).
-fn record(path: &Path) -> Result<(), Box<dyn Error>> {
+/// complete up to the stop), with eyecam-rec's eye-camera values from `camera_path` as read with each sample (only
+/// read, like the live loop does). Nothing is sent, and the status and calibration files are left alone, so this can
+/// run next to the installed service (the panel's "Eye log" runs it).
+fn record(path: &Path, camera_path: &Path) -> Result<(), Box<dyn Error>> {
     // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
@@ -2527,16 +2862,30 @@ fn record(path: &Path) -> Result<(), Box<dyn Error>> {
         source.layout.version,
         path.display()
     );
+    // Says in the log whether there are eye-camera values, from which eyecam-rec, and when that changes
+    let mut camera = LiveReader::new(camera_path.to_owned(), Instant::now());
     let mut last_flush = Instant::now();
     let mut reported = 0;
     loop {
         if STOP_RECORDING.load(std::sync::atomic::Ordering::Relaxed) {
             recorder.flush()?;
-            eprintln!("Stopped: {} samples in {}", recorder.count, path.display());
+            eprintln!(
+                "Stopped: {} samples in {} ({} with eye-camera values)",
+                recorder.count,
+                path.display(),
+                recorder.camera_count
+            );
             return Ok(());
         }
+        if let Some(line) = camera.check(Instant::now()) {
+            eprintln!("{line}");
+        }
         match source.next(POLL)? {
-            Next::Sample(data) => recorder.write(&data)?,
+            Next::Sample(data) => {
+                let now_ns = eyecam_live::monotonic_ns();
+                let live = camera.read(now_ns);
+                recorder.write(&data, live.as_ref().map(|live| (live, now_ns)))?;
+            }
             Next::Waiting | Next::Stopped if source.is_stale() => {
                 eprintln!("{SOURCE} was replaced; reopening");
                 source = EyeSource::open()?;
@@ -2559,7 +2908,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let matches = Args::command().get_matches();
     let args = Args::from_arg_matches(&matches)?;
     if let Some(path) = &args.record {
-        return record(path);
+        return record(path, &args.eyecam_live.clone().unwrap_or_else(eyecam_live::live_path));
     }
     if args.target != "auto" && config::split_target(&args.target).is_none() {
         return Err("--target must be HOST:PORT or auto".into());
@@ -2568,6 +2917,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let calibration_path = args.calibration_file.clone().or_else(|| in_config_dir("calibration"));
     let config_path = args.config.clone().or_else(|| in_config_dir("config.json"));
     let replay = args.replay.clone().map(|input| (input, args.replay_out.clone()));
+    let camera_path = args.eyecam_live.clone().unwrap_or_else(eyecam_live::live_path);
     let mut config = Config::new(config_path, args, config::given_options(&matches));
     let settings = config.load()?;
     if let Some((input, output)) = replay {
@@ -2576,6 +2926,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         calibration.path = None;
         return replay::run(&input, output.as_deref(), &settings, &calibration);
     }
+    // camera_lids for eyecam-rec too ("live off" / "live on" on its control socket, next to its live file), on a
+    // thread of its own
+    let live_wanted = Arc::new(AtomicBool::new(settings.camera_lids));
+    if let Some(dir) = camera_path.parent() {
+        eyecam_ctl::LiveControl::new(dir.to_owned()).spawn(live_wanted.clone())?;
+    }
+    let pupil_output = Output::new(pupil_target(&settings));
     let mut bridge = Bridge {
         output: Output::new(Target::of(&settings)),
         smoother: Smoother::new(&settings),
@@ -2594,6 +2951,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         livelink_neutral: None,
         livelink_throttle: Throttle::default(),
         pace: Pace::default(),
+        camera: LiveReader::new(camera_path, Instant::now()),
+        camera_live: None,
+        squint_out: [false; 2],
+        pupil_output,
+        pupil_bits: PupilBits::default(),
     };
     let mut status_file = StatusFile::new(status::status_path());
     // Until the shared memory can be read, frameeyeosc keeps running and trying again, and the status file says why,
@@ -2605,8 +2967,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     loop {
         if let Some(reload) = bridge.config.poll() {
             bridge.apply(reload)?;
+            live_wanted.store(bridge.settings.camera_lids, Ordering::Relaxed);
         }
         bridge.output.refresh();
+        if pupil_stream(&bridge.settings).is_some() {
+            bridge.pupil_output.refresh();
+        }
         if let Some(line) = eye.open_if_due(Instant::now()) {
             eprintln!("{line}");
         }
@@ -2644,6 +3010,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             if let Some(line) = bridge.check_low_rate(Instant::now()) {
                 eprintln!("{line}");
             }
+            // Also while there are no eye samples to read it with
+            bridge.read_camera();
             status_file.write(&bridge.status(eye.error.as_deref(), eye.dominant_eye));
         }
     }
@@ -2679,7 +3047,7 @@ mod tests {
         let mut smoother = Smoother::new(settings);
         readings
             .iter()
-            .map(|data| process(settings, &mut smoother, [1.0; 2], data))
+            .map(|data| process(settings, &mut smoother, [1.0; 2], data, None))
             .collect()
     }
 
@@ -3318,7 +3686,7 @@ mod tests {
         let mut calibration = LidCalibration::load(None, 0.80);
         let mut smoother = Smoother::new(&fitted());
         for i in 0..900 {
-            step(&fitted(), &mut smoother, &mut calibration, &reading(i, [0.0, 0.0], [0.6, 0.6]), true);
+            step(&fitted(), &mut smoother, &mut calibration, &reading(i, [0.0, 0.0], [0.6, 0.6]), true, None);
         }
         assert!(calibration.histograms.iter().flatten().all(|weight| *weight == 0.0));
     }
@@ -3777,6 +4145,7 @@ mod tests {
             lids: [0.375, 0.75],
             reliable: [true; 2],
             gaze_held: false,
+            camera: CameraValues::default(),
         }
     }
 
@@ -3931,6 +4300,12 @@ mod tests {
             livelink_neutral: None,
             livelink_throttle: Throttle::default(),
             pace: Pace::default(),
+            camera: LiveReader::new(PathBuf::from("/nonexistent"), Instant::now()),
+            camera_live: None,
+            squint_out: [false; 2],
+            // Never VRChat's port on this machine in a test: a test that wants the pupils points it at its own listener
+            pupil_output: Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9 }),
+            pupil_bits: PupilBits::default(),
         };
         bridge.output.refresh();
         bridge
@@ -5089,7 +5464,7 @@ mod tests {
                     openness: openness(i),
                     ..EyeData::default()
                 };
-                (process(settings, smoother, [1.0; 2], &data).lids, smoother.saturation.on)
+                (process(settings, smoother, [1.0; 2], &data, None).lids, smoother.saturation.on)
             })
             .collect()
     }
@@ -5201,5 +5576,682 @@ mod tests {
         }
         assert!(saturation.on, "{} open samples", saturation.open);
         assert_eq!(saturation.open, 700);
+    }
+
+    /// eyecam-rec's values as read: both eyes fresh and calibrated for this wear, at eyelid `lid` with `squint`.
+    pub(crate) fn camera(lid: f32, squint: f32) -> Live {
+        let eye = eyecam_live::Eye {
+            valid: true,
+            lid,
+            squint,
+            pupil_mm: 4.0,
+            pupil_dilation: 0.5,
+            ..Default::default()
+        };
+        Live {
+            calib_state: 1,
+            recalib_suggested: false,
+            live: true,
+            eyes: [eye; 2],
+            fresh: [true; 2],
+        }
+    }
+
+    /// The samples for `seconds` of 90 Hz eye-server samples from `start` looking straight ahead, with each eye's
+    /// openness from `openness(sample index)` and the eye camera's values from `camera(sample index)`.
+    fn camera_samples(
+        settings: &Settings,
+        smoother: &mut Smoother,
+        start: f64,
+        seconds: f64,
+        openness: impl Fn(usize) -> [f32; 2],
+        camera: impl Fn(usize) -> Option<Live>,
+    ) -> Vec<Sample> {
+        (0..(seconds * 90.0) as usize)
+            .map(|i| {
+                let data = EyeData {
+                    sample_time: start + i as f64 / 90.0,
+                    gaze: [[0.0, 0.0, -1.0]; 2],
+                    fixation_point: [0.0, 0.0, -1.0],
+                    openness: openness(i),
+                    ..EyeData::default()
+                };
+                process(settings, smoother, [1.0; 2], &data, camera(i).as_ref())
+            })
+            .collect()
+    }
+
+    /// A smoother whose openness already counts as saturated, as on SteamOS 0.4.3.
+    fn saturated_smoother(settings: &Settings) -> Smoother {
+        let mut smoother = Smoother::new(settings);
+        smoother.saturation.on = true;
+        smoother
+    }
+
+    fn all_relaxed_or_below(samples: &[Sample]) -> bool {
+        samples.iter().all(|sample| sample.lids.iter().all(|lid| *lid <= LID_RELAXED))
+    }
+
+    #[test]
+    fn the_cameras_widening_passes_the_saturation_cap() {
+        let settings = Settings {
+            lid_calibration: false,
+            ..settings()
+        };
+        // The eye server reads relaxed open as 1.000; the camera sees the eyes widened
+        let mut smoother = saturated_smoother(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 2.0, |_| [1.0; 2], |_| Some(camera(0.95, 0.0)));
+        // Once it has lasted WIDEN_SUSTAIN (22.5 samples), like any widening
+        assert!(all_relaxed_or_below(&sent[..23]), "{:?}", sent[22].lids);
+        assert!(sent[24].lids.iter().all(|lid| *lid > LID_RELAXED), "{:?}", sent[24].lids);
+        let last = sent.last().unwrap().lids;
+        assert!(last.iter().all(|lid| (lid - 0.95).abs() < 0.005), "{last:?}");
+        // Without the camera, without its wear calibration, or with camera_lids off: capped as before
+        let uncalibrated = Live {
+            calib_state: 2,
+            ..camera(0.95, 0.0)
+        };
+        let off = Settings {
+            camera_lids: false,
+            ..settings.clone()
+        };
+        for (settings, camera) in [(&settings, None), (&settings, Some(uncalibrated)), (&off, Some(camera(0.95, 0.0)))] {
+            let mut smoother = saturated_smoother(settings);
+            let sent = camera_samples(settings, &mut smoother, 100.0, 2.0, |_| [1.0; 2], |_| camera);
+            assert!(all_relaxed_or_below(&sent), "{camera:?}");
+            assert_eq!(sent.last().unwrap().lids, [LID_RELAXED; 2]);
+        }
+        // Not saturated (before 0.4.3), the camera's eyelid wins over the eye server's from relaxed open up too
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 2.0, |_| [1.0; 2], |_| Some(camera(0.75, 0.0)));
+        assert!(!smoother.saturation.on);
+        assert_eq!(sent.last().unwrap().lids, [LID_RELAXED; 2]);
+        // The camera's eyelid stays between relaxed open and fully widened
+        let mut smoother = saturated_smoother(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 2.0, |_| [1.0; 2], |_| Some(camera(1.4, 0.0)));
+        assert!(sent.iter().all(|sample| sample.lids.iter().all(|lid| *lid <= 1.0)));
+        let sent = camera_samples(&settings, &mut smoother, 102.0, 1.0, |_| [1.0; 2], |_| Some(camera(0.3, 0.0)));
+        assert!(sent.last().unwrap().lids.iter().all(|lid| (lid - LID_RELAXED).abs() < 1e-4));
+    }
+
+    #[test]
+    fn closing_stays_the_eye_servers() {
+        let settings = Settings {
+            lid_calibration: false,
+            ..settings()
+        };
+        let mut smoother = saturated_smoother(&settings);
+        // The camera says widened all along: a blink and a half-closed eye still come from the eye server
+        let sent = camera_samples(
+            &settings,
+            &mut smoother,
+            100.0,
+            3.0,
+            |i| match i {
+                90..=94 => [0.1, 0.1],
+                180.. => [0.55, 0.55],
+                _ => [1.0, 1.0],
+            },
+            |_| Some(camera(1.0, 0.0)),
+        );
+        assert!(sent[89].lids.iter().all(|lid| *lid > 0.95), "{:?}", sent[89].lids);
+        // (one sample late, through the 3-sample median)
+        assert_eq!(sent[91].lids, [0.0; 2]);
+        let half = lid_to_vrcft(0.55, &settings);
+        assert!((sent.last().unwrap().lids[0] - half).abs() < 0.01, "{:?} {half}", sent.last().unwrap().lids);
+        // --raw: the same mix, unsmoothed
+        let raw = Settings { raw: true, ..settings.clone() };
+        let mut smoother = Smoother::new(&raw);
+        let openness = |i: usize| if i < 4 { [1.0; 2] } else { [0.55, 1.0] };
+        let sent = camera_samples(&raw, &mut smoother, 100.0, 0.1, openness, |_| Some(camera(0.9, 0.0)));
+        assert_eq!(sent[0].lids, [0.9; 2]);
+        // A wink-sized difference, so lid_sync leaves both as they are
+        assert_eq!(sent[5].lids, [half, 0.9]);
+    }
+
+    #[test]
+    fn an_eye_the_camera_stops_seeing_while_widened_goes_back_to_relaxed() {
+        let settings = Settings {
+            lid_calibration: false,
+            ..settings()
+        };
+        let mut smoother = saturated_smoother(&settings);
+        let wide = camera_samples(&settings, &mut smoother, 100.0, 1.0, |_| [1.0; 2], |_| Some(camera(1.0, 0.0)));
+        assert!(wide.last().unwrap().lids.iter().all(|lid| *lid > 0.99));
+        // The left eye's values go stale: it is capped again at once, though the right eye stays widened (and
+        // lid_sync would pull the left one toward it)
+        let left_stale = Live {
+            fresh: [false, true],
+            ..camera(1.0, 0.0)
+        };
+        let one = camera_samples(&settings, &mut smoother, 101.0, 0.5, |_| [1.0; 2], |_| Some(left_stale));
+        assert!(one.iter().all(|sample| sample.lids[0] <= LID_RELAXED && sample.lids[1] > 0.9), "{:?}", one[0].lids);
+        assert_eq!(one[0].camera.squint, [None, Some(0.0)]);
+        // Both: capped, filters and all
+        let none = camera_samples(&settings, &mut smoother, 101.5, 0.5, |_| [1.0; 2], |_| None);
+        assert!(all_relaxed_or_below(&none));
+        assert!(smoother.lids.iter().all(|filter| filter.value.unwrap() <= LID_RELAXED));
+        // Back: the widening shows only once it has lasted again, not stuck from before
+        let back = camera_samples(&settings, &mut smoother, 102.0, 1.0, |_| [1.0; 2], |_| Some(camera(1.0, 0.0)));
+        assert!(all_relaxed_or_below(&back[..23]), "{:?}", back[22].lids);
+        assert!(back.last().unwrap().lids.iter().all(|lid| *lid > 0.99));
+    }
+
+    #[test]
+    fn camera_squint_and_pupils_are_smoothed_per_eye_and_start_over_after_a_gap() {
+        let settings = settings();
+        let mut cameras = CameraSmoother::default();
+        let with = |squint: f32, pupil_mm: f32, dilation: f32| {
+            let mut live = camera(0.9, squint);
+            for eye in &mut live.eyes {
+                (eye.pupil_mm, eye.pupil_dilation) = (pupil_mm, dilation);
+            }
+            live
+        };
+        // The first value as it is, then a share of each new one
+        let (lids, values) = cameras.take(&settings, Some(&with(1.0, 4.0, 0.5)), true);
+        assert_eq!(lids, [Some(0.9); 2]);
+        assert_eq!(values.squint, [Some(1.0); 2]);
+        assert_eq!((values.pupil_diameter, values.pupil_dilation), ([Some(4.0); 2], [Some(0.5); 2]));
+        let (_, values) = cameras.take(&settings, Some(&with(0.0, 6.0, 1.0)), true);
+        assert_eq!(values.squint, [Some(1.0 - CAMERA_SQUINT_ALPHA); 2]);
+        assert_eq!(values.pupil_diameter, [Some(4.0 + 2.0 * CAMERA_PUPIL_ALPHA); 2]);
+        assert_eq!(values.pupil_dilation, [Some(0.5 + 0.5 * CAMERA_PUPIL_ALPHA); 2]);
+        // Unsmoothed with --raw
+        let mut copy = cameras;
+        let (_, raw) = copy.take(&settings, Some(&with(0.0, 6.0, 1.0)), false);
+        assert_eq!((raw.squint, raw.pupil_diameter), ([Some(0.0); 2], [Some(6.0); 2]));
+        // A gap in one eye: that eye starts over from its new value, the other carries on
+        let left_gone = Live {
+            fresh: [false, true],
+            ..with(0.0, 6.0, 1.0)
+        };
+        let (lids, values) = cameras.take(&settings, Some(&left_gone), true);
+        assert_eq!(lids, [None, Some(0.9)]);
+        assert_eq!((values.squint[0], values.pupil_dilation[0]), (None, None));
+        let (_, values) = cameras.take(&settings, Some(&with(0.0, 6.0, 1.0)), true);
+        assert_eq!(values.squint[0], Some(0.0));
+        assert!(values.squint[1].unwrap() > 0.0);
+        // Without a wear calibration: no eyelid or squint, but the pupils
+        let uncalibrated = Live {
+            calib_state: 2,
+            ..with(0.4, 6.0, 1.0)
+        };
+        let (lids, values) = cameras.take(&settings, Some(&uncalibrated), true);
+        assert_eq!((lids, values.squint), ([None; 2], [None; 2]));
+        assert!(values.pupil_dilation.iter().all(Option::is_some));
+        // camera_lids off: nothing
+        let off = Settings {
+            camera_lids: false,
+            ..settings.clone()
+        };
+        assert_eq!(cameras.take(&off, Some(&with(0.4, 6.0, 1.0)), true), ([None; 2], CameraValues::default()));
+        // Squint and dilation are kept within 0..1
+        let (_, values) = CameraSmoother::default().take(&settings, Some(&with(1.5, -1.0, -0.5)), true);
+        assert_eq!((values.squint[0], values.pupil_diameter[0], values.pupil_dilation[0]), (Some(1.0), Some(0.0), Some(0.0)));
+        // A gap in the eye samples starts the smoothing over too
+        let mut smoother = Smoother::new(&settings);
+        camera_samples(&settings, &mut smoother, 100.0, 0.1, |_| [0.8; 2], |_| Some(with(1.0, 4.0, 0.5)));
+        let after = camera_samples(&settings, &mut smoother, 101.0, 0.05, |_| [0.8; 2], |_| Some(with(0.0, 4.0, 0.5)));
+        assert_eq!(after[0].camera.squint, [Some(0.0); 2]);
+    }
+
+    /// `name`'s value among `messages`, if it is there.
+    fn param(messages: &[(String, OscType)], name: &str) -> Option<f32> {
+        messages.iter().find(|(addr, _)| addr == name).map(|(_, value)| match value {
+            OscType::Float(value) => *value,
+            other => panic!("{name}: {other:?}"),
+        })
+    }
+
+    #[test]
+    fn vrchat_gets_the_cameras_squint_and_pupils() {
+        let camera = CameraValues {
+            squint: [Some(0.2), Some(0.4)],
+            pupil_dilation: [Some(0.5), Some(0.7)],
+            pupil_diameter: [Some(4.0), Some(12.0)],
+        };
+        let messages = osc_messages(&settings(), &Sample { camera, ..sample() });
+        let addrs: Vec<&str> = messages.iter().map(|(addr, _)| addr.as_str()).collect();
+        // After the eye set as before
+        assert_eq!(messages[..9], sent(&settings())[..]);
+        assert_eq!(
+            addrs[9..],
+            [
+                "/avatar/parameters/FT/v2/EyeSquintLeft",
+                "/avatar/parameters/FT/v2/EyeSquintRight",
+                "/avatar/parameters/FT/v2/EyeSquint",
+                "/avatar/parameters/FT/v2/PupilDilation",
+                "/avatar/parameters/FT/v2/PupilDiameterLeft",
+                "/avatar/parameters/FT/v2/PupilDiameterRight",
+                "/avatar/parameters/FT/v2/PupilDiameter",
+            ]
+        );
+        let value = |name: &str| param(&messages, &format!("/avatar/parameters/FT/v2/{name}")).unwrap();
+        let expected = [
+            ("EyeSquintLeft", 0.2),
+            ("EyeSquintRight", 0.4),
+            ("EyeSquint", 0.3),
+            ("PupilDilation", 0.6),
+            // In cm, and at most 1
+            ("PupilDiameterLeft", 0.4),
+            ("PupilDiameterRight", 1.0),
+            ("PupilDiameter", 0.7),
+        ];
+        for (name, expected) in expected {
+            assert!((value(name) - expected).abs() < 1e-6, "{name}: {}", value(name));
+        }
+        // Only the eyes they are used for, and the combined ones from those
+        let one_eye = CameraValues {
+            squint: [None, Some(0.4)],
+            pupil_dilation: [Some(0.5), None],
+            pupil_diameter: [Some(4.0), None],
+        };
+        let messages = osc_messages(&settings(), &Sample { camera: one_eye, ..sample() });
+        let value = |name: &str| param(&messages, &format!("/avatar/parameters/FT/v2/{name}"));
+        assert_eq!((value("EyeSquintLeft"), value("EyeSquintRight"), value("EyeSquint")), (None, Some(0.4), Some(0.4)));
+        assert_eq!((value("PupilDiameterLeft"), value("PupilDiameterRight")), (Some(0.4), None));
+        assert_eq!((value("PupilDilation"), value("PupilDiameter")), (Some(0.5), Some(0.4)));
+        // Not to the other outputs; the Steam Link names stay last; the prefix applies
+        let etvr = Settings {
+            output: OutputKind::Etvr,
+            ..settings()
+        };
+        assert_eq!(osc_messages(&etvr, &Sample { camera, ..sample() }), sent(&etvr));
+        let messages = osc_messages(&steamlink(), &Sample { camera, ..sample() });
+        assert_eq!(messages.len(), 28);
+        assert_eq!(messages[16..], steamlink_messages(sample().gaze, sample().lids)[..]);
+        let bare = Settings {
+            prefix: String::new(),
+            ..settings()
+        };
+        assert_eq!(osc_messages(&bare, &Sample { camera, ..sample() })[9].0, "/avatar/parameters/v2/EyeSquintLeft");
+    }
+
+    #[test]
+    fn livelink_mode_sends_the_pupils_alone_to_vrchat() {
+        let camera = CameraValues {
+            squint: [Some(0.3); 2],
+            pupil_dilation: [Some(0.5), Some(0.7)],
+            pupil_diameter: [Some(4.0), Some(12.0)],
+        };
+        let livelink = Settings {
+            output: OutputKind::LiveLink,
+            ..settings()
+        };
+        let messages = pupil_messages(&livelink, &camera);
+        let addrs: Vec<&str> = messages.iter().map(|(addr, _)| addr.as_str()).collect();
+        assert_eq!(
+            addrs,
+            [
+                "/avatar/parameters/FT/v2/PupilDilation",
+                "/avatar/parameters/FT/v2/PupilDiameterLeft",
+                "/avatar/parameters/FT/v2/PupilDiameterRight",
+                "/avatar/parameters/FT/v2/PupilDiameter",
+            ]
+        );
+        // The same values the VRChat-direct path sends, nothing else
+        let direct = osc_messages(&settings(), &Sample { camera, ..sample() });
+        assert!(messages.iter().all(|message| direct.contains(message)));
+        assert!(messages.iter().all(|(addr, _)| !addr.contains("EyeLid") && !addr.contains("EyeSquint")));
+        assert!(pupil_messages(&livelink, &CameraValues { pupil_dilation: [None; 2], pupil_diameter: [None; 2], ..camera }).is_empty());
+        let bare = Settings {
+            prefix: String::new(),
+            ..livelink.clone()
+        };
+        assert_eq!(pupil_messages(&bare, &camera)[0].0, "/avatar/parameters/v2/PupilDilation");
+        // Only in LiveLink mode, while sending, with the setting on; to port 9000 of the LiveLink target's host
+        assert_eq!(pupil_stream(&livelink), Some(("auto", 9000)));
+        assert!(pupil_stream(&settings()).is_none());
+        assert!(pupil_stream(&Settings { output: OutputKind::Etvr, ..livelink.clone() }).is_none());
+        assert!(pupil_stream(&Settings { sending: false, ..livelink.clone() }).is_none());
+        assert!(pupil_stream(&Settings { pupils_to_vrchat: false, ..livelink.clone() }).is_none());
+        assert!(pupil_target(&livelink) == Target::SteamLink { port: 9000 });
+        let fixed = Settings {
+            host: "192.168.0.60".into(),
+            port: Some(11112),
+            ..livelink.clone()
+        };
+        assert!(pupil_target(&fixed) == Target::Fixed { host: "192.168.0.60".into(), port: 9000 });
+        assert_eq!(pupil_stream(&fixed), Some(("192.168.0.60", 9000)));
+    }
+
+    #[test]
+    fn livelink_mode_sends_the_pupils_next_to_each_packet() {
+        use eyecam_live::tests::{TempDir, TestEye, live_bytes, write_live};
+        let dir = TempDir::new("pupils");
+        let path = dir.0.join("live");
+        let write = || {
+            let now = eyecam_live::monotonic_ns();
+            let mut eyes = [TestEye::at(now, 0.9, 0.2); 2];
+            eyes[1].pupil_mm = 5.0;
+            write_live(&path, &live_bytes(7, 1, true, eyes));
+        };
+        let livelink_listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let vrchat_listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let live = Settings {
+            output: OutputKind::LiveLink,
+            host: "127.0.0.1".into(),
+            port: Some(livelink_listener.local_addr().unwrap().port()),
+            lid_calibration: false,
+            ..settings()
+        };
+        let mut bridge = test_bridge(live.clone());
+        bridge.camera = LiveReader::new(path.clone(), Instant::now());
+        // Standing in for VRChat's 9000
+        let vrchat_port = vrchat_listener.local_addr().unwrap().port();
+        bridge.pupil_output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port: vrchat_port });
+        bridge.pupil_output.refresh();
+        // No pupils yet: the Live Link packet alone
+        bridge.on_sample(reading(0, [0.0, 0.0], [0.8; 2])).unwrap();
+        assert!(receive(&livelink_listener).is_some());
+        assert!(osc_received(&vrchat_listener).is_empty());
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(json["pupil_target"], format!("127.0.0.1:{vrchat_port}"));
+        assert!(json["sent"]["pupil_dilation"].is_null());
+        // With them: the four pupil parameters, and nothing of the eyelids or gaze
+        write();
+        // (looked for again at once, rather than a second later)
+        bridge.camera = LiveReader::new(path.clone(), Instant::now());
+        bridge.livelink_throttle = Throttle::default();
+        bridge.on_sample(reading(1, [0.0, 0.0], [0.8; 2])).unwrap();
+        assert!(livelink::tests::module_eyes(&receive(&livelink_listener).unwrap()).is_some());
+        let received = osc_received(&vrchat_listener);
+        let addrs: Vec<&str> = received.iter().map(|(addr, _)| addr.as_str()).collect();
+        assert_eq!(addrs.len(), 4, "{addrs:?}");
+        assert!(addrs.iter().all(|addr| addr.starts_with("/avatar/parameters/FT/v2/Pupil")), "{addrs:?}");
+        assert_eq!(param(&received, "/avatar/parameters/FT/v2/PupilDiameterRight"), Some(0.5));
+        assert!((param(&received, "/avatar/parameters/FT/v2/PupilDiameter").unwrap() - 0.45).abs() < 1e-6);
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(json["sent"]["pupil_dilation"], 0.5);
+        assert!(json["sent"]["squint"].is_null());
+        // Held back with the Live Link packet by the throttle: two samples at once, one packet and one set of pupils
+        write();
+        bridge.on_sample(reading(2, [0.0, 0.0], [0.8; 2])).unwrap();
+        bridge.on_sample(reading(3, [0.0, 0.0], [0.8; 2])).unwrap();
+        assert!(receive(&livelink_listener).is_some() && receive(&livelink_listener).is_none());
+        assert_eq!(osc_received(&vrchat_listener).len(), 4);
+        // Turned off: nothing more, and nothing to set back
+        let off = Settings {
+            pupils_to_vrchat: false,
+            ..live.clone()
+        };
+        bridge.apply(reload(&off)).unwrap();
+        bridge.pupil_output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port: vrchat_port });
+        bridge.pupil_output.refresh();
+        receive(&livelink_listener);
+        write();
+        bridge.livelink_throttle = Throttle::default();
+        bridge.on_sample(reading(4, [0.0, 0.0], [0.8; 2])).unwrap();
+        assert!(receive(&livelink_listener).is_some());
+        assert!(osc_received(&vrchat_listener).is_empty());
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert!(json["pupil_target"].is_null() && json["sent"]["pupil_dilation"].is_null());
+        bridge.on_lost("test").unwrap();
+        assert!(osc_received(&vrchat_listener).is_empty());
+    }
+
+    #[test]
+    fn a_squint_that_stops_is_set_back_to_zero_once() {
+        let settings = settings();
+        let zero = |names: &[&str]| -> Vec<(String, OscType)> {
+            names.iter().map(|name| (format!("/avatar/parameters/FT/v2/{name}"), OscType::Float(0.0))).collect()
+        };
+        assert!(squint_release(&settings, [false; 2], [None; 2]).is_empty());
+        assert!(squint_release(&settings, [true; 2], [Some(0.3); 2]).is_empty());
+        assert!(squint_release(&settings, [false; 2], [Some(0.3), None]).is_empty());
+        // One eye stops: that eye; the combined one still goes out with the other
+        assert_eq!(squint_release(&settings, [true; 2], [None, Some(0.3)]), zero(&["EyeSquintLeft"]));
+        // The last one stops: the combined one too
+        assert_eq!(squint_release(&settings, [false, true], [None; 2]), zero(&["EyeSquintRight", "EyeSquint"]));
+        assert_eq!(squint_release(&settings, [true; 2], [None; 2]), zero(&["EyeSquintLeft", "EyeSquintRight", "EyeSquint"]));
+    }
+
+    /// The OSC messages that arrive until none has for 100 ms.
+    #[test]
+    fn pupil_bits_match_vrcfts_binary_parameters() {
+        // (int)(value * 2^bits), bit k as PupilDilation{2^k}; above 0.99999 all of them
+        assert_eq!(binary_bits(0.5, 3), [false, false, true]);
+        assert_eq!(binary_bits(1.0, 3), [true; 3]);
+        assert_eq!(binary_bits(0.0, 3), [false; 3]);
+        assert_eq!(binary_bits(0.99999, 4), [true; 4]);
+        assert_eq!(binary_bits(1.5, 2), [true; 2]);
+        // Never negative: no bits (and no Negative parameter)
+        assert_eq!(binary_bits(-0.5, 2), [false; 2]);
+        for bits in 1..=4u8 {
+            let steps = f32::from(1u8 << bits);
+            assert_eq!(binary_bits(0.0, bits), vec![false; usize::from(bits)]);
+            assert_eq!(binary_bits(1.0, bits), vec![true; usize::from(bits)]);
+            // Each step's lower edge is that number, the value just below it the one before
+            for big in 1..(1u32 << bits) {
+                let at = big as f32 / steps;
+                let number = |bools: Vec<bool>| bools.iter().rev().fold(0, |n, &bit| n * 2 + u32::from(bit));
+                assert_eq!(number(binary_bits(at, bits)), big, "{bits} bits at {at}");
+                assert_eq!(number(binary_bits(at - 1e-4, bits)), big - 1, "{bits} bits below {at}");
+            }
+        }
+        assert_eq!(binary_bits(0.25, 2), [true, false]);
+        assert_eq!(binary_bits(0.9374, 4), [false, true, true, true]);
+    }
+
+    #[test]
+    fn pupil_bits_go_out_when_they_change_and_all_again_each_second() {
+        let three = Settings {
+            pupil_bits: 3,
+            ..settings()
+        };
+        let names = |messages: &[(String, OscType)]| -> Vec<(String, bool)> {
+            messages
+                .iter()
+                .map(|(addr, value)| match value {
+                    OscType::Bool(bit) => (addr.trim_start_matches("/avatar/parameters/FT/v2/").to_owned(), *bit),
+                    other => panic!("{addr}: {other:?}"),
+                })
+                .collect()
+        };
+        let bit = |name: &str, on: bool| (name.to_owned(), on);
+        let mut bits = PupilBits::default();
+        let start = Instant::now();
+        // All of them first
+        assert_eq!(
+            names(&bits.messages(&three, Some(0.5), start)),
+            [bit("PupilDilation1", false), bit("PupilDilation2", false), bit("PupilDilation4", true)]
+        );
+        // The same: nothing; a change: only the bits that changed (4 -> 3)
+        assert!(bits.messages(&three, Some(0.55), start + Duration::from_millis(10)).is_empty());
+        assert_eq!(
+            names(&bits.messages(&three, Some(0.4), start + Duration::from_millis(20))),
+            [bit("PupilDilation1", true), bit("PupilDilation2", true), bit("PupilDilation4", false)]
+        );
+        assert_eq!(
+            names(&bits.messages(&three, Some(0.5), start + Duration::from_millis(30))),
+            [bit("PupilDilation1", false), bit("PupilDilation2", false), bit("PupilDilation4", true)]
+        );
+        assert_eq!(
+            names(&bits.messages(&three, Some(0.25), start + Duration::from_millis(40))),
+            [bit("PupilDilation2", true), bit("PupilDilation4", false)]
+        );
+        // No pupil: nothing, and nothing set back (the avatar holds them)
+        assert!(bits.messages(&three, None, start + Duration::from_millis(50)).is_empty());
+        assert!(bits.messages(&three, Some(0.25), start + Duration::from_millis(60)).is_empty());
+        // A second after the last full set: all of them again, unchanged or not
+        assert!(bits.messages(&three, Some(0.25), start + Duration::from_millis(999)).is_empty());
+        assert_eq!(bits.messages(&three, Some(0.25), start + Duration::from_secs(1)).len(), 3);
+        assert!(bits.messages(&three, Some(0.25), start + Duration::from_millis(1500)).is_empty());
+        assert_eq!(bits.messages(&three, Some(0.25), start + Duration::from_secs(2)).len(), 3);
+        // Another count, or a reset (settings or target changed): all of them at once
+        let one = Settings {
+            pupil_bits: 1,
+            ..settings()
+        };
+        assert_eq!(
+            names(&bits.messages(&one, Some(0.25), start + Duration::from_millis(2100))),
+            [bit("PupilDilation1", false)]
+        );
+        bits.reset();
+        assert_eq!(bits.messages(&one, Some(0.25), start + Duration::from_millis(2200)).len(), 1);
+        // 0: the float only; the prefix applies as to the float
+        assert!(PupilBits::default().messages(&settings(), Some(0.5), start).is_empty());
+        let bare = Settings {
+            prefix: String::new(),
+            ..one
+        };
+        assert_eq!(PupilBits::default().messages(&bare, Some(1.0), start)[0].0, "/avatar/parameters/v2/PupilDilation1");
+    }
+
+    #[test]
+    fn pupil_bits_go_wherever_the_pupils_go_to_vrchat() {
+        use eyecam_live::tests::{TempDir, TestEye, live_bytes, write_live};
+        let dir = TempDir::new("pupil-bits");
+        let path = dir.0.join("live");
+        let write = || {
+            let now = eyecam_live::monotonic_ns();
+            write_live(&path, &live_bytes(7, 1, true, [TestEye::at(now, 0.9, 0.2); 2]));
+        };
+        for output in [OutputKind::Vrchat, OutputKind::LiveLink] {
+            // VRChat directly: on the output; LiveLink: next to the packet, on the pupils' own sender
+            let target_listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let vrchat_listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let direct = output == OutputKind::Vrchat;
+            let settings = Settings {
+                output,
+                host: "127.0.0.1".into(),
+                port: Some(if direct { &vrchat_listener } else { &target_listener }.local_addr().unwrap().port()),
+                lid_calibration: false,
+                pupil_bits: 2,
+                ..settings()
+            };
+            let mut bridge = test_bridge(settings);
+            bridge.pupil_output = Output::new(Target::Fixed {
+                host: "127.0.0.1".into(),
+                port: vrchat_listener.local_addr().unwrap().port(),
+            });
+            bridge.pupil_output.refresh();
+            write();
+            bridge.camera = LiveReader::new(path.clone(), Instant::now());
+            bridge.on_sample(reading(0, [0.0, 0.0], [0.8; 2])).unwrap();
+            let received = osc_received(&vrchat_listener);
+            let is_bit = |addr: &str| addr.ends_with("PupilDilation1") || addr.ends_with("PupilDilation2");
+            let bits: Vec<_> = received.iter().filter(|(addr, _)| is_bit(addr)).collect();
+            // The dilation is 0.5: 2 of 4 steps, the float next to the bits
+            assert_eq!(
+                bits,
+                [
+                    &("/avatar/parameters/FT/v2/PupilDilation1".to_owned(), OscType::Bool(false)),
+                    &("/avatar/parameters/FT/v2/PupilDilation2".to_owned(), OscType::Bool(true)),
+                ],
+                "{output:?}"
+            );
+            assert_eq!(param(&received, "/avatar/parameters/FT/v2/PupilDilation"), Some(0.5), "{output:?}");
+            // Unchanged within the second: the float again, the bits not
+            write();
+            bridge.livelink_throttle = Throttle::default();
+            bridge.on_sample(reading(1, [0.0, 0.0], [0.8; 2])).unwrap();
+            let received = osc_received(&vrchat_listener);
+            assert!(param(&received, "/avatar/parameters/FT/v2/PupilDilation").is_some(), "{output:?}");
+            assert!(!received.iter().any(|(addr, _)| is_bit(addr)), "{output:?}");
+        }
+    }
+
+    fn osc_received(listener: &UdpSocket) -> Vec<(String, OscType)> {
+        listener.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+        let mut buffer = [0u8; 1024];
+        let mut received = Vec::new();
+        while let Ok(size) = listener.recv(&mut buffer) {
+            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
+            let OscPacket::Message(message) = packet else { panic!("not a message") };
+            received.push((message.addr, message.args[0].clone()));
+        }
+        received
+    }
+
+    #[test]
+    fn the_cameras_values_go_out_and_their_squint_is_set_back_when_it_stops() {
+        use eyecam_live::tests::{TempDir, TestEye, live_bytes, write_live};
+        let dir = TempDir::new("bridge");
+        let path = dir.0.join("live");
+        let write = |calib_state: u32| {
+            let now = eyecam_live::monotonic_ns();
+            write_live(&path, &live_bytes(7, calib_state, true, [TestEye::at(now, 0.9, 0.6); 2]));
+        };
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let vrchat = Settings {
+            host: "127.0.0.1".into(),
+            port: Some(listener.local_addr().unwrap().port()),
+            lid_calibration: false,
+            ..settings()
+        };
+        let mut bridge = test_bridge(vrchat.clone());
+        // No live file: nothing about the camera, in the messages or the status
+        bridge.on_sample(reading(0, [0.0, 0.0], [0.8; 2])).unwrap();
+        let received = osc_received(&listener);
+        assert_eq!(received.len(), 9);
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert!(json["camera"].is_null());
+        assert!(json["sent"]["squint"].is_null() && json["sent"]["pupil_dilation"].is_null());
+
+        bridge.camera = LiveReader::new(path.clone(), Instant::now());
+        let squint = |name: &str| format!("/avatar/parameters/FT/v2/EyeSquint{name}");
+        write(1);
+        bridge.on_sample(reading(1, [0.0, 0.0], [0.8; 2])).unwrap();
+        let received = osc_received(&listener);
+        assert_eq!(param(&received, &squint("Left")), Some(0.6));
+        assert_eq!(param(&received, &squint("")), Some(0.6));
+        assert_eq!(param(&received, "/avatar/parameters/FT/v2/PupilDiameterRight"), Some(0.4));
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        let camera = &json["camera"];
+        assert_eq!((camera["present"].as_bool(), camera["calib_state"].as_u64()), (Some(true), Some(1)));
+        assert_eq!(camera["used"], serde_json::json!([true, true]));
+        assert_eq!(camera["pupil_used"], serde_json::json!([true, true]));
+        assert!(camera["error"].is_null() && camera["recalib_suggested"] == false);
+        assert_eq!(json["sent"]["squint"].as_array().unwrap().len(), 2);
+        assert_eq!(json["sent"]["squint"][0].as_f64().unwrap() as f32, 0.6);
+        assert_eq!(json["sent"]["pupil_dilation"], 0.5);
+
+        // The wear calibration goes: the squint is set back to 0, once; the pupils go on
+        write(0);
+        bridge.on_sample(reading(2, [0.0, 0.0], [0.8; 2])).unwrap();
+        let received = osc_received(&listener);
+        for name in ["Left", "Right", ""] {
+            assert_eq!(param(&received, &squint(name)), Some(0.0), "{name}");
+        }
+        assert!(param(&received, "/avatar/parameters/FT/v2/PupilDilation").is_some());
+        bridge.on_sample(reading(3, [0.0, 0.0], [0.8; 2])).unwrap();
+        let received = osc_received(&listener);
+        assert!(received.iter().all(|(addr, _)| !addr.contains("EyeSquint")), "{received:?}");
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(json["camera"]["used"], serde_json::json!([false, false]));
+        assert!(json["sent"]["squint"].is_null());
+
+        // Losing the eye data sets it back too
+        write(1);
+        bridge.on_sample(reading(4, [0.0, 0.0], [0.8; 2])).unwrap();
+        osc_received(&listener);
+        bridge.on_lost("test").unwrap();
+        let received = osc_received(&listener);
+        assert_eq!(received[0], ("/avatar/parameters/FT/EyeTrackingActive".into(), OscType::Bool(false)));
+        assert_eq!(received[1..], [squint("Left"), squint("Right"), squint("")].map(|addr| (addr, OscType::Float(0.0))));
+        bridge.on_lost("test").unwrap();
+        assert!(osc_received(&listener).iter().all(|(addr, _)| !addr.contains("EyeSquint")));
+
+        // And so does pausing, or moving VRChat elsewhere: where it went
+        for changed in [Settings { sending: false, ..vrchat.clone() }, Settings { prefix: "/Other".into(), ..vrchat.clone() }] {
+            bridge.apply(reload(&vrchat)).unwrap();
+            write(1);
+            bridge.on_sample(reading(5, [0.0, 0.0], [0.8; 2])).unwrap();
+            osc_received(&listener);
+            bridge.apply(reload(&changed)).unwrap();
+            let received = osc_received(&listener);
+            assert_eq!(param(&received, &squint("")), Some(0.0), "{received:?}");
+            assert!(bridge.squint_out == [false; 2]);
+        }
+
+        // A file that isn't right: there, with the reason
+        write_live(&path, &[0u8; 200]);
+        bridge.camera = LiveReader::new(path.clone(), Instant::now());
+        bridge.read_camera();
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(json["camera"]["present"], false);
+        assert!(json["camera"]["error"].as_str().unwrap().contains("magic"), "{}", json["camera"]);
     }
 }

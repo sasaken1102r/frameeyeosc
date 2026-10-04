@@ -66,6 +66,21 @@ private:
     std::vector<uint8_t> rgba_;
 };
 
+/** The eye capture's full-view overlay image's edge length (px; about 8 px a degree as it is shown). */
+constexpr int kFillImageSize = 1024;
+
+/**
+ * Draw the eye capture's full-view overlay for a bright or dark step: all white or all black, with the instruction
+ * faintly in the middle so the user knows what is going on (see VrOverlay::showFill).
+ * @param fonts the fonts
+ * @param bright white (else black)
+ * @param label the instruction
+ * @param rgba where to write un-premultiplied RGBA (kFillImageSize squared)
+ * @param pngPath also save a PNG here if not empty
+ */
+void renderFill(const FontSet& fonts, bool bright, const std::string& label, std::vector<uint8_t>& rgba,
+                const std::string& pngPath = "");
+
 /** The debug gaze dot image's edge length (px). */
 constexpr int kDotImageSize = 64;
 

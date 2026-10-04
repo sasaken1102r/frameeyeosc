@@ -137,18 +137,10 @@ std::string uniqueBase(const std::string& dir, const std::string& stamp) {
     }
 }
 
-namespace {
-
 #ifndef CLOSE_RANGE_CLOEXEC
 #define CLOSE_RANGE_CLOEXEC (1U << 2)
 #endif
 
-/**
- * In the child between fork and exec: mark every descriptor from 3 up close-on-exec, however high, so nothing of the
- * panel's (its lock file, sockets, the GPU) reaches the recorder. Marked rather than closed, so the pipe that reports
- * a failed exec stays open until the exec. close_range (Linux 5.11+); otherwise the descriptors listed in
- * /proc/self/fd, read with getdents64 (only async-signal-safe calls here).
- */
 void cloexecFrom3() {
 #ifdef SYS_close_range
     if (::syscall(SYS_close_range, 3U, ~0U, CLOSE_RANGE_CLOEXEC) == 0) return;
@@ -176,8 +168,6 @@ void cloexecFrom3() {
     }
     ::close(dir);
 }
-
-}  // namespace
 
 Recorder::~Recorder() {
     shutdown();

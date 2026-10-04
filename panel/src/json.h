@@ -82,6 +82,22 @@ struct JsonValue {
 bool parseJson(const std::string& source, JsonValue& out, std::string& error);
 
 /**
+ * Text that is valid UTF-8, for drawing (cairo and FreeType take only that): every byte that doesn't start a whole,
+ * shortest-form UTF-8 character of at most U+10FFFF (and not a surrogate) becomes U+FFFD.
+ * @param text the text as read (a file, a socket)
+ * @return it, valid
+ */
+std::string validUtf8(const std::string& text);
+
+/**
+ * How many bytes of the text's first `max` bytes end on a character boundary (no UTF-8 character cut in two).
+ * @param text the text
+ * @param max the most bytes wanted
+ * @return at most max, at a boundary
+ */
+size_t utf8Prefix(const std::string& text, size_t max);
+
+/**
  * Write a value as pretty-printed JSON (2-space indent, members in their stored order, trailing newline).
  * Fractional numbers are written with up to 6 significant digits so that 0.1 steps stay readable.
  * @param value the value to write

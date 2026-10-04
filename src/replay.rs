@@ -1,7 +1,8 @@
-//! Recording the eye server's samples to CSV (--record), and running a recording back through the same
-//! processing (--replay) to compare settings by a few numbers.
+//! Recording the eye server's samples to CSV (--record), with the eye camera's values read with each, and running a
+//! recording back through the same processing (--replay) to compare settings by a few numbers.
 
 use crate::config::{LidFit, Settings};
+use crate::eyecam_live::{Eye, Live};
 use crate::{
     CAL_SETTLE, EyeData, LidCalibration, MAX_GAP, NOMINAL_DT, Sample, Saturation, Smoother, TIMEOUT, gaze_angles, step,
 };
@@ -18,8 +19,10 @@ const OPEN_ABOVE: f32 = 0.6;
 const BLINK_MERGE: usize = 2;
 // How long after a blink its eyelids may still be closing, given the filters' lag.
 const BLINK_TAIL: f64 = 0.15;
-// Sent eyelids (VRCFT) at or below this look closed on an avatar.
+// Sent eyelids (VRCFT) at or below this look closed on an avatar...
 const LID_SHUT: f32 = 0.05;
+// ...and at or above this visibly widened (40% of the way from relaxed open to full).
+const LID_WIDE: f32 = 0.85;
 // Gaze jumps are looked for this close to a sample where either eye is below BLINK_BELOW.
 const BLINK_NEAR: f64 = 0.1;
 // Flicker is only measured this far from any sample where either eye is below BLINK_BELOW.
@@ -86,6 +89,73 @@ fn values(data: &EyeData) -> Vec<f64> {
     values
 }
 
+// Each eye's eye-camera columns (cam_l_*, cam_r_*): whether its values were fresh when read with the sample (and so
+// could be used), eyecam-rec's values, and how long before that read the camera frame was taken.
+const CAMERA_EYE_FIELDS: [&str; 10] =
+    ["fresh", "valid", "closed", "lid", "wide", "squint", "pupil_mm", "pupil_dilation", "confidence", "age_ms"];
+
+/// Names of the eye camera's columns, after the eye server's: each eye's (CAMERA_EYE_FIELDS), then the calibration
+/// state and whether eyecam-rec was processing. Recordings from before there were any have none.
+fn camera_columns() -> Vec<String> {
+    let mut names: Vec<String> =
+        ["l", "r"].iter().flat_map(|eye| CAMERA_EYE_FIELDS.map(|field| format!("cam_{eye}_{field}"))).collect();
+    names.extend(["cam_calib_state".to_owned(), "cam_live".to_owned()]);
+    names
+}
+
+/// The eye camera's cells of one row: its values as read at `now_ns` (CLOCK_MONOTONIC), or all empty without a live
+/// file to read.
+fn camera_fields(camera: Option<(&Live, u64)>) -> Vec<String> {
+    let Some((live, now_ns)) = camera else {
+        return vec![String::new(); camera_columns().len()];
+    };
+    let flag = |value: bool| u8::from(value).to_string();
+    let mut fields = Vec::new();
+    for (eye, fresh) in live.eyes.iter().zip(live.fresh) {
+        fields.extend([flag(fresh), flag(eye.valid), flag(eye.closed)]);
+        let floats = [eye.lid, eye.wide, eye.squint, eye.pupil_mm, eye.pupil_dilation, eye.confidence];
+        fields.extend(floats.map(|value| value.to_string()));
+        let age_ns = i128::from(now_ns) - i128::from(eye.time_ns);
+        fields.push(format!("{:.1}", age_ns as f64 / 1e6));
+    }
+    fields.extend([live.calib_state.to_string(), flag(live.live)]);
+    fields
+}
+
+/// The eye camera's values from a row's cells (in camera_columns order), as they were read for that sample: whether
+/// each eye's were fresh is as recorded, not judged again. None when the cells are empty; Err when they are not
+/// numbers.
+fn camera_from(cells: &[&str]) -> Result<Option<Live>, ()> {
+    if cells.iter().all(|cell| cell.is_empty()) {
+        return Ok(None);
+    }
+    let values = cells.iter().map(|cell| cell.parse::<f64>()).collect::<Result<Vec<_>, _>>().map_err(|_| ())?;
+    let per_eye = CAMERA_EYE_FIELDS.len();
+    let eye = |eye: usize| {
+        let value = |field: usize| values[eye * per_eye + field];
+        let eye = Eye {
+            time_ns: 0,
+            valid: value(1) != 0.0,
+            closed: value(2) != 0.0,
+            lid: value(3) as f32,
+            wide: value(4) as f32,
+            squint: value(5) as f32,
+            pupil_mm: value(6) as f32,
+            pupil_dilation: value(7) as f32,
+            confidence: value(8) as f32,
+        };
+        (value(0) != 0.0, eye)
+    };
+    let [(fresh_left, left), (fresh_right, right)] = [eye(0), eye(1)];
+    Ok(Some(Live {
+        calib_state: values[2 * per_eye] as u32,
+        recalib_suggested: false,
+        live: values[2 * per_eye + 1] != 0.0,
+        eyes: [left, right],
+        fresh: [fresh_left, fresh_right],
+    }))
+}
+
 /// The sample `values` came from.
 fn from_values(values: &[f64]) -> EyeData {
     let mut floats = values[1..].iter().map(|value| *value as f32);
@@ -110,29 +180,37 @@ fn from_values(values: &[f64]) -> EyeData {
     }
 }
 
-/// Writes samples to a CSV file, one line each.
+/// Writes samples to a CSV file, one line each, with the eye camera's columns last.
 pub struct Recorder {
     out: BufWriter<File>,
     pub count: u64,
+    // Lines with the eye camera's values.
+    pub camera_count: u64,
 }
 
 impl Recorder {
     pub fn create(path: &Path) -> io::Result<Self> {
         let mut out = BufWriter::new(File::create(path)?);
-        writeln!(out, "{}", columns().join(","))?;
-        Ok(Self { out, count: 0 })
+        writeln!(out, "{},{}", columns().join(","), camera_columns().join(","))?;
+        Ok(Self {
+            out,
+            count: 0,
+            camera_count: 0,
+        })
     }
 
-    pub fn write(&mut self, data: &EyeData) -> io::Result<()> {
+    /// One sample, with the eye camera's values as read for it at `now_ns` (CLOCK_MONOTONIC), if there were any.
+    pub fn write(&mut self, data: &EyeData, camera: Option<(&Live, u64)>) -> io::Result<()> {
         // Floats print in their shortest form that reads back exactly.
-        let line = values(data)
+        let mut fields: Vec<String> = values(data)
             .iter()
             .enumerate()
             .map(|(i, value)| if i == 0 { value.to_string() } else { (*value as f32).to_string() })
-            .collect::<Vec<_>>()
-            .join(",");
-        writeln!(self.out, "{line}")?;
+            .collect();
+        fields.extend(camera_fields(camera));
+        writeln!(self.out, "{}", fields.join(","))?;
         self.count += 1;
+        self.camera_count += u64::from(camera.is_some());
         Ok(())
     }
 
@@ -141,49 +219,69 @@ impl Recorder {
     }
 }
 
-/// Read a recording. Columns are found by name, so their order does not matter and extra ones are ignored.
-fn parse(text: &str) -> Result<Vec<EyeData>, String> {
+/// One recorded sample, and the eye camera's values read with it (None while there was no live file, and in
+/// recordings from before there were any).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Row {
+    data: EyeData,
+    camera: Option<Live>,
+}
+
+/// Read a recording, and whether it has the eye camera's columns. Columns are found by name, so their order does not
+/// matter and extra ones are ignored.
+fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
     let mut lines = text.lines().enumerate().filter(|(_, line)| !line.trim().is_empty());
     let (_, header) = lines.next().ok_or("the file is empty")?;
     let header: Vec<&str> = header.split(',').map(str::trim).collect();
+    let position = |name: &String| header.iter().position(|column| column == name);
     let positions = columns()
         .iter()
-        .map(|name| {
-            header
-                .iter()
-                .position(|column| column == name)
-                .ok_or_else(|| format!("column {name} is missing"))
-        })
+        .map(|name| position(name).ok_or_else(|| format!("column {name} is missing")))
         .collect::<Result<Vec<_>, _>>()?;
-    lines
+    let camera_positions = camera_columns().iter().map(position).collect::<Option<Vec<_>>>();
+    let rows = lines
         .map(|(index, line)| {
+            let not_numbers = || format!("line {}: not a row of numbers", index + 1);
             let fields: Vec<&str> = line.split(',').map(str::trim).collect();
             let values = positions
                 .iter()
                 .map(|position| fields.get(*position)?.parse::<f64>().ok())
                 .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| format!("line {}: not a row of numbers", index + 1))?;
-            Ok(from_values(&values))
+                .ok_or_else(not_numbers)?;
+            let camera = match &camera_positions {
+                Some(positions) => {
+                    let cells: Vec<&str> =
+                        positions.iter().map(|position| fields.get(*position).copied().unwrap_or("")).collect();
+                    camera_from(&cells).map_err(|_| not_numbers())?
+                }
+                None => None,
+            };
+            Ok(Row {
+                data: from_values(&values),
+                camera,
+            })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok((rows, camera_positions.is_some()))
 }
 
-/// Everything sent for each sample, as the live loop would have sent it. The calibration settles and
-/// restarts on sample time the way the live loop does on the clock.
-fn replay(samples: &[EyeData], settings: &Settings, mut calibration: LidCalibration) -> Vec<Sample> {
+/// Everything sent for each sample, as the live loop would have sent it, with the eye camera's values recorded with
+/// it. The calibration settles and restarts on sample time the way the live loop does on the clock.
+fn replay(samples: &[EyeData], cameras: &[Option<Live>], settings: &Settings, mut calibration: LidCalibration) -> Vec<Sample> {
     let mut smoother = Smoother::new(settings);
     let mut since = None;
     let mut last: Option<f64> = None;
     samples
         .iter()
-        .map(|data| {
+        .zip(cameras)
+        .map(|(data, camera)| {
             let time = data.sample_time;
             if last.is_some_and(|last| time - last >= TIMEOUT.as_secs_f64()) {
                 since = None;
             }
             last = Some(time);
             let settled = time - *since.get_or_insert(time) >= CAL_SETTLE.as_secs_f64();
-            step(settings, &mut smoother, &mut calibration, data, settled)
+            step(settings, &mut smoother, &mut calibration, data, settled, camera.as_ref())
         })
         .collect()
 }
@@ -604,18 +702,64 @@ fn report(input: &Path, samples: &[EyeData], skipped: usize, settings: &Settings
     text
 }
 
-/// Every processed sample: Frame openness, the gaze and VRCFT eyelids as sent, and the quality check.
-fn write_processed(path: &Path, samples: &[EyeData], sent: &[Sample]) -> io::Result<()> {
+/// How the eye camera's values were used over a recording that has them, as report lines: how often there were
+/// values, fresh and with a baseline, how often each eye's eyelid and squint came from them, and how often each eye
+/// went out visibly widened (LID_WIDE) with them (`with`) and without them (`without`, camera_lids off).
+fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -> String {
+    let n = cameras.len().max(1) as f64;
+    let share = |count: usize| count as f64 * 100.0 / n;
+    let read: Vec<&Live> = cameras.iter().flatten().collect();
+    let fresh = [0, 1].map(|eye| share(read.iter().filter(|live| live.fresh[eye]).count()));
+    let baseline = share(read.iter().filter(|live| live.baseline()).count());
+    let used = [0, 1].map(|eye| share(with.iter().filter(|sample| sample.camera.squint[eye].is_some()).count()));
+    let wide = |sent: &[Sample]| {
+        let [left, right] = [0, 1].map(|eye| share(sent.iter().filter(|sample| sample.lids[eye] >= LID_WIDE).count()));
+        format!("{left:.1}% / {right:.1}%")
+    };
+    format!(
+        "\nEye camera (eyecam-rec): values with {:.1}% of the samples; fresh (L / R) {:.1}% / {:.1}%; \
+         with a baseline for the wear {baseline:.1}%\n  \
+         eyelid and squint from it (L / R)          {:.1}% / {:.1}%\n  \
+         sent widened, VRCFT {LID_WIDE} or more (L / R)    {} with it, {} without it\n",
+        share(read.len()),
+        fresh[0],
+        fresh[1],
+        used[0],
+        used[1],
+        wide(with),
+        wide(without),
+    )
+}
+
+/// Every processed sample: Frame openness, the gaze and VRCFT eyelids as sent, and the quality check. A recording
+/// with the eye camera's columns also gets, per eye, whether its eyelid could come from the camera, and the squint,
+/// pupil dilation and pupil diameter (mm) as sent (empty where they were not).
+fn write_processed(path: &Path, samples: &[EyeData], sent: &[Sample], camera: bool) -> io::Result<()> {
     let mut out = BufWriter::new(File::create(path)?);
-    writeln!(
+    write!(
         out,
         "sample_time,openness_left,openness_right,gaze_left_x,gaze_left_y,gaze_right_x,gaze_right_y,\
          gaze_x,gaze_y,lid_left,lid_right,reliable_left,reliable_right"
     )?;
+    if camera {
+        write!(
+            out,
+            ",camera_left,camera_right,squint_left,squint_right,pupil_dilation_left,pupil_dilation_right,\
+             pupil_mm_left,pupil_mm_right"
+        )?;
+    }
+    writeln!(out)?;
+    let optional = |value: Option<f32>| value.map_or_else(String::new, |value| value.to_string());
     for (data, sample) in samples.iter().zip(sent) {
         let mut fields = vec![data.sample_time.to_string()];
         fields.extend(data.openness.iter().chain(&sample.gaze).chain(&sample.lids).map(f32::to_string));
         fields.extend(sample.reliable.map(|reliable| u8::from(reliable).to_string()));
+        if camera {
+            let values = sample.camera;
+            fields.extend(values.squint.map(|squint| u8::from(squint.is_some()).to_string()));
+            let optionals = [values.squint, values.pupil_dilation, values.pupil_diameter];
+            fields.extend(optionals.iter().flatten().map(|value| optional(*value)));
+        }
         writeln!(out, "{}", fields.join(","))?;
     }
     out.flush()
@@ -624,15 +768,25 @@ fn write_processed(path: &Path, samples: &[EyeData], sent: &[Sample]) -> io::Res
 /// Replay a recording with the new stages off and with `settings`, and print the comparison.
 pub fn run(input: &Path, output: Option<&Path>, settings: &Settings, calibration: &LidCalibration) -> Result<(), Box<dyn Error>> {
     let text = fs::read_to_string(input).map_err(|error| format!("{}: {error}", input.display()))?;
-    let all = parse(&text).map_err(|error| format!("{}: {error}", input.display()))?;
-    let samples: Vec<EyeData> = all.iter().copied().filter(EyeData::is_finite).collect();
-    let before = replay(&samples, &without_new_stages(settings), calibration.clone());
-    let after = replay(&samples, settings, calibration.clone());
+    let (all, camera) = parse(&text).map_err(|error| format!("{}: {error}", input.display()))?;
+    let rows: Vec<Row> = all.iter().copied().filter(|row| row.data.is_finite()).collect();
+    let samples: Vec<EyeData> = rows.iter().map(|row| row.data).collect();
+    let cameras: Vec<Option<Live>> = rows.iter().map(|row| row.camera).collect();
+    let before = replay(&samples, &cameras, &without_new_stages(settings), calibration.clone());
+    let after = replay(&samples, &cameras, settings, calibration.clone());
     if let Some(output) = output {
-        write_processed(output, &samples, &after).map_err(|error| format!("{}: {error}", output.display()))?;
+        write_processed(output, &samples, &after, camera).map_err(|error| format!("{}: {error}", output.display()))?;
     }
+    let camera_text = camera.then(|| {
+        let off = Settings {
+            camera_lids: false,
+            ..settings.clone()
+        };
+        camera_lines(&cameras, &after, &replay(&samples, &cameras, &off, calibration.clone()))
+    });
     let (before, after) = (metrics(&samples, &before), metrics(&samples, &after));
     print!("{}", report(input, &samples, all.len() - samples.len(), settings, &before, &after));
+    print!("{}", camera_text.unwrap_or_default());
     Ok(())
 }
 
@@ -646,7 +800,12 @@ mod tests {
     const SYNTHETIC: &str = include_str!("../tests/fixtures/synthetic.csv");
 
     fn synthetic() -> Vec<EyeData> {
-        parse(SYNTHETIC).unwrap()
+        parse(SYNTHETIC).unwrap().0.into_iter().map(|row| row.data).collect()
+    }
+
+    /// `replay` without the eye camera's values.
+    fn replay_alone(samples: &[EyeData], settings: &Settings, calibration: LidCalibration) -> Vec<Sample> {
+        replay(samples, &vec![None; samples.len()], settings, calibration)
     }
 
     fn calibration() -> LidCalibration {
@@ -663,7 +822,7 @@ mod tests {
 
     fn run_with(settings: &Settings) -> Metrics {
         let samples = synthetic();
-        metrics(&samples, &replay(&samples, settings, calibration()))
+        metrics(&samples, &replay_alone(&samples, settings, calibration()))
     }
 
     #[test]
@@ -680,23 +839,169 @@ mod tests {
         };
         let path = std::env::temp_dir().join(format!("frameeyeosc-record-{}.csv", std::process::id()));
         let mut recorder = Recorder::create(&path).unwrap();
-        recorder.write(&data).unwrap();
-        recorder.write(&EyeData { sample_time: 19892.74, ..data }).unwrap();
+        recorder.write(&data, None).unwrap();
+        let mut camera = crate::tests::camera(0.93, 0.25);
+        camera.eyes[1] = Eye {
+            time_ns: 1_000_000_000,
+            closed: true,
+            wide: 0.72,
+            pupil_mm: 3.75,
+            pupil_dilation: 0.4,
+            confidence: 0.8,
+            ..camera.eyes[1]
+        };
+        camera.fresh = [true, false];
+        camera.calib_state = 5;
+        recorder.write(&EyeData { sample_time: 19892.74, ..data }, Some((&camera, 1_012_345_678))).unwrap();
         recorder.flush().unwrap();
+        assert_eq!((recorder.count, recorder.camera_count), (2, 1));
         drop(recorder);
-        let read = parse(&fs::read_to_string(&path).unwrap()).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
         fs::remove_file(path).unwrap();
-        assert_eq!(read, [data, EyeData { sample_time: 19892.74, ..data }]);
+        let (read, has_camera) = parse(&text).unwrap();
+        assert!(has_camera);
+        let expected = [
+            Row { data, camera: None },
+            Row {
+                data: EyeData { sample_time: 19892.74, ..data },
+                // As read, with the capture times left out (only their age is recorded)
+                camera: Some(Live {
+                    eyes: camera.eyes.map(|eye| Eye { time_ns: 0, ..eye }),
+                    ..camera
+                }),
+            },
+        ];
+        assert_eq!(read, expected);
+        // The camera's columns come last, after the eye server's as before: empty without a live file
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].starts_with(&(columns().join(",") + ",cam_l_fresh,cam_l_valid,cam_l_closed,cam_l_lid,")));
+        assert!(lines[0].ends_with(",cam_r_confidence,cam_r_age_ms,cam_calib_state,cam_live"));
+        assert!(lines[1].ends_with(&",".repeat(22)), "{}", lines[1]);
+        let cells: Vec<&str> = lines[2].split(',').skip(columns().len()).collect();
+        assert_eq!(
+            cells,
+            [
+                "1", "1", "0", "0.93", "0", "0.25", "4", "0.5", "0", "1012.3",
+                "0", "1", "1", "0.93", "0.72", "0.25", "3.75", "0.4", "0.8", "12.3",
+                "5", "1",
+            ]
+        );
     }
 
     #[test]
     fn columns_are_found_by_name() {
         let text = "note,".to_owned() + &columns().join(",") + "\n" + "9," + &["1"; 38].join(",");
-        let read = parse(&text).unwrap();
-        assert_eq!((read[0].sample_time, read[0].extra[7]), (1.0, 1.0));
+        let (read, has_camera) = parse(&text).unwrap();
+        assert_eq!((read[0].data.sample_time, read[0].data.extra[7]), (1.0, 1.0));
+        assert!(!has_camera && read[0].camera.is_none());
         assert!(parse("sample_time\n1\n").unwrap_err().contains("gaze_left_x"));
         let broken = columns().join(",") + "\n1,2,x";
         assert!(parse(&broken).unwrap_err().starts_with("line 2"));
+    }
+
+    #[test]
+    fn old_recordings_have_no_camera_and_new_ones_may_lack_it_for_a_while() {
+        // From before the camera's columns: read as before
+        let (old, has_camera) = parse(SYNTHETIC).unwrap();
+        assert!(!has_camera && old.len() == 540 && old.iter().all(|row| row.camera.is_none()));
+        // With them: rows without a live file have empty cells
+        let header = columns().join(",") + "," + &camera_columns().join(",");
+        let eye = ["1", "1", "0", "0.9", "0.6", "0.1", "4.5", "0.55", "0.95", "3.2"].join(",");
+        let sample = ["2"; 38].join(",");
+        let text = format!("{header}\n{sample}{}\n{sample},{eye},{eye},4,1\n", ",".repeat(22));
+        let (rows, has_camera) = parse(&text).unwrap();
+        assert!(has_camera);
+        assert_eq!(rows[0].camera, None);
+        let live = rows[1].camera.unwrap();
+        assert_eq!((live.calib_state, live.live, live.fresh), (4, true, [true; 2]));
+        assert_eq!((live.eyes[1].lid, live.eyes[1].wide, live.eyes[1].pupil_mm), (0.9, 0.6, 4.5));
+        assert_eq!(live.lids_usable(), [true; 2]);
+        // Not numbers there: refused like any other cell
+        let broken = format!("{header}\n{sample},{eye},{},4,1\n", eye.replace("0.9", "x"));
+        assert!(parse(&broken).unwrap_err().starts_with("line 2"));
+    }
+
+    /// A recording of `seconds` at 90 Hz looking straight ahead with both eyes reading 1.000 (relaxed open on SteamOS
+    /// 0.4.3), and the eye camera's values from `camera(sample index)`, written by the Recorder and read back.
+    fn saturated_recording(seconds: usize, camera: impl Fn(usize) -> Option<Live>) -> (Vec<EyeData>, Vec<Option<Live>>) {
+        let path = std::env::temp_dir().join(format!("frameeyeosc-camera-replay-{}.csv", std::process::id()));
+        let mut recorder = Recorder::create(&path).unwrap();
+        for i in 0..seconds * 90 {
+            let data = EyeData {
+                sample_time: 500.0 + i as f64 / 90.0,
+                gaze: [[0.0, 0.0, -1.0]; 2],
+                fixation_point: [0.0, 0.0, -1.0],
+                pre_fusion_gaze: [[0.0, 0.0, -1.0]; 2],
+                openness: [1.0; 2],
+                ..EyeData::default()
+            };
+            recorder.write(&data, camera(i).as_ref().map(|live| (live, 0))).unwrap();
+        }
+        recorder.flush().unwrap();
+        drop(recorder);
+        let text = fs::read_to_string(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        let rows = parse(&text).unwrap().0;
+        (rows.iter().map(|row| row.data).collect(), rows.iter().map(|row| row.camera).collect())
+    }
+
+    #[test]
+    fn a_replay_mixes_in_the_recorded_camera_widening_past_the_saturation_cap() {
+        let settings = Settings {
+            lid_calibration: false,
+            ..Settings::default()
+        };
+        // The camera sees the eyes widened from 10 s in, after the openness has been told to be saturated (6.7 s)
+        let wide = crate::tests::camera(0.95, 0.2);
+        let (samples, cameras) = saturated_recording(15, |i| (i >= 900).then_some(wide));
+        let sent = replay(&samples, &cameras, &settings, calibration());
+        assert!(sent[700..900].iter().all(|sample| sample.lids.iter().all(|lid| *lid <= 0.75)));
+        let last = sent.last().unwrap();
+        assert!(last.lids.iter().all(|lid| (lid - 0.95).abs() < 0.005), "{:?}", last.lids);
+        assert_eq!(last.camera.squint, [Some(0.2); 2]);
+        // Its freshness is as recorded, whatever the replay's clock: stale values are not used
+        let stale = Live {
+            fresh: [false; 2],
+            ..wide
+        };
+        let (samples, cameras) = saturated_recording(15, |i| (i >= 900).then_some(stale));
+        let sent = replay(&samples, &cameras, &settings, calibration());
+        assert!(sent[700..].iter().all(|sample| sample.lids.iter().all(|lid| *lid <= 0.75)));
+        // The report says how much of the widening came from the camera (here all: marks 3 and 4 at 1.000 keep the
+        // eye server's readings from widening even before the cap)
+        let marks = Settings {
+            lid_widen_start: 1.0,
+            lid_wide: 1.0,
+            ..settings.clone()
+        };
+        let (samples, cameras) = saturated_recording(15, |i| (i >= 900).then_some(wide));
+        let sent = replay(&samples, &cameras, &marks, calibration());
+        let off = Settings {
+            camera_lids: false,
+            ..marks.clone()
+        };
+        let without = replay(&samples, &cameras, &off, calibration());
+        let widened = sent.iter().filter(|sample| sample.lids[0] >= LID_WIDE).count();
+        assert!((420..450).contains(&widened), "{widened}");
+        let lines = camera_lines(&cameras, &sent, &without);
+        assert!(lines.contains("values with 33.3% of the samples; fresh (L / R) 33.3% / 33.3%"), "{lines}");
+        assert!(lines.contains("eyelid and squint from it (L / R)          33.3% / 33.3%"), "{lines}");
+        let share = format!("{:.1}%", widened as f64 * 100.0 / 1350.0);
+        assert!(lines.contains(&format!("{share} / {share} with it, 0.0% / 0.0% without it")), "{lines}");
+        let path = std::env::temp_dir().join(format!("frameeyeosc-camera-processed-{}.csv", std::process::id()));
+        write_processed(&path, &samples, &sent, true).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        write_processed(&path, &samples, &sent, false).unwrap();
+        let plain = fs::read_to_string(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        let header = text.lines().next().unwrap();
+        assert!(header.ends_with(",reliable_right,camera_left,camera_right,squint_left,squint_right,\
+            pupil_dilation_left,pupil_dilation_right,pupil_mm_left,pupil_mm_right"), "{header}");
+        let first = text.lines().nth(1).unwrap();
+        assert!(first.ends_with(&format!(",1,1,0,0{}", ",".repeat(6))), "{first}");
+        assert!(text.lines().last().unwrap().ends_with(",1,1,1,1,0.2,0.2,0.5,0.5,4,4"), "{}", text.lines().last().unwrap());
+        // Without the camera's columns, as before
+        assert!(plain.lines().next().unwrap().ends_with(",reliable_left,reliable_right"));
     }
 
     #[test]

@@ -1,7 +1,9 @@
 /target/
 /dist/
 # Eye-tracking recordings are personal data; never commit them.
-/tools/
+/tools/*
+# ...except the vendored eye-camera tool (see Development in README.md)
+!/tools/eyecam/
 *.csv
 # ...except the made-up one the replay tests read.
 !/tests/fixtures/synthetic.csv

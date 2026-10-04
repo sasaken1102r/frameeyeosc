@@ -65,6 +65,7 @@ struct UiText {
     const char* tabGazeFit;
     const char* tabLids;
     const char* tabAdvanced;
+    const char* tabEyecam;          ///< the developer tab, only while eyecam-rec runs
 
     // Shared
     const char* on;
@@ -94,6 +95,13 @@ struct UiText {
     const char* rowSteamlink;       ///< also send the avatar parameters Steam Link's own OSC sends
     const char* hintSteamlink;
     const char* steamlinkNoPrefix;  ///< after its example address: the prefix is never added
+    const char* rowPupils;  ///< LiveLink output: send the pupils straight to VRChat (pupils_to_vrchat)
+    const char* hintPupils;  ///< ...why, under it
+    const char* pupilsTargetFormat;  ///< ...where they go now ("to %s")
+    const char* rowPupilBits;  ///< how the avatar takes pupils: a float or that many bits (pupil_bits)
+    const char* pupilBitsFloat;  ///< ...its first segment (0)
+    const char* hintPupilBits;  ///< ...under it: how to tell the count
+    const char* hintPupilBitsOff;  ///< ...under it while greyed (the pupils don't go straight to VRChat)
     const char* rowNativeEyes;      ///< also send VRChat's own eye tracking input (/tracking/eye/*)
     const char* hintNativeEyes;
     const char* rowTarget;
@@ -294,6 +302,253 @@ struct UiText {
     const char* sectionTools;       ///< section titles: the gaze dots and the eye log...
     const char* sectionFiles;       ///< ...and the file locations and the process
     const char* updateCheckChip;    ///< the automatic update check, as a chip in the version row ("... On")
+    const char* historyButton;      ///< the version row's button that opens the version history
+    const char* historyTitle;       ///< the version history's title
+    const char* historyClose;       ///< its button back to the Advanced tab
+    const char* historyMissing;     ///< no CHANGELOG.md (or CHANGELOG.ja.md) was found
+
+    // The eye cameras tab (eyecam-rec's state and controls; its recording is on the Advanced tab)
+    const char* eyecamTitle;           ///< the title over the tab
+    const char* eyecamStart;           ///< the big button that sends "start"
+    const char* eyecamSearching;       ///< searching: looking for the eyes
+    const char* eyecamStop;            ///< the button that sends "stop"
+    const char* eyecamErrorTitle;      ///< error: the heading over the recorder's message
+    const char* eyecamRetry;           ///< error: start again
+    const char* eyecamUnknownFormat;   ///< a state this panel doesn't know ("State: %s")
+    const char* eyecamFpsFormat;       ///< "fps  L %s / R %s"
+    const char* eyecamNotLocked;       ///< while recording without camera frames (headset off): put it on
+    const char* eyecamRemainingFormat; ///< seconds left of the step ("%d s left")
+    const char* eyecamStepFormat;      ///< "Step %d of %d"
+    const char* eyecamSending;         ///< a command waits for its reply
+    const char* eyecamReplyFailedFormat;  ///< the last command failed ("Couldn't %s: %s")
+    const char* eyecamStepNormal;      ///< the instruction of each step label
+    const char* eyecamStepWiden;
+    const char* eyecamStepClose;
+    const char* eyecamStepSquint;
+    const char* eyecamStepLookUp;
+    const char* eyecamStepLookDown;
+    const char* eyecamStepBright;
+    const char* eyecamStepDark;
+    const char* eyecamStepEnd;
+    const char* eyecamStepLeadIn;  ///< the countdown before the first step
+    const char* eyecamLightTitle;      ///< the light warning before a start: its red title
+    const char* eyecamStorageNote;     ///< ...under it: where the video goes, how big, and to delete it
+    const char* eyecamStorageRow;      ///< the same, shorter, next to the recording's button
+    const char* eyecamLightWarning;    ///< ...the warning ("\n" breaks a line, "\n\n" between paragraphs)
+    const char* eyecamStartWithLight;  ///< ...sends "start"
+    const char* eyecamStartNoLight;    ///< ...sends "start widen_nolight"
+    const char* eyecamCancel;          ///< ...back without starting
+    const char* eyecamNoLight;         ///< by the step number while recording without the light
+    // ...the eye cameras for frameeyeosc (their usual page): the camera_lids switch and what frameeyeosc uses now
+    const char* rowCameraLids;         ///< the camera_lids switch
+    const char* cameraUseBoth;         ///< the cameras drive both eyes
+    const char* cameraUseLeft;         ///< ...only the left one
+    const char* cameraUseRight;        ///< ...only the right one
+    const char* cameraUseValve;        ///< Valve's values (camera_lids off, or no reason given)
+    const char* cameraUseValveFormat;  ///< Valve's values, and why ("... (%s)")
+    const char* cameraWhyNotCalibrated;  ///< ...not calibrated for this wear
+    const char* cameraWhyNoCamera;     ///< ...no live camera values reach frameeyeosc
+    const char* cameraWhyWarming;      ///< ...eyecam-rec is still learning the relaxed eyes
+    const char* cameraPupilSuffix;     ///< after "in use" when the pupils come from the cameras too
+    const char* eyecamWarmingFormat;   ///< by the cameras' title while learning the relaxed eyes ("... %d s left")
+    const char* eyecamLiveOff;         ///< eyecam-rec doesn't read the cameras live (nothing to calibrate for)
+    // ...while calibrating, and after a failed calibration
+    const char* eyecamCalibWearTitle;  ///< the title while calibrating for this wear
+    const char* eyecamCalibUserTitle;  ///< ...for the user
+    const char* eyecamCalibWaiting;    ///< calibrating, before the first step (waiting for the video)
+    const char* eyecamCalibErrorTitle; ///< error after a calibration: the heading over the recorder's message
+    const char* eyecamCalibRetry;      ///< ...the same calibration again
+    const char* eyecamSensitivity;     ///< the widening sensitivity slider (eye cameras)...
+    const char* eyecamSensitivityDull; ///< ...its left end
+    const char* eyecamSensitivitySharp;  ///< ...its right end
+    // The eye cameras' setup checklist, their usual page, the Eyelids tab's widening row, the developer recording
+    const char* setupTitle;  ///< the eye cameras tab while not set up: the checklist title
+    const char* setupOptional;  ///< ...at its right at (1) and (2)
+    const char* setupOneLeft;  ///< ...at (3)
+    const char* setupAllDone;  ///< ...when done (green)
+    const char* setupStepPassword;  ///< step (1)
+    const char* setupStepTool;  ///< step (2)
+    const char* setupStepToolAgain;  ///< ...when an update brought a new tool (grab_outdated)
+    const char* setupToolUpdated;  ///< ...the line under its title, and in the left column
+    const char* toolNoticeOutdated;  ///< set up, the tool outdated: the usual page's card
+    const char* eyecamBack;          ///< "Back" on a calibration's or recording's error
+    const char* camCalibNeedsLids;   ///< the page's calibrations while camera_lids is off (greyed)
+    const char* eyecamUserNeedsWear; ///< a failed user calibration that can't be retried (the headset put back on)
+    const char* toolNoticeTooOld;    ///< set up, the tool below the safety floor: the usual page's card (stronger)
+    const char* nextToolOutdated;    ///< ...the left column's card, under "install again"
+    const char* nextToolTooOld;
+    const char* setupStepLearn;  ///< step (3)
+    const char* setupStepDone;  ///< step (4)
+    const char* setupLaterTool;  ///< a step still to come, after its name
+    const char* setupLaterLearn;
+    const char* setupLaterDone;
+    const char* setupPasswordLabel;  ///< a step done: its name...
+    const char* setupPasswordSet;  ///< ...and what it is (green)
+    const char* setupAutoChecked;  ///< ...and how it was found
+    const char* setupToolLabel;
+    const char* setupToolDone;
+    const char* setupLearnLabel;
+    const char* setupLearnDone;
+    const char* setupPassPill;  ///< (1): the pill at the right of its title
+    const char* setupPassBody;  ///< (1): why
+    const char* setupPassWhere;  ///< (1): rows: where...
+    const char* setupPassPath1;  ///< ...the settings path
+    const char* setupPassPath2;
+    const char* setupPassPath3;
+    const char* setupPassKonsole;  ///< ...with Konsole
+    const char* setupPassKonsoleHow;
+    const char* setupPassMemo;  ///< ...a note
+    const char* setupPassMemoText;
+    const char* setupPassButton;  ///< ...its button
+    const char* setupVideo;  ///< the video button (only with a video URL)
+    const char* setupVideoNote;  ///< ...the line under it, before the URL
+    const char* setupCheckPill;  ///< (2): the pill
+    const char* setupCheckFlow;  ///< (2): how, before the command
+    const char* setupCheckTyped;  ///< ...after it
+    const char* setupCheckWhat;  ///< (2): rows
+    const char* setupCheckWhatText;
+    const char* setupCheckPassword;
+    const char* setupCheckPasswordText;
+    const char* setupCheckSsh;
+    const char* setupCheckSshText;
+    const char* setupCheckButton;  ///< (2): its button
+    const char* setupWaitPill;  ///< (3) before its button: the pill
+    const char* setupWaitTitle;  ///< ...the big line
+    const char* setupWaitVideo;  ///< ...rows: the camera video...
+    const char* setupWaitVideoOk;
+    const char* setupWaitVideoNo;
+    const char* setupWaitEyeOk;  ///< ...each eye
+    const char* setupWaitEyeNo;
+    const char* setupWaitButton;  ///< ...the button ("calib wear")
+    const char* setupWaitHint1;  ///< ...beside it
+    const char* setupWaitHint2;
+    const char* setupWaitFoot;  ///< ...under it
+    const char* setupLearnPill;  ///< (3) calibrating: the pill
+    const char* setupLearnWidenHint;  ///< ...beside the instruction to widen
+    const char* setupChipClose;  ///< ...the steps as chips
+    const char* setupChipNormal;
+    const char* setupChipWiden;
+    const char* setupChipSquint;  ///< ...the user calibration's
+    const char* setupChipLookUp;
+    const char* setupChipLookDown;
+    const char* setupLeftBefore;  ///< ...the seconds left: before the number...
+    const char* setupLeftAfter;  ///< ...and after it
+    const char* setupLearnStepFormat;  ///< ..."Step %d of %d · %d s in all"
+    const char* setupLearnFoot;  ///< ...under it
+    const char* setupStop;  ///< ...stop
+    const char* setupErrorPill;  ///< (3) failed: the pill
+    const char* setupAgain;  ///< (3) failed or standard widening: once more
+    const char* setupFailPill;  ///< (3) standard widening: the pill
+    const char* setupFailTitle;
+    const char* setupFailBody;
+    const char* setupFailClosed;
+    const char* setupFailNormal;
+    const char* setupFailWiden;
+    const char* setupFailWidenValue;
+    const char* setupFailProceed;  ///< ...on with them
+    const char* setupFailLater;
+    const char* setupDoneTitle;  ///< done: the card
+    const char* setupDoneBody;
+    const char* setupDoneHelp;  ///< ...what to do if something is off
+    const char* setupDoneHelp1;
+    const char* setupDoneHelp1Do;
+    const char* setupDoneHelp2;
+    const char* setupDoneHelp2Do;
+    const char* setupDoneButton;
+    const char* setupDoneNote;
+    const char* calibDonePill;  ///< a calibration from the usual page ended well: the card's pill
+    const char* calibDoneTitle;  ///< ...this wear's
+    const char* calibDoneBody;
+    const char* calibUserDoneTitle;  ///< ...the user's
+    const char* calibUserDoneBody;
+    const char* calibDoneButton;  ///< ...back to the page
+    const char* nextTitle;  ///< the left column while not set up: its card
+    const char* nextPass;  ///< ...what (1) is about
+    const char* nextWait;  ///< ...(3) before its button
+    const char* nextLearnFormat;  ///< ...(3) calibrating ("%d s left")
+    const char* nextFail;  ///< ...(3) standard widening
+    const char* nextError;  ///< ...(3) failed
+    const char* readyTitle;  ///< the left column right after the setup (green)
+    const char* readyNote;
+    const char* lidsFromValve;  ///< by the left column's eyelid title: where they come from
+    const char* lidsFromCamera;
+    const char* lidsFromCameraLeft;
+    const char* lidsFromCameraRight;
+    const char* camRowState;  ///< the eye cameras page: rows (title, hint)
+    const char* camRowStateHint;
+    const char* camLearned;  ///< ...the baseline learned (green pill)
+    const char* camRowLidsHint;
+    const char* camRowCalib;
+    const char* camRowCalibHint;
+    const char* camCalibButton;
+    const char* camCalibSide1;
+    const char* camCalibSide2;
+    const char* camRowUser;
+    const char* camRowUserHint;
+    const char* camUserButton;
+    const char* camUserSide1;
+    const char* camUserSide2;
+    const char* camUserNeedsCalib;  ///< ...instead while it can't be pressed
+    // The sentence at the bottom of the eye cameras' page (cameraLine)
+    const char* camLineBothVrchat;
+    const char* camLineBoth;
+    const char* camLineLeft;
+    const char* camLineRight;
+    const char* camLineWarmingFormat;
+    const char* camLineWarming;
+    const char* camLinePutOn;
+    const char* camLineOff;
+    const char* camHelpTitle;  ///< the "when..." box
+    const char* camHelp1;
+    const char* camHelp1Do;
+    const char* camHelp2;
+    const char* camHelp2Do;
+    const char* camHelp3;
+    const char* camHelp3Do;
+    const char* lidsCamButton;
+    const char* lidsCamMarks;  ///< ...the folded marks' line
+    const char* lidsNowLabel;  ///< the Eyelids tab (案E): the band at its top, "now"
+    const char* lidsNowBoth;  ///< ...from both cameras
+    const char* lidsNowLeft;  ///< ...the left camera, Valve for the right
+    const char* lidsNowRight;  ///< ...the right camera, Valve for the left
+    const char* lidsNowValve;  ///< ...Valve's values
+    const char* lidsNowSwitch;  ///< ...at its right: where to switch
+    const char* lidsNowNoCamera;  ///< ...no eye cameras set up
+    const char* rowWidenEase;  ///< the one widening slider
+    const char* widenHintCamera;  ///< ...its hint: the cameras
+    const char* widenHintMixed;  ///< ...one eye on the cameras
+    const char* widenHintValve;  ///< ...Valve's values
+    const char* widenHintSaturated;  ///< ...nothing to drive
+    const char* widenNoteCamera;  ///< ...the line under it: the cameras
+    const char* widenNoteValve;  ///< ...Valve's values (four stops)
+    const char* widenNoteUnfitted;  ///< ...an eye without an eye fit
+    const char* widenSaturated1;  ///< ...on a SteamOS that caps openness: the box
+    const char* widenSaturated2;
+    const char* blinkHint;  ///< the blink row: its hint
+    const char* blinkHoldCaption;  ///< ...beside the hold
+    const char* rowBlinkBoth;  ///< blink_sync_below
+    const char* blinkBothHint;  ///< ...its hint
+    const char* blinkBothNote;  ///< ...beside it
+    const char* lidSmoothHint;  ///< the eyelid smoothing presets: hint
+    const char* syncOff;  ///< the lid sync slider: its left end
+    const char* syncStrong;  ///< ...its right end
+    const char* syncHint;  ///< ...the row hint
+    const char* rowOther;  ///< the row that opens Fine-tune
+    const char* otherHint;  ///< ...its hint
+    const char* otherText1;  ///< ...beside its button
+    const char* otherText2;
+    const char* detailsTitle;  ///< Fine-tune open: its title
+    const char* detailsClose;  ///< ...the button back
+    const char* camPupilLine;  ///< the eye cameras page: under "Now" while the pupils go straight to VRChat
+    const char* camWidenNotice;  ///< ...the pointer to the Eyelids tab
+    const char* camWidenButton;  ///< ...its button
+    const char* calibCardTitle;  ///< a calibration from the page: the card title
+    const char* calibResultTitle;  ///< ...how it ended: the card title
+    const char* calibWearNote;  ///< ...at the right of the heading (this wear)
+    const char* lidsCamMarksOpen;  ///< ...the same with the marks open  ///< ...at the bottom of the tab
+    const char* devTitle;  ///< Advanced tab: the developer section (eye recording)
+    const char* devRecord;  ///< ...its row
+    const char* devRecordHint;
     const char* rowPrefix;
     const char* prefixNone;
     const char* prefixExample;      ///< "e.g." before an OSC address

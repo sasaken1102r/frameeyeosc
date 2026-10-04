@@ -29,6 +29,12 @@ mkdir -p "$(dirname "$DESKTOP")"
 sed "s|@BINARY@|$BIN|" contrib/frameeyeosc-panel.desktop > "$DESKTOP.tmp"
 chmod 644 "$DESKTOP.tmp"
 mv "$DESKTOP.tmp" "$DESKTOP"
+# The changelogs from the repository, for the version history (where install.sh puts them)
+for changelog in CHANGELOG.md CHANGELOG.ja.md; do
+    if [ -f "../$changelog" ]; then
+        install -Dm644 "../$changelog" "$DATA/frameeyeosc/$changelog"
+    fi
+done
 # The systemd user unit (installed and loaded only; not enabled, not started)
 install -Dm644 contrib/frameeyeosc-panel.service "$UNIT"
 systemctl --user daemon-reload

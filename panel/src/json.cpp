@@ -295,6 +295,55 @@ const JsonValue* JsonValue::get(const std::string& key) const {
     return nullptr;
 }
 
+std::string validUtf8(const std::string& text) {
+    static const char kReplacement[] = "\xEF\xBF\xBD";
+    std::string out;
+    out.reserve(text.size());
+    const auto byte = [&](size_t i) { return static_cast<unsigned char>(text[i]); };
+    for (size_t i = 0; i < text.size();) {
+        const unsigned char lead = byte(i);
+        size_t length = 0;
+        unsigned int code = 0;
+        if (lead < 0x80) {
+            length = 1;
+            code = lead;
+        } else if (lead >= 0xC2 && lead <= 0xDF) {
+            length = 2;
+            code = lead & 0x1F;
+        } else if (lead >= 0xE0 && lead <= 0xEF) {
+            length = 3;
+            code = lead & 0x0F;
+        } else if (lead >= 0xF0 && lead <= 0xF4) {
+            length = 4;
+            code = lead & 0x07;
+        }
+        bool ok = length > 0 && i + length <= text.size();
+        for (size_t k = 1; ok && k < length; ++k) {
+            ok = (byte(i + k) & 0xC0) == 0x80;
+            code = (code << 6) | (byte(i + k) & 0x3F);
+        }
+        // Shortest form only, no surrogates, nothing past U+10FFFF
+        if (ok && length == 3) ok = code >= 0x800 && (code < 0xD800 || code > 0xDFFF);
+        if (ok && length == 4) ok = code >= 0x10000 && code <= 0x10FFFF;
+        if (ok) {
+            out.append(text, i, length);
+            i += length;
+        } else {
+            out += kReplacement;
+            ++i;
+        }
+    }
+    return out;
+}
+
+size_t utf8Prefix(const std::string& text, size_t max) {
+    if (max >= text.size()) return text.size();
+    size_t end = max;
+    // Back over continuation bytes to the start of the character the cut would split
+    while (end > 0 && (static_cast<unsigned char>(text[end]) & 0xC0) == 0x80) --end;
+    return end;
+}
+
 bool parseJson(const std::string& source, JsonValue& out, std::string& error) {
     out = JsonValue();
     Parser parser(source);

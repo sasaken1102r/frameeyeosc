@@ -5,7 +5,9 @@
 #include "model.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 class FontSet;
@@ -18,6 +20,7 @@ enum class PanelAction {
     None,
     Tab,               ///< switch tab (handled inside the panel; arg = tab)
     SetBool,           ///< key = arg != 0
+    SetInteger,        ///< key = arg (an integer setting, within its spec)
     Step,              ///< key += arg * step
     HostAuto,          ///< host = "auto"
     FixHost,           ///< host = the IP frameeyeosc sends to now
@@ -53,12 +56,35 @@ enum class PanelAction {
     FitReset,          ///< the fit back to the defaults (fitResetKeys: the gaze fit, lid_fit_*, lid_scale_*)
     FitDetails,        ///< open / close "Fine-tune" (handled inside the panel)
     FitDetailsPage,    ///< show arg (0 gaze, 1 eyelids) under "Fine-tune" (handled inside the panel)
-    LidMarks,          ///< open / close the lid marks on the Eyelids tab for fitted eyes (handled inside the panel)
+    LidMarks,          ///< open / close "Fine-tune" on the Eyelids tab (handled inside the panel)
     SetLidWiden,       ///< lid_widen = kLidWidenModes[arg]
+    LidPreset,         ///< eyelid smoothing preset arg (0 light, 1 medium, 2 strong)
+    NumberSlider,      ///< a setting's slider (key): pressed and dragged inside the panel; the caller takes the value
+                       ///< with takeNumberSlider and writes it (SetNumber)
+    SetNumber,         ///< key = arg / 1000 (onto its step grid)
     HostEnter,         ///< open the keypad for the target PC (the caller fills in the host now)
     HostKey,           ///< a keypad key: arg = '0'-'9', '.' or host_entry::kBackspace (handled inside the panel)
     HostOk,            ///< use the typed host (the caller checks and writes it)
     HostCancel,        ///< close the keypad (handled inside the panel)
+    HistoryOpen,       ///< open the version history on the Advanced tab (the panel opens it; the caller reads the
+                       ///< changelog)
+    HistoryClose,      ///< back to the Advanced tab (handled inside the panel)
+    HistoryRow,        ///< open version row arg, or close it if it is open (handled inside the panel)
+    HistoryScroll,     ///< scroll the version history a third of its height, arg -1 up / 1 down (handled inside)
+    EyecamStart,       ///< eye capture tab: open the light warning before a start (handled inside the panel)
+    EyecamChoose,      ///< a button in the light warning: arg = eyecam::StartChoice (the panel returns only the two
+                       ///< starts; the caller sends eyecam::startCommand to eyecam-rec's socket)
+    EyecamStop,        ///< eye capture tab: send "stop"
+    EyecamCalib,       ///< a calibration: arg = eyecam::Calib (the panel shows the eye capture tab; the caller sends
+                       ///< eyecam::calibCommand)
+    EyecamSensitivity, ///< the widening sensitivity slider: pressed and dragged inside the panel; the caller takes
+                       ///< the value with takeSensitivity / sensitivityDragging
+    SetupKonsole,      ///< the eye cameras' setup: open a Konsole with the command typed in (arg 0 = the tool's install,
+                       ///< 1 = passwd; the caller starts it, never from --dump-png)
+    SetupVideo,        ///< ...open the setup video (only shown with a video URL)
+    SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
+    EyecamBack,        ///< "Back" on a failed calibration's or recording's error: dismiss it in the panel only
+                       ///< (SetupFlow::dismissError; eyecam-rec stays in "error" until the next command)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -73,8 +99,11 @@ struct PanelHit {
     bool operator!=(const PanelHit& other) const { return !(*this == other); }
 };
 
-/** The tabs, in the order they are shown. */
-enum class PanelTab { Basic, Output, Gaze, EyeFit, Lids, Advanced };
+/** The tabs. Eyecam (the eye cameras) only shows while eyecam-rec runs, before Advanced. */
+enum class PanelTab { Basic, Output, Gaze, EyeFit, Lids, Advanced, Eyecam };
+
+/** An icon before a button's label. */
+enum class ButtonIcon { None, Terminal, Play };
 
 /**
  * Draws the panel image and finds the button under the laser pointer.
@@ -83,6 +112,8 @@ class EyePanel {
 public:
     /** Seconds the quit / reset buttons wait for the confirming second press. */
     static constexpr double kConfirmSec = 3.0;
+    /** Seconds the sensitivity slider keeps its let-go value at most, waiting for status.json to have it. */
+    static constexpr double kSensitivityHoldSec = 3.0;
 
     /**
      * @param fonts the fonts (must outlive the panel)
@@ -156,7 +187,7 @@ public:
      */
     void setTab(PanelTab tab) { tab_ = tab; }
 
-    /** @return the tab shown */
+    /** @return the tab shown (Eyecam falls back to Basic at the next draw once its tab is gone) */
     PanelTab tab() const { return tab_; }
 
     /**
@@ -188,6 +219,92 @@ public:
 
     /** @return true while the keypad is open */
     bool hostEntryOpen() const { return hostEntryOpen_; }
+
+    /**
+     * Open the light warning on the Advanced tab, as its recording's start button does (for --fake-eyecam confirm).
+     * @param state the recorder's state (only idle and error open it)
+     */
+    void openEyecamConfirm(eyecam::State state);
+
+    /**
+     * Follow eyecam-rec: the light warning closes once its state leaves the one it was opened in, or the tab is
+     * gone or not the one shown. Called every loop (render does it too).
+     * @param view the recorder as read
+     * @return true if the warning closed (redraw)
+     */
+    bool syncEyecam(const eyecam::View& view);
+
+    /** Close the light warning (the dashboard closed). */
+    void closeEyecamConfirm() { eyecamConfirm_.close(); }
+
+    /** @return true while the light warning shows */
+    bool eyecamConfirmOpen() const { return eyecamConfirm_.isOpen(); }
+
+    /**
+     * The widening sensitivity slider was let go of (once per release). It keeps showing that value until
+     * status.json has it, its command fails (dropSensitivityHold), or kSensitivityHoldSec pass.
+     * @param value where to write the value (0..1, two decimals)
+     * @param now monotonic seconds
+     * @return true if it was let go of since the last call
+     */
+    bool takeSensitivity(double& value, double now);
+
+    /** @return true while the slider is dragged */
+    bool sensitivityDragging() const { return sensDragging_; }
+
+    /** @return the slider's value while dragged (or as last let go of) */
+    double sensitivityValue() const { return sensValue_; }
+
+    /** Show status.json's value again (the command failed). */
+    void dropSensitivityHold() { sensHeld_ = false; }
+
+    /**
+     * A setting's slider was let go of (once per release).
+     * @param name where to write its key
+     * @param value where to write the value (on the setting's step grid)
+     * @return true if one was let go of since the last call
+     */
+    bool takeNumberSlider(std::string& name, double& value);
+
+    /**
+     * For --sensitivity-drag: the slider as if dragged to a value.
+     * @param value 0..1
+     */
+    void previewSensitivityDrag(double value);
+
+    /**
+     * Open the version history on the Advanced tab, with the installed version's row open (the newest one if the
+     * changelog doesn't have it) and scrolled to the top. Choosing another tab closes it.
+     */
+    void openHistory();
+
+    /** Close the version history (the Advanced tab shows its rows again). */
+    void closeHistory() { historyOpen_ = false; }
+
+    /** @return true while the version history is open */
+    bool historyOpen() const { return historyOpen_; }
+
+    /**
+     * For --history-open: open this version's row instead (without scrolling to it).
+     * @param version "0.5.0"
+     */
+    void setHistoryRow(const std::string& version);
+
+    /**
+     * For --history-scroll: how far the version history is scrolled (kept within the list when drawn).
+     * @param px px from the top of the list
+     */
+    void setHistoryScroll(double px);
+
+    /** @return true while the panel wants the controller's scroll events (the version history is shown) */
+    bool wantsScroll() const { return historyOpen_ && tab_ == PanelTab::Advanced; }
+
+    /**
+     * Scroll the version history (the thumbstick or touchpad; ignored while it is not shown or a prompt is open).
+     * @param dy px; positive moves the list up (shows what is further down)
+     * @return true if it moved (redraw needed)
+     */
+    bool scroll(double dy);
 
     /** @return what is typed */
     const std::string& hostEntryText() const { return hostEntryText_; }
@@ -221,6 +338,18 @@ public:
     int width() const;
     /** @return the image height (px) */
     int height() const;
+
+    /** A usable button as last drawn: its hit and where it is. */
+    struct HitArea {
+        PanelHit hit;
+        double x, y, w, h;
+    };
+
+    /**
+     * The usable buttons as last drawn (panel-test checks what each screen offers).
+     * @return them, in drawing order
+     */
+    std::vector<HitArea> hitAreas() const;
 
 private:
     /** Hit area of one button. */
@@ -257,6 +386,37 @@ private:
     bool hostEntryOpen_ = false;  ///< the keypad for the target PC is open
     std::string hostEntryText_;   ///< what is typed in it
     std::string hostEntryError_;  ///< why it can't be used, shown under it
+    bool historyOpen_ = false;          ///< the version history is shown on the Advanced tab
+    bool historyRowPending_ = false;    ///< open the installed version's row at the next draw
+    bool historyScrollSet_ = false;     ///< --history-scroll gave the scroll; don't move it to the open row
+    bool historyReveal_ = false;        ///< scroll the open row into view at the next draw
+    std::string historyRow_;            ///< the version whose row is open ("" = none)
+    std::vector<std::string> historyVersions_;  ///< the rows as last drawn (HistoryRow's arg is an index)
+    double historyScroll_ = 0.0;        ///< px the list is scrolled
+    double historyMaxScroll_ = 0.0;     ///< as far as it can scroll (from the last draw)
+    double historyViewH_ = 0.0;         ///< the height it is shown in (from the last draw)
+    bool eyecamTab_ = false;            ///< the eye capture tab is in the tab row (eyecam-rec runs)
+    eyecam::State eyecamState_ = eyecam::State::Missing;  ///< the recorder's state as last seen (its start button)
+    eyecam::StartConfirm eyecamConfirm_;  ///< the light warning before a start
+    bool sensDragging_ = false;         ///< the widening sensitivity slider is held
+    double sensValue_ = 0.0;            ///< its value while held, or as last let go of
+    bool sensReleased_ = false;         ///< let go of, not taken yet (takeSensitivity)
+    bool sensHeld_ = false;             ///< showing sensValue_ until status.json has it
+    double sensHoldUntil_ = 0.0;        ///< ...at most until then (monotonic seconds)
+    double sensTrackX_ = 0.0;           ///< the slider's track as last drawn
+    double sensTrackW_ = 1.0;
+    bool numDragging_ = false;          ///< a setting's slider is held (NumberSlider)
+    std::string numKey_;                ///< ...which one
+    double numValue_ = 0.0;             ///< ...its value while held, or as last let go of
+    bool numReleased_ = false;          ///< ...let go of, not taken yet (takeNumberSlider)
+    std::map<std::string, std::pair<double, double>> numTrack_;  ///< each one's track (x, width) as last drawn
+
+    /**
+     * The slider's value at a pointer position (on its track, two decimals).
+     * @param x px from the left
+     * @return 0..1
+     */
+    double sensitivityAt(double x) const;
 
     /**
      * Find the usable button at a point.
@@ -293,7 +453,7 @@ private:
     void drawStatus(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
-     * The tab row.
+     * The tab row (the eye capture tab last, only while eyecamTab_).
      * @param pen drawing tools
      * @param t texts
      */
@@ -384,9 +544,10 @@ private:
      * @param hit what it does
      * @param usable whether it can be pressed
      * @param accent accent fill
+     * @param textSize the label's size (smaller if it doesn't fit)
      */
     void drawButton(const Pen& pen, double x, double y, double w, double h, const std::string& label,
-                    const PanelHit& hit, bool usable, bool accent);
+                    const PanelHit& hit, bool usable, bool accent, double textSize = 19);
 
     /**
      * The Eyelids tab.
@@ -405,6 +566,188 @@ private:
      * @param view the settings shown
      */
     void drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The version history in place of the Advanced tab: a title row with "Close", one row per version (newest
+     * first; the open one shows its summary and items), clipped to the card and scrolled, and ▲ / ▼ on the right.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (the changelog, and the installed version)
+     */
+    void drawHistory(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * The eye cameras tab: the setup checklist until it is done (drawSetup), then their page (drawCameraPage); a
+     * calibration from that page and how it ended show as the setup's card (drawPageCalib), its failure as drawRun.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (its eyecam view)
+     * @param view the settings shown
+     */
+    void drawEyecam(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * What eyecam-rec runs, in large type to read in the headset: the light warning before a recording, searching,
+     * recording and calibrating (the step's instruction, the seconds left, the step number, a progress bar, the fps
+     * and "Stop"; "No light" or the calibration's name by the step number), and a failed calibration or recording
+     * with "again". The recorder's message and a failed command's reply under it. (The recording's on the Advanced
+     * tab, the calibrations' on the eye cameras tab.)
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (its eyecam view)
+     */
+    void drawRun(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * The setup checklist: (1) a password, (2) the tool, (3) the eye movements, (4) done. Steps done in a row each
+     * (green), the current one in a card (setupCard), those to come muted under it.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param screen which one (not Camera)
+     */
+    void drawSetup(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen);
+
+    /**
+     * A calibration from the usual page, and how it ended, in the setup's card: titled with the calibration instead of
+     * (3), without the checklist around it.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param screen Learn (calibrating), Fail (the standard widening) or Calibrated
+     */
+    void drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen);
+
+    /**
+     * The current step's card in the checklist (or a calibration's from the usual page), measured (draw false) or
+     * drawn.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param screen which step and how
+     * @param x0 its text's left
+     * @param x1 its text's right
+     * @param top its top
+     * @param draw draw it (else only measure)
+     * @param page from the usual page: titled with the calibration (this wear's or the user's) instead of (3)
+     * @return its height
+     */
+    double setupCard(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen, double x0,
+                     double x1, double top, bool draw, bool page = false);
+
+    /**
+     * The eye cameras' usual page: what drives the eyelids now, camera_lids, the widening sensitivity, a calibration
+     * when something feels off, the user's own (optional), and what to do when.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     */
+    void drawCameraPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The Eyelids tab's widening slider ("見開きの出やすさ"): dull at the left, sensitive and the value at the right.
+     * For the cameras (both eyes, or one) it is eyecam-rec's sensitivity (held, its own value, and after it is let go
+     * of until status.json has it); for Valve's values lid_widen's four stops (a press goes to the nearest one, its
+     * level's name at the right); greyed when nothing can be driven.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (eyecam-rec's status)
+     * @param v the settings shown
+     * @param widen what it drives (widenSlider)
+     * @param x0 left
+     * @param x1 right
+     * @param y top
+     * @param h height
+     */
+    void drawWidenSlider(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
+                         const WidenSlider& widen, double x0, double x1, double y, double h);
+
+    /**
+     * A setting's slider over its whole range: the low end's word at the left, the high end's and the value at the
+     * right. Held, it follows the pointer (numberShown); let go of, the caller writes it.
+     * @param pen drawing tools
+     * @param name the setting
+     * @param value its value (numberShown)
+     * @param low the left end's word
+     * @param high the right end's word
+     * @param x0 left
+     * @param x1 right
+     * @param y top
+     * @param h height
+     * @param usable it can be moved (not locked)
+     */
+    void drawNumberSlider(const Pen& pen, const char* name, double value, const char* low, const char* high, double x0,
+                          double x1, double y, double h, bool usable);
+
+    /**
+     * A setting's value as its slider shows it: its own while held.
+     * @param name the setting
+     * @param value the setting's value
+     * @return the value to show
+     */
+    double numberShown(const char* name, double value) const;
+
+    /**
+     * A setting's value at a pointer position on its slider's track (on its step grid).
+     * @param name the setting
+     * @param x px from the left
+     * @return the value (NaN if its slider wasn't drawn)
+     */
+    double numberAt(const std::string& name, double x) const;
+
+    /**
+     * "Fine-tune" on the Eyelids tab, open: the auto calibration (eyes without a fit, not from the cameras), the
+     * per-eye scales, the openness bars with the four marks and their values, and the smoothing values.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model
+     * @param v the settings shown
+     */
+    void drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v);
+
+    /**
+     * A button with an icon before its label (centered together).
+     * @param pen drawing tools
+     * @param x left
+     * @param y top
+     * @param w width
+     * @param h height
+     * @param label the label
+     * @param hit what it does
+     * @param usable whether it can be pressed
+     * @param accent accent fill
+     * @param textSize the label's size (smaller if it doesn't fit)
+     * @param icon the icon
+     */
+    void drawIconButton(const Pen& pen, double x, double y, double w, double h, const std::string& label,
+                        const PanelHit& hit, bool usable, bool accent, double textSize, ButtonIcon icon);
+
+    /**
+     * At the bottom of the status column while the eye cameras aren't set up: what to do next (a button to their
+     * tab); right after the setup, that they are ready (green, for a short while).
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param screen the eye cameras' screen (eyecam::setupScreen)
+     * @param x0 left
+     * @param x1 right
+     */
+    void drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen,
+                         double x0, double x1);
+
+
+
+
+    /**
+     * The light warning before a start: a red "Light warning" title with a warning sign, the warning in a red box,
+     * "Start with light" / "Start without light" and "Cancel".
+     * @param pen drawing tools
+     * @param t texts
+     * @param view the recorder (a command on its way greys out the two starts)
+     * @param y the top under the section title
+     */
+    void drawEyecamConfirm(const Pen& pen, const UiText& t, const eyecam::View& view, double y);
 
     /**
      * The recommendation prompt over everything (only its buttons stay usable).

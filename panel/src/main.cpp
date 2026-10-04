@@ -4,6 +4,7 @@
 #include "autostart.h"
 #include "config.h"
 #include "draw.h"
+#include "eyecam.h"
 #include "gaze_dots.h"
 #include "gaze_fit.h"
 #include "host_entry.h"
@@ -11,6 +12,7 @@
 #include "model.h"
 #include "panel.h"
 #include "recorder.h"
+#include "setup_tools.h"
 #include "sounds.h"
 #include "status.h"
 #include "target.h"
@@ -33,6 +35,7 @@
 #include <ctime>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -55,6 +58,10 @@ constexpr double kStatusReadSec = 0.1;    ///< status.json is read this often wh
 /** ...and this often while it is closed and only watching for the headset being put on (auto_recenter) */
 constexpr double kWatchStatusReadSec = 0.5;
 constexpr double kUpdateSettleSec = 60.0; ///< --update-live: longest wait for a check or an install to finish
+/** eyecam-rec's status.json is read this often while it runs (its tab shows, or its light is up)... */
+constexpr double kEyecamReadSec = 0.1;
+/** ...and this often otherwise, only to notice it starting (one failed open a second while it isn't there) */
+constexpr double kEyecamIdleReadSec = 1.0;
 
 /** The command line. */
 struct Options {
@@ -76,6 +83,10 @@ struct Options {
     bool fitDetails = false;      ///< --fit-details: "Fine-tune" open on the Eye fit tab
     int fitDetailsPage = 0;       ///< --fit-details lids: its eyelid page
     bool lidMarks = false;        ///< --lid-marks: the lid marks open on the Eyelids tab
+    bool history = false;         ///< --history: the version history open (on the Advanced tab)
+    std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
+    double historyScroll = -1.0;  ///< --history-scroll: px it is scrolled (-1 = as opened)
+    std::string changelogDir;     ///< --changelog-dir: read CHANGELOG*.md from here only
     std::string language;         ///< for --dump-png: overrides the config language (ja / en)
     PanelTab tab = PanelTab::Basic;
     bool previewQuit = false;
@@ -90,6 +101,8 @@ struct Options {
     bool fakeSlowTracker = false; ///< --fake-slow-tracker: the eye tracker delivers 15 samples a second
     bool fakeEtvr = false;
     bool fakeLivelink = false;
+    bool fakePupilsOff = false;   ///< --fake-pupils-off: pupils_to_vrchat off
+    int fakePupilBits = -1;       ///< --fake-pupil-bits N: pupil_bits (-1 = as the file says)
     bool fakeFixed = false;
     bool fakeTargetNull = false;
     bool fakeLocked = false;
@@ -107,6 +120,13 @@ struct Options {
     std::string fakeFit;          ///< a made-up eye fit state (see printUsage)
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
+    std::string fakeEyecam;       ///< a made-up eyecam-rec state (see printUsage and parseFakeEyecam)
+    std::string fakeCamera;       ///< --fake-camera: the eye cameras as frameeyeosc reports them (see printUsage)
+    std::string fakePassword = "set";  ///< --fake-password: the setup's password check
+    double sensitivityDrag = -1;  ///< --sensitivity-drag: the slider as if dragged there (-1 = not)
+    std::string eyecamDir;        ///< --eyecam-dir: eyecam-rec's folder (status.json, ctl.sock) instead of the default
+    std::string fillPngPath;      ///< --eyecam-fill-png: the eye capture's full-view light image
+    std::string fillKind = "bright";  ///< --eyecam-fill bright|dark
     bool updateLive = false;      ///< --dump-png: run the real update checker (and wait for it after clicks)
     std::vector<std::pair<double, double>> clicks;  ///< --click X,Y: presses carried out before the PNG is drawn
     Autostart fakeAutostart = Autostart::Disabled;
@@ -194,9 +214,15 @@ void printUsage() {
         "      --target-bench N  Also draw it N times and print how long one takes, then one gaze point\n"
         "                        paced at 90 frames/s\n"
         "      --language ja|en  Draw in this language instead of the config's\n"
-        "      --tab basic|output|gaze|eyefit|lids|advanced  Draw this tab\n"
+        "      --tab basic|output|gaze|eyefit|lids|advanced|eyecam  Draw this tab (eyecam: only while eyecam-rec runs,\n"
+        "                        or with --fake-eyecam)\n"
         "      --fit-details [gaze|lids]  Open \"Fine-tune\" on the Eye fit tab (default: its gaze page)\n"
         "      --lid-marks       Show the lid marks on the Eyelids tab although the eyes are fitted\n"
+        "      --history         Open the version history (Advanced tab)\n"
+        "      --history-open VERSION  ...with this version's row open instead of the installed one\n"
+        "      --history-scroll PX  ...scrolled this far (kept within the list)\n"
+        "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
+        "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
         "      --preview-quit    Show \"press again to quit\"\n"
         "      --preview-reset   Show \"press again to reset\"\n"
         "      --preview-update-prompt  Show the \"update to ...?\" question (with --fake-update available)\n"
@@ -204,6 +230,8 @@ void printUsage() {
         "                        Each --fake-* below implies --fake\n"
         "      --fake-not-running / --fake-paused / --fake-no-tracking / --fake-etvr / --fake-livelink / --fake-fixed\n"
         "      --fake-target-null  Auto target not found yet\n"
+        "      --fake-pupils-off  pupils_to_vrchat off (the Output tab's row for LiveLink with the eye cameras)\n"
+        "      --fake-pupil-bits N  pupil_bits 0..4 (the Output tab's \"pupils as bits\" row, with the eye cameras)\n"
         "      --fake-slow-tracker  The eye tracker delivers only 15 samples a second\n"
         "      --fake-locked     Some keys locked by the command line\n"
         "      --fake-config-error  frameeyeosc reports a config error\n"
@@ -226,6 +254,32 @@ void printUsage() {
         "                 failed-noresult  A made-up eye fit (Eye fit tab)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
+        "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
+        "                        A made-up eyecam-rec for the eye cameras tab (confirm: idle with the recording's\n"
+        "                        light warning open, on the Advanced tab; LABEL: lead_in, normal, widen, close,\n"
+        "                        squint, look_up, look_down, bright, dark, end; calibrating without a label: waiting\n"
+        "                        for the video; calib-error: a failed user calibration). Flags after it, each with\n"
+        "                        \":\": unlocked (the cameras lost the eyes), nolight (recording without the light),\n"
+        "                        user (calibrating / calib-error: the user's calibration; wear: this wear's),\n"
+        "                        calib=N (calib_state 0..7, bit 2 a baseline learned by itself; default 0, 1 for a\n"
+        "                        failed user calibration), warming=N (learning the relaxed eyes, N s left), ready\n"
+        "                        (learned them; both mark an eyecam-rec that learns by itself), saved (calib_saved),\n"
+        "                        recalib (recalib_suggested), nolive (not reading the cameras live), auto=VALUE\n"
+        "                        (auto_grab), outdated (grab_outdated: an update brought a new tool), sens=V\n"
+        "                        (widen_sensitivity 0..1), buffers (has_buffers), setup /\n"
+        "                        nosetup (setup_done true / false; without either, an eyecam-rec before it),\n"
+        "                        widen=measured|default (last_calib_widen), done / fail (the setup's calibration\n"
+        "                        just ended: the checklist's done screen, or widening on the standard values),\n"
+        "                        page=measured|default|user (a calibration from the usual page just ended: its\n"
+        "                        card; with setup),\n"
+        "                        msg / msgja (eyecam-rec's message with message_en / Japanese only)\n"
+        "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
+        "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
+        "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
+        "                        them (off: camera_lids off)\n"
+        "  --eyecam-fill-png PATH  Draw the eye capture's full-view light (with --language) to a PNG\n"
+        "      --eyecam-fill bright|dark  Which one (default bright)\n"
+        "  --eyecam-dir DIR      eyecam-rec's folder: status.json and ctl.sock (default $XDG_RUNTIME_DIR/eyecam)\n"
         "      --update-live     Run the real update checker: check first, and after each --click wait for the\n"
         "                        check or install it started (installs really happen; for testing with a fake GitHub)\n"
         "      --click X,Y       Press the panel at X,Y first (repeatable; writes --config; not with --fake)\n"
@@ -235,6 +289,104 @@ void printUsage() {
         "  --version             Print the version\n"
         "  --config PATH         Config file (default ~/.config/frameeyeosc/config.json)\n"
         "  --status PATH         Status file (default $XDG_RUNTIME_DIR/frameeyeosc/status.json)\n");
+}
+
+/** --fake-eyecam, taken apart. */
+struct FakeEyecam {
+    std::string state;      ///< waiting, idle, confirm, searching, recording, calibrating, error, calib-error
+    std::string label;      ///< recording's and calibrating's step label ("" = none)
+    bool unlocked = false;  ///< the cameras lost the eyes
+    bool noLight = false;   ///< the recording runs without the light
+    int calibUser = -1;     ///< 1 = the user's calibration, 0 = this wear's, -1 = from the label
+    int calibState = -1;    ///< calib_state (-1 = the state's default)
+    bool recalib = false;   ///< recalib_suggested
+    bool noLive = false;    ///< not reading the cameras live
+    std::string autoGrab;   ///< auto_grab ("" = an eyecam-rec without it)
+    bool outdated = false;  ///< grab_outdated
+    std::string baseline;   ///< "warming" or "ready" ("" = an eyecam-rec that doesn't learn the baseline by itself)
+    double warmupS = -1.0;  ///< warmup_remaining_s while warming (-1 = none)
+    bool saved = false;     ///< calib_saved
+    double sens = -1.0;     ///< widen_sensitivity (-1 = an eyecam-rec without it)
+    bool buffers = false;   ///< has_buffers
+    int setup = -1;         ///< setup_done: 1 / 0 (-1 = an eyecam-rec before it)
+    std::string widen;      ///< last_calib_widen ("" = none)
+    std::string result;     ///< "done" / "fail": the setup's calibration just ended that way ("" = no)
+    std::string page;       ///< "measured" / "default" / "user": one from the usual page just ended ("" = no)
+    int message = 0;        ///< 1 = a message with message_en, 2 = a message without it (an older eyecam-rec)
+};
+
+/**
+ * Take --fake-eyecam apart: STATE[:LABEL][:flag]..., where a label only follows recording (which needs one) and
+ * calibrating.
+ * @param text the option's value
+ * @param fake where to write
+ * @return false if something in it is unknown
+ */
+bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
+    fake = FakeEyecam();
+    std::vector<std::string> parts;
+    for (size_t from = 0;;) {
+        const size_t colon = text.find(':', from);
+        parts.push_back(text.substr(from, colon == std::string::npos ? std::string::npos : colon - from));
+        if (colon == std::string::npos) break;
+        from = colon + 1;
+    }
+    fake.state = parts[0];
+    static const char* const kStates[] = {"waiting", "idle",        "confirm", "searching",
+                                          "recording", "calibrating", "error",   "calib-error"};
+    if (std::find(std::begin(kStates), std::end(kStates), fake.state) == std::end(kStates)) return false;
+    size_t next = 1;
+    const bool takesLabel = fake.state == "recording" || fake.state == "calibrating";
+    if (takesLabel && next < parts.size() && eyecam::parseStep(parts[next]) != eyecam::Step::Unknown) {
+        fake.label = parts[next++];
+    }
+    if (fake.state == "recording" && fake.label.empty()) return false;
+    for (; next < parts.size(); ++next) {
+        const std::string& flag = parts[next];
+        if (flag == "unlocked") {
+            fake.unlocked = true;
+        } else if (flag == "nolight") {
+            fake.noLight = true;
+        } else if (flag == "user" || flag == "wear") {
+            fake.calibUser = flag == "user" ? 1 : 0;
+        } else if (flag == "recalib") {
+            fake.recalib = true;
+        } else if (flag == "nolive") {
+            fake.noLive = true;
+        } else if (flag.rfind("auto=", 0) == 0 && flag.size() > 5) {
+            fake.autoGrab = flag.substr(5);
+        } else if (flag.rfind("warming=", 0) == 0 && flag.size() > 8 &&
+                   flag.find_first_not_of("0123456789.", 8) == std::string::npos) {
+            fake.baseline = "warming";
+            fake.warmupS = std::atof(flag.c_str() + 8);
+        } else if (flag == "msg" || flag == "msgja") {
+            fake.message = flag == "msg" ? 1 : 2;
+        } else if (flag == "buffers") {
+            fake.buffers = true;
+        } else if (flag == "outdated") {
+            fake.outdated = true;
+        } else if (flag == "setup" || flag == "nosetup") {
+            fake.setup = flag == "setup" ? 1 : 0;
+        } else if (flag == "widen=measured" || flag == "widen=default") {
+            fake.widen = flag.substr(6);
+        } else if (flag == "done" || flag == "fail") {
+            fake.result = flag;
+        } else if (flag == "page=measured" || flag == "page=default" || flag == "page=user") {
+            fake.page = flag.substr(5);
+        } else if (flag == "ready") {
+            fake.baseline = "ready";
+        } else if (flag == "saved") {
+            fake.saved = true;
+        } else if (flag.rfind("sens=", 0) == 0 && flag.size() > 5 &&
+                   flag.find_first_not_of("0123456789.", 5) == std::string::npos) {
+            fake.sens = std::atof(flag.c_str() + 5);
+        } else if (flag.rfind("calib=", 0) == 0 && flag.size() == 7 && flag[6] >= '0' && flag[6] <= '7') {
+            fake.calibState = flag[6] - '0';
+        } else {
+            return false;
+        }
+    }
+    return true;
 }
 
 /**
@@ -287,6 +439,16 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.targetBench = std::max(0, std::min(100000, std::atoi(argv[++i])));
         } else if (arg == "--lid-marks") {
             options.lidMarks = true;
+        } else if (arg == "--history") {
+            options.history = true;
+        } else if (arg == "--history-open" && hasNext) {
+            options.history = true;
+            options.historyOpen = argv[++i];
+        } else if (arg == "--history-scroll" && hasNext) {
+            options.history = true;
+            options.historyScroll = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--changelog-dir" && hasNext) {
+            options.changelogDir = argv[++i];
         } else if (arg == "--fit-details") {
             options.fitDetails = true;
             if (hasNext && (std::string(argv[i + 1]) == "gaze" || std::string(argv[i + 1]) == "lids")) {
@@ -319,8 +481,11 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 options.tab = PanelTab::Lids;
             } else if (tab == "advanced") {
                 options.tab = PanelTab::Advanced;
+            } else if (tab == "eyecam") {
+                options.tab = PanelTab::Eyecam;
             } else {
-                std::fprintf(stderr, "--tab must be basic, output, gaze, eyefit, lids or advanced: %s\n", tab.c_str());
+                std::fprintf(stderr, "--tab must be basic, output, gaze, eyefit, lids, advanced or eyecam: %s\n",
+                             tab.c_str());
                 return false;
             }
         } else if (arg == "--preview-quit") {
@@ -343,6 +508,16 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeEtvr = true;
         } else if (arg == "--fake-livelink") {
             options.fake = options.fakeLivelink = true;
+        } else if (arg == "--fake-pupils-off") {
+            options.fake = options.fakePupilsOff = true;
+        } else if (arg == "--fake-pupil-bits" && hasNext) {
+            const std::string value = argv[++i];
+            if (value.size() != 1 || value[0] < '0' || value[0] > '4') {
+                std::fprintf(stderr, "--fake-pupil-bits takes 0 to 4, not %s\n", value.c_str());
+                return false;
+            }
+            options.fake = true;
+            options.fakePupilBits = value[0] - '0';
         } else if (arg == "--fake-fixed") {
             options.fake = options.fakeFixed = true;
         } else if (arg == "--fake-target-null") {
@@ -426,6 +601,46 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 return false;
             }
             options.fake = true;
+        } else if (arg == "--fake-eyecam" && hasNext) {
+            options.fakeEyecam = argv[++i];
+            FakeEyecam fake;
+            if (!parseFakeEyecam(options.fakeEyecam, fake)) {
+                std::fprintf(stderr,
+                             "--fake-eyecam must be waiting, idle, confirm, searching, recording:LABEL, "
+                             "calibrating[:LABEL], error or calib-error, with known flags: %s\n",
+                             options.fakeEyecam.c_str());
+                return false;
+            }
+            options.fake = true;
+        } else if (arg == "--fake-password" && hasNext) {
+            options.fakePassword = argv[++i];
+            if (options.fakePassword != "set" && options.fakePassword != "unset" && options.fakePassword != "unknown") {
+                std::fprintf(stderr, "--fake-password must be set, unset or unknown: %s\n", options.fakePassword.c_str());
+                return false;
+            }
+            options.fake = true;
+        } else if (arg == "--sensitivity-drag" && hasNext) {
+            options.sensitivityDrag = std::atof(argv[++i]);
+        } else if (arg == "--fake-camera" && hasNext) {
+            options.fakeCamera = argv[++i];
+            static const char* const kCameras[] = {"both", "left", "right", "uncalibrated", "absent", "error", "off"};
+            if (std::find(std::begin(kCameras), std::end(kCameras), options.fakeCamera) == std::end(kCameras)) {
+                std::fprintf(stderr, "--fake-camera must be both, left, right, uncalibrated, absent, error or off: %s\n",
+                             options.fakeCamera.c_str());
+                return false;
+            }
+            options.fake = true;
+        } else if (arg == "--eyecam-dir" && hasNext) {
+            options.eyecamDir = argv[++i];
+        } else if (arg == "--eyecam-fill-png" && hasNext) {
+            options.mode = Options::Mode::DumpPng;
+            options.fillPngPath = argv[++i];
+        } else if (arg == "--eyecam-fill" && hasNext) {
+            options.fillKind = argv[++i];
+            if (options.fillKind != "bright" && options.fillKind != "dark") {
+                std::fprintf(stderr, "--eyecam-fill must be bright or dark: %s\n", options.fillKind.c_str());
+                return false;
+            }
         } else if (arg == "--fake-fit" && hasNext) {
             options.fakeFit = argv[++i];
             static const char* const kFitStates[] = {
@@ -478,6 +693,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
     }
     if (options.configPath.empty()) options.configPath = defaultConfigPath();
     if (options.statusPath.empty()) options.statusPath = defaultStatusPath();
+    if (options.eyecamDir.empty()) options.eyecamDir = eyecam::defaultDir();
     return true;
 }
 
@@ -575,6 +791,189 @@ frame_updater::UpdateStatus fakeUpdate(const std::string& state, const std::stri
 }
 
 /**
+ * A made-up eyecam-rec for --fake-eyecam, written just now (so its tab shows).
+ * @param text the option (see parseFakeEyecam; confirm is idle, and the caller opens the light warning)
+ * @return the view
+ */
+eyecam::View fakeEyecam(const std::string& text) {
+    FakeEyecam fake;
+    parseFakeEyecam(text, fake);
+    const std::string& state = fake.state;
+    eyecam::View view;
+    eyecam::Status& s = view.status;
+    s.present = true;
+    s.mtime = unixNow();
+    s.protocol = "default";
+    const auto nan = std::numeric_limits<double>::quiet_NaN();
+    s.fpsL = s.fpsR = s.stepRemainingS = s.elapsedS = s.totalS = s.warmupRemainingS = nan;
+    // The headset on, the cameras read live and not calibrated yet, unless the flags say otherwise
+    s.locked = !fake.unlocked;
+    s.live = !fake.noLive;
+    s.liveMs = s.live ? 4.2 : nan;
+    s.calibState = 0;
+    if (state == "waiting") {
+        s.stateText = "waiting_fds";
+        s.message = fake.autoGrab.empty() ? "eyecam-grab からカメラのバッファを待っています"
+                                          : "アイトラッカーが始まるのを待ってるよ";
+        s.autoGrab = fake.autoGrab;
+        s.locked = false;
+        s.live = false;
+    } else if (state == "idle" || state == "confirm") {
+        s.stateText = "idle";
+    } else if (state == "searching") {
+        s.stateText = "searching";
+        s.fpsL = 29.8;
+        s.fpsR = 30.1;
+    } else if (state == "error") {
+        s.stateText = "error";
+        s.message = "右のカメラの映像が 3 秒届きません";
+        view.lastRun = eyecam::Run::Recording;
+        // A failed command too, to see where it goes
+        view.hasReply = true;
+        view.reply.command = "start";
+        view.reply.error = "not idle";
+    } else if (state == "calib-error") {
+        // eyecam-rec's reason is Japanese only
+        const bool wear = fake.calibUser == 0;
+        s.stateText = "error";
+        s.message = wear ? "右目: 目を閉じても目の開きが変わっていない（もう一度、しっかり閉じてね）"
+                         : "左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）";
+        s.calibState = wear ? 0 : eyecam::kCalibWearBit;
+        view.lastRun = wear ? eyecam::Run::CalibWear : eyecam::Run::CalibUser;
+    } else if (state == "calibrating") {
+        // At that step of the calibration: this wear's (18 s) or the user's (18 s)
+        static const struct {
+            const char* label;
+            double seconds;
+        } kWear[] = {{"lead_in", 3}, {"close", 2}, {"normal", 5}, {"widen", 3}, {"normal", 2}, {"widen", 3}},
+          kUser[] = {{"lead_in", 3}, {"squint", 5}, {"look_up", 5}, {"look_down", 5}};
+        const eyecam::Step step = eyecam::parseStep(fake.label);
+        const bool user = fake.calibUser == 1 ||
+                          (fake.calibUser < 0 && (step == eyecam::Step::Squint || step == eyecam::Step::LookUp ||
+                                                  step == eyecam::Step::LookDown));
+        s.stateText = "calibrating";
+        s.protocol = user ? eyecam::kCalibUserCommand : eyecam::kCalibWearCommand;
+        s.calibState = user ? eyecam::kCalibWearBit : 0;
+        view.lastRun = user ? eyecam::Run::CalibUser : eyecam::Run::CalibWear;
+        s.stepLabel = fake.label;
+        if (!fake.label.empty()) {
+            const auto* steps = user ? kUser : kWear;
+            const int count = user ? static_cast<int>(std::size(kUser)) : static_cast<int>(std::size(kWear));
+            s.stepCount = count;
+            s.stepIndex = 0;
+            double before = 0.0;
+            s.totalS = 0.0;
+            for (int i = 0; i < count; ++i) s.totalS += steps[i].seconds;
+            while (s.stepIndex < count - 1 && steps[s.stepIndex].label != fake.label) before += steps[s.stepIndex++].seconds;
+            s.stepRemainingS = 1.4;
+            s.elapsedS = before + steps[s.stepIndex].seconds - s.stepRemainingS;
+            s.fpsL = 30.0;
+            s.fpsR = 29.9;
+        }
+    } else {
+        // recording:<label>, at that step of the default run (9 steps, 120 s)
+        static const char* const kLabels[] = {"normal",    "widen",  "close", "squint", "look_up",
+                                              "look_down", "bright", "dark",  "end"};
+        s.stateText = "recording";
+        s.stepLabel = fake.label;
+        if (fake.noLight) s.protocol = eyecam::kNoLightProtocol;
+        s.stepCount = static_cast<int>(std::size(kLabels));
+        s.stepIndex = static_cast<int>(std::find(std::begin(kLabels), std::end(kLabels), s.stepLabel) -
+                                       std::begin(kLabels));
+        s.stepRemainingS = 3.4;
+        s.totalS = 120.0;
+        s.elapsedS = s.stepIndex * 13.0 + 9.6;
+        s.fpsL = 30.0;
+        s.fpsR = 29.9;
+        s.sessionDir = "/home/steamos/eyecam/2026-10-03_12-00-00";
+        view.lastRun = eyecam::Run::Recording;
+    }
+    if (fake.calibState >= 0) s.calibState = fake.calibState;
+    s.recalibSuggested = fake.recalib;
+    // An eyecam-rec that learns the relaxed eyes by itself writes the baseline and calib_saved
+    if (!fake.baseline.empty()) {
+        s.hasBaseline = s.hasCalibSaved = true;
+        s.baseline = fake.baseline;
+        if (fake.warmupS >= 0) s.warmupRemainingS = fake.warmupS;
+    }
+    if (fake.saved) s.hasCalibSaved = true;
+    s.calibSaved = fake.saved;
+    if (fake.sens >= 0) {
+        s.hasWidenSensitivity = true;
+        s.widenSensitivity = fake.sens;
+    }
+    if (!fake.autoGrab.empty()) s.autoGrab = fake.autoGrab;
+    s.grabOutdated = fake.outdated;
+    if (fake.message > 0) {
+        s.message = "校正できた（かぶり）";
+        s.messageEn = fake.message == 1 ? "Calibrated (this wear)" : "";
+    }
+    // A failed calibration keeps the buffers (eyecam-rec writes has_buffers in every state)
+    s.hasBuffers = fake.buffers || state == "calib-error";
+    s.hasSetupDone = fake.setup >= 0;
+    s.setupDone = fake.setup == 1;
+    s.lastCalibWiden = fake.result == "fail" ? "default" : (fake.result == "done" ? "measured" : fake.widen);
+    s.state = eyecam::parseState(s.stateText);
+    view.visible = eyecam::tabVisible(s, unixNow());
+    // The setup's calibration that just ended: followed as the loop would, from calibrating to this status
+    if (!fake.result.empty()) {
+        eyecam::Status calibrating = s;
+        calibrating.state = eyecam::State::Calibrating;
+        calibrating.hasSetupDone = true;
+        calibrating.setupDone = false;
+        view.flow.follow(calibrating, nowSeconds());
+        // eyecam-rec says setup_done after either (the standard widening is saved too)
+        s.hasSetupDone = s.setupDone = true;
+        view.flow.follow(s, nowSeconds());
+        view.readyNotice = view.flow.readyNotice(nowSeconds());
+        view.lastRun = eyecam::Run::CalibWear;
+    }
+    // One from the usual page that just ended: followed from its last step to this status
+    if (!fake.page.empty()) {
+        const bool user = fake.page == "user";
+        eyecam::Status calibrating = s;
+        calibrating.state = eyecam::State::Calibrating;
+        calibrating.protocol = user ? eyecam::kCalibUserCommand : eyecam::kCalibWearCommand;
+        calibrating.stepCount = user ? 4 : 6;
+        calibrating.stepIndex = calibrating.stepCount - 1;
+        view.flow.follow(s, nowSeconds());
+        view.flow.follow(calibrating, nowSeconds());
+        if (!user) s.lastCalibWiden = fake.page;
+        view.flow.follow(s, nowSeconds());
+        view.lastRun = user ? eyecam::Run::CalibUser : eyecam::Run::CalibWear;
+    }
+    return view;
+}
+
+/**
+ * Copy where a command to eyecam-rec is (waiting, or its reply) into the view the panel draws.
+ * @param view the view
+ * @param control the control socket
+ */
+void syncEyecamControl(eyecam::View& view, const eyecam::Control& control) {
+    view.busy = control.busy();
+    view.busyCommand = control.busy() ? control.command() : std::string();
+    view.hasReply = control.hasReply();
+    if (control.hasReply()) view.reply = control.reply();
+}
+
+/**
+ * A setting's slider let go of: its value as a SetNumber press.
+ * @param panel the panel
+ * @param apply applies the press
+ */
+template <typename Apply>
+void takeSliders(EyePanel& panel, Apply apply) {
+    std::string name;
+    double value = 0.0;
+    if (!panel.takeNumberSlider(name, value)) return;
+    const SettingSpec* spec = findSetting(name);
+    if (spec == nullptr) return;
+    std::fprintf(stderr, "[action] %s slid to %.3f\n", name.c_str(), value);
+    apply(PanelHit {PanelAction::SetNumber, spec->key, static_cast<int>(std::lround(value * 1000))});
+}
+
+/**
  * A made-up model for --dump-png (--fake*), so every state can be checked without frameeyeosc.
  * @param options the command line
  * @return the model
@@ -588,6 +987,8 @@ PanelModel fakeModel(const Options& options) {
     JsonValue& root = m.config.root;
     if (options.fakeEtvr) root.set(key::kOutput, JsonValue::makeString(kOutputEtvr));
     if (options.fakeLivelink) root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+    if (options.fakePupilsOff) root.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
+    if (options.fakePupilBits >= 0) root.set(key::kPupilBits, JsonValue::makeNumber(options.fakePupilBits, true));
     if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
     if (!options.fakeWiden.empty()) root.set(key::kLidWiden, JsonValue::makeString(options.fakeWiden));
     if (options.fakePaused) root.set(key::kSending, JsonValue::makeBool(false));
@@ -754,12 +1155,31 @@ PanelModel fakeModel(const Options& options) {
             s.sourceError = "unsupported eye shared-memory version 6; supported: 4, 5";
         }
         s.dominantEye = options.fakeDominantEye;
+        // LiveLink: the pupils go straight to VRChat on the same PC (while the setting is on)
+        if (options.fakeLivelink && m.config.flag(key::kPupilsToVrchat)) s.pupilTarget = "192.168.0.60:9000";
         s.opennessSaturated = options.fakeOpennessSaturated;
+        if (!options.fakeCamera.empty()) {
+            const std::string& camera = options.fakeCamera;
+            CameraStatus& c = s.camera;
+            c.known = true;
+            c.present = camera != "absent";
+            c.calibState = camera == "uncalibrated" ? 0 : (camera == "error" ? 1 : 3);
+            c.used[0] = camera == "both" || camera == "left";
+            c.used[1] = camera == "both" || camera == "right";
+            c.pupilUsed[0] = c.pupilUsed[1] = camera == "both";
+            if (camera == "error") c.error = "camera frames are stale";
+            if (camera == "off") root.set(key::kCameraLids, JsonValue::makeBool(false));
+            if (c.used[0] || c.used[1]) {
+                s.squint = {{c.used[0] ? 0.12 : NAN, c.used[1] ? 0.08 : NAN}};
+                if (camera == "both") s.pupilDilation = 0.46;
+            }
+        }
         s.effective = root;
         if (options.fakeLocked) {
             s.locked = {key::kOutput,          key::kPort,        key::kRaw,         key::kLidOpen,
-                        key::kIndependentEyes, key::kGazeOffsetY, key::kSteamlinkParams, key::kNativeEyes};
-            s.effective.set(key::kOutput, JsonValue::makeString(kOutputVrchat));
+                        key::kIndependentEyes, key::kGazeOffsetY, key::kSteamlinkParams, key::kNativeEyes,
+                        key::kCameraLids, key::kPupilsToVrchat, key::kPupilBits};
+            s.effective.set(key::kOutput, JsonValue::makeString(options.fakeLivelink ? kOutputLivelink : kOutputVrchat));
             s.effective.set(key::kPort, JsonValue::makeNumber(9123, true));
             s.effective.set(key::kRaw, JsonValue::makeBool(true));
             s.effective.set(key::kLidOpen, JsonValue::makeNumber(0.78));
@@ -767,10 +1187,18 @@ PanelModel fakeModel(const Options& options) {
             s.effective.set(key::kGazeOffsetY, JsonValue::makeNumber(-0.05));
             s.effective.set(key::kSteamlinkParams, JsonValue::makeBool(true));
             s.effective.set(key::kNativeEyes, JsonValue::makeBool(true));
+            s.effective.set(key::kCameraLids, JsonValue::makeBool(true));
+            s.effective.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
+            s.effective.set(key::kPupilBits, JsonValue::makeNumber(3, true));
         }
     } else {
         s.readError = "no status file";
     }
+    m.eyecamDir = options.eyecamDir;
+    if (!options.fakeEyecam.empty()) m.eyecam = fakeEyecam(options.fakeEyecam);
+    m.eyecam.password = options.fakePassword == "unset"   ? eyecam::PasswordState::NotSet
+                        : options.fakePassword == "unknown" ? eyecam::PasswordState::Unknown
+                                                            : eyecam::PasswordState::Set;
     m.autostart.autostart = options.fakeAutostart;
     m.language = configLanguage(m.config);
     if (options.fakeWriteError) m.panelError = "rename failed: Read-only file system";
@@ -781,7 +1209,7 @@ PanelModel fakeModel(const Options& options) {
 
 void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, AutostartWorker& autostart,
               frame_updater::UpdateChecker* updater, gaze_fit::Session* fit, const VrOverlay* vr,
-              recorder::Recorder* eyeLog);
+              recorder::Recorder* eyeLog, eyecam::Control* eyecamControl);
 std::string targetLabel(const UiText& t, gaze_fit::TargetStyle style);
 
 /**
@@ -799,6 +1227,17 @@ void settleUpdater(frame_updater::UpdateChecker& updater, bool enabled) {
         if (!u.checking && u.state != frame_updater::UpdateState::Installing) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
+}
+
+/**
+ * Read the version history for the panel's language (when it is opened, and again if the language changes while
+ * it is open).
+ * @param model the model (its changelogDirs; history is written)
+ */
+void loadHistory(PanelModel& model) {
+    model.history = changelog::load(model.changelogDirs, model.language == Language::Ja);
+    std::fprintf(stderr, "[history] %zu versions from %s\n", model.history.entries.size(),
+                 model.history.found ? model.history.dir.c_str() : "nowhere (no CHANGELOG.md found)");
 }
 
 /**
@@ -820,13 +1259,27 @@ int runDumpPng(const Options& options) {
             model.status = readStatus(options.statusPath, unixNow());
             model.autostart.autostart = readAutostart();
             model.language = configLanguage(model.config);
+            // eyecam-rec as it is now (its tab shows only while it runs; --eyecam-dir to try it on a test folder)
+            model.eyecamDir = options.eyecamDir;
+            model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+            model.eyecam.visible = eyecam::tabVisible(model.eyecam.status, unixNow());
+            model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
         }
         if (!options.language.empty()) parseLanguage(options.language, model.language);
+        model.changelogDirs =
+            options.changelogDir.empty() ? changelog::defaultDirs() : std::vector<std::string> {options.changelogDir};
         EyePanel panel(fonts);
         panel.setTab(options.tab);
         panel.setFitDetails(options.fitDetails);
         panel.setFitDetailsPage(options.fitDetailsPage);
         panel.setLidMarks(options.lidMarks);
+        if (options.history) {
+            loadHistory(model);
+            panel.openHistory();
+            if (!options.historyOpen.empty()) panel.setHistoryRow(options.historyOpen);
+            if (options.historyScroll >= 0) panel.setHistoryScroll(options.historyScroll);
+        }
+        if (options.fakeEyecam.rfind("confirm", 0) == 0) panel.openEyecamConfirm(model.eyecam.status.state);
         if (options.previewQuit) panel.armQuitForPreview();
         if (options.previewReset) panel.armResetForPreview();
         if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
@@ -841,15 +1294,53 @@ int runDumpPng(const Options& options) {
         }
         // Presses as the laser pointer would make them (hit areas and config writes, without a headset)
         AutostartWorker idleAutostart;  // never started: autostart presses are only logged
+        eyecam::Control eyecamControl;  // the eye capture tab's buttons really talk to --eyecam-dir's socket
         for (const auto& click : options.clicks) {
             panel.render(model);
             const PanelHit hit = panel.pointerDown(click.first, click.second, nowSeconds());
             std::printf("click %.0f,%.0f -> action %d key %s arg %d\n", click.first, click.second,
                         static_cast<int>(hit.action), hit.key != nullptr ? hit.key : "-", hit.arg);
             if (hit.action != PanelAction::Quit) {
-                applyHit(hit, model, panel, idleAutostart, updater.get(), nullptr, nullptr, nullptr);
+                applyHit(hit, model, panel, idleAutostart, updater.get(), nullptr, nullptr, nullptr, &eyecamControl);
+            }
+            // Wait for eyecam-rec's reply, and show the folder as it is after it
+            if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop ||
+                hit.action == PanelAction::EyecamCalib) {
+                while (eyecamControl.busy()) {
+                    eyecamControl.poll(nowSeconds());
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                const eyecam::Reply& r = eyecamControl.reply();
+                std::printf("eyecam: %s -> %s%s\n", r.command.c_str(), r.ok ? "ok" : "err ", r.error.c_str());
+                syncEyecamControl(model.eyecam, eyecamControl);
+                if (r.ok && eyecam::runOfCommand(r.command) != eyecam::Run::None) {
+                    model.eyecam.lastRun = eyecam::runOfCommand(r.command);
+                }
+                model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+                model.eyecam.visible = eyecam::tabVisible(model.eyecam.status, unixNow());
+                model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
             }
             panel.pointerUp();
+            takeSliders(panel, [&](const PanelHit& slid) {
+                applyHit(slid, model, panel, idleAutostart, updater.get(), nullptr, nullptr, nullptr, &eyecamControl);
+            });
+            double sensitivity = 0.0;
+            if (panel.takeSensitivity(sensitivity, nowSeconds())) {
+                const std::string command = eyecam::sensitivityCommand(sensitivity);
+                std::fprintf(stderr, "[eyecam] sending \"%s\" to %s/ctl.sock\n", command.c_str(),
+                             model.eyecamDir.c_str());
+                eyecamControl.send(model.eyecamDir + "/ctl.sock", command, nowSeconds());
+                while (eyecamControl.busy()) {
+                    eyecamControl.poll(nowSeconds());
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                const eyecam::Reply& r = eyecamControl.reply();
+                std::printf("eyecam: %s -> %s%s\n", r.command.c_str(), r.ok ? "ok" : "err ", r.error.c_str());
+                if (!r.ok) panel.dropSensitivityHold();
+                syncEyecamControl(model.eyecam, eyecamControl);
+                model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+                model.eyecam.visible = eyecam::tabVisible(model.eyecam.status, unixNow());
+            }
             if (updater) {
                 settleUpdater(*updater, model.config.flag(key::kUpdateCheck));
                 model.update = updater->status();
@@ -863,6 +1354,8 @@ int runDumpPng(const Options& options) {
                         u.step.c_str(), u.version.c_str(), u.error.c_str(), u.checkedAt);
         }
         panel.pointerLeave();
+        // (after the pointer left: leaving lets go of the slider)
+        if (options.sensitivityDrag >= 0) panel.previewSensitivityDrag(options.sensitivityDrag);
         panel.render(model);
         if (!panel.writePng(options.pngPath)) {
             std::fprintf(stderr, "Could not write the PNG: %s\n", options.pngPath.c_str());
@@ -922,6 +1415,14 @@ int runDumpPng(const Options& options) {
             std::printf("paced: %d frames in %.3f s (%.1f frames/s), %d pictures drawn, %.3f ms busy per frame\n",
                         frames, took, frames / took, drawn, busy / frames * 1000);
         }
+    }
+    if (!options.fillPngPath.empty()) {
+        Language language = Language::Ja;
+        if (!options.language.empty()) parseLanguage(options.language, language);
+        const std::string label = eyecam::instruction(uiText(language), options.fillKind);
+        std::vector<uint8_t> rgba;
+        renderFill(fonts, options.fillKind == "bright", label, rgba, options.fillPngPath);
+        std::printf("Wrote %s (%dx%d)\n", options.fillPngPath.c_str(), kFillImageSize, kFillImageSize);
     }
     if (!options.thumbnailPngPath.empty()) {
         std::vector<uint8_t> rgba;
@@ -1009,6 +1510,11 @@ std::string statusSignature(const EyeStatus& s) {
                   s.rawGazeEye[0].v[1], s.rawGazeEye[1].v[0], s.rawGazeEye[1].v[1], s.sentGazeEye[0].v[0],
                   s.sentGazeEye[0].v[1], s.sentGazeEye[1].v[0], s.sentGazeEye[1].v[1]);
     signature += eyes;
+    const CameraStatus& c = s.camera;
+    signature += "|" + std::to_string(c.known) + std::to_string(c.present) + std::to_string(c.calibState) +
+                 std::to_string(c.recalibSuggested) + std::to_string(c.used[0]) + std::to_string(c.used[1]) +
+                 std::to_string(c.pupilUsed[0]) + std::to_string(c.pupilUsed[1]) + c.error;
+    signature += "|" + s.pupilTarget;
     signature += "|" + s.configError + "|" + s.sourceError + "|" + s.dominantEye + "|" +
                  (s.opennessSaturated ? "saturated" : "") + "|" + s.configPath + "|" + s.calibrationPath + "|";
     for (const auto& name : s.locked) signature += name + ",";
@@ -1190,10 +1696,11 @@ void startFit(gaze_fit::Session& fit, gaze_fit::Mode mode, const SettingsView& v
  * @param fit the eye fit session (null in --dump-png)
  * @param vr the connection to SteamVR, for the IPD (null in --dump-png)
  * @param eyeLog the eye log (null in --dump-png)
+ * @param eyecamControl eyecam-rec's control socket (null: its buttons do nothing)
  */
 void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, AutostartWorker& autostart,
               frame_updater::UpdateChecker* updater, gaze_fit::Session* fit, const VrOverlay* vr,
-              recorder::Recorder* eyeLog) {
+              recorder::Recorder* eyeLog, eyecam::Control* eyecamControl) {
     const SettingsView view(model);
     std::function<void(JsonValue&)> change;
     std::string openPrompt;
@@ -1212,6 +1719,15 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             const std::string name = hit.key;
             const bool value = hit.arg != 0;
             change = [name, value](JsonValue& root) { root.set(name, JsonValue::makeBool(value)); };
+            break;
+        }
+        case PanelAction::SetInteger: {
+            const SettingSpec* spec = findSetting(hit.key);
+            if (spec == nullptr || view.locked(hit.key) || hit.arg < spec->min || hit.arg > spec->max) return;
+            const std::string name = hit.key;
+            const double value = hit.arg;
+            if (std::fabs(view.number(name) - value) < 1e-12) return;
+            change = [name, value](JsonValue& root) { root.set(name, JsonValue::makeNumber(value, true)); };
             break;
         }
         case PanelAction::Step: {
@@ -1291,6 +1807,24 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
                 root.set(key::kGazeBeta, JsonValue::makeNumber(preset.beta));
                 root.set(key::kGazeDCutoff, JsonValue::makeNumber(preset.dCutoff));
             };
+            break;
+        }
+        case PanelAction::LidPreset: {
+            if (hit.arg < 0 || hit.arg > 2) return;
+            const LidPreset preset = lidPresets()[hit.arg];
+            change = [preset](JsonValue& root) {
+                root.set(key::kLidMinCutoff, JsonValue::makeNumber(preset.minCutoff));
+                root.set(key::kLidBeta, JsonValue::makeNumber(preset.beta));
+            };
+            break;
+        }
+        case PanelAction::SetNumber: {
+            const SettingSpec* spec = findSetting(hit.key);
+            if (spec == nullptr || view.locked(hit.key)) return;
+            const std::string name = hit.key;
+            const double next = snapValue(*spec, hit.arg / 1000.0);
+            if (std::fabs(next - view.number(name)) < 1e-12) return;
+            change = [name, next](JsonValue& root) { root.set(name, JsonValue::makeNumber(next)); };
             break;
         }
         case PanelAction::NumberOn: {
@@ -1393,7 +1927,44 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::FitDetailsPage:
         case PanelAction::LidMarks:
         case PanelAction::HostKey:
-        case PanelAction::HostCancel: return;
+        case PanelAction::HostCancel:
+        case PanelAction::HistoryClose:
+        case PanelAction::HistoryRow:
+        case PanelAction::HistoryScroll:
+        case PanelAction::EyecamStart:
+        case PanelAction::NumberSlider:                // the loop writes the slider's value (SetNumber)
+        case PanelAction::EyecamSensitivity: return;  // the loop sends the slider's value
+        case PanelAction::SetupProceed:
+            std::fprintf(stderr, "[setup] on to the eye cameras' page\n");
+            model.eyecam.flow.proceed();
+            return;
+        case PanelAction::SetupKonsole:
+        case PanelAction::SetupVideo: {
+            // Konsole with the command typed in (the user presses Enter and types the password: the panel never runs
+            // sudo or passwd), or the video in Chromium. Only in VR: --dump-png (vr null) only says what it would run
+            const std::vector<std::string> argv =
+                hit.action == PanelAction::SetupVideo
+                    ? setup_tools::videoArgv(setup_tools::kVideoUrl)
+                    : setup_tools::setupKonsoleArgv(hit.arg, model.language);
+            std::string line;
+            for (const std::string& arg : argv) line += (line.empty() ? "" : " | ") + arg;
+            if (vr == nullptr) {
+                std::printf("setup: would start %s\n", line.c_str());
+                return;
+            }
+            std::string error;
+            if (setup_tools::spawnDetached(argv, error)) {
+                std::fprintf(stderr, "[setup] started %s\n", line.c_str());
+                model.eyecam.spawnError.clear();
+            } else {
+                std::fprintf(stderr, "[setup] couldn't start %s: %s\n", argv[0].c_str(), error.c_str());
+                model.eyecam.spawnError = argv[0] + ": " + error;
+            }
+            return;
+        }
+        case PanelAction::HistoryOpen:
+            loadHistory(model);
+            return;
         case PanelAction::HostEnter: {
             // Start from the IP address set now (a host name can only be changed in config.json)
             const std::string host = view.text(key::kHost);
@@ -1414,6 +1985,32 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             std::fprintf(stderr, "[action] host typed: %s\n", host.c_str());
             change = [host](JsonValue& root) { root.set(key::kHost, JsonValue::makeString(host)); };
             break;
+        }
+        case PanelAction::EyecamBack:
+            std::fprintf(stderr, "[eyecam] error dismissed: %s\n", model.eyecam.status.message.c_str());
+            model.eyecam.flow.dismissError(model.eyecam.lastRun, model.eyecam.status);
+            return;
+        case PanelAction::EyecamChoose:
+        case PanelAction::EyecamStop:
+        case PanelAction::EyecamCalib: {
+            // One line to its socket ("start" or "start widen_nolight" from the light warning, "stop", or a
+            // calibration); the reply is read by the loop (eyecam::Control never waits)
+            if (eyecamControl == nullptr) return;
+            const std::string command =
+                hit.action == PanelAction::EyecamStop    ? std::string("stop")
+                : hit.action == PanelAction::EyecamCalib ? eyecam::calibCommand(static_cast<eyecam::Calib>(hit.arg))
+                                                         : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
+            if (command.empty()) return;
+            const std::string socket = model.eyecamDir + "/ctl.sock";
+            std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
+            if (!eyecamControl->send(socket, command, nowSeconds()) && !eyecamControl->busy()) {
+                std::fprintf(stderr, "[eyecam] %s failed: %s\n", command.c_str(), eyecamControl->reply().error.c_str());
+            } else if (hit.action == PanelAction::EyecamStop) {
+                // A calibration stopped from here ends idle like one done: no result after it
+                model.eyecam.flow.stopSent();
+            }
+            syncEyecamControl(model.eyecam, *eyecamControl);
+            return;
         }
         case PanelAction::FitStop:
             std::fprintf(stderr, "[fit] stopped\n");
@@ -1601,6 +2198,9 @@ int runOverlay(const Options& options) {
     PanelModel model;
     model.configPath = options.configPath;
     model.statusPath = options.statusPath;
+    model.eyecamDir = options.eyecamDir;
+    model.changelogDirs =
+        options.changelogDir.empty() ? changelog::defaultDirs() : std::vector<std::string> {options.changelogDir};
     model.config = readConfigFile(model.configPath);
     model.language = configLanguage(model.config);
     std::fprintf(stderr, "[start] config %s, status %s\n", model.configPath.c_str(), model.statusPath.c_str());
@@ -1672,6 +2272,20 @@ int runOverlay(const Options& options) {
     double loggedYaw = NAN;         // where the target was last logged as settled
     double loggedPitch = NAN;
     std::string lastFitState;
+    // The developer tab "Eye capture": eyecam-rec's status file and control socket, and the full-view light during its
+    // bright and dark steps (the picture drawn, and the one the overlay has)
+    eyecam::Control eyecamControl;
+    eyecam::SensitivitySender sensitivitySender;  // the widening sensitivity slider's value on its way
+    setup_tools::PasswordCheck passwordCheck;     // the eye cameras' setup: is there a SteamOS password
+    double lastEyecamRead = -1e9;
+    std::string drawnEyecam;
+    std::string loggedEyecam;
+    std::vector<uint8_t> fillImage;
+    std::string fillDrawn;          // what fillImage shows ("bright|<text>"), "" before the first
+    std::string fillSent;           // what the overlay was last sent, "" to send again
+    eyecam::Light light;            // the light as shown: which one, and its alpha as it fades in and out
+    eyecam::Fill lightWanted = eyecam::Fill::None;  // the one fillFor wanted last time (to log a fade-out once)
+    bool lightMoving = false;       // fading in or out: the loop runs every display frame
     // The debug gaze dots: their socket, the three dot images (drawn once), which image each overlay has
     gaze_dots::Receiver dots;
     std::vector<uint8_t> dotImages[3];
@@ -1745,6 +2359,10 @@ int runOverlay(const Options& options) {
                 migrateConfig(model);
                 lastStamp = configStamp(model.configPath);
                 model.language = configLanguage(model.config);
+                // The version history follows the language
+                if (panel.historyOpen() && model.history.japanese != (model.language == Language::Ja)) {
+                    loadHistory(model);
+                }
                 dirty = true;
             }
         }
@@ -1758,7 +2376,7 @@ int runOverlay(const Options& options) {
                         std::fprintf(stderr, "[VR] quitting from the panel's \"Quit\"\n");
                         userQuit = true;
                     } else {
-                        applyHit(hit, model, panel, autostart, &updater, &fit, &vr, &eyeLog);
+                        applyHit(hit, model, panel, autostart, &updater, &fit, &vr, &eyeLog, &eyecamControl);
                         lastStamp = configStamp(model.configPath);
                     }
                     dirty = true;
@@ -1766,9 +2384,12 @@ int runOverlay(const Options& options) {
                 }
                 case PointerInput::Type::Up: dirty |= panel.pointerUp(); break;
                 case PointerInput::Type::Leave: dirty |= panel.pointerLeave(); break;
+                case PointerInput::Type::Scroll: dirty |= panel.scroll(input.y); break;
             }
         }
         if (userQuit) break;
+        // The thumbstick scrolls the panel only while the version history is shown
+        vr.setPanelScroll(panel.wantsScroll());
         dirty |= panel.tick(nowSeconds());
         const uint64_t autostartVersion = autostart.snapshot(model.autostart);
         if (autostartVersion != drawnAutostart) {
@@ -1953,6 +2574,158 @@ int runOverlay(const Options& options) {
             }
         }
 
+        // The developer tab "Eye capture" while eyecam-rec runs, dashboard open or closed: its status file read often
+        // while it runs (once a second otherwise, to notice it), the reply to "start" / "stop", the light warning
+        // before a start, and the full-view light during the bright and dark steps: faded in and, when its step ends,
+        // out; hidden at once when recording ends, "stop" is sent, the file goes stale or the tab goes (and destroyed
+        // with the other overlays at shutdown)
+        {
+            const bool running = model.eyecam.visible || vr.fillShown() || eyecamControl.busy();
+            if (nowSeconds() >= lastEyecamRead + (running ? kEyecamReadSec : kEyecamIdleReadSec)) {
+                lastEyecamRead = nowSeconds();
+                model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+                model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
+            }
+            const double now = unixNow();
+            const eyecam::Status& s = model.eyecam.status;
+            const bool shown = eyecam::tabVisible(s, now);
+            if (shown != model.eyecam.visible) {
+                std::fprintf(stderr, "[eyecam] tab %s (%s)\n", shown ? "shown" : "gone",
+                             !s.present ? s.readError.c_str() : (shown ? s.stateText.c_str() : "stopped or stale"));
+                model.eyecam.visible = shown;
+            }
+            if (eyecamControl.poll(nowSeconds())) {
+                const eyecam::Reply& r = eyecamControl.reply();
+                std::fprintf(stderr, "[eyecam] %s -> %s%s\n", r.command.c_str(), r.ok ? "ok" : "err ", r.error.c_str());
+                // A run it took (a calibration's error then reads as the calibration's)
+                if (r.ok && eyecam::runOfCommand(r.command) != eyecam::Run::None) {
+                    model.eyecam.lastRun = eyecam::runOfCommand(r.command);
+                }
+                // A sensitivity it refused: the slider shows the file's value again (the reply shows like others)
+                if (!r.ok && eyecam::isSensitivityCommand(r.command)) {
+                    panel.dropSensitivityHold();
+                    dirty = true;
+                }
+            }
+            // A setting's slider let go of: written like a press (and the widening slider's Valve eye, below)
+            takeSliders(panel, [&](const PanelHit& slid) {
+                applyHit(slid, model, panel, autostart, &updater, &fit, &vr, &eyeLog, &eyecamControl);
+                dirty = true;
+            });
+            // The widening sensitivity slider: its value goes out when let go of, and a few times a second while
+            // dragged, one command at a time
+            {
+                double value = 0.0;
+                if (panel.takeSensitivity(value, nowSeconds())) {
+                    sensitivitySender.released(value);
+                    // One eye on the cameras: the other (Valve's values) takes lid_widen's nearest level with it
+                    const SettingsView view(model);
+                    if (widenSlider(view, model.status).control == WidenControl::Mixed && !view.locked(key::kLidWiden)) {
+                        applyHit({PanelAction::SetLidWiden, key::kLidWiden, widenLevelAt(value)}, model, panel, autostart,
+                                 &updater, &fit, &vr, &eyeLog, &eyecamControl);
+                    }
+                } else if (panel.sensitivityDragging()) {
+                    sensitivitySender.dragged(panel.sensitivityValue(), nowSeconds());
+                }
+                std::string command;
+                if (sensitivitySender.next(eyecamControl.busy(), nowSeconds(), command)) {
+                    const std::string socket = model.eyecamDir + "/ctl.sock";
+                    std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
+                    if (!eyecamControl.send(socket, command, nowSeconds()) && !eyecamControl.busy()) {
+                        std::fprintf(stderr, "[eyecam] %s failed: %s\n", command.c_str(),
+                                     eyecamControl.reply().error.c_str());
+                        panel.dropSensitivityHold();
+                    }
+                    dirty = true;
+                }
+            }
+            syncEyecamControl(model.eyecam, eyecamControl);
+            // The setup: the password (only while it may still be needed: at (1) or (2), the tool not in), how its
+            // calibration ended, and the short "ready" in the left column after it
+            {
+                // (only while the panel shows on the dashboard: nobody reads it otherwise)
+                const bool wanted = visible && shown &&
+                                    eyecam::setupStep(s, eyecam::PasswordState::Unknown) == eyecam::SetupStep::Tool;
+                if (passwordCheck.tick(wanted, nowSeconds())) {
+                    std::fprintf(stderr, "[setup] password: %s\n",
+                                 passwordCheck.state() == eyecam::PasswordState::Set      ? "set"
+                                 : passwordCheck.state() == eyecam::PasswordState::NotSet ? "not set"
+                                                                                           : "unknown");
+                }
+                model.eyecam.password = passwordCheck.state();
+                const eyecam::SetupResult before = model.eyecam.flow.result();
+                const eyecam::CalibResult pageBefore = model.eyecam.flow.calibResult();
+                model.eyecam.flow.follow(s, nowSeconds());
+                if (model.eyecam.flow.result() != before && model.eyecam.flow.result() != eyecam::SetupResult::None) {
+                    std::fprintf(stderr, "[setup] calibration ended: %s\n",
+                                 model.eyecam.flow.result() == eyecam::SetupResult::Done ? "done" : "standard widening");
+                }
+                const eyecam::CalibResult page = model.eyecam.flow.calibResult();
+                if (page != pageBefore && page != eyecam::CalibResult::None) {
+                    std::fprintf(stderr, "[eyecam] calibration ended: %s\n",
+                                 page == eyecam::CalibResult::User      ? "user"
+                                 : page == eyecam::CalibResult::Default ? "standard widening"
+                                                                        : "measured");
+                }
+                model.eyecam.readyNotice = model.eyecam.flow.readyNotice(nowSeconds());
+            }
+            const std::string state = shown ? s.stateText + " " + std::to_string(s.stepIndex) + " " + s.stepLabel : "";
+            if (state != loggedEyecam) {
+                if (shown) {
+                    std::fprintf(stderr, "[eyecam] %s, step %d/%d %s%s%s\n", s.stateText.c_str(), s.stepIndex,
+                                 s.stepCount, s.stepLabel.c_str(), s.message.empty() ? "" : ": ", s.message.c_str());
+                }
+                loggedEyecam = state;
+            }
+            const std::string signature = eyecam::signature(model.eyecam);
+            if (signature != drawnEyecam) {
+                drawnEyecam = signature;
+                dirty = true;
+            }
+            // The light fades in and out on a step change while recording goes on; anything else (stale file, tab
+            // gone, recording over, "stop" sent) takes it away at once
+            if (panel.syncEyecam(model.eyecam)) dirty = true;
+            const eyecam::Fill wanted = eyecam::fillFor(s, now);
+            const bool hideNow = eyecam::hideLightAtOnce(model.eyecam, now);
+            const eyecam::Light before = light;
+            light = eyecam::stepLight(light, wanted, hideNow, nowSeconds());
+            if (light.fill == eyecam::Fill::None) {
+                if (vr.fillShown()) {
+                    vr.hideFill();
+                    const char* why = "faded out";
+                    if (hideNow) {
+                        why = !shown                                          ? "tab gone"
+                              : eyecam::age(s, now) > eyecam::kOverlayStaleSec ? "status file stale"
+                              : s.state != eyecam::State::Recording           ? "not recording"
+                                                                              : "stop sent";
+                    }
+                    std::fprintf(stderr, "[eyecam] light off (%s)\n", why);
+                }
+                fillSent.clear();
+            } else {
+                if (before.fill == light.fill && wanted != light.fill && lightWanted == light.fill) {
+                    std::fprintf(stderr, "[eyecam] light fading out (step changed)\n");
+                }
+                const bool bright = light.fill == eyecam::Fill::Bright;
+                // The light's own step (while it fades out, the status already has the next one)
+                const std::string label = eyecam::instruction(uiText(model.language), bright ? "bright" : "dark");
+                const std::string key = std::string(bright ? "bright|" : "dark|") + label;
+                if (key != fillDrawn) {
+                    renderFill(fonts, bright, label, fillImage);
+                    fillDrawn = key;
+                }
+                const bool fresh = key != fillSent;
+                if (vr.showFill(fresh ? fillImage.data() : nullptr, kFillImageSize, light.alpha)) {
+                    if (fresh) std::fprintf(stderr, "[eyecam] light on: %s, fading in\n", bright ? "bright" : "dark");
+                    fillSent = key;
+                } else {
+                    fillSent.clear();
+                }
+            }
+            lightWanted = wanted;
+            lightMoving = eyecam::lightFading(light, wanted);
+        }
+
         // Draw only while visible, and only when something changed
         if (visible && (dirty || !wasVisible)) {
             panel.render(model);
@@ -1963,21 +2736,31 @@ int runOverlay(const Options& options) {
                 vr.logOverlayState("after the first draw");
             }
         }
-        // The IP keypad doesn't stay open behind a closed dashboard
-        if (!visible && wasVisible) panel.closeHostEntry();
+        // The IP keypad and the eye capture's light warning don't stay open behind a closed dashboard
+        if (!visible && wasVisible) {
+            panel.closeHostEntry();
+            panel.closeEyecamConfirm();
+            // ...nor the setup's done screen ("next time it shows the usual page")
+            model.eyecam.flow.closed();
+        }
         wasVisible = visible;
         // Every display frame while the fit's target or the debug dots are up: with the target, paced by the
         // compositor itself (a fixed sleep plus the loop's work fell behind the display, and the ring stuttered)
         // (the dots only while packets arrive: with none for kStaleSec, the usual slow poll)
         const bool dotsLive = dots.isOpen() && nowSeconds() - lastDotAt <= gaze_dots::kStaleSec;
-        const bool everyFrame = fit.active() || dotsLive;
+        // (and while the eye capture's light fades, so its alpha steps are small)
+        const bool everyFrame = fit.active() || dotsLive || lightMoving;
+        // While eyecam-rec runs, as often as with the panel open, so the light follows its steps closely
+        const bool eyecamLive = model.eyecam.visible || vr.fillShown() || eyecamControl.busy();
         if (!(targetUp && vr.waitFrameSync(kFrameSyncTimeoutMs))) {
-            sleepInterruptible(everyFrame ? kFitPollSec : (visible ? kPanelPollSec : kClosedPollSec));
+            sleepInterruptible(everyFrame ? kFitPollSec : ((visible || eyecamLive) ? kPanelPollSec : kClosedPollSec));
         }
     }
 
     // The same shutdown for SIGTERM / SIGINT, SteamVR quitting, vrserver gone, "close" and "Quit"; a recording is
-    // stopped (and its file written out) first
+    // stopped (and its file written out) first. The eye capture's light goes first of all (shutdown also destroys it)
+    if (vr.fillShown()) std::fprintf(stderr, "[eyecam] light off (quitting)\n");
+    vr.hideFill();
     eyeLog.shutdown();
     vr.shutdown();
     autostart.stop();

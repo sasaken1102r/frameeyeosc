@@ -115,6 +115,28 @@ int matchingGazePreset(const SettingsView& view) {
     return -1;
 }
 
+/** Light follows quickly, strong smooths more; medium is lid_min_cutoff / lid_beta's defaults. */
+const LidPreset kLidPresets[3] = {
+    {10.0, 8.0},
+    {6.0, 5.0},
+    {3.0, 2.5},
+};
+
+const LidPreset* lidPresets() {
+    return kLidPresets;
+}
+
+int matchingLidPreset(const SettingsView& view) {
+    const double minCutoff = view.number(key::kLidMinCutoff);
+    const double beta = view.number(key::kLidBeta);
+    for (int i = 0; i < 3; ++i) {
+        if (std::fabs(kLidPresets[i].minCutoff - minCutoff) < 1e-6 && std::fabs(kLidPresets[i].beta - beta) < 1e-6) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 const char* outputOfArg(int arg) {
     if (arg == 1) return kOutputEtvr;
     if (arg == 2) return kOutputLivelink;
@@ -403,4 +425,95 @@ std::string updateNotes(const frame_updater::UpdateStatus& update, Language lang
     if (update.state != frame_updater::UpdateState::Available) return "";
     if (language == Language::Ja && !update.notesJa.empty()) return update.notesJa;
     return update.notes;
+}
+
+CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming) {
+    const CameraStatus& c = status.camera;
+    if (!status.running || !c.known) return CameraUse::Unknown;
+    if (c.used[0] && c.used[1]) return CameraUse::Both;
+    if (c.used[0]) return CameraUse::Left;
+    if (c.used[1]) return CameraUse::Right;
+    if (!cameraLids) return CameraUse::Off;
+    if (!c.present) return CameraUse::NoCamera;
+    // A baseline for this wear: calibrated (bit 0) or learned by eyecam-rec itself (bit 2)
+    if ((c.calibState & (1 | 4)) == 0) return warming ? CameraUse::Warming : CameraUse::NotCalibrated;
+    if (!c.error.empty()) return CameraUse::Error;
+    return CameraUse::Valve;
+}
+
+bool lidsFromCameras(const EyeStatus& status) {
+    return status.running && status.camera.used[0] && status.camera.used[1];
+}
+
+WidenSlider widenSlider(const SettingsView& view, const EyeStatus& status) {
+    WidenSlider slider;
+    const bool used[2] = {status.running && status.camera.used[0], status.running && status.camera.used[1]};
+    if (used[0] && used[1]) {
+        slider.control = WidenControl::Camera;
+        return slider;
+    }
+    if (used[0] || used[1]) {
+        slider.control = WidenControl::Mixed;
+    } else if (status.running && status.opennessSaturated) {
+        slider.control = WidenControl::Saturated;
+        return slider;
+    }
+    // lid_widen reaches only fitted eyes: one on Valve's values without a fit widens by marks 3 and 4
+    const WidenState widen = widenState(view);
+    for (int eye = 0; eye < 2; ++eye) {
+        if (!used[eye] && !widen.fitted[eye]) slider.unfittedNote = true;
+    }
+    return slider;
+}
+
+int widenLevelAt(double value) {
+    if (!std::isfinite(value)) return 2;
+    return static_cast<int>(std::lround(std::clamp(value, 0.0, 1.0) * 3));
+}
+
+double widenStop(int level) {
+    return std::clamp(level, 0, 3) / 3.0;
+}
+
+bool warmingShown(bool warming, CameraUse use) {
+    return warming && use != CameraUse::NoCamera;
+}
+
+bool learnedShown(bool learned, bool live, CameraUse use) {
+    return learned && live && use != CameraUse::NoCamera;
+}
+
+double helpBoxHeight(int rows) {
+    return 40 + rows * 30;
+}
+
+int helpRows(double top, double bottom) {
+    int rows = 3;
+    while (rows > 0 && top + helpBoxHeight(rows) > bottom) --rows;
+    return rows;
+}
+
+CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool vrchat) {
+    switch (use) {
+        case CameraUse::Both: return vrchat ? CameraLine::BothVrchat : CameraLine::Both;
+        case CameraUse::Left: return CameraLine::Left;
+        case CameraUse::Right: return CameraLine::Right;
+        case CameraUse::Off: return CameraLine::Off;
+        default: break;
+    }
+    if (!live) return CameraLine::Reason;
+    if (warmingShown(warming, use)) return CameraLine::Warming;
+    if (!locked) return CameraLine::PutOn;
+    return CameraLine::Reason;
+}
+
+bool pupilsRowShown(const std::string& output, bool eyeCameras) {
+    return output == kOutputLivelink && eyeCameras;
+}
+
+PupilBitsRow pupilBitsRow(const std::string& output, bool eyeCameras, bool cameraLids, bool pupilsToVrchat) {
+    const bool livelink = output == kOutputLivelink;
+    if (!eyeCameras || (output != kOutputVrchat && !livelink)) return PupilBitsRow::Hidden;
+    if (!cameraLids || (livelink && !pupilsToVrchat)) return PupilBitsRow::Greyed;
+    return PupilBitsRow::Usable;
 }

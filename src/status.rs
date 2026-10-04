@@ -22,6 +22,8 @@ pub struct Status<'a> {
     pub output: OutputKind,
     pub target_mode: &'static str,
     pub target: Option<String>,
+    /// Where the eye camera's pupils go straight to VRChat in LiveLink mode (see pupils_to_vrchat); None otherwise.
+    pub pupil_target: Option<String>,
     pub rate: f32,
     /// Samples from the eye tracker in the last second (sent or not): about 90-136 while streaming,
     /// and it has been seen at 15. None until tracking has run for a second (the count is still filling).
@@ -49,6 +51,8 @@ pub struct Status<'a> {
     pub dominant_eye: Option<&'static str>,
     /// Whether a relaxed open eye reads 1.000 (SteamOS 0.4.3), so widening can't come through.
     pub openness_saturated: bool,
+    /// eyecam-rec's eye-camera values; None while its file can't be opened at all (eyecam-rec not running).
+    pub camera: Option<CameraStatus<'a>>,
     pub locked: &'a [&'static str],
     pub effective: &'a Settings,
     /// The latest gaze capture the panel asked for.
@@ -73,6 +77,26 @@ pub struct SentValues {
     pub gaze: [f32; 2],
     pub gaze_left: [f32; 2],
     pub gaze_right: [f32; 2],
+    /// Each eye's squint (0 for an eye whose squint is not sent); None while no squint goes out (VRChat only).
+    pub squint: Option<[f32; 2]>,
+    /// The pupil dilation; None while it does not go out (to VRChat, directly or next to LiveLink).
+    pub pupil_dilation: Option<f32>,
+}
+
+/// What eyecam-rec's live file says, and what of it is used.
+#[derive(Serialize)]
+pub struct CameraStatus<'a> {
+    /// The file reads right, eyecam-rec is processing, and at least one eye's values are fresh.
+    pub present: bool,
+    /// Bit 0: calibrated for this wear (`calib wear`), bit 1: for this user (`calib user`).
+    pub calib_state: u32,
+    pub recalib_suggested: bool,
+    /// Whether the camera drives each eye's eyelid (from relaxed open up) and squint now.
+    pub used: [bool; 2],
+    /// Whether each eye's pupil comes from the camera now.
+    pub pupil_used: [bool; 2],
+    /// Why the file can't be used (a header this does not know, ...); None while it can.
+    pub error: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -87,7 +111,11 @@ pub struct CalibrationStatus {
 
 /// Four decimals are plenty for display and keep the file short.
 pub fn round(values: [f32; 2]) -> [f32; 2] {
-    values.map(|value| (value * 10_000.0).round() / 10_000.0)
+    values.map(round_one)
+}
+
+pub fn round_one(value: f32) -> f32 {
+    (value * 10_000.0).round() / 10_000.0
 }
 
 pub fn unix_time(time: SystemTime) -> f64 {

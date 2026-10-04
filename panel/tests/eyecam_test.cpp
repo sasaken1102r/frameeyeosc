@@ -890,7 +890,8 @@ void testSetupStep() {
     CHECK(eyecam::setupComplete(setupStatus("idle", ", \"calib_saved\": true")));
     CHECK(!eyecam::setupComplete(setupStatus("idle", ", \"calib_saved\": false")));
 
-    // The step for every combination of password, tool and setup done
+    // The step for every combination of password, tool and setup done: the first one not met (no tool is (1) or (2)
+    // even when set up)
     const PasswordState passwords[3] = {PasswordState::Unknown, PasswordState::Set, PasswordState::NotSet};
     for (const PasswordState password : passwords) {
         for (int tool = 0; tool < 2; ++tool) {
@@ -899,10 +900,10 @@ void testSetupStep() {
                                               std::string(", \"auto_grab\": \"") + (tool ? "ok" : "missing") +
                                                   "\", \"setup_done\": " + (done ? "true" : "false"));
                 const SetupStep step = eyecam::setupStep(st, password);
-                const SetupStep want = done ? SetupStep::Done
-                                       : tool ? SetupStep::Learn
-                                       : password == PasswordState::NotSet ? SetupStep::Password
-                                                                           : SetupStep::Tool;
+                const SetupStep want = !tool ? (password == PasswordState::NotSet ? SetupStep::Password
+                                                                                  : SetupStep::Tool)
+                                       : done ? SetupStep::Done
+                                              : SetupStep::Learn;
                 CHECK(step == want);
             }
         }
@@ -1108,6 +1109,45 @@ void testSetupFlow() {
         failShown.status = setupStatus("idle", notDone);
         failShown.flow.follow(failShown.status, 140.0);
         CHECK(eyecam::setupScreen(failShown) == SetupScreen::Wait);
+    }
+    // Set up, then the tool removed (setup_done still true): (2) again, never the page; back with the tool, straight
+    // to the page (no calibration again). A set-up user with the tool is never asked for the password
+    {
+        const std::string set = ", \"setup_done\": true, \"calib_state\": 5, \"has_buffers\": ";
+        eyecam::View view;
+        view.password = eyecam::PasswordState::NotSet;
+        view.status = setupStatus("idle", set + "true, \"auto_grab\": \"ok\"");
+        view.flow.follow(view.status, 100.0);
+        CHECK(eyecam::setupStep(view.status, view.password) == eyecam::SetupStep::Done);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+        for (const char* grab : {"missing", "no_cap", "unsafe: group-writable"}) {
+            view.status = setupStatus("waiting_fds", set + "false, \"auto_grab\": \"" + grab + "\"");
+            view.flow.follow(view.status, 101.0);
+            view.password = eyecam::PasswordState::Set;
+            CHECK(eyecam::setupScreen(view) == SetupScreen::Check);
+            view.password = eyecam::PasswordState::NotSet;
+            CHECK(eyecam::setupScreen(view) == SetupScreen::Pass);
+        }
+        // ...waiting for the tracker, trying, a failed try: the tool is in, so the page
+        for (const char* grab : {"waiting_tracker", "trying", "failed: x", "ok"}) {
+            view.status = setupStatus("waiting_fds", set + "false, \"auto_grab\": \"" + grab + "\"");
+            view.flow.follow(view.status, 102.0);
+            CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+        }
+        // The done screen (and the ready notice) go when the tool does, and don't come back with it
+        eyecam::View shown = follow({setupStatus("idle", notDone), setupStatus("calibrating", notDone),
+                                     setupStatus("idle", done + ", \"last_calib_widen\": \"measured\"")});
+        CHECK(eyecam::setupScreen(shown) == SetupScreen::Done);
+        shown.status = setupStatus("waiting_fds", set + "false, \"auto_grab\": \"missing\"");
+        shown.flow.follow(shown.status, 101.0);
+        CHECK(shown.flow.result() == SetupResult::None && !shown.flow.readyNotice(101.0));
+        CHECK(eyecam::setupScreen(shown) == SetupScreen::Check);
+        shown.status = setupStatus("idle", done + ", \"has_buffers\": true");
+        shown.flow.follow(shown.status, 102.0);
+        CHECK(eyecam::setupScreen(shown) == SetupScreen::Camera);
+        // An eyecam-rec without auto_grab can't say whether the tool is in: set up is the page, as before
+        CHECK(eyecam::setupStep(setupStatus("waiting_fds", ", \"setup_done\": true"), eyecam::PasswordState::NotSet) ==
+              eyecam::SetupStep::Done);
     }
     // An older eyecam-rec: its fallback decides each time too (the baseline lost: the checklist again)
     {

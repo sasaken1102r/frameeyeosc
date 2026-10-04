@@ -316,8 +316,11 @@ bool setupComplete(const Status& status) {
 }
 
 SetupStep setupStep(const Status& status, PasswordState password) {
-    if (setupComplete(status)) return SetupStep::Done;
-    if (toolInstalled(status)) return SetupStep::Learn;
+    const bool tool = toolInstalled(status);
+    // Set up needs the tool too (without it the cameras stop at the next SteamVR start); an eyecam-rec without
+    // auto_grab can't tell (eyecam-grab was always run by hand), so there being set up is enough
+    if (setupComplete(status) && (tool || status.autoGrab.empty())) return SetupStep::Done;
+    if (tool) return SetupStep::Learn;
     return password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
 }
 
@@ -361,8 +364,8 @@ void SetupFlow::follow(const Status& status, double now) {
         setupCalib_ = false;
         completeBefore_ = complete;
     }
-    // Not complete (any more, e.g. calib.json removed): nothing of an earlier calibration is shown
-    if (!complete) {
+    // Not set up (any more: calib.json removed, or the tool): nothing of an earlier calibration is shown
+    if (setupStep(status, PasswordState::Unknown) != SetupStep::Done) {
         result_ = SetupResult::None;
         doneAt_ = -1e9;
     }

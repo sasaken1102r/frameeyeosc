@@ -145,7 +145,8 @@ struct Status {
  * The setup's calibration as the panel follows it: when a calibration that began before the setup was complete ends
  * with the setup complete, it says how (Done once, so the checklist can show its last screen; Fail while widening fell
  * back to the standard values). That is all it keeps: whether the tool is in and the setup is done are read from each
- * status, so a removed tool or a setup_done gone back to false shows the checklist again at once (and drops a result).
+ * status, so a removed tool or a setup_done gone back to false shows the checklist again at once (and drops a result:
+ * it is kept only while setupStep says Done).
  */
 class SetupFlow {
 public:
@@ -396,9 +397,10 @@ bool toolInstalled(const Status& status);
 bool setupComplete(const Status& status);
 
 /**
- * The current step, from this status and password check alone: the first one not met. Complete is Done; the tool in
- * is (3) whatever the password check says (it was needed to install it); otherwise (1) only while the password is
- * known to be missing, else (2).
+ * The current step, from this status and password check alone: the first one not met. The tool not in is (1) only
+ * while the password is known to be missing, else (2), even when set up (an eyecam-rec without auto_grab can't say,
+ * so set up is Done there); the tool in is Done when complete, else (3), whatever the password check says (it was
+ * needed to install it).
  * @param status the status
  * @param password the password check
  * @return the step

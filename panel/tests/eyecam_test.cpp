@@ -562,6 +562,17 @@ void testCalib() {
         CHECK(eyecam::followRun(Run::None, step("calibrating", label)) == Run::CalibWear);
         CHECK(eyecam::followRun(Run::Recording, step("calibrating", label)) == Run::CalibWear);
     }
+    // ...unless eyecam-rec names it (its protocol is the command)
+    for (const char* label : {"lead_in", ""}) {
+        const auto named = [&](const char* protocol) {
+            return eyecam::parseStatus("{\"state\": \"calibrating\", \"step_label\": \"" + std::string(label) +
+                                           "\", \"protocol\": \"" + protocol + "\"}",
+                                       kNow);
+        };
+        CHECK(eyecam::followRun(Run::CalibWear, named("calib user")) == Run::CalibUser);
+        CHECK(eyecam::followRun(Run::None, named("calib user")) == Run::CalibUser);
+        CHECK(eyecam::followRun(Run::CalibUser, named("calib wear")) == Run::CalibWear);
+    }
     CHECK(eyecam::followRun(Run::CalibUser, step("recording", "normal")) == Run::Recording);
     CHECK(eyecam::followRun(Run::CalibWear, step("searching", "")) == Run::Recording);
     // Other states keep it: an error after a calibration is the calibration's
@@ -667,7 +678,9 @@ void testCalibText() {
               t.lidsCamRowHint, t.lidsCamText1, t.lidsCamText2, t.lidsCamButton, t.lidsCamNote, t.lidsCamMarks,
               t.lidsCamMarksOpen, t.camLineBothVrchat, t.camLineBoth, t.camLineLeft, t.camLineRight,
               t.camLineWarmingFormat, t.camLineWarming, t.camLinePutOn, t.camLineOff, t.devTitle,
-              t.devRecord, t.devRecordHint, t.tabEyecam}) {
+              t.devRecord, t.devRecordHint, t.tabEyecam, t.setupChipSquint, t.setupChipLookUp,
+              t.setupChipLookDown, t.calibDonePill, t.calibDoneTitle, t.calibDoneBody, t.calibUserDoneTitle,
+              t.calibUserDoneBody, t.calibDoneButton}) {
             CHECK(text != nullptr && text[0] != '\0');
         }
         CHECK(t.setupLeftBefore != nullptr);  // (empty in English: "7 s left")
@@ -1171,6 +1184,191 @@ void testSetupFlow() {
     SAME(eyecam::kCalibWearSteps[2], "widen");
 }
 
+/**
+ * A calibration's status at a step (status.json as eyecam-rec writes it while calibrating).
+ * @param protocol "calib wear" / "calib user"
+ * @param count step_count
+ * @param index step_index
+ * @param label step_label
+ * @param extra more members, each starting with ", "
+ * @return the status
+ */
+Status calibStep(const std::string& protocol, int count, int index, const std::string& label,
+                 const std::string& extra = "") {
+    return setupStatus("calibrating", ", \"protocol\": \"" + protocol + "\", \"step_count\": " +
+                                          std::to_string(count) + ", \"step_index\": " + std::to_string(index) +
+                                          ", \"step_label\": \"" + label + "\"" + extra);
+}
+
+void testCalibChips() {
+    using eyecam::Calib;
+    // This wear's: a countdown, then five steps
+    const std::vector<std::string> wear = eyecam::calibChips(calibStep("calib wear", 6, 2, "normal"), Calib::Wear);
+    CHECK((wear == std::vector<std::string> {"close", "normal", "widen", "normal", "widen"}));
+    // The user's: a countdown, then three
+    const std::vector<std::string> user = eyecam::calibChips(calibStep("calib user", 4, 1, "squint"), Calib::User);
+    CHECK((user == std::vector<std::string> {"squint", "look_up", "look_down"}));
+    // Another count (another protocol, or not said): no chips
+    for (const int count : {-1, 0, 3, 5, 7}) {
+        CHECK(eyecam::calibChips(calibStep("calib wear", count, 1, "close"), Calib::Wear).empty());
+    }
+    CHECK(eyecam::calibChips(calibStep("calib user", 6, 1, "close"), Calib::User).empty());
+    CHECK(eyecam::calibChips(calibStep("calib wear", 4, 1, "squint"), Calib::Wear).empty());
+    // Which one a run is
+    CHECK(eyecam::calibOf(eyecam::Run::CalibUser) == Calib::User);
+    for (const eyecam::Run run : {eyecam::Run::CalibWear, eyecam::Run::None, eyecam::Run::Recording}) {
+        CHECK(eyecam::calibOf(run) == Calib::Wear);
+    }
+}
+
+void testPageCalib() {
+    using eyecam::CalibResult;
+    using eyecam::PageScreen;
+    using eyecam::SetupScreen;
+    const std::string set = ", \"auto_grab\": \"ok\", \"has_buffers\": true, \"setup_done\": true";
+    /**
+     * The view after these statuses (set up, at 100 s), with what the panel sent as the last run.
+     */
+    const auto follow = [](std::initializer_list<Status> statuses, eyecam::Run lastRun) {
+        eyecam::View view;
+        view.password = eyecam::PasswordState::Set;
+        view.lastRun = lastRun;
+        for (const Status& st : statuses) {
+            view.status = st;
+            view.flow.follow(st, 100.0);
+        }
+        return view;
+    };
+    const Status idle = setupStatus("idle", set);
+    const Status measured = setupStatus("idle", set + ", \"last_calib_widen\": \"measured\"");
+    const Status standard = setupStatus("idle", set + ", \"last_calib_widen\": \"default\"");
+    // A calibration from the page while it runs: the setup's card (never the checklist)
+    {
+        const eyecam::View view = follow({idle, calibStep("calib wear", 6, 3, "widen", set)}, eyecam::Run::CalibWear);
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+        CHECK(eyecam::pageScreen(view) == PageScreen::Calibrating);
+        const eyecam::View user = follow({idle, calibStep("calib user", 4, 2, "look_up", set)}, eyecam::Run::CalibUser);
+        CHECK(eyecam::pageScreen(user) == PageScreen::Calibrating);
+    }
+    // This wear's, measured: "calibrated", until OK (or the dashboard closes)
+    {
+        eyecam::View view = follow({idle, calibStep("calib wear", 6, 1, "close", set),
+                                    calibStep("calib wear", 6, 5, "widen", set), measured},
+                                   eyecam::Run::CalibWear);
+        CHECK(view.flow.calibResult() == CalibResult::Measured);
+        CHECK(view.flow.result() == eyecam::SetupResult::None);  // not the setup's
+        CHECK(eyecam::setupScreen(view) == SetupScreen::Camera);
+        CHECK(eyecam::pageScreen(view) == PageScreen::Result);
+        CHECK(!view.flow.readyNotice(100.0));
+        view.flow.proceed();
+        CHECK(eyecam::pageScreen(view) == PageScreen::Page);
+        eyecam::View closed = follow({idle, calibStep("calib wear", 6, 5, "widen", set), measured},
+                                     eyecam::Run::CalibWear);
+        closed.flow.closed();
+        CHECK(eyecam::pageScreen(closed) == PageScreen::Page);
+        // ...an eyecam-rec that doesn't say: measured too
+        const eyecam::View old = follow({idle, calibStep("calib wear", 6, 5, "widen", set), idle},
+                                        eyecam::Run::CalibWear);
+        CHECK(old.flow.calibResult() == CalibResult::Measured);
+        // ...ended at "end" (after the last step)
+        const eyecam::View atEnd = follow({idle, calibStep("calib wear", 6, 6, "end", set), measured},
+                                          eyecam::Run::CalibWear);
+        CHECK(atEnd.flow.calibResult() == CalibResult::Measured);
+    }
+    // ...widening on the standard values: the setup's question, kept through a closed dashboard, until answered
+    {
+        eyecam::View view = follow({idle, calibStep("calib wear", 6, 5, "widen", set), standard},
+                                   eyecam::Run::CalibWear);
+        CHECK(view.flow.calibResult() == CalibResult::Default);
+        CHECK(eyecam::pageScreen(view) == PageScreen::Result);
+        view.flow.closed();
+        CHECK(view.flow.calibResult() == CalibResult::Default);
+        eyecam::View again = view;
+        view.flow.proceed();
+        CHECK(eyecam::pageScreen(view) == PageScreen::Page);
+        // "again": the next calibration clears it at once
+        again.status = calibStep("calib wear", 6, 0, "lead_in", set);
+        again.flow.follow(again.status, 200.0);
+        CHECK(again.flow.calibResult() == CalibResult::None);
+        CHECK(eyecam::pageScreen(again) == PageScreen::Calibrating);
+    }
+    // The user's: "user calibration done", whatever last_calib_widen still says from before
+    {
+        const eyecam::View view = follow({measured, calibStep("calib user", 4, 1, "squint", set),
+                                          calibStep("calib user", 4, 3, "look_down", set), standard},
+                                         eyecam::Run::CalibUser);
+        CHECK(view.flow.calibResult() == CalibResult::User);
+        CHECK(eyecam::pageScreen(view) == PageScreen::Result);
+        // ...told by the protocol even when the panel didn't send it (lastRun says otherwise)
+        const eyecam::View other = follow({idle, calibStep("calib user", 4, 3, "look_down", set), idle},
+                                          eyecam::Run::CalibWear);
+        CHECK(other.flow.calibResult() == CalibResult::User);
+    }
+    // Stopped: idle like a done one, but no result (the panel's stop, or one that never got to its last step)
+    {
+        eyecam::View view;
+        view.password = eyecam::PasswordState::Set;
+        for (const Status& st : {idle, calibStep("calib wear", 6, 5, "widen", set)}) view.flow.follow(st, 100.0);
+        view.flow.stopSent();
+        view.status = measured;
+        view.flow.follow(measured, 101.0);
+        CHECK(view.flow.calibResult() == CalibResult::None);
+        CHECK(eyecam::pageScreen(view) == PageScreen::Page);
+        const eyecam::View early = follow({idle, calibStep("calib wear", 6, 3, "widen", set), measured},
+                                          eyecam::Run::CalibWear);
+        CHECK(early.flow.calibResult() == CalibResult::None);
+        // ...a stop sent while nothing ran doesn't spoil the next one
+        eyecam::View before;
+        before.flow.follow(idle, 100.0);
+        before.flow.stopSent();
+        for (const Status& st : {calibStep("calib wear", 6, 5, "widen", set), measured}) before.flow.follow(st, 101.0);
+        CHECK(before.flow.calibResult() == CalibResult::Measured);
+    }
+    // Failed: the error as before, never a result
+    {
+        const eyecam::View view = follow({idle, calibStep("calib wear", 6, 5, "widen", set), setupStatus("error", set)},
+                                         eyecam::Run::CalibWear);
+        CHECK(view.flow.calibResult() == CalibResult::None);
+        CHECK(eyecam::pageScreen(view) == PageScreen::Error);
+        // (an error after a recording isn't the calibration's: the page)
+        eyecam::View recorded = view;
+        recorded.lastRun = eyecam::Run::Recording;
+        CHECK(eyecam::pageScreen(recorded) == PageScreen::Page);
+    }
+    // Tied to its run: gone once eyecam-rec leaves idle, the tool goes, or the setup isn't done any more
+    {
+        const auto ended = [&]() {
+            return follow({idle, calibStep("calib wear", 6, 5, "widen", set), measured}, eyecam::Run::CalibWear);
+        };
+        for (const Status& next : {setupStatus("searching", set), setupStatus("error", set),
+                                   setupStatus("waiting_fds", ", \"auto_grab\": \"waiting_tracker\", \"setup_done\": true")}) {
+            eyecam::View view = ended();
+            view.status = next;
+            view.flow.follow(next, 101.0);
+            CHECK(view.flow.calibResult() == CalibResult::None);
+            view.status = measured;
+            view.flow.follow(measured, 102.0);
+            CHECK(eyecam::pageScreen(view) == PageScreen::Page);
+        }
+        eyecam::View removed = ended();
+        removed.status = setupStatus("waiting_fds", ", \"auto_grab\": \"missing\", \"setup_done\": true");
+        removed.flow.follow(removed.status, 101.0);
+        CHECK(removed.flow.calibResult() == CalibResult::None);
+        eyecam::View undone = ended();
+        undone.status = setupStatus("idle", ", \"auto_grab\": \"ok\", \"setup_done\": false");
+        undone.flow.follow(undone.status, 101.0);
+        CHECK(undone.flow.calibResult() == CalibResult::None);
+        CHECK(eyecam::setupScreen(undone) == SetupScreen::Wait);
+    }
+    // ...and it redraws
+    {
+        eyecam::View a = follow({idle}, eyecam::Run::CalibWear);
+        const eyecam::View b = follow({idle, calibStep("calib wear", 6, 5, "widen", set), idle}, eyecam::Run::CalibWear);
+        a.status = b.status;
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+    }
+}
+
 void testSetupTools() {
     // Konsole with the command typed in: the spec's line, exactly
     const std::vector<std::string> install = setup_tools::konsoleArgv(setup_tools::kInstallCommand, Language::Ja);
@@ -1487,6 +1685,8 @@ int main() {
     testSetupParse();
     testSetupStep();
     testSetupFlow();
+    testCalibChips();
+    testPageCalib();
     testSetupTools();
     testReply();
     testReadFile();

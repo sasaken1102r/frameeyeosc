@@ -270,6 +270,9 @@ Run followRun(Run last, const Status& status) {
         case State::Searching:
         case State::Recording: return Run::Recording;
         case State::Calibrating:
+            // eyecam-rec names the calibration as its protocol; the steps say it too (after the countdown)
+            if (status.protocol == kCalibUserCommand) return Run::CalibUser;
+            if (status.protocol == kCalibWearCommand) return Run::CalibWear;
             switch (parseStep(status.stepLabel)) {
                 case Step::Squint:
                 case Step::LookUp:
@@ -324,6 +327,27 @@ SetupStep setupStep(const Status& status, PasswordState password) {
     return password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
 }
 
+std::vector<std::string> calibChips(const Status& status, Calib calib) {
+    const bool user = calib == Calib::User;
+    const size_t count = user ? std::size(kCalibUserSteps) : std::size(kCalibWearSteps);
+    // The count with the countdown before them; another protocol gets no chips
+    if (status.stepCount != static_cast<int>(count) + 1) return {};
+    const char* const* steps = user ? kCalibUserSteps : kCalibWearSteps;
+    return std::vector<std::string>(steps, steps + count);
+}
+
+Calib calibOf(Run run) {
+    return run == Run::CalibUser ? Calib::User : Calib::Wear;
+}
+
+PageScreen pageScreen(const View& view) {
+    const Status& s = view.status;
+    if (s.state == State::Calibrating) return PageScreen::Calibrating;
+    if (s.state == State::Error && isCalib(view.lastRun)) return PageScreen::Error;
+    if (view.flow.calibResult() != CalibResult::None) return PageScreen::Result;
+    return PageScreen::Page;
+}
+
 SetupScreen setupScreen(const View& view) {
     const Status& s = view.status;
     if (view.flow.result() == SetupResult::Fail) return SetupScreen::Fail;
@@ -342,14 +366,26 @@ SetupScreen setupScreen(const View& view) {
 
 void SetupFlow::follow(const Status& status, double now) {
     const bool complete = setupComplete(status);
+    run_ = followRun(run_, status);
     if (status.state == State::Calibrating) {
         if (!calibrating_) {
             // A new calibration: the setup's if the setup wasn't complete before it (or, joined midway, now)
             calibrating_ = true;
             setupCalib_ = !(seen_ ? completeBefore_ : complete);
             result_ = SetupResult::None;
+            calibResult_ = CalibResult::None;
+            reachedEnd_ = false;
+            stopSent_ = false;
         }
+        if (status.stepCount > 0 && status.stepIndex >= status.stepCount - 1) reachedEnd_ = true;
     } else {
+        if (calibrating_ && !setupCalib_ && status.state == State::Idle && reachedEnd_ && !stopSent_) {
+            // One from the usual page ended well (stopped, it ends idle too, but not at its last step or not by
+            // the panel's stop)
+            calibResult_ = run_ == Run::CalibUser                ? CalibResult::User
+                           : status.lastCalibWiden == "default" ? CalibResult::Default
+                                                                 : CalibResult::Measured;
+        }
         if (calibrating_ && setupCalib_ && status.state == State::Idle && complete) {
             // It ended well (eyecam-rec says setup_done after it): widening fell back to the standard values, or it
             // is done (measured, or an eyecam-rec that doesn't say)
@@ -367,17 +403,26 @@ void SetupFlow::follow(const Status& status, double now) {
     // Not set up (any more: calib.json removed, or the tool): nothing of an earlier calibration is shown
     if (setupStep(status, PasswordState::Unknown) != SetupStep::Done) {
         result_ = SetupResult::None;
+        calibResult_ = CalibResult::None;
         doneAt_ = -1e9;
     }
+    // The page's result belongs to the idle right after its run (a recording, an error, a restart: gone)
+    if (status.state != State::Idle) calibResult_ = CalibResult::None;
     seen_ = true;
 }
 
 void SetupFlow::proceed() {
     result_ = SetupResult::None;
+    calibResult_ = CalibResult::None;
 }
 
 void SetupFlow::closed() {
     if (result_ == SetupResult::Done) result_ = SetupResult::None;
+    if (calibResult_ != CalibResult::Default) calibResult_ = CalibResult::None;
+}
+
+void SetupFlow::stopSent() {
+    if (calibrating_) stopSent_ = true;
 }
 
 bool SetupFlow::readyNotice(double now) const {
@@ -496,6 +541,7 @@ std::string signature(const View& view) {
            rounded(s.widenSensitivity, 0.01) + "|" + std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
            std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.autoGrab + "|" +
            std::to_string(static_cast<int>(view.password)) + std::to_string(static_cast<int>(view.flow.result())) +
+           std::to_string(static_cast<int>(view.flow.calibResult())) +
            std::to_string(view.readyNotice) + "|" + view.spawnError;
 }
 

@@ -544,7 +544,7 @@ private:
 
     /**
      * The eye cameras tab: the setup checklist until it is done (drawSetup), then their page (drawCameraPage); a
-     * calibration from that page and its failure show as drawRun.
+     * calibration from that page and how it ended show as the setup's card (drawPageCalib), its failure as drawRun.
      * @param pen drawing tools
      * @param t texts
      * @param model the model (its eyecam view)
@@ -575,7 +575,18 @@ private:
     void drawSetup(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen);
 
     /**
-     * The current step's card in the checklist, measured (draw false) or drawn.
+     * A calibration from the usual page, and how it ended, in the setup's card: titled with the calibration instead of
+     * (3), without the checklist around it.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param screen Learn (calibrating), Fail (the standard widening) or Calibrated
+     */
+    void drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen);
+
+    /**
+     * The current step's card in the checklist (or a calibration's from the usual page), measured (draw false) or
+     * drawn.
      * @param pen drawing tools
      * @param t texts
      * @param model the model
@@ -584,10 +595,11 @@ private:
      * @param x1 its text's right
      * @param top its top
      * @param draw draw it (else only measure)
+     * @param page from the usual page: titled with the calibration (this wear's or the user's) instead of (3)
      * @return its height
      */
     double setupCard(const Pen& pen, const UiText& t, const PanelModel& model, eyecam::SetupScreen screen, double x0,
-                     double x1, double top, bool draw);
+                     double x1, double top, bool draw, bool page = false);
 
     /**
      * The eye cameras' usual page: what drives the eyelids now, camera_lids, the widening sensitivity, a calibration

@@ -411,6 +411,9 @@ UiText makeJapanese() {
     t.setupChipClose = "閉じる";
     t.setupChipNormal = "普段";
     t.setupChipWiden = "見開く";
+    t.setupChipSquint = "細める";
+    t.setupChipLookUp = "上を見る";
+    t.setupChipLookDown = "下を見る";
     t.setupLeftBefore = "あと";
     t.setupLeftAfter = "秒";
     t.setupLearnStepFormat = "ステップ %d / %d・全部で %d 秒";
@@ -436,6 +439,12 @@ UiText makeJapanese() {
     t.setupDoneHelp2Do = "目のカメラの校正（18秒）";
     t.setupDoneButton = "使いはじめる";
     t.setupDoneNote = "押さなくても、次に開いたときはふだんの画面になるよ";
+    t.calibDonePill = "できたよ";
+    t.calibDoneTitle = "校正できたよ";
+    t.calibDoneBody = "普段の目と見開きを、いまのかぶり方で覚え直したよ";
+    t.calibUserDoneTitle = "ユーザー校正できたよ";
+    t.calibUserDoneBody = "目を細めたときと、上下を見たときの目の開きを覚えたよ";
+    t.calibDoneButton = "OK";
     t.nextTitle = "次にやること・目のカメラ";
     t.nextPass = "SteamOS の設定で決めてね";
     t.nextWait = "ボタンを押すと始まるよ";
@@ -980,6 +989,9 @@ UiText makeEnglish() {
     t.setupChipClose = "Close";
     t.setupChipNormal = "Normal";
     t.setupChipWiden = "Wide";
+    t.setupChipSquint = "Squint";
+    t.setupChipLookUp = "Look up";
+    t.setupChipLookDown = "Look down";
     t.setupLeftBefore = "";
     t.setupLeftAfter = "s left";
     t.setupLearnStepFormat = "Step %d of %d · %d s in all";
@@ -1005,6 +1017,12 @@ UiText makeEnglish() {
     t.setupDoneHelp2Do = "Calibrate the cameras (18 s)";
     t.setupDoneButton = "Start using";
     t.setupDoneNote = "Even without pressing, the usual page shows next time";
+    t.calibDonePill = "Done";
+    t.calibDoneTitle = "Calibrated";
+    t.calibDoneBody = "Your relaxed and wide eyes are learned again, as you wear the headset now";
+    t.calibUserDoneTitle = "User calibration done";
+    t.calibUserDoneBody = "Learned how your eyes open when you squint and look up or down";
+    t.calibDoneButton = "OK";
     t.nextTitle = "Next · Eye cameras";
     t.nextPass = "Set it in the SteamOS settings";
     t.nextWait = "It starts with the button";

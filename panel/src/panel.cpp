@@ -3476,19 +3476,34 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
 }
 
 void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
-    const eyecam::Status& s = m.eyecam.status;
     const eyecam::SetupScreen screen = eyecam::setupScreen(m.eyecam);
     if (screen != eyecam::SetupScreen::Camera) {
         drawSetup(pen, t, m, screen);
         return;
     }
-    // Set up: a calibration from the page, and its failure, show as they always have
-    if (s.state == eyecam::State::Calibrating ||
-        (s.state == eyecam::State::Error && eyecam::isCalib(m.eyecam.lastRun))) {
-        drawRun(pen, t, m);
-        return;
+    // Set up: a calibration from the page, and how it ended, in the setup's card; its failure as it always has
+    switch (eyecam::pageScreen(m.eyecam)) {
+        case eyecam::PageScreen::Calibrating: drawPageCalib(pen, t, m, eyecam::SetupScreen::Learn); return;
+        case eyecam::PageScreen::Error: drawRun(pen, t, m); return;
+        case eyecam::PageScreen::Result:
+            drawPageCalib(pen, t, m,
+                          m.eyecam.flow.calibResult() == eyecam::CalibResult::Default ? eyecam::SetupScreen::Fail
+                                                                                      : eyecam::SetupScreen::Calibrated);
+            return;
+        case eyecam::PageScreen::Page: break;
     }
     drawCameraPage(pen, t, m, v);
+}
+
+void EyePanel::drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& m, eyecam::SetupScreen screen) {
+    const double cardX = kInnerX;
+    const double cardRight = kInnerRight - 2;
+    const double padX = 22;
+    const double cardTop = 118;
+    const double cardH = setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, false, true);
+    strokeRounded(pen, cardX, cardTop, cardRight - cardX, cardH, 14,
+                  screen == eyecam::SetupScreen::Calibrated ? kSuccess : kAccent, 2);
+    setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, true, true);
 }
 
 void EyePanel::drawIconButton(const Pen& pen, double x, double y, double w, double h, const std::string& label,
@@ -3544,6 +3559,9 @@ void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, e
     const double cardH = setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, false);
     const double cardBottom = cardTop + cardH;
     const int laterCount = done ? 0 : 3 - current;
+    // Set up already (the tool removed): (3) stays done, it isn't asked again
+    const bool learned = (screen == SetupScreen::Pass || screen == SetupScreen::Check) &&
+                         eyecam::setupComplete(m.eyecam.status);
     const double lastY = laterCount > 0 ? cardBottom + 28 + rowStep * (laterCount - 1) : cardBottom - 20;
     pen.color(kDivider);
     cairo_set_line_width(cr, 2);
@@ -3572,6 +3590,13 @@ void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, e
     for (int k = 0; k < laterCount; ++k) {
         const int i = current + 1 + k;
         const double cy = cardBottom + 28 + rowStep * k;
+        if (i == 2 && learned) {
+            drawDot(cr, circleX, cy, radius, kSuccess);
+            drawCheck(cr, circleX, cy, 18, kBg);
+            const double x = circleX + 32 + pen.text(circleX + 32, cy + 6, doneLabels[i], 17, kText);
+            pen.text(x, cy + 6, doneValues[i], 17, kSuccess, true);
+            continue;
+        }
         drawDot(cr, circleX, cy, radius, kCard);
         drawRing(cr, circleX, cy, radius - 1, 2, kBorder);
         textCentered(pen, circleX, cy + 6, std::to_string(i + 1), 16, kTextMuted, true);
@@ -3581,12 +3606,22 @@ void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, e
 }
 
 double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m, eyecam::SetupScreen screen,
-                           double x0, double x1, double top, bool draw) {
+                           double x0, double x1, double top, bool draw, bool page) {
     using eyecam::SetupScreen;
     using eyecam::State;
     cairo_t* cr = pen.cr;
     const eyecam::View& view = m.eyecam;
     const eyecam::Status& s = view.status;
+    // Which calibration: the setup's is always this wear's; from the page, the one that ran
+    const eyecam::Calib calib =
+        !page ? eyecam::Calib::Wear
+              : (screen == SetupScreen::Calibrated ? (view.flow.calibResult() == eyecam::CalibResult::User
+                                                          ? eyecam::Calib::User
+                                                          : eyecam::Calib::Wear)
+                                                   : eyecam::calibOf(view.lastRun));
+    const char* learnName = !page                         ? t.setupStepLearn
+                            : calib == eyecam::Calib::User ? t.eyecamCalibUserTitle
+                                                           : t.eyecamCalibWearTitle;
     const double w = x1 - x0;
     const bool busy = view.busy;
     double y = top;  // the last baseline (or bottom) laid out
@@ -3769,7 +3804,7 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             break;
         }
         case SetupScreen::Learn: {
-            title(t.setupStepLearn, t.setupLearnPill, kAccent);
+            title(learnName, t.setupLearnPill, kAccent);
             // The instruction, large, in the accent (and what it means, beside it, for widening)
             const eyecam::Step step = eyecam::parseStep(s.stepLabel);
             const std::string instruction = s.stepLabel.empty() ? t.eyecamCalibWaiting : eyecam::instruction(t, s.stepLabel);
@@ -3777,17 +3812,21 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             const double size = fitSize(pen, instruction, 40, 22, w * 0.7, true);
             const double right = x0 + text(x0, y, instruction, size, kAccent, true);
             if (step == eyecam::Step::Widen) text(right + 18, y, t.setupLearnWidenHint, 17, kTextMuted, false);
-            // The steps as chips (eyecam-rec's protocol for "calib wear": a countdown, then these)
-            const int count = static_cast<int>(std::size(eyecam::kCalibWearSteps));
-            if (s.stepCount == count + 1) {
+            // The steps as chips (the calibration's protocol: a countdown, then these; none for another one)
+            const std::vector<std::string> chips = eyecam::calibChips(s, calib);
+            const int count = static_cast<int>(chips.size());
+            if (count > 0) {
                 y += 40;
                 const double h = 32;
                 double cx = x0;
                 for (int i = 0; i < count; ++i) {
-                    const eyecam::Step chip = eyecam::parseStep(eyecam::kCalibWearSteps[i]);
-                    const char* label = chip == eyecam::Step::Close    ? t.setupChipClose
-                                        : chip == eyecam::Step::Widen ? t.setupChipWiden
-                                                                      : t.setupChipNormal;
+                    const eyecam::Step chip = eyecam::parseStep(chips[i]);
+                    const char* label = chip == eyecam::Step::Close      ? t.setupChipClose
+                                        : chip == eyecam::Step::Widen    ? t.setupChipWiden
+                                        : chip == eyecam::Step::Squint   ? t.setupChipSquint
+                                        : chip == eyecam::Step::LookUp   ? t.setupChipLookUp
+                                        : chip == eyecam::Step::LookDown ? t.setupChipLookDown
+                                                                         : t.setupChipNormal;
                     const bool past = i < s.stepIndex - 1;
                     const bool now = i == s.stepIndex - 1;
                     const double check = past ? 22 : 0;
@@ -3855,7 +3894,7 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
         case SetupScreen::Fail:
         case SetupScreen::Error: {
             const bool failed = screen == SetupScreen::Error;
-            title(t.setupStepLearn, failed ? t.setupErrorPill : t.setupFailPill, failed ? kDanger : kTextMuted);
+            title(learnName, failed ? t.setupErrorPill : t.setupFailPill, failed ? kDanger : kTextMuted);
             y += 50;
             const char* big = failed ? t.eyecamCalibErrorTitle : t.setupFailTitle;
             text(x0, y, big, fitSize(pen, big, 26, 16, w, true), failed ? kDanger : kText, true);
@@ -3944,6 +3983,24 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                 const double nx = x0 + bw + 14;
                 pen.text(nx, by + 29, t.setupDoneNote, fitSize(pen, t.setupDoneNote, 15, 11, x1 - nx, false),
                          kTextMuted);
+            }
+            y = by + bh;
+            break;
+        }
+        case SetupScreen::Calibrated: {
+            // A calibration from the page ended well: a line on what it learned, and back to the page
+            const bool user = calib == eyecam::Calib::User;
+            title(learnName, t.calibDonePill, kSuccess);
+            y += 50;
+            const char* big = user ? t.calibUserDoneTitle : t.calibDoneTitle;
+            text(x0, y, big, fitSize(pen, big, 26, 16, w, true), kText, true);
+            para(user ? t.calibUserDoneBody : t.calibDoneBody, 17, kText, false, 38, 26, 2);
+            const double by = y + 22;
+            const double bh = 46;
+            const double bw = std::max(120.0, pen.measure(t.calibDoneButton, 18, true) + 64);
+            if (draw) {
+                drawButton(pen, x0, by, bw, bh, t.calibDoneButton, {PanelAction::SetupProceed, nullptr, 0}, true, true,
+                           18);
             }
             y = by + bh;
             break;

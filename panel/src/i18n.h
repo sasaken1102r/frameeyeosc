@@ -413,6 +413,9 @@ struct UiText {
     const char* setupChipClose;  ///< ...the steps as chips
     const char* setupChipNormal;
     const char* setupChipWiden;
+    const char* setupChipSquint;  ///< ...the user calibration's
+    const char* setupChipLookUp;
+    const char* setupChipLookDown;
     const char* setupLeftBefore;  ///< ...the seconds left: before the number...
     const char* setupLeftAfter;  ///< ...and after it
     const char* setupLearnStepFormat;  ///< ..."Step %d of %d · %d s in all"
@@ -438,6 +441,12 @@ struct UiText {
     const char* setupDoneHelp2Do;
     const char* setupDoneButton;
     const char* setupDoneNote;
+    const char* calibDonePill;  ///< a calibration from the usual page ended well: the card's pill
+    const char* calibDoneTitle;  ///< ...this wear's
+    const char* calibDoneBody;
+    const char* calibUserDoneTitle;  ///< ...the user's
+    const char* calibUserDoneBody;
+    const char* calibDoneButton;  ///< ...back to the page
     const char* nextTitle;  ///< the left column while not set up: its card
     const char* nextPass;  ///< ...what (1) is about
     const char* nextWait;  ///< ...(3) before its button

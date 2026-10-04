@@ -267,6 +267,8 @@ void printUsage() {
         "                        nosetup (setup_done true / false; without either, an eyecam-rec before it),\n"
         "                        widen=measured|default (last_calib_widen), done / fail (the setup's calibration\n"
         "                        just ended: the checklist's done screen, or widening on the standard values),\n"
+        "                        page=measured|default|user (a calibration from the usual page just ended: its\n"
+        "                        card; with setup),\n"
         "                        msg / msgja (eyecam-rec's message with message_en / Japanese only)\n"
         "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
@@ -305,6 +307,7 @@ struct FakeEyecam {
     int setup = -1;         ///< setup_done: 1 / 0 (-1 = an eyecam-rec before it)
     std::string widen;      ///< last_calib_widen ("" = none)
     std::string result;     ///< "done" / "fail": the setup's calibration just ended that way ("" = no)
+    std::string page;       ///< "measured" / "default" / "user": one from the usual page just ended ("" = no)
     int message = 0;        ///< 1 = a message with message_en, 2 = a message without it (an older eyecam-rec)
 };
 
@@ -362,6 +365,8 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.widen = flag.substr(6);
         } else if (flag == "done" || flag == "fail") {
             fake.result = flag;
+        } else if (flag == "page=measured" || flag == "page=default" || flag == "page=user") {
+            fake.page = flag.substr(5);
         } else if (flag == "ready") {
             fake.baseline = "ready";
         } else if (flag == "saved") {
@@ -832,6 +837,7 @@ eyecam::View fakeEyecam(const std::string& text) {
                           (fake.calibUser < 0 && (step == eyecam::Step::Squint || step == eyecam::Step::LookUp ||
                                                   step == eyecam::Step::LookDown));
         s.stateText = "calibrating";
+        s.protocol = user ? eyecam::kCalibUserCommand : eyecam::kCalibWearCommand;
         s.calibState = user ? eyecam::kCalibWearBit : 0;
         view.lastRun = user ? eyecam::Run::CalibUser : eyecam::Run::CalibWear;
         s.stepLabel = fake.label;
@@ -905,6 +911,20 @@ eyecam::View fakeEyecam(const std::string& text) {
         view.flow.follow(s, nowSeconds());
         view.readyNotice = view.flow.readyNotice(nowSeconds());
         view.lastRun = eyecam::Run::CalibWear;
+    }
+    // One from the usual page that just ended: followed from its last step to this status
+    if (!fake.page.empty()) {
+        const bool user = fake.page == "user";
+        eyecam::Status calibrating = s;
+        calibrating.state = eyecam::State::Calibrating;
+        calibrating.protocol = user ? eyecam::kCalibUserCommand : eyecam::kCalibWearCommand;
+        calibrating.stepCount = user ? 4 : 6;
+        calibrating.stepIndex = calibrating.stepCount - 1;
+        view.flow.follow(s, nowSeconds());
+        view.flow.follow(calibrating, nowSeconds());
+        if (!user) s.lastCalibWiden = fake.page;
+        view.flow.follow(s, nowSeconds());
+        view.lastRun = user ? eyecam::Run::CalibUser : eyecam::Run::CalibWear;
     }
     return view;
 }
@@ -1916,6 +1936,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
             if (!eyecamControl->send(socket, command, nowSeconds()) && !eyecamControl->busy()) {
                 std::fprintf(stderr, "[eyecam] %s failed: %s\n", command.c_str(), eyecamControl->reply().error.c_str());
+            } else if (hit.action == PanelAction::EyecamStop) {
+                // A calibration stopped from here ends idle like one done: no result after it
+                model.eyecam.flow.stopSent();
             }
             syncEyecamControl(model.eyecam, *eyecamControl);
             return;
@@ -2550,10 +2573,18 @@ int runOverlay(const Options& options) {
                 }
                 model.eyecam.password = passwordCheck.state();
                 const eyecam::SetupResult before = model.eyecam.flow.result();
+                const eyecam::CalibResult pageBefore = model.eyecam.flow.calibResult();
                 model.eyecam.flow.follow(s, nowSeconds());
                 if (model.eyecam.flow.result() != before && model.eyecam.flow.result() != eyecam::SetupResult::None) {
                     std::fprintf(stderr, "[setup] calibration ended: %s\n",
                                  model.eyecam.flow.result() == eyecam::SetupResult::Done ? "done" : "standard widening");
+                }
+                const eyecam::CalibResult page = model.eyecam.flow.calibResult();
+                if (page != pageBefore && page != eyecam::CalibResult::None) {
+                    std::fprintf(stderr, "[eyecam] calibration ended: %s\n",
+                                 page == eyecam::CalibResult::User      ? "user"
+                                 : page == eyecam::CalibResult::Default ? "standard widening"
+                                                                        : "measured");
                 }
                 model.eyecam.readyNotice = model.eyecam.flow.readyNotice(nowSeconds());
             }

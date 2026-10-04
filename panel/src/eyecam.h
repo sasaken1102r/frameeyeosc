@@ -11,6 +11,7 @@
 #include "i18n.h"
 
 #include <string>
+#include <vector>
 
 namespace eyecam {
 
@@ -70,8 +71,11 @@ enum class Calib { Wear, User };
 /** What eyecam-rec ran last, to tell a failed calibration from a failed recording. */
 enum class Run { None, Recording, CalibWear, CalibUser };
 
-/** The steps of "calib wear" after its countdown, as the setup checklist shows them (eyecam-rec's protocol). */
+/** The steps of "calib wear" after its countdown, as the chips show them (eyecam-rec's protocol). */
 constexpr const char* kCalibWearSteps[] = {"close", "normal", "widen", "normal", "widen"};
+
+/** ...and of "calib user". */
+constexpr const char* kCalibUserSteps[] = {"squint", "look_up", "look_down"};
 
 /** Whether the SteamOS user has a password ("steamos-passwd --has-password"; the setup's first step). */
 enum class PasswordState {
@@ -98,10 +102,27 @@ enum class SetupScreen {
     Fail,    ///< ...at (3), calibrated but widening fell back to the standard values ("このまま進む" / again)
     Done,    ///< the checklist done, right after the setup's calibration (once)
     Camera,  ///< the usual page (set up)
+    Calibrated,  ///< (the usual page only, never from setupScreen) a calibration from it ended well
 };
 
 /** How the setup's calibration ended, for the screen after it. */
 enum class SetupResult { None, Done, Fail };
+
+/** How a calibration started from the usual page ended, for the card after it. */
+enum class CalibResult {
+    None,
+    Measured,  ///< "calib wear", widening measured (or an eyecam-rec that doesn't say): "校正できたよ"
+    Default,   ///< "calib wear", widening on the standard values: the setup's question again
+    User,      ///< "calib user" done
+};
+
+/** What the usual page shows (once set up). */
+enum class PageScreen {
+    Page,         ///< the page itself
+    Calibrating,  ///< a calibration from it: the setup's (3) card, titled with the calibration
+    Error,        ///< ...that failed (as before: the error and "again")
+    Result,       ///< ...that ended: SetupFlow::calibResult
+};
 
 /** status.json as read. Numbers missing from it are NaN (steps -1). */
 struct Status {
@@ -142,11 +163,12 @@ struct Status {
 };
 
 /**
- * The setup's calibration as the panel follows it: when a calibration that began before the setup was complete ends
- * with the setup complete, it says how (Done once, so the checklist can show its last screen; Fail while widening fell
- * back to the standard values). That is all it keeps: whether the tool is in and the setup is done are read from each
- * status, so a removed tool or a setup_done gone back to false shows the checklist again at once (and drops a result:
- * it is kept only while setupStep says Done).
+ * The calibrations as the panel follows them. When one that began before the setup was complete ends with the setup
+ * complete, it says how (Done once, so the checklist can show its last screen; Fail while widening fell back to the
+ * standard values). When one from the usual page ends at its last step, not stopped, it says how too (calibResult).
+ * That is all it keeps, each tied to its run: whether the tool is in and the setup is done are read from each status,
+ * so a removed tool or a setup_done gone back to false shows the checklist again at once (and drops both results:
+ * they are kept only while setupStep says Done; the page's only while eyecam-rec stays idle).
  */
 class SetupFlow {
 public:
@@ -157,11 +179,17 @@ public:
      */
     void follow(const Status& status, double now);
 
-    /** "使いはじめる" or "このまま進む": on to the usual page (eyecam-rec says setup_done after either). */
+    /** "使いはじめる", "このまま進む" or "OK": on to the usual page (eyecam-rec says setup_done after either). */
     void proceed();
 
-    /** The dashboard closed: the checklist's done screen is not shown again. */
+    /** The dashboard closed: the checklist's done screen, and the page's "calibrated", are not shown again. */
     void closed();
+
+    /** The panel sent "stop" (the calibration running now ends without a result). */
+    void stopSent();
+
+    /** @return how the last calibration from the usual page ended (None once dismissed or no longer idle) */
+    CalibResult calibResult() const { return calibResult_; }
 
     /**
      * @return how the setup's calibration ended (None once it is dismissed, another one starts, or the setup is no
@@ -184,7 +212,11 @@ private:
     bool calibrating_ = false;     ///< it was calibrating at the last one
     bool setupCalib_ = false;      ///< ...and that calibration is the setup's
     bool completeBefore_ = false;  ///< the setup was complete before it
+    bool reachedEnd_ = false;      ///< ...it got to its last step
+    bool stopSent_ = false;        ///< ...the panel stopped it
+    Run run_ = Run::None;          ///< which calibration (followRun)
     SetupResult result_ = SetupResult::None;
+    CalibResult calibResult_ = CalibResult::None;
     double doneAt_ = -1e9;
 };
 
@@ -406,6 +438,30 @@ bool setupComplete(const Status& status);
  * @return the step
  */
 SetupStep setupStep(const Status& status, PasswordState password);
+
+/**
+ * The chips of a calibration: its steps after the countdown (lead_in), when step_count matches its protocol
+ * (status.json gives only the count, the index and the label: the steps are eyecam-rec's, per command), else none.
+ * @param status the status
+ * @param calib which calibration
+ * @return the step labels ("close", ...; empty = no chips)
+ */
+std::vector<std::string> calibChips(const Status& status, Calib calib);
+
+/**
+ * Which calibration a run is.
+ * @param run the run (anything but CalibUser is this wear's)
+ * @return the calibration
+ */
+Calib calibOf(Run run);
+
+/**
+ * What the usual page shows: a calibration running, its error (with its run), how the last one ended, or the page.
+ * Only once setupScreen says Camera.
+ * @param view the recorder
+ * @return the screen
+ */
+PageScreen pageScreen(const View& view);
 
 /**
  * What the eye cameras' tab shows: how the setup's calibration ended while that is still to be shown, else the

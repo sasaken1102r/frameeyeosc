@@ -493,7 +493,7 @@ UiText makeJapanese() {
     t.camLineWarmingFormat = "普段の目を覚えてるところだよ（あと %d 秒）。普段どおりにしててね";
     t.camLineWarming = "普段の目を覚えてるところだよ。普段どおりにしててね";
     t.camLinePutOn = "HMD をかぶると、カメラで目を見はじめるよ";
-    t.camLineOff = "カメラはオフ。まぶたは Valve の値だけで送ってるよ";
+    t.camLineOff = "カメラはオフ（処理も止めてる）。まぶたは Valve の値だけで送ってるよ";
     t.camHelpTitle = "こんなときは";
     t.camHelp1 = "見開きが出すぎる・出ない";
     t.camHelp1Do = "「まぶた」タブの「見開きの出やすさ」で";
@@ -1119,7 +1119,7 @@ UiText makeEnglish() {
     t.camLineWarmingFormat = "Learning your relaxed eyes (%d s left). Just act as usual";
     t.camLineWarming = "Learning your relaxed eyes. Just act as usual";
     t.camLinePutOn = "Put the headset on and the cameras start watching your eyes";
-    t.camLineOff = "Cameras off: the eyelids go out on Valve's values only";
+    t.camLineOff = "Cameras off (not processed): the eyelids go out on Valve's values only";
     t.camHelpTitle = "When…";
     t.camHelp1 = "Widening too much or too little";
     t.camHelp1Do = "\"How easily widening shows\" on the Eyelids tab";

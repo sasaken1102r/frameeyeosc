@@ -2276,6 +2276,7 @@ int runOverlay(const Options& options) {
     // bright and dark steps (the picture drawn, and the one the overlay has)
     eyecam::Control eyecamControl;
     eyecam::SensitivitySender sensitivitySender;  // the widening sensitivity slider's value on its way
+    eyecam::LiveSync liveSync;                    // camera_lids for eyecam-rec too ("live on" / "live off")
     setup_tools::PasswordCheck passwordCheck;     // the eye cameras' setup: is there a SteamOS password
     double lastEyecamRead = -1e9;
     std::string drawnEyecam;
@@ -2635,6 +2636,21 @@ int runOverlay(const Options& options) {
                         std::fprintf(stderr, "[eyecam] %s failed: %s\n", command.c_str(),
                                      eyecamControl.reply().error.c_str());
                         panel.dropSensitivityHold();
+                    }
+                    dirty = true;
+                }
+            }
+            // camera_lids off: eyecam-rec stops working the video out too ("live off"), and on again; re-sent while
+            // status.json says otherwise (it starts live after a restart, and takes it only in idle and error)
+            {
+                std::string command;
+                if (liveSync.next(SettingsView(model).flag(key::kCameraLids), s, model.eyecam.visible,
+                                  eyecamControl.busy(), nowSeconds(), command)) {
+                    const std::string socket = model.eyecamDir + "/ctl.sock";
+                    std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
+                    if (!eyecamControl.send(socket, command, nowSeconds()) && !eyecamControl.busy()) {
+                        std::fprintf(stderr, "[eyecam] %s failed: %s\n", command.c_str(),
+                                     eyecamControl.reply().error.c_str());
                     }
                     dirty = true;
                 }

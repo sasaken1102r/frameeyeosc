@@ -4422,7 +4422,8 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         const double lineH = pupils ? 52 : h;  // the state line's part of the row
         drawRowLabel(pen, t, y, h, t.camRowState, t.camRowStateHint, false);
         // (while learning, the pill says so: the line itself stays short)
-        std::string state = !s.live                     ? std::string(t.eyecamLiveOff)
+        // (camera_lids off turns eyecam-rec's live off too: the line says the cameras are off, not why live is)
+        std::string state = !s.live && use != CameraUse::Off ? std::string(t.eyecamLiveOff)
                             : use == CameraUse::Warming ? std::string(t.cameraUseValve)
                                                         : cameraUseText(t, use, es);
         reason = state;

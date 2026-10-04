@@ -589,6 +589,42 @@ private:
     double lastAt_ = 0.0;
 };
 
+/** How long a "live on" / "live off" waits for status.json to show it before it is sent again (s). */
+constexpr double kLiveResendSec = 3.0;
+
+/**
+ * The command that turns eyecam-rec's live processing of the camera video on or off.
+ * @param on on
+ * @return "live on" or "live off"
+ */
+std::string liveCommand(bool on);
+
+/**
+ * camera_lids for eyecam-rec too: while it is off, eyecam-rec stops working out the eye values from the video ("live
+ * off"; it keeps running and holding the buffers), and starts again when it is on. eyecam-rec takes live on / off only
+ * in idle and error, and starts with live on (after a restart, or once it has the buffers), so the wanted state is
+ * compared with status.json's "live" whenever it is idle or in error, and sent when they differ: at once, then at
+ * most every kLiveResendSec while status.json doesn't show it yet (a refused one is tried again that way too).
+ */
+class LiveSync {
+public:
+    /**
+     * The command to send now, if any.
+     * @param wanted camera_lids (as frameeyeosc has it)
+     * @param status eyecam-rec's status
+     * @param visible eyecam-rec runs (tabVisible)
+     * @param busy another command waits for its reply
+     * @param now monotonic seconds
+     * @param command where to write it
+     * @return true if there is one (it counts as sent)
+     */
+    bool next(bool wanted, const Status& status, bool visible, bool busy, double now, std::string& command);
+
+private:
+    double sentAt_ = -1e9;
+    bool sentOn_ = false;
+};
+
 /**
  * Whether a reply is to the widening sensitivity (its error puts the slider back to the file's value).
  * @param command the command answered

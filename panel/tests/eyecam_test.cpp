@@ -1847,6 +1847,44 @@ void testControl() {
  * Run the tests.
  * @return 0 if all passed
  */
+void testLiveSync() {
+    const auto status = [](const char* state, bool live) {
+        Status st = setupStatus(state, ", \"has_buffers\": true");
+        st.live = live;
+        return st;
+    };
+    SAME(eyecam::liveCommand(false), "live off");
+    SAME(eyecam::liveCommand(true), "live on");
+    eyecam::LiveSync sync;
+    std::string command;
+    // In step: nothing
+    CHECK(!sync.next(true, status("idle", true), true, false, 0.0, command));
+    // camera_lids off while idle: "live off" at once
+    CHECK(sync.next(false, status("idle", true), true, false, 0.0, command));
+    SAME(command, "live off");
+    // ...not again while status.json hasn't shown it yet, then again (refused, or lost)
+    CHECK(!sync.next(false, status("idle", true), true, false, 1.0, command));
+    CHECK(sync.next(false, status("idle", true), true, false, eyecam::kLiveResendSec + 0.1, command));
+    // ...shown: nothing more
+    CHECK(!sync.next(false, status("idle", false), true, false, 10.0, command));
+    // On again: "live on" at once, even right after an off
+    CHECK(sync.next(true, status("idle", false), true, false, 10.1, command));
+    SAME(command, "live on");
+    // Busy eyecam-rec (calibrating, recording, searching) or waiting for the buffers: kept until it is idle or in error
+    for (const char* busyState : {"calibrating", "recording", "searching", "waiting_fds"}) {
+        CHECK(!sync.next(false, status(busyState, true), true, false, 20.0, command));
+    }
+    CHECK(sync.next(false, status("error", true), true, false, 20.0, command));
+    SAME(command, "live off");
+    // eyecam-rec restarted (live again): sent again
+    CHECK(!sync.next(false, status("idle", false), true, false, 21.0, command));
+    CHECK(sync.next(false, status("idle", true), true, false, 30.0, command));
+    // Another command out, or eyecam-rec not running: waits
+    CHECK(!sync.next(true, status("idle", false), true, true, 40.0, command));
+    CHECK(!sync.next(true, status("idle", false), false, false, 40.0, command));
+    CHECK(sync.next(true, status("idle", false), true, false, 40.0, command));
+}
+
 void testUtf8() {
     // Valid text stays as it is
     SAME(validUtf8("校正できた ok"), "校正できた ok");
@@ -1917,6 +1955,7 @@ int main() {
     testSetupTools();
     testReply();
     testUtf8();
+    testLiveSync();
     testReadFile();
     testControl();
     if (gFailures > 0) {

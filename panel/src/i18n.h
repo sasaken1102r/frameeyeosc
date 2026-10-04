@@ -378,6 +378,10 @@ struct UiText {
     const char* calibPromptButton;
     const char* recalibPromptText;     ///< recalib_suggested
     const char* recalibPromptButton;
+    const char* eyecamSensitivity;     ///< the widening sensitivity slider (eye cameras)...
+    const char* eyecamSensitivityDull; ///< ...its left end
+    const char* eyecamSensitivitySharp;  ///< ...its right end
+    const char* lidWidenCameraNote;    ///< Eyelids tab: eyes on the cameras widen by the eye capture tab's sensitivity
     const char* calibOfferText;        ///< the quiet line in the note's place: a calibration if widening looks wrong
     const char* calibOfferButton;
     const char* rowPrefix;

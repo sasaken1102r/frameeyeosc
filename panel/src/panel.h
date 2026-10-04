@@ -70,6 +70,8 @@ enum class PanelAction {
     EyecamStop,        ///< eye capture tab: send "stop"
     EyecamCalib,       ///< a calibration: arg = eyecam::Calib (the panel shows the eye capture tab; the caller sends
                        ///< eyecam::calibCommand)
+    EyecamSensitivity, ///< the widening sensitivity slider: pressed and dragged inside the panel; the caller takes
+                       ///< the value with takeSensitivity / sensitivityDragging
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -94,6 +96,8 @@ class EyePanel {
 public:
     /** Seconds the quit / reset buttons wait for the confirming second press. */
     static constexpr double kConfirmSec = 3.0;
+    /** Seconds the sensitivity slider keeps its let-go value at most, waiting for status.json to have it. */
+    static constexpr double kSensitivityHoldSec = 3.0;
 
     /**
      * @param fonts the fonts (must outlive the panel)
@@ -221,6 +225,30 @@ public:
     bool eyecamConfirmOpen() const { return eyecamConfirm_.isOpen(); }
 
     /**
+     * The widening sensitivity slider was let go of (once per release). It keeps showing that value until
+     * status.json has it, its command fails (dropSensitivityHold), or kSensitivityHoldSec pass.
+     * @param value where to write the value (0..1, two decimals)
+     * @param now monotonic seconds
+     * @return true if it was let go of since the last call
+     */
+    bool takeSensitivity(double& value, double now);
+
+    /** @return true while the slider is dragged */
+    bool sensitivityDragging() const { return sensDragging_; }
+
+    /** @return the slider's value while dragged (or as last let go of) */
+    double sensitivityValue() const { return sensValue_; }
+
+    /** Show status.json's value again (the command failed). */
+    void dropSensitivityHold() { sensHeld_ = false; }
+
+    /**
+     * For --sensitivity-drag: the slider as if dragged to a value.
+     * @param value 0..1
+     */
+    void previewSensitivityDrag(double value);
+
+    /**
      * Open the version history on the Advanced tab, with the installed version's row open (the newest one if the
      * changelog doesn't have it) and scrolled to the top. Choosing another tab closes it.
      */
@@ -334,6 +362,20 @@ private:
     bool eyecamTab_ = false;            ///< the eye capture tab is in the tab row (eyecam-rec runs)
     eyecam::State eyecamState_ = eyecam::State::Missing;  ///< the recorder's state as last seen (its start button)
     eyecam::StartConfirm eyecamConfirm_;  ///< the light warning before a start
+    bool sensDragging_ = false;         ///< the widening sensitivity slider is held
+    double sensValue_ = 0.0;            ///< its value while held, or as last let go of
+    bool sensReleased_ = false;         ///< let go of, not taken yet (takeSensitivity)
+    bool sensHeld_ = false;             ///< showing sensValue_ until status.json has it
+    double sensHoldUntil_ = 0.0;        ///< ...at most until then (monotonic seconds)
+    double sensTrackX_ = 0.0;           ///< the slider's track as last drawn
+    double sensTrackW_ = 1.0;
+
+    /**
+     * The slider's value at a pointer position (on its track, two decimals).
+     * @param x px from the left
+     * @return 0..1
+     */
+    double sensitivityAt(double x) const;
 
     /**
      * Find the usable button at a point.

@@ -38,6 +38,8 @@ constexpr int kCalibWearBit = 1;
 constexpr int kCalibUserBit = 2;
 /** calib_state's bit for a baseline eyecam-rec learned by itself for this wear (the relaxed eyes; newer eyecam-rec). */
 constexpr int kCalibAutoBit = 4;
+/** How often at most the widening sensitivity is sent while its slider is dragged (s); it is sent again on release. */
+constexpr double kSensitivitySendSec = 0.3;
 /** The command the user runs once over SSH to give the recorder the camera buffers (the panel only shows it). */
 constexpr const char* kGrabCommand = "sudo /home/steamos/eyecam-src/target/release/eyecam-grab";
 
@@ -105,6 +107,8 @@ struct Status {
     double warmupRemainingS = 0.0; ///< seconds left of the learning, while warming (NaN when missing)
     bool hasCalibSaved = false;    ///< "calib_saved" is there
     bool calibSaved = false;       ///< a calibration for the wear was saved once (calib.json), so it never asks again
+    bool hasWidenSensitivity = false;  ///< "widen_sensitivity" is there (the slider shows only then)
+    double widenSensitivity = 0.0;     ///< 0 dull (rarely widens by itself) .. 1 sensitive (NaN when missing)
 };
 
 /** The recorder's reply to a command. */
@@ -304,6 +308,58 @@ CalibPrompt calibPrompt(const View& view, bool cameraLids);
  * @return true to show it
  */
 bool calibOffer(const View& view, bool cameraLids);
+
+/**
+ * The command that sets the widening sensitivity (eyecam-rec takes it in every state, applies it at once and keeps
+ * it).
+ * @param value 0 dull .. 1 sensitive; kept within 0..1
+ * @return "set widen_sensitivity 0.60" (two decimals), or "" for a value that isn't a number
+ */
+std::string sensitivityCommand(double value);
+
+/**
+ * The widening sensitivity on its way to eyecam-rec: the value let go of is always sent; while the slider is
+ * dragged, at most every kSensitivitySendSec and only when it moved. One command at a time, so a value waits while
+ * another command is out, and only the newest one goes.
+ */
+class SensitivitySender {
+public:
+    /**
+     * The slider was let go of.
+     * @param value its value
+     */
+    void released(double value);
+
+    /**
+     * The slider is being dragged.
+     * @param value its value now
+     * @param now monotonic seconds
+     */
+    void dragged(double value, double now);
+
+    /**
+     * The command to send now, if any.
+     * @param busy another command waits for its reply
+     * @param now monotonic seconds
+     * @param command where to write it
+     * @return true if there is one (it counts as sent)
+     */
+    bool next(bool busy, double now, std::string& command);
+
+private:
+    bool pending_ = false;
+    double value_ = 0.0;
+    bool sent_ = false;      ///< something was sent (lastValue_ / lastAt_ are set)
+    double lastValue_ = 0.0;
+    double lastAt_ = 0.0;
+};
+
+/**
+ * Whether a reply is to the widening sensitivity (its error puts the slider back to the file's value).
+ * @param command the command answered
+ * @return true for "set widen_sensitivity ..."
+ */
+bool isSensitivityCommand(const std::string& command);
 
 /**
  * The light warning before a start: the start button (idle) and the retry button (error) open it instead of

@@ -375,6 +375,10 @@ UiText makeJapanese() {
     t.calibPromptButton = "校正する";
     t.recalibPromptText = "目のカメラの基準がずれてきたかも";
     t.recalibPromptButton = "校正し直す";
+    t.eyecamSensitivity = "見開きの感度";
+    t.eyecamSensitivityDull = "鈍い";
+    t.eyecamSensitivitySharp = "敏感";
+    t.lidWidenCameraNote = "カメラ使用中は「目の撮影」タブの感度が効きます";
     t.calibOfferText = "見開きが変だと思ったら";
     t.calibOfferButton = "校正（18秒）";
     t.rowPrefix = "パラメーター名の頭";
@@ -829,6 +833,10 @@ UiText makeEnglish() {
     t.calibPromptButton = "Calibrate";
     t.recalibPromptText = "The eye cameras may have drifted";
     t.recalibPromptButton = "Recalibrate";
+    t.eyecamSensitivity = "Widening sensitivity";
+    t.eyecamSensitivityDull = "Dull";
+    t.eyecamSensitivitySharp = "Sensitive";
+    t.lidWidenCameraNote = "With the cameras in use, the Eye capture tab's sensitivity applies";
     t.calibOfferText = "Widening looks off?";
     t.calibOfferButton = "Calibrate (18 s)";
     t.rowPrefix = "Parameter prefix";

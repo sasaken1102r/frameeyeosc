@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -104,6 +105,7 @@ Status parseStatus(const std::string& text, double mtime) {
     status.mtime = mtime;
     status.fpsL = status.fpsR = kNaN;
     status.stepRemainingS = status.elapsedS = status.totalS = status.liveMs = status.warmupRemainingS = kNaN;
+    status.widenSensitivity = kNaN;
     JsonValue root;
     if (!parseJson(text, root, status.readError)) return status;
     if (!root.isObject()) {
@@ -144,6 +146,9 @@ Status parseStatus(const std::string& text, double mtime) {
     const JsonValue* saved = root.get("calib_saved");
     status.hasCalibSaved = saved != nullptr && saved->isBool();
     status.calibSaved = status.hasCalibSaved && saved->boolean;
+    // The widening sensitivity (missing on an older eyecam-rec: no slider)
+    status.widenSensitivity = readNumber(root, "widen_sensitivity", kNaN);
+    status.hasWidenSensitivity = std::isfinite(status.widenSensitivity);
     return status;
 }
 
@@ -295,6 +300,39 @@ bool calibOffer(const View& view, bool cameraLids) {
     return calibPrompt(view, cameraLids) == CalibPrompt::None;
 }
 
+std::string sensitivityCommand(double value) {
+    if (!std::isfinite(value)) return std::string();
+    char text[64];
+    std::snprintf(text, sizeof(text), "set widen_sensitivity %.2f", std::clamp(value, 0.0, 1.0));
+    return text;
+}
+
+void SensitivitySender::released(double value) {
+    pending_ = true;
+    value_ = value;
+}
+
+void SensitivitySender::dragged(double value, double now) {
+    if (sent_ && (now < lastAt_ + kSensitivitySendSec || std::fabs(value - lastValue_) < 0.005)) return;
+    pending_ = true;
+    value_ = value;
+}
+
+bool SensitivitySender::next(bool busy, double now, std::string& command) {
+    if (!pending_ || busy) return false;
+    pending_ = false;
+    command = sensitivityCommand(value_);
+    if (command.empty()) return false;
+    sent_ = true;
+    lastValue_ = value_;
+    lastAt_ = now;
+    return true;
+}
+
+bool isSensitivityCommand(const std::string& command) {
+    return command.rfind("set widen_sensitivity", 0) == 0;
+}
+
 bool StartConfirm::open(State state) {
     if (state != State::Idle && state != State::Error) return false;
     open_ = true;
@@ -370,7 +408,8 @@ std::string signature(const View& view) {
            (std::isfinite(s.warmupRemainingS)
                 ? std::to_string(static_cast<long>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)))
                 : std::string("-")) +
-           "|" + std::to_string(s.hasCalibSaved) + std::to_string(s.calibSaved);
+           "|" + std::to_string(s.hasCalibSaved) + std::to_string(s.calibSaved) + "|" +
+           rounded(s.widenSensitivity, 0.01);
 }
 
 Control::~Control() {

@@ -597,7 +597,33 @@ PanelHit EyePanel::hitTest(double x, double y) const {
     return {};
 }
 
+double EyePanel::sensitivityAt(double x) const {
+    const double value = std::clamp((x - sensTrackX_) / std::max(1.0, sensTrackW_), 0.0, 1.0);
+    return std::round(value * 100) / 100;
+}
+
+bool EyePanel::takeSensitivity(double& value, double now) {
+    if (!sensReleased_) return false;
+    sensReleased_ = false;
+    value = sensValue_;
+    sensHeld_ = true;
+    sensHoldUntil_ = now + kSensitivityHoldSec;
+    return true;
+}
+
+void EyePanel::previewSensitivityDrag(double value) {
+    sensDragging_ = true;
+    sensValue_ = std::clamp(value, 0.0, 1.0);
+}
+
 bool EyePanel::pointerMove(double x, double y) {
+    // A held slider follows the pointer anywhere (it is let go of by the release, or by leaving the panel)
+    if (sensDragging_) {
+        const double value = sensitivityAt(x);
+        if (value == sensValue_) return false;
+        sensValue_ = value;
+        return true;
+    }
     const PanelHit now = hitTest(x, y);
     if (now == hover_) return false;
     hover_ = now;
@@ -661,6 +687,11 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             historyOpen_ = false;
             eyecamConfirm_.close();
             return hit;
+        case PanelAction::EyecamSensitivity:
+            // Held: follows the pointer until let go of (the caller sends it)
+            sensDragging_ = true;
+            sensValue_ = sensitivityAt(x);
+            return {};
         case PanelAction::EyecamChoose:
             if (!eyecamConfirm_.isOpen()) return {};
             // "Cancel" only closes it
@@ -692,12 +723,21 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
 }
 
 bool EyePanel::pointerUp() {
+    if (sensDragging_) {
+        sensDragging_ = false;
+        sensReleased_ = true;
+    }
     if (pressed_.action == PanelAction::None) return false;
     pressed_ = {};
     return true;
 }
 
 bool EyePanel::pointerLeave() {
+    // Leaving the panel lets go of the slider where it is
+    if (sensDragging_) {
+        sensDragging_ = false;
+        sensReleased_ = true;
+    }
     const bool changed = hover_.action != PanelAction::None || pressed_.action != PanelAction::None;
     hover_ = {};
     pressed_ = {};
@@ -706,6 +746,10 @@ bool EyePanel::pointerLeave() {
 
 bool EyePanel::tick(double now) {
     bool changed = false;
+    if (sensHeld_ && now > sensHoldUntil_) {
+        sensHeld_ = false;
+        changed = true;
+    }
     if (quitArmed_ && now > quitArmedUntil_) {
         quitArmed_ = false;
         changed = true;
@@ -2187,6 +2231,14 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
             note = t.opennessSaturated;
             notice = true;
         }
+        // Eyes on the eye cameras widen by eyecam-rec's own sensitivity, not by this setting (both of them: that
+        // wins over the cap above, which then doesn't matter)
+        const bool cameraBoth = s.running && s.camera.used[0] && s.camera.used[1];
+        const bool cameraAny = s.running && (s.camera.used[0] || s.camera.used[1]);
+        if (cameraBoth || (cameraAny && !(s.running && s.opennessSaturated))) {
+            note = t.lidWidenCameraNote;
+            notice = false;
+        }
         pen.text(kInnerX, y + 18, note, fitSize(pen, note, 15, 11, kInnerRight - bw - 12 - kInnerX, notice),
                  notice ? kText : kTextMuted, notice);
     }
@@ -3244,7 +3296,44 @@ void EyePanel::drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel&
                       {{t.on, {PanelAction::SetBool, key::kCameraLids, 1}},
                        {t.off, {PanelAction::SetBool, key::kCameraLids, 0}}},
                       on ? 0 : 1, 20, locked);
-        y += 80;
+        y += 76;
+    }
+    // The widening sensitivity (only from an eyecam-rec that has it): dull at the left, sensitive at the right
+    if (s.hasWidenSensitivity) {
+        const double file = std::clamp(s.widenSensitivity, 0.0, 1.0);
+        // Its own value while held, and after it is let go of until the file has it
+        if (sensHeld_ && std::fabs(file - sensValue_) < 0.005) sensHeld_ = false;
+        const double value = sensDragging_ || sensHeld_ ? sensValue_ : file;
+        const double rowH = 48;
+        const double mid = y + rowH / 2;
+        const double labelSize = fitSize(pen, t.eyecamSensitivity, 18, 14, 230, true);
+        const double labelRight = kInnerX + pen.text(kInnerX, centerBaseline(y, rowH, labelSize), t.eyecamSensitivity,
+                                                     labelSize, kText, true);
+        // The value after it, in a fixed width so the track doesn't move with it
+        char number[16];
+        std::snprintf(number, sizeof(number), "%.2f", value);
+        pen.text(labelRight + 10, centerBaseline(y, rowH, 15), number, 15, kTextMuted);
+        const double endSize = 15;
+        const double dullX = labelRight + 10 + pen.measure("0.00", 15, false) + 22;
+        const double dullW = pen.measure(t.eyecamSensitivityDull, endSize, false);
+        const double sharpW = pen.measure(t.eyecamSensitivitySharp, endSize, false);
+        pen.text(dullX, centerBaseline(y, rowH, endSize), t.eyecamSensitivityDull, endSize, kTextMuted);
+        pen.text(kInnerRight - sharpW, centerBaseline(y, rowH, endSize), t.eyecamSensitivitySharp, endSize, kTextMuted);
+        const double trackX = dullX + dullW + 26;
+        const double trackW = kInnerRight - sharpW - 26 - trackX;
+        sensTrackX_ = trackX;
+        sensTrackW_ = trackW;
+        const double trackH = 10;
+        fillRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kControl);
+        strokeRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kBorder, 1.5);
+        if (value > 0) fillRounded(pen, trackX, mid - trackH / 2, std::max(trackH, trackW * value), trackH, trackH / 2, kAccent);
+        // The knob: larger while held or under the pointer, with a card-colored edge so it stands off the track
+        const PanelHit hit {PanelAction::EyecamSensitivity, nullptr, 0};
+        const double r = sensDragging_ || pointerState(hit) > 0 ? 14 : 12;
+        drawDot(pen.cr, trackX + trackW * value, mid, r + 3, kCard);
+        drawDot(pen.cr, trackX + trackW * value, mid, r, kAccent);
+        addButton(hit, trackX - 18, y, trackW + 36, rowH);
+        y += rowH + 8;
     }
 
     // The calibrations: done or not, what to do next, and their buttons
@@ -3305,7 +3394,7 @@ void EyePanel::drawEyecamIdle(const Pen& pen, const UiText& t, const PanelModel&
             textCentered(pen, kInnerX + bw + gap + bw / 2, by + bh + 22, t.eyecamCalibUserNeedsWear,
                          fitSize(pen, t.eyecamCalibUserNeedsWear, 15, 11, bw, false), kTextMuted, false);
         }
-        y += 184;
+        y += 178;
     }
 
     // The recording (developer): its start opens the light warning, as before

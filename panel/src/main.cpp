@@ -119,6 +119,7 @@ struct Options {
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
     std::string fakeEyecam;       ///< a made-up eyecam-rec state (see printUsage and parseFakeEyecam)
     std::string fakeCamera;       ///< --fake-camera: the eye cameras as frameeyeosc reports them (see printUsage)
+    double sensitivityDrag = -1;  ///< --sensitivity-drag: the slider as if dragged there (-1 = not)
     std::string eyecamDir;        ///< --eyecam-dir: eyecam-rec's folder (status.json, ctl.sock) instead of the default
     std::string fillPngPath;      ///< --eyecam-fill-png: the eye capture's full-view light image
     std::string fillKind = "bright";  ///< --eyecam-fill bright|dark
@@ -257,7 +258,8 @@ void printUsage() {
         "                        calib=N (calib_state 0..7, bit 2 a baseline learned by itself; default 0, 1 for a\n"
         "                        failed user calibration), warming=N (learning the relaxed eyes, N s left), ready\n"
         "                        (learned them; both mark an eyecam-rec that learns by itself), saved (calib_saved),\n"
-        "                        recalib\n"
+        "                        recalib, sens=V (widen_sensitivity 0..1)\n"
+        "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with --fake-eyecam idle:sens=...)\n"
         "                        (recalib_suggested), nolive (not reading the cameras live), auto=VALUE\n"
         "                        (auto_grab: waiting while eyecam-rec takes the buffers by itself)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
@@ -290,6 +292,7 @@ struct FakeEyecam {
     std::string baseline;   ///< "warming" or "ready" ("" = an eyecam-rec that doesn't learn the baseline by itself)
     double warmupS = -1.0;  ///< warmup_remaining_s while warming (-1 = none)
     bool saved = false;     ///< calib_saved
+    double sens = -1.0;     ///< widen_sensitivity (-1 = an eyecam-rec without it)
 };
 
 /**
@@ -340,6 +343,9 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.baseline = "ready";
         } else if (flag == "saved") {
             fake.saved = true;
+        } else if (flag.rfind("sens=", 0) == 0 && flag.size() > 5 &&
+                   flag.find_first_not_of("0123456789.", 5) == std::string::npos) {
+            fake.sens = std::atof(flag.c_str() + 5);
         } else if (flag.rfind("calib=", 0) == 0 && flag.size() == 7 && flag[6] >= '0' && flag[6] <= '7') {
             fake.calibState = flag[6] - '0';
         } else {
@@ -562,6 +568,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 return false;
             }
             options.fake = true;
+        } else if (arg == "--sensitivity-drag" && hasNext) {
+            options.sensitivityDrag = std::atof(argv[++i]);
         } else if (arg == "--fake-camera" && hasNext) {
             options.fakeCamera = argv[++i];
             static const char* const kCameras[] = {"both", "left", "right", "uncalibrated", "absent", "error", "off"};
@@ -837,6 +845,10 @@ eyecam::View fakeEyecam(const std::string& text) {
     }
     if (fake.saved) s.hasCalibSaved = true;
     s.calibSaved = fake.saved;
+    if (fake.sens >= 0) {
+        s.hasWidenSensitivity = true;
+        s.widenSensitivity = fake.sens;
+    }
     s.state = eyecam::parseState(s.stateText);
     view.visible = eyecam::tabVisible(s, unixNow());
     return view;
@@ -1193,6 +1205,23 @@ int runDumpPng(const Options& options) {
                 model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
             }
             panel.pointerUp();
+            double sensitivity = 0.0;
+            if (panel.takeSensitivity(sensitivity, nowSeconds())) {
+                const std::string command = eyecam::sensitivityCommand(sensitivity);
+                std::fprintf(stderr, "[eyecam] sending \"%s\" to %s/ctl.sock\n", command.c_str(),
+                             model.eyecamDir.c_str());
+                eyecamControl.send(model.eyecamDir + "/ctl.sock", command, nowSeconds());
+                while (eyecamControl.busy()) {
+                    eyecamControl.poll(nowSeconds());
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                }
+                const eyecam::Reply& r = eyecamControl.reply();
+                std::printf("eyecam: %s -> %s%s\n", r.command.c_str(), r.ok ? "ok" : "err ", r.error.c_str());
+                if (!r.ok) panel.dropSensitivityHold();
+                syncEyecamControl(model.eyecam, eyecamControl);
+                model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+                model.eyecam.visible = eyecam::tabVisible(model.eyecam.status, unixNow());
+            }
             if (updater) {
                 settleUpdater(*updater, model.config.flag(key::kUpdateCheck));
                 model.update = updater->status();
@@ -1206,6 +1235,8 @@ int runDumpPng(const Options& options) {
                         u.step.c_str(), u.version.c_str(), u.error.c_str(), u.checkedAt);
         }
         panel.pointerLeave();
+        // (after the pointer left: leaving lets go of the slider)
+        if (options.sensitivityDrag >= 0) panel.previewSensitivityDrag(options.sensitivityDrag);
         panel.render(model);
         if (!panel.writePng(options.pngPath)) {
             std::fprintf(stderr, "Could not write the PNG: %s\n", options.pngPath.c_str());
@@ -1753,7 +1784,8 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::HistoryClose:
         case PanelAction::HistoryRow:
         case PanelAction::HistoryScroll:
-        case PanelAction::EyecamStart: return;
+        case PanelAction::EyecamStart:
+        case PanelAction::EyecamSensitivity: return;  // the loop sends the slider's value
         case PanelAction::HistoryOpen:
             loadHistory(model);
             return;
@@ -2060,6 +2092,7 @@ int runOverlay(const Options& options) {
     // The developer tab "Eye capture": eyecam-rec's status file and control socket, and the full-view light during its
     // bright and dark steps (the picture drawn, and the one the overlay has)
     eyecam::Control eyecamControl;
+    eyecam::SensitivitySender sensitivitySender;  // the widening sensitivity slider's value on its way
     double lastEyecamRead = -1e9;
     std::string drawnEyecam;
     std::string loggedEyecam;
@@ -2383,6 +2416,32 @@ int runOverlay(const Options& options) {
                 // A run it took (a calibration's error then reads as the calibration's)
                 if (r.ok && eyecam::runOfCommand(r.command) != eyecam::Run::None) {
                     model.eyecam.lastRun = eyecam::runOfCommand(r.command);
+                }
+                // A sensitivity it refused: the slider shows the file's value again (the reply shows like others)
+                if (!r.ok && eyecam::isSensitivityCommand(r.command)) {
+                    panel.dropSensitivityHold();
+                    dirty = true;
+                }
+            }
+            // The widening sensitivity slider: its value goes out when let go of, and a few times a second while
+            // dragged, one command at a time
+            {
+                double value = 0.0;
+                if (panel.takeSensitivity(value, nowSeconds())) {
+                    sensitivitySender.released(value);
+                } else if (panel.sensitivityDragging()) {
+                    sensitivitySender.dragged(panel.sensitivityValue(), nowSeconds());
+                }
+                std::string command;
+                if (sensitivitySender.next(eyecamControl.busy(), nowSeconds(), command)) {
+                    const std::string socket = model.eyecamDir + "/ctl.sock";
+                    std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
+                    if (!eyecamControl.send(socket, command, nowSeconds()) && !eyecamControl.busy()) {
+                        std::fprintf(stderr, "[eyecam] %s failed: %s\n", command.c_str(),
+                                     eyecamControl.reply().error.c_str());
+                        panel.dropSensitivityHold();
+                    }
+                    dirty = true;
                 }
             }
             syncEyecamControl(model.eyecam, eyecamControl);

@@ -737,7 +737,8 @@ void testCalibText() {
               t.eyecamCalibWearTitle, t.eyecamCalibUserTitle, t.eyecamCalibWaiting, t.eyecamCalibErrorTitle,
               t.eyecamCalibRetry, t.calibPromptText, t.calibPromptButton, t.recalibPromptText,
               t.recalibPromptButton, t.eyecamIdleHint, t.cameraWhyWarming, t.eyecamCalibAuto, t.eyecamWarmingFormat,
-              t.eyecamWarming, t.eyecamCalibHintOptional, t.calibOfferText, t.calibOfferButton}) {
+              t.eyecamWarming, t.eyecamCalibHintOptional, t.calibOfferText, t.calibOfferButton,
+              t.eyecamSensitivity, t.eyecamSensitivityDull, t.eyecamSensitivitySharp, t.lidWidenCameraNote}) {
             CHECK(text != nullptr && text[0] != '\0');
         }
         // One %s each
@@ -770,6 +771,82 @@ void testAutoGrab() {
     for (const Language language : {Language::Ja, Language::En}) {
         const char* hint = uiText(language).eyecamAutoGrabHint;
         CHECK(hint != nullptr && hint[0] != '\0');
+    }
+}
+
+void testSensitivity() {
+    // Read from status.json; missing (an older eyecam-rec: no slider) or not a number is none
+    {
+        const Status s = eyecam::parseStatus("{\"state\": \"idle\", \"widen_sensitivity\": 0.6}", kNow);
+        CHECK(s.hasWidenSensitivity && std::fabs(s.widenSensitivity - 0.6) < 1e-9);
+        for (const char* bad : {"{\"state\": \"idle\"}", "{\"state\": \"idle\", \"widen_sensitivity\": null}",
+                                "{\"state\": \"idle\", \"widen_sensitivity\": \"0.6\"}"}) {
+            const Status none = eyecam::parseStatus(bad, kNow);
+            CHECK(!none.hasWidenSensitivity && std::isnan(none.widenSensitivity));
+        }
+        // In every state (it is shown wherever the camera section is)
+        CHECK(eyecam::parseStatus("{\"state\": \"calibrating\", \"widen_sensitivity\": 0}", kNow).hasWidenSensitivity);
+    }
+    // The command: two decimals, kept within 0..1, nothing for a value that isn't a number
+    SAME(eyecam::sensitivityCommand(0.6), "set widen_sensitivity 0.60");
+    SAME(eyecam::sensitivityCommand(0.456), "set widen_sensitivity 0.46");
+    SAME(eyecam::sensitivityCommand(0.0), "set widen_sensitivity 0.00");
+    SAME(eyecam::sensitivityCommand(1.0), "set widen_sensitivity 1.00");
+    SAME(eyecam::sensitivityCommand(1.7), "set widen_sensitivity 1.00");
+    SAME(eyecam::sensitivityCommand(-0.3), "set widen_sensitivity 0.00");
+    SAME(eyecam::sensitivityCommand(std::nan("")), "");
+    CHECK(eyecam::isSensitivityCommand("set widen_sensitivity 0.60"));
+    CHECK(!eyecam::isSensitivityCommand("calib wear") && !eyecam::isSensitivityCommand("stop"));
+    // It starts no run
+    CHECK(eyecam::runOfCommand("set widen_sensitivity 0.60") == eyecam::Run::None);
+    // The redraw follows it (to 0.01)
+    {
+        eyecam::View a;
+        a.status = eyecam::parseStatus("{\"state\": \"idle\", \"widen_sensitivity\": 0.6}", kNow);
+        eyecam::View b = a;
+        b.status.widenSensitivity = 0.61;
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+        b.status.widenSensitivity = 0.6004;
+        SAME(eyecam::signature(a), eyecam::signature(b));
+    }
+
+    // Sending: on release always; while dragged at most every kSensitivitySendSec and only when it moved; never
+    // while another command is out (the newest value waits)
+    {
+        eyecam::SensitivitySender sender;
+        std::string command;
+        CHECK(!sender.next(false, 0.0, command));
+        sender.dragged(0.4, 10.0);
+        CHECK(sender.next(false, 10.0, command));
+        SAME(command, "set widen_sensitivity 0.40");
+        CHECK(!sender.next(false, 10.01, command));  // once
+        sender.dragged(0.5, 10.1);                  // too soon
+        CHECK(!sender.next(false, 10.1, command));
+        sender.dragged(0.41, 10.0 + eyecam::kSensitivitySendSec + 0.01);  // hardly moved... 0.01 is a move
+        CHECK(sender.next(false, 10.4, command));
+        SAME(command, "set widen_sensitivity 0.41");
+        sender.dragged(0.412, 11.0);  // less than half a step: no
+        CHECK(!sender.next(false, 11.0, command));
+        // Many moves in a second: at most a few commands
+        int sent = 0;
+        for (int i = 0; i < 90; ++i) {
+            const double now = 20.0 + i / 90.0;
+            sender.dragged(0.1 + i * 0.008, now);
+            if (sender.next(false, now, command)) ++sent;
+        }
+        CHECK(sent >= 2 && sent <= 4);
+        // Busy: it waits, and the newest value goes
+        sender.released(0.7);
+        CHECK(!sender.next(true, 30.0, command));
+        sender.released(0.75);
+        CHECK(sender.next(false, 30.1, command));
+        SAME(command, "set widen_sensitivity 0.75");
+        // A release goes even right after a drag send of the same value
+        sender.dragged(0.9, 40.0);
+        CHECK(sender.next(false, 40.0, command));
+        sender.released(0.9);
+        CHECK(sender.next(false, 40.01, command));
+        SAME(command, "set widen_sensitivity 0.90");
     }
 }
 
@@ -1038,6 +1115,7 @@ int main() {
     testCalib();
     testCalibText();
     testAutoGrab();
+    testSensitivity();
     testReply();
     testReadFile();
     testControl();

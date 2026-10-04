@@ -27,6 +27,12 @@ panel/build/recorder-test
 panel/build/model-test
 panel/build/changelog-test
 panel/build/eyecam-test
+# eyecam, the eye-camera tool (tools/eyecam): its own crate and lockfile, built into its own target folder.
+# Stripped like frameeyeosc (its Cargo.toml is a vendored copy, so the profile is set here)
+eyecam_target=tools/eyecam/target
+"$cargo" test --release --locked --manifest-path tools/eyecam/Cargo.toml --target-dir "$eyecam_target"
+CARGO_PROFILE_RELEASE_STRIP=true "$cargo" build --release --locked --manifest-path tools/eyecam/Cargo.toml \
+    --target-dir "$eyecam_target"
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT
@@ -37,6 +43,10 @@ cp panel/build/frameeyeosc-panel panel/contrib/frameeyeosc-panel.service panel/c
     "$stage/frameeyeosc/"
 cp panel/contrib/icons/frameeyeosc-panel-{48,128,256}.png "$stage/frameeyeosc/icons/"
 cp vendor/frame-updater/frame-update.sh "$stage/frameeyeosc/"
+# install.sh puts these in ~/.local/lib/eyecam (install_grab.sh is run once by the user, with sudo)
+mkdir -p "$stage/frameeyeosc/eyecam"
+cp "$eyecam_target/release/eyecam-rec" "$eyecam_target/release/eyecam-grab" tools/eyecam/install_grab.sh \
+    tools/eyecam/protocol_*.txt tools/eyecam/eyecam.service tools/eyecam/NOTICE "$stage/frameeyeosc/eyecam/"
 mkdir -p dist
 tar -C "$stage" -czf "dist/$name.tar.gz" frameeyeosc
 # The panel's update button only installs releases that carry this file (attach it to the release too)

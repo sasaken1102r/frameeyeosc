@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Regenerate THIRD_PARTY_LICENSES.md: the license notices of every crate that ends up inside the
-# frameeyeosc binary (build-time-only proc-macro crates are left out) and of the OpenVR header that
-# frameeyeosc-panel is built with. For crates offered under a choice of licenses, the MIT text is
-# reproduced.
+# frameeyeosc binary or the bundled eyecam binaries (tools/eyecam; build-time-only proc-macro crates
+# are left out), of the OpenVR header that frameeyeosc-panel is built with, and eyecam's NOTICE for
+# the code it ports. For crates offered under a choice of licenses, the MIT text is reproduced.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,15 +17,20 @@ openvr_license=panel/third_party/openvr/LICENSE
 openvr_header=panel/third_party/openvr/openvr.h
 openvr_version="$(sed -n 's/.*k_nSteamVRVersion[A-Za-z]* = \([0-9]*\);.*/\1/p' "$openvr_header" | paste -sd.)"
 
-crates="$("$cargo" tree --offline --locked --target aarch64-unknown-linux-gnu -e normal,no-proc-macro --prefix none \
-    --format '{p}|{l}' | grep -v -e '(proc-macro)' -e '(\*)' -e '^frameeyeosc ' | sort -u)"
+eyecam_notice=tools/eyecam/NOTICE
+
+crates="$(for manifest in Cargo.toml tools/eyecam/Cargo.toml; do
+    "$cargo" tree --manifest-path "$manifest" --offline --locked --target aarch64-unknown-linux-gnu \
+        -e normal,no-proc-macro --prefix none --format '{p}|{l}'
+done | grep -v -e '(proc-macro)' -e '(\*)' -e '^frameeyeosc ' -e '^eyecam ' | sort -u)"
 
 {
     echo "# Third-party licenses"
     echo
-    echo "Third-party code included in frameeyeosc and frameeyeosc-panel. frameeyeosc includes the Rust"
-    echo "standard library and the Rust crates below; frameeyeosc-panel is built with the OpenVR SDK header."
-    echo "Their license notices follow."
+    echo "Third-party code included in frameeyeosc, frameeyeosc-panel and the bundled eye-camera tool"
+    echo "eyecam (eyecam-rec and eyecam-grab, from tools/eyecam). frameeyeosc and eyecam include the Rust"
+    echo "standard library and the Rust crates below; frameeyeosc-panel is built with the OpenVR SDK header;"
+    echo "eyecam ports parts of FrameEyeCameraFeed. Their license notices follow."
     echo
     echo "frameeyeosc-panel also links at run time to libraries that come with SteamOS and SteamVR (cairo,"
     echo "FreeType, the Vulkan loader, libopenvr_api). They are not bundled, so they are not listed here."
@@ -72,6 +77,14 @@ crates="$("$cargo" tree --offline --locked --target aarch64-unknown-linux-gnu -e
     echo
     echo '```'
     sed 's/\r$//' "$openvr_license"
+    echo '```'
+    echo
+    echo "## FrameEyeCameraFeed (ported in eyecam)"
+    echo
+    echo "License: MIT. eyecam's notice (tools/eyecam/NOTICE, also in the release tarball as eyecam/NOTICE):"
+    echo
+    echo '```'
+    sed 's/\r$//' "$eyecam_notice"
     echo '```'
 } >"$out"
 echo "$out"

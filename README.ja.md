@@ -90,11 +90,13 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.loc
 
 | 基本 | 送り方 |
 |---|---|
-| ![基本のタブ](docs/images/panel-basic-ja_2026-10-01_02-00-00.png) | ![送り方のタブ](docs/images/panel-output-ja_2026-10-01_02-00-00.png) |
+| ![基本のタブ](docs/images/panel-basic-ja_2026-10-05_00-30-00.png) | ![送り方のタブ](docs/images/panel-output-ja_2026-10-05_00-30-00.png) |
 | **視線** | **目を合わせる** |
-| ![視線のタブ](docs/images/panel-gaze-ja_2026-10-01_02-00-00.png) | ![目を合わせるタブ](docs/images/panel-eyefit-ja_2026-10-01_02-00-00.png) |
-| **まぶた** | **詳細** |
-| ![まぶたのタブ](docs/images/panel-lids-ja_2026-10-01_02-00-00.png) | ![詳細のタブ](docs/images/panel-advanced-ja_2026-10-01_02-00-00.png) |
+| ![視線のタブ](docs/images/panel-gaze-ja_2026-10-05_00-30-00.png) | ![目を合わせるタブ](docs/images/panel-eyefit-ja_2026-10-05_00-30-00.png) |
+| **まぶた** | **目のカメラ** |
+| ![まぶたのタブ](docs/images/panel-lids-ja_2026-10-05_00-30-00.png) | ![目のカメラのタブ](docs/images/panel-eyecam-ja_2026-10-05_00-30-00.png) |
+| **詳細** | |
+| ![詳細のタブ](docs/images/panel-advanced-ja_2026-10-05_00-30-00.png) | |
 
 - 左の列には、いつでも今の状態が出ます: 送信中か止めているか、送り先、毎秒の送信回数、目のデータが毎秒何回来ているか（60 未満は赤で「少なめ」。その下に、遅いのが本体か Frame か）、左右のまぶたと視線（生の値と送った値）、設定のエラー。「Track Dominant Eye Only」の設定がオンのあいだは、視線の見出しの行に、Frame がどちらの目で追っているかが出ます（「Frame の設定: 右目だけで追っています」）
 - 基本: 送信の一時停止、送り先（3 枚のカード: VRChat に直接・VRCFT（LiveLink、おすすめ）・VRCFT（ETVR）。それぞれ見開きが届くか、ほかの人からの見え方、VRCFaceTracking が要るかを表示）、言語（日本語 / English）、SteamVR と一緒に起動、すべて既定に戻す、アプリを終了

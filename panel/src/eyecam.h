@@ -111,6 +111,7 @@ struct Status {
     State state = State::Missing;
     std::string stateText;   ///< "state" as written
     std::string message;     ///< a short Japanese line from the recorder, shown as is ("" = none)
+    std::string messageEn;   ///< the same in English ("message_en"; "" when missing: then message is shown)
     bool locked = false;
     double fpsL = 0.0;       ///< NaN when missing
     double fpsR = 0.0;
@@ -368,6 +369,15 @@ bool isCalib(Run run);
  * @return true while warming
  */
 bool baselineWarming(const Status& status);
+
+/**
+ * eyecam-rec's line in the panel's language: in English its message_en when there is one, else (and in Japanese)
+ * its message.
+ * @param status the status
+ * @param language the panel's language
+ * @return the line ("" = none)
+ */
+const std::string& shownMessage(const Status& status, Language language);
 
 /**
  * Whether the camera tool is in: eyecam-rec says auto_grab "ok" or has_buffers, or it is in a state that only comes

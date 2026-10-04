@@ -37,6 +37,14 @@ constexpr double kPasswordTimeoutSec = 5.0;
 std::vector<std::string> konsoleArgv(const std::string& command, Language language);
 
 /**
+ * The Konsole a setup button opens, in the panel's language.
+ * @param button 0 = the tool's install (2), 1 = passwd (1) (PanelAction::SetupKonsole's arg)
+ * @param language the panel's language now
+ * @return konsoleArgv for its command
+ */
+std::vector<std::string> setupKonsoleArgv(int button, Language language);
+
+/**
  * The setup video in the Frame's Chromium (not xdg-open: https opens Discover there).
  * @param url the video
  * @return the argument list: flatpak run org.chromium.Chromium <url>

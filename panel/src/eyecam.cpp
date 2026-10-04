@@ -118,6 +118,7 @@ Status parseStatus(const std::string& text, double mtime) {
     // A file without a state is still the recorder's: shown as an unknown state, not as no recorder
     if (status.state == State::Missing) status.state = State::Unknown;
     status.message = readText(root, "message");
+    status.messageEn = readText(root, "message_en");
     status.autoGrab = readText(root, "auto_grab");
     const JsonValue* locked = root.get("locked");
     status.locked = locked != nullptr && locked->isBool() && locked->boolean;
@@ -288,6 +289,10 @@ bool isCalib(Run run) {
 
 bool baselineWarming(const Status& status) {
     return status.hasBaseline && status.baseline == "warming";
+}
+
+const std::string& shownMessage(const Status& status, Language language) {
+    return language == Language::En && !status.messageEn.empty() ? status.messageEn : status.message;
 }
 
 bool toolInstalled(const Status& status) {
@@ -466,7 +471,7 @@ std::string signature(const View& view) {
                                 : kNaN;
     return std::to_string(view.visible) + "|" + std::to_string(view.busy) + "|" + view.busyCommand + "|" +
            std::to_string(view.hasReply) + std::to_string(view.reply.ok) + view.reply.command + "|" +
-           view.reply.error + "|" + s.stateText + "|" + s.message + "|" + std::to_string(s.locked) + "|" +
+           view.reply.error + "|" + s.stateText + "|" + s.message + "|" + s.messageEn + "|" + std::to_string(s.locked) + "|" +
            rounded(s.fpsL, 0.1) + "|" + rounded(s.fpsR, 0.1) + "|" + std::to_string(s.stepIndex) + "|" +
            std::to_string(s.stepCount) + "|" + s.stepLabel + "|" +
            (std::isfinite(s.stepRemainingS) ? std::to_string(static_cast<long>(std::ceil(s.stepRemainingS - 1e-9)))

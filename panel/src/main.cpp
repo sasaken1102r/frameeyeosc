@@ -264,7 +264,8 @@ void printUsage() {
         "                        (auto_grab), sens=V (widen_sensitivity 0..1), buffers (has_buffers), setup /\n"
         "                        nosetup (setup_done true / false; without either, an eyecam-rec before it),\n"
         "                        widen=measured|default (last_calib_widen), done / fail (the setup's calibration\n"
-        "                        just ended: the checklist's done screen, or widening on the standard values)\n"
+        "                        just ended: the checklist's done screen, or widening on the standard values),\n"
+        "                        msg / msgja (eyecam-rec's message with message_en / Japanese only)\n"
         "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
@@ -302,6 +303,7 @@ struct FakeEyecam {
     int setup = -1;         ///< setup_done: 1 / 0 (-1 = an eyecam-rec before it)
     std::string widen;      ///< last_calib_widen ("" = none)
     std::string result;     ///< "done" / "fail": the setup's calibration just ended that way ("" = no)
+    int message = 0;        ///< 1 = a message with message_en, 2 = a message without it (an older eyecam-rec)
 };
 
 /**
@@ -348,6 +350,8 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
                    flag.find_first_not_of("0123456789.", 8) == std::string::npos) {
             fake.baseline = "warming";
             fake.warmupS = std::atof(flag.c_str() + 8);
+        } else if (flag == "msg" || flag == "msgja") {
+            fake.message = flag == "msg" ? 1 : 2;
         } else if (flag == "buffers") {
             fake.buffers = true;
         } else if (flag == "setup" || flag == "nosetup") {
@@ -874,6 +878,10 @@ eyecam::View fakeEyecam(const std::string& text) {
         s.widenSensitivity = fake.sens;
     }
     if (!fake.autoGrab.empty()) s.autoGrab = fake.autoGrab;
+    if (fake.message > 0) {
+        s.message = "校正できた（かぶり）";
+        s.messageEn = fake.message == 1 ? "Calibrated (this wear)" : "";
+    }
     s.hasBuffers = fake.buffers;
     s.hasSetupDone = fake.setup >= 0;
     s.setupDone = fake.setup == 1;
@@ -1841,8 +1849,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             const std::vector<std::string> argv =
                 hit.action == PanelAction::SetupVideo
                     ? setup_tools::videoArgv(setup_tools::kVideoUrl)
-                    : setup_tools::konsoleArgv(hit.arg == 1 ? setup_tools::kPasswdCommand : setup_tools::kInstallCommand,
-                                               model.language);
+                    : setup_tools::setupKonsoleArgv(hit.arg, model.language);
             std::string line;
             for (const std::string& arg : argv) line += (line.empty() ? "" : " | ") + arg;
             if (vr == nullptr) {

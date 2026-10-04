@@ -799,6 +799,30 @@ Status setupStatus(const std::string& state, const std::string& extra = "") {
     return eyecam::parseStatus("{\"state\": \"" + state + "\", \"locked\": true, \"live\": true" + extra + "}", kNow);
 }
 
+void testMessageEn() {
+    // In English the recorder's own English line, when it gives one; else (and in Japanese) its message
+    const Status both = eyecam::parseStatus(
+        "{\"state\": \"idle\", \"message\": \"校正できた（かぶり）\", \"message_en\": \"Calibrated (this wear)\"}", kNow);
+    SAME(both.messageEn, "Calibrated (this wear)");
+    SAME(eyecam::shownMessage(both, Language::En), "Calibrated (this wear)");
+    SAME(eyecam::shownMessage(both, Language::Ja), "校正できた（かぶり）");
+    const Status jaOnly = eyecam::parseStatus("{\"state\": \"error\", \"message\": \"左目: 下を見ても\"}", kNow);
+    CHECK(jaOnly.messageEn.empty());
+    SAME(eyecam::shownMessage(jaOnly, Language::En), "左目: 下を見ても");
+    const Status emptyEn = eyecam::parseStatus(
+        "{\"state\": \"error\", \"message\": \"失敗\", \"message_en\": \"\"}", kNow);
+    SAME(eyecam::shownMessage(emptyEn, Language::En), "失敗");
+    const Status odd = eyecam::parseStatus("{\"state\": \"error\", \"message\": \"失敗\", \"message_en\": 3}", kNow);
+    SAME(eyecam::shownMessage(odd, Language::En), "失敗");
+    SAME(eyecam::shownMessage(Status(), Language::En), "");
+    // ...and it redraws
+    eyecam::View a;
+    a.status = both;
+    eyecam::View b = a;
+    b.status.messageEn = "Calibrated";
+    CHECK(eyecam::signature(a) != eyecam::signature(b));
+}
+
 void testSetupParse() {
     const Status s = setupStatus("idle", ", \"has_buffers\": true, \"setup_done\": false, \"last_calib_widen\": \"default\"");
     CHECK(s.hasBuffers && s.hasSetupDone && !s.setupDone);
@@ -1033,6 +1057,21 @@ void testSetupTools() {
     const std::vector<std::string> english = setup_tools::konsoleArgv(setup_tools::kInstallCommand, Language::En);
     CHECK(english[4].find("-i \"sudo $HOME/.local/lib/eyecam/install_grab.sh\" c && eval \"$c\"") != std::string::npos);
     CHECK(english[4].find("Press Enter") != std::string::npos);
+    // The buttons: each one's command, with the panel's language in what Konsole says
+    for (const Language language : {Language::Ja, Language::En}) {
+        const bool ja = language == Language::Ja;
+        for (int button = 0; button < 2; ++button) {
+            const std::vector<std::string> argv = setup_tools::setupKonsoleArgv(button, language);
+            CHECK(argv == setup_tools::konsoleArgv(button == 1 ? "passwd" : setup_tools::kInstallCommand, language));
+            const std::string& script = argv[4];
+            CHECK(script.find(button == 1 ? "-i \"passwd\"" : "-i \"sudo $HOME/.local/lib/eyecam/install_grab.sh\"") !=
+                  std::string::npos);
+            CHECK((script.find("Enter を押すと実行するよ（パスワードを聞かれるよ）") != std::string::npos) == ja);
+            CHECK((script.find("Enter で閉じるよ") != std::string::npos) == ja);
+            CHECK((script.find("Press Enter to run it (it asks for your password)") != std::string::npos) == !ja);
+            CHECK((script.find("Press Enter to close") != std::string::npos) == !ja);
+        }
+    }
     // Never sudo or passwd run by the panel itself: they are only typed in
     for (const auto& argv : {install, passwd, english}) CHECK(argv[0] == "konsole");
     SAME(setup_tools::kShownInstallCommand, "sudo ~/.local/lib/eyecam/install_grab.sh");
@@ -1311,6 +1350,7 @@ int main() {
     testCalibText();
     testAutoGrab();
     testSensitivity();
+    testMessageEn();
     testSetupParse();
     testSetupStep();
     testSetupFlow();

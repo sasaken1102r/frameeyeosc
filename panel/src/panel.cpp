@@ -2753,7 +2753,8 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
                    {PanelAction::EyecamStart, nullptr, 0}, ready && !m.eyecam.busy, false);
         if (failed) {
             const double textX = kControlX + bw + 14;
-            const std::string why = es.message.empty() ? std::string(t.eyecamErrorTitle) : es.message;
+            const std::string& message = eyecam::shownMessage(es, m.language);
+            const std::string why = message.empty() ? std::string(t.eyecamErrorTitle) : message;
             const std::vector<std::string> lines = wrapText(pen, why, 14, true, kInnerRight - textX, 2);
             double baseline = y + h / 2 - (lines.size() - 1) * 9 + 5;
             for (const std::string& line : lines) {
@@ -3407,8 +3408,8 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
         case State::Error: {
             centered(y + 76, calibRun ? t.eyecamCalibErrorTitle : t.eyecamErrorTitle, 34, 20, kDanger, true);
             // (eyecam-rec's reason, in Japanese only)
-            if (!s.message.empty()) {
-                wrappedCentered(y + 130, s.message, 24, kText, false, 3);
+            if (!eyecam::shownMessage(s, m.language).empty()) {
+                wrappedCentered(y + 130, eyecam::shownMessage(s, m.language), 24, kText, false, 3);
                 messageShown = true;
             }
             const double w = 400;
@@ -3437,8 +3438,9 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
         bool bold;
     };
     std::vector<Line> lines;
-    if (!s.message.empty() && !messageShown) {
-        for (const std::string& line : wrapText(pen, s.message, 20, false, width, 2)) lines.push_back({line, 20, kText, false});
+    const std::string& message = eyecam::shownMessage(s, m.language);
+    if (!message.empty() && !messageShown) {
+        for (const std::string& line : wrapText(pen, message, 20, false, width, 2)) lines.push_back({line, 20, kText, false});
     }
     if (view.busy) {
         lines.push_back({t.eyecamSending, 18, kTextMuted, false});
@@ -3840,8 +3842,9 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             const char* big = failed ? t.eyecamCalibErrorTitle : t.setupFailTitle;
             text(x0, y, big, fitSize(pen, big, 26, 16, w, true), failed ? kDanger : kText, true);
             if (failed) {
-                // eyecam-rec's reason, in Japanese only
-                if (!s.message.empty()) para(s.message, 17, kText, false, 38, 26, 3);
+                // eyecam-rec's reason (in English when it gives one)
+                const std::string& message = eyecam::shownMessage(s, m.language);
+                if (!message.empty()) para(message, 17, kText, false, 38, 26, 3);
             } else {
                 para(t.setupFailBody, 17, kText, false, 38, 26, 2);
                 // What it learned, and the standard values for widening
@@ -4109,7 +4112,7 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
     std::vector<Line> lines;
     // Ready (idle): a sentence from the same things as the "Now" row, in place of eyecam-rec's own message; running
     // anything else: its message as it is
-    std::string sentence = s.message;
+    std::string sentence = eyecam::shownMessage(s, m.language);
     if (s.state == eyecam::State::Idle) {
         switch (cameraLine(use, warming, s.live, s.locked, v.text(key::kOutput) == kOutputVrchat)) {
             case CameraLine::BothVrchat: sentence = t.camLineBothVrchat; break;

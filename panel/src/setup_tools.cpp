@@ -50,6 +50,10 @@ std::vector<std::string> konsoleArgv(const std::string& command, Language langua
     return {"konsole", "-e", "bash", "-c", script};
 }
 
+std::vector<std::string> setupKonsoleArgv(int button, Language language) {
+    return konsoleArgv(button == 1 ? kPasswdCommand : kInstallCommand, language);
+}
+
 std::vector<std::string> videoArgv(const std::string& url) {
     return {"flatpak", "run", "org.chromium.Chromium", url};
 }

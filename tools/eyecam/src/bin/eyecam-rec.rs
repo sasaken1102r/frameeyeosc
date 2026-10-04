@@ -39,6 +39,10 @@ const WORN_FOR: f64 = 1.0;
 const EST_FPS: f64 = 90.0;
 const MIN_FREE: u64 = 1 << 30;
 
+/// What waiting_fds says while the buffers can't be fetched automatically: the camera tool (eyecam-grab with
+/// cap_sys_ptrace) is put in by the panel's first-time setup. Once it is in, the automatic grab's messages replace this.
+const INSTALL_TOOL: &str = "パネルの「目のカメラ」タブで、目のカメラの道具を入れてね";
+
 static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_signal(_: libc::c_int) {
@@ -297,8 +301,8 @@ impl Abort {
         match self {
             Abort::Interrupted => "中断した（Ctrl-C / SIGTERM）",
             Abort::Stopped => "stop で止めた",
-            Abort::TrackerExited => "アイトラッカーが終了した。sudo eyecam-grab をもう一度実行してね",
-            Abort::Stale => "バッファが更新されなくなった。sudo eyecam-grab をもう一度実行してね",
+            Abort::TrackerExited => "アイトラッカーが終了した",
+            Abort::Stale => "バッファが更新されなくなった",
             Abort::NotFound => "目の映像が見つからなかった（ヘッドセットをかぶってから start してね）",
             Abort::DiskFull => "ディスクの空きが 1 GB 未満",
             Abort::TimeUp => "録画時間が終わった",
@@ -578,7 +582,7 @@ fn serve(args: &Args) -> Result<()> {
     let mut prox = Proximity::find();
     let mut why: Option<&str> = None;
     while !STOP.load(Ordering::SeqCst) {
-        let message = why.map_or("sudo eyecam-grab を実行してね".to_string(), str::to_string);
+        let message = why.map_or(INSTALL_TOOL.to_string(), |w| format!("{w}。{INSTALL_TOOL}"));
         daemon.set(|s| {
             s.state = "waiting_fds";
             s.message = message;
@@ -947,7 +951,7 @@ fn fake(args: &Args, d: &Daemon) {
             match phase {
                 Phase::Waiting => {
                     s.state = "waiting_fds";
-                    s.message = "（fake）sudo eyecam-grab を実行してね".into();
+                    s.message = format!("（fake）{INSTALL_TOOL}");
                     s.has_buffers = false;
                     s.locked = false;
                     s.prox = -1.0;
@@ -1203,7 +1207,7 @@ fn receive_buffers(wait: f64, ctl: Option<&Daemon>) -> Result<(proto::Header, Ve
                         let why = last.trim_start_matches("eyecam-grab: ").to_string();
                         set_auto(
                             format!("failed: {why}"),
-                            Some(format!("自動でバッファを取れなかった: {why}（sudo eyecam-grab でもいい）")),
+                            Some(format!("自動でバッファを取れなかった: {why}")),
                         );
                         child = None;
                         next_try = now + 5.0;
@@ -2385,7 +2389,7 @@ mod tests {
         let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
         daemon.set(|s| {
             s.state = "waiting_fds";
-            s.message = "sudo eyecam-grab を実行してね".into();
+            s.message = INSTALL_TOOL.into();
         });
         let status_path = dir.join(status::STATUS_FILE);
         let live_dir = dir.clone();

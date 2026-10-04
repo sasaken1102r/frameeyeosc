@@ -9,20 +9,26 @@
 # 置き場所は /home/.eyecam/eyecam-grab（root 所有 0755、ディレクトリも root 所有 0755）。
 # SteamOS では /var が A/B スロットごとの小さなパーティションで、アップデートで切り替わると消えうるため、
 # アップデートしても残る /home パーティションの、ユーザーが書き込めない root のディレクトリに置く。
+#
+# メッセージは英語と日本語の 2 行で出す（Frame のシステムの言語はいつも英語で、Steam の表示言語からは見分けられないため）。
 set -euo pipefail
+
+# say "English" "日本語": 両方を続けて出す（エラーは say_err で標準エラーへ）
+say() { printf '%s\n%s\n' "$1" "$2"; }
+say_err() { say "$1" "$2" >&2; }
 
 DEST_DIR=/home/.eyecam
 DEST="$DEST_DIR/eyecam-grab"
 
 if [ "$(id -u)" -ne 0 ]; then
-    echo "sudo で実行してね: sudo $0 $*" >&2
+    say_err "Run this with sudo: sudo $0 $*" "sudo で実行してね: sudo $0 $*"
     exit 1
 fi
 
 if [ "${1:-}" = "--uninstall" ]; then
     rm -f "$DEST"
     rmdir "$DEST_DIR" 2>/dev/null || true
-    echo "取り除いた: $DEST"
+    say "Removed: $DEST" "取り除いた: $DEST"
     exit 0
 fi
 
@@ -36,15 +42,15 @@ else
     SRC="$HERE/target/release/eyecam-grab"
 fi
 if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
-    echo "eyecam-grab が見つからない: $SRC" >&2
+    say_err "eyecam-grab not found: $SRC" "eyecam-grab が見つからない: $SRC"
     exit 1
 fi
 if [ -L "$DEST_DIR" ] || { [ -e "$DEST_DIR" ] && [ ! -d "$DEST_DIR" ]; }; then
-    echo "$DEST_DIR がふつうのディレクトリじゃないので触らない" >&2
+    say_err "$DEST_DIR is not a plain directory, leaving it alone" "$DEST_DIR がふつうのディレクトリじゃないので触らない"
     exit 1
 fi
 
-echo "入れるファイル: $SRC"
+say "Installing: $SRC" "入れるファイル: $SRC"
 sha256sum "$SRC"
 
 # root 所有・ほかの人は書けないディレクトリに、root 所有・0755 のコピーを置き、能力を付けてから名前を付け替える
@@ -61,8 +67,9 @@ caps="$(getcap "$DEST")"
 echo "$caps"
 case "$caps" in
     *cap_sys_ptrace=ep*) ;;
-    *) echo "能力が付いていない（setcap が効いていない）" >&2; exit 1 ;;
+    *) say_err "The capability is not set (setcap did not take effect)" "能力が付いていない（setcap が効いていない）"; exit 1 ;;
 esac
 ls -l "$DEST"
 sha256sum "$DEST"
-echo "インストールした。eyecam-rec --serve は次から自動でバッファを取りに行く。"
+say "Installed. You can close this window: the panel picks it up by itself." \
+    "インストールした。このウィンドウは閉じていいよ（パネルが自動で使いはじめる）。"

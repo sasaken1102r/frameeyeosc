@@ -10,7 +10,7 @@ const EXACT: &[(&str, &str)] = &[
     ("見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね", "Widening width not known yet, using a default. Please calibrate the eye camera once"),
     ("HMD をかぶってね（目の映像を待ってるよ）", "Put the headset on (waiting for the eye cameras)"),
     ("HMD をかぶってね", "Put the headset on"),
-    ("sudo eyecam-grab を実行してね", "Run sudo eyecam-grab"),
+    ("パネルの「目のカメラ」タブで、目のカメラの道具を入れてね", "Install the eye camera tool from the panel's Eye cameras tab"),
     ("eyecam-rec は止まっている", "eyecam-rec is stopped"),
     ("録画中", "Recording"),
     ("校正中", "Calibrating"),
@@ -28,8 +28,8 @@ const EXACT: &[(&str, &str)] = &[
     ("止めた（途中まで保存）", "Stopped (saved so far)"),
     ("中断した（Ctrl-C / SIGTERM）", "Interrupted (Ctrl-C / SIGTERM)"),
     ("stop で止めた", "Stopped"),
-    ("アイトラッカーが終了した。sudo eyecam-grab をもう一度実行してね", "The eye tracker exited. Run sudo eyecam-grab again"),
-    ("バッファが更新されなくなった。sudo eyecam-grab をもう一度実行してね", "The buffers stopped updating. Run sudo eyecam-grab again"),
+    ("アイトラッカーが終了した", "The eye tracker exited"),
+    ("バッファが更新されなくなった", "The buffers stopped updating"),
     ("目の映像が見つからなかった（ヘッドセットをかぶってから start してね）", "Couldn't find the eye cameras (put the headset on, then start)"),
     ("ディスクの空きが 1 GB 未満", "Less than 1 GB of disk space left"),
     ("録画時間が終わった", "Recording time is over"),
@@ -87,9 +87,15 @@ pub fn message_en(ja: &str) -> String {
     if let Some(rest) = ja.strip_prefix("左右の差が大きい") {
         return format!("Large left/right difference{}", details(rest));
     }
-    if let Some(rest) = ja.strip_prefix("自動でバッファを取れなかった: ") {
-        let why = rest.strip_suffix("（sudo eyecam-grab でもいい）").unwrap_or(rest);
-        return format!("Couldn't get the buffers automatically: {why} (sudo eyecam-grab also works)");
+    if let Some(why) = ja.strip_prefix("自動でバッファを取れなかった: ") {
+        return format!("Couldn't get the buffers automatically: {why}");
+    }
+    // "<why the buffers were dropped>。<how to get them again>" (waiting_fds after an abort)
+    if let Some((head, tail)) = ja.split_once('。')
+        && EXACT.iter().any(|(j, _)| *j == head)
+        && EXACT.iter().any(|(j, _)| *j == tail)
+    {
+        return format!("{}. {}", message_en(head), message_en(tail));
     }
     if let Some((name, e)) = ja.split_once(".txt の書き方がおかしい: ") {
         return format!("{name}.txt is malformed: {e}");
@@ -130,10 +136,10 @@ mod tests {
             "見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね",
             "HMD をかぶってね（目の映像を待ってるよ）",
             "（fake）HMD をかぶってね（目の映像を待ってるよ）",
-            "（fake）sudo eyecam-grab を実行してね",
+            "（fake）パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
             "（fake）校正できた（かぶり）",
             "（fake）保存した（途中で止めた）: rec_fake",
-            "sudo eyecam-grab を実行してね",
+            "パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
             "eyecam-rec は止まっている",
             "録画中",
             "校正中",
@@ -154,11 +160,11 @@ mod tests {
             "バッファを受け取れなかった: bad message",
             "自動でバッファを取りに行くよ（アイトラッキングが始まるのを待ってる）",
             "自動でバッファを取りに行ってる…",
-            "自動でバッファを取れなかった: pidfd_getfd: Operation not permitted（sudo eyecam-grab でもいい）",
+            "自動でバッファを取れなかった: pidfd_getfd: Operation not permitted",
             "片目しか映っていない（ちゃんとかぶれてる？）",
             "目の映像がまだ流れていない",
-            "アイトラッカーが終了した。sudo eyecam-grab をもう一度実行してね",
-            "バッファが更新されなくなった。sudo eyecam-grab をもう一度実行してね",
+            "アイトラッカーが終了した。パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
+            "バッファが更新されなくなった",
             "校正の計算が終わらなかった",
             "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）",
             "右目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）",

@@ -87,7 +87,7 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
 1. 起動直後は `waiting_fds`。SteamVR が動いている状態で `sudo /home/steamos/eyecam-src/target/release/eyecam-grab` を 1 回
 2. バッファを受け取ると `idle`。以後はパネルから `start` / `stop`
 3. アイトラッカーが終了・再起動したり、かぶっているのにバッファが 2 分間まったく更新されなかったりしたら、
-   バッファを手放して `waiting_fds` に戻る（grab 用ソケットも作り直す）。もう一度 `sudo eyecam-grab` してね
+   バッファを手放して `waiting_fds` に戻る（grab 用ソケットも作り直す）。道具が入っていれば自動で取り直す。入っていなければもう一度 `sudo eyecam-grab` してね
 4. 止めるときは `systemctl --user stop eyecam`（または `kill`）。録画中なら、そのセッションをきちんと閉じてから終わる。
    終了すると status.json に `state: "stopped"` を書き、`ctl.sock` は消える
 
@@ -132,7 +132,7 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
 
 | `has_buffers` | bool | バッファを持っている（`sudo eyecam-grab` が成功した）。映像が流れているかどうかとは別。`waiting_fds` のときだけ false |
 | `message_en` | string | `message` と同じ内容の英語（パネルを英語で表示するとき用）。例: `Put the headset on (waiting for the eye cameras)`、`Recording`、`Saved: rec_…`、`Calibrated`、`Calibrated (couldn't measure widening, using the usual width)`。訳は `src/message_en.rs` にまとめてあり、訳のない文が来たら日本語のまま入る |
-| `message` | string | そのまま表示できる日本語の短文。例: `sudo eyecam-grab を実行してね`、`HMD をかぶってね（目の映像を待ってるよ）`、`録画中`、`保存した: rec_…`、`保存した（途中で止めた）: rec_…`、`中止した`。`idle` でかぶっていてライブ処理がオンのときは、`見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね`（`calib_saved` が false）/ `見開きの基準を覚えているところ（目を開けて、ふつうに前を見ていてね）`（`warming`）/ `目の値を出しているよ` |
+| `message` | string | そのまま表示できる日本語の短文。例: `パネルの「目のカメラ」タブで、目のカメラの道具を入れてね`、`HMD をかぶってね（目の映像を待ってるよ）`、`録画中`、`保存した: rec_…`、`保存した（途中で止めた）: rec_…`、`中止した`。`idle` でかぶっていてライブ処理がオンのときは、`見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね`（`calib_saved` が false）/ `見開きの基準を覚えているところ（目を開けて、ふつうに前を見ていてね）`（`warming`）/ `目の値を出しているよ` |
 | `locked` | bool | 目の映像の位置をつかんでいて、今も流れている。**`recording` / `calibrating` 中に false** なら、映像が止まって（HMD を外したなど）探し直している。そのとき `message` は `HMD をかぶってね（目の映像を待ってるよ）`。時間・合図・`step_*` はそのまま進む。`idle` でもライブ処理がオンなら、かぶっている間は true |
 | `fps_l`, `fps_r` | number | 録画中の左右のフレームレート（直近 1 秒）。録画中以外と、探し直し中は 0 |
 | `step_index` | int | いまのプロトコルの段の番号。**0 から**数えて、段が変わるたびに必ず変わる（パネルは「段 `step_index+1` / `step_count`」と出せる）。全段が終わると `step_count`（このとき `step_label` は `end`）。録画中以外は -1 |
@@ -493,7 +493,7 @@ sudo ./install_grab.sh target-next/release/eyecam-grab   # ビルドしたもの
 
 | 値 | 意味 |
 |---|---|
-| `missing` | インストールされていない（いつもどおり `sudo eyecam-grab` を案内） |
+| `missing` | インストールされていない（`message` は「パネルの「目のカメラ」タブで、目のカメラの道具を入れてね」。手で `sudo eyecam-grab` してもいい） |
 | `no_cap` | 置いてあるが能力が付いていない |
 | `unsafe: …` | root 所有でない・書き込める人がいる、など。使わない |
 | `waiting_tracker` | アイトラッカー（SteamVR のアイトラッキング）が始まるのを待っている |

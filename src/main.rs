@@ -3,6 +3,7 @@
 mod capture;
 mod config;
 mod dots;
+mod eyecam_ctl;
 mod eyecam_live;
 mod livelink;
 mod replay;
@@ -24,6 +25,8 @@ use std::mem::{align_of, offset_of, size_of};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 const SOURCE: &str = "/dev/shm/eye-server.mmap";
@@ -2923,6 +2926,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         calibration.path = None;
         return replay::run(&input, output.as_deref(), &settings, &calibration);
     }
+    // camera_lids for eyecam-rec too ("live off" / "live on" on its control socket, next to its live file), on a
+    // thread of its own
+    let live_wanted = Arc::new(AtomicBool::new(settings.camera_lids));
+    if let Some(dir) = camera_path.parent() {
+        eyecam_ctl::LiveControl::new(dir.to_owned()).spawn(live_wanted.clone())?;
+    }
     let pupil_output = Output::new(pupil_target(&settings));
     let mut bridge = Bridge {
         output: Output::new(Target::of(&settings)),
@@ -2958,6 +2967,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     loop {
         if let Some(reload) = bridge.config.poll() {
             bridge.apply(reload)?;
+            live_wanted.store(bridge.settings.camera_lids, Ordering::Relaxed);
         }
         bridge.output.refresh();
         if pupil_stream(&bridge.settings).is_some() {

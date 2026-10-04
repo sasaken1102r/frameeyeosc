@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.2 (2026-10-05)
 
 Optional support for the Frame's eye cameras: after a one-time setup on the panel's new "Eye cameras" tab, widened eyes come through again on SteamOS 0.4.3, and squints and pupil size are sent too. The eyelid look settings are gathered on the Eyelids tab, and the Advanced tab gets a version history.
 

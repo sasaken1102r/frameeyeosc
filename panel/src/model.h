@@ -314,6 +314,31 @@ CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming = fal
  */
 bool warmingShown(bool warming, CameraUse use);
 
+/** The sentence at the bottom of the eye cameras' page (eyecam-rec idle, set up). */
+enum class CameraLine {
+    BothVrchat,  ///< the cameras drive both eyes, sent to VRChat
+    Both,        ///< ...to another receiver (VRCFT)
+    Left,        ///< only the left eye (the right one: Valve's values)
+    Right,       ///< only the right eye
+    Warming,     ///< learning the relaxed eyes (camera values arriving)
+    PutOn,       ///< the headset is off: the cameras start once it is on
+    Off,         ///< camera_lids off: Valve's values only
+    Reason,      ///< anything else: the same reason as the "Now" row
+};
+
+/**
+ * The sentence at the bottom of the eye cameras' page, from the same things as its "Now" row, so the two never
+ * disagree: the cameras in use first (both eyes, or one), then the setting off, then (with the cameras read live)
+ * learning the relaxed eyes, the headset off (the eyes not seen), and otherwise the row's own reason.
+ * @param use what drives the eyelids (cameraUse)
+ * @param warming eyecam-rec is learning the relaxed eyes (eyecam::baselineWarming)
+ * @param live eyecam-rec reads the cameras live
+ * @param locked eyecam-rec's cameras see the eyes
+ * @param vrchat the output is VRChat itself (not VRCFT)
+ * @return the sentence
+ */
+CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool vrchat);
+
 /**
  * Whether the eye cameras drive both eyelids now (frameeyeosc's camera.used): then widening is their sensitivity, and
  * the Eyelids tab shows that in Widen's place.

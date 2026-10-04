@@ -463,6 +463,15 @@ struct UiText {
     const char* camUserSide1;
     const char* camUserSide2;
     const char* camUserNeedsCalib;  ///< ...instead while it can't be pressed
+    // The sentence at the bottom of the eye cameras' page (cameraLine)
+    const char* camLineBothVrchat;
+    const char* camLineBoth;
+    const char* camLineLeft;
+    const char* camLineRight;
+    const char* camLineWarmingFormat;
+    const char* camLineWarming;
+    const char* camLinePutOn;
+    const char* camLineOff;
     const char* camHelpTitle;  ///< the "when..." box
     const char* camHelp1;
     const char* camHelp1Do;

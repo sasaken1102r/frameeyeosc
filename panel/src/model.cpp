@@ -426,3 +426,17 @@ bool lidsFromCameras(const EyeStatus& status) {
 bool warmingShown(bool warming, CameraUse use) {
     return warming && use != CameraUse::NoCamera;
 }
+
+CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool vrchat) {
+    switch (use) {
+        case CameraUse::Both: return vrchat ? CameraLine::BothVrchat : CameraLine::Both;
+        case CameraUse::Left: return CameraLine::Left;
+        case CameraUse::Right: return CameraLine::Right;
+        case CameraUse::Off: return CameraLine::Off;
+        default: break;
+    }
+    if (!live) return CameraLine::Reason;
+    if (warmingShown(warming, use)) return CameraLine::Warming;
+    if (!locked) return CameraLine::PutOn;
+    return CameraLine::Reason;
+}

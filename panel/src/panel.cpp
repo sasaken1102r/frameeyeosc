@@ -3988,18 +3988,20 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         cairo_stroke(cr);
     };
 
-    // Now: what drives the eyelids, and whether the relaxed eyes are learned
+    // Now: what drives the eyelids, and whether the relaxed eyes are learned (its line is also the bottom sentence's
+    // last case)
+    const bool warming = eyecam::baselineWarming(s);
+    const CameraUse use = cameraUse(es, v.flag(key::kCameraLids), warming);
+    std::string reason;
     {
         const double h = 64;
         drawRowLabel(pen, t, y, h, t.camRowState, t.camRowStateHint, false);
-        const bool on = v.flag(key::kCameraLids);
-        const bool warming = eyecam::baselineWarming(s);
-        const CameraUse use = cameraUse(es, on, warming);
         const bool inUse = use == CameraUse::Both || use == CameraUse::Left || use == CameraUse::Right;
         // (while learning, the pill says so: the line itself stays short)
         std::string state = !s.live                     ? std::string(t.eyecamLiveOff)
                             : use == CameraUse::Warming ? std::string(t.cameraUseValve)
                                                         : cameraUseText(t, use, es);
+        reason = state;
         if (state.empty()) state = "—";
         // The pill: learning them now (with the seconds; not while no camera values come), or learned
         std::string pill;
@@ -4105,8 +4107,32 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
     };
     const double width = kInnerRight - kInnerX;
     std::vector<Line> lines;
-    if (!s.message.empty()) {
-        for (const std::string& line : wrapText(pen, s.message, 17, false, width, 2)) lines.push_back({line, kText, false});
+    // Ready (idle): a sentence from the same things as the "Now" row, in place of eyecam-rec's own message; running
+    // anything else: its message as it is
+    std::string sentence = s.message;
+    if (s.state == eyecam::State::Idle) {
+        switch (cameraLine(use, warming, s.live, s.locked, v.text(key::kOutput) == kOutputVrchat)) {
+            case CameraLine::BothVrchat: sentence = t.camLineBothVrchat; break;
+            case CameraLine::Both: sentence = t.camLineBoth; break;
+            case CameraLine::Left: sentence = t.camLineLeft; break;
+            case CameraLine::Right: sentence = t.camLineRight; break;
+            case CameraLine::Warming: {
+                sentence = t.camLineWarming;
+                if (std::isfinite(s.warmupRemainingS)) {
+                    char text[200];
+                    std::snprintf(text, sizeof(text), t.camLineWarmingFormat,
+                                  static_cast<int>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)));
+                    sentence = text;
+                }
+                break;
+            }
+            case CameraLine::PutOn: sentence = t.camLinePutOn; break;
+            case CameraLine::Off: sentence = t.camLineOff; break;
+            case CameraLine::Reason: sentence = reason; break;
+        }
+    }
+    if (!sentence.empty()) {
+        for (const std::string& line : wrapText(pen, sentence, 17, false, width, 2)) lines.push_back({line, kText, false});
     }
     if (view.busy) {
         lines.push_back({t.eyecamSending, kTextMuted, false});

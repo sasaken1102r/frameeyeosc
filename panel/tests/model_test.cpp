@@ -430,6 +430,45 @@ void testCameraLids() {
 }
 
 /** frameeyeosc's "camera" and the camera values sent, and what the eye capture tab says about them. */
+/** The bottom sentence of the eye cameras' page, for every case, in its order. */
+void testCameraLine() {
+    // The cameras in use come first, whatever else is going on
+    for (const bool warming : {false, true}) {
+        for (const bool live : {false, true}) {
+            for (const bool locked : {false, true}) {
+                CHECK(cameraLine(CameraUse::Both, warming, live, locked, true) == CameraLine::BothVrchat);
+                CHECK(cameraLine(CameraUse::Both, warming, live, locked, false) == CameraLine::Both);
+                CHECK(cameraLine(CameraUse::Left, warming, live, locked, true) == CameraLine::Left);
+                CHECK(cameraLine(CameraUse::Right, warming, live, locked, false) == CameraLine::Right);
+                // ...then camera_lids off
+                CHECK(cameraLine(CameraUse::Off, warming, live, locked, true) == CameraLine::Off);
+            }
+        }
+    }
+    // Not read live: the "Now" row's reason
+    for (const CameraUse use : {CameraUse::NoCamera, CameraUse::Warming, CameraUse::NotCalibrated, CameraUse::Error}) {
+        CHECK(cameraLine(use, true, false, false, true) == CameraLine::Reason);
+    }
+    // Learning the relaxed eyes, with camera values arriving (headset on or off for a moment)
+    CHECK(cameraLine(CameraUse::Warming, true, true, true, true) == CameraLine::Warming);
+    CHECK(cameraLine(CameraUse::Warming, true, true, false, true) == CameraLine::Warming);
+    // ...but without camera values the headset is off: put it on
+    CHECK(cameraLine(CameraUse::NoCamera, true, true, false, true) == CameraLine::PutOn);
+    CHECK(cameraLine(CameraUse::NoCamera, false, true, false, true) == CameraLine::PutOn);
+    CHECK(cameraLine(CameraUse::Unknown, false, true, false, true) == CameraLine::PutOn);
+    // The headset on, nothing learning, the cameras not used: the row's reason
+    for (const CameraUse use : {CameraUse::NoCamera, CameraUse::NotCalibrated, CameraUse::Error, CameraUse::Valve,
+                                CameraUse::Unknown}) {
+        CHECK(cameraLine(use, false, true, true, true) == CameraLine::Reason);
+    }
+    // A camera error with the headset on: the reason (not "put it on")
+    CHECK(cameraLine(CameraUse::Error, false, true, true, false) == CameraLine::Reason);
+    // The sentence agrees with the row: learning only where the row shows its pill
+    for (const CameraUse use : {CameraUse::NoCamera, CameraUse::Warming, CameraUse::Valve}) {
+        CHECK((cameraLine(use, true, true, true, true) == CameraLine::Warming) == warmingShown(true, use));
+    }
+}
+
 /** "Learning your relaxed eyes (N s left)" only while it can move: not without camera values (the headset off). */
 void testWarmingShown() {
     for (const CameraUse use : {CameraUse::Unknown, CameraUse::Off, CameraUse::Both, CameraUse::Left, CameraUse::Right,
@@ -588,6 +627,7 @@ int main() {
     testCameraStatus();
     testLidsFromCameras();
     testWarmingShown();
+    testCameraLine();
     testUpdateNotes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

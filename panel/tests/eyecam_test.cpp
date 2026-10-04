@@ -665,7 +665,8 @@ void testCalibText() {
               t.camUserSide1, t.camUserSide2, t.camUserNeedsCalib, t.camHelpTitle, t.camHelp1, t.camHelp1Do,
               t.camHelp2, t.camHelp2Do, t.camHelp3, t.camHelp3Do, t.camHelp4, t.camHelp4Do, t.lidsCamRow,
               t.lidsCamRowHint, t.lidsCamText1, t.lidsCamText2, t.lidsCamButton, t.lidsCamNote, t.lidsCamMarks,
-              t.lidsCamMarksOpen, t.devTitle,
+              t.lidsCamMarksOpen, t.camLineBothVrchat, t.camLineBoth, t.camLineLeft, t.camLineRight,
+              t.camLineWarmingFormat, t.camLineWarming, t.camLinePutOn, t.camLineOff, t.devTitle,
               t.devRecord, t.devRecordHint, t.tabEyecam}) {
             CHECK(text != nullptr && text[0] != '\0');
         }

@@ -184,6 +184,106 @@ void testWidenState() {
     CHECK(spec != nullptr && std::string(spec->defaultText) == "normal");
 }
 
+/**
+ * widenSlider for a made-up model: frameeyeosc running with these eyes on the cameras.
+ * @param left the left eye's lid from the cameras
+ * @param right the right eye's
+ * @param saturated a relaxed open eye reads 1.0 (SteamOS 0.4.3)
+ * @param fitted which eyes have an eye fit (0 none, 1 left, 2 right, 3 both)
+ * @param running frameeyeosc runs
+ * @return the slider
+ */
+WidenSlider sliderOf(bool left, bool right, bool saturated, int fitted, bool running = true) {
+    PanelModel model;
+    model.config.exists = true;
+    model.config.root.type = JsonValue::Type::Object;
+    for (int eye = 0; eye < 2; ++eye) {
+        if ((fitted & (1 << eye)) == 0) continue;
+        const double readings[4] = {0.2, 0.86, 0.85, 0.75};
+        for (int i = 0; i < 4; ++i) model.config.root.set(kLidFitKeys[eye][i], JsonValue::makeNumber(readings[i]));
+    }
+    model.status.running = running;
+    model.status.camera.known = true;
+    model.status.camera.used[0] = left;
+    model.status.camera.used[1] = right;
+    model.status.opennessSaturated = saturated;
+    return widenSlider(SettingsView(model), model.status);
+}
+
+/** The Eyelids tab's one widening slider: the cameras, one camera and lid_widen, lid_widen, or nothing. */
+void testWidenSlider() {
+    // Both eyes on the cameras: their sensitivity, whatever the cap or the fit says
+    for (const bool saturated : {false, true}) {
+        for (int fitted = 0; fitted < 4; ++fitted) {
+            const WidenSlider s = sliderOf(true, true, saturated, fitted);
+            CHECK(s.control == WidenControl::Camera && !s.unfittedNote);
+        }
+    }
+    // One eye: both (the cameras, and lid_widen for the other one), also on a capped SteamOS
+    for (const bool saturated : {false, true}) {
+        CHECK(sliderOf(true, false, saturated, 3).control == WidenControl::Mixed);
+        CHECK(sliderOf(false, true, saturated, 3).control == WidenControl::Mixed);
+    }
+    // ...the note only when the Valve eye has no fit (the camera eye's fit doesn't matter)
+    CHECK(!sliderOf(true, false, false, 2).unfittedNote);
+    CHECK(sliderOf(true, false, false, 1).unfittedNote);
+    CHECK(!sliderOf(false, true, false, 1).unfittedNote);
+    CHECK(sliderOf(false, true, false, 2).unfittedNote);
+    // Valve's values: lid_widen; the note while an eye has no fit
+    CHECK(sliderOf(false, false, false, 3).control == WidenControl::Valve);
+    CHECK(!sliderOf(false, false, false, 3).unfittedNote);
+    for (const int fitted : {0, 1, 2}) {
+        const WidenSlider s = sliderOf(false, false, false, fitted);
+        CHECK(s.control == WidenControl::Valve && s.unfittedNote);
+    }
+    // A capped SteamOS without a camera: nothing (greyed), with or without a fit
+    for (int fitted = 0; fitted < 4; ++fitted) {
+        const WidenSlider s = sliderOf(false, false, true, fitted);
+        CHECK(s.control == WidenControl::Saturated && !s.unfittedNote);
+    }
+    // frameeyeosc not running: nothing it reports counts (Valve's values, lid_widen)
+    CHECK(sliderOf(true, true, true, 3, false).control == WidenControl::Valve);
+    // The four stops and the level nearest a position
+    for (int level = 0; level < 4; ++level) CHECK(widenLevelAt(widenStop(level)) == level);
+    CHECK(widenStop(0) == 0.0 && widenStop(3) == 1.0);
+    CHECK(widenLevelAt(0.0) == 0 && widenLevelAt(0.16) == 0 && widenLevelAt(0.17) == 1 && widenLevelAt(0.5) == 2);
+    CHECK(widenLevelAt(0.83) == 2 && widenLevelAt(0.84) == 3 && widenLevelAt(1.0) == 3);
+    CHECK(widenLevelAt(-1.0) == 0 && widenLevelAt(2.0) == 3 && widenLevelAt(NAN) == 2);
+    // (the cameras' default 0.5 gives lid_widen's default, normal)
+    CHECK(std::string(kLidWidenModes[widenLevelAt(0.5)]) == findSetting(key::kLidWiden)->defaultText);
+}
+
+/** Eyelid smoothing presets: medium is the defaults; values at none read as custom. */
+void testLidPresets() {
+    const LidPreset* presets = lidPresets();
+    CHECK(findSetting(key::kLidMinCutoff)->defaultNumber == presets[1].minCutoff);
+    CHECK(findSetting(key::kLidBeta)->defaultNumber == presets[1].beta);
+    for (int i = 0; i < 2; ++i) {
+        CHECK(presets[i].minCutoff > presets[i + 1].minCutoff && presets[i].beta > presets[i + 1].beta);
+    }
+    PanelModel model;
+    model.config.exists = true;
+    model.config.root.type = JsonValue::Type::Object;
+    CHECK(matchingLidPreset(SettingsView(model)) == 1);
+    for (int i = 0; i < 3; ++i) {
+        model.config.root.set(key::kLidMinCutoff, JsonValue::makeNumber(presets[i].minCutoff));
+        model.config.root.set(key::kLidBeta, JsonValue::makeNumber(presets[i].beta));
+        CHECK(matchingLidPreset(SettingsView(model)) == i);
+        // (each value one the steppers can reach)
+        for (const char* name : {key::kLidMinCutoff, key::kLidBeta}) {
+            const SettingSpec* spec = findSetting(name);
+            const double value = numberIn(model.config.root, name);
+            CHECK(value >= spec->min && value <= spec->max && snapValue(*spec, value) == value);
+        }
+    }
+    model.config.root.set(key::kLidBeta, JsonValue::makeNumber(4.5));
+    CHECK(matchingLidPreset(SettingsView(model)) == -1);
+    // A slider's value onto the step grid, within the range
+    const SettingSpec* sync = findSetting(key::kLidSync);
+    CHECK(snapValue(*sync, 0.512) == 0.5 && snapValue(*sync, 0.53) == 0.55);
+    CHECK(snapValue(*sync, -0.3) == 0.0 && snapValue(*sync, 1.7) == 1.0);
+}
+
 /** A 0.5.x config: scales next to a lid fit go, once. */
 void testMigrateLidScales() {
     JsonValue root;
@@ -662,6 +762,8 @@ int main() {
     testRecenterDefault();
     testOutputArgs();
     testWidenState();
+    testWidenSlider();
+    testLidPresets();
     testMigrateLidScales();
     testSourceError();
     testDominantEyeAndSaturation();

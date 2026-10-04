@@ -942,6 +942,22 @@ void syncEyecamControl(eyecam::View& view, const eyecam::Control& control) {
 }
 
 /**
+ * A setting's slider let go of: its value as a SetNumber press.
+ * @param panel the panel
+ * @param apply applies the press
+ */
+template <typename Apply>
+void takeSliders(EyePanel& panel, Apply apply) {
+    std::string name;
+    double value = 0.0;
+    if (!panel.takeNumberSlider(name, value)) return;
+    const SettingSpec* spec = findSetting(name);
+    if (spec == nullptr) return;
+    std::fprintf(stderr, "[action] %s slid to %.3f\n", name.c_str(), value);
+    apply(PanelHit {PanelAction::SetNumber, spec->key, static_cast<int>(std::lround(value * 1000))});
+}
+
+/**
  * A made-up model for --dump-png (--fake*), so every state can be checked without frameeyeosc.
  * @param options the command line
  * @return the model
@@ -1287,6 +1303,9 @@ int runDumpPng(const Options& options) {
                 model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
             }
             panel.pointerUp();
+            takeSliders(panel, [&](const PanelHit& slid) {
+                applyHit(slid, model, panel, idleAutostart, updater.get(), nullptr, nullptr, nullptr, &eyecamControl);
+            });
             double sensitivity = 0.0;
             if (panel.takeSensitivity(sensitivity, nowSeconds())) {
                 const std::string command = eyecam::sensitivityCommand(sensitivity);
@@ -1763,6 +1782,24 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             };
             break;
         }
+        case PanelAction::LidPreset: {
+            if (hit.arg < 0 || hit.arg > 2) return;
+            const LidPreset preset = lidPresets()[hit.arg];
+            change = [preset](JsonValue& root) {
+                root.set(key::kLidMinCutoff, JsonValue::makeNumber(preset.minCutoff));
+                root.set(key::kLidBeta, JsonValue::makeNumber(preset.beta));
+            };
+            break;
+        }
+        case PanelAction::SetNumber: {
+            const SettingSpec* spec = findSetting(hit.key);
+            if (spec == nullptr || view.locked(hit.key)) return;
+            const std::string name = hit.key;
+            const double next = snapValue(*spec, hit.arg / 1000.0);
+            if (std::fabs(next - view.number(name)) < 1e-12) return;
+            change = [name, next](JsonValue& root) { root.set(name, JsonValue::makeNumber(next)); };
+            break;
+        }
         case PanelAction::NumberOn: {
             const SettingSpec* spec = findSetting(hit.key);
             if (spec == nullptr) return;
@@ -1868,6 +1905,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::HistoryRow:
         case PanelAction::HistoryScroll:
         case PanelAction::EyecamStart:
+        case PanelAction::NumberSlider:                // the loop writes the slider's value (SetNumber)
         case PanelAction::EyecamSensitivity: return;  // the loop sends the slider's value
         case PanelAction::SetupProceed:
             std::fprintf(stderr, "[setup] on to the eye cameras' page\n");
@@ -2538,12 +2576,23 @@ int runOverlay(const Options& options) {
                     dirty = true;
                 }
             }
+            // A setting's slider let go of: written like a press (and the widening slider's Valve eye, below)
+            takeSliders(panel, [&](const PanelHit& slid) {
+                applyHit(slid, model, panel, autostart, &updater, &fit, &vr, &eyeLog, &eyecamControl);
+                dirty = true;
+            });
             // The widening sensitivity slider: its value goes out when let go of, and a few times a second while
             // dragged, one command at a time
             {
                 double value = 0.0;
                 if (panel.takeSensitivity(value, nowSeconds())) {
                     sensitivitySender.released(value);
+                    // One eye on the cameras: the other (Valve's values) takes lid_widen's nearest level with it
+                    const SettingsView view(model);
+                    if (widenSlider(view, model.status).control == WidenControl::Mixed && !view.locked(key::kLidWiden)) {
+                        applyHit({PanelAction::SetLidWiden, key::kLidWiden, widenLevelAt(value)}, model, panel, autostart,
+                                 &updater, &fit, &vr, &eyeLog, &eyecamControl);
+                    }
                 } else if (panel.sensitivityDragging()) {
                     sensitivitySender.dragged(panel.sensitivityValue(), nowSeconds());
                 }

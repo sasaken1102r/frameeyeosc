@@ -742,6 +742,14 @@ int EyePanel::pointerState(const PanelHit& hit) const {
     return 0;
 }
 
+std::vector<EyePanel::HitArea> EyePanel::hitAreas() const {
+    std::vector<HitArea> areas;
+    for (const auto& b : buttons_) {
+        if (b.usable) areas.push_back({b.hit, b.x, b.y, b.w, b.h});
+    }
+    return areas;
+}
+
 PanelHit EyePanel::hitTest(double x, double y) const {
     for (const auto& b : buttons_) {
         if (!b.usable) continue;
@@ -753,6 +761,14 @@ PanelHit EyePanel::hitTest(double x, double y) const {
 double EyePanel::sensitivityAt(double x) const {
     const double value = std::clamp((x - sensTrackX_) / std::max(1.0, sensTrackW_), 0.0, 1.0);
     return std::round(value * 100) / 100;
+}
+
+bool EyePanel::takeNumberSlider(std::string& name, double& value) {
+    if (!numReleased_) return false;
+    numReleased_ = false;
+    name = numKey_;
+    value = numValue_;
+    return std::isfinite(value);
 }
 
 bool EyePanel::takeSensitivity(double& value, double now) {
@@ -775,6 +791,12 @@ bool EyePanel::pointerMove(double x, double y) {
         const double value = sensitivityAt(x);
         if (value == sensValue_) return false;
         sensValue_ = value;
+        return true;
+    }
+    if (numDragging_) {
+        const double value = numberAt(numKey_, x);
+        if (!std::isfinite(value) || value == numValue_) return false;
+        numValue_ = value;
         return true;
     }
     const PanelHit now = hitTest(x, y);
@@ -845,6 +867,13 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             sensDragging_ = true;
             sensValue_ = sensitivityAt(x);
             return {};
+        case PanelAction::NumberSlider:
+            // Held: follows the pointer until let go of (the caller writes it)
+            if (hit.key == nullptr) return {};
+            numDragging_ = true;
+            numKey_ = hit.key;
+            numValue_ = numberAt(numKey_, x);
+            return {};
         case PanelAction::EyecamChoose:
             if (!eyecamConfirm_.isOpen()) return {};
             // "Cancel" only closes it
@@ -880,6 +909,10 @@ bool EyePanel::pointerUp() {
         sensDragging_ = false;
         sensReleased_ = true;
     }
+    if (numDragging_) {
+        numDragging_ = false;
+        numReleased_ = true;
+    }
     if (pressed_.action == PanelAction::None) return false;
     pressed_ = {};
     return true;
@@ -890,6 +923,10 @@ bool EyePanel::pointerLeave() {
     if (sensDragging_) {
         sensDragging_ = false;
         sensReleased_ = true;
+    }
+    if (numDragging_) {
+        numDragging_ = false;
+        numReleased_ = true;
     }
     const bool changed = hover_.action != PanelAction::None || pressed_.action != PanelAction::None;
     hover_ = {};
@@ -2333,54 +2370,219 @@ void EyePanel::drawEyeFitLids(const Pen& pen, const UiText& t, const SettingsVie
 }
 
 void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+    // "Fine-tune" open: the per-eye scales, the marks, the auto calibration and the smoothing values in the rows' place
+    if (lidMarksOpen_) {
+        drawLidsDetails(pen, t, m, v);
+        return;
+    }
     const EyeStatus& s = m.status;
     cairo_t* cr = pen.cr;
-    double y = kRowTop;
+    const WidenSlider widen = widenSlider(v, s);
     const double cy = (kRowH - kControlH) / 2;
-    // Eyes with an eye fit: closing and opening come from the fit, widening from lid_widen. The learned calibration
-    // and the lid marks only matter for eyes without one, so the Widen row takes the calibration's place and the
-    // marks fold away behind "Fine-tune"
+    // A thin line under each row
+    const auto divider = [&](double at) {
+        pen.color(kDivider);
+        cairo_set_line_width(cr, 1);
+        cairo_move_to(cr, kInnerX, at + 0.5);
+        cairo_line_to(cr, kInnerRight, at + 0.5);
+        cairo_stroke(cr);
+    };
+    double y = kRowTop - 4;
+
+    // Where the eyelids come from now, and where that is switched
+    {
+        const double h = 52;
+        const bool used[2] = {s.running && s.camera.used[0], s.running && s.camera.used[1]};
+        const bool camera = used[0] || used[1];
+        fillRounded(pen, kInnerX, y, kInnerRight - kInnerX, h, 12, kBg);
+        if (camera) {
+            drawCameraIcon(pen, kInnerX + 30, y + h / 2, kSuccess);
+        } else {
+            drawEyeIcon(pen, kInnerX + 30, y + h / 2, kTextMuted);
+        }
+        const char* source = used[0] && used[1] ? t.lidsNowBoth
+                             : used[0]          ? t.lidsNowLeft
+                             : used[1]          ? t.lidsNowRight
+                                                : t.lidsNowValve;
+        // The eye cameras are set up (their tab shows their page): switched there; else not set up
+        const bool setUp = m.eyecam.visible && eyecam::setupScreen(m.eyecam) == eyecam::SetupScreen::Camera;
+        const char* note = camera || setUp ? t.lidsNowSwitch : t.lidsNowNoCamera;
+        const double noteSize = 14;
+        const double noteW = pen.measure(note, noteSize, false);
+        pen.text(kInnerRight - 16, centerBaseline(y, h, noteSize), note, noteSize, kTextMuted, false, true);
+        double x = kInnerX + 52;
+        x += pen.text(x, centerBaseline(y, h, 15), t.lidsNowLabel, 15, kTextMuted) + 12;
+        const double room = kInnerRight - 16 - noteW - 16 - x;
+        const double size = fitSize(pen, source, 19, 13, room, true);
+        pen.text(x, centerBaseline(y, h, size), source, size, kText, true);
+        y += h + 10;
+    }
+    // How easily widening shows: one slider, whatever drives it
+    {
+        const double h = 78;
+        const bool locked = widen.control == WidenControl::Valve && v.locked(key::kLidWiden);
+        const char* hint = widen.control == WidenControl::Camera  ? t.widenHintCamera
+                           : widen.control == WidenControl::Mixed ? t.widenHintMixed
+                           : widen.control == WidenControl::Valve ? t.widenHintValve
+                                                                  : t.widenHintSaturated;
+        drawRowLabel(pen, t, y, h, t.rowWidenEase, hint, locked);
+        drawWidenSlider(pen, t, m, v, widen, kControlX, kInnerRight, y + 6, 40);
+        const char* note = widen.control == WidenControl::Saturated ? ""
+                           : widen.unfittedNote                     ? t.widenNoteUnfitted
+                           : widen.control == WidenControl::Valve   ? t.widenNoteValve
+                                                                    : t.widenNoteCamera;
+        if (note[0] != '\0') {
+            pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
+        }
+        y += h;
+        // Nothing to widen by on this SteamOS without the cameras: what would, and the way there
+        if (widen.control == WidenControl::Saturated) {
+            const double boxH = 70;
+            fillRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 12, kBg);
+            strokeRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 12, kDivider, 1);
+            drawInfoIcon(pen, kInnerX + 28, y + boxH / 2, kTextMuted);
+            double textRight = kInnerRight - 16;
+            if (eyecamTab_) {
+                const double bh = 46;
+                const double bw = std::max(160.0, pen.measure(t.lidsCamButton, 17, true) + 64);
+                const double bx = kInnerRight - 14 - bw;
+                drawButton(pen, bx, y + (boxH - bh) / 2, bw, bh, std::string(t.lidsCamButton) + "  →",
+                           {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)}, true, false, 17);
+                textRight = bx - 14;
+            }
+            const double tx = kInnerX + 52;
+            const double size = std::min(fitSize(pen, t.widenSaturated1, 17, 11, textRight - tx, false),
+                                         fitSize(pen, t.widenSaturated2, 17, 11, textRight - tx, false));
+            pen.text(tx, y + boxH / 2 - 5, t.widenSaturated1, size, kText);
+            pen.text(tx, y + boxH / 2 + size + 3, t.widenSaturated2, size, kText);
+            y += boxH + 10;
+        }
+        divider(y);
+    }
+    // Blinks: how long a closed eye stays closed
+    {
+        const bool locked = v.locked(key::kBlinkHoldMs);
+        drawRowLabel(pen, t, y, kRowH, t.rowBlink, t.blinkHint, locked);
+        const double labelW = 52;
+        const double stepperW = 220;
+        pen.text(kControlX, centerBaseline(y, kRowH, 18), t.blinkHold, fitSize(pen, t.blinkHold, 18, 12, labelW - 6, true),
+                 kText, true);
+        const double hold = v.number(key::kBlinkHoldMs);
+        char holdText[32];
+        std::snprintf(holdText, sizeof(holdText), "%.0f ms", hold);
+        drawStepper(pen, kControlX + labelW, y + cy, stepperW, kControlH, key::kBlinkHoldMs, hold, holdText, true, locked);
+        const double nx = kControlX + labelW + stepperW + 16;
+        const std::vector<std::string> lines = wrapText(pen, t.blinkHoldCaption, 15, false, kInnerRight - nx, 2);
+        double baseline = y + kRowH / 2 + 5 - (static_cast<double>(lines.size()) - 1) * 10;
+        for (const std::string& line : lines) {
+            pen.text(nx, baseline, line, 15, kTextMuted);
+            baseline += 20;
+        }
+        y += kRowH;
+        divider(y);
+    }
+    // ...closing both when one is closed (blink_sync_below; 0 = off)
+    {
+        const bool locked = v.locked(key::kBlinkSyncBelow);
+        drawRowLabel(pen, t, y, kRowH, t.rowBlinkBoth, t.blinkBothHint, locked);
+        const double stepperW = 196;
+        const double sync = v.number(key::kBlinkSyncBelow);
+        drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kBlinkSyncBelow, sync,
+                    formatSetting(key::kBlinkSyncBelow, sync), true, locked);
+        const double nx = kControlX + stepperW + 16;
+        const std::vector<std::string> lines = wrapText(pen, t.blinkBothNote, 13, false, kInnerRight - nx, 3);
+        double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
+        for (const std::string& line : lines) {
+            pen.text(nx, baseline, line, 13, kTextMuted);
+            baseline += 17;
+        }
+        y += kRowH;
+        divider(y);
+    }
+    // Eyelid smoothing: three presets (the two values themselves under "Fine-tune")
+    {
+        const bool locked = v.locked(key::kLidMinCutoff) || v.locked(key::kLidBeta);
+        const int preset = matchingLidPreset(v);
+        drawRowLabel(pen, t, y, kRowH, t.rowLidSmooth, preset < 0 ? t.custom : t.lidSmoothHint, locked);
+        std::vector<Option> options;
+        const char* names[3] = {t.strengthLight, t.strengthMedium, t.strengthStrong};
+        for (int i = 0; i < 3; ++i) options.push_back({names[i], {PanelAction::LidPreset, nullptr, i}});
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH, options, preset, 20, locked);
+        y += kRowH;
+        divider(y);
+    }
+    // Sync both lids: a slider (0 = off)
+    {
+        const bool locked = v.locked(key::kLidSync);
+        drawRowLabel(pen, t, y, kRowH, t.rowSync, t.syncHint, locked);
+        drawNumberSlider(pen, key::kLidSync, numberShown(key::kLidSync, v.number(key::kLidSync)), t.syncOff,
+                         t.syncStrong, kControlX, kInnerRight, y + 12, kRowH - 24, !locked);
+        y += kRowH;
+        divider(y);
+    }
+    // The rest, folded: "Fine-tune"
+    {
+        drawRowLabel(pen, t, y, kRowH, t.rowOther, t.otherHint, false);
+        const std::string label = std::string(t.fitDetails) + "  ▼";
+        const double bw = std::max(156.0, pen.measure(label, 18, true) + 44);
+        const double bh = 46;
+        drawButton(pen, kControlX, y + (kRowH - bh) / 2, bw, bh, label, {PanelAction::LidMarks, nullptr, 0}, true, false,
+                   18);
+        const double nx = kControlX + bw + 16;
+        const double size = std::min(fitSize(pen, t.otherText1, 15, 11, kInnerRight - nx, false),
+                                     fitSize(pen, t.otherText2, 15, 11, kInnerRight - nx, false));
+        pen.text(nx, y + kRowH / 2 - 3, t.otherText1, size, kTextMuted);
+        pen.text(nx, y + kRowH / 2 + 17, t.otherText2, size, kTextMuted);
+    }
+}
+
+void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+    const EyeStatus& s = m.status;
+    cairo_t* cr = pen.cr;
+    double y = kRowTop - 4;
+    const double cy = (kRowH - kControlH) / 2;
+    // Eyes with an eye fit: closing and opening come from the fit, widening from the slider (lid_widen). The learned
+    // calibration and marks 3 and 4 only matter for eyes without one
     const WidenState widen = widenState(v);
     const bool anyFitted = widen.fitted[0] || widen.fitted[1];
-    // Both eyelids from the eye cameras: their widening is the cameras' sensitivity, so its row only points there
     const bool fromCameras = lidsFromCameras(s);
 
-    if (fromCameras) {
-        drawRowLabel(pen, t, y, kRowH, t.lidsCamRow, t.lidsCamRowHint, false);
-        const double boxY = y + 4;
-        const double boxH = kRowH - 8;
-        fillRounded(pen, kControlX, boxY, kControlW, boxH, 12, kBg);
-        drawCameraIcon(pen, kControlX + 24, boxY + boxH / 2, kSuccess);
-        const double bh = 40;
-        const double bw = std::max(150.0, pen.measure(t.lidsCamButton, 17, true) + 56);
-        const double bx = kControlX + kControlW - 10 - bw;
-        const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)};
-        drawButton(pen, bx, boxY + (boxH - bh) / 2, bw, bh, std::string(t.lidsCamButton) + "  →", hit, eyecamTab_,
-                   false, 17);
-        const double textX = kControlX + 46;
-        const double textW = bx - 12 - textX;
-        const double size = std::min(fitSize(pen, t.lidsCamText1, 16, 11, textW, false),
-                                     fitSize(pen, t.lidsCamText2, 16, 11, textW, false));
-        const double mid = boxY + boxH / 2;
-        textCentered(pen, textX + textW / 2, mid - 3, t.lidsCamText1, size, kText, false);
-        textCentered(pen, textX + textW / 2, mid + size + 1, t.lidsCamText2, size, kText, false);
-    } else if (anyFitted) {
-        const bool locked = v.locked(key::kLidWiden);
-        drawRowLabel(pen, t, y, kRowH, t.rowWiden, t.hintWiden, locked);
-        std::vector<Option> options;
-        for (int i = 0; i < 4; ++i) options.push_back({t.widenModes[i], {PanelAction::SetLidWiden, key::kLidWiden, i}});
-        drawSegmented(pen, kControlX, y + cy, kControlW, kControlH, options, widen.mode, 19, locked);
+    // The title, "Close" back to the rows, and a line on what decides the eyelids
+    {
+        pen.text(kInnerX, y + 26, t.detailsTitle, 20, kText, true);
+        const std::string label = std::string(t.detailsClose) + "  ▲";
+        const double bw = std::max(130.0, pen.measure(label, 17, true) + 40);
+        drawButton(pen, kInnerRight - bw, y, bw, 40, label, {PanelAction::LidMarks, nullptr, 0}, true, false, 17);
+        const char* note = t.marksTitle;
+        bool notice = false;
+        if (anyFitted) note = t.lidMarksUnused;
+        if (widen.mode > 0 && widen.fitted[0] && widen.fitted[1]) {
+            if (!widen.room[0] && widen.room[1]) note = t.widenFollowsLeft;
+            if (widen.room[0] && !widen.room[1]) note = t.widenFollowsRight;
+            if (!widen.room[0] && !widen.room[1]) note = t.widenNoRoom;
+            notice = widen.room[0] != widen.room[1] || !widen.room[0];
+        }
+        // On a SteamOS where a relaxed open eye already reads 1.0 there is nothing above it to widen by
+        if (s.running && s.opennessSaturated) {
+            note = t.opennessSaturated;
+            notice = true;
+        }
+        // (the cameras widen by their own sensitivity: the widening marks and that cap don't matter then)
+        if (fromCameras) {
+            note = t.lidsCamMarksOpen;
+            notice = false;
+        }
+        const double nw = kInnerRight - bw - 16 - kInnerX - pen.measure(t.detailsTitle, 20, true) - 18;
+        pen.text(kInnerX + pen.measure(t.detailsTitle, 20, true) + 18, y + 25, note,
+                 fitSize(pen, note, 15, 10, nw, notice), notice ? kText : kTextMuted, notice);
+        y += 52;
     }
-    // Auto calibration: on / off, what it learned, reset
-    else {
+    // Auto calibration: on / off, what it learned, reset (only for eyes without a fit, and not from the cameras)
+    if (!anyFitted && !fromCameras) {
         const bool locked = v.locked(key::kLidCalibration);
         const bool on = v.flag(key::kLidCalibration);
         std::string learned;
-        const FitInConfig saved = fitInConfig(v);
-        const bool lidFit = saved.lidsFitted[0] && saved.lidsFitted[1];
-        if (lidFit) {
-            learned = t.lidFitInUse;
-        } else if (s.running && (std::isfinite(s.relaxed.v[0]) || std::isfinite(s.relaxed.v[1]))) {
+        if (s.running && (std::isfinite(s.relaxed.v[0]) || std::isfinite(s.relaxed.v[1]))) {
             char text[128];
             std::snprintf(text, sizeof(text), t.learnedFormat, twoDecimals(s.relaxed.v[0]).c_str(),
                           twoDecimals(s.relaxed.v[1]).c_str());
@@ -2393,7 +2595,7 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
                       {{t.on, {PanelAction::SetBool, key::kLidCalibration, 1}},
                        {t.off, {PanelAction::SetBool, key::kLidCalibration, 0}}},
                       on ? 0 : 1, 20, locked);
-        if (s.running && s.learning && !lidFit) {
+        if (s.running && s.learning) {
             const double lx = kControlX + 194;
             drawDot(cr, lx + 6, y + kRowH / 2, 5, kAccent);
             pen.text(lx + 18, centerBaseline(y, kRowH, 16), t.learning,
@@ -2409,8 +2611,8 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
         textCentered(pen, bx + bw / 2, centerBaseline(y + cy, kControlH, size), t.calibrationReset, size,
                      on ? kText : kTextDisabled, true);
         addButton(hit, bx, y + cy, bw, kControlH, on);
+        y += kRowH + kRowGap;
     }
-    y += kRowH + kRowGap;
     // Per-eye scales: automatic (from calibration) or fixed; for a fitted eye a fine-tune after the fit (automatic
     // is 1 there)
     {
@@ -2441,53 +2643,16 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
         }
     }
     y += kRowH + kRowGap;
-    // Fitted, or both eyelids from the eye cameras: a line saying what decides the eyelids (or that an eye follows the
-    // other one), and "Fine-tune" to open the marks
-    const bool fold = anyFitted || fromCameras;
-    const bool showMarks = !fold || lidMarksOpen_;
-    const double marksShift = fold ? 8 : 0;
-    if (fold) {
-        const double bw = 150;
-        const std::string label = std::string(t.fitDetails) + (lidMarksOpen_ ? "  ▲" : "  ▼");
-        drawButton(pen, kInnerRight - bw, y, bw, 28, label, {PanelAction::LidMarks, nullptr, 0}, true, false);
-        const char* note = lidMarksOpen_ ? t.lidMarksUnused : t.lidMarksFitted;
-        bool notice = false;
-        if (widen.mode > 0 && widen.fitted[0] && widen.fitted[1]) {
-            notice = widen.room[0] != widen.room[1] || !widen.room[0];
-            if (!widen.room[0] && widen.room[1]) note = t.widenFollowsLeft;
-            if (widen.room[0] && !widen.room[1]) note = t.widenFollowsRight;
-            if (!widen.room[0] && !widen.room[1]) note = t.widenNoRoom;
-        }
-        // On a SteamOS where a relaxed open eye already reads 1.0 there is nothing above it to widen by
-        if (s.running && s.opennessSaturated) {
-            note = t.opennessSaturated;
-            notice = true;
-        }
-        // (the cameras widen by their own sensitivity: the widening marks and that cap don't matter then)
-        if (fromCameras) {
-            note = lidMarksOpen_ ? t.lidsCamMarksOpen : t.lidsCamMarks;
-            notice = false;
-        }
-        pen.text(kInnerX, y + 18, note, fitSize(pen, note, 15, 11, kInnerRight - bw - 12 - kInnerX, notice),
-                 notice ? kText : kTextMuted, notice);
-    }
     // The raw openness of each eye with the four marks laid over it
+    const char* marks[4] = {key::kLidClosed, key::kLidOpen, key::kLidWidenStart, key::kLidWide};
     {
-        const double top = y + marksShift;
-        if (!fold) {
-            // Marks 3 and 4 widen these eyes, which can't happen while the openness tops out at 1.0
-            const bool saturated = s.running && s.opennessSaturated;
-            const char* title = saturated ? t.opennessSaturated : t.marksTitle;
-            pen.text(kInnerX, top + 16, title, fitSize(pen, title, 15, 11, kInnerRight - kInnerX, saturated),
-                     saturated ? kText : kTextMuted, saturated);
-        }
+        const double top = y - 14;
         const double barX = kInnerX + 34;
         const double barW = kInnerRight - barX;
         /**
          * x of an openness value on the bars.
          */
         const auto xOf = [&](double value) { return barX + std::clamp(value / kLidScaleMax, 0.0, 1.0) * barW; };
-        const char* marks[4] = {key::kLidClosed, key::kLidOpen, key::kLidWidenStart, key::kLidWide};
         const bool live = s.running && s.tracking && s.hasRaw;
         for (int eye = 0; eye < 2; ++eye) {
             const double by = top + 50 + eye * 28;
@@ -2502,7 +2667,7 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
             textCentered(pen, barX + barW / 2, centerBaseline(top + 50, 20, 14), t.noEyeData, 14, kTextMuted, false);
         }
         // Mark lines: a light line with dark edges, visible on the accent fill and on the dark track
-        for (int i = 0; i < (showMarks ? 4 : 0); ++i) {
+        for (int i = 0; i < 4; ++i) {
             const double x = std::round(xOf(v.number(marks[i])));
             pen.color(kBg);
             cairo_set_line_width(cr, 6);
@@ -2516,11 +2681,10 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
             cairo_stroke(cr);
             drawNumberBadge(pen, x, top + 34, i + 1);
         }
+        y = top + 110;
     }
-    y += 110 + marksShift;
-    // The four marks (3 and 4 greyed for fitted eyes, which widen by lid_widen)
-    if (showMarks) {
-        const char* marks[4] = {key::kLidClosed, key::kLidOpen, key::kLidWidenStart, key::kLidWide};
+    // The four marks (3 and 4 greyed for fitted eyes, which widen by the slider, and while the cameras drive both)
+    {
         const char* captions[4] = {t.markClosed, t.markOpen, t.markWidenStart, t.markWide};
         const double gap = 12;
         const double w = (kInnerRight - kInnerX - gap * 3) / 4;
@@ -2537,43 +2701,7 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
         }
         y += kCaptionRowH + kRowGap;
     }
-    // Sync both lids
-    {
-        const bool locked = v.locked(key::kLidSync);
-        const double value = v.number(key::kLidSync);
-        drawRowLabel(pen, t, y, kRowH, t.rowSync, t.hintSync, locked);
-        drawStepper(pen, kControlX, y + cy, 220, kControlH, key::kLidSync, value, formatSetting(key::kLidSync, value),
-                    true, locked);
-    }
-    y += kRowH + kRowGap;
-    // Blinks: how long a closed eye stays closed, and closing both when one is closed (0 = off for each)
-    {
-        const bool lockedHold = v.locked(key::kBlinkHoldMs);
-        const bool lockedSync = v.locked(key::kBlinkSyncBelow);
-        drawRowLabel(pen, t, y, kRowH, t.rowBlink, t.hintBlink, lockedHold || lockedSync);
-        const double labelW = 52;
-        const double gap = 12;
-        const double stepperW = (kControlW - labelW * 2 - gap) / 2;
-        const double hold = v.number(key::kBlinkHoldMs);
-        char holdText[32];
-        std::snprintf(holdText, sizeof(holdText), "%.0f ms", hold);
-        const double sync = v.number(key::kBlinkSyncBelow);
-        for (int i = 0; i < 2; ++i) {
-            const double lx = kControlX + i * (labelW + stepperW + gap);
-            const char* label = i == 0 ? t.blinkHold : t.blinkSync;
-            pen.text(lx, centerBaseline(y, kRowH, 18), label, fitSize(pen, label, 18, 12, labelW - 6, true), kText,
-                     true);
-            if (i == 0) {
-                drawStepper(pen, lx + labelW, y + cy, stepperW, kControlH, key::kBlinkHoldMs, hold, holdText, true,
-                            lockedHold);
-            } else {
-                drawStepper(pen, lx + labelW, y + cy, stepperW, kControlH, key::kBlinkSyncBelow, sync,
-                            formatSetting(key::kBlinkSyncBelow, sync), true, lockedSync);
-            }
-        }
-    }
-    y += kRowH + kRowGap;
-    // Eyelid smoothing (two One Euro values)
+    // Eyelid smoothing: the two One Euro values behind the presets
     {
         drawRowLabel(pen, t, y, kCaptionRowH, t.rowLidSmooth, t.lowerSmoother, false);
         const char* keys[2] = {key::kLidMinCutoff, key::kLidBeta};
@@ -2585,12 +2713,6 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
             drawStepper(pen, x, y + 28, 220, kControlH, keys[i], value, formatSetting(keys[i], value), true,
                         v.locked(keys[i]));
         }
-    }
-    // While the cameras drive the eyelids: where Widen went
-    if (fromCameras) {
-        const double bottom = kContentY + kContentH - 22;
-        pen.text(kInnerX, bottom, t.lidsCamNote, fitSize(pen, t.lidsCamNote, 15, 11, kInnerRight - kInnerX, false),
-                 kTextMuted);
     }
 }
 
@@ -3499,7 +3621,15 @@ void EyePanel::drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& 
     const double cardX = kInnerX;
     const double cardRight = kInnerRight - 2;
     const double padX = 22;
-    const double cardTop = 118;
+    // The heading: which calibration, and what it is for
+    const bool user = screen == eyecam::SetupScreen::Calibrated
+                          ? m.eyecam.flow.calibResult() == eyecam::CalibResult::User
+                          : eyecam::calibOf(m.eyecam.lastRun) == eyecam::Calib::User;
+    const char* name = user ? t.eyecamCalibUserTitle : t.eyecamCalibWearTitle;
+    const char* note = user ? t.camRowUser : t.calibWearNote;
+    pen.text(kInnerX, 140, name, fitSize(pen, name, 19, 14, 420, true), kText, true);
+    pen.text(kInnerRight, 139, note, 14, kTextMuted, false, true);
+    const double cardTop = 158;
     const double cardH = setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, false, true);
     strokeRounded(pen, cardX, cardTop, cardRight - cardX, cardH, 14,
                   screen == eyecam::SetupScreen::Calibrated ? kSuccess : kAccent, 2);
@@ -3619,9 +3749,10 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                                                           ? eyecam::Calib::User
                                                           : eyecam::Calib::Wear)
                                                    : eyecam::calibOf(view.lastRun));
+    // (from the page the calibration's name is the heading above the card: the card says what to do, or "result")
     const char* learnName = !page                         ? t.setupStepLearn
-                            : calib == eyecam::Calib::User ? t.eyecamCalibUserTitle
-                                                           : t.eyecamCalibWearTitle;
+                            : screen == SetupScreen::Learn ? t.calibCardTitle
+                                                           : t.calibResultTitle;
     const double w = x1 - x0;
     const bool busy = view.busy;
     double y = top;  // the last baseline (or bottom) laid out
@@ -4015,38 +4146,120 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
     return y - top + 22;
 }
 
-void EyePanel::drawSensitivitySlider(const Pen& pen, const UiText& t, const eyecam::Status& s, double x0, double x1,
-                                     double y, double h) {
-    const double file = std::clamp(s.widenSensitivity, 0.0, 1.0);
-    // Its own value while held, and after it is let go of until the file has it
-    if (sensHeld_ && std::fabs(file - sensValue_) < 0.005) sensHeld_ = false;
-    const double value = sensDragging_ || sensHeld_ ? sensValue_ : file;
+void EyePanel::drawWidenSlider(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
+                               const WidenSlider& widen, double x0, double x1, double y, double h) {
+    const eyecam::Status& es = m.eyecam.status;
+    const bool camera = widen.control == WidenControl::Camera || widen.control == WidenControl::Mixed;
+    const int level = widenState(v).mode;
+    // The cameras' sensitivity (its own value while held, and after it is let go of until the file has it), or
+    // lid_widen's level at its stop
+    double value = widenStop(level);
+    bool usable = false;
+    if (camera) {
+        const double file = std::isfinite(es.widenSensitivity) ? std::clamp(es.widenSensitivity, 0.0, 1.0) : 0.5;
+        if (sensHeld_ && std::fabs(file - sensValue_) < 0.005) sensHeld_ = false;
+        value = sensDragging_ || sensHeld_ ? sensValue_ : file;
+        usable = m.eyecam.visible && es.hasWidenSensitivity;
+    } else if (widen.control == WidenControl::Valve) {
+        usable = !v.locked(key::kLidWiden);
+    }
     const double mid = y + h / 2;
     const double endSize = 15;
     const double dullW = pen.measure(t.eyecamSensitivityDull, endSize, false);
     const double sharpW = pen.measure(t.eyecamSensitivitySharp, endSize, false);
-    // The value at the right end, in a fixed width so the track doesn't move with it
-    char number[16];
-    std::snprintf(number, sizeof(number), "%.2f", value);
-    const double valueW = pen.measure("0.00", 18, true);
-    pen.text(x1, centerBaseline(y, h, 18), number, 18, kText, true, true);
+    // The value at the right end, in a fixed width so the track doesn't move with it: the number for the cameras,
+    // the level's name for lid_widen
+    std::string number;
+    double valueW = pen.measure("0.00", 18, true);
+    if (camera) {
+        char text[16];
+        std::snprintf(text, sizeof(text), "%.2f", value);
+        number = text;
+    } else {
+        number = t.widenModes[std::clamp(level, 0, 3)];
+        for (int i = 0; i < 4; ++i) valueW = std::max(valueW, pen.measure(t.widenModes[i], 18, true));
+    }
+    const Color ink = usable ? kText : kTextDisabled;
+    pen.text(x1, centerBaseline(y, h, 18), number, 18, ink, true, true);
     pen.text(x0, centerBaseline(y, h, endSize), t.eyecamSensitivityDull, endSize, kTextMuted);
     const double sharpX = x1 - valueW - 22 - sharpW;
     pen.text(sharpX, centerBaseline(y, h, endSize), t.eyecamSensitivitySharp, endSize, kTextMuted);
     const double trackX = x0 + dullW + 22;
     const double trackW = sharpX - 22 - trackX;
-    sensTrackX_ = trackX;
-    sensTrackW_ = trackW;
     const double trackH = 10;
     fillRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kControl);
     strokeRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kBorder, 1.5);
-    if (value > 0) fillRounded(pen, trackX, mid - trackH / 2, std::max(trackH, trackW * value), trackH, trackH / 2, kAccent);
+    const Color fill = usable ? kAccent : kTextDisabled;
+    if (value > 0) fillRounded(pen, trackX, mid - trackH / 2, std::max(trackH, trackW * value), trackH, trackH / 2, fill);
+    // lid_widen's four stops, as ticks under the track
+    if (!camera) {
+        for (int i = 0; i < 4; ++i) drawDot(pen.cr, trackX + trackW * widenStop(i), mid + 18, 2.5, kBorder);
+    }
     // The knob: larger while held or under the pointer, with a card-colored edge so it stands off the track
-    const PanelHit hit {PanelAction::EyecamSensitivity, nullptr, 0};
-    const double r = sensDragging_ || pointerState(hit) > 0 ? 14 : 12;
+    const PanelHit sensHit {PanelAction::EyecamSensitivity, nullptr, 0};
+    const bool active = usable && camera && (sensDragging_ || pointerState(sensHit) > 0);
+    const double r = active ? 14 : 12;
     drawDot(pen.cr, trackX + trackW * value, mid, r + 3, kCard);
-    drawDot(pen.cr, trackX + trackW * value, mid, r, kAccent);
+    drawDot(pen.cr, trackX + trackW * value, mid, r, fill);
+    if (!usable) return;
+    if (camera) {
+        sensTrackX_ = trackX;
+        sensTrackW_ = trackW;
+        addButton(sensHit, trackX - 18, y, trackW + 36, h);
+        return;
+    }
+    // lid_widen: a press anywhere goes to the nearest stop
+    for (int i = 0; i < 4; ++i) {
+        const double from = i == 0 ? trackX - 18 : trackX + trackW * (widenStop(i - 1) + widenStop(i)) / 2;
+        const double to = i == 3 ? trackX + trackW + 18 : trackX + trackW * (widenStop(i) + widenStop(i + 1)) / 2;
+        addButton({PanelAction::SetLidWiden, key::kLidWiden, i}, from, y, to - from, h);
+    }
+}
+
+void EyePanel::drawNumberSlider(const Pen& pen, const char* name, double value, const char* low, const char* high,
+                                double x0, double x1, double y, double h, bool usable) {
+    const SettingSpec* spec = findSetting(name);
+    const double lower = spec != nullptr ? spec->min : 0.0;
+    const double upper = spec != nullptr ? spec->max : 1.0;
+    const double share = std::isfinite(value) ? std::clamp((value - lower) / std::max(1e-9, upper - lower), 0.0, 1.0) : 0;
+    const double mid = y + h / 2;
+    const double endSize = 15;
+    const double lowW = pen.measure(low, endSize, false);
+    const double highW = pen.measure(high, endSize, false);
+    const std::string number = formatSetting(name, value);
+    const double valueW = pen.measure("0.00", 18, true);
+    const Color ink = usable ? kText : kTextDisabled;
+    pen.text(x1, centerBaseline(y, h, 18), number, 18, ink, true, true);
+    pen.text(x0, centerBaseline(y, h, endSize), low, endSize, kTextMuted);
+    const double highX = x1 - valueW - 22 - highW;
+    pen.text(highX, centerBaseline(y, h, endSize), high, endSize, kTextMuted);
+    const double trackX = x0 + lowW + 22;
+    const double trackW = highX - 22 - trackX;
+    const double trackH = 10;
+    fillRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kControl);
+    strokeRounded(pen, trackX, mid - trackH / 2, trackW, trackH, trackH / 2, kBorder, 1.5);
+    const Color fill = usable ? kAccent : kTextDisabled;
+    if (share > 0) fillRounded(pen, trackX, mid - trackH / 2, std::max(trackH, trackW * share), trackH, trackH / 2, fill);
+    const PanelHit hit {PanelAction::NumberSlider, name, 0};
+    const bool held = numDragging_ && numKey_ == name;
+    const double r = usable && (held || pointerState(hit) > 0) ? 14 : 12;
+    drawDot(pen.cr, trackX + trackW * share, mid, r + 3, kCard);
+    drawDot(pen.cr, trackX + trackW * share, mid, r, fill);
+    if (!usable) return;
+    numTrack_[name] = {trackX, trackW};
     addButton(hit, trackX - 18, y, trackW + 36, h);
+}
+
+double EyePanel::numberShown(const char* name, double value) const {
+    return numDragging_ && numKey_ == name ? numValue_ : value;
+}
+
+double EyePanel::numberAt(const std::string& name, double x) const {
+    const auto track = numTrack_.find(name);
+    const SettingSpec* spec = findSetting(name);
+    if (track == numTrack_.end() || spec == nullptr) return NAN;
+    const double share = std::clamp((x - track->second.first) / std::max(1.0, track->second.second), 0.0, 1.0);
+    return snapValue(*spec, spec->min + share * (spec->max - spec->min));
 }
 
 void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
@@ -4072,9 +4285,12 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
     const CameraUse use = cameraUse(es, v.flag(key::kCameraLids), warming);
     std::string reason;
     {
-        const double h = 64;
-        drawRowLabel(pen, t, y, h, t.camRowState, t.camRowStateHint, false);
         const bool inUse = use == CameraUse::Both || use == CameraUse::Left || use == CameraUse::Right;
+        // The pupils going straight to VRChat (LiveLink) get a line under it
+        const bool pupils = inUse && !es.pupilTarget.empty() && (es.camera.pupilUsed[0] || es.camera.pupilUsed[1]);
+        const double h = pupils ? 80 : 64;
+        const double lineH = pupils ? 52 : h;  // the state line's part of the row
+        drawRowLabel(pen, t, y, h, t.camRowState, t.camRowStateHint, false);
         // (while learning, the pill says so: the line itself stays short)
         std::string state = !s.live                     ? std::string(t.eyecamLiveOff)
                             : use == CameraUse::Warming ? std::string(t.cameraUseValve)
@@ -4112,13 +4328,17 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         const double room = kInnerRight - textX - (pill.empty() ? 0 : pillW + 14);
         const double size = fitSize(pen, state, 19, 13, room, inUse);
         state = ellipsize(pen, state, size, inUse, room, false);
-        drawDot(cr, kControlX + 6, y + h / 2, 5.5, inUse ? kSuccess : kTextMuted);
-        const double textRight = textX + pen.text(textX, centerBaseline(y, h, size), state, size, inUse ? kText : kTextMuted,
-                                                  inUse);
+        drawDot(cr, kControlX + 6, y + lineH / 2, 5.5, inUse ? kSuccess : kTextMuted);
+        const double textRight = textX + pen.text(textX, centerBaseline(y, lineH, size), state, size,
+                                                  inUse ? kText : kTextMuted, inUse);
+        if (pupils) {
+            pen.text(textX, y + lineH + 14, t.camPupilLine,
+                     fitSize(pen, t.camPupilLine, 15, 11, kInnerRight - textX, false), kTextMuted);
+        }
         if (!pill.empty()) {
             // (right after the line; it was given room for that)
             const double px = std::min(textRight + 14, kInnerRight - pillW);
-            const double py = y + (h - pillH) / 2;
+            const double py = y + (lineH - pillH) / 2;
             fillRounded(pen, px, py, pillW, pillH, pillH / 2, learned ? kSuccessTint : kAccentTint);
             double tx = px + 14;
             if (learned) {
@@ -4139,14 +4359,6 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
                       {{t.on, {PanelAction::SetBool, key::kCameraLids, 1}},
                        {t.off, {PanelAction::SetBool, key::kCameraLids, 0}}},
                       v.flag(key::kCameraLids) ? 0 : 1, 20, locked);
-        y += h;
-        divider(y);
-    }
-    // The widening sensitivity (only from an eyecam-rec that has it)
-    if (s.hasWidenSensitivity) {
-        const double h = 66;
-        drawRowLabel(pen, t, y, h, t.eyecamSensitivity, t.camRowSensitivityHint, false);
-        drawSensitivitySlider(pen, t, s, kControlX, kInnerRight, y + 8, h - 16);
         y += h;
         divider(y);
     }
@@ -4175,6 +4387,23 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         }
         y += h;
         if (!user) divider(y);
+    }
+    // Widening moved to the Eyelids tab (one slider, whatever drives the eyelids): a pointer there
+    {
+        const double boxTop = y + 6;
+        const double boxH = 56;
+        fillRounded(pen, kInnerX, boxTop, kInnerRight - kInnerX, boxH, 12, kBg);
+        drawEyeIcon(pen, kInnerX + 28, boxTop + boxH / 2, kAccent);
+        const std::string label = std::string(t.camWidenButton) + "  →";
+        const double bh = 42;
+        const double bw = std::max(130.0, pen.measure(label, 17, true) + 44);
+        const double bx = kInnerRight - 10 - bw;
+        drawButton(pen, bx, boxTop + (boxH - bh) / 2, bw, bh, label,
+                   {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Lids)}, true, false, 17);
+        const double tx = kInnerX + 50;
+        pen.text(tx, centerBaseline(boxTop, boxH, 17), t.camWidenNotice,
+                 fitSize(pen, t.camWidenNotice, 17, 11, bx - 14 - tx, false), kText);
+        y = boxTop + boxH + 4;
     }
 
     // At the bottom: eyecam-rec's message, a command on its way, and a command that failed
@@ -4231,14 +4460,14 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
     const double boxTop = y + 8;
     const double boxBottom = lines.empty() ? bottom + 2 : baseline + 4;
     const double rowStep = 30;
-    const int rows = std::min(4, static_cast<int>(std::floor((boxBottom - boxTop - 52) / rowStep)) + 1);
+    const int rows = std::min(3, static_cast<int>(std::floor((boxBottom - boxTop - 52) / rowStep)) + 1);
     if (rows < 1) return;
     const double boxH = 48 + rows * rowStep - 8;
     fillRounded(pen, kInnerX, boxTop, width, boxH, 12, kBg);
     drawInfoIcon(pen, kInnerX + 28, boxTop + 24, kAccent);
     pen.text(kInnerX + 46, boxTop + 30, t.camHelpTitle, 17, kText, true);
-    const char* situations[4] = {t.camHelp1, t.camHelp2, t.camHelp3, t.camHelp4};
-    const char* remedies[4] = {t.camHelp1Do, t.camHelp2Do, t.camHelp3Do, t.camHelp4Do};
+    const char* situations[3] = {t.camHelp1, t.camHelp2, t.camHelp3};
+    const char* remedies[3] = {t.camHelp1Do, t.camHelp2Do, t.camHelp3Do};
     double colW = 0;
     for (const char* situation : situations) colW = std::max(colW, pen.measure(situation, 16, false));
     const double colX = kInnerX + 20 + std::max(250.0, colW + 24);

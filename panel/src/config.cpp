@@ -328,6 +328,11 @@ double roundToDecimals(const SettingSpec& spec, double value) {
     return std::round(value * scale) / scale;
 }
 
+double snapValue(const SettingSpec& spec, double value) {
+    const double snapped = spec.min + std::round((value - spec.min) / spec.step) * spec.step;
+    return roundToDecimals(spec, std::fmin(spec.max, std::fmax(spec.min, snapped)));
+}
+
 double stepValue(const SettingSpec& spec, double current, int direction, double low, double high) {
     const double lower = std::fmax(spec.min, low);
     const double upper = std::fmin(spec.max, high);

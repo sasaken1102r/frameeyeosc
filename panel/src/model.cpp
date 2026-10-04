@@ -115,6 +115,28 @@ int matchingGazePreset(const SettingsView& view) {
     return -1;
 }
 
+/** Light follows quickly, strong smooths more; medium is lid_min_cutoff / lid_beta's defaults. */
+const LidPreset kLidPresets[3] = {
+    {10.0, 8.0},
+    {6.0, 5.0},
+    {3.0, 2.5},
+};
+
+const LidPreset* lidPresets() {
+    return kLidPresets;
+}
+
+int matchingLidPreset(const SettingsView& view) {
+    const double minCutoff = view.number(key::kLidMinCutoff);
+    const double beta = view.number(key::kLidBeta);
+    for (int i = 0; i < 3; ++i) {
+        if (std::fabs(kLidPresets[i].minCutoff - minCutoff) < 1e-6 && std::fabs(kLidPresets[i].beta - beta) < 1e-6) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 const char* outputOfArg(int arg) {
     if (arg == 1) return kOutputEtvr;
     if (arg == 2) return kOutputLivelink;
@@ -421,6 +443,36 @@ CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming) {
 
 bool lidsFromCameras(const EyeStatus& status) {
     return status.running && status.camera.used[0] && status.camera.used[1];
+}
+
+WidenSlider widenSlider(const SettingsView& view, const EyeStatus& status) {
+    WidenSlider slider;
+    const bool used[2] = {status.running && status.camera.used[0], status.running && status.camera.used[1]};
+    if (used[0] && used[1]) {
+        slider.control = WidenControl::Camera;
+        return slider;
+    }
+    if (used[0] || used[1]) {
+        slider.control = WidenControl::Mixed;
+    } else if (status.running && status.opennessSaturated) {
+        slider.control = WidenControl::Saturated;
+        return slider;
+    }
+    // lid_widen reaches only fitted eyes: one on Valve's values without a fit widens by marks 3 and 4
+    const WidenState widen = widenState(view);
+    for (int eye = 0; eye < 2; ++eye) {
+        if (!used[eye] && !widen.fitted[eye]) slider.unfittedNote = true;
+    }
+    return slider;
+}
+
+int widenLevelAt(double value) {
+    if (!std::isfinite(value)) return 2;
+    return static_cast<int>(std::lround(std::clamp(value, 0.0, 1.0) * 3));
+}
+
+double widenStop(int level) {
+    return std::clamp(level, 0, 3) / 3.0;
 }
 
 bool warmingShown(bool warming, CameraUse use) {

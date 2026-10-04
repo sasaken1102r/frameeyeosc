@@ -111,6 +111,35 @@ target_include_directories(model-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
 target_compile_options(model-test PRIVATE -Wall -Wextra)
 add_test(NAME model COMMAND model-test)
 
+# The Eyelids and eye cameras tabs as drawn (案E: the widening slider's routing, "Fine-tune", the moved sensitivity
+# slider, a setting's slider): panel/build/panel-test, run right after it is built (it renders with the panel's fonts)
+add_executable(panel-test tests/panel_test.cpp
+  src/autostart.cpp
+  src/changelog.cpp
+  src/command.cpp
+  src/config.cpp
+  src/draw.cpp
+  src/eyecam.cpp
+  src/fit_text.cpp
+  src/gaze_fit.cpp
+  src/host_entry.cpp
+  src/i18n.cpp
+  src/json.cpp
+  src/model.cpp
+  src/panel.cpp
+  src/recorder.cpp
+  src/setup_tools.cpp
+  src/status.cpp
+  src/theme.cpp
+  ${FRAME_UPDATER_DIR}/cpp/update_check.cpp
+)
+target_include_directories(panel-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
+target_compile_definitions(panel-test PRIVATE FRAMEEYEOSC_VERSION="${FRAMEEYEOSC_VERSION}")
+target_compile_options(panel-test PRIVATE -Wall -Wextra)
+target_link_libraries(panel-test PRIVATE PkgConfig::CAIRO PkgConfig::FREETYPE Threads::Threads)
+add_custom_command(TARGET panel-test POST_BUILD COMMAND panel-test VERBATIM)
+add_test(NAME panel COMMAND panel-test)
+
 # Checking a typed target PC and the eye fit's failure texts (both languages): panel/build/text-test
 add_executable(text-test tests/text_test.cpp src/host_entry.cpp src/fit_text.cpp src/i18n.cpp src/gaze_fit.cpp
   src/status.cpp src/json.cpp)

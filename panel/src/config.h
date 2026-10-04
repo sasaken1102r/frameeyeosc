@@ -248,3 +248,11 @@ double stepValue(const SettingSpec& spec, double current, int direction, double 
  * @return the rounded value
  */
 double roundToDecimals(const SettingSpec& spec, double value);
+
+/**
+ * A value onto a setting's step grid, within its range (a slider's position).
+ * @param spec the setting
+ * @param value the value
+ * @return the value on the grid
+ */
+double snapValue(const SettingSpec& spec, double value);

@@ -5,7 +5,9 @@
 #include "model.h"
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 class FontSet;
@@ -53,8 +55,12 @@ enum class PanelAction {
     FitReset,          ///< the fit back to the defaults (fitResetKeys: the gaze fit, lid_fit_*, lid_scale_*)
     FitDetails,        ///< open / close "Fine-tune" (handled inside the panel)
     FitDetailsPage,    ///< show arg (0 gaze, 1 eyelids) under "Fine-tune" (handled inside the panel)
-    LidMarks,          ///< open / close the lid marks on the Eyelids tab for fitted eyes (handled inside the panel)
+    LidMarks,          ///< open / close "Fine-tune" on the Eyelids tab (handled inside the panel)
     SetLidWiden,       ///< lid_widen = kLidWidenModes[arg]
+    LidPreset,         ///< eyelid smoothing preset arg (0 light, 1 medium, 2 strong)
+    NumberSlider,      ///< a setting's slider (key): pressed and dragged inside the panel; the caller takes the value
+                       ///< with takeNumberSlider and writes it (SetNumber)
+    SetNumber,         ///< key = arg / 1000 (onto its step grid)
     HostEnter,         ///< open the keypad for the target PC (the caller fills in the host now)
     HostKey,           ///< a keypad key: arg = '0'-'9', '.' or host_entry::kBackspace (handled inside the panel)
     HostOk,            ///< use the typed host (the caller checks and writes it)
@@ -250,6 +256,14 @@ public:
     void dropSensitivityHold() { sensHeld_ = false; }
 
     /**
+     * A setting's slider was let go of (once per release).
+     * @param name where to write its key
+     * @param value where to write the value (on the setting's step grid)
+     * @return true if one was let go of since the last call
+     */
+    bool takeNumberSlider(std::string& name, double& value);
+
+    /**
      * For --sensitivity-drag: the slider as if dragged to a value.
      * @param value 0..1
      */
@@ -322,6 +336,18 @@ public:
     /** @return the image height (px) */
     int height() const;
 
+    /** A usable button as last drawn: its hit and where it is. */
+    struct HitArea {
+        PanelHit hit;
+        double x, y, w, h;
+    };
+
+    /**
+     * The usable buttons as last drawn (panel-test checks what each screen offers).
+     * @return them, in drawing order
+     */
+    std::vector<HitArea> hitAreas() const;
+
 private:
     /** Hit area of one button. */
     struct Button {
@@ -376,6 +402,11 @@ private:
     double sensHoldUntil_ = 0.0;        ///< ...at most until then (monotonic seconds)
     double sensTrackX_ = 0.0;           ///< the slider's track as last drawn
     double sensTrackW_ = 1.0;
+    bool numDragging_ = false;          ///< a setting's slider is held (NumberSlider)
+    std::string numKey_;                ///< ...which one
+    double numValue_ = 0.0;             ///< ...its value while held, or as last let go of
+    bool numReleased_ = false;          ///< ...let go of, not taken yet (takeNumberSlider)
+    std::map<std::string, std::pair<double, double>> numTrack_;  ///< each one's track (x, width) as last drawn
 
     /**
      * The slider's value at a pointer position (on its track, two decimals).
@@ -612,18 +643,65 @@ private:
     void drawCameraPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
 
     /**
-     * The widening sensitivity slider: dull at the left, sensitive and the value at the right; held, it shows its own
-     * value (and after it is let go of, until status.json has it).
+     * The Eyelids tab's widening slider ("見開きの出やすさ"): dull at the left, sensitive and the value at the right.
+     * For the cameras (both eyes, or one) it is eyecam-rec's sensitivity (held, its own value, and after it is let go
+     * of until status.json has it); for Valve's values lid_widen's four stops (a press goes to the nearest one, its
+     * level's name at the right); greyed when nothing can be driven.
      * @param pen drawing tools
      * @param t texts
-     * @param s eyecam-rec's status (its value)
+     * @param m the model (eyecam-rec's status)
+     * @param v the settings shown
+     * @param widen what it drives (widenSlider)
      * @param x0 left
      * @param x1 right
      * @param y top
      * @param h height
      */
-    void drawSensitivitySlider(const Pen& pen, const UiText& t, const eyecam::Status& s, double x0, double x1, double y,
-                               double h);
+    void drawWidenSlider(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
+                         const WidenSlider& widen, double x0, double x1, double y, double h);
+
+    /**
+     * A setting's slider over its whole range: the low end's word at the left, the high end's and the value at the
+     * right. Held, it follows the pointer (numberShown); let go of, the caller writes it.
+     * @param pen drawing tools
+     * @param name the setting
+     * @param value its value (numberShown)
+     * @param low the left end's word
+     * @param high the right end's word
+     * @param x0 left
+     * @param x1 right
+     * @param y top
+     * @param h height
+     * @param usable it can be moved (not locked)
+     */
+    void drawNumberSlider(const Pen& pen, const char* name, double value, const char* low, const char* high, double x0,
+                          double x1, double y, double h, bool usable);
+
+    /**
+     * A setting's value as its slider shows it: its own while held.
+     * @param name the setting
+     * @param value the setting's value
+     * @return the value to show
+     */
+    double numberShown(const char* name, double value) const;
+
+    /**
+     * A setting's value at a pointer position on its slider's track (on its step grid).
+     * @param name the setting
+     * @param x px from the left
+     * @return the value (NaN if its slider wasn't drawn)
+     */
+    double numberAt(const std::string& name, double x) const;
+
+    /**
+     * "Fine-tune" on the Eyelids tab, open: the auto calibration (eyes without a fit, not from the cameras), the
+     * per-eye scales, the openness bars with the four marks and their values, and the smoothing values.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model
+     * @param v the settings shown
+     */
+    void drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v);
 
     /**
      * A button with an icon before its label (centered together).

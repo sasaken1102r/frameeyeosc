@@ -224,6 +224,25 @@ const GazePreset* gazePresets();
  */
 int matchingGazePreset(const SettingsView& view);
 
+/** An eyelid smoothing preset (the two One Euro values). */
+struct LidPreset {
+    double minCutoff;
+    double beta;
+};
+
+/**
+ * The three eyelid smoothing presets: light, medium (= the defaults), strong.
+ * @return the presets
+ */
+const LidPreset* lidPresets();
+
+/**
+ * Which eyelid preset the current values match.
+ * @param view the settings
+ * @return 0..2, or -1 for custom values
+ */
+int matchingLidPreset(const SettingsView& view);
+
 /** One key and the value to write. */
 struct SettingChange {
     const char* key;
@@ -355,6 +374,44 @@ CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool 
  * @return true while it runs and both eyes are on the cameras
  */
 bool lidsFromCameras(const EyeStatus& status);
+
+/** What the Eyelids tab's one widening slider ("見開きの出やすさ") drives. */
+enum class WidenControl {
+    Camera,     ///< the cameras drive both eyelids: eyecam-rec's widen_sensitivity
+    Mixed,      ///< one eye on the cameras: their sensitivity, and lid_widen's nearest level for the other (Valve) eye
+    Valve,      ///< Valve's values: lid_widen's four levels (stops at 0, 1/3, 2/3, 1)
+    Saturated,  ///< Valve's values on a SteamOS that caps openness at 1.0, no camera: nothing to drive (greyed)
+};
+
+/** The widening slider as the Eyelids tab shows it. */
+struct WidenSlider {
+    WidenControl control = WidenControl::Valve;
+    bool unfittedNote = false;  ///< an eye on Valve's values has no eye fit: its widening is marks 3 and 4 instead
+};
+
+/**
+ * What the widening slider drives now, from where the eyelids come from (frameeyeosc's camera.used) and the eye fit:
+ * the cameras for both eyes, for one (and lid_widen for the other), lid_widen alone, or, with no camera on a SteamOS
+ * whose openness tops out at 1.0, nothing.
+ * @param view the settings (the eye fit, for the note)
+ * @param status frameeyeosc's status
+ * @return the slider
+ */
+WidenSlider widenSlider(const SettingsView& view, const EyeStatus& status);
+
+/**
+ * The lid_widen level nearest a slider position (its four stops).
+ * @param value 0..1
+ * @return 0 (off) .. 3 (high)
+ */
+int widenLevelAt(double value);
+
+/**
+ * The slider position of a lid_widen level.
+ * @param level 0..3
+ * @return 0..1
+ */
+double widenStop(int level);
 
 /**
  * The new release's summary shown under the update row: the Japanese one on a Japanese panel when the release text

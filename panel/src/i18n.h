@@ -463,7 +463,6 @@ struct UiText {
     const char* camRowStateHint;
     const char* camLearned;  ///< ...the baseline learned (green pill)
     const char* camRowLidsHint;
-    const char* camRowSensitivityHint;
     const char* camRowCalib;
     const char* camRowCalibHint;
     const char* camCalibButton;
@@ -491,15 +490,46 @@ struct UiText {
     const char* camHelp2Do;
     const char* camHelp3;
     const char* camHelp3Do;
-    const char* camHelp4;
-    const char* camHelp4Do;
-    const char* lidsCamRow;  ///< Eyelids tab while the cameras drive both eyes: the widening row
-    const char* lidsCamRowHint;
-    const char* lidsCamText1;  ///< ...its box
-    const char* lidsCamText2;
     const char* lidsCamButton;
-    const char* lidsCamNote;
     const char* lidsCamMarks;  ///< ...the folded marks' line
+    const char* lidsNowLabel;  ///< the Eyelids tab (案E): the band at its top, "now"
+    const char* lidsNowBoth;  ///< ...from both cameras
+    const char* lidsNowLeft;  ///< ...the left camera, Valve for the right
+    const char* lidsNowRight;  ///< ...the right camera, Valve for the left
+    const char* lidsNowValve;  ///< ...Valve's values
+    const char* lidsNowSwitch;  ///< ...at its right: where to switch
+    const char* lidsNowNoCamera;  ///< ...no eye cameras set up
+    const char* rowWidenEase;  ///< the one widening slider
+    const char* widenHintCamera;  ///< ...its hint: the cameras
+    const char* widenHintMixed;  ///< ...one eye on the cameras
+    const char* widenHintValve;  ///< ...Valve's values
+    const char* widenHintSaturated;  ///< ...nothing to drive
+    const char* widenNoteCamera;  ///< ...the line under it: the cameras
+    const char* widenNoteValve;  ///< ...Valve's values (four stops)
+    const char* widenNoteUnfitted;  ///< ...an eye without an eye fit
+    const char* widenSaturated1;  ///< ...on a SteamOS that caps openness: the box
+    const char* widenSaturated2;
+    const char* blinkHint;  ///< the blink row: its hint
+    const char* blinkHoldCaption;  ///< ...beside the hold
+    const char* rowBlinkBoth;  ///< blink_sync_below
+    const char* blinkBothHint;  ///< ...its hint
+    const char* blinkBothNote;  ///< ...beside it
+    const char* lidSmoothHint;  ///< the eyelid smoothing presets: hint
+    const char* syncOff;  ///< the lid sync slider: its left end
+    const char* syncStrong;  ///< ...its right end
+    const char* syncHint;  ///< ...the row hint
+    const char* rowOther;  ///< the row that opens Fine-tune
+    const char* otherHint;  ///< ...its hint
+    const char* otherText1;  ///< ...beside its button
+    const char* otherText2;
+    const char* detailsTitle;  ///< Fine-tune open: its title
+    const char* detailsClose;  ///< ...the button back
+    const char* camPupilLine;  ///< the eye cameras page: under "Now" while the pupils go straight to VRChat
+    const char* camWidenNotice;  ///< ...the pointer to the Eyelids tab
+    const char* camWidenButton;  ///< ...its button
+    const char* calibCardTitle;  ///< a calibration from the page: the card title
+    const char* calibResultTitle;  ///< ...how it ended: the card title
+    const char* calibWearNote;  ///< ...at the right of the heading (this wear)
     const char* lidsCamMarksOpen;  ///< ...the same with the marks open  ///< ...at the bottom of the tab
     const char* devTitle;  ///< Advanced tab: the developer section (eye recording)
     const char* devRecord;  ///< ...its row

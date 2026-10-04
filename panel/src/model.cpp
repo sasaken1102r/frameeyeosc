@@ -496,3 +496,10 @@ CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool 
 bool pupilsRowShown(const std::string& output, bool eyeCameras) {
     return output == kOutputLivelink && eyeCameras;
 }
+
+PupilBitsRow pupilBitsRow(const std::string& output, bool eyeCameras, bool cameraLids, bool pupilsToVrchat) {
+    const bool livelink = output == kOutputLivelink;
+    if (!eyeCameras || (output != kOutputVrchat && !livelink)) return PupilBitsRow::Hidden;
+    if (!cameraLids || (livelink && !pupilsToVrchat)) return PupilBitsRow::Greyed;
+    return PupilBitsRow::Usable;
+}

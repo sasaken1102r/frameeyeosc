@@ -577,6 +577,34 @@ void testPupilsToVrchat() {
     CHECK(!pupilsRowShown("", true));
 }
 
+/** pupil_bits (the Output tab's "How the avatar takes pupils"): an integer 0..4, 0 by default, and where its row
+ *  shows (wherever the pupils go straight to VRChat) and greys (while they don't go there now). */
+void testPupilBits() {
+    const SettingSpec* spec = findSetting(key::kPupilBits);
+    CHECK(spec != nullptr && spec->type == SettingType::Integer && spec->defaultNumber == 0);
+    CHECK(spec != nullptr && spec->min == 0 && spec->max == 4);
+    PanelModel m;
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(SettingsView(m).number(key::kPupilBits) == 0);
+    m.config.root.set(key::kPupilBits, JsonValue::makeNumber(3, true));
+    CHECK(SettingsView(m).number(key::kPupilBits) == 3);
+    CHECK(writeJson(m.config.root).find("\"pupil_bits\": 3") != std::string::npos);
+    // Locked by --pupil-bits: frameeyeosc's value
+    m.status = parseStatus("{\"pid\": 1, \"locked\": [\"pupil_bits\"], \"effective\": {\"pupil_bits\": 2}}", 0, false);
+    CHECK(SettingsView(m).locked(key::kPupilBits) && SettingsView(m).number(key::kPupilBits) == 2);
+    // The row: only with the eye cameras, for VRChat directly and LiveLink; greyed while the pupils don't go there
+    CHECK(pupilBitsRow(kOutputVrchat, true, true, true) == PupilBitsRow::Usable);
+    CHECK(pupilBitsRow(kOutputVrchat, true, true, false) == PupilBitsRow::Usable);  // pupils_to_vrchat is LiveLink's
+    CHECK(pupilBitsRow(kOutputVrchat, true, false, true) == PupilBitsRow::Greyed);  // camera_lids off
+    CHECK(pupilBitsRow(kOutputLivelink, true, true, true) == PupilBitsRow::Usable);
+    CHECK(pupilBitsRow(kOutputLivelink, true, true, false) == PupilBitsRow::Greyed);
+    CHECK(pupilBitsRow(kOutputLivelink, true, false, true) == PupilBitsRow::Greyed);
+    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, ""}) {
+        CHECK(pupilBitsRow(output, false, true, true) == PupilBitsRow::Hidden);
+    }
+    CHECK(pupilBitsRow(kOutputEtvr, true, true, true) == PupilBitsRow::Hidden);
+}
+
 /** The bottom sentence of the eye cameras' page, for every case, in its order. */
 void testCameraLine() {
     // The cameras in use come first, whatever else is going on
@@ -778,6 +806,7 @@ int main() {
     testWarmingShown();
     testCameraLine();
     testPupilsToVrchat();
+    testPupilBits();
     testUpdateNotes();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

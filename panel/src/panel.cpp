@@ -1746,6 +1746,29 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const bool livelink = output == kOutputLivelink;
     const bool etvr = output == kOutputEtvr;
 
+    // Wherever the pupils go straight to VRChat: how the avatar takes them, a float or that many bits (pupil_bits). The
+    // hint under the control, like the examples above
+    const auto pupilBits = [&](double rowY) {
+        const PupilBitsRow row = pupilBitsRow(output, m.eyecam.visible, v.flag(key::kCameraLids),
+                                              v.flag(key::kPupilsToVrchat));
+        if (row == PupilBitsRow::Hidden) return rowY;
+        const bool locked = v.locked(key::kPupilBits);
+        const bool usable = row == PupilBitsRow::Usable;
+        const int bits = static_cast<int>(std::lround(v.number(key::kPupilBits)));
+        drawRowLabel(pen, t, rowY, kRowH, t.rowPupilBits, "", locked);
+        std::vector<Option> options;
+        for (int n = 0; n <= 4; ++n) {
+            options.push_back({n == 0 ? std::string(t.pupilBitsFloat) : std::to_string(n),
+                               {PanelAction::SetInteger, key::kPupilBits, n}, usable});
+        }
+        // Greyed like a locked control (the choice outlined, not filled), so it doesn't look in effect
+        drawSegmented(pen, kControlX, rowY + cy, kControlW, kControlH, options, bits >= 0 && bits <= 4 ? bits : -1, 19,
+                      locked || !usable);
+        const char* hint = usable ? t.hintPupilBits : t.hintPupilBitsOff;
+        pen.text(kControlX + 4, rowY + kRowH + 16, hint, fitSize(pen, hint, 15, 11, kControlW, false), kTextMuted);
+        return rowY + kRowH + 24;
+    };
+
     // Target PC: automatic, fixed to the PC frameeyeosc sends to now, or typed on the keypad; any host set by hand
     // shows in the third choice
     {
@@ -1845,6 +1868,8 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
             pen.text(kControlX + 4, y + kRowH + 16, t.hintNativeEyes,
                      fitSize(pen, t.hintNativeEyes, 15, 11, kControlW, false), kTextMuted);
         }
+        y += kRowH + 24;
+        pupilBits(y);
         return;
     }
 
@@ -1864,6 +1889,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         pen.text(kControlX + 4, y + kRowH + 16, t.hintPupils, fitSize(pen, t.hintPupils, 15, 11, kControlW, false),
                  kTextMuted);
         y += kRowH + 24;
+        y = pupilBits(y);
     }
 
     // LiveLink and ETVR: what to set up in VRCFT on the PC (nothing else is set here)

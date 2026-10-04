@@ -342,6 +342,25 @@ bool warmingShown(bool warming, CameraUse use);
  */
 bool pupilsRowShown(const std::string& output, bool eyeCameras);
 
+/** How the Output tab shows "How the avatar takes pupils" (pupil_bits). */
+enum class PupilBitsRow {
+    Hidden,  ///< not there: no eye cameras, or ETVR (no pupils go to VRChat)
+    Greyed,  ///< there, but the pupils don't go straight to VRChat now (pupils_to_vrchat or camera_lids off)
+    Usable,  ///< there and in effect
+};
+
+/**
+ * How the Output tab shows "How the avatar takes pupils" (pupil_bits): wherever the pupils go to VRChat straight from
+ * frameeyeosc, so with the eye cameras, for VRChat directly and for LiveLink (under "Send pupils straight to VRChat").
+ * Greyed while they don't go there: camera_lids off (no camera values at all), or LiveLink with pupils_to_vrchat off.
+ * @param output the "output" setting
+ * @param eyeCameras the eye cameras tab shows (eyecam::View::visible)
+ * @param cameraLids camera_lids
+ * @param pupilsToVrchat pupils_to_vrchat
+ * @return how it shows
+ */
+PupilBitsRow pupilBitsRow(const std::string& output, bool eyeCameras, bool cameraLids, bool pupilsToVrchat);
+
 /** The sentence at the bottom of the eye cameras' page (eyecam-rec idle, set up). */
 enum class CameraLine {
     BothVrchat,  ///< the cameras drive both eyes, sent to VRChat

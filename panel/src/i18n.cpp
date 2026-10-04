@@ -94,6 +94,10 @@ UiText makeJapanese() {
     t.rowPupils = "瞳孔は VRChat に直接送る";
     t.hintPupils = "LiveLink では瞳孔が送れないので、瞳孔だけ VRChat へ";
     t.pupilsTargetFormat = "送り先: %s";
+    t.rowPupilBits = "瞳孔の受け取り方";
+    t.pupilBitsFloat = "小数（ふつう）";
+    t.hintPupilBits = "アバターに PupilDilation1・2・4… があるときは、その個数を選んでね（1・2・4 なら 3）";
+    t.hintPupilBitsOff = "いまは瞳孔を VRChat に直接送っていないので効かないよ";
     t.rowNativeEyes = "VRChat 標準の目も動かす";
     t.hintNativeEyes = "VRCFT 用の値がないアバター用。まぶたが閉じすぎたらオフに";
     t.rowTarget = "送り先の PC";
@@ -702,6 +706,10 @@ UiText makeEnglish() {
     t.rowPupils = "Send pupils straight to VRChat";
     t.hintPupils = "LiveLink has no pupils, so they go to VRChat directly";
     t.pupilsTargetFormat = "To %s";
+    t.rowPupilBits = "How the avatar takes pupils";
+    t.pupilBitsFloat = "Float (usual)";
+    t.hintPupilBits = "If the avatar has PupilDilation1, 2, 4…, pick how many (1, 2, 4 → 3)";
+    t.hintPupilBitsOff = "No effect now: the pupils don't go straight to VRChat";
     t.rowNativeEyes = "VRChat's own eyes too";
     t.hintNativeEyes = "For avatars without VRCFT parameters. Turn off if eyelids close too far";
     t.rowTarget = "Target PC";

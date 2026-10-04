@@ -20,6 +20,7 @@ enum class PanelAction {
     None,
     Tab,               ///< switch tab (handled inside the panel; arg = tab)
     SetBool,           ///< key = arg != 0
+    SetInteger,        ///< key = arg (an integer setting, within its spec)
     Step,              ///< key += arg * step
     HostAuto,          ///< host = "auto"
     FixHost,           ///< host = the IP frameeyeosc sends to now

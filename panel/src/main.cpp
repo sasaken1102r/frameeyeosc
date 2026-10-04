@@ -102,6 +102,7 @@ struct Options {
     bool fakeEtvr = false;
     bool fakeLivelink = false;
     bool fakePupilsOff = false;   ///< --fake-pupils-off: pupils_to_vrchat off
+    int fakePupilBits = -1;       ///< --fake-pupil-bits N: pupil_bits (-1 = as the file says)
     bool fakeFixed = false;
     bool fakeTargetNull = false;
     bool fakeLocked = false;
@@ -230,6 +231,7 @@ void printUsage() {
         "      --fake-not-running / --fake-paused / --fake-no-tracking / --fake-etvr / --fake-livelink / --fake-fixed\n"
         "      --fake-target-null  Auto target not found yet\n"
         "      --fake-pupils-off  pupils_to_vrchat off (the Output tab's row for LiveLink with the eye cameras)\n"
+        "      --fake-pupil-bits N  pupil_bits 0..4 (the Output tab's \"pupils as bits\" row, with the eye cameras)\n"
         "      --fake-slow-tracker  The eye tracker delivers only 15 samples a second\n"
         "      --fake-locked     Some keys locked by the command line\n"
         "      --fake-config-error  frameeyeosc reports a config error\n"
@@ -508,6 +510,14 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeLivelink = true;
         } else if (arg == "--fake-pupils-off") {
             options.fake = options.fakePupilsOff = true;
+        } else if (arg == "--fake-pupil-bits" && hasNext) {
+            const std::string value = argv[++i];
+            if (value.size() != 1 || value[0] < '0' || value[0] > '4') {
+                std::fprintf(stderr, "--fake-pupil-bits takes 0 to 4, not %s\n", value.c_str());
+                return false;
+            }
+            options.fake = true;
+            options.fakePupilBits = value[0] - '0';
         } else if (arg == "--fake-fixed") {
             options.fake = options.fakeFixed = true;
         } else if (arg == "--fake-target-null") {
@@ -977,6 +987,7 @@ PanelModel fakeModel(const Options& options) {
     if (options.fakeEtvr) root.set(key::kOutput, JsonValue::makeString(kOutputEtvr));
     if (options.fakeLivelink) root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
     if (options.fakePupilsOff) root.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
+    if (options.fakePupilBits >= 0) root.set(key::kPupilBits, JsonValue::makeNumber(options.fakePupilBits, true));
     if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
     if (!options.fakeWiden.empty()) root.set(key::kLidWiden, JsonValue::makeString(options.fakeWiden));
     if (options.fakePaused) root.set(key::kSending, JsonValue::makeBool(false));
@@ -1166,7 +1177,7 @@ PanelModel fakeModel(const Options& options) {
         if (options.fakeLocked) {
             s.locked = {key::kOutput,          key::kPort,        key::kRaw,         key::kLidOpen,
                         key::kIndependentEyes, key::kGazeOffsetY, key::kSteamlinkParams, key::kNativeEyes,
-                        key::kCameraLids, key::kPupilsToVrchat};
+                        key::kCameraLids, key::kPupilsToVrchat, key::kPupilBits};
             s.effective.set(key::kOutput, JsonValue::makeString(options.fakeLivelink ? kOutputLivelink : kOutputVrchat));
             s.effective.set(key::kPort, JsonValue::makeNumber(9123, true));
             s.effective.set(key::kRaw, JsonValue::makeBool(true));
@@ -1177,6 +1188,7 @@ PanelModel fakeModel(const Options& options) {
             s.effective.set(key::kNativeEyes, JsonValue::makeBool(true));
             s.effective.set(key::kCameraLids, JsonValue::makeBool(true));
             s.effective.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
+            s.effective.set(key::kPupilBits, JsonValue::makeNumber(3, true));
         }
     } else {
         s.readError = "no status file";
@@ -1706,6 +1718,15 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             const std::string name = hit.key;
             const bool value = hit.arg != 0;
             change = [name, value](JsonValue& root) { root.set(name, JsonValue::makeBool(value)); };
+            break;
+        }
+        case PanelAction::SetInteger: {
+            const SettingSpec* spec = findSetting(hit.key);
+            if (spec == nullptr || view.locked(hit.key) || hit.arg < spec->min || hit.arg > spec->max) return;
+            const std::string name = hit.key;
+            const double value = hit.arg;
+            if (std::fabs(view.number(name) - value) < 1e-12) return;
+            change = [name, value](JsonValue& root) { root.set(name, JsonValue::makeNumber(value, true)); };
             break;
         }
         case PanelAction::Step: {

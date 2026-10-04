@@ -57,6 +57,11 @@ constexpr const char* kSteamlinkParams = "steamlink_params";
 constexpr const char* kNativeEyes = "native_eyes";
 /** LiveLink output: send the eye cameras' pupils straight to VRChat (the LiveLink module has none; default on). */
 constexpr const char* kPupilsToVrchat = "pupils_to_vrchat";
+/**
+ * Wherever the pupils go to VRChat: also send the dilation as this many bool parameters (PupilDilation1, 2, 4, 8) for
+ * avatars that take it bit-packed; 0 (the default) sends the float only.
+ */
+constexpr const char* kPupilBits = "pupil_bits";
 /** Eyelids (and squint) from the eye cameras where eyecam-rec reads them live and is calibrated (default on). */
 constexpr const char* kCameraLids = "camera_lids";
 constexpr const char* kRaw = "raw";

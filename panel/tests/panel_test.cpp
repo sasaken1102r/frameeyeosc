@@ -263,6 +263,43 @@ void testNumberSlider(const FontSet& fonts) {
 
 }  // namespace
 
+void testPupilBitsRow(const FontSet& fonts) {
+    // The Output tab's "How the avatar takes pupils": five usable segments where the pupils go straight to VRChat
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Output);
+    const auto segments = [&](PanelModel m) {
+        panel.render(m);
+        return hits(panel, PanelAction::SetInteger, key::kPupilBits);
+    };
+    PanelModel direct = modelWith(Lids::Both);
+    std::vector<EyePanel::HitArea> found = segments(direct);
+    CHECK(found.size() == 5);
+    for (size_t i = 0; i < found.size(); ++i) CHECK(found[i].hit.arg == static_cast<int>(i));
+    PanelModel livelink = direct;
+    livelink.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+    CHECK(segments(livelink).size() == 5);
+    // Greyed (drawn, nothing to press): LiveLink without "Send pupils straight to VRChat", or the cameras off
+    PanelModel pupilsOff = livelink;
+    pupilsOff.config.root.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
+    CHECK(segments(pupilsOff).empty());
+    CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).size() == 2);
+    PanelModel camerasOff = direct;
+    camerasOff.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
+    CHECK(segments(camerasOff).empty());
+    // Not there: without the eye cameras, or for ETVR; locked: nothing to press
+    CHECK(segments(modelWith(Lids::Valve, false)).empty());
+    PanelModel etvr = direct;
+    etvr.config.root.set(key::kOutput, JsonValue::makeString(kOutputEtvr));
+    CHECK(segments(etvr).empty());
+    PanelModel locked = direct;
+    locked.status.locked.push_back(key::kPupilBits);
+    CHECK(segments(locked).empty());
+    // The other VRChat rows are still all there above it
+    panel.render(direct);
+    CHECK(hits(panel, PanelAction::SetBool, key::kNativeEyes).size() == 2);
+    CHECK(hits(panel, PanelAction::SetActiveType).size() == 3);
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -270,6 +307,7 @@ int main() {
     testFold(fonts);
     testSliderMoved(fonts);
     testNumberSlider(fonts);
+    testPupilBitsRow(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

@@ -98,6 +98,10 @@ struct UiText {
     const char* rowPupils;  ///< LiveLink output: send the pupils straight to VRChat (pupils_to_vrchat)
     const char* hintPupils;  ///< ...why, under it
     const char* pupilsTargetFormat;  ///< ...where they go now ("to %s")
+    const char* rowPupilBits;  ///< how the avatar takes pupils: a float or that many bits (pupil_bits)
+    const char* pupilBitsFloat;  ///< ...its first segment (0)
+    const char* hintPupilBits;  ///< ...under it: how to tell the count
+    const char* hintPupilBitsOff;  ///< ...under it while greyed (the pupils don't go straight to VRChat)
     const char* rowNativeEyes;      ///< also send VRChat's own eye tracking input (/tracking/eye/*)
     const char* hintNativeEyes;
     const char* rowTarget;

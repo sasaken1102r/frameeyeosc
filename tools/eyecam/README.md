@@ -126,7 +126,7 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
 | `version` | int | この形式の版。今は 1 |
 | `state` | string | `waiting_fds`（grab 待ち）/ `idle`（待機中。バッファを受け取ったらすぐこれになる。HMD をかぶっていない間は `message` が `HMD をかぶってね（目の映像を待ってるよ）`）/ `searching`（`start` を受けて、かぶるのと映像を待っている）/ `recording` / `calibrating`（`calib wear` / `calib user` を受けてから終わるまで。映像待ちの間も `calibrating`）/ `error`（直前の録画か校正が失敗。次の `start` / `calib` まで残る）/ `stopped`（eyecam-rec が終了した） |
 | `auto_grab` | string | 自動 grab の状態（「sudo なしで使う」の表）。`--serve` 以外は `""` |
-| `grab_outdated` | bool | 入っている eyecam-grab（`/home/.eyecam/eyecam-grab`）が、eyecam-rec の隣の eyecam-grab と中身が違う（更新で新しい eyecam-grab が届いた）。true なら `install_grab.sh` をもう一度 sudo で実行してもらう。どちらかが無いときは false。中身の比較はファイルの大きさか更新時刻が変わったときだけやり直す |
+| `grab_outdated` | bool | eyecam-rec の隣の eyecam-grab が、入っている eyecam-grab（`/home/.eyecam/eyecam-grab`）より新しい版（更新で新しい eyecam-grab が届いた）。true なら `install_grab.sh` をもう一度 sudo で実行してもらう。どちらかが無いときは false。版はバイナリに埋め込んだ印 `EYECAM_GRAB_VERSION=<n>;` で比べる（同じソースでもビルドごとにバイトは変わるため。印の無い古いビルドは 1）。`src/bin/eyecam-grab.rs` を変えたら、その番号を上げる（上げ忘れはテストが止める） |
 | `has_buffers` | bool | バッファを持っている（`sudo eyecam-grab` が成功した）。映像が流れているかどうかとは別。`waiting_fds` のときだけ false |
 | `message_en` | string | `message` と同じ内容の英語（パネルを英語で表示するとき用）。例: `Put the headset on (waiting for the eye cameras)`、`Recording`、`Saved: rec_…`、`Calibrated`、`Calibrated (couldn't measure widening, using the usual width)`。訳は `src/message_en.rs` にまとめてあり、訳のない文が来たら日本語のまま入る |
 | `message` | string | そのまま表示できる日本語の短文。例: `sudo eyecam-grab を実行してね`、`HMD をかぶってね（目の映像を待ってるよ）`、`録画中`、`保存した: rec_…`、`保存した（途中で止めた）: rec_…`、`中止した`。`idle` でかぶっていてライブ処理がオンのときは、`見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね`（`calib_saved` が false）/ `見開きの基準を覚えているところ（目を開けて、ふつうに前を見ていてね）`（`warming`）/ `目の値を出しているよ` |

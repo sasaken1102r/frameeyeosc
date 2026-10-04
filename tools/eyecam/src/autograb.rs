@@ -123,9 +123,9 @@ fn stamp(path: &Path) -> Option<(u64, i64, i64)> {
 type OutdatedKey = (PathBuf, (u64, i64, i64), PathBuf, (u64, i64, i64));
 static OUTDATED: std::sync::Mutex<Option<(OutdatedKey, bool)>> = std::sync::Mutex::new(None);
 
-/// Whether the installed copy (the first of PATHS that exists) differs from `bundled`, the eyecam-grab shipped
-/// beside eyecam-rec: an update brought a new eyecam-grab and install_grab.sh has to be run again. False when
-/// either is missing. The files are compared byte for byte, again only after one of them changed.
+/// Whether `bundled`, the eyecam-grab shipped beside eyecam-rec, is a newer version than the installed copy (the
+/// first of PATHS that exists): an update brought a new eyecam-grab and install_grab.sh has to be run again. False
+/// when either is missing. The version markers are read again only after one of the files changed.
 pub fn grab_outdated(bundled: &Path) -> bool {
     let Some(installed) = PATHS.iter().map(Path::new).find(|p| std::fs::symlink_metadata(p).is_ok()) else {
         return false;
@@ -139,11 +139,28 @@ pub fn grab_outdated(bundled: &Path) -> bool {
         return *v;
     }
     let differs = match (std::fs::read(installed), std::fs::read(bundled)) {
-        (Ok(a), Ok(b)) => a != b,
+        (Ok(a), Ok(b)) => grab_version(&a) < grab_version(&b),
         _ => false,
     };
     *cache = Some((key, differs));
     differs
+}
+
+const VERSION_PREFIX: &[u8] = b"EYECAM_GRAB_VERSION=";
+
+/// The version marker an eyecam-grab binary carries (`EYECAM_GRAB_VERSION=<n>;`, see src/bin/eyecam-grab.rs), or 1
+/// for a binary built before the marker existed. Builds of the same source differ in their bytes (strip, build
+/// paths), so the marker, not the bytes, tells whether the installed copy needs replacing.
+pub fn grab_version(binary: &[u8]) -> u32 {
+    binary
+        .windows(VERSION_PREFIX.len())
+        .position(|w| w == VERSION_PREFIX)
+        .and_then(|i| {
+            let rest = &binary[i + VERSION_PREFIX.len()..];
+            let end = rest.iter().position(|&b| b == b';').filter(|&e| (1..=9).contains(&e))?;
+            std::str::from_utf8(&rest[..end]).ok()?.parse().ok()
+        })
+        .unwrap_or(1)
 }
 
 /// The eyecam-grab shipped beside this executable (~/.local/lib/eyecam/eyecam-grab), if there is one.
@@ -164,6 +181,28 @@ pub fn eyetracking_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_version_marker() {
+        assert_eq!(grab_version(b"ELF header..EYECAM_GRAB_VERSION=3;.."), 3);
+        assert_eq!(grab_version(b"no marker here"), 1);
+        assert_eq!(grab_version(b"EYECAM_GRAB_VERSION=x;"), 1);
+        assert_eq!(grab_version(b"EYECAM_GRAB_VERSION=12"), 1);
+    }
+
+    /// FNV-1a of src/bin/eyecam-grab.rs without carriage returns. When this fails, eyecam-grab.rs changed: raise
+    /// EYECAM_GRAB_VERSION there (so installed copies get replaced) and then update GRAB_SOURCE_FNV and
+    /// GRAB_SOURCE_VERSION here.
+    const GRAB_SOURCE_FNV: u64 = 0x67ec737b668c300f;
+    const GRAB_SOURCE_VERSION: u32 = 1;
+
+    #[test]
+    fn eyecam_grab_changes_come_with_a_new_version() {
+        let src = include_str!("bin/eyecam-grab.rs").replace('\r', "");
+        let fnv = src.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        assert_eq!(grab_version(src.as_bytes()), GRAB_SOURCE_VERSION, "update GRAB_SOURCE_VERSION");
+        assert_eq!(fnv, GRAB_SOURCE_FNV, "eyecam-grab.rs changed: raise EYECAM_GRAB_VERSION, then set GRAB_SOURCE_FNV to {fnv:#x}");
+    }
 
     #[test]
     fn a_missing_bundled_copy_is_not_outdated() {

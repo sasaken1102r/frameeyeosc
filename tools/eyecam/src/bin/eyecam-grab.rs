@@ -32,6 +32,11 @@ const SOCKET_PATH: &str = "/run/user/1000/eyecam.sock";
 // Keep in sync with eyecam::proto (src/proto.rs).
 const MAGIC: [u8; 8] = *b"EYECAM01";
 const MAX_BUFFERS: usize = 4;
+/// This program's version for update checks. eyecam-rec looks for this marker in the installed copy and in the one
+/// shipped beside it, without running either (eyecam::autograb::grab_version), and asks for install_grab.sh again
+/// only when the shipped one is newer. Raise the number whenever this file changes. A copy built before the marker
+/// existed counts as version 1.
+static VERSION_MARKER: &[u8] = b"EYECAM_GRAB_VERSION=1;";
 
 /// A DMA-BUF the eye tracker holds: its descriptor number there, and what fdinfo says about it.
 struct Dmabuf {
@@ -41,6 +46,8 @@ struct Dmabuf {
 }
 
 fn main() -> ExitCode {
+    // Keep the version marker in the binary (also after strip); it is only read from the file, never printed.
+    std::hint::black_box(VERSION_MARKER);
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

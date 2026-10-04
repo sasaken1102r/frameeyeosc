@@ -657,7 +657,7 @@ void testCalibText() {
               t.setupOneLeft, t.setupAllDone, t.setupStepPassword, t.setupStepTool, t.setupStepLearn, t.setupStepDone,
               t.setupStepToolAgain, t.setupToolUpdated, t.eyecamStorageNote, t.eyecamStorageRow,
               t.toolNoticeOutdated, t.toolNoticeTooOld, t.nextToolOutdated, t.nextToolTooOld, t.eyecamBack,
-              t.eyecamUserNeedsWear,
+              t.eyecamUserNeedsWear, t.camCalibNeedsLids,
               t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone, t.setupPasswordLabel, t.setupPasswordSet,
               t.setupAutoChecked, t.setupToolLabel, t.setupToolDone, t.setupLearnLabel, t.setupLearnDone,
               t.setupPassPill, t.setupPassBody, t.setupPassWhere, t.setupPassPath1, t.setupPassPath2,
@@ -1537,6 +1537,8 @@ void testSetupTools() {
     SAME(install[2], "bash");
     SAME(install[3], "-c");
     SAME(install[4],
+         "echo \"入れる道具の sha256（リリースノートの eyecam-grab の値と同じか見てね）:\"; /usr/bin/sha256sum "
+         "\"$HOME/.local/lib/eyecam/eyecam-grab\"; echo; "
          "echo \"Enter を押すと実行するよ（パスワードを聞かれるよ）\"; read -e -p \"$ \" -i \"sudo "
          "$HOME/.local/lib/eyecam/install_grab.sh\" c && eval \"$c\"; echo; read -p \"Enter で閉じるよ\" _");
     // ...passwd the same way
@@ -1547,6 +1549,10 @@ void testSetupTools() {
     const std::vector<std::string> english = setup_tools::konsoleArgv(setup_tools::kInstallCommand, Language::En);
     CHECK(english[4].find("-i \"sudo $HOME/.local/lib/eyecam/install_grab.sh\" c && eval \"$c\"") != std::string::npos);
     CHECK(english[4].find("Press Enter") != std::string::npos);
+    // ...only installing the tool shows the sha256 first (absolute path: not whatever sha256sum is first in PATH)
+    CHECK(english[4].rfind("echo \"sha256 of the tool to install", 0) == 0);
+    CHECK(english[4].find("/usr/bin/sha256sum \"$HOME/.local/lib/eyecam/eyecam-grab\"") != std::string::npos);
+    CHECK(passwd[4].find("sha256sum") == std::string::npos);
     // The buttons: each one's command, with the panel's language in what Konsole says
     for (const Language language : {Language::Ja, Language::En}) {
         const bool ja = language == Language::Ja;
@@ -1847,44 +1853,6 @@ void testControl() {
  * Run the tests.
  * @return 0 if all passed
  */
-void testLiveSync() {
-    const auto status = [](const char* state, bool live) {
-        Status st = setupStatus(state, ", \"has_buffers\": true");
-        st.live = live;
-        return st;
-    };
-    SAME(eyecam::liveCommand(false), "live off");
-    SAME(eyecam::liveCommand(true), "live on");
-    eyecam::LiveSync sync;
-    std::string command;
-    // In step: nothing
-    CHECK(!sync.next(true, status("idle", true), true, false, 0.0, command));
-    // camera_lids off while idle: "live off" at once
-    CHECK(sync.next(false, status("idle", true), true, false, 0.0, command));
-    SAME(command, "live off");
-    // ...not again while status.json hasn't shown it yet, then again (refused, or lost)
-    CHECK(!sync.next(false, status("idle", true), true, false, 1.0, command));
-    CHECK(sync.next(false, status("idle", true), true, false, eyecam::kLiveResendSec + 0.1, command));
-    // ...shown: nothing more
-    CHECK(!sync.next(false, status("idle", false), true, false, 10.0, command));
-    // On again: "live on" at once, even right after an off
-    CHECK(sync.next(true, status("idle", false), true, false, 10.1, command));
-    SAME(command, "live on");
-    // Busy eyecam-rec (calibrating, recording, searching) or waiting for the buffers: kept until it is idle or in error
-    for (const char* busyState : {"calibrating", "recording", "searching", "waiting_fds"}) {
-        CHECK(!sync.next(false, status(busyState, true), true, false, 20.0, command));
-    }
-    CHECK(sync.next(false, status("error", true), true, false, 20.0, command));
-    SAME(command, "live off");
-    // eyecam-rec restarted (live again): sent again
-    CHECK(!sync.next(false, status("idle", false), true, false, 21.0, command));
-    CHECK(sync.next(false, status("idle", true), true, false, 30.0, command));
-    // Another command out, or eyecam-rec not running: waits
-    CHECK(!sync.next(true, status("idle", false), true, true, 40.0, command));
-    CHECK(!sync.next(true, status("idle", false), false, false, 40.0, command));
-    CHECK(sync.next(true, status("idle", false), true, false, 40.0, command));
-}
-
 void testUtf8() {
     // Valid text stays as it is
     SAME(validUtf8("校正できた ok"), "校正できた ok");
@@ -1955,7 +1923,6 @@ int main() {
     testSetupTools();
     testReply();
     testUtf8();
-    testLiveSync();
     testReadFile();
     testControl();
     if (gFailures > 0) {

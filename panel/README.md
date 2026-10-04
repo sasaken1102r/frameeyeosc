@@ -214,10 +214,10 @@ systemctl --user daemon-reload
 
 ## 守っていること
 
-- eyecam-rec の `status.json`（64 KB まで）と `ctl.sock` の返事の文字列は、描く前に正しい UTF-8 にする（壊れたバイトは U+FFFD。切るときは文字の境目で）。eyecam-rec に送るのは決まったコマンドだけ（`start`、`stop`、`calib wear` / `calib user`、`set widen_sensitivity 0.00`〜`1.00`、`live on` / `live off`）
+- eyecam-rec の `status.json`（64 KB まで）と `ctl.sock` の返事の文字列は、描く前に正しい UTF-8 にする（壊れたバイトは U+FFFD。切るときは文字の境目で）。eyecam-rec に送るのは決まったコマンドだけ（`start`、`stop`、`calib wear` / `calib user`、`set widen_sensitivity 0.00`〜`1.00`）。`live on` / `live off`（camera_lids に合わせる）は本体の frameeyeosc が送る
 - 書くのは設定ファイル（と、壊れていたときの `config.json.broken`）だけ。ほかに作るのは、視線の点がオンの間の `gaze-dots.sock`（状態ファイルのフォルダ、閉じるときに消す）と、起動時に書く目合わせの音 `sounds/*.wav`（状態ファイルのフォルダ、7 つ）だけ。アイトラッキングの共有メモリ・カメラ・GPIO・sysfs・`/persist` には触らない。sudo を使わない
 - 外部コマンドは `systemctl --user` と `/bin/sh ~/.local/share/frameeyeosc/frame-update.sh`、目を合わせるときの音の `pw-play`（無ければ `paplay`、`aplay`。どれも無ければ鳴らさない。`/usr/bin`・`/bin` を先に探し、PATH の空や相対のフォルダは使わない）、目のカメラの準備の 3 つだけ:
-  - `konsole -e bash -c '<script>'`（準備の ①・② のボタンを押したときだけ）。`<script>` はコードの中の定数（`setup_tools::kInstallCommand` = `sudo $HOME/.local/lib/eyecam/install_grab.sh`、`kPasswdCommand` = `passwd`）と、パネルの言語の 2 行の案内（これも定数）だけから組み立てる。状態ファイルや設定から来た文字列は入らない。Konsole は入力済みで開くだけで、Enter とパスワードは本人（パネルは sudo も passwd も実行しない）。`systemd-run --user --collect` で別の一時ユニットとして起動し（パネルが再起動しても閉じない。DISPLAY などの変数だけ `-E` で渡す）、無ければ直接。どちらも stdin / stdout / stderr を捨て、3 以上の fd は渡さず、待たない
+  - `konsole -e bash -c '<script>'`（準備の ①・② のボタンを押したときだけ）。`<script>` はコードの中の定数（`setup_tools::kInstallCommand` = `sudo $HOME/.local/lib/eyecam/install_grab.sh`、`kPasswdCommand` = `passwd`）と、パネルの言語の案内（これも定数）だけから組み立てる。道具を入れるほうは、プロンプトの前に `/usr/bin/sha256sum "$HOME/.local/lib/eyecam/eyecam-grab"` で入れるファイルの sha256 を出す（リリースノートの値と比べてもらう）。状態ファイルや設定から来た文字列は入らない。Konsole は入力済みで開くだけで、Enter とパスワードは本人（パネルは sudo も passwd も実行しない）。`systemd-run --user --collect` で別の一時ユニットとして起動し（パネルが再起動しても閉じない。DISPLAY などの変数だけ `-E` で渡す）、無ければ直接。どちらも stdin / stdout / stderr を捨て、3 以上の fd は渡さず、待たない
   - `steamos-passwd --has-password`（読むだけ。パネルがダッシュボードに出ていて準備が ①・② のあいだだけ。答えが同じあいだは 4 → 30 秒と間をあける。5 秒で答えなければ SIGKILL）
   - `flatpak run org.chromium.Chromium <動画の URL>`（準備の動画のボタン。URL がまだ無いので、今は出さず、起動もしない）音は `posix_spawn` で出力を捨てて起動し、待たずにループで片付ける（同時に 2 つまで）。音量や PipeWire / WirePlumber の設定には触らない。どちらも固定の引数で呼び、コマンドの文字列を組み立ててシェルに渡すことはしない。`systemctl` は 2 秒（enable / disable は 5 秒）、更新の確認は 90 秒で終わらなければ SIGKILL、どの場合も `waitpid` で片付ける
 - 更新のスクリプトが書くのは `~/.cache/frameeyeosc/` だけ。新しい版を入れるのは［更新する］を押して確認したときだけ

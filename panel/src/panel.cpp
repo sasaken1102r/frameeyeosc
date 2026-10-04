@@ -4502,7 +4502,9 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
                      false);
         const double bw = 264;
         const double bh = user ? 42 : 46;
-        const bool allowed = !user || eyecam::userCalibAllowed(s);
+        // (camera_lids off stops eyecam-rec's processing too: nothing to calibrate then)
+        const bool lidsOn = v.flag(key::kCameraLids);
+        const bool allowed = lidsOn && (!user || eyecam::userCalibAllowed(s));
         drawButton(pen, kControlX, y + (h - bh) / 2, bw, bh, user ? t.camUserButton : t.camCalibButton,
                    {PanelAction::EyecamCalib, nullptr, static_cast<int>(user ? eyecam::Calib::User : eyecam::Calib::Wear)},
                    ready && allowed && !busy, false, user ? 17 : 18);
@@ -4514,8 +4516,22 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
             pen.text(sx, y + h / 2 - 3, first, fitSize(pen, first, 15, 11, sw, false), kTextMuted);
             pen.text(sx, y + h / 2 + 17, second, fitSize(pen, second, 15, 11, sw, false), kTextMuted);
         } else {
-            pen.text(sx, centerBaseline(y, h, 15), t.camUserNeedsCalib, fitSize(pen, t.camUserNeedsCalib, 15, 11, sw, false),
-                     kTextMuted);
+            // Why not, on up to two lines like the hints beside the buttons ("\n" where the text breaks them itself)
+            const std::string why = !lidsOn ? t.camCalibNeedsLids : t.camUserNeedsCalib;
+            std::vector<std::string> lines;
+            const size_t brk = why.find('\n');
+            if (brk != std::string::npos) {
+                for (const std::string& part : {why.substr(0, brk), why.substr(brk + 1)}) {
+                    lines.push_back(ellipsize(pen, part, 15, false, sw, false));
+                }
+            } else {
+                lines = wrapText(pen, why, 15, false, sw, 2);
+            }
+            double baseline = lines.size() > 1 ? y + h / 2 - 3 : centerBaseline(y, h, 15);
+            for (const std::string& line : lines) {
+                pen.text(sx, baseline, line, 15, kTextMuted);
+                baseline += 20;
+            }
         }
         y += h;
         if (!user) divider(y);

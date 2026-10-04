@@ -47,7 +47,14 @@ std::vector<std::string> konsoleArgv(const std::string& command, Language langua
     const std::string say = ja ? "Enter を押すと実行するよ（パスワードを聞かれるよ）"
                                : "Press Enter to run it (it asks for your password)";
     const std::string close = ja ? "Enter で閉じるよ" : "Press Enter to close";
-    const std::string script = "echo \"" + say + "\"; read -e -p \"$ \" -i \"" + command +
+    // Installing the tool: its sha256 first, to compare with the release notes before the password
+    std::string check;
+    if (command == kInstallCommand) {
+        const std::string what = ja ? "入れる道具の sha256（リリースノートの eyecam-grab の値と同じか見てね）:"
+                                    : "sha256 of the tool to install (check it matches eyecam-grab's in the release notes):";
+        check = "echo \"" + what + "\"; /usr/bin/sha256sum \"$HOME/.local/lib/eyecam/eyecam-grab\"; echo; ";
+    }
+    const std::string script = check + "echo \"" + say + "\"; read -e -p \"$ \" -i \"" + command +
                                "\" c && eval \"$c\"; echo; read -p \"" + close + "\" _";
     return {"konsole", "-e", "bash", "-c", script};
 }

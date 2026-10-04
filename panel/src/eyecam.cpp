@@ -488,24 +488,6 @@ bool SetupFlow::readyNotice(double now) const {
     return now >= doneAt_ && now < doneAt_ + kReadyNoticeSec;
 }
 
-std::string liveCommand(bool on) {
-    return on ? "live on" : "live off";
-}
-
-bool LiveSync::next(bool wanted, const Status& status, bool visible, bool busy, double now, std::string& command) {
-    // Only where eyecam-rec takes it (holding the buffers: idle, or an error after a run), and one command at a time
-    if (!visible || busy || !status.present || (status.state != State::Idle && status.state != State::Error)) {
-        return false;
-    }
-    if (status.live == wanted) return false;
-    // Just sent and not shown yet: give status.json time (a different wish goes at once)
-    if (sentOn_ == wanted && now < sentAt_ + kLiveResendSec) return false;
-    command = liveCommand(wanted);
-    sentAt_ = now;
-    sentOn_ = wanted;
-    return true;
-}
-
 std::string sensitivityCommand(double value) {
     if (!std::isfinite(value)) return std::string();
     char text[64];

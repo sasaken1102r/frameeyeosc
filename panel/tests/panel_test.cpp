@@ -370,6 +370,20 @@ void testErrorBack(const FontSet& fonts) {
     CHECK(hits(panel, PanelAction::EyecamBack).empty());
 }
 
+void testCalibNeedsLids(const FontSet& fonts) {
+    // camera_lids off: the page's calibrations can't be pressed (eyecam-rec doesn't process the video then); on: they can
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Eyecam);
+    PanelModel m = eyecamIn("idle");
+    m.eyecam.status.calibState = eyecam::kCalibWearBit | eyecam::kCalibAutoBit;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamCalib).size() == 2);
+    m.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamCalib).empty());
+    CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);  // the switch to turn it on again
+}
+
 void testWayOut(const FontSet& fonts) {
     // Every screen of the eye cameras tab and of the Advanced tab's recording offers a usable control
     struct Screen {
@@ -504,6 +518,7 @@ int main() {
     testToolNotice(fonts);
     testErrorBack(fonts);
     testWayOut(fonts);
+    testCalibNeedsLids(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

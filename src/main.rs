@@ -116,6 +116,9 @@ const CAMERA_SQUINT_ALPHA: f32 = 0.35;
 const CAMERA_PUPIL_ALPHA: f32 = 0.1;
 // The pupil diameter goes out in cm (VRCFT's PupilDiameter, 0..1).
 const PUPIL_MM_PER_UNIT: f32 = 10.0;
+// The pupil dilation's bits (pupil_bits) go out only when they change, and all of them again this often, since a
+// datagram can be lost.
+const PUPIL_BITS_RESEND: Duration = Duration::from_secs(1);
 // How often the Steam Link PC is looked up again, to follow reconnects over another network.
 const RESOLVE_INTERVAL: Duration = Duration::from_secs(5);
 // Eyelid auto calibration keeps a decaying histogram of each eye's open readings (0.005 wide bins).
@@ -294,6 +297,10 @@ struct Args {
     /// avatars without VRCFT parameters
     #[arg(long)]
     native_eyes: bool,
+    /// Also send the pupil dilation to VRChat as this many bool parameters (PupilDilation1, 2, 4, 8), for avatars
+    /// that take it bit-packed; 0 sends only the float
+    #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=4))]
+    pupil_bits: u8,
     /// How easily an eye with an eye fit widens: off, low, normal or high (eyes without one use --lid-widen-start
     /// and --lid-wide)
     #[arg(long, value_enum, default_value_t = Widen::Normal)]
@@ -2138,9 +2145,64 @@ fn camera_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
 /// is used, and the combined diameter.
 fn pupil_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
     let diameter = camera.pupil_diameter.map(|mm| mm.map(|mm| (mm / PUPIL_MM_PER_UNIT).min(1.0)));
-    let mut params: Vec<_> = mean(camera.pupil_dilation).map(|dilation| ("PupilDilation", dilation)).into_iter().collect();
+    let mut params: Vec<_> = pupil_dilation(camera).map(|dilation| ("PupilDilation", dilation)).into_iter().collect();
     params.extend(per_eye_params(["PupilDiameterLeft", "PupilDiameterRight", "PupilDiameter"], diameter));
     params
+}
+
+/// The pupil dilation that goes out (PupilDilation, and its bits): the mean of the eyes whose pupil is used.
+fn pupil_dilation(camera: &CameraValues) -> Option<f32> {
+    mean(camera.pupil_dilation)
+}
+
+/// A value 0..1 as `bits` bools the way VRCFT's BinaryBaseParameter makes them (VRCFaceTracking.Core, OSC/DataTypes/
+/// BinaryBaseParameter.cs, ProcessBinary): above 0.99999 every bit is set, else bit k of (int)(value * 2^bits).
+/// Negative values give no bits: pupils are never negative, so there is no Negative parameter.
+fn binary_bits(value: f32, bits: u8) -> Vec<bool> {
+    let all = value > 0.99999;
+    // as i64 truncates toward zero like C#'s (int), and saturates instead of overflowing
+    let big = if value > 0.0 { (value * f32::from(1u8 << bits)) as i64 } else { 0 };
+    (0..bits).map(|k| all || (big >> k) & 1 == 1).collect()
+}
+
+/// The pupil dilation as bool parameters, for avatars that take it bit-packed (pupil_bits): PupilDilation1, 2, 4
+/// and 8 under the same prefix as the float, next to it wherever pupils go to VRChat. Only the bits that changed go
+/// out, and all of them again every PUPIL_BITS_RESEND. When the pupils stop, nothing is sent: the avatar holds them,
+/// like the floats.
+#[derive(Default)]
+struct PupilBits {
+    // The bits as they last went out, and when all of them last did.
+    sent: Vec<bool>,
+    sent_all: Option<Instant>,
+}
+
+impl PupilBits {
+    /// The messages for this sample's dilation (None: no eye's pupil is used).
+    fn messages(&mut self, settings: &Settings, dilation: Option<f32>, now: Instant) -> Vec<(String, OscType)> {
+        let Some(dilation) = dilation.filter(|_| settings.pupil_bits > 0) else {
+            return Vec::new();
+        };
+        let bits = binary_bits(dilation, settings.pupil_bits);
+        let all = bits.len() != self.sent.len()
+            || self.sent_all.is_none_or(|at| now.saturating_duration_since(at) >= PUPIL_BITS_RESEND);
+        let prefix = format!("/avatar/parameters{}/v2/PupilDilation", settings.prefix);
+        let messages = bits
+            .iter()
+            .enumerate()
+            .filter(|&(k, bit)| all || self.sent[k] != *bit)
+            .map(|(k, &bit)| (format!("{prefix}{}", 1u8 << k), OscType::Bool(bit)))
+            .collect();
+        if all {
+            self.sent_all = Some(now);
+        }
+        self.sent = bits;
+        messages
+    }
+
+    /// Send all of them with the next sample (the settings or the target changed).
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// The left, right and combined (`names`) of per-eye values, for the eyes that have one; the combined one is their
@@ -2454,6 +2516,8 @@ struct Bridge {
     // In LiveLink mode, the eye camera's pupils straight to VRChat (see pupil_stream): a sender of its own, so the
     // Live Link rate and drops stay the LiveLink module's.
     pupil_output: Output,
+    // The pupil dilation's bits that went out (pupil_bits), wherever pupils go to VRChat.
+    pupil_bits: PupilBits,
 }
 
 impl Bridge {
@@ -2492,6 +2556,8 @@ impl Bridge {
         self.output.set_target(Target::of(&settings));
         // Nothing to set back when the pupils stop going there: they just hold
         self.pupil_output.set_target(pupil_target(&settings));
+        // All the bits again with the next sample, wherever they go now and however many
+        self.pupil_bits.reset();
         self.smoother.configure(&settings);
         if reset_calibration {
             eprintln!("Starting eyelid calibration over");
@@ -2530,7 +2596,8 @@ impl Bridge {
                     self.output.send_datagram(&livelink_packet(&sample, livelink::time_of_day(SystemTime::now())));
                     // At the same pace
                     if pupil_stream(&self.settings).is_some() {
-                        for (addr, arg) in pupil_messages(&self.settings, &sample.camera) {
+                        let bits = self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now);
+                        for (addr, arg) in pupil_messages(&self.settings, &sample.camera).into_iter().chain(bits) {
                             self.pupil_output.send(addr, vec![arg])?;
                         }
                     }
@@ -2541,6 +2608,9 @@ impl Bridge {
                     self.output.send(addr, vec![arg])?;
                 }
                 if self.settings.output == OutputKind::Vrchat {
+                    for (addr, arg) in self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now) {
+                        self.output.send(addr, vec![arg])?;
+                    }
                     for (addr, arg) in squint_release(&self.settings, self.squint_out, sample.camera.squint) {
                         self.output.send(addr, vec![arg])?;
                     }
@@ -2876,6 +2946,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         camera_live: None,
         squint_out: [false; 2],
         pupil_output,
+        pupil_bits: PupilBits::default(),
     };
     let mut status_file = StatusFile::new(status::status_path());
     // Until the shared memory can be read, frameeyeosc keeps running and trying again, and the status file says why,
@@ -4224,6 +4295,7 @@ mod tests {
             squint_out: [false; 2],
             // Never VRChat's port on this machine in a test: a test that wants the pupils points it at its own listener
             pupil_output: Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9 }),
+            pupil_bits: PupilBits::default(),
         };
         bridge.output.refresh();
         bridge
@@ -5926,6 +5998,151 @@ mod tests {
     }
 
     /// The OSC messages that arrive until none has for 100 ms.
+    #[test]
+    fn pupil_bits_match_vrcfts_binary_parameters() {
+        // (int)(value * 2^bits), bit k as PupilDilation{2^k}; above 0.99999 all of them
+        assert_eq!(binary_bits(0.5, 3), [false, false, true]);
+        assert_eq!(binary_bits(1.0, 3), [true; 3]);
+        assert_eq!(binary_bits(0.0, 3), [false; 3]);
+        assert_eq!(binary_bits(0.99999, 4), [true; 4]);
+        assert_eq!(binary_bits(1.5, 2), [true; 2]);
+        // Never negative: no bits (and no Negative parameter)
+        assert_eq!(binary_bits(-0.5, 2), [false; 2]);
+        for bits in 1..=4u8 {
+            let steps = f32::from(1u8 << bits);
+            assert_eq!(binary_bits(0.0, bits), vec![false; usize::from(bits)]);
+            assert_eq!(binary_bits(1.0, bits), vec![true; usize::from(bits)]);
+            // Each step's lower edge is that number, the value just below it the one before
+            for big in 1..(1u32 << bits) {
+                let at = big as f32 / steps;
+                let number = |bools: Vec<bool>| bools.iter().rev().fold(0, |n, &bit| n * 2 + u32::from(bit));
+                assert_eq!(number(binary_bits(at, bits)), big, "{bits} bits at {at}");
+                assert_eq!(number(binary_bits(at - 1e-4, bits)), big - 1, "{bits} bits below {at}");
+            }
+        }
+        assert_eq!(binary_bits(0.25, 2), [true, false]);
+        assert_eq!(binary_bits(0.9374, 4), [false, true, true, true]);
+    }
+
+    #[test]
+    fn pupil_bits_go_out_when_they_change_and_all_again_each_second() {
+        let three = Settings {
+            pupil_bits: 3,
+            ..settings()
+        };
+        let names = |messages: &[(String, OscType)]| -> Vec<(String, bool)> {
+            messages
+                .iter()
+                .map(|(addr, value)| match value {
+                    OscType::Bool(bit) => (addr.trim_start_matches("/avatar/parameters/FT/v2/").to_owned(), *bit),
+                    other => panic!("{addr}: {other:?}"),
+                })
+                .collect()
+        };
+        let bit = |name: &str, on: bool| (name.to_owned(), on);
+        let mut bits = PupilBits::default();
+        let start = Instant::now();
+        // All of them first
+        assert_eq!(
+            names(&bits.messages(&three, Some(0.5), start)),
+            [bit("PupilDilation1", false), bit("PupilDilation2", false), bit("PupilDilation4", true)]
+        );
+        // The same: nothing; a change: only the bits that changed (4 -> 3)
+        assert!(bits.messages(&three, Some(0.55), start + Duration::from_millis(10)).is_empty());
+        assert_eq!(
+            names(&bits.messages(&three, Some(0.4), start + Duration::from_millis(20))),
+            [bit("PupilDilation1", true), bit("PupilDilation2", true), bit("PupilDilation4", false)]
+        );
+        assert_eq!(
+            names(&bits.messages(&three, Some(0.5), start + Duration::from_millis(30))),
+            [bit("PupilDilation1", false), bit("PupilDilation2", false), bit("PupilDilation4", true)]
+        );
+        assert_eq!(
+            names(&bits.messages(&three, Some(0.25), start + Duration::from_millis(40))),
+            [bit("PupilDilation2", true), bit("PupilDilation4", false)]
+        );
+        // No pupil: nothing, and nothing set back (the avatar holds them)
+        assert!(bits.messages(&three, None, start + Duration::from_millis(50)).is_empty());
+        assert!(bits.messages(&three, Some(0.25), start + Duration::from_millis(60)).is_empty());
+        // A second after the last full set: all of them again, unchanged or not
+        assert!(bits.messages(&three, Some(0.25), start + Duration::from_millis(999)).is_empty());
+        assert_eq!(bits.messages(&three, Some(0.25), start + Duration::from_secs(1)).len(), 3);
+        assert!(bits.messages(&three, Some(0.25), start + Duration::from_millis(1500)).is_empty());
+        assert_eq!(bits.messages(&three, Some(0.25), start + Duration::from_secs(2)).len(), 3);
+        // Another count, or a reset (settings or target changed): all of them at once
+        let one = Settings {
+            pupil_bits: 1,
+            ..settings()
+        };
+        assert_eq!(
+            names(&bits.messages(&one, Some(0.25), start + Duration::from_millis(2100))),
+            [bit("PupilDilation1", false)]
+        );
+        bits.reset();
+        assert_eq!(bits.messages(&one, Some(0.25), start + Duration::from_millis(2200)).len(), 1);
+        // 0: the float only; the prefix applies as to the float
+        assert!(PupilBits::default().messages(&settings(), Some(0.5), start).is_empty());
+        let bare = Settings {
+            prefix: String::new(),
+            ..one
+        };
+        assert_eq!(PupilBits::default().messages(&bare, Some(1.0), start)[0].0, "/avatar/parameters/v2/PupilDilation1");
+    }
+
+    #[test]
+    fn pupil_bits_go_wherever_the_pupils_go_to_vrchat() {
+        use eyecam_live::tests::{TempDir, TestEye, live_bytes, write_live};
+        let dir = TempDir::new("pupil-bits");
+        let path = dir.0.join("live");
+        let write = || {
+            let now = eyecam_live::monotonic_ns();
+            write_live(&path, &live_bytes(7, 1, true, [TestEye::at(now, 0.9, 0.2); 2]));
+        };
+        for output in [OutputKind::Vrchat, OutputKind::LiveLink] {
+            // VRChat directly: on the output; LiveLink: next to the packet, on the pupils' own sender
+            let target_listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let vrchat_listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+            let direct = output == OutputKind::Vrchat;
+            let settings = Settings {
+                output,
+                host: "127.0.0.1".into(),
+                port: Some(if direct { &vrchat_listener } else { &target_listener }.local_addr().unwrap().port()),
+                lid_calibration: false,
+                pupil_bits: 2,
+                ..settings()
+            };
+            let mut bridge = test_bridge(settings);
+            bridge.pupil_output = Output::new(Target::Fixed {
+                host: "127.0.0.1".into(),
+                port: vrchat_listener.local_addr().unwrap().port(),
+            });
+            bridge.pupil_output.refresh();
+            write();
+            bridge.camera = LiveReader::new(path.clone(), Instant::now());
+            bridge.on_sample(reading(0, [0.0, 0.0], [0.8; 2])).unwrap();
+            let received = osc_received(&vrchat_listener);
+            let is_bit = |addr: &str| addr.ends_with("PupilDilation1") || addr.ends_with("PupilDilation2");
+            let bits: Vec<_> = received.iter().filter(|(addr, _)| is_bit(addr)).collect();
+            // The dilation is 0.5: 2 of 4 steps, the float next to the bits
+            assert_eq!(
+                bits,
+                [
+                    &("/avatar/parameters/FT/v2/PupilDilation1".to_owned(), OscType::Bool(false)),
+                    &("/avatar/parameters/FT/v2/PupilDilation2".to_owned(), OscType::Bool(true)),
+                ],
+                "{output:?}"
+            );
+            assert_eq!(param(&received, "/avatar/parameters/FT/v2/PupilDilation"), Some(0.5), "{output:?}");
+            // Unchanged within the second: the float again, the bits not
+            write();
+            bridge.livelink_throttle = Throttle::default();
+            bridge.on_sample(reading(1, [0.0, 0.0], [0.8; 2])).unwrap();
+            let received = osc_received(&vrchat_listener);
+            assert!(param(&received, "/avatar/parameters/FT/v2/PupilDilation").is_some(), "{output:?}");
+            assert!(!received.iter().any(|(addr, _)| is_bit(addr)), "{output:?}");
+        }
+    }
+
     fn osc_received(listener: &UdpSocket) -> Vec<(String, OscType)> {
         listener.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
         let mut buffer = [0u8; 1024];

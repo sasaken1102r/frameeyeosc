@@ -150,7 +150,7 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
 | `warmup_remaining_s` | number | `warming` のとき、あと何秒ぶんの「使えるフレーム」（目を開けて、ふつうに前を見ている）が要るか。`ready` なら 0。かぶってから約 35 秒で使えるようになる |
 | `calib_saved` | bool | calib.json に見開きの幅を測れた `calib wear` が 1 回以上ある（見開きの幅の履歴がある）。false の間は見開きの幅が仮の値 |
 | `setup_done` | bool | 成功した `calib wear` が一度でもある（見開きが取れなかった部分成功も含む）= パネルの最初の準備が済んだ。calib.json の `setup_done` に保存され、ずっと残る（このフィールドがない古い calib.json は、見開きの履歴があれば true） |
-| `last_calib_widen` | string | この起動での直近の `calib wear` の見開き: `measured`（測れた）/ `default`（取れなかったので履歴の中央値の幅を使った）/ `""`（まだしていない、または失敗した） |
+| `last_calib_widen` | string | 直近の `calib wear` の見開き: `measured`（測れた）/ `default`（取れなかったので履歴の中央値の幅を使った）/ `""`（まだしていない、この起動で失敗した、または見開きを記録する前の calib.json）。calib.json の `wear.widen` に残るので、再起動しても変わらない |
 | `widen_sensitivity` | number | 見開きの感度 0〜1（`set widen_sensitivity`。既定 0.5）。どの state でも入っている |
 | `dev` | bool | 開発者モード（settings.json の `"dev": true`、既定 false）。true のときだけ校正のたびの目の映像（`eye_L.raw` など）も残す（下の「settings.json」）。録画（`start`）はこれに関係なく誰でも使える。settings.json を手で書き換えると、再起動しなくても次の書き直しで反映される |
 | `live` | bool | ライブ処理がオン（バッファを持っていて `live on`）|

@@ -472,6 +472,7 @@ impl Worker {
                 if measured {
                     self.calib.push_history(&self.calib.wear_time.clone(), &w);
                 }
+                self.calib.wear_widen_measured = Some(measured);
                 self.calib.setup_done = true;
                 self.apply_calib();
                 self.shared.last_calib_widen.store(if measured { 1 } else { 2 }, Ordering::Relaxed);
@@ -588,6 +589,15 @@ pub fn spawn(
             }
         }
     }
+    // The last wear calibration's widen, as it was saved (so a restart keeps last_calib_widen)
+    shared.last_calib_widen.store(
+        match calib_file.wear_widen_measured {
+            Some(true) => 1,
+            Some(false) => 2,
+            None => 0,
+        },
+        Ordering::Relaxed,
+    );
     match calib_file.history_params() {
         Some(h) => eprintln!(
             "eyecam-rec: widen step L {:.3} / R {:.3}, open gap L {:.3} / R {:.3}, R L {:.1} / R {:.1} px (medians of {} wear calibrations)",

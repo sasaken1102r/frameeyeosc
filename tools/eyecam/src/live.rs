@@ -909,6 +909,9 @@ pub struct CalibFile {
     pub pupil_measured: bool,
     pub wear: Option<[WearParams; 2]>,
     pub wear_time: String,
+    /// Whether that wear calibration measured the widen (false: it used the history's or the default width; None:
+    /// not known, a file from before this field). status.json's last_calib_widen after a restart.
+    pub wear_widen_measured: Option<bool>,
     /// (time, L, R), oldest first.
     pub history: Vec<(String, [WearRecord; 2])>,
     /// A wear calibration has succeeded at least once (also one whose widen was not caught): the first-time setup
@@ -1014,8 +1017,13 @@ impl CalibFile {
             );
         }
         if let Some(w) = &self.wear {
+            let widen = match self.wear_widen_measured {
+                Some(true) => ", \"widen\": \"measured\"",
+                Some(false) => ", \"widen\": \"default\"",
+                None => "",
+            };
             s += &format!(
-                ",\n  \"wear\": {{\"time\": {}, \"L\": {}, \"R\": {}}}",
+                ",\n  \"wear\": {{\"time\": {}{widen}, \"L\": {}, \"R\": {}}}",
                 json::string(&self.wear_time),
                 wear_json(&w[0]),
                 wear_json(&w[1])
@@ -1051,6 +1059,11 @@ impl CalibFile {
         if let Some(w) = j.get("wear") {
             c.wear = Some([parse_wear(w.get("L").ok_or("wear.L")?)?, parse_wear(w.get("R").ok_or("wear.R")?)?]);
             c.wear_time = w.get("time").and_then(Json::str).unwrap_or("").to_string();
+            c.wear_widen_measured = match w.get("widen").and_then(Json::str) {
+                Some("measured") => Some(true),
+                Some("default") => Some(false),
+                _ => None,
+            };
         }
         if let Some(items) = j.get("history").and_then(Json::arr) {
             let rec = |e: Option<&Json>| -> Option<WearRecord> {
@@ -1343,11 +1356,17 @@ mod tests {
             pupil_measured: false,
             wear: Some(w),
             wear_time: "w".into(),
+            wear_widen_measured: Some(false),
             history: Vec::new(),
             setup_done: false,
         };
         let back = CalibFile::parse(&file.to_json()).unwrap();
         assert_eq!(back.user, file.user);
+        assert_eq!(back.wear_widen_measured, Some(false));
+        let measured = CalibFile { wear: Some(w), wear_widen_measured: Some(true), ..CalibFile::default() };
+        assert_eq!(CalibFile::parse(&measured.to_json()).unwrap().wear_widen_measured, Some(true));
+        let older = CalibFile { wear_widen_measured: None, ..measured };
+        assert_eq!(CalibFile::parse(&older.to_json()).unwrap().wear_widen_measured, None, "a file from before it");
         // A file without a history takes its last wear calibration as the history.
         assert_eq!(back.history.len(), 1);
         assert!(back.setup_done, "a history means the setup was done");

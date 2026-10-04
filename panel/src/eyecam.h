@@ -296,6 +296,16 @@ bool baselineWarming(const Status& status);
 CalibPrompt calibPrompt(const View& view, bool cameraLids);
 
 /**
+ * The quiet line in the note's place on the first tab, for a calibration when widening looks wrong: while the eye
+ * capture tab shows, the recorder is ready (idle or error) and reads the cameras live, frameeyeosc may use the camera
+ * eyelids (camera_lids), and the note itself isn't showing. Never without eyecam-rec.
+ * @param view the recorder
+ * @param cameraLids the camera_lids setting
+ * @return true to show it
+ */
+bool calibOffer(const View& view, bool cameraLids);
+
+/**
  * The light warning before a start: the start button (idle) and the retry button (error) open it instead of
  * starting; its buttons start with or without the light, or close it. It closes by itself once the recorder's state
  * is no longer the one it was opened in, or the tab is hidden.

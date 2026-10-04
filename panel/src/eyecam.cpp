@@ -288,6 +288,13 @@ CalibPrompt calibPrompt(const View& view, bool cameraLids) {
     return s.recalibSuggested ? CalibPrompt::Recalibrate : CalibPrompt::None;
 }
 
+bool calibOffer(const View& view, bool cameraLids) {
+    const Status& s = view.status;
+    if (!view.visible || !cameraLids || !s.live) return false;
+    if (s.state != State::Idle && s.state != State::Error) return false;
+    return calibPrompt(view, cameraLids) == CalibPrompt::None;
+}
+
 bool StartConfirm::open(State state) {
     if (state != State::Idle && state != State::Error) return false;
     open_ = true;

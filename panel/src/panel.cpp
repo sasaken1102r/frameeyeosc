@@ -1309,13 +1309,32 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
     y += kControlH;
     // The eye cameras want a calibration (only with eyecam-rec running): a note with its button
     const eyecam::CalibPrompt prompt = eyecam::calibPrompt(m.eyecam, v.flag(key::kCameraLids));
-    if (prompt != eyecam::CalibPrompt::None) y += 14 + drawCalibPrompt(pen, t, prompt, m.eyecam.busy, y + 14);
+    if (prompt != eyecam::CalibPrompt::None) {
+        y += 14 + drawCalibPrompt(pen, t, prompt, m.eyecam.busy, y + 14);
+    } else if (eyecam::calibOffer(m.eyecam, v.flag(key::kCameraLids))) {
+        // ...or, quieter, a way to calibrate when widening looks wrong
+        y += 14 + drawCalibOffer(pen, t, m.eyecam.busy, y + 14);
+    }
     y += 28;
     const std::vector<std::string> lines = wrapText(pen, t.footer, 15, false, kInnerRight - kInnerX, 2);
     // (all of it, or none: under the note, a second line would leave the card)
     if (y + (lines.size() - 1) * 22 <= kContentY + kContentH - 14) {
         for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
     }
+}
+
+double EyePanel::drawCalibOffer(const Pen& pen, const UiText& t, bool busy, double y) {
+    // No box: a muted question right before a plain button, both at the right, lower than the note
+    const double h = 44;
+    const double bh = 40;
+    const double bw = std::max(150.0, pen.measure(t.calibOfferButton, 17, true) + 40);
+    const double bx = kInnerRight - bw;
+    const double size = fitSize(pen, t.calibOfferText, 17, 12, bx - 16 - kInnerX, false);
+    pen.text(bx - 16 - pen.measure(t.calibOfferText, size, false), centerBaseline(y, h, size), t.calibOfferText, size,
+             kTextMuted, false);
+    drawButton(pen, bx, y + (h - bh) / 2, bw, bh, t.calibOfferButton,
+               {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy, false, 17);
+    return h;
 }
 
 double EyePanel::drawCalibPrompt(const Pen& pen, const UiText& t, eyecam::CalibPrompt prompt, bool busy, double y) {

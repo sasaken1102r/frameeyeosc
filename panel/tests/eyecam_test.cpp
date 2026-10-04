@@ -638,6 +638,39 @@ void testCalib() {
     // ...with the same conditions as before
     CHECK(prompt(calibStatus("idle", 0, learns + "false"), false) == CalibPrompt::None);
     CHECK(prompt(calibStatus("calibrating", 0, learns + "false"), true) == CalibPrompt::None);
+    // The quiet line in the note's place: only while the note doesn't show, with the same recorder conditions
+    // (the headset on or not)
+    const auto offer = [](const Status& status, bool cameraLids, bool visible = true) {
+        eyecam::View view;
+        view.status = status;
+        view.visible = visible;
+        return eyecam::calibOffer(view, cameraLids);
+    };
+    CHECK(offer(calibStatus("idle", 4, learns + "true"), true));
+    CHECK(offer(calibStatus("idle", 0, learns + "true"), true));
+    CHECK(offer(calibStatus("error", 5, learns + "true"), true));
+    CHECK(offer(calibStatus("idle", 1), true));  // an older eyecam-rec, calibrated
+    {
+        Status off = calibStatus("idle", 4, learns + "true");
+        off.locked = false;
+        CHECK(offer(off, true));
+    }
+    // ...never with the note (Calibrate or Recalibrate) up
+    CHECK(!offer(calibStatus("idle", 0, learns + "false"), true));
+    CHECK(!offer(calibStatus("idle", 0), true));
+    CHECK(!offer(calibStatus("idle", 4, learns + "true, \"recalib_suggested\": true"), true));
+    // ...nor without eyecam-rec, its tab, camera_lids, live, or while it runs something
+    CHECK(!offer(calibStatus("idle", 4, learns + "true"), false));
+    CHECK(!offer(calibStatus("idle", 4, learns + "true"), true, false));
+    CHECK(!offer(Status(), true, false));
+    {
+        Status off = calibStatus("idle", 4, learns + "true");
+        off.live = false;
+        CHECK(!offer(off, true));
+    }
+    for (const char* state : {"calibrating", "recording", "searching", "waiting_fds", "stopped", "something_new"}) {
+        CHECK(!offer(calibStatus(state, 4, learns + "true"), true));
+    }
     // An older eyecam-rec (no baseline) keeps asking each wear, even with calib_saved alone
     CHECK(prompt(calibStatus("idle", 0, ", \"calib_saved\": true"), true) == CalibPrompt::Calibrate);
     CHECK(prompt(calibStatus("idle", 4), true) == CalibPrompt::Calibrate);
@@ -704,7 +737,7 @@ void testCalibText() {
               t.eyecamCalibWearTitle, t.eyecamCalibUserTitle, t.eyecamCalibWaiting, t.eyecamCalibErrorTitle,
               t.eyecamCalibRetry, t.calibPromptText, t.calibPromptButton, t.recalibPromptText,
               t.recalibPromptButton, t.eyecamIdleHint, t.cameraWhyWarming, t.eyecamCalibAuto, t.eyecamWarmingFormat,
-              t.eyecamWarming, t.eyecamCalibHintOptional}) {
+              t.eyecamWarming, t.eyecamCalibHintOptional, t.calibOfferText, t.calibOfferButton}) {
             CHECK(text != nullptr && text[0] != '\0');
         }
         // One %s each

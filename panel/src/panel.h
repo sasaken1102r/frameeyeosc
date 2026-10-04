@@ -533,6 +533,17 @@ private:
     double drawCalibPrompt(const Pen& pen, const UiText& t, eyecam::CalibPrompt prompt, bool busy, double y);
 
     /**
+     * The quiet line in the note's place (eyecam::calibOffer): a muted question and a plain button that starts the
+     * calibration for this wear and shows the eye capture tab.
+     * @param pen drawing tools
+     * @param t texts
+     * @param busy a command to eyecam-rec waits for its reply (the button greys out)
+     * @param y the top
+     * @return the height used
+     */
+    double drawCalibOffer(const Pen& pen, const UiText& t, bool busy, double y);
+
+    /**
      * The light warning before a start: a red "Light warning" title with a warning sign, the warning in a red box,
      * "Start with light" / "Start without light" and "Cancel".
      * @param pen drawing tools

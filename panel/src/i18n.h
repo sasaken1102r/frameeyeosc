@@ -378,6 +378,8 @@ struct UiText {
     const char* calibPromptButton;
     const char* recalibPromptText;     ///< recalib_suggested
     const char* recalibPromptButton;
+    const char* calibOfferText;        ///< the quiet line in the note's place: a calibration if widening looks wrong
+    const char* calibOfferButton;
     const char* rowPrefix;
     const char* prefixNone;
     const char* prefixExample;      ///< "e.g." before an OSC address

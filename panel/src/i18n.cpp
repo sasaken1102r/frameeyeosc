@@ -375,6 +375,8 @@ UiText makeJapanese() {
     t.calibPromptButton = "校正する";
     t.recalibPromptText = "目のカメラの基準がずれてきたかも";
     t.recalibPromptButton = "校正し直す";
+    t.calibOfferText = "見開きが変だと思ったら";
+    t.calibOfferButton = "校正（18秒）";
     t.rowPrefix = "パラメーター名の頭";
     t.prefixNone = "なし";
     t.prefixExample = "例: ";
@@ -827,6 +829,8 @@ UiText makeEnglish() {
     t.calibPromptButton = "Calibrate";
     t.recalibPromptText = "The eye cameras may have drifted";
     t.recalibPromptButton = "Recalibrate";
+    t.calibOfferText = "Widening looks off?";
+    t.calibOfferButton = "Calibrate (18 s)";
     t.rowPrefix = "Parameter prefix";
     t.prefixNone = "None";
     t.prefixExample = "e.g. ";

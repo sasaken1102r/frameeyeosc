@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 
 ## Steam Link 標準の OSC との違い
 
-https://github.com/user-attachments/assets/c10236ed-a395-4bd1-8971-87446f293d12
+https://github.com/user-attachments/assets/c2acaf2a-b644-4235-91f6-81891d831ba3
 
 SteamVR の Steam Link は、自分でもアイトラッキングを OSC で送れます（`LeftEyeX`、`LeftEyeLid` など）。同じ目の記録で比べると、こうなります（SteamVR 2.18.2）。
 

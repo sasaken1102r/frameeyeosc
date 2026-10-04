@@ -30,6 +30,9 @@ pub enum State {
     Unsafe(String),
     /// Installed safely, but without cap_sys_ptrace=ep.
     NoCap(PathBuf),
+    /// Installed safely, but older than MIN_SAFE_GRAB_VERSION (a version with a known problem): not used until
+    /// install_grab.sh puts the shipped copy in place.
+    TooOld(PathBuf),
 }
 
 impl State {
@@ -40,6 +43,7 @@ impl State {
             State::Missing => "missing".into(),
             State::Unsafe(why) => format!("unsafe: {why}"),
             State::NoCap(_) => "no_cap".into(),
+            State::TooOld(_) => "too_old".into(),
         }
     }
 }
@@ -104,7 +108,13 @@ pub fn check(path: &Path) -> State {
         return State::Unsafe(e);
     }
     match read_cap_xattr(path) {
-        Some(x) if has_ptrace_cap(&x) => State::Ready(path.to_path_buf()),
+        Some(x) if has_ptrace_cap(&x) => {
+            if std::fs::read(path).is_ok_and(|b| grab_version(&b) < MIN_SAFE_GRAB_VERSION) {
+                State::TooOld(path.to_path_buf())
+            } else {
+                State::Ready(path.to_path_buf())
+            }
+        }
         _ => State::NoCap(path.to_path_buf()),
     }
 }
@@ -147,6 +157,11 @@ pub fn grab_outdated(bundled: &Path) -> bool {
 }
 
 const VERSION_PREFIX: &[u8] = b"EYECAM_GRAB_VERSION=";
+
+/// The oldest eyecam-grab version eyecam-rec still starts by itself. Raise it only when an installed version must
+/// not be used any more (a security problem in eyecam-grab): older copies then count as TooOld, the camera waits,
+/// and the panel asks for install_grab.sh. For ordinary changes raise only EYECAM_GRAB_VERSION (grab_outdated).
+pub const MIN_SAFE_GRAB_VERSION: u32 = 1;
 
 /// The version marker an eyecam-grab binary carries (`EYECAM_GRAB_VERSION=<n>;`, see src/bin/eyecam-grab.rs), or 1
 /// for a binary built before the marker existed. Builds of the same source differ in their bytes (strip, build

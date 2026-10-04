@@ -19,15 +19,33 @@ say_err() { say "$1" "$2" >&2; }
 
 DEST_DIR=/home/.eyecam
 DEST="$DEST_DIR/eyecam-grab"
+# 前の置き場所（A/B スロットごとの /var）。見つけたら能力を外して消す
+OLD_DEST=/var/lib/eyecam/eyecam-grab
 
 if [ "$(id -u)" -ne 0 ]; then
     say_err "Run this with sudo: sudo $0 $*" "sudo で実行してね: sudo $0 $*"
     exit 1
 fi
 
+# 置き換える・消す前に、まず能力を外す。ファイルが別の名前（ハードリンク）でも残っていたとき、
+# 古いコピーが能力を持ったまま生き残らないようにするため
+drop_cap() {
+    if [ -f "$1" ] && [ ! -L "$1" ]; then
+        setcap -r "$1" 2>/dev/null || true
+    fi
+}
+
+remove_old() {
+    drop_cap "$OLD_DEST"
+    rm -f "$OLD_DEST"
+    rmdir "$(dirname "$OLD_DEST")" 2>/dev/null || true
+}
+
 if [ "${1:-}" = "--uninstall" ]; then
+    drop_cap "$DEST"
     rm -f "$DEST"
     rmdir "$DEST_DIR" 2>/dev/null || true
+    remove_old
     say "Removed: $DEST" "取り除いた: $DEST"
     exit 0
 fi
@@ -60,8 +78,10 @@ tmp="$(mktemp "$DEST_DIR/.eyecam-grab.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 install -o root -g root -m 0755 "$SRC" "$tmp"
 setcap cap_sys_ptrace=ep "$tmp"
+drop_cap "$DEST"
 mv -f "$tmp" "$DEST"
 trap - EXIT
+remove_old
 
 caps="$(getcap "$DEST")"
 echo "$caps"

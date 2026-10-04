@@ -1,5 +1,8 @@
 eyecam ports parts of FrameEyeCameraFeed (https://github.com/Curtis-VL/FrameEyeCameraFeed), framestream.c:
-the eye-frame ring discovery (src/ring.rs) and the cache-maintenance / fingerprint approach (src/mem.rs).
+the eye-frame ring discovery (src/ring.rs), the cache-maintenance / fingerprint approach (src/mem.rs), the way
+the shared buffers are taken from the eye tracker (src/bin/eyecam-grab.rs: pidfd_open + pidfd_getfd, choosing the
+DMA-BUFs by `exp_name: udmabuf` in fdinfo, and skipping the same buffer by its inode), and the per-slot change
+tracking that tells whether the ring is live (SlotStates and ring_is_live in src/bin/eyecam-rec.rs).
 Those parts are used under the following license.
 
 MIT License

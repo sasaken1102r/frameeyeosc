@@ -9,9 +9,9 @@
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-/// Where install_grab.sh puts it (the first that exists is used). /home is the partition that survives SteamOS
-/// updates; /var is per A/B slot, so a copy there can disappear after an update.
-pub const PATHS: [&str; 2] = ["/home/.eyecam/eyecam-grab", "/var/lib/eyecam/eyecam-grab"];
+/// Where install_grab.sh puts it: /home is the partition that survives SteamOS updates (/var is per A/B slot).
+/// A list so that a later location can be added; the first that exists is used.
+pub const PATHS: [&str; 1] = ["/home/.eyecam/eyecam-grab"];
 
 /// The eye tracker the grab looks for (eyecam-grab checks it again itself).
 pub const EYETRACKING_EXE: &str = "/opt/steamvr/tools/eyetracking/bin/linuxarm64/eyetracking";
@@ -109,10 +109,11 @@ pub fn check(path: &Path) -> State {
     }
     match read_cap_xattr(path) {
         Some(x) if has_ptrace_cap(&x) => {
-            if std::fs::read(path).is_ok_and(|b| grab_version(&b) < MIN_SAFE_GRAB_VERSION) {
-                State::TooOld(path.to_path_buf())
-            } else {
-                State::Ready(path.to_path_buf())
+            // Its version decides whether it may be used, so a copy that can't be read is not used either.
+            match std::fs::read(path) {
+                Ok(b) if grab_version(&b) < MIN_SAFE_GRAB_VERSION => State::TooOld(path.to_path_buf()),
+                Ok(_) => State::Ready(path.to_path_buf()),
+                Err(e) => State::Unsafe(format!("{}: {e}", path.display())),
             }
         }
         _ => State::NoCap(path.to_path_buf()),

@@ -38,7 +38,9 @@ if [ "$UNINSTALL" -eq 1 ]; then
         systemctl --user disable --now eyecam.service 2>/dev/null || true
     fi
     rm -f "$UNIT_DIR/eyecam.service"
-    rm -rf "$PREFIX"
+    # 入れたファイルだけを消す（--prefix を間違えても、ほかのものは消さない）
+    rm -f "$PREFIX"/eyecam-rec "$PREFIX"/eyecam-grab "$PREFIX"/install_grab.sh "$PREFIX"/protocol_*.txt
+    rmdir "$PREFIX" 2>/dev/null || echo "残したもの（自分で入れたファイル）: $PREFIX" >&2
     [ "$ENABLE" -eq 1 ] && systemctl --user daemon-reload
     echo "取り除いた: $PREFIX, $UNIT_DIR/eyecam.service"
     exit 0

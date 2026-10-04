@@ -98,6 +98,8 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
 ## パネル向け仕様（status.json / ctl.sock）
 
 場所は既定で `/run/user/1000/eyecam/`（ディレクトリは 0700、`--serve` / `--fake` とも `--run-dir DIR` で変更可）。
+uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` は見ない）。eyecam-grab からバッファを受け取るソケット
+`/run/user/1000/eyecam.sock` はこのフォルダの外にあり、`--run-dir` を変えても動かない。
 
 ### タブを出す条件
 
@@ -521,11 +523,18 @@ journalctl --user -u eyecam -f    # ログ
 
 - root で常駐するデーモンも、sudoers の書き換えも使わない。特権は「eyecam-grab という 1 ファイルが持つ CAP_SYS_PTRACE だけ」
 - CAP_SYS_PTRACE があれば、`kernel.yama.ptrace_scope=1` の下でも、ほかのプロセスの fd を `pidfd_getfd` で写せる。eyecam-grab が
-  それを使うのは、身元を確かめた Valve の eyetracking（exe のパスと uid 1000）の udmabuf だけで、渡す相手も uid 1000 の
-  eyecam-rec のソケットだけ（これまでの検査はそのまま）。アタッチ・停止・メモリの読み書きはしない
+  それを使うのは、身元を確かめた Valve の eyetracking（exe のパスと uid 1000）の udmabuf だけ。渡す相手は
+  「`/run/user/1000/eyecam.sock` で待っている uid 1000 のプロセス」で、それが eyecam-rec かどうかまでは確かめない
+  （同じユーザーのほかのプログラムがそのソケットを作れば、そちらが受け取れる）。アタッチ・停止・メモリの読み書きはしない
 - 能力つきのプログラムは secure-exec で動く（LD_PRELOAD などの環境変数は効かない）。eyecam-grab は環境変数も自分の uid も見ない
 - ファイルは root 所有でユーザーは書き換えられず、書き換えれば能力は消える。どのユーザーのプロセスでも実行はできるが、
-  できることは「eyecam-rec のソケットへ eyetracking のバッファを渡す」ことだけ
+  できることは「uid 1000 のソケットへ eyetracking のバッファ（目のカメラの映像が通る）を渡す」ことだけ。つまり steamos
+  ユーザーとして動くプログラムなら、目の映像を受け取れる
+- 入れ直し・取り除きでは、ファイルを置き換える前に `setcap -r` で能力を外す（古いコピーが別の名前で能力を持ったまま残らないように）
+- install_grab.sh が入れるのは `~/.local/lib/eyecam/eyecam-grab`（steamos が書き換えられる場所）。steamos ユーザーとして動く
+  悪いプログラムがあれば、sudo の前にこのファイルを差し替えられる（install_grab.sh 自体も同じ場所にあるので、隣にハッシュの
+  一覧を置いても守れない）。気になるときは、install_grab.sh が最初に出す sha256 を、リリースに書かれた値と比べてから
+  パスワードを打つ
 
 ## ビープの合図（`--cues`、常駐モードの録画・校正も同じ）
 
@@ -566,6 +575,8 @@ dark の合図で暗い画面（暗いシーン、ダッシュボードを閉じ
 
 **プライバシー**: 目の映像（`eye_L.raw`, `eye_R.raw`）とそれを含みうる生データ（`headers.bin`, `lock_dump.bin`）が残るのは、自分で始めた録画（`start`）だけ。
 校正は settings.json で `"dev": true` にしていない限り映像を書かず、小さなテキスト（結果の値・フレームの時刻・Valve の推定値）だけを残す。
+常駐中は systemd の journal（`journalctl --user -u eyecam`）にも書く: 30 秒ごとの処理の集計（左右の瞳孔の差を mm で含む）と、
+校正のたびの結果（目ごとの測った値）。映像は書かない。どれも Frame の中だけで、どこにも送らない。
 
 時刻はぜんぶ CLOCK_MONOTONIC_RAW の秒。Valve の `sample_time` も、カメラの `t_cam` も同じ時計なので、そのまま突き合わせられる
 （`t_cam` はスロットが書き換わり始めてから約 6.5 ms 後の値。読み終えるのはその約 4 ms 後）。
@@ -631,8 +642,12 @@ eye_L.raw と eye_R.raw を名前の付け替えで入れ替え、frames.csv の
 受け取ったバッファは **読み取り専用**（`PROT_READ`）で mmap し、書き込みも `DMA_BUF_IOCTL_SYNC` もしない。
 `eye-server.mmap` も読み取り専用で開く（`metadata_requested` などは一切書かない）。常駐モードでも root にはならない。
 
-注意: `eyecam-grab` は steamos が書き換えられる場所にある。sudo で動かすのは、自分でビルドしたものを中身を確認したうえで。
-気になるなら `sha256sum target/release/eyecam-grab` をビルド直後に控えておく。
+注意: sudo で入れる元の `eyecam-grab` は steamos が書き換えられる場所にある（`~/.local/lib/eyecam` や `target/release`）。
+sudo で動かすのは、自分でビルドしたもの、またはリリースのものを中身を確認したうえで。install_grab.sh は入れる前に sha256 を出すので、
+自分でビルドしたなら `sha256sum target/release/eyecam-grab` をビルド直後に控えておいて比べる。
+
+`eyecam-rec` が grab からの接続を受けるのは、root か自分で起動した子プロセス（`SO_PEERCRED` の pid）からだけ。ただし逆向き
+（eyecam-grab が渡す相手）は uid しか確かめないので、同じユーザーのほかのプログラムが先にソケットを作れば受け取れる。
 
 ## しくみのメモ
 

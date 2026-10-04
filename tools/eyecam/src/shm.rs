@@ -6,7 +6,7 @@
 //! client (frameeyeosc) keeps requesting samples. Without the mutex a record can in principle be read while being
 //! rewritten; the sequence is read before and after, and the sample is dropped if it moved.
 
-use std::fs::File;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::os::fd::AsRawFd;
 use std::ptr;
 
@@ -92,8 +92,18 @@ pub struct Shm {
 
 impl Shm {
     pub fn open() -> Result<Self, String> {
-        let file = File::open(PATH).map_err(|e| format!("{PATH}: {e}"))?;
-        let len = file.metadata().map_err(|e| format!("{PATH}: {e}"))?.len() as usize;
+        // /dev/shm is writable by everyone: no symlink, and only a regular file of this user (Valve's eye-server
+        // runs as the user too) is read.
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(PATH)
+            .map_err(|e| format!("{PATH}: {e}"))?;
+        let meta = file.metadata().map_err(|e| format!("{PATH}: {e}"))?;
+        if !meta.is_file() || meta.uid() != unsafe { libc::getuid() } {
+            return Err(format!("{PATH}: not a regular file of this user"));
+        }
+        let len = meta.len() as usize;
         if len < 8 {
             return Err(format!("{PATH}: too small"));
         }

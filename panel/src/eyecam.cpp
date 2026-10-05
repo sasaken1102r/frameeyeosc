@@ -105,6 +105,7 @@ Status parseStatus(const std::string& text, double mtime) {
     Status status;
     status.mtime = mtime;
     status.fpsL = status.fpsR = kNaN;
+    status.pupil[0] = status.pupil[1] = kNaN;
     status.stepRemainingS = status.elapsedS = status.totalS = status.liveMs = status.warmupRemainingS = kNaN;
     status.widenSensitivity = kNaN;
     JsonValue root;
@@ -160,6 +161,14 @@ Status parseStatus(const std::string& text, double mtime) {
     status.hasSetupDone = setup != nullptr && setup->isBool();
     status.setupDone = status.hasSetupDone && setup->boolean;
     status.lastCalibWiden = readText(root, "last_calib_widen");
+    status.calibFailedEye = readText(root, "calib_failed_eye");
+    // The pupils (missing on an older eyecam-rec: "locked" alone says whether the eyes are seen)
+    status.hasPupil = root.get("pupil_l") != nullptr || root.get("pupil_r") != nullptr;
+    const char* const pupilKeys[2] = {"pupil_l", "pupil_r"};
+    for (int eye = 0; eye < 2; ++eye) {
+        const double share = readNumber(root, pupilKeys[eye], kNaN);
+        status.pupil[eye] = std::isfinite(share) ? std::clamp(share, 0.0, 1.0) : kNaN;
+    }
     return status;
 }
 
@@ -599,7 +608,9 @@ std::string signature(const View& view) {
                 : std::string("-")) +
            "|" + std::to_string(s.hasCalibSaved) + std::to_string(s.calibSaved) + "|" +
            rounded(s.widenSensitivity, 0.01) + "|" + std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
-           std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.autoGrab + std::to_string(s.grabOutdated) + "|" +
+           std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.calibFailedEye + "|" +
+           std::to_string(s.hasPupil) + std::to_string(static_cast<int>(eyeSight(s, 0))) +
+           std::to_string(static_cast<int>(eyeSight(s, 1))) + "|" + s.autoGrab + std::to_string(s.grabOutdated) + "|" +
            std::to_string(static_cast<int>(view.password)) + std::to_string(static_cast<int>(view.flow.result())) +
            std::to_string(static_cast<int>(view.flow.calibResult())) +
            std::to_string(view.readyNotice) + "|" + view.spawnError;
@@ -698,6 +709,44 @@ bool Control::poll(double now) {
         return true;
     }
     return false;
+}
+
+EyeSight eyeSight(const Status& status, int eye) {
+    if (!status.locked) return EyeSight::NotSeen;
+    // An eyecam-rec that doesn't say, or that isn't processing the video (null): the video is all it knows
+    if (!status.hasPupil || eye < 0 || eye > 1) return EyeSight::Seen;
+    const double share = status.pupil[eye];
+    if (!std::isfinite(share)) return status.live ? EyeSight::NotSeen : EyeSight::Seen;
+    if (share >= kPupilSeenShare) return EyeSight::Seen;
+    return share < kPupilMissingShare ? EyeSight::NoPupil : EyeSight::Weak;
+}
+
+bool pupilTrouble(const Status& status) {
+    for (int eye = 0; eye < 2; ++eye) {
+        const EyeSight sight = eyeSight(status, eye);
+        if (sight == EyeSight::NoPupil || sight == EyeSight::Weak) return true;
+    }
+    return false;
+}
+
+int failedEyes(const Status& status) {
+    if (status.state != State::Error) return 0;
+    const std::string& message = status.message;
+    if (message.find("両目") != std::string::npos) return kLeftEyeBit | kRightEyeBit;
+    int eyes = 0;
+    if (message.find("左目") != std::string::npos) eyes |= kLeftEyeBit;
+    if (message.find("右目") != std::string::npos) eyes |= kRightEyeBit;
+    return eyes;
+}
+
+int partialEye(const Status& status) {
+    if (status.calibFailedEye == "L") return 0;
+    if (status.calibFailedEye == "R") return 1;
+    return -1;
+}
+
+bool partialProvisional(const Status& status) {
+    return status.message.find("仮の値") != std::string::npos;
 }
 
 bool needsManualGrab(const Status& s) {

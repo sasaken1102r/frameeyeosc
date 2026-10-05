@@ -2,9 +2,9 @@
 // fields), when the tab shows (stale, stopped, missing), the step texts in both languages, when the full-view light
 // shows and how it fades (and when it goes at once), the light warning before a start and the commands it sends, the
 // calibrations (their commands, what ran last), the setup checklist (its step for every combination, how the setup's
-// calibration ends, the screens, the Konsole command lines it starts), and the control socket against a stand-in
-// recorder in a temporary folder (never the real one; nothing is started). Built with the panel as eyecam-test; exits non-zero
-// on failure.
+// calibration ends, the screens, the Konsole command lines it starts), the pupils per eye and the eyes a calibration
+// failed on (or went through without), and the control socket against a stand-in recorder in a temporary folder
+// (never the real one; nothing is started). Built with the panel as eyecam-test; exits non-zero on failure.
 #include "eyecam.h"
 #include "json.h"
 #include "setup_tools.h"
@@ -1900,8 +1900,133 @@ void testUtf8() {
     SAME(read.message, bad + bad);
 }
 
+void testPupils() {
+    using eyecam::EyeSight;
+    // pupil_l / pupil_r and calib_failed_eye as eyecam-rec writes them (null when it can't tell)
+    {
+        const Status s = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"locked\": true, \"live\": true, \"calib_failed_eye\": \"R\", "
+            "\"pupil_l\": 0.970, \"pupil_r\": null}",
+            kNow);
+        CHECK(s.hasPupil);
+        CHECK(std::fabs(s.pupil[0] - 0.97) < 1e-9 && std::isnan(s.pupil[1]));
+        SAME(s.calibFailedEye, "R");
+        CHECK(eyecam::eyeSight(s, 0) == EyeSight::Seen);
+        // Live processing on and no share: that eye's video stopped
+        CHECK(eyecam::eyeSight(s, 1) == EyeSight::NotSeen);
+        CHECK(!eyecam::pupilTrouble(s));
+        CHECK(eyecam::partialEye(s) == 1);
+    }
+    // Out of range is clamped, odd types are null
+    {
+        const Status s = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"locked\": true, \"pupil_l\": 1.5, \"pupil_r\": \"0.9\"}", kNow);
+        CHECK(s.hasPupil && s.pupil[0] == 1.0 && std::isnan(s.pupil[1]));
+    }
+    // An older eyecam-rec without them: "locked" is all there is, as before
+    {
+        const Status s = eyecam::parseStatus("{\"state\": \"idle\", \"locked\": true, \"live\": true}", kNow);
+        CHECK(!s.hasPupil && std::isnan(s.pupil[0]) && std::isnan(s.pupil[1]));
+        CHECK(s.calibFailedEye.empty() && eyecam::partialEye(s) == -1);
+        CHECK(eyecam::eyeSight(s, 0) == EyeSight::Seen && eyecam::eyeSight(s, 1) == EyeSight::Seen);
+        CHECK(!eyecam::pupilTrouble(s));
+        Status off = s;
+        off.locked = false;
+        CHECK(eyecam::eyeSight(off, 0) == EyeSight::NotSeen && eyecam::eyeSight(off, 1) == EyeSight::NotSeen);
+    }
+    // The thresholds: seen from 50 %, not found under 20 %, only sometimes between; nothing without the video
+    {
+        Status s = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"locked\": true, \"live\": true, \"pupil_l\": 0.5, \"pupil_r\": 0.95}",
+            kNow);
+        const struct {
+            double share;
+            EyeSight sight;
+        } kShares[] = {{0.97, EyeSight::Seen},  {0.5, EyeSight::Seen},     {0.49, EyeSight::Weak},
+                       {0.2, EyeSight::Weak},   {0.19, EyeSight::NoPupil}, {0.0, EyeSight::NoPupil}};
+        for (const auto& item : kShares) {
+            s.pupil[0] = item.share;
+            CHECK(eyecam::eyeSight(s, 0) == item.sight);
+            CHECK(eyecam::pupilTrouble(s) == (item.sight != EyeSight::Seen));
+            CHECK(eyecam::eyeSight(s, 1) == EyeSight::Seen);
+        }
+        s.pupil[0] = 0.0;
+        s.locked = false;
+        CHECK(eyecam::eyeSight(s, 0) == EyeSight::NotSeen && !eyecam::pupilTrouble(s));
+        // Live processing off (both null): the video is all it knows
+        s.locked = true;
+        s.live = false;
+        s.pupil[0] = s.pupil[1] = std::nan("");
+        CHECK(eyecam::eyeSight(s, 0) == EyeSight::Seen && eyecam::eyeSight(s, 1) == EyeSight::Seen);
+        CHECK(!eyecam::pupilTrouble(s));
+    }
+    // The signature follows how each eye looks, not every change of its share
+    {
+        eyecam::View a;
+        a.status = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"locked\": true, \"live\": true, \"pupil_l\": 0.97, \"pupil_r\": 0.95}",
+            kNow);
+        eyecam::View b = a;
+        b.status.pupil[0] = 0.91;
+        CHECK(eyecam::signature(a) == eyecam::signature(b));
+        b.status.pupil[0] = 0.05;
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+        b = a;
+        b.status.calibFailedEye = "L";
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+    }
+    // The eyes a failed calibration names: from its message (the new forms and an older eyecam-rec's)
+    {
+        const struct {
+            const char* message;
+            int eyes;
+        } kMessages[] = {
+            {"両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]",
+             eyecam::kLeftEyeBit | eyecam::kRightEyeBit},
+            {"左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]。"
+             "右目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）",
+             eyecam::kLeftEyeBit | eyecam::kRightEyeBit},
+            {"右目の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[40/486、90 必要]",
+             eyecam::kRightEyeBit},
+            {"左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）", eyecam::kLeftEyeBit},
+            {"右のカメラの映像が 3 秒届きません", 0},
+            {"", 0},
+        };
+        Status s;
+        s.state = State::Error;
+        for (const auto& item : kMessages) {
+            s.message = item.message;
+            CHECK(eyecam::failedEyes(s) == item.eyes);
+        }
+        // ...only an error's (a calibration that went through names the eye it went without, too)
+        s.state = State::Idle;
+        s.message = kMessages[0].message;
+        CHECK(eyecam::failedEyes(s) == 0);
+        // (a stale calib_failed_eye doesn't make a failure before the fit one of both eyes)
+        s.state = State::Error;
+        s.calibFailedEye = "LR";
+        s.message = "右のカメラの映像が 3 秒届きません";
+        CHECK(eyecam::failedEyes(s) == 0);
+    }
+    // One eye failed but it went through: which, and on what values
+    {
+        Status s;
+        s.state = State::Idle;
+        s.calibFailedEye = "L";
+        s.message = "校正できた（左目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]";
+        CHECK(eyecam::partialEye(s) == 0 && !eyecam::partialProvisional(s));
+        s.message = "校正できた（左目は上まぶたの線が見つからなかったので、仮の値を使うよ）[20/300、90 必要]";
+        CHECK(eyecam::partialProvisional(s));
+        s.calibFailedEye = "LR";
+        CHECK(eyecam::partialEye(s) == -1);
+        s.calibFailedEye = "";
+        CHECK(eyecam::partialEye(s) == -1);
+    }
+}
+
 int main() {
     testParse();
+    testPupils();
     testVisible();
     testText();
     testFill();

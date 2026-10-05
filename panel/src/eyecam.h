@@ -180,6 +180,13 @@ struct Status {
     bool hasSetupDone = false;     ///< "setup_done" is there (a newer eyecam-rec)
     bool setupDone = false;        ///< the setup's calibration was done once
     std::string lastCalibWiden;    ///< "last_calib_widen": "measured" / "default" ("" when missing)
+    std::string calibFailedEye;    ///< "calib_failed_eye": "L" / "R" (that eye's part of the last "calib wear" failed:
+                                   ///< it went through, that eye on its earlier or provisional values), "LR" (both:
+                                   ///< it failed), "" (none, or an eyecam-rec before it)
+    bool hasPupil = false;         ///< "pupil_l" / "pupil_r" are there (a newer eyecam-rec that says whether it finds
+                                   ///< the pupils; without them "locked" is all there is)
+    double pupil[2] = {0.0, 0.0};  ///< per eye (left, right), the share of the last 2 s of frames with the pupil found,
+                                   ///< 0..1 (NaN when null: live processing off, or that eye's video stopped)
 };
 
 /**
@@ -714,6 +721,65 @@ private:
      */
     void finish(const Reply& reply);
 };
+
+/** The eyes as bits (failedEyes): the left one... */
+constexpr int kLeftEyeBit = 1;
+/** ...and the right one. */
+constexpr int kRightEyeBit = 2;
+
+/** At least this share of frames with the pupil: the eye is seen ("見えてるよ"). */
+constexpr double kPupilSeenShare = 0.5;
+/** Under this share, with the video there: the pupil isn't found (the calibration needs about 18 %). */
+constexpr double kPupilMissingShare = 0.2;
+
+/** How one eye looks to eyecam-rec, as the setup's (3) shows it. */
+enum class EyeSight {
+    NotSeen,  ///< no video ("locked" false), or with live processing on, that eye's video stopped (pupil null)
+    NoPupil,  ///< the video is there, but the pupil is found in under kPupilMissingShare of the frames
+    Weak,     ///< ...found, but in under kPupilSeenShare of them
+    Seen,     ///< the video and the pupil (or an eyecam-rec that doesn't say, or live processing off: the video)
+};
+
+/**
+ * How one eye looks to eyecam-rec: from "locked" and that eye's pupil share. An eyecam-rec without pupil_l / pupil_r
+ * (or with live processing off, when they are null) says only "locked": seen or not, as before.
+ * @param status the status
+ * @param eye 0 left, 1 right
+ * @return how it looks
+ */
+EyeSight eyeSight(const Status& status, int eye);
+
+/**
+ * Whether an eye's video is there but its pupil isn't found well (NoPupil or Weak): the setup's (3) asks to put the
+ * headset on again before calibrating.
+ * @param status the status
+ * @return true for either eye
+ */
+bool pupilTrouble(const Status& status);
+
+/**
+ * Which eyes a failed calibration names: eyecam-rec's (Japanese) message says "両目" for both, "左目" / "右目" for
+ * each (also an older eyecam-rec's "右目: ..."). Read from the message, not calib_failed_eye: a calibration that
+ * failed before its fit (the video lost) names no eye, and leaves calib_failed_eye as it was.
+ * @param status the status (only an error names eyes)
+ * @return kLeftEyeBit | kRightEyeBit, or 0
+ */
+int failedEyes(const Status& status);
+
+/**
+ * The eye a "calib wear" went through without (calib_failed_eye "L" / "R"): it is on its earlier values, or
+ * provisional ones.
+ * @param status the status
+ * @return 0 left, 1 right, -1 none (also "LR": that one failed)
+ */
+int partialEye(const Status& status);
+
+/**
+ * Whether partialEye's eye got provisional values (there were no earlier ones): eyecam-rec's message says "仮の値".
+ * @param status the status
+ * @return true for provisional, false for its previous values
+ */
+bool partialProvisional(const Status& status);
 
 /**
  * Whether waiting_fds needs the user to run eyecam-grab with sudo: the tool is missing or too old (not toolInstalled).

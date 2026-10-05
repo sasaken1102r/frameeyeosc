@@ -684,6 +684,7 @@ eye_L.raw と eye_R.raw を名前の付け替えで入れ替え、frames.csv の
 --serve            常駐モード（上の説明）
 --fake             中身なしの常駐モード（パネル開発用。--serve を含む）
 --fake-search R    --fake で、映像が見つからないままにする（R は status.json の search: not_worn / no_video / one_eye）
+--fake-calib E     --fake で、calib wear が目 E なしで通る（L / R）か、失敗する（LR）
 --run-dir DIR      status.json と ctl.sock の置き場所（既定 /run/user/1000/eyecam）
 --seconds N        録画時間（既定 120、プロトコルがあればその長さ + 1.5）
 --out DIR          保存先（既定 ~/eyecam）

@@ -195,6 +195,23 @@ std::string searchText(const UiText& t, const eyecam::SearchDetail& d) {
 }
 
 /**
+ * The camera tool's checksum as shown: the copy eyecam-rec runs when it can be read, with install.sh's beside it when
+ * that differs; otherwise install.sh's, "unreadable" or "no file".
+ * @param t the texts
+ * @param s what the panel read
+ * @return the text
+ */
+std::string toolHash(const UiText& t, const System& s) {
+    if (!s.installedHash.empty()) {
+        return s.grabHash.empty() || s.grabHash == s.installedHash
+                   ? s.installedHash
+                   : format(t.diagToolBundledFormat, s.installedHash.c_str(), s.grabHash.c_str());
+    }
+    if (!s.grabHash.empty()) return s.grabHash;
+    return s.grabUnreadable ? t.diagUnreadable : t.diagToolMissing;
+}
+
+/**
  * A message from eyecam-rec in the panel's language.
  * @param ja the Japanese
  * @param en the English ("" when it has none)
@@ -303,18 +320,32 @@ const std::string& FileHash::get(const std::string& path) {
     struct stat st {};
     if (stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
         path_ = path;
-        size_ = mtimeNs_ = -1;
+        size_ = mtimeNs_ = ctimeNs_ = -1;
+        hash_.clear();
+        unreadable_ = false;
+        return hash_;
+    }
+    const auto ns = [](const timespec& time) {
+        return static_cast<long long>(time.tv_sec) * 1000000000LL + time.tv_nsec;
+    };
+    const long long mtimeNs = ns(st.st_mtim);
+    const long long ctimeNs = ns(st.st_ctim);
+    if (path == path_ && st.st_size == size_ && mtimeNs == mtimeNs_ && ctimeNs == ctimeNs_) return hash_;
+    path_ = path;
+    std::ifstream file(path, std::ios::binary);
+    std::string bytes;
+    if (file.is_open()) bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    // Not opened (permissions) or failed while reading: nothing kept, so it is tried again next time
+    unreadable_ = !file.is_open() || file.bad();
+    if (unreadable_) {
+        size_ = mtimeNs_ = ctimeNs_ = -1;
         hash_.clear();
         return hash_;
     }
-    const long long mtimeNs = static_cast<long long>(st.st_mtim.tv_sec) * 1000000000LL + st.st_mtim.tv_nsec;
-    if (path == path_ && st.st_size == size_ && mtimeNs == mtimeNs_) return hash_;
-    path_ = path;
     size_ = st.st_size;
     mtimeNs_ = mtimeNs;
-    std::ifstream file(path, std::ios::binary);
-    const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    hash_ = file.bad() ? std::string() : sha256Hex(bytes).substr(0, 8);
+    ctimeNs_ = ctimeNs;
+    hash_ = sha256Hex(bytes).substr(0, 8);
     return hash_;
 }
 
@@ -373,7 +404,7 @@ std::vector<Card> cards(const UiText& t, const PanelModel& m) {
         card.rows.push_back({"SteamOS", m.system.steamos.empty() ? unknown : m.system.steamos});
         std::string grab = recorder && !e.autoGrab.empty() ? e.autoGrab : unknown;
         if (recorder && e.grabOutdated) grab += std::string(" ") + kDot + " " + t.diagToolOutdated;
-        grab += std::string(" ") + kDot + " " + (m.system.grabHash.empty() ? std::string(t.diagToolMissing) : m.system.grabHash);
+        grab += std::string(" ") + kDot + " " + toolHash(t, m.system);
         const bool grabBad = recorder && (e.autoGrab.rfind("failed", 0) == 0 || e.autoGrab == "too_old" ||
                                           e.autoGrab == "missing" || e.autoGrab.rfind("unsafe", 0) == 0);
         card.rows.push_back({t.diagRowTool, grab, grabBad});

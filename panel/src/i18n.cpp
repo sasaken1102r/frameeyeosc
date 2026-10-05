@@ -338,6 +338,7 @@ UiText makeJapanese() {
     t.diagRowLastError = "最後のエラー";
     t.diagToolOutdated = "新しい版あり";
     t.diagToolMissing = "ファイルなし";
+    t.diagToolBundledFormat = "%s（同梱 %s）";
     t.diagModeAuto = "自動";
     t.diagModeFixed = "固定";
     t.diagRateFormat = "%.0f 回/秒";
@@ -1058,6 +1059,7 @@ UiText makeEnglish() {
     t.diagRowLastError = "Last error";
     t.diagToolOutdated = "update waiting";
     t.diagToolMissing = "no file";
+    t.diagToolBundledFormat = "%s (bundled %s)";
     t.diagModeAuto = "auto";
     t.diagModeFixed = "fixed";
     t.diagRateFormat = "%.0f/s";

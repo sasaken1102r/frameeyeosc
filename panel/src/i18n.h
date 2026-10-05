@@ -340,6 +340,7 @@ struct UiText {
     const char* diagRowLastError;
     const char* diagToolOutdated;        ///< the tool: an update brought a newer one
     const char* diagToolMissing;         ///< ...not found where install.sh puts it
+    const char* diagToolBundledFormat;   ///< ...the installed copy's checksum, and install.sh's when it differs (%s %s)
     const char* diagModeAuto;            ///< the target PC: Steam Link's
     const char* diagModeFixed;           ///< ...fixed (the host follows)
     const char* diagRateFormat;          ///< a rate ("%.0f": a second)

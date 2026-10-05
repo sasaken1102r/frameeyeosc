@@ -8,6 +8,7 @@
 #include "model.h"
 #include "status.h"
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cmath>
@@ -174,8 +175,23 @@ void testFileHash() {
         file << "The quick brown fox jumps over the lazy dog";
     }
     SAME(hash.get(path), "d7a8fbb3");
+    CHECK(!hash.unreadable());
+    // There but not readable (permissions): "", and unreadable() says so; readable again (a chmod: the same size and
+    // modification time), it is worked out again (root reads it anyway)
+    if (geteuid() != 0) {
+        CHECK(chmod(path, 0) == 0);
+        SAME(hash.get(path), "");
+        CHECK(hash.unreadable());
+        CHECK(chmod(path, 0600) == 0);
+        SAME(hash.get(path), "d7a8fbb3");
+        CHECK(!hash.unreadable());
+        CHECK(chmod(path, 0) == 0);
+        SAME(hash.get(path), "");
+        CHECK(hash.unreadable());
+    }
     std::remove(path);
     SAME(hash.get(path), "");
+    CHECK(!hash.unreadable());
     SAME(hash.get("/nonexistent/eyecam-grab"), "");
 }
 
@@ -343,9 +359,24 @@ void testCards() {
         SAME(rowOf(cards, ja.diagRowSearch).value, "—");
         SAME(rowOf(cards, ja.diagRowWhen).value, "—");
         SAME(rowOf(cards, ja.diagRowTool).value, "— · 294d06c6");
-        // The tool not installed where install.sh puts it
+        // The tool not installed where install.sh puts it, or not readable
         m.system.grabHash.clear();
         SAME(rowOf(diag::cards(en, m), en.diagRowTool).value, "— · no file");
+        m.system.grabUnreadable = true;
+        SAME(rowOf(diag::cards(en, m), en.diagRowTool).value, "— · unreadable");
+        SAME(rowOf(diag::cards(ja, m), ja.diagRowTool).value, "— · 読めない");
+    }
+    {
+        // The installed copy eyecam-rec runs: its checksum when it can be read, install.sh's beside it when that differs
+        PanelModel m = healthy();
+        m.system.installedHash = "294d06c6";
+        SAME(rowOf(diag::cards(ja, m), ja.diagRowTool).value, "ok · 294d06c6");
+        m.system.installedHash = "1a2b3c4d";
+        SAME(rowOf(diag::cards(ja, m), ja.diagRowTool).value, "ok · 1a2b3c4d（同梱 294d06c6）");
+        SAME(rowOf(diag::cards(en, m), en.diagRowTool).value, "ok · 1a2b3c4d (bundled 294d06c6)");
+        m.system.grabHash.clear();
+        m.system.grabUnreadable = true;
+        SAME(rowOf(diag::cards(en, m), en.diagRowTool).value, "ok · 1a2b3c4d");
     }
     {
         // Candidates in separate buffers: where it stopped, without a refresh rate (it didn't measure one)
@@ -388,7 +419,8 @@ void testTexts() {
         &UiText::diagRowProx, &UiText::diagRowPupil, &UiText::diagRowLoad, &UiText::diagRowWhen, &UiText::diagRowResult,
         &UiText::diagRowPupilFrames, &UiText::diagRowPupilAt, &UiText::diagRowWindow, &UiText::diagRowBlocks,
         &UiText::diagRowLastError, &UiText::diagSameAsResult, &UiText::diagToolOutdated,
-        &UiText::diagToolMissing, &UiText::diagModeAuto, &UiText::diagModeFixed, &UiText::diagRateFormat,
+        &UiText::diagToolMissing, &UiText::diagToolBundledFormat, &UiText::diagModeAuto, &UiText::diagModeFixed,
+        &UiText::diagRateFormat,
         &UiText::diagMissedFormat, &UiText::diagDroppedFormat, &UiText::diagPaused, &UiText::diagCapOn,
         &UiText::diagCapOff, &UiText::diagLidsBoth, &UiText::diagLidsLeft, &UiText::diagLidsRight,
         &UiText::diagLidsValve, &UiText::diagNone, &UiText::diagCoreNotRunning, &UiText::diagCoreNoTarget,
@@ -401,7 +433,7 @@ void testTexts() {
         &UiText::diagChangedFormat, &UiText::diagNotLooked, &UiText::diagUnreadable, &UiText::diagEyesFormat,
         &UiText::diagMsFormat, &UiText::diagOk, &UiText::diagFailedFormat, &UiText::diagPreviousLeft,
         &UiText::diagPreviousRight, &UiText::diagNoCalib};
-    CHECK(std::size(fields) == 76);
+    CHECK(std::size(fields) == 77);
     for (const Language language : {Language::Ja, Language::En}) {
         const UiText& t = uiText(language);
         for (const char* UiText::*field : fields) CHECK(t.*field != nullptr && (t.*field)[0] != '\0');

@@ -31,8 +31,10 @@ namespace diag {
 
 /** What the panel reads for the page itself (not in the status files). */
 struct System {
-    std::string steamos;   ///< "0.4.3 (20260930.6234839)" ("" = unknown)
-    std::string grabHash;  ///< the first 8 hex of the installed camera tool's SHA-256 ("" = not there)
+    std::string steamos;          ///< "0.4.3 (20260930.6234839)" ("" = unknown)
+    std::string grabHash;         ///< first 8 hex of the SHA-256 of the camera tool install.sh puts in ("" = not there)
+    bool grabUnreadable = false;  ///< ...it is there but can't be read
+    std::string installedHash;    ///< the same of the copy eyecam-rec runs (kInstalledGrabPath; "" = none / unreadable)
 };
 
 /** One row: a label and its value. */
@@ -72,22 +74,31 @@ std::string sha256Hex(const std::string& bytes);
 /** Where install.sh puts the camera tool the setup installs ($HOME/.local/lib/eyecam/eyecam-grab). */
 std::string defaultGrabPath();
 
+/** Where the setup installs the copy with the capability, which eyecam-rec runs (root's; readable by everyone). */
+constexpr const char* kInstalledGrabPath = "/home/.eyecam/eyecam-grab";
+
 /**
- * The first 8 hex of a file's SHA-256, worked out again only when its size or modification time changes.
+ * The first 8 hex of a file's SHA-256, worked out again only when its size, modification time or status change time
+ * (a chmod) changes. A file that can't be read is tried again on every call.
  */
 class FileHash {
 public:
     /**
      * @param path the file
-     * @return 8 hex digits, or "" if it can't be read
+     * @return 8 hex digits, or "" if it isn't there or can't be read (unreadable() tells which)
      */
     const std::string& get(const std::string& path);
+
+    /** @return the last get's file is there but couldn't be read (permissions) */
+    bool unreadable() const { return unreadable_; }
 
 private:
     std::string path_;
     long long size_ = -1;
     long long mtimeNs_ = -1;
+    long long ctimeNs_ = -1;
     std::string hash_;
+    bool unreadable_ = false;
 };
 
 /**

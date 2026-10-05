@@ -1414,14 +1414,17 @@ void settleUpdater(frame_updater::UpdateChecker& updater, bool enabled) {
  * @param model the model (its changelogDirs; history is written)
  */
 /**
- * What the diagnostics page reads itself: SteamOS's version (once) and the camera tool's checksum (again only when the
- * file changed).
+ * What the diagnostics page reads itself: SteamOS's version (once) and the camera tool's checksums (again only when a
+ * file changed): install.sh's copy, and the installed one eyecam-rec runs when it can be read (no root needed).
  * @param model where to put them
  */
 void readSystem(PanelModel& model) {
     static diag::FileHash grabHash;
+    static diag::FileHash installedHash;
     if (model.system.steamos.empty()) model.system.steamos = diag::readSteamos();
     model.system.grabHash = grabHash.get(diag::defaultGrabPath());
+    model.system.grabUnreadable = grabHash.unreadable();
+    model.system.installedHash = installedHash.get(diag::kInstalledGrabPath);
 }
 
 void loadHistory(PanelModel& model) {

@@ -160,9 +160,10 @@ pub struct Status {
     pub session_dir: String,
     pub protocol: String,
     pub prox: f64,
-    /// While searching and not locked, why not: SEARCH_NOT_WORN (the proximity sensor says the headset is off, and
-    /// nothing was found), SEARCH_NO_VIDEO (worn, or the sensor unknown, but no eye video in the buffers),
-    /// SEARCH_ONE_EYE (only one camera's video). "" when locked, not searching, or before the first look.
+    /// While searching and not locked, why not: SEARCH_NOT_WORN (the proximity sensor says the headset is off,
+    /// Valve's eye tracker delivers no samples, and nothing was found), SEARCH_NO_VIDEO (worn by the sensor, or the
+    /// sensor unknown, or Valve's eye tracker delivering samples, but no eye video in the buffers), SEARCH_ONE_EYE
+    /// (only one camera's video). "" when locked, not searching, or before the first look.
     pub search: &'static str,
     /// Whether the last recording ended early (stop, Ctrl-C, frames gone, ...); its meta.txt says aborted=1.
     pub last_session_aborted: bool,

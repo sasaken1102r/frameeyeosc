@@ -5,8 +5,9 @@
 // cairo (diag-test). The panel only draws it.
 //
 // The diagnostic code (diag::code), its parts joined with "·":
-//   S  the eye video: OK flowing / NW not worn (the proximity sensor says off, nothing found) / NV no video (worn, nothing
-//      found) / OE one eye only / SR searching, no reason yet / LO live processing off / WF waiting for the tool to hand
+//   S  the eye video: OK flowing / NW not worn (the proximity sensor says off, Valve's eye tracker gives no samples,
+//      nothing found) / NV no video (worn, by the sensor or by Valve's eye tracker giving samples, nothing found) /
+//      OE one eye only / SR searching, no reason yet / LO live processing off / WF waiting for the tool to hand
 //      over the camera buffers / NR eyecam-rec not running
 //   P  the proximity reading, rounded ("P3"; "P-" unknown)
 //   B  the 64 KiB blocks of the camera buffers that changed before the last look ("B0": nothing is written; "B-" no

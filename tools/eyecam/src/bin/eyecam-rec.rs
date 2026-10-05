@@ -1407,6 +1407,9 @@ struct Buffers {
     last_activity: f64,
     worn_since: Option<f64>,
     valve: ValveWatch,
+    /// Valve's eye tracker delivered a new tracked sample at the last `watch` that asked it (only asked while the
+    /// proximity sensor doesn't say worn).
+    valve_tracking: bool,
 }
 
 impl Buffers {
@@ -1426,7 +1429,16 @@ impl Buffers {
         let arenas = maps.iter().map(|m| unsafe { Arena::new(m.ptr, m.len) }).collect();
         let tracker = Tracker::open(header.pid);
         let valve = ValveWatch::default();
-        Ok(Self { header, arenas, _maps: maps, tracker, last_activity: now_raw(), worn_since: None, valve })
+        Ok(Self {
+            header,
+            arenas,
+            _maps: maps,
+            tracker,
+            last_activity: now_raw(),
+            worn_since: None,
+            valve,
+            valve_tracking: false,
+        })
     }
 
     /// Note which blocks changed (whether or not the headset is worn: the search looks either way), and fail if the
@@ -1446,7 +1458,8 @@ impl Buffers {
         if any {
             self.last_activity = now;
         }
-        if prox_worn == Some(true) || self.valve.tracking(now) {
+        self.valve_tracking = prox_worn != Some(true) && self.valve.tracking(now);
+        if prox_worn == Some(true) || self.valve_tracking {
             self.worn_since.get_or_insert(now);
         } else {
             self.worn_since = None;
@@ -1530,17 +1543,40 @@ impl Drop for Mapping {
     }
 }
 
+/// Where ValveWatch reads Valve's samples: its shared memory (`Shm`), or a stand-in in tests.
+trait SampleSource {
+    /// The latest sample, if there is a new one since the last call.
+    fn poll(&mut self) -> Option<Sample>;
+}
+
+impl SampleSource for Shm {
+    fn poll(&mut self) -> Option<Sample> {
+        Shm::poll(self)
+    }
+}
+
 /// Whether Valve's eye tracker is tracking: a new sample with producer_state 1 in its shared memory (read-only, as
 /// Shm reads it) since the last look. The eye server publishes only while a client (frameeyeosc) asks for samples
 /// and only while its cameras run, so this is false on a desk, and also whenever frameeyeosc is not running.
-#[derive(Default)]
-struct ValveWatch {
-    shm: Option<Shm>,
+struct ValveWatch<S = Shm> {
+    shm: Option<S>,
+    /// Opens the source (`Shm::open`; tests count the attempts).
+    open: Box<dyn FnMut() -> Option<S>>,
     retry: f64,
     last_new: f64,
 }
 
-impl ValveWatch {
+impl Default for ValveWatch<Shm> {
+    fn default() -> Self {
+        Self::new(Box::new(|| Shm::open().ok()))
+    }
+}
+
+impl<S: SampleSource> ValveWatch<S> {
+    fn new(open: Box<dyn FnMut() -> Option<S>>) -> Self {
+        Self { shm: None, open, retry: 0.0, last_new: 0.0 }
+    }
+
     fn tracking(&mut self, now: f64) -> bool {
         // Reopen now and then while nothing new comes (the eye server may have replaced the file).
         if self.shm.is_some() && now - self.last_new > 30.0 {
@@ -1552,12 +1588,12 @@ impl ValveWatch {
             }
             self.retry = now + 5.0;
             self.last_new = now;
-            self.shm = Shm::open().ok();
+            self.shm = (self.open)();
             // The sample already there when it is opened can be old: only later ones count.
-            self.shm.as_mut().and_then(Shm::poll);
+            self.shm.as_mut().and_then(S::poll);
             return false;
         }
-        match self.shm.as_mut().and_then(Shm::poll) {
+        match self.shm.as_mut().and_then(S::poll) {
             Some(sample) => {
                 self.last_new = now;
                 sample.producer_state == 1
@@ -1726,12 +1762,7 @@ fn lock_ring(
             _ => above_since = None,
         }
         let worn = reading.is_none() || above_since.is_some_and(|t| now - t >= WORN_FOR);
-        let search = match (scanned, one_eye, worn) {
-            (_, true, _) => status::SEARCH_ONE_EYE,
-            (_, false, false) => status::SEARCH_NOT_WORN,
-            (true, false, true) => status::SEARCH_NO_VIDEO,
-            (false, false, true) => "",
-        };
+        let search = search_reason(scanned, one_eye, worn, b.valve_tracking);
         if let Some(d) = ctl {
             let message = status::search_message(search).to_string();
             match ctx {
@@ -1773,15 +1804,14 @@ fn lock_ring(
             }
             match found {
                 Some(r) if r.both_eyes || args.allow_one_eye => {
-                    let p = reading.map_or("unknown".into(), |v| format!("{v:.1}"));
                     eprintln!(
-                        "locked: {} slots at 0x{:x}, spacing {}, cameras {:?}{}; proximity {p} ({})",
+                        "locked: {} slots at 0x{:x}, spacing {}, cameras {:?}{}; {}",
                         r.off.len(),
                         r.off[0],
                         r.pitch,
                         r.eye,
                         if r.both_eyes { "" } else { " (one eye only)" },
-                        if worn { "worn" } else { "the sensor says not worn" }
+                        prox_at_look(reading, args.prox_min, above_since.map(|t| now - t))
                     );
                     return Ok(r);
                 }
@@ -1802,6 +1832,34 @@ fn lock_ring(
         }
         // Idle searches run for as long as live processing is on: keep them cheap.
         thread::sleep(Duration::from_millis(if ctx == Ctx::Idle { 300 } else { 100 }));
+    }
+}
+
+/// Why a search hasn't found the eye video (status.json `search`), from what it knows: whether it has looked yet,
+/// whether the last look found only one camera's video, whether the proximity sensor says worn (`worn`: above
+/// --prox-min for WORN_FOR, or unknown), and whether Valve's eye tracker delivered fresh samples at the last look.
+/// "" before the first look. Not worn needs both the sensor and Valve's tracker to say so: the sensor reads low
+/// on some faces (0-3 while worn on the developer's headset), and Valve's tracker only delivers while its cameras
+/// see an eye, so then the headset is on and the video is what is missing.
+fn search_reason(scanned: bool, one_eye: bool, worn: bool, valve_tracking: bool) -> &'static str {
+    match (scanned, one_eye, worn || valve_tracking) {
+        (false, _, _) => "",
+        (true, true, _) => status::SEARCH_ONE_EYE,
+        (true, false, true) => status::SEARCH_NO_VIDEO,
+        (true, false, false) => status::SEARCH_NOT_WORN,
+    }
+}
+
+/// The proximity reading at the start of a look, for the lock's log line: the reading, and whether it had been
+/// above --prox-min for WORN_FOR yet (`above_for`: how long it had been above, None when it wasn't).
+fn prox_at_look(reading: Option<f64>, prox_min: f64, above_for: Option<f64>) -> String {
+    match (reading, above_for) {
+        (None, _) => "proximity unknown".into(),
+        (Some(v), Some(d)) if d >= WORN_FOR => format!("proximity {v:.1}, above {prox_min} for {WORN_FOR} s: worn"),
+        (Some(v), Some(d)) => {
+            format!("proximity {v:.1}, above {prox_min} for only {d:.1} s (worn after {WORN_FOR} s)")
+        }
+        (Some(v), None) => format!("proximity {v:.1}, not above {prox_min}: the sensor says not worn"),
     }
 }
 
@@ -2587,6 +2645,7 @@ mod tests {
             last_activity: now_raw(),
             worn_since: None,
             valve: ValveWatch::default(),
+            valve_tracking: false,
         }
     }
 
@@ -2669,6 +2728,119 @@ mod tests {
         let (json, used) = run_idle("idle-cpu", &[16 << 20, 32 << 20], seconds);
         eprintln!("idle with the cameras off: {:.3} s CPU in {seconds} s ({:.2} % of a core)
 {json}", used, used / seconds * 100.0);
+    }
+
+    /// A stand-in for Valve's shared memory: the samples `poll` hands out, one per call (None: nothing new).
+    struct Samples(std::rc::Rc<std::cell::RefCell<Vec<Option<u32>>>>);
+
+    impl SampleSource for Samples {
+        fn poll(&mut self) -> Option<Sample> {
+            let mut queue = self.0.borrow_mut();
+            if queue.is_empty() {
+                return None;
+            }
+            queue.remove(0).map(|producer_state| Sample { producer_state, ..Sample::default() })
+        }
+    }
+
+    /// A ValveWatch over `Samples`: the queue its source reads (shared by every open), how many times it tried to
+    /// open, and whether opening works.
+    #[allow(clippy::type_complexity)]
+    fn valve_watch() -> (
+        ValveWatch<Samples>,
+        std::rc::Rc<std::cell::RefCell<Vec<Option<u32>>>>,
+        std::rc::Rc<std::cell::Cell<u32>>,
+        std::rc::Rc<std::cell::Cell<bool>>,
+    ) {
+        let queue = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let opens = std::rc::Rc::new(std::cell::Cell::new(0));
+        let can_open = std::rc::Rc::new(std::cell::Cell::new(true));
+        let (q, o, c) = (queue.clone(), opens.clone(), can_open.clone());
+        let watch = ValveWatch::new(Box::new(move || {
+            o.set(o.get() + 1);
+            c.get().then(|| Samples(q.clone()))
+        }));
+        (watch, queue, opens, can_open)
+    }
+
+    #[test]
+    fn valve_watch_retries_opening_every_5_s() {
+        let (mut watch, _, opens, can_open) = valve_watch();
+        can_open.set(false);
+        assert!(!watch.tracking(100.0));
+        assert_eq!(opens.get(), 1);
+        // Not again before 5 s are up
+        for t in [101.0, 103.0, 104.9] {
+            assert!(!watch.tracking(t));
+        }
+        assert_eq!(opens.get(), 1);
+        assert!(!watch.tracking(105.0));
+        assert_eq!(opens.get(), 2);
+        assert!(!watch.tracking(109.0));
+        assert_eq!(opens.get(), 2);
+        can_open.set(true);
+        assert!(!watch.tracking(110.0));
+        assert_eq!(opens.get(), 3);
+        assert!(watch.shm.is_some());
+    }
+
+    #[test]
+    fn valve_watch_counts_only_fresh_tracked_samples() {
+        let (mut watch, queue, opens, _) = valve_watch();
+        // The sample there at open doesn't count, even a tracked one
+        queue.borrow_mut().extend([Some(1), Some(1), Some(0), None, Some(1)]);
+        assert!(!watch.tracking(0.0));
+        assert_eq!(queue.borrow().len(), 4);
+        // A fresh one with producer_state 1 does; producer_state 0 or nothing new doesn't
+        assert!(watch.tracking(1.0));
+        assert!(!watch.tracking(2.0));
+        assert!(!watch.tracking(3.0));
+        assert!(watch.tracking(4.0));
+        assert!(!watch.tracking(5.0));
+        assert_eq!(opens.get(), 1);
+    }
+
+    #[test]
+    fn valve_watch_reopens_after_30_s_without_new_samples() {
+        let (mut watch, queue, opens, _) = valve_watch();
+        assert!(!watch.tracking(0.0));
+        assert_eq!(opens.get(), 1);
+        // A sample that isn't tracked still counts as new: it keeps the file open
+        queue.borrow_mut().push(Some(0));
+        assert!(!watch.tracking(20.0));
+        assert!(!watch.tracking(50.0));
+        assert_eq!(opens.get(), 1);
+        // Over 30 s since the last new one: closed and opened again (that look never counts)
+        queue.borrow_mut().extend([Some(1), Some(1)]);
+        assert!(!watch.tracking(50.1));
+        assert_eq!(opens.get(), 2);
+        assert!(watch.tracking(51.0));
+        assert_eq!(opens.get(), 2);
+    }
+
+    #[test]
+    fn search_reason_needs_a_look_and_both_sensors_for_not_worn() {
+        // Nothing before the first look, whatever the sensor says
+        for worn in [false, true] {
+            assert_eq!(search_reason(false, false, worn, false), "");
+            assert_eq!(search_reason(false, false, worn, true), "");
+        }
+        assert_eq!(search_reason(true, true, false, false), status::SEARCH_ONE_EYE);
+        assert_eq!(search_reason(true, false, true, false), status::SEARCH_NO_VIDEO);
+        // The sensor says off but Valve's eye tracker is delivering: worn, the video is what is missing
+        assert_eq!(search_reason(true, false, false, true), status::SEARCH_NO_VIDEO);
+        assert_eq!(search_reason(true, false, false, false), status::SEARCH_NOT_WORN);
+    }
+
+    #[test]
+    fn prox_at_look_says_how_long_it_was_above() {
+        assert_eq!(prox_at_look(None, 20.0, None), "proximity unknown");
+        assert_eq!(prox_at_look(Some(31.0), 20.0, Some(4.0)), "proximity 31.0, above 20 for 1 s: worn");
+        assert_eq!(
+            prox_at_look(Some(39.0), 20.0, Some(0.4)),
+            "proximity 39.0, above 20 for only 0.4 s (worn after 1 s)"
+        );
+        assert_eq!(prox_at_look(Some(2.9), 20.0, None), "proximity 2.9, not above 20: the sensor says not worn");
     }
 
     #[test]

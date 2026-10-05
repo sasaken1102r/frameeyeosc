@@ -689,7 +689,8 @@ void testCalibText() {
               t.widenNoteUnfitted, t.widenSaturated1, t.widenSaturated2, t.blinkHint, t.blinkHoldCaption,
               t.rowBlinkBoth, t.blinkBothHint, t.blinkBothNote, t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
               t.rowOther, t.otherHint, t.otherText1, t.otherText2, t.detailsTitle, t.detailsClose, t.camPupilLine,
-              t.camWidenNotice, t.camWidenButton, t.calibCardTitle, t.calibResultTitle, t.calibWearNote}) {
+              t.camWidenNotice, t.camWidenButton, t.calibCardTitle, t.calibResultTitle, t.calibWearNote,
+              t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye}) {
             CHECK(text != nullptr && text[0] != '\0');
         }
         CHECK(t.setupLeftBefore != nullptr);  // (empty in English: "7 s left")
@@ -698,6 +699,8 @@ void testCalibText() {
         CHECK(std::string(t.eyecamWarmingFormat).find("%d") != std::string::npos);
         CHECK(std::string(t.eyecamWarmingFormat).find("%s") == std::string::npos);
         CHECK(std::string(t.nextLearnFormat).find("%d") != std::string::npos);
+        CHECK(std::string(t.searchNotWornFormat).find("%d") != std::string::npos);
+        CHECK(std::string(t.searchNotWornFormat).find("%s") == std::string::npos);
         char line[200];
         std::snprintf(line, sizeof(line), t.setupLearnStepFormat, 3, 5, 18);
         CHECK(std::string(line).find('3') != std::string::npos && std::string(line).find("18") != std::string::npos);
@@ -2024,9 +2027,79 @@ void testPupils() {
     }
 }
 
+void testSearch() {
+    using eyecam::Search;
+    // Why the video isn't found, as eyecam-rec writes it while searching (with the proximity reading)
+    {
+        const Status s = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"has_buffers\": true, \"locked\": false, \"prox\": 11.6, \"search\": \"not_worn\"}", kNow);
+        CHECK(s.hasSearch && s.search == "not_worn" && std::fabs(s.prox - 11.6) < 1e-9);
+        CHECK(eyecam::searchReason(s) == Search::NotWorn);
+        // Holding the buffers isn't the video
+        CHECK(!eyecam::videoFlowing(s));
+        for (const Language language : {Language::Ja, Language::En}) {
+            const std::string line = eyecam::searchText(uiText(language), s);
+            CHECK(line.find("12") != std::string::npos && line.find('%') == std::string::npos);
+        }
+        // No reading: the sentence alone
+        Status unread = s;
+        unread.prox = -1;
+        SAME(eyecam::searchText(uiText(Language::Ja), unread), uiText(Language::Ja).searchNotWorn);
+    }
+    {
+        const struct {
+            const char* json;
+            Search reason;
+        } kReasons[] = {
+            {"{\"state\": \"calibrating\", \"locked\": false, \"search\": \"no_video\"}", Search::NoVideo},
+            {"{\"state\": \"searching\", \"locked\": false, \"search\": \"one_eye\"}", Search::OneEye},
+            // Locked, not looked yet, something new, or an older eyecam-rec without it: no line
+            {"{\"state\": \"idle\", \"locked\": true, \"search\": \"no_video\"}", Search::None},
+            {"{\"state\": \"idle\", \"locked\": false, \"search\": \"\"}", Search::None},
+            {"{\"state\": \"idle\", \"locked\": false, \"search\": \"asleep\"}", Search::None},
+            {"{\"state\": \"idle\", \"locked\": false}", Search::None},
+        };
+        for (const auto& item : kReasons) {
+            const Status s = eyecam::parseStatus(item.json, kNow);
+            CHECK(eyecam::searchReason(s) == item.reason);
+            CHECK(eyecam::searchText(uiText(Language::En), s).empty() == (item.reason == Search::None));
+        }
+        const Status old = eyecam::parseStatus("{\"state\": \"idle\", \"locked\": false}", kNow);
+        CHECK(!old.hasSearch && std::isnan(old.prox));
+    }
+    // The video: locked, or frames counted
+    {
+        Status s = eyecam::parseStatus("{\"state\": \"recording\", \"locked\": false, \"fps_l\": 0, \"fps_r\": 0}", kNow);
+        CHECK(!eyecam::videoFlowing(s));
+        s.fpsR = 29.9;
+        CHECK(eyecam::videoFlowing(s));
+        s.fpsR = 0;
+        s.locked = true;
+        CHECK(eyecam::videoFlowing(s));
+    }
+    // The signature follows the reason, and the reading only while it is shown (to the whole number)
+    {
+        eyecam::View a;
+        a.status = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"locked\": false, \"prox\": 11.6, \"search\": \"not_worn\"}", kNow);
+        eyecam::View b = a;
+        b.status.prox = 11.8;
+        SAME(eyecam::signature(a), eyecam::signature(b));
+        b.status.prox = 14.2;
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+        b = a;
+        b.status.search = "no_video";
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+        a.status.search = b.status.search;
+        b.status.prox = 30.0;
+        SAME(eyecam::signature(a), eyecam::signature(b));
+    }
+}
+
 int main() {
     testParse();
     testPupils();
+    testSearch();
     testVisible();
     testText();
     testFill();

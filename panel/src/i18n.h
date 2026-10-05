@@ -317,6 +317,12 @@ struct UiText {
     const char* eyecamUnknownFormat;   ///< a state this panel doesn't know ("State: %s")
     const char* eyecamFpsFormat;       ///< "fps  L %s / R %s"
     const char* eyecamNotLocked;       ///< while recording without camera frames (headset off): put it on
+    // Why the eyes' video isn't found, as eyecam-rec says (status.json "search"; eyecam::searchText), in place of the
+    // call to put the headset on and under the setup's (3)
+    const char* searchNotWornFormat;   ///< the proximity sensor says the headset is off (%d: its reading)
+    const char* searchNotWorn;         ///< ...without a reading
+    const char* searchNoVideo;         ///< worn, but no eye video (eye tracking off in SteamVR?)
+    const char* searchOneEye;          ///< only one eye's video
     const char* eyecamRemainingFormat; ///< seconds left of the step ("%d s left")
     const char* eyecamStepFormat;      ///< "Step %d of %d"
     const char* eyecamSending;         ///< a command waits for its reply

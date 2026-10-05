@@ -390,6 +390,26 @@ void testPupilSetup(const FontSet& fonts) {
     CHECK(hits(panel, PanelAction::EyecamCalib).empty());
 }
 
+void testSearchSetup(const FontSet& fonts) {
+    // The setup's (3) while the video isn't found, for each reason eyecam-rec gives (and an older one without it):
+    // nothing to press but the tabs, drawn without trouble
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Eyecam);
+    for (const char* reason : {"not_worn", "no_video", "one_eye", ""}) {
+        for (const Language language : {Language::Ja, Language::En}) {
+            PanelModel m = eyecamIn("idle", false);
+            m.language = language;
+            m.eyecam.status.locked = false;
+            m.eyecam.status.hasBuffers = true;
+            m.eyecam.status.hasSearch = reason[0] != '\0';
+            m.eyecam.status.search = reason;
+            m.eyecam.status.prox = 12.0;
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::EyecamCalib).empty());
+        }
+    }
+}
+
 /**
  * eyecam-rec idle after a "calib wear" that went through without one eye.
  * @param setup the setup's (its done screen), or one from the usual page
@@ -613,6 +633,7 @@ int main() {
     testWayOut(fonts);
     testCalibNeedsLids(fonts);
     testPupilSetup(fonts);
+    testSearchSetup(fonts);
     testPartialResult(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);

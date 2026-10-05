@@ -169,6 +169,11 @@ Status parseStatus(const std::string& text, double mtime) {
         const double share = readNumber(root, pupilKeys[eye], kNaN);
         status.pupil[eye] = std::isfinite(share) ? std::clamp(share, 0.0, 1.0) : kNaN;
     }
+    // Why the video isn't found (missing on an older eyecam-rec: no line for it)
+    status.prox = readNumber(root, "prox", kNaN);
+    const JsonValue* search = root.get("search");
+    status.hasSearch = search != nullptr && search->isString();
+    status.search = readText(root, "search");
     return status;
 }
 
@@ -611,6 +616,8 @@ std::string signature(const View& view) {
            std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.calibFailedEye + "|" +
            std::to_string(s.hasPupil) + std::to_string(static_cast<int>(eyeSight(s, 0))) +
            std::to_string(static_cast<int>(eyeSight(s, 1))) + "|" + s.autoGrab + std::to_string(s.grabOutdated) + "|" +
+           std::to_string(static_cast<int>(searchReason(s))) +
+           (searchReason(s) == Search::NotWorn ? rounded(s.prox, 1.0) : std::string()) + "|" +
            std::to_string(static_cast<int>(view.password)) + std::to_string(static_cast<int>(view.flow.result())) +
            std::to_string(static_cast<int>(view.flow.calibResult())) +
            std::to_string(view.readyNotice) + "|" + view.spawnError;
@@ -719,6 +726,35 @@ EyeSight eyeSight(const Status& status, int eye) {
     if (!std::isfinite(share)) return status.live ? EyeSight::NotSeen : EyeSight::Seen;
     if (share >= kPupilSeenShare) return EyeSight::Seen;
     return share < kPupilMissingShare ? EyeSight::NoPupil : EyeSight::Weak;
+}
+
+Search searchReason(const Status& status) {
+    if (status.locked || !status.hasSearch) return Search::None;
+    if (status.search == "not_worn") return Search::NotWorn;
+    if (status.search == "no_video") return Search::NoVideo;
+    if (status.search == "one_eye") return Search::OneEye;
+    return Search::None;
+}
+
+bool videoFlowing(const Status& status) {
+    return status.locked || (std::isfinite(status.fpsL) && status.fpsL > 0) ||
+           (std::isfinite(status.fpsR) && status.fpsR > 0);
+}
+
+std::string searchText(const UiText& t, const Status& status) {
+    switch (searchReason(status)) {
+        case Search::NotWorn: {
+            // (the reading as a whole number; without one, the sentence alone)
+            if (!std::isfinite(status.prox) || status.prox < 0) return t.searchNotWorn;
+            char line[256];
+            std::snprintf(line, sizeof(line), t.searchNotWornFormat, static_cast<int>(std::lround(status.prox)));
+            return line;
+        }
+        case Search::NoVideo: return t.searchNoVideo;
+        case Search::OneEye: return t.searchOneEye;
+        case Search::None: break;
+    }
+    return std::string();
 }
 
 bool pupilTrouble(const Status& status) {

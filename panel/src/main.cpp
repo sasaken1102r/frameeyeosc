@@ -278,7 +278,9 @@ void printUsage() {
         "                        \"calib wear\" that went through without that eye, with done or page=...; LR both\n"
         "                        eyes' pupils not seen, mixed a different reason per eye, with calib-error; with\n"
         "                        user too, a failed user calibration's message for each eye), prov\n"
-        "                        (failed=L|R: provisional values, not the previous ones)\n"
+        "                        (failed=L|R: provisional values, not the previous ones),\n"
+        "                        search=not_worn|no_video|one_eye (unlocked, and why: the proximity sensor says\n"
+        "                        the headset is off, no eye video, or only one eye's; not_worn reads 12)\n"
         "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
@@ -323,6 +325,8 @@ struct FakeEyecam {
     double pupil[2] = {0.0, 0.0};  ///< ...their values (NaN = null)
     std::string failed;     ///< "L" / "R" / "LR" / "mixed": calib_failed_eye and its message ("" = none)
     bool provisional = false;  ///< failed=L|R: provisional values (no earlier ones)
+    std::string search;     ///< search: why the video isn't found (not_worn / no_video / one_eye; "" = an older
+                            ///< eyecam-rec without it, or locked)
 };
 
 /**
@@ -413,6 +417,9 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.failed = flag.substr(7);
         } else if (flag == "prov") {
             fake.provisional = true;
+        } else if (flag == "search=not_worn" || flag == "search=no_video" || flag == "search=one_eye") {
+            fake.search = flag.substr(7);
+            fake.unlocked = true;
         } else if (flag == "ready") {
             fake.baseline = "ready";
         } else if (flag == "saved") {
@@ -944,6 +951,10 @@ eyecam::View fakeEyecam(const std::string& text) {
     }
     if (!fake.autoGrab.empty()) s.autoGrab = fake.autoGrab;
     s.grabOutdated = fake.outdated;
+    // Why the video isn't found (and the proximity reading that goes with it)
+    s.hasSearch = !fake.search.empty();
+    s.search = fake.search;
+    s.prox = fake.search == "not_worn" ? 12.0 : (fake.search.empty() ? nan : 31.0);
     if (fake.message > 0) {
         s.message = "校正できた（かぶり）";
         s.messageEn = fake.message == 1 ? "Calibrated (this wear)" : "";

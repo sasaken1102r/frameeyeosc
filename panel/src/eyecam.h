@@ -187,6 +187,10 @@ struct Status {
                                    ///< the pupils; without them "locked" is all there is)
     double pupil[2] = {0.0, 0.0};  ///< per eye (left, right), the share of the last 2 s of frames with the pupil found,
                                    ///< 0..1 (NaN when null: live processing off, or that eye's video stopped)
+    double prox = 0.0;             ///< "prox": the proximity sensor's reading (-1: eyecam-rec can't read it; NaN when
+                                   ///< missing)
+    bool hasSearch = false;        ///< "search" is there (a newer eyecam-rec that says why the video isn't found)
+    std::string search;            ///< "search": not_worn / no_video / one_eye while searching unlocked, else ""
 };
 
 /**
@@ -748,6 +752,36 @@ enum class EyeSight {
  * @return how it looks
  */
 EyeSight eyeSight(const Status& status, int eye);
+
+/** Why eyecam-rec hasn't found the eyes' video while it searches ("search"). */
+enum class Search {
+    None,     ///< found (locked), not searching, not looked yet, or an eyecam-rec that doesn't say
+    NotWorn,  ///< the proximity sensor says the headset is off, and no video was found
+    NoVideo,  ///< worn (or the sensor unreadable), but no eye video in the buffers (eye tracking off?)
+    OneEye,   ///< only one camera's video
+};
+
+/**
+ * Why the eyes' video isn't found, from "search" (only while "locked" is false).
+ * @param status the status
+ * @return the reason, or None
+ */
+Search searchReason(const Status& status);
+
+/**
+ * Whether the eyes' video is coming in: "locked", or a frame rate above 0 (holding the buffers alone isn't enough).
+ * @param status the status
+ * @return true while frames come
+ */
+bool videoFlowing(const Status& status);
+
+/**
+ * One short line saying why the eyes' video isn't found (searchReason), with the proximity reading for NotWorn.
+ * @param t the texts
+ * @param status the status
+ * @return the line, or "" for Search::None
+ */
+std::string searchText(const UiText& t, const Status& status);
 
 /**
  * Whether an eye's video is there but its pupil isn't found well (NoPupil or Weak): the setup's (3) asks to put the

@@ -315,6 +315,10 @@ UiText makeJapanese() {
     t.eyecamUnknownFormat = "状態: %s";
     t.eyecamFpsFormat = "fps  左 %s / 右 %s";
     t.eyecamNotLocked = "HMD をかぶってください";
+    t.searchNotWornFormat = "HMD をかぶったのが分からないみたい（近接センサー %d）";
+    t.searchNotWorn = "HMD をかぶったのが分からないみたい";
+    t.searchNoVideo = "目の映像が流れてないよ。SteamVR の視線トラッキングがオンか見てね";
+    t.searchOneEye = "片目しか映ってないよ。HMD をかぶり直してね";
     t.eyecamRemainingFormat = "あと %d 秒";
     t.eyecamStepFormat = "ステップ %d / %d";
     t.eyecamSending = "送っています…";
@@ -952,6 +956,10 @@ UiText makeEnglish() {
     t.eyecamUnknownFormat = "State: %s";
     t.eyecamFpsFormat = "fps  L %s / R %s";
     t.eyecamNotLocked = "Put the headset on";
+    t.searchNotWornFormat = "Can't tell the headset is on (proximity sensor %d)";
+    t.searchNotWorn = "Can't tell the headset is on";
+    t.searchNoVideo = "No eye video. Check that eye tracking is on in SteamVR";
+    t.searchOneEye = "Only one eye is on video. Put the headset on again";
     t.eyecamRemainingFormat = "%d s left";
     t.eyecamStepFormat = "Step %d of %d";
     t.eyecamSending = "Sending…";

@@ -3549,7 +3549,13 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
     } else switch (s.state) {
         case State::Searching: {
             centered(y + 130, t.eyecamSearching, 52, 24, kText, true);
-            centered(y + 190, fpsLine, 24, 14, kTextMuted, false);
+            // Why the video isn't found yet, when eyecam-rec says; otherwise the frame rates
+            const std::string why = eyecam::searchText(t, s);
+            if (why.empty()) {
+                centered(y + 190, fpsLine, 24, 14, kTextMuted, false);
+            } else {
+                centered(y + 190, why, 28, 14, kDanger, true);
+            }
             const double w = 240;
             drawButton(pen, cx - w / 2, y + 250, w, 68, t.eyecamStop, {PanelAction::EyecamStop, nullptr, 0},
                        stopUsable, false, 26);
@@ -3561,7 +3567,10 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
             // A calibration waits for the video before its first step
             if (calibrating && s.stepLabel.empty()) {
                 centered(y + 130, t.eyecamCalibWaiting, 44, 24, kText, true);
-                if (!s.locked) centered(y + 190, t.eyecamNotLocked, 32, 18, kDanger, true);
+                if (!s.locked) {
+                    const std::string why = eyecam::searchText(t, s);
+                    centered(y + 190, why.empty() ? std::string(t.eyecamNotLocked) : why, 32, 14, kDanger, true);
+                }
                 const double w = 240;
                 drawButton(pen, cx - w / 2, y + 250, w, 68, t.eyecamStop, {PanelAction::EyecamStop, nullptr, 0},
                            stopUsable, false, 26);
@@ -3601,7 +3610,8 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
             // The seconds left of the step; while the cameras lost the eyes (the headset came off; the time runs on),
             // a call to put it back on in their place
             if (!s.locked) {
-                centered(y + 226, t.eyecamNotLocked, 40, 20, kDanger, true);
+                const std::string why = eyecam::searchText(t, s);
+                centered(y + 226, why.empty() ? std::string(t.eyecamNotLocked) : why, 40, 14, kDanger, true);
             } else if (std::isfinite(s.stepRemainingS)) {
                 char left[64];
                 std::snprintf(left, sizeof(left), t.eyecamRemainingFormat,
@@ -4076,9 +4086,9 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             title(t.setupStepLearn, t.setupWaitPill, kAccent);
             y += 50;
             text(x0, y, t.setupWaitTitle, fitSize(pen, t.setupWaitTitle, 26, 16, w, true), kText, true);
-            // What it needs: the camera video, and each eye seen (its pupil found, when eyecam-rec says)
-            const bool video = s.state == State::Idle || s.state == State::Calibrating || s.state == State::Searching ||
-                               s.state == State::Recording;
+            // What it needs: the camera video (frames coming in, not just the buffers held), and each eye seen (its
+            // pupil found, when eyecam-rec says)
+            const bool video = eyecam::videoFlowing(s);
             const double boxTop = y + 18;
             const double boxH = 126;
             box(boxTop, boxH);
@@ -4131,9 +4141,13 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                          kTextMuted);
             }
             y = by + bh;
-            // An eye's pupil not found: put the headset on again first. Otherwise when it can be pressed
+            // An eye's pupil not found: put the headset on again first. The video not found: why, as eyecam-rec says.
+            // Otherwise when it can be pressed
+            const std::string why = eyecam::searchText(t, s);
             if (s.locked && eyecam::pupilTrouble(s)) {
                 para(t.setupWaitNoPupil, 15, kDanger, true, 32, 21, 2);
+            } else if (!why.empty()) {
+                para(why, 15, kAccent, true, 32, 21, 2);
             } else {
                 para(t.setupWaitFoot, 14, kTextMuted, false, 30, 20, 2);
             }
@@ -4192,8 +4206,10 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                 const double br = x1 - 18;
                 const double baseline = boxTop + 56;
                 if (!s.locked) {
-                    pen.text(bx, baseline, t.eyecamNotLocked, fitSize(pen, t.eyecamNotLocked, 26, 14, br - bx, true),
-                             kDanger, true);
+                    // (why, when eyecam-rec says)
+                    const std::string why = eyecam::searchText(t, s);
+                    const std::string call = why.empty() ? std::string(t.eyecamNotLocked) : why;
+                    pen.text(bx, baseline, call, fitSize(pen, call, 26, 14, br - bx, true), kDanger, true);
                 } else if (std::isfinite(s.stepRemainingS)) {
                     const int left = static_cast<int>(std::ceil(std::max(0.0, s.stepRemainingS) - 1e-9));
                     double lx = bx;
@@ -4331,7 +4347,8 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             y = by + bh;
             // A failed one, under its buttons: the video not there, or an eye's pupil not found (before "again")
             if (failed && !s.locked) {
-                para(t.setupWaitFoot, 14, kTextMuted, false, 30, 20, 2);
+                const std::string why = eyecam::searchText(t, s);
+                para(why.empty() ? std::string(t.setupWaitFoot) : why, 14, kTextMuted, false, 30, 20, 2);
             } else if (failed && eyecam::pupilTrouble(s)) {
                 para(t.setupWaitNoPupil, 15, kDanger, true, 32, 21, 2);
             }
@@ -4749,7 +4766,12 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
                 }
                 break;
             }
-            case CameraLine::PutOn: sentence = t.camLinePutOn; break;
+            case CameraLine::PutOn: {
+                // (why the video isn't found, when eyecam-rec says)
+                const std::string why = eyecam::searchText(t, s);
+                sentence = why.empty() ? std::string(t.camLinePutOn) : why;
+                break;
+            }
             case CameraLine::Off: sentence = t.camLineOff; break;
             case CameraLine::Reason: sentence = reason; break;
         }

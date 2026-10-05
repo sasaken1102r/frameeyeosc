@@ -87,6 +87,7 @@ struct Options {
     std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
     double historyScroll = -1.0;  ///< --history-scroll: px it is scrolled (-1 = as opened)
     std::string changelogDir;     ///< --changelog-dir: read CHANGELOG*.md from here only
+    bool diag = false;            ///< --diag: the diagnostics page open (on the Advanced tab)
     std::string language;         ///< for --dump-png: overrides the config language (ja / en)
     PanelTab tab = PanelTab::Basic;
     bool previewQuit = false;
@@ -108,6 +109,7 @@ struct Options {
     bool fakeLocked = false;
     bool fakeConfigError = false;
     bool fakeSourceError = false;
+    bool fakeCoreError = false;   ///< --fake-core-error: frameeyeosc's last_error
     bool fakeBroken = false;
     bool fakeWriteError = false;
     bool fakeCustom = false;
@@ -221,6 +223,7 @@ void printUsage() {
         "      --history         Open the version history (Advanced tab)\n"
         "      --history-open VERSION  ...with this version's row open instead of the installed one\n"
         "      --history-scroll PX  ...scrolled this far (kept within the list)\n"
+        "      --diag            Open the diagnostics page (Advanced tab)\n"
         "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
         "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
         "      --preview-quit    Show \"press again to quit\"\n"
@@ -236,6 +239,7 @@ void printUsage() {
         "      --fake-locked     Some keys locked by the command line\n"
         "      --fake-config-error  frameeyeosc reports a config error\n"
         "      --fake-source-error  frameeyeosc can't read the eye tracker (an unsupported shared-memory version)\n"
+        "      --fake-core-error  frameeyeosc logged a problem 2 minutes ago (its last_error)\n"
         "      --fake-broken     config.json can't be parsed\n"
         "      --fake-write-error  The panel failed to write config.json\n"
         "      --fake-custom     Gaze smoothing values that match no preset\n"
@@ -280,7 +284,11 @@ void printUsage() {
         "                        user too, a failed user calibration's message for each eye), prov\n"
         "                        (failed=L|R: provisional values, not the previous ones),\n"
         "                        search=not_worn|no_video|one_eye (unlocked, and why: the proximity sensor says\n"
-        "                        the headset is off, no eye video, or only one eye's; not_worn reads 12)\n"
+        "                        the headset is off, no eye video, or only one eye's; not_worn reads 12),\n"
+        "                        prox=V (the proximity reading), blocks=N (changed blocks before the last look;\n"
+        "                        the look itself follows the state: the ring of 8, or where search=... stops),\n"
+        "                        lasterror (eyecam-rec's last error, 3 minutes ago). The last calibration follows\n"
+        "                        setup, failed=... and calib-error\n"
         "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
@@ -327,6 +335,9 @@ struct FakeEyecam {
     bool provisional = false;  ///< failed=L|R: provisional values (no earlier ones)
     std::string search;     ///< search: why the video isn't found (not_worn / no_video / one_eye; "" = an older
                             ///< eyecam-rec without it, or locked)
+    double prox = -1.0;     ///< prox=V: the proximity reading (-1 = as the search says)
+    int blocks = -1;        ///< blocks=N: changed blocks before the last look (-1 = as the search says)
+    bool lastError = false; ///< lasterror: eyecam-rec's last error
 };
 
 /**
@@ -420,6 +431,14 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
         } else if (flag == "search=not_worn" || flag == "search=no_video" || flag == "search=one_eye") {
             fake.search = flag.substr(7);
             fake.unlocked = true;
+        } else if (flag.rfind("prox=", 0) == 0 && flag.size() > 5 &&
+                   flag.find_first_not_of("0123456789.", 5) == std::string::npos) {
+            fake.prox = std::atof(flag.c_str() + 5);
+        } else if (flag.rfind("blocks=", 0) == 0 && flag.size() > 7 &&
+                   flag.find_first_not_of("0123456789", 7) == std::string::npos) {
+            fake.blocks = std::atoi(flag.c_str() + 7);
+        } else if (flag == "lasterror") {
+            fake.lastError = true;
         } else if (flag == "ready") {
             fake.baseline = "ready";
         } else if (flag == "saved") {
@@ -494,6 +513,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--history-scroll" && hasNext) {
             options.history = true;
             options.historyScroll = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--diag") {
+            options.diag = true;
         } else if (arg == "--changelog-dir" && hasNext) {
             options.changelogDir = argv[++i];
         } else if (arg == "--fit-details") {
@@ -573,6 +594,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeLocked = true;
         } else if (arg == "--fake-config-error") {
             options.fake = options.fakeConfigError = true;
+        } else if (arg == "--fake-core-error") {
+            options.fake = options.fakeCoreError = true;
         } else if (arg == "--fake-source-error") {
             options.fake = options.fakeSourceError = true;
         } else if (arg == "--fake-broken") {
@@ -1003,6 +1026,55 @@ eyecam::View fakeEyecam(const std::string& text) {
                       (widenDefault ? ". Couldn't measure widening, using the usual width" : "") + ") [12/486, 90 needed]";
     }
     if (fake.message == 2) s.messageEn.clear();
+    // The diagnostics: the proximity threshold, the last look (as eyecam-rec's own --fake makes it), the last wear
+    // calibration and the last error
+    s.proxMin = 20.0;
+    if (fake.prox >= 0) {
+        s.prox = fake.prox;
+    } else if (state != "waiting" && !std::isfinite(s.prox)) {
+        s.prox = 31.0;  // (worn)
+    }
+    if (state != "waiting") {
+        eyecam::SearchDetail& d = s.searchDetail;
+        if (fake.search == "one_eye") {
+            d = {true, true, 4, 90.0, 4, false, "one_eye", 64};
+        } else if (fake.search == "not_worn" || fake.search == "no_video") {
+            d = {true, true, 0, 0.0, 0, false, "no_candidates", fake.search == "no_video" ? 3 : 0};
+        } else {
+            d = {true, true, 8, 90.0, 8, true, "", 128};
+        }
+        if (fake.blocks >= 0) d.changedBlocks = fake.blocks;
+    }
+    {
+        eyecam::LastCalib& c = s.lastCalib;
+        const bool failedWear = state == "calib-error" && fake.calibUser != 1;
+        c.known = true;
+        c.present = fake.setup == 1 || !fake.failed.empty() || failedWear;
+        c.time = "2026-10-05 19:51:03";
+        c.ok = fake.failed != "LR" && fake.failed != "mixed" && !failedWear;
+        c.failedEye = c.ok ? (fake.failed == "L" || fake.failed == "R" ? fake.failed : "") : "LR";
+        c.message = c.ok ? (c.failedEye.empty() ? std::string("校正できた（かぶり）") : s.message) : s.message;
+        c.messageEn = c.ok ? (c.failedEye.empty() ? std::string("Calibrated") : s.messageEn) : s.messageEn;
+        if (failedWear && fake.failed.empty()) {
+            c.message = "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]";
+            c.messageEn = "Both eyes: couldn't see the pupil well (adjust the headset and try again) "
+                          "[L 12/486, R 30/486, 90 needed]";
+        }
+        for (int eye = 0; eye < 2; ++eye) {
+            const bool lost = !c.ok || c.failedEye == (eye == 0 ? "L" : "R");
+            c.pupilFrames[eye] = lost ? (eye == 0 ? 12 : 30) : (eye == 0 ? 470 : 482);
+            c.normalFrames[eye] = 486;
+            c.pupilX[eye] = lost ? nan : (eye == 0 ? 238 : 252);
+            c.pupilY[eye] = lost ? nan : (eye == 0 ? 201 : 194);
+            c.window[eye][0] = eye == 0 ? 186 : 180;
+            c.window[eye][1] = eye == 0 ? 346 : 340;
+        }
+    }
+    if (fake.lastError || state == "calib-error" || state == "error") {
+        s.lastError = state == "error" || state == "calib-error" ? s.message : "右のカメラの映像が 3 秒届きません";
+        s.lastErrorEn = state == "error" || state == "calib-error" ? s.messageEn : "";
+        s.lastErrorUnix = unixNow() - 180;
+    }
     // A failed calibration keeps the buffers (eyecam-rec writes has_buffers in every state)
     s.hasBuffers = fake.buffers || state == "calib-error";
     s.hasSetupDone = fake.setup >= 0;
@@ -1249,6 +1321,11 @@ PanelModel fakeModel(const Options& options) {
         if (options.fakeSourceError) {
             s.sourceError = "unsupported eye shared-memory version 6; supported: 4, 5";
         }
+        if (options.fakeCoreError) {
+            s.lastError = "Can't send OSC to 192.168.0.60:9000 yet (Network is unreachable (os error 101)); retrying "
+                          "every 5 s";
+            s.lastErrorTime = now - 120;
+        }
         s.dominantEye = options.fakeDominantEye;
         // LiveLink: the pupils go straight to VRChat on the same PC (while the setting is on)
         if (options.fakeLivelink && m.config.flag(key::kPupilsToVrchat)) s.pupilTarget = "192.168.0.60:9000";
@@ -1299,6 +1376,9 @@ PanelModel fakeModel(const Options& options) {
     if (options.fakeWriteError) m.panelError = "rename failed: Read-only file system";
     m.update = fakeUpdate(options.fakeUpdate, options.fakeUpdateNotes);
     if (options.fakeUpdate.empty()) m.update.state = frame_updater::UpdateState::UpToDate;
+    // The diagnostics page's SteamOS and camera tool, as on the developer's headset
+    m.system.steamos = "0.4.3 (20260930.6234839)";
+    m.system.grabHash = "294d06c6";
     return m;
 }
 
@@ -1329,6 +1409,17 @@ void settleUpdater(frame_updater::UpdateChecker& updater, bool enabled) {
  * it is open).
  * @param model the model (its changelogDirs; history is written)
  */
+/**
+ * What the diagnostics page reads itself: SteamOS's version (once) and the camera tool's checksum (again only when the
+ * file changed).
+ * @param model where to put them
+ */
+void readSystem(PanelModel& model) {
+    static diag::FileHash grabHash;
+    if (model.system.steamos.empty()) model.system.steamos = diag::readSteamos();
+    model.system.grabHash = grabHash.get(diag::defaultGrabPath());
+}
+
 void loadHistory(PanelModel& model) {
     model.history = changelog::load(model.changelogDirs, model.language == Language::Ja);
     std::fprintf(stderr, "[history] %zu versions from %s\n", model.history.entries.size(),
@@ -1359,6 +1450,8 @@ int runDumpPng(const Options& options) {
             model.eyecam.status = eyecam::readStatus(model.eyecamDir);
             model.eyecam.visible = eyecam::tabVisible(model.eyecam.status, unixNow());
             model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
+            model.update.current = FRAMEEYEOSC_VERSION;
+            readSystem(model);
         }
         if (!options.language.empty()) parseLanguage(options.language, model.language);
         model.changelogDirs =
@@ -1368,6 +1461,7 @@ int runDumpPng(const Options& options) {
         panel.setFitDetails(options.fitDetails);
         panel.setFitDetailsPage(options.fitDetailsPage);
         panel.setLidMarks(options.lidMarks);
+        if (options.diag) panel.openDiag();
         if (options.history) {
             loadHistory(model);
             panel.openHistory();
@@ -2024,6 +2118,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::HostKey:
         case PanelAction::HostCancel:
         case PanelAction::HistoryClose:
+        case PanelAction::DiagClose:
         case PanelAction::HistoryRow:
         case PanelAction::HistoryScroll:
         case PanelAction::EyecamStart:
@@ -2059,6 +2154,10 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         }
         case PanelAction::HistoryOpen:
             loadHistory(model);
+            return;
+        case PanelAction::DiagOpen:
+            readSystem(model);
+            std::fprintf(stderr, "[diag] opened: %s\n", diag::code(model).c_str());
             return;
         case PanelAction::HostEnter: {
             // Start from the IP address set now (a host name can only be changed in config.json)
@@ -2301,6 +2400,7 @@ int runOverlay(const Options& options) {
     std::fprintf(stderr, "[start] config %s, status %s\n", model.configPath.c_str(), model.statusPath.c_str());
     if (!model.config.error.empty()) std::fprintf(stderr, "[config] broken: %s\n", model.config.error.c_str());
     migrateConfig(model);
+    model.system.steamos = diag::readSteamos();
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
     EyePanel panel(fonts);
@@ -2394,6 +2494,8 @@ int runOverlay(const Options& options) {
     uint64_t drawnAutostart = autostart.snapshot(model.autostart);
     uint64_t drawnUpdate = 0;
     std::string lastSignature;
+    std::string drawnDiag;          // what the diagnostics page showed last
+    double lastDiagRead = -1e9;
     std::string lastStamp = configStamp(model.configPath);
     bool lastRunning = false;
     double lastStatusRead = -1e9;
@@ -2819,6 +2921,18 @@ int runOverlay(const Options& options) {
             }
             lightWanted = wanted;
             lightMoving = eyecam::lightFading(light, wanted);
+        }
+
+        // The diagnostics page: redrawn when anything on it changes (the tool's checksum is looked at again too, which
+        // costs a stat unless the file changed)
+        if (visible && panel.diagOpen() && nowSeconds() >= lastDiagRead + kStatusReadSec) {
+            lastDiagRead = nowSeconds();
+            readSystem(model);
+            const std::string signature = diag::signature(uiText(model.language), model);
+            if (signature != drawnDiag) {
+                drawnDiag = signature;
+                dirty = true;
+            }
         }
 
         // Draw only while visible, and only when something changed

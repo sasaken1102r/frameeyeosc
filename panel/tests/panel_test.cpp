@@ -406,7 +406,91 @@ void testSearchSetup(const FontSet& fonts) {
             m.eyecam.status.prox = 12.0;
             panel.render(m);
             CHECK(hits(panel, PanelAction::EyecamCalib).empty());
+            // Beside the reason, a way to the diagnostics page (not without one)
+            CHECK(hits(panel, PanelAction::DiagOpen).size() == (reason[0] != '\0' ? 1u : 0u));
         }
+    }
+    // Pressed, it shows the page on the Advanced tab
+    PanelModel m = eyecamIn("idle", false);
+    m.eyecam.status.locked = false;
+    m.eyecam.status.hasBuffers = true;
+    m.eyecam.status.hasSearch = true;
+    m.eyecam.status.search = "not_worn";
+    panel.render(m);
+    const std::vector<EyePanel::HitArea> link = hits(panel, PanelAction::DiagOpen);
+    CHECK(link.size() == 1);
+    if (link.empty()) return;
+    const PanelHit hit = panel.pointerDown(link[0].x + link[0].w / 2, link[0].y + link[0].h / 2, 0.0);
+    panel.pointerUp();
+    CHECK(hit.action == PanelAction::DiagOpen);
+    CHECK(panel.tab() == PanelTab::Advanced && panel.diagOpen());
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::DiagClose).size() == 1);
+}
+
+/**
+ * Press the one usable button with this action.
+ * @param panel the panel (rendered)
+ * @param action the action
+ * @return what the press returned (action None if there is no such button)
+ */
+PanelHit press(EyePanel& panel, PanelAction action) {
+    const std::vector<EyePanel::HitArea> found = hits(panel, action);
+    if (found.size() != 1) return {};
+    const PanelHit hit = panel.pointerDown(found[0].x + found[0].w / 2, found[0].y + found[0].h / 2, 0.0);
+    panel.pointerUp();
+    return hit;
+}
+
+void testDiagPage(const FontSet& fonts) {
+    // The Advanced tab offers it, with eyecam-rec and without
+    for (const bool eyecam : {true, false}) {
+        for (const Language language : {Language::Ja, Language::En}) {
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Advanced);
+            PanelModel m = modelWith(Lids::Both, eyecam);
+            m.language = language;
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::HistoryOpen).size() == 1);
+            CHECK(press(panel, PanelAction::DiagOpen).action == PanelAction::DiagOpen);
+            CHECK(panel.diagOpen() && !panel.historyOpen());
+            // The page: only "Back" and the tabs
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::DiagOpen).empty());
+            CHECK(hits(panel, PanelAction::HistoryOpen).empty());
+            for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::DiagClose);
+            }
+            // "Back" returns to the tab's rows; another tab closes it too
+            CHECK(press(panel, PanelAction::DiagClose).action == PanelAction::None);
+            CHECK(!panel.diagOpen() && panel.tab() == PanelTab::Advanced);
+            panel.render(m);
+            press(panel, PanelAction::DiagOpen);
+            panel.render(m);
+            panel.pointerDown(0, 0, 0.0);  // (nothing there)
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) {
+                if (area.hit.arg != static_cast<int>(PanelTab::Basic)) continue;
+                panel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+                panel.pointerUp();
+            }
+            CHECK(panel.tab() == PanelTab::Basic && !panel.diagOpen());
+            panel.setTab(PanelTab::Advanced);
+            CHECK(!panel.diagOpen());
+        }
+    }
+    // The eye cameras' page: beside its "why no video" line only
+    for (const char* reason : {"no_video", ""}) {
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Eyecam);
+        PanelModel m = eyecamIn("idle");
+        m.eyecam.status.live = true;
+        m.eyecam.status.locked = false;
+        m.eyecam.status.hasSearch = reason[0] != '\0';
+        m.eyecam.status.search = reason;
+        m.status.camera.used[0] = m.status.camera.used[1] = false;
+        m.status.camera.present = false;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::DiagOpen).size() == (reason[0] != '\0' ? 1u : 0u));
     }
 }
 
@@ -634,6 +718,7 @@ int main() {
     testCalibNeedsLids(fonts);
     testPupilSetup(fonts);
     testSearchSetup(fonts);
+    testDiagPage(fonts);
     testPartialResult(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);

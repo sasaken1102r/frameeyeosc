@@ -142,6 +142,36 @@ enum class PageScreen {
 /** The most of status.json that is read (eyecam-rec writes one line of well under 2 KB). */
 constexpr size_t kMaxStatusBytes = 64 * 1024;
 
+/** The last look for the eyes' video ("search_detail"; for the diagnostics page). */
+struct SearchDetail {
+    bool known = false;       ///< "search_detail" is there (an object, or null before the first look; an older
+                              ///< eyecam-rec doesn't write it)
+    bool present = false;     ///< ...and an object
+    int candidates = 0;       ///< picture-like frames in changed memory
+    double refreshHz = 0.0;   ///< how often they were rewritten a second (median)
+    int slots = 0;            ///< the ring's slots found
+    bool bothEyes = false;
+    std::string stoppedAt;    ///< "" (found), "no_candidates", "not_refreshing", "few_slots", "one_eye"
+    int changedBlocks = -1;   ///< 64 KiB blocks of the buffers changed before it (-1 when missing)
+};
+
+/** The last "calib wear" ("last_calib"; for the diagnostics page). Numbers it doesn't have are NaN. */
+struct LastCalib {
+    bool known = false;         ///< "last_calib" is there (an object, or null: none yet; an older eyecam-rec doesn't
+                                ///< write it)
+    bool present = false;       ///< ...and an object
+    std::string time;           ///< local "YYYY-MM-DD HH:MM:SS"
+    bool ok = false;
+    std::string failedEye;      ///< "L" / "R" (went through without it), "LR" (failed), ""
+    std::string message;        ///< eyecam-rec's (Japanese)
+    std::string messageEn;      ///< ...in English ("" when missing)
+    double pupilFrames[2] = {0.0, 0.0};   ///< per eye (left, right): normal-step frames with the pupil
+    double normalFrames[2] = {0.0, 0.0};  ///< ...normal-step frames
+    double pupilX[2] = {0.0, 0.0};        ///< ...the median pupil position (px)
+    double pupilY[2] = {0.0, 0.0};
+    double window[2][2] = {{0.0, 0.0}, {0.0, 0.0}};  ///< ...the search window's left and right edge (px)
+};
+
 /** status.json as read. Numbers missing from it are NaN (steps -1). */
 struct Status {
     bool present = false;    ///< the file was read and parsed as an object
@@ -191,6 +221,12 @@ struct Status {
                                    ///< missing)
     bool hasSearch = false;        ///< "search" is there (a newer eyecam-rec that says why the video isn't found)
     std::string search;            ///< "search": not_worn / no_video / one_eye while searching unlocked, else ""
+    double proxMin = 0.0;          ///< "prox_min": above it the headset counts as worn (NaN when missing)
+    SearchDetail searchDetail;     ///< "search_detail"
+    LastCalib lastCalib;           ///< "last_calib"
+    std::string lastError;         ///< "last_error": the last error's message, kept after it ("" = none)
+    std::string lastErrorEn;       ///< ...in English
+    double lastErrorUnix = 0.0;    ///< ...when (Unix seconds; 0 = none)
 };
 
 /**

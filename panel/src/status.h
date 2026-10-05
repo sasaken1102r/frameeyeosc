@@ -99,6 +99,8 @@ struct EyeStatus {
     std::vector<std::string> locked;  ///< config keys set on the command line
     JsonValue effective;              ///< the settings in effect (config keys)
     GazeCaptureStatus capture;        ///< the latest gaze capture
+    std::string lastError;            ///< the last problem frameeyeosc logged ("last_error"; "" = none, or an older one)
+    double lastErrorTime = 0.0;       ///< ...when (Unix seconds)
 
     /**
      * Whether a config key is set on frameeyeosc's command line (only trusted while it runs).

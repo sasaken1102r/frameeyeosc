@@ -365,6 +365,7 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 ## うまく動かないとき
 
 - ログ: `journalctl --user -u frameeyeosc -f`（パネルは `journalctl --user -u frameeyeosc-panel -f`）
+- 困って相談するとき: パネルの「詳細」タブの［診断を見る］（目のカメラのタブで映像が見つからない理由が出ているときは、その横の［診断を見る］）を押して、そのページのスクショを送ってください。版、目のデータ、目のカメラが映像を最後に探したときの様子、最後の校正と、返信に書ける短い「診断コード」（例 `NW·P3·B0·G1·C1R·F1`。読み方は [panel/README.md](panel/README.md#診断コード)）が 1 枚に出ます
 - `No Steam Link connection found; waiting for one`: Steam Link がまだつながっていません。または送り先の PC を固定してください
 - `Can't send OSC to ... yet (Network is unreachable)` や `Sending OSC to ... failed (...)`: ネットワークがまだつながっていない（起動直後の Wi-Fi など）か、PC に届きません。frameeyeosc は動き続けて送り直し、送れるようになると `... works again` と出ます
 - 左の列の「目のデータ」が少なめ（赤、毎秒 60 未満。90 のはずが 46 や 15 のことがありました）、または目を合わせると最初の点でサンプルが足りずに止まる: 回数の下の行に、どちらが遅いかが出ます。「本体の処理が追いついていません」なら、目のトラッカーが出したサンプルを frameeyeosc が読みそびれたか、1 つに時間がかかりすぎています。「Frame から届く数が少なめです」なら、目のトラッカーから届く数そのものが少なく、frameeyeosc は全部読めています。少なめが 10 秒続くと、数字を 1 行ログに残します（`journalctl --user -u frameeyeosc` に `Eye data has been low for 10 s: …`）。その行と、PC から Steam Link で送っていたかどうかを知らせてください

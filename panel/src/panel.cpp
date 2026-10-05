@@ -1,6 +1,7 @@
 // The panel. Colors only come from theme.h (in step with the --contrast-report pairs).
 #include "panel.h"
 
+#include "diag.h"
 #include "draw.h"
 #include "fit_text.h"
 #include "host_entry.h"
@@ -833,11 +834,20 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::Tab:
             tab_ = static_cast<PanelTab>(hit.arg);
             historyOpen_ = false;
+            diagOpen_ = false;
             return {};
         case PanelAction::HistoryOpen:
             // The caller reads the changelog
             openHistory();
+            diagOpen_ = false;
             return hit;
+        case PanelAction::DiagOpen:
+            // (from the eye cameras tab too; the caller reads the tool's checksum)
+            openDiag();
+            return hit;
+        case PanelAction::DiagClose:
+            closeDiag();
+            return {};
         case PanelAction::HistoryClose:
             closeHistory();
             return {};
@@ -877,6 +887,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             // Its steps show on the eye cameras tab
             if (eyecamTab_) tab_ = PanelTab::Eyecam;
             historyOpen_ = false;
+            diagOpen_ = false;
             eyecamConfirm_.close();
             return hit;
         case PanelAction::EyecamSensitivity:
@@ -1006,6 +1017,13 @@ void EyePanel::openHistory() {
     historyScrollSet_ = false;
     historyReveal_ = false;
     historyScroll_ = 0.0;
+}
+
+void EyePanel::openDiag() {
+    tab_ = PanelTab::Advanced;
+    diagOpen_ = true;
+    historyOpen_ = false;
+    eyecamConfirm_.close();
 }
 
 void EyePanel::setHistoryRow(const std::string& version) {
@@ -2784,12 +2802,12 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     }
 }
 
-double EyePanel::drawSectionTitle(const Pen& pen, double y, const std::string& title) {
+double EyePanel::drawSectionTitle(const Pen& pen, double y, const std::string& title, double lineRight) {
     pen.text(kInnerX, y + 20, title, 15, kTextMuted, true);
     pen.color(kDivider);
     cairo_set_line_width(pen.cr, 1);
     cairo_move_to(pen.cr, kInnerX, y + 29.5);
-    cairo_line_to(pen.cr, kInnerRight, y + 29.5);
+    cairo_line_to(pen.cr, lineRight > 0 ? lineRight : kInnerRight, y + 29.5);
     cairo_stroke(pen.cr);
     return 36;
 }
@@ -2797,6 +2815,10 @@ double EyePanel::drawSectionTitle(const Pen& pen, double y, const std::string& t
 void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
     if (historyOpen_) {
         drawHistory(pen, t, m);
+        return;
+    }
+    if (diagOpen_) {
+        drawDiag(pen, t, m);
         return;
     }
     // The developer recording: its light warning, and its steps while it runs, in the tab's place
@@ -2876,7 +2898,14 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         y += h + (dev ? 4 : 10);
     }
 
-    y += drawSectionTitle(pen, y, t.sectionFiles);
+    // "Diagnostics" at the right of the section's title (the line under the title stops short of it)
+    {
+        const double chipH = 30;
+        const double chipW = drawDiagChip(pen, t, kInnerRight, y - 2, chipH, 15, false);
+        drawSectionTitle(pen, y, t.sectionFiles, kInnerRight - chipW - 12);
+        drawDiagChip(pen, t, kInnerRight, y - 2, chipH, 15);
+        y += 36;
+    }
     // Read-only rows in smaller type: the title (muted) on the left, the text on the right
     const double infoH = dev ? 22 : 28;
     const double infoSize = 15;
@@ -3153,6 +3182,135 @@ double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_upda
         pen.text(kInnerX, baseline - 5, line, notesSize, kText);
     }
     return h + 14 + notesLines.size() * notesStep;
+}
+
+double EyePanel::drawDiagChip(const Pen& pen, const UiText& t, double right, double top, double h, double size,
+                               bool draw) {
+    const PanelHit hit {PanelAction::DiagOpen, nullptr, 0};
+    const double w = pen.measure(t.diagButton, size, true) + 32;
+    if (!draw) return w;
+    const double x = right - w;
+    const int pointer = pointerState(hit);
+    fillRounded(pen, x, top, w, h, h / 2, pointer > 0 ? kControlHover : kControl);
+    strokeRounded(pen, x, top, w, h, h / 2, kBorder, 2);
+    textCentered(pen, x + w / 2, centerBaseline(top, h, size), t.diagButton, size, kText, true);
+    addButton(hit, x, top, w, h);
+    return w;
+}
+
+void EyePanel::drawDiag(const Pen& pen, const UiText& t, const PanelModel& m) {
+    const double top = kContentY + 14;
+    const double headerH = 56;
+    // "Back" at the right, the code left of it (its label over it), the title and what the page is for at the left
+    const double backW = std::max(110.0, pen.measure(t.diagBack, 18, true) + 48);
+    drawButton(pen, kInnerRight - backW, top + 4, backW, headerH - 8, t.diagBack, {PanelAction::DiagClose, nullptr, 0},
+               true, false, 18);
+    const std::string code = diag::code(m);
+    const double codeSize = 20;
+    const double chipH = 32;
+    const double chipW = pen.measure(code, codeSize, true) + 28;
+    const double chipRight = kInnerRight - backW - 14;
+    const double chipX = chipRight - chipW;
+    const double chipY = top + headerH - chipH - 2;
+    pen.text(chipRight, chipY - 5, t.diagCodeLabel, 13, kTextMuted, false, true);
+    fillRounded(pen, chipX, chipY, chipW, chipH, 8, kAccent);
+    textCentered(pen, chipX + chipW / 2, centerBaseline(chipY, chipH, codeSize), code, codeSize, kOnAccent, true);
+    const double codeLeft = std::min(chipX, chipRight - pen.measure(t.diagCodeLabel, 13, false));
+    const double titleRoom = std::max(120.0, codeLeft - 20 - kInnerX);
+    pen.text(kInnerX, top + 25, t.diagTitle, fitSize(pen, t.diagTitle, 22, 16, titleRoom, true), kText, true);
+    pen.text(kInnerX, top + 48, t.diagSub, fitSize(pen, t.diagSub, 15, 11, titleRoom, false), kTextMuted);
+
+    // The four cards, two by two: each row of cards as tall as its fuller card needs, the room left shared out
+    const std::vector<diag::Card> cards = diag::cards(t, m);
+    const double gap = 12;
+    const double gridTop = top + headerH + 10;
+    const double gridBottom = kContentY + kContentH - 14;
+    const double cardW = (kInnerRight - kInnerX - gap) / 2;
+    const double padX = 14;
+    const double innerW = cardW - padX * 2;
+    const double titleBaseline = 25;  // from the card's top
+    const double firstGap = 26;       // the title's baseline to the first row's
+    const double bottomPad = 12;      // the last baseline to the card's bottom
+    /** A row as laid out: its value's lines, beside the label (one) or under it. */
+    struct Laid {
+        bool under = false;
+        std::vector<std::string> lines;
+    };
+    /** How a card is laid out: the text size and its rows. */
+    struct Layout {
+        double size = 15;
+        std::vector<Laid> rows;
+        double height = 0;  ///< the card's height it needs
+    };
+    const auto layout = [&](const diag::Card& card, double size, size_t maxLines) {
+        Layout l;
+        l.size = size;
+        const double step = size + 8;
+        const double wrapStep = size + 5;
+        double h = titleBaseline + firstGap - step;
+        for (const diag::Row& row : card.rows) {
+            Laid laid;
+            const double labelW = pen.measure(row.label, size - 1, false);
+            if (labelW + 14 + pen.measure(row.value, size, row.bad) <= innerW) {
+                laid.lines = {row.value};
+                h += step;
+            } else {
+                laid.under = true;
+                laid.lines = wrapText(pen, row.value, size, row.bad, innerW - 12, maxLines);
+                h += step + laid.lines.size() * wrapStep;
+            }
+            l.rows.push_back(laid);
+        }
+        l.height = h + bottomPad;
+        return l;
+    };
+    // Each card as it would like to be (values under their labels up to three lines)
+    std::vector<Layout> wanted;
+    for (size_t i = 0; i < cards.size() && i < 4; ++i) wanted.push_back(layout(cards[i], 15, 3));
+    const double room = gridBottom - gridTop - gap;
+    double rowH[2] = {0, 0};
+    for (size_t i = 0; i < wanted.size(); ++i) rowH[i / 2] = std::max(rowH[i / 2], wanted[i].height);
+    if (rowH[0] + rowH[1] <= room) {
+        const double extra = (room - rowH[0] - rowH[1]) / 2;
+        rowH[0] += extra;
+        rowH[1] += extra;
+    } else {
+        // Too much: shared out as they need it (each card shrinks to fit below)
+        const double need = rowH[0] + rowH[1];
+        rowH[0] = room * rowH[0] / need;
+        rowH[1] = room - rowH[0];
+    }
+    for (size_t i = 0; i < wanted.size(); ++i) {
+        const diag::Card& card = cards[i];
+        const double x = kInnerX + (i % 2) * (cardW + gap);
+        const double y = gridTop + (i / 2) * (rowH[0] + gap);
+        const double cardH = rowH[i / 2];
+        // Shrunk until it fits: two lines under a label, then one, then smaller type
+        Layout l = wanted[i];
+        for (int pass = 0; l.height > cardH && pass < 5; ++pass) {
+            l = layout(card, pass < 2 ? 15 : 15 - (pass - 1), pass == 0 ? 2 : 1);
+        }
+        fillRounded(pen, x, y, cardW, cardH, 12, kBg);
+        pen.text(x + padX, y + titleBaseline, card.title, 15, kAccent, true);
+        const double step = l.size + 8;
+        const double wrapStep = l.size + 5;
+        double baseline = y + titleBaseline + firstGap;
+        for (size_t r = 0; r < card.rows.size(); ++r) {
+            const diag::Row& row = card.rows[r];
+            const Laid& laid = l.rows[r];
+            const Color valueColor = row.bad ? kDanger : kText;
+            pen.text(x + padX, baseline, row.label, l.size - 1, kTextMuted);
+            if (!laid.under) {
+                pen.text(x + cardW - padX, baseline, laid.lines.front(), l.size, valueColor, row.bad, true);
+            } else {
+                for (const std::string& line : laid.lines) {
+                    baseline += wrapStep;
+                    pen.text(x + padX + 12, baseline, line, l.size, valueColor, row.bad);
+                }
+            }
+            baseline += step;
+        }
+    }
 }
 
 void EyePanel::drawHistory(const Pen& pen, const UiText& t, const PanelModel& m) {
@@ -4147,7 +4305,16 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             if (s.locked && eyecam::pupilTrouble(s)) {
                 para(t.setupWaitNoPupil, 15, kDanger, true, 32, 21, 2);
             } else if (!why.empty()) {
-                para(why, 15, kAccent, true, 32, 21, 2);
+                // (with "Diagnostics" at the right, for someone who stays stuck there)
+                const double chipH = 30;
+                const double chipW = drawDiagChip(pen, t, x1, 0, chipH, 14, false);
+                bool first = true;
+                for (const std::string& line : wrapText(pen, why, 15, true, w - chipW - 14, 2)) {
+                    y += first ? 32 : 21;
+                    if (first && draw) drawDiagChip(pen, t, x1, y - 20, chipH, 14);
+                    first = false;
+                    text(x0, y, line, 15, kAccent, true);
+                }
             } else {
                 para(t.setupWaitFoot, 14, kTextMuted, false, 30, 20, 2);
             }
@@ -4744,12 +4911,14 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         std::string text;
         Color color;
         bool bold;
+        bool link = false;  ///< "Diagnostics" at its right (the "why no video" line)
     };
     const double width = kInnerRight - kInnerX;
     std::vector<Line> lines;
     // Ready (idle): a sentence from the same things as the "Now" row, in place of eyecam-rec's own message; running
     // anything else: its message as it is
     std::string sentence = eyecam::shownMessage(s, m.language);
+    bool whyLine = false;
     if (s.state == eyecam::State::Idle) {
         switch (cameraLine(use, warming, s.live, s.locked, v.text(key::kOutput) == kOutputVrchat)) {
             case CameraLine::BothVrchat: sentence = t.camLineBothVrchat; break;
@@ -4767,17 +4936,23 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
                 break;
             }
             case CameraLine::PutOn: {
-                // (why the video isn't found, when eyecam-rec says)
+                // (why the video isn't found, when eyecam-rec says; then with "Diagnostics" beside it)
                 const std::string why = eyecam::searchText(t, s);
                 sentence = why.empty() ? std::string(t.camLinePutOn) : why;
+                whyLine = !why.empty();
                 break;
             }
             case CameraLine::Off: sentence = t.camLineOff; break;
             case CameraLine::Reason: sentence = reason; break;
         }
     }
+    const double linkH = 30;
+    const double linkW = whyLine ? drawDiagChip(pen, t, kInnerRight, 0, linkH, 14, false) : 0.0;
     if (!sentence.empty()) {
-        for (const std::string& line : wrapText(pen, sentence, 17, false, width, 2)) lines.push_back({line, kText, false});
+        const double room = whyLine ? width - linkW - 14 : width;
+        for (const std::string& line : wrapText(pen, sentence, 17, false, room, 2)) {
+            lines.push_back({line, kText, false, whyLine});
+        }
     }
     if (view.busy) {
         lines.push_back({t.eyecamSending, kTextMuted, false});
@@ -4789,8 +4964,16 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
     }
     const double bottom = kContentY + kContentH - 14;
     double baseline = bottom;
+    bool linked = false;
     for (auto line = lines.rbegin(); line != lines.rend(); ++line) {
-        textCentered(pen, (kInnerX + kInnerRight) / 2, baseline, line->text, 17, line->color, line->bold);
+        // (the why line centered left of "Diagnostics")
+        const double right = line->link ? kInnerRight - linkW - 14 : kInnerRight;
+        textCentered(pen, (kInnerX + right) / 2, baseline, line->text, 17, line->color, line->bold);
+        // (once, beside the why line's last line)
+        if (line->link && !linked) {
+            drawDiagChip(pen, t, kInnerRight, baseline - 21, linkH, 14);
+            linked = true;
+        }
         baseline -= 24;
     }
 

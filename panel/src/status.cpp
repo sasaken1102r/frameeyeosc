@@ -177,6 +177,10 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
     status.calibrationPath = readText(root, "calibration_path");
     status.configError = readText(root, "config_error");
     status.sourceError = readText(root, "source_error");
+    if (const JsonValue* last = root.get("last_error"); last != nullptr && last->isObject()) {
+        status.lastError = readText(*last, "text");
+        status.lastErrorTime = readNumber(*last, "time", 0.0);
+    }
     status.dominantEye = readText(root, "dominant_eye");
     status.pupilTarget = readText(root, "pupil_target");
     if (status.dominantEye != "left" && status.dominantEye != "right") status.dominantEye.clear();

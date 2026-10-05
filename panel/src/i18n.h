@@ -306,6 +306,82 @@ struct UiText {
     const char* historyTitle;       ///< the version history's title
     const char* historyClose;       ///< its button back to the Advanced tab
     const char* historyMissing;     ///< no CHANGELOG.md (or CHANGELOG.ja.md) was found
+    // The diagnostics page (diag.h; the Advanced tab's "Diagnostics")
+    const char* diagButton;              ///< opens the diagnostics page (Advanced tab; eye cameras' "no video")
+    const char* diagTitle;               ///< the diagnostics page's title
+    const char* diagSub;                 ///< ...the line under it
+    const char* diagCodeLabel;           ///< over the diagnostic code
+    const char* diagBack;                ///< back to the Advanced tab
+    const char* diagCardVersions;        ///< the cards' titles
+    const char* diagCardEyeData;
+    const char* diagCardCameras;
+    const char* diagCardCalib;
+    const char* diagRowTool;             ///< the rows' labels
+    const char* diagRowOutput;
+    const char* diagRowGaze;
+    const char* diagRowSend;
+    const char* diagRowCap;
+    const char* diagRowLids;
+    const char* diagRowCoreError;
+    const char* diagRowState;
+    const char* diagRowSearch;
+    const char* diagRowBlocks;
+    const char* diagRowProx;
+    const char* diagRowPupil;
+    const char* diagRowLoad;
+    const char* diagRowWhen;
+    const char* diagRowResult;
+    const char* diagRowPupilFrames;
+    const char* diagRowPupilAt;
+    const char* diagRowWindow;
+    const char* diagRowLastError;
+    const char* diagToolOutdated;        ///< the tool: an update brought a newer one
+    const char* diagToolMissing;         ///< ...not found where install.sh puts it
+    const char* diagModeAuto;            ///< the target PC: Steam Link's
+    const char* diagModeFixed;           ///< ...fixed (the host follows)
+    const char* diagRateFormat;          ///< a rate ("%.0f": a second)
+    const char* diagMissedFormat;        ///< samples frameeyeosc missed in the last second
+    const char* diagDroppedFormat;       ///< datagrams dropped in the last second
+    const char* diagPaused;              ///< sending paused
+    const char* diagCapOn;               ///< a relaxed open eye reads 1.0 (SteamOS 0.4.3)
+    const char* diagCapOff;
+    const char* diagLidsBoth;            ///< where the eyelids come from
+    const char* diagLidsLeft;
+    const char* diagLidsRight;
+    const char* diagLidsValve;
+    const char* diagNone;                ///< no error
+    const char* diagCoreNotRunning;      ///< frameeyeosc isn't running
+    const char* diagCoreNoTarget;        ///< no target PC found (Steam Link's)
+    const char* diagWithTimeFormat;      ///< when a message came, and the message ("%s · %s")
+    const char* diagVideoSlotsFormat;    ///< the eye video flows (%d: the ring's slots)
+    const char* diagVideo;               ///< ...without the slots
+    const char* diagNotWorn;             ///< not found: the proximity sensor says the headset is off
+    const char* diagNoVideo;             ///< not found though worn
+    const char* diagOneEyeOnly;          ///< only one eye's video
+    const char* diagSearching;           ///< searching, nothing said yet
+    const char* diagLiveOff;             ///< live processing off
+    const char* diagWaitingTool;         ///< waiting for the tool to hand over the buffers
+    const char* diagNoRecorder;          ///< eyecam-rec isn't running
+    const char* diagError;               ///< eyecam-rec is in "error"
+    const char* diagCandidatesFormat;    ///< the last look: candidate frames
+    const char* diagHzFormat;            ///< ...how often they were rewritten
+    const char* diagSlotsFormat;         ///< ...the ring's slots
+    const char* diagBothEyes;
+    const char* diagOneEye;
+    const char* diagStopNoCandidates;    ///< ...where it stopped
+    const char* diagStopNotRefreshing;
+    const char* diagStopFewSlots;
+    const char* diagChangedFormat;       ///< the 64 KiB blocks changed before the last look
+    const char* diagNotLooked;           ///< no look yet
+    const char* diagUnreadable;          ///< the proximity sensor can't be read
+    const char* diagEyesFormat;          ///< a value per eye ("L %s · R %s")
+    const char* diagMsFormat;            ///< live processing time per frame
+    const char* diagOk;                  ///< the last calibration went through
+    const char* diagFailedFormat;        ///< ...failed (%s: why)
+    const char* diagPreviousLeft;        ///< ...without the left eye (it kept its previous values)
+    const char* diagPreviousRight;
+    const char* diagSameAsResult;        ///< eyecam-rec's last error is the last calibration's result
+    const char* diagNoCalib;             ///< no calibration yet
 
     // The eye cameras tab (eyecam-rec's state and controls; its recording is on the Advanced tab)
     const char* eyecamTitle;           ///< the title over the tab

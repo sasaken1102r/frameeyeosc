@@ -85,6 +85,9 @@ enum class PanelAction {
     SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
     EyecamBack,        ///< "Back" on a failed calibration's or recording's error: dismiss it in the panel only
                        ///< (SetupFlow::dismissError; eyecam-rec stays in "error" until the next command)
+    DiagOpen,          ///< open the diagnostics page on the Advanced tab (the panel opens it; the caller reads the
+                       ///< camera tool's checksum)
+    DiagClose,         ///< back to the Advanced tab (handled inside the panel)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -284,6 +287,15 @@ public:
     /** @return true while the version history is open */
     bool historyOpen() const { return historyOpen_; }
 
+    /** Show the diagnostics page on the Advanced tab (in place of its rows; choosing another tab closes it). */
+    void openDiag();
+
+    /** Close the diagnostics page. */
+    void closeDiag() { diagOpen_ = false; }
+
+    /** @return true while the diagnostics page is shown */
+    bool diagOpen() const { return diagOpen_ && tab_ == PanelTab::Advanced; }
+
     /**
      * For --history-open: open this version's row instead (without scrolling to it).
      * @param version "0.5.0"
@@ -395,6 +407,7 @@ private:
     double historyScroll_ = 0.0;        ///< px the list is scrolled
     double historyMaxScroll_ = 0.0;     ///< as far as it can scroll (from the last draw)
     double historyViewH_ = 0.0;         ///< the height it is shown in (from the last draw)
+    bool diagOpen_ = false;             ///< the diagnostics page is shown on the Advanced tab
     bool eyecamTab_ = false;            ///< the eye capture tab is in the tab row (eyecam-rec runs)
     eyecam::State eyecamState_ = eyecam::State::Missing;  ///< the recorder's state as last seen (its start button)
     eyecam::StartConfirm eyecamConfirm_;  ///< the light warning before a start
@@ -575,6 +588,30 @@ private:
      * @param model the model (the changelog, and the installed version)
      */
     void drawHistory(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * The diagnostics page in place of the Advanced tab: the title and what it is for, the diagnostic code and "Back",
+     * then four cards of label / value rows (diag::cards). A value that doesn't fit beside its label goes under it
+     * (two lines at most, one if the card would overflow, smaller type last).
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     */
+    void drawDiag(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * A small pill that opens the diagnostics page.
+     * @param pen drawing tools
+     * @param t texts
+     * @param right its right edge
+     * @param top its top
+     * @param h its height
+     * @param size its text size
+     * @param draw draw it (else only measure)
+     * @return its width
+     */
+    double drawDiagChip(const Pen& pen, const UiText& t, double right, double top, double h, double size,
+                        bool draw = true);
 
     /**
      * The eye cameras tab: the setup checklist until it is done (drawSetup), then their page (drawCameraPage); a
@@ -793,9 +830,10 @@ private:
      * @param pen drawing tools
      * @param y top
      * @param title the title
+     * @param lineRight where the line under it stops (0 = the content's right edge)
      * @return the height used
      */
-    double drawSectionTitle(const Pen& pen, double y, const std::string& title);
+    double drawSectionTitle(const Pen& pen, double y, const std::string& title, double lineRight = 0);
 
     /**
      * A row's title on the left, with a hint or the "locked" note under it.

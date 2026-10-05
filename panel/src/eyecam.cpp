@@ -174,6 +174,58 @@ Status parseStatus(const std::string& text, double mtime) {
     const JsonValue* search = root.get("search");
     status.hasSearch = search != nullptr && search->isString();
     status.search = readText(root, "search");
+    // For the diagnostics page (missing on an older eyecam-rec: shown as unknown)
+    status.proxMin = readNumber(root, "prox_min", kNaN);
+    status.searchDetail.known = root.get("search_detail") != nullptr;
+    status.lastCalib.known = root.get("last_calib") != nullptr;
+    if (const JsonValue* look = root.get("search_detail"); look != nullptr && look->isObject()) {
+        SearchDetail& d = status.searchDetail;
+        d.present = true;
+        d.candidates = std::max(0, readInt(*look, "candidates", 0));
+        d.refreshHz = readNumber(*look, "refresh_hz", kNaN);
+        d.slots = std::max(0, readInt(*look, "slots", 0));
+        const JsonValue* both = look->get("both_eyes");
+        d.bothEyes = both != nullptr && both->isBool() && both->boolean;
+        d.stoppedAt = readText(*look, "stopped_at");
+        d.changedBlocks = readInt(*look, "changed_blocks", -1);
+    }
+    if (const JsonValue* calib = root.get("last_calib"); calib != nullptr && calib->isObject()) {
+        LastCalib& c = status.lastCalib;
+        c.present = true;
+        c.time = readText(*calib, "time");
+        const JsonValue* ok = calib->get("ok");
+        c.ok = ok != nullptr && ok->isBool() && ok->boolean;
+        c.failedEye = readText(*calib, "failed_eye");
+        c.message = readText(*calib, "message");
+        c.messageEn = readText(*calib, "message_en");
+        // [left, right] pairs (null = NaN)
+        const auto pair = [&](const char* name, double* out) {
+            const JsonValue* value = calib->get(name);
+            for (int eye = 0; eye < 2; ++eye) {
+                const bool there = value != nullptr && value->isArray() && value->items.size() == 2 &&
+                                   value->items[eye].isNumber();
+                out[eye] = there ? value->items[eye].number : kNaN;
+            }
+        };
+        pair("pupil_frames", c.pupilFrames);
+        pair("normal_frames", c.normalFrames);
+        pair("pupil_x", c.pupilX);
+        pair("pupil_y", c.pupilY);
+        const JsonValue* window = calib->get("window");
+        for (int eye = 0; eye < 2; ++eye) {
+            const JsonValue* edges = window != nullptr && window->isArray() && window->items.size() == 2
+                                         ? &window->items[eye]
+                                         : nullptr;
+            for (int side = 0; side < 2; ++side) {
+                const bool there = edges != nullptr && edges->isArray() && edges->items.size() == 2 &&
+                                   edges->items[side].isNumber();
+                c.window[eye][side] = there ? edges->items[side].number : kNaN;
+            }
+        }
+    }
+    status.lastError = readText(root, "last_error");
+    status.lastErrorEn = readText(root, "last_error_en");
+    status.lastErrorUnix = readNumber(root, "last_error_unix", 0.0);
     return status;
 }
 

@@ -169,6 +169,63 @@ Status parseStatus(const std::string& text, double mtime) {
         const double share = readNumber(root, pupilKeys[eye], kNaN);
         status.pupil[eye] = std::isfinite(share) ? std::clamp(share, 0.0, 1.0) : kNaN;
     }
+    // Why the video isn't found (missing on an older eyecam-rec: no line for it)
+    status.prox = readNumber(root, "prox", kNaN);
+    const JsonValue* search = root.get("search");
+    status.hasSearch = search != nullptr && search->isString();
+    status.search = readText(root, "search");
+    // For the diagnostics page (missing on an older eyecam-rec: shown as unknown)
+    status.proxMin = readNumber(root, "prox_min", kNaN);
+    status.searchDetail.known = root.get("search_detail") != nullptr;
+    status.lastCalib.known = root.get("last_calib") != nullptr;
+    if (const JsonValue* look = root.get("search_detail"); look != nullptr && look->isObject()) {
+        SearchDetail& d = status.searchDetail;
+        d.present = true;
+        d.candidates = std::max(0, readInt(*look, "candidates", 0));
+        d.refreshHz = readNumber(*look, "refresh_hz", kNaN);
+        d.slots = std::max(0, readInt(*look, "slots", 0));
+        const JsonValue* both = look->get("both_eyes");
+        d.bothEyes = both != nullptr && both->isBool() && both->boolean;
+        d.stoppedAt = readText(*look, "stopped_at");
+        d.changedBlocks = readInt(*look, "changed_blocks", -1);
+    }
+    if (const JsonValue* calib = root.get("last_calib"); calib != nullptr && calib->isObject()) {
+        LastCalib& c = status.lastCalib;
+        c.present = true;
+        c.time = readText(*calib, "time");
+        const JsonValue* ok = calib->get("ok");
+        c.ok = ok != nullptr && ok->isBool() && ok->boolean;
+        c.failedEye = readText(*calib, "failed_eye");
+        c.message = readText(*calib, "message");
+        c.messageEn = readText(*calib, "message_en");
+        // [left, right] pairs (null = NaN)
+        const auto pair = [&](const char* name, double* out) {
+            const JsonValue* value = calib->get(name);
+            for (int eye = 0; eye < 2; ++eye) {
+                const bool there = value != nullptr && value->isArray() && value->items.size() == 2 &&
+                                   value->items[eye].isNumber();
+                out[eye] = there ? value->items[eye].number : kNaN;
+            }
+        };
+        pair("pupil_frames", c.pupilFrames);
+        pair("normal_frames", c.normalFrames);
+        pair("pupil_x", c.pupilX);
+        pair("pupil_y", c.pupilY);
+        const JsonValue* window = calib->get("window");
+        for (int eye = 0; eye < 2; ++eye) {
+            const JsonValue* edges = window != nullptr && window->isArray() && window->items.size() == 2
+                                         ? &window->items[eye]
+                                         : nullptr;
+            for (int side = 0; side < 2; ++side) {
+                const bool there = edges != nullptr && edges->isArray() && edges->items.size() == 2 &&
+                                   edges->items[side].isNumber();
+                c.window[eye][side] = there ? edges->items[side].number : kNaN;
+            }
+        }
+    }
+    status.lastError = readText(root, "last_error");
+    status.lastErrorEn = readText(root, "last_error_en");
+    status.lastErrorUnix = readNumber(root, "last_error_unix", 0.0);
     return status;
 }
 
@@ -611,6 +668,8 @@ std::string signature(const View& view) {
            std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.calibFailedEye + "|" +
            std::to_string(s.hasPupil) + std::to_string(static_cast<int>(eyeSight(s, 0))) +
            std::to_string(static_cast<int>(eyeSight(s, 1))) + "|" + s.autoGrab + std::to_string(s.grabOutdated) + "|" +
+           std::to_string(static_cast<int>(searchReason(s))) +
+           (searchReason(s) == Search::NotWorn ? rounded(s.prox, 1.0) : std::string()) + "|" +
            std::to_string(static_cast<int>(view.password)) + std::to_string(static_cast<int>(view.flow.result())) +
            std::to_string(static_cast<int>(view.flow.calibResult())) +
            std::to_string(view.readyNotice) + "|" + view.spawnError;
@@ -719,6 +778,35 @@ EyeSight eyeSight(const Status& status, int eye) {
     if (!std::isfinite(share)) return status.live ? EyeSight::NotSeen : EyeSight::Seen;
     if (share >= kPupilSeenShare) return EyeSight::Seen;
     return share < kPupilMissingShare ? EyeSight::NoPupil : EyeSight::Weak;
+}
+
+Search searchReason(const Status& status) {
+    if (status.locked || !status.hasSearch) return Search::None;
+    if (status.search == "not_worn") return Search::NotWorn;
+    if (status.search == "no_video") return Search::NoVideo;
+    if (status.search == "one_eye") return Search::OneEye;
+    return Search::None;
+}
+
+bool videoFlowing(const Status& status) {
+    return status.locked || (std::isfinite(status.fpsL) && status.fpsL > 0) ||
+           (std::isfinite(status.fpsR) && status.fpsR > 0);
+}
+
+std::string searchText(const UiText& t, const Status& status) {
+    switch (searchReason(status)) {
+        case Search::NotWorn: {
+            // (the reading as a whole number; without one, the sentence alone)
+            if (!std::isfinite(status.prox) || status.prox < 0) return t.searchNotWorn;
+            char line[256];
+            std::snprintf(line, sizeof(line), t.searchNotWornFormat, static_cast<int>(std::lround(status.prox)));
+            return line;
+        }
+        case Search::NoVideo: return t.searchNoVideo;
+        case Search::OneEye: return t.searchOneEye;
+        case Search::None: break;
+    }
+    return std::string();
 }
 
 bool pupilTrouble(const Status& status) {

@@ -100,6 +100,7 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"eye camera setup: steps done (card)", kSuccess, kCard, ContrastKind::Text},
         {"eye camera setup: what it sees, its seconds left (dark box)", kSuccess, kBg, ContrastKind::Text},
         {"eye camera setup: the seconds left (dark box)", kAccent, kBg, ContrastKind::Text},
+        {"diagnostics: a problem now (dark card)", kDanger, kBg, ContrastKind::Text},
         {"eye camera setup: the left column's next step (card)", kAccent, kCard, ContrastKind::Text},
         {"eye camera setup: ready (green tint)", kText, kSuccessTint, ContrastKind::Text},
         {"eye camera setup: steps to come, the chip's chevrons (card)", kBorder, kCard, ContrastKind::Ui},

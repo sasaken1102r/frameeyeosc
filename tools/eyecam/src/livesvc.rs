@@ -6,7 +6,7 @@ use crate::liveshm::{self, LiveWriter};
 use crate::vision::{H, W};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 /// A new wear (HMD taken off and put back on) when an eye's frames stop for this long.
@@ -122,6 +122,8 @@ pub struct Shared {
     /// Per eye, the share of the last PUPIL_SHARE_S of frames with the pupil (f32 bits; NaN: no frames, or live
     /// processing off). Counted as the calibration counts them.
     pub pupil_share: [AtomicU32; 2],
+    /// The last `calib wear` (status.json `last_calib`): this run's, else the newest one saved under the data folder.
+    pub last_calib: Mutex<Option<crate::status::LastCalib>>,
 }
 
 impl Default for Shared {
@@ -140,6 +142,7 @@ impl Default for Shared {
             frames: AtomicU64::new(0),
             live_on: AtomicBool::new(false),
             pupil_share: [AtomicU32::new(f32::NAN.to_bits()), AtomicU32::new(f32::NAN.to_bits())],
+            last_calib: Mutex::new(None),
         }
     }
 }
@@ -402,8 +405,17 @@ impl Worker {
         self.shared.recalib_suggested.store(recalib, Ordering::Relaxed);
     }
 
-    /// Write calib_result.json and calib_samples.csv for a calibration attempt, and log the per-eye values.
-    fn report(&self, dir: Option<&Path>, kind: CollectKind, samples: &[Vec<Sample>; 2], result: &Result<String, String>, params: Option<String>) {
+    /// Write calib_result.json and calib_samples.csv for a calibration attempt, and log the per-eye values. A wear
+    /// calibration's becomes status.json's `last_calib` too. `failed_eye`: "L" / "R" / "LR" / "" (calib_failed_eye).
+    fn report(
+        &self,
+        dir: Option<&Path>,
+        kind: CollectKind,
+        samples: &[Vec<Sample>; 2],
+        result: &Result<String, String>,
+        params: Option<String>,
+        failed_eye: &str,
+    ) {
         let (values, lines) = match kind {
             CollectKind::Wear => live::wear_report(samples),
             CollectKind::User => match (self.params[0].wear, self.params[1].wear) {
@@ -415,7 +427,6 @@ impl Worker {
         for l in &lines {
             eprintln!("{l}");
         }
-        let Some(dir) = dir else { return };
         let (ok, message) = match result {
             Ok(m) => (true, m.as_str()),
             Err(m) => (false, m.as_str()),
@@ -426,11 +437,16 @@ impl Worker {
             CollectKind::Pupil => "pupil",
         };
         let json = format!(
-            "{{\n  \"kind\": \"{kind_name}\",\n  \"time\": {},\n  \"ok\": {ok},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+            "{{\n  \"kind\": \"{kind_name}\",\n  \"time\": {},\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
             crate::json::string(&stamp()),
+            crate::json::string(failed_eye),
             crate::json::string(message),
             params.unwrap_or_else(|| "null".into())
         );
+        if kind == CollectKind::Wear {
+            *self.shared.last_calib.lock().unwrap() = crate::status::LastCalib::from_result(&json);
+        }
+        let Some(dir) = dir else { return };
         if let Err(e) = std::fs::write(dir.join("calib_result.json"), json) {
             eprintln!("eyecam-rec: calib_result.json: {e}");
         }
@@ -490,7 +506,11 @@ impl Worker {
         if kind == CollectKind::Wear && result.is_err() {
             self.shared.last_calib_widen.store(0, Ordering::Relaxed);
         }
-        self.report(dir.as_deref(), kind, &samples, &result, params);
+        let failed_eye = match kind {
+            CollectKind::Wear => ["", "L", "R", "LR"][(self.shared.calib_failed_eye.load(Ordering::Relaxed) & 3) as usize],
+            _ => "",
+        };
+        self.report(dir.as_deref(), kind, &samples, &result, params, failed_eye);
         self.publish_state();
         result
     }
@@ -638,6 +658,10 @@ pub fn spawn(
             }
         }
     }
+    // The last wear calibration, as saved under the data folder (status.json's last_calib after a restart)
+    if let Some(dir) = data_dir {
+        *shared.last_calib.lock().unwrap() = crate::status::LastCalib::newest_in(dir);
+    }
     // The last wear calibration's widen, as it was saved (so a restart keeps last_calib_widen)
     shared.last_calib_widen.store(
         match calib_file.wear_widen_measured {
@@ -727,7 +751,7 @@ pub fn spawn(
                     Ok(Msg::Abort(dir)) => {
                         if let Some(kind) = w.collect.take() {
                             let samples = std::mem::take(&mut w.samples);
-                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None);
+                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None, "");
                         }
                         w.steps.clear();
                         w.samples = [Vec::new(), Vec::new()];
@@ -831,6 +855,10 @@ mod tests {
         let result = std::fs::read_to_string(dir.join("calib_result.json")).unwrap();
         assert!(crate::json::parse(&result).is_ok() && result.contains("\"ok\": true"), "{result}");
         assert!(std::fs::read_to_string(dir.join("calib_samples.csv")).unwrap().lines().count() > 1000);
+        // ...and status.json's last_calib, read back from it
+        assert!(result.contains("\"failed_eye\": "), "{result}");
+        let last = shared.last_calib.lock().unwrap().clone().expect("last_calib");
+        assert!(last.ok && last.pupil_frames[0] > 0.0 && last.normal_frames[0] > 0.0, "{last:?}");
         let text = std::fs::read_to_string(&calib).unwrap();
         let saved = crate::live::CalibFile::parse(&text).unwrap();
         assert!(saved.wear.is_some() && saved.history.len() == 1);

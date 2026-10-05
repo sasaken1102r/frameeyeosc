@@ -32,6 +32,7 @@ add_executable(frameeyeosc-panel
   src/changelog.cpp
   src/command.cpp
   src/config.cpp
+  src/diag.cpp
   src/draw.cpp
   src/eyecam.cpp
   src/gaze_dots.cpp
@@ -118,6 +119,7 @@ add_executable(panel-test tests/panel_test.cpp
   src/changelog.cpp
   src/command.cpp
   src/config.cpp
+  src/diag.cpp
   src/draw.cpp
   src/eyecam.cpp
   src/fit_text.cpp
@@ -163,3 +165,12 @@ target_include_directories(eyecam-test PRIVATE src)
 target_compile_options(eyecam-test PRIVATE -Wall -Wextra)
 target_link_libraries(eyecam-test PRIVATE Threads::Threads)
 add_test(NAME eyecam COMMAND eyecam-test)
+
+# The diagnostics page's texts and code (diag.{h,cpp}: the cards, the diagnostic code, SteamOS's version, SHA-256),
+# without cairo: panel/build/diag-test
+add_executable(diag-test tests/diag_test.cpp src/diag.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/status.cpp
+  src/model.cpp src/config.cpp src/gaze_fit.cpp src/setup_tools.cpp src/recorder.cpp)
+target_include_directories(diag-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
+target_compile_options(diag-test PRIVATE -Wall -Wextra)
+target_link_libraries(diag-test PRIVATE Threads::Threads)
+add_test(NAME diag COMMAND diag-test)

@@ -49,14 +49,17 @@ sudo /home/steamos/eyecam-src/target/release/eyecam-grab
 
 ### 4. ヘッドセットをかぶる
 
-装着を検知（近接センサーが `--prox-min` を **1 秒続けて** 超える）→ 目の映像が流れているのを確認（約 2 秒）→ 録画開始。
+目の映像が流れているのを見つけて確認（約 2 秒）→ 録画開始。映像は、近接センサーが「かぶっていない」と言っていても探す
+（顔やフェイスクッションによっては、かぶっていても `--prox-min` を超えないため）。センサーが装着中（`--prox-min` を **1 秒続けて**
+超える）のあいだは 1 秒ごと、そうでないときは 2 秒ごとにバッファを見る。カメラが止まっていればバッファは何も変わらないので、
+1 回見るのは約 2.5 ms で済む。
 `--cues` を付けていれば、開始と同時にビープで合図が始まる（下の表）。
 5 秒ごとに左右の fps、Valve サンプルの Hz、書き込み量、空き容量を表示する。
 途中で外すと「止まった」と判断して再探索し、かぶり直せば同じセッションに続けて記録する（録画時間は止まらない）。
 Ctrl-C で途中終了しても、そこまでのファイルはちゃんと閉じる。
 
 注意: 目のカメラは、ちゃんとかぶっていなくても（レンズの中が映るだけでも）流れることがある。
-ロックの条件として「装着中」を見ているのは近接センサーだけなので、録画が始まるのは実際にかぶってからにしてね。
+近接センサーではロックを止めないので、手に持っているうちに映像が流れれば、そこで録画が始まることがある。
 
 ### 5. PC に持ってきて見る
 
@@ -87,7 +90,9 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
 1. 起動直後は `waiting_fds`。SteamVR が動いている状態で `sudo /home/steamos/eyecam-src/target/release/eyecam-grab` を 1 回
 2. バッファを受け取ると `idle`。以後はパネルから `start` / `stop`
 3. アイトラッカーが終了・再起動したり、かぶっているのにバッファが 2 分間まったく更新されなかったりしたら、
-   バッファを手放して `waiting_fds` に戻る（grab 用ソケットも作り直す）。道具が入っていれば自動で取り直す。入っていなければもう一度 `sudo eyecam-grab` してね
+   バッファを手放して `waiting_fds` に戻る（grab 用ソケットも作り直す）。道具が入っていれば自動で取り直す。入っていなければもう一度 `sudo eyecam-grab` してね。
+   ここで「かぶっている」は、近接センサーが `--prox-min` を超えているか、Valve のアイトラッカーが新しいサンプル（`producer_state` 1）を
+   出している（カメラが動いている）こと。どちらも机に置いたままでは起きないので、置いてある間に取り直しをくり返すことはない
 4. 止めるときは `systemctl --user stop eyecam`（または `kill`）。録画中なら、そのセッションをきちんと閉じてから終わる。
    終了すると status.json に `state: "stopped"` を書き、`ctl.sock` は消える
 
@@ -117,10 +122,15 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 ```json
 {"version":1,"state":"recording","message":"録画中","message_en":"Recording","has_buffers":true,"locked":true,"fps_l":90.000,"fps_r":90.000,
  "step_index":2,"step_count":17,"step_label":"normal","step_remaining_s":3.412,"elapsed_s":6.588,"total_s":84.500,
- "session_dir":"/home/steamos/eyecam/rec_2026-10-04_10-00-00","protocol":"widen","prox":31.000,
+ "session_dir":"/home/steamos/eyecam/rec_2026-10-04_10-00-00","protocol":"widen","prox":31.000,"search":"",
  "last_session_aborted":false,"calib_state":6,"recalib_suggested":false,"baseline":"ready","warmup_remaining_s":0.000,
  "calib_saved":true,"widen_sensitivity":0.500,"dev":false,"setup_done":true,"last_calib_widen":"measured",
- "calib_failed_eye":"","live":true,"live_ms":1.05,"pupil_l":0.967,"pupil_r":0.978,
+ "calib_failed_eye":"","live":true,"live_ms":1.05,"pupil_l":0.967,"pupil_r":0.978,"prox_min":20.000,
+ "search_detail":{"candidates":8,"refresh_hz":90.000,"slots":8,"both_eyes":true,"stopped_at":"","changed_blocks":128,"unix":1791099990.000},
+ "last_calib":{"time":"2026-10-04 09:51:03","ok":true,"failed_eye":"","message":"校正できた（かぶり）","message_en":"Calibrated",
+  "pupil_frames":[470.000,482.000],"normal_frames":[486.000,486.000],"pupil_x":[238.000,252.000],"pupil_y":[201.000,194.000],
+  "window":[[186.000,346.000],[180.000,340.000]]},
+ "last_error":"","last_error_en":"","last_error_unix":0.000,
  "pid":1234,"updated_unix":1791100000.123}
 ```
 
@@ -136,7 +146,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `has_buffers` | bool | バッファを持っている（`sudo eyecam-grab` が成功した）。映像が流れているかどうかとは別。`waiting_fds` のときだけ false |
 | `message_en` | string | `message` と同じ内容の英語（パネルを英語で表示するとき用）。例: `Put the headset on (waiting for the eye cameras)`、`Recording`、`Saved: rec_…`、`Calibrated`、`Calibrated (couldn't measure widening, using the usual width)`。訳は `src/message_en.rs` にまとめてあり、訳のない文が来たら日本語のまま入る |
 | `message` | string | そのまま表示できる日本語の短文。例: `パネルの「目のカメラ」タブで、目のカメラの道具を入れてね`、`HMD をかぶってね（目の映像を待ってるよ）`、`録画中`、`保存した: rec_…`、`保存した（途中で止めた）: rec_…`、`中止した`。`idle` でかぶっていてライブ処理がオンのときは、`見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね`（`calib_saved` が false）/ `見開きの基準を覚えているところ（目を開けて、ふつうに前を見ていてね）`（`warming`）/ `目の値を出しているよ` |
-| `locked` | bool | 目の映像の位置をつかんでいて、今も流れている。**`recording` / `calibrating` 中に false** なら、映像が止まって（HMD を外したなど）探し直している。そのとき `message` は `HMD をかぶってね（目の映像を待ってるよ）`。時間・合図・`step_*` はそのまま進む。`idle` でもライブ処理がオンなら、かぶっている間は true |
+| `locked` | bool | 目の映像の位置をつかんでいて、今も流れている。**`recording` / `calibrating` 中に false** なら、映像が止まって（HMD を外したなど）探し直している。そのとき `message` は `search` に合わせた文（ふつうは `HMD をかぶってね（目の映像を待ってるよ）`）。時間・合図・`step_*` はそのまま進む。`idle` でもライブ処理がオンなら、かぶっている間は true |
 | `fps_l`, `fps_r` | number | 録画中の左右のフレームレート（直近 1 秒）。録画中以外と、探し直し中は 0 |
 | `step_index` | int | いまのプロトコルの段の番号。**0 から**数えて、段が変わるたびに必ず変わる（パネルは「段 `step_index+1` / `step_count`」と出せる）。全段が終わると `step_count`（このとき `step_label` は `end`）。録画中以外は -1 |
 | `step_count` | int | プロトコルの段の数（`searching` / `recording` / `calibrating` のとき）。それ以外は 0 |
@@ -145,7 +155,8 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `elapsed_s`, `total_s` | number | 録画開始からの秒数 / 録画の長さ（プロトコルの長さ + 1.5 秒）。`total_s` は `searching` のときから入る |
 | `session_dir` | string | 録画中（と、そのあとの `idle`）のセッションディレクトリ。無ければ `""` |
 | `protocol` | string | 録画中（と、そのあと）のプロトコル名 |
-| `prox` | number | 近接センサーの値（読めなければ -1）。だいたい 20 を超えるとかぶっている |
+| `prox` | number | 近接センサーの値（読めなければ -1）。だいたい 20 を超えるとかぶっている（顔によっては、かぶっていても 20 に届かない） |
+| `search` | string | 映像を探していて `locked` が false のとき、見つからない理由: `not_worn`（近接センサーが「かぶっていない」と言っていて、Valve の視線トラッカーも新しいサンプルを出しておらず、映像も見つからない。`message` は `HMD をかぶってね（目の映像を待ってるよ）`）/ `no_video`（かぶっている〔近接センサーがそう言っている・センサーが読めない・センサーは「かぶっていない」でも Valve の視線トラッカーが新しいサンプルを出している（センサーが低く読む顔がある）のどれか〕のに、バッファに目の映像が流れていない。`message` は `目の映像がまだ流れていない（SteamVR の視線トラッキングはオン？）`）/ `one_eye`（片方のカメラの映像しか見つからない。`message` は `片目しか映っていない（ちゃんとかぶれてる？）`）。ロックしているとき・探していないとき（ライブ処理がオフなど）・探し始めて最初に見るまでは `""`。このフィールドがない古い eyecam-rec もある |
 | `last_session_aborted` | bool | 直前の録画が最後まで行かなかった（stop など）。その meta.txt は `aborted=1` |
 | `calib_state` | int | ビットの和: 1 このかぶりで `calib wear` した / 2 ユーザー校正済み（`calib user`）/ **4 自動の基準線ができた（校正しなくても `eye_wide` などが使える）**。かぶり直す（映像が 10 秒以上止まる）と 1 と 4 は落ちる。**4 は `setup_done` が true になるまで立たない**（最初の準備が済むまで frameeyeosc はカメラを使わない。基準線を覚える計算は裏で続けている） |
 | `recalib_suggested` | bool | 今は常に false（基準線がかぶっている間ずっと追従するので、やり直しをすすめる必要がなくなった。互換のため残している） |
@@ -160,6 +171,10 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `live` | bool | ライブ処理がオン（バッファを持っていて `live on`）|
 | `live_ms` | number | ライブ処理の 1 フレーム（片目）あたりの時間、直近 1 秒の平均（ms） |
 | `pupil_l`, `pupil_r` | number / null | 目ごとの、直近 2 秒のフレームのうち瞳が見つかった割合（0〜1）。校正が「瞳が見えたフレーム」を数えるのと同じ数え方（閉じたまぶたのしわを除いた後）。ライブ処理がオフのときと、その目の映像が止まったときは `null`。**`locked` は映像が流れているという意味だけ**なので、校正の前に瞳が見えているかはこちらで見る。ふだん（目を開けて前を見ている）は 0.95 前後、目を閉じると 0。`calib wear` は普段の段（約 5.4 秒）のうち 90 フレーム（約 18%）以上で瞳が要る。`--fake` では 0.97 / 0.95 |
+| `prox_min` | number | `--prox-min`（近接センサーがこれを超えて 1 秒たつと「かぶっている」。既定 20）。パネルの診断が `prox` と並べて出す |
+| `search_detail` | object / null | 直近に目の映像を探したときに見えたもの（パネルの診断用）。探すたびに書き換え、ロックしたあとも残る。まだ一度も見ていなければ `null`。`candidates`（変化したメモリの中で絵に見えたフレームの数）、`refresh_hz`（そのうち選んだバッファの候補が 1 秒に何回書き換わったかの中央値。選んだバッファの候補が 2 つ未満なら 0）、`slots`（見つかったリングのスロット数。ふつう 8）、`both_eyes`（両目のスロットがそろった）、`stopped_at`（どこで止まったか: `""` 見つかった〔両目〕/ `no_candidates` 絵に見える候補が 2 つ未満 / `split_buffers` 候補は 2 つ以上あるが、いちばん多いバッファでも 2 つ未満（ほかのバッファに散らばっている）/ `not_refreshing` 1 秒に 5 回以上書き換わる候補が 2 つ未満 / `few_slots` リングのスロットが 2 つ未満 / `one_eye` 片目のスロットだけ）、`changed_blocks`（その前に変化した 64 KiB のブロックの数。0 ならバッファに何も書かれていない）、`unix`（見た時刻） |
+| `last_calib` | object / null | 直近の `calib wear`（この起動でしたもの、なければ `~/eyecam/calib_*/calib_result.json` のいちばん新しい wear のもの。どちらも無ければ `null`）。`time`（ローカル時刻 `YYYY-MM-DD HH:MM:SS`）、`ok`、`failed_eye`（`calib_failed_eye` と同じ。`failed_eye` の無い古い calib_result.json は、失敗なら `LR`）、`message` / `message_en`、目ごとの `[左, 右]` で `pupil_frames`（普段の段で瞳が見えたフレーム）・`normal_frames`（普段の段のフレーム）・`pupil_x` / `pupil_y`（普段の段の瞳の位置の中央値、px）・`window`（瞳を探した枠の左右 `[[左目の左, 左目の右], [右目の左, 右目の右]]`）。無い値は `null`。途中で止めた校正もここに入る（`ok` false、`message` は `途中で止めた`） |
+| `last_error`, `last_error_en`, `last_error_unix` | string / string / number | 直近に `state` が `error` になったときの `message`（とその英語）と時刻（UNIX 秒）。`state` が戻っても残る。まだ無ければ `""` と 0 |
 | `pid` | int | デーモンのプロセス ID |
 | `updated_unix` | number | 書いた時刻（UNIX 秒） |
 
@@ -208,6 +223,12 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 `calib wear` / `calib user` も本物と同じ段を実時間で `calibrating` して、終わると `calib_state` が立つ（wear 前の `calib user` は断る）。
 `baseline` は `idle` になってから 30 秒 `warming`（`warmup_remaining_s` が減っていく）→ `ready`（`calib_state` に 4）。
 `calib_saved` は fake の `calib wear` が終わると true（そのときは `baseline` もすぐ `ready`）。
+`--fake-search not_worn|no_video|one_eye` を付けると映像が見つからない状態を作れる: ライブ処理がオンの `idle` と、`start` / `calib` の
+`searching` / `calibrating` が `locked` false・`search` がその理由（と、それに合う `message`）のまま進まない（`stop` で `idle` に戻る）。
+`not_worn` のときは `prox` が 9.5。`search_detail` は、見つかっているときは候補 8・90 回/秒・8 スロット・両目、`not_worn` は候補 0
+（`no_candidates`）で変化 0 ブロック、`no_video` は候補 0 で変化 3 ブロック、`one_eye` は候補 4・4 スロット（`one_eye`）。
+`--fake-calib L|R|LR` を付けると、fake の `calib wear` がその目なしで通る（`L` / `R`）か、失敗して `error` になる（`LR`）。
+`last_calib` は fake の `calib wear` が終わると、作った数字で入る（`--fake-calib` の目は瞳が 12 フレームで位置が `null`）。
 `set widen_sensitivity` は status.json の `widen_sensitivity` に出るだけで、settings.json には書かない（`dev` だけは本物と同じく settings.json から読んで出す）。
 共有メモリ `live` は作らない。
 終了すると `state: "stopped"` を書く。`--run-dir` を省くと本物と同じ `/run/user/1000/eyecam/` を使う（本物の `--serve` と同時には動かせない）。
@@ -376,7 +397,7 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
   ふだんは小さなテキストだけ（`calib_result.json`, `calib_samples.csv`, `cues.csv`, `frames.csv`, `valve.csv`, `meta.txt`。合わせて 1 MB ほど）で、
   `eye_L.raw`, `eye_R.raw`, `headers.bin`, `lock_dump.bin` は最初から書かない（meta.txt に `images=none …`）。
   settings.json で `"dev": true` のときだけ、録画と同じ形式で映像も残す（約 0.5 GB / 回、meta.txt に `images=kept`）。
-  中身は `calib_result.json`（`ok`・`message`・目ごとの中間値: 虹彩の半径、普段/見開きの skin_up と見開きの幅、普段/閉じの開き、
+  中身は `calib_result.json`（`ok`・`failed_eye`〔wear のときの `calib_failed_eye`。途中で止めたら `""`〕・`message`・目ごとの中間値: 虹彩の半径、普段/見開きの skin_up と見開きの幅、普段/閉じの開き、
   普段の段で瞳が見えたフレーム数 `normal_frames_with_pupil` とそのうち上まぶたの線も取れた数 `normal_frames_with_lid_line`、
   user なら細めの深さや下を見たときの開きの比、それぞれのしきい値・できた校正の値）と
   `calib_samples.csv`（当てはめに使った各フレーム: 目・時刻・段・瞳の有無・skin_up・開き・瞳孔・視線・下まぶた・R、
@@ -662,6 +683,8 @@ eye_L.raw と eye_R.raw を名前の付け替えで入れ替え、frames.csv の
 ```
 --serve            常駐モード（上の説明）
 --fake             中身なしの常駐モード（パネル開発用。--serve を含む）
+--fake-search R    --fake で、映像が見つからないままにする（R は status.json の search: not_worn / no_video / one_eye）
+--fake-calib E     --fake で、calib wear が目 E なしで通る（L / R）か、失敗する（LR）
 --run-dir DIR      status.json と ctl.sock の置き場所（既定 /run/user/1000/eyecam）
 --seconds N        録画時間（既定 120、プロトコルがあればその長さ + 1.5）
 --out DIR          保存先（既定 ~/eyecam）
@@ -669,7 +692,7 @@ eye_L.raw と eye_R.raw を名前の付け替えで入れ替え、frames.csv の
 --swap             L と R の割り当てを入れ替える（ふつうは要らない）
 --wait-grab N      eyecam-grab を待つ秒数（既定 600。--serve は無期限）
 --wait-lock N      映像が見つかるまで待つ秒数（既定 300、外して再探索するときも同じ）
---prox-min V       近接センサーがこの値を 1 秒続けて超えたら装着中とみなす（既定 20）
+--prox-min V       近接センサーがこの値を 1 秒続けて超えたら装着中とみなす（既定 20）。映像を探す間隔と、status.json の search に使う
 --allow-one-eye    片目しか流れていなくても録る
 --full-width       512 バイトの行のまま保存（パディング込み。枠合わせを疑うとき用）
 --no-beep / --volume V
@@ -709,7 +732,8 @@ sudo で動かすのは、自分でビルドしたもの、またはリリース
   同じ目の中のスロット間隔は 262208 バイト（256 KiB + 64）。**2 つ目の目のグループは、その間隔から予想される位置より 64 バイト後ろから始まる**
   （別々に確保されているらしい。初めての実機録画で判明）
 - リングの位置は毎回変わるので探す。探し方は FrameEyeCameraFeed の `framestream.c`（MIT、Curtis English。`NOTICE` 参照）の移植で、
-  装着中・20% 以上が明るい・1 秒間更新が続く、の 3 条件がそろったときだけロックする
+  20% 以上が明るい・1 秒間更新が続く、の 2 条件がそろったときだけロックする（元は装着中も条件だったが、近接センサーが
+  かぶっていても低い顔があるので外した）
 - 正確な先頭位置は eyecam 独自で、**スロットごと**に決める: ピクセルは黒くても 0 にならず（黒レベル約 4）毎フレーム変わる一方、
   パディング列と行間のすき間は 0 のまま変わらない。その境目がぴったり合う位置を先頭にする（パディング削除がずれない／ヘッダが先頭の直前に来る）
 - ヘッダの先頭 8 バイトはカメラのタイムスタンプ（u64、CLOCK_MONOTONIC_RAW の ns。90 fps で 11.11 ms 間隔）。残り 56 バイトは今のところ 0

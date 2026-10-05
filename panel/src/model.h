@@ -5,6 +5,7 @@
 #include "autostart.h"
 #include "changelog.h"
 #include "config.h"
+#include "diag.h"
 #include "eyecam.h"
 #include "gaze_fit.h"
 #include "i18n.h"
@@ -32,6 +33,7 @@ struct PanelModel {
     changelog::History history;  ///< the version history, read when it is opened
     eyecam::View eyecam;         ///< eyecam-rec, for the developer tab "Eye capture" (only shown while it runs)
     std::string eyecamDir;       ///< its folder (status.json and ctl.sock; eyecam::defaultDir or --eyecam-dir)
+    diag::System system;         ///< SteamOS's version and the camera tool's checksum (the diagnostics page)
 };
 
 /**

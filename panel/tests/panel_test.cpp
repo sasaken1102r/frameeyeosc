@@ -1,7 +1,8 @@
 // Tests for the Eyelids and eye cameras tabs as drawn (案E): which buttons they offer for each source of the eyelids
 // (the widening slider's routing, "Fine-tune" folded and open, the sensitivity slider moved off the eye cameras page)
 // and a setting's slider let go of, the setup's (3) with a pupil not found, and a calibration that went through without
-// one eye. Built with the panel as panel-test (it renders offscreen with the panel's fonts) and
+// one eye, and the Advanced tab's page scrolled (kept within it, ▲ / ▼, only what shows can be pressed). Built with
+// the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
 #include "draw.h"
@@ -357,11 +358,13 @@ void testErrorBack(const FontSet& fonts) {
     CHECK(hits(panel, PanelAction::EyecamBack).empty());
     CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);
 
-    // The recording's error on the Advanced tab: "Start again" and "Back"; after "Back", "Start recording" alone
+    // The recording's error on the Advanced tab (at the bottom of its page): "Start again" and "Back"; after "Back",
+    // "Start recording" alone
     PanelModel rec = eyecamIn("error");
     rec.eyecam.lastRun = eyecam::Run::Recording;
     rec.eyecam.status.message = "右のカメラの映像が 3 秒届きません";
     panel.setTab(PanelTab::Advanced);
+    panel.setAdvancedScroll(1e6);
     panel.render(rec);
     CHECK(hits(panel, PanelAction::EyecamStart).size() == 1);
     CHECK(hits(panel, PanelAction::EyecamBack).size() == 1);
@@ -388,6 +391,265 @@ void testPupilSetup(const FontSet& fonts) {
     m.eyecam.status.locked = false;
     panel.render(m);
     CHECK(hits(panel, PanelAction::EyecamCalib).empty());
+}
+
+void testSearchSetup(const FontSet& fonts) {
+    // The setup's (3) while the video isn't found, for each reason eyecam-rec gives (and an older one without it):
+    // nothing to press but the tabs, drawn without trouble
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Eyecam);
+    for (const char* reason : {"not_worn", "no_video", "one_eye", ""}) {
+        for (const Language language : {Language::Ja, Language::En}) {
+            PanelModel m = eyecamIn("idle", false);
+            m.language = language;
+            m.eyecam.status.locked = false;
+            m.eyecam.status.hasBuffers = true;
+            m.eyecam.status.hasSearch = reason[0] != '\0';
+            m.eyecam.status.search = reason;
+            m.eyecam.status.prox = 12.0;
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::EyecamCalib).empty());
+            // Beside the reason, a way to the diagnostics page (not without one)
+            CHECK(hits(panel, PanelAction::DiagOpen).size() == (reason[0] != '\0' ? 1u : 0u));
+        }
+    }
+    // Pressed, it shows the page on the Advanced tab
+    PanelModel m = eyecamIn("idle", false);
+    m.eyecam.status.locked = false;
+    m.eyecam.status.hasBuffers = true;
+    m.eyecam.status.hasSearch = true;
+    m.eyecam.status.search = "not_worn";
+    panel.render(m);
+    const std::vector<EyePanel::HitArea> link = hits(panel, PanelAction::DiagOpen);
+    CHECK(link.size() == 1);
+    if (link.empty()) return;
+    const PanelHit hit = panel.pointerDown(link[0].x + link[0].w / 2, link[0].y + link[0].h / 2, 0.0);
+    panel.pointerUp();
+    CHECK(hit.action == PanelAction::DiagOpen);
+    CHECK(panel.tab() == PanelTab::Advanced && panel.diagOpen());
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::DiagClose).size() == 1);
+}
+
+/**
+ * Press the one usable button with this action.
+ * @param panel the panel (rendered)
+ * @param action the action
+ * @return what the press returned (action None if there is no such button)
+ */
+PanelHit press(EyePanel& panel, PanelAction action) {
+    const std::vector<EyePanel::HitArea> found = hits(panel, action);
+    if (found.size() != 1) return {};
+    const PanelHit hit = panel.pointerDown(found[0].x + found[0].w / 2, found[0].y + found[0].h / 2, 0.0);
+    panel.pointerUp();
+    return hit;
+}
+
+void testDiagPage(const FontSet& fonts) {
+    // The Advanced tab offers it, with eyecam-rec and without
+    for (const bool eyecam : {true, false}) {
+        for (const Language language : {Language::Ja, Language::En}) {
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Advanced);
+            PanelModel m = modelWith(Lids::Both, eyecam);
+            m.language = language;
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::HistoryOpen).size() == 1);
+            CHECK(press(panel, PanelAction::DiagOpen).action == PanelAction::DiagOpen);
+            CHECK(panel.diagOpen() && !panel.historyOpen());
+            // The page: only "Back" and the tabs
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::DiagOpen).empty());
+            CHECK(hits(panel, PanelAction::HistoryOpen).empty());
+            for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::DiagClose);
+            }
+            // "Back" returns to the tab's rows; another tab closes it too
+            CHECK(press(panel, PanelAction::DiagClose).action == PanelAction::None);
+            CHECK(!panel.diagOpen() && panel.tab() == PanelTab::Advanced);
+            panel.render(m);
+            press(panel, PanelAction::DiagOpen);
+            panel.render(m);
+            panel.pointerDown(0, 0, 0.0);  // (nothing there)
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) {
+                if (area.hit.arg != static_cast<int>(PanelTab::Basic)) continue;
+                panel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+                panel.pointerUp();
+            }
+            CHECK(panel.tab() == PanelTab::Basic && !panel.diagOpen());
+            panel.setTab(PanelTab::Advanced);
+            CHECK(!panel.diagOpen());
+        }
+    }
+    // The eye cameras' page: beside its "why no video" line only
+    for (const char* reason : {"no_video", ""}) {
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Eyecam);
+        PanelModel m = eyecamIn("idle");
+        m.eyecam.status.live = true;
+        m.eyecam.status.locked = false;
+        m.eyecam.status.hasSearch = reason[0] != '\0';
+        m.eyecam.status.search = reason;
+        m.status.camera.used[0] = m.status.camera.used[1] = false;
+        m.status.camera.present = false;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::DiagOpen).size() == (reason[0] != '\0' ? 1u : 0u));
+    }
+}
+
+/**
+ * The Advanced tab's ▲ (-1) or ▼ (1) as last drawn.
+ * @param panel the panel
+ * @param direction -1 or 1
+ * @param area where to write it
+ * @return true if it is usable
+ */
+bool arrow(const EyePanel& panel, int direction, EyePanel::HitArea& area) {
+    for (const EyePanel::HitArea& found : hits(panel, PanelAction::AdvancedScroll)) {
+        if (found.hit.arg != direction) continue;
+        area = found;
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Press the Advanced tab's ▲ or ▼.
+ * @param panel the panel
+ * @param direction -1 or 1
+ * @return true if it was there to press
+ */
+bool pressArrow(EyePanel& panel, int direction) {
+    EyePanel::HitArea area;
+    if (!arrow(panel, direction, area)) return false;
+    panel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+    panel.pointerUp();
+    return true;
+}
+
+void testAdvancedScroll(const FontSet& fonts) {
+    for (const bool eyecam : {true, false}) {
+        for (const Language language : {Language::Ja, Language::En}) {
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Advanced);
+            PanelModel m = modelWith(Lids::Both, eyecam);
+            m.language = language;
+            panel.render(m);
+            // Taller than the card: scrolled, with the thumbstick's scroll events, from the top
+            const double max = panel.advancedMaxScroll();
+            CHECK(max > 0);
+            CHECK(panel.wantsScroll());
+            CHECK(panel.advancedScroll() == 0.0);
+            EyePanel::HitArea up;
+            EyePanel::HitArea down;
+            CHECK(!arrow(panel, -1, up) && arrow(panel, 1, down));
+            // The developer recording is at the bottom, out of view: it can't be pressed yet
+            CHECK(hits(panel, PanelAction::EyecamStart).empty());
+            CHECK(hits(panel, PanelAction::HistoryOpen).size() == 1);
+
+            // Kept within the page
+            CHECK(!panel.scroll(-50));
+            CHECK(panel.advancedScroll() == 0.0);
+            CHECK(panel.scroll(1e6));
+            CHECK(std::fabs(panel.advancedScroll() - max) < 1e-6);
+            CHECK(!panel.scroll(10));
+            panel.render(m);
+            CHECK(arrow(panel, -1, up) && !arrow(panel, 1, down));
+            CHECK(hits(panel, PanelAction::EyecamStart).size() == (eyecam ? 1u : 0u));
+            if (eyecam) CHECK(hits(panel, PanelAction::HistoryOpen).empty());
+            panel.setAdvancedScroll(1e6);
+            panel.render(m);
+            CHECK(std::fabs(panel.advancedScroll() - max) < 1e-6);
+            // ...and every button but the tabs inside the view (between the arrows' outer edges)
+            const double viewTop = up.y;
+            panel.setAdvancedScroll(max / 2);
+            panel.render(m);
+            CHECK(arrow(panel, -1, up) && arrow(panel, 1, down));
+            const double viewBottom = down.y + down.h;
+            for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                if (area.hit.action == PanelAction::Tab) continue;
+                CHECK(area.y >= viewTop - 1e-6 && area.y + area.h <= viewBottom + 1e-6);
+            }
+
+            // ▲ / ▼: a third of the view each
+            panel.setAdvancedScroll(0);
+            panel.render(m);
+            const double third = (viewBottom - viewTop) / 3;
+            CHECK(pressArrow(panel, 1));
+            CHECK(std::fabs(panel.advancedScroll() - std::min(max, third)) < 1e-6);
+            panel.render(m);
+            CHECK(pressArrow(panel, -1));
+            CHECK(panel.advancedScroll() == 0.0);
+
+            // A button half under the view's top ("Check now", near the top so the page scrolls that far): only its
+            // part that shows can be pressed, and none of it once it is out of view
+            panel.render(m);
+            const std::vector<EyePanel::HitArea> checkNow = hits(panel, PanelAction::UpdateCheck);
+            CHECK(checkNow.size() == 1);
+            if (checkNow.size() == 1) {
+                const EyePanel::HitArea before = checkNow[0];
+                const double x = before.x + before.w / 2;
+                const double half = before.y + before.h / 2 - viewTop;
+                CHECK(half <= max);
+                panel.setAdvancedScroll(half);
+                panel.render(m);
+                const std::vector<EyePanel::HitArea> cut = hits(panel, PanelAction::UpdateCheck);
+                CHECK(cut.size() == 1);
+                if (cut.size() == 1) CHECK(std::fabs(cut[0].y - viewTop) < 1e-6 && cut[0].h < before.h);
+                CHECK(panel.pointerDown(x, viewTop - 6, 0.0).action == PanelAction::None);
+                panel.pointerUp();
+                CHECK(panel.pointerDown(x, viewTop + 6, 0.0).action == PanelAction::UpdateCheck);
+                panel.pointerUp();
+                const double gone = before.y + before.h - viewTop + 2;
+                if (gone <= max) {
+                    panel.setAdvancedScroll(gone);
+                    panel.render(m);
+                    CHECK(hits(panel, PanelAction::UpdateCheck).empty());
+                    CHECK(panel.pointerDown(x, viewTop + 6, 0.0).action != PanelAction::UpdateCheck);
+                    panel.pointerUp();
+                }
+            }
+
+            // The diagnostics row opens the page; "Back" comes back where the page was
+            panel.setAdvancedScroll(0);
+            panel.render(m);
+            CHECK(panel.scroll(30));
+            panel.render(m);
+            CHECK(press(panel, PanelAction::DiagOpen).action == PanelAction::DiagOpen);
+            CHECK(panel.diagOpen());
+            panel.render(m);
+            CHECK(!panel.wantsScroll());
+            CHECK(!panel.scroll(30));
+            CHECK(press(panel, PanelAction::DiagClose).action == PanelAction::None);
+            panel.render(m);
+            CHECK(panel.advancedScroll() == 30.0);
+            CHECK(panel.wantsScroll());
+
+            // The version history scrolls itself; the page stays where it was
+            CHECK(press(panel, PanelAction::HistoryOpen).action == PanelAction::HistoryOpen);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::AdvancedScroll).empty());
+            panel.scroll(40);
+            CHECK(panel.advancedScroll() == 30.0);
+            CHECK(press(panel, PanelAction::HistoryClose).action == PanelAction::None);
+            panel.render(m);
+            CHECK(panel.advancedScroll() == 30.0);
+
+            // Leaving the tab: back at the top next time
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) {
+                if (area.hit.arg != static_cast<int>(PanelTab::Basic)) continue;
+                panel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+                panel.pointerUp();
+            }
+            CHECK(panel.tab() == PanelTab::Basic && panel.advancedScroll() == 0.0);
+            panel.render(m);
+            CHECK(!panel.wantsScroll());
+            CHECK(!panel.scroll(30));
+            panel.setTab(PanelTab::Advanced);
+            panel.render(m);
+            CHECK(panel.advancedScroll() == 0.0 && panel.wantsScroll());
+        }
+    }
 }
 
 /**
@@ -613,6 +875,9 @@ int main() {
     testWayOut(fonts);
     testCalibNeedsLids(fonts);
     testPupilSetup(fonts);
+    testSearchSetup(fonts);
+    testDiagPage(fonts);
+    testAdvancedScroll(fonts);
     testPartialResult(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);

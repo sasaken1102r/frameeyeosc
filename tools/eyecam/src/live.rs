@@ -508,14 +508,19 @@ impl EyeEngine {
         self.ex.search = feat::Search::live(self.x_min);
         let r_ready = self.r_est.len() >= 10;
         let r_ref = r_ready.then_some(self.r_est.value);
+        let no_prior = self.prev.is_none();
         let (mut f, mut p) = self.ex.extract(img, self.xmax, self.prev, r_ref, self.prev_p.as_ref());
         // A "pupil" found while the iris box is as bright as lid skin must look like the open eye's pupil (as dark, mostly
         // visible, 0.45-1.3 x its size); otherwise it is a dark crease or lash line on the closed lid. Bright light also
         // lights the box this much, and the pupil then shrinks to 0.55-0.65 x its usual size but stays as dark and whole
         // (creases on the closed lid: interior 24-28 levels brighter, under half visible, 0.23-0.42 x the size).
+        // A pupil found without the prior (after it was dropped, or in the retry away from it) is checked the same way
+        // whatever the box: the box is then measured around the blob itself, and a lash or lid line caught while the
+        // eye is closing has dark lashes in its box (replays: the eye counted as open through a whole close step).
         let box_bright = self.box_open.len() >= 30 && f.box_mean > 1.3 * self.box_open.value;
+        let unanchored = no_prior || f.diag.retried;
         if let Some(pp) = p
-            && box_bright
+            && (box_bright || unanchored)
             && self.a_open.len() >= 30
             && (!(0.45..=1.3).contains(&(pp.a / self.a_open.value)) || pp.inner > self.inner_open.value + 15.0 || pp.vis < 0.5)
         {
@@ -2001,6 +2006,46 @@ mod tests {
         e.reset_tracking();
         assert!(e.prev.is_none() && e.prev_p.is_none() && e.nopupil == 0);
         assert!(e.r_est.len() > 0 || e.cm_n > 0, "what belongs to the wear stays");
+    }
+
+    /// A closing eye: a dark band of lashes over the box, and a small dark blob on it.
+    fn lash_frame(blob: (f64, f64, f64)) -> Vec<u8> {
+        let mut img = disc_frame(None);
+        for y in 120..280 {
+            for x in 150..350 {
+                let d = (x as f64 - blob.0).hypot(y as f64 - blob.1);
+                img[y * vision::W + x] = if d < blob.2 { 10 } else { 55 };
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn a_small_blob_found_without_the_prior_must_look_like_the_open_pupil() {
+        let p = Params::default();
+        let eye = disc_frame(Some((250.0, 200.0, 25.0)));
+        let lash = lash_frame((282.0, 254.0, 10.5));
+        let trained = || {
+            let mut e = EyeEngine::default();
+            for k in 0..80 {
+                assert!(e.process(&eye, f64::NAN, k as f64 / FPS, &p).f.ok_pupil);
+            }
+            e
+        };
+        // Next to the prior, the lash blob's box is not bright: the prototype's rule takes it.
+        let mut anchored = trained();
+        anchored.prev = Some((280.0, 250.0));
+        let o = anchored.process(&lash, f64::NAN, 1.0, &p);
+        assert!(o.f.ok_pupil && !o.f.diag.gated, "{:?}", o.f.diag);
+        // Without the prior it is refused: under half the open pupil's size.
+        let mut e = trained();
+        e.prev = None;
+        let o = e.process(&lash, f64::NAN, 1.0, &p);
+        assert!(!o.f.ok_pupil && o.f.diag.gated, "{:?}", o.f.diag);
+        assert!(e.prev.is_none());
+        // The real pupil is still taken without the prior.
+        let o = e.process(&eye, f64::NAN, 1.1, &p);
+        assert!(o.f.ok_pupil && !o.f.diag.gated);
     }
 
     #[test]

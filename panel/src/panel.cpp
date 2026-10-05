@@ -3110,7 +3110,7 @@ double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_upda
         addButton(b.hit, bx, by, bw, bh, usable);
     }
 
-    // The automatic check, as a chip at the bottom of the text column: "Check at start and daily  On"; pressing it
+    // The automatic check, as a chip at the bottom of the text column: "Check at start and hourly  On"; pressing it
     // switches it
     {
         const PanelHit hit {PanelAction::SetBool, key::kUpdateCheck, checkOn ? 0 : 1};

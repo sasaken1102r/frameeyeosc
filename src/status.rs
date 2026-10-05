@@ -7,6 +7,7 @@ use std::fs::{self, DirBuilder};
 use std::io;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Ten times a second, whether or not eye tracking is running.
@@ -57,6 +58,42 @@ pub struct Status<'a> {
     pub effective: &'a Settings,
     /// The latest gaze capture the panel asked for.
     pub gaze_capture: Option<&'a CaptureResult>,
+    /// The last problem frameeyeosc logged (see `log_error`), kept after it clears; None if there was none yet.
+    pub last_error: Option<LastError>,
+}
+
+/// One problem frameeyeosc logged: the log line, and when (Unix seconds).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct LastError {
+    pub text: String,
+    pub time: f64,
+}
+
+/// Keeps the last problem logged, for status.json's `last_error` (the panel's diagnostics: why nothing is sent).
+pub struct ErrorLog(Mutex<Option<LastError>>);
+
+impl ErrorLog {
+    pub const fn new() -> Self {
+        Self(Mutex::new(None))
+    }
+
+    pub fn note(&self, text: &str, time: SystemTime) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(LastError { text: text.to_owned(), time: unix_time(time) });
+    }
+
+    pub fn last(&self) -> Option<LastError> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// frameeyeosc's problems: the eye data that can't be read, the target that can't be found or sent to, a file that
+/// can't be written.
+pub static ERRORS: ErrorLog = ErrorLog::new();
+
+/// Log a problem (to stderr, as every other line) and keep it as status.json's `last_error`.
+pub fn log_error(line: &str) {
+    eprintln!("{line}");
+    ERRORS.note(line, SystemTime::now());
 }
 
 /// Readings from the Frame: gaze in -1..1 before smoothing, openness before and after the per-eye scale.
@@ -159,7 +196,7 @@ impl StatusFile {
             Ok(()) => self.failing = false,
             // Report once, not ten times a second.
             Err(error) if !self.failing => {
-                eprintln!("Could not write {}: {error}", self.path.display());
+                log_error(&format!("Could not write {}: {error}", self.path.display()));
                 self.failing = true;
             }
             Err(_) => {}

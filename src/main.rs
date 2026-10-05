@@ -884,7 +884,7 @@ impl LidCalibration {
                 eprintln!("Saved eyelid calibration: left relaxes at {left:.3}, right at {right:.3}");
                 self.saved = self.relaxed;
             }
-            Err(error) => eprintln!("Could not save {}: {error}", path.display()),
+            Err(error) => status::log_error(&format!("Could not save {}: {error}", path.display())),
         }
     }
 
@@ -1710,7 +1710,10 @@ impl Output {
                 Err(error) => {
                     let reason = error.to_string();
                     if self.resolve_error.as_ref() != Some(&reason) {
-                        eprintln!("Could not resolve {host}: {reason}; retrying every {} s", RESOLVE_INTERVAL.as_secs());
+                        status::log_error(&format!(
+                            "Could not resolve {host}: {reason}; retrying every {} s",
+                            RESOLVE_INTERVAL.as_secs()
+                        ));
                         self.resolve_error = Some(reason);
                     }
                     None
@@ -1733,14 +1736,17 @@ impl Output {
                 Err(error) => {
                     let reason = error.to_string();
                     if self.connect_error.as_ref() != Some(&reason) {
-                        eprintln!("Can't send OSC to {addr} yet ({reason}); retrying every {} s", RESOLVE_INTERVAL.as_secs());
+                        status::log_error(&format!(
+                            "Can't send OSC to {addr} yet ({reason}); retrying every {} s",
+                            RESOLVE_INTERVAL.as_secs()
+                        ));
                         self.connect_error = Some(reason);
                     }
                     None
                 }
             },
             None if matches!(self.target, Target::SteamLink { .. }) => {
-                eprintln!("No Steam Link connection found; waiting for one");
+                status::log_error("No Steam Link connection found; waiting for one");
                 None
             }
             None => None,
@@ -1769,7 +1775,12 @@ impl Output {
         };
         let (target, result) = (*target, socket.send(datagram));
         if let Some(line) = self.note(Instant::now(), target, &result) {
-            eprintln!("{line}");
+            // A failure to send is kept for the panel; its end, and dropped datagrams, are only logged
+            if result.as_ref().is_err_and(|error| error.kind() != io::ErrorKind::WouldBlock) {
+                status::log_error(&line);
+            } else {
+                eprintln!("{line}");
+            }
         }
     }
 
@@ -2830,6 +2841,7 @@ impl Bridge {
             locked: &self.config.locked,
             effective: settings,
             gaze_capture: self.capture_result.as_ref(),
+            last_error: status::ERRORS.last(),
         }
     }
 }
@@ -2974,7 +2986,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             bridge.pupil_output.refresh();
         }
         if let Some(line) = eye.open_if_due(Instant::now()) {
-            eprintln!("{line}");
+            // ("Can't read eye data" is kept for the panel)
+            if eye.error.is_some() {
+                status::log_error(&line);
+            } else {
+                eprintln!("{line}");
+            }
         }
         if let Some(since) = busy_since.take() {
             bridge.pace.add_busy(Instant::now(), since.elapsed());
@@ -5265,6 +5282,30 @@ mod tests {
         assert!(source.is_stale());
         let _replacement = FakeShm::new("stale", 5, 0x4f21f);
         assert!(source.is_stale());
+    }
+
+    #[test]
+    fn status_keeps_the_last_error() {
+        // The last problem logged, with its time, until another one replaces it
+        let log = status::ErrorLog::new();
+        assert_eq!(log.last(), None);
+        let at = std::time::UNIX_EPOCH + Duration::from_millis(1_791_200_000_250);
+        log.note("Can't send OSC to 192.168.0.60:9000 yet (Network is unreachable (os error 101))", at);
+        log.note("No Steam Link connection found; waiting for one", at + Duration::from_secs(5));
+        let last = log.last().unwrap();
+        assert_eq!(last.text, "No Steam Link connection found; waiting for one");
+        assert_eq!(last.time, 1_791_200_005.25);
+        assert_eq!(
+            serde_json::to_value(&last).unwrap(),
+            serde_json::json!({"text": "No Steam Link connection found; waiting for one", "time": 1_791_200_005.25})
+        );
+        // status.json carries frameeyeosc's (null before the first)
+        let bridge = test_bridge(settings());
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert!(json.as_object().unwrap().contains_key("last_error"));
+        status::log_error("Could not save /nowhere/calibration: No such file or directory (os error 2)");
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert!(json["last_error"]["text"].is_string() && json["last_error"]["time"].as_f64().unwrap() > 1.7e9, "{json}");
     }
 
     #[test]

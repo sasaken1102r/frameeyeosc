@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.4 (2026-10-05)
+
+The eye-camera setup no longer gets stuck at "not seen" for both eyes when the headset's proximity sensor reads low while worn. A new Diagnostics page shows, in one screenshot, what is going on, and the Advanced tab becomes one scrolling page with sections.
+
+日本語: HMD の近接センサーがかぶっていても低い値になる人で、目のカメラの準備が「両目とも見えてないよ」のまま止まらないようにしました。新しい「診断」ページで、スクショ 1 枚で状況が分かります。「詳細」タブは見出しつきの 1 枚のスクロールページになりました。
+
+- eyecam-rec looks for the eye-camera video whether or not the proximity sensor says the headset is worn (every second when it does, every 2 seconds otherwise). Before, it only looked once the sensor read above `--prox-min` (20) for a second, and on some faces it never does: on the developer's own headset it read 0 to 3 while worn on one day, and 20 to 42 on others, so the setup waited forever while Valve's eye tracking worked. With the cameras off nothing changes in memory and a look ends at once; idle CPU stays about 0.5 % of a core. The stale-buffer check (fetch the buffers again after 2 minutes worn with no change) now also counts the headset as worn while Valve's eye tracker publishes fresh samples (its shared memory is only read).
+- `status.json` says why the video isn't found: `search` is `not_worn` (the sensor says not worn, Valve's eye tracker publishes nothing and nothing was found), `no_video` (worn, but the cameras write nothing: is eye tracking on in SteamVR?), `one_eye`, or `""`. It also has `prox_min`, `search_detail` (candidates, refreshes per second, slots, both eyes, where the look stopped, changed blocks), `last_calib` (the last wear calibration's time, result, pupil frames, pupil position and search window, from `calib_result.json` when this run hasn't calibrated) and `last_error` / `last_error_en` / `last_error_unix`. `calib_result.json` gets `failed_eye`.
+- frameeyeosc's own `status.json` has `last_error` (`text`, `time`): the last problem it logged (eye data unreadable, name lookup, sending, Steam Link not found, files it couldn't write). It stays after the problem is gone.
+- The panel's eye-camera setup says "Camera video: arriving" only while frames flow (before, it only meant the tool had handed over the buffers), and under the steps it says why the eyes aren't seen, with the proximity reading, plus a "Diagnostics" button. The usual eye-camera page says the same at the bottom.
+- New Diagnostics page (Advanced tab, "Having trouble", "Open"): versions (frameeyeosc, SteamOS, the eye-camera tool's checksum), eye data (Valve's rate and misses, send rate and drops, the 0.4.3 openness cap, where the eyelids come from, frameeyeosc's last error), the eye cameras (state, the last search, changed blocks, proximity, pupils seen, processing time) and the last calibration. At the top a short diagnostic code such as `NW·P3·B0·G1·C1R·F1` to quote in a reply; panel/README.md explains it. A screenshot of this page can show your LAN IP (a fixed target) and file paths.
+- The Advanced tab is one page with sections (Version, Having trouble, Debug tools, Files and process, Developer). When it doesn't fit, the thumbstick or touchpad scrolls it, as do ▲ / ▼ on the right. In English, the old "Diagnostics" section is now "Debug tools".
+
 ## 0.7.3 (2026-10-05)
 
 Fewer eye-camera calibrations failing with "the pupil wasn't seen": the pupil search now fits faces whose eyes sit further toward the nose, and a calibration where only one eye fails still goes through. The panel says per eye whether the pupil is seen, and checks for updates every hour.

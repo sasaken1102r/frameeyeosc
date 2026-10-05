@@ -20,7 +20,7 @@ body:
     attributes:
       label: Version / 版
       description: Shown on the panel's Advanced tab, or run `~/.local/bin/frameeyeosc-panel --version` on the Frame. / パネルの「詳細」タブ、または Frame で `~/.local/bin/frameeyeosc-panel --version`
-      placeholder: "0.7.3"
+      placeholder: "0.7.4"
     validations:
       required: true
   - type: dropdown

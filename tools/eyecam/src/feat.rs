@@ -185,13 +185,24 @@ const SHADE_END_LEVEL: f64 = 40.0;
 const SHADE_MARGIN: f64 = 10.0;
 
 /// The live search's left edge for this wear, from the same column means as `occluder_x`: where the dark shading
-/// on the nasal side ends (the first 4 columns in a row at `SHADE_END_LEVEL` or brighter, from x = 60 on), minus
-/// `SHADE_MARGIN`, within [X_MIN_LO, X_MIN]. The shading follows the face: when the eyes sit further toward the
-/// nose in the image, so does it, and the window follows. The prototype's X_MIN is the upper bound (the developer's
-/// recordings all give it).
+/// on the nasal side ends, minus `SHADE_MARGIN`, within [X_MIN_LO, X_MIN]. The end is that of the bright region the
+/// iris is in: from X_MIN + SHADE_MARGIN (it and the next 3 columns at `SHADE_END_LEVEL` or brighter, else the
+/// shading reaches past it and the edge stays at X_MIN) leftwards to the last column at that level, x = 60 at the
+/// most. Something bright further toward the nose (a lit nose bridge) with shading between it and the iris does not
+/// pull the window over the shading. The shading follows the face: when the eyes sit further toward the nose in the
+/// image, so does it, and the window follows. The prototype's X_MIN is the upper bound (the developer's recordings
+/// all give it).
 pub fn search_x_min(col_mean: &[f64]) -> f64 {
-    let end = (60..W - 4).find(|&x| col_mean[x..x + 4].iter().all(|&m| m >= SHADE_END_LEVEL));
-    end.map_or(X_MIN, |x| (x as f64 - SHADE_MARGIN).clamp(X_MIN_LO, X_MIN))
+    let bright = |x: usize| col_mean[x] >= SHADE_END_LEVEL;
+    let top = (X_MIN + SHADE_MARGIN) as usize;
+    if !(top..top + 4).all(bright) {
+        return X_MIN;
+    }
+    let mut end = top;
+    while end > 60 && bright(end - 1) {
+        end -= 1;
+    }
+    (end as f64 - SHADE_MARGIN).clamp(X_MIN_LO, X_MIN)
 }
 
 /// Column means over rows 60..340 of one 400x400 image.
@@ -227,6 +238,8 @@ pub struct Extractor {
     cands: Vec<Cand>,
     /// The search rules (default: the prototype's).
     pub search: Search,
+    /// First column of `opf` computed for the current frame (left of it: zeros, or an earlier frame's pixels).
+    opf_x0: usize,
 }
 
 impl Default for Extractor {
@@ -234,6 +247,7 @@ impl Default for Extractor {
         Self {
             cands: Vec::new(),
             search: Search::LEGACY,
+            opf_x0: OPF_X0,
             op: Vec::new(),
             opf: Vec::new(),
             smf: Vec::new(),
@@ -271,6 +285,7 @@ impl Extractor {
         };
         vision::open9_cols(img, W, H, open_x0, W, &mut self.morph, &mut self.op);
         vision::gauss_u8(&self.op, W, H, &self.k1, Rect { x0: opf_x0, y0: 0, x1: W, y1: H }, &mut self.gauss, &mut self.opf);
+        self.opf_x0 = opf_x0;
         f.diag.x_min = search.x_min;
         let p = if search.legacy {
             self.find_pupil_blob(xmax, prev, &mut f.diag);
@@ -450,6 +465,8 @@ impl Extractor {
     /// Rays from the blob centre; the sub-pixel crossing of the middle level between the pupil and the iris on
     /// each, rejecting rays that end past the lens edge or stay dark outside (lashes, lid, vignette); ellipse fit.
     /// Also returns the share of the rays pointing left (more than 60 degrees from vertical) that found the edge.
+    /// Rays that reach left of the columns computed for this frame (a tall blob cut by the window's left edge) are
+    /// skipped and not counted among the left ones: those columns hold nothing of this frame.
     fn refine_pupil(&self, c: (f64, f64), r0: f64, xmax: f64) -> Option<(Pupil, f64)> {
         let (cx, cy) = c;
         let (start, stop) = (0.4 * r0, 2.0 * r0 + 6.0);
@@ -482,7 +499,11 @@ impl Extractor {
         let mut ok = 0usize;
         let (mut left_n, mut left_ok) = (0usize, 0usize);
         let mut ov = Vec::with_capacity(nr);
+        let x_lo = self.opf_x0 as f64;
         for k in 0..NRAY {
+            if last_x[k] < x_lo {
+                continue;
+            }
             let left = (k as f64 * (std::f64::consts::TAU / NRAY as f64)).cos() < -0.5;
             left_n += left as usize;
             let row = &prof[k * nr..(k + 1) * nr];
@@ -893,8 +914,7 @@ mod tests {
             *v = 4;
         }
         shade(&mut img);
-        let mut ex = Extractor::default();
-        ex.search = Search::live(X_MIN);
+        let mut ex = Extractor { search: Search::live(X_MIN), ..Extractor::default() };
         let (f, p) = ex.extract(&img, 347.0, None, None, None);
         assert!(p.is_none() && !f.ok_pupil, "{p:?}");
         assert!(f.diag.candidates >= 1, "the bulge is a candidate, refused for its missing left edge: {:?}", f.diag);
@@ -908,12 +928,36 @@ mod tests {
     }
 
     #[test]
+    fn rays_left_of_the_computed_columns_do_not_count() {
+        // Only x >= 200 belongs to this frame; left of it are an earlier frame's bright pixels, which would look
+        // like the pupil's edge on the rays pointing left.
+        let mut ex = Extractor { opf: vec![120; W * H], opf_x0: 200, ..Extractor::default() };
+        for y in 0..H {
+            for x in 0..W {
+                if (x as f64 - 205.0).hypot(y as f64 - 200.0) < 20.0 {
+                    ex.opf[y * W + x] = 12;
+                }
+            }
+        }
+        let (p, left_share) = ex.refine_pupil((205.0, 200.0), 20.0, 347.0).expect("the other rays still fit it");
+        assert!((p.cy - 200.0).abs() < 1.5 && (p.a - 20.0).abs() < 2.0, "{p:?}");
+        assert!(left_share.is_nan() || left_share < EDGE_LEFT_SHARE, "no left ray reached only this frame's columns: {left_share}");
+        ex.opf_x0 = 0;
+        assert!(ex.refine_pupil((205.0, 200.0), 20.0, 347.0).is_some_and(|x| x.1 >= EDGE_LEFT_SHARE));
+    }
+
+    #[test]
     fn the_search_window_follows_the_nasal_shading() {
         let profile = |end: usize| (0..W).map(|x| if x < end { 8.0 } else { 80.0 }).collect::<Vec<f64>>();
         assert_eq!(search_x_min(&profile(198)), X_MIN, "the developer's recordings: the prototype's edge");
         assert_eq!(search_x_min(&profile(150)), 140.0);
         assert_eq!(search_x_min(&profile(40)), X_MIN_LO);
         assert_eq!(search_x_min(&vec![10.0; W]), X_MIN, "no bright columns: the prototype's edge");
+        assert_eq!(search_x_min(&profile(230)), X_MIN, "shading past the prototype's edge: it stays");
+        // A lit nose bridge at x 60..100 with shading between it and the iris: the shading's end counts.
+        let mut nose = profile(150);
+        nose[60..100].fill(90.0);
+        assert_eq!(search_x_min(&nose), 140.0);
         assert_eq!(Search::live(20.0).x_min, X_MIN_LO);
         // A pupil left of the prototype's window is found with the window moved left.
         let mut img = synthetic_eye(170.0, 200.0, 24.0);

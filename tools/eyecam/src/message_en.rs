@@ -83,8 +83,7 @@ fn details(s: &str) -> String {
         .replace("左 ", "L ")
         .replace("右 ", "R ")
         .replace("必要", "needed")
-        .replace('・', ", ")
-        .replace('、', ", ")
+        .replace(['・', '、'], ", ")
 }
 
 /// "body[details]" -> (body, " [translated details]").

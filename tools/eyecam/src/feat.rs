@@ -31,6 +31,8 @@ const MAX_CANDIDATES: usize = 3;
 /// A blob that touches the search window's left edge only counts as a pupil when at least this share of the rays
 /// pointing left (outside the window) find the pupil's edge: dark shading cut by the window has no edge there.
 const EDGE_LEFT_SHARE: f64 = 0.4;
+/// The second search without the prior only looks at blobs at least this far (px) from it.
+const RETRY_MIN_JUMP: f64 = 40.0;
 
 /// How the pupil is searched for.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -276,12 +278,16 @@ impl Extractor {
             blob.and_then(|b| self.refine_pupil(b.c, b.r, xmax)).map(|x| x.0)
         } else {
             self.find_pupil_blob(xmax, prev, &mut f.diag);
-            let mut p = self.refine_candidates(xmax, &mut f.diag);
-            if p.is_none() && prev.is_some() {
-                // The prior may be on something that is not the pupil (or the eye moved far): once more without it.
+            let mut p = self.refine_candidates(xmax, None, &mut f.diag);
+            if p.is_none()
+                && let Some(pv) = prev
+            {
+                // The prior may be on something that is not the pupil: once more without it, for a pupil somewhere
+                // else (near the prior this would only find the same blob at another threshold: lids half over the
+                // pupil, as in a squint, which the prototype does not count as a pupil either).
                 f.diag.retried = true;
                 self.find_pupil_blob(xmax, None, &mut f.diag);
-                p = self.refine_candidates(xmax, &mut f.diag);
+                p = self.refine_candidates(xmax, Some(pv), &mut f.diag);
             }
             p
         };
@@ -421,12 +427,18 @@ impl Extractor {
     }
 
     /// Refine the candidates in order; the first that gives a pupil wins. A blob cut by the window's left edge also
-    /// needs the pupil's edge on the rays pointing left (outside the window).
-    fn refine_candidates(&mut self, xmax: f64, diag: &mut Diag) -> Option<Pupil> {
+    /// needs the pupil's edge on the rays pointing left (outside the window), and no pupil may be centred past the
+    /// lens edge (an arc of dark lens band fitted as an ellipse). Blobs within RETRY_MIN_JUMP of `away_from` are
+    /// skipped.
+    fn refine_candidates(&mut self, xmax: f64, away_from: Option<(f64, f64)>, diag: &mut Diag) -> Option<Pupil> {
         for i in 0..self.cands.len() {
             let c = self.cands[i];
+            if away_from.is_some_and(|(x, y)| (c.c.0 - x).hypot(c.c.1 - y) < RETRY_MIN_JUMP) {
+                continue;
+            }
             if let Some((p, left_share)) = self.refine_pupil(c.c, c.r, xmax)
                 && (!c.left || left_share >= EDGE_LEFT_SHARE)
+                && p.cx < xmax
             {
                 diag.left_edge = c.left;
                 return Some(p);

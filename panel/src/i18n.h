@@ -301,6 +301,9 @@ struct UiText {
     // Advanced tab
     const char* sectionTools;       ///< section titles: the gaze dots and the eye log...
     const char* sectionFiles;       ///< ...and the file locations and the process
+    const char* sectionHelp;        ///< ...and the diagnostics row ("Having trouble")
+    const char* diagRowHint;        ///< under the diagnostics row's title
+    const char* diagOpen;           ///< the diagnostics row's button
     const char* updateCheckChip;    ///< the automatic update check, as a chip in the version row ("... On")
     const char* historyButton;      ///< the version row's button that opens the version history
     const char* historyTitle;       ///< the version history's title
@@ -676,9 +679,9 @@ struct UiText {
     const char* promptNo;
 
     // Updates. The texts are vendor/frame-updater/strings.md word for word (same key names); rowVersion and
-    // checkedFormat are this panel's own (the label of the version row on the Advanced tab)
+    // checkedFormat are this panel's own (the version section's title, and the version row's hint on the Advanced tab)
     const char* rowVersion;
-    const char* checkedFormat;          ///< after the version under the row label: "・確認 %s" (time or date)
+    const char* checkedFormat;          ///< under the version (the row's label): "%s に確認" (time or date)
     const char* rowGazeDots;         ///< the debug gaze dots switch
     const char* hintGazeDots;
     const char* dotDistance;         ///< next to its stepper ("Dot distance")

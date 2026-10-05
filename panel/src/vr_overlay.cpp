@@ -27,7 +27,7 @@ constexpr const char* kDashboardName = "Eye";
 constexpr float kDashboardWidthM = 2.8f;
 // On shutdown, how long to wait after clearing the overlay before VR_Shutdown (about 36 frames at 90Hz)
 constexpr int kShutdownWaitMs = 400;
-// Scrolling the panel (the version history): px per unit of the scroll events' ydelta. Not measured on the Frame
+// Scrolling the panel (the version history, the Advanced tab): px per unit of the scroll events' ydelta. Not measured on the Frame
 // yet; the first few events are logged to tune them
 constexpr double kSmoothScrollPx = 120.0;   ///< VREvent_ScrollSmooth (a continuous delta)
 constexpr double kDiscreteScrollPx = 80.0;  ///< VREvent_ScrollDiscrete (one notch)

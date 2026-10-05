@@ -300,6 +300,9 @@ UiText makeJapanese() {
 
     t.sectionTools = "調べる道具";
     t.sectionFiles = "ファイルと本体";
+    t.sectionHelp = "困ったとき";
+    t.diagRowHint = "スクショを送ってね";
+    t.diagOpen = "開く";
     t.updateCheckChip = "起動時と 1 時間ごとに確認";
     t.historyButton = "更新履歴";
     t.historyTitle = "更新履歴";
@@ -669,7 +672,7 @@ UiText makeJapanese() {
     t.promptNo = "しない";
 
     t.rowVersion = "バージョン";
-    t.checkedFormat = "・確認 %s";
+    t.checkedFormat = "%s に確認";
     t.rowGazeDots = "視線の点を表示";
     t.hintGazeDots = "デバッグ用・送る視線を表示";
     t.dotDistance = "点の距離";
@@ -1014,8 +1017,11 @@ UiText makeEnglish() {
     t.blinkSync = "Both";
     t.rowLidSmooth = "Eyelid smoothing";
 
-    t.sectionTools = "Diagnostics";
+    t.sectionTools = "Debug tools";
     t.sectionFiles = "Files and process";
+    t.sectionHelp = "Having trouble";
+    t.diagRowHint = "Send us a screenshot";
+    t.diagOpen = "Open";
     t.updateCheckChip = "Check at start and hourly";
     t.historyButton = "Version history";
     t.historyTitle = "Version history";
@@ -1389,7 +1395,7 @@ UiText makeEnglish() {
     t.promptNo = "No";
 
     t.rowVersion = "Version";
-    t.checkedFormat = " · checked %s";
+    t.checkedFormat = "Checked %s";
     t.rowGazeDots = "Show gaze dots";
     t.hintGazeDots = "Debug: the sent gaze";
     t.dotDistance = "Dot distance";

@@ -46,7 +46,6 @@ constexpr double kRowH = 64;
 constexpr double kRowGap = 2;
 constexpr double kCaptionRowH = 84;
 constexpr double kControlH = 52;
-constexpr double kUpdateRowH = 138;  ///< the version row (four lines of text and the update check chip)
 /** The raw openness range drawn in the lid mark bars. */
 constexpr double kLidScaleMax = 1.2;
 // The version history (in place of the Advanced tab): a title row, then the rows, scrolled within the card
@@ -59,6 +58,8 @@ constexpr double kHistoryHeaderH = 56;   ///< a row's header (the whole row whil
 constexpr double kHistoryRowGap = 8;
 constexpr double kHistoryTextSize = 16;  ///< the summary and items (the hints are 15)
 constexpr double kHistoryLineStep = 23;
+constexpr double kAdvViewTop = kContentY + 12;               ///< the Advanced tab's page is shown between these
+constexpr double kAdvViewBottom = kContentY + kContentH - 12;
 
 /**
  * The largest text size (down to a minimum) that fits a width.
@@ -751,6 +752,14 @@ EyePanel::~EyePanel() {
 }
 
 void EyePanel::addButton(PanelHit hit, double x, double y, double w, double h, bool usable) {
+    if (hitClip_) {
+        // In a scrolled view: only the part that shows
+        const double top = std::max(y, hitClipTop_);
+        const double bottom = std::min(y + h, hitClipBottom_);
+        if (bottom - top < 4) return;
+        y = top;
+        h = bottom - top;
+    }
     buttons_.push_back({hit, x, y, w, h, usable});
 }
 
@@ -832,7 +841,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
     if (hit.action != PanelAction::ResetAll) resetArmed_ = false;
     switch (hit.action) {
         case PanelAction::Tab:
-            tab_ = static_cast<PanelTab>(hit.arg);
+            setTab(static_cast<PanelTab>(hit.arg));
             historyOpen_ = false;
             diagOpen_ = false;
             return {};
@@ -862,6 +871,9 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::HistoryScroll:
             scroll(hit.arg * historyViewH_ / 3);
+            return {};
+        case PanelAction::AdvancedScroll:
+            scroll(hit.arg * advViewH_ / 3);
             return {};
         case PanelAction::FitDetails:
             fitDetails_ = !fitDetails_;
@@ -1040,6 +1052,13 @@ void EyePanel::setHistoryScroll(double px) {
 
 bool EyePanel::scroll(double dy) {
     if (!wantsScroll() || promptOpen() || hostEntryOpen_) return false;
+    if (!historyOpen_) {
+        // The Advanced tab's page
+        const double next = std::clamp(advScroll_ + dy, 0.0, advMaxScroll_);
+        if (std::fabs(next - advScroll_) < 1e-3) return false;
+        advScroll_ = next;
+        return true;
+    }
     const double next = std::max(0.0, std::min(historyMaxScroll_, historyScroll_ + dy));
     if (std::fabs(next - historyScroll_) < 1e-3) return false;
     historyScroll_ = next;
@@ -2828,64 +2847,141 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         drawRun(pen, t, m);
         return;
     }
+    cairo_t* cr = pen.cr;
+    const double viewTop = kAdvViewTop;
+    const double viewBottom = kAdvViewBottom;
+    const double viewH = viewBottom - viewTop;
+    advViewH_ = viewH;
+    const size_t firstButton = buttons_.size();
+
+    // As one page across the card when it fits
+    cairo_push_group(cr);
+    const double fullH = drawAdvancedPage(pen, t, m, v, viewTop, kInnerRight);
+    if (fullH <= viewH) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint(cr);
+        advScroll_ = 0.0;
+        advMaxScroll_ = 0.0;
+        return;
+    }
+    cairo_pattern_destroy(cairo_pop_group(cr));
+    buttons_.resize(firstButton);
+
+    // Too tall: a little narrower beside ▲ / ▼, clipped to the view and scrolled (only what shows can be pressed)
+    const double barX = kInnerRight - kHistoryBarW;
+    const double right = barX - 14;
+    advScrollable_ = true;
+    hitClip_ = true;
+    hitClipTop_ = viewTop;
+    hitClipBottom_ = viewBottom;
+    double pageH = 0.0;
+    for (int pass = 0;; ++pass) {
+        cairo_push_group(cr);
+        cairo_rectangle(cr, kRightX + 2, viewTop, barX - 8 - kRightX, viewH);
+        cairo_clip(cr);
+        pageH = drawAdvancedPage(pen, t, m, v, viewTop - advScroll_, right);
+        advMaxScroll_ = std::max(0.0, pageH - viewH);
+        const double kept = std::clamp(advScroll_, 0.0, advMaxScroll_);
+        if (std::fabs(kept - advScroll_) < 1e-6 || pass > 0) {
+            advScroll_ = kept;
+            cairo_pop_group_to_source(cr);
+            cairo_paint(cr);
+            break;
+        }
+        // Scrolled past the end (the page got shorter, or --adv-scroll): again, ending at the page's end
+        advScroll_ = kept;
+        cairo_pattern_destroy(cairo_pop_group(cr));
+        buttons_.resize(firstButton);
+    }
+    hitClip_ = false;
+    drawScrollBar(pen, PanelAction::AdvancedScroll, barX, viewTop, viewBottom, advScroll_, advMaxScroll_, pageH);
+}
+
+double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
+                                  double top, double right) {
     const EyeStatus& s = m.status;
-    double y = kRowTop - 6;
-    // With eyecam-rec running, the developer section at the bottom: the rows above get a little tighter
-    const bool dev = m.eyecam.visible;
+    const double controlW = right - kControlX;
+    double y = top + 2;
 
-    // Version, new release check and install, and the automatic check
-    y += drawUpdateRow(pen, t, m.update, updateNotes(m.update, m.language), v.flag(key::kUpdateCheck), y) + 10;
+    // Version: new release check and install, the version history and the automatic check
+    y += drawSectionTitle(pen, y, t.rowVersion, right);
+    y += drawUpdateRow(pen, t, m.update, updateNotes(m.update, m.language), v.flag(key::kUpdateCheck), y, right) + 12;
 
-    y += drawSectionTitle(pen, y, t.sectionTools);
+    // Having trouble: the diagnostics page (its code here too, to read out without opening it)
+    y += drawSectionTitle(pen, y, t.sectionHelp, right);
+    {
+        const double h = 56;
+        drawRowLabel(pen, t, y, h, t.diagTitle, t.diagRowHint, false);
+        const double bh = 44;
+        const double bw = std::max(120.0, pen.measure(t.diagOpen, 19, true) + 48);
+        const double bx = right - bw;
+        drawButton(pen, bx, y + (h - bh) / 2, bw, bh, t.diagOpen, {PanelAction::DiagOpen, nullptr, 0}, true, false);
+        const std::string code = diag::code(m);
+        const double codeSize = fitSize(pen, code, 17, 12, bx - 14 - kControlX - 24, true);
+        const double chipH = 32;
+        const double chipW = pen.measure(code, codeSize, true) + 24;
+        const double chipX = bx - 14 - chipW;
+        const double chipY = y + (h - chipH) / 2;
+        fillRounded(pen, chipX, chipY, chipW, chipH, 8, kAccent);
+        textCentered(pen, chipX + chipW / 2, centerBaseline(chipY, chipH, codeSize), code, codeSize, kOnAccent, true);
+        y += h + 12;
+    }
+
+    // Debug tools
+    y += drawSectionTitle(pen, y, t.sectionTools, right);
     // The debug gaze dots (a head-locked dot where the sent gaze points)
     {
-        const double h = dev ? 56 : 60;
+        const double h = 60;
         const bool locked = v.locked(key::kGazeDebugDots);
         const bool on = v.flag(key::kGazeDebugDots);
-        const double top = y + (h - kControlH) / 2;
+        const double rowTop = y + (h - kControlH) / 2;
+        // Narrower beside the scroll buttons
+        const bool narrow = right < kInnerRight;
+        const double segW = narrow ? 170 : 200;
         drawRowLabel(pen, t, y, h, t.rowGazeDots, t.hintGazeDots, locked);
-        drawSegmented(pen, kControlX, top, 200, kControlH,
+        drawSegmented(pen, kControlX, rowTop, segW, kControlH,
                       {{t.on, {PanelAction::SetBool, key::kGazeDebugDots, 1}},
                        {t.off, {PanelAction::SetBool, key::kGazeDebugDots, 0}}},
                       on ? 0 : 1, 20, locked);
         // How far ahead the dots are: "Dot distance  − 1.0 m ＋", greyed out while the dots are off
-        const double stepperW = 180;
-        const double stepperX = kInnerRight - stepperW;
-        const double captionRight = stepperX - 12;
-        const double captionLeft = kControlX + 200 + 12;
+        const double stepperW = narrow ? 156 : 180;
+        const double stepperX = right - stepperW;
+        const double captionRight = stepperX - 10;
+        const double captionLeft = kControlX + segW + 10;
         const double captionSize = fitSize(pen, t.dotDistance, 16, 12, captionRight - captionLeft, false);
         const double captionW = pen.measure(t.dotDistance, captionSize, false);
         pen.text(captionRight - captionW, centerBaseline(y, h, captionSize), t.dotDistance, captionSize,
                  on ? kText : kTextMuted);
         const double distance = v.number(key::kGazeDebugDotsDistanceM);
-        drawStepper(pen, stepperX, top, stepperW, kControlH, key::kGazeDebugDotsDistanceM, distance,
+        drawStepper(pen, stepperX, rowTop, stepperW, kControlH, key::kGazeDebugDotsDistanceM, distance,
                     formatSetting(key::kGazeDebugDotsDistanceM, distance) + " m", on, false);
-        y += h + (dev ? 4 : 8);
+        y += h + 6;
     }
     // The eye log: record the raw eye data to a file, from now until "Stop" (or 60 minutes)
     {
-        const double h = 52;
+        const double h = 56;
         const recorder::View& r = m.recording;
         drawRowLabel(pen, t, y, h, t.rowEyeLog, "", false);
         const std::string label =
             r.recording ? formatText(t.eyeLogStopFormat, recorder::elapsedText(r.elapsedSec)) : std::string(t.eyeLogRecord);
         const double buttonW = 160;
-        drawButton(pen, kControlX, y + (h - 40) / 2, buttonW, 40, label, {PanelAction::RecordToggle, nullptr, 0}, true,
+        drawButton(pen, kControlX, y + (h - 44) / 2, buttonW, 44, label, {PanelAction::RecordToggle, nullptr, 0}, true,
                    false);
         const double textX = kControlX + buttonW + 14;
-        const double textW = kInnerRight - textX;
-        // Two short lines next to the button: where the files go and the limit, or why it could not record
+        const double textW = right - textX;
+        // Next to the button: where the files go (wrapped) and the limit, or why it could not record (up to three lines)
         std::vector<std::string> lines;
         Color color = kTextMuted;
         bool bold = false;
         if (!r.error.empty() && !r.recording) {
-            lines = wrapText(pen, formatText(t.eyeLogFailedFormat, r.error), 14, true, textW, 2);
+            lines = wrapText(pen, formatText(t.eyeLogFailedFormat, r.error), 14, true, textW, 3);
             color = kDanger;
             bold = true;
         } else {
             const std::string where = formatText(t.eyeLogWhereFormat, recorder::shortPath(recorder::defaultDir()));
             // After the 60-minute limit stopped it: say so instead of the limit
-            lines = {ellipsize(pen, where, 14, false, textW, true), r.autoStopped ? t.eyeLogAutoStopped : t.eyeLogLimit};
+            lines = wrapText(pen, where, 14, false, textW, 2);
+            lines.push_back(r.autoStopped ? t.eyeLogAutoStopped : t.eyeLogLimit);
             if (r.autoStopped) {
                 color = kText;
             }
@@ -2895,31 +2991,24 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
             pen.text(textX, baseline, line, 14, color, bold);
             baseline += 18;
         }
-        y += h + (dev ? 4 : 10);
+        y += h + 12;
     }
 
-    // "Diagnostics" at the right of the section's title (the line under the title stops short of it)
-    {
-        const double chipH = 30;
-        const double chipW = drawDiagChip(pen, t, kInnerRight, y - 2, chipH, 15, false);
-        drawSectionTitle(pen, y, t.sectionFiles, kInnerRight - chipW - 12);
-        drawDiagChip(pen, t, kInnerRight, y - 2, chipH, 15);
-        y += 36;
-    }
-    // Read-only rows in smaller type: the title (muted) on the left, the text on the right
-    const double infoH = dev ? 22 : 28;
+    // Files and process: read-only rows in smaller type, the title (muted) on the left, the text on the right
+    y += drawSectionTitle(pen, y, t.sectionFiles, right);
+    const double infoH = 28;
     const double infoSize = 15;
     const auto infoRow = [&](const std::string& title, const std::string& value, bool keepEnd) {
         const double baseline = y + infoH / 2 + infoSize * 0.36;
         pen.text(kInnerX, baseline, title, fitSize(pen, title, infoSize, 11, kLabelW, false), kTextMuted);
-        pen.text(kControlX, baseline, ellipsize(pen, value, infoSize, false, kControlW, keepEnd), infoSize, kText);
+        pen.text(kControlX, baseline, ellipsize(pen, value, infoSize, false, controlW, keepEnd), infoSize, kText);
         y += infoH;
     };
     // File locations
     infoRow(t.rowConfigPath, m.configPath, true);
     if (s.running && !s.configPath.empty() && s.configPath != m.configPath) {
         const std::string warning = t.configPathMismatch + s.configPath;
-        pen.text(kControlX, y + 14, ellipsize(pen, warning, 14, true, kControlW, true), 14, kDanger, true);
+        pen.text(kControlX, y + 14, ellipsize(pen, warning, 14, true, controlW, true), 14, kDanger, true);
         y += 22;
     }
     infoRow(t.rowCalibrationPath, s.running && !s.calibrationPath.empty() ? s.calibrationPath : "—", true);
@@ -2962,10 +3051,10 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         if (items.empty()) items.push_back(s.running ? t.noneLocked : "—");
         std::vector<std::string> lines;
         for (const std::string& item : items) {
-            if (!lines.empty() && pen.measure(lines.back() + ",  " + item, infoSize, false) <= kControlW) {
+            if (!lines.empty() && pen.measure(lines.back() + ",  " + item, infoSize, false) <= controlW) {
                 lines.back() += ",  " + item;
             } else {
-                lines.push_back(ellipsize(pen, item, infoSize, false, kControlW, false));
+                lines.push_back(ellipsize(pen, item, infoSize, false, controlW, false));
             }
         }
         if (lines.size() > 2) lines.resize(2);
@@ -2978,20 +3067,22 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         y += infoH + 26;
     }
     // Developer: eyecam-rec's eye recording (its start opens the light warning; a failed one says why)
-    if (dev) {
+    if (m.eyecam.visible) {
         const eyecam::Status& es = m.eyecam.status;
-        y += drawSectionTitle(pen, y, t.devTitle);
-        const double h = 40;
+        y += 8;
+        y += drawSectionTitle(pen, y, t.devTitle, right);
+        const double h = 56;
+        const double bh = 44;
         const bool failed = eyecam::errorShown(m.eyecam, true);
         const bool ready = es.state == eyecam::State::Idle || es.state == eyecam::State::Error;
         drawRowLabel(pen, t, y, h, t.devRecord, t.devRecordHint, false);
         const double bw = 160;
-        drawButton(pen, kControlX, y + (h - 38) / 2, bw, 38, failed ? t.eyecamRetry : t.eyecamStart,
+        drawButton(pen, kControlX, y + (h - bh) / 2, bw, bh, failed ? t.eyecamRetry : t.eyecamStart,
                    {PanelAction::EyecamStart, nullptr, 0}, ready && !m.eyecam.busy, false);
         if (!failed) {
             // Where the video goes, before anyone starts one
             const double textX = kControlX + bw + 14;
-            const std::vector<std::string> lines = wrapText(pen, t.eyecamStorageRow, 13, false, kInnerRight - textX, 2);
+            const std::vector<std::string> lines = wrapText(pen, t.eyecamStorageRow, 13, false, right - textX, 3);
             double baseline = y + h / 2 - (lines.size() - 1) * 8.5 + 5;
             for (const std::string& line : lines) {
                 pen.text(textX, baseline, line, 13, kTextMuted);
@@ -3000,10 +3091,10 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         } else {
             // Why it failed, and "Back" at the right (dismissed in the panel only, as on the eye cameras tab)
             const double backW = pen.measure(t.eyecamBack, 16, true) + 40;
-            drawButton(pen, kInnerRight - backW, y + (h - 38) / 2, backW, 38, t.eyecamBack,
+            drawButton(pen, right - backW, y + (h - bh) / 2, backW, bh, t.eyecamBack,
                        {PanelAction::EyecamBack, nullptr, 0}, true, false, 16);
             const double textX = kControlX + bw + 14;
-            const double textRight = kInnerRight - backW - 12;
+            const double textRight = right - backW - 12;
             const std::string& message = eyecam::shownMessage(es, m.language);
             const std::string why = message.empty() ? std::string(t.eyecamErrorTitle) : message;
             const std::vector<std::string> lines = wrapText(pen, why, 14, true, textRight - textX, 2);
@@ -3013,11 +3104,13 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
                 baseline += 18;
             }
         }
+        y += h;
     }
+    return y + 8 - top;
 }
 
 double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u,
-                               const std::string& notes, bool checkOn, double y) {
+                               const std::string& notes, bool checkOn, double y, double right) {
     using frame_updater::UpdateState;
     const std::string current = bareVersion(u.current);
 
@@ -3077,33 +3170,33 @@ double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_upda
         secondary = t.updateChecking;
     }
 
-    // The texts, wrapped to at most four lines, left of the buttons
+    // The texts, wrapped to at most six lines (the error up to four, what to do about it up to two), left of the
+    // buttons
     const double bw = 170;
-    const double left = kInnerRight - bw - 12;
-    const double textW = (buttons.empty() ? kInnerRight : left) - kControlX;
+    const double left = right - bw - 12;
+    const double textW = (buttons.empty() ? right : left) - kControlX;
     const double primarySize = 17;
     const double secondarySize = 14;
-    const size_t maxLines = 4;
     const std::vector<std::string> primaryLines =
-        primary.empty() ? std::vector<std::string>() : wrapText(pen, primary, primarySize, true, textW, secondary.empty() ? 4 : 3);
+        primary.empty() ? std::vector<std::string>() : wrapText(pen, primary, primarySize, true, textW, 4);
     const std::vector<std::string> secondaryLines =
-        secondary.empty() || primaryLines.size() >= maxLines
-            ? std::vector<std::string>()
-            : wrapText(pen, secondary, secondarySize, false, textW, maxLines - primaryLines.size());
+        secondary.empty() ? std::vector<std::string>() : wrapText(pen, secondary, secondarySize, false, textW, 2);
     const double primaryStep = 22;
     const double secondaryStep = 20;
     const double textBlock = primaryLines.size() * primaryStep + secondaryLines.size() * secondaryStep;
 
-    // The texts get four lines' room above the chip; with the new release's summary under the row, only what they
-    // need (at least a button's height), so the summary fits on the tab
+    // The texts and the buttons above the chips' line, as tall as they need (at least a button's height; two
+    // stacked buttons 44 px each); the chips' line spans the row under them
     const double chipH = 34;
-    const double textH = notes.empty() ? kUpdateRowH - chipH - 6 : std::max(kControlH + 8, textBlock + 12);
-    const double h = textH + 4 + chipH + 2;  // kUpdateRowH without a summary
+    const double gap = 8;
+    const double textH = std::max({kControlH + 8, textBlock + 12, buttons.size() > 1 ? 44 * 2 + gap : 0.0});
+    const double h = textH + 4 + chipH + 2;
     const double chipY = y + h - chipH - 2;
 
-    std::string hint = "v" + current;
-    if (u.checkedAt > 0) hint += formatText(t.checkedFormat, checkedText(u.checkedAt));
-    drawRowLabel(pen, t, y, textH + 4, t.rowVersion, hint, false);
+    // The label: the running version, and when it was last checked
+    const std::string title = current.empty() ? std::string(t.rowVersion) : "v" + current;
+    const std::string hint = u.checkedAt > 0 ? formatText(t.checkedFormat, checkedText(u.checkedAt)) : std::string();
+    drawRowLabel(pen, t, y, textH + 4, title, hint, false);
 
     // "Version history" under the label, on the chip's line
     {
@@ -3118,12 +3211,11 @@ double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_upda
     }
 
     // Buttons at the right end; two are stacked so the texts keep their width
-    const double gap = 8;
-    const double bh = buttons.size() > 1 ? (h - gap) / 2 : kControlH;
+    const double bh = buttons.size() > 1 ? (textH - gap) / 2 : kControlH;
     for (size_t i = 0; i < buttons.size(); ++i) {
         const RowButton& b = buttons[i];
-        const double bx = kInnerRight - bw;
-        const double by = buttons.size() > 1 ? y + i * (bh + gap) : y + (h - bh) / 2;
+        const double bx = right - bw;
+        const double by = buttons.size() > 1 ? y + i * (bh + gap) : y + (textH - bh) / 2;
         // A check can't be started while one runs
         const bool usable = !(b.hit.action == PanelAction::UpdateCheck && u.checking);
         const int pointer = usable ? pointerState(b.hit) : 0;
@@ -3145,7 +3237,7 @@ double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_upda
         const PanelHit hit {PanelAction::SetBool, key::kUpdateCheck, checkOn ? 0 : 1};
         const std::string state = checkOn ? t.on : t.off;
         const double labelSize = 15;
-        const double chipMax = left - kControlX;
+        const double chipMax = right - kControlX;
         const double stateW = pen.measure(state, labelSize, true);
         const double labelRoom = chipMax - 28 - 10 - stateW;
         const std::string label = ellipsize(pen, t.updateCheckChip, labelSize, false, labelRoom, false);
@@ -3175,7 +3267,7 @@ double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_upda
     if (notes.empty()) return h;
     const double notesSize = 15;
     const double notesStep = 20;
-    const std::vector<std::string> notesLines = wrapText(pen, notes, notesSize, false, kInnerRight - kInnerX, 3);
+    const std::vector<std::string> notesLines = wrapText(pen, notes, notesSize, false, right - kInnerX, 3);
     baseline = y + h + 10;
     for (const std::string& line : notesLines) {
         baseline += notesStep;
@@ -3472,14 +3564,22 @@ void EyePanel::drawHistory(const Pen& pen, const UiText& t, const PanelModel& m)
     cairo_restore(cr);
 
     // ▲ / ▼ at the right edge (a third of the view per press), with where the view is between them
-    const double barCx = barX + kHistoryBarW / 2;
+    drawScrollBar(pen, PanelAction::HistoryScroll, barX, viewTop, viewBottom, historyScroll_, historyMaxScroll_,
+                  contentH);
+}
+
+void EyePanel::drawScrollBar(const Pen& pen, PanelAction action, double x, double viewTop, double viewBottom,
+                             double scroll, double maxScroll, double contentH) {
+    cairo_t* cr = pen.cr;
+    const double viewH = viewBottom - viewTop;
+    const double barCx = x + kHistoryBarW / 2;
     const auto arrow = [&](int direction, double by) {
-        const PanelHit hit {PanelAction::HistoryScroll, nullptr, direction};
-        const bool can = direction < 0 ? historyScroll_ > 0.5 : historyScroll_ < historyMaxScroll_ - 0.5;
+        const PanelHit hit {action, nullptr, direction};
+        const bool can = direction < 0 ? scroll > 0.5 : scroll < maxScroll - 0.5;
         const int pointer = can ? pointerState(hit) : 0;
-        fillRounded(pen, barX, by, kHistoryBarW, kHistoryBarW, 14,
+        fillRounded(pen, x, by, kHistoryBarW, kHistoryBarW, 14,
                     pointer == 2 ? kAccentPressed : (pointer == 1 ? kControlHover : kControl));
-        strokeRounded(pen, barX, by, kHistoryBarW, kHistoryBarW, 14, can ? kBorder : kDivider, 2);
+        strokeRounded(pen, x, by, kHistoryBarW, kHistoryBarW, 14, can ? kBorder : kDivider, 2);
         pen.color(pointer == 2 ? kOnAccent : (can ? kText : kTextDisabled));
         const double cy = by + kHistoryBarW / 2;
         cairo_move_to(cr, barCx - 9, cy - direction * 5);
@@ -3487,16 +3587,16 @@ void EyePanel::drawHistory(const Pen& pen, const UiText& t, const PanelModel& m)
         cairo_line_to(cr, barCx, cy + direction * 6);
         cairo_close_path(cr);
         cairo_fill(cr);
-        addButton(hit, barX, by, kHistoryBarW, kHistoryBarW, can);
+        addButton(hit, x, by, kHistoryBarW, kHistoryBarW, can);
     };
     arrow(-1, viewTop);
     arrow(1, viewBottom - kHistoryBarW);
     const double trackTop = viewTop + kHistoryBarW + 10;
     const double trackH = viewBottom - kHistoryBarW - 10 - trackTop;
     fillRounded(pen, barCx - 3, trackTop, 6, trackH, 3, kControl);
-    if (historyMaxScroll_ > 0) {
+    if (maxScroll > 0 && contentH > 0) {
         const double thumbH = std::max(36.0, trackH * viewH / contentH);
-        const double thumbY = trackTop + (trackH - thumbH) * historyScroll_ / historyMaxScroll_;
+        const double thumbY = trackTop + (trackH - thumbH) * scroll / maxScroll;
         fillRounded(pen, barCx - 3, thumbY, 6, thumbH, 3, kBorder);
     }
 }
@@ -5100,6 +5200,10 @@ void EyePanel::render(const PanelModel& model) {
     eyecamTab_ = model.eyecam.visible;
     if (!eyecamTab_ && tab_ == PanelTab::Eyecam) tab_ = PanelTab::Basic;
     syncEyecam(model.eyecam);
+    // The Advanced tab's page starts at its top again once the tab is left (drawAdvanced sets these while it scrolls)
+    if (tab_ != PanelTab::Advanced) advScroll_ = 0.0;
+    advScrollable_ = false;
+    hitClip_ = false;
 
     drawStatus(pen, t, model);
     drawTabs(pen, t);

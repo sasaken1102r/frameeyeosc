@@ -86,6 +86,7 @@ struct Options {
     bool history = false;         ///< --history: the version history open (on the Advanced tab)
     std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
     double historyScroll = -1.0;  ///< --history-scroll: px it is scrolled (-1 = as opened)
+    double advScroll = 0.0;       ///< --adv-scroll: px the Advanced tab's page is scrolled
     std::string changelogDir;     ///< --changelog-dir: read CHANGELOG*.md from here only
     bool diag = false;            ///< --diag: the diagnostics page open (on the Advanced tab)
     std::string language;         ///< for --dump-png: overrides the config language (ja / en)
@@ -224,6 +225,7 @@ void printUsage() {
         "      --history-open VERSION  ...with this version's row open instead of the installed one\n"
         "      --history-scroll PX  ...scrolled this far (kept within the list)\n"
         "      --diag            Open the diagnostics page (Advanced tab)\n"
+        "      --adv-scroll PX   Scroll the Advanced tab's page this far (kept within the page; with --tab advanced)\n"
         "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
         "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
         "      --preview-quit    Show \"press again to quit\"\n"
@@ -515,6 +517,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.historyScroll = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--diag") {
             options.diag = true;
+        } else if (arg == "--adv-scroll" && hasNext) {
+            options.advScroll = std::max(0.0, std::atof(argv[++i]));
         } else if (arg == "--changelog-dir" && hasNext) {
             options.changelogDir = argv[++i];
         } else if (arg == "--fit-details") {
@@ -1462,6 +1466,7 @@ int runDumpPng(const Options& options) {
         panel.setFitDetailsPage(options.fitDetailsPage);
         panel.setLidMarks(options.lidMarks);
         if (options.diag) panel.openDiag();
+        panel.setAdvancedScroll(options.advScroll);
         if (options.history) {
             loadHistory(model);
             panel.openHistory();
@@ -2121,6 +2126,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::DiagClose:
         case PanelAction::HistoryRow:
         case PanelAction::HistoryScroll:
+        case PanelAction::AdvancedScroll:
         case PanelAction::EyecamStart:
         case PanelAction::NumberSlider:                // the loop writes the slider's value (SetNumber)
         case PanelAction::EyecamSensitivity: return;  // the loop sends the slider's value
@@ -2585,7 +2591,7 @@ int runOverlay(const Options& options) {
             }
         }
         if (userQuit) break;
-        // The thumbstick scrolls the panel only while the version history is shown
+        // The thumbstick scrolls the panel only while the version history, or a taller Advanced tab, is shown
         vr.setPanelScroll(panel.wantsScroll());
         dirty |= panel.tick(nowSeconds());
         const uint64_t autostartVersion = autostart.snapshot(model.autostart);

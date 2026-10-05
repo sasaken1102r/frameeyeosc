@@ -4,6 +4,7 @@
 
 #include "model.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <string>
@@ -88,6 +89,7 @@ enum class PanelAction {
     DiagOpen,          ///< open the diagnostics page on the Advanced tab (the panel opens it; the caller reads the
                        ///< camera tool's checksum)
     DiagClose,         ///< back to the Advanced tab (handled inside the panel)
+    AdvancedScroll,    ///< scroll the Advanced tab a third of its view, arg -1 up / 1 down (handled inside)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -188,7 +190,10 @@ public:
      * Choose the tab.
      * @param tab the tab
      */
-    void setTab(PanelTab tab) { tab_ = tab; }
+    void setTab(PanelTab tab) {
+        if (tab != tab_) advScroll_ = 0.0;
+        tab_ = tab;
+    }
 
     /** @return the tab shown (Eyecam falls back to Basic at the next draw once its tab is gone) */
     PanelTab tab() const { return tab_; }
@@ -308,11 +313,29 @@ public:
      */
     void setHistoryScroll(double px);
 
-    /** @return true while the panel wants the controller's scroll events (the version history is shown) */
-    bool wantsScroll() const { return historyOpen_ && tab_ == PanelTab::Advanced; }
+    /**
+     * For --adv-scroll: how far the Advanced tab's page is scrolled (kept within the page when drawn).
+     * @param px px from the top of the page
+     */
+    void setAdvancedScroll(double px) { advScroll_ = std::max(0.0, px); }
+
+    /** @return how far the Advanced tab's page is scrolled (px, as last drawn or scrolled) */
+    double advancedScroll() const { return advScroll_; }
+
+    /** @return as far as the Advanced tab's page can scroll (px, from the last draw; 0 = it fits) */
+    double advancedMaxScroll() const { return advMaxScroll_; }
 
     /**
-     * Scroll the version history (the thumbstick or touchpad; ignored while it is not shown or a prompt is open).
+     * @return true while the panel wants the controller's scroll events: the version history is shown, or the
+     * Advanced tab's page is taller than its view
+     */
+    bool wantsScroll() const {
+        return tab_ == PanelTab::Advanced && (historyOpen_ || (!diagOpen_ && advScrollable_));
+    }
+
+    /**
+     * Scroll the version history, or the Advanced tab's page (the thumbstick or touchpad; ignored while neither is
+     * shown or a prompt is open).
      * @param dy px; positive moves the list up (shows what is further down)
      * @return true if it moved (redraw needed)
      */
@@ -408,6 +431,13 @@ private:
     double historyMaxScroll_ = 0.0;     ///< as far as it can scroll (from the last draw)
     double historyViewH_ = 0.0;         ///< the height it is shown in (from the last draw)
     bool diagOpen_ = false;             ///< the diagnostics page is shown on the Advanced tab
+    double advScroll_ = 0.0;            ///< px the Advanced tab's page is scrolled (0 again once the tab is left)
+    double advMaxScroll_ = 0.0;         ///< as far as it can scroll (from the last draw)
+    double advViewH_ = 0.0;             ///< the height it is shown in
+    bool advScrollable_ = false;        ///< the last draw showed the page scrolled, with ▲ / ▼ (it didn't fit)
+    bool hitClip_ = false;              ///< addButton keeps only what is between hitClipTop_ and hitClipBottom_
+    double hitClipTop_ = 0.0;
+    double hitClipBottom_ = 0.0;
     bool eyecamTab_ = false;            ///< the eye capture tab is in the tab row (eyecam-rec runs)
     eyecam::State eyecamState_ = eyecam::State::Missing;  ///< the recorder's state as last seen (its start button)
     eyecam::StartConfirm eyecamConfirm_;  ///< the light warning before a start
@@ -440,7 +470,8 @@ private:
     PanelHit hitTest(double x, double y) const;
 
     /**
-     * Register a button's hit area.
+     * Register a button's hit area. While hitClip_ is on (a scrolled view), only the part inside it, and nothing if
+     * too little of it shows.
      * @param hit the button
      * @param x left
      * @param y top
@@ -579,6 +610,35 @@ private:
      * @param view the settings shown
      */
     void drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The Advanced tab's page, one section after another: the version, "Having trouble" (the diagnostics), the debug
+     * tools, the files and the process, and the developer recording while eyecam-rec runs.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     * @param top the page's top (moved up by the scroll)
+     * @param right the rows' right edge
+     * @return the page's height
+     */
+    double drawAdvancedPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view,
+                            double top, double right);
+
+    /**
+     * ▲ / ▼ at the right edge of a scrolled view (a third of the view per press) and a thin bar between them with
+     * where the view is.
+     * @param pen drawing tools
+     * @param action the buttons' action (arg -1 up, 1 down)
+     * @param x the column's left
+     * @param viewTop the view's top
+     * @param viewBottom the view's bottom
+     * @param scroll px scrolled
+     * @param maxScroll as far as it can scroll
+     * @param contentH the content's height
+     */
+    void drawScrollBar(const Pen& pen, PanelAction action, double x, double viewTop, double viewBottom, double scroll,
+                       double maxScroll, double contentH);
 
     /**
      * The version history in place of the Advanced tab: a title row with "Close", one row per version (newest
@@ -809,10 +869,11 @@ private:
      * @param notes the new release's summary in the panel's language ("" = none; see updateNotes)
      * @param checkOn whether the automatic check (update_check) is on
      * @param y row top
+     * @param right the row's right edge
      * @return the row's height
      */
     double drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u,
-                         const std::string& notes, bool checkOn, double y);
+                         const std::string& notes, bool checkOn, double y, double right);
 
     /**
      * A notice at the bottom of the status column while a new release is available, installing or installed.

@@ -2480,7 +2480,7 @@ int runOverlay(const Options& options) {
             drawnAutostart = autostartVersion;
             dirty = true;
         }
-        // Checks at start and then daily (frame-update.sh asks GitHub at most once a day), even while closed
+        // Checks at start and then hourly (frame-update.sh reuses GitHub's answer for 55 minutes), even while closed
         updater.tick(model.config.flag(key::kUpdateCheck));
         if (updater.revision() != drawnUpdate) {
             drawnUpdate = updater.revision();

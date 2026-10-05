@@ -300,7 +300,7 @@ UiText makeJapanese() {
 
     t.sectionTools = "調べる道具";
     t.sectionFiles = "ファイルと本体";
-    t.updateCheckChip = "起動時と 1 日 1 回確認";
+    t.updateCheckChip = "起動時と 1 時間ごとに確認";
     t.historyButton = "更新履歴";
     t.historyTitle = "更新履歴";
     t.historyClose = "閉じる";
@@ -595,7 +595,7 @@ UiText makeJapanese() {
     t.hintGazeDots = "デバッグ用・送る視線を表示";
     t.dotDistance = "点の距離";
     t.rowUpdateCheck = "新しい版の確認";
-    t.hintUpdateCheck = "起動時と 1 日 1 回、GitHub に新しい版がないか見に行きます";
+    t.hintUpdateCheck = "起動時と 1 時間に 1 回、GitHub に新しい版がないか見に行きます";
     t.updateUpToDateFormat = "最新版です（%s）";
     t.updateChecking = "新しい版を確かめています…";
     t.updateAvailableFormat = "新しい版 %s があります";
@@ -937,7 +937,7 @@ UiText makeEnglish() {
 
     t.sectionTools = "Diagnostics";
     t.sectionFiles = "Files and process";
-    t.updateCheckChip = "Check at start and daily";
+    t.updateCheckChip = "Check at start and hourly";
     t.historyButton = "Version history";
     t.historyTitle = "Version history";
     t.historyClose = "Close";
@@ -1236,7 +1236,7 @@ UiText makeEnglish() {
     t.hintGazeDots = "Debug: the sent gaze";
     t.dotDistance = "Dot distance";
     t.rowUpdateCheck = "Check for updates";
-    t.hintUpdateCheck = "Looks on GitHub for a new version at start and once a day";
+    t.hintUpdateCheck = "Looks on GitHub for a new version at start and every hour";
     t.updateUpToDateFormat = "Up to date (%s)";
     t.updateChecking = "Checking for updates…";
     t.updateAvailableFormat = "Version %s is available";

@@ -13,7 +13,7 @@
 # --asset is the release file name with {version} in place of the version, e.g.
 # "frameeyeosc-{version}-steamframe-aarch64.tar.gz". Every command prints one line of JSON on
 # stdout (see README.md). Files, with C = ${XDG_CACHE_HOME:-~/.cache}/A:
-#   C/update-check.json  last answer from GitHub, reused for 24 hours (errors for 1 hour)
+#   C/update-check.json  last answer from GitHub, reused for 55 minutes (errors for 1 hour)
 #   C/update-state.json  progress of the last install: running (with step) / done / failed
 #                        (a "done" older than 24 hours is dropped at the next check or install)
 #   C/update.log         log of the last install, including install.sh's output
@@ -24,14 +24,15 @@
 # user unit (A-update), so it keeps going when install.sh restarts the caller (the panel).
 #
 # Test overrides (environment): FRAME_UPDATE_API_URL (default https://api.github.com),
-# FRAME_UPDATE_ALLOW_INSECURE=1 (allow http:// and any host), FRAME_UPDATE_CHECK_TTL (86400),
+# FRAME_UPDATE_ALLOW_INSECURE=1 (allow http:// and any host), FRAME_UPDATE_CHECK_TTL (3300),
 # FRAME_UPDATE_ERROR_TTL (3600).
 
-FRAME_UPDATE_VERSION=0.2.0
+FRAME_UPDATE_VERSION=0.3.0
 
 api_base=${FRAME_UPDATE_API_URL:-https://api.github.com}
 insecure=${FRAME_UPDATE_ALLOW_INSECURE:-0}
-check_ttl=${FRAME_UPDATE_CHECK_TTL:-86400}
+# A bit under the panels' hourly tick, so each tick really asks GitHub: about once an hour per app.
+check_ttl=${FRAME_UPDATE_CHECK_TTL:-3300}
 error_ttl=${FRAME_UPDATE_ERROR_TTL:-3600}
 # A detached install that hasn't written its PID after this many seconds never started
 start_grace=60

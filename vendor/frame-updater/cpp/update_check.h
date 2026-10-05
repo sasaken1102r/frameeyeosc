@@ -31,7 +31,7 @@ struct UpdaterConfig {
     std::string currentVersion;                   ///< version of the running app ("0.3.0")
     std::string assetPattern;                     ///< release file, {version} for the version
     std::vector<std::string> defaultInstallArgs;  ///< install.sh options when ~/.config/<app>/install-args is missing
-    int recheckSeconds = 3600;                    ///< how often tick() asks the script (it reuses GitHub's answer for 24 h)
+    int recheckSeconds = 3600;                    ///< how often tick() asks the script (it reuses GitHub's answer for 55 min, so about hourly)
 };
 
 /** Overall state, for choosing what to show. */

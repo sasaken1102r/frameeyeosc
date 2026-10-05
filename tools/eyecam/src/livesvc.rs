@@ -656,6 +656,11 @@ pub fn spawn(
                         w.collect = Some(kind);
                         w.steps.clear();
                         w.samples = [Vec::new(), Vec::new()];
+                        // A calibration starts from a clean pupil search: a prior left on something else (caught
+                        // before the calibration) could keep the pupil out of reach for seconds.
+                        for e in &mut w.engines {
+                            e.reset_tracking();
+                        }
                     }
                     Ok(Msg::Step { label, t0, seconds }) => w.steps.push((Label::parse(&label), t0, seconds)),
                     Ok(Msg::Finish(reply, dir)) => {

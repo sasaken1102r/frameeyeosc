@@ -1,7 +1,7 @@
 //! The live per-eye engine: features (`feat`) -> causal estimates -> VRCFT-style outputs, plus calibration.
 //!
 //! Follows the choices of the cross-wear evaluation (analysis/xwear.py and analysis/mapping.py): features normalised by the iris radius R (a long-term median of the
-//! nasal limbus, no calibration), "gated" closed detection (box brightness > 1.3 x its long-term open median AND no
+//! limbus, no calibration), "gated" closed detection (box brightness > 1.3 x its long-term open median AND no
 //! pupil for 3 frames), EyeWide from the skin line (by default 0 below 32.5% of the widen step above the baseline,
 //! 0.5 at 60%, 1 at 87.5%, adjustable with the widen sensitivity; above 0.3 only after 100 ms above 0.5), EyeSquint from the pitch-corrected aperture, EyeLid on the VRCFT
 //! scale (0 closed, 0.75 normal, 1 full widen), pupil
@@ -32,6 +32,9 @@ const PUPIL_MIN_VIS: f64 = 0.75;
 const PUPIL_MAX_BA_DEV: f64 = 0.08;
 /// Frames after a blink before the pupil size is trusted again (300 ms).
 const PUPIL_SETTLE_FRAMES: u32 = 27;
+/// After this many frames in a row without a pupil, the search forgets where the pupil was (its prior): a wrong
+/// blob caught once (during a blink, say) would otherwise keep the real pupil out of reach for seconds.
+pub const PRIOR_RESET_MISSES: u32 = 10;
 /// The default widen sensitivity (see `wide_curve`): 0.5 at 60% of the widen step. Calibration-free on the 5
 /// protocol sessions and the 3-minute free-use session this was the balance: 0.5 at 70% (sensitivity 0) missed too
 /// much of true widen (0.63 of widen frames), 0.5 at 50% (sensitivity 1) widened falsely twice a minute in free use.
@@ -177,6 +180,8 @@ pub struct Out {
     pub r: f64,
     pub pitch: f64,
     pub xmax: f64,
+    /// The pupil search's left edge (`feat::search_x_min`).
+    pub x_min: f64,
     /// The levels in use for this frame (calibrated, or the automatic baseline + stored step).
     pub b_n: f64,
     pub b_w: f64,
@@ -250,6 +255,7 @@ pub struct EyeEngine {
     cm_sum: Vec<f64>,
     cm_n: u32,
     xmax: f64,
+    x_min: f64,
     r_est: LongMedian,
     skin: Win,
     ap: Win,
@@ -386,6 +392,7 @@ impl Default for EyeEngine {
             cm_sum: vec![0.0; vision::W],
             cm_n: 0,
             xmax: 346.0,
+            x_min: feat::X_MIN,
             // One sample every 2nd frame: 30 s for R, 60 s for the open box level.
             r_est: LongMedian::new(1350, 45),
             skin: Win::new(5),
@@ -444,6 +451,17 @@ impl EyeEngine {
         *self = Self { ex: std::mem::take(&mut self.ex), ..Self::default() };
     }
 
+    /// Forget where the pupil was (the search prior, the last pupil the lids are measured around, the run of frames
+    /// without one), so that a calibration starts from a clean search. What belongs to the wear stays: lens edge,
+    /// search window, iris radius, open-eye levels, and the open eye's pupil size, darkness and iris-box brightness
+    /// (the closed-lid crease check). Replays of the 14 recorded calibrations after 30 s of another session gave the
+    /// same pupil counts with those kept or cleared, and fewer "pupils" on closed eyes with them kept.
+    pub fn reset_tracking(&mut self) {
+        self.prev = None;
+        self.prev_p = None;
+        self.nopupil = 0;
+    }
+
     /// The lens edge and iris radius the engine currently uses.
     pub fn geometry(&self) -> (f64, f64) {
         (self.xmax, self.r_est.value)
@@ -485,7 +503,9 @@ impl EyeEngine {
             self.cm_n += 1;
             let m: Vec<f64> = self.cm_sum.iter().map(|v| v / self.cm_n as f64).collect();
             self.xmax = feat::occluder_x(&m);
+            self.x_min = feat::search_x_min(&m);
         }
+        self.ex.search = feat::Search::live(self.x_min);
         let r_ready = self.r_est.len() >= 10;
         let r_ref = r_ready.then_some(self.r_est.value);
         let (mut f, mut p) = self.ex.extract(img, self.xmax, self.prev, r_ref, self.prev_p.as_ref());
@@ -501,6 +521,7 @@ impl EyeEngine {
         {
             p = None;
             f.ok_pupil = false;
+            f.diag.gated = true;
             (f.pupil_cx, f.pupil_cy, f.pupil_a, f.pupil_b, f.pupil_vis) = (f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN);
             (f.iris_r, f.iris_n) = (f64::NAN, 0);
         }
@@ -541,6 +562,11 @@ impl EyeEngine {
         let pupil_whole = f.ok_pupil && f.pupil_vis >= PUPIL_MIN_VIS && roundness_ok && self.since_closed > PUPIL_SETTLE_FRAMES;
         let pd = self.pd.push(if pupil_whole { 2.0 * f.pupil_a / r } else { f64::NAN });
         self.nopupil = if f.ok_pupil { 0 } else { self.nopupil + 1 };
+        if self.nopupil >= PRIOR_RESET_MISSES && self.prev.is_some() {
+            // prev_p stays: the lids and the box are still measured where the pupil last was.
+            self.prev = None;
+            f.diag.prior_reset = true;
+        }
         if f.ok_pupil && self.frame_no.is_multiple_of(2) {
             self.box_open.push(box_f);
         }
@@ -663,6 +689,7 @@ impl EyeEngine {
             r,
             pitch,
             xmax: self.xmax,
+            x_min: self.x_min,
             b_n,
             b_w,
         }
@@ -1383,6 +1410,51 @@ mod tests {
         up.extend(samples(Label::LookDown, 200, 0.6, 1.1, -35.0, 240.0, true));
         assert!(fit_user(&[up.clone(), up], &w, None, true).unwrap_err().contains("下まぶたが上に"));
         assert_eq!(back.wear, file.wear);
+    }
+
+    /// A grey frame with the lens-edge band, and a dark disc (the pupil) if `pupil`.
+    fn disc_frame(pupil: Option<(f64, f64, f64)>) -> Vec<u8> {
+        let mut img = vec![120u8; vision::W * vision::H];
+        for y in 0..vision::H {
+            for x in 0..vision::W {
+                let v = &mut img[y * vision::W + x];
+                if x >= 350 {
+                    *v = 4;
+                } else if let Some((px, py, r)) = pupil {
+                    let d = (x as f64 - px).hypot(y as f64 - py);
+                    if d < r {
+                        *v = 12;
+                    } else if d < 2.2 * r {
+                        *v = 70;
+                    }
+                }
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn the_search_prior_is_forgotten_after_ten_frames_without_a_pupil() {
+        let mut e = EyeEngine::default();
+        let p = Params::default();
+        let eye = disc_frame(Some((250.0, 200.0, 25.0)));
+        let blank = disc_frame(None);
+        let o = e.process(&eye, f64::NAN, 0.0, &p);
+        assert!(o.f.ok_pupil && e.prev.is_some());
+        assert_eq!(o.x_min, feat::X_MIN_LO, "no dark shading: the window opens all the way");
+        for k in 1..=PRIOR_RESET_MISSES {
+            let o = e.process(&blank, f64::NAN, k as f64 / FPS, &p);
+            assert!(!o.f.ok_pupil);
+            assert_eq!(o.f.diag.prior_reset, k == PRIOR_RESET_MISSES, "frame {k}");
+            assert_eq!(e.prev.is_some(), k < PRIOR_RESET_MISSES);
+        }
+        assert!(e.prev_p.is_some(), "the lids are still measured where the pupil was");
+        let o = e.process(&blank, f64::NAN, 1.0, &p);
+        assert!(!o.f.diag.prior_reset, "once");
+        assert!(e.process(&eye, f64::NAN, 1.1, &p).f.ok_pupil && e.prev.is_some());
+        e.reset_tracking();
+        assert!(e.prev.is_none() && e.prev_p.is_none() && e.nopupil == 0);
+        assert!(e.r_est.len() > 0 || e.cm_n > 0, "what belongs to the wear stays");
     }
 
     #[test]

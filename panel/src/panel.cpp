@@ -3648,13 +3648,22 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
             // The user's calibration again can't be offered once the headset was put back on (bit 0 gone): a note
             // above the buttons says so
             const bool userBlocked = calibRun && calib == eyecam::Calib::User && !eyecam::userCalibAllowed(s);
-            // eyecam-rec's reason (in English when it gives one; with its counts), as large as fits in 3 lines (2
-            // with the eyes' line and that note: a third would run into the note)
+            // eyecam-rec's reason (in English when it gives one; with its counts), as large as fits in 3 lines. With
+            // the eyes' line and that note, a third line at that size would run into the note: 2 lines, or 3 at 17 or
+            // smaller when 2 don't hold it (the third then ends above the note)
             const std::string& message = eyecam::shownMessage(s, m.language);
             if (!message.empty()) {
-                const size_t maxLines = eyes != 0 && userBlocked ? 2 : 3;
-                wrappedCentered(eyes != 0 ? y + 160 : y + 130, message,
-                                wrapSize(pen, message, 24, 17, false, width, maxLines), kText, false, maxLines);
+                size_t maxLines = 3;
+                double size = wrapSize(pen, message, 24, 17, false, width, maxLines);
+                if (eyes != 0 && userBlocked) {
+                    maxLines = 2;
+                    size = wrapSize(pen, message, 24, 17, false, width, maxLines);
+                    if (wrapText(pen, message, size, false, width, 3).size() > 2) {
+                        maxLines = 3;
+                        size = wrapSize(pen, message, 17, 14, false, width, maxLines);
+                    }
+                }
+                wrappedCentered(eyes != 0 ? y + 160 : y + 130, message, size, kText, false, maxLines);
                 messageShown = true;
             }
             // The way on, and "Back" beside it (the error is dismissed in the panel only: eyecam-rec stays in "error"

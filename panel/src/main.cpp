@@ -2504,6 +2504,7 @@ int runOverlay(const Options& options) {
     uint64_t drawnUpdate = 0;
     std::string lastSignature;
     std::string drawnDiag;          // what the diagnostics page showed last
+    std::string drawnCode;          // the diagnostic code the Advanced tab showed last
     double lastDiagRead = -1e9;
     std::string lastStamp = configStamp(model.configPath);
     bool lastRunning = false;
@@ -2940,6 +2941,16 @@ int runOverlay(const Options& options) {
             const std::string signature = diag::signature(uiText(model.language), model);
             if (signature != drawnDiag) {
                 drawnDiag = signature;
+                dirty = true;
+            }
+        }
+
+        // The Advanced tab's diagnostic code: worked out again and compared (it reads more of the status files than the
+        // eye cameras' signature covers: the changed blocks, the last calibration, the proximity reading)
+        if (visible && panel.tab() == PanelTab::Advanced && !panel.diagOpen() && !panel.historyOpen()) {
+            const std::string code = diag::code(model);
+            if (code != drawnCode) {
+                drawnCode = code;
                 dirty = true;
             }
         }

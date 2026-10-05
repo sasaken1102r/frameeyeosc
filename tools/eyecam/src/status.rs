@@ -6,6 +6,20 @@ pub const STATUS_FILE: &str = "status.json";
 pub const CTL_FILE: &str = "ctl.sock";
 pub const DEFAULT_PROTOCOL: &str = "widen";
 
+/// Why the eye cameras are not locked while they are searched for (status.json `search`).
+pub const SEARCH_NOT_WORN: &str = "not_worn";
+pub const SEARCH_NO_VIDEO: &str = "no_video";
+pub const SEARCH_ONE_EYE: &str = "one_eye";
+
+/// The message that goes with a `search` reason ("" for none: the headset to put on, as before a search).
+pub fn search_message(search: &str) -> &'static str {
+    match search {
+        SEARCH_NO_VIDEO => "目の映像がまだ流れていない（SteamVR の視線トラッキングはオン？）",
+        SEARCH_ONE_EYE => "片目しか映っていない（ちゃんとかぶれてる？）",
+        _ => "HMD をかぶってね（目の映像を待ってるよ）",
+    }
+}
+
 /// One snapshot of the daemon's state. Numbers that do not apply are -1 (indices, prox) or 0 (times, counts).
 #[derive(Clone, Debug)]
 pub struct Status {
@@ -31,6 +45,10 @@ pub struct Status {
     pub session_dir: String,
     pub protocol: String,
     pub prox: f64,
+    /// While searching and not locked, why not: SEARCH_NOT_WORN (the proximity sensor says the headset is off, and
+    /// nothing was found), SEARCH_NO_VIDEO (worn, or the sensor unknown, but no eye video in the buffers),
+    /// SEARCH_ONE_EYE (only one camera's video). "" when locked, not searching, or before the first look.
+    pub search: &'static str,
     /// Whether the last recording ended early (stop, Ctrl-C, frames gone, ...); its meta.txt says aborted=1.
     pub last_session_aborted: bool,
     /// Bits (as in the live shared memory): 1 wear calibrated this wear, 2 user calibrated, 4 auto baseline ready
@@ -82,6 +100,7 @@ impl Default for Status {
             session_dir: String::new(),
             protocol: String::new(),
             prox: -1.0,
+            search: "",
             last_session_aborted: false,
             calib_state: 0,
             recalib_suggested: false,
@@ -118,7 +137,7 @@ impl Status {
         format!(
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
-\"session_dir\":{},\"protocol\":{},\"prox\":{},\"last_session_aborted\":{},\"calib_state\":{},\
+\"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
 \"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"pupil_l\":{},\"pupil_r\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
@@ -138,6 +157,7 @@ impl Status {
             json_str(&self.session_dir),
             json_str(&self.protocol),
             num(self.prox),
+            json_str(self.search),
             self.last_session_aborted,
             self.calib_state,
             self.recalib_suggested,
@@ -257,12 +277,23 @@ mod tests {
     }
 
     #[test]
+    fn every_search_reason_has_a_message_in_both_languages() {
+        for reason in ["", SEARCH_NOT_WORN, SEARCH_NO_VIDEO, SEARCH_ONE_EYE] {
+            let ja = search_message(reason);
+            assert_ne!(crate::message_en::message_en(ja), ja, "{reason}");
+        }
+        assert_eq!(search_message(SEARCH_NOT_WORN), search_message(""));
+    }
+
+    #[test]
     fn json_is_one_escaped_line() {
         let status = Status { message: "録画中 \"x\"\n".into(), prox: f64::NAN, ..Status::default() };
         let json = status.to_json(1.5, 7);
         assert!(!json.contains('\n'));
         assert!(json.starts_with("{\"version\":1,\"state\":\"waiting_fds\",\"message\":\"録画中 \\\"x\\\"\\n\",\"message_en\":\"録画中 \\\"x\\\"\\n\",\"has_buffers\":false,\"auto_grab\":\"\","));
-        assert!(json.contains("\"prox\":-1,") && json.contains("\"step_index\":-1,"));
+        assert!(json.contains("\"prox\":-1,\"search\":\"\",") && json.contains("\"step_index\":-1,"));
+        let searching = Status { search: SEARCH_NO_VIDEO, prox: 12.5, ..Status::default() }.to_json(1.5, 7);
+        assert!(searching.contains("\"prox\":12.500,\"search\":\"no_video\",") && crate::json::parse(&searching).is_ok());
         let status = Status { message: "録画中".into(), ..Status::default() };
         assert!(status.to_json(1.5, 7).contains("\"message\":\"録画中\",\"message_en\":\"Recording\","));
         assert!(json.ends_with("\"updated_unix\":1.500}"));

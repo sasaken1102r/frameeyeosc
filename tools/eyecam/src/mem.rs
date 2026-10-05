@@ -141,3 +141,25 @@ impl Arena {
         self.clear_block_changes();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What watching the buffers costs while nothing changes (the headset off): one `note_block_changes` over buffers
+    /// the size of the real ones (16 + 32 MiB). On the headset: `cargo test --release -- --ignored note_cost --nocapture`.
+    #[test]
+    #[ignore]
+    fn note_cost() {
+        for len in [16 << 20, 32 << 20] {
+            let buf = vec![7u8; len];
+            let mut arena = unsafe { Arena::new(buf.as_ptr(), buf.len()) };
+            let t = crate::now_raw();
+            let n = 50;
+            for _ in 0..n {
+                assert!(!arena.note_block_changes());
+            }
+            eprintln!("{} MiB: note_block_changes {:.2} ms", len >> 20, (crate::now_raw() - t) * 1e3 / n as f64);
+        }
+    }
+}

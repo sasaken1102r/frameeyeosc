@@ -35,6 +35,11 @@ const LOST_AFTER: f64 = 2.0;
 const STALE_AFTER: f64 = 120.0;
 // The proximity reading has to stay above --prox-min this long before the headset counts as worn.
 const WORN_FOR: f64 = 1.0;
+// How often a search looks at the buffers: every second while the headset counts as worn (or the sensor can't be
+// read), less often while the proximity sensor says it is off. It looks either way, since the sensor reads low on
+// some faces: with the cameras off nothing changes in the buffers, and a look costs about 2.5 ms.
+const SCAN_EVERY: f64 = 1.0;
+const SCAN_EVERY_NOT_WORN: f64 = 2.0;
 // Assumed frame rate per eye when estimating disk use.
 const EST_FPS: f64 = 90.0;
 const MIN_FREE: u64 = 1 << 30;
@@ -58,6 +63,8 @@ struct Args {
     cues: Option<PathBuf>,
     serve: bool,
     fake: bool,
+    /// --fake-search: the fake never finds the eye video, for this status.json `search` reason.
+    fake_search: Option<&'static str>,
     run_dir: PathBuf,
     replay: Option<PathBuf>,
     compat: bool,
@@ -83,6 +90,8 @@ const USAGE: &str = "usage: eyecam-rec [options]
                      (/run/user/1000/eyecam/ctl.sock), publishing /run/user/1000/eyecam/status.json
   --fake             like --serve, but with no buffers, camera or files: it plays the states and the protocol
                      timeline so a panel can be built and tested against it (implies --serve)
+  --fake-search R    like --fake, but the eye video is never found while searching (idle with live on, start,
+                     calib), for status.json search reason R: not_worn, no_video or one_eye
   --run-dir DIR      where status.json and ctl.sock go (default /run/user/1000/eyecam)
   --replay DIR       run the eye-feature pipeline over a recorded session, writing a CSV to --out
   --compat           with --replay: reproduce the Python prototype's run2.py features (for agreement checks)
@@ -117,6 +126,7 @@ fn parse_args() -> Result<Args> {
         cues: None,
         serve: false,
         fake: false,
+        fake_search: None,
         run_dir: PathBuf::from(status::DEFAULT_DIR),
         replay: None,
         compat: false,
@@ -173,6 +183,16 @@ fn parse_args() -> Result<Args> {
             "--fake" => {
                 args.serve = true;
                 args.fake = true;
+            }
+            "--fake-search" => {
+                let v = value("--fake-search")?;
+                let reason = [status::SEARCH_NOT_WORN, status::SEARCH_NO_VIDEO, status::SEARCH_ONE_EYE]
+                    .into_iter()
+                    .find(|r| *r == v)
+                    .ok_or("--fake-search must be not_worn, no_video or one_eye")?;
+                args.serve = true;
+                args.fake = true;
+                args.fake_search = Some(reason);
             }
             "--run-dir" => args.run_dir = PathBuf::from(value("--run-dir")?),
             "--swap" => args.swap = true,
@@ -595,6 +615,7 @@ fn serve(args: &Args) -> Result<()> {
             s.message = message;
             s.has_buffers = false;
             s.locked = false;
+            s.search = "";
             s.clear_recording();
         });
         let mut buffers = match Buffers::receive(f64::INFINITY, Some(&daemon)) {
@@ -763,7 +784,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
     let mut deferred: Vec<Request> = Vec::new();
     let mut next_check = 0.0;
     let mut next_search = 0.0;
-    let waiting = || if live.on { "HMD をかぶってね（目の映像を待ってるよ）" } else { "待機中" };
+    let waiting = || if live.on { status::search_message("") } else { "待機中" };
     let mut state: (&'static str, String) = ("idle", waiting().into());
     // The buffers are held from here on: say so right away (the first search can take a while).
     d.set(|s| {
@@ -771,6 +792,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
         s.message = state.1.clone();
         s.has_buffers = true;
         s.locked = false;
+        s.search = "";
         s.clear_recording();
     });
     loop {
@@ -824,7 +846,8 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
             let total = if recording { recording_seconds(args, &Some(steps.clone())) } else { steps.iter().map(|s| s.seconds).sum::<f64>() + 1.5 };
             d.set(|s| {
                 s.state = if recording { "searching" } else { "calibrating" };
-                s.message = "HMD をかぶってね（目の映像を待ってるよ）".into();
+                s.message = status::search_message("").into();
+                s.search = "";
                 s.clear_recording();
                 s.step_count = steps.len();
                 s.total_s = total;
@@ -877,7 +900,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                     live.send(Msg::Stale);
                     next_search = now + 1.0;
                     if state.0 == "idle" {
-                        state.1 = "HMD をかぶってね（目の映像を待ってるよ）".into();
+                        state.1 = status::search_message("").into();
                     }
                     next_check = 0.0;
                 }
@@ -888,7 +911,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                     match lock_ring(b, args, prox, Some(d), Ctx::Idle, &mut || true, &mut deferred) {
                         Ok(r) => {
                             pump = Some(Pump::new(&b.arenas[r.arena], r));
-                            if state.0 == "idle" && state.1 == "HMD をかぶってね（目の映像を待ってるよ）" {
+                            if state.0 == "idle" && state.1 == status::search_message("") {
                                 state.1 = "待機中".into();
                             }
                             next_check = 0.0;
@@ -910,11 +933,17 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                 return Some(a);
             }
             let locked = pump.as_ref().is_some_and(|p| now - p.last_change < 1.0);
+            let searching = live.on && pump.is_none();
             d.set(|s| {
                 s.state = state.0;
-                s.message = state.1.clone();
+                // Between searches, the waiting message goes with why the last one found nothing.
+                let waiting = state.0 == "idle" && state.1 == status::search_message("");
+                s.message = if waiting && searching { status::search_message(s.search).into() } else { state.1.clone() };
                 s.locked = locked;
                 s.prox = reading.unwrap_or(-1.0);
+                if !searching {
+                    s.search = "";
+                }
                 s.clear_recording();
             });
         }
@@ -925,7 +954,8 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
 /// `--fake`: the serve state machine with nothing behind it, for building the panel. waiting_fds for 5 s, then
 /// idle; `start` searches for 2 s, then "records" along the protocol's timeline (90 fps, no files, no beeps);
 /// `calib wear` / `calib user` run their protocols the same way and then count as calibrated; `stop`, `live` and
-/// the replies work as in the real thing.
+/// the replies work as in the real thing. With `--fake-search R` the eye video is never found: idle with live on
+/// and every search stay unlocked with `search` R (and its message) until `stop`.
 fn fake(args: &Args, d: &Daemon) {
     enum Phase {
         Waiting,
@@ -955,7 +985,12 @@ fn fake(args: &Args, d: &Daemon) {
             s.has_buffers = !matches!(phase, Phase::Waiting);
             s.live = live_on && !matches!(phase, Phase::Waiting);
             s.live_ms = if s.live { 1.2 } else { 0.0 };
-            s.pupil = if s.live && !matches!(phase, Phase::Waiting | Phase::Searching(..)) { [0.97, 0.95] } else { [f64::NAN; 2] };
+            // --fake-search: never locked while searching (idle with live on, or after start / calib)
+            let searching = matches!(phase, Phase::Searching(..)) || (matches!(phase, Phase::Idle(_)) && live_on);
+            let unlocked = args.fake_search.filter(|_| searching);
+            let seen = s.live && unlocked.is_none() && !matches!(phase, Phase::Waiting | Phase::Searching(..));
+            s.pupil = if seen { [0.97, 0.95] } else { [f64::NAN; 2] };
+            s.search = "";
             match phase {
                 Phase::Waiting => {
                     s.state = "waiting_fds";
@@ -971,6 +1006,12 @@ fn fake(args: &Args, d: &Daemon) {
                     s.locked = live_on;
                     s.prox = 30.0;
                     s.clear_recording();
+                    if let Some(reason) = unlocked {
+                        s.message = format!("（fake）{}", status::search_message(reason));
+                        s.locked = false;
+                        s.search = reason;
+                        s.prox = if reason == status::SEARCH_NOT_WORN { 9.5 } else { 30.0 };
+                    }
                 }
                 Phase::Searching(_, steps, name, calib) | Phase::Running(_, steps, name, calib) => {
                     s.step_count = steps.len();
@@ -997,9 +1038,13 @@ fn fake(args: &Args, d: &Daemon) {
                         s.session_dir = if calib.is_some() { String::new() } else { session.clone() };
                     } else {
                         s.state = if calib.is_some() { "calibrating" } else { "searching" };
-                        s.message = "（fake）HMD をかぶってね（目の映像を待ってるよ）".into();
+                        s.message = format!("（fake）{}", status::search_message(unlocked.unwrap_or("")));
                         s.locked = false;
                         s.session_dir.clear();
+                        if let Some(reason) = unlocked {
+                            s.search = reason;
+                            s.prox = if reason == status::SEARCH_NOT_WORN { 9.5 } else { 30.0 };
+                        }
                     }
                 }
             }
@@ -1047,7 +1092,9 @@ fn fake(args: &Args, d: &Daemon) {
         }
         phase = match phase {
             Phase::Waiting if now - t0 >= 5.0 => Phase::Idle("（fake）待機中".into()),
-            Phase::Searching(t, steps, name, calib) if now - t >= 2.0 => Phase::Running(now, steps, name, calib),
+            Phase::Searching(t, steps, name, calib) if now - t >= 2.0 && args.fake_search.is_none() => {
+                Phase::Running(now, steps, name, calib)
+            }
             Phase::Running(t, steps, _, calib) if now - t >= total(&steps, calib) => match calib {
                 Some(CalibKind::Wear) => {
                     calib_state |= 1;
@@ -1288,6 +1335,7 @@ struct Buffers {
     tracker: Tracker,
     last_activity: f64,
     worn_since: Option<f64>,
+    valve: ValveWatch,
 }
 
 impl Buffers {
@@ -1306,21 +1354,20 @@ impl Buffers {
         );
         let arenas = maps.iter().map(|m| unsafe { Arena::new(m.ptr, m.len) }).collect();
         let tracker = Tracker::open(header.pid);
-        Ok(Self { header, arenas, _maps: maps, tracker, last_activity: now_raw(), worn_since: None })
+        let valve = ValveWatch::default();
+        Ok(Self { header, arenas, _maps: maps, tracker, last_activity: now_raw(), worn_since: None, valve })
     }
 
-    /// Note which blocks changed, and fail if the tracker exited or the buffers went stale: worn (`Some(true)`)
-    /// for STALE_AFTER without any change. An unknown proximity never counts as stale. While the headset is not
-    /// worn nothing is scanned (the cameras are off, and nothing searches then).
-    fn watch(&mut self, worn: Option<bool>) -> std::result::Result<(), Abort> {
+    /// Note which blocks changed (whether or not the headset is worn: the search looks either way), and fail if the
+    /// tracker exited or the buffers went stale: worn for STALE_AFTER without any change. Worn means the proximity
+    /// reading `prox_worn` says so, or Valve's eye tracker delivered a new tracked sample since the last call (its
+    /// cameras are running, so live buffers would be changing). Neither on a desk, so stale never starts a re-grab
+    /// there; an unknown proximity without Valve samples never counts as stale. Called about once a second.
+    fn watch(&mut self, prox_worn: Option<bool>) -> std::result::Result<(), Abort> {
         if self.tracker.exited() {
             return Err(Abort::TrackerExited);
         }
         let now = now_raw();
-        if worn == Some(false) {
-            self.worn_since = None;
-            return Ok(());
-        }
         let mut any = false;
         for arena in &mut self.arenas {
             any |= arena.note_block_changes();
@@ -1328,7 +1375,7 @@ impl Buffers {
         if any {
             self.last_activity = now;
         }
-        if worn == Some(true) {
+        if prox_worn == Some(true) || self.valve.tracking(now) {
             self.worn_since.get_or_insert(now);
         } else {
             self.worn_since = None;
@@ -1409,6 +1456,43 @@ impl Mapping {
 impl Drop for Mapping {
     fn drop(&mut self) {
         unsafe { libc::munmap(self.ptr as *mut libc::c_void, self.len) };
+    }
+}
+
+/// Whether Valve's eye tracker is tracking: a new sample with producer_state 1 in its shared memory (read-only, as
+/// Shm reads it) since the last look. The eye server publishes only while a client (frameeyeosc) asks for samples
+/// and only while its cameras run, so this is false on a desk, and also whenever frameeyeosc is not running.
+#[derive(Default)]
+struct ValveWatch {
+    shm: Option<Shm>,
+    retry: f64,
+    last_new: f64,
+}
+
+impl ValveWatch {
+    fn tracking(&mut self, now: f64) -> bool {
+        // Reopen now and then while nothing new comes (the eye server may have replaced the file).
+        if self.shm.is_some() && now - self.last_new > 30.0 {
+            self.shm = None;
+        }
+        if self.shm.is_none() {
+            if now < self.retry {
+                return false;
+            }
+            self.retry = now + 5.0;
+            self.last_new = now;
+            self.shm = Shm::open().ok();
+            // The sample already there when it is opened can be old: only later ones count.
+            self.shm.as_mut().and_then(Shm::poll);
+            return false;
+        }
+        match self.shm.as_mut().and_then(Shm::poll) {
+            Some(sample) => {
+                self.last_new = now;
+                sample.producer_state == 1
+            }
+            None => false,
+        }
     }
 }
 
@@ -1529,10 +1613,13 @@ fn lock_ring(
     let mut last_scan = start;
     let mut last_status = start - 60.0;
     let status_every = if ctx == Ctx::Idle { 60.0 } else { 5.0 };
-    // The headset counts as worn once the proximity reading has stayed above --prox-min for WORN_FOR seconds,
-    // so a reading flickering past it while the headset is being handled does not start a search.
+    // The headset counts as worn once the proximity reading has stayed above --prox-min for WORN_FOR seconds.
+    // That only decides how often to look and what to say: the search looks whether or not it is worn.
     let mut above_since: Option<f64> = None;
-    let mut why = String::new();
+    // Whether the last look found only one camera's video (otherwise none), and whether there was one yet.
+    let mut one_eye = false;
+    let mut scanned = false;
+    let mut changed_blocks = 0usize;
     loop {
         if STOP.load(Ordering::SeqCst) {
             return Err(Abort::Interrupted);
@@ -1542,6 +1629,9 @@ fn lock_ring(
         }
         if !tick() {
             return Err(Abort::TimeUp);
+        }
+        if b.tracker.exited() {
+            return Err(Abort::TrackerExited);
         }
         while let Some(req) = ctl.and_then(Daemon::request) {
             match (ctx, &req.command) {
@@ -1564,10 +1654,15 @@ fn lock_ring(
             }
             _ => above_since = None,
         }
-        b.watch(reading.map(|v| v > args.prox_min))?;
         let worn = reading.is_none() || above_since.is_some_and(|t| now - t >= WORN_FOR);
+        let search = match (scanned, one_eye, worn) {
+            (_, true, _) => status::SEARCH_ONE_EYE,
+            (_, false, false) => status::SEARCH_NOT_WORN,
+            (true, false, true) => status::SEARCH_NO_VIDEO,
+            (false, false, true) => "",
+        };
         if let Some(d) = ctl {
-            let message = if worn && !why.is_empty() { why.clone() } else { "HMD をかぶってね（目の映像を待ってるよ）".into() };
+            let message = status::search_message(search).to_string();
             match ctx {
                 Ctx::Idle => d.set(|s| {
                     // Keep an error from the last run on screen; otherwise say what is missing.
@@ -1578,16 +1673,20 @@ fn lock_ring(
                     s.has_buffers = true;
                     s.locked = false;
                     s.prox = reading.unwrap_or(-1.0);
+                    s.search = search;
                 }),
                 Ctx::Search(state) | Ctx::Relock(state) => d.set(|s| {
                     s.state = state;
                     s.message = message;
                     s.locked = false;
                     s.prox = reading.unwrap_or(-1.0);
+                    s.search = search;
                 }),
             }
         }
-        if now - last_scan > 1.0 && worn {
+        if now - last_scan > if worn { SCAN_EVERY } else { SCAN_EVERY_NOT_WORN } {
+            b.watch(reading.map(|v| v > args.prox_min))?;
+            changed_blocks = b.arenas.iter().map(|a| a.block_changed.iter().filter(|&&c| c).count()).sum();
             let mut log = |line: String| eprintln!("  {line}");
             let mut clock = RealClock { ctl, ctx, deferred: &mut *deferred, stop_requested: false };
             let found = ring::discover(&b.arenas, &mut clock, &mut log);
@@ -1595,23 +1694,23 @@ fn lock_ring(
                 return Err(if ctx == Ctx::Idle { Abort::Busy } else { Abort::Stopped });
             }
             last_scan = now_raw();
+            scanned = true;
             match found {
                 Some(r) if r.both_eyes || args.allow_one_eye => {
                     let p = reading.map_or("unknown".into(), |v| format!("{v:.1}"));
                     eprintln!(
-                        "locked: {} slots at 0x{:x}, spacing {}, cameras {:?}{}; proximity {p} (above {} for {} s)",
+                        "locked: {} slots at 0x{:x}, spacing {}, cameras {:?}{}; proximity {p} ({})",
                         r.off.len(),
                         r.off[0],
                         r.pitch,
                         r.eye,
                         if r.both_eyes { "" } else { " (one eye only)" },
-                        args.prox_min,
-                        WORN_FOR
+                        if worn { "worn" } else { "the sensor says not worn" }
                     );
                     return Ok(r);
                 }
-                Some(_) => why = "片目しか映っていない（ちゃんとかぶれてる？）".into(),
-                None => why = "目の映像がまだ流れていない".into(),
+                Some(_) => one_eye = true,
+                None => one_eye = false,
             }
             b.arenas.iter_mut().for_each(Arena::clear_block_changes);
         }
@@ -1619,9 +1718,10 @@ fn lock_ring(
             last_status = now_raw();
             let p = reading.map_or("unknown".into(), |v| format!("{v:.1}"));
             eprintln!(
-                "waiting for eye frames: put the headset on. proximity {p} (worn above {} for {WORN_FOR} s){}",
+                "waiting for eye frames: {}. proximity {p} (worn above {} for {WORN_FOR} s){}",
+                if search.is_empty() { "searching" } else { search },
                 args.prox_min,
-                if why.is_empty() { String::new() } else { format!("; {why}") }
+                if scanned { format!(", {changed_blocks} changed block(s) in the last look") } else { String::new() }
             );
         }
         // Idle searches run for as long as live processing is on: keep them cheap.
@@ -1702,7 +1802,8 @@ fn record(
     if let Some(d) = ctl {
         d.set(|s| {
             s.state = if recording { "searching" } else { "calibrating" };
-            s.message = "HMD をかぶってね（目の映像を待ってるよ）".into();
+            s.message = status::search_message("").into();
+            s.search = "";
             s.clear_recording();
             s.step_count = step_count;
             s.total_s = seconds;
@@ -1866,6 +1967,7 @@ fn record(
                 s.state = busy_state;
                 s.message = if recording { "録画中" } else { "校正中" }.into();
                 s.locked = true;
+                s.search = "";
                 s.fps = fps;
                 s.step_index = step_index;
                 s.step_label = step_label;
@@ -2360,21 +2462,17 @@ mod tests {
         assert!(ms > 0.1, "{json}");
     }
 
-    /// Once the buffers are held, status.json must say so at once (idle, has_buffers), even while the headset is
-    /// off and the first search is still running. Uses memfd stand-ins for the buffers and the real proximity
-    /// sensor (run on the headset, not worn): `cargo test --release -- --ignored idle_reports_buffers`.
-    #[test]
-    #[ignore]
-    fn idle_reports_buffers_at_once() {
-        let dir = std::env::temp_dir().join(format!("eyecam-idle-test-{}", std::process::id()));
-        let args = Args {
+    /// Args as `--serve` has them, with status.json and everything else in `dir`.
+    fn serve_args(dir: &Path) -> Args {
+        Args {
             seconds: None,
             out: dir.join("out"),
             swap: false,
             cues: None,
             serve: true,
             fake: false,
-            run_dir: dir.clone(),
+            fake_search: None,
+            run_dir: dir.to_path_buf(),
             replay: None,
             compat: false,
             limit: None,
@@ -2392,7 +2490,34 @@ mod tests {
             full_width: false,
             beep: false,
             volume: 0.0,
-        };
+        }
+    }
+
+    /// memfd stand-ins for the camera buffers (all zeros, never changing: the cameras off), "from" this process.
+    fn still_buffers(sizes: &[u64]) -> Buffers {
+        let mut maps = Vec::new();
+        for &size in sizes {
+            let fd = unsafe { OwnedFd::from_raw_fd(libc::memfd_create(c"eyecam-test".as_ptr(), libc::MFD_CLOEXEC)) };
+            File::from(fd.try_clone().unwrap()).set_len(size).unwrap();
+            maps.push(Mapping::new(&fd, size as usize).unwrap());
+        }
+        let arenas = maps.iter().map(|m| unsafe { Arena::new(m.ptr, m.len) }).collect();
+        Buffers {
+            header: proto::Header { count: sizes.len(), pid: std::process::id() as i32, sizes: sizes.to_vec() },
+            arenas,
+            _maps: maps,
+            tracker: Tracker::open(std::process::id() as i32),
+            last_activity: now_raw(),
+            worn_since: None,
+            valve: ValveWatch::default(),
+        }
+    }
+
+    /// Run idle() for `seconds` on still buffers of `sizes` with the real proximity sensor, then stop it. Returns
+    /// the last status.json, and the process's CPU seconds (user + system) over the run.
+    fn run_idle(name: &str, sizes: &'static [u64], seconds: f64) -> (String, f64) {
+        let dir = std::env::temp_dir().join(format!("eyecam-{name}-{}", std::process::id()));
+        let args = serve_args(&dir);
         let shared = Arc::new(livesvc::Shared::default());
         let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
         daemon.set(|s| {
@@ -2401,20 +2526,16 @@ mod tests {
         });
         let status_path = dir.join(status::STATUS_FILE);
         let live_dir = dir.clone();
+        let cpu = || {
+            let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+            unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
+            let t = |v: libc::timeval| v.tv_sec as f64 + v.tv_usec as f64 * 1e-6;
+            t(u.ru_utime) + t(u.ru_stime)
+        };
+        let cpu0 = cpu();
         let handle = thread::spawn(move || {
             let mut live = Live::start(&live_dir, None, shared).unwrap();
-            let fd = unsafe { OwnedFd::from_raw_fd(libc::memfd_create(c"eyecam-test".as_ptr(), libc::MFD_CLOEXEC)) };
-            File::from(fd.try_clone().unwrap()).set_len(16 << 20).unwrap();
-            let maps = vec![Mapping::new(&fd, 16 << 20).unwrap()];
-            let arenas = maps.iter().map(|m| unsafe { Arena::new(m.ptr, m.len) }).collect();
-            let mut b = Buffers {
-                header: proto::Header { count: 1, pid: std::process::id() as i32, sizes: vec![16 << 20] },
-                arenas,
-                _maps: maps,
-                tracker: Tracker::open(std::process::id() as i32),
-                last_activity: now_raw(),
-                worn_since: None,
-            };
+            let mut b = still_buffers(sizes);
             let mut prox = Proximity::find();
             live.send(Msg::Buffers(true));
             let r = idle(&mut b, &args, &mut prox, &daemon, &mut live);
@@ -2422,17 +2543,40 @@ mod tests {
             daemon.finish();
             r
         });
-        thread::sleep(Duration::from_millis(1000));
+        thread::sleep(Duration::from_secs_f64(seconds));
         let json = fs::read_to_string(&status_path).unwrap();
+        let used = cpu() - cpu0;
         STOP.store(true, Ordering::SeqCst);
         assert!(handle.join().unwrap().is_none());
         STOP.store(false, Ordering::SeqCst);
         fs::remove_dir_all(&dir).unwrap();
+        (json, used)
+    }
+
+    /// Once the buffers are held, status.json must say so at once (idle, has_buffers), even while the headset is
+    /// off and the first search is still running. Uses memfd stand-ins for the buffers and the real proximity
+    /// sensor (run on the headset, not worn): `cargo test --release -- --ignored idle_reports_buffers`.
+    #[test]
+    #[ignore]
+    fn idle_reports_buffers_at_once() {
+        let (json, _) = run_idle("idle-test", &[16 << 20], 1.0);
         eprintln!("{json}");
         assert!(json.contains("\"state\":\"idle\""), "{json}");
         assert!(json.contains("\"has_buffers\":true"), "{json}");
         assert!(json.contains("\"live\":true"), "{json}");
         assert!(json.contains("HMD をかぶってね"), "{json}");
+    }
+
+    /// What idling costs while the cameras are off (nothing changes in the buffers): the process's CPU over 30 s of
+    /// idle() on still buffers the size of the real ones (16 + 32 MiB), with the real proximity sensor. On the
+    /// headset, not worn: `cargo test --release -- --ignored idle_cpu --nocapture`.
+    #[test]
+    #[ignore]
+    fn idle_cpu_while_the_cameras_are_off() {
+        let seconds = 30.0;
+        let (json, used) = run_idle("idle-cpu", &[16 << 20, 32 << 20], seconds);
+        eprintln!("idle with the cameras off: {:.3} s CPU in {seconds} s ({:.2} % of a core)
+{json}", used, used / seconds * 100.0);
     }
 
     #[test]

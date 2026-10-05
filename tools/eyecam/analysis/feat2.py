@@ -16,7 +16,7 @@ COS, SIN = np.cos(TH), np.sin(TH)
 
 
 def occluder_x(img):
-    """x where the black nasal lens-edge band starts (from a frame or a mean image)."""
+    """x where the black lens-edge band on the temporal (large-x) side starts (from a frame or a mean image)."""
     cm = img[60:340].mean(0)
     xs = np.where(cm[280:] < 25)[0]
     return 280 + (int(xs[0]) if len(xs) else 120) - 3
@@ -129,7 +129,7 @@ def refine_pupil(opf, c, r0, lvl, xmax):
 
 
 def iris_fit(opf, p, xmax):
-    """Limbus along rays (nasal & temporal sides, top/bottom excluded), mapped into the pupil-ellipse
+    """Limbus along rays (left & right sides, top/bottom excluded), mapped into the pupil-ellipse
     frame (same axis ratio/orientation, concentric). Returns R (vertical-major semi-axis, px), points."""
     cx, cy = p['cx'], p['cy']
     (ex, ey), (A, B), ang = p['e']
@@ -153,8 +153,8 @@ def iris_fit(opf, p, xmax):
         prof = sample(opf, X[None, okx], Y[None, okx])[0]
         prof = np.convolve(prof, np.ones(3) / 3, 'same')
         g = prof[3:] - prof[:-3]
-        nasal = np.cos(th) > 0
-        # nasal: iris (dark) -> sclera (bright). temporal: often vignetted, accept either sign but prefer +
+        nasal = np.cos(th) > 0  # rays to large x: the TEMPORAL side of both upright images (named nasal here)
+        # large x: iris (dark) -> sclera (bright). small x (nasal): often dark shading, accept either sign but prefer +
         gg = g if nasal else np.where(g > 0, g, -0.8 * g)
         k = int(np.argmax(gg[2:-2])) + 2
         if gg[k] < (12 if nasal else 9):
@@ -170,7 +170,7 @@ def iris_fit(opf, p, xmax):
         return np.nan, np.array(pts), 0
     rho = np.array([r[0] for r in res])
     nas = np.array([r[1] for r in res])
-    if nas.sum() >= 4:  # nasal limbus (iris -> bright sclera) is reliable; temporal side often hits the canthus
+    if nas.sum() >= 4:  # large-x (temporal) limbus (iris -> bright sclera) is reliable; the nasal side often hits the canthus
         rho, pts = rho[nas], np.array(pts)[nas]
     med = np.median(rho)
     good = np.abs(rho - med) < 6
@@ -277,7 +277,7 @@ def lids(smf, gy, p, R, xmax, gy_low=None, prev_lower=None):
             if col[k] > max(5.0, 0.15 * U['grad']):
                 my[j], mok[j] = y0 + k, True
         # the band below the skin line has ~constant width; estimate it where the eyeball step is clear
-        # (mostly the nasal sclera) and shift the skin line by its median
+        # (mostly the sclera) and shift the skin line by its median
         off = my - ysk
         if mok.sum() >= 6:
             o = np.median(off[mok])

@@ -7,7 +7,7 @@ README.md for the fields). Example:
 
     updater = Updater(script, "frame-jp-keyboard", "sasaken1102r/frame-jp-keyboard", "0.5.1",
                       "frame-jp-keyboard-{version}.tar.gz")
-    answer = await updater.check()          # at start, then hourly: GitHub is asked at most daily
+    answer = await updater.check()          # at start, then hourly: GitHub is asked about hourly
     if answer["status"] == "update-available" and answer.get("installable"):
         summary = answer.get("notes_ja") or answer.get("notes", "")  # its summary on a Japanese screen ("" = none)
         await updater.install()             # after the user pressed the button; returns at once

@@ -229,6 +229,23 @@ std::vector<std::string> wrapText(const Pen& pen, const std::string& text, doubl
 }
 
 /**
+ * The largest text size (down to a minimum) at which wrapped text fits in so many lines without being cut.
+ * @param pen drawing tools
+ * @param text the text
+ * @param size the size to start from
+ * @param minSize never smaller than this (the text may be cut there)
+ * @param bold whether bold
+ * @param maxWidth line width
+ * @param maxLines most lines
+ * @return the size
+ */
+double wrapSize(const Pen& pen, const std::string& text, double size, double minSize, bool bold, double maxWidth,
+                size_t maxLines) {
+    while (size > minSize && wrapText(pen, text, size, bold, maxWidth, maxLines + 1).size() > maxLines) size -= 1;
+    return size;
+}
+
+/**
  * Draw a card: stacked shadow, fill, border and a 1 px inner highlight on the top edge.
  * @param pen drawing tools
  * @param x left
@@ -3093,7 +3110,7 @@ double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_upda
         addButton(b.hit, bx, by, bw, bh, usable);
     }
 
-    // The automatic check, as a chip at the bottom of the text column: "Check at start and daily  On"; pressing it
+    // The automatic check, as a chip at the bottom of the text column: "Check at start and hourly  On"; pressing it
     // switches it
     {
         const PanelHit hit {PanelAction::SetBool, key::kUpdateCheck, checkOn ? 0 : 1};
@@ -3612,9 +3629,41 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
         }
         case State::Error: {
             centered(y + 76, calibRun ? t.eyecamCalibErrorTitle : t.eyecamErrorTitle, 34, 20, kDanger, true);
-            // (eyecam-rec's reason, in Japanese only)
-            if (!eyecam::shownMessage(s, m.language).empty()) {
-                wrappedCentered(y + 130, eyecam::shownMessage(s, m.language), 24, kText, false, 3);
+            // A calibration's: the eyes eyecam-rec's message names, centered under the title
+            const int eyes = calibRun ? eyecam::failedEyes(s) : 0;
+            if (eyes != 0) {
+                double lineW = pen.measure(t.setupErrorEyes, 17, true);
+                for (int eye = 0; eye < 2; ++eye) {
+                    if ((eyes & (eye == 0 ? eyecam::kLeftEyeBit : eyecam::kRightEyeBit)) == 0) continue;
+                    lineW += 22 + 28 + pen.measure(eye == 0 ? t.leftEye : t.rightEye, 20, true);
+                }
+                double ex = cx - lineW / 2;
+                ex += pen.text(ex, y + 120, t.setupErrorEyes, 17, kTextMuted, true);
+                for (int eye = 0; eye < 2; ++eye) {
+                    if ((eyes & (eye == 0 ? eyecam::kLeftEyeBit : eyecam::kRightEyeBit)) == 0) continue;
+                    drawEyeIcon(pen, ex + 22 + 10, y + 114, eye == 0 ? kDotLeft : kDotRight);
+                    ex += 22 + 28 + pen.text(ex + 22 + 28, y + 120, eye == 0 ? t.leftEye : t.rightEye, 20, kDanger, true);
+                }
+            }
+            // The user's calibration again can't be offered once the headset was put back on (bit 0 gone): a note
+            // above the buttons says so
+            const bool userBlocked = calibRun && calib == eyecam::Calib::User && !eyecam::userCalibAllowed(s);
+            // eyecam-rec's reason (in English when it gives one; with its counts), as large as fits in 3 lines. With
+            // the eyes' line and that note, a third line at that size would run into the note: 2 lines, or 3 at 17 or
+            // smaller when 2 don't hold it (the third then ends above the note)
+            const std::string& message = eyecam::shownMessage(s, m.language);
+            if (!message.empty()) {
+                size_t maxLines = 3;
+                double size = wrapSize(pen, message, 24, 17, false, width, maxLines);
+                if (eyes != 0 && userBlocked) {
+                    maxLines = 2;
+                    size = wrapSize(pen, message, 24, 17, false, width, maxLines);
+                    if (wrapText(pen, message, size, false, width, 3).size() > 2) {
+                        maxLines = 3;
+                        size = wrapSize(pen, message, 17, 14, false, width, maxLines);
+                    }
+                }
+                wrappedCentered(eyes != 0 ? y + 160 : y + 130, message, size, kText, false, maxLines);
                 messageShown = true;
             }
             // The way on, and "Back" beside it (the error is dismissed in the panel only: eyecam-rec stays in "error"
@@ -3628,7 +3677,6 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
             if (calibRun) {
                 // The same calibration again; the user's only while this wear's is still there. Put back on since
                 // (bit 0 gone), it can't be: say so, and offer this wear's calibration instead
-                const bool userBlocked = calib == eyecam::Calib::User && !eyecam::userCalibAllowed(s);
                 if (userBlocked) {
                     centered(by - 22, t.eyecamUserNeedsWear, 22, 14, kAccent, true);
                     drawButton(pen, left, by, w, bh, t.camCalibButton,
@@ -3713,8 +3761,10 @@ void EyePanel::drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& 
     pen.text(kInnerRight, 139, note, 14, kTextMuted, false, true);
     const double cardTop = 158;
     const double cardH = setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, false, true);
+    // (green when it ended well, unless one eye went on its earlier values)
+    const bool partial = !user && eyecam::partialEye(m.eyecam.status) >= 0;
     strokeRounded(pen, cardX, cardTop, cardRight - cardX, cardH, 14,
-                  screen == eyecam::SetupScreen::Calibrated ? kSuccess : kAccent, 2);
+                  screen == eyecam::SetupScreen::Calibrated && !partial ? kSuccess : kAccent, 2);
     setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, true, true);
 }
 
@@ -3906,6 +3956,55 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
         }
         return by + bh + 28;
     };
+    // "calib wear" went through without one eye: its title ("左目は前の値を使うよ")...
+    const int partial = calib == eyecam::Calib::Wear ? eyecam::partialEye(s) : -1;
+    const auto partialTitle = [&]() {
+        return formatText(eyecam::partialProvisional(s) ? t.partialTitleProvFormat : t.partialTitlePrevFormat,
+                          partial == 0 ? t.partialEyeLeft : t.partialEyeRight);
+    };
+    // ...each eye in a box (learned now, or on its earlier or provisional values), with eyecam-rec's message (its
+    // reason and counts) under them
+    const auto partialBox = [&]() {
+        const bool provisional = eyecam::partialProvisional(s);
+        const std::string& message = eyecam::shownMessage(s, m.language);
+        const std::vector<std::string> lines =
+            message.empty() ? std::vector<std::string>() : wrapText(pen, message, 14, false, w - 36, 2);
+        const double boxTop = y + 18;
+        const double rowsBottom = boxTop + 14 + 2 * 32;
+        const double boxH = rowsBottom - boxTop + (lines.empty() ? 6 : 16 + lines.size() * 20);
+        box(boxTop, boxH);
+        double labelW = 0;
+        for (const char* label : {t.leftEye, t.rightEye}) labelW = std::max(labelW, pen.measure(label, 17, false));
+        const double valueX = x0 + 50 + std::max(110.0, labelW + 30);
+        for (int eye = 0; eye < 2; ++eye) {
+            const double baseline = boxTop + 36 + eye * 32;
+            const bool failedOne = eye == partial;
+            if (draw) drawEyeIcon(pen, x0 + 28, baseline - 6, eye == 0 ? kDotLeft : kDotRight);
+            text(x0 + 50, baseline, eye == 0 ? t.leftEye : t.rightEye, 17, kTextMuted, false);
+            const char* value = !failedOne ? t.partialNew : provisional ? t.partialProv : t.partialPrev;
+            text(valueX, baseline, value, 17, failedOne ? kAccent : kSuccess, true);
+        }
+        double baseline = rowsBottom + 20;
+        for (const std::string& line : lines) {
+            text(x0 + 18, baseline, line, 14, kTextMuted, false);
+            baseline += 20;
+        }
+        y = boxTop + boxH;
+    };
+    // ...and its buttons: on (accent), or the calibration again
+    const auto partialButtons = [&](const char* proceed) {
+        const double by = y + 18;
+        const double bh = 46;
+        const double pw = std::max(120.0, pen.measure(proceed, 18, true) + 56);
+        const double aw = pen.measure(t.setupAgain, 18, true) + 76;
+        if (draw) {
+            drawButton(pen, x0, by, pw, bh, proceed, {PanelAction::SetupProceed, nullptr, 0}, true, true, 18);
+            drawIconButton(pen, x0 + pw + 10, by, aw, bh, t.setupAgain,
+                           {PanelAction::EyecamCalib, nullptr, static_cast<int>(eyecam::Calib::Wear)}, !busy, false, 18,
+                           ButtonIcon::Play);
+        }
+        y = by + bh;
+    };
 
     switch (screen) {
         case SetupScreen::Pass: {
@@ -3977,7 +4076,7 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             title(t.setupStepLearn, t.setupWaitPill, kAccent);
             y += 50;
             text(x0, y, t.setupWaitTitle, fitSize(pen, t.setupWaitTitle, 26, 16, w, true), kText, true);
-            // What it needs: the camera video, and each eye seen
+            // What it needs: the camera video, and each eye seen (its pupil found, when eyecam-rec says)
             const bool video = s.state == State::Idle || s.state == State::Calibrating || s.state == State::Searching ||
                                s.state == State::Recording;
             const double boxTop = y + 18;
@@ -3986,7 +4085,8 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             const double valueX = x0 + 210;
             for (int i = 0; i < 3; ++i) {
                 const double baseline = boxTop + 38 + i * 35;
-                const bool ok = i == 0 ? video : s.locked;
+                const eyecam::EyeSight sight = i == 0 ? eyecam::EyeSight::Seen : eyecam::eyeSight(s, i - 1);
+                const bool ok = i == 0 ? video : sight == eyecam::EyeSight::Seen;
                 if (draw) {
                     if (i == 0) {
                         if (ok) {
@@ -4000,12 +4100,22 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                 }
                 const char* label = i == 0 ? t.setupWaitVideo : i == 1 ? t.leftEye : t.rightEye;
                 const char* value = i == 0 ? (ok ? t.setupWaitVideoOk : t.setupWaitVideoNo)
-                                           : (ok ? t.setupWaitEyeOk : t.setupWaitEyeNo);
+                                    : sight == eyecam::EyeSight::Seen    ? t.setupWaitEyeOk
+                                    : sight == eyecam::EyeSight::NoPupil ? t.setupWaitEyeNoPupil
+                                    : sight == eyecam::EyeSight::Weak    ? t.setupWaitEyeWeak
+                                                                         : t.setupWaitEyeNo;
+                // The video without the pupil in red (the calibration would fail), only some of the time in the accent;
+                // one eye not seen while the video is there (its frames stopped) in the accent too
+                const bool noPupil = i > 0 && sight == eyecam::EyeSight::NoPupil;
+                const bool weak = i > 0 && (sight == eyecam::EyeSight::Weak ||
+                                            (s.locked && sight == eyecam::EyeSight::NotSeen));
+                const Color color = ok ? kSuccess : noPupil ? kDanger : weak ? kAccent : kTextMuted;
+                const bool bold = ok || noPupil || weak;
                 text(x0 + 50, baseline, label, 17, kTextMuted, false);
-                text(valueX, baseline, value, 17, ok ? kSuccess : kTextMuted, ok);
+                text(valueX, baseline, value, fitSize(pen, value, 17, 12, x1 - 18 - valueX, bold), color, bold);
             }
             y = boxTop + boxH;
-            // Only while both eyes are seen and eyecam-rec is ready
+            // Whenever the video is there and eyecam-rec is ready (the pupils not found only warn: see under it)
             const double by = y + 14;
             const double bh = 46;
             const double bw = std::max(186.0, pen.measure(t.setupWaitButton, 18, true) + 76);
@@ -4021,7 +4131,12 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                          kTextMuted);
             }
             y = by + bh;
-            para(t.setupWaitFoot, 14, kTextMuted, false, 30, 20, 2);
+            // An eye's pupil not found: put the headset on again first. Otherwise when it can be pressed
+            if (s.locked && eyecam::pupilTrouble(s)) {
+                para(t.setupWaitNoPupil, 15, kDanger, true, 32, 21, 2);
+            } else {
+                para(t.setupWaitFoot, 14, kTextMuted, false, 30, 20, 2);
+            }
             break;
         }
         case SetupScreen::Learn: {
@@ -4115,25 +4230,55 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
         case SetupScreen::Fail:
         case SetupScreen::Error: {
             const bool failed = screen == SetupScreen::Error;
-            title(learnName, failed ? t.setupErrorPill : t.setupFailPill, failed ? kDanger : kTextMuted);
+            title(learnName, failed ? t.setupErrorPill : partial >= 0 ? t.partialPill : t.setupFailPill,
+                  failed ? kDanger : partial >= 0 ? kAccent : kTextMuted);
             y += 50;
             const char* big = failed ? t.eyecamCalibErrorTitle : t.setupFailTitle;
             text(x0, y, big, fitSize(pen, big, 26, 16, w, true), failed ? kDanger : kText, true);
             if (failed) {
-                // eyecam-rec's reason (in English when it gives one)
+                // The eyes eyecam-rec's message names...
+                const int eyes = eyecam::failedEyes(s);
+                if (eyes != 0) {
+                    y += 36;
+                    double ex = x0 + text(x0, y, t.setupErrorEyes, 15, kTextMuted, true) + 18;
+                    for (int eye = 0; eye < 2; ++eye) {
+                        if ((eyes & (eye == 0 ? eyecam::kLeftEyeBit : eyecam::kRightEyeBit)) == 0) continue;
+                        if (draw) drawEyeIcon(pen, ex + 10, y - 6, eye == 0 ? kDotLeft : kDotRight);
+                        ex += 28 + text(ex + 28, y, eye == 0 ? t.leftEye : t.rightEye, 17, kDanger, true) + 22;
+                    }
+                }
+                // ...and its reason with the counts (in English when it gives one), as large as fits in 4 lines
                 const std::string& message = eyecam::shownMessage(s, m.language);
-                if (!message.empty()) para(message, 17, kText, false, 38, 26, 3);
+                if (!message.empty()) {
+                    const double size = wrapSize(pen, message, 17, 14, false, w, 4);
+                    para(message, size, kText, false, eyes != 0 ? 32 : 38, std::round(size * 1.5), 4);
+                }
             } else {
                 para(t.setupFailBody, 17, kText, false, 38, 26, 2);
-                // What it learned, and the standard values for widening
+                // ...and the eye that went on its earlier or provisional values
+                if (partial >= 0) para(partialTitle(), 17, kAccent, true, 30, 24, 2);
+                // What it learned (each eye, when one went on its earlier values), and the standard values for
+                // widening
                 const double boxTop = y + 18;
                 const double boxH = 104;
                 box(boxTop, boxH);
                 const char* labels[3] = {t.setupFailClosed, t.setupFailNormal, t.setupFailWiden};
+                if (partial >= 0) {
+                    labels[0] = t.leftEye;
+                    labels[1] = t.rightEye;
+                }
+                const char* provisional = eyecam::partialProvisional(s) ? t.partialProv : t.partialPrev;
                 for (int i = 0; i < 3; ++i) {
                     const double baseline = boxTop + 30 + i * 30;
+                    const char* value = i == 2 ? t.setupFailWidenValue
+                                        : partial < 0 ? t.setupLearnDone
+                                        : i == partial ? provisional
+                                                       : t.partialNew;
+                    const Color color = i == 2 ? kText : partial == i ? kAccent : kSuccess;
                     if (draw) {
-                        if (i < 2) {
+                        if (i < 2 && partial >= 0) {
+                            drawEyeIcon(pen, x0 + 28, baseline - 6, i == 0 ? kDotLeft : kDotRight);
+                        } else if (i < 2) {
                             drawCheck(cr, x0 + 28, baseline - 6, 15, kSuccess);
                         } else {
                             pen.color(kTextMuted);
@@ -4144,8 +4289,7 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                         }
                     }
                     text(x0 + 48, baseline, labels[i], 17, kTextMuted, false);
-                    text(x0 + 178, baseline, i < 2 ? t.setupLearnDone : t.setupFailWidenValue, 17,
-                         i < 2 ? kSuccess : kText, true);
+                    text(x0 + 178, baseline, value, 17, color, true);
                 }
                 y = boxTop + boxH;
             }
@@ -4172,7 +4316,7 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                     drawButton(pen, x1 - backW, by, backW, bh, t.eyecamBack, {PanelAction::EyecamBack, nullptr, 0},
                                true, false, 18);
                 }
-                const char* note = failed ? (s.locked ? "" : t.setupWaitFoot) : t.setupFailLater;
+                const char* note = failed ? "" : t.setupFailLater;
                 const double nx = bx + aw + 14;
                 const double noteRight = failed ? x1 - backW - 14 : x1;
                 if (note[0] != '\0') {
@@ -4185,10 +4329,25 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                 }
             }
             y = by + bh;
+            // A failed one, under its buttons: the video not there, or an eye's pupil not found (before "again")
+            if (failed && !s.locked) {
+                para(t.setupWaitFoot, 14, kTextMuted, false, 30, 20, 2);
+            } else if (failed && eyecam::pupilTrouble(s)) {
+                para(t.setupWaitNoPupil, 15, kDanger, true, 32, 21, 2);
+            }
             break;
         }
         case SetupScreen::Done: {
             y = top + 50;
+            if (partial >= 0) {
+                // Set up, but one eye on its earlier or provisional values: which, and the calibration again
+                const std::string big = partialTitle();
+                text(x0, y, big, fitSize(pen, big, 26, 16, w, true), kText, true);
+                para(t.partialSetupBody, 17, kText, false, 40, 26, 2);
+                partialBox();
+                partialButtons(t.setupDoneButton);
+                break;
+            }
             text(x0, y, t.setupDoneTitle, fitSize(pen, t.setupDoneTitle, 26, 16, w, true), kText, true);
             para(t.setupDoneBody, 17, kText, false, 44, 28, 3);
             // If something is off later: where to go
@@ -4219,8 +4378,17 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
         case SetupScreen::Calibrated: {
             // A calibration from the page ended well: a line on what it learned, and back to the page
             const bool user = calib == eyecam::Calib::User;
-            title(learnName, t.calibDonePill, kSuccess);
+            title(learnName, partial >= 0 ? t.partialPill : t.calibDonePill, partial >= 0 ? kAccent : kSuccess);
             y += 50;
+            if (partial >= 0) {
+                // This wear's without one eye: which, and the calibration again
+                const std::string big = partialTitle();
+                text(x0, y, big, fitSize(pen, big, 26, 16, w, true), kText, true);
+                para(t.partialPageBody, 17, kText, false, 38, 26, 2);
+                partialBox();
+                partialButtons(t.calibDoneButton);
+                break;
+            }
             const char* big = user ? t.calibUserDoneTitle : t.calibDoneTitle;
             text(x0, y, big, fitSize(pen, big, 26, 16, w, true), kText, true);
             para(user ? t.calibUserDoneBody : t.calibDoneBody, 17, kText, false, 38, 26, 2);

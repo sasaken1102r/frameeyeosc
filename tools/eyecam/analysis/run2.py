@@ -14,7 +14,7 @@ VARIANTS = {'base': {'lower_open': 9, 'lower_band': None}, 'tophat': {'lower_ope
 
 
 def estimate_R(s, e, xm):
-    """Unsupervised iris radius for the search windows: median of per-frame nasal-limbus fits on every 25th frame."""
+    """Unsupervised iris radius for the search windows: median of per-frame limbus fits (large-x, temporal side preferred) on every 25th frame."""
     F = frames(s, e)
     rs = []
     for k in range(0, len(F), 25):

@@ -419,10 +419,14 @@ struct UiText {
     const char* setupWaitVideoNo;
     const char* setupWaitEyeOk;  ///< ...each eye
     const char* setupWaitEyeNo;
+    const char* setupWaitEyeNoPupil;  ///< ...the video there, the pupil not found (eyecam::EyeSight::NoPupil)
+    const char* setupWaitEyeWeak;  ///< ...the pupil found only some of the time (eyecam::EyeSight::Weak)
     const char* setupWaitButton;  ///< ...the button ("calib wear")
     const char* setupWaitHint1;  ///< ...beside it
     const char* setupWaitHint2;
-    const char* setupWaitFoot;  ///< ...under it
+    const char* setupWaitFoot;  ///< ...under it (also under a failed one's buttons while the video isn't there)
+    const char* setupWaitNoPupil;  ///< ...instead, while an eye's pupil isn't found: put the headset on again
+    const char* setupErrorEyes;  ///< (3) failed: before the eyes eyecam-rec's message names
     const char* setupLearnPill;  ///< (3) calibrating: the pill
     const char* setupLearnWidenHint;  ///< ...beside the instruction to widen
     const char* setupChipClose;  ///< ...the steps as chips
@@ -462,6 +466,16 @@ struct UiText {
     const char* calibUserDoneTitle;  ///< ...the user's
     const char* calibUserDoneBody;
     const char* calibDoneButton;  ///< ...back to the page
+    const char* partialPill;  ///< "calib wear" went through without one eye (calib_failed_eye L / R): the pill
+    const char* partialEyeLeft;  ///< ...the eye in its title (a name that starts a sentence)
+    const char* partialEyeRight;
+    const char* partialTitlePrevFormat;  ///< ..."%s" (the eye) uses its earlier values
+    const char* partialTitleProvFormat;  ///< ...or provisional ones (there were no earlier ones)
+    const char* partialSetupBody;  ///< ...the setup's: set up, but calibrate again
+    const char* partialPageBody;  ///< ...from the usual page
+    const char* partialNew;  ///< ...rows: the eye that went through
+    const char* partialPrev;  ///< ...the other one: its earlier values
+    const char* partialProv;  ///< ...or provisional ones
     const char* nextTitle;  ///< the left column while not set up: its card
     const char* nextPass;  ///< ...what (1) is about
     const char* nextWait;  ///< ...(3) before its button

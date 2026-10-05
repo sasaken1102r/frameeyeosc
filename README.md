@@ -99,7 +99,7 @@ To remove it: `./install.sh --uninstall` (removes the panel too; add `--purge` t
 
 #### Updating from the panel (0.4.0 and later)
 
-From 0.4.0 on, the panel's "Update" button does the update. The panel's Advanced page shows the installed version. At start and then at most once a day, the panel asks GitHub whether a newer release exists. That holds while checks succeed: after a failed check it tries again an hour later. "Check now" asks right away. When a newer release exists, the Advanced page shows its summary under the version row (in Japanese on a Japanese panel when the release has one), and "Update" downloads it, checks it against the release's `SHA256SUMS`, and runs its `install.sh` with the options of your last install (kept in `~/.config/frameeyeosc/install-args`). frameeyeosc and the panel restart on the new version. If anything fails before `install.sh` runs, nothing changes; the log is in `~/.cache/frameeyeosc/update.log`. Turn "Check for updates" off to stop the daily check (the "Check now" button still works). The update itself only runs when you press the button.
+From 0.4.0 on, the panel's "Update" button does the update. The panel's Advanced page shows the installed version. At start and then every hour, the panel asks GitHub whether a newer release exists. "Check now" asks right away. When a newer release exists, the Advanced page shows its summary under the version row (in Japanese on a Japanese panel when the release has one), and "Update" downloads it, checks it against the release's `SHA256SUMS`, and runs its `install.sh` with the options of your last install (kept in `~/.config/frameeyeosc/install-args`). frameeyeosc and the panel restart on the new version. If anything fails before `install.sh` runs, nothing changes; the log is in `~/.cache/frameeyeosc/update.log`. Turn "Check for updates" off to stop the hourly check (the "Check now" button still works). The update itself only runs when you press the button.
 
 `SHA256SUMS` is a checksum file from the same release, not a signature. It catches a corrupted or incomplete download. It can't catch a release that was replaced on GitHub, because the checksum would be replaced along with it.
 
@@ -182,7 +182,7 @@ Settings are in `~/.config/frameeyeosc/config.json`. The panel writes it, and yo
 | `gaze_debug_dots_distance_m` | | `1.0` | How far ahead the debug gaze dots are (0.3–2.0 m, "Dot distance" on the Advanced tab), the same with the dashboard open or closed. Beyond about 1.2 m the open dashboard hides them. The panel uses it; frameeyeosc ignores it |
 | `fit_sounds` | | `true` | The panel plays short sounds during the eye fit. frameeyeosc itself ignores it |
 | `auto_recenter` | | `"center"` | What the panel fits by itself once each time the headset is put on (when the gaze is fitted): `"center"` straight ahead only (one dot, 2.5 seconds), `"tilt"` straight ahead and the tilt (straight ahead, up and down, about 7.5 seconds), `"off"` nothing. The button next to "Fit again" runs the same (`"center"` when it is off). frameeyeosc itself ignores it |
-| `update_check` | | `true` | The panel looks for a new release on GitHub at start and once a day (an hour later after a failed check). frameeyeosc itself ignores it |
+| `update_check` | | `true` | The panel looks for a new release on GitHub at start and every hour. frameeyeosc itself ignores it |
 
 Command-line options win over the file. They go in `~/.config/frameeyeosc/env` (then `systemctl --user restart frameeyeosc`):
 
@@ -387,7 +387,7 @@ If it differs, don't type the password (close Konsole) and reinstall frameeyeosc
 ## Privacy
 
 - frameeyeosc sends gaze and eyelid values, and with the eye cameras squint and pupil size too, only to your PC: the destination above, and in LiveLink mode with the eye cameras a second one on the same PC for the pupils, VRChat's port 9000 (`pupil_target` in the status file). It has no telemetry and doesn't talk to the internet.
-- The panel asks GitHub (`api.github.com`) for the latest release at start and at most once a day (an hour after a failed check), unless "Check for updates" is off. Like any web request, this shows GitHub your IP address. Nothing else is sent, and downloads only come from GitHub.
+- The panel asks GitHub (`api.github.com`) for the latest release at start and about once an hour, unless "Check for updates" is off. Like any web request, this shows GitHub your IP address. Nothing else is sent, and downloads only come from GitHub.
 - On disk it keeps:
   - your settings (`~/.config/frameeyeosc/config.json`) and two numbers, each eye's learned relaxed openness (`~/.config/frameeyeosc/calibration`)
   - from `install.sh`: the update script `~/.local/share/frameeyeosc/frame-update.sh`, the changelogs the panel's version history reads (`CHANGELOG.md`, `CHANGELOG.ja.md` next to it) and your install options `~/.config/frameeyeosc/install-args`

@@ -1,6 +1,7 @@
 // Tests for the Eyelids and eye cameras tabs as drawn (案E): which buttons they offer for each source of the eyelids
 // (the widening slider's routing, "Fine-tune" folded and open, the sensitivity slider moved off the eye cameras page)
-// and a setting's slider let go of. Built with the panel as panel-test (it renders offscreen with the panel's fonts) and
+// and a setting's slider let go of, the setup's (3) with a pupil not found, and a calibration that went through without
+// one eye. Built with the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
 #include "draw.h"
@@ -370,6 +371,88 @@ void testErrorBack(const FontSet& fonts) {
     CHECK(hits(panel, PanelAction::EyecamBack).empty());
 }
 
+void testPupilSetup(const FontSet& fonts) {
+    // The setup's (3) with an eye's pupil not found: still pressable (the video is there), with the warning under it
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Eyecam);
+    PanelModel m = eyecamIn("idle", false);
+    m.eyecam.status.hasPupil = true;
+    m.eyecam.status.live = true;
+    m.eyecam.status.pupil[0] = 0.97;
+    m.eyecam.status.pupil[1] = 0.03;
+    panel.render(m);
+    std::vector<EyePanel::HitArea> calib = hits(panel, PanelAction::EyecamCalib);
+    CHECK(calib.size() == 1);
+    if (calib.size() == 1) CHECK(calib[0].hit.arg == static_cast<int>(eyecam::Calib::Wear));
+    // ...not without the video
+    m.eyecam.status.locked = false;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamCalib).empty());
+}
+
+/**
+ * eyecam-rec idle after a "calib wear" that went through without one eye.
+ * @param setup the setup's (its done screen), or one from the usual page
+ * @param widen "measured" or "default"
+ * @return the model
+ */
+PanelModel partialResult(bool setup, const char* widen) {
+    PanelModel m = eyecamIn("idle", true);
+    eyecam::Status before = m.eyecam.status;
+    before.state = eyecam::State::Calibrating;
+    before.protocol = eyecam::kCalibWearCommand;
+    before.stepCount = 6;
+    before.stepIndex = 5;
+    if (setup) before.setupDone = false;
+    if (!setup) m.eyecam.flow.follow(m.eyecam.status, 0.0);
+    m.eyecam.flow.follow(before, 0.5);
+    m.eyecam.status.lastCalibWiden = widen;
+    m.eyecam.status.calibFailedEye = "R";
+    m.eyecam.status.message = "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]";
+    m.eyecam.flow.follow(m.eyecam.status, 1.0);
+    m.eyecam.lastRun = eyecam::Run::CalibWear;
+    return m;
+}
+
+void testPartialResult(const FontSet& fonts) {
+    // One eye on its earlier values: on, or this wear's calibration again (the setup's done screen and the page's)
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Eyecam);
+    for (const bool setup : {true, false}) {
+        PanelModel m = partialResult(setup, "measured");
+        CHECK(setup ? m.eyecam.flow.result() == eyecam::SetupResult::Done
+                    : m.eyecam.flow.calibResult() == eyecam::CalibResult::Measured);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetupProceed).size() == 1);
+        std::vector<EyePanel::HitArea> calib = hits(panel, PanelAction::EyecamCalib);
+        CHECK(calib.size() == 1);
+        if (calib.size() == 1) CHECK(calib[0].hit.arg == static_cast<int>(eyecam::Calib::Wear));
+        // ...without a failed eye, as before: the done screen's one button (the page's calibrations not under it)
+        m.eyecam.status.calibFailedEye.clear();
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetupProceed).size() == 1);
+        if (setup) CHECK(hits(panel, PanelAction::EyecamCalib).empty());
+    }
+    // A user calibration after it (calib_failed_eye kept from the wear's): its own result, no "again"
+    {
+        PanelModel m = eyecamIn("idle", true);
+        m.eyecam.status.calibFailedEye = "R";
+        eyecam::Status before = m.eyecam.status;
+        before.state = eyecam::State::Calibrating;
+        before.protocol = eyecam::kCalibUserCommand;
+        before.stepCount = 4;
+        before.stepIndex = 3;
+        m.eyecam.flow.follow(m.eyecam.status, 0.0);
+        m.eyecam.flow.follow(before, 0.5);
+        m.eyecam.flow.follow(m.eyecam.status, 1.0);
+        m.eyecam.lastRun = eyecam::Run::CalibUser;
+        CHECK(m.eyecam.flow.calibResult() == eyecam::CalibResult::User);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetupProceed).size() == 1);
+        CHECK(hits(panel, PanelAction::EyecamCalib).empty());
+    }
+}
+
 void testCalibNeedsLids(const FontSet& fonts) {
     // camera_lids off: the page's calibrations can't be pressed (eyecam-rec doesn't process the video then); on: they can
     EyePanel panel(fonts);
@@ -450,6 +533,16 @@ void testWayOut(const FontSet& fonts) {
             r.eyecam.flow.follow(r.eyecam.status, 1.0);
             add("setup's result", r);
         }
+        // ...one eye on its earlier values (the setup's, and the page's)
+        for (const char* widen : {"default", "measured"}) {
+            add("setup's result, one eye", partialResult(true, widen));
+            add("page's result, one eye", partialResult(false, widen));
+        }
+        PanelModel both = eyecamIn("error", false);
+        both.eyecam.lastRun = eyecam::Run::CalibWear;
+        both.eyecam.status.calibFailedEye = "LR";
+        both.eyecam.status.message = "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]";
+        add("setup (3), both eyes failed", both);
     }
     {
         PanelModel m = eyecamIn("error");
@@ -519,6 +612,8 @@ int main() {
     testErrorBack(fonts);
     testWayOut(fonts);
     testCalibNeedsLids(fonts);
+    testPupilSetup(fonts);
+    testPartialResult(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

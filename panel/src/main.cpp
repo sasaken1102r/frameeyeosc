@@ -272,7 +272,13 @@ void printUsage() {
         "                        just ended: the checklist's done screen, or widening on the standard values),\n"
         "                        page=measured|default|user (a calibration from the usual page just ended: its\n"
         "                        card; with setup),\n"
-        "                        msg / msgja (eyecam-rec's message with message_en / Japanese only)\n"
+        "                        msg / msgja (eyecam-rec's message with message_en / Japanese only),\n"
+        "                        pupil=L,R (pupil_l / pupil_r: each 0..1 or null; without it, an eyecam-rec before\n"
+        "                        them), failed=L|R|LR|mixed (calib_failed_eye, with eyecam-rec's message: L / R a\n"
+        "                        \"calib wear\" that went through without that eye, with done or page=...; LR both\n"
+        "                        eyes' pupils not seen, mixed a different reason per eye, with calib-error; with\n"
+        "                        user too, a failed user calibration's message for each eye), prov\n"
+        "                        (failed=L|R: provisional values, not the previous ones)\n"
         "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
@@ -313,7 +319,35 @@ struct FakeEyecam {
     std::string result;     ///< "done" / "fail": the setup's calibration just ended that way ("" = no)
     std::string page;       ///< "measured" / "default" / "user": one from the usual page just ended ("" = no)
     int message = 0;        ///< 1 = a message with message_en, 2 = a message without it (an older eyecam-rec)
+    bool hasPupil = false;  ///< pupil_l / pupil_r given (an eyecam-rec that says whether it finds the pupils)
+    double pupil[2] = {0.0, 0.0};  ///< ...their values (NaN = null)
+    std::string failed;     ///< "L" / "R" / "LR" / "mixed": calib_failed_eye and its message ("" = none)
+    bool provisional = false;  ///< failed=L|R: provisional values (no earlier ones)
 };
+
+/**
+ * Parse pupil=L,R: each a share 0..1 or "null".
+ * @param text after "pupil="
+ * @param fake where to write
+ * @return false if it isn't two of them
+ */
+bool parseFakePupil(const std::string& text, FakeEyecam& fake) {
+    const size_t comma = text.find(',');
+    if (comma == std::string::npos) return false;
+    const std::string values[2] = {text.substr(0, comma), text.substr(comma + 1)};
+    for (int eye = 0; eye < 2; ++eye) {
+        const std::string& value = values[eye];
+        if (value == "null") {
+            fake.pupil[eye] = std::numeric_limits<double>::quiet_NaN();
+        } else if (!value.empty() && value.find_first_not_of("0123456789.") == std::string::npos) {
+            fake.pupil[eye] = std::atof(value.c_str());
+        } else {
+            return false;
+        }
+    }
+    fake.hasPupil = true;
+    return true;
+}
 
 /**
  * Take --fake-eyecam apart: STATE[:LABEL][:flag]..., where a label only follows recording (which needs one) and
@@ -373,6 +407,12 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.result = flag;
         } else if (flag == "page=measured" || flag == "page=default" || flag == "page=user") {
             fake.page = flag.substr(5);
+        } else if (flag.rfind("pupil=", 0) == 0) {
+            if (!parseFakePupil(flag.substr(6), fake)) return false;
+        } else if (flag == "failed=L" || flag == "failed=R" || flag == "failed=LR" || flag == "failed=mixed") {
+            fake.failed = flag.substr(7);
+        } else if (flag == "prov") {
+            fake.provisional = true;
         } else if (flag == "ready") {
             fake.baseline = "ready";
         } else if (flag == "saved") {
@@ -908,6 +948,50 @@ eyecam::View fakeEyecam(const std::string& text) {
         s.message = "校正できた（かぶり）";
         s.messageEn = fake.message == 1 ? "Calibrated (this wear)" : "";
     }
+    // The pupils, and an eye a "calib wear" failed on (with eyecam-rec's messages for it)
+    s.hasPupil = fake.hasPupil;
+    s.pupil[0] = fake.hasPupil ? fake.pupil[0] : nan;
+    s.pupil[1] = fake.hasPupil ? fake.pupil[1] : nan;
+    if (fake.failed == "LR" || fake.failed == "mixed") {
+        s.calibFailedEye = "LR";
+        if (fake.failed == "LR") {
+            s.message = "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]";
+            s.messageEn = "Both eyes: couldn't see the pupil well (adjust the headset and try again) "
+                          "[L 12/486, R 30/486, 90 needed]";
+        } else if (fake.calibUser == 1) {
+            // A user calibration's: a different reason per eye, one of eyecam-rec's longest messages
+            s.message = "左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）。"
+                        "右目のまぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[100/600、150 必要]";
+            s.messageEn = "Left eye: looking down didn't change the eye opening (try again and look down clearly). "
+                          "Right eye: couldn't find the eyelid lines (adjust the headset and try again) "
+                          "[100/600, 150 needed]";
+        } else {
+            s.message = "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]。"
+                        "右目の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[40/486、90 必要]";
+            s.messageEn = "Left eye: couldn't see the pupil well (adjust the headset and try again) [12/486, 90 needed]. "
+                          "Right eye: couldn't find the upper eyelid line (adjust the headset and try again) "
+                          "[40/486, 90 needed]";
+        }
+        if (state == "calib-error") {
+            const bool user = fake.calibUser == 1 && fake.failed == "mixed";
+            s.calibState = fake.calibState >= 0 ? fake.calibState : (user ? eyecam::kCalibWearBit : 0);
+            view.lastRun = user ? eyecam::Run::CalibUser : eyecam::Run::CalibWear;
+        }
+    } else if (!fake.failed.empty()) {
+        // It went through: the other eye's new values, this one's earlier (or provisional) ones; widening on the
+        // standard values too with fail or page=default
+        s.calibFailedEye = fake.failed;
+        const bool left = fake.failed == "L";
+        const bool widenDefault = fake.result == "fail" || fake.page == "default" || fake.widen == "default";
+        s.message = std::string("校正できた（") + (left ? "左目" : "右目") + "は瞳がうまく見えなかったので、" +
+                    (fake.provisional ? "仮の値" : "前の値") + "を使うよ" +
+                    (widenDefault ? "。見開きは取れなかったので、いつもの幅を使うよ" : "") + "）[12/486、90 必要]";
+        s.messageEn = std::string("Calibrated (") + (left ? "Left eye" : "Right eye") +
+                      ": couldn't see the pupil well, using " +
+                      (fake.provisional ? "provisional values" : "its previous values") +
+                      (widenDefault ? ". Couldn't measure widening, using the usual width" : "") + ") [12/486, 90 needed]";
+    }
+    if (fake.message == 2) s.messageEn.clear();
     // A failed calibration keeps the buffers (eyecam-rec writes has_buffers in every state)
     s.hasBuffers = fake.buffers || state == "calib-error";
     s.hasSetupDone = fake.setup >= 0;
@@ -2396,7 +2480,7 @@ int runOverlay(const Options& options) {
             drawnAutostart = autostartVersion;
             dirty = true;
         }
-        // Checks at start and then daily (frame-update.sh asks GitHub at most once a day), even while closed
+        // Checks at start and then hourly (frame-update.sh reuses GitHub's answer for 55 minutes), even while closed
         updater.tick(model.config.flag(key::kUpdateCheck));
         if (updater.revision() != drawnUpdate) {
             drawnUpdate = updater.revision();

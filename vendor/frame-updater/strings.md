@@ -8,7 +8,7 @@
 | キー | 日本語 | English |
 |---|---|---|
 | `rowUpdateCheck` | 新しい版の確認 | Check for updates |
-| `hintUpdateCheck` | 起動時と 1 日 1 回、GitHub に新しい版がないか見に行きます | Looks on GitHub for a new version at start and once a day |
+| `hintUpdateCheck` | 起動時と 1 時間に 1 回、GitHub に新しい版がないか見に行きます | Looks on GitHub for a new version at start and every hour |
 
 ## 状態の行
 

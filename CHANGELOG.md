@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.7.3 (2026-10-05)
+
+Fewer eye-camera calibrations failing with "the pupil wasn't seen": the pupil search now fits faces whose eyes sit further toward the nose, and a calibration where only one eye fails still goes through. The panel says per eye whether the pupil is seen, and checks for updates every hour.
+
+日本語: 目のカメラの校正が「瞳が見えなかった」で失敗しにくくなりました。目が鼻寄りに写る顔でも瞳を探せるようにし、片目だけ失敗したときも校正が通ります。パネルは目ごとに瞳が見えているかを出し、新しい版の確認を 1 時間に 1 回にしました。
+
+- eyecam-rec finds the pupil in more faces. The search window's nose-side edge was fixed at x = 186, fitted to one face; it is now worked out for each wear from where the dark area beside the nose ends (100 to 186), and a dark blob touching that edge is kept when a leftward ray finds the pupil's rim (shadows still drop out). Up to three candidates are tried instead of one, and after 10 frames without a pupil, or when a calibration starts, it forgets where the pupil was last, so one bad frame no longer keeps it looking in the wrong place. A pupil found without that hint must also look like an open eye's (size, darkness, how much is visible), so eyelashes and the eyelid line aren't taken for the pupil while the eye closes. On the 14 calibrations recorded so far (28 eyes) nothing got worse (pupil seen in relaxed eyes 97.9 % → 98.0 %, the eyelid values within 0.002); with the eyes shifted 30 to 50 px toward the nose, every eye now has at least 427 of 486 frames with a pupil, where before some had none.
+- A calibration checks both eyes before saying what failed, and says so per eye: the pupil wasn't seen (with the counts, e.g. `[L 12/486, R 30/486, 90 needed]`) or the upper eyelid line wasn't found. When only one eye fails, the calibration still goes through, as it already did when only the widening couldn't be measured: the good eye gets its new values, the other keeps its previous ones (or, the first time or when that eye failed last time too, provisional values from the other eye and earlier calibrations), and the message and the panel say which. `status.json` gives the eye in `calib_failed_eye` (`"L"`, `"R"`, `"LR"` or `""`).
+- `status.json` has `pupil_l` and `pupil_r`: the share of the last 2 seconds' frames in which that eye's pupil was found (null while the live processing is off or that eye's video has stopped). The panel's setup checklist uses them to tell, per eye, "Seen", "Video is coming but the pupil isn't found" (with a hint to put the headset on again) and "Not seen".
+- Each calibration's `calib_result.json` carries diagnostics per eye and step (where the search window was, where the pupil sat, why frames had no pupil), so a failure can be traced without eye video.
+- The panel checks for a new release at start and every hour, instead of at most once a day (frame-updater 0.3.0).
+
 ## 0.7.2 (2026-10-05)
 
 Optional support for the Frame's eye cameras: after a one-time setup on the panel's new "Eye cameras" tab, widened eyes come through again on SteamOS 0.4.3, and squints and pupil size are sent too. The eyelid look settings are gathered on the Eyelids tab, and the Advanced tab gets a version history.

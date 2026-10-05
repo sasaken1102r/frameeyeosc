@@ -1059,12 +1059,13 @@ impl WearOutcome {
 }
 
 /// A wear calibration with one eye allowed to fail (like a widen that was not caught): the eye that went through
-/// gets its new levels, the failed one its `previous` ones (the last wear calibration's), or without those
-/// provisional ones (`provisional_wear`). Both eyes failing is the reason to redo it.
+/// gets its new levels, the failed one its `previous` ones (the last wear calibration's, if they were measured on
+/// that eye: `CalibFile::measured_wear`), or without those provisional ones (`provisional_wear`). Both eyes
+/// failing is the reason to redo it.
 pub fn fit_wear_settled(
     samples: &[Vec<Sample>; 2],
     fallback_step: [f64; 2],
-    previous: Option<[WearParams; 2]>,
+    previous: [Option<WearParams>; 2],
     hist: Option<[History; 2]>,
 ) -> Result<WearOutcome, String> {
     let eyes = fit_wear_eyes(samples, fallback_step);
@@ -1074,25 +1075,25 @@ pub fn fit_wear_settled(
     }
     let wear = [0, 1].map(|e| match (ok[e], ok[1 - e]) {
         (Some((w, _)), _) => w,
-        (None, Some((other, _))) => previous.map_or_else(|| provisional_wear(&samples[e], &other, hist.map(|h| h[e])), |p| p[e]),
+        (None, Some((other, _))) => previous[e].unwrap_or_else(|| provisional_wear(&samples[e], &other, hist.map(|h| h[e]))),
         (None, None) => unreachable!("both eyes failing returned above"),
     });
     Ok(WearOutcome {
         wear,
         failed: ok.map(|x| x.is_none()),
         widen_measured: ok.iter().flatten().all(|x| x.1),
-        message: wear_ok_message(&eyes, previous.is_some()),
+        message: wear_ok_message(&eyes, previous.map(|p| p.is_some())),
     })
 }
 
 /// The message of a wear calibration that went through: notes for an eye that failed (it uses its `previous`
 /// values, or provisional ones) and for a widen not caught on an eye that passed; that eye's details at the end.
-pub fn wear_ok_message(eyes: &[EyeWear; 2], previous: bool) -> String {
+pub fn wear_ok_message(eyes: &[EyeWear; 2], previous: [bool; 2]) -> String {
     let mut notes = Vec::new();
     let mut details = String::new();
     for (e, x) in eyes.iter().enumerate() {
         if let Err(f) = x {
-            let src = if previous { "前の値" } else { "仮の値" };
+            let src = if previous[e] { "前の値" } else { "仮の値" };
             notes.push(format!("{}目は{}ので、{src}を使うよ", ["左", "右"][e], f.reason()));
             details = f.issue().details();
         }
@@ -1307,6 +1308,13 @@ fn parse_user(j: &Json) -> Result<UserParams, String> {
 }
 
 impl CalibFile {
+    /// The last wear calibration's levels of each eye that were measured on that eye: not those of the eye that
+    /// failed then (they were themselves carried over or provisional, and a calibration that fails on that eye
+    /// again says so and starts it from provisional ones).
+    pub fn measured_wear(&self) -> [Option<WearParams>; 2] {
+        [0, 1].map(|e| self.wear.map(|w| w[e]).filter(|_| self.wear_failed_eye != ["L", "R"][e]))
+    }
+
     /// The medians of the history (None when it is empty).
     pub fn history_params(&self) -> Option<[History; 2]> {
         if self.history.is_empty() {
@@ -1834,7 +1842,7 @@ mod tests {
         // Both eyes without the pupil: "both", with each eye's count.
         let err = fit_wear(&[wear_eye(12, 12), wear_eye(30, 30)], [0.19; 2]).unwrap_err();
         assert_eq!(err, format!("両目{MSG_PUPIL}[左 12/300・右 30/300、90 必要]"));
-        assert!(fit_wear_settled(&[wear_eye(12, 12), wear_eye(30, 30)], [0.19; 2], None, None).is_err());
+        assert!(fit_wear_settled(&[wear_eye(12, 12), wear_eye(30, 30)], [0.19; 2], [None; 2], None).is_err());
         // One eye: named, and the right eye is not hidden behind the left one any more.
         assert_eq!(fit_wear(&[good.clone(), wear_eye(40, 40)], [0.19; 2]).unwrap_err(), format!("右目{MSG_PUPIL}[40/300、90 必要]"));
         assert_eq!(fit_wear(&[wear_eye(89, 89), good.clone()], [0.19; 2]).unwrap_err(), format!("左目{MSG_PUPIL}[89/300、90 必要]"));
@@ -1857,7 +1865,7 @@ mod tests {
         let good = wear_eye(300, 300);
         let old = WearParams { r_px: 60.0, b_n: 0.7, b_w: 0.9, ap_n: 1.5, ap_cl: 0.6, pitch_n: -12.0, lower_px: 245.0 };
         // The right eye failed: the left one's new levels, the right one's previous ones.
-        let out = fit_wear_settled(&[good.clone(), wear_eye(12, 12)], [0.19; 2], Some([old, old]), None).unwrap();
+        let out = fit_wear_settled(&[good.clone(), wear_eye(12, 12)], [0.19; 2], [Some(old); 2], None).unwrap();
         assert_eq!(out.failed, [false, true]);
         assert_eq!(out.failed_eye(), "R");
         assert_eq!(out.wear[1], old);
@@ -1865,7 +1873,7 @@ mod tests {
         assert_eq!(out.message, "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/300、90 必要]");
         // No earlier levels: provisional ones, the other eye's with the history's step, gap and radius.
         let hist = History { step: 0.25, gap: 0.8, r_px: 66.0 };
-        let out = fit_wear_settled(&[wear_eye(300, 20), good.clone()], [0.19; 2], None, Some([hist, hist])).unwrap();
+        let out = fit_wear_settled(&[wear_eye(300, 20), good.clone()], [0.19; 2], [None; 2], Some([hist, hist])).unwrap();
         assert_eq!(out.failed_eye(), "L");
         let (l, r) = (out.wear[0], out.wear[1]);
         assert_eq!((l.r_px, l.b_n, l.ap_n), (66.0, r.b_n, r.ap_n));
@@ -1880,15 +1888,25 @@ mod tests {
         for x in flat.iter_mut().filter(|x| x.label == Label::Widen) {
             x.skin = 0.74;
         }
-        let out = fit_wear_settled(&[flat, wear_eye(0, 0)], [0.19; 2], Some([old, old]), None).unwrap();
+        let out = fit_wear_settled(&[flat, wear_eye(0, 0)], [0.19; 2], [Some(old); 2], None).unwrap();
         assert!(!out.widen_measured);
         assert_eq!(
             out.message,
             "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ。見開きは取れなかったので、いつもの幅を使うよ）[0/300、90 必要]"
         );
         // Both eyes fine: as before.
-        let out = fit_wear_settled(&[good.clone(), good], [0.19; 2], Some([old, old]), None).unwrap();
+        let out = fit_wear_settled(&[good.clone(), good.clone()], [0.19; 2], [Some(old); 2], None).unwrap();
         assert!(out.for_history() && out.failed_eye().is_empty() && out.message == "校正できた（かぶり）");
+        // The same eye failing again: what it has was not measured on it, so provisional ones from this wear.
+        let file = CalibFile { wear: Some([old, old]), wear_failed_eye: "R".into(), ..CalibFile::default() };
+        assert_eq!(file.measured_wear(), [Some(old), None]);
+        let out = fit_wear_settled(&[good.clone(), wear_eye(12, 12)], [0.19; 2], file.measured_wear(), None).unwrap();
+        assert_eq!((out.wear[1].b_n, out.wear[1].ap_n), (out.wear[0].b_n, out.wear[0].ap_n));
+        assert_eq!(out.message, "校正できた（右目は瞳がうまく見えなかったので、仮の値を使うよ）[12/300、90 必要]");
+        // The other eye failing now: its levels from then were measured.
+        let out = fit_wear_settled(&[wear_eye(12, 12), good.clone()], [0.19; 2], file.measured_wear(), None).unwrap();
+        assert_eq!(out.wear[0], old);
+        assert!(out.message.contains("左目は瞳がうまく見えなかったので、前の値を使うよ"), "{}", out.message);
         // calib.json keeps which eye failed; older files have none.
         let file = CalibFile { wear: Some(out.wear), wear_failed_eye: "R".into(), ..CalibFile::default() };
         assert!(file.to_json().contains("\"failed_eye\": \"R\""));

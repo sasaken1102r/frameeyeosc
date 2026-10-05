@@ -503,8 +503,9 @@ impl Worker {
                 let hist = self.calib.history_params();
                 let fallback = [0, 1].map(|e| hist.map_or(live::DEFAULT_WIDEN_STEP, |h| h[e].step));
                 // One eye failing does not fail the calibration either: the other eye's levels are new, the failed
-                // one keeps its earlier ones (or gets provisional ones from the other eye and the history).
-                let out = live::fit_wear_settled(&samples, fallback, self.calib.wear, hist);
+                // one keeps its earlier ones if they were measured on it (else gets provisional ones from the other
+                // eye and the history).
+                let out = live::fit_wear_settled(&samples, fallback, self.calib.measured_wear(), hist);
                 let failed = out.as_ref().map_or([true, true], |o| o.failed);
                 self.shared.calib_failed_eye.store(failed[0] as u32 | (failed[1] as u32) << 1, Ordering::Relaxed);
                 let out = out?;

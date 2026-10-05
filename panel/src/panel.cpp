@@ -3645,11 +3645,16 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
                     ex += 22 + 28 + pen.text(ex + 22 + 28, y + 120, eye == 0 ? t.leftEye : t.rightEye, 20, kDanger, true);
                 }
             }
-            // eyecam-rec's reason (in English when it gives one; with its counts), as large as fits in 3 lines
+            // The user's calibration again can't be offered once the headset was put back on (bit 0 gone): a note
+            // above the buttons says so
+            const bool userBlocked = calibRun && calib == eyecam::Calib::User && !eyecam::userCalibAllowed(s);
+            // eyecam-rec's reason (in English when it gives one; with its counts), as large as fits in 3 lines (2
+            // with the eyes' line and that note: a third would run into the note)
             const std::string& message = eyecam::shownMessage(s, m.language);
             if (!message.empty()) {
-                wrappedCentered(eyes != 0 ? y + 160 : y + 130, message, wrapSize(pen, message, 24, 17, false, width, 3),
-                                kText, false, 3);
+                const size_t maxLines = eyes != 0 && userBlocked ? 2 : 3;
+                wrappedCentered(eyes != 0 ? y + 160 : y + 130, message,
+                                wrapSize(pen, message, 24, 17, false, width, maxLines), kText, false, maxLines);
                 messageShown = true;
             }
             // The way on, and "Back" beside it (the error is dismissed in the panel only: eyecam-rec stays in "error"
@@ -3663,7 +3668,6 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
             if (calibRun) {
                 // The same calibration again; the user's only while this wear's is still there. Put back on since
                 // (bit 0 gone), it can't be: say so, and offer this wear's calibration instead
-                const bool userBlocked = calib == eyecam::Calib::User && !eyecam::userCalibAllowed(s);
                 if (userBlocked) {
                     centered(by - 22, t.eyecamUserNeedsWear, 22, 14, kAccent, true);
                     drawButton(pen, left, by, w, bh, t.camCalibButton,
@@ -4091,9 +4095,11 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                                     : sight == eyecam::EyeSight::NoPupil ? t.setupWaitEyeNoPupil
                                     : sight == eyecam::EyeSight::Weak    ? t.setupWaitEyeWeak
                                                                          : t.setupWaitEyeNo;
-                // The video without the pupil in red (the calibration would fail), only some of the time in the accent
+                // The video without the pupil in red (the calibration would fail), only some of the time in the accent;
+                // one eye not seen while the video is there (its frames stopped) in the accent too
                 const bool noPupil = i > 0 && sight == eyecam::EyeSight::NoPupil;
-                const bool weak = i > 0 && sight == eyecam::EyeSight::Weak;
+                const bool weak = i > 0 && (sight == eyecam::EyeSight::Weak ||
+                                            (s.locked && sight == eyecam::EyeSight::NotSeen));
                 const Color color = ok ? kSuccess : noPupil ? kDanger : weak ? kAccent : kTextMuted;
                 const bool bold = ok || noPupil || weak;
                 text(x0 + 50, baseline, label, 17, kTextMuted, false);

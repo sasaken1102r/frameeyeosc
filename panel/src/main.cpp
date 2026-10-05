@@ -276,7 +276,8 @@ void printUsage() {
         "                        pupil=L,R (pupil_l / pupil_r: each 0..1 or null; without it, an eyecam-rec before\n"
         "                        them), failed=L|R|LR|mixed (calib_failed_eye, with eyecam-rec's message: L / R a\n"
         "                        \"calib wear\" that went through without that eye, with done or page=...; LR both\n"
-        "                        eyes' pupils not seen, mixed a different reason per eye, with calib-error), prov\n"
+        "                        eyes' pupils not seen, mixed a different reason per eye, with calib-error; with\n"
+        "                        user too, a failed user calibration's message for each eye), prov\n"
         "                        (failed=L|R: provisional values, not the previous ones)\n"
         "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
@@ -957,6 +958,13 @@ eyecam::View fakeEyecam(const std::string& text) {
             s.message = "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]";
             s.messageEn = "Both eyes: couldn't see the pupil well (adjust the headset and try again) "
                           "[L 12/486, R 30/486, 90 needed]";
+        } else if (fake.calibUser == 1) {
+            // A user calibration's: a different reason per eye, one of eyecam-rec's longest messages
+            s.message = "左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）。"
+                        "右目のまぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[100/600、150 必要]";
+            s.messageEn = "Left eye: looking down didn't change the eye opening (try again and look down clearly). "
+                          "Right eye: couldn't find the eyelid lines (adjust the headset and try again) "
+                          "[100/600, 150 needed]";
         } else {
             s.message = "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]。"
                         "右目の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[40/486、90 必要]";
@@ -965,8 +973,9 @@ eyecam::View fakeEyecam(const std::string& text) {
                           "[40/486, 90 needed]";
         }
         if (state == "calib-error") {
-            s.calibState = fake.calibState >= 0 ? fake.calibState : 0;
-            view.lastRun = eyecam::Run::CalibWear;
+            const bool user = fake.calibUser == 1 && fake.failed == "mixed";
+            s.calibState = fake.calibState >= 0 ? fake.calibState : (user ? eyecam::kCalibWearBit : 0);
+            view.lastRun = user ? eyecam::Run::CalibUser : eyecam::Run::CalibWear;
         }
     } else if (!fake.failed.empty()) {
         // It went through: the other eye's new values, this one's earlier (or provisional) ones; widening on the

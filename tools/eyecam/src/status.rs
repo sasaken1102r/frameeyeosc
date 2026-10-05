@@ -51,6 +51,9 @@ pub struct Status {
     pub setup_done: bool,
     /// The last `calib wear` of this run: "measured" (widen caught), "default" (not caught: the usual step), or "".
     pub last_calib_widen: &'static str,
+    /// The eye whose part of the last `calib wear` failed: "L" / "R" (it went through with the other eye; the failed
+    /// one kept its earlier levels), "LR" (both: the calibration failed), or "".
+    pub calib_failed_eye: &'static str,
     /// Live processing is on (`live on`, the default).
     pub live: bool,
     /// Live processing time per frame (one eye), ms, averaged over the last second.
@@ -86,6 +89,7 @@ impl Default for Status {
             dev: false,
             setup_done: false,
             last_calib_widen: "",
+            calib_failed_eye: "",
             live: false,
             live_ms: 0.0,
         }
@@ -111,7 +115,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"live\":{},\"live_ms\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -140,6 +144,7 @@ impl Status {
             self.dev,
             self.setup_done,
             json_str(self.last_calib_widen),
+            json_str(self.calib_failed_eye),
             self.live,
             num(self.live_ms),
             num(updated_unix),
@@ -253,5 +258,7 @@ mod tests {
         assert!(json.ends_with("\"updated_unix\":1.500}"));
         assert!(json.contains("\"widen_sensitivity\":0.500,\"dev\":false,\"setup_done\":false,"));
         assert!(Status { dev: true, ..Status::default() }.to_json(1.5, 7).contains(",\"dev\":true,"));
+        assert!(json.contains("\"last_calib_widen\":\"\",\"calib_failed_eye\":\"\","));
+        assert!(Status { calib_failed_eye: "R", ..Status::default() }.to_json(1.5, 7).contains(",\"calib_failed_eye\":\"R\","));
     }
 }

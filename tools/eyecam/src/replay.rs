@@ -425,6 +425,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             wear: Some(wear),
             wear_time: s.dir.display().to_string(),
             wear_widen_measured: None,
+            wear_failed_eye: String::new(),
             history: vec![(s.dir.display().to_string(), [live::WearRecord::of(&wear[0]), live::WearRecord::of(&wear[1])])],
             setup_done: true,
         };

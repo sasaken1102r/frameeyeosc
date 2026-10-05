@@ -41,9 +41,11 @@ const EXACT: &[(&str, &str)] = &[
     ("視線と目の開きの関係が求められなかった（もう一度）", "Couldn't work out how gaze changes the eye opening (try again)"),
 ];
 
-/// Per-eye calibration failures, after "左目" / "右目" (the details in [...] follow).
+/// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
 const EYE: &[(&str, &str)] = &[
     ("の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）", "couldn't see the pupil well (adjust the headset and try again)"),
+    ("の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）", "couldn't find the upper eyelid line (adjust the headset and try again)"),
+    ("のまぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）", "couldn't find the eyelid lines (adjust the headset and try again)"),
     ("を閉じたのが検出できなかった（もう一度、しっかり閉じてね）", "couldn't detect the eye closing (try again and close it firmly)"),
     ("の細めが測れなかった（もう一度）", "couldn't measure the squint (try again)"),
     ("の細めが浅かった（もう一度、しっかり細めてね）", "the squint was too shallow (try again and squint harder)"),
@@ -61,9 +63,70 @@ const PREFIX: &[(&str, &str)] = &[
     ("プロトコルが見つからない: ", "Protocol not found: "),
 ];
 
+/// The eyes a message can start with.
+const EYES: [(&str, &str); 3] = [("左目", "Left eye"), ("右目", "Right eye"), ("両目", "Both eyes")];
+
+/// Notes in a wear calibration that went through ("校正できた（<note>。<note>）[details]"), after "左目は" / "右目は"
+/// for an eye that failed.
+const NOTE_REASON: &[(&str, &str)] = &[
+    ("瞳がうまく見えなかったので、", "couldn't see the pupil well, "),
+    ("上まぶたの線が見つからなかったので、", "couldn't find the upper eyelid line, "),
+    ("閉じたのが検出できなかったので、", "couldn't detect the eye closing, "),
+];
+const NOTE_SOURCE: &[(&str, &str)] = &[("前の値を使うよ", "using its previous values"), ("仮の値を使うよ", "using provisional values")];
+
 /// Words inside the [...] details of calibration messages.
 fn details(s: &str) -> String {
-    s.replace("下を見たとき", "looking down").replace("細め", "squint").replace("普段", "normal").replace('、', ", ")
+    s.replace("下を見たとき", "looking down")
+        .replace("細め", "squint")
+        .replace("普段", "normal")
+        .replace("左 ", "L ")
+        .replace("右 ", "R ")
+        .replace("必要", "needed")
+        .replace('・', ", ")
+        .replace('、', ", ")
+}
+
+/// "body[details]" -> (body, " [translated details]").
+fn split_details(s: &str) -> (&str, String) {
+    match s.find('[') {
+        Some(i) => (&s[..i], format!(" {}", details(&s[i..]))),
+        None => (s, String::new()),
+    }
+}
+
+/// Split at "。" outside （…） and […].
+fn split_sentences(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0i32, 0);
+    for (i, c) in s.char_indices() {
+        match c {
+            '（' | '[' => depth += 1,
+            '）' | ']' => depth -= 1,
+            '。' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
+fn has_japanese(s: &str) -> bool {
+    s.chars().any(|c| matches!(c as u32, 0x3040..=0x30FF | 0x4E00..=0x9FFF | 0xFF01..=0xFF60))
+}
+
+/// One note of a wear calibration that went through.
+fn note_en(note: &str) -> Option<String> {
+    if note == crate::live::NOTE_WIDEN {
+        return Some("couldn't measure widening, using the usual width".into());
+    }
+    let (eye_en, rest) = EYES[..2].iter().find_map(|(j, en)| Some((*en, note.strip_prefix(j)?.strip_prefix('は')?)))?;
+    let (why, rest) = NOTE_REASON.iter().find_map(|(j, en)| Some((*en, rest.strip_prefix(j)?)))?;
+    let src = NOTE_SOURCE.iter().find(|(j, _)| *j == rest)?.1;
+    Some(format!("{eye_en}: {why}{src}"))
 }
 
 /// The English for one Japanese message.
@@ -87,6 +150,19 @@ pub fn message_en(ja: &str) -> String {
     if let Some(rest) = ja.strip_prefix("左右の差が大きい") {
         return format!("Large left/right difference{}", details(rest));
     }
+    // "校正できた（<note>。<note>）[details]": a wear calibration that went through with an eye's earlier levels or the
+    // usual widen.
+    if let Some(rest) = ja.strip_prefix("校正できた（") {
+        let (body, detail) = split_details(rest);
+        if let Some(notes) = body.strip_suffix('）').and_then(|b| b.split('。').map(note_en).collect::<Option<Vec<String>>>()) {
+            let notes: Vec<String> = notes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| if i == 0 { n.clone() } else { n[..1].to_uppercase() + &n[1..] })
+                .collect();
+            return format!("Calibrated ({}){detail}", notes.join(". "));
+        }
+    }
     if let Some(why) = ja.strip_prefix("自動でバッファを取れなかった: ") {
         return format!("Couldn't get the buffers automatically: {why}");
     }
@@ -100,12 +176,17 @@ pub fn message_en(ja: &str) -> String {
     if let Some((name, e)) = ja.split_once(".txt の書き方がおかしい: ") {
         return format!("{name}.txt is malformed: {e}");
     }
-    for (eye_ja, eye_en) in [("左目", "Left eye"), ("右目", "Right eye")] {
+    // Several messages (one per eye) joined with "。".
+    let parts = split_sentences(ja);
+    if parts.len() > 1 {
+        let en: Vec<String> = parts.iter().map(|p| message_en(p)).collect();
+        if !en.iter().any(|e| has_japanese(e)) {
+            return en.join(". ");
+        }
+    }
+    for (eye_ja, eye_en) in EYES {
         if let Some(rest) = ja.strip_prefix(eye_ja) {
-            let (body, detail) = match rest.find('[') {
-                Some(i) => (&rest[..i], format!(" {}", details(&rest[i..]))),
-                None => (rest, String::new()),
-            };
+            let (body, detail) = split_details(rest);
             if let Some(&(_, en)) = EYE.iter().find(|(j, _)| *j == body) {
                 return format!("{eye_en}: {en}{detail}");
             }
@@ -122,10 +203,6 @@ pub fn message_en(ja: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn has_japanese(s: &str) -> bool {
-        s.chars().any(|c| matches!(c as u32, 0x3040..=0x30FF | 0x4E00..=0x9FFF | 0xFF01..=0xFF60))
-    }
 
     #[test]
     fn every_message_has_english() {
@@ -167,6 +244,20 @@ mod tests {
             "バッファが更新されなくなった",
             "校正の計算が終わらなかった",
             "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）",
+            "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]",
+            "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]",
+            "右目の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[40/486、90 必要]",
+            "両目の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[左 40/486・右 60/486、90 必要]",
+            "左目のまぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[100/900、150 必要]",
+            "両目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）",
+            "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]。右目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）",
+            "両目の細めが測れなかった（もう一度）",
+            "両目の細めが浅かった（もう一度、しっかり細めてね）[左 f_sq 0.91・右 f_sq 0.88]",
+            "両目: 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）[左 240.0 px / 普段 250.0 px・右 241.0 px / 普段 251.0 px]",
+            "左目の細めが浅かった（もう一度、しっかり細めてね）[f_sq 0.91]。右目: 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）[240.0 px / 普段 250.0 px]",
+            "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]",
+            "校正できた（左目は上まぶたの線が見つからなかったので、仮の値を使うよ。見開きは取れなかったので、いつもの幅を使うよ）[40/486、90 必要]",
+            "校正できた（右目は閉じたのが検出できなかったので、前の値を使うよ）",
             "右目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）",
             "左目の細めが測れなかった（もう一度）",
             "右目の細めが浅かった（もう一度、しっかり細めてね）[f_sq 0.91]",
@@ -188,5 +279,21 @@ mod tests {
             "Left eye: looking down didn't change the eye opening (try again and look down clearly) [1.54 / normal 1.47]"
         );
         assert_eq!(message_en(""), "");
+        assert_eq!(
+            message_en("両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]"),
+            "Both eyes: couldn't see the pupil well (adjust the headset and try again) [L 12/486, R 30/486, 90 needed]"
+        );
+        assert_eq!(
+            message_en("左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]。右目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）"),
+            "Left eye: couldn't see the pupil well (adjust the headset and try again) [12/486, 90 needed]. Right eye: couldn't detect the eye closing (try again and close it firmly)"
+        );
+        assert_eq!(
+            message_en("校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ。見開きは取れなかったので、いつもの幅を使うよ）[12/486、90 必要]"),
+            "Calibrated (Right eye: couldn't see the pupil well, using its previous values. Couldn't measure widening, using the usual width) [12/486, 90 needed]"
+        );
+        assert_eq!(
+            message_en("校正できた（見開きは取れなかったので、いつもの幅を使うよ）"),
+            "Calibrated (couldn't measure widening, using the usual width)"
+        );
     }
 }

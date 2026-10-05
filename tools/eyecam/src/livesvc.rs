@@ -110,6 +110,9 @@ pub struct Shared {
     pub setup_done: AtomicBool,
     /// The last `calib wear` of this run: 0 none (or it failed), 1 widen measured, 2 widen not caught (history step).
     pub last_calib_widen: AtomicU32,
+    /// The eyes whose part of the last `calib wear` failed: bit 1 left, bit 2 right (both: the calibration failed;
+    /// one: it went through, that eye kept its earlier levels).
+    pub calib_failed_eye: AtomicU32,
     /// Average processing time per frame over the last second, in microseconds.
     pub us_per_frame: AtomicU32,
     pub frames: AtomicU64,
@@ -127,6 +130,7 @@ impl Default for Shared {
             calib_saved: AtomicBool::new(false),
             setup_done: AtomicBool::new(false),
             last_calib_widen: AtomicU32::new(0),
+            calib_failed_eye: AtomicU32::new(0),
             us_per_frame: AtomicU32::new(0),
             frames: AtomicU64::new(0),
             live_on: AtomicBool::new(false),
@@ -458,7 +462,13 @@ impl Worker {
                 // A widen that was not caught does not fail the calibration: that eye uses the history's step.
                 let hist = self.calib.history_params();
                 let fallback = [0, 1].map(|e| hist.map_or(live::DEFAULT_WIDEN_STEP, |h| h[e].step));
-                let (w, measured) = live::fit_wear(&samples, fallback)?;
+                // One eye failing does not fail the calibration either: the other eye's levels are new, the failed
+                // one keeps its earlier ones (or gets provisional ones from the other eye and the history).
+                let out = live::fit_wear_settled(&samples, fallback, self.calib.wear, hist);
+                let failed = out.as_ref().map_or([true, true], |o| o.failed);
+                self.shared.calib_failed_eye.store(failed[0] as u32 | (failed[1] as u32) << 1, Ordering::Relaxed);
+                let out = out?;
+                let w = out.wear;
                 *params_out = Some(live::wear_params_json(&w));
                 // The calibration only sets where the baselines start (they keep following the wearer) and adds its
                 // sizes to the history.
@@ -468,20 +478,18 @@ impl Worker {
                 }
                 self.calib.wear = Some(w);
                 self.calib.wear_time = stamp();
-                // Only a measured widen step goes into the history (a fallback would just repeat the median).
-                if measured {
+                // Only a widen step measured on both eyes goes into the history (a fallback would just repeat the
+                // median, an eye that failed would repeat its earlier values).
+                if out.for_history() {
                     self.calib.push_history(&self.calib.wear_time.clone(), &w);
                 }
-                self.calib.wear_widen_measured = Some(measured);
+                self.calib.wear_widen_measured = Some(out.widen_measured);
+                self.calib.wear_failed_eye = out.failed_eye().to_string();
                 self.calib.setup_done = true;
                 self.apply_calib();
-                self.shared.last_calib_widen.store(if measured { 1 } else { 2 }, Ordering::Relaxed);
+                self.shared.last_calib_widen.store(if out.widen_measured { 1 } else { 2 }, Ordering::Relaxed);
                 save_calib(&self.calib_path, &self.calib)?;
-                Ok(if measured {
-                    "校正できた（かぶり）".to_string()
-                } else {
-                    "校正できた（見開きは取れなかったので、いつもの幅を使うよ）".to_string()
-                })
+                Ok(out.message)
             }
             CollectKind::User => {
                 let wear = match (self.params[0].wear, self.params[1].wear) {
@@ -595,6 +603,14 @@ pub fn spawn(
             Some(true) => 1,
             Some(false) => 2,
             None => 0,
+        },
+        Ordering::Relaxed,
+    );
+    shared.calib_failed_eye.store(
+        match calib_file.wear_failed_eye.as_str() {
+            "L" => 1,
+            "R" => 2,
+            _ => 0,
         },
         Ordering::Relaxed,
     );

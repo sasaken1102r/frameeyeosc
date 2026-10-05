@@ -784,13 +784,108 @@ fn med_of(s: &[Sample], pick: impl Fn(&Sample) -> Option<f64>) -> (f64, usize) {
     (vision::median(&mut v), n)
 }
 
-/// Levels from normal / widen / close frames. Both eyes need the normal and closed levels; an eye whose widen was not
-/// caught gets `fallback_step` (iris radii) as its widen step instead of failing the calibration. Also returns whether
-/// the widen step was measured on both eyes (only then does it belong in the history).
-pub fn fit_wear(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> Result<([WearParams; 2], bool), String> {
-    let mut out = [None, None];
-    let mut measured = true;
-    for (e, s) in samples.iter().enumerate() {
+/// Calibration problems of one eye: the text that follows "左目" / "右目" / "両目".
+pub const MSG_PUPIL: &str = "の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）";
+pub const MSG_LID_LINE: &str = "の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）";
+pub const MSG_LIDS: &str = "のまぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）";
+pub const MSG_CLOSE: &str = "を閉じたのが検出できなかった（もう一度、しっかり閉じてね）";
+pub const MSG_SQUINT_MISSING: &str = "の細めが測れなかった（もう一度）";
+pub const MSG_SQUINT_SHALLOW: &str = "の細めが浅かった（もう一度、しっかり細めてね）";
+pub const MSG_LOOK_DOWN: &str = ": 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）";
+pub const MSG_LOWER_UP: &str = ": 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）";
+/// Valve's gaze was missing (not one eye's problem).
+pub const MSG_NO_GAZE: &str = "視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度";
+/// A wear calibration that went through without the widen on an eye.
+pub const NOTE_WIDEN: &str = "見開きは取れなかったので、いつもの幅を使うよ";
+
+/// One eye's calibration problem: its text (MSG_*) and details, the eye's own value and what is needed (either may
+/// be empty).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EyeIssue {
+    pub text: &'static str,
+    pub value: String,
+    pub need: String,
+}
+
+impl EyeIssue {
+    fn new(text: &'static str, value: String, need: &str) -> Self {
+        Self { text, value, need: need.to_string() }
+    }
+
+    /// "[value、need]", "[value]" or "".
+    fn details(&self) -> String {
+        bracket(&self.value, &self.need)
+    }
+
+    /// The message for one eye (0 = left).
+    pub fn message(&self, eye: usize) -> String {
+        format!("{}{}{}", ["左目", "右目"][eye], self.text, self.details())
+    }
+}
+
+fn bracket(value: &str, need: &str) -> String {
+    match (value.is_empty(), need.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => format!("[{value}]"),
+        (true, false) => format!("[{need}]"),
+        (false, false) => format!("[{value}、{need}]"),
+    }
+}
+
+/// The message for the eyes' problems (at most one each): "両目…[左 a・右 b、need]" when both have the same one, else
+/// one message per eye joined with "。" (left first).
+pub fn eyes_message(issues: &[Option<EyeIssue>; 2]) -> String {
+    match issues {
+        [Some(l), Some(r)] if l.text == r.text => {
+            let value = if l.value.is_empty() { String::new() } else { format!("左 {}・右 {}", l.value, r.value) };
+            format!("両目{}{}", l.text, bracket(&value, &l.need))
+        }
+        _ => issues.iter().enumerate().filter_map(|(e, i)| Some(i.as_ref()?.message(e))).collect::<Vec<_>>().join("。"),
+    }
+}
+
+/// Why one eye's wear calibration did not go through.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WearFail {
+    /// Too few normal frames with the pupil: (frames with it, normal frames).
+    Pupil { seen: usize, frames: usize },
+    /// The pupil was seen, but too few of those frames had the upper lid's skin line: (frames with both, normal
+    /// frames).
+    LidLine { seen: usize, frames: usize },
+    /// The closed eye was not caught.
+    Close,
+}
+
+impl WearFail {
+    pub fn issue(&self) -> EyeIssue {
+        let need = format!("{MIN_NORMAL_FRAMES} 必要");
+        match *self {
+            WearFail::Pupil { seen, frames } => EyeIssue::new(MSG_PUPIL, format!("{seen}/{frames}"), &need),
+            WearFail::LidLine { seen, frames } => EyeIssue::new(MSG_LID_LINE, format!("{seen}/{frames}"), &need),
+            WearFail::Close => EyeIssue::new(MSG_CLOSE, String::new(), ""),
+        }
+    }
+
+    /// What went wrong, for the note in a calibration that went through with the other eye.
+    fn reason(&self) -> &'static str {
+        match self {
+            WearFail::Pupil { .. } => "瞳がうまく見えなかった",
+            WearFail::LidLine { .. } => "上まぶたの線が見つからなかった",
+            WearFail::Close => "閉じたのが検出できなかった",
+        }
+    }
+}
+
+/// One eye's wear calibration: its levels and whether its widen was measured (else it has `fallback_step`), or why
+/// it failed.
+pub type EyeWear = Result<(WearParams, bool), WearFail>;
+
+/// Levels from normal / widen / close frames, each eye on its own. An eye needs the pupil (and the upper lid's skin
+/// line) in MIN_NORMAL_FRAMES normal frames and its closed level; an eye whose widen was not caught gets
+/// `fallback_step` (iris radii) as its widen step instead of failing.
+pub fn fit_wear_eyes(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> [EyeWear; 2] {
+    [0, 1].map(|e| {
+        let s = &samples[e];
         // One radius for the whole calibration (as the prototype's block calibration does): the running estimate
         // may still be settling while the steps are recorded.
         let r_px = calib_radius(s, &[Label::Normal, Label::Widen]);
@@ -800,29 +895,129 @@ pub fn fit_wear(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> Result<(
         let normal: Vec<Sample> = s.iter().copied().filter(is(Label::Normal)).collect();
         let widen: Vec<Sample> = s.iter().copied().filter(is(Label::Widen)).collect();
         let close: Vec<Sample> = s.iter().copied().filter(is(Label::Close)).collect();
+        let n_pupil = normal.iter().filter(|x| x.ok).count();
         let (b_n, nn) = med_of(&normal, |x| x.ok.then_some(x.skin));
         let (b_w, nw) = med_of(&widen, |x| x.ok.then_some(x.skin));
         let (ap_n, _) = med_of(&normal, |x| x.ok.then_some(x.ap));
         let (ap_cl, nc) = med_of(&close, |x| Some(x.ap));
-        let eye = ["左", "右"][e];
+        if n_pupil < MIN_NORMAL_FRAMES {
+            return Err(WearFail::Pupil { seen: n_pupil, frames: normal.len() });
+        }
         if nn < MIN_NORMAL_FRAMES {
-            return Err(format!("{eye}目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）"));
+            return Err(WearFail::LidLine { seen: nn, frames: normal.len() });
         }
         let widen_ok = nw >= MIN_WIDEN_FRAMES && b_w - b_n >= MIN_WIDEN_STEP;
         let b_w = if widen_ok { b_w } else { b_n + fallback_step[e] };
-        measured &= widen_ok;
         if nc < MIN_CLOSE_FRAMES || ap_n - ap_cl < MIN_OPEN_GAP || (ap_n - ap_cl).is_nan() {
-            return Err(format!("{eye}目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）"));
+            return Err(WearFail::Close);
         }
         let (pitch_n, _) = med_of(&normal, |x| Some(x.pitch));
         let (lower_px, _) = med_of(&normal, |x| x.ok.then_some(x.lower_px));
-        out[e] = Some(WearParams { r_px, b_n, b_w, ap_n, ap_cl, pitch_n, lower_px });
+        Ok((WearParams { r_px, b_n, b_w, ap_n, ap_cl, pitch_n, lower_px }, widen_ok))
+    })
+}
+
+/// The message for a wear calibration whose eyes did not both go through (both eyes' problems).
+pub fn wear_fail_message(eyes: &[EyeWear; 2]) -> String {
+    eyes_message(&[0, 1].map(|e| eyes[e].as_ref().err().map(WearFail::issue)))
+}
+
+/// Both eyes' levels, or the reason (both eyes' problems) to redo it. Also returns whether the widen step was
+/// measured on both eyes (only then does it belong in the history).
+pub fn fit_wear(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> Result<([WearParams; 2], bool), String> {
+    match fit_wear_eyes(samples, fallback_step) {
+        [Ok((l, ml)), Ok((r, mr))] => Ok(([l, r], ml && mr)),
+        eyes => Err(wear_fail_message(&eyes)),
     }
-    Ok(([out[0].unwrap(), out[1].unwrap()], measured))
+}
+
+/// Levels for an eye whose wear calibration failed and that has no earlier ones: the other eye's (in iris radii),
+/// with the history's widen step and open gap (else the defaults) and its own iris radius (the history's, else the
+/// one in use during the calibration, else the other eye's). EyeWide and the lids start from these and follow the
+/// wearer from there.
+pub fn provisional_wear(own: &[Sample], other: &WearParams, hist: Option<History>) -> WearParams {
+    let own_r = calib_radius(own, &[Label::Normal, Label::Widen]);
+    let r_px = [hist.map_or(f64::NAN, |h| h.r_px), own_r].into_iter().find(|r| r.is_finite() && *r > 0.0).unwrap_or(other.r_px);
+    let step = hist.map(|h| h.step).filter(|v| v.is_finite()).unwrap_or(DEFAULT_WIDEN_STEP);
+    let gap = hist.map(|h| h.gap).filter(|v| v.is_finite()).unwrap_or(DEFAULT_OPEN_GAP);
+    WearParams { r_px, b_w: other.b_n + step, ap_cl: other.ap_n - gap, lower_px: f64::NAN, ..*other }
+}
+
+/// A wear calibration that went through, maybe with one eye failed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WearOutcome {
+    pub wear: [WearParams; 2],
+    /// The eyes that failed (at most one): they have their `previous` levels, or provisional ones.
+    pub failed: [bool; 2],
+    /// The widen step was measured on the eyes that went through.
+    pub widen_measured: bool,
+    pub message: String,
+}
+
+impl WearOutcome {
+    /// Its sizes belong in the history: both eyes went through and measured the widen.
+    pub fn for_history(&self) -> bool {
+        self.widen_measured && self.failed == [false, false]
+    }
+
+    /// "L", "R" or "".
+    pub fn failed_eye(&self) -> &'static str {
+        match self.failed {
+            [true, _] => "L",
+            [_, true] => "R",
+            _ => "",
+        }
+    }
+}
+
+/// A wear calibration with one eye allowed to fail (like a widen that was not caught): the eye that went through
+/// gets its new levels, the failed one its `previous` ones (the last wear calibration's), or without those
+/// provisional ones (`provisional_wear`). Both eyes failing is the reason to redo it.
+pub fn fit_wear_settled(
+    samples: &[Vec<Sample>; 2],
+    fallback_step: [f64; 2],
+    previous: Option<[WearParams; 2]>,
+    hist: Option<[History; 2]>,
+) -> Result<WearOutcome, String> {
+    let eyes = fit_wear_eyes(samples, fallback_step);
+    let ok = [0, 1].map(|e| eyes[e].as_ref().ok().copied());
+    if ok == [None, None] {
+        return Err(wear_fail_message(&eyes));
+    }
+    let wear = [0, 1].map(|e| match (ok[e], ok[1 - e]) {
+        (Some((w, _)), _) => w,
+        (None, Some((other, _))) => previous.map_or_else(|| provisional_wear(&samples[e], &other, hist.map(|h| h[e])), |p| p[e]),
+        (None, None) => unreachable!("both eyes failing returned above"),
+    });
+    Ok(WearOutcome {
+        wear,
+        failed: ok.map(|x| x.is_none()),
+        widen_measured: ok.iter().flatten().all(|x| x.1),
+        message: wear_ok_message(&eyes, previous.is_some()),
+    })
+}
+
+/// The message of a wear calibration that went through: notes for an eye that failed (it uses its `previous`
+/// values, or provisional ones) and for a widen not caught on an eye that passed; that eye's details at the end.
+pub fn wear_ok_message(eyes: &[EyeWear; 2], previous: bool) -> String {
+    let mut notes = Vec::new();
+    let mut details = String::new();
+    for (e, x) in eyes.iter().enumerate() {
+        if let Err(f) = x {
+            let src = if previous { "前の値" } else { "仮の値" };
+            notes.push(format!("{}目は{}ので、{src}を使うよ", ["左", "右"][e], f.reason()));
+            details = f.issue().details();
+        }
+    }
+    if eyes.iter().any(|x| matches!(x, Ok((_, false)))) {
+        notes.push(NOTE_WIDEN.to_string());
+    }
+    if notes.is_empty() { "校正できた（かぶり）".to_string() } else { format!("校正できた（{}）{details}", notes.join("。")) }
 }
 
 /// Pitch curve and squint depth (needs this wear's levels), with the sanity checks; pupil range kept from `old`.
-/// With `strict` false the checks only produce warnings (for offline evaluation).
+/// With `strict` false the checks only produce warnings (for offline evaluation). Both eyes are checked before it
+/// fails, and the message names both when both have a problem.
 pub fn fit_user(
     samples: &[Vec<Sample>; 2],
     wear: &[WearParams; 2],
@@ -832,18 +1027,8 @@ pub fn fit_user(
     let mut out = [UserParams::default(); 2];
     let mut deltas = [(0.0, 0.0); 2];
     let mut warnings = Vec::new();
-    let mut check = |bad: bool, msg: String| -> Result<(), String> {
-        if !bad {
-            Ok(())
-        } else if strict {
-            Err(msg)
-        } else {
-            warnings.push(msg);
-            Ok(())
-        }
-    };
+    let mut fails: [Option<EyeIssue>; 2] = [None, None];
     for (e, s) in samples.iter().enumerate() {
-        let eye = ["左", "右"][e];
         let w = &wear[e];
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(w.r_px)).collect();
         let s = &s[..];
@@ -851,7 +1036,17 @@ pub fn fit_user(
         let pts: Vec<(f64, f64)> =
             s.iter().filter(|x| neutral(x.label) && x.ok && x.pitch.is_finite() && x.ap.is_finite()).map(|x| (x.pitch, x.ap)).collect();
         if pts.len() < 150 {
-            return Err("視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度".into());
+            let count = |f: &dyn Fn(&Sample) -> bool| s.iter().filter(|x| neutral(x.label) && f(x)).count();
+            let (frames, gaze, pupil) = (count(&|_| true), count(&|x| x.pitch.is_finite()), count(&|x| x.ok));
+            if gaze < 150 {
+                return Err(MSG_NO_GAZE.into());
+            }
+            fails[e] = Some(if pupil < 150 {
+                EyeIssue::new(MSG_PUPIL, format!("{pupil}/{frames}"), "150 必要")
+            } else {
+                EyeIssue::new(MSG_LIDS, format!("{}/{frames}", pts.len()), "150 必要")
+            });
+            continue;
         }
         let xs: Vec<f64> = pts.iter().map(|p| p.0).collect();
         let ys: Vec<f64> = pts.iter().map(|p| p.1).collect();
@@ -862,23 +1057,33 @@ pub fn fit_user(
         let (lo, hi) = (vision::percentile(&mut sorted, 1.0), vision::percentile(&mut sorted, 99.0));
         let (ap_sq, nsq) = med_of(s, |x| (x.label == Label::Squint).then_some(x.ap));
         if nsq < 30 {
-            return Err(format!("{eye}目の細めが測れなかった（もう一度）"));
+            fails[e] = Some(EyeIssue::new(MSG_SQUINT_MISSING, String::new(), ""));
+            continue;
         }
         let f_sq = (ap_sq - w.ap_cl) / (w.ap_n - w.ap_cl);
-        check(f_sq >= 0.85 || f_sq.is_nan(), format!("{eye}目の細めが浅かった（もう一度、しっかり細めてね）[f_sq {f_sq:.2}]"))?;
         let (ap_down, nd) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.ap));
-        check(
-            nd < 30 || ap_down > 0.95 * w.ap_n,
-            format!("{eye}目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）[{ap_down:.2} / 普段 {:.2}]", w.ap_n),
-        )?;
         let (lower_down, _) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.lower_px));
-        check(
-            lower_down < w.lower_px,
-            format!("{eye}目: 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）[{lower_down:.1} px / 普段 {:.1} px]", w.lower_px),
-        )?;
+        let checks = [
+            (f_sq >= 0.85 || f_sq.is_nan(), EyeIssue::new(MSG_SQUINT_SHALLOW, format!("f_sq {f_sq:.2}"), "")),
+            (nd < 30 || ap_down > 0.95 * w.ap_n, EyeIssue::new(MSG_LOOK_DOWN, format!("{ap_down:.2} / 普段 {:.2}", w.ap_n), "")),
+            (lower_down < w.lower_px, EyeIssue::new(MSG_LOWER_UP, format!("{lower_down:.1} px / 普段 {:.1} px", w.lower_px), "")),
+        ];
+        for (bad, issue) in checks {
+            if !bad {
+                continue;
+            }
+            if strict {
+                fails[e].get_or_insert(issue);
+            } else {
+                warnings.push(issue.message(e));
+            }
+        }
         deltas[e] = (ap_down - w.ap_n, ap_sq - w.ap_n);
         let keep = old.map(|o| o[e]).unwrap_or_default();
         out[e] = UserParams { pitch_c, pitch_lo: lo, pitch_hi: hi, f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max };
+    }
+    if fails.iter().any(Option::is_some) {
+        return Err(eyes_message(&fails));
     }
     // The left/right difference is only a warning: clean recordings trip it too (0.39 and 0.33 in two of them).
     let (dd, ds) = ((deltas[0].0 - deltas[1].0).abs(), (deltas[0].1 - deltas[1].1).abs());
@@ -939,6 +1144,9 @@ pub struct CalibFile {
     /// Whether that wear calibration measured the widen (false: it used the history's or the default width; None:
     /// not known, a file from before this field). status.json's last_calib_widen after a restart.
     pub wear_widen_measured: Option<bool>,
+    /// The eye whose part of that wear calibration failed ("L" / "R"; "" none): it kept its earlier levels (or got
+    /// provisional ones). status.json's calib_failed_eye after a restart.
+    pub wear_failed_eye: String,
     /// (time, L, R), oldest first.
     pub history: Vec<(String, [WearRecord; 2])>,
     /// A wear calibration has succeeded at least once (also one whose widen was not caught): the first-time setup
@@ -1049,8 +1257,13 @@ impl CalibFile {
                 Some(false) => ", \"widen\": \"default\"",
                 None => "",
             };
+            let failed = if self.wear_failed_eye.is_empty() {
+                String::new()
+            } else {
+                format!(", \"failed_eye\": {}", json::string(&self.wear_failed_eye))
+            };
             s += &format!(
-                ",\n  \"wear\": {{\"time\": {}{widen}, \"L\": {}, \"R\": {}}}",
+                ",\n  \"wear\": {{\"time\": {}{widen}{failed}, \"L\": {}, \"R\": {}}}",
                 json::string(&self.wear_time),
                 wear_json(&w[0]),
                 wear_json(&w[1])
@@ -1090,6 +1303,10 @@ impl CalibFile {
                 Some("measured") => Some(true),
                 Some("default") => Some(false),
                 _ => None,
+            };
+            c.wear_failed_eye = match w.get("failed_eye").and_then(Json::str) {
+                Some(e @ ("L" | "R")) => e.to_string(),
+                _ => String::new(),
             };
         }
         if let Some(items) = j.get("history").and_then(Json::arr) {
@@ -1384,6 +1601,7 @@ mod tests {
             wear: Some(w),
             wear_time: "w".into(),
             wear_widen_measured: Some(false),
+            wear_failed_eye: String::new(),
             history: Vec::new(),
             setup_done: false,
         };
@@ -1410,6 +1628,123 @@ mod tests {
         up.extend(samples(Label::LookDown, 200, 0.6, 1.1, -35.0, 240.0, true));
         assert!(fit_user(&[up.clone(), up], &w, None, true).unwrap_err().contains("下まぶたが上に"));
         assert_eq!(back.wear, file.wear);
+    }
+
+    /// A wear calibration's samples for one eye: `pupil` of the 300 normal frames with the pupil, `line` of those
+    /// also with the upper lid's skin line.
+    fn wear_eye(pupil: usize, line: usize) -> Vec<Sample> {
+        let mut eye = Vec::new();
+        eye.extend(samples(Label::Normal, 300, 0.73, 1.44, -14.0, 250.0, true));
+        eye.extend(samples(Label::Widen, 200, 0.93, 1.6, -14.0, 252.0, true));
+        eye.extend(samples(Label::Close, 80, f64::NAN, 0.56, -14.0, 240.0, false));
+        for (i, x) in eye.iter_mut().filter(|x| x.label == Label::Normal).enumerate() {
+            x.ok = i < pupil;
+            if i >= line {
+                x.skin = f64::NAN;
+            }
+        }
+        eye
+    }
+
+    #[test]
+    fn wear_calibration_checks_both_eyes_and_names_them() {
+        let good = wear_eye(300, 300);
+        // Both eyes without the pupil: "both", with each eye's count.
+        let err = fit_wear(&[wear_eye(12, 12), wear_eye(30, 30)], [0.19; 2]).unwrap_err();
+        assert_eq!(err, format!("両目{MSG_PUPIL}[左 12/300・右 30/300、90 必要]"));
+        assert!(fit_wear_settled(&[wear_eye(12, 12), wear_eye(30, 30)], [0.19; 2], None, None).is_err());
+        // One eye: named, and the right eye is not hidden behind the left one any more.
+        assert_eq!(fit_wear(&[good.clone(), wear_eye(40, 40)], [0.19; 2]).unwrap_err(), format!("右目{MSG_PUPIL}[40/300、90 必要]"));
+        assert_eq!(fit_wear(&[wear_eye(89, 89), good.clone()], [0.19; 2]).unwrap_err(), format!("左目{MSG_PUPIL}[89/300、90 必要]"));
+        // The pupil was seen but the upper lid's line was not: its own message.
+        let eyes = fit_wear_eyes(&[wear_eye(300, 50), good.clone()], [0.19; 2]);
+        assert_eq!(eyes[0], Err(WearFail::LidLine { seen: 50, frames: 300 }));
+        assert_eq!(wear_fail_message(&eyes), format!("左目{MSG_LID_LINE}[50/300、90 必要]"));
+        // Different problems on the two eyes: both messages.
+        let mut no_close = good.clone();
+        no_close.retain(|x| x.label != Label::Close);
+        let err = fit_wear(&[wear_eye(0, 0), no_close], [0.19; 2]).unwrap_err();
+        assert_eq!(err, format!("左目{MSG_PUPIL}[0/300、90 必要]。右目{MSG_CLOSE}"));
+        // Enough frames on both: the levels.
+        let (w, measured) = fit_wear(&[good.clone(), wear_eye(90, 90)], [0.19; 2]).unwrap();
+        assert!(measured && (w[1].b_n - 0.73).abs() < 1e-9);
+    }
+
+    #[test]
+    fn one_eye_failing_keeps_its_earlier_levels() {
+        let good = wear_eye(300, 300);
+        let old = WearParams { r_px: 60.0, b_n: 0.7, b_w: 0.9, ap_n: 1.5, ap_cl: 0.6, pitch_n: -12.0, lower_px: 245.0 };
+        // The right eye failed: the left one's new levels, the right one's previous ones.
+        let out = fit_wear_settled(&[good.clone(), wear_eye(12, 12)], [0.19; 2], Some([old, old]), None).unwrap();
+        assert_eq!(out.failed, [false, true]);
+        assert_eq!(out.failed_eye(), "R");
+        assert_eq!(out.wear[1], old);
+        assert!((out.wear[0].b_n - 0.73).abs() < 1e-9 && out.widen_measured && !out.for_history());
+        assert_eq!(out.message, "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/300、90 必要]");
+        // No earlier levels: provisional ones, the other eye's with the history's step, gap and radius.
+        let hist = History { step: 0.25, gap: 0.8, r_px: 66.0 };
+        let out = fit_wear_settled(&[wear_eye(300, 20), good.clone()], [0.19; 2], None, Some([hist, hist])).unwrap();
+        assert_eq!(out.failed_eye(), "L");
+        let (l, r) = (out.wear[0], out.wear[1]);
+        assert_eq!((l.r_px, l.b_n, l.ap_n), (66.0, r.b_n, r.ap_n));
+        assert!((l.b_w - l.b_n - 0.25).abs() < 1e-9 && (l.ap_n - l.ap_cl - 0.8).abs() < 1e-9 && l.lower_px.is_nan());
+        assert_eq!(out.message, "校正できた（左目は上まぶたの線が見つからなかったので、仮の値を使うよ）[20/300、90 必要]");
+        // Without a history either: the defaults, and the radius in use during the calibration.
+        let w = provisional_wear(&wear_eye(0, 0), &r, None);
+        assert_eq!(w.r_px, 55.0);
+        assert!((w.b_w - w.b_n - DEFAULT_WIDEN_STEP).abs() < 1e-9 && (w.ap_n - w.ap_cl - DEFAULT_OPEN_GAP).abs() < 1e-9);
+        // With the widen not caught on the eye that went through, both notes.
+        let mut flat = good.clone();
+        for x in flat.iter_mut().filter(|x| x.label == Label::Widen) {
+            x.skin = 0.74;
+        }
+        let out = fit_wear_settled(&[flat, wear_eye(0, 0)], [0.19; 2], Some([old, old]), None).unwrap();
+        assert!(!out.widen_measured);
+        assert_eq!(
+            out.message,
+            "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ。見開きは取れなかったので、いつもの幅を使うよ）[0/300、90 必要]"
+        );
+        // Both eyes fine: as before.
+        let out = fit_wear_settled(&[good.clone(), good], [0.19; 2], Some([old, old]), None).unwrap();
+        assert!(out.for_history() && out.failed_eye().is_empty() && out.message == "校正できた（かぶり）");
+        // calib.json keeps which eye failed; older files have none.
+        let file = CalibFile { wear: Some(out.wear), wear_failed_eye: "R".into(), ..CalibFile::default() };
+        assert!(file.to_json().contains("\"failed_eye\": \"R\""));
+        assert_eq!(CalibFile::parse(&file.to_json()).unwrap().wear_failed_eye, "R");
+        let older = CalibFile { wear_failed_eye: String::new(), ..file };
+        assert!(!older.to_json().contains("failed_eye"));
+        assert_eq!(CalibFile::parse(&older.to_json()).unwrap().wear_failed_eye, "");
+    }
+
+    #[test]
+    fn user_calibration_checks_both_eyes() {
+        let w = WearParams { r_px: 55.0, b_n: 0.73, b_w: 0.93, ap_n: 1.441, ap_cl: 0.561, pitch_n: -14.0, lower_px: 250.0 };
+        let user = |squint_ap: f64, ok: bool| {
+            let mut u = Vec::new();
+            u.extend(samples(Label::LeadIn, 200, 0.73, 1.44, -14.0, 250.0, ok));
+            u.extend(samples(Label::LookUp, 200, 0.73, 1.6, 5.0, 248.0, ok));
+            u.extend(samples(Label::LookDown, 200, 0.6, 1.1, -35.0, 256.0, ok));
+            u.extend(samples(Label::Squint, 200, 0.6, squint_ap, -14.0, 249.0, true));
+            u
+        };
+        // A shallow squint on both eyes: one message for both, with both values.
+        let err = fit_user(&[user(1.4, true), user(1.38, true)], &[w, w], None, true).unwrap_err();
+        assert_eq!(err, format!("両目{MSG_SQUINT_SHALLOW}[左 f_sq 0.95・右 f_sq 0.93]"));
+        // Only the right eye: the right eye (it used to be found only after the left one passed).
+        assert_eq!(
+            fit_user(&[user(0.83, true), user(1.4, true)], &[w, w], None, true).unwrap_err(),
+            format!("右目{MSG_SQUINT_SHALLOW}[f_sq 0.95]")
+        );
+        // The pupil not seen in the neutral steps: the pupil, not Valve's gaze.
+        assert_eq!(
+            fit_user(&[user(0.83, false), user(0.83, true)], &[w, w], None, true).unwrap_err(),
+            format!("左目{MSG_PUPIL}[0/600、150 必要]")
+        );
+        // Valve's gaze missing: that message, as before.
+        let mut no_gaze = user(0.83, true);
+        no_gaze.iter_mut().for_each(|x| x.pitch = f64::NAN);
+        assert_eq!(fit_user(&[no_gaze.clone(), no_gaze], &[w, w], None, true).unwrap_err(), MSG_NO_GAZE);
+        assert!(fit_user(&[user(0.83, true), user(0.83, true)], &[w, w], None, true).is_ok());
     }
 
     /// A grey frame with the lens-edge band, and a dark disc (the pupil) if `pupil`.

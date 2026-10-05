@@ -24,15 +24,18 @@ namespace {
 constexpr const char* kDot = "·";
 
 /**
- * A printf format with one argument.
+ * A printf format with its arguments, as long as it comes out (never cut, so never inside a UTF-8 character).
  * @param format the format
  * @param args its arguments
  * @return the text
  */
 template <typename... Args>
 std::string format(const char* format, Args... args) {
-    char text[512];
-    std::snprintf(text, sizeof(text), format, args...);
+    const int n = std::snprintf(nullptr, 0, format, args...);
+    if (n <= 0) return "";
+    std::string text(static_cast<size_t>(n) + 1, '\0');
+    std::snprintf(text.data(), text.size(), format, args...);
+    text.resize(static_cast<size_t>(n));
     return text;
 }
 

@@ -386,6 +386,21 @@ void testCards() {
         SAME(rowOf(diag::cards(en, m), en.diagRowSearch).value, "3 candidates · stopped (candidates in separate buffers)");
     }
     {
+        // A long calibration message comes out whole (never cut inside a UTF-8 character)
+        PanelModel m = healthy();
+        eyecam::LastCalib& c = m.eyecam.status.lastCalib;
+        c.ok = false;
+        c.failedEye = "LR";
+        c.message.clear();
+        for (int i = 0; i < 60; ++i) c.message += "瞳が見えない";
+        CHECK(c.message.size() > 1000);
+        SAME(rowOf(diag::cards(ja, m), ja.diagRowResult).value, "失敗: " + c.message);
+        m.eyecam.status.lastError = "x" + c.message;
+        m.eyecam.status.lastErrorUnix = 1791200000;
+        const std::string last = rowOf(diag::cards(ja, m), ja.diagRowLastError).value;
+        CHECK(last.size() > c.message.size() && last.substr(last.size() - c.message.size()) == c.message);
+    }
+    {
         // An older eyecam-rec (no search_detail, no last_calib) against one that hasn't looked or calibrated yet
         PanelModel m = healthy();
         m.eyecam.status.searchDetail = {};

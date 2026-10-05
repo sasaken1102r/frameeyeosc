@@ -370,6 +370,7 @@ UiText makeJapanese() {
     t.diagBothEyes = "両目";
     t.diagOneEye = "片目";
     t.diagStopNoCandidates = "止まった（候補なし）";
+    t.diagStopSplitBuffers = "止まった（候補が別々のバッファ）";
     t.diagStopNotRefreshing = "止まった（書き換わらない）";
     t.diagStopFewSlots = "止まった（スロット不足）";
     t.diagChangedFormat = "%d";
@@ -1089,6 +1090,7 @@ UiText makeEnglish() {
     t.diagBothEyes = "both eyes";
     t.diagOneEye = "one eye";
     t.diagStopNoCandidates = "stopped (no candidates)";
+    t.diagStopSplitBuffers = "stopped (candidates in separate buffers)";
     t.diagStopNotRefreshing = "stopped (not rewritten)";
     t.diagStopFewSlots = "stopped (too few slots)";
     t.diagChangedFormat = "%d";

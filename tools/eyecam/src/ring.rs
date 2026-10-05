@@ -60,6 +60,8 @@ pub struct Framing {
 
 /// Where the last look stopped (`Look::stopped_at`), for status.json's `search_detail`.
 pub const STOP_NO_CANDIDATES: &str = "no_candidates";
+/// Two or more candidates in all, but fewer than 2 in the buffer holding the most (the rest are elsewhere).
+pub const STOP_SPLIT_BUFFERS: &str = "split_buffers";
 pub const STOP_NOT_REFRESHING: &str = "not_refreshing";
 pub const STOP_FEW_SLOTS: &str = "few_slots";
 pub const STOP_ONE_EYE: &str = "one_eye";
@@ -76,7 +78,8 @@ pub struct Look {
     pub slots: usize,
     /// Both cameras' slots were found.
     pub both_eyes: bool,
-    /// "" (found, both eyes), STOP_NO_CANDIDATES, STOP_NOT_REFRESHING, STOP_FEW_SLOTS or STOP_ONE_EYE.
+    /// "" (found, both eyes), STOP_NO_CANDIDATES, STOP_SPLIT_BUFFERS, STOP_NOT_REFRESHING, STOP_FEW_SLOTS or
+    /// STOP_ONE_EYE.
     pub stopped_at: &'static str,
 }
 
@@ -271,6 +274,7 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
     let mut cand: Vec<usize> = cand.into_iter().filter(|c| c.0 == a).map(|c| c.1).collect();
     let arena = &arenas[a];
     if cand.len() < 2 {
+        look.stopped_at = STOP_SPLIT_BUFFERS;
         return None;
     }
 
@@ -618,6 +622,28 @@ mod tests {
         let mut look = Look { candidates: 9, slots: 8, both_eyes: true, ..Look::default() };
         assert!(discover(&[arena], &mut Still(0.0), &mut |_| {}, &mut look).is_none());
         assert_eq!(look, Look { stopped_at: STOP_NO_CANDIDATES, ..Look::default() });
+    }
+
+    #[test]
+    fn candidates_split_between_buffers_stop_at_split_buffers() {
+        // One eye-like picture in each of two buffers: 2 candidates in all, 1 in the buffer it would work in
+        let mut bufs = [vec![0u8; 2 << 20], vec![0u8; 2 << 20]];
+        for buf in &mut bufs {
+            for y in 0..HEIGHT {
+                for x in 0..WIDTH {
+                    buf[(1 << 20) + y * STRIDE + x] = (40 + (x * 7 + y * 3) % 9) as u8;
+                }
+            }
+        }
+        let mut arenas: Vec<Arena> = bufs.iter().map(|b| unsafe { Arena::new(b.as_ptr(), b.len()) }).collect();
+        for arena in &mut arenas {
+            arena.block_changed.fill(true);
+        }
+        let mut look = Look::default();
+        assert!(discover(&arenas, &mut Still(0.0), &mut |_| {}, &mut look).is_none());
+        assert_eq!(look, Look { candidates: 2, stopped_at: STOP_SPLIT_BUFFERS, ..Look::default() });
+        drop(arenas);
+        drop(bufs);
     }
 
     fn find_ring(pad: u8, mirrored: bool) {

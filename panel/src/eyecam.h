@@ -151,7 +151,7 @@ struct SearchDetail {
     double refreshHz = 0.0;   ///< how often they were rewritten a second (median)
     int slots = 0;            ///< the ring's slots found
     bool bothEyes = false;
-    std::string stoppedAt;    ///< "" (found), "no_candidates", "not_refreshing", "few_slots", "one_eye"
+    std::string stoppedAt;    ///< "" (found), "no_candidates", "split_buffers", "not_refreshing", "few_slots", "one_eye"
     int changedBlocks = -1;   ///< 64 KiB blocks of the buffers changed before it (-1 when missing)
 };
 

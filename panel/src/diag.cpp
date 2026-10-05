@@ -174,12 +174,16 @@ std::string proxText(const eyecam::Status& s) {
 std::string searchText(const UiText& t, const eyecam::SearchDetail& d) {
     std::vector<std::string> parts {format(t.diagCandidatesFormat, d.candidates)};
     const std::string& stop = d.stoppedAt;
-    if (stop != "no_candidates" && std::isfinite(d.refreshHz)) parts.push_back(format(t.diagHzFormat, d.refreshHz));
+    // (it stops before measuring the refreshes there)
+    const bool measured = stop != "no_candidates" && stop != "split_buffers";
+    if (measured && std::isfinite(d.refreshHz)) parts.push_back(format(t.diagHzFormat, d.refreshHz));
     if (stop.empty() || stop == "one_eye") {
         parts.push_back(format(t.diagSlotsFormat, d.slots));
         parts.push_back(d.bothEyes ? t.diagBothEyes : t.diagOneEye);
     } else if (stop == "no_candidates") {
         parts.push_back(t.diagStopNoCandidates);
+    } else if (stop == "split_buffers") {
+        parts.push_back(t.diagStopSplitBuffers);
     } else if (stop == "not_refreshing") {
         parts.push_back(t.diagStopNotRefreshing);
     } else if (stop == "few_slots") {

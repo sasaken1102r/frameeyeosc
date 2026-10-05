@@ -372,6 +372,7 @@ struct UiText {
     const char* diagBothEyes;
     const char* diagOneEye;
     const char* diagStopNoCandidates;    ///< ...where it stopped
+    const char* diagStopSplitBuffers;
     const char* diagStopNotRefreshing;
     const char* diagStopFewSlots;
     const char* diagChangedFormat;       ///< the 64 KiB blocks changed before the last look

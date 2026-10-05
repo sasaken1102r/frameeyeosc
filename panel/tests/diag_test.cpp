@@ -348,6 +348,13 @@ void testCards() {
         SAME(rowOf(diag::cards(en, m), en.diagRowTool).value, "— · no file");
     }
     {
+        // Candidates in separate buffers: where it stopped, without a refresh rate (it didn't measure one)
+        PanelModel m = stuck();
+        m.eyecam.status.searchDetail = {true, true, 3, 0.0, 0, false, "split_buffers", 12};
+        SAME(rowOf(diag::cards(ja, m), ja.diagRowSearch).value, "候補 3 · 止まった（候補が別々のバッファ）");
+        SAME(rowOf(diag::cards(en, m), en.diagRowSearch).value, "3 candidates · stopped (candidates in separate buffers)");
+    }
+    {
         // An older eyecam-rec (no search_detail, no last_calib) against one that hasn't looked or calibrated yet
         PanelModel m = healthy();
         m.eyecam.status.searchDetail = {};
@@ -389,11 +396,12 @@ void testTexts() {
         &UiText::diagNoVideo, &UiText::diagOneEyeOnly, &UiText::diagSearching, &UiText::diagLiveOff,
         &UiText::diagWaitingTool, &UiText::diagNoRecorder, &UiText::diagError, &UiText::diagCandidatesFormat,
         &UiText::diagHzFormat, &UiText::diagSlotsFormat, &UiText::diagBothEyes, &UiText::diagOneEye,
-        &UiText::diagStopNoCandidates, &UiText::diagStopNotRefreshing, &UiText::diagStopFewSlots,
+        &UiText::diagStopNoCandidates, &UiText::diagStopSplitBuffers, &UiText::diagStopNotRefreshing,
+        &UiText::diagStopFewSlots,
         &UiText::diagChangedFormat, &UiText::diagNotLooked, &UiText::diagUnreadable, &UiText::diagEyesFormat,
         &UiText::diagMsFormat, &UiText::diagOk, &UiText::diagFailedFormat, &UiText::diagPreviousLeft,
         &UiText::diagPreviousRight, &UiText::diagNoCalib};
-    CHECK(std::size(fields) == 75);
+    CHECK(std::size(fields) == 76);
     for (const Language language : {Language::Ja, Language::En}) {
         const UiText& t = uiText(language);
         for (const char* UiText::*field : fields) CHECK(t.*field != nullptr && (t.*field)[0] != '\0');

@@ -58,6 +58,28 @@ pub struct Framing {
     pub pad_dirty: Vec<f64>,
 }
 
+/// Where the last look stopped (`Look::stopped_at`), for status.json's `search_detail`.
+pub const STOP_NO_CANDIDATES: &str = "no_candidates";
+pub const STOP_NOT_REFRESHING: &str = "not_refreshing";
+pub const STOP_FEW_SLOTS: &str = "few_slots";
+pub const STOP_ONE_EYE: &str = "one_eye";
+
+/// What one `discover` saw, whether or not it found the ring (status.json `search_detail`, for the panel's
+/// diagnostics).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Look {
+    /// Picture-like candidate frames in changed memory (step 1, all buffers).
+    pub candidates: usize,
+    /// The median refreshes a second of the candidates in the chosen buffer (step 3; 0 before it).
+    pub refresh_hz: f64,
+    /// The slots of the ring found (0 if it stopped before).
+    pub slots: usize,
+    /// Both cameras' slots were found.
+    pub both_eyes: bool,
+    /// "" (found, both eyes), STOP_NO_CANDIDATES, STOP_NOT_REFRESHING, STOP_FEW_SLOTS or STOP_ONE_EYE.
+    pub stopped_at: &'static str,
+}
+
 #[derive(Clone, Debug)]
 pub struct Ring {
     pub arena: usize,
@@ -207,8 +229,9 @@ pub fn refine_start(region: &[u8], changes: Option<&[u16]>) -> (i64, f64) {
 }
 
 /// Look for the ring in memory that changed recently (`Arena::block_changed`). Takes about 1.6 s when there are
-/// candidates. `log` gets a line per decision.
-pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(String)) -> Option<Ring> {
+/// candidates. `log` gets a line per decision; `look` what was seen and where it stopped.
+pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(String), look: &mut Look) -> Option<Ring> {
+    *look = Look { stopped_at: STOP_NO_CANDIDATES, ..Look::default() };
     // ---- 1. Rough candidates: changed regions that look like pictures.
     let mut cand: Vec<(usize, usize)> = Vec::new();
     for (a, arena) in arenas.iter().enumerate() {
@@ -234,6 +257,7 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
             off += 4096;
         }
     }
+    look.candidates = cand.len();
     if cand.len() < 2 {
         return None;
     }
@@ -265,10 +289,15 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
         clock.wait();
     }
     log(format!("refreshes in 1 s: {hits:?}"));
+    let mut sorted = hits.clone();
+    sorted.sort_unstable();
+    look.refresh_hz = sorted[sorted.len() / 2] as f64 / (clock.now() - t0).max(1.0);
+    look.stopped_at = STOP_NOT_REFRESHING;
     cand = cand.into_iter().zip(&hits).filter(|(_, h)| **h >= 5).map(|(o, _)| o).collect();
     if cand.len() < 2 {
         return None;
     }
+    look.stopped_at = STOP_FEW_SLOTS;
 
     // ---- 4. Reference: the candidate with the darkest edges (least likely to wrap around the frame edge).
     let snap = arena.snapshot();
@@ -438,6 +467,9 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
         camera_reason += &format!("; WARNING: picture similarity groups the slots as {similar:?}");
     }
     log(format!("cameras {eye:?}: {camera_reason}"));
+    look.slots = off.len();
+    look.both_eyes = both_eyes;
+    look.stopped_at = if both_eyes { "" } else { STOP_ONE_EYE };
     Some(Ring { arena: a, pitch, off, eye, both_eyes, framing, camera_reason })
 }
 
@@ -566,6 +598,28 @@ mod tests {
         find_ring(0, true);
     }
 
+    /// A clock that never waits (nothing to look at refreshes).
+    struct Still(f64);
+
+    impl Clock for Still {
+        fn now(&mut self) -> f64 {
+            self.0
+        }
+        fn wait(&mut self) {
+            self.0 += 0.01;
+        }
+    }
+
+    #[test]
+    fn a_look_at_unchanged_memory_stops_at_no_candidates() {
+        let buf = vec![0u8; 4 << 20];
+        let mut arena = unsafe { Arena::new(buf.as_ptr(), buf.len()) };
+        arena.note_block_changes();
+        let mut look = Look { candidates: 9, slots: 8, both_eyes: true, ..Look::default() };
+        assert!(discover(&[arena], &mut Still(0.0), &mut |_| {}, &mut look).is_none());
+        assert_eq!(look, Look { stopped_at: STOP_NO_CANDIDATES, ..Look::default() });
+    }
+
     fn find_ring(pad: u8, mirrored: bool) {
         let mut ring_buf = vec![0u8; 16 << 20];
         let mut other_buf = vec![0u8; 32 << 20];
@@ -598,7 +652,8 @@ mod tests {
             arena.note_block_changes();
         }
         let mut lines = Vec::new();
-        let ring = discover(&arenas, &mut sim, &mut |line| lines.push(line)).expect("ring");
+        let mut look = Look::default();
+        let ring = discover(&arenas, &mut sim, &mut |line| lines.push(line), &mut look).expect("ring");
         for line in &lines {
             eprintln!("{line}");
         }
@@ -608,6 +663,10 @@ mod tests {
         assert_eq!(ring.off, expected);
         assert_eq!(ring.eye, vec![0, 0, 0, 0, 1, 1, 1, 1]);
         assert!(ring.both_eyes);
+        // What the panel's diagnostics show of it: the candidates, how often they refreshed, the slots, both eyes
+        assert!(look.candidates >= 8, "{look:?}");
+        assert!(look.refresh_hz >= 5.0, "{look:?}");
+        assert_eq!((look.slots, look.both_eyes, look.stopped_at), (8, true, ""), "{look:?}");
         assert!(ring.camera_reason.starts_with("layout: group boundary before slot 4 (spacing 262208+64)"));
         assert!(!ring.camera_reason.contains("WARNING"), "{}", ring.camera_reason);
         let clean = if pad == 0 { 0.001 } else { 0.51 };

@@ -125,7 +125,12 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
  "session_dir":"/home/steamos/eyecam/rec_2026-10-04_10-00-00","protocol":"widen","prox":31.000,"search":"",
  "last_session_aborted":false,"calib_state":6,"recalib_suggested":false,"baseline":"ready","warmup_remaining_s":0.000,
  "calib_saved":true,"widen_sensitivity":0.500,"dev":false,"setup_done":true,"last_calib_widen":"measured",
- "calib_failed_eye":"","live":true,"live_ms":1.05,"pupil_l":0.967,"pupil_r":0.978,
+ "calib_failed_eye":"","live":true,"live_ms":1.05,"pupil_l":0.967,"pupil_r":0.978,"prox_min":20.000,
+ "search_detail":{"candidates":8,"refresh_hz":90.000,"slots":8,"both_eyes":true,"stopped_at":"","changed_blocks":128,"unix":1791099990.000},
+ "last_calib":{"time":"2026-10-04 09:51:03","ok":true,"failed_eye":"","message":"校正できた（かぶり）","message_en":"Calibrated",
+  "pupil_frames":[470.000,482.000],"normal_frames":[486.000,486.000],"pupil_x":[238.000,252.000],"pupil_y":[201.000,194.000],
+  "window":[[186.000,346.000],[180.000,340.000]]},
+ "last_error":"","last_error_en":"","last_error_unix":0.000,
  "pid":1234,"updated_unix":1791100000.123}
 ```
 
@@ -166,6 +171,10 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `live` | bool | ライブ処理がオン（バッファを持っていて `live on`）|
 | `live_ms` | number | ライブ処理の 1 フレーム（片目）あたりの時間、直近 1 秒の平均（ms） |
 | `pupil_l`, `pupil_r` | number / null | 目ごとの、直近 2 秒のフレームのうち瞳が見つかった割合（0〜1）。校正が「瞳が見えたフレーム」を数えるのと同じ数え方（閉じたまぶたのしわを除いた後）。ライブ処理がオフのときと、その目の映像が止まったときは `null`。**`locked` は映像が流れているという意味だけ**なので、校正の前に瞳が見えているかはこちらで見る。ふだん（目を開けて前を見ている）は 0.95 前後、目を閉じると 0。`calib wear` は普段の段（約 5.4 秒）のうち 90 フレーム（約 18%）以上で瞳が要る。`--fake` では 0.97 / 0.95 |
+| `prox_min` | number | `--prox-min`（近接センサーがこれを超えて 1 秒たつと「かぶっている」。既定 20）。パネルの診断が `prox` と並べて出す |
+| `search_detail` | object / null | 直近に目の映像を探したときに見えたもの（パネルの診断用）。探すたびに書き換え、ロックしたあとも残る。まだ一度も見ていなければ `null`。`candidates`（変化したメモリの中で絵に見えたフレームの数）、`refresh_hz`（そのうち選んだバッファの候補が 1 秒に何回書き換わったかの中央値。候補が 2 つ未満なら 0）、`slots`（見つかったリングのスロット数。ふつう 8）、`both_eyes`（両目のスロットがそろった）、`stopped_at`（どこで止まったか: `""` 見つかった〔両目〕/ `no_candidates` 絵に見える候補が 2 つ未満 / `not_refreshing` 1 秒に 5 回以上書き換わる候補が 2 つ未満 / `few_slots` リングのスロットが 2 つ未満 / `one_eye` 片目のスロットだけ）、`changed_blocks`（その前に変化した 64 KiB のブロックの数。0 ならバッファに何も書かれていない）、`unix`（見た時刻） |
+| `last_calib` | object / null | 直近の `calib wear`（この起動でしたもの、なければ `~/eyecam/calib_*/calib_result.json` のいちばん新しい wear のもの。どちらも無ければ `null`）。`time`（ローカル時刻 `YYYY-MM-DD HH:MM:SS`）、`ok`、`failed_eye`（`calib_failed_eye` と同じ。`failed_eye` の無い古い calib_result.json は、失敗なら `LR`）、`message` / `message_en`、目ごとの `[左, 右]` で `pupil_frames`（普段の段で瞳が見えたフレーム）・`normal_frames`（普段の段のフレーム）・`pupil_x` / `pupil_y`（普段の段の瞳の位置の中央値、px）・`window`（瞳を探した枠の左右 `[[左目の左, 左目の右], [右目の左, 右目の右]]`）。無い値は `null`。途中で止めた校正もここに入る（`ok` false、`message` は `途中で止めた`） |
+| `last_error`, `last_error_en`, `last_error_unix` | string / string / number | 直近に `state` が `error` になったときの `message`（とその英語）と時刻（UNIX 秒）。`state` が戻っても残る。まだ無ければ `""` と 0 |
 | `pid` | int | デーモンのプロセス ID |
 | `updated_unix` | number | 書いた時刻（UNIX 秒） |
 
@@ -216,7 +225,10 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 `calib_saved` は fake の `calib wear` が終わると true（そのときは `baseline` もすぐ `ready`）。
 `--fake-search not_worn|no_video|one_eye` を付けると映像が見つからない状態を作れる: ライブ処理がオンの `idle` と、`start` / `calib` の
 `searching` / `calibrating` が `locked` false・`search` がその理由（と、それに合う `message`）のまま進まない（`stop` で `idle` に戻る）。
-`not_worn` のときは `prox` が 9.5。
+`not_worn` のときは `prox` が 9.5。`search_detail` は、見つかっているときは候補 8・90 回/秒・8 スロット・両目、`not_worn` は候補 0
+（`no_candidates`）で変化 0 ブロック、`no_video` は候補 0 で変化 3 ブロック、`one_eye` は候補 4・4 スロット（`one_eye`）。
+`--fake-calib L|R|LR` を付けると、fake の `calib wear` がその目なしで通る（`L` / `R`）か、失敗して `error` になる（`LR`）。
+`last_calib` は fake の `calib wear` が終わると、作った数字で入る（`--fake-calib` の目は瞳が 12 フレームで位置が `null`）。
 `set widen_sensitivity` は status.json の `widen_sensitivity` に出るだけで、settings.json には書かない（`dev` だけは本物と同じく settings.json から読んで出す）。
 共有メモリ `live` は作らない。
 終了すると `state: "stopped"` を書く。`--run-dir` を省くと本物と同じ `/run/user/1000/eyecam/` を使う（本物の `--serve` と同時には動かせない）。
@@ -385,7 +397,7 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
   ふだんは小さなテキストだけ（`calib_result.json`, `calib_samples.csv`, `cues.csv`, `frames.csv`, `valve.csv`, `meta.txt`。合わせて 1 MB ほど）で、
   `eye_L.raw`, `eye_R.raw`, `headers.bin`, `lock_dump.bin` は最初から書かない（meta.txt に `images=none …`）。
   settings.json で `"dev": true` のときだけ、録画と同じ形式で映像も残す（約 0.5 GB / 回、meta.txt に `images=kept`）。
-  中身は `calib_result.json`（`ok`・`message`・目ごとの中間値: 虹彩の半径、普段/見開きの skin_up と見開きの幅、普段/閉じの開き、
+  中身は `calib_result.json`（`ok`・`failed_eye`〔wear のときの `calib_failed_eye`。途中で止めたら `""`〕・`message`・目ごとの中間値: 虹彩の半径、普段/見開きの skin_up と見開きの幅、普段/閉じの開き、
   普段の段で瞳が見えたフレーム数 `normal_frames_with_pupil` とそのうち上まぶたの線も取れた数 `normal_frames_with_lid_line`、
   user なら細めの深さや下を見たときの開きの比、それぞれのしきい値・できた校正の値）と
   `calib_samples.csv`（当てはめに使った各フレーム: 目・時刻・段・瞳の有無・skin_up・開き・瞳孔・視線・下まぶた・R、

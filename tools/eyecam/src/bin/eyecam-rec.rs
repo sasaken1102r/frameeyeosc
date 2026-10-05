@@ -65,6 +65,8 @@ struct Args {
     fake: bool,
     /// --fake-search: the fake never finds the eye video, for this status.json `search` reason.
     fake_search: Option<&'static str>,
+    /// --fake-calib: the fake `calib wear` goes through without this eye ("L" / "R"), or fails ("LR").
+    fake_calib: Option<&'static str>,
     run_dir: PathBuf,
     replay: Option<PathBuf>,
     compat: bool,
@@ -92,6 +94,7 @@ const USAGE: &str = "usage: eyecam-rec [options]
                      timeline so a panel can be built and tested against it (implies --serve)
   --fake-search R    like --fake, but the eye video is never found while searching (idle with live on, start,
                      calib), for status.json search reason R: not_worn, no_video or one_eye
+  --fake-calib E     like --fake, but `calib wear` goes through without eye E (L or R), or fails (LR)
   --run-dir DIR      where status.json and ctl.sock go (default /run/user/1000/eyecam)
   --replay DIR       run the eye-feature pipeline over a recorded session, writing a CSV to --out
   --compat           with --replay: reproduce the Python prototype's run2.py features (for agreement checks)
@@ -127,6 +130,7 @@ fn parse_args() -> Result<Args> {
         serve: false,
         fake: false,
         fake_search: None,
+        fake_calib: None,
         run_dir: PathBuf::from(status::DEFAULT_DIR),
         replay: None,
         compat: false,
@@ -193,6 +197,12 @@ fn parse_args() -> Result<Args> {
                 args.serve = true;
                 args.fake = true;
                 args.fake_search = Some(reason);
+            }
+            "--fake-calib" => {
+                let v = value("--fake-calib")?;
+                args.fake_calib = Some(["L", "R", "LR"].into_iter().find(|e| *e == v).ok_or("--fake-calib must be L, R or LR")?);
+                args.serve = true;
+                args.fake = true;
             }
             "--run-dir" => args.run_dir = PathBuf::from(value("--run-dir")?),
             "--swap" => args.swap = true,
@@ -417,6 +427,7 @@ impl StatusFile {
                     _ => "",
                 };
                 s.pupil = [0, 1].map(|e| if s.live { l.pupil_share(e) } else { f64::NAN });
+                s.last_calib = l.last_calib.lock().unwrap().clone();
                 // While idle with the eyes in view, say what the live values are waiting for.
                 if s.state == "idle" && s.live && s.locked && LIVE_IDLE_MESSAGES.contains(&s.message.as_str()) {
                     s.message = live_idle_message(s.calib_saved, ready).into();
@@ -474,7 +485,10 @@ impl Daemon {
     }
 
     fn set(&self, f: impl FnOnce(&mut Status)) {
-        f(&mut self.status.lock().unwrap());
+        let mut s = self.status.lock().unwrap();
+        let before = (s.state == "error").then(|| s.message.clone());
+        f(&mut s);
+        s.note_error(before.as_deref(), unix_now());
     }
 
     fn request(&self) -> Option<Request> {
@@ -587,6 +601,7 @@ fn serve(args: &Args) -> Result<()> {
         shared.set_widen_sensitivity(Settings::load(&settings::path()).widen_sensitivity);
     }
     let daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()))?;
+    daemon.set(|s| s.prox_min = args.prox_min);
     eprintln!(
         "serving{}: status {}, control {}",
         if args.fake { " (fake)" } else { "" },
@@ -970,7 +985,8 @@ fn fake(args: &Args, d: &Daemon) {
     };
     let mut calib_state = 0u32;
     let mut live_on = true;
-    let render = |phase: &Phase, now: f64, calib_state: u32, live_on: bool| {
+    let mut failed_calib = false;
+    let render = |phase: &Phase, now: f64, calib_state: u32, live_on: bool, failed_calib: bool| {
         d.set(|s| {
             let left = (eyecam::live::WARMUP_S - (now - t0 - 5.0)).clamp(0.0, eyecam::live::WARMUP_S);
             let ready = live_on && left == 0.0 || calib_state & 1 != 0;
@@ -991,6 +1007,10 @@ fn fake(args: &Args, d: &Daemon) {
             let seen = s.live && unlocked.is_none() && !matches!(phase, Phase::Waiting | Phase::Searching(..));
             s.pupil = if seen { [0.97, 0.95] } else { [f64::NAN; 2] };
             s.search = "";
+            // What the last look saw: the ring (8 slots), or where it stopped for --fake-search
+            if !matches!(phase, Phase::Waiting) && (seen || unlocked.is_some()) {
+                s.search_detail = Some(fake_search_detail(unlocked));
+            }
             match phase {
                 Phase::Waiting => {
                     s.state = "waiting_fds";
@@ -1001,7 +1021,7 @@ fn fake(args: &Args, d: &Daemon) {
                     s.clear_recording();
                 }
                 Phase::Idle(message) => {
-                    s.state = "idle";
+                    s.state = if failed_calib { "error" } else { "idle" };
                     s.message = message.clone();
                     s.locked = live_on;
                     s.prox = 30.0;
@@ -1054,6 +1074,9 @@ fn fake(args: &Args, d: &Daemon) {
     while !STOP.load(Ordering::SeqCst) {
         let now = now_raw();
         while let Some(Request { command, reply }) = d.request() {
+            if matches!(command, Command::Start(_) | Command::Calib(_)) {
+                failed_calib = false;
+            }
             let text;
             (phase, text) = match (phase, command) {
                 (p, Command::Live(on)) => {
@@ -1087,7 +1110,7 @@ fn fake(args: &Args, d: &Daemon) {
                 (p, _) => (p, "err 録画中".into()),
             };
             // The state changes before the reply goes out, so status.json already shows it.
-            render(&phase, now, calib_state, live_on);
+            render(&phase, now, calib_state, live_on, failed_calib);
             let _ = reply.send(text);
         }
         phase = match phase {
@@ -1097,8 +1120,19 @@ fn fake(args: &Args, d: &Daemon) {
             }
             Phase::Running(t, steps, _, calib) if now - t >= total(&steps, calib) => match calib {
                 Some(CalibKind::Wear) => {
-                    calib_state |= 1;
-                    Phase::Idle("（fake）校正できた（かぶり）".into())
+                    let result = fake_last_calib(args.fake_calib);
+                    let message = format!("（fake）{}", result.message);
+                    let failed = result.failed_eye.clone();
+                    d.set(|s| {
+                        s.calib_failed_eye = ["", "L", "R", "LR"].into_iter().find(|e| *e == failed).unwrap_or("");
+                        s.last_calib = Some(result);
+                    });
+                    // (failed: `error` until the next command, as the real one)
+                    failed_calib = failed == "LR";
+                    if !failed_calib {
+                        calib_state |= 1;
+                    }
+                    Phase::Idle(message)
                 }
                 Some(CalibKind::User) => {
                     calib_state |= 2;
@@ -1111,8 +1145,45 @@ fn fake(args: &Args, d: &Daemon) {
             },
             p => p,
         };
-        render(&phase, now, calib_state, live_on);
+        render(&phase, now, calib_state, live_on, failed_calib);
         thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The fake's last look: the whole ring with both eyes, or where it stops for a --fake-search reason.
+fn fake_search_detail(reason: Option<&str>) -> status::SearchDetail {
+    let (look, changed_blocks) = match reason {
+        Some(status::SEARCH_ONE_EYE) => {
+            (ring::Look { candidates: 4, refresh_hz: 90.0, slots: 4, both_eyes: false, stopped_at: ring::STOP_ONE_EYE }, 64)
+        }
+        Some(status::SEARCH_NO_VIDEO) => (ring::Look { stopped_at: ring::STOP_NO_CANDIDATES, ..ring::Look::default() }, 3),
+        Some(_) => (ring::Look { stopped_at: ring::STOP_NO_CANDIDATES, ..ring::Look::default() }, 0),
+        None => (ring::Look { candidates: 8, refresh_hz: 90.0, slots: 8, both_eyes: true, stopped_at: "" }, 128),
+    };
+    status::SearchDetail { look, changed_blocks, unix: unix_now() }
+}
+
+/// The fake `calib wear`'s result: both eyes, without one (--fake-calib L / R), or failed (LR), with made-up numbers.
+fn fake_last_calib(failed: Option<&str>) -> status::LastCalib {
+    let failed = failed.unwrap_or("");
+    let lost = |e: usize| failed.contains(["L", "R"][e]);
+    let message = match failed {
+        "L" => "校正できた（左目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]",
+        "R" => "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]",
+        "LR" => "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]",
+        _ => "校正できた（かぶり）",
+    };
+    let frames = [if lost(0) { 12.0 } else { 470.0 }, if lost(1) { if failed == "LR" { 30.0 } else { 12.0 } } else { 482.0 }];
+    status::LastCalib {
+        time: local_stamp().split_once('_').map(|(day, time)| format!("{day} {}", time.replace('-', ":"))).unwrap_or_default(),
+        ok: failed != "LR",
+        failed_eye: failed.into(),
+        message: message.into(),
+        pupil_frames: frames,
+        normal_frames: [486.0; 2],
+        pupil_x: [if lost(0) { f64::NAN } else { 238.0 }, if lost(1) { f64::NAN } else { 252.0 }],
+        pupil_y: [if lost(0) { f64::NAN } else { 201.0 }, if lost(1) { f64::NAN } else { 194.0 }],
+        window: [[186.0, 346.0], [180.0, 340.0]],
     }
 }
 
@@ -1689,12 +1760,17 @@ fn lock_ring(
             changed_blocks = b.arenas.iter().map(|a| a.block_changed.iter().filter(|&&c| c).count()).sum();
             let mut log = |line: String| eprintln!("  {line}");
             let mut clock = RealClock { ctl, ctx, deferred: &mut *deferred, stop_requested: false };
-            let found = ring::discover(&b.arenas, &mut clock, &mut log);
+            let mut look = ring::Look::default();
+            let found = ring::discover(&b.arenas, &mut clock, &mut log, &mut look);
             if clock.stop_requested {
                 return Err(if ctx == Ctx::Idle { Abort::Busy } else { Abort::Stopped });
             }
             last_scan = now_raw();
             scanned = true;
+            // What this look saw, for the panel's diagnostics (kept after a lock)
+            if let Some(d) = ctl {
+                d.set(|s| s.search_detail = Some(status::SearchDetail { look, changed_blocks, unix: unix_now() }));
+            }
             match found {
                 Some(r) if r.both_eyes || args.allow_one_eye => {
                     let p = reading.map_or("unknown".into(), |v| format!("{v:.1}"));
@@ -2472,6 +2548,7 @@ mod tests {
             serve: true,
             fake: false,
             fake_search: None,
+            fake_calib: None,
             run_dir: dir.to_path_buf(),
             replay: None,
             compat: false,
@@ -2565,6 +2642,21 @@ mod tests {
         assert!(json.contains("\"has_buffers\":true"), "{json}");
         assert!(json.contains("\"live\":true"), "{json}");
         assert!(json.contains("HMD をかぶってね"), "{json}");
+    }
+
+    /// After the first look at still buffers (the cameras off), status.json says where it stopped: no candidates, with
+    /// nothing changed, and the proximity threshold beside the reading. On the headset:
+    /// `cargo test --release -- --ignored idle_says_what_the_look_saw`.
+    #[test]
+    #[ignore]
+    fn idle_says_what_the_look_saw() {
+        let (json, _) = run_idle("idle-look", &[16 << 20], 3.5);
+        eprintln!("{json}");
+        assert!(json.contains("\"prox_min\":20.000,"), "{json}");
+        assert!(
+            json.contains("\"search_detail\":{\"candidates\":0,\"refresh_hz\":0.000,\"slots\":0,\"both_eyes\":false,\"stopped_at\":\"no_candidates\",\"changed_blocks\":0,"),
+            "{json}"
+        );
     }
 
     /// What idling costs while the cameras are off (nothing changes in the buffers): the process's CPU over 30 s of

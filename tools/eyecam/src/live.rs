@@ -714,6 +714,88 @@ pub struct Sample {
     pub iris_r: f64,
     /// Frame time (camera clock, s).
     pub t: f64,
+    /// What the pupil search saw.
+    pub seen: Seen,
+}
+
+/// Why a frame has no pupil.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Miss {
+    /// It has one.
+    None,
+    /// No dark blob passed the size and shape tests (`Seen::rejected` says what the dropped ones failed).
+    NoBlob,
+    /// Blobs were found, but none gave a pupil's edge all round.
+    Refine,
+    /// A pupil was found while the iris box was as bright as lid skin and it did not look like the open pupil.
+    Gated,
+}
+
+impl Miss {
+    pub fn name(self) -> &'static str {
+        match self {
+            Miss::None => "",
+            Miss::NoBlob => "no_blob",
+            Miss::Refine => "refine",
+            Miss::Gated => "gated",
+        }
+    }
+}
+
+/// What the pupil search saw in a calibration frame (calib_result.json's diag and calib_samples.csv).
+#[derive(Clone, Copy, Debug)]
+pub struct Seen {
+    /// Pupil centre, px (upright image; NaN without one).
+    pub cx: f64,
+    pub cy: f64,
+    /// The search window's left edge and the lens edge.
+    pub x_min: f64,
+    pub xmax: f64,
+    /// The search window's median minus its dark level.
+    pub contrast: f64,
+    pub miss: Miss,
+    /// feat::REJ_* bits of the blobs that were dropped.
+    pub rejected: u8,
+    /// The pupil came from a blob cut by the window's left edge.
+    pub left_edge: bool,
+    /// The search ran a second time without its prior.
+    pub retried: bool,
+    /// The engine forgot its prior on this frame.
+    pub prior_reset: bool,
+}
+
+impl Default for Seen {
+    fn default() -> Self {
+        let n = f64::NAN;
+        Self { cx: n, cy: n, x_min: n, xmax: n, contrast: n, miss: Miss::None, rejected: 0, left_edge: false, retried: false, prior_reset: false }
+    }
+}
+
+impl Seen {
+    pub fn of(o: &Out) -> Self {
+        let d = &o.f.diag;
+        let miss = if o.f.ok_pupil {
+            Miss::None
+        } else if d.gated {
+            Miss::Gated
+        } else if d.candidates == 0 {
+            Miss::NoBlob
+        } else {
+            Miss::Refine
+        };
+        Self {
+            cx: o.f.pupil_cx,
+            cy: o.f.pupil_cy,
+            x_min: o.x_min,
+            xmax: o.xmax,
+            contrast: d.p50 - d.lo,
+            miss,
+            rejected: d.rejected,
+            left_edge: d.left_edge,
+            retried: d.retried,
+            prior_reset: d.prior_reset,
+        }
+    }
 }
 
 impl Sample {
@@ -774,6 +856,7 @@ impl Sample {
             r: o.r,
             iris_r: if o.f.ok_pupil && o.f.iris_n >= 4 { o.f.iris_r } else { f64::NAN },
             t,
+            seen: Seen::of(o),
         }
     }
 }
@@ -1387,6 +1470,7 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
     for (e, s) in samples.iter().enumerate() {
         let r_px = calib_radius(s, &[Label::Normal, Label::Widen]);
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(r_px)).collect();
+        let n_pupil = s.iter().filter(|x| x.label == Label::Normal && x.ok).count();
         let (b_n, nn) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.skin));
         let (b_w, nw) = med_of(&s, |x| (x.label == Label::Widen && x.ok).then_some(x.skin));
         let (ap_n, _) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.ap));
@@ -1396,10 +1480,11 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
             let n = all(l);
             if n == 0 { f64::NAN } else { s.iter().filter(|x| x.label == l && x.ok).count() as f64 / n as f64 }
         };
+        let d = diag_report(&s);
         eyes.push(format!(
             "\"{}\": {{\"r_px\": {}, \"b_n\": {}, \"b_w\": {}, \"widen_step\": {}, \"ap_n\": {}, \"ap_cl\": {}, \"open_gap\": {}, \
-\"normal_frames_with_pupil\": {nn}, \"widen_frames_with_pupil\": {nw}, \"close_frames_with_lids\": {nc}, \
-\"pupil_seen_share\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}}}",
+\"normal_frames_with_pupil\": {n_pupil}, \"normal_frames_with_lid_line\": {nn}, \"widen_frames_with_pupil\": {nw}, \"close_frames_with_lids\": {nc}, \
+\"pupil_seen_share\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}, \"diag\": {}}}",
             ["L", "R"][e],
             json::num(r_px),
             json::num(b_n),
@@ -1411,16 +1496,19 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
             json::num(ok_share(Label::Normal)),
             json::num(ok_share(Label::Widen)),
             json::num(ok_share(Label::Close)),
+            d.json,
         ));
         lines.push(format!(
             "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
-frames with pupil normal {nn} / widen {nw} (need {MIN_NORMAL_FRAMES} / {MIN_WIDEN_FRAMES}), close {nc} (need {MIN_CLOSE_FRAMES}), R {:.1} px",
+frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {MIN_NORMAL_FRAMES} / {MIN_WIDEN_FRAMES}), close {nc} (need {MIN_CLOSE_FRAMES}), R {:.1} px; {}",
             ["L", "R"][e],
             b_w - b_n,
             b_n,
             b_w,
             ap_n - ap_cl,
-            r_px
+            all(Label::Normal),
+            r_px,
+            d.line
         ));
     }
     let json = format!(
@@ -1429,6 +1517,87 @@ frames with pupil normal {nn} / widen {nw} (need {MIN_NORMAL_FRAMES} / {MIN_WIDE
         eyes.join(", ")
     );
     (json, lines)
+}
+
+/// One eye's search diagnostics over a calibration.
+struct DiagReport {
+    json: String,
+    line: String,
+}
+
+/// How the pupil search went in one eye's calibration frames: frame rate, per step the frames, those with the pupil
+/// and with the upper lid line, why the others had none, the prior resets; the window used, the median pupil
+/// position and the window's contrast in the normal frames.
+fn diag_report(s: &[Sample]) -> DiagReport {
+    let mut labels: Vec<Label> = Vec::new();
+    for x in s {
+        if !labels.contains(&x.label) {
+            labels.push(x.label);
+        }
+    }
+    // Frame interval: the median gap between consecutive frames of a step.
+    let mut dt: Vec<f64> = s.windows(2).filter(|w| w[0].label == w[1].label).map(|w| w[1].t - w[0].t).filter(|d| *d > 0.0 && *d < 0.5).collect();
+    let fps = 1.0 / vision::median(&mut dt);
+    let count = |l: Label, f: &dyn Fn(&Sample) -> bool| s.iter().filter(|x| x.label == l && f(x)).count();
+    let no_blob = |x: &Sample, bits: u8| x.seen.miss == Miss::NoBlob && x.seen.rejected & bits != 0;
+    let steps: Vec<String> = labels
+        .iter()
+        .map(|&l| {
+            format!(
+                "\"{}\": {{\"frames\": {}, \"pupil\": {}, \"lid_line\": {}, \"no_blob\": {}, \"no_blob_edge\": {}, \"no_blob_too_big\": {}, \
+\"no_blob_shape\": {}, \"refine_failed\": {}, \"gated\": {}, \"left_edge_pupils\": {}, \"retried\": {}, \"prior_resets\": {}}}",
+                l.name(),
+                count(l, &|_| true),
+                count(l, &|x| x.ok),
+                count(l, &|x| x.ok && x.skin.is_finite()),
+                count(l, &|x| x.seen.miss == Miss::NoBlob),
+                count(l, &|x| no_blob(x, feat::REJ_LEFT | feat::REJ_TOP | feat::REJ_BOTTOM)),
+                count(l, &|x| no_blob(x, feat::REJ_BIG)),
+                count(l, &|x| no_blob(x, feat::REJ_SHAPE)),
+                count(l, &|x| x.seen.miss == Miss::Refine),
+                count(l, &|x| x.seen.miss == Miss::Gated),
+                count(l, &|x| x.ok && x.seen.left_edge),
+                count(l, &|x| x.seen.retried),
+                count(l, &|x| x.seen.prior_reset),
+            )
+        })
+        .collect();
+    let normal = |x: &Sample| x.label == Label::Normal;
+    let (px, _) = med_of(s, |x| (normal(x) && x.ok).then_some(x.seen.cx));
+    let (py, _) = med_of(s, |x| (normal(x) && x.ok).then_some(x.seen.cy));
+    let (x_min, _) = med_of(s, |x| Some(x.seen.x_min));
+    let (xmax, _) = med_of(s, |x| Some(x.seen.xmax));
+    let (contrast, _) = med_of(s, |x| normal(x).then_some(x.seen.contrast));
+    let json = format!(
+        "{{\"fps\": {}, \"search_x_min\": {}, \"search_xmax\": {}, \"normal_pupil_x\": {}, \"normal_pupil_y\": {}, \"normal_contrast\": {}, \
+\"steps\": {{{}}}}}",
+        json::num(fps),
+        json::num(x_min),
+        json::num(xmax),
+        json::num(px),
+        json::num(py),
+        json::num(contrast),
+        steps.join(", ")
+    );
+    let n = |f: &dyn Fn(&Sample) -> bool| s.iter().filter(|x| normal(x) && f(x)).count();
+    let line = format!(
+        "normal without pupil: no blob {} (edge {}, too big {}, shape {}), refine {}, gated {}; prior resets {}; window x {:.0}..{:.0}, \
+pupil at ({:.0}, {:.0}), contrast {:.0}, {:.0} fps",
+        n(&|x| x.seen.miss == Miss::NoBlob),
+        n(&|x| no_blob(x, feat::REJ_LEFT | feat::REJ_TOP | feat::REJ_BOTTOM)),
+        n(&|x| no_blob(x, feat::REJ_BIG)),
+        n(&|x| no_blob(x, feat::REJ_SHAPE)),
+        n(&|x| x.seen.miss == Miss::Refine),
+        n(&|x| x.seen.miss == Miss::Gated),
+        s.iter().filter(|x| x.seen.prior_reset).count(),
+        x_min,
+        xmax,
+        px,
+        py,
+        contrast,
+        fps
+    );
+    DiagReport { json, line }
 }
 
 /// The per-eye values behind a user calibration (needs this wear's levels): (JSON object, log lines).
@@ -1479,12 +1648,12 @@ pub fn user_report(samples: &[Vec<Sample>; 2], wear: &[WearParams; 2]) -> (Strin
 
 /// The collected samples as CSV (one row per eye and frame).
 pub fn samples_csv(samples: &[Vec<Sample>; 2]) -> String {
-    let mut out = String::from("eye,t,label,ok,skin_up,aperture,pupil_ratio,pitch,lower_px,r,iris_r\n");
+    let mut out = String::from("eye,t,label,ok,skin_up,aperture,pupil_ratio,pitch,lower_px,r,iris_r,pupil_x,pupil_y,miss,rejected,contrast,x_min,prior_reset\n");
     let f = |v: f64| if v.is_finite() { format!("{v:.5}") } else { String::new() };
     for (e, s) in samples.iter().enumerate() {
         for x in s {
             out += &format!(
-                "{},{:.6},{},{},{},{},{},{},{},{},{}\n",
+                "{},{:.6},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 ["L", "R"][e],
                 x.t,
                 x.label.name(),
@@ -1495,7 +1664,14 @@ pub fn samples_csv(samples: &[Vec<Sample>; 2]) -> String {
                 f(x.pitch),
                 f(x.lower_px),
                 f(x.r),
-                f(x.iris_r)
+                f(x.iris_r),
+                f(x.seen.cx),
+                f(x.seen.cy),
+                x.seen.miss.name(),
+                x.seen.rejected,
+                f(x.seen.contrast),
+                f(x.seen.x_min),
+                x.seen.prior_reset as u8
             );
         }
     }
@@ -1546,6 +1722,7 @@ mod tests {
                 r: 55.0,
                 iris_r: if ok { 55.0 } else { f64::NAN },
                 t: i as f64 / 90.0,
+                seen: Seen::default(),
             })
             .collect()
     }
@@ -1714,6 +1891,40 @@ mod tests {
         let older = CalibFile { wear_failed_eye: String::new(), ..file };
         assert!(!older.to_json().contains("failed_eye"));
         assert_eq!(CalibFile::parse(&older.to_json()).unwrap().wear_failed_eye, "");
+    }
+
+    #[test]
+    fn wear_report_says_why_frames_had_no_pupil() {
+        let mut eye = wear_eye(300, 250);
+        for (i, x) in eye.iter_mut().enumerate() {
+            x.seen = Seen { cx: 240.0, cy: 190.0, x_min: 186.0, xmax: 346.0, contrast: 90.0, ..Seen::default() };
+            if x.label == Label::Normal && i % 10 == 0 {
+                (x.ok, x.seen.miss, x.seen.rejected) = (false, Miss::NoBlob, feat::REJ_TOP | feat::REJ_SHAPE);
+            }
+            if x.label == Label::Normal && i % 10 == 5 {
+                (x.ok, x.seen.miss) = (false, Miss::Refine);
+            }
+            x.seen.prior_reset = i == 7;
+        }
+        let (report, lines) = wear_report(&[eye.clone(), eye]);
+        let j = crate::json::parse(&report).unwrap();
+        let l = j.get("L").unwrap();
+        let num = |v: &Json, k: &str| v.get(k).and_then(Json::num).unwrap();
+        assert_eq!(num(l, "normal_frames_with_pupil"), 240.0);
+        assert_eq!(num(l, "normal_frames_with_lid_line"), 200.0);
+        let d = l.get("diag").unwrap();
+        assert!((num(d, "fps") - 90.0).abs() < 1e-6);
+        assert_eq!((num(d, "search_x_min"), num(d, "search_xmax"), num(d, "normal_pupil_x")), (186.0, 346.0, 240.0));
+        assert_eq!(num(d, "normal_contrast"), 90.0);
+        let normal = d.get("steps").unwrap().get("normal").unwrap();
+        assert_eq!(
+            ["frames", "pupil", "lid_line", "no_blob", "no_blob_edge", "no_blob_shape", "no_blob_too_big", "refine_failed", "prior_resets"]
+                .map(|k| num(normal, k)),
+            [300.0, 240.0, 200.0, 30.0, 30.0, 30.0, 0.0, 30.0, 1.0]
+        );
+        assert_eq!(num(d.get("steps").unwrap().get("close").unwrap(), "frames"), 80.0);
+        assert!(lines[0].contains("frames with pupil normal 240 of 300, with the upper lid line 200"), "{}", lines[0]);
+        assert!(lines[0].contains("no blob 30 (edge 30, too big 0, shape 30), refine 30"), "{}", lines[0]);
     }
 
     #[test]

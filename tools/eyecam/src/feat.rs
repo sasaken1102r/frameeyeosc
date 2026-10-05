@@ -66,7 +66,7 @@ pub struct Diag {
     pub p50: f64,
     /// The left edge used.
     pub x_min: f64,
-    /// Blobs that passed the size and shape tests, and refined (0 or 1 = the pupil).
+    /// Blobs that passed the size and shape tests (the most of the two searches when it searched again).
     pub candidates: u8,
     /// REJ_* bits for blobs of at least 120 px that were dropped.
     pub rejected: u8,
@@ -417,7 +417,7 @@ impl Extractor {
             }
             self.cands = kept;
         }
-        diag.candidates = self.cands.len() as u8;
+        diag.candidates = diag.candidates.max(self.cands.len() as u8);
     }
 
     /// Refine the candidates in order; the first that gives a pupil wins. A blob cut by the window's left edge also

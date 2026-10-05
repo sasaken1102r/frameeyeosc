@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 const NEW_WEAR_GAP: f64 = 10.0;
 /// An eye's published values are marked invalid when its frames stop for this long.
 const STALE_AFTER: f64 = 0.25;
+/// status.json's pupil_l / pupil_r: the share of frames with the pupil over this many seconds.
+const PUPIL_SHARE_S: f64 = 2.0;
 /// Pupils react together: both eyes' diameters differ by less than this (recordings: median 0.3-0.6 mm, 99th
 /// percentile 1.3-1.8 mm, part of it a fixed per-eye scale difference).
 const PUPIL_LR_MAX_MM: f64 = 1.5;
@@ -117,6 +119,9 @@ pub struct Shared {
     pub us_per_frame: AtomicU32,
     pub frames: AtomicU64,
     pub live_on: AtomicBool,
+    /// Per eye, the share of the last PUPIL_SHARE_S of frames with the pupil (f32 bits; NaN: no frames, or live
+    /// processing off). Counted as the calibration counts them.
+    pub pupil_share: [AtomicU32; 2],
 }
 
 impl Default for Shared {
@@ -134,6 +139,7 @@ impl Default for Shared {
             us_per_frame: AtomicU32::new(0),
             frames: AtomicU64::new(0),
             live_on: AtomicBool::new(false),
+            pupil_share: [AtomicU32::new(f32::NAN.to_bits()), AtomicU32::new(f32::NAN.to_bits())],
         }
     }
 }
@@ -145,6 +151,30 @@ impl Shared {
 
     pub fn set_widen_sensitivity(&self, v: f64) {
         self.widen_sensitivity.store(v.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The eye's recent pupil share (0..1), NaN when not known.
+    pub fn pupil_share(&self, eye: usize) -> f64 {
+        f32::from_bits(self.pupil_share[eye].load(Ordering::Relaxed)) as f64
+    }
+}
+
+/// The recent frames of one eye: (time, pupil seen), for status.json's pupil share.
+#[derive(Default)]
+struct PupilSeen {
+    recent: std::collections::VecDeque<(f64, bool)>,
+    seen: usize,
+}
+
+impl PupilSeen {
+    fn push(&mut self, t: f64, ok: bool) -> f64 {
+        self.recent.push_back((t, ok));
+        self.seen += ok as usize;
+        while self.recent.front().is_some_and(|x| t - x.0 > PUPIL_SHARE_S) {
+            let (_, old) = self.recent.pop_front().unwrap();
+            self.seen -= old as usize;
+        }
+        self.seen as f64 / self.recent.len() as f64
     }
 }
 
@@ -214,6 +244,7 @@ struct Worker {
     samples: [Vec<Sample>; 2],
     flipped: Vec<u8>,
     pupils: [PupilTrack; 2],
+    pupil_seen: [PupilSeen; 2],
     pupil_offset: PupilOffset,
     pub pupil_conflicts: u64,
     pub pupil_pairs: u64,
@@ -268,6 +299,12 @@ impl Worker {
     }
 
     fn invalidate(&mut self, eye: Option<usize>) {
+        for e in 0..2 {
+            if eye.is_none_or(|x| x == e) {
+                self.pupil_seen[e] = PupilSeen::default();
+                self.shared.pupil_share[e].store(f32::NAN.to_bits(), Ordering::Relaxed);
+            }
+        }
         self.writer.update(|s| {
             for (e, v) in s.eyes.iter_mut().enumerate() {
                 if eye.is_none_or(|x| x == e) {
@@ -291,6 +328,7 @@ impl Worker {
                 p.wear = None;
             }
             self.pupils = [PupilTrack::default(), PupilTrack::default()];
+            self.pupil_seen = [PupilSeen::default(), PupilSeen::default()];
             self.pupil_offset = PupilOffset::default();
             self.last_t = [f64::NEG_INFINITY; 2];
         }
@@ -315,6 +353,8 @@ impl Worker {
         let started = Instant::now();
         let mut o = self.engines[eye].process(img, pitch as f64, t, &self.params[eye]);
         self.check_pupils(eye, t, &mut o);
+        let share = self.pupil_seen[eye].push(t, o.f.ok_pupil);
+        self.shared.pupil_share[eye].store((share as f32).to_bits(), Ordering::Relaxed);
         self.busy += started.elapsed();
         self.busy_n += 1;
         self.frames[eye] += 1;
@@ -651,6 +691,7 @@ pub fn spawn(
                 samples: [Vec::new(), Vec::new()],
                 flipped: vec![0; W * H],
                 pupils: [PupilTrack::default(), PupilTrack::default()],
+                pupil_seen: [PupilSeen::default(), PupilSeen::default()],
                 pupil_offset: PupilOffset::default(),
                 pupil_conflicts: 0,
                 pupil_pairs: 0,
@@ -725,6 +766,23 @@ pub fn spawn(
 mod tests {
     use super::*;
     use crate::replay::Session;
+
+    #[test]
+    fn pupil_share_covers_the_last_two_seconds() {
+        let mut p = PupilSeen::default();
+        assert_eq!(p.push(0.0, true), 1.0);
+        for k in 1..=90 {
+            p.push(k as f64 / 90.0, k % 2 == 0);
+        }
+        // 91 frames over 1 s: 46 with the pupil.
+        assert!((p.push(1.0 + 1.0 / 90.0, false) - 46.0 / 92.0).abs() < 1e-9);
+        // 3 s later only the last 2 s count.
+        let mut last = 0.0;
+        for k in 0..=180 {
+            last = p.push(2.0 + k as f64 / 90.0, k >= 90);
+        }
+        assert!((last - 91.0 / 181.0).abs() < 0.01, "{last}");
+    }
 
     #[test]
     #[ignore]

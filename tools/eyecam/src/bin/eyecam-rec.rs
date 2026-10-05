@@ -396,6 +396,7 @@ impl StatusFile {
                     3 => "LR",
                     _ => "",
                 };
+                s.pupil = [0, 1].map(|e| if s.live { l.pupil_share(e) } else { f64::NAN });
                 // While idle with the eyes in view, say what the live values are waiting for.
                 if s.state == "idle" && s.live && s.locked && LIVE_IDLE_MESSAGES.contains(&s.message.as_str()) {
                     s.message = live_idle_message(s.calib_saved, ready).into();
@@ -954,6 +955,7 @@ fn fake(args: &Args, d: &Daemon) {
             s.has_buffers = !matches!(phase, Phase::Waiting);
             s.live = live_on && !matches!(phase, Phase::Waiting);
             s.live_ms = if s.live { 1.2 } else { 0.0 };
+            s.pupil = if s.live && !matches!(phase, Phase::Waiting | Phase::Searching(..)) { [0.97, 0.95] } else { [f64::NAN; 2] };
             match phase {
                 Phase::Waiting => {
                     s.state = "waiting_fds";

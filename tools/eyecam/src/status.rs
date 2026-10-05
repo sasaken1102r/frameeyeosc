@@ -58,6 +58,9 @@ pub struct Status {
     pub live: bool,
     /// Live processing time per frame (one eye), ms, averaged over the last second.
     pub live_ms: f64,
+    /// Per eye, the share of the last 2 s of frames in which the pupil was found (as the calibration counts them);
+    /// NaN (null in the JSON) when live processing is off or the eye's frames stopped.
+    pub pupil: [f64; 2],
 }
 
 impl Default for Status {
@@ -92,6 +95,7 @@ impl Default for Status {
             calib_failed_eye: "",
             live: false,
             live_ms: 0.0,
+            pupil: [f64::NAN; 2],
         }
     }
 }
@@ -115,7 +119,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"pupil_l\":{},\"pupil_r\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -147,6 +151,8 @@ impl Status {
             json_str(self.calib_failed_eye),
             self.live,
             num(self.live_ms),
+            num_or_null(self.pupil[0]),
+            num_or_null(self.pupil[1]),
             num(updated_unix),
         )
     }
@@ -154,6 +160,10 @@ impl Status {
 
 fn num(v: f64) -> String {
     if v.is_finite() { format!("{:.3}", v) } else { "-1".into() }
+}
+
+fn num_or_null(v: f64) -> String {
+    if v.is_finite() { format!("{:.3}", v) } else { "null".into() }
 }
 
 fn json_str(s: &str) -> String {
@@ -259,6 +269,9 @@ mod tests {
         assert!(json.contains("\"widen_sensitivity\":0.500,\"dev\":false,\"setup_done\":false,"));
         assert!(Status { dev: true, ..Status::default() }.to_json(1.5, 7).contains(",\"dev\":true,"));
         assert!(json.contains("\"last_calib_widen\":\"\",\"calib_failed_eye\":\"\","));
+        assert!(json.contains(",\"pupil_l\":null,\"pupil_r\":null,"), "{json}");
+        let seen = Status { pupil: [0.95, f64::NAN], ..Status::default() }.to_json(1.5, 7);
+        assert!(seen.contains(",\"pupil_l\":0.950,\"pupil_r\":null,") && crate::json::parse(&seen).is_ok(), "{seen}");
         assert!(Status { calib_failed_eye: "R", ..Status::default() }.to_json(1.5, 7).contains(",\"calib_failed_eye\":\"R\","));
     }
 }

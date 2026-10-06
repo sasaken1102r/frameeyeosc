@@ -13,8 +13,11 @@ use std::time::{Duration, Instant};
 const NEW_WEAR_GAP: f64 = 10.0;
 /// An eye's published values are marked invalid when its frames stop for this long.
 const STALE_AFTER: f64 = 0.25;
-/// status.json's pupil_l / pupil_r: the share of frames with the pupil over this many seconds.
+/// status.json's pupil_l / pupil_r: the share of frames with the pupil over this many seconds; cam_fps: the frames
+/// a second over this many seconds.
 const PUPIL_SHARE_S: f64 = 2.0;
+/// status.json's cam_fps is null once an eye's last frame is older than this (s).
+const CAM_FPS_FRESH: f64 = 0.5;
 /// Pupils react together: both eyes' diameters differ by less than this (recordings: median 0.3-0.6 mm, 99th
 /// percentile 1.3-1.8 mm, part of it a fixed per-eye scale difference).
 const PUPIL_LR_MAX_MM: f64 = 1.5;
@@ -34,8 +37,9 @@ impl PupilOffset {
         }
     }
 
-    fn value(&self) -> f64 {
-        if self.recent.len() < 90 {
+    /// The median once a second's worth of pairs is in (`fps`: the cameras' frame rate; 90 pairs at 90 fps), else 0.
+    fn value(&self, fps: f64) -> f64 {
+        if self.recent.len() < (fps.round() as usize).max(12) {
             return 0.0;
         }
         let mut v: Vec<f64> = self.recent.iter().map(|x| x.1).collect();
@@ -122,6 +126,10 @@ pub struct Shared {
     /// Per eye, the share of the last PUPIL_SHARE_S of frames with the pupil (f32 bits; NaN: no frames, or live
     /// processing off). Counted as the calibration counts them.
     pub pupil_share: [AtomicU32; 2],
+    /// Per eye, the frames a second its camera delivered over the last PUPIL_SHARE_S (f32 bits; camera timestamps,
+    /// measured as the frames are taken from the buffers), and when the last one came (f64 bits, now_raw seconds).
+    pub cam_fps: [AtomicU32; 2],
+    pub cam_at: [AtomicU64; 2],
     /// The last `calib wear` (status.json `last_calib`): this run's, else the newest one saved under the data folder.
     pub last_calib: Mutex<Option<crate::status::LastCalib>>,
 }
@@ -142,6 +150,8 @@ impl Default for Shared {
             frames: AtomicU64::new(0),
             live_on: AtomicBool::new(false),
             pupil_share: [AtomicU32::new(f32::NAN.to_bits()), AtomicU32::new(f32::NAN.to_bits())],
+            cam_fps: [AtomicU32::new(f32::NAN.to_bits()), AtomicU32::new(f32::NAN.to_bits())],
+            cam_at: [AtomicU64::new(f64::NEG_INFINITY.to_bits()), AtomicU64::new(f64::NEG_INFINITY.to_bits())],
             last_calib: Mutex::new(None),
         }
     }
@@ -159,6 +169,42 @@ impl Shared {
     /// The eye's recent pupil share (0..1), NaN when not known.
     pub fn pupil_share(&self, eye: usize) -> f64 {
         f32::from_bits(self.pupil_share[eye].load(Ordering::Relaxed)) as f64
+    }
+
+    /// Note a frame of camera `eye` taken at `t_cam` (s), handed over at `now` (now_raw s).
+    pub fn note_camera_frame(&self, eye: usize, rate: &mut CamRate, t_cam: f64, now: f64) {
+        let fps = rate.push(t_cam);
+        self.cam_fps[eye].store((fps as f32).to_bits(), Ordering::Relaxed);
+        self.cam_at[eye].store(now.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The eye's camera frame rate at `now` (now_raw s): NaN without a frame in the last CAM_FPS_FRESH s.
+    pub fn cam_fps(&self, eye: usize, now: f64) -> f64 {
+        let at = f64::from_bits(self.cam_at[eye].load(Ordering::Relaxed));
+        if now - at > CAM_FPS_FRESH { f64::NAN } else { f32::from_bits(self.cam_fps[eye].load(Ordering::Relaxed)) as f64 }
+    }
+}
+
+/// One camera's frame rate: its frames (camera timestamps) over the last PUPIL_SHARE_S, in frames a second (NaN
+/// with fewer than two). Starts over when the time goes back or the frames stop for a second.
+#[derive(Default)]
+pub struct CamRate {
+    recent: std::collections::VecDeque<f64>,
+}
+
+impl CamRate {
+    pub fn push(&mut self, t: f64) -> f64 {
+        if self.recent.back().is_some_and(|&b| t <= b || t - b > 1.0) {
+            self.recent.clear();
+        }
+        self.recent.push_back(t);
+        while self.recent.front().is_some_and(|&f| t - f > PUPIL_SHARE_S) {
+            self.recent.pop_front();
+        }
+        match (self.recent.len(), self.recent.front()) {
+            (n, Some(&f)) if n >= 2 && t > f => (n - 1) as f64 / (t - f),
+            _ => f64::NAN,
+        }
     }
 }
 
@@ -468,7 +514,7 @@ impl Worker {
         }
         self.pupils[eye].latest = Some((t, o.pupil_mm));
         let other = 1 - eye;
-        let offset = self.pupil_offset.value();
+        let offset = self.pupil_offset.value(self.engines[eye].fps());
         // Left minus right, whichever eye this is.
         let lr = |mine: f64, theirs: f64| if eye == 0 { mine - theirs } else { theirs - mine };
         let conflict = match self.pupils[other].latest {
@@ -613,7 +659,7 @@ impl Worker {
                         self.log_us as f64 / self.log_n as f64 / 1000.0,
                         self.pupil_conflicts,
                         self.pupil_pairs,
-                        self.pupil_offset.value()
+                        self.pupil_offset.value(self.engines[0].fps())
                     );
                 }
                 self.log_n = 0;
@@ -807,6 +853,29 @@ mod tests {
             last = p.push(2.0 + k as f64 / 90.0, k >= 90);
         }
         assert!((last - 91.0 / 181.0).abs() < 0.01, "{last}");
+    }
+
+    #[test]
+    fn camera_rate_is_frames_a_second_over_the_last_two_seconds() {
+        let mut r = CamRate::default();
+        assert!(r.push(100.0).is_nan());
+        let mut last = f64::NAN;
+        for k in 1..300 {
+            last = r.push(100.0 + k as f64 / 90.0);
+        }
+        assert!((last - 90.0).abs() < 1e-6, "{last}");
+        for k in 1..60 {
+            last = r.push(110.0 + k as f64 / 15.0);
+        }
+        assert!((last - 15.0).abs() < 1e-6, "after a gap it starts over: {last}");
+        let shared = Shared::default();
+        let mut rate = CamRate::default();
+        for k in 0..30 {
+            shared.note_camera_frame(1, &mut rate, 5.0 + k as f64 / 15.0, 50.0 + k as f64 / 15.0);
+        }
+        assert!((shared.cam_fps(1, 52.0) - 15.0).abs() < 1e-3, "{}", shared.cam_fps(1, 52.0));
+        assert!(shared.cam_fps(1, 53.0).is_nan(), "frames stopped");
+        assert!(shared.cam_fps(0, 52.0).is_nan(), "no frames from that camera");
     }
 
     #[test]

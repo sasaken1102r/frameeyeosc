@@ -65,6 +65,8 @@ pub struct LastCalib {
     pub pupil_y: [f64; 2],
     /// The pupil search window's left and right edge (the medians over the calibration).
     pub window: [[f64; 2]; 2],
+    /// The frame rate each camera delivered during it.
+    pub fps: [f64; 2],
 }
 
 impl LastCalib {
@@ -87,6 +89,7 @@ impl LastCalib {
             pupil_x: [f64::NAN; 2],
             pupil_y: [f64::NAN; 2],
             window: [[f64::NAN; 2]; 2],
+            fps: [f64::NAN; 2],
         };
         for (e, name) in ["L", "R"].iter().enumerate() {
             let Some(v) = j.get("values").and_then(|v| v.get(name)) else { continue };
@@ -97,6 +100,7 @@ impl LastCalib {
             c.pupil_x[e] = n(diag.and_then(|d| d.get("normal_pupil_x")));
             c.pupil_y[e] = n(diag.and_then(|d| d.get("normal_pupil_y")));
             c.window[e] = [n(diag.and_then(|d| d.get("search_x_min"))), n(diag.and_then(|d| d.get("search_xmax")))];
+            c.fps[e] = n(diag.and_then(|d| d.get("fps")));
         }
         Some(c)
     }
@@ -119,7 +123,7 @@ impl LastCalib {
     fn to_json(&self) -> String {
         let pair = |v: [f64; 2]| format!("[{},{}]", num_or_null(v[0]), num_or_null(v[1]));
         format!(
-            "{{\"time\":{},\"ok\":{},\"failed_eye\":{},\"message\":{},\"message_en\":{},\"pupil_frames\":{},\"normal_frames\":{},\"pupil_x\":{},\"pupil_y\":{},\"window\":[{},{}]}}",
+            "{{\"time\":{},\"ok\":{},\"failed_eye\":{},\"message\":{},\"message_en\":{},\"pupil_frames\":{},\"normal_frames\":{},\"pupil_x\":{},\"pupil_y\":{},\"window\":[{},{}],\"fps\":{}}}",
             json_str(&self.time),
             self.ok,
             json_str(&self.failed_eye),
@@ -131,6 +135,7 @@ impl LastCalib {
             pair(self.pupil_y),
             pair(self.window[0]),
             pair(self.window[1]),
+            pair(self.fps),
         )
     }
 }
@@ -195,6 +200,10 @@ pub struct Status {
     /// Per eye, the share of the last 2 s of frames in which the pupil was found (as the calibration counts them);
     /// NaN (null in the JSON) when live processing is off or the eye's frames stopped.
     pub pupil: [f64; 2],
+    /// Per eye, the frames a second its camera delivered over the last 2 s (camera timestamps), while locked with
+    /// live processing on; NaN (null) otherwise. 90 on most headsets; Valve's eye tracker also sets 72, 80, 120 or
+    /// as few as 15.
+    pub cam_fps: [f64; 2],
     /// --prox-min: the proximity reading above which the headset counts as worn.
     pub prox_min: f64,
     /// The last look for the eye video (None before the first).
@@ -240,6 +249,7 @@ impl Default for Status {
             live: false,
             live_ms: 0.0,
             pupil: [f64::NAN; 2],
+            cam_fps: [f64::NAN; 2],
             prox_min: 20.0,
             search_detail: None,
             last_calib: None,
@@ -277,7 +287,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"pupil_l\":{},\"pupil_r\":{},\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -312,6 +322,8 @@ impl Status {
             num(self.live_ms),
             num_or_null(self.pupil[0]),
             num_or_null(self.pupil[1]),
+            num_or_null(self.cam_fps[0]),
+            num_or_null(self.cam_fps[1]),
             num(self.prox_min),
             self.search_detail.as_ref().map_or("null".into(), SearchDetail::to_json),
             self.last_calib.as_ref().map_or("null".into(), LastCalib::to_json),
@@ -445,7 +457,9 @@ mod tests {
         assert!(json.contains("\"widen_sensitivity\":0.500,\"dev\":false,\"setup_done\":false,"));
         assert!(Status { dev: true, ..Status::default() }.to_json(1.5, 7).contains(",\"dev\":true,"));
         assert!(json.contains("\"last_calib_widen\":\"\",\"calib_failed_eye\":\"\","));
-        assert!(json.contains(",\"pupil_l\":null,\"pupil_r\":null,"), "{json}");
+        assert!(json.contains(",\"pupil_l\":null,\"pupil_r\":null,\"cam_fps\":[null,null],"), "{json}");
+        let slow = Status { cam_fps: [15.0, 14.9], ..Status::default() }.to_json(1.5, 7);
+        assert!(slow.contains(",\"cam_fps\":[15.000,14.900],") && crate::json::parse(&slow).is_ok(), "{slow}");
         let seen = Status { pupil: [0.95, f64::NAN], ..Status::default() }.to_json(1.5, 7);
         assert!(seen.contains(",\"pupil_l\":0.950,\"pupil_r\":null,") && crate::json::parse(&seen).is_ok(), "{seen}");
         assert!(Status { calib_failed_eye: "R", ..Status::default() }.to_json(1.5, 7).contains(",\"calib_failed_eye\":\"R\","));
@@ -479,7 +493,7 @@ mod tests {
   "failed_eye": "R",
   "message": "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[0/486、90 必要]",
   "values": {"L": {"r_px": 40, "normal_frames_with_pupil": 486, "diag": {"fps": 90, "search_x_min": 186, "search_xmax": 346, "normal_pupil_x": 240.5, "normal_pupil_y": 201, "normal_contrast": 30, "steps": {"normal": {"frames": 486, "pupil": 486}}}},
-             "R": {"r_px": null, "normal_frames_with_pupil": 0, "diag": {"fps": 90, "search_x_min": 180, "search_xmax": 340, "normal_pupil_x": null, "normal_pupil_y": null, "normal_contrast": 12, "steps": {"normal": {"frames": 486, "pupil": 0}}}},
+             "R": {"r_px": null, "normal_frames_with_pupil": 0, "diag": {"fps": 15, "search_x_min": 180, "search_xmax": 340, "normal_pupil_x": null, "normal_pupil_y": null, "normal_contrast": 12, "steps": {"normal": {"frames": 486, "pupil": 0}}}},
              "thresholds": {}},
   "params": null
 }
@@ -494,10 +508,11 @@ mod tests {
         assert_eq!((c.pupil_x[0], c.pupil_y[0]), (240.5, 201.0));
         assert!(c.pupil_x[1].is_nan() && c.pupil_y[1].is_nan());
         assert_eq!(c.window, [[186.0, 346.0], [180.0, 340.0]]);
+        assert_eq!(c.fps, [90.0, 15.0]);
         let json = Status { last_calib: Some(c), ..Status::default() }.to_json(1.5, 7);
         assert!(json.contains(",\"last_calib\":{\"time\":\"2026-10-05 19:51:03\",\"ok\":true,\"failed_eye\":\"R\",\"message\":\"校正できた（"), "{json}");
         assert!(json.contains("\"message_en\":\"Calibrated (Right eye: couldn't see the pupil well, using its previous values) [0/486, 90 needed]\""), "{json}");
-        assert!(json.contains("\"pupil_frames\":[486.000,0.000],\"normal_frames\":[486.000,486.000],\"pupil_x\":[240.500,null],\"pupil_y\":[201.000,null],\"window\":[[186.000,346.000],[180.000,340.000]]}"), "{json}");
+        assert!(json.contains("\"pupil_frames\":[486.000,0.000],\"normal_frames\":[486.000,486.000],\"pupil_x\":[240.500,null],\"pupil_y\":[201.000,null],\"window\":[[186.000,346.000],[180.000,340.000]],\"fps\":[90.000,15.000]}"), "{json}");
         assert!(crate::json::parse(&json).is_ok());
         // Only a wear calibration's; an older file without failed_eye says only whether it failed
         assert!(LastCalib::from_result(&RESULT.replace("\"wear\"", "\"user\"")).is_none());

@@ -715,18 +715,56 @@ std::string rollText(double deg) {
 }
 
 /**
- * What to do while a fit waits or runs.
+ * What to do while a fit runs.
  * @param t texts
  * @param mode the fit
  * @return the words
  */
-const char* waitingText(const UiText& t, gaze_fit::Mode mode) {
+const char* howToText(const UiText& t, gaze_fit::Mode mode) {
     switch (mode) {
-        case gaze_fit::Mode::Center: return t.fitWaitingCenter;
-        case gaze_fit::Mode::Tilt: return t.fitWaitingTilt;
+        case gaze_fit::Mode::Center: return t.fitHowToCenter;
+        case gaze_fit::Mode::Tilt: return t.fitHowToTilt;
         case gaze_fit::Mode::Full: break;
     }
     return t.fitHowTo;
+}
+
+/**
+ * A text's sentences (split after "。", or after ". " in English), so each can start a line of its own. An English
+ * sentence keeps its full stop; a Japanese one drops it, like the panel's other lines.
+ * @param text the text
+ * @return the sentences
+ */
+std::vector<std::string> sentences(const std::string& text) {
+    constexpr const char* kJaStop = "。";
+    const size_t jaStop = std::strlen(kJaStop);
+    std::vector<std::string> out;
+    for (size_t from = 0; from < text.size();) {
+        const size_t ja = text.find(kJaStop, from);
+        const size_t en = text.find(". ", from);
+        size_t end = text.size();
+        size_t next = text.size();
+        if (ja != std::string::npos && (en == std::string::npos || ja < en)) {
+            end = ja;
+            next = ja + jaStop;
+        } else if (en != std::string::npos) {
+            end = en + 1;
+            next = en + 2;
+        }
+        out.push_back(text.substr(from, end - from));
+        from = next;
+    }
+    return out;
+}
+
+/**
+ * Whether a fit is running (its targets are up).
+ * @param fit the fit
+ * @return true while it runs
+ */
+bool fitRunning(const gaze_fit::View& fit) {
+    using gaze_fit::Phase;
+    return fit.phase == Phase::Settling || fit.phase == Phase::Capturing || fit.phase == Phase::Reopen;
 }
 
 }  // namespace
@@ -2140,9 +2178,13 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
     double y = kRowTop;
     const double cy = (kRowH - kControlH) / 2;
     const bool anyLocked = fitKeysLocked(v);
-    const bool busy = fit.phase == Phase::Waiting || fit.phase == Phase::Settling || fit.phase == Phase::Capturing ||
-                      fit.phase == Phase::Reopen;
-    const bool canRun = m.status.running && !anyLocked && !busy;
+    const bool busy = fitRunning(fit);
+    // While it runs, only "look at the dot" and "Stop": the dots show in front of this panel
+    if (busy) {
+        drawEyeFitRunning(pen, t, fit);
+        return;
+    }
+    const bool canRun = m.status.running && !anyLocked;
     const AutoRecenter rewear = autoRecenter(m.config);
 
     // The one button to press: fit (again); and the re-wear fit, the kind auto_recenter runs by itself when the
@@ -2184,27 +2226,20 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         std::vector<std::string> paragraphs;
         bool error = false;
         bool check = false;
-        bool stop = false;
         bool reset = false;
         char text[320];
         switch (fit.phase) {
-            case Phase::Waiting:
-                title = t.fitWaiting;
-                paragraphs.push_back(waitingText(t, fit.mode));
-                stop = true;
-                break;
             case Phase::Settling:
             case Phase::Capturing:
-            case Phase::Reopen:
-                std::snprintf(text, sizeof(text), t.fitRunningFormat, pointName(t, fit.point), fit.index + 1, fit.count);
-                title = text;
-                if (fit.attempt > 1) {
-                    std::snprintf(text, sizeof(text), t.fitRetryFormat, fit.attempt);
-                    title += text;
-                }
-                paragraphs.push_back(waitingText(t, fit.mode));
-                break;
+            case Phase::Reopen: break;  // drawn by drawEyeFitRunning
             case Phase::Failed:
+                if (fit.failure == gaze_fit::Failure::Cancelled || fit.failure == gaze_fit::Failure::Left ||
+                    fit.failure == gaze_fit::Failure::DashboardOpened) {
+                    // Stopped by the user: why, not an error
+                    title = failureText(t, fit);
+                    paragraphs.push_back(t.fitUnchanged);
+                    break;
+                }
                 error = true;
                 title = t.fitFailed;
                 paragraphs.push_back(failureText(t, fit));
@@ -2260,7 +2295,9 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                 } else {
                     title = !m.status.running ? t.fitNeedsRunning : (anyLocked ? t.fitLocked : "");
                     error = !title.empty();
+                    // How it goes, a sentence a line
                     paragraphs.push_back(t.fitIntro);
+                    for (const std::string& sentence : sentences(t.fitHowTo)) paragraphs.push_back(sentence);
                 }
                 break;
         }
@@ -2270,7 +2307,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
             paragraphs.clear();
         }
         const double buttonW = 150;
-        const bool button = stop || reset;
+        const bool button = reset;
         double textX = x0 + 20;
         if (check) {
             drawCheck(pen.cr, x0 + 32, compact ? y + h / 2 : y + 32, 24, kSuccess);
@@ -2298,10 +2335,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
             pen.text(textX, baseline - 5, line, 15, kTextMuted);
         }
         const double buttonH = compact ? 40 : kControlH;
-        if (stop) {
-            drawButton(pen, x1 - 20 - buttonW, y + (h - buttonH) / 2, buttonW, buttonH, t.fitStop,
-                       {PanelAction::FitStop, nullptr, 0}, true, false);
-        } else if (reset) {
+        if (reset) {
             drawButton(pen, x1 - 20 - buttonW, y + (h - buttonH) / 2, buttonW, buttonH, t.fitReset,
                        {PanelAction::FitReset, nullptr, 0}, !anyLocked && !busy, false);
         }
@@ -2345,6 +2379,32 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
     } else {
         drawEyeFitLids(pen, t, v, saved, busy, y);
     }
+}
+
+void EyePanel::drawEyeFitRunning(const Pen& pen, const UiText& t, const gaze_fit::View& fit) {
+    // Calm and still, since the dots show in front of it: one line to say what to do, under it how (muted, never
+    // changing while the fit runs: no step count or ring to pull the eyes), the middle of the card left empty where
+    // the dots usually are, and a big "Stop" at the bottom
+    const double cx = (kRightX + kRight) / 2;
+    const double width = kInnerRight - kInnerX - 40;
+    const double titleSize = 26;
+    double baseline = kContentY + 64;
+    textCentered(pen, cx, baseline, t.fitRunningTitle, titleSize, kText, true);
+    baseline += 12;
+    // A sentence a line (wrapped if one is too long), so none breaks in the middle of a word
+    size_t lines = 0;
+    for (const std::string& sentence : sentences(howToText(t, fit.mode))) {
+        if (lines >= 4) break;
+        for (const std::string& line : wrapText(pen, sentence, 17, false, width, 4 - lines)) {
+            baseline += 26;
+            textCentered(pen, cx, baseline, line, 17, kTextMuted, false);
+            ++lines;
+        }
+    }
+    const double stopW = 360;
+    const double stopH = 84;
+    drawButton(pen, cx - stopW / 2, kContentY + kContentH - 36 - stopH, stopW, stopH, t.fitStop,
+               {PanelAction::FitStop, nullptr, 0}, true, false, 32);
 }
 
 void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& v, const FitInConfig& saved,
@@ -5224,6 +5284,18 @@ void EyePanel::render(const PanelModel& model) {
         case PanelTab::Lids: drawLids(pen, t, model, view); break;
         case PanelTab::Advanced: drawAdvanced(pen, t, model, view); break;
         case PanelTab::Eyecam: drawEyecam(pen, t, model, view); break;
+    }
+    // While a fit runs on its tab, the rest is dimmed and can't be pressed, except the tabs (leaving stops the fit)
+    if (tab_ == PanelTab::EyeFit && fitRunning(model.fit)) {
+        pen.color(kBg, 0.72);
+        cairo_rectangle(pen.cr, kStatusX, kStatusY, kStatusW, kStatusH);
+        cairo_fill(pen.cr);
+        pen.color(kBg, 0.5);
+        cairo_rectangle(pen.cr, kRightX, kTabY, kRight - kRightX, kTabH);
+        cairo_fill(pen.cr);
+        for (Button& b : buttons_) {
+            if (b.hit.action != PanelAction::Tab && b.hit.action != PanelAction::FitStop) b.usable = false;
+        }
     }
     if (promptOpen()) drawPrompt(pen, t);
     if (hostEntryOpen_) drawHostEntry(pen, t);

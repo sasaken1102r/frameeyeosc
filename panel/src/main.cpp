@@ -254,10 +254,10 @@ void printUsage() {
         "                        A made-up update state (the version row on the Advanced tab)\n"
         "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
         "                        English and Japanese, English only, or both cut at 300 characters\n"
-        "      --fake-fit waiting|waiting-center|waiting-tilt|running|running-closed|done|done-center|done-tilt|\n"
+        "      --fake-fit running|running-center|running-tilt|running-closed|done|done-center|done-tilt|\n"
         "                 fitted|fitted-gaze|\n"
         "                 failed-unsteady|failed-notclosed|failed-movement|failed-lidrange|failed-cancelled|\n"
-        "                 failed-noresult  A made-up eye fit (Eye fit tab)\n"
+        "                 failed-left|failed-opened|failed-noresult  A made-up eye fit (Eye fit tab)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
         "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
@@ -725,10 +725,10 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--fake-fit" && hasNext) {
             options.fakeFit = argv[++i];
             static const char* const kFitStates[] = {
-                "waiting",         "waiting-center",   "waiting-tilt",    "running",         "running-closed",
-                "done",            "done-center",      "done-tilt",       "fitted",          "fitted-gaze",
-                "failed-unsteady", "failed-notclosed", "failed-movement", "failed-lidrange", "failed-cancelled",
-                "failed-noresult"};
+                "running",          "running-center",  "running-tilt",     "running-closed",  "done",
+                "done-center",      "done-tilt",       "fitted",           "fitted-gaze",     "failed-unsteady",
+                "failed-notclosed", "failed-movement", "failed-lidrange",  "failed-cancelled", "failed-left",
+                "failed-opened",    "failed-noresult"};
             if (std::find(std::begin(kFitStates), std::end(kFitStates), options.fakeFit) == std::end(kFitStates)) {
                 std::fprintf(stderr, "--fake-fit: unknown state %s\n", options.fakeFit.c_str());
                 return false;
@@ -1242,13 +1242,17 @@ PanelModel fakeModel(const Options& options) {
                 for (int i = 0; i < 4; ++i) root.set(kLidFitKeys[eye][i], JsonValue::makeNumber(readings[eye][i]));
             }
         }
-        if (state.rfind("waiting", 0) == 0) {
-            fit.phase = Phase::Waiting;
-        } else if (state == "running") {
+        if (state == "running") {
             fit.phase = Phase::Capturing;
             fit.index = 2;
             fit.point = Point::Down;
             fit.attempt = 2;
+        } else if (state == "running-center") {
+            fit.phase = Phase::Capturing;
+        } else if (state == "running-tilt") {
+            fit.phase = Phase::Settling;
+            fit.index = 1;
+            fit.point = Point::Up;
         } else if (state == "running-closed") {
             fit.phase = Phase::Settling;
             fit.index = 5;
@@ -1264,6 +1268,8 @@ PanelModel fakeModel(const Options& options) {
                           : state == "failed-movement"  ? Failure::NoMovement
                           : state == "failed-lidrange"  ? Failure::NoLidRange
                           : state == "failed-cancelled" ? Failure::Cancelled
+                          : state == "failed-left"      ? Failure::Left
+                          : state == "failed-opened"    ? Failure::DashboardOpened
                                                         : Failure::NoResult;
             fit.point = state == "failed-movement" ? Point::Down : Point::Left;
             // Made-up numbers behind it
@@ -1894,7 +1900,7 @@ std::string hostErrorText(const UiText& t, host_entry::HostError problem) {
 }
 
 /**
- * Start an eye fit session (it waits for the dashboard to close, or goes straight to the first target if it is).
+ * Start an eye fit session: the first target shows at once, the dashboard open or closed.
  * @param fit the session
  * @param mode the whole fit, re-centering only, or re-centering and the tilt
  * @param view the settings (the fit now)
@@ -1905,7 +1911,8 @@ void startFit(gaze_fit::Session& fit, gaze_fit::Mode mode, const SettingsView& v
     const char* name = mode == gaze_fit::Mode::Full     ? "eye fit"
                        : mode == gaze_fit::Mode::Center ? "re-center"
                                                         : "re-center and tilt";
-    std::fprintf(stderr, "[fit] %s, IPD %.1f mm\n", name, ipd * 1000);
+    std::fprintf(stderr, "[fit] %s, IPD %.1f mm, dashboard %s\n", name, ipd * 1000,
+                 vr != nullptr && vr->dashboardVisible() ? "open" : "closed");
     fit.start(mode, fitInConfig(view).values, nowSeconds(), ipd);
 }
 
@@ -2141,7 +2148,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::FitStart:
         case PanelAction::FitCenter: {
             const bool full = hit.action == PanelAction::FitStart;
-            std::fprintf(stderr, "[fit] %s: waiting for the dashboard to close\n", full ? "eye fit" : "re-wear fit");
+            std::fprintf(stderr, "[fit] %s: started from the panel\n", full ? "eye fit" : "re-wear fit");
             const gaze_fit::Mode mode = full ? gaze_fit::Mode::Full : rewearMode(autoRecenter(model.config));
             if (fit != nullptr) startFit(*fit, mode, view, vr);
             return;
@@ -2538,6 +2545,7 @@ int runOverlay(const Options& options) {
     bool dirty = true;
     bool wasVisible = false;
     bool firstSubmit = true;
+    bool calmDrawn = false;         // the Eye fit tab's running view was drawn (it then stays still, see below)
     bool userQuit = false;
     while (!gStopRequested && !userQuit) {
         if (gShowRequested) {
@@ -2558,7 +2566,7 @@ int runOverlay(const Options& options) {
             break;
         }
 
-        // Files are only read while the panel is visible, or while a eye fit runs with the dashboard closed
+        // Files are only read while the panel is visible, or while an eye fit runs (the dashboard open or closed)
         const bool visible = vr.panelVisible();
         autostart.setActive(visible);
         const bool fitting = fit.active();
@@ -2600,11 +2608,19 @@ int runOverlay(const Options& options) {
             }
         }
 
+        bool pointerDirty = false;  // the pointer changed something on the panel (hover, a press)
         for (const PointerInput& input : events.pointer) {
+            bool changed = false;
             switch (input.type) {
-                case PointerInput::Type::Move: dirty |= panel.pointerMove(input.x, input.y); break;
+                case PointerInput::Type::Move: changed = panel.pointerMove(input.x, input.y); break;
                 case PointerInput::Type::Down: {
+                    const PanelTab tabBefore = panel.tab();
                     const PanelHit hit = panel.pointerDown(input.x, input.y, nowSeconds());
+                    // Leaving the tab stops a fit (the tab bar is the one thing left to press besides "Stop")
+                    if (panel.tab() != tabBefore && fit.active()) {
+                        std::fprintf(stderr, "[fit] stopped: another tab chosen\n");
+                        fit.cancel(gaze_fit::Failure::Left);
+                    }
                     if (hit.action == PanelAction::Quit) {
                         std::fprintf(stderr, "[VR] quitting from the panel's \"Quit\"\n");
                         userQuit = true;
@@ -2612,13 +2628,15 @@ int runOverlay(const Options& options) {
                         applyHit(hit, model, panel, autostart, &updater, &fit, &vr, &eyeLog, &eyecamControl);
                         lastStamp = configStamp(model.configPath);
                     }
-                    dirty = true;
+                    changed = true;
                     break;
                 }
-                case PointerInput::Type::Up: dirty |= panel.pointerUp(); break;
-                case PointerInput::Type::Leave: dirty |= panel.pointerLeave(); break;
-                case PointerInput::Type::Scroll: dirty |= panel.scroll(input.y); break;
+                case PointerInput::Type::Up: changed = panel.pointerUp(); break;
+                case PointerInput::Type::Leave: changed = panel.pointerLeave(); break;
+                case PointerInput::Type::Scroll: changed = panel.scroll(input.y); break;
             }
+            dirty |= changed;
+            pointerDirty |= changed;
         }
         if (userQuit) break;
         // The thumbstick scrolls the panel only while the version history, or a taller Advanced tab, is shown
@@ -2669,10 +2687,13 @@ int runOverlay(const Options& options) {
             if (step.start) startFit(fit, rewearMode(autoRecenter(model.config)), view, &vr);
         }
 
-        // The eye fit: requests and results go through config.json and status.json; the target is only shown
-        // while the dashboard is closed
+        // The eye fit: requests and results go through config.json and status.json; the target shows over the open
+        // dashboard too (it is nearer)
         {
-            const gaze_fit::Actions actions = fit.tick(nowSeconds(), dashboardOpen, model.status);
+            gaze_fit::Dashboard dashboard;
+            dashboard.open = dashboardOpen;
+            dashboard.panelShown = visible;
+            const gaze_fit::Actions actions = fit.tick(nowSeconds(), dashboard, model.status);
             // One "[fit]" line each (a try's numbers, and at the end the tilt)
             for (size_t start = 0; start < actions.log.size();) {
                 const size_t end = std::min(actions.log.find('\n', start), actions.log.size());
@@ -2981,11 +3002,16 @@ int runOverlay(const Options& options) {
             }
         }
 
-        // Draw only while visible, and only when something changed
-        if (visible && (dirty || !wasVisible)) {
+        // Draw only while visible, and only when something changed. While a fit runs on its tab, the panel is behind
+        // the dots: drawn once and then only for the pointer, so nothing on it moves (the left column's numbers, the
+        // steps) and the loop keeps to the display's frames; what changed meanwhile is drawn when the fit ends
+        const bool calm = fit.active() && panel.tab() == PanelTab::EyeFit;
+        if (!calm) calmDrawn = false;
+        if (visible && (dirty || !wasVisible) && (!calm || !calmDrawn || pointerDirty || !wasVisible)) {
             panel.render(model);
             vr.submitPanel(panel.toRgba().data());
             dirty = false;
+            calmDrawn = calm;
             if (firstSubmit) {
                 firstSubmit = false;
                 vr.logOverlayState("after the first draw");

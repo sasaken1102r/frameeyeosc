@@ -1,7 +1,8 @@
 // Tests for the Eyelids and eye cameras tabs as drawn (案E): which buttons they offer for each source of the eyelids
 // (the widening slider's routing, "Fine-tune" folded and open, the sensitivity slider moved off the eye cameras page)
 // and a setting's slider let go of, the setup's (3) with a pupil not found, and a calibration that went through without
-// one eye, and the Advanced tab's page scrolled (kept within it, ▲ / ▼, only what shows can be pressed). Built with
+// one eye, the Advanced tab's page scrolled (kept within it, ▲ / ▼, only what shows can be pressed), and the Eye fit
+// tab while a fit runs (only "Stop" and the tabs). Built with
 // the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
@@ -862,6 +863,57 @@ void testToolNotice(const FontSet& fonts) {
     }
 }
 
+void testFitRunning(const FontSet& fonts) {
+    // Before: the fit's buttons, no "Stop"
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::EyeFit);
+    PanelModel m = modelWith(Lids::Valve, false);
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::FitStart).size() == 1 && hits(panel, PanelAction::FitCenter).size() == 1);
+    CHECK(hits(panel, PanelAction::FitStop).empty());
+    // Running (started with the dashboard open, so the panel shows behind the dots): one big "Stop" low in the card
+    // and the tabs; nothing else can be pressed (the rest is dimmed), in every step and mode
+    for (const gaze_fit::Phase phase : {gaze_fit::Phase::Settling, gaze_fit::Phase::Capturing, gaze_fit::Phase::Reopen}) {
+        for (const gaze_fit::Mode mode : {gaze_fit::Mode::Full, gaze_fit::Mode::Center, gaze_fit::Mode::Tilt}) {
+            m.fit = gaze_fit::View();
+            m.fit.phase = phase;
+            m.fit.mode = mode;
+            panel.render(m);
+            const std::vector<EyePanel::HitArea> stop = hits(panel, PanelAction::FitStop);
+            CHECK(stop.size() == 1);
+            CHECK(stop.size() == 1 && stop[0].w >= 300 && stop[0].h >= 80 && stop[0].y > 500);
+            CHECK(hits(panel, PanelAction::Tab).size() >= 5);  // the other tabs
+            for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::FitStop);
+            }
+        }
+    }
+    // Pressing "Stop" gives it to the caller (which stops the fit)
+    {
+        const EyePanel::HitArea stop = hits(panel, PanelAction::FitStop)[0];
+        const PanelHit hit = panel.pointerDown(stop.x + stop.w / 2, stop.y + stop.h / 2, 0.0);
+        panel.pointerUp();
+        CHECK(hit.action == PanelAction::FitStop);
+    }
+    // Another tab chosen: the tab changes (the caller sees it and stops the fit)
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) {
+        if (area.hit.arg != static_cast<int>(PanelTab::Basic)) continue;
+        panel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+        panel.pointerUp();
+    }
+    CHECK(panel.tab() == PanelTab::Basic);
+    // A fit running while another tab shows (re-centering when the headset was put on): that tab as usual
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::FitStop).empty() && panel.hitAreas().size() > hits(panel, PanelAction::Tab).size());
+    // Stopped: back to the buttons, with why
+    panel.setTab(PanelTab::EyeFit);
+    m.fit.phase = gaze_fit::Phase::Failed;
+    m.fit.failure = gaze_fit::Failure::Cancelled;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::FitStop).empty() && hits(panel, PanelAction::FitStart).size() == 1);
+    CHECK(hits(panel, PanelAction::FitDetails).size() == 1);
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -879,6 +931,7 @@ int main() {
     testDiagPage(fonts);
     testAdvancedScroll(fonts);
     testPartialResult(fonts);
+    testFitRunning(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

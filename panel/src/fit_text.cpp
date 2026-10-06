@@ -69,7 +69,8 @@ std::string failureText(const UiText& t, const gaze_fit::View& fit) {
     switch (fit.failure) {
         case Failure::None: return "";
         case Failure::Cancelled: return t.failCancelled;
-        case Failure::WaitTimedOut: return t.failWaitTimedOut;
+        case Failure::Left: return t.failLeft;
+        case Failure::DashboardOpened: return t.failDashboardOpened;
         case Failure::NotRunning: return t.failNotRunning;
         case Failure::NoResult: return t.failNoResult;
         case Failure::Unsteady: return format(t.failUnsteadyFormat, pointName(t, fit.point));

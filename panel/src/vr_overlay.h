@@ -107,9 +107,9 @@ public:
 
 
     /**
-     * Show the eye fit's target: an overlay of its own (not on the dashboard), fixed to the headset 2 m ahead in
-     * the given direction. Created the first time it is needed and kept, hidden, until shutdown. The caller only
-     * shows it while the dashboard is closed.
+     * Show the eye fit's target: an overlay of its own (not on the dashboard), fixed to the headset
+     * gaze_fit::kTargetDistanceM (0.9 m) ahead in the given direction, nearer than the dashboard so it shows over it
+     * when that is open. Created the first time it is needed and kept, hidden, until shutdown.
      * @param yawDeg degrees to the right of straight ahead
      * @param pitchDeg degrees up
      * @param rgba a new image, non-premultiplied RGBA; nullptr keeps the last one

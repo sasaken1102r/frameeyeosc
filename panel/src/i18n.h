@@ -168,15 +168,13 @@ struct UiText {
     const char* fitCenterOnly;       ///< small button: re-center the gaze only...
     const char* fitCenterTilt;       ///< ...or re-center and measure the tilt (as auto_recenter says)
     const char* fitStop;
-    const char* fitIntro;            ///< before any fit
+    const char* fitIntro;            ///< before any fit (fitHowTo follows it)
     const char* fitNeedsRunning;
     const char* fitLocked;
-    const char* fitWaiting;          ///< "Close the dashboard to start"
-    const char* fitHowTo;            ///< while waiting / running (full fit)
-    const char* fitWaitingCenter;    ///< while waiting / running (re-centering)
-    const char* fitWaitingTilt;      ///< while waiting / running (re-centering and the tilt)
-    const char* fitRunningFormat;    ///< "Measuring: %s (%d of %d)"
-    const char* fitRetryFormat;      ///< appended: ", try %d"
+    const char* fitRunningTitle;     ///< while a fit runs: the one calm line ("Look at the dot")...
+    const char* fitHowTo;            ///< ...and under it, what to do (full fit)
+    const char* fitHowToCenter;      ///< (re-centering)
+    const char* fitHowToTilt;        ///< (re-centering and the tilt)
     const char* fitDone;             ///< right after a full fit
     const char* fitDoneCenter;       ///< right after re-centering
     const char* fitDoneTilt;         ///< right after re-centering and the tilt
@@ -189,8 +187,10 @@ struct UiText {
     const char* fitLidFormat;        ///< "Eyelid %s: open %s, closed %s, looking down %s"
     const char* fitLidsNone;
     const char* fitFailed;
-    const char* failCancelled;
-    const char* failWaitTimedOut;
+    const char* failCancelled;       ///< "Stop" pressed
+    const char* fitUnchanged;        ///< under a stop (Cancelled, Left, DashboardOpened): "Nothing was changed"
+    const char* failLeft;            ///< another tab or dashboard page
+    const char* failDashboardOpened; ///< opened while the fit ran without it
     const char* failNotRunning;
     const char* failNoResult;
     const char* failUnsteadyFormat;  ///< %s = the point

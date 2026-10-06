@@ -32,12 +32,14 @@ constexpr int kShutdownWaitMs = 400;
 constexpr double kSmoothScrollPx = 120.0;   ///< VREvent_ScrollSmooth (a continuous delta)
 constexpr double kDiscreteScrollPx = 80.0;  ///< VREvent_ScrollDiscrete (one notch)
 constexpr int kScrollLogCount = 12;
-// The eye fit's target: an ordinary (not dashboard) overlay fixed to the headset
+// The eye fit's target: a plain overlay fixed to the headset, like the debug dots and the eye capture's light (no sort
+// order, no dashboard flags: with those, the dashboard hid the dots even at 1 m), so it shows over the open dashboard
 constexpr const char* kTargetKey = "sasaken.frameeyeosc-panel.target";
 constexpr const char* kTargetName = "Eye target";
-// 2 m ahead (gaze_fit::kTargetDistanceM) and 0.3 m wide (about 8.6 degrees)
+// 0.9 m ahead (gaze_fit::kTargetDistanceM), nearer than the dashboard (about 1.35 m), and 0.15 m wide per meter
+// ahead: about 8.6 degrees, as when it was 0.3 m wide 2 m ahead
 constexpr double kTargetDistanceM = gaze_fit::kTargetDistanceM;
-constexpr float kTargetWidthM = 0.3f;
+constexpr float kTargetWidthM = static_cast<float>(0.15 * kTargetDistanceM);
 // The debug gaze dots: small plain overlays of their own, like frame-perf-overlay's panel (no sort order, no
 // dashboard flags: with those, the dashboard hid them even at 1 m); their width and distance: gaze_dots.h
 constexpr const char* kDotKeys[2] = {"sasaken.frameeyeosc-panel.dot0", "sasaken.frameeyeosc-panel.dot1"};
@@ -399,6 +401,8 @@ bool VrOverlay::showTarget(double yawDeg, double pitchDeg, const uint8_t* rgba, 
         }
         targetHandle_ = handle;
         checkOverlay("SetOverlayWidthInMeters(target)", overlay->SetOverlayWidthInMeters(handle, kTargetWidthM));
+        std::fprintf(stderr, "[VR] target %.2f m ahead, %.3f m wide (plain overlay, no sort order or flags)\n",
+                     kTargetDistanceM, kTargetWidthM);
         if (!targetTexture_.create(vulkan_, size, size, message)) {
             std::fprintf(stderr, "[Vulkan] can't create the target texture: %s\n", message.c_str());
             targetFailed_ = true;

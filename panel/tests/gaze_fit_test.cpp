@@ -39,6 +39,11 @@ using namespace gaze_fit;
 const double kSide = kSideDeg / kFullScaleDeg;
 const double kUpDown = kUpDownDeg / kFullScaleDeg;
 
+/** The dashboard closed; open on this panel (a fit started from it); open on another overlay's page. */
+const Dashboard kClosed {};
+const Dashboard kOpen {true, true};
+const Dashboard kElsewhere {true, false};
+
 /**
  * A steady capture with the eyes open.
  * @param x average x
@@ -168,7 +173,9 @@ void testEyes() {
     const double left = eyeAngle(0.0, 0, 0.063);
     const double right = eyeAngle(0.0, 1, 0.063);
     CHECK(left > 0 && near(left, -right));
-    CHECK(std::fabs(left * kFullScaleDeg - std::atan2(0.0315, 2.0) * 180 / M_PI) < 1e-9);
+    // ...as seen from the eye at the distance the dots are drawn (0.9 m: about 2.0°)
+    CHECK(std::fabs(left * kFullScaleDeg - std::atan2(0.0315, kTargetDistanceM) * 180 / M_PI) < 1e-9);
+    CHECK(near(kTargetDistanceM, 0.9) && std::fabs(left * kFullScaleDeg - 2.0) < 0.01);
     CHECK(eyeAngle(kSideDeg, 0, 0.063) > eyeAngle(kSideDeg, 1, 0.063));
     CHECK(near(eyeAngle(kSideDeg, 0, 0.0), kSideDeg / kFullScaleDeg));
 
@@ -456,15 +463,15 @@ void testCenterAndUsable() {
  * @return the actions after the answer
  */
 Actions runStep(Session& s, double& now, long long& id, const Measured& answer, double settle = kSettleSec,
-                bool gaze = true) {
-    s.tick(now, false, runningWith(0, false, {}));
+                bool gaze = true, const Dashboard& dashboard = kClosed) {
+    s.tick(now, dashboard, runningWith(0, false, {}));
     now += settle;
-    const Actions a = s.tick(now, false, runningWith(0, false, {}));
+    const Actions a = s.tick(now, dashboard, runningWith(0, false, {}));
     CHECK(a.writeCapture);
     CHECK(near(a.captureSec, gaze ? kCaptureSec : kClosedSec) && near(a.skipSec, gaze ? kCaptureSkipSec : kClosedSkipSec));
     s.captureSent(++id, now);
     now += (gaze ? kCaptureSec : kClosedSec) + 0.2;
-    return s.tick(now, false, runningWith(id, true, answer, gaze));
+    return s.tick(now, dashboard, runningWith(id, true, answer, gaze));
 }
 
 void testFullSession() {
@@ -474,75 +481,74 @@ void testFullSession() {
     double now = 100.0;
     long long id = 0;
     s.start(Mode::Full, Values(), now);
-    CHECK(s.active() && s.view().phase == Phase::Waiting && s.view().count == 6);
-    // Nothing is shown while the dashboard is open
-    Actions a = s.tick(now + 0.1, true, runningWith(0, false, {}));
-    CHECK(!a.showTarget && s.view().phase == Phase::Waiting);
+    CHECK(s.active() && s.view().phase == Phase::Settling && s.view().count == 6);
 
-    // First step: the dot straight ahead, the ring full and no number until it is measured
-    now += 1.0;
-    a = s.tick(now, false, runningWith(0, false, {}));
+    // Started from the panel, the dashboard open: the first step shows at once (no waiting for the dashboard to
+    // close): the dot straight ahead, the ring full and no number until it is measured
+    Actions a = s.tick(now, kOpen, runningWith(0, false, {}));
     CHECK(a.showTarget && a.style == TargetStyle::Dot && a.seconds == 0 && near(a.progress, 1.0));
     CHECK(near(a.yawDeg, 0.0) && near(a.pitchDeg, 0.0));
     now += kSettleSec;
-    a = s.tick(now, false, runningWith(0, false, {}));
+    a = s.tick(now, kOpen, runningWith(0, false, {}));
     CHECK(a.writeCapture && std::string(a.target) == "center" && near(a.captureSec, 2.0) && near(a.skipSec, 0.3));
     CHECK(near(kSettleSec + kCaptureSec, 2.5));
     s.captureSent(++id, now);
     // An old capture's result is not ours; the measured seconds count down 2, 1 and the ring runs down evenly
-    a = s.tick(now + 0.5, false, runningWith(id - 1 + 100, true, steady(0.3, 0.3)));
+    a = s.tick(now + 0.5, kOpen, runningWith(id - 1 + 100, true, steady(0.3, 0.3)));
     CHECK(s.view().phase == Phase::Capturing && a.seconds == 2 && near(a.progress, 1.5 / 2.5));
-    a = s.tick(now + 1.0, false, runningWith(id, false, {}));
-    a = s.tick(now + 1.5, false, runningWith(id, false, {}));
+    a = s.tick(now + 1.0, kOpen, runningWith(id, false, {}));
+    a = s.tick(now + 1.5, kOpen, runningWith(id, false, {}));
     CHECK(a.seconds == 1 && near(a.progress, 0.5 / 2.5));
     now += 2.2;
-    a = s.tick(now, false, runningWith(id, true, points[0]));
+    a = s.tick(now, kOpen, runningWith(id, true, points[0]));
     CHECK(s.view().point == Point::Up && s.view().phase == Phase::Settling);
 
     // The dot glides up from the center over kMoveSec
-    a = s.tick(now + kMoveSec / 2, false, runningWith(0, false, {}));
+    a = s.tick(now + kMoveSec / 2, kOpen, runningWith(0, false, {}));
     CHECK(a.pitchDeg > 0.0 && a.pitchDeg < kUpDownDeg);
-    a = s.tick(now + kMoveSec, false, runningWith(0, false, {}));
+    a = s.tick(now + kMoveSec, kOpen, runningWith(0, false, {}));
     CHECK(near(a.pitchDeg, kUpDownDeg));
 
-    // An unsteady capture is tried again at the same point, without gliding
+    // An unsteady capture is tried again at the same point, without gliding. The dashboard is closed meanwhile: the
+    // fit goes on (the dots stay)
     Measured shaky = points[1];
     shaky.spread = 0.2;
     runStep(s, now, id, shaky);
+    CHECK(s.active());
     CHECK(s.view().point == Point::Up && s.view().attempt == 2 && s.view().phase == Phase::Settling);
-    a = s.tick(now + 0.01, false, runningWith(0, false, {}));
+    a = s.tick(now + 0.01, kClosed, runningWith(0, false, {}));
     CHECK(near(a.pitchDeg, kUpDownDeg));
     for (int i = 1; i < 5; ++i) runStep(s, now, id, points[i]);
     CHECK(s.view().point == Point::Closed);
 
     // The eyes-shut step: "close your eyes" 3, 2, 1, then "keep them closed", then "open your eyes"
     // The ring runs the full circle over the countdown: full at 3.0 s left, half at 1.5 s, nearly empty at 0.1 s
-    a = s.tick(now, false, runningWith(0, false, {}));
+    a = s.tick(now, kClosed, runningWith(0, false, {}));
     CHECK(a.style == TargetStyle::CloseEyes && a.seconds == 3 && near(a.progress, 1.0));
-    a = s.tick(now + 1.5, false, runningWith(0, false, {}));
+    a = s.tick(now + 1.5, kClosed, runningWith(0, false, {}));
     CHECK(a.seconds == 2 && near(a.progress, 0.5));
-    a = s.tick(now + 2.9, false, runningWith(0, false, {}));
+    a = s.tick(now + 2.9, kClosed, runningWith(0, false, {}));
     CHECK(a.seconds == 1 && near(a.progress, 0.1 / 3));
-    a = s.tick(now + 2.5, false, runningWith(0, false, {}));
+    a = s.tick(now + 2.5, kClosed, runningWith(0, false, {}));
     CHECK(a.style == TargetStyle::CloseEyes && a.seconds == 1 && !a.writeCapture);
     now += kCloseSettleSec;
-    a = s.tick(now, false, runningWith(0, false, {}));
+    a = s.tick(now, kClosed, runningWith(0, false, {}));
     CHECK(a.writeCapture && std::string(a.target) == "closed" && a.style == TargetStyle::KeepClosed);
     CHECK(near(a.captureSec, 3.0) && near(a.skipSec, 0.5) && near(a.progress, 1.0));
     s.captureSent(++id, now);
     // ...and again the whole way round while the eyes are shut
-    a = s.tick(now + 1.5, false, runningWith(id, false, {}));
+    a = s.tick(now + 1.5, kClosed, runningWith(id, false, {}));
     CHECK(a.style == TargetStyle::KeepClosed && near(a.progress, 0.5));
     now += kClosedSec + 0.2;
-    a = s.tick(now, false, runningWith(id, true, points[5], false));
+    a = s.tick(now, kClosed, runningWith(id, true, points[5], false));
     CHECK(s.view().phase == Phase::Reopen && a.style == TargetStyle::OpenEyes && !a.writeValues);
     now += kReopenSec;
-    a = s.tick(now, false, runningWith(0, false, {}));
+    a = s.tick(now, kClosed, runningWith(0, false, {}));
     CHECK(a.writeValues && !a.showTarget && s.view().phase == Phase::Done && !s.active());
     CHECK(near(a.values.gainX, 0.93) && a.values.hasLids && near(a.values.lidClosed[1], 0.26));
     CHECK(id == 7);
     // Done stays done
-    a = s.tick(now + 1, false, runningWith(id, true, points[5], false));
+    a = s.tick(now + 1, kClosed, runningWith(id, true, points[5], false));
     CHECK(!a.writeValues && !a.writeCapture);
 }
 
@@ -590,7 +596,7 @@ void testTiltSession() {
         a = runStep(s, now, id, gazeOnly);
         if (i == 0) {
             // The dot glides up
-            const Actions glide = s.tick(now + kMoveSec / 2, false, runningWith(0, false, {}));
+            const Actions glide = s.tick(now + kMoveSec / 2, kClosed, runningWith(0, false, {}));
             CHECK(glide.pitchDeg > 0.0 && glide.pitchDeg < kUpDownDeg && near(glide.yawDeg, 0.0));
         }
     }
@@ -619,7 +625,7 @@ void testTiltSession() {
     for (int i = 0; i < 5; ++i) runStep(full, now, id, first[i]);
     runStep(full, now, id, shut(), kCloseSettleSec, false);
     now += kReopenSec;
-    a = full.tick(now, false, runningWith(0, false, {}));
+    a = full.tick(now, kClosed, runningWith(0, false, {}));
     CHECK(a.writeValues && near(a.values.rollDeg, 6.7));
     CHECK(a.log == "tilt +6.7° from up/down, +6.7° from the sides");
 }
@@ -693,53 +699,97 @@ void testFailures() {
         for (int i = 0; i < 5; ++i) runStep(s, now, id, lowDown[i]);
         runStep(s, now, id, shut(0.15, 0.55), kCloseSettleSec, false);
         now += kReopenSec;
-        const Actions a = s.tick(now, false, runningWith(0, false, {}));
+        const Actions a = s.tick(now, kClosed, runningWith(0, false, {}));
         CHECK(!a.writeValues && s.view().failure == Failure::NoLidRange);
         // Which eye and reading: the right eye looking down, 0.6 open against 0.55 shut
         const FailureDetail& d = s.view().detail;
         CHECK(d.eye == 1 && d.lidPoint == Point::Down && near(d.lidOpen, 0.6) && near(d.lidClosed, 0.55));
     }
     {
-        // Opening the dashboard during a run stops it and hides the target
+        // Opening the dashboard during a run started without it (re-centering when the headset is put on) stops it
+        // and hides the target
         Session s;
         s.start(Mode::Full, Values(), 0.0);
-        s.tick(0.5, false, runningWith(0, false, {}));
-        const Actions a = s.tick(0.8, true, runningWith(0, false, {}));
-        CHECK(!a.showTarget && s.view().failure == Failure::Cancelled);
+        s.tick(0.5, kClosed, runningWith(0, false, {}));
+        const Actions a = s.tick(0.8, kOpen, runningWith(0, false, {}));
+        CHECK(!a.showTarget && s.view().failure == Failure::DashboardOpened);
+    }
+    {
+        // Started with it open and closed halfway: the run goes on; opened again, it stops (the way to stop it
+        // once the panel's "Stop" can't be reached)
+        Session s;
+        s.start(Mode::Center, Values(), 0.0);
+        CHECK(s.tick(0.1, kOpen, runningWith(0, false, {})).showTarget);
+        CHECK(s.tick(0.3, kClosed, runningWith(0, false, {})).showTarget && s.active());
+        const Actions a = s.tick(0.4, kOpen, runningWith(0, false, {}));
+        CHECK(!a.showTarget && s.view().failure == Failure::DashboardOpened);
+    }
+    {
+        // Open all along on this panel: nothing stops it, and it runs to the end
+        Session s;
+        double now = 0.0;
+        long long id = 0;
+        s.start(Mode::Center, Values(), now);
+        const Actions a = runStep(s, now, id, steady(0.05, -0.12), kSettleSec, true, kOpen);
+        CHECK(a.writeValues && s.view().phase == Phase::Done);
+    }
+    {
+        // The dashboard showing another page: a moment of it (the dashboard closing: the panel hides a frame before
+        // it) goes on; kAwaySec of it stops the run
+        Session s;
+        s.start(Mode::Full, Values(), 0.0);
+        s.tick(0.1, kOpen, runningWith(0, false, {}));
+        s.tick(0.2, kElsewhere, runningWith(0, false, {}));
+        CHECK(s.tick(0.2 + kAwaySec - 0.05, kElsewhere, runningWith(0, false, {})).showTarget);
+        // Back on the panel and away again: counted afresh
+        s.tick(0.2 + kAwaySec - 0.04, kOpen, runningWith(0, false, {}));
+        CHECK(s.tick(0.2 + kAwaySec + 0.1, kElsewhere, runningWith(0, false, {})).showTarget && s.active());
+        // ...and then closed: it goes on
+        CHECK(s.tick(0.2 + kAwaySec + 0.2, kClosed, runningWith(0, false, {})).showTarget && s.active());
+        CHECK(s.tick(5.0, kClosed, runningWith(0, false, {})).showTarget && s.active());
+        // Open all along, on another page
+        Session away;
+        away.start(Mode::Full, Values(), 0.0);
+        away.tick(0.1, kOpen, runningWith(0, false, {}));
+        away.tick(0.25, kElsewhere, runningWith(0, false, {}));
+        const Actions a = away.tick(0.25 + kAwaySec, kElsewhere, runningWith(0, false, {}));
+        CHECK(!a.showTarget && away.view().failure == Failure::Left);
     }
     {
         // frameeyeosc not running
         Session s;
         s.start(Mode::Center, Values(), 0.0);
-        s.tick(0.1, true, EyeStatus());
+        s.tick(0.1, kOpen, EyeStatus());
         CHECK(s.view().failure == Failure::NotRunning);
     }
     {
         // No answer to a capture
         Session s;
         s.start(Mode::Center, Values(), 0.0);
-        s.tick(0.1, false, runningWith(0, false, {}));
-        s.tick(1.2, false, runningWith(0, false, {}));
+        s.tick(0.1, kClosed, runningWith(0, false, {}));
+        s.tick(1.2, kClosed, runningWith(0, false, {}));
         s.captureSent(1, 1.2);
-        s.tick(1.2 + kResultTimeoutSec + 0.1, false, runningWith(0, false, {}));
+        s.tick(1.2 + kResultTimeoutSec + 0.1, kClosed, runningWith(0, false, {}));
         CHECK(s.view().failure == Failure::NoResult);
     }
     {
-        // The dashboard never closed
+        // "Stop" pressed, another tab chosen, and a failed write
         Session s;
         s.start(Mode::Full, Values(), 0.0);
-        s.tick(kDashboardWaitSec + 1, true, runningWith(0, false, {}));
-        CHECK(s.view().failure == Failure::WaitTimedOut);
-    }
-    {
-        // "Stop" while waiting, and a failed write
-        Session s;
-        s.start(Mode::Full, Values(), 0.0);
+        s.tick(0.1, kOpen, runningWith(0, false, {}));
         s.cancel();
         CHECK(s.view().failure == Failure::Cancelled && !s.active());
+        CHECK(!s.tick(0.2, kOpen, runningWith(0, false, {})).showTarget);
+        s.start(Mode::Tilt, Values(), 0.0);
+        s.tick(0.1, kOpen, runningWith(0, false, {}));
+        s.cancel(Failure::Left);
+        CHECK(s.view().failure == Failure::Left && !s.active());
+        // Stopping a stopped fit changes nothing
+        s.cancel();
+        CHECK(s.view().failure == Failure::Left);
         s.start(Mode::Center, Values(), 0.0);
-        s.tick(0.1, false, runningWith(0, false, {}));
-        const Actions a = s.tick(1.2, false, runningWith(0, false, {}));
+        s.tick(0.1, kOpen, runningWith(0, false, {}));
+        const Actions a = s.tick(1.2, kOpen, runningWith(0, false, {}));
         CHECK(a.writeCapture);
         s.writeFailed();
         CHECK(s.view().failure == Failure::WriteFailed);

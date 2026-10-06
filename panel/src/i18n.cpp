@@ -165,17 +165,13 @@ UiText makeJapanese() {
     t.fitCenterOnly = "正面だけ合わせ直す";
     t.fitCenterTilt = "正面と傾きを合わせ直す";
     t.fitStop = "やめる";
-    t.fitIntro = "ダッシュボードを閉じると始まります。頭は動かさず、点を目で追ってください。最後は 3・2・1 のあと 3 秒間目を閉じ、"
-                 "チャイムで開けます";
+    t.fitIntro = "［目を合わせる］を押すと、すぐに点が出ます（ダッシュボードは開いたままで大丈夫）";
     t.fitNeedsRunning = "frameeyeosc が動いているときに使えます";
     t.fitLocked = "視線かまぶたの値がコマンドで固定されているので使えません";
-    t.fitWaiting = "ダッシュボードを閉じると始まります";
-    t.fitHowTo = "頭は動かさず、点を目で追ってください。最後は 3・2・1 のあと 3 秒間目を閉じ、チャイムで開けます。"
-                 "ダッシュボードを開くと止まります";
-    t.fitWaitingCenter = "正面に点が出ます。頭は動かさず見てください。ダッシュボードを開くと止まります";
-    t.fitWaitingTilt = "正面、上、下の順に点が出ます。頭は動かさず、点を目で追ってください。ダッシュボードを開くと止まります";
-    t.fitRunningFormat = "測っています: %s（%d / %d）";
-    t.fitRetryFormat = "・%d 回目";
+    t.fitRunningTitle = "点を見てください";
+    t.fitHowTo = "頭は動かさず、点を目で追ってください。最後は 3・2・1 のあと 3 秒間目を閉じ、チャイムで開けます";
+    t.fitHowToCenter = "点は正面に出ます。頭は動かさず見てください";
+    t.fitHowToTilt = "点は正面、上、下の順に出ます。頭は動かさず、点を目で追ってください";
     t.fitDone = "合わせました";
     t.fitDoneCenter = "正面を合わせ直しました";
     t.fitDoneTilt = "正面と傾きを合わせ直しました";
@@ -188,8 +184,10 @@ UiText makeJapanese() {
     t.fitLidFormat = "まぶた %s: 開 %s・閉 %s・下を見ると %s";
     t.fitLidsNone = "まぶた: 合わせていません（自動で覚えています）";
     t.fitFailed = "合わせられませんでした";
-    t.failCancelled = "止めました（ダッシュボードを開くと止まります）";
-    t.failWaitTimedOut = "1 分のうちにダッシュボードが閉じられませんでした";
+    t.failCancelled = "止めました";
+    t.fitUnchanged = "設定は変わっていません";
+    t.failLeft = "ほかのタブや画面に移ったので止めました";
+    t.failDashboardOpened = "ダッシュボードを開いたので止めました";
     t.failNotRunning = "frameeyeosc が動いていません";
     t.failNoResult = "frameeyeosc から結果が届きませんでした";
     t.failUnsteadyFormat = "%s の点で視線が落ち着きませんでした（目を閉じていたかも）";
@@ -888,19 +886,14 @@ UiText makeEnglish() {
     t.fitCenterOnly = "Re-center only";
     t.fitCenterTilt = "Re-center + tilt";
     t.fitStop = "Stop";
-    t.fitIntro = "It starts when you close the dashboard. Keep your head still and follow the dot with your eyes. "
-                 "At the end, after 3, 2, 1, close your eyes for 3 seconds and open them at the chime.";
+    t.fitIntro = "Press \"Fit my eyes\" and a dot shows right away (the dashboard can stay open).";
     t.fitNeedsRunning = "Works while frameeyeosc is running";
     t.fitLocked = "Not available: gaze or eyelid values are locked by the command line";
-    t.fitWaiting = "Close the dashboard to start";
+    t.fitRunningTitle = "Look at the dot";
     t.fitHowTo = "Keep your head still and follow the dot with your eyes. At the end, after 3, 2, 1, close your eyes "
-                 "for 3 seconds and open them at the chime. Opening the dashboard stops it.";
-    t.fitWaitingCenter = "A dot appears straight ahead. Keep your head still and look at it. Opening the dashboard "
-                         "stops it.";
-    t.fitWaitingTilt = "A dot appears straight ahead, then up and down. Keep your head still and follow it with "
-                       "your eyes. Opening the dashboard stops it.";
-    t.fitRunningFormat = "Measuring: %s (%d of %d)";
-    t.fitRetryFormat = ", try %d";
+                 "for 3 seconds and open them at the chime.";
+    t.fitHowToCenter = "The dot is straight ahead. Keep your head still and look at it.";
+    t.fitHowToTilt = "The dot is straight ahead, then up and down. Keep your head still and follow it with your eyes.";
     t.fitDone = "Fitted";
     t.fitDoneCenter = "Re-centered";
     t.fitDoneTilt = "Re-centered and leveled";
@@ -913,8 +906,10 @@ UiText makeEnglish() {
     t.fitLidFormat = "Eyelid %s: open %s, closed %s, looking down %s";
     t.fitLidsNone = "Eyelids: not fitted (learned automatically)";
     t.fitFailed = "Could not fit";
-    t.failCancelled = "Stopped (opening the dashboard stops it)";
-    t.failWaitTimedOut = "The dashboard wasn't closed within a minute";
+    t.failCancelled = "Stopped";
+    t.fitUnchanged = "Nothing was changed";
+    t.failLeft = "Stopped: you went to another tab or page";
+    t.failDashboardOpened = "Stopped: the dashboard was opened";
     t.failNotRunning = "frameeyeosc is not running";
     t.failNoResult = "No answer from frameeyeosc";
     t.failUnsteadyFormat = "The gaze wasn't steady at the %s dot (eyes closed?)";

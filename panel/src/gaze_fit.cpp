@@ -360,20 +360,20 @@ bool fitLids(const Measured points[kPointCount], Values& out, FailureDetail* det
 
 void Session::start(Mode mode, const Values& current, double now, double ipd) {
     *this = Session();
-    phase_ = Phase::Waiting;
+    // No waiting for the dashboard: the first dot shows right away (nearer than the dashboard, so over it)
+    phase_ = Phase::Settling;
+    phaseAt_ = now;
     mode_ = mode;
     current_ = current;
     ipd_ = ipd;
-    startedAt_ = now;
 }
 
-void Session::cancel() {
-    if (active()) fail(Failure::Cancelled);
+void Session::cancel(Failure why) {
+    if (active()) fail(why);
 }
 
 bool Session::active() const {
-    return phase_ == Phase::Waiting || phase_ == Phase::Settling || phase_ == Phase::Capturing ||
-           phase_ == Phase::Reopen;
+    return phase_ == Phase::Settling || phase_ == Phase::Capturing || phase_ == Phase::Reopen;
 }
 
 void Session::fail(Failure failure) {
@@ -477,32 +477,26 @@ void Session::finish(Actions& actions) {
     actions.values = result_;
 }
 
-Actions Session::tick(double now, bool dashboardOpen, const EyeStatus& status) {
+Actions Session::tick(double now, const Dashboard& dashboard, const EyeStatus& status) {
     Actions actions;
-    switch (phase_) {
-        case Phase::Idle:
-        case Phase::Done:
-        case Phase::Failed: return actions;
-        case Phase::Waiting:
-            if (!status.running) {
-                fail(Failure::NotRunning);
-            } else if (!dashboardOpen) {
-                phase_ = Phase::Settling;
-                phaseAt_ = now;
-            } else if (now - startedAt_ >= kDashboardWaitSec) {
-                fail(Failure::WaitTimedOut);
-            }
-            break;
-        case Phase::Settling:
-        case Phase::Capturing:
-        case Phase::Reopen:
-            // Targets are only shown with the dashboard closed; opening it stops the run
-            if (dashboardOpen) {
-                fail(Failure::Cancelled);
-            } else if (!status.running) {
-                fail(Failure::NotRunning);
-            }
-            break;
+    if (!active()) return actions;
+    // The dashboard open or closed, the targets show over it. Closing it goes on; opening it while the fit runs
+    // without it stops it (the way to stop a fit started with it closed, and the eyes would be on it). With it open,
+    // another page (not this panel's) stops it too, once that has lasted kAwaySec
+    const bool opened = dashboardSeen_ && !dashboardWasOpen_ && dashboard.open;
+    dashboardSeen_ = true;
+    dashboardWasOpen_ = dashboard.open;
+    if (!dashboard.open || dashboard.panelShown) {
+        awaySince_ = -1.0;
+    } else if (awaySince_ < 0.0) {
+        awaySince_ = now;
+    }
+    if (opened) {
+        fail(Failure::DashboardOpened);
+    } else if (!status.running) {
+        fail(Failure::NotRunning);
+    } else if (awaySince_ >= 0.0 && now - awaySince_ >= kAwaySec) {
+        fail(Failure::Left);
     }
     if (phase_ == Phase::Settling && now - phaseAt_ >= settleSec()) {
         phase_ = Phase::Capturing;

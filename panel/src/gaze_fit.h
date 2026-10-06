@@ -1,5 +1,5 @@
 // The eye fit (the "Eye fit" tab): where the targets are, how captured averages become the gaze zero point and
-// gains and each eye's lid fit, and the step-by-step session the panel runs while the dashboard is closed.
+// gains and each eye's lid fit, and the step-by-step session the panel runs (with the dashboard open or closed).
 // Nothing here talks to OpenVR or writes files, so it can be tested on its own (gaze_fit_test.cpp).
 #pragma once
 
@@ -33,8 +33,10 @@ constexpr double kSideDeg = 20.0;
 constexpr double kUpDownDeg = 15.0;
 /** The gaze angle that frameeyeosc sends as 1.0. */
 constexpr double kFullScaleDeg = 45.0;
-/** How far ahead the targets are shown (m). Each eye's own angle to a target depends on it. */
-constexpr double kTargetDistanceM = 2.0;
+/** How far ahead the targets are shown (m). Each eye's own angle to a target depends on it (eyeAngle), so this is
+ *  the distance they are really drawn at. Nearer than the open dashboard (about 1.35 m) so they show over it: plain
+ *  overlays showed over it at 0.45-1.0 m, and at 1.2 m it hid them depending on where the head was (gaze_dots.h). */
+constexpr double kTargetDistanceM = 0.9;
 /** The distance between the eyes when SteamVR doesn't say (m). */
 constexpr double kDefaultIpdM = 0.063;
 /** A capture is used when at least this share of the samples that came in are usable (the eyes open and the gaze
@@ -78,8 +80,9 @@ constexpr double kReopenSec = 1.5;
 /** Seconds to wait for a capture's result: frameeyeosc checks config.json every 0.1 s and gives up 3 s after the
  *  capture should have ended. */
 constexpr double kResultTimeoutSec = 8.0;
-/** How long "close the dashboard to start" waits. */
-constexpr double kDashboardWaitSec = 60.0;
+/** With the dashboard open, how long it may show another page (not this panel's) before the fit stops. Long enough
+ *  for the dashboard closing (the panel and the dashboard need not hide in the same frame). */
+constexpr double kAwaySec = 0.5;
 /** A side / up / down point must move at least this share of its target angle, the right way. */
 constexpr double kMinMoveFraction = 0.25;
 /** The allowed zero points and gains (the same as frameeyeosc's). */
@@ -303,7 +306,6 @@ bool fitLids(const Measured points[kPointCount], Values& out, FailureDetail* det
 /** Where a session is. */
 enum class Phase {
     Idle,       ///< nothing going on (maybe showing the last result)
-    Waiting,    ///< waiting for the dashboard to close
     Settling,   ///< a target is shown; its capture is asked for after the settle time
     Capturing,  ///< waiting for frameeyeosc's result
     Reopen,     ///< "open your eyes" after the eyes-shut step
@@ -314,8 +316,9 @@ enum class Phase {
 /** Why a session stopped. */
 enum class Failure {
     None,
-    Cancelled,     ///< the dashboard was opened again (or "Stop" pressed)
-    WaitTimedOut,  ///< the dashboard was not closed within kDashboardWaitSec
+    Cancelled,     ///< "Stop" pressed
+    Left,          ///< another tab chosen, or the dashboard showed another page for kAwaySec
+    DashboardOpened,  ///< the dashboard was opened while the fit ran without it
     NotRunning,    ///< frameeyeosc is not running
     NoResult,      ///< frameeyeosc did not answer a capture
     Unsteady,      ///< a point stayed unsteady or eyes closed for kMaxAttempts tries
@@ -364,14 +367,22 @@ struct Actions {
     std::string log;            ///< a try's numbers to log (tryText), and at the end the tilt; lines split by '\n'
 };
 
+/** What the SteamVR dashboard is doing, for Session::tick. */
+struct Dashboard {
+    bool open = false;        ///< the dashboard is open...
+    bool panelShown = false;  ///< ...on this panel (not on another overlay's page)
+};
+
 /**
- * One fit. The caller ticks it every frame while it is active, with whether the dashboard is open and the latest
- * status.json, and carries out the returned actions.
+ * One fit. The caller ticks it every frame while it is active, with what the dashboard is doing and the latest
+ * status.json, and carries out the returned actions. The targets show at once, the dashboard open or closed (they are
+ * nearer than it). With it open (started from the panel), closing it does not stop the fit; opening it while the
+ * fit runs without it does (the panel's "Stop" can't be reached then, and the eyes would be on the dashboard).
  */
 class Session {
 public:
     /**
-     * Start: wait for the dashboard to close.
+     * Start: the first target shows at the next tick.
      * @param mode the whole fit, re-centering only, or re-centering and the tilt
      * @param current the settings now (kept where the mode does not change them)
      * @param now monotonic seconds
@@ -379,17 +390,20 @@ public:
      */
     void start(Mode mode, const Values& current, double now, double ipd = kDefaultIpdM);
 
-    /** Stop ("Stop" pressed). */
-    void cancel();
+    /**
+     * Stop.
+     * @param why Failure::Cancelled ("Stop" pressed) or Failure::Left (another tab chosen)
+     */
+    void cancel(Failure why = Failure::Cancelled);
 
     /**
      * Move on.
      * @param now monotonic seconds
-     * @param dashboardOpen whether the SteamVR dashboard is open
+     * @param dashboard what the SteamVR dashboard is doing
      * @param status the latest status.json
      * @return what to do
      */
-    Actions tick(double now, bool dashboardOpen, const EyeStatus& status);
+    Actions tick(double now, const Dashboard& dashboard, const EyeStatus& status);
 
     /**
      * The capture request asked for by the last tick was written.
@@ -401,7 +415,7 @@ public:
     /** A write asked for by the last tick failed. */
     void writeFailed();
 
-    /** @return true while waiting for the dashboard or showing targets */
+    /** @return true while showing targets */
     bool active() const;
 
     /** @return what the panel shows */
@@ -420,7 +434,9 @@ private:
     Point failedPoint_ = Point::Center;
     FailureDetail detail_;
     Point previousPoint_ = Point::Center;  ///< where the dot glides from
-    double startedAt_ = 0.0;     ///< when Waiting began
+    bool dashboardSeen_ = false;   ///< a tick has said whether the dashboard is open...
+    bool dashboardWasOpen_ = false;  ///< ...and it was, at the last tick
+    double awaySince_ = -1.0;    ///< when the dashboard began showing another page (-1: it isn't)
     double phaseAt_ = 0.0;       ///< when Settling, Capturing or Reopen began
     long long captureId_ = 0;    ///< 0 until captureSent
     bool requested_ = false;     ///< the request was asked for and not yet confirmed

@@ -142,6 +142,26 @@ void testFailureTexts() {
     fit = gaze_fit::View();
     fit.failure = Failure::Cancelled;
     SAME(failureDetailText(ja, fit), "");
+
+    // Stopped: by "Stop", by leaving the tab, by opening the dashboard (no word of waiting for it to close)
+    SAME(failureText(ja, fit), "止めました");
+    SAME(failureText(en, fit), "Stopped");
+    fit.failure = Failure::Left;
+    SAME(failureText(ja, fit), "ほかのタブや画面に移ったので止めました");
+    SAME(failureText(en, fit), "Stopped: you went to another tab or page");
+    SAME(failureDetailText(en, fit), "");
+    fit.failure = Failure::DashboardOpened;
+    SAME(failureText(ja, fit), "ダッシュボードを開いたので止めました");
+    SAME(failureText(en, fit), "Stopped: the dashboard was opened");
+    // The fit's words no longer ask to close the dashboard (the intro says it can stay open)
+    for (const UiText* t : {&ja, &en}) {
+        for (const char* text : {t->fitHowTo, t->fitHowToCenter, t->fitHowToTilt, t->fitRunningTitle}) {
+            const std::string s = text;
+            CHECK(s.find("ダッシュボード") == std::string::npos && s.find("dashboard") == std::string::npos);
+        }
+    }
+    SAME(ja.fitIntro, "［目を合わせる］を押すと、すぐに点が出ます（ダッシュボードは開いたままで大丈夫）");
+    SAME(en.fitIntro, "Press \"Fit my eyes\" and a dot shows right away (the dashboard can stay open).");
 }
 
 }  // namespace

@@ -51,7 +51,7 @@ enum class PanelAction {
     UpdateDismiss,     ///< close the "installed" / "failed" message
     FitStart,          ///< eye fit: the whole fit (the caller starts the session)
     FitCenter,         ///< eye fit: the re-wear fit, as auto_recenter says (re-center only when it is off)
-    FitStop,           ///< eye fit: stop waiting for the dashboard to close
+    FitStop,           ///< eye fit: stop the running fit
     SetAutoRecenter,   ///< auto_recenter = kAutoRecenterModes[arg]
     RecordToggle,      ///< start the eye log, or stop it (the caller runs the recorder)
     FitReset,          ///< the fit back to the defaults (fitResetKeys: the gaze fit, lid_fit_*, lid_scale_*)
@@ -551,6 +551,14 @@ private:
      * @param view the settings shown
      */
     void drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The Eye fit tab while a fit runs: "look at the dot", how, and a big "Stop" (the dots show in front of it).
+     * @param pen drawing tools
+     * @param t texts
+     * @param fit the fit
+     */
+    void drawEyeFitRunning(const Pen& pen, const UiText& t, const gaze_fit::View& fit);
 
     /**
      * "Fine-tune" on the Eye fit tab, gaze page: the zero point, the gains, the far-down hold and each eye's own

@@ -665,7 +665,8 @@ void testCalibText() {
               t.setupPassButton, t.setupVideo, t.setupVideoNote, t.setupCheckPill, t.setupCheckFlow,
               t.setupCheckTyped, t.setupCheckWhat, t.setupCheckWhatText, t.setupCheckPassword,
               t.setupCheckPasswordText, t.setupCheckSsh, t.setupCheckSshText, t.setupCheckButton, t.setupWaitPill,
-              t.setupWaitTitle, t.setupWaitVideo, t.setupWaitVideoOk, t.setupWaitVideoNo, t.setupWaitEyeOk,
+              t.setupWaitTitle, t.setupWaitVideo, t.setupWaitVideoOk, t.setupWaitVideoNo, t.setupWaitVideoSlowFormat,
+              t.setupWaitEyeOk,
               t.setupWaitEyeNo, t.setupWaitButton, t.setupWaitHint1, t.setupWaitHint2, t.setupWaitFoot,
               t.setupLearnPill, t.setupLearnWidenHint, t.setupChipClose, t.setupChipNormal, t.setupChipWiden,
               t.setupLeftAfter, t.setupLearnStepFormat, t.setupLearnFoot, t.setupStop, t.setupErrorPill,
@@ -1903,6 +1904,45 @@ void testUtf8() {
     SAME(read.message, bad + bad);
 }
 
+void testCameraRate() {
+    // cam_fps as eyecam-rec writes it: [left, right], null while not locked
+    {
+        const Status s = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"locked\": true, \"live\": true, \"cam_fps\": [15.020, 14.980]}", kNow);
+        CHECK(s.hasCamFps && s.camFps[0] == 15.02 && s.camFps[1] == 14.98);
+        CHECK(eyecam::cameraFps(s) == 14.98 && eyecam::cameraFps(s, 0) == 15.02);
+        CHECK(eyecam::cameraFps(s) < eyecam::kLowCameraFps);
+    }
+    {
+        const Status s =
+            eyecam::parseStatus("{\"state\": \"idle\", \"locked\": true, \"cam_fps\": [90.0, null]}", kNow);
+        CHECK(s.hasCamFps && std::isnan(s.camFps[1]) && eyecam::cameraFps(s) == 90.0);
+        const Status none = eyecam::parseStatus("{\"state\": \"idle\", \"cam_fps\": [null, null]}", kNow);
+        CHECK(none.hasCamFps && std::isnan(eyecam::cameraFps(none)));
+        // Odd values are null, an older eyecam-rec has none
+        const Status odd = eyecam::parseStatus("{\"state\": \"idle\", \"cam_fps\": [-3, \"90\"]}", kNow);
+        CHECK(std::isnan(odd.camFps[0]) && std::isnan(odd.camFps[1]));
+        const Status old = eyecam::parseStatus("{\"state\": \"idle\", \"cam_fps\": 90}", kNow);
+        CHECK(!old.hasCamFps && std::isnan(eyecam::cameraFps(old)));
+        Status zero;
+        CHECK(std::isnan(eyecam::cameraFps(zero)));
+    }
+    // The setup redraws when the rate becomes low or changes while low, not for every change of a fast one
+    {
+        eyecam::View a;
+        a.status = eyecam::parseStatus(
+            "{\"state\": \"idle\", \"locked\": true, \"live\": true, \"cam_fps\": [90.1, 89.9]}", kNow);
+        eyecam::View b = a;
+        b.status.camFps[0] = 89.4;
+        CHECK(eyecam::signature(a) == eyecam::signature(b));
+        b.status.camFps[0] = b.status.camFps[1] = 15.0;
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+        eyecam::View c = b;
+        c.status.camFps[0] = c.status.camFps[1] = 18.0;
+        CHECK(eyecam::signature(b) != eyecam::signature(c));
+    }
+}
+
 void testPupils() {
     using eyecam::EyeSight;
     // pupil_l / pupil_r and calib_failed_eye as eyecam-rec writes them (null when it can't tell)
@@ -2099,6 +2139,7 @@ void testSearch() {
 int main() {
     testParse();
     testPupils();
+    testCameraRate();
     testSearch();
     testVisible();
     testText();

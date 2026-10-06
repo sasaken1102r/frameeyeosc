@@ -106,6 +106,7 @@ Status parseStatus(const std::string& text, double mtime) {
     status.mtime = mtime;
     status.fpsL = status.fpsR = kNaN;
     status.pupil[0] = status.pupil[1] = kNaN;
+    status.camFps[0] = status.camFps[1] = kNaN;
     status.stepRemainingS = status.elapsedS = status.totalS = status.liveMs = status.warmupRemainingS = kNaN;
     status.widenSensitivity = kNaN;
     JsonValue root;
@@ -168,6 +169,14 @@ Status parseStatus(const std::string& text, double mtime) {
     for (int eye = 0; eye < 2; ++eye) {
         const double share = readNumber(root, pupilKeys[eye], kNaN);
         status.pupil[eye] = std::isfinite(share) ? std::clamp(share, 0.0, 1.0) : kNaN;
+    }
+    // The cameras' frame rate, [left, right] (missing on an older eyecam-rec; null while not locked)
+    if (const JsonValue* rate = root.get("cam_fps"); rate != nullptr && rate->isArray() && rate->items.size() == 2) {
+        status.hasCamFps = true;
+        for (int eye = 0; eye < 2; ++eye) {
+            const JsonValue& value = rate->items[eye];
+            status.camFps[eye] = value.isNumber() && std::isfinite(value.number) && value.number > 0 ? value.number : kNaN;
+        }
     }
     // Why the video isn't found (missing on an older eyecam-rec: no line for it)
     status.prox = readNumber(root, "prox", kNaN);
@@ -640,6 +649,18 @@ Reply parseReply(const std::string& line, const std::string& command) {
     return reply;
 }
 
+double cameraFps(const Status& status, int eye) {
+    const double fps = status.camFps[eye];
+    return std::isfinite(fps) && fps > 0 ? fps : kNaN;
+}
+
+double cameraFps(const Status& status) {
+    const double left = cameraFps(status, 0);
+    const double right = cameraFps(status, 1);
+    if (std::isfinite(left) && std::isfinite(right)) return std::min(left, right);
+    return std::isfinite(left) ? left : right;
+}
+
 std::string signature(const View& view) {
     const Status& s = view.status;
     // As drawn: whole seconds left, the progress bar in steps of 0.2 %, fps to 0.1
@@ -667,7 +688,10 @@ std::string signature(const View& view) {
            rounded(s.widenSensitivity, 0.01) + "|" + std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
            std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.calibFailedEye + "|" +
            std::to_string(s.hasPupil) + std::to_string(static_cast<int>(eyeSight(s, 0))) +
-           std::to_string(static_cast<int>(eyeSight(s, 1))) + "|" + s.autoGrab + std::to_string(s.grabOutdated) + "|" +
+           std::to_string(static_cast<int>(eyeSight(s, 1))) + "|" +
+           // (the setup shows the cameras' rate only while it is low, as a whole number)
+           (cameraFps(s) < kLowCameraFps ? rounded(cameraFps(s), 1.0) : std::string("-")) + "|" + s.autoGrab +
+           std::to_string(s.grabOutdated) + "|" +
            std::to_string(static_cast<int>(searchReason(s))) +
            (searchReason(s) == Search::NotWorn ? rounded(s.prox, 1.0) : std::string()) + "|" +
            std::to_string(static_cast<int>(view.password)) + std::to_string(static_cast<int>(view.flow.result())) +

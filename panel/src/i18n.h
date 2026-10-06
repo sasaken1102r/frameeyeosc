@@ -381,6 +381,9 @@ struct UiText {
     const char* diagUnreadable;          ///< the proximity sensor can't be read
     const char* diagEyesFormat;          ///< a value per eye ("L %s · R %s")
     const char* diagMsFormat;            ///< live processing time per frame
+    const char* diagRowCamera;           ///< the eye cameras' frame rate (status.json cam_fps)...
+    const char* diagCameraFpsFormat;     ///< ...frames a second ("%d fps")
+    const char* diagCameraLow;           ///< ...after it, under eyecam::kLowCameraFps (" (low)")
     const char* diagOk;                  ///< the last calibration went through
     const char* diagFailedFormat;        ///< ...failed (%s: why)
     const char* diagPreviousLeft;        ///< ...without the left eye (it kept its previous values)
@@ -504,6 +507,7 @@ struct UiText {
     const char* setupWaitVideo;  ///< ...rows: the camera video...
     const char* setupWaitVideoOk;
     const char* setupWaitVideoNo;
+    const char* setupWaitVideoSlowFormat;  ///< ...there, but under eyecam::kLowCameraFps frames a second (%d)
     const char* setupWaitEyeOk;  ///< ...each eye
     const char* setupWaitEyeNo;
     const char* setupWaitEyeNoPupil;  ///< ...the video there, the pupil not found (eyecam::EyeSight::NoPupil)

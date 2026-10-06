@@ -379,6 +379,9 @@ UiText makeJapanese() {
     t.diagUnreadable = "読めない";
     t.diagEyesFormat = "左 %s · 右 %s";
     t.diagMsFormat = "%.1f ms/枚";
+    t.diagRowCamera = "カメラ";
+    t.diagCameraFpsFormat = "%d 枚/秒";
+    t.diagCameraLow = "（少なめ）";
     t.diagOk = "OK";
     t.diagFailedFormat = "失敗: %s";
     t.diagPreviousLeft = "左目は前の値";
@@ -499,6 +502,7 @@ UiText makeJapanese() {
     t.setupWaitVideo = "カメラの映像";
     t.setupWaitVideoOk = "届いてるよ";
     t.setupWaitVideoNo = "まだ届いてないよ";
+    t.setupWaitVideoSlowFormat = "届いてるよ（毎秒 %d 枚・少なめ）";
     t.setupWaitEyeOk = "見えてるよ";
     t.setupWaitEyeNo = "見えてないよ";
     t.setupWaitEyeNoPupil = "映像はあるけど瞳が見つからない";
@@ -1100,6 +1104,9 @@ UiText makeEnglish() {
     t.diagUnreadable = "unreadable";
     t.diagEyesFormat = "L %s · R %s";
     t.diagMsFormat = "%.1f ms/frame";
+    t.diagRowCamera = "Camera";
+    t.diagCameraFpsFormat = "%d fps";
+    t.diagCameraLow = " (low)";
     t.diagOk = "OK";
     t.diagFailedFormat = "failed: %s";
     t.diagPreviousLeft = "left eye: previous values";
@@ -1224,6 +1231,7 @@ UiText makeEnglish() {
     t.setupWaitVideo = "Camera video";
     t.setupWaitVideoOk = "arriving";
     t.setupWaitVideoNo = "not yet";
+    t.setupWaitVideoSlowFormat = "coming in (only %d fps)";
     t.setupWaitEyeOk = "seen";
     t.setupWaitEyeNo = "not seen";
     t.setupWaitEyeNoPupil = "video, but no pupil found";

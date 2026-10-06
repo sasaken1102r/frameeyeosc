@@ -217,6 +217,9 @@ struct Status {
                                    ///< the pupils; without them "locked" is all there is)
     double pupil[2] = {0.0, 0.0};  ///< per eye (left, right), the share of the last 2 s of frames with the pupil found,
                                    ///< 0..1 (NaN when null: live processing off, or that eye's video stopped)
+    bool hasCamFps = false;        ///< "cam_fps" is there (a newer eyecam-rec that measures the cameras' frame rate)
+    double camFps[2] = {0.0, 0.0}; ///< per eye, the frames a second its camera delivered over the last 2 s (NaN when
+                                   ///< null: not locked, live processing off, or that eye's video stopped)
     double prox = 0.0;             ///< "prox": the proximity sensor's reading (-1: eyecam-rec can't read it; NaN when
                                    ///< missing)
     bool hasSearch = false;        ///< "search" is there (a newer eyecam-rec that says why the video isn't found)
@@ -766,6 +769,28 @@ private:
 constexpr int kLeftEyeBit = 1;
 /** ...and the right one. */
 constexpr int kRightEyeBit = 2;
+
+/**
+ * Under this many frames a second the eye cameras are slow (Valve's eye tracker sets their rate: 90 on most headsets,
+ * 72, 80 or 120 too, as few as 15 on some): the diagnostics show it in red and the setup says so. eyecam-rec works
+ * with it (its calibration needs follow the rate), but the eyelids follow less closely.
+ */
+constexpr double kLowCameraFps = 60.0;
+
+/**
+ * The eye cameras' frame rate as one number: the slower eye's (the eyes usually agree).
+ * @param status the status
+ * @return frames a second, NaN when eyecam-rec doesn't say (not locked, or an eyecam-rec before cam_fps)
+ */
+double cameraFps(const Status& status);
+
+/**
+ * One eye camera's frame rate.
+ * @param status the status
+ * @param eye 0 left, 1 right
+ * @return frames a second, NaN when not known
+ */
+double cameraFps(const Status& status, int eye);
 
 /** At least this share of frames with the pupil: the eye is seen ("見えてるよ"). */
 constexpr double kPupilSeenShare = 0.5;

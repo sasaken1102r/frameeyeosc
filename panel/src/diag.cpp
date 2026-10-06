@@ -504,11 +504,26 @@ std::vector<Card> cards(const UiText& t, const PanelModel& m) {
             card.rows.push_back({t.diagRowPupil, e.hasPupil ? format(t.diagEyesFormat, percent(e.pupil[0]).c_str(),
                                                                      percent(e.pupil[1]).c_str())
                                                             : unknown});
+            // The cameras' frame rate: one number when the eyes agree, else each eye's; red when low
+            const auto rate = [&](double fps) {
+                return std::isfinite(fps) ? format(t.diagCameraFpsFormat, static_cast<int>(std::lround(fps))) : unknown;
+            };
+            const double slower = eyecam::cameraFps(e);
+            const double left = eyecam::cameraFps(e, 0);
+            const double right = eyecam::cameraFps(e, 1);
+            const bool same = std::isfinite(left) && std::isfinite(right) && std::lround(left) == std::lround(right);
+            const bool low = slower < eyecam::kLowCameraFps;
+            std::string camera = !std::isfinite(slower) ? unknown
+                                 : same              ? rate(slower)
+                                                     : format(t.diagEyesFormat, rate(left).c_str(), rate(right).c_str());
+            if (low) camera += t.diagCameraLow;
+            card.rows.push_back({t.diagRowCamera, camera, low});
             card.rows.push_back({t.diagRowLoad, e.live && std::isfinite(e.liveMs) && e.liveMs > 0
                                                     ? format(t.diagMsFormat, e.liveMs)
                                                     : unknown});
         } else {
-            for (const char* label : {t.diagRowSearch, t.diagRowBlocks, t.diagRowProx, t.diagRowPupil, t.diagRowLoad}) {
+            for (const char* label :
+                 {t.diagRowSearch, t.diagRowBlocks, t.diagRowProx, t.diagRowPupil, t.diagRowCamera, t.diagRowLoad}) {
                 card.rows.push_back({label, unknown});
             }
         }

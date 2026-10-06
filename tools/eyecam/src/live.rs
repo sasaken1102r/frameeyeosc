@@ -8,6 +8,11 @@
 //! diameter in iris units and mm. Everything is causal; values are 5-frame causal medians of the per-frame
 //! features with no further smoothing (frameeyeosc smooths). Wide and squint are 0 while closed and for 80 ms after.
 //!
+//! The cameras do not always run at 90 frames a second (Valve's eye tracker sets the rate: 72, 80, 90, 120, and as
+//! low as 15 on some headsets), so every duration here is in seconds, turned into frames at the rate measured from
+//! the frame times (`FrameRate`). The frame counts in the comments are those at 90 fps, where the results are the
+//! same as when they were fixed counts.
+//!
 //! No per-wear calibration is needed: after the HMD goes on, the open-eye levels (skin line and aperture, in pixels)
 //! are the mode of the first 30 s of usable frames (pupil seen, eye open, gaze within 15 degrees of the wearer's
 //! typical pitch), and from then on they follow slowly (60 s time constant, frames with EyeWide < 0.2 only). The widen
@@ -21,20 +26,30 @@ use crate::json::{self, Json};
 use crate::vision::{self, Quad};
 use std::collections::VecDeque;
 
+/// The frame rate assumed until the frame times say otherwise (the rate the durations below were tuned at).
 pub const FPS: f64 = 90.0;
 /// Assumed iris radius in mm (HVID 11.8 mm); only scales pupil_mm.
 pub const R_MM: f64 = 5.9;
-/// Frames that wide/squint stay 0 after the eye reopens: int(0.08 s * 90).
-const HOLD_FRAMES: u32 = 7;
+/// Wide/squint stay 0 for this long after the last closed frame (6 frames at 90 fps; with the closed frame,
+/// int(0.08 s * 90) = 7).
+const HOLD_S: f64 = 6.0 / FPS;
 /// A pupil counts as seen whole when at least this share of the 64 rays reached its edge ...
 const PUPIL_MIN_VIS: f64 = 0.75;
 /// ... and its roundness (b/a) is within this of the usual one.
 const PUPIL_MAX_BA_DEV: f64 = 0.08;
-/// Frames after a blink before the pupil size is trusted again (300 ms).
-const PUPIL_SETTLE_FRAMES: u32 = 27;
-/// After this many frames in a row without a pupil, the search forgets where the pupil was (its prior): a wrong
-/// blob caught once (during a blink, say) would otherwise keep the real pupil out of reach for seconds.
-pub const PRIOR_RESET_MISSES: u32 = 10;
+/// Time after a blink before the pupil size is trusted again (27 frames at 90 fps).
+const PUPIL_SETTLE_S: f64 = 0.3;
+/// After this long without a pupil (10 frames at 90 fps; at least 2 frames), the search forgets where the pupil
+/// was (its prior): a wrong blob caught once (during a blink, say) would otherwise keep the real pupil out of reach
+/// for seconds.
+pub const PRIOR_RESET_S: f64 = 10.0 / FPS;
+/// Closed needs no pupil for this long (3 frames at 90 fps; at least 2 frames).
+const CLOSED_NO_PUPIL_S: f64 = 3.0 / FPS;
+/// The lid features are causal medians over this long (5 frames at 90 fps; an odd number, at least 3).
+const MEDIAN_S: f64 = 5.0 / FPS;
+/// The long-run medians (iris radius, the open eye's box level, pupil size and darkness, typical pitch) take a
+/// value about this often a second: every 2nd frame at 90 fps, every frame at 45 fps or less.
+const LONG_HZ: f64 = 45.0;
 /// The default widen sensitivity (see `wide_curve`): 0.5 at 60% of the widen step. Calibration-free on the 5
 /// protocol sessions and the 3-minute free-use session this was the balance: 0.5 at 70% (sensitivity 0) missed too
 /// much of true widen (0.63 of widen frames), 0.5 at 50% (sensitivity 1) widened falsely twice a minute in free use.
@@ -49,9 +64,10 @@ pub fn wide_curve(sensitivity: f64) -> (f64, f64) {
     let half = 0.7 - 0.2 * s;
     (start, 2.0 * (half - start))
 }
-/// EyeWide shows above `WIDE_OFF` only once it has stayed above 0.5 for this many frames (100 ms), and then until
-/// it falls below `WIDE_OFF` (hysteresis): short spikes of the skin line stay at most `WIDE_OFF`.
-const WIDE_ON_FRAMES: u32 = 9;
+/// EyeWide shows above `WIDE_OFF` only once it has stayed above 0.5 for this long (9 frames at 90 fps, 100 ms; at
+/// least 2 frames), and then until it falls below `WIDE_OFF` (hysteresis): short spikes of the skin line stay at
+/// most `WIDE_OFF`.
+const WIDE_ON_S: f64 = 9.0 / FPS;
 const WIDE_OFF: f64 = 0.3;
 /// Auto baseline: seconds of usable frames before EyeWide is enabled (about 35 s of wearing).
 pub const WARMUP_S: f64 = 30.0;
@@ -187,53 +203,104 @@ pub struct Out {
     pub b_w: f64,
 }
 
-/// A NaN-aware causal running median over the last `n` frames.
+/// `seconds` in frames at `fps`: rounded, and at least `min`.
+fn frames_in(seconds: f64, fps: f64, min: u32) -> u32 {
+    ((seconds * fps).round() as u32).max(min)
+}
+
+/// The camera's frame rate from the frame times: the median of the last RATE_WINDOW frame intervals, rounded to
+/// whole frames a second (the cameras run at whole rates). FPS until RATE_MIN intervals are known; gaps of half a
+/// second or more (frames stopped) are not intervals.
+#[derive(Clone, Debug)]
+pub struct FrameRate {
+    last_t: f64,
+    dt: VecDeque<f64>,
+    fps: f64,
+}
+
+const RATE_WINDOW: usize = 31;
+const RATE_MIN: usize = 5;
+
+impl Default for FrameRate {
+    fn default() -> Self {
+        Self { last_t: f64::NAN, dt: VecDeque::with_capacity(RATE_WINDOW), fps: FPS }
+    }
+}
+
+impl FrameRate {
+    /// Note a frame taken at `t` (s).
+    pub fn push(&mut self, t: f64) {
+        let d = t - self.last_t;
+        if t.is_finite() {
+            self.last_t = t;
+        }
+        if !(d > 0.0 && d < 0.5) {
+            return;
+        }
+        if self.dt.len() == RATE_WINDOW {
+            self.dt.pop_front();
+        }
+        self.dt.push_back(d);
+        if self.dt.len() >= RATE_MIN {
+            let mut v: Vec<f64> = self.dt.iter().copied().collect();
+            self.fps = (1.0 / vision::median(&mut v)).round().max(1.0);
+        }
+    }
+
+    /// Frames a second.
+    pub fn fps(&self) -> f64 {
+        self.fps
+    }
+}
+
+/// A NaN-aware causal running median over the last `n` frames (`n` may change from frame to frame).
 struct Win {
     v: VecDeque<f64>,
-    n: usize,
 }
 
 impl Win {
-    fn new(n: usize) -> Self {
-        Self { v: VecDeque::with_capacity(n), n }
+    fn new() -> Self {
+        Self { v: VecDeque::with_capacity(8) }
     }
 
-    fn push(&mut self, x: f64) -> f64 {
-        if self.v.len() == self.n {
+    fn push(&mut self, x: f64, n: usize) -> f64 {
+        while self.v.len() >= n.max(1) {
             self.v.pop_front();
         }
         self.v.push_back(x);
         let mut f: Vec<f64> = self.v.iter().copied().filter(|x| x.is_finite()).collect();
         vision::median(&mut f)
     }
-
 }
 
-/// A long-run median: keeps the last `cap` samples, recomputed every `every` pushes.
+/// A long-run median over the last `span_s` seconds of samples, recomputed about once a second.
 struct LongMedian {
     v: VecDeque<f64>,
-    cap: usize,
-    every: usize,
+    span_s: f64,
     since: usize,
     pub value: f64,
 }
 
 impl LongMedian {
-    fn new(cap: usize, every: usize) -> Self {
-        Self { v: VecDeque::with_capacity(cap), cap, every, since: 0, value: f64::NAN }
+    fn new(span_s: f64) -> Self {
+        Self { v: VecDeque::new(), span_s, since: 0, value: f64::NAN }
     }
 
-    fn push(&mut self, x: f64) {
+    /// Add a sample, samples coming `hz` times a second: it keeps the last `span_s * hz` (at 45 a second: 45 x
+    /// span_s) and recomputes every `hz` samples.
+    fn push(&mut self, x: f64, hz: f64) {
         if !x.is_finite() {
             return;
         }
-        if self.v.len() == self.cap {
+        let cap = ((self.span_s * hz).round() as usize).max(1);
+        let every = (hz.round() as usize).max(1);
+        while self.v.len() >= cap {
             self.v.pop_front();
         }
         self.v.push_back(x);
         self.since += 1;
         // Recompute often while warming up, then once per `every` samples.
-        if self.since >= self.every || self.v.len() < 64 {
+        if self.since >= every || self.v.len() < 64 {
             self.since = 0;
             let mut s: Vec<f64> = self.v.iter().copied().collect();
             self.value = vision::median(&mut s);
@@ -252,8 +319,11 @@ pub struct EyeEngine {
     prev: Option<(f64, f64)>,
     prev_p: Option<Pupil>,
     frame_no: u64,
+    rate: FrameRate,
+    /// The lens edge's mean image: summed column means, how many frames, and the last one's number.
     cm_sum: Vec<f64>,
     cm_n: u32,
+    cm_last: u64,
     xmax: f64,
     x_min: f64,
     r_est: LongMedian,
@@ -271,7 +341,6 @@ pub struct EyeEngine {
     ba_open: LongMedian,
     /// Frames since the eye was last closed.
     since_closed: u32,
-    closed_hist: u32,
     last_wide: f64,
     wide_gate: WideGate,
     last_sq: f64,
@@ -292,7 +361,9 @@ struct AutoBase {
     /// Warm-up values of the skin line height above the pupil and of the aperture, px.
     skin: Vec<f64>,
     ap: Vec<f64>,
-    since: usize,
+    /// Seconds of usable frames so far, and since the levels were last worked out.
+    seconds: f64,
+    since_s: f64,
     b: f64,
     ap_n: f64,
     ready: bool,
@@ -305,16 +376,15 @@ impl Default for AutoBase {
         Self {
             skin: Vec::new(),
             ap: Vec::new(),
-            since: 0,
+            seconds: 0.0,
+            since_s: 0.0,
             b: f64::NAN,
             ap_n: f64::NAN,
             ready: false,
-            pitch_typ: LongMedian::new(2700, 45),
+            pitch_typ: LongMedian::new(60.0),
         }
     }
 }
-
-const WARMUP_FRAMES: usize = (WARMUP_S * FPS) as usize;
 
 /// The densest value of `v`: a histogram with bins of `bw` between its 1st and 99th percentiles, smoothed over 5
 /// bins. The open eye's level is the mode; glances, expressions and blinks only add tails.
@@ -347,26 +417,30 @@ fn mode_est(v: &[f64], bw: f64) -> f64 {
 
 impl AutoBase {
     fn warmup_remaining_s(&self) -> f64 {
-        if self.ready { 0.0 } else { (WARMUP_FRAMES - self.skin.len().min(WARMUP_FRAMES)) as f64 / FPS }
+        if self.ready { 0.0 } else { (WARMUP_S - self.seconds).clamp(0.0, WARMUP_S) }
     }
 
-    /// Add one usable frame's levels during warm-up (`bw`: histogram bin, px).
-    fn warm(&mut self, skin: f64, ap: f64, bw: f64) {
+    /// Add one usable frame's levels during warm-up (`bw`: histogram bin, px; `dt`: the frame interval, s). The
+    /// levels are worked out every half second of usable frames (45 frames at 90 fps) and once WARMUP_S is reached
+    /// (2700 frames at 90 fps; both within half a frame).
+    fn warm(&mut self, skin: f64, ap: f64, bw: f64, dt: f64) {
         if self.ready {
             return;
         }
         self.skin.push(skin);
         self.ap.push(ap);
-        self.since += 1;
-        if (self.since >= 45 && self.skin.len() >= 20) || self.skin.len() >= WARMUP_FRAMES {
-            self.since = 0;
+        self.seconds += dt;
+        self.since_s += dt;
+        let done = self.seconds >= WARMUP_S - 0.5 * dt;
+        if (self.since_s >= 0.5 - 0.5 * dt && self.skin.len() >= 20) || done {
+            self.since_s = 0.0;
             self.b = mode_est(&self.skin, bw);
             let a = mode_est(&self.ap, bw);
             if a.is_finite() {
                 self.ap_n = a;
             }
         }
-        if self.skin.len() >= WARMUP_FRAMES && self.b.is_finite() {
+        if done && self.b.is_finite() {
             self.ready = true;
             self.skin = Vec::new();
             self.ap = Vec::new();
@@ -389,24 +463,25 @@ impl Default for EyeEngine {
             prev: None,
             prev_p: None,
             frame_no: 0,
+            rate: FrameRate::default(),
             cm_sum: vec![0.0; vision::W],
             cm_n: 0,
+            cm_last: 0,
             xmax: 346.0,
             x_min: feat::X_MIN,
-            // One sample every 2nd frame: 30 s for R, 60 s for the open box level.
-            r_est: LongMedian::new(1350, 45),
-            skin: Win::new(5),
-            ap: Win::new(5),
-            lo: Win::new(5),
-            bx: Win::new(5),
-            pd: Win::new(5),
+            // 30 s for R, 60 s for the open box level, 20 s for the open pupil.
+            r_est: LongMedian::new(30.0),
+            skin: Win::new(),
+            ap: Win::new(),
+            lo: Win::new(),
+            bx: Win::new(),
+            pd: Win::new(),
             nopupil: 0,
-            box_open: LongMedian::new(2700, 45),
-            a_open: LongMedian::new(900, 45),
-            inner_open: LongMedian::new(900, 45),
-            ba_open: LongMedian::new(900, 45),
+            box_open: LongMedian::new(60.0),
+            a_open: LongMedian::new(20.0),
+            inner_open: LongMedian::new(20.0),
+            ba_open: LongMedian::new(20.0),
             since_closed: u32::MAX / 2,
-            closed_hist: 0,
             last_wide: 0.0,
             wide_gate: WideGate::default(),
             last_sq: 0.0,
@@ -425,7 +500,7 @@ fn clamp01(v: f64) -> f64 {
     v.clamp(0.0, 1.0)
 }
 
-/// Hysteresis on EyeWide (see `WIDE_ON_FRAMES`).
+/// Hysteresis on EyeWide (see `WIDE_ON_S`).
 #[derive(Clone, Copy, Debug, Default)]
 struct WideGate {
     on: bool,
@@ -433,12 +508,12 @@ struct WideGate {
 }
 
 impl WideGate {
-    /// The value to report for this frame's ungated EyeWide `w`.
-    fn step(&mut self, w: f64) -> f64 {
+    /// The value to report for this frame's ungated EyeWide `w`; `on_frames` is WIDE_ON_S in frames.
+    fn step(&mut self, w: f64, on_frames: u32) -> f64 {
         self.run = if w > 0.5 { self.run + 1 } else { 0 };
         if w < WIDE_OFF {
             self.on = false;
-        } else if self.run >= WIDE_ON_FRAMES {
+        } else if self.run >= on_frames {
             self.on = true;
         }
         if self.on { w } else { w.min(WIDE_OFF) }
@@ -465,6 +540,11 @@ impl EyeEngine {
     /// The lens edge and iris radius the engine currently uses.
     pub fn geometry(&self) -> (f64, f64) {
         (self.xmax, self.r_est.value)
+    }
+
+    /// The camera's frame rate as measured from the frame times (FPS until a few frames are in).
+    pub fn fps(&self) -> f64 {
+        self.rate.fps()
     }
 
     /// The open-eye levels are known (warm-up over, or seeded by a calibration).
@@ -495,8 +575,18 @@ impl EyeEngine {
     /// Process one upright frame. `pitch`: Valve gaze pitch of this eye (degrees) or NaN; `t`: frame time (s).
     pub fn process(&mut self, img: &[u8], pitch: f64, t: f64, params: &Params) -> Out {
         self.frame_no += 1;
+        self.rate.push(t);
+        let fps = self.rate.fps();
+        // The long-run medians take every `stride`-th frame, `long_hz` a second.
+        let stride = ((fps / LONG_HZ).round() as u64).max(1);
+        let long_hz = fps / stride as f64;
+        let sampled = self.frame_no.is_multiple_of(stride);
         // Lens edge: the first frame, then the mean of one frame every 0.5 s for the first 20 s.
-        if self.frame_no == 1 || (self.cm_n < 40 && self.frame_no.is_multiple_of(45)) {
+        let cm_due = self.cm_n < 40 && self.frame_no - self.cm_last >= frames_in(0.5, fps, 1) as u64;
+        if cm_due {
+            self.cm_last = self.frame_no;
+        }
+        if self.frame_no == 1 || cm_due {
             for (a, b) in self.cm_sum.iter_mut().zip(feat::column_means(img)) {
                 *a += b;
             }
@@ -533,16 +623,16 @@ impl EyeEngine {
         if let Some(pp) = p {
             self.prev = Some((pp.cx, pp.cy));
             self.prev_p = Some(pp);
-            if !box_bright && self.frame_no.is_multiple_of(2) {
-                self.a_open.push(pp.a);
-                self.inner_open.push(pp.inner);
+            if !box_bright && sampled {
+                self.a_open.push(pp.a, long_hz);
+                self.inner_open.push(pp.inner, long_hz);
                 if pp.vis >= PUPIL_MIN_VIS {
-                    self.ba_open.push(pp.b / pp.a);
+                    self.ba_open.push(pp.b / pp.a, long_hz);
                 }
             }
         }
-        if f.ok_pupil && f.iris_r.is_finite() && f.iris_n >= 4 && self.frame_no.is_multiple_of(2) {
-            self.r_est.push(f.iris_r);
+        if f.ok_pupil && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
+            self.r_est.push(f.iris_r, long_hz);
         }
         if !self.t_first.is_finite() {
             self.t_first = t;
@@ -554,33 +644,38 @@ impl EyeEngine {
             _ if f.iris_r.is_finite() => f.iris_r,
             _ => 2.0 * f.pupil_a,
         };
-        // Lid geometry in pixels (5-frame causal medians); the outputs below are in iris radii.
-        let skin_px = self.skin.push(f.pupil_cy - f.upper_skin_y);
-        let ap_px = self.ap.push(f.lower_y - f.upper_y);
-        let lo_px = self.lo.push(f.lower_y - f.pupil_cy);
+        // Lid geometry in pixels (causal medians over MEDIAN_S, 5 frames at 90 fps); the outputs below are in iris
+        // radii.
+        let med_n = (frames_in(MEDIAN_S, fps, 3) | 1) as usize;
+        let skin_px = self.skin.push(f.pupil_cy - f.upper_skin_y, med_n);
+        let ap_px = self.ap.push(f.lower_y - f.upper_y, med_n);
+        let lo_px = self.lo.push(f.lower_y - f.pupil_cy, med_n);
         let (skin, ap, lo) = (skin_px / r, ap_px / r, lo_px / r);
-        let box_f = self.bx.push(f.box_mean);
+        let box_f = self.bx.push(f.box_mean, med_n);
         // The pupil's size is only taken from a pupil seen whole: most rays reach its edge, its roundness is the
         // usual one for this camera angle (a lid cutting into it flattens the fit), and not while the lids are
         // still opening after a blink (300 ms). Otherwise the last good value is kept.
         let roundness_ok = self.ba_open.len() < 30 || (f.pupil_b / f.pupil_a - self.ba_open.value).abs() <= PUPIL_MAX_BA_DEV;
-        let pupil_whole = f.ok_pupil && f.pupil_vis >= PUPIL_MIN_VIS && roundness_ok && self.since_closed > PUPIL_SETTLE_FRAMES;
-        let pd = self.pd.push(if pupil_whole { 2.0 * f.pupil_a / r } else { f64::NAN });
+        let settled = self.since_closed > frames_in(PUPIL_SETTLE_S, fps, 1);
+        let pupil_whole = f.ok_pupil && f.pupil_vis >= PUPIL_MIN_VIS && roundness_ok && settled;
+        let pd = self.pd.push(if pupil_whole { 2.0 * f.pupil_a / r } else { f64::NAN }, med_n);
         self.nopupil = if f.ok_pupil { 0 } else { self.nopupil + 1 };
-        if self.nopupil >= PRIOR_RESET_MISSES && self.prev.is_some() {
+        if self.nopupil >= frames_in(PRIOR_RESET_S, fps, 2) && self.prev.is_some() {
             // prev_p stays: the lids and the box are still measured where the pupil last was.
             self.prev = None;
             f.diag.prior_reset = true;
         }
-        if f.ok_pupil && self.frame_no.is_multiple_of(2) {
-            self.box_open.push(box_f);
+        if f.ok_pupil && sampled {
+            self.box_open.push(box_f, long_hz);
         }
 
-        // Closed: lid skin covers the box (brighter than the open-eye level) and no pupil for 3 frames.
-        let closed = self.box_open.len() >= 30 && box_f > 1.3 * self.box_open.value && self.nopupil >= 3;
-        self.closed_hist = ((self.closed_hist << 1) | closed as u32) & ((1 << HOLD_FRAMES) - 1);
-        let hold = self.closed_hist != 0;
+        // Closed: lid skin covers the box (brighter than the open-eye level) and no pupil for CLOSED_NO_PUPIL_S (3
+        // frames at 90 fps).
+        let no_pupil_long = self.nopupil >= frames_in(CLOSED_NO_PUPIL_S, fps, 2);
+        let closed = self.box_open.len() >= 30 && box_f > 1.3 * self.box_open.value && no_pupil_long;
         self.since_closed = if closed { 0 } else { self.since_closed.saturating_add(1) };
+        // Wide and squint are 0 on a closed frame and for HOLD_S after it.
+        let hold = self.since_closed <= frames_in(HOLD_S, fps, 1);
 
         // Downward glance: the pitch fell by GAZE_DROP_DEG within the last GAZE_DROP_WINDOW.
         if pitch.is_finite() {
@@ -600,15 +695,16 @@ impl EyeEngine {
         let (step_r, gap_r, cal_q) = params.hist.map_or((DEFAULT_WIDEN_STEP, DEFAULT_OPEN_GAP, 0.7), |h| (h.step, h.gap, 1.0));
         let (step_px, gap_px) = (step_r * r, gap_r * r);
         let open_seen = f.ok_pupil && !closed && skin_px.is_finite();
-        if open_seen && pitch.is_finite() && self.frame_no.is_multiple_of(2) {
-            self.base.pitch_typ.push(pitch);
+        if open_seen && pitch.is_finite() && sampled {
+            self.base.pitch_typ.push(pitch, long_hz);
         }
         let p_typ = self.base.pitch_typ.value;
         let usable = open_seen && (!pitch.is_finite() || (p_typ.is_finite() && (pitch - p_typ).abs() < PITCH_GATE));
         if usable && !self.base.ready {
-            self.base.warm(skin_px, ap_px, 0.01 * r);
+            self.base.warm(skin_px, ap_px, 0.01 * r, 1.0 / fps);
         } else if usable && params.tune.track && step_px > 0.0 {
-            let k = 1.0 / (TRACK_TAU_S * FPS);
+            // One frame's share of the time constant.
+            let k = 1.0 / (TRACK_TAU_S * fps);
             if self.last_wide < TRACK_MAX_WIDE {
                 self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
             }
@@ -629,7 +725,7 @@ impl EyeEngine {
         };
         let wide = if wide.is_finite() { wide } else { 0.0 };
         self.last_wide = wide;
-        let wide = self.wide_gate.step(wide);
+        let wide = self.wide_gate.step(wide, frames_in(WIDE_ON_S, fps, 2));
 
         // Squint and openness from the pitch-corrected aperture (the user's curve is in iris radii).
         let p0 = if p_typ.is_finite() { p_typ } else { DEFAULT_PITCH_N };
@@ -924,7 +1020,7 @@ fn bracket(value: &str, need: &str) -> String {
 /// one message per eye joined with "。" (left first).
 pub fn eyes_message(issues: &[Option<EyeIssue>; 2]) -> String {
     match issues {
-        [Some(l), Some(r)] if l.text == r.text => {
+        [Some(l), Some(r)] if l.text == r.text && l.need == r.need => {
             let value = if l.value.is_empty() { String::new() } else { format!("左 {}・右 {}", l.value, r.value) };
             format!("両目{}{}", l.text, bracket(&value, &l.need))
         }
@@ -935,21 +1031,22 @@ pub fn eyes_message(issues: &[Option<EyeIssue>; 2]) -> String {
 /// Why one eye's wear calibration did not go through.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WearFail {
-    /// Too few normal frames with the pupil: (frames with it, normal frames).
-    Pupil { seen: usize, frames: usize },
+    /// Too few normal frames with the pupil: (frames with it, normal frames, frames needed).
+    Pupil { seen: usize, frames: usize, need: usize },
     /// The pupil was seen, but too few of those frames had the upper lid's skin line: (frames with both, normal
-    /// frames).
-    LidLine { seen: usize, frames: usize },
+    /// frames, frames needed).
+    LidLine { seen: usize, frames: usize, need: usize },
     /// The closed eye was not caught.
     Close,
 }
 
 impl WearFail {
     pub fn issue(&self) -> EyeIssue {
-        let need = format!("{MIN_NORMAL_FRAMES} 必要");
         match *self {
-            WearFail::Pupil { seen, frames } => EyeIssue::new(MSG_PUPIL, format!("{seen}/{frames}"), &need),
-            WearFail::LidLine { seen, frames } => EyeIssue::new(MSG_LID_LINE, format!("{seen}/{frames}"), &need),
+            WearFail::Pupil { seen, frames, need } => EyeIssue::new(MSG_PUPIL, format!("{seen}/{frames}"), &format!("{need} 必要")),
+            WearFail::LidLine { seen, frames, need } => {
+                EyeIssue::new(MSG_LID_LINE, format!("{seen}/{frames}"), &format!("{need} 必要"))
+            }
             WearFail::Close => EyeIssue::new(MSG_CLOSE, String::new(), ""),
         }
     }
@@ -969,11 +1066,12 @@ impl WearFail {
 pub type EyeWear = Result<(WearParams, bool), WearFail>;
 
 /// Levels from normal / widen / close frames, each eye on its own. An eye needs the pupil (and the upper lid's skin
-/// line) in MIN_NORMAL_FRAMES normal frames and its closed level; an eye whose widen was not caught gets
+/// line) in NEED_NORMAL of its normal frames and its closed level; an eye whose widen was not caught gets
 /// `fallback_step` (iris radii) as its widen step instead of failing.
 pub fn fit_wear_eyes(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> [EyeWear; 2] {
     [0, 1].map(|e| {
         let s = &samples[e];
+        let need = WearNeeds::of(s);
         // One radius for the whole calibration (as the prototype's block calibration does): the running estimate
         // may still be settling while the steps are recorded.
         let r_px = calib_radius(s, &[Label::Normal, Label::Widen]);
@@ -988,15 +1086,15 @@ pub fn fit_wear_eyes(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> [Ey
         let (b_w, nw) = med_of(&widen, |x| x.ok.then_some(x.skin));
         let (ap_n, _) = med_of(&normal, |x| x.ok.then_some(x.ap));
         let (ap_cl, nc) = med_of(&close, |x| Some(x.ap));
-        if n_pupil < MIN_NORMAL_FRAMES {
-            return Err(WearFail::Pupil { seen: n_pupil, frames: normal.len() });
+        if n_pupil < need.normal {
+            return Err(WearFail::Pupil { seen: n_pupil, frames: normal.len(), need: need.normal });
         }
-        if nn < MIN_NORMAL_FRAMES {
-            return Err(WearFail::LidLine { seen: nn, frames: normal.len() });
+        if nn < need.normal {
+            return Err(WearFail::LidLine { seen: nn, frames: normal.len(), need: need.normal });
         }
-        let widen_ok = nw >= MIN_WIDEN_FRAMES && b_w - b_n >= MIN_WIDEN_STEP;
+        let widen_ok = nw >= need.widen && b_w - b_n >= MIN_WIDEN_STEP;
         let b_w = if widen_ok { b_w } else { b_n + fallback_step[e] };
-        if nc < MIN_CLOSE_FRAMES || ap_n - ap_cl < MIN_OPEN_GAP || (ap_n - ap_cl).is_nan() {
+        if nc < need.close || ap_n - ap_cl < MIN_OPEN_GAP || (ap_n - ap_cl).is_nan() {
             return Err(WearFail::Close);
         }
         let (pitch_n, _) = med_of(&normal, |x| Some(x.pitch));
@@ -1015,7 +1113,7 @@ pub fn wear_fail_message(eyes: &[EyeWear; 2]) -> String {
 pub fn fit_wear(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> Result<([WearParams; 2], bool), String> {
     match fit_wear_eyes(samples, fallback_step) {
         [Ok((l, ml)), Ok((r, mr))] => Ok(([l, r], ml && mr)),
-        eyes => Err(wear_fail_message(&eyes)),
+        eyes => Err(with_rate_note(wear_fail_message(&eyes), samples)),
     }
 }
 
@@ -1071,7 +1169,7 @@ pub fn fit_wear_settled(
     let eyes = fit_wear_eyes(samples, fallback_step);
     let ok = [0, 1].map(|e| eyes[e].as_ref().ok().copied());
     if ok == [None, None] {
-        return Err(wear_fail_message(&eyes));
+        return Err(with_rate_note(wear_fail_message(&eyes), samples));
     }
     let wear = [0, 1].map(|e| match (ok[e], ok[1 - e]) {
         (Some((w, _)), _) => w,
@@ -1113,27 +1211,37 @@ pub fn fit_user(
     old: Option<[UserParams; 2]>,
     strict: bool,
 ) -> Result<([UserParams; 2], Vec<String>), String> {
+    fit_user_checked(samples, wear, old, strict).map_err(|m| with_rate_note(m, samples))
+}
+
+fn fit_user_checked(
+    samples: &[Vec<Sample>; 2],
+    wear: &[WearParams; 2],
+    old: Option<[UserParams; 2]>,
+    strict: bool,
+) -> Result<([UserParams; 2], Vec<String>), String> {
     let mut out = [UserParams::default(); 2];
     let mut deltas = [(0.0, 0.0); 2];
     let mut warnings = Vec::new();
     let mut fails: [Option<EyeIssue>; 2] = [None, None];
     for (e, s) in samples.iter().enumerate() {
         let w = &wear[e];
+        let need = UserNeeds::of(s);
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(w.r_px)).collect();
         let s = &s[..];
-        let neutral = |l: Label| matches!(l, Label::LeadIn | Label::Normal | Label::LookUp | Label::LookDown | Label::Bright | Label::Dark);
         let pts: Vec<(f64, f64)> =
             s.iter().filter(|x| neutral(x.label) && x.ok && x.pitch.is_finite() && x.ap.is_finite()).map(|x| (x.pitch, x.ap)).collect();
-        if pts.len() < 150 {
+        if pts.len() < need.points {
             let count = |f: &dyn Fn(&Sample) -> bool| s.iter().filter(|x| neutral(x.label) && f(x)).count();
             let (frames, gaze, pupil) = (count(&|_| true), count(&|x| x.pitch.is_finite()), count(&|x| x.ok));
-            if gaze < 150 {
+            if gaze < need.points {
                 return Err(MSG_NO_GAZE.into());
             }
-            fails[e] = Some(if pupil < 150 {
-                EyeIssue::new(MSG_PUPIL, format!("{pupil}/{frames}"), "150 必要")
+            let need_text = format!("{} 必要", need.points);
+            fails[e] = Some(if pupil < need.points {
+                EyeIssue::new(MSG_PUPIL, format!("{pupil}/{frames}"), &need_text)
             } else {
-                EyeIssue::new(MSG_LIDS, format!("{}/{frames}", pts.len()), "150 必要")
+                EyeIssue::new(MSG_LIDS, format!("{}/{frames}", pts.len()), &need_text)
             });
             continue;
         }
@@ -1145,7 +1253,7 @@ pub fn fit_user(
         let mut sorted = xs.clone();
         let (lo, hi) = (vision::percentile(&mut sorted, 1.0), vision::percentile(&mut sorted, 99.0));
         let (ap_sq, nsq) = med_of(s, |x| (x.label == Label::Squint).then_some(x.ap));
-        if nsq < 30 {
+        if nsq < need.squint {
             fails[e] = Some(EyeIssue::new(MSG_SQUINT_MISSING, String::new(), ""));
             continue;
         }
@@ -1154,7 +1262,7 @@ pub fn fit_user(
         let (lower_down, _) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.lower_px));
         let checks = [
             (f_sq >= 0.85 || f_sq.is_nan(), EyeIssue::new(MSG_SQUINT_SHALLOW, format!("f_sq {f_sq:.2}"), "")),
-            (nd < 30 || ap_down > 0.95 * w.ap_n, EyeIssue::new(MSG_LOOK_DOWN, format!("{ap_down:.2} / 普段 {:.2}", w.ap_n), "")),
+            (nd < need.look_down || ap_down > 0.95 * w.ap_n, EyeIssue::new(MSG_LOOK_DOWN, format!("{ap_down:.2} / 普段 {:.2}", w.ap_n), "")),
             (lower_down < w.lower_px, EyeIssue::new(MSG_LOWER_UP, format!("{lower_down:.1} px / 普段 {:.1} px", w.lower_px), "")),
         ];
         for (bad, issue) in checks {
@@ -1191,7 +1299,9 @@ pub fn fit_pupil(samples: &[Vec<Sample>; 2], r: Option<[f64; 2]>) -> Option<[(f6
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(rr)).collect();
         let mut br: Vec<f64> = s.iter().filter(|x| x.label == Label::Bright && x.pd.is_finite()).map(|x| x.pd).collect();
         let mut dk: Vec<f64> = s.iter().filter(|x| x.label == Label::Dark && x.pd.is_finite()).map(|x| x.pd).collect();
-        if br.len() < 60 || dk.len() < 60 {
+        let fps = samples_fps(&s);
+        let step = |l: Label| s.iter().filter(|x| x.label == l).count();
+        if br.len() < NEED_PUPIL.frames(step(Label::Bright), fps) || dk.len() < NEED_PUPIL.frames(step(Label::Dark), fps) {
             return None;
         }
         let (lo, hi) = (vision::percentile(&mut br, 5.0), vision::percentile(&mut dk, 95.0));
@@ -1453,11 +1563,119 @@ impl CalibFile {
 // ------------------------------------------------------------------------------------------------- reports
 
 /// Thresholds of the calibration checks (fit_wear / fit_user use the same numbers).
-pub const MIN_NORMAL_FRAMES: usize = 90;
-pub const MIN_WIDEN_FRAMES: usize = 60;
-pub const MIN_CLOSE_FRAMES: usize = 20;
 pub const MIN_WIDEN_STEP: f64 = 0.05;
 pub const MIN_OPEN_GAP: f64 = 0.2;
+
+/// How many frames a calibration check needs, relative to what the cameras delivered: at least `share` of the
+/// step's frames, `seconds` worth at the cameras' frame rate, and `floor`. The cameras run at 90 frames a second on
+/// most headsets but as slowly as 15 on some, where the old fixed counts could never be met (a 5.4 s normal step
+/// has 486 frames at 90 fps and 81 at 15). At 90 fps the seconds decide and give the old counts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Need {
+    pub share: f64,
+    pub seconds: f64,
+    pub floor: usize,
+}
+
+impl Need {
+    /// The frames needed out of a step's `step_frames` at `fps` (NaN: not known, the share and floor only).
+    pub fn frames(&self, step_frames: usize, fps: f64) -> usize {
+        let by_time = if fps.is_finite() { (self.seconds * fps).round() as usize } else { 0 };
+        let by_share = (self.share * step_frames as f64).ceil() as usize;
+        self.floor.max(by_time).max(by_share)
+    }
+
+    fn json(&self) -> String {
+        format!("{{\"share\": {}, \"seconds\": {}, \"floor\": {}}}", json::num(self.share), json::num(self.seconds), self.floor)
+    }
+}
+
+/// The pupil and the upper lid's line in the normal steps: about a second's worth (90 at 90 fps, 15 at 15).
+pub const NEED_NORMAL: Need = Need { share: 0.18, seconds: 1.0, floor: 12 };
+/// The pupil in the widen steps for the widen to count (60 at 90 fps).
+pub const NEED_WIDEN: Need = Need { share: 0.14, seconds: 60.0 / FPS, floor: 8 };
+/// Lids measured in the close step (20 at 90 fps).
+pub const NEED_CLOSE: Need = Need { share: 0.15, seconds: 20.0 / FPS, floor: 3 };
+/// User calibration: pupil, lids and Valve's gaze in the neutral steps (150 at 90 fps) ...
+pub const NEED_USER_POINTS: Need = Need { share: 0.15, seconds: 150.0 / FPS, floor: 25 };
+/// ... and the lids in the squint and look_down steps (30 at 90 fps).
+pub const NEED_USER_STEP: Need = Need { share: 0.07, seconds: 30.0 / FPS, floor: 5 };
+/// Pupil range: whole pupils in the bright and the dark steps (60 at 90 fps).
+pub const NEED_PUPIL: Need = Need { share: 0.08, seconds: 60.0 / FPS, floor: 8 };
+/// Below this many frames a second a failed calibration says how few frames came.
+pub const LOW_FPS: f64 = 60.0;
+
+/// The cameras' frame rate in a calibration's samples of one eye: the median interval between frames of the same
+/// step, rounded to whole frames a second (as `FrameRate`); NaN without two frames in a row.
+pub fn samples_fps(s: &[Sample]) -> f64 {
+    let mut dt: Vec<f64> =
+        s.windows(2).filter(|w| w[0].label == w[1].label).map(|w| w[1].t - w[0].t).filter(|d| *d > 0.0 && *d < 0.5).collect();
+    if dt.is_empty() { f64::NAN } else { (1.0 / vision::median(&mut dt)).round().max(1.0) }
+}
+
+/// One eye's wear calibration needs (frames), and the frame rate they are for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WearNeeds {
+    pub fps: f64,
+    pub normal: usize,
+    pub widen: usize,
+    pub close: usize,
+}
+
+impl WearNeeds {
+    pub fn of(s: &[Sample]) -> Self {
+        let fps = samples_fps(s);
+        let n = |l: Label| s.iter().filter(|x| x.label == l).count();
+        Self {
+            fps,
+            normal: NEED_NORMAL.frames(n(Label::Normal), fps),
+            widen: NEED_WIDEN.frames(n(Label::Widen), fps),
+            close: NEED_CLOSE.frames(n(Label::Close), fps),
+        }
+    }
+}
+
+/// The steps a user calibration fits the pitch curve on.
+fn neutral(l: Label) -> bool {
+    matches!(l, Label::LeadIn | Label::Normal | Label::LookUp | Label::LookDown | Label::Bright | Label::Dark)
+}
+
+/// One eye's user calibration needs (frames), and the frame rate they are for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UserNeeds {
+    pub fps: f64,
+    pub points: usize,
+    pub squint: usize,
+    pub look_down: usize,
+}
+
+impl UserNeeds {
+    pub fn of(s: &[Sample]) -> Self {
+        let fps = samples_fps(s);
+        let n = |f: &dyn Fn(Label) -> bool| s.iter().filter(|x| f(x.label)).count();
+        Self {
+            fps,
+            points: NEED_USER_POINTS.frames(n(&neutral), fps),
+            squint: NEED_USER_STEP.frames(n(&|l| l == Label::Squint), fps),
+            look_down: NEED_USER_STEP.frames(n(&|l| l == Label::LookDown), fps),
+        }
+    }
+}
+
+/// "カメラの映像が毎秒 N 枚しか届いていない": added to a failed calibration's message when the cameras delivered
+/// fewer than LOW_FPS frames a second, so that a screenshot says why.
+pub fn rate_note(fps: f64) -> Option<String> {
+    (fps.is_finite() && fps < LOW_FPS).then(|| format!("カメラの映像が毎秒 {} 枚しか届いていない", fps.round()))
+}
+
+/// `message`, with the rate note for the slower eye's frame rate if it is low.
+fn with_rate_note(message: String, samples: &[Vec<Sample>; 2]) -> String {
+    let fps = samples.iter().map(|s| samples_fps(s)).filter(|f| f.is_finite()).fold(f64::NAN, f64::min);
+    match rate_note(fps) {
+        Some(note) => format!("{message}。{note}"),
+        None => message,
+    }
+}
 
 impl Label {
     pub fn name(self) -> &'static str {
@@ -1480,7 +1698,9 @@ impl Label {
 pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
     let mut eyes = Vec::new();
     let mut lines = Vec::new();
+    let needs = [0, 1].map(|e| WearNeeds::of(&samples[e]));
     for (e, s) in samples.iter().enumerate() {
+        let need = needs[e];
         let r_px = calib_radius(s, &[Label::Normal, Label::Widen]);
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(r_px)).collect();
         let n_pupil = s.iter().filter(|x| x.label == Label::Normal && x.ok).count();
@@ -1513,21 +1733,34 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         ));
         lines.push(format!(
             "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
-frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {MIN_NORMAL_FRAMES} / {MIN_WIDEN_FRAMES}), close {nc} (need {MIN_CLOSE_FRAMES}), R {:.1} px; {}",
+frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), R {:.1} px; {}",
             ["L", "R"][e],
             b_w - b_n,
             b_n,
             b_w,
             ap_n - ap_cl,
             all(Label::Normal),
+            need.normal,
+            need.widen,
+            need.close,
+            need.fps,
             r_px,
             d.line
         ));
     }
+    // The frame counts needed per eye ([L, R]), for the frame rate each eye's camera delivered, and the rule.
+    let pair = |f: &dyn Fn(&WearNeeds) -> String| format!("[{}, {}]", f(&needs[0]), f(&needs[1]));
     let json = format!(
-        "{{{}, \"thresholds\": {{\"widen_step_min\": {MIN_WIDEN_STEP}, \"open_gap_min\": {MIN_OPEN_GAP}, \"normal_frames_min\": {MIN_NORMAL_FRAMES}, \
-\"widen_frames_min\": {MIN_WIDEN_FRAMES}, \"close_frames_min\": {MIN_CLOSE_FRAMES}}}}}",
-        eyes.join(", ")
+        "{{{}, \"thresholds\": {{\"widen_step_min\": {MIN_WIDEN_STEP}, \"open_gap_min\": {MIN_OPEN_GAP}, \"fps\": {}, \"normal_frames_min\": {}, \
+\"widen_frames_min\": {}, \"close_frames_min\": {}, \"rule\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}}}}}",
+        eyes.join(", "),
+        pair(&|n| json::num(n.fps)),
+        pair(&|n| n.normal.to_string()),
+        pair(&|n| n.widen.to_string()),
+        pair(&|n| n.close.to_string()),
+        NEED_NORMAL.json(),
+        NEED_WIDEN.json(),
+        NEED_CLOSE.json(),
     );
     (json, lines)
 }
@@ -1618,8 +1851,10 @@ pub fn user_report(samples: &[Vec<Sample>; 2], wear: &[WearParams; 2]) -> (Strin
     let mut eyes = Vec::new();
     let mut lines = Vec::new();
     let mut deltas = [(f64::NAN, f64::NAN); 2];
+    let needs = [0, 1].map(|e| UserNeeds::of(&samples[e]));
     for (e, s) in samples.iter().enumerate() {
         let w = &wear[e];
+        let need = needs[e];
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(w.r_px)).collect();
         let (ap_sq, nsq) = med_of(&s, |x| (x.label == Label::Squint).then_some(x.ap));
         let (ap_down, nd) = med_of(&s, |x| (x.label == Label::LookDown).then_some(x.ap));
@@ -1640,21 +1875,33 @@ pub fn user_report(samples: &[Vec<Sample>; 2], wear: &[WearParams; 2]) -> (Strin
             json::num(w.lower_px),
         ));
         lines.push(format!(
-            "calib user {}: squint depth {:.2} (needs < 0.85), look_down aperture {:.2} of normal (needs <= 0.95), lower lid {:.1} px vs normal {:.1} px (must not move up), pitch points {pitch_pts} (need 150)",
+            "calib user {}: squint depth {:.2} (needs < 0.85), look_down aperture {:.2} of normal (needs <= 0.95), lower lid {:.1} px vs normal {:.1} px (must not move up), pitch points {pitch_pts} (need {}), squint / look_down frames {nsq} / {nd} (need {} / {}; at {:.0} fps)",
             ["L", "R"][e],
             f_sq,
             ap_down / w.ap_n,
             lower_down,
-            w.lower_px
+            w.lower_px,
+            need.points,
+            need.squint,
+            need.look_down,
+            need.fps
         ));
     }
     let (dd, ds) = ((deltas[0].0 - deltas[1].0).abs(), (deltas[0].1 - deltas[1].1).abs());
     lines.push(format!("calib user L/R difference: look_down {dd:.2}, squint {ds:.2} (warning at >= 0.2)"));
+    let pair = |f: &dyn Fn(&UserNeeds) -> String| format!("[{}, {}]", f(&needs[0]), f(&needs[1]));
     let json = format!(
-        "{{{}, \"left_right_difference\": {{\"look_down\": {}, \"squint\": {}}}, \"thresholds\": {{\"f_sq_max\": 0.85, \"look_down_ratio_max\": 0.95, \"left_right_warn\": 0.2, \"pitch_points_min\": 150}}}}",
+        "{{{}, \"left_right_difference\": {{\"look_down\": {}, \"squint\": {}}}, \"thresholds\": {{\"f_sq_max\": 0.85, \"look_down_ratio_max\": 0.95, \"left_right_warn\": 0.2, \
+\"fps\": {}, \"pitch_points_min\": {}, \"squint_frames_min\": {}, \"look_down_frames_min\": {}, \"rule\": {{\"pitch_points\": {}, \"squint_look_down\": {}}}}}}}",
         eyes.join(", "),
         json::num(dd),
-        json::num(ds)
+        json::num(ds),
+        pair(&|n| json::num(n.fps)),
+        pair(&|n| n.points.to_string()),
+        pair(&|n| n.squint.to_string()),
+        pair(&|n| n.look_down.to_string()),
+        NEED_USER_POINTS.json(),
+        NEED_USER_STEP.json(),
     );
     (json, lines)
 }
@@ -1708,18 +1955,58 @@ mod tests {
     #[test]
     fn wide_gate_needs_100_ms_above_half_and_stays_on_down_to_the_off_level() {
         let mut g = WideGate::default();
+        let n = frames_in(WIDE_ON_S, FPS, 2);
+        assert_eq!(n, 9, "9 frames at 90 fps");
         // A spike shorter than 100 ms is capped at the off level.
-        let spike: Vec<f64> = (0..8).map(|_| g.step(0.9)).collect();
+        let spike: Vec<f64> = (0..8).map(|_| g.step(0.9, n)).collect();
         assert!(spike.iter().all(|&v| v == WIDE_OFF), "{spike:?}");
-        assert_eq!(g.step(0.2), 0.2);
+        assert_eq!(g.step(0.2, n), 0.2);
         // A held widen comes through on its 9th frame and stays while above the off level.
-        let held: Vec<f64> = (0..9).map(|_| g.step(0.8)).collect();
+        let held: Vec<f64> = (0..9).map(|_| g.step(0.8, n)).collect();
         assert_eq!(held[7], WIDE_OFF);
         assert_eq!(held[8], 0.8);
-        assert_eq!(g.step(0.4), 0.4);
-        assert_eq!(g.step(0.29), 0.29);
+        assert_eq!(g.step(0.4, n), 0.4);
+        assert_eq!(g.step(0.29, n), 0.29);
         // Below the off level it has to wait again.
-        assert_eq!(g.step(0.9), WIDE_OFF);
+        assert_eq!(g.step(0.9, n), WIDE_OFF);
+        // At 15 fps the 100 ms are 2 frames (a single frame is still capped).
+        let n = frames_in(WIDE_ON_S, 15.0, 2);
+        let mut g = WideGate::default();
+        assert_eq!([g.step(0.8, n), g.step(0.8, n)], [WIDE_OFF, 0.8]);
+    }
+
+    #[test]
+    fn durations_turn_into_the_old_frame_counts_at_90_fps() {
+        let at = |s: f64, min: u32| [90.0, 72.0, 45.0, 18.0, 15.0].map(|fps| frames_in(s, fps, min));
+        assert_eq!(at(HOLD_S, 1), [6, 5, 3, 1, 1]);
+        assert_eq!(at(PUPIL_SETTLE_S, 1), [27, 22, 14, 5, 5]);
+        assert_eq!(at(PRIOR_RESET_S, 2), [10, 8, 5, 2, 2]);
+        assert_eq!(at(CLOSED_NO_PUPIL_S, 2), [3, 2, 2, 2, 2]);
+        assert_eq!(at(WIDE_ON_S, 2), [9, 7, 5, 2, 2]);
+        assert_eq!(at(MEDIAN_S, 3).map(|n| n | 1), [5, 5, 3, 3, 3]);
+        assert_eq!(at(0.5, 1), [45, 36, 23, 9, 8]);
+    }
+
+    #[test]
+    fn frame_rate_comes_from_the_frame_times() {
+        let rate = |fps: f64, n: usize, lost: &[usize]| {
+            let mut r = FrameRate::default();
+            for k in (0..n).filter(|k| !lost.contains(k)) {
+                r.push(1000.0 + k as f64 / fps + (k % 3) as f64 * 3e-5);
+            }
+            r.fps()
+        };
+        assert_eq!(rate(15.0, 4, &[]), FPS, "too few frames yet: the default");
+        assert_eq!(rate(15.0, 40, &[]), 15.0);
+        assert_eq!(rate(72.0, 40, &[]), 72.0);
+        assert_eq!(rate(90.0, 100, &[50, 51, 70]), 90.0, "lost frames do not change it");
+        assert_eq!(rate(120.0, 100, &[]), 120.0);
+        // A long gap (frames stopped) is not an interval.
+        let mut r = FrameRate::default();
+        for k in 0..40 {
+            r.push(if k < 20 { k as f64 / 15.0 } else { 100.0 + k as f64 / 15.0 });
+        }
+        assert_eq!(r.fps(), 15.0);
     }
 
     fn samples(label: Label, n: usize, skin: f64, ap: f64, pitch: f64, lower: f64, ok: bool) -> Vec<Sample> {
@@ -1848,7 +2135,7 @@ mod tests {
         assert_eq!(fit_wear(&[wear_eye(89, 89), good.clone()], [0.19; 2]).unwrap_err(), format!("左目{MSG_PUPIL}[89/300、90 必要]"));
         // The pupil was seen but the upper lid's line was not: its own message.
         let eyes = fit_wear_eyes(&[wear_eye(300, 50), good.clone()], [0.19; 2]);
-        assert_eq!(eyes[0], Err(WearFail::LidLine { seen: 50, frames: 300 }));
+        assert_eq!(eyes[0], Err(WearFail::LidLine { seen: 50, frames: 300, need: 90 }));
         assert_eq!(wear_fail_message(&eyes), format!("左目{MSG_LID_LINE}[50/300、90 必要]"));
         // Different problems on the two eyes: both messages.
         let mut no_close = good.clone();
@@ -1858,6 +2145,77 @@ mod tests {
         // Enough frames on both: the levels.
         let (w, measured) = fit_wear(&[good.clone(), wear_eye(90, 90)], [0.19; 2]).unwrap();
         assert!(measured && (w[1].b_n - 0.73).abs() < 1e-9);
+    }
+
+    /// A wear calibration's samples for one eye at `fps`: the protocol's steps (5.4 s normal, 4.4 s widen, 1.2 s
+    /// close) with the pupil in `pupil` of the normal frames.
+    fn wear_eye_at(fps: f64, pupil: usize) -> Vec<Sample> {
+        let n = |s: f64| (s * fps).round() as usize;
+        let mut eye = Vec::new();
+        eye.extend(samples(Label::Normal, n(5.4), 0.73, 1.44, -14.0, 250.0, true));
+        eye.extend(samples(Label::Widen, n(4.4), 0.93, 1.6, -14.0, 252.0, true));
+        eye.extend(samples(Label::Close, n(1.2), f64::NAN, 0.56, -14.0, 240.0, false));
+        for (i, x) in eye.iter_mut().enumerate() {
+            x.t = i as f64 / fps;
+        }
+        for (i, x) in eye.iter_mut().filter(|x| x.label == Label::Normal).enumerate() {
+            x.ok = i < pupil;
+        }
+        eye
+    }
+
+    #[test]
+    fn calibration_needs_follow_the_frames_the_cameras_delivered() {
+        // At 90 fps the old counts: 90 of 486 normal frames, 60 widen, 20 close.
+        let at90 = wear_eye_at(90.0, 486);
+        assert_eq!(WearNeeds::of(&at90), WearNeeds { fps: 90.0, normal: 90, widen: 60, close: 20 });
+        // At 15 fps (issue #23: "[L 81/81, R 81/81, 90 needed]"): about a second's worth.
+        let at15 = wear_eye_at(15.0, 81);
+        assert_eq!(WearNeeds::of(&at15), WearNeeds { fps: 15.0, normal: 15, widen: 10, close: 3 });
+        let (w, measured) = fit_wear(&[at15.clone(), at15.clone()], [0.19; 2]).unwrap();
+        assert!(measured && (w[0].b_w - w[0].b_n - 0.2).abs() < 1e-9 && (w[1].ap_n - w[1].ap_cl - 0.88).abs() < 0.01);
+        // Too few: the real need, and the frame rate when it is low.
+        let err = fit_wear(&[wear_eye_at(15.0, 5), wear_eye_at(15.0, 3)], [0.19; 2]).unwrap_err();
+        assert_eq!(err, format!("両目{MSG_PUPIL}[左 5/81・右 3/81、15 必要]。カメラの映像が毎秒 15 枚しか届いていない"));
+        let err = fit_wear(&[wear_eye_at(72.0, 30), wear_eye_at(72.0, 20)], [0.19; 2]).unwrap_err();
+        assert_eq!(err, format!("両目{MSG_PUPIL}[左 30/389・右 20/389、72 必要]"), "72 fps is not low");
+        // Eyes needing different counts (their cameras' rates differ): one message each.
+        let err = fit_wear(&[wear_eye_at(15.0, 5), wear_eye_at(18.0, 3)], [0.19; 2]).unwrap_err();
+        assert_eq!(err, format!("左目{MSG_PUPIL}[5/81、15 必要]。右目{MSG_PUPIL}[3/97、18 必要]。カメラの映像が毎秒 15 枚しか届いていない"));
+        // The share keeps a check from passing on a few frames when the rate is not known.
+        assert_eq!(NEED_NORMAL.frames(486, f64::NAN), 88);
+        assert_eq!(NEED_NORMAL.frames(30, f64::NAN), 12);
+        // The report has the needs per eye and the rate.
+        let (report, lines) = wear_report(&[at15.clone(), at90.clone()]);
+        let j = crate::json::parse(&report).unwrap();
+        let th = j.get("thresholds").unwrap();
+        let arr = |k: &str| th.get(k).and_then(Json::arr).unwrap().iter().map(|v| v.num().unwrap()).collect::<Vec<_>>();
+        assert_eq!(arr("fps"), [15.0, 90.0]);
+        assert_eq!(arr("normal_frames_min"), [15.0, 90.0]);
+        assert_eq!((arr("widen_frames_min"), arr("close_frames_min")), (vec![10.0, 60.0], vec![3.0, 20.0]));
+        assert!(lines[0].contains("(need 15 / 10), close 18 (need 3; at 15 fps)"), "{}", lines[0]);
+        // User calibration: 150 points at 90 fps, 25 at 15.
+        let user_eye = |fps: f64| {
+            let n = |s: f64| (s * fps).round() as usize;
+            let mut u = Vec::new();
+            u.extend(samples(Label::LeadIn, n(2.2), 0.73, 1.44, -14.0, 250.0, true));
+            u.extend(samples(Label::Squint, n(4.2), 0.6, 0.83, -14.0, 249.0, true));
+            u.extend(samples(Label::LookUp, n(4.2), 0.73, 1.6, 5.0, 248.0, true));
+            u.extend(samples(Label::LookDown, n(4.2), 0.6, 1.1, -35.0, 256.0, true));
+            for (i, x) in u.iter_mut().enumerate() {
+                x.t = i as f64 / fps;
+            }
+            u
+        };
+        assert_eq!(UserNeeds::of(&user_eye(90.0)), UserNeeds { fps: 90.0, points: 150, squint: 30, look_down: 30 });
+        assert_eq!(UserNeeds::of(&user_eye(15.0)), UserNeeds { fps: 15.0, points: 25, squint: 5, look_down: 5 });
+        assert!(fit_user(&[user_eye(15.0), user_eye(15.0)], &w, None, true).is_ok());
+        let mut blind = user_eye(15.0);
+        blind.iter_mut().for_each(|x| x.ok = false);
+        assert_eq!(
+            fit_user(&[blind, user_eye(15.0)], &w, None, true).unwrap_err(),
+            format!("左目{MSG_PUPIL}[0/159、25 必要]。カメラの映像が毎秒 15 枚しか届いていない")
+        );
     }
 
     #[test]
@@ -2011,11 +2369,13 @@ mod tests {
         let o = e.process(&eye, f64::NAN, 0.0, &p);
         assert!(o.f.ok_pupil && e.prev.is_some());
         assert_eq!(o.x_min, feat::X_MIN_LO, "no dark shading: the window opens all the way");
-        for k in 1..=PRIOR_RESET_MISSES {
+        let misses = frames_in(PRIOR_RESET_S, FPS, 2);
+        assert_eq!(misses, 10);
+        for k in 1..=misses {
             let o = e.process(&blank, f64::NAN, k as f64 / FPS, &p);
             assert!(!o.f.ok_pupil);
-            assert_eq!(o.f.diag.prior_reset, k == PRIOR_RESET_MISSES, "frame {k}");
-            assert_eq!(e.prev.is_some(), k < PRIOR_RESET_MISSES);
+            assert_eq!(o.f.diag.prior_reset, k == misses, "frame {k}");
+            assert_eq!(e.prev.is_some(), k < misses);
         }
         assert!(e.prev_p.is_some(), "the lids are still measured where the pupil was");
         let o = e.process(&blank, f64::NAN, 1.0, &p);
@@ -2024,6 +2384,22 @@ mod tests {
         e.reset_tracking();
         assert!(e.prev.is_none() && e.prev_p.is_none() && e.nopupil == 0);
         assert!(e.r_est.len() > 0 || e.cm_n > 0, "what belongs to the wear stays");
+    }
+
+    #[test]
+    fn at_15_fps_the_prior_goes_after_the_same_time() {
+        let mut e = EyeEngine::default();
+        let p = Params::default();
+        let eye = disc_frame(Some((250.0, 200.0, 25.0)));
+        let blank = disc_frame(None);
+        for k in 0..10 {
+            assert!(e.process(&eye, f64::NAN, k as f64 / 15.0, &p).f.ok_pupil);
+        }
+        assert_eq!(e.fps(), 15.0);
+        // 2 frames at 15 fps (133 ms; 10 frames at 90 fps are 111 ms).
+        assert!(!e.process(&blank, f64::NAN, 10.0 / 15.0, &p).f.diag.prior_reset);
+        assert!(e.process(&blank, f64::NAN, 11.0 / 15.0, &p).f.diag.prior_reset);
+        assert!(e.prev.is_none());
     }
 
     /// A closing eye: a dark band of lashes over the box, and a small dark blob on it.
@@ -2106,22 +2482,28 @@ mod tests {
     fn auto_baseline_is_the_mode_of_the_warm_up() {
         // A wearer who mostly looks straight (0.80 px-units) but glances and widens a lot (tails): the mode, not the
         // mean, is the open level.
-        let mut b = AutoBase::default();
-        assert_eq!(b.warmup_remaining_s(), WARMUP_S);
-        for i in 0..WARMUP_FRAMES {
-            let skin = match i % 10 {
-                0..=5 => 40.0 + (i % 3) as f64 * 0.1,
-                6 | 7 => 46.0,
-                _ => 30.0 + (i % 7) as f64,
-            };
-            assert!(!b.ready);
-            b.warm(skin, 80.0, 0.5);
+        // 30 s of usable frames: 2700 at 90 fps, 450 at 15.
+        for (fps, frames) in [(FPS, 2700), (15.0, 450)] {
+            let mut b = AutoBase::default();
+            assert_eq!(b.warmup_remaining_s(), WARMUP_S);
+            for i in 0..frames {
+                let skin = match i % 10 {
+                    0..=5 => 40.0 + (i % 3) as f64 * 0.1,
+                    6 | 7 => 46.0,
+                    _ => 30.0 + (i % 7) as f64,
+                };
+                assert!(!b.ready, "{fps} fps, frame {i}");
+                b.warm(skin, 80.0, 0.5, 1.0 / fps);
+                if i == frames / 2 - 1 {
+                    assert!((b.warmup_remaining_s() - 15.0).abs() < 1e-6, "{}", b.warmup_remaining_s());
+                }
+            }
+            assert!(b.ready, "{fps} fps");
+            // Within the 5-bin smoothing window (2 bins of 0.5) of the true level.
+            assert!((b.b - 40.1).abs() <= 1.25, "{}", b.b);
+            assert!((b.ap_n - 80.0).abs() <= 1.25, "{}", b.ap_n);
+            assert_eq!(b.warmup_remaining_s(), 0.0);
         }
-        assert!(b.ready);
-        // Within the 5-bin smoothing window (2 bins of 0.5) of the true level.
-        assert!((b.b - 40.1).abs() <= 1.25, "{}", b.b);
-        assert!((b.ap_n - 80.0).abs() <= 1.25, "{}", b.ap_n);
-        assert_eq!(b.warmup_remaining_s(), 0.0);
         let mut c = AutoBase::default();
         c.seed(41.0, 79.0);
         assert!(c.ready && c.b == 41.0);

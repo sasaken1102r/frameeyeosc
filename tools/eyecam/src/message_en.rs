@@ -136,6 +136,17 @@ pub fn message_en(ja: &str) -> String {
     if let Some(&(_, en)) = EXACT.iter().find(|(j, _)| *j == ja) {
         return en.to_string();
     }
+    // The note after a failed calibration when the cameras deliver few frames (live::rate_note), alone or after
+    // the message.
+    let rate = |s: &str| s.strip_prefix("カメラの映像が毎秒 ")?.strip_suffix(" 枚しか届いていない").map(str::to_string);
+    if let Some(n) = rate(ja) {
+        return format!("The eye cameras deliver only {n} frames a second");
+    }
+    if let Some((head, tail)) = ja.rsplit_once('。')
+        && let Some(n) = rate(tail)
+    {
+        return format!("{}. The eye cameras deliver only {n} frames a second", message_en(head));
+    }
     // "<reason>（途中まで保存: <session>）"
     if let Some(body) = ja.strip_suffix('）')
         && let Some((head, name)) = body.rsplit_once("（途中まで保存: ")
@@ -268,6 +279,12 @@ mod tests {
             "右目: 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）[240.0 px / 普段 250.0 px]",
             "視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度",
             "視線と目の開きの関係が求められなかった（もう一度）",
+            "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 5/81・右 3/81、15 必要]。カメラの映像が毎秒 15 枚しか届いていない",
+            "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[5/81、15 必要]。右目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[3/97、18 必要]。カメラの映像が毎秒 15 枚しか届いていない",
+            "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[0/159、25 必要]。カメラの映像が毎秒 15 枚しか届いていない",
+            "視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度。カメラの映像が毎秒 15 枚しか届いていない",
+            "（fake）両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 5/81・右 3/81、15 必要]。カメラの映像が毎秒 15 枚しか届いていない",
+            "カメラの映像が毎秒 15 枚しか届いていない",
             "protocol_x.txt の書き方がおかしい: line 3",
             "プロトコルが見つからない: protocol_x.txt",
         ];
@@ -293,6 +310,14 @@ mod tests {
         assert_eq!(
             message_en("校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ。見開きは取れなかったので、いつもの幅を使うよ）[12/486、90 必要]"),
             "Calibrated (Right eye: couldn't see the pupil well, using its previous values. Couldn't measure widening, using the usual width) [12/486, 90 needed]"
+        );
+        assert_eq!(
+            message_en("両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 81/81・右 81/81、15 必要]。カメラの映像が毎秒 15 枚しか届いていない"),
+            "Both eyes: couldn't see the pupil well (adjust the headset and try again) [L 81/81, R 81/81, 15 needed]. The eye cameras deliver only 15 frames a second"
+        );
+        assert_eq!(
+            message_en(&format!("{}。{}", crate::live::MSG_NO_GAZE, crate::live::rate_note(15.0).unwrap())),
+            "Couldn't get the gaze direction from Valve. Check that frameeyeosc is running and try again. The eye cameras deliver only 15 frames a second"
         );
         assert_eq!(
             message_en("校正できた（見開きは取れなかったので、いつもの幅を使うよ）"),

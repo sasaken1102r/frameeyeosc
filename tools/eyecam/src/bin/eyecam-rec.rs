@@ -77,6 +77,10 @@ struct Args {
     fit_user: Option<PathBuf>,
     use_wear: bool,
     prewarm: bool,
+    /// --resample: replay as if the cameras had run at this frame rate.
+    resample: Option<f64>,
+    /// --calib: replay the session as this calibration and write its calib_result.json to --out.
+    calib_replay: Option<eyecam::replay::CalibRun>,
     tune: eyecam::live::Tune,
     wait_grab: f64,
     wait_lock: f64,
@@ -104,6 +108,10 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --fit-user FILE    with --replay: fit a user calibration from the whole session and write it to FILE
   --use-wear         with --replay --user-calib: start from that file's wear levels (as right after calib wear)
   --prewarm          with --replay: learn the auto baselines in a first pass, then replay from the start with them
+  --resample FPS     with --replay: as if the cameras had run at FPS (the frames nearest to an FPS grid), e.g. 15
+  --calib KIND       with --replay: replay the session as a calibration (wear or user, its steps from cues.csv) and
+                     write what calib_result.json would hold to --out; --user-calib gives the history, the user
+                     calibration and (for user) the wear levels
   --no-track         with --replay: do not follow the baselines after warm-up (evaluation)
   --no-gaze-drop     with --replay: no EyeWide hold after a downward glance (evaluation)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
@@ -141,6 +149,8 @@ fn parse_args() -> Result<Args> {
         fit_user: None,
         use_wear: false,
         prewarm: false,
+        resample: None,
+        calib_replay: None,
         tune: eyecam::live::Tune::default(),
         wait_grab: 600.0,
         wait_lock: 300.0,
@@ -169,6 +179,20 @@ fn parse_args() -> Result<Args> {
             "--fit-user" => args.fit_user = Some(PathBuf::from(value("--fit-user")?)),
             "--use-wear" => args.use_wear = true,
             "--prewarm" => args.prewarm = true,
+            "--resample" => {
+                let v = number(value("--resample")?, "--resample")?;
+                if v < 1.0 {
+                    return Err("--resample needs a frame rate of at least 1".into());
+                }
+                args.resample = Some(v);
+            }
+            "--calib" => {
+                args.calib_replay = Some(match value("--calib")?.as_str() {
+                    "wear" => eyecam::replay::CalibRun::Wear,
+                    "user" => eyecam::replay::CalibRun::User,
+                    _ => return Err("--calib must be wear or user".into()),
+                })
+            }
             "--no-track" => args.tune.track = false,
             "--no-gaze-drop" => args.tune.gaze_drop = false,
             "--widen-sensitivity" => {
@@ -246,8 +270,12 @@ fn run() -> Result<()> {
         if !args.out_given {
             return Err("--replay needs --out FILE.csv".into());
         }
-        let session = eyecam::replay::Session::open(dir, args.swap)?;
+        let mut session = eyecam::replay::Session::open(dir, args.swap)?;
         eprintln!("replay {}{}", dir.display(), if session.swapped { " (eye files swapped)" } else { "" });
+        if let Some(fps) = args.resample {
+            session.resample(fps);
+            eprintln!("resampled to {fps} fps: {} L + {} R frames", session.frames(0), session.frames(1));
+        }
         if args.compat {
             return Ok(eyecam::replay::write_compat(&session, &args.out, args.limit)?);
         }
@@ -255,6 +283,11 @@ fn run() -> Result<()> {
             Some(p) => Some(eyecam::live::CalibFile::parse(&fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?)?),
             None => None,
         };
+        if let Some(kind) = args.calib_replay {
+            let json = eyecam::replay::replay_calib(&session, kind, &calib.unwrap_or_default(), args.tune)?;
+            fs::write(&args.out, json).map_err(|e| format!("{}: {e}", args.out.display()))?;
+            return Ok(());
+        }
         let opts = eyecam::replay::LiveOpts {
             calib,
             block_steps: args.calib_block,
@@ -2617,6 +2650,8 @@ mod tests {
             fit_user: None,
             use_wear: false,
             prewarm: false,
+            resample: None,
+            calib_replay: None,
             tune: eyecam::live::Tune::default(),
             wait_grab: 0.0,
             wait_lock: 300.0,

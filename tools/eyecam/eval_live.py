@@ -5,6 +5,7 @@
 テストに使うのは、各セッションの最初のブロック（lead_in, close, normal, widen）より後の段（step >= 4）だけ。
 xwear の ('block', 'gated', 'soft') と同じ条件: 15 秒のブロックで wear 校正、user 校正（視線と開きの関係・細めの深さ・
 瞳孔の範囲）は別のかぶりの参照セッションから。eye_wide は生の値と、Python と同じ EMA 0.35 をかけた値の両方を出す。
+フレームレートは t_cam の間隔から測る（--resample で落とした録画でも、回/分と EMA が時間で同じになる。EMA の 0.35 は 90 fps でのもの）。
 """
 
 import csv
@@ -16,7 +17,6 @@ import sys
 import numpy as np
 
 NEUTRAL = ['normal', 'look_up', 'look_down', 'bright', 'dark']
-FPS = 90.0
 
 
 def auroc(pos, neg):
@@ -75,8 +75,16 @@ def med(x):
     return float(np.median(x)) if len(x) else np.nan
 
 
+def fps_of(d):
+    """t_cam の間隔の中央値から測ったフレームレート。"""
+    dt = np.diff(d['t_cam'])
+    dt = dt[(dt > 0) & (dt < 0.5)]
+    return 1.0 / float(np.median(dt))
+
+
 def evaluate(d):
     """1 本・片目の指標（xwear.evaluate と同じ定義）。"""
+    fps = fps_of(d)
     T = d['step'] >= 4
     sel = lambda labs: T & np.isin(d['label'], labs)
     r = {}
@@ -84,10 +92,12 @@ def evaluate(d):
     wid, nor, neu = sel(['widen']), sel(['normal']), sel(NEUTRAL)
     r['auc_wn'] = auroc(s[wid], s[nor])
     r['auc_wneu'] = auroc(s[wid], s[neu])
-    for tag, W in (('raw', d['eye_wide']), ('ema35', ema(d['eye_wide'], 0.35))):
+    # 90 fps で 0.35 の EMA と同じ時定数
+    a = 1.0 - (1.0 - 0.35) ** (90.0 / fps)
+    for tag, W in (('raw', d['eye_wide']), ('ema35', ema(d['eye_wide'], a))):
         r[f'wide_tpr_{tag}'] = float(np.nanmean(W[wid] > 0.5))
         r[f'wide_fpr_{tag}'] = float(np.nanmean(W[neu] > 0.5))
-        r[f'wide_fp_ep_min_{tag}'] = episodes((W > 0.5) & neu) / (neu.sum() / FPS) * 60
+        r[f'wide_fp_ep_min_{tag}'] = episodes((W > 0.5) & neu) / (neu.sum() / fps) * 60
     closed = d['closed'] > 0
     pred = np.where(closed, 0, np.where(d['eye_squint'] > 0.5, 1, 2))
     for lab, cls in (('close', 0), ('squint', 1), ('normal', 2), ('widen', 2), ('look_down', 2), ('look_up', 2)):
@@ -103,7 +113,9 @@ def evaluate(d):
     r['pupil_mm_dark'] = med(d['pupil_mm'][dk])
     r['dil_bright'] = med(d['pupil_dilation'][br])
     r['dil_dark'] = med(d['pupil_dilation'][dk])
+    r['pupil_share_normal'] = float(np.mean(d['ok_pupil'][nor] > 0))
     r['wear_cal_share'] = float(np.mean(d['wear_cal'][T] > 0))
+    r['fps'] = fps
     return r
 
 

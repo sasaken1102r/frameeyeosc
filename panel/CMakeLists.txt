@@ -44,11 +44,13 @@ add_executable(frameeyeosc-panel
   src/model.cpp
   src/panel.cpp
   src/recorder.cpp
+  src/report.cpp
   src/setup_tools.cpp
   src/sounds.cpp
   src/status.cpp
   src/target.cpp
   src/theme.cpp
+  src/ui_state.cpp
   src/vk_texture.cpp
   src/vr_overlay.cpp
   ${FRAME_UPDATER_DIR}/cpp/update_check.cpp
@@ -130,9 +132,11 @@ add_executable(panel-test tests/panel_test.cpp
   src/model.cpp
   src/panel.cpp
   src/recorder.cpp
+  src/report.cpp
   src/setup_tools.cpp
   src/status.cpp
   src/theme.cpp
+  src/ui_state.cpp
   ${FRAME_UPDATER_DIR}/cpp/update_check.cpp
 )
 target_include_directories(panel-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
@@ -174,3 +178,13 @@ target_include_directories(diag-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
 target_compile_options(diag-test PRIVATE -Wall -Wextra)
 target_link_libraries(diag-test PRIVATE Threads::Threads)
 add_test(NAME diag COMMAND diag-test)
+
+# The records of calibrations and eye fits (report.{h,cpp}: parsing the journal and Valve's log, the key lines, the
+# files, keeping 10, report.txt, --report) and the remembered sub-tab (ui_state), with made-up logs in a folder under
+# the current one: panel/build/report-test
+add_executable(report-test tests/report_test.cpp src/report.cpp src/ui_state.cpp src/i18n.cpp src/json.cpp
+  src/command.cpp)
+target_include_directories(report-test PRIVATE src)
+target_compile_options(report-test PRIVATE -Wall -Wextra)
+target_link_libraries(report-test PRIVATE Threads::Threads)
+add_test(NAME report COMMAND report-test)

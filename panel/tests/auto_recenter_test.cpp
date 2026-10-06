@@ -2,6 +2,7 @@
 // what keeps it from firing. Built with the panel as auto-recenter-test; exits non-zero on failure.
 #include "auto_recenter.h"
 
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -342,6 +343,21 @@ void testOneShotPerPutOn() {
     CHECK(run.logs.size() == 3);
 }
 
+void testWornFor() {
+    // For the records: how long the eyes have been tracked, and how long they weren't before that
+    Run run;
+    CHECK(std::isnan(run.watcher.trackedSec()) && std::isnan(run.watcher.offBeforeSec()));  // nothing seen yet
+    run.wait(6);
+    CHECK(std::fabs(run.watcher.trackedSec() - 5.75) < 1e-6);
+    run.in.tracking = false;
+    run.wait(30);
+    CHECK(std::isnan(run.watcher.trackedSec()) && std::isnan(run.watcher.offBeforeSec()));
+    run.in.tracking = true;
+    run.wait(10);
+    CHECK(std::fabs(run.watcher.trackedSec() - 9.75) < 1e-6);
+    CHECK(std::fabs(run.watcher.offBeforeSec() - 30.0) < 1e-6);
+}
+
 }  // namespace
 
 /**
@@ -358,6 +374,7 @@ int main() {
     testSuspendCountsAsOff();
     testDisabledDisarms();
     testOneShotPerPutOn();
+    testWornFor();
     if (gFailures == 0) std::printf("auto-recenter-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

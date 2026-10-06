@@ -27,6 +27,7 @@ panel/build/recorder-test
 panel/build/model-test
 panel/build/changelog-test
 panel/build/eyecam-test
+panel/build/report-test
 # eyecam, the eye-camera tool (tools/eyecam): its own crate and lockfile, built into its own target folder.
 # Stripped like frameeyeosc (its Cargo.toml is a vendored copy, so the profile is set here)
 eyecam_target=tools/eyecam/target

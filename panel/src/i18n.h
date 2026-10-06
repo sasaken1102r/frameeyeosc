@@ -309,6 +309,85 @@ struct UiText {
     const char* historyTitle;       ///< the version history's title
     const char* historyClose;       ///< its button back to the Advanced tab
     const char* historyMissing;     ///< no CHANGELOG.md (or CHANGELOG.ja.md) was found
+    // The Advanced tab's sub-tabs (a segmented control at its top)
+    const char* advVersion;         ///< the version, updates and the version history
+    const char* advTrouble;         ///< the diagnostics and the recent records
+    const char* advTools;           ///< the gaze dots, the eye log and the eye capture
+    const char* advFiles;           ///< the files and the process
+    const char* updateToFormat;     ///< the update button: "%s に更新する" (the new version)
+    const char* updateNotesFormat;  ///< over the new release's summary: "%s の内容"
+    // Records of calibrations and eye fits (report.h): the "Having trouble" page, a record, all records, report.txt
+    const char* recordsTitle;       ///< "Recent records"
+    const char* recordsHint;        ///< beside it
+    const char* recordsNone;        ///< none yet
+    const char* recordView;         ///< a row's button
+    const char* recordsAllFormat;   ///< the button to all of them: "すべての記録（%s）›" (the count)
+    const char* recordsAllTitleFormat;  ///< their page's title: "すべての記録（%s）"
+    const char* recordsKept;        ///< beside it: how many are kept
+    const char* recordsSsh;         ///< how to read them over SSH
+    const char* recordBack;         ///< "‹ Back" on a record and on all records
+    const char* recordReason;       ///< before a failure's reason
+    const char* recordOutcome;      ///< before what came of a run that went well
+    const char* recordFlow;         ///< over the key log lines
+    const char* recordFlowNone;     ///< no key log lines
+    const char* recordContents;     ///< over the files
+    const char* recordFileReport;   ///< what each file is
+    const char* recordFileLogs;
+    const char* recordFileStatus;
+    const char* recordFileCalib;
+    const char* recordCode;         ///< before the diagnostic code
+    const char* recordMissing;      ///< the record's folder is gone
+    const char* recordSavedFit;     ///< the bar on a failed fit
+    const char* recordSavedCalib;   ///< ...and on a failed calibration
+    const char* recordShow;         ///< its button
+    const char* recordStopped;      ///< the reason of a run stopped partway
+    const char* recordNoStartFormat;  ///< a calibration eyecam-rec refused: "始められなかった: %s"
+    const char* resultOk;           ///< the badges
+    const char* resultFailed;
+    const char* resultPartial;
+    const char* kindFit;            ///< what ran
+    const char* kindRecenter;
+    const char* kindRecenterTilt;
+    const char* kindCalibWear;
+    const char* kindCalibUser;
+    const char* condDashOpen;       ///< the conditions
+    const char* condDashClosed;
+    const char* condAuto;           ///< the re-wear fit run by itself
+    const char* condCameraFormat;   ///< "カメラ %.0f 枚/秒"
+    const char* condPutOnFormat;    ///< "かぶってから %.0f 秒"
+    const char* condSeparator;      ///< between them: "・"
+    const char* reportTitle;        ///< report.txt's first line
+    const char* reportKind;         ///< its labels
+    const char* reportTime;
+    const char* reportResult;
+    const char* reportVersions;
+    const char* reportCode;
+    const char* reportEyeData;
+    const char* reportBefore;
+    const char* reportFlow;
+    const char* reportFiles;
+    const char* reportParenFormat;    ///< an aside after the kind: "（%s）"
+    const char* reportSecondsFormat;  ///< after the times: "（%.1f 秒）"
+    const char* reportTrackerFormat;  ///< "Valve %.0f 回/秒"
+    const char* reportMissedFormat;   ///< "（取りこぼし %.0f）"
+    const char* reportOffFormat;      ///< "（目のデータ %.0f 秒ぶりに再開）"
+    const char* sourceCore;         ///< the logs' names
+    const char* sourcePanel;
+    const char* sourceEyecam;
+    const char* sourceValve;
+    const char* flowStartFormat;    ///< the key lines in the panel's words: "%s 開始（%s）"
+    const char* flowDashOpen;
+    const char* flowDashClosed;
+    const char* flowFit;
+    const char* flowRecenter;
+    const char* flowTilt;
+    const char* flowTryFormat;      ///< "%s %d 回目 %d/%d → %s"
+    const char* flowAgain;
+    const char* flowFailed;
+    const char* flowOk;
+    const char* flowDotHiddenFormat;  ///< "点を消した（%.1f 秒）"
+    const char* flowResumedFormat;    ///< "目のデータ 再開（%.0f 秒ぶり）"
+    const char* flowPutOnFormat;      ///< "かぶった（%.0f 秒ぶり）"
     // The diagnostics page (diag.h; the Advanced tab's "Diagnostics")
     const char* diagButton;              ///< opens the diagnostics page (Advanced tab; eye cameras' "no video")
     const char* diagTitle;               ///< the diagnostics page's title

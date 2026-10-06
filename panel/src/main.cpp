@@ -5,6 +5,7 @@
 #include "config.h"
 #include "draw.h"
 #include "eyecam.h"
+#include "fit_text.h"
 #include "gaze_dots.h"
 #include "gaze_fit.h"
 #include "host_entry.h"
@@ -12,11 +13,13 @@
 #include "model.h"
 #include "panel.h"
 #include "recorder.h"
+#include "report.h"
 #include "setup_tools.h"
 #include "sounds.h"
 #include "status.h"
 #include "target.h"
 #include "theme.h"
+#include "ui_state.h"
 #include "vr_overlay.h"
 
 #include <fcntl.h>
@@ -65,7 +68,8 @@ constexpr double kEyecamIdleReadSec = 1.0;
 
 /** The command line. */
 struct Options {
-    enum class Mode { Overlay, Print, DumpPng, Probe, SwitchAway, ContrastReport, PlaySound, Help, Version };
+    enum class Mode { Overlay, Print, DumpPng, Probe, SwitchAway, ContrastReport, PlaySound, Report, ReportMake, Help,
+                      Version };
     Mode mode = Mode::Overlay;
     std::string configPath;
     std::string statusPath;
@@ -89,6 +93,14 @@ struct Options {
     double advScroll = 0.0;       ///< --adv-scroll: px the Advanced tab's page is scrolled
     std::string changelogDir;     ///< --changelog-dir: read CHANGELOG*.md from here only
     bool diag = false;            ///< --diag: the diagnostics page open (on the Advanced tab)
+    std::string advPage;          ///< --adv-page: the Advanced tab's sub-tab (version, trouble, tools, files)
+    std::string record;           ///< --record: a record shown on the Advanced tab (its folder name, or latest)
+    bool recordsAll = false;      ///< --records-all: all records listed on the Advanced tab
+    bool fakeRecords = false;     ///< --fake-records: made-up records instead of the folder's
+    bool fakeSaved = false;       ///< --fake-saved: a failed fit's or calibration's record was just saved (its bar)
+    std::string report;           ///< --report: latest, list or a record's folder name
+    std::string reportsDir;       ///< --reports-dir: the records' folder (default ~/.local/state/frameeyeosc/reports)
+    std::vector<std::string> reportMake;  ///< --report-make KIND START END RESULT REASON (a test hook)
     std::string language;         ///< for --dump-png: overrides the config language (ja / en)
     PanelTab tab = PanelTab::Basic;
     bool previewQuit = false;
@@ -225,7 +237,12 @@ void printUsage() {
         "      --history-open VERSION  ...with this version's row open instead of the installed one\n"
         "      --history-scroll PX  ...scrolled this far (kept within the list)\n"
         "      --diag            Open the diagnostics page (Advanced tab)\n"
+        "      --adv-page version|trouble|tools|files  The Advanced tab's sub-tab (default version)\n"
         "      --adv-scroll PX   Scroll the Advanced tab's page this far (kept within the page; with --tab advanced)\n"
+        "      --record NAME|latest  Show a record (its folder name) on the Advanced tab\n"
+        "      --records-all     List all records on the Advanced tab\n"
+        "      --fake-records    Made-up records (ten) instead of the records' folder; --record N shows the Nth (0 newest)\n"
+        "      --fake-saved      A failed fit's or calibration's log was just saved: the bar on its failure screen\n"
         "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
         "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
         "      --preview-quit    Show \"press again to quit\"\n"
@@ -303,6 +320,12 @@ void printUsage() {
         "      --update-live     Run the real update checker: check first, and after each --click wait for the\n"
         "                        check or install it started (installs really happen; for testing with a fake GitHub)\n"
         "      --click X,Y       Press the panel at X,Y first (repeatable; writes --config; not with --fake)\n"
+        "  --report latest|list|NAME  Print the newest record's report.txt, a line per record, or that record's\n"
+        "                        report (records of calibrations and eye fits; works over SSH, without SteamVR)\n"
+        "      --reports-dir DIR  The records' folder (default ~/.local/state/frameeyeosc/reports)\n"
+        "  --report-make KIND START END RESULT REASON  For testing: write a record of that window from today's logs\n"
+        "                        (KIND fit|recenter|calib-wear|calib-user, START / END \"YYYY-MM-DD HH:MM:SS\",\n"
+        "                        RESULT ok|failed|partial) into --reports-dir, and print its folder\n"
         "  --contrast-report     Print the WCAG contrast ratio of every color pair on screen\n"
         "  --probe               Diagnostics: connect to SteamVR as a background app and describe the resident panel\n"
         "  --probe-switch-away [S]  Diagnostics: switch the dashboard to a temporary overlay for S s (default 3)\n"
@@ -526,6 +549,29 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.diag = true;
         } else if (arg == "--adv-scroll" && hasNext) {
             options.advScroll = std::max(0.0, std::atof(argv[++i]));
+        } else if (arg == "--adv-page" && hasNext) {
+            options.advPage = argv[++i];
+            AdvPage page;
+            if (!ui_state::parsePage(options.advPage, page)) {
+                std::fprintf(stderr, "--adv-page must be version, trouble, tools or files: %s\n", options.advPage.c_str());
+                return false;
+            }
+        } else if (arg == "--record" && hasNext) {
+            options.record = argv[++i];
+        } else if (arg == "--records-all") {
+            options.recordsAll = true;
+        } else if (arg == "--fake-records") {
+            options.fakeRecords = true;
+        } else if (arg == "--fake-saved") {
+            options.fake = options.fakeSaved = true;
+        } else if (arg == "--report" && hasNext) {
+            options.mode = Options::Mode::Report;
+            options.report = argv[++i];
+        } else if (arg == "--reports-dir" && hasNext) {
+            options.reportsDir = argv[++i];
+        } else if (arg == "--report-make" && i + 5 < argc) {
+            options.mode = Options::Mode::ReportMake;
+            for (int k = 0; k < 5; ++k) options.reportMake.push_back(argv[++i]);
         } else if (arg == "--changelog-dir" && hasNext) {
             options.changelogDir = argv[++i];
         } else if (arg == "--fit-details") {
@@ -775,6 +821,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
     if (options.configPath.empty()) options.configPath = defaultConfigPath();
     if (options.statusPath.empty()) options.statusPath = defaultStatusPath();
     if (options.eyecamDir.empty()) options.eyecamDir = eyecam::defaultDir();
+    if (options.reportsDir.empty()) options.reportsDir = report::defaultDir();
     return true;
 }
 
@@ -1466,6 +1513,144 @@ void loadHistory(PanelModel& model) {
 }
 
 /**
+ * A local time written "YYYY-MM-DD HH:MM:SS" (or Unix seconds).
+ * @param text the time
+ * @param when where to write it
+ * @return true if it could be read
+ */
+bool parseLocalTime(const std::string& text, double& when) {
+    std::tm tm {};
+    if (std::sscanf(text.c_str(), "%d-%d-%d %d:%d:%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday, &tm.tm_hour, &tm.tm_min,
+                    &tm.tm_sec) == 6) {
+        tm.tm_year -= 1900;
+        tm.tm_mon -= 1;
+        tm.tm_isdst = -1;
+        when = static_cast<double>(std::mktime(&tm));
+        return true;
+    }
+    char* end = nullptr;
+    when = std::strtod(text.c_str(), &end);
+    return end != text.c_str() && *end == '\0' && when > 0;
+}
+
+/**
+ * The records again (when "Having trouble" or all records show, and when one was written).
+ * @param model the model (records.list)
+ */
+void loadRecords(PanelModel& model) {
+    model.records.list = report::list(model.records.dir);
+}
+
+/**
+ * Read a record for its view.
+ * @param model the model (records.opened, openedFound, files)
+ * @param folder its folder name
+ */
+void openRecordView(PanelModel& model, const std::string& folder) {
+    model.records.opened = report::Summary();
+    model.records.files.clear();
+    model.records.openedFound = report::load(model.records.dir, folder, model.records.opened, &model.records.files);
+    std::fprintf(stderr, "[report] %s: %s\n", folder.c_str(), model.records.openedFound ? "shown" : "not found");
+}
+
+/**
+ * Made-up records for --fake-records: ten, newest first, the second a failed eye fit with its key lines (as on the
+ * developer's headset on 2026-10-06).
+ * @return them
+ */
+std::vector<report::Summary> fakeRecordList() {
+    using report::Kind;
+    using report::Result;
+    using report::Source;
+    const auto at = [](const char* text) {
+        double when = 0;
+        parseLocalTime(text, when);
+        return when;
+    };
+    const auto make = [&](Kind kind, const char* start, double seconds, Result result, const char* brief,
+                          const char* briefEn, const char* reason, const char* reasonEn) {
+        report::Summary s;
+        s.kind = kind;
+        s.start = at(start);
+        s.end = s.start + seconds;
+        s.result = result;
+        s.brief = brief;
+        s.briefEn = briefEn;
+        s.reason = reason;
+        s.reasonEn = reasonEn;
+        s.version = FRAMEEYEOSC_VERSION;
+        s.steamos = "0.4.3 (20260930.6234839)";
+        s.code = "OK·P24·B128·G1·C1·FW";
+        s.mode = kind == Kind::Fit ? "full" : kind == Kind::Recenter ? "center" : "";
+        s.conditions.dashboardOpen = 1;
+        s.conditions.cameraFps = 90;
+        s.conditions.trackerRate = 90;
+        s.conditions.trackerMissed = 0;
+        s.folder = report::folderName(kind, s.start);
+        return s;
+    };
+    std::vector<report::Summary> list;
+    list.push_back(make(Kind::Fit, "2026-10-06 20:46:02", 21.4, Result::Ok, "", "",
+                        "合わせました。視線の正面: 左右 +0.021・上下 -0.013・傾き +1.2°",
+                        "Fitted. Gaze center: L-R +0.021, U-D -0.013, tilt +1.2°"));
+    {
+        report::Summary s = make(Kind::Fit, "2026-10-06 20:45:09", 7.9, Result::Failed,
+                                 "正面の点で視線が落ち着きませんでした", "The gaze wasn't steady at the center dot",
+                                 "正面 の点で視線が落ち着きませんでした（目を閉じていたかも） 正面の点: 使えたサンプル "
+                                 "0/153（毎秒 90・45 以上が必要）・ばらつき —（2.7° まで）・3 回",
+                                 "The gaze wasn't steady at the center dot (eyes closed?) Center dot: 0 of 153 samples "
+                                 "usable at 90 Hz (needs 45) · spread — (max 2.7°) · 3 tries");
+        s.conditions.sincePutOnSec = 10;
+        s.conditions.offBeforeSec = 201.3;
+        s.conditions.ipdMm = 69.6;
+        const double t0 = s.start;
+        s.flow = {
+            {t0 - 10.2, Source::Core, "Eye tracking resumed after 202.4 s"},
+            {t0 - 10.1, Source::Panel, "[fit] put on (tracking was off 201.3 s): re-centering once the eyes settle"},
+            {t0 - 10.2, Source::Valve, "[Info] - HMD on, starting eye tracking"},
+            {t0, Source::Panel, "[fit] eye fit, IPD 69.6 mm, dashboard open"},
+            {t0 + 2.6, Source::Panel,
+             "[fit] center try 1: 0 of 153 samples usable at 90 Hz (needs 45), no gaze average -> again"},
+            {t0 + 5.3, Source::Panel,
+             "[fit] center try 2: 0 of 153 samples usable at 90 Hz (needs 45), no gaze average -> again"},
+            {t0 + 7.9, Source::Panel,
+             "[fit] center try 3: 0 of 153 samples usable at 90 Hz (needs 45), no gaze average -> failed"},
+            {t0 + 7.9, Source::Panel, "[fit] target up 7.9 s: 944 frames (119 per second), 902 pictures drawn"},
+        };
+        std::stable_sort(s.flow.begin(), s.flow.end(),
+                         [](const report::LogLine& a, const report::LogLine& b) { return a.at < b.at; });
+        list.push_back(s);
+    }
+    list.push_back(make(Kind::CalibWear, "2026-10-06 19:43:02", 21.0, Result::Ok, "カメラ 72 枚/秒", "cameras 72 fps",
+                        "校正できた", "Calibrated"));
+    {
+        report::Summary s = make(Kind::Recenter, "2026-10-06 19:40:11", 3.2, Result::Ok, "", "", "正面を合わせ直しました",
+                                 "Re-centered");
+        s.trigger = "auto";
+        s.conditions.dashboardOpen = 0;
+        list.push_back(s);
+    }
+    list.push_back(make(Kind::CalibWear, "2026-10-06 18:12:40", 20.5, Result::Partial,
+                        "右目は瞳がうまく見えなかったので、前の値を使うよ", "Right eye: previous values",
+                        "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]",
+                        "Calibrated (the right eye's pupil wasn't seen well: its previous values are used) [12/486, 90 "
+                        "needed]"));
+    list.push_back(make(Kind::CalibWear, "2026-10-06 18:11:02", 20.1, Result::Failed, "両目の瞳がうまく見えなかった",
+                        "Both eyes: couldn't see the pupil well",
+                        "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 2/81・右 5/81、15 必要]",
+                        "Both eyes: couldn't see the pupil well (adjust the headset and try again) [L 2/81, R 5/81, 15 "
+                        "needed]"));
+    list.push_back(make(Kind::CalibUser, "2026-10-05 22:30:15", 19.0, Result::Ok, "", "", "校正できた（ユーザー）",
+                        "Calibrated (user)"));
+    list.push_back(make(Kind::Fit, "2026-10-05 22:28:40", 20.9, Result::Ok, "", "", "合わせました", "Fitted"));
+    list.push_back(make(Kind::Recenter, "2026-10-05 21:05:03", 2.9, Result::Failed, "止めました", "Stopped", "止めました",
+                        "Stopped"));
+    list.push_back(make(Kind::CalibWear, "2026-10-05 21:01:44", 20.3, Result::Ok, "カメラ 90 枚/秒", "cameras 90 fps",
+                        "校正できた", "Calibrated"));
+    return list;
+}
+
+/**
  * --dump-png / --thumbnail-png: draw without OpenVR and save PNGs.
  * @param options the command line
  * @return exit code
@@ -1495,8 +1680,35 @@ int runDumpPng(const Options& options) {
         if (!options.language.empty()) parseLanguage(options.language, model.language);
         model.changelogDirs =
             options.changelogDir.empty() ? changelog::defaultDirs() : std::vector<std::string> {options.changelogDir};
+        // The records: made up, or the folder's
+        model.records.dir = options.reportsDir;
+        model.records.list = options.fakeRecords ? fakeRecordList() : report::list(model.records.dir);
+        if (options.fakeSaved) {
+            model.records.lastFit = "fit_2026-10-06_20-45-09";
+            model.records.lastCalib = "calib-wear_2026-10-06_18-11-02";
+        }
         EyePanel panel(fonts);
         panel.setTab(options.tab);
+        if (AdvPage page; ui_state::parsePage(options.advPage, page)) panel.setAdvPage(page);
+        if (options.recordsAll) panel.openRecordsAll();
+        if (!options.record.empty()) {
+            std::string folder = options.record;
+            if (folder == "latest") folder = model.records.list.empty() ? "" : model.records.list.front().folder;
+            if (options.fakeRecords) {
+                // --record N: the Nth made-up one
+                const size_t index = static_cast<size_t>(std::max(0, std::atoi(options.record.c_str())));
+                if (index < model.records.list.size()) {
+                    folder = model.records.list[index].folder;
+                    model.records.opened = model.records.list[index];
+                    model.records.openedFound = true;
+                    model.records.files = {{"report.txt", 4 * 1024}, {"logs.txt", 86 * 1024},
+                                           {"status.jsonl", 31 * 1024}, {"summary.json", 2 * 1024}};
+                }
+            } else {
+                openRecordView(model, folder);
+            }
+            panel.openRecord(folder);
+        }
         panel.setFitDetails(options.fitDetails);
         panel.setFitDetailsPage(options.fitDetailsPage);
         panel.setLidMarks(options.lidMarks);
@@ -1659,6 +1871,51 @@ int runDumpPng(const Options& options) {
         std::printf("Wrote %s (%dx%d)\n", options.thumbnailPngPath.c_str(), options.thumbnailSize,
                     options.thumbnailSize);
     }
+    return 0;
+}
+
+/**
+ * --report: a record's report.txt (or the list of them), in the config's language, for reading over SSH.
+ * @param options the command line
+ * @return exit code (1 if there is no such record)
+ */
+int runReport(const Options& options) {
+    const UiText& t = uiText(configLanguage(readConfigFile(options.configPath)));
+    std::string out;
+    const int code = report::cliReport(t, options.reportsDir, options.report, out);
+    std::fputs(out.c_str(), code == 0 ? stdout : stderr);
+    return code;
+}
+
+/**
+ * --report-make: a record of a window from today's logs, as the panel writes one after a run (for testing the
+ * records against the real journal and Valve's log; nothing else is read).
+ * @param options the command line
+ * @return exit code
+ */
+int runReportMake(const Options& options) {
+    const std::vector<std::string>& a = options.reportMake;
+    report::Pending pending;
+    report::Summary& s = pending.summary;
+    if (a.size() != 5 || !report::parseKind(a[0], s.kind) || !parseLocalTime(a[1], s.start) ||
+        !parseLocalTime(a[2], s.end) || !report::parseResult(a[3], s.result) || s.end < s.start) {
+        std::fprintf(stderr, "--report-make KIND START END RESULT REASON: KIND fit|recenter|calib-wear|calib-user, "
+                             "START / END \"YYYY-MM-DD HH:MM:SS\", RESULT ok|failed|partial\n");
+        return 2;
+    }
+    s.mode = s.kind == report::Kind::Fit ? "full" : s.kind == report::Kind::Recenter ? "center" : "";
+    s.reason = s.reasonEn = a[4];
+    s.version = FRAMEEYEOSC_VERSION;
+    s.steamos = diag::readSteamos();
+    const ConfigFile config = readConfigFile(options.configPath);
+    pending.language = configLanguage(config);
+    std::string folder;
+    std::string error;
+    if (!report::writeRecord(options.reportsDir, pending, report::systemSources(), folder, error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        if (folder.empty()) return 1;
+    }
+    std::printf("%s/%s\n", options.reportsDir.c_str(), folder.c_str());
     return 0;
 }
 
@@ -2197,6 +2454,10 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::HistoryOpen:
             loadHistory(model);
             return;
+        case PanelAction::AdvancedPage:
+        case PanelAction::RecordBack: return;  // handled inside the panel
+        case PanelAction::RecordOpen: openRecordView(model, panel.recordShown()); return;
+        case PanelAction::RecordsAll: loadRecords(model); return;
         case PanelAction::DiagOpen:
             readSystem(model);
             std::fprintf(stderr, "[diag] opened: %s\n", diag::code(model).c_str());
@@ -2406,6 +2667,145 @@ void logUpdate(const frame_updater::UpdateStatus& u) {
 }
 
 /**
+ * A small file's text (status.json), for the records' status.jsonl.
+ * @param path the file
+ * @return its text ("" if it can't be read or is over 256 KB)
+ */
+std::string readSmallFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return "";
+    std::string text(256 * 1024 + 1, '\0');
+    in.read(&text[0], static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<size_t>(in.gcount()));
+    return text.size() > 256 * 1024 ? std::string() : text;
+}
+
+/**
+ * What a calibration or a fit runs under, for its record.
+ * @param model the model (frameeyeosc's and eyecam-rec's status)
+ * @param vr the connection to SteamVR (the dashboard)
+ * @param recenter the put-on watcher (how long the eyes have been tracked)
+ * @return the conditions
+ */
+report::Conditions runConditions(const PanelModel& model, const VrOverlay& vr, const auto_recenter::Watcher& recenter) {
+    report::Conditions c;
+    c.dashboardOpen = vr.dashboardVisible() ? 1 : 0;
+    c.cameraFps = model.eyecam.visible ? eyecam::cameraFps(model.eyecam.status) : NAN;
+    c.trackerRate = model.status.running ? model.status.trackerRate : NAN;
+    c.trackerMissed = model.status.running ? model.status.missedRate : NAN;
+    c.sincePutOnSec = recenter.trackedSec();
+    c.offBeforeSec = recenter.offBeforeSec();
+    return c;
+}
+
+/**
+ * A short line from eyecam-rec's message: up to its first bracket ("両目の瞳がうまく見えなかった").
+ * @param message the message
+ * @return the start of it
+ */
+std::string briefOf(const std::string& message) {
+    size_t cut = message.size();
+    for (const char* mark : {"（", "(", "[", "。"}) cut = std::min(cut, message.find(mark));
+    std::string brief = message.substr(0, cut);
+    while (!brief.empty() && brief.back() == ' ') brief.pop_back();
+    return brief;
+}
+
+/**
+ * How an eye fit ended, for its record (Japanese and English).
+ * @param s the record's summary
+ * @param fit the session as it ended
+ */
+void fillFitResult(report::Summary& s, const gaze_fit::View& fit) {
+    const UiText* tables[2] = {&uiText(Language::Ja), &uiText(Language::En)};
+    if (fit.phase == gaze_fit::Phase::Done) {
+        s.result = report::Result::Ok;
+        for (int i = 0; i < 2; ++i) {
+            const UiText& t = *tables[i];
+            const char* title = fit.mode == gaze_fit::Mode::Center ? t.fitDoneCenter
+                                : fit.mode == gaze_fit::Mode::Tilt ? t.fitDoneTilt
+                                                                   : t.fitDone;
+            char x[16];
+            char y[16];
+            char roll[16];
+            std::snprintf(x, sizeof(x), "%+.3f", fit.values.offsetX);
+            std::snprintf(y, sizeof(y), "%+.3f", fit.values.offsetY);
+            std::snprintf(roll, sizeof(roll), "%+.1f°", fit.values.rollDeg);
+            char line[256];
+            std::snprintf(line, sizeof(line), t.fitGazeCenterFormat, x, y, roll);
+            (i == 0 ? s.reason : s.reasonEn) = std::string(title) + t.condSeparator + line;
+        }
+        return;
+    }
+    s.result = report::Result::Failed;
+    for (int i = 0; i < 2; ++i) {
+        const UiText& t = *tables[i];
+        const std::string why = failureText(t, fit);
+        const std::string detail = failureDetailText(t, fit);
+        (i == 0 ? s.brief : s.briefEn) = why;
+        (i == 0 ? s.reason : s.reasonEn) = why + (detail.empty() ? "" : " " + detail);
+    }
+}
+
+/**
+ * How a calibration ended, for its record: from eyecam-rec's status after it (its message in both languages, one eye
+ * on its earlier values as "partial"), or why it never ran.
+ * @param s the record's summary
+ * @param es eyecam-rec's status after it
+ * @param stopped the panel's "Stop" ended it
+ * @param refused eyecam-rec's answer when it refused the command ("" = it took it)
+ */
+void fillCalibResult(report::Summary& s, const eyecam::Status& es, bool stopped, const std::string& refused) {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    s.result = report::Result::Failed;
+    if (!refused.empty()) {
+        char text[512];
+        std::snprintf(text, sizeof(text), ja.recordNoStartFormat, refused.c_str());
+        s.reason = s.brief = text;
+        std::snprintf(text, sizeof(text), en.recordNoStartFormat, refused.c_str());
+        s.reasonEn = s.briefEn = text;
+        return;
+    }
+    if (stopped) {
+        s.reason = s.brief = ja.recordStopped;
+        s.reasonEn = s.briefEn = en.recordStopped;
+        return;
+    }
+    const std::string messageEn = es.messageEn.empty() ? es.message : es.messageEn;
+    s.reason = es.message;
+    s.reasonEn = messageEn;
+    if (es.state == eyecam::State::Error || es.state != eyecam::State::Idle) {
+        if (s.reason.empty()) s.reason = ja.eyecamCalibErrorTitle;
+        if (s.reasonEn.empty()) s.reasonEn = en.eyecamCalibErrorTitle;
+        s.brief = briefOf(s.reason);
+        s.briefEn = briefOf(s.reasonEn);
+        return;
+    }
+    // Idle after it: done, or (this wear's) one eye on its earlier values, or neither eye
+    const std::string& eye = es.calibFailedEye;
+    if (s.kind == report::Kind::CalibWear && eye == "LR") {
+        s.brief = briefOf(s.reason);
+        s.briefEn = briefOf(s.reasonEn);
+        return;
+    }
+    if (s.kind == report::Kind::CalibWear && (eye == "L" || eye == "R")) {
+        s.result = report::Result::Partial;
+        s.brief = briefOf(s.reason);
+        s.briefEn = briefOf(s.reasonEn);
+        return;
+    }
+    s.result = report::Result::Ok;
+    if (std::isfinite(s.conditions.cameraFps)) {
+        char text[64];
+        std::snprintf(text, sizeof(text), ja.condCameraFormat, s.conditions.cameraFps);
+        s.brief = text;
+        std::snprintf(text, sizeof(text), en.condCameraFormat, s.conditions.cameraFps);
+        s.briefEn = text;
+    }
+}
+
+/**
  * Stay resident as a dashboard overlay. Waits for SteamVR, exits quietly when it quits.
  * If another instance runs, asks it to open its panel and exits (no VR_Init).
  * @param options the command line
@@ -2446,6 +2846,11 @@ int runOverlay(const Options& options) {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
     EyePanel panel(fonts);
+    // The Advanced tab's sub-tab open last time (its own file: config.json isn't touched for it), and the records
+    const std::string uiStatePath = ui_state::defaultPath();
+    AdvPage savedPage = ui_state::readPage(uiStatePath);
+    panel.setAdvPage(savedPage);
+    model.records.dir = options.reportsDir;
     AutostartWorker autostart;
     autostart.start();
     frame_updater::UpdateChecker updater(updaterConfig());
@@ -2491,6 +2896,16 @@ int runOverlay(const Options& options) {
     }
 
     gaze_fit::Session fit;
+    // The records of calibrations and eye fits (report.h): each run's start and its status a second, then the logs
+    // read and written on the writer's own thread after it
+    report::Writer writer(model.records.dir, report::systemSources());
+    report::Run fitRun;
+    report::Run calibRun;
+    std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself
+    std::string calibCommand;          // the calibration's command, to know its reply
+    report::CalibWatch calibWatch;     // ...until it ends
+    double lastRunSample = 0.0;
+    bool recordsWereShown = false;     // "Having trouble" (or all records) showed at the last loop
     // The eye log (frameeyeosc --record as a child), and what the panel last drew of it
     recorder::Recorder eyeLog;
     std::string drawnRecording;
@@ -2547,6 +2962,23 @@ int runOverlay(const Options& options) {
     bool firstSubmit = true;
     bool calmDrawn = false;         // the Eye fit tab's running view was drawn (it then stays still, see below)
     bool userQuit = false;
+    const auto submitRecord = [&](report::Pending pending) {
+        report::Summary& s = pending.summary;
+        s.version = FRAMEEYEOSC_VERSION;
+        s.steamos = model.system.steamos;
+        s.code = diag::code(model);
+        pending.language = model.language;
+        std::fprintf(stderr, "[report] %s %s (%.1f s): writing its record\n", report::kindName(s.kind),
+                     report::resultName(s.result), s.end - s.start);
+        writer.submit(std::move(pending));
+    };
+    // A calibration's end, from eyecam-rec's status now
+    const auto finishCalib = [&](const std::string& refused) {
+        report::Pending pending = calibRun.finish(unixNow());
+        fillCalibResult(pending.summary, model.eyecam.status, calibWatch.stopped(), refused);
+        calibWatch.end();
+        submitRecord(std::move(pending));
+    };
     while (!gStopRequested && !userQuit) {
         if (gShowRequested) {
             gShowRequested = 0;
@@ -2627,6 +3059,17 @@ int runOverlay(const Options& options) {
                     } else {
                         applyHit(hit, model, panel, autostart, &updater, &fit, &vr, &eyeLog, &eyecamControl);
                         lastStamp = configStamp(model.configPath);
+                        // A calibration sent to eyecam-rec: its record starts (one still open ends first)
+                        if (hit.action == PanelAction::EyecamCalib && eyecamControl.busy()) {
+                            if (calibRun.active()) finishCalib("");
+                            const bool user = static_cast<eyecam::Calib>(hit.arg) == eyecam::Calib::User;
+                            calibRun.begin(user ? report::Kind::CalibUser : report::Kind::CalibWear, unixNow());
+                            calibRun.summary().conditions = runConditions(model, vr, recenter);
+                            calibCommand = eyecamControl.command();
+                            calibWatch.start(nowSeconds());
+                            model.records.lastCalib.clear();
+                        }
+                        if (hit.action == PanelAction::EyecamStop) calibWatch.stop();
                     }
                     changed = true;
                     break;
@@ -2684,8 +3127,26 @@ int runOverlay(const Options& options) {
             // On a clock that runs through suspend: taking the headset off usually lets the Frame sleep
             const auto_recenter::Step step = recenter.update(bootSeconds(), in);
             if (!step.log.empty()) std::fprintf(stderr, "[fit] %s\n", step.log.c_str());
-            if (step.start) startFit(fit, rewearMode(autoRecenter(model.config)), view, &vr);
+            if (step.start) {
+                fitTrigger = "auto";
+                startFit(fit, rewearMode(autoRecenter(model.config)), view, &vr);
+            }
         }
+
+        // A fit started (from the panel or by itself): its record starts
+        if (fit.active() && !fitRun.active()) {
+            const gaze_fit::View started = fit.view();
+            fitRun.begin(started.mode == gaze_fit::Mode::Full ? report::Kind::Fit : report::Kind::Recenter, unixNow());
+            report::Summary& s = fitRun.summary();
+            s.trigger = fitTrigger;
+            s.mode = started.mode == gaze_fit::Mode::Full     ? "full"
+                     : started.mode == gaze_fit::Mode::Center ? "center"
+                                                              : "tilt";
+            s.conditions = runConditions(model, vr, recenter);
+            s.conditions.ipdMm = vr.userIpdMeters() * 1000;
+            model.records.lastFit.clear();
+        }
+        fitTrigger = "panel";
 
         // The eye fit: requests and results go through config.json and status.json; the target shows over the open
         // dashboard too (it is nearer)
@@ -2761,6 +3222,12 @@ int runOverlay(const Options& options) {
                 model.fit = view;
                 dirty = true;
             }
+        }
+        // ...and ends with it (done, failed or stopped)
+        if (!fit.active() && fitRun.active()) {
+            report::Pending pending = fitRun.finish(unixNow());
+            fillFitResult(pending.summary, fit.view());
+            submitRecord(std::move(pending));
         }
 
         // The debug gaze dots: while the switch is on (and no eye fit runs), move a dot to where the gaze frameeyeosc
@@ -2855,6 +3322,10 @@ int runOverlay(const Options& options) {
                 if (r.ok && eyecam::runOfCommand(r.command) != eyecam::Run::None) {
                     model.eyecam.lastRun = eyecam::runOfCommand(r.command);
                 }
+                // A calibration it refused: its record ends here
+                if (calibRun.active() && r.command == calibCommand && calibWatch.replied(r.ok)) {
+                    finishCalib(r.error.empty() ? std::string("err") : r.error);
+                }
                 // A sensitivity it refused: the slider shows the file's value again (the reply shows like others)
                 if (!r.ok && eyecam::isSensitivityCommand(r.command)) {
                     panel.dropSensitivityHold();
@@ -2894,6 +3365,18 @@ int runOverlay(const Options& options) {
                 }
             }
             syncEyecamControl(model.eyecam, eyecamControl);
+            // The calibration's record: where eyecam keeps it, the cameras' rate during it, and its end once eyecam-rec
+            // leaves "calibrating" (or never got there)
+            if (calibRun.active()) {
+                if (s.state == eyecam::State::Calibrating) {
+                    calibRun.calibDir(s.sessionDir);
+                    const double fps = eyecam::cameraFps(s);
+                    if (std::isfinite(fps)) calibRun.summary().conditions.cameraFps = fps;
+                }
+                if (calibWatch.follow(s.state == eyecam::State::Calibrating, eyecamControl.busy(), nowSeconds())) {
+                    finishCalib("");
+                }
+            }
             // The setup: the password (only while it may still be needed: at (1) or (2), the tool not in), how its
             // calibration ended, and the short "ready" in the left column after it
             {
@@ -2980,6 +3463,43 @@ int runOverlay(const Options& options) {
             lightMoving = eyecam::lightFading(light, wanted);
         }
 
+        // A run's status a second (status.jsonl)
+        if ((fitRun.active() || calibRun.active()) && unixNow() >= lastRunSample + 1.0) {
+            lastRunSample = unixNow();
+            const std::string core = readSmallFile(model.statusPath);
+            const std::string eyecamText = readSmallFile(model.eyecamDir + "/status.json");
+            fitRun.sample(lastRunSample, core, eyecamText);
+            calibRun.sample(lastRunSample, core, eyecamText);
+        }
+        // A record written: the failure screens' bar links to it, the lists show it
+        {
+            std::string folder;
+            report::Kind kind = report::Kind::Fit;
+            while (writer.poll(folder, kind)) {
+                const bool calib = kind == report::Kind::CalibWear || kind == report::Kind::CalibUser;
+                (calib ? model.records.lastCalib : model.records.lastFit) = folder;
+                loadRecords(model);
+                if (panel.recordShown() == folder) openRecordView(model, folder);
+                dirty = true;
+            }
+        }
+        // "Having trouble" (or all records) shown: the records read again
+        {
+            const bool shown = visible && ((panel.advPageShown() && panel.advPage() == AdvPage::Trouble) ||
+                                           panel.recordsAllOpen());
+            if (shown && !recordsWereShown) {
+                loadRecords(model);
+                dirty = true;
+            }
+            recordsWereShown = shown;
+        }
+        // The Advanced tab's sub-tab, remembered for the next start
+        if (panel.advPage() != savedPage) {
+            savedPage = panel.advPage();
+            std::string error;
+            if (!ui_state::writePage(uiStatePath, savedPage, error)) std::fprintf(stderr, "[panel] %s\n", error.c_str());
+        }
+
         // The diagnostics page: redrawn when anything on it changes (the tool's checksum is looked at again too, which
         // costs a stat unless the file changed)
         if (visible && panel.diagOpen() && nowSeconds() >= lastDiagRead + kStatusReadSec) {
@@ -2994,7 +3514,7 @@ int runOverlay(const Options& options) {
 
         // The Advanced tab's diagnostic code: worked out again and compared (it reads more of the status files than the
         // eye cameras' signature covers: the changed blocks, the last calibration, the proximity reading)
-        if (visible && panel.tab() == PanelTab::Advanced && !panel.diagOpen() && !panel.historyOpen()) {
+        if (visible && panel.advPageShown() && panel.advPage() == AdvPage::Trouble) {
             const std::string code = diag::code(model);
             if (code != drawnCode) {
                 drawnCode = code;
@@ -3077,6 +3597,8 @@ int main(int argc, char** argv) {
         case Options::Mode::SwitchAway: return VrOverlay::switchAway(options.switchAwaySec);
         case Options::Mode::ContrastReport: return printContrastReport();
         case Options::Mode::PlaySound: return runPlaySound(options);
+        case Options::Mode::Report: return runReport(options);
+        case Options::Mode::ReportMake: return runReportMake(options);
         case Options::Mode::Overlay: break;
     }
     return runOverlay(options);

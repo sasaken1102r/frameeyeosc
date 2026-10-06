@@ -10,11 +10,23 @@
 #include "gaze_fit.h"
 #include "i18n.h"
 #include "recorder.h"
+#include "report.h"
 #include "status.h"
 #include "update_check.h"
 
 #include <string>
 #include <vector>
+
+/** The records of calibrations and eye fits as the panel shows them (report.h). */
+struct RecordsView {
+    std::string dir;                      ///< the records' folder (report::defaultDir, or --reports-dir)
+    std::vector<report::Summary> list;    ///< newest first, as last read
+    report::Summary opened;               ///< the record shown (its view)
+    bool openedFound = false;             ///< ...its summary.json was read
+    std::vector<report::FileInfo> files;  ///< ...its files with their sizes
+    std::string lastFit;                  ///< the last eye fit's record, once written ("" = none since the start)
+    std::string lastCalib;                ///< the last calibration's
+};
 
 /** Everything one frame of the panel is drawn from. */
 struct PanelModel {
@@ -34,6 +46,7 @@ struct PanelModel {
     eyecam::View eyecam;         ///< eyecam-rec, for the developer tab "Eye capture" (only shown while it runs)
     std::string eyecamDir;       ///< its folder (status.json and ctl.sock; eyecam::defaultDir or --eyecam-dir)
     diag::System system;         ///< SteamOS's version and the camera tool's checksum (the diagnostics page)
+    RecordsView records;         ///< the records (the Advanced tab's "Having trouble", and the failure screens' bar)
 };
 
 /**

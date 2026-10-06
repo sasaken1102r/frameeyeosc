@@ -6,6 +6,7 @@
 #include "fit_text.h"
 #include "host_entry.h"
 #include "recorder.h"
+#include "report.h"
 #include "setup_tools.h"
 #include "theme.h"
 
@@ -58,8 +59,10 @@ constexpr double kHistoryHeaderH = 56;   ///< a row's header (the whole row whil
 constexpr double kHistoryRowGap = 8;
 constexpr double kHistoryTextSize = 16;  ///< the summary and items (the hints are 15)
 constexpr double kHistoryLineStep = 23;
-constexpr double kAdvViewTop = kContentY + 12;               ///< the Advanced tab's page is shown between these
-constexpr double kAdvViewBottom = kContentY + kContentH - 12;
+constexpr double kAdvViewBottom = kContentY + kContentH - 12;  ///< the Advanced tab's page is shown above this...
+constexpr double kSubTabY = kContentY + 16;                   ///< ...under its sub-tabs
+constexpr double kSubTabH = 48;
+constexpr double kAdvPageTop = kSubTabY + kSubTabH + 14;      ///< ...from here
 
 /**
  * The largest text size (down to a minimum) that fits a width.
@@ -882,6 +885,34 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             setTab(static_cast<PanelTab>(hit.arg));
             historyOpen_ = false;
             diagOpen_ = false;
+            recordOpen_.clear();
+            recordsAllOpen_ = false;
+            return {};
+        case PanelAction::AdvancedPage:
+            // (from the left column's update notice too: the tab opens on it)
+            if (hit.arg < 0 || hit.arg > static_cast<int>(AdvPage::Files)) return {};
+            setTab(PanelTab::Advanced);
+            setAdvPage(static_cast<AdvPage>(hit.arg));
+            historyOpen_ = false;
+            diagOpen_ = false;
+            recordOpen_.clear();
+            recordsAllOpen_ = false;
+            return {};
+        case PanelAction::RecordOpen:
+            // The caller reads it
+            if (hit.arg < 0 || hit.arg >= static_cast<int>(recordNames_.size())) return {};
+            openRecord(recordNames_[hit.arg]);
+            return hit;
+        case PanelAction::RecordsAll:
+            // The caller reads them again
+            openRecordsAll();
+            return hit;
+        case PanelAction::RecordBack:
+            if (!recordOpen_.empty()) {
+                recordOpen_.clear();
+            } else {
+                recordsAllOpen_ = false;
+            }
             return {};
         case PanelAction::HistoryOpen:
             // The caller reads the changelog
@@ -911,7 +942,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             scroll(hit.arg * historyViewH_ / 3);
             return {};
         case PanelAction::AdvancedScroll:
-            scroll(hit.arg * advViewH_ / 3);
+            scroll(hit.arg * (recordsAllOpen_ && recordOpen_.empty() ? listViewH_ : advViewH_) / 3);
             return {};
         case PanelAction::FitDetails:
             fitDetails_ = !fitDetails_;
@@ -938,6 +969,8 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             if (eyecamTab_) tab_ = PanelTab::Eyecam;
             historyOpen_ = false;
             diagOpen_ = false;
+            recordOpen_.clear();
+            recordsAllOpen_ = false;
             eyecamConfirm_.close();
             return hit;
         case PanelAction::EyecamSensitivity:
@@ -1062,6 +1095,10 @@ void EyePanel::closeHostEntry() {
 
 void EyePanel::openHistory() {
     tab_ = PanelTab::Advanced;
+    // (from the Version page: "Close" comes back to it)
+    advPage_ = AdvPage::Version;
+    recordOpen_.clear();
+    recordsAllOpen_ = false;
     historyOpen_ = true;
     historyRowPending_ = true;
     historyScrollSet_ = false;
@@ -1070,9 +1107,35 @@ void EyePanel::openHistory() {
 }
 
 void EyePanel::openDiag() {
-    tab_ = PanelTab::Advanced;
+    setTab(PanelTab::Advanced);
+    // "Back" comes back to "Having trouble", where its row is (also when it was opened from the eye cameras tab)
+    setAdvPage(AdvPage::Trouble);
     diagOpen_ = true;
     historyOpen_ = false;
+    recordOpen_.clear();
+    recordsAllOpen_ = false;
+    eyecamConfirm_.close();
+}
+
+void EyePanel::openRecord(const std::string& folder) {
+    // From all records "Back" goes back to them; from anywhere else to "Having trouble"
+    if (tab_ != PanelTab::Advanced) recordsAllOpen_ = false;
+    setTab(PanelTab::Advanced);
+    setAdvPage(AdvPage::Trouble);
+    recordOpen_ = folder;
+    historyOpen_ = false;
+    diagOpen_ = false;
+    eyecamConfirm_.close();
+}
+
+void EyePanel::openRecordsAll() {
+    setTab(PanelTab::Advanced);
+    setAdvPage(AdvPage::Trouble);
+    recordsAllOpen_ = true;
+    recordOpen_.clear();
+    listScroll_ = 0.0;
+    historyOpen_ = false;
+    diagOpen_ = false;
     eyecamConfirm_.close();
 }
 
@@ -1091,10 +1154,11 @@ void EyePanel::setHistoryScroll(double px) {
 bool EyePanel::scroll(double dy) {
     if (!wantsScroll() || promptOpen() || hostEntryOpen_) return false;
     if (!historyOpen_) {
-        // The Advanced tab's page
-        const double next = std::clamp(advScroll_ + dy, 0.0, advMaxScroll_);
-        if (std::fabs(next - advScroll_) < 1e-3) return false;
-        advScroll_ = next;
+        // All records, or the Advanced tab's page
+        double& at = recordsAllOpen_ ? listScroll_ : advScroll_;
+        const double next = std::clamp(at + dy, 0.0, recordsAllOpen_ ? listMaxScroll_ : advMaxScroll_);
+        if (std::fabs(next - at) < 1e-3) return false;
+        at = next;
         return true;
     }
     const double next = std::max(0.0, std::min(historyMaxScroll_, historyScroll_ + dy));
@@ -1620,9 +1684,9 @@ void EyePanel::drawUpdateNotice(const Pen& pen, const UiText& t, const frame_upd
             break;
         default: return;
     }
-    // Opens the Advanced tab, where the version row is
-    const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Advanced)};
-    const bool usable = tab_ != PanelTab::Advanced;
+    // Opens the Advanced tab on "Version"
+    const PanelHit hit {PanelAction::AdvancedPage, nullptr, static_cast<int>(AdvPage::Version)};
+    const bool usable = !(advPageShown() && advPage_ == AdvPage::Version);
     const double size = 16;
     const std::vector<std::string> lines = wrapText(pen, text, size, true, x1 - x0 - 58, 2);
     const double h = lines.size() > 1 ? 54 : 42;
@@ -2227,6 +2291,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         bool error = false;
         bool check = false;
         bool reset = false;
+        bool failed = false;  // it failed (not stopped): its record's bar under the box
         char text[320];
         switch (fit.phase) {
             case Phase::Settling:
@@ -2241,6 +2306,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                     break;
                 }
                 error = true;
+                failed = true;
                 title = t.fitFailed;
                 paragraphs.push_back(failureText(t, fit));
                 // The numbers behind it (what was measured against what was needed), for asking for help
@@ -2340,6 +2406,10 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                        {PanelAction::FitReset, nullptr, 0}, !anyLocked && !busy, false);
         }
         y += h + (compact ? 8 : 12);
+        // Its log was saved: where to find it
+        if (failed && !compact && !m.records.lastFit.empty()) {
+            y += drawRecordBar(pen, t, m.records.lastFit, false, kInnerX, kInnerRight, y) + 12;
+        }
     }
     // "Fine-tune": the values by hand, folded away by default. Next to it the sounds switch, as wide as its longer
     // wording, and once it is open the page switch on the right
@@ -2900,6 +2970,14 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         drawDiag(pen, t, m);
         return;
     }
+    if (!recordOpen_.empty()) {
+        drawRecord(pen, t, m);
+        return;
+    }
+    if (recordsAllOpen_) {
+        drawRecordsAll(pen, t, m);
+        return;
+    }
     // The developer recording: its light warning, and its steps while it runs, in the tab's place
     const eyecam::State recording = m.eyecam.status.state;
     if (eyecamConfirm_.isOpen() ||
@@ -2907,30 +2985,80 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         drawRun(pen, t, m);
         return;
     }
-    cairo_t* cr = pen.cr;
-    const double viewTop = kAdvViewTop;
-    const double viewBottom = kAdvViewBottom;
-    const double viewH = viewBottom - viewTop;
-    advViewH_ = viewH;
-    const size_t firstButton = buttons_.size();
+    // The sub-tabs, and under them the one chosen (scrolled only if it doesn't fit)
+    drawSubTabs(pen, t, m, kSubTabY, kSubTabH);
+    drawScrolled(pen, kAdvPageTop, kAdvViewBottom, advScroll_, advMaxScroll_, advViewH_, advScrollable_,
+                 [&](double top, double right) { return drawAdvancedPage(pen, t, m, v, top, right); });
+}
 
-    // As one page across the card when it fits
+void EyePanel::drawSubTabs(const Pen& pen, const UiText& t, const PanelModel& m, double y, double h) {
+    const AdvPage pages[4] = {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files};
+    const char* labels[4] = {t.advVersion, t.advTrouble, t.advTools, t.advFiles};
+    const double x0 = kInnerX;
+    const double w = kInnerRight - kInnerX;
+    fillRounded(pen, x0, y, w, h, h / 2, kBg);
+    strokeRounded(pen, x0, y, w, h, h / 2, kBorder, 1.5);
+    const double inset = 4;
+    const double segW = (w - inset * 2) / 4;
+    const double segH = h - inset * 2;
+    // A new release: a dot after "Version"
+    const bool update = m.update.state == frame_updater::UpdateState::Available;
+    const double dotW = 16;
+    // One size for all four, the largest at which each fits
+    double size = 17;
+    for (int i = 0; i < 4; ++i) {
+        const double room = segW - 24 - (i == 0 && update ? dotW : 0);
+        size = std::min(size, fitSize(pen, labels[i], 17, 12, room, true));
+    }
+    for (int i = 0; i < 4; ++i) {
+        const double sx = x0 + inset + segW * i;
+        const double sy = y + inset;
+        const PanelHit hit {PanelAction::AdvancedPage, nullptr, static_cast<int>(pages[i])};
+        const bool selected = advPage_ == pages[i];
+        const int pointer = selected ? 0 : pointerState(hit);
+        if (selected) {
+            fillRounded(pen, sx, sy, segW, segH, segH / 2, kAccent);
+        } else if (pointer > 0) {
+            fillRounded(pen, sx, sy, segW, segH, segH / 2, kControlHover);
+        }
+        const Color color = selected ? kOnAccent : kText;
+        const double textW = pen.measure(labels[i], size, selected) + (i == 0 && update ? dotW : 0);
+        const double tx = sx + (segW - textW) / 2;
+        pen.text(tx, centerBaseline(sy, segH, size), labels[i], size, color, selected);
+        if (i == 0 && update) {
+            drawDot(pen.cr, tx + textW - dotW / 2 + 3, sy + segH / 2, 4.5, selected ? kOnAccent : kAccent);
+        }
+        addButton(hit, sx, y, segW, h, !selected);
+    }
+}
+
+void EyePanel::drawScrolled(const Pen& pen, double viewTop, double viewBottom, double& scroll, double& maxScroll,
+                            double& viewH, bool& scrollable,
+                            const std::function<double(double top, double right)>& page) {
+    cairo_t* cr = pen.cr;
+    viewH = viewBottom - viewTop;
+    const size_t firstButton = buttons_.size();
+    const size_t firstName = recordNames_.size();
+
+    // As it is when it fits
     cairo_push_group(cr);
-    const double fullH = drawAdvancedPage(pen, t, m, v, viewTop, kInnerRight);
+    const double fullH = page(viewTop, kInnerRight);
     if (fullH <= viewH) {
         cairo_pop_group_to_source(cr);
         cairo_paint(cr);
-        advScroll_ = 0.0;
-        advMaxScroll_ = 0.0;
+        scroll = 0.0;
+        maxScroll = 0.0;
+        scrollable = false;
         return;
     }
     cairo_pattern_destroy(cairo_pop_group(cr));
     buttons_.resize(firstButton);
+    recordNames_.resize(firstName);
 
     // Too tall: a little narrower beside ▲ / ▼, clipped to the view and scrolled (only what shows can be pressed)
     const double barX = kInnerRight - kHistoryBarW;
     const double right = barX - 14;
-    advScrollable_ = true;
+    scrollable = true;
     hitClip_ = true;
     hitClipTop_ = viewTop;
     hitClipBottom_ = viewBottom;
@@ -2939,59 +3067,305 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         cairo_push_group(cr);
         cairo_rectangle(cr, kRightX + 2, viewTop, barX - 8 - kRightX, viewH);
         cairo_clip(cr);
-        pageH = drawAdvancedPage(pen, t, m, v, viewTop - advScroll_, right);
-        advMaxScroll_ = std::max(0.0, pageH - viewH);
-        const double kept = std::clamp(advScroll_, 0.0, advMaxScroll_);
-        if (std::fabs(kept - advScroll_) < 1e-6 || pass > 0) {
-            advScroll_ = kept;
+        pageH = page(viewTop - scroll, right);
+        maxScroll = std::max(0.0, pageH - viewH);
+        const double kept = std::clamp(scroll, 0.0, maxScroll);
+        if (std::fabs(kept - scroll) < 1e-6 || pass > 0) {
+            scroll = kept;
             cairo_pop_group_to_source(cr);
             cairo_paint(cr);
             break;
         }
         // Scrolled past the end (the page got shorter, or --adv-scroll): again, ending at the page's end
-        advScroll_ = kept;
+        scroll = kept;
         cairo_pattern_destroy(cairo_pop_group(cr));
         buttons_.resize(firstButton);
+        recordNames_.resize(firstName);
     }
     hitClip_ = false;
-    drawScrollBar(pen, PanelAction::AdvancedScroll, barX, viewTop, viewBottom, advScroll_, advMaxScroll_, pageH);
+    drawScrollBar(pen, PanelAction::AdvancedScroll, barX, viewTop, viewBottom, scroll, maxScroll, pageH);
 }
 
 double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
                                   double top, double right) {
-    const EyeStatus& s = m.status;
-    const double controlW = right - kControlX;
-    double y = top + 2;
+    switch (advPage_) {
+        case AdvPage::Version: return drawVersionPage(pen, t, m, v, top, right);
+        case AdvPage::Trouble: return drawTroublePage(pen, t, m, top, right);
+        case AdvPage::Tools: return drawToolsPage(pen, t, m, v, top, right);
+        case AdvPage::Files: return drawFilesPage(pen, t, m, top, right);
+    }
+    return 0.0;
+}
 
-    // Version: new release check and install, the version history and the automatic check
-    y += drawSectionTitle(pen, y, t.rowVersion, right);
-    y += drawUpdateRow(pen, t, m.update, updateNotes(m.update, m.language), v.flag(key::kUpdateCheck), y, right) + 12;
+double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
+                                 double top, double right) {
+    using frame_updater::UpdateState;
+    const frame_updater::UpdateStatus& u = m.update;
+    const std::string current = bareVersion(u.current);
+    const std::string latest = bareVersion(u.latest);
 
-    // Having trouble: the diagnostics page (its code here too, to read out without opening it)
-    y += drawSectionTitle(pen, y, t.sectionHelp, right);
+    /** A button beside the version. */
+    struct RowButton {
+        PanelHit hit;
+        std::string label;
+        bool accent;
+    };
+    const PanelHit dismiss {PanelAction::UpdateDismiss, nullptr, 0};
+    const PanelHit install {PanelAction::UpdateInstall, nullptr, 0};
+    std::string primary;    // what came of the check
+    std::string secondary;  // muted, under it
+    bool error = false;     // primary in red, on a line of its own
+    std::vector<RowButton> buttons;
+    switch (u.state) {
+        case UpdateState::Unknown:
+            if (u.checking) primary = t.updateChecking;
+            break;
+        case UpdateState::UpToDate: primary = formatText(t.updateUpToDateFormat, current); break;
+        case UpdateState::Available:
+            primary = formatText(t.updateAvailableFormat, latest);
+            if (u.installable) {
+                buttons.push_back({install, formatText(t.updateToFormat, latest), true});
+            } else {
+                secondary = t.updateManual;
+            }
+            break;
+        case UpdateState::Installing: primary = formatText(t.updateInstallingFormat, updateStepText(t, u.step)); break;
+        case UpdateState::Installed:
+            primary = formatText(t.updateInstalledFormat, bareVersion(u.version));
+            buttons.push_back({dismiss, t.updateDismiss, false});
+            break;
+        case UpdateState::CheckFailed:
+            primary = std::string(t.updateCheckFailed) + " " + updateReasonText(t, u.error);
+            error = true;
+            break;
+        case UpdateState::InstallFailed:
+            primary = std::string(t.updateInstallFailed) + " " + updateReasonText(t, u.error);
+            secondary = t.updateLogHint;
+            error = true;
+            buttons.push_back({install, t.updateRetry, false});
+            buttons.push_back({dismiss, t.updateDismiss, false});
+            break;
+    }
+    // A check running over an earlier answer: the answer stays, with a note under it
+    if (u.checking && u.state != UpdateState::Unknown && u.state != UpdateState::Installing) {
+        secondary = t.updateChecking;
+    }
+
+    // The buttons at the right, side by side
+    const double bh = 50;
+    const double gap = 10;
+    std::vector<double> widths;
+    double buttonsW = 0;
+    for (const RowButton& b : buttons) {
+        widths.push_back(std::max(120.0, pen.measure(b.label, 18, true) + 52));
+        buttonsW += widths.back() + (buttonsW > 0 ? gap : 0);
+    }
+    const double textRight = buttons.empty() ? right : right - buttonsW - 20;
+    const double textW = textRight - kInnerX;
+
+    // The version (large), then when it was checked and what came of it
+    const double y = top + 4;
+    const std::string title = current.empty() ? std::string(t.rowVersion) : "v" + current;
+    pen.text(kInnerX, y + 32, title, fitSize(pen, title, 32, 20, textW, true), kText, true);
+    const std::string checked = u.checkedAt > 0 ? formatText(t.checkedFormat, checkedText(u.checkedAt)) : std::string();
+    struct Line {
+        std::string text;
+        double size;
+        Color color;
+        bool bold;
+    };
+    std::vector<Line> lines;
+    if (!error) {
+        std::string line = checked;
+        if (!primary.empty()) line += (line.empty() ? "" : t.condSeparator) + primary;
+        for (const std::string& part : wrapText(pen, line, 16, false, textW, 3)) lines.push_back({part, 16, kTextMuted, false});
+    } else {
+        if (!checked.empty()) lines.push_back({checked, 15, kTextMuted, false});
+        for (const std::string& part : wrapText(pen, primary, 16, true, textW, 4)) lines.push_back({part, 16, kDanger, true});
+    }
+    for (const std::string& part : wrapText(pen, secondary, 14, false, textW, 2)) lines.push_back({part, 14, kTextMuted, false});
+    double baseline = y + 32;
+    for (const Line& line : lines) {
+        baseline += line.size + 8;
+        pen.text(kInnerX, baseline, line.text, line.size, line.color, line.bold);
+    }
+    const double textBottom = baseline + 8;
+    const double blockBottom = std::max(textBottom, y + 64);
+    double bx = right - buttonsW;
+    const double by = y + (blockBottom - y - bh) / 2;
+    for (size_t i = 0; i < buttons.size(); ++i) {
+        drawButton(pen, bx, by, widths[i], bh, buttons[i].label, buttons[i].hit, true, buttons[i].accent, 18);
+        bx += widths[i] + gap;
+    }
+    double bottom = blockBottom;
+
+    // The new release's summary (from its release notes), up to four lines in a box
+    const std::string notes = updateNotes(u, m.language);
+    if (!notes.empty()) {
+        const double boxTop = bottom + 14;
+        const double padX = 18;
+        const std::vector<std::string> noteLines = wrapText(pen, notes, 16, false, right - kInnerX - padX * 2, 4);
+        const double boxH = 40 + noteLines.size() * 24 + 8;
+        fillRounded(pen, kInnerX, boxTop, right - kInnerX, boxH, 14, kControl);
+        const std::string heading = formatText(t.updateNotesFormat, latest.empty() ? current : latest);
+        pen.text(kInnerX + padX, boxTop + 28, heading, 14, kAccent, true);
+        double noteBaseline = boxTop + 34;
+        for (const std::string& line : noteLines) {
+            noteBaseline += 24;
+            pen.text(kInnerX + padX, noteBaseline, line, 16, kText);
+        }
+        bottom = boxTop + boxH;
+    }
+
+    // "Version history", the automatic check (a chip that switches it) and "Check now"
+    const double rowTop = bottom + 18;
+    const double rowH = 44;
+    double x = kInnerX;
     {
-        const double h = 56;
-        drawRowLabel(pen, t, y, h, t.diagTitle, t.diagRowHint, false);
-        const double bh = 44;
-        const double bw = std::max(120.0, pen.measure(t.diagOpen, 19, true) + 48);
+        const double w = pen.measure(t.historyButton, 16, true) + 44;
+        drawButton(pen, x, rowTop, w, rowH, t.historyButton, {PanelAction::HistoryOpen, nullptr, 0}, true, false, 16);
+        x += w + 10;
+    }
+    const double checkW = pen.measure(t.updateCheckNow, 16, true) + 44;
+    {
+        const bool checkOn = v.flag(key::kUpdateCheck);
+        const PanelHit hit {PanelAction::SetBool, key::kUpdateCheck, checkOn ? 0 : 1};
+        const std::string state = checkOn ? t.on : t.off;
+        const double labelSize = 15;
+        const double stateW = pen.measure(state, labelSize, true);
+        const double chipMax = right - checkW - 10 - x;
+        const std::string label = ellipsize(pen, t.updateCheckChip, labelSize, false, chipMax - 28 - 10 - stateW, false);
+        const double labelW = pen.measure(label, labelSize, false);
+        const double chipW = labelW + 10 + stateW + 28;
+        const int pointer = pointerState(hit);
+        fillRounded(pen, x, rowTop, chipW, rowH, rowH / 2, pointer > 0 ? kControlHover : kControl);
+        strokeRounded(pen, x, rowTop, chipW, rowH, rowH / 2, kBorder, 2);
+        const double chipBaseline = centerBaseline(rowTop, rowH, labelSize);
+        pen.text(x + 14, chipBaseline, label, labelSize, kText);
+        pen.text(x + 14 + labelW + 10, chipBaseline, state, labelSize, checkOn ? kAccent : kTextMuted, true);
+        addButton(hit, x, rowTop, chipW, rowH);
+    }
+    // (not while a check or an install runs)
+    drawButton(pen, right - checkW, rowTop, checkW, rowH, t.updateCheckNow, {PanelAction::UpdateCheck, nullptr, 0},
+               !u.checking && u.state != UpdateState::Installing, false, 16);
+    return rowTop + rowH + 8 - top;
+}
+
+double EyePanel::drawTroublePage(const Pen& pen, const UiText& t, const PanelModel& m, double top, double right) {
+    double y = top + 4;
+    // The diagnostics: what it is for, its code (to read out without opening it) and "Open"
+    {
+        const double h = 60;
+        const double bh = 46;
+        const double bw = std::max(110.0, pen.measure(t.diagOpen, 18, true) + 48);
         const double bx = right - bw;
-        drawButton(pen, bx, y + (h - bh) / 2, bw, bh, t.diagOpen, {PanelAction::DiagOpen, nullptr, 0}, true, false);
+        drawButton(pen, bx, y + (h - bh) / 2, bw, bh, t.diagOpen, {PanelAction::DiagOpen, nullptr, 0}, true, false, 18);
         const std::string code = diag::code(m);
-        const double codeSize = fitSize(pen, code, 17, 12, bx - 14 - kControlX - 24, true);
-        const double chipH = 32;
+        const double codeSize = fitSize(pen, code, 17, 12, (right - kInnerX) / 2, true);
+        const double chipH = 34;
         const double chipW = pen.measure(code, codeSize, true) + 24;
         const double chipX = bx - 14 - chipW;
         const double chipY = y + (h - chipH) / 2;
         fillRounded(pen, chipX, chipY, chipW, chipH, 8, kAccent);
         textCentered(pen, chipX + chipW / 2, centerBaseline(chipY, chipH, codeSize), code, codeSize, kOnAccent, true);
-        y += h + 12;
+        const double room = chipX - 16 - kInnerX;
+        pen.text(kInnerX, y + 24, t.diagTitle, fitSize(pen, t.diagTitle, 20, 14, room, true), kText, true);
+        pen.text(kInnerX, y + 48, ellipsize(pen, t.diagRowHint, 14, false, room, false), 14, kTextMuted);
+        y += h + 16;
     }
+    // The newest records
+    {
+        const double titleW = pen.text(kInnerX, y + 18, t.recordsTitle, 17, kText, true);
+        const double hintX = kInnerX + titleW + 14;
+        pen.text(hintX, y + 18, ellipsize(pen, t.recordsHint, 14, false, right - hintX, false), 14, kTextMuted);
+        y += 30;
+    }
+    const std::vector<report::Summary>& records = m.records.list;
+    const size_t shown = std::min<size_t>(3, records.size());
+    const double rowH = 54;
+    const double boxH = shown > 0 ? shown * rowH + 8 : 64;
+    fillRounded(pen, kInnerX, y, right - kInnerX, boxH, 14, kBg);
+    strokeRounded(pen, kInnerX, y, right - kInnerX, boxH, 14, kDivider, 1);
+    if (shown == 0) {
+        pen.text(kInnerX + 18, centerBaseline(y, boxH, 15),
+                 ellipsize(pen, t.recordsNone, 15, false, right - kInnerX - 36, false), 15, kTextMuted);
+    }
+    for (size_t i = 0; i < shown; ++i) {
+        const double rowY = y + 4 + i * rowH;
+        if (i > 0) {
+            pen.color(kDivider);
+            cairo_set_line_width(pen.cr, 1);
+            cairo_move_to(pen.cr, kInnerX + 14, rowY + 0.5);
+            cairo_line_to(pen.cr, right - 14, rowY + 0.5);
+            cairo_stroke(pen.cr);
+        }
+        drawRecordRow(pen, t, records[i], kInnerX + 4, right - 4, rowY, rowH);
+    }
+    y += boxH + 14;
+    // Over SSH, and all of them
+    {
+        const double h = 42;
+        const std::string all = formatText(t.recordsAllFormat, std::to_string(records.size()));
+        const double w = pen.measure(all, 16, true) + 44;
+        drawButton(pen, right - w, y, w, h, all, {PanelAction::RecordsAll, nullptr, 0}, !records.empty(), false, 16);
+        pen.text(kInnerX, centerBaseline(y, h, 14), ellipsize(pen, t.recordsSsh, 14, false, right - w - 16 - kInnerX, false),
+                 14, kTextMuted);
+        y += h;
+    }
+    return y + 8 - top;
+}
 
-    // Debug tools
-    y += drawSectionTitle(pen, y, t.sectionTools, right);
+void EyePanel::drawRecordRow(const Pen& pen, const UiText& t, const report::Summary& r, double x0, double x1, double y,
+                             double h) {
+    const int index = static_cast<int>(recordNames_.size());
+    recordNames_.push_back(r.folder);
+    const PanelHit hit {PanelAction::RecordOpen, nullptr, index};
+    const bool en = &t == &uiText(Language::En);
+    // "View" at the right, the result's badge left of it
+    const double bh = 38;
+    const double bw = std::max(80.0, pen.measure(t.recordView, 16, true) + 40);
+    const double bx = x1 - 10 - bw;
+    drawButton(pen, bx, y + (h - bh) / 2, bw, bh, t.recordView, hit, true, false, 16);
+    const double badgeW = drawResultBadge(pen, t, r.result, bx - 14, y + h / 2, 15);
+    const double textRight = bx - 14 - badgeW - 14;
+    // When, what, and a short line
+    double x = x0 + 14;
+    const std::time_t when = static_cast<std::time_t>(std::floor(r.start));
+    std::tm local {};
+    localtime_r(&when, &local);
+    char stamp[32];
+    std::strftime(stamp, sizeof(stamp), "%m/%d %H:%M", &local);
+    const double baseline = centerBaseline(y, h, 16);
+    pen.text(x, baseline, stamp, 15, kTextMuted);
+    x += pen.measure("00/00 00:00", 15, false) + 18;
+    const std::string kind = report::kindLabel(t, r);
+    x += pen.text(x, baseline, ellipsize(pen, kind, 16, true, std::max(40.0, textRight - x), false), 16, kText, true);
+    const std::string& brief = en && !r.briefEn.empty() ? r.briefEn : r.brief;
+    if (!brief.empty() && textRight - x - 14 > 40) {
+        pen.text(x + 14, baseline, ellipsize(pen, brief, 14, false, textRight - x - 14, false), 14, kTextMuted);
+    }
+}
+
+double EyePanel::drawResultBadge(const Pen& pen, const UiText& t, report::Result result, double right, double cy,
+                                 double size) {
+    const char* label = report::resultLabel(t, result);
+    const Color fg = result == report::Result::Ok ? kSuccess : result == report::Result::Failed ? kDangerSoft : kAccent;
+    const Color bg = result == report::Result::Ok       ? kSuccessTint
+                     : result == report::Result::Failed ? kDangerTint
+                                                        : kAccentTint;
+    const double h = size + 14;
+    const double w = pen.measure(label, size, true) + 26;
+    fillRounded(pen, right - w, cy - h / 2, w, h, h / 2, bg);
+    textCentered(pen, right - w / 2, centerBaseline(cy - h / 2, h, size), label, size, fg, true);
+    return w;
+}
+
+double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double top,
+                               double right) {
+    double y = top + 4;
     // The debug gaze dots (a head-locked dot where the sent gaze points)
     {
-        const double h = 60;
+        const double h = 64;
         const bool locked = v.locked(key::kGazeDebugDots);
         const bool on = v.flag(key::kGazeDebugDots);
         const double rowTop = y + (h - kControlH) / 2;
@@ -3015,17 +3389,17 @@ double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelMo
         const double distance = v.number(key::kGazeDebugDotsDistanceM);
         drawStepper(pen, stepperX, rowTop, stepperW, kControlH, key::kGazeDebugDotsDistanceM, distance,
                     formatSetting(key::kGazeDebugDotsDistanceM, distance) + " m", on, false);
-        y += h + 6;
+        y += h + 14;
     }
     // The eye log: record the raw eye data to a file, from now until "Stop" (or 60 minutes)
     {
-        const double h = 56;
+        const double h = 60;
         const recorder::View& r = m.recording;
         drawRowLabel(pen, t, y, h, t.rowEyeLog, "", false);
         const std::string label =
             r.recording ? formatText(t.eyeLogStopFormat, recorder::elapsedText(r.elapsedSec)) : std::string(t.eyeLogRecord);
         const double buttonW = 160;
-        drawButton(pen, kControlX, y + (h - 44) / 2, buttonW, 44, label, {PanelAction::RecordToggle, nullptr, 0}, true,
+        drawButton(pen, kControlX, y + (h - 46) / 2, buttonW, 46, label, {PanelAction::RecordToggle, nullptr, 0}, true,
                    false);
         const double textX = kControlX + buttonW + 14;
         const double textW = right - textX;
@@ -3042,100 +3416,38 @@ double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelMo
             // After the 60-minute limit stopped it: say so instead of the limit
             lines = wrapText(pen, where, 14, false, textW, 2);
             lines.push_back(r.autoStopped ? t.eyeLogAutoStopped : t.eyeLogLimit);
-            if (r.autoStopped) {
-                color = kText;
-            }
+            if (r.autoStopped) color = kText;
         }
         double baseline = y + h / 2 - (lines.size() - 1) * 9 + 5;
         for (const std::string& line : lines) {
             pen.text(textX, baseline, line, 14, color, bold);
             baseline += 18;
         }
-        y += h + 12;
+        y += h + 14;
     }
-
-    // Files and process: read-only rows in smaller type, the title (muted) on the left, the text on the right
-    y += drawSectionTitle(pen, y, t.sectionFiles, right);
-    const double infoH = 28;
-    const double infoSize = 15;
-    const auto infoRow = [&](const std::string& title, const std::string& value, bool keepEnd) {
-        const double baseline = y + infoH / 2 + infoSize * 0.36;
-        pen.text(kInnerX, baseline, title, fitSize(pen, title, infoSize, 11, kLabelW, false), kTextMuted);
-        pen.text(kControlX, baseline, ellipsize(pen, value, infoSize, false, controlW, keepEnd), infoSize, kText);
-        y += infoH;
-    };
-    // File locations
-    infoRow(t.rowConfigPath, m.configPath, true);
-    if (s.running && !s.configPath.empty() && s.configPath != m.configPath) {
-        const std::string warning = t.configPathMismatch + s.configPath;
-        pen.text(kControlX, y + 14, ellipsize(pen, warning, 14, true, controlW, true), 14, kDanger, true);
-        y += 22;
-    }
-    infoRow(t.rowCalibrationPath, s.running && !s.calibrationPath.empty() ? s.calibrationPath : "—", true);
-    infoRow(t.rowStatusPath, m.statusPath, true);
-    // frameeyeosc process
-    {
-        std::string text = t.notRunning;
-        if (s.running) {
-            const int minutes = static_cast<int>(std::max(0.0, s.time - s.started) / 60);
-            char uptime[64];
-            if (minutes >= 60) {
-                std::snprintf(uptime, sizeof(uptime), t.hoursMinutesFormat, minutes / 60, minutes % 60);
-            } else {
-                std::snprintf(uptime, sizeof(uptime), t.minutesFormat, minutes);
-            }
-            char line[128];
-            std::snprintf(line, sizeof(line), t.coreFormat, s.pid, uptime);
-            text = line;
-        }
-        infoRow(t.rowCore, text, false);
-    }
-    // Locked by the command line, with the values in effect (up to two lines; where they come from under the title)
-    {
-        std::vector<std::string> items;
-        if (s.running) {
-            for (const std::string& name : s.locked) {
-                std::string value = "?";
-                if (const JsonValue* effective = s.effective.get(name)) {
-                    if (effective->isBool()) value = effective->boolean ? "true" : "false";
-                    if (effective->isNumber()) {
-                        value = effective->integer ? std::to_string(static_cast<long long>(effective->number))
-                                                   : formatSetting(name, effective->number);
-                    }
-                    if (effective->isString()) value = "\"" + effective->text + "\"";
-                    if (effective->isNull()) value = "null";
-                }
-                items.push_back(name + " = " + value);
-            }
-        }
-        if (items.empty()) items.push_back(s.running ? t.noneLocked : "—");
-        std::vector<std::string> lines;
-        for (const std::string& item : items) {
-            if (!lines.empty() && pen.measure(lines.back() + ",  " + item, infoSize, false) <= controlW) {
-                lines.back() += ",  " + item;
-            } else {
-                lines.push_back(ellipsize(pen, item, infoSize, false, controlW, false));
-            }
-        }
-        if (lines.size() > 2) lines.resize(2);
-        const double baseline = y + infoH / 2 + infoSize * 0.36;
-        pen.text(kInnerX, baseline, t.rowLockedList, fitSize(pen, t.rowLockedList, infoSize, 11, kLabelW, false),
-                 kTextMuted);
-        pen.text(kInnerX, baseline + 20, t.hintLockedList, fitSize(pen, t.hintLockedList, 13, 10, kLabelW, false),
-                 kTextMuted);
-        for (size_t i = 0; i < lines.size(); ++i) pen.text(kControlX, baseline + i * 22, lines[i], infoSize, kText);
-        y += infoH + 26;
-    }
-    // Developer: eyecam-rec's eye recording (its start opens the light warning; a failed one says why)
+    // Developer: eyecam-rec's eye recording (its start opens the light warning; a failed one says why), only while it
+    // runs
     if (m.eyecam.visible) {
         const eyecam::Status& es = m.eyecam.status;
-        y += 8;
-        y += drawSectionTitle(pen, y, t.devTitle, right);
-        const double h = 56;
-        const double bh = 44;
+        const double h = 64;
+        const double bh = 46;
         const bool failed = eyecam::errorShown(m.eyecam, true);
         const bool ready = es.state == eyecam::State::Idle || es.state == eyecam::State::Error;
-        drawRowLabel(pen, t, y, h, t.devRecord, t.devRecordHint, false);
+        // Its title with a "Developer" badge, and what it does
+        {
+            const double titleSize = fitSize(pen, t.devRecord, 20, 14, kLabelW - 70, true);
+            const double titleW = pen.text(kInnerX, y + h / 2 - 3, t.devRecord, titleSize, kText, true);
+            const double badgeSize = 12;
+            const double badgeW = pen.measure(t.devTitle, badgeSize, true) + 16;
+            const double badgeH = 20;
+            const double badgeX = kInnerX + titleW + 8;
+            const double badgeY = y + h / 2 - 3 - titleSize * 0.36 - badgeH / 2;
+            fillRounded(pen, badgeX, badgeY, badgeW, badgeH, badgeH / 2, kAccentTint);
+            textCentered(pen, badgeX + badgeW / 2, centerBaseline(badgeY, badgeH, badgeSize), t.devTitle, badgeSize,
+                         kText, true);
+            pen.text(kInnerX, y + h / 2 + 19, t.devRecordHint, fitSize(pen, t.devRecordHint, 15, 11, kLabelW, false),
+                     kTextMuted);
+        }
         const double bw = 160;
         drawButton(pen, kControlX, y + (h - bh) / 2, bw, bh, failed ? t.eyecamRetry : t.eyecamStart,
                    {PanelAction::EyecamStart, nullptr, 0}, ready && !m.eyecam.busy, false);
@@ -3169,171 +3481,308 @@ double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelMo
     return y + 8 - top;
 }
 
-double EyePanel::drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u,
-                               const std::string& notes, bool checkOn, double y, double right) {
-    using frame_updater::UpdateState;
-    const std::string current = bareVersion(u.current);
-
-    /** A button at the right end of the row. */
-    struct RowButton {
-        PanelHit hit;
-        const char* label;
-        bool accent;
+double EyePanel::drawFilesPage(const Pen& pen, const UiText& t, const PanelModel& m, double top, double right) {
+    const EyeStatus& s = m.status;
+    const double controlW = right - kControlX;
+    double y = top + 4;
+    // Read-only rows: the title (muted) on the left, the text on the right
+    const double infoH = 34;
+    const double infoSize = 16;
+    const auto infoRow = [&](const std::string& title, const std::string& value, bool keepEnd) {
+        const double baseline = y + infoH / 2 + infoSize * 0.36;
+        pen.text(kInnerX, baseline, title, fitSize(pen, title, infoSize, 11, kLabelW, false), kTextMuted);
+        pen.text(kControlX, baseline, ellipsize(pen, value, infoSize, false, controlW, keepEnd), infoSize, kText);
+        y += infoH;
     };
-    const PanelHit check {PanelAction::UpdateCheck, nullptr, 0};
-    const PanelHit dismiss {PanelAction::UpdateDismiss, nullptr, 0};
-    const PanelHit install {PanelAction::UpdateInstall, nullptr, 0};
-    std::string primary;    // bold
-    std::string secondary;  // muted
-    bool error = false;     // primary in red
-    std::vector<RowButton> buttons;
-    switch (u.state) {
-        case UpdateState::Unknown:
-            if (u.checking) primary = t.updateChecking;
-            buttons.push_back({check, t.updateCheckNow, false});
-            break;
-        case UpdateState::UpToDate:
-            primary = formatText(t.updateUpToDateFormat, current);
-            buttons.push_back({check, t.updateCheckNow, false});
-            break;
-        case UpdateState::Available:
-            primary = formatText(t.updateAvailableFormat, bareVersion(u.latest));
-            if (u.installable) {
-                buttons.push_back({install, t.updateButton, true});
+    // File locations
+    infoRow(t.rowConfigPath, m.configPath, true);
+    if (s.running && !s.configPath.empty() && s.configPath != m.configPath) {
+        const std::string warning = t.configPathMismatch + s.configPath;
+        pen.text(kControlX, y + 14, ellipsize(pen, warning, 14, true, controlW, true), 14, kDanger, true);
+        y += 22;
+    }
+    infoRow(t.rowCalibrationPath, s.running && !s.calibrationPath.empty() ? s.calibrationPath : "—", true);
+    infoRow(t.rowStatusPath, m.statusPath, true);
+    infoRow(t.recordsTitle, report::shortPathOf(m.records.dir.empty() ? report::defaultDir() : m.records.dir) + "/", true);
+    // frameeyeosc process
+    {
+        std::string text = t.notRunning;
+        if (s.running) {
+            const int minutes = static_cast<int>(std::max(0.0, s.time - s.started) / 60);
+            char uptime[64];
+            if (minutes >= 60) {
+                std::snprintf(uptime, sizeof(uptime), t.hoursMinutesFormat, minutes / 60, minutes % 60);
             } else {
-                secondary = t.updateManual;
-                buttons.push_back({check, t.updateCheckNow, false});
+                std::snprintf(uptime, sizeof(uptime), t.minutesFormat, minutes);
             }
-            break;
-        case UpdateState::Installing:
-            primary = formatText(t.updateInstallingFormat, updateStepText(t, u.step));
-            break;
-        case UpdateState::Installed:
-            primary = formatText(t.updateInstalledFormat, bareVersion(u.version));
-            buttons.push_back({dismiss, t.updateDismiss, false});
-            break;
-        case UpdateState::CheckFailed:
-            primary = std::string(t.updateCheckFailed) + " " + updateReasonText(t, u.error);
-            error = true;
-            buttons.push_back({check, t.updateCheckNow, false});
-            break;
-        case UpdateState::InstallFailed:
-            primary = std::string(t.updateInstallFailed) + " " + updateReasonText(t, u.error);
-            secondary = t.updateLogHint;
-            error = true;
-            buttons.push_back({install, t.updateRetry, false});
-            buttons.push_back({dismiss, t.updateDismiss, false});
-            break;
-    }
-    // A check running over an earlier answer: the answer stays, with a note under it
-    if (u.checking && u.state != UpdateState::Unknown && u.state != UpdateState::Installing) {
-        secondary = t.updateChecking;
-    }
-
-    // The texts, wrapped to at most six lines (the error up to four, what to do about it up to two), left of the
-    // buttons
-    const double bw = 170;
-    const double left = right - bw - 12;
-    const double textW = (buttons.empty() ? right : left) - kControlX;
-    const double primarySize = 17;
-    const double secondarySize = 14;
-    const std::vector<std::string> primaryLines =
-        primary.empty() ? std::vector<std::string>() : wrapText(pen, primary, primarySize, true, textW, 4);
-    const std::vector<std::string> secondaryLines =
-        secondary.empty() ? std::vector<std::string>() : wrapText(pen, secondary, secondarySize, false, textW, 2);
-    const double primaryStep = 22;
-    const double secondaryStep = 20;
-    const double textBlock = primaryLines.size() * primaryStep + secondaryLines.size() * secondaryStep;
-
-    // The texts and the buttons above the chips' line, as tall as they need (at least a button's height; two
-    // stacked buttons 44 px each); the chips' line spans the row under them
-    const double chipH = 34;
-    const double gap = 8;
-    const double textH = std::max({kControlH + 8, textBlock + 12, buttons.size() > 1 ? 44 * 2 + gap : 0.0});
-    const double h = textH + 4 + chipH + 2;
-    const double chipY = y + h - chipH - 2;
-
-    // The label: the running version, and when it was last checked
-    const std::string title = current.empty() ? std::string(t.rowVersion) : "v" + current;
-    const std::string hint = u.checkedAt > 0 ? formatText(t.checkedFormat, checkedText(u.checkedAt)) : std::string();
-    drawRowLabel(pen, t, y, textH + 4, title, hint, false);
-
-    // "Version history" under the label, on the chip's line
-    {
-        const PanelHit hit {PanelAction::HistoryOpen, nullptr, 0};
-        const double size = fitSize(pen, t.historyButton, 16, 12, kLabelW - 28, true);
-        const double w = std::min(kLabelW, pen.measure(t.historyButton, size, true) + 32);
-        const int pointer = pointerState(hit);
-        fillRounded(pen, kInnerX, chipY, w, chipH, chipH / 2, pointer > 0 ? kControlHover : kControl);
-        strokeRounded(pen, kInnerX, chipY, w, chipH, chipH / 2, kBorder, 2);
-        textCentered(pen, kInnerX + w / 2, centerBaseline(chipY, chipH, size), t.historyButton, size, kText, true);
-        addButton(hit, kInnerX, chipY, w, chipH);
-    }
-
-    // Buttons at the right end; two are stacked so the texts keep their width
-    const double bh = buttons.size() > 1 ? (textH - gap) / 2 : kControlH;
-    for (size_t i = 0; i < buttons.size(); ++i) {
-        const RowButton& b = buttons[i];
-        const double bx = right - bw;
-        const double by = buttons.size() > 1 ? y + i * (bh + gap) : y + (textH - bh) / 2;
-        // A check can't be started while one runs
-        const bool usable = !(b.hit.action == PanelAction::UpdateCheck && u.checking);
-        const int pointer = usable ? pointerState(b.hit) : 0;
-        if (b.accent) {
-            fillRounded(pen, bx, by, bw, bh, bh / 2, pointer == 2 ? kAccentPressed : kAccent);
-        } else {
-            fillRounded(pen, bx, by, bw, bh, bh / 2, pointer > 0 ? kControlHover : kControl);
-            strokeRounded(pen, bx, by, bw, bh, bh / 2, usable ? kBorder : kDivider, 2);
+            char line[128];
+            std::snprintf(line, sizeof(line), t.coreFormat, s.pid, uptime);
+            text = line;
         }
-        const double size = fitSize(pen, b.label, 19, 12, bw - 20, true);
-        const Color labelColor = b.accent ? kOnAccent : (usable ? kText : kTextDisabled);
-        textCentered(pen, bx + bw / 2, centerBaseline(by, bh, size), b.label, size, labelColor, true);
-        addButton(b.hit, bx, by, bw, bh, usable);
+        infoRow(t.rowCore, text, false);
     }
-
-    // The automatic check, as a chip at the bottom of the text column: "Check at start and hourly  On"; pressing it
-    // switches it
+    // Locked by the command line, with the values in effect (up to three lines; where they come from under the title)
     {
-        const PanelHit hit {PanelAction::SetBool, key::kUpdateCheck, checkOn ? 0 : 1};
-        const std::string state = checkOn ? t.on : t.off;
-        const double labelSize = 15;
-        const double chipMax = right - kControlX;
-        const double stateW = pen.measure(state, labelSize, true);
-        const double labelRoom = chipMax - 28 - 10 - stateW;
-        const std::string label = ellipsize(pen, t.updateCheckChip, labelSize, false, labelRoom, false);
-        const double labelW = pen.measure(label, labelSize, false);
-        const double chipW = labelW + 10 + stateW + 28;
-        const int pointer = pointerState(hit);
-        fillRounded(pen, kControlX, chipY, chipW, chipH, chipH / 2, pointer > 0 ? kControlHover : kControl);
-        strokeRounded(pen, kControlX, chipY, chipW, chipH, chipH / 2, kBorder, 2);
-        const double baseline = centerBaseline(chipY, chipH, labelSize);
-        pen.text(kControlX + 14, baseline, label, labelSize, kText);
-        pen.text(kControlX + 14 + labelW + 10, baseline, state, labelSize, checkOn ? kAccent : kTextMuted, true);
-        addButton(hit, kControlX, chipY, chipW, chipH);
+        std::vector<std::string> items;
+        if (s.running) {
+            for (const std::string& name : s.locked) {
+                std::string value = "?";
+                if (const JsonValue* effective = s.effective.get(name)) {
+                    if (effective->isBool()) value = effective->boolean ? "true" : "false";
+                    if (effective->isNumber()) {
+                        value = effective->integer ? std::to_string(static_cast<long long>(effective->number))
+                                                   : formatSetting(name, effective->number);
+                    }
+                    if (effective->isString()) value = "\"" + effective->text + "\"";
+                    if (effective->isNull()) value = "null";
+                }
+                items.push_back(name + " = " + value);
+            }
+        }
+        if (items.empty()) items.push_back(s.running ? t.noneLocked : "—");
+        std::vector<std::string> lines;
+        for (const std::string& item : items) {
+            if (!lines.empty() && pen.measure(lines.back() + ",  " + item, infoSize, false) <= controlW) {
+                lines.back() += ",  " + item;
+            } else {
+                lines.push_back(ellipsize(pen, item, infoSize, false, controlW, false));
+            }
+        }
+        if (lines.size() > 3) lines.resize(3);
+        const double baseline = y + infoH / 2 + infoSize * 0.36;
+        pen.text(kInnerX, baseline, t.rowLockedList, fitSize(pen, t.rowLockedList, infoSize, 11, kLabelW, false),
+                 kTextMuted);
+        pen.text(kInnerX, baseline + 22, t.hintLockedList, fitSize(pen, t.hintLockedList, 13, 10, kLabelW, false),
+                 kTextMuted);
+        for (size_t i = 0; i < lines.size(); ++i) pen.text(kControlX, baseline + i * 24, lines[i], infoSize, kText);
+        y += infoH + std::max(26.0, (lines.size() - 1) * 24.0);
     }
+    return y + 8 - top;
+}
 
-    // The texts, centered above the chip
-    double baseline = y + (textH - textBlock) / 2;
-    for (const std::string& line : primaryLines) {
-        baseline += primaryStep;
-        pen.text(kControlX, baseline - 6, line, primarySize, error ? kDanger : kText, true);
+void EyePanel::drawRecord(const Pen& pen, const UiText& t, const PanelModel& m) {
+    const report::Summary& r = m.records.opened;
+    const bool en = m.language == Language::En;
+    const double top = kContentY + 18;
+    const double backH = 42;
+    const double backW = pen.measure(t.recordBack, 16, true) + 40;
+    drawButton(pen, kInnerX, top, backW, backH, t.recordBack, {PanelAction::RecordBack, nullptr, 0}, true, false, 16);
+    if (!m.records.openedFound || r.folder != recordOpen_) {
+        pen.text(kInnerX, top + 100, t.recordMissing, 18, kTextMuted);
+        pen.text(kInnerX, top + 130, recordOpen_, 15, kTextMuted);
+        return;
     }
-    for (const std::string& line : secondaryLines) {
-        baseline += secondaryStep;
-        pen.text(kControlX, baseline - 5, line, secondarySize, kTextMuted);
+    // What ran and when, the conditions under it, the result's badge at the right
+    const double badgeW = drawResultBadge(pen, t, r.result, kInnerRight, top + backH / 2, 16);
+    const double titleX = kInnerX + backW + 16;
+    const double titleRoom = kInnerRight - badgeW - 16 - titleX;
+    {
+        const std::time_t when = static_cast<std::time_t>(std::floor(r.start));
+        std::tm local {};
+        localtime_r(&when, &local);
+        char stamp[32];
+        std::strftime(stamp, sizeof(stamp), "%m/%d %H:%M", &local);
+        const std::string title = report::kindLabel(t, r) + t.condSeparator + stamp;
+        pen.text(titleX, top + 19, ellipsize(pen, title, 21, true, titleRoom, false), 21, kText, true);
+        pen.text(titleX, top + 40, ellipsize(pen, report::conditionsText(t, r), 14, false, titleRoom, false), 14,
+                 kTextMuted);
     }
+    double y = top + backH + 16;
+    // Why (or what came of it) in a box: red for a failure
+    {
+        const std::string& reason = en && !r.reasonEn.empty() ? r.reasonEn : r.reason;
+        const bool failed = r.result == report::Result::Failed;
+        const Color fg = failed ? kDangerSoft : r.result == report::Result::Partial ? kAccent : kSuccess;
+        const Color line = failed ? kDanger : fg;
+        const Color bg = failed ? kDangerTint : r.result == report::Result::Partial ? kAccentTint : kSuccessTint;
+        const char* label = r.result == report::Result::Ok ? t.recordOutcome : t.recordReason;
+        const double padX = 16;
+        const double labelW = pen.measure(label, 16, true);
+        const double textX = kInnerX + padX + labelW + 4;
+        const std::vector<std::string> lines =
+            wrapText(pen, reason.empty() ? std::string("—") : reason, 16, false, kInnerRight - padX - textX, 3);
+        const double boxH = 18 + lines.size() * 24;
+        fillRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 12, bg);
+        strokeRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 12, line, 1.5);
+        pen.text(kInnerX + padX, y + 31, label, 16, fg, true);
+        double baseline = y + 7;
+        for (const std::string& line : lines) {
+            baseline += 24;
+            pen.text(textX, baseline, line, 16, kText);
+        }
+        y += boxH + 14;
+    }
+    // Two cards: the key log lines, and the folder's files
+    const double bottom = kContentY + kContentH - 18;
+    const double gap = 12;
+    const double colW = (kInnerRight - kInnerX - gap) / 2;
+    const double colH = bottom - y;
+    const double padX = 14;
+    {
+        const double x = kInnerX;
+        fillRounded(pen, x, y, colW, colH, 12, kControl);
+        pen.text(x + padX, y + 26, t.recordFlow, 14, kAccent, true);
+        const double size = 14;
+        const double step = 22;
+        const size_t fits = static_cast<size_t>(std::max(1.0, std::floor((colH - 44) / step)));
+        // As many as fit: the first two, and the last ones (how it ended)
+        std::vector<report::LogLine> lines = r.flow;
+        if (lines.size() > fits) {
+            std::vector<report::LogLine> kept(lines.begin(), lines.begin() + std::min<size_t>(2, fits / 3));
+            kept.insert(kept.end(), lines.end() - (fits - kept.size()), lines.end());
+            lines = kept;
+        }
+        double sourceW = 0;
+        for (const report::Source source :
+             {report::Source::Core, report::Source::Panel, report::Source::Eyecam, report::Source::Valve}) {
+            sourceW = std::max(sourceW, pen.measure(report::sourceLabel(t, source), 13, false));
+        }
+        const double timeW = pen.measure("00:00:00", size, false);
+        double baseline = y + 32;
+        if (lines.empty()) pen.text(x + padX, baseline + step, t.recordFlowNone, size, kTextMuted);
+        for (const report::LogLine& line : lines) {
+            baseline += step;
+            const std::time_t when = static_cast<std::time_t>(std::floor(line.at));
+            std::tm local {};
+            localtime_r(&when, &local);
+            char stamp[16];
+            std::strftime(stamp, sizeof(stamp), "%H:%M:%S", &local);
+            double lx = x + padX;
+            pen.text(lx, baseline, stamp, size, kTextMuted);
+            lx += timeW + 8;
+            pen.text(lx, baseline, report::sourceLabel(t, line.source), 13, kTextMuted);
+            lx += sourceW + 8;
+            pen.text(lx, baseline, ellipsize(pen, report::flowText(t, line), size, false, x + colW - padX - lx, false),
+                     size, kText);
+        }
+    }
+    {
+        const double x = kInnerX + colW + gap;
+        const double x1 = x + colW - padX;
+        fillRounded(pen, x, y, colW, colH, 12, kControl);
+        pen.text(x + padX, y + 26, t.recordContents, 14, kAccent, true);
+        double baseline = y + 32;
+        for (const report::FileInfo& file : m.records.files) {
+            const char* what = file.name == "report.txt"          ? t.recordFileReport
+                               : file.name == "logs.txt"          ? t.recordFileLogs
+                               : file.name == "status.jsonl"      ? t.recordFileStatus
+                               : file.name == "calib_result.json" ? t.recordFileCalib
+                                                                  : nullptr;
+            const std::string label = what != nullptr ? what : file.name;
+            const std::string size = report::sizeText(file.bytes);
+            baseline += 24;
+            const double sizeW = pen.measure(size, 14, false);
+            pen.text(x1 - sizeW, baseline, size, 14, kTextMuted);
+            pen.text(x + padX, baseline, ellipsize(pen, label, 15, false, x1 - sizeW - 12 - x - padX, false), 15, kText);
+        }
+        baseline += 16;
+        pen.color(kDivider);
+        cairo_set_line_width(pen.cr, 1);
+        cairo_move_to(pen.cr, x + padX, baseline + 0.5);
+        cairo_line_to(pen.cr, x1, baseline + 0.5);
+        cairo_stroke(pen.cr);
+        baseline += 26;
+        const double codeLabelW = pen.text(x + padX, baseline, t.recordCode, 14, kTextMuted);
+        pen.text(x + padX + codeLabelW + 10, baseline,
+                 ellipsize(pen, r.code.empty() ? std::string("—") : r.code, 15, true, x1 - x - padX - codeLabelW - 10, false),
+                 15, kText, true);
+        const std::string folder =
+            report::shortPathOf((m.records.dir.empty() ? report::defaultDir() : m.records.dir) + "/" + r.folder) + "/";
+        // The folder, broken after a "/" where it doesn't fit (two lines at most)
+        std::vector<std::string> lines(1);
+        for (size_t at = 0; at < folder.size();) {
+            const size_t slash = folder.find('/', at);
+            const std::string part = folder.substr(at, slash == std::string::npos ? std::string::npos : slash + 1 - at);
+            at = slash == std::string::npos ? folder.size() : slash + 1;
+            if (!lines.back().empty() && pen.measure(lines.back() + part, 13, false) > x1 - x - padX && lines.size() < 2) {
+                lines.emplace_back();
+            }
+            lines.back() += part;
+        }
+        for (const std::string& line : lines) {
+            baseline += 20;
+            pen.text(x + padX, baseline, ellipsize(pen, line, 13, false, x1 - x - padX, true), 13, kTextMuted);
+        }
+    }
+}
 
-    // The new release's summary (from its release notes) across the row, up to three lines
-    if (notes.empty()) return h;
-    const double notesSize = 15;
-    const double notesStep = 20;
-    const std::vector<std::string> notesLines = wrapText(pen, notes, notesSize, false, right - kInnerX, 3);
-    baseline = y + h + 10;
-    for (const std::string& line : notesLines) {
-        baseline += notesStep;
-        pen.text(kInnerX, baseline - 5, line, notesSize, kText);
+void EyePanel::drawRecordsAll(const Pen& pen, const UiText& t, const PanelModel& m) {
+    const std::vector<report::Summary>& records = m.records.list;
+    const double top = kContentY + 18;
+    const double backH = 42;
+    const double backW = pen.measure(t.recordBack, 16, true) + 40;
+    drawButton(pen, kInnerX, top, backW, backH, t.recordBack, {PanelAction::RecordBack, nullptr, 0}, true, false, 16);
+    const std::string title = formatText(t.recordsAllTitleFormat, std::to_string(records.size()));
+    const double titleX = kInnerX + backW + 16;
+    const double noteW = pen.measure(t.recordsKept, 14, false);
+    pen.text(titleX, centerBaseline(top, backH, 21),
+             ellipsize(pen, title, 21, true, kInnerRight - noteW - 16 - titleX, false), 21, kText, true);
+    pen.text(kInnerRight - noteW, centerBaseline(top, backH, 14), t.recordsKept, 14, kTextMuted);
+    const double viewTop = top + backH + 14;
+    if (records.empty()) {
+        pen.text(kInnerX, viewTop + 40, t.recordsNone, 16, kTextMuted);
+        listScroll_ = 0.0;
+        listMaxScroll_ = 0.0;
+        listScrollable_ = false;
+        return;
     }
-    return h + 14 + notesLines.size() * notesStep;
+    drawScrolled(pen, viewTop, kAdvViewBottom, listScroll_, listMaxScroll_, listViewH_, listScrollable_,
+                 [&](double pageTop, double right) {
+                     const double rowH = 54;
+                     const double gap = 6;
+                     double y = pageTop;
+                     for (const report::Summary& record : records) {
+                         fillRounded(pen, kInnerX, y, right - kInnerX, rowH, 12, kBg);
+                         drawRecordRow(pen, t, record, kInnerX, right, y, rowH);
+                         y += rowH + gap;
+                     }
+                     return y - gap - pageTop;
+                 });
+}
+
+double EyePanel::drawRecordBar(const Pen& pen, const UiText& t, const std::string& folder, bool calib, double x0,
+                               double x1, double y, bool draw) {
+    const char* text = calib ? t.recordSavedCalib : t.recordSavedFit;
+    const double padX = 16;
+    const double iconW = 30;
+    const double bh = 38;
+    const double bw = pen.measure(t.recordShow, 16, true) + 40;
+    const double textX = x0 + padX + iconW;
+    const double textW = x1 - padX - bw - 14 - textX;
+    const std::vector<std::string> lines = wrapText(pen, text, 15, false, textW, 2);
+    const double h = std::max(56.0, lines.size() * 21.0 + 22);
+    if (!draw) return h;
+    fillRounded(pen, x0, y, x1 - x0, h, 12, kControl);
+    // A sheet with a check on it
+    {
+        cairo_t* cr = pen.cr;
+        const double ix = x0 + padX;
+        const double iy = y + h / 2 - 11;
+        pen.color(kSuccess);
+        cairo_set_line_width(cr, 2);
+        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+        cairo_move_to(cr, ix + 3, iy + 1);
+        cairo_line_to(cr, ix + 13, iy + 1);
+        cairo_line_to(cr, ix + 19, iy + 7);
+        cairo_line_to(cr, ix + 19, iy + 21);
+        cairo_line_to(cr, ix + 3, iy + 21);
+        cairo_close_path(cr);
+        cairo_stroke(cr);
+        cairo_move_to(cr, ix + 7, iy + 13);
+        cairo_line_to(cr, ix + 10, iy + 16);
+        cairo_line_to(cr, ix + 15, iy + 10);
+        cairo_stroke(cr);
+    }
+    double baseline = y + h / 2 - (lines.size() - 1) * 10.5 + 5;
+    for (const std::string& line : lines) {
+        pen.text(textX, baseline, line, 15, kText);
+        baseline += 21;
+    }
+    const int index = static_cast<int>(recordNames_.size());
+    recordNames_.push_back(folder);
+    drawButton(pen, x1 - padX + 6 - bw, y + (h - bh) / 2, bw, bh, t.recordShow, {PanelAction::RecordOpen, nullptr, index},
+               true, false, 16);
+    return h;
 }
 
 double EyePanel::drawDiagChip(const Pen& pen, const UiText& t, double right, double top, double h, double size,
@@ -4020,6 +4469,10 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
             }
             drawButton(pen, left + w + gap, by, backW, bh, t.eyecamBack, {PanelAction::EyecamBack, nullptr, 0}, true,
                        false, 28);
+            // A calibration's log was saved: where to find it
+            if (calibRun && !m.records.lastCalib.empty()) {
+                drawRecordBar(pen, t, m.records.lastCalib, true, kInnerX, kInnerRight, by + bh + 16);
+            }
             break;
         }
         default: {
@@ -4603,6 +5056,11 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                 if (!message.empty()) {
                     const double size = wrapSize(pen, message, 17, 14, false, w, 4);
                     para(message, size, kText, false, eyes != 0 ? 32 : 38, std::round(size * 1.5), 4);
+                }
+                // Its log was saved: where to find it
+                if (!m.records.lastCalib.empty()) {
+                    y += 16;
+                    y += drawRecordBar(pen, t, m.records.lastCalib, true, x0, x1, y, draw) - 12;
                 }
             } else {
                 para(t.setupFailBody, 17, kText, false, 38, 26, 2);
@@ -5271,7 +5729,9 @@ void EyePanel::render(const PanelModel& model) {
     // The Advanced tab's page starts at its top again once the tab is left (drawAdvanced sets these while it scrolls)
     if (tab_ != PanelTab::Advanced) advScroll_ = 0.0;
     advScrollable_ = false;
+    listScrollable_ = false;
     hitClip_ = false;
+    recordNames_.clear();
 
     drawStatus(pen, t, model);
     drawTabs(pen, t);

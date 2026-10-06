@@ -135,6 +135,14 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"left eye's sent gaze dot (gaze pad)", kDotLeft, kBg, ContrastKind::Ui},
         {"right eye's sent gaze dot (gaze pad)", kDotRight, kBg, ContrastKind::Ui},
         {"eye colors in the gaze legend (card)", kDotRight, kCard, ContrastKind::Ui},
+        // The Advanced tab's sub-tabs and the records
+        {"Advanced tab's sub-tabs: outline (panel background)", kBorder, kBg, ContrastKind::Ui},
+        {"records: \"Failed\" badge, a failure's \"Why\" (red tint)", kDangerSoft, kDangerTint, ContrastKind::Text},
+        {"records: a failure's box outline (red tint)", kDanger, kDangerTint, ContrastKind::Ui},
+        {"records: \"One eye\" badge, its \"Why\" (accent tint)", kAccent, kAccentTint, ContrastKind::Text},
+        {"records: \"OK\" badge, its \"Result\" (green tint)", kSuccess, kSuccessTint, ContrastKind::Text},
+        {"records: card titles (pill-colored card)", kAccent, kControl, ContrastKind::Text},
+        {"records: the saved bar's sheet (pill-colored card)", kSuccess, kControl, ContrastKind::Ui},
     };
     return pairs;
 }

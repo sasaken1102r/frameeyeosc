@@ -55,6 +55,7 @@ constexpr Color kSuccess = hexColor(0x3fb950);    ///< sending
 constexpr Color kSuccessTint = blendColor(kSuccess, kCard, 0.15);
 constexpr Color kDanger = hexColor(0xf85149);     ///< errors, not running
 constexpr Color kDangerTint = blendColor(kDanger, kCard, 0.15);
+constexpr Color kDangerSoft = hexColor(0xff8a8a); ///< red text on the red tint (kDanger is only 4.4:1 there)
 constexpr Color kQuitFill = blendColor(kDanger, kCard, 0.12);  ///< quit / reset buttons (quiet)
 // ---- The eye capture's full-view overlay (a light stimulus, not UI) ----
 // Pure white and black for the bright and dark steps, and the instruction on them on purpose faint, so it barely

@@ -3,9 +3,11 @@
 #pragma once
 
 #include "model.h"
+#include "ui_state.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
@@ -89,7 +91,14 @@ enum class PanelAction {
     DiagOpen,          ///< open the diagnostics page on the Advanced tab (the panel opens it; the caller reads the
                        ///< camera tool's checksum)
     DiagClose,         ///< back to the Advanced tab (handled inside the panel)
-    AdvancedScroll,    ///< scroll the Advanced tab a third of its view, arg -1 up / 1 down (handled inside)
+    AdvancedScroll,    ///< scroll the Advanced tab's page (or all records) a third of its view, arg -1 up / 1 down
+                       ///< (handled inside)
+    AdvancedPage,      ///< show the Advanced tab's sub-tab arg (AdvPage; handled inside the panel, which opens the tab;
+                       ///< the caller remembers it, see advPage)
+    RecordOpen,        ///< open record arg (an index into the records as last drawn; the panel opens its view on the
+                       ///< Advanced tab, the caller reads it: recordShown)
+    RecordsAll,        ///< open the list of all records (the panel opens it; the caller reads them again)
+    RecordBack,        ///< back from a record (to the list it came from) or from all records (handled inside)
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -194,6 +203,33 @@ public:
         if (tab != tab_) advScroll_ = 0.0;
         tab_ = tab;
     }
+
+    /** @return the Advanced tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
+    AdvPage advPage() const { return advPage_; }
+
+    /**
+     * Choose the Advanced tab's sub-tab (the one remembered from before, at start; or for --adv-page).
+     * @param page the sub-tab
+     */
+    void setAdvPage(AdvPage page) {
+        if (page != advPage_) advScroll_ = 0.0;
+        advPage_ = page;
+    }
+
+    /**
+     * Show a record on the Advanced tab ("Having trouble"), as its "View" does (for --record).
+     * @param folder its folder name
+     */
+    void openRecord(const std::string& folder);
+
+    /** Show all records on the Advanced tab ("Having trouble"), as its button does (for --records-all). */
+    void openRecordsAll();
+
+    /** @return the record shown ("" = none; only while the Advanced tab shows) */
+    std::string recordShown() const { return tab_ == PanelTab::Advanced ? recordOpen_ : std::string(); }
+
+    /** @return true while all records are listed (and no record is open over them) */
+    bool recordsAllOpen() const { return tab_ == PanelTab::Advanced && recordsAllOpen_ && recordOpen_.empty(); }
 
     /** @return the tab shown (Eyecam falls back to Basic at the next draw once its tab is gone) */
     PanelTab tab() const { return tab_; }
@@ -301,6 +337,11 @@ public:
     /** @return true while the diagnostics page is shown */
     bool diagOpen() const { return diagOpen_ && tab_ == PanelTab::Advanced; }
 
+    /** @return true while the Advanced tab shows its sub-tabs and a page of them (nothing open over them) */
+    bool advPageShown() const {
+        return tab_ == PanelTab::Advanced && !historyOpen_ && !diagOpen_ && recordOpen_.empty() && !recordsAllOpen_;
+    }
+
     /**
      * For --history-open: open this version's row instead (without scrolling to it).
      * @param version "0.5.0"
@@ -325,17 +366,26 @@ public:
     /** @return as far as the Advanced tab's page can scroll (px, from the last draw; 0 = it fits) */
     double advancedMaxScroll() const { return advMaxScroll_; }
 
+    /** @return how far the list of all records is scrolled (px) */
+    double recordsScroll() const { return listScroll_; }
+
+    /** @return as far as it can scroll (px, from the last draw; 0 = it fits) */
+    double recordsMaxScroll() const { return listMaxScroll_; }
+
     /**
      * @return true while the panel wants the controller's scroll events: the version history is shown, or the
-     * Advanced tab's page is taller than its view
+     * Advanced tab's page (or the list of all records) is taller than its view
      */
     bool wantsScroll() const {
-        return tab_ == PanelTab::Advanced && (historyOpen_ || (!diagOpen_ && advScrollable_));
+        if (tab_ != PanelTab::Advanced) return false;
+        if (historyOpen_) return true;
+        if (diagOpen_ || !recordOpen_.empty()) return false;
+        return recordsAllOpen_ ? listScrollable_ : advScrollable_;
     }
 
     /**
-     * Scroll the version history, or the Advanced tab's page (the thumbstick or touchpad; ignored while neither is
-     * shown or a prompt is open).
+     * Scroll the version history, the Advanced tab's page or the list of all records (the thumbstick or touchpad;
+     * ignored while none is shown or a prompt is open).
      * @param dy px; positive moves the list up (shows what is further down)
      * @return true if it moved (redraw needed)
      */
@@ -435,6 +485,14 @@ private:
     double advMaxScroll_ = 0.0;         ///< as far as it can scroll (from the last draw)
     double advViewH_ = 0.0;             ///< the height it is shown in
     bool advScrollable_ = false;        ///< the last draw showed the page scrolled, with ▲ / ▼ (it didn't fit)
+    AdvPage advPage_ = AdvPage::Version;  ///< the Advanced tab's sub-tab
+    std::string recordOpen_;            ///< the record shown on the Advanced tab ("" = none)
+    bool recordsAllOpen_ = false;       ///< all records are listed on the Advanced tab (a record may be open over them)
+    std::vector<std::string> recordNames_;  ///< the records as last drawn (RecordOpen's arg is an index)
+    double listScroll_ = 0.0;           ///< px the list of all records is scrolled
+    double listMaxScroll_ = 0.0;        ///< as far as it can scroll (from the last draw)
+    double listViewH_ = 0.0;            ///< the height it is shown in
+    bool listScrollable_ = false;       ///< the last draw showed it scrolled (it didn't fit)
     bool hitClip_ = false;              ///< addButton keeps only what is between hitClipTop_ and hitClipBottom_
     double hitClipTop_ = 0.0;
     double hitClipBottom_ = 0.0;
@@ -620,8 +678,33 @@ private:
     void drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
 
     /**
-     * The Advanced tab's page, one section after another: the version, "Having trouble" (the diagnostics), the debug
-     * tools, the files and the process, and the developer recording while eyecam-rec runs.
+     * The Advanced tab's sub-tabs: a segmented control across the card (a dot after "Version" while a new release is
+     * available).
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param y its top
+     * @param h its height
+     */
+    void drawSubTabs(const Pen& pen, const UiText& t, const PanelModel& model, double y, double h);
+
+    /**
+     * A page drawn into a view: as it is when it fits; else a little narrower beside ▲ / ▼, clipped to the view and
+     * scrolled (only what shows can be pressed).
+     * @param pen drawing tools
+     * @param viewTop the view's top
+     * @param viewBottom its bottom
+     * @param scroll px scrolled (kept within the page)
+     * @param maxScroll where to write how far it can scroll
+     * @param viewH where to write the view's height
+     * @param scrollable where to write whether it scrolls
+     * @param page draws the page from its top to a right edge and returns its height
+     */
+    void drawScrolled(const Pen& pen, double viewTop, double viewBottom, double& scroll, double& maxScroll,
+                      double& viewH, bool& scrollable, const std::function<double(double top, double right)>& page);
+
+    /**
+     * The Advanced tab's sub-tab shown, as a page.
      * @param pen drawing tools
      * @param t texts
      * @param model the model
@@ -632,6 +715,114 @@ private:
      */
     double drawAdvancedPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view,
                             double top, double right);
+
+    /**
+     * "Version": the version (large), when it was last checked and what came of it, the update button and the new
+     * release's summary, and under them "Version history", the automatic check's chip and "Check now".
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     * @param top the page's top
+     * @param right its right edge
+     * @return its height
+     */
+    double drawVersionPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view,
+                           double top, double right);
+
+    /**
+     * "Having trouble": the diagnostics row (its code and "Open"), the newest three records, how to read them over
+     * SSH and "All records".
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param top the page's top
+     * @param right its right edge
+     * @return its height
+     */
+    double drawTroublePage(const Pen& pen, const UiText& t, const PanelModel& model, double top, double right);
+
+    /**
+     * "Debug tools": the gaze dots and their distance, the eye log, and the eye capture while eyecam-rec runs.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     * @param top the page's top
+     * @param right its right edge
+     * @return its height
+     */
+    double drawToolsPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view,
+                         double top, double right);
+
+    /**
+     * "Files": the files' places, frameeyeosc's PID and how long it has run, and what the command line locks.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param top the page's top
+     * @param right its right edge
+     * @return its height
+     */
+    double drawFilesPage(const Pen& pen, const UiText& t, const PanelModel& model, double top, double right);
+
+    /**
+     * One record as a row: when, what, a short line, its result's badge and "View".
+     * @param pen drawing tools
+     * @param t texts
+     * @param record the record
+     * @param x0 left
+     * @param x1 right
+     * @param y top
+     * @param h height
+     */
+    void drawRecordRow(const Pen& pen, const UiText& t, const report::Summary& record, double x0, double x1, double y,
+                       double h);
+
+    /**
+     * A result's badge ("OK" green, "失敗" red, "片目だけ" accent), right-aligned.
+     * @param pen drawing tools
+     * @param t texts
+     * @param result the result
+     * @param right its right edge
+     * @param cy its middle
+     * @param size the text size
+     * @return its width
+     */
+    double drawResultBadge(const Pen& pen, const UiText& t, report::Result result, double right, double cy, double size);
+
+    /**
+     * A record in place of the Advanced tab: "‹ Back", what ran and when, the conditions, the result's badge, the reason
+     * in a box, the key log lines, and the files with their sizes, the diagnostic code and the folder.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (records.opened)
+     */
+    void drawRecord(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * All records in place of the Advanced tab: "‹ Back", the title, and a row each (scrolled when they don't fit).
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     */
+    void drawRecordsAll(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * The bar on a failed fit or calibration: its log was saved, where to find it, and "View record". Measured
+     * (draw false) or drawn.
+     * @param pen drawing tools
+     * @param t texts
+     * @param folder the record
+     * @param calib a calibration's (else a fit's)
+     * @param x0 left
+     * @param x1 right
+     * @param y top
+     * @param draw draw it (else only measure)
+     * @return its height
+     */
+    double drawRecordBar(const Pen& pen, const UiText& t, const std::string& folder, bool calib, double x0, double x1,
+                         double y, bool draw = true);
 
     /**
      * ▲ / ▼ at the right edge of a scrolled view (a third of the view per press) and a thin bar between them with
@@ -867,21 +1058,6 @@ private:
      * @param t texts
      */
     void drawHostEntry(const Pen& pen, const UiText& t);
-
-    /**
-     * The version row and its button (Advanced tab): the running version, the check result, install progress, and
-     * the switch for the automatic check as a chip under the texts, and the new release's summary under all that.
-     * @param pen drawing tools
-     * @param t texts
-     * @param u the update status
-     * @param notes the new release's summary in the panel's language ("" = none; see updateNotes)
-     * @param checkOn whether the automatic check (update_check) is on
-     * @param y row top
-     * @param right the row's right edge
-     * @return the row's height
-     */
-    double drawUpdateRow(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u,
-                         const std::string& notes, bool checkOn, double y, double right);
 
     /**
      * A notice at the bottom of the status column while a new release is available, installing or installed.

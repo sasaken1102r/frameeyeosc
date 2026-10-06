@@ -5,9 +5,11 @@
 #include "draw.h"
 #include "fit_text.h"
 #include "host_entry.h"
+#include "icons.h"
 #include "recorder.h"
 #include "report.h"
 #include "setup_tools.h"
+#include "text_layout.h"
 #include "theme.h"
 
 #include <cairo.h>
@@ -103,151 +105,6 @@ double centerBaseline(double top, double h, double size) {
 void textCentered(const Pen& pen, double cx, double baseline, const std::string& text, double size, Color c,
                   bool bold) {
     pen.text(cx - pen.measure(text, size, bold) / 2, baseline, text, size, c, bold);
-}
-
-/**
- * Length in bytes of the UTF-8 character that starts with this byte.
- * @param lead the first byte
- * @return 1..4
- */
-size_t utf8Length(unsigned char lead) {
-    if (lead < 0x80) return 1;
-    if ((lead >> 5) == 0x6) return 2;
-    if ((lead >> 4) == 0xE) return 3;
-    if ((lead >> 3) == 0x1E) return 4;
-    return 1;
-}
-
-/**
- * Shorten text with "…" until it fits.
- * @param pen drawing tools
- * @param text the text
- * @param size text size
- * @param bold whether bold
- * @param maxWidth the width to fit
- * @param keepEnd keep the end and cut the start (for file paths)
- * @return the text that fits
- */
-std::string ellipsize(const Pen& pen, const std::string& text, double size, bool bold, double maxWidth, bool keepEnd) {
-    if (pen.measure(text, size, bold) <= maxWidth) return text;
-    std::vector<std::string> chars;
-    for (size_t i = 0; i < text.size();) {
-        const size_t n = std::min(utf8Length(static_cast<unsigned char>(text[i])), text.size() - i);
-        chars.push_back(text.substr(i, n));
-        i += n;
-    }
-    while (!chars.empty()) {
-        if (keepEnd) {
-            chars.erase(chars.begin());
-        } else {
-            chars.pop_back();
-        }
-        std::string joined;
-        for (const auto& c : chars) joined += c;
-        const std::string candidate = keepEnd ? "…" + joined : joined + "…";
-        if (pen.measure(candidate, size, bold) <= maxWidth) return candidate;
-    }
-    return "…";
-}
-
-/**
- * Whether a CJK character may not start a line (closing brackets and punctuation).
- * @param unit one character
- * @return true for 。、）」』，．！？
- */
-bool closesLine(const std::string& unit) {
-    static const char* const marks[] = {"。", "、", "）", "」", "』", "，", "．", "！", "？"};
-    for (const char* mark : marks) {
-        if (unit == mark) return true;
-    }
-    return false;
-}
-
-/**
- * Break text into lines that fit a width. Breaks at spaces, and between any two CJK characters, but never before
- * a closing mark (the character before it moves down with it).
- * The last allowed line is shortened with "…" if the text does not fit.
- * @param pen drawing tools
- * @param text the text
- * @param size text size
- * @param bold whether bold
- * @param maxWidth line width
- * @param maxLines most lines
- * @return the lines
- */
-std::vector<std::string> wrapText(const Pen& pen, const std::string& text, double size, bool bold, double maxWidth,
-                                  size_t maxLines) {
-    // Units: a word with its trailing spaces, or one CJK character
-    std::vector<std::string> units;
-    std::string word;
-    for (size_t i = 0; i < text.size();) {
-        const size_t n = std::min(utf8Length(static_cast<unsigned char>(text[i])), text.size() - i);
-        const std::string ch = text.substr(i, n);
-        i += n;
-        if (n >= 3) {
-            if (!word.empty()) units.push_back(word);
-            word.clear();
-            units.push_back(ch);
-        } else if (ch == " ") {
-            word += ch;
-            units.push_back(word);
-            word.clear();
-        } else {
-            word += ch;
-        }
-    }
-    if (!word.empty()) units.push_back(word);
-
-    std::vector<std::string> lines;
-    std::string line;
-    size_t lineStart = 0;  // the line's first unit
-    for (size_t u = 0; u < units.size(); ++u) {
-        const std::string candidate = line + units[u];
-        std::string trimmed = candidate;
-        while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
-        if (line.empty() || pen.measure(trimmed, size, bold) <= maxWidth) {
-            line = candidate;
-            continue;
-        }
-        // The next line starts here, or a character earlier if this one is a closing mark
-        const size_t next = closesLine(units[u]) && u > lineStart + 1 && units[u - 1].size() >= 3 ? u - 1 : u;
-        std::string head;
-        for (size_t i = lineStart; i < next; ++i) head += units[i];
-        while (!head.empty() && head.back() == ' ') head.pop_back();
-        lines.push_back(head);
-        line.clear();
-        for (size_t i = next; i <= u; ++i) line += units[i];
-        lineStart = next;
-        if (lines.size() == maxLines) {
-            // Out of lines: put the rest on the last line and cut it with "…" (the space trimmed off the line goes
-            // back between it and the rest)
-            std::string rest = lines.back();
-            if (next > 0 && units[next - 1].back() == ' ') rest += ' ';
-            for (size_t r = next; r < units.size(); ++r) rest += units[r];
-            lines.back() = ellipsize(pen, rest, size, bold, maxWidth, false);
-            return lines;
-        }
-    }
-    while (!line.empty() && line.back() == ' ') line.pop_back();
-    if (!line.empty()) lines.push_back(ellipsize(pen, line, size, bold, maxWidth, false));
-    return lines;
-}
-
-/**
- * The largest text size (down to a minimum) at which wrapped text fits in so many lines without being cut.
- * @param pen drawing tools
- * @param text the text
- * @param size the size to start from
- * @param minSize never smaller than this (the text may be cut there)
- * @param bold whether bold
- * @param maxWidth line width
- * @param maxLines most lines
- * @return the size
- */
-double wrapSize(const Pen& pen, const std::string& text, double size, double minSize, bool bold, double maxWidth,
-                size_t maxLines) {
-    while (size > minSize && wrapText(pen, text, size, bold, maxWidth, maxLines + 1).size() > maxLines) size -= 1;
-    return size;
 }
 
 /**
@@ -361,18 +218,18 @@ void drawCross(cairo_t* cr, double cx, double cy, double s, Color c) {
     cairo_stroke(cr);
 }
 
-/** A leading "✓ " or "✗ " on a destination card's line, drawn with lines since the font may not have them. */
+/** A leading check or cross icon (and a space) on a destination card's line, hung in front of the lines. */
 enum class LineMark { None, Check, Cross };
 
 /**
  * Split a card line into its leading mark and the rest.
- * @param text the line ("✓ Wide eyes")
+ * @param text the line (ICON_CHECK " Wide eyes")
  * @param rest the text after the mark (written)
  * @return the mark
  */
 LineMark splitMark(const std::string& text, std::string& rest) {
-    static const std::string check = "\u2713 ";
-    static const std::string cross = "\u2717 ";
+    static const std::string check = ICON_CHECK " ";
+    static const std::string cross = ICON_CROSS " ";
     if (text.compare(0, check.size(), check) == 0) {
         rest = text.substr(check.size());
         return LineMark::Check;
@@ -1359,8 +1216,8 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         const char* receiver = s.output == kOutputEtvr       ? t.outputEtvrShort
                                : s.output == kOutputLivelink ? t.outputLivelinkShort
                                                              : t.outputVrchatShort;
-        const std::string destination =
-            std::string(receiver) + " → " + (s.target.empty() ? std::string(t.searchingPc) : s.target);
+        const std::string destination = std::string(receiver) + " " ICON_ARROW_RIGHT " " +
+                                         (s.target.empty() ? std::string(t.searchingPc) : s.target);
         const double size = fitSize(pen, destination, 19, 13, x1 - x0, true);
         pen.text(x0, 180, destination, size, kText, true);
         pen.text(x0, 204, s.targetMode == "fixed" ? t.modeFixed : t.modeAuto, 15, kTextMuted);
@@ -2424,7 +2281,8 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         };
         const double room = kInnerRight - kInnerX - detailsW - gap - (fitDetails_ ? pagesW + gap : 0);
         const double soundsW = std::min(room, switchW({t.fitSoundsOn, t.fitSoundsOff}));
-        const std::string label = std::string(t.fitDetails) + (fitDetails_ ? "  ▲" : "  ▼");
+        const std::string label =
+            std::string(t.fitDetails) + (fitDetails_ ? "  " ICON_TRIANGLE_UP : "  " ICON_TRIANGLE_DOWN);
         drawButton(pen, kInnerX, y, detailsW, 38, label, {PanelAction::FitDetails, nullptr, 0}, true, false);
         // Sound cues on / off: one button that says the state and flips it
         const double x = kInnerX + detailsW + gap;
@@ -2679,9 +2537,10 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
             double textRight = kInnerRight - 16;
             if (eyecamTab_) {
                 const double bh = 46;
-                const double bw = std::max(160.0, pen.measure(t.lidsCamButton, 17, true) + 64);
+                const std::string label = std::string(t.lidsCamButton) + "  " ICON_ARROW_RIGHT;
+                const double bw = std::max(160.0, pen.measure(label, 17, true) + 40);
                 const double bx = kInnerRight - 14 - bw;
-                drawButton(pen, bx, y + (boxH - bh) / 2, bw, bh, std::string(t.lidsCamButton) + "  →",
+                drawButton(pen, bx, y + (boxH - bh) / 2, bw, bh, label,
                            {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)}, true, false, 17);
                 textRight = bx - 14;
             }
@@ -2758,7 +2617,7 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
     // The rest, folded: "Fine-tune"
     {
         drawRowLabel(pen, t, y, kRowH, t.rowOther, t.otherHint, false);
-        const std::string label = std::string(t.fitDetails) + "  ▼";
+        const std::string label = std::string(t.fitDetails) + "  " ICON_TRIANGLE_DOWN;
         const double bw = std::max(156.0, pen.measure(label, 18, true) + 44);
         const double bh = 46;
         drawButton(pen, kControlX, y + (kRowH - bh) / 2, bw, bh, label, {PanelAction::LidMarks, nullptr, 0}, true, false,
@@ -2785,7 +2644,7 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     // The title, "Close" back to the rows, and a line on what decides the eyelids
     {
         pen.text(kInnerX, y + 26, t.detailsTitle, 20, kText, true);
-        const std::string label = std::string(t.detailsClose) + "  ▲";
+        const std::string label = std::string(t.detailsClose) + "  " ICON_TRIANGLE_UP;
         const double bw = std::max(130.0, pen.measure(label, 17, true) + 40);
         drawButton(pen, kInnerRight - bw, y, bw, 40, label, {PanelAction::LidMarks, nullptr, 0}, true, false, 17);
         const char* note = t.marksTitle;
@@ -5521,7 +5380,7 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         const double boxH = 56;
         fillRounded(pen, kInnerX, boxTop, kInnerRight - kInnerX, boxH, 12, kBg);
         drawEyeIcon(pen, kInnerX + 28, boxTop + boxH / 2, kAccent);
-        const std::string label = std::string(t.camWidenButton) + "  →";
+        const std::string label = std::string(t.camWidenButton) + "  " ICON_ARROW_RIGHT;
         const double bh = 42;
         const double bw = std::max(130.0, pen.measure(label, 17, true) + 44);
         const double bx = kInnerRight - 10 - bw;

@@ -71,7 +71,7 @@ struct Pen {
     void color(Color c, double alpha = 1.0) const { cairo_set_source_rgba(cr, c.r, c.g, c.b, alpha); }
 
     /**
-     * Measure the width of a string.
+     * Measure the width of a string. An icon marker (icons.h) counts as its icon's width.
      * @param text UTF-8 string
      * @param size font size (px)
      * @param isBold whether to use bold
@@ -80,7 +80,8 @@ struct Pen {
     double measure(const std::string& text, double size, bool isBold = false) const;
 
     /**
-     * Draw a string.
+     * Draw a string. An icon marker (icons.h) is drawn as its icon with paths, in the same color and with lines as
+     * thick as the font's.
      * @param x left edge (right edge if alignRight)
      * @param y baseline
      * @param text UTF-8 string

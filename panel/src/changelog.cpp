@@ -1,12 +1,16 @@
 // The version history: reading CHANGELOG.md / CHANGELOG.ja.md into what the view shows.
 #include "changelog.h"
 
+#include "icons.h"
+
 #include <unistd.h>
 
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <string>
+#include <utility>
 
 namespace changelog {
 
@@ -14,6 +18,12 @@ namespace {
 
 /** Files larger than this are not read (the changelog is about 40 KB). */
 constexpr std::streamoff kMaxFileBytes = 4 * 1024 * 1024;
+
+/** Symbols written in the changelog and the icon markers the panel draws in their place (icons.h). */
+constexpr std::pair<const char*, const char*> kSymbols[] = {
+    {"→", ICON_ARROW_RIGHT}, {"▲", ICON_TRIANGLE_UP}, {"▼", ICON_TRIANGLE_DOWN}, {"♪", ICON_NOTE},
+    {"‹", ICON_CHEVRON_LEFT}, {"›", ICON_CHEVRON_RIGHT}, {"✓", ICON_CHECK},
+};
 
 /**
  * Whether text starts with a prefix.
@@ -202,6 +212,18 @@ std::string stripMarkdown(const std::string& text) {
                 i += 2;
                 continue;
             }
+            // The panel's arrows and symbols, as the icons the panel draws them with
+            bool symbol = false;
+            for (const auto& pair : kSymbols) {
+                const size_t n = std::char_traits<char>::length(pair.first);
+                if (text.compare(i, n, pair.first) == 0) {
+                    out += pair.second;
+                    i += n;
+                    symbol = true;
+                    break;
+                }
+            }
+            if (symbol) continue;
             // [text](url) -> text
             if (c == '[') {
                 const size_t close = text.find("](", i);

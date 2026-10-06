@@ -1,5 +1,6 @@
 // On-screen text in Japanese and English. Drawing code never contains text itself; it takes it from here.
-// Logs stay in English and are not in this table.
+// Logs stay in English and are not in this table. Arrows and other symbols are icon markers (icons.h: ICON_ARROW_RIGHT
+// and the like), drawn with paths; report.txt and --report turn them back into characters (icon::plain).
 #pragma once
 
 #include <string>
@@ -87,7 +88,8 @@ struct UiText {
     const char* outputLivelink;
     const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
-    /** Each card's three lines (VRChat, LiveLink, ETVR): wide eyes, sync, VRCFT. A leading "✓ " or "✗ " is drawn. */
+    /** Each card's three lines (VRChat, LiveLink, ETVR): wide eyes, sync, VRCFT. A leading ICON_CHECK or ICON_CROSS
+     *  and a space hang in front of the lines (icons.h). */
     const char* outputMarks[3][3];
     const char* rowActiveType;      ///< how EyeTrackingActive is sent
     const char* hintActiveType;
@@ -321,11 +323,11 @@ struct UiText {
     const char* recordsHint;        ///< beside it
     const char* recordsNone;        ///< none yet
     const char* recordView;         ///< a row's button
-    const char* recordsAllFormat;   ///< the button to all of them: "すべての記録（%s）›" (the count)
+    const char* recordsAllFormat;   ///< the button to all of them: "すべての記録（%s）" and a chevron (the count)
     const char* recordsAllTitleFormat;  ///< their page's title: "すべての記録（%s）"
     const char* recordsKept;        ///< beside it: how many are kept
     const char* recordsSsh;         ///< how to read them over SSH
-    const char* recordBack;         ///< "‹ Back" on a record and on all records
+    const char* recordBack;         ///< a chevron and " Back" on a record and on all records
     const char* recordReason;       ///< before a failure's reason
     const char* recordOutcome;      ///< before what came of a run that went well
     const char* recordFlow;         ///< over the key log lines
@@ -381,7 +383,7 @@ struct UiText {
     const char* flowFit;
     const char* flowRecenter;
     const char* flowTilt;
-    const char* flowTryFormat;      ///< "%s %d 回目 %d/%d → %s"
+    const char* flowTryFormat;      ///< "%s %d 回目 %d/%d", an arrow, "%s"
     const char* flowAgain;
     const char* flowFailed;
     const char* flowOk;

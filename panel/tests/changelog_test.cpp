@@ -2,6 +2,7 @@
 // paragraph, cutting English items to their first sentence, removing markdown and taking a version missing in
 // Japanese from the English file. Built with the panel as changelog-test; exits non-zero on failure.
 #include "changelog.h"
+#include "icons.h"
 
 #include <unistd.h>
 
@@ -131,6 +132,9 @@ void testMarkdown() {
     // Brackets that aren't a link stay
     SAME(changelog::stripMarkdown("[fit] center (min 45)"), "[fit] center (min 45)");
     SAME(changelog::stripMarkdown("__bold__ text"), "bold text");
+    // Arrows and symbols become the panel's icons (not inside code)
+    SAME(changelog::stripMarkdown("97.9 % → 98.0 %, ▲ / ▼, 「♪ 音」 `a → b`"),
+         "97.9 % " ICON_ARROW_RIGHT " 98.0 %, " ICON_TRIANGLE_UP " / " ICON_TRIANGLE_DOWN ", 「" ICON_NOTE " 音」 a → b");
 }
 
 void testFirstSentence() {

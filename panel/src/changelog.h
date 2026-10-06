@@ -42,7 +42,8 @@ struct History {
 std::vector<Section> parse(const std::string& text);
 
 /**
- * Remove markdown: backticks, links (their text stays) and bold.
+ * Remove markdown: backticks, links (their text stays) and bold. Outside code, the panel's arrows and symbols
+ * (→ ▲ ▼ ♪ ‹ › ✓) become the icon markers the panel draws them with (icons.h).
  * @param text one paragraph
  * @return plain text
  * @example

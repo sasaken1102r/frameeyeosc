@@ -80,6 +80,7 @@ frameeyeosc の設定を、Steam Frame を被ったまま SteamVR のダッシ�
 - 言語: `config.json` に `language` が無いときは、起動時に 1 回だけ `~/.steam/registry.vdf` の `language` を読み、`japanese` なら日本語、それ以外は英語（読めなければ `LC_ALL` / `LC_MESSAGES` / `LANG`）。こうして決めた言語はファイルに書かず、言語のボタンを押したときだけ保存する
 - 「リセット」（キャリブレーション）は `calibration_reset` を 1 増やすだけ。覚え直すのは本体
 - 選択状態は色だけで伝えない（✓・塗り・太字。タブは塗りと下向きの印）
+- 矢印や記号（‹ › ▲ ▼ → ♪ ✓ ✗ ◯ △ など）はフォントの文字にせず、線で描く（`icons.{h,cpp}`）。文言には私用領域の印（`ICON_ARROW_RIGHT` など。U+E000〜U+E00F）を入れ、`Pen::measure` / `Pen::text` がその幅（文字と同じく em で決めた幅）を数え、文字と同じ色・フォントの太さに合わせた線で描く。高さの真ん中は x ハイトの真ん中とキャップハイトの真ん中のあいだ（◯ と △ はかなと並ぶのでキャップハイトの真ん中）。折り返し（`text_layout.{h,cpp}`）では矢印を行頭に置かず、「…」で切るときも印を半分にしない。`report.txt` と `--report` では文字（→ など）に戻す。更新履歴は CHANGELOG の → ▲ ▼ ♪ ‹ › ✓ を読むときに印にする。数の「×0.99」や「＋ は右・上」の ＋ のような文字は文字のまま
 
 ## 診断コード
 
@@ -316,5 +317,6 @@ systemctl --user daemon-reload
 | `src/i18n.*` | 画面の文言（日本語・英語）。ログは英語 |
 | `src/vr_overlay.*` | OpenVR の接続、ダッシュボードのオーバーレイ、イベント、終了処理、`--probe` |
 | `src/vk_texture.*`・`src/draw.*`・`src/json.*` | Vulkan の画像、描画の部品、JSON の読み書き |
+| `src/icons.*`・`src/text_layout.*` | 文言の中の線で描く印（矢印・記号）の幅と文字への戻し方、文字の折り返しと「…」での切り方 |
 | `contrib/` | `.desktop`・`.service`・アイコン・`install-panel.sh` |
 | `third_party/openvr/` | `openvr.h`（OpenVR SDK 2.15.6）と、そのライセンス（BSD-3-Clause） |

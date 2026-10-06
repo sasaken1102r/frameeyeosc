@@ -3,6 +3,7 @@
 // record written from made-up logs (what goes in, what never does), keeping 10, the size caps, status.jsonl a second,
 // the writer's thread and `--report`. Files go to a folder made under the current one, removed at the end. Exits
 // non-zero on failure. Runs in Japan's time zone (JST-9), so the local times are fixed.
+#include "icons.h"
 #include "report.h"
 #include "ui_state.h"
 
@@ -396,12 +397,17 @@ void testKeyLines() {
     const UiText& en = uiText(Language::En);
     const LogLine tryLine {0.0, Source::Panel,
                            "[fit] center try 1: 0 of 153 samples usable at 90 Hz (needs 45), no gaze average -> again"};
-    CHECK(report::flowText(ja, tryLine) == "正面 1 回目 0/153 → もう一度");
-    CHECK(report::flowText(en, tryLine) == "center try 1: 0/153 → again");
+    // (the arrow is an icon marker the panel draws with lines; as plain text it is "→")
+    CHECK(report::flowText(ja, tryLine) == "正面 1 回目 0/153 " ICON_ARROW_RIGHT " もう一度");
+    CHECK(report::flowText(en, tryLine) == "center try 1: 0/153 " ICON_ARROW_RIGHT " again");
+    CHECK(icon::plain(report::flowText(ja, tryLine)) == "正面 1 回目 0/153 → もう一度");
+    CHECK(icon::plain(ICON_CHEVRON_LEFT " Back · " ICON_TRIANGLE_DOWN ICON_NOTE "x") == "‹ Back · ▼♪x");
+    CHECK(icon::plain("no icons → here") == "no icons → here");
+    CHECK(!icon::any("正面 → OK") && icon::any("a" ICON_DOT));
     CHECK(report::flowText(ja, {0.0, Source::Panel, "[fit] up try 3: 12 of 40 samples usable at 15 Hz (needs 24) -> failed"}) ==
-          "上 3 回目 12/40 → 失敗");
+          "上 3 回目 12/40 " ICON_ARROW_RIGHT " 失敗");
     CHECK(report::flowText(ja, {0.0, Source::Panel, "[fit] center try 2: 128 samples (min 45), spread 3.4° -> ok"}) ==
-          "正面 2 回目 128 → OK");
+          "正面 2 回目 128 " ICON_ARROW_RIGHT " OK");
     CHECK(report::flowText(ja, {0.0, Source::Panel, "[fit] eye fit, IPD 69.6 mm, dashboard open"}) ==
           "目合わせ 開始（開いたまま）");
     CHECK(report::flowText(en, {0.0, Source::Panel, "[fit] re-center, IPD 63.0 mm, dashboard closed"}) ==

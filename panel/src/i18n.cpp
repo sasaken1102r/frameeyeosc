@@ -1,6 +1,8 @@
 // The text tables.
 #include "i18n.h"
 
+#include "icons.h"
+
 #include <cstdlib>
 #include <fstream>
 
@@ -71,19 +73,19 @@ UiText makeJapanese() {
     t.send = "送る";
     t.stop = "止める";
     t.rowOutput = "送り先";
-    t.hintOutput = "同期＝ほかの人からの見え方（△はアバターによる）";
+    t.hintOutput = "同期＝ほかの人からの見え方（" ICON_TRIANGLE_OUTLINE "はアバターによる）";
     t.outputVrchat = "VRChat に直接";
     t.outputLivelink = "VRCFT（LiveLink）";
     t.outputEtvr = "VRCFT（ETVR）";
     t.outputRecommended = "おすすめ";
-    t.outputMarks[0][0] = "見開き ◯";
-    t.outputMarks[0][1] = "同期 △";
+    t.outputMarks[0][0] = "見開き " ICON_RING;
+    t.outputMarks[0][1] = "同期 " ICON_TRIANGLE_OUTLINE;
     t.outputMarks[0][2] = "VRCFT 不要";
-    t.outputMarks[1][0] = "見開き ◯";
-    t.outputMarks[1][1] = "同期 ◯";
+    t.outputMarks[1][0] = "見開き " ICON_RING;
+    t.outputMarks[1][1] = "同期 " ICON_RING;
     t.outputMarks[1][2] = "VRCFT 必要";
-    t.outputMarks[2][0] = "見開き ×";
-    t.outputMarks[2][1] = "同期 ◯";
+    t.outputMarks[2][0] = "見開き " ICON_CROSS;
+    t.outputMarks[2][1] = "同期 " ICON_RING;
     t.outputMarks[2][2] = "VRCFT 必要";
     t.rowActiveType = "EyeTrackingActive の型";
     t.hintActiveType = "アバターによっては Float が必要";
@@ -222,8 +224,8 @@ UiText makeJapanese() {
     t.targetOpen = "開けて OK";
     t.fitReset = "元に戻す";
     t.fitDetails = "細かく直す";
-    t.fitSoundsOn = "♪ 音を鳴らす: オン";
-    t.fitSoundsOff = "♪ 音を鳴らす: オフ";
+    t.fitSoundsOn = ICON_NOTE " 音を鳴らす: オン";
+    t.fitSoundsOff = ICON_NOTE " 音を鳴らす: オフ";
     t.rowAutoRecenter = "被ったとき";
     t.hintAutoRecenter = "被り直したら自動で合わせ直す";
     t.autoRecenterOff = "何もしない";
@@ -316,11 +318,11 @@ UiText makeJapanese() {
     t.recordsHint = "校正と目合わせのたびに残すよ";
     t.recordsNone = "まだ記録はないよ。校正か目合わせをすると残るよ";
     t.recordView = "見る";
-    t.recordsAllFormat = "すべての記録（%s）›";
+    t.recordsAllFormat = "すべての記録（%s）" ICON_CHEVRON_RIGHT;
     t.recordsAllTitleFormat = "すべての記録（%s）";
     t.recordsKept = "新しい 10 件を残すよ";
     t.recordsSsh = "SSH なら frameeyeosc-panel --report latest";
-    t.recordBack = "‹ 戻る";
+    t.recordBack = ICON_CHEVRON_LEFT " 戻る";
     t.recordReason = "理由：";
     t.recordOutcome = "結果：";
     t.recordFlow = "流れ（時刻順）";
@@ -332,8 +334,8 @@ UiText makeJapanese() {
     t.recordFileCalib = "calib_result.json（校正の数値）";
     t.recordCode = "診断コード";
     t.recordMissing = "この記録は見つからないよ（もう消えたかも）";
-    t.recordSavedFit = "この目合わせのログを記録したよ。困ったら「詳細」→「最近の記録」で見られるよ";
-    t.recordSavedCalib = "この校正のログを記録したよ。困ったら「詳細」→「最近の記録」で見られるよ";
+    t.recordSavedFit = "この目合わせのログを記録したよ。困ったら「詳細」" ICON_ARROW_RIGHT "「最近の記録」で見られるよ";
+    t.recordSavedCalib = "この校正のログを記録したよ。困ったら「詳細」" ICON_ARROW_RIGHT "「最近の記録」で見られるよ";
     t.recordShow = "記録を見る";
     t.recordStopped = "途中で止めた";
     t.recordNoStartFormat = "始められなかった: %s";
@@ -376,7 +378,7 @@ UiText makeJapanese() {
     t.flowFit = "目合わせ";
     t.flowRecenter = "合わせ直し";
     t.flowTilt = "合わせ直し（傾きも）";
-    t.flowTryFormat = "%s %d 回目 %d/%d → %s";
+    t.flowTryFormat = "%s %d 回目 %d/%d " ICON_ARROW_RIGHT " %s";
     t.flowAgain = "もう一度";
     t.flowFailed = "失敗";
     t.flowOk = "OK";
@@ -556,14 +558,14 @@ UiText makeJapanese() {
     t.setupPassPath2 = "開発者";
     t.setupPassPath3 = "ユーザーパスワードを変更";
     t.setupPassKonsole = "Konsole で";
-    t.setupPassKonsoleHow = "下のボタン → Enter → 同じパスワードを 2 回打つ";
+    t.setupPassKonsoleHow = "下のボタン " ICON_ARROW_RIGHT " Enter " ICON_ARROW_RIGHT " 同じパスワードを 2 回打つ";
     t.setupPassMemo = "メモ";
-    t.setupPassMemoText = "「開発者」がないときは、システム → 開発者モードをオン";
+    t.setupPassMemoText = "「開発者」がないときは、システム " ICON_ARROW_RIGHT " 開発者モードをオン";
     t.setupPassButton = "Konsole で passwd を開く";
     t.setupVideo = "動画を開く";
     t.setupVideoNote = "動画は Frame の Chromium で開くよ・開けないとき：";
     t.setupCheckPill = "入るのを待ってるよ";
-    t.setupCheckFlow = "Konsole で開く → Enter → パスワード";
+    t.setupCheckFlow = "Konsole で開く " ICON_ARROW_RIGHT " Enter " ICON_ARROW_RIGHT " パスワード";
     t.setupCheckTyped = "（入力済みで開くよ）";
     t.setupCheckWhat = "何をする";
     t.setupCheckWhatText = "目のカメラの映像を受け取る小さな道具に、その権限だけを付けるよ";
@@ -874,14 +876,14 @@ UiText makeEnglish() {
     t.outputLivelink = "VRCFT (LiveLink)";
     t.outputEtvr = "VRCFT (ETVR)";
     t.outputRecommended = "Recommended";
-    t.outputMarks[0][0] = "✓ Wide eyes";
+    t.outputMarks[0][0] = ICON_CHECK " Wide eyes";
     t.outputMarks[0][1] = "Sync: depends on avatar";
     t.outputMarks[0][2] = "No VRCFT needed";
-    t.outputMarks[1][0] = "✓ Wide eyes";
-    t.outputMarks[1][1] = "✓ Synced to others";
+    t.outputMarks[1][0] = ICON_CHECK " Wide eyes";
+    t.outputMarks[1][1] = ICON_CHECK " Synced to others";
     t.outputMarks[1][2] = "Needs VRCFT";
-    t.outputMarks[2][0] = "✗ No wide eyes";
-    t.outputMarks[2][1] = "✓ Synced to others";
+    t.outputMarks[2][0] = ICON_CROSS " No wide eyes";
+    t.outputMarks[2][1] = ICON_CHECK " Synced to others";
     t.outputMarks[2][2] = "Needs VRCFT";
     t.rowActiveType = "EyeTrackingActive type";
     t.hintActiveType = "Some avatars need Float";
@@ -894,7 +896,7 @@ UiText makeEnglish() {
     t.pupilsTargetFormat = "To %s";
     t.rowPupilBits = "How the avatar takes pupils";
     t.pupilBitsFloat = "Float";
-    t.hintPupilBits = "If the avatar has PupilDilation1, 2, 4…, pick how many (1, 2, 4 → 3)";
+    t.hintPupilBits = "If the avatar has PupilDilation1, 2, 4…, pick how many (1, 2, 4 " ICON_ARROW_RIGHT " 3)";
     t.hintPupilBitsOff = "No effect now: the pupils don't go straight to VRChat";
     t.rowNativeEyes = "VRChat's own eyes too";
     t.hintNativeEyes = "For avatars without VRCFT parameters. Turn off if eyelids close too far";
@@ -1021,8 +1023,8 @@ UiText makeEnglish() {
     t.targetOpen = "Open them";
     t.fitReset = "Reset";
     t.fitDetails = "Fine-tune";
-    t.fitSoundsOn = "♪ Sounds: on";
-    t.fitSoundsOff = "♪ Sounds: off";
+    t.fitSoundsOn = ICON_NOTE " Sounds: on";
+    t.fitSoundsOff = ICON_NOTE " Sounds: off";
     t.rowAutoRecenter = "When put on";
     t.hintAutoRecenter = "Fits again when put back on";
     t.autoRecenterOff = "Nothing";
@@ -1115,11 +1117,11 @@ UiText makeEnglish() {
     t.recordsHint = "Kept for each calibration and eye fit";
     t.recordsNone = "None yet. Each calibration and eye fit leaves one";
     t.recordView = "View";
-    t.recordsAllFormat = "All records (%s) ›";
+    t.recordsAllFormat = "All records (%s) " ICON_CHEVRON_RIGHT;
     t.recordsAllTitleFormat = "All records (%s)";
     t.recordsKept = "The newest 10 are kept";
     t.recordsSsh = "Over SSH: frameeyeosc-panel --report latest";
-    t.recordBack = "‹ Back";
+    t.recordBack = ICON_CHEVRON_LEFT " Back";
     t.recordReason = "Why: ";
     t.recordOutcome = "Result: ";
     t.recordFlow = "What happened, in order";
@@ -1131,8 +1133,8 @@ UiText makeEnglish() {
     t.recordFileCalib = "calib_result.json (calibration numbers)";
     t.recordCode = "Diagnostic code";
     t.recordMissing = "This record isn't there any more";
-    t.recordSavedFit = "This eye fit's log was saved. Find it under Advanced → Recent records";
-    t.recordSavedCalib = "This calibration's log was saved. Find it under Advanced → Recent records";
+    t.recordSavedFit = "This eye fit's log was saved. Find it under Advanced " ICON_ARROW_RIGHT " Recent records";
+    t.recordSavedCalib = "This calibration's log was saved. Find it under Advanced " ICON_ARROW_RIGHT " Recent records";
     t.recordShow = "View record";
     t.recordStopped = "Stopped partway";
     t.recordNoStartFormat = "Couldn't start: %s";
@@ -1175,7 +1177,7 @@ UiText makeEnglish() {
     t.flowFit = "eye fit";
     t.flowRecenter = "re-center";
     t.flowTilt = "re-center and tilt";
-    t.flowTryFormat = "%s try %d: %d/%d → %s";
+    t.flowTryFormat = "%s try %d: %d/%d " ICON_ARROW_RIGHT " %s";
     t.flowAgain = "again";
     t.flowFailed = "failed";
     t.flowOk = "ok";
@@ -1359,14 +1361,14 @@ UiText makeEnglish() {
     t.setupPassPath2 = "Developer";
     t.setupPassPath3 = "Change user password";
     t.setupPassKonsole = "In Konsole";
-    t.setupPassKonsoleHow = "The button below → Enter → the same password twice";
+    t.setupPassKonsoleHow = "The button below " ICON_ARROW_RIGHT " Enter " ICON_ARROW_RIGHT " the same password twice";
     t.setupPassMemo = "Note";
-    t.setupPassMemoText = "No \"Developer\"? Turn on System → Developer mode";
+    t.setupPassMemoText = "No \"Developer\"? Turn on System " ICON_ARROW_RIGHT " Developer mode";
     t.setupPassButton = "Open passwd in Konsole";
     t.setupVideo = "Open the video";
     t.setupVideoNote = "The video opens in the Frame's Chromium. If it doesn't: ";
     t.setupCheckPill = "Waiting for it";
-    t.setupCheckFlow = "Open in Konsole → Enter → password";
+    t.setupCheckFlow = "Open in Konsole " ICON_ARROW_RIGHT " Enter " ICON_ARROW_RIGHT " password";
     t.setupCheckTyped = "(it opens typed in)";
     t.setupCheckWhat = "What";
     t.setupCheckWhatText = "Gives a small tool just the right to receive the eye cameras";

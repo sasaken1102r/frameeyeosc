@@ -4,15 +4,23 @@
 // one eye, the Advanced tab's sub-tabs (switching, remembered while other tabs show, the update notice to "Version",
 // the diagnostics from the eye cameras tab back to "Having trouble"), its pages fitting, the records (the newest three,
 // one open, all of them scrolled: kept within the list, ▲ / ▼, only what shows can be pressed) and the failure screens'
-// bar, and the Eye fit tab while a fit runs (only "Stop" and the tabs). Built with
+// bar, the Eye fit tab while a fit runs (only "Stop" and the tabs), and the icons in texts (measured and drawn in their
+// own boxes, never starting a line, cut whole). Built with
 // the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
 #include "draw.h"
+#include "i18n.h"
+#include "icons.h"
 #include "model.h"
 #include "panel.h"
+#include "text_layout.h"
 
+#include <cairo.h>
+
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -1203,6 +1211,117 @@ void testFitRunning(const FontSet& fonts) {
     CHECK(hits(panel, PanelAction::FitDetails).size() == 1);
 }
 
+/**
+ * The ink drawn in a column range of a surface.
+ * @param surface the image (ARGB32)
+ * @param x0 first column
+ * @param x1 one past the last column
+ * @param top first row with ink (written; -1 if none)
+ * @param bottom last row with ink (written)
+ * @return how many pixels have ink
+ */
+int inkIn(cairo_surface_t* surface, int x0, int x1, int& top, int& bottom) {
+    cairo_surface_flush(surface);
+    const int w = cairo_image_surface_get_width(surface);
+    const int h = cairo_image_surface_get_height(surface);
+    const int stride = cairo_image_surface_get_stride(surface);
+    const unsigned char* data = cairo_image_surface_get_data(surface);
+    int count = 0;
+    top = -1;
+    bottom = -1;
+    for (int y = 0; y < h; ++y) {
+        const auto* row = reinterpret_cast<const uint32_t*>(data + static_cast<size_t>(y) * stride);
+        for (int x = std::max(0, x0); x < std::min(w, x1); ++x) {
+            if ((row[x] >> 24) < 40) continue;
+            ++count;
+            if (top < 0) top = y;
+            bottom = y;
+        }
+    }
+    return count;
+}
+
+void testIconText(const FontSet& fonts) {
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 400, 80);
+    cairo_t* cr = cairo_create(surface);
+    const Pen pen {cr, &fonts};
+    const Color white {1, 1, 1};
+    // Measuring: an icon is its own width between the runs of text (the font isn't asked for it)
+    for (const bool bold : {false, true}) {
+        const double size = 17;
+        const double arrow = icon::advance(icon::Icon::ArrowRight, size);
+        CHECK(arrow > size * 0.8 && arrow < size * 1.1);
+        const double joined = pen.measure("Enter " ICON_ARROW_RIGHT " password", size, bold);
+        const double parts = pen.measure("Enter ", size, bold) + arrow + pen.measure(" password", size, bold);
+        CHECK(std::fabs(joined - parts) < 0.5);
+        const double back = pen.measure(ICON_CHEVRON_LEFT " 戻る", size, bold);
+        CHECK(std::fabs(back - icon::advance(icon::Icon::ChevronLeft, size) - pen.measure(" 戻る", size, bold)) < 0.5);
+        // Drawn as wide as measured, left or right aligned
+        CHECK(std::fabs(pen.text(10, 40, "Enter " ICON_ARROW_RIGHT " password", size, white, bold) - joined) < 0.5);
+        CHECK(std::fabs(pen.text(390, 40, "Enter " ICON_ARROW_RIGHT " password", size, white, bold, true) - joined) <
+              0.5);
+    }
+    // Drawing: each icon puts ink inside its own box only, around the middle of the line
+    for (int k = 1; k <= 16; ++k) {
+        cairo_save(cr);
+        cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+        cairo_paint(cr);
+        cairo_restore(cr);
+        const std::string marker = std::string("\xEE\x80") + static_cast<char>(0x80 + k - 1);
+        const icon::Icon which = icon::at(marker, 0);
+        CHECK(which != icon::Icon::None);
+        const double size = 20;
+        const double x = 100;
+        const double baseline = 50;
+        const double w = pen.text(x, baseline, "a" + marker + "a", size, white);
+        const double aW = pen.measure("a", size, false);
+        CHECK(std::fabs(w - aW * 2 - icon::advance(which, size)) < 0.5);
+        int top = 0;
+        int bottom = 0;
+        const double boxLeft = x + aW;
+        const double boxRight = boxLeft + icon::advance(which, size);
+        const int inside = inkIn(surface, static_cast<int>(boxLeft + 1), static_cast<int>(boxRight), top, bottom);
+        CHECK(inside > 10);
+        // Within the line, like a kanji: from about the capitals' top down to just under the baseline
+        CHECK(top >= baseline - size * 0.9 && bottom <= baseline + size * 0.12 + 1);
+        if (which != icon::Icon::Note) {
+            // The others are centred about a third of the size above the baseline
+            const double middle = (top + bottom) / 2.0;
+            CHECK(middle > baseline - size * 0.42 && middle < baseline - size * 0.22);
+        }
+    }
+    // Wrapping: an arrow never starts a line, and nothing is lost between the lines
+    for (const Language language : {Language::Ja, Language::En}) {
+        const UiText& t = uiText(language);
+        for (const char* text : {t.setupPassKonsoleHow, t.setupCheckFlow, t.setupPassMemoText, t.recordSavedFit,
+                                 t.recordSavedCalib}) {
+            for (double width = 60; width <= 600; width += 7) {
+                const std::vector<std::string> lines = wrapText(pen, text, 15, false, width, 20);
+                std::string joined;
+                for (const std::string& line : lines) {
+                    const size_t first = line.find_first_not_of(' ');
+                    CHECK(first == std::string::npos || icon::at(line, first) != icon::Icon::ArrowRight);
+                    joined += line;
+                }
+                // (unless a word wider than the line was cut)
+                if (joined.find("…") != std::string::npos) continue;
+                std::string wanted = text;
+                wanted.erase(std::remove(wanted.begin(), wanted.end(), ' '), wanted.end());
+                joined.erase(std::remove(joined.begin(), joined.end(), ' '), joined.end());
+                CHECK(joined == wanted);
+            }
+        }
+    }
+    // Cutting with "…": an icon goes whole or not at all
+    for (double width = 10; width <= 300; width += 3) {
+        const std::string cut = ellipsize(pen, "正面 1 回目 0/153 " ICON_ARROW_RIGHT " もう一度", 14, false, width, false);
+        CHECK(icon::plain(cut).find('\xEE') == std::string::npos);
+        CHECK(pen.measure(cut, 14, false) <= std::max(width, pen.measure("…", 14, false)) + 0.01);
+    }
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -1226,6 +1345,7 @@ int main() {
     testRecordBars(fonts);
     testPartialResult(fonts);
     testFitRunning(fonts);
+    testIconText(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

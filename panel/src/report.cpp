@@ -2,6 +2,7 @@
 #include "report.h"
 
 #include "command.h"
+#include "icons.h"
 #include "json.h"
 
 #include <dirent.h>
@@ -829,7 +830,8 @@ std::string reportText(const UiText& t, const Summary& s, const std::string& fol
     }
     out += "\n";
     row(t.reportFiles, folderShown);
-    return out;
+    // A text file: any icon marker from the panel's texts as a plain character
+    return icon::plain(out);
 }
 
 std::string compactJson(const std::string& text) {
@@ -1050,7 +1052,7 @@ std::string listText(const UiText& t, const std::vector<Summary>& records) {
         while (!line.empty() && line.back() == ' ') line.pop_back();
         out += line + "\n";
     }
-    return out;
+    return icon::plain(out);
 }
 
 int cliReport(const UiText& t, const std::string& dir, const std::string& what, std::string& out) {

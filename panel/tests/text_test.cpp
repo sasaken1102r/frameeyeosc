@@ -1,10 +1,13 @@
-// Tests for checking a typed target PC address (host_entry.cpp) and the eye fit's failure texts in both languages
-// (fit_text.cpp). Built with the panel as text-test; exits non-zero on failure.
+// Tests for checking a typed target PC address (host_entry.cpp), the eye fit's failure texts in both languages
+// (fit_text.cpp), and that no text draws an arrow or symbol as a character (they are icon markers, icons.h). Built with
+// the panel as text-test; exits non-zero on failure.
 #include "fit_text.h"
 #include "host_entry.h"
+#include "icons.h"
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -164,6 +167,35 @@ void testFailureTexts() {
     SAME(en.fitIntro, "Press \"Fit my eyes\" and a dot shows right away (the dashboard can stay open).");
 }
 
+/**
+ * No text in either table has an arrow or a symbol the panel draws with paths: they are icon markers, so the font
+ * never draws them. Kept: "×" for "times" (×0.99) and "＋" as a word ("+ is right", "camera + Valve").
+ */
+void testNoSymbolGlyphs() {
+    static_assert(sizeof(UiText) % sizeof(const char*) == 0, "UiText holds only strings");
+    const char* const glyphs[] = {"‹", "›", "▲", "▼", "△", "▽", "→", "←", "♪", "✓", "✗", "◯", "●", "▶", "▷"};
+    int markers = 0;
+    for (const Language language : {Language::Ja, Language::En}) {
+        const UiText& t = uiText(language);
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&t);
+        for (size_t at = 0; at < sizeof(UiText); at += sizeof(const char*)) {
+            const char* text = nullptr;
+            std::memcpy(&text, bytes + at, sizeof(text));
+            if (text == nullptr) continue;
+            const std::string s = text;
+            markers += icon::any(s) ? 1 : 0;
+            for (const char* glyph : glyphs) {
+                if (s.find(glyph) != std::string::npos) {
+                    ++gFailures;
+                    std::fprintf(stderr, "FAILED: \"%s\" has %s (use an icon marker)\n", text, glyph);
+                }
+            }
+        }
+    }
+    // The arrows, chevrons, the note, the marks and the like are there as markers
+    CHECK(markers >= 20);
+}
+
 }  // namespace
 
 /**
@@ -173,6 +205,7 @@ void testFailureTexts() {
 int main() {
     testHosts();
     testFailureTexts();
+    testNoSymbolGlyphs();
     if (gFailures == 0) std::printf("text-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

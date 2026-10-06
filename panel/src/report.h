@@ -239,7 +239,8 @@ std::vector<LogLine> flowLines(const std::vector<LogLine>& lines, size_t max = k
 
 /**
  * A flow line in the panel's words, where it is one the panel knows (a fit's try, the fit starting, the dot hidden,
- * the eye data back), else the line itself (Valve's without its "[Info] - ").
+ * the eye data back), else the line itself (Valve's without its "[Info] - "). For the panel: a try's arrow is an icon
+ * marker (icons.h).
  * @param t texts
  * @param line the line
  * @return the text

@@ -21,7 +21,7 @@ constexpr std::streamoff kMaxFileBytes = 4 * 1024 * 1024;
 
 /** Symbols written in the changelog and the icon markers the panel draws in their place (icons.h). */
 constexpr std::pair<const char*, const char*> kSymbols[] = {
-    {"→", ICON_ARROW_RIGHT}, {"▲", ICON_TRIANGLE_UP}, {"▼", ICON_TRIANGLE_DOWN}, {"♪", ICON_NOTE},
+    {"→", ICON_ARROW_RIGHT}, {"▲", ICON_CHEVRON_UP}, {"▼", ICON_CHEVRON_DOWN}, {"♪", ICON_NOTE},
     {"‹", ICON_CHEVRON_LEFT}, {"›", ICON_CHEVRON_RIGHT}, {"✓", ICON_CHECK},
 };
 

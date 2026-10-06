@@ -14,7 +14,7 @@ struct Spec {
 
 // In marker order (U+E000 up)
 constexpr Spec kSpecs[] = {
-    {Icon::ChevronLeft, 0.46, "‹"},     {Icon::ChevronRight, 0.46, "›"},   {Icon::ChevronUp, 0.72, "˄"},
+    {Icon::ChevronLeft, 0.78, "‹"},     {Icon::ChevronRight, 0.62, "›"},   {Icon::ChevronUp, 0.72, "˄"},
     {Icon::ChevronDown, 0.72, "˅"},     {Icon::TriangleUp, 0.86, "▲"},     {Icon::TriangleDown, 0.86, "▼"},
     {Icon::ArrowRight, 0.96, "→"},      {Icon::Play, 0.72, "▶"},           {Icon::Check, 0.82, "✓"},
     {Icon::Cross, 0.74, "×"},           {Icon::Plus, 0.74, "+"},           {Icon::Minus, 0.74, "-"},

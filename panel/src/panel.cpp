@@ -2282,7 +2282,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         const double room = kInnerRight - kInnerX - detailsW - gap - (fitDetails_ ? pagesW + gap : 0);
         const double soundsW = std::min(room, switchW({t.fitSoundsOn, t.fitSoundsOff}));
         const std::string label =
-            std::string(t.fitDetails) + (fitDetails_ ? "  " ICON_TRIANGLE_UP : "  " ICON_TRIANGLE_DOWN);
+            std::string(t.fitDetails) + (fitDetails_ ? "  " ICON_CHEVRON_UP : "  " ICON_CHEVRON_DOWN);
         drawButton(pen, kInnerX, y, detailsW, 38, label, {PanelAction::FitDetails, nullptr, 0}, true, false);
         // Sound cues on / off: one button that says the state and flips it
         const double x = kInnerX + detailsW + gap;
@@ -2617,7 +2617,7 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
     // The rest, folded: "Fine-tune"
     {
         drawRowLabel(pen, t, y, kRowH, t.rowOther, t.otherHint, false);
-        const std::string label = std::string(t.fitDetails) + "  " ICON_TRIANGLE_DOWN;
+        const std::string label = std::string(t.fitDetails) + "  " ICON_CHEVRON_DOWN;
         const double bw = std::max(156.0, pen.measure(label, 18, true) + 44);
         const double bh = 46;
         drawButton(pen, kControlX, y + (kRowH - bh) / 2, bw, bh, label, {PanelAction::LidMarks, nullptr, 0}, true, false,
@@ -2644,7 +2644,7 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     // The title, "Close" back to the rows, and a line on what decides the eyelids
     {
         pen.text(kInnerX, y + 26, t.detailsTitle, 20, kText, true);
-        const std::string label = std::string(t.detailsClose) + "  " ICON_TRIANGLE_UP;
+        const std::string label = std::string(t.detailsClose) + "  " ICON_CHEVRON_UP;
         const double bw = std::max(130.0, pen.measure(label, 17, true) + 40);
         drawButton(pen, kInnerRight - bw, y, bw, 40, label, {PanelAction::LidMarks, nullptr, 0}, true, false, 17);
         const char* note = t.marksTitle;
@@ -3951,11 +3951,16 @@ void EyePanel::drawScrollBar(const Pen& pen, PanelAction action, double x, doubl
         strokeRounded(pen, x, by, kHistoryBarW, kHistoryBarW, 14, can ? kBorder : kDivider, 2);
         pen.color(pointer == 2 ? kOnAccent : (can ? kText : kTextDisabled));
         const double cy = by + kHistoryBarW / 2;
-        cairo_move_to(cr, barCx - 9, cy - direction * 5);
-        cairo_line_to(cr, barCx + 9, cy - direction * 5);
-        cairo_line_to(cr, barCx, cy + direction * 6);
-        cairo_close_path(cr);
-        cairo_fill(cr);
+        // A chevron (lines, not a filled triangle), pointing up or down
+        cairo_save(cr);
+        cairo_set_line_width(cr, 2.5);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+        cairo_move_to(cr, barCx - 8, cy - direction * 4);
+        cairo_line_to(cr, barCx, cy + direction * 4);
+        cairo_line_to(cr, barCx + 8, cy - direction * 4);
+        cairo_stroke(cr);
+        cairo_restore(cr);
         addButton(hit, x, by, kHistoryBarW, kHistoryBarW, can);
     };
     arrow(-1, viewTop);

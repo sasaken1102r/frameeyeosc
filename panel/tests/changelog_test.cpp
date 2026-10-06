@@ -134,7 +134,7 @@ void testMarkdown() {
     SAME(changelog::stripMarkdown("__bold__ text"), "bold text");
     // Arrows and symbols become the panel's icons (not inside code)
     SAME(changelog::stripMarkdown("97.9 % → 98.0 %, ▲ / ▼, 「♪ 音」 `a → b`"),
-         "97.9 % " ICON_ARROW_RIGHT " 98.0 %, " ICON_TRIANGLE_UP " / " ICON_TRIANGLE_DOWN ", 「" ICON_NOTE " 音」 a → b");
+         "97.9 % " ICON_ARROW_RIGHT " 98.0 %, " ICON_CHEVRON_UP " / " ICON_CHEVRON_DOWN ", 「" ICON_NOTE " 音」 a → b");
 }
 
 void testFirstSentence() {

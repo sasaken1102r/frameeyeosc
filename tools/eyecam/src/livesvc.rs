@@ -194,13 +194,22 @@ pub struct CamRate {
 
 impl CamRate {
     pub fn push(&mut self, t: f64) -> f64 {
-        if self.recent.back().is_some_and(|&b| t <= b || t - b > 1.0) {
-            self.recent.clear();
+        match self.recent.back() {
+            // A frame of this eye arriving out of order: skip it rather than start over.
+            Some(&b) if t <= b => return self.rate(b),
+            // The video stopped for over a second: count from here.
+            Some(&b) if t - b > 1.0 => self.recent.clear(),
+            _ => {}
         }
         self.recent.push_back(t);
         while self.recent.front().is_some_and(|&f| t - f > PUPIL_SHARE_S) {
             self.recent.pop_front();
         }
+        self.rate(t)
+    }
+
+    /// Frames per second over the kept frames, up to `t` (NaN with fewer than 2).
+    fn rate(&self, t: f64) -> f64 {
         match (self.recent.len(), self.recent.front()) {
             (n, Some(&f)) if n >= 2 && t > f => (n - 1) as f64 / (t - f),
             _ => f64::NAN,
@@ -868,6 +877,10 @@ mod tests {
             last = r.push(110.0 + k as f64 / 15.0);
         }
         assert!((last - 15.0).abs() < 1e-6, "after a gap it starts over: {last}");
+        // A frame arriving out of order is skipped, not a reason to start over.
+        let before = last;
+        let back = r.push(110.0 + 30.0 / 15.0);
+        assert!((back - before).abs() < 1e-9 && !back.is_nan(), "{back} vs {before}");
         let shared = Shared::default();
         let mut rate = CamRate::default();
         for k in 0..30 {

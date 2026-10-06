@@ -3601,11 +3601,12 @@ void EyePanel::drawRecord(const Pen& pen, const UiText& t, const PanelModel& m) 
         const double textX = kInnerX + padX + labelW + 4;
         const std::vector<std::string> lines =
             wrapText(pen, reason.empty() ? std::string("—") : reason, 16, false, kInnerRight - padX - textX, 3);
-        const double boxH = 18 + lines.size() * 24;
+        // 24 px a line with 10 px above and below: a 16 px line's baseline 17 px into its row centres it
+        const double boxH = 20 + lines.size() * 24;
         fillRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 12, bg);
         strokeRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 12, line, 1.5);
-        pen.text(kInnerX + padX, y + 31, label, 16, fg, true);
-        double baseline = y + 7;
+        pen.text(kInnerX + padX, y + 27, label, 16, fg, true);
+        double baseline = y + 3;
         for (const std::string& line : lines) {
             baseline += 24;
             pen.text(textX, baseline, line, 16, kText);

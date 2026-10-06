@@ -289,8 +289,10 @@ void printUsage() {
         "                        the headset is off, no eye video, or only one eye's; not_worn reads 12),\n"
         "                        prox=V (the proximity reading), blocks=N (changed blocks before the last look;\n"
         "                        the look itself follows the state: the ring of 8, or where search=... stops),\n"
-        "                        lasterror (eyecam-rec's last error, 3 minutes ago). The last calibration follows\n"
-        "                        setup, failed=... and calib-error\n"
+        "                        lasterror (eyecam-rec's last error, 3 minutes ago), camfps=N (cam_fps: the eye\n"
+        "                        cameras deliver N frames a second, 1..500; without it, an eyecam-rec before\n"
+        "                        cam_fps. The calibration messages' counts follow it, with eyecam-rec's note under\n"
+        "                        60). The last calibration follows setup, failed=... and calib-error\n"
         "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
@@ -340,6 +342,7 @@ struct FakeEyecam {
     double prox = -1.0;     ///< prox=V: the proximity reading (-1 = as the search says)
     int blocks = -1;        ///< blocks=N: changed blocks before the last look (-1 = as the search says)
     bool lastError = false; ///< lasterror: eyecam-rec's last error
+    double camFps = -1.0;   ///< camfps=N: the cameras' frame rate (-1 = an eyecam-rec before cam_fps)
 };
 
 /**
@@ -441,6 +444,10 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.blocks = std::atoi(flag.c_str() + 7);
         } else if (flag == "lasterror") {
             fake.lastError = true;
+        } else if (flag.rfind("camfps=", 0) == 0 && flag.size() > 7 &&
+                   flag.find_first_not_of("0123456789.", 7) == std::string::npos) {
+            fake.camFps = std::atof(flag.c_str() + 7);
+            if (fake.camFps < 1 || fake.camFps > 500) return false;
         } else if (flag == "ready") {
             fake.baseline = "ready";
         } else if (flag == "saved") {
@@ -986,6 +993,25 @@ eyecam::View fakeEyecam(const std::string& text) {
         s.message = "校正できた（かぶり）";
         s.messageEn = fake.message == 1 ? "Calibrated (this wear)" : "";
     }
+    // The cameras' frame rate (while locked), and the calibration counts at it: eyecam-rec's 5.4 s of normal steps
+    // (486 frames at 90 fps), what it needs of them (about a second's worth: 90 at 90 fps, 15 at 15), and its note when
+    // the rate is low. At 90 the made-up messages are the ones they always were.
+    const double camFps = fake.camFps > 0 ? fake.camFps : 90.0;
+    s.hasCamFps = fake.camFps > 0;
+    s.camFps[0] = s.camFps[1] = s.hasCamFps && s.locked && s.live ? fake.camFps : nan;
+    const int normalFrames = static_cast<int>(std::lround(5.4 * camFps));
+    const auto seenOf = [&](double at90) { return std::max(1L, std::lround(at90 * camFps / 90.0)); };
+    const int needed = std::max({12, static_cast<int>(std::lround(camFps)), static_cast<int>(std::ceil(0.18 * normalFrames))});
+    const auto counts = [&](double at90) { return std::to_string(seenOf(at90)) + "/" + std::to_string(normalFrames); };
+    const std::string needJa = "、" + std::to_string(needed) + " 必要]";
+    const std::string needEn = ", " + std::to_string(needed) + " needed]";
+    const std::string slowJa = camFps < 60 ? "。カメラの映像が毎秒 " + std::to_string(std::lround(camFps)) + " 枚しか届いていない" : "";
+    const std::string slowEn =
+        camFps < 60 ? ". The eye cameras deliver only " + std::to_string(std::lround(camFps)) + " frames a second" : "";
+    const std::string bothJa = "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 " + counts(12) + "・右 " +
+                               counts(30) + needJa + slowJa;
+    const std::string bothEn = "Both eyes: couldn't see the pupil well (adjust the headset and try again) [L " + counts(12) +
+                               ", R " + counts(30) + needEn + slowEn;
     // The pupils, and an eye a "calib wear" failed on (with eyecam-rec's messages for it)
     s.hasPupil = fake.hasPupil;
     s.pupil[0] = fake.hasPupil ? fake.pupil[0] : nan;
@@ -993,9 +1019,8 @@ eyecam::View fakeEyecam(const std::string& text) {
     if (fake.failed == "LR" || fake.failed == "mixed") {
         s.calibFailedEye = "LR";
         if (fake.failed == "LR") {
-            s.message = "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]";
-            s.messageEn = "Both eyes: couldn't see the pupil well (adjust the headset and try again) "
-                          "[L 12/486, R 30/486, 90 needed]";
+            s.message = bothJa;
+            s.messageEn = bothEn;
         } else if (fake.calibUser == 1) {
             // A user calibration's: a different reason per eye, one of eyecam-rec's longest messages
             s.message = "左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）。"
@@ -1004,11 +1029,12 @@ eyecam::View fakeEyecam(const std::string& text) {
                           "Right eye: couldn't find the eyelid lines (adjust the headset and try again) "
                           "[100/600, 150 needed]";
         } else {
-            s.message = "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]。"
-                        "右目の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[40/486、90 必要]";
-            s.messageEn = "Left eye: couldn't see the pupil well (adjust the headset and try again) [12/486, 90 needed]. "
-                          "Right eye: couldn't find the upper eyelid line (adjust the headset and try again) "
-                          "[40/486, 90 needed]";
+            s.message = "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[" + counts(12) + needJa +
+                        "。右目の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[" + counts(40) + needJa +
+                        slowJa;
+            s.messageEn = "Left eye: couldn't see the pupil well (adjust the headset and try again) [" + counts(12) +
+                          needEn + ". Right eye: couldn't find the upper eyelid line (adjust the headset and try again) [" +
+                          counts(40) + needEn + slowEn;
         }
         if (state == "calib-error") {
             const bool user = fake.calibUser == 1 && fake.failed == "mixed";
@@ -1023,11 +1049,12 @@ eyecam::View fakeEyecam(const std::string& text) {
         const bool widenDefault = fake.result == "fail" || fake.page == "default" || fake.widen == "default";
         s.message = std::string("校正できた（") + (left ? "左目" : "右目") + "は瞳がうまく見えなかったので、" +
                     (fake.provisional ? "仮の値" : "前の値") + "を使うよ" +
-                    (widenDefault ? "。見開きは取れなかったので、いつもの幅を使うよ" : "") + "）[12/486、90 必要]";
+                    (widenDefault ? "。見開きは取れなかったので、いつもの幅を使うよ" : "") + "）[" + counts(12) + needJa;
         s.messageEn = std::string("Calibrated (") + (left ? "Left eye" : "Right eye") +
                       ": couldn't see the pupil well, using " +
                       (fake.provisional ? "provisional values" : "its previous values") +
-                      (widenDefault ? ". Couldn't measure widening, using the usual width" : "") + ") [12/486, 90 needed]";
+                      (widenDefault ? ". Couldn't measure widening, using the usual width" : "") + ") [" + counts(12) +
+                      needEn;
     }
     if (fake.message == 2) s.messageEn.clear();
     // The diagnostics: the proximity threshold, the last look (as eyecam-rec's own --fake makes it), the last wear
@@ -1060,14 +1087,13 @@ eyecam::View fakeEyecam(const std::string& text) {
         c.message = c.ok ? (c.failedEye.empty() ? std::string("校正できた（かぶり）") : s.message) : s.message;
         c.messageEn = c.ok ? (c.failedEye.empty() ? std::string("Calibrated") : s.messageEn) : s.messageEn;
         if (failedWear && fake.failed.empty()) {
-            c.message = "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]";
-            c.messageEn = "Both eyes: couldn't see the pupil well (adjust the headset and try again) "
-                          "[L 12/486, R 30/486, 90 needed]";
+            c.message = bothJa;
+            c.messageEn = bothEn;
         }
         for (int eye = 0; eye < 2; ++eye) {
             const bool lost = !c.ok || c.failedEye == (eye == 0 ? "L" : "R");
-            c.pupilFrames[eye] = lost ? (eye == 0 ? 12 : 30) : (eye == 0 ? 470 : 482);
-            c.normalFrames[eye] = 486;
+            c.pupilFrames[eye] = static_cast<double>(seenOf(lost ? (eye == 0 ? 12 : 30) : (eye == 0 ? 470 : 482)));
+            c.normalFrames[eye] = normalFrames;
             c.pupilX[eye] = lost ? nan : (eye == 0 ? 238 : 252);
             c.pupilY[eye] = lost ? nan : (eye == 0 ? 201 : 194);
             c.window[eye][0] = eye == 0 ? 186 : 180;

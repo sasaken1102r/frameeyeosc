@@ -4367,7 +4367,15 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                     }
                 }
                 const char* label = i == 0 ? t.setupWaitVideo : i == 1 ? t.leftEye : t.rightEye;
-                const char* value = i == 0 ? (ok ? t.setupWaitVideoOk : t.setupWaitVideoNo)
+                // The video coming in slowly (eyecam-rec copes, but it is worth knowing): how fast, in the accent
+                const double fps = eyecam::cameraFps(s);
+                const bool slow = i == 0 && ok && fps < eyecam::kLowCameraFps;
+                char slowText[96] = "";
+                if (slow) {
+                    std::snprintf(slowText, sizeof(slowText), t.setupWaitVideoSlowFormat, static_cast<int>(std::lround(fps)));
+                }
+                const char* value = slow    ? slowText
+                                    : i == 0 ? (ok ? t.setupWaitVideoOk : t.setupWaitVideoNo)
                                     : sight == eyecam::EyeSight::Seen    ? t.setupWaitEyeOk
                                     : sight == eyecam::EyeSight::NoPupil ? t.setupWaitEyeNoPupil
                                     : sight == eyecam::EyeSight::Weak    ? t.setupWaitEyeWeak
@@ -4377,7 +4385,7 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
                 const bool noPupil = i > 0 && sight == eyecam::EyeSight::NoPupil;
                 const bool weak = i > 0 && (sight == eyecam::EyeSight::Weak ||
                                             (s.locked && sight == eyecam::EyeSight::NotSeen));
-                const Color color = ok ? kSuccess : noPupil ? kDanger : weak ? kAccent : kTextMuted;
+                const Color color = slow ? kAccent : ok ? kSuccess : noPupil ? kDanger : weak ? kAccent : kTextMuted;
                 const bool bold = ok || noPupil || weak;
                 text(x0 + 50, baseline, label, 17, kTextMuted, false);
                 text(valueX, baseline, value, fitSize(pen, value, 17, 12, x1 - 18 - valueX, bold), color, bold);

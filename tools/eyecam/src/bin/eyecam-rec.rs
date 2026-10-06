@@ -67,6 +67,8 @@ struct Args {
     fake_search: Option<&'static str>,
     /// --fake-calib: the fake `calib wear` goes through without this eye ("L" / "R"), or fails ("LR").
     fake_calib: Option<&'static str>,
+    /// --fake-camfps: the fake cameras' frame rate (status.json cam_fps, and the fake calibration's counts).
+    fake_camfps: f64,
     run_dir: PathBuf,
     replay: Option<PathBuf>,
     compat: bool,
@@ -77,6 +79,10 @@ struct Args {
     fit_user: Option<PathBuf>,
     use_wear: bool,
     prewarm: bool,
+    /// --resample: replay as if the cameras had run at this frame rate.
+    resample: Option<f64>,
+    /// --calib: replay the session as this calibration and write its calib_result.json to --out.
+    calib_replay: Option<eyecam::replay::CalibRun>,
     tune: eyecam::live::Tune,
     wait_grab: f64,
     wait_lock: f64,
@@ -95,6 +101,8 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --fake-search R    like --fake, but the eye video is never found while searching (idle with live on, start,
                      calib), for status.json search reason R: not_worn, no_video or one_eye
   --fake-calib E     like --fake, but `calib wear` goes through without eye E (L or R), or fails (LR)
+  --fake-camfps N    like --fake, but the cameras deliver N frames a second (default 90): status.json cam_fps, and
+                     the fake calibration's frame counts and message
   --run-dir DIR      where status.json and ctl.sock go (default /run/user/1000/eyecam)
   --replay DIR       run the eye-feature pipeline over a recorded session, writing a CSV to --out
   --compat           with --replay: reproduce the Python prototype's run2.py features (for agreement checks)
@@ -104,6 +112,10 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --fit-user FILE    with --replay: fit a user calibration from the whole session and write it to FILE
   --use-wear         with --replay --user-calib: start from that file's wear levels (as right after calib wear)
   --prewarm          with --replay: learn the auto baselines in a first pass, then replay from the start with them
+  --resample FPS     with --replay: as if the cameras had run at FPS (the frames nearest to an FPS grid), e.g. 15
+  --calib KIND       with --replay: replay the session as a calibration (wear or user, its steps from cues.csv) and
+                     write what calib_result.json would hold to --out; --user-calib gives the history, the user
+                     calibration and (for user) the wear levels
   --no-track         with --replay: do not follow the baselines after warm-up (evaluation)
   --no-gaze-drop     with --replay: no EyeWide hold after a downward glance (evaluation)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
@@ -131,6 +143,7 @@ fn parse_args() -> Result<Args> {
         fake: false,
         fake_search: None,
         fake_calib: None,
+        fake_camfps: 90.0,
         run_dir: PathBuf::from(status::DEFAULT_DIR),
         replay: None,
         compat: false,
@@ -141,6 +154,8 @@ fn parse_args() -> Result<Args> {
         fit_user: None,
         use_wear: false,
         prewarm: false,
+        resample: None,
+        calib_replay: None,
         tune: eyecam::live::Tune::default(),
         wait_grab: 600.0,
         wait_lock: 300.0,
@@ -169,6 +184,20 @@ fn parse_args() -> Result<Args> {
             "--fit-user" => args.fit_user = Some(PathBuf::from(value("--fit-user")?)),
             "--use-wear" => args.use_wear = true,
             "--prewarm" => args.prewarm = true,
+            "--resample" => {
+                let v = number(value("--resample")?, "--resample")?;
+                if v < 1.0 {
+                    return Err("--resample needs a frame rate of at least 1".into());
+                }
+                args.resample = Some(v);
+            }
+            "--calib" => {
+                args.calib_replay = Some(match value("--calib")?.as_str() {
+                    "wear" => eyecam::replay::CalibRun::Wear,
+                    "user" => eyecam::replay::CalibRun::User,
+                    _ => return Err("--calib must be wear or user".into()),
+                })
+            }
             "--no-track" => args.tune.track = false,
             "--no-gaze-drop" => args.tune.gaze_drop = false,
             "--widen-sensitivity" => {
@@ -201,6 +230,15 @@ fn parse_args() -> Result<Args> {
             "--fake-calib" => {
                 let v = value("--fake-calib")?;
                 args.fake_calib = Some(["L", "R", "LR"].into_iter().find(|e| *e == v).ok_or("--fake-calib must be L, R or LR")?);
+                args.serve = true;
+                args.fake = true;
+            }
+            "--fake-camfps" => {
+                let v = number(value("--fake-camfps")?, "--fake-camfps")?;
+                if !(1.0..=500.0).contains(&v) {
+                    return Err("--fake-camfps needs 1 to 500 frames a second".into());
+                }
+                args.fake_camfps = v;
                 args.serve = true;
                 args.fake = true;
             }
@@ -246,8 +284,12 @@ fn run() -> Result<()> {
         if !args.out_given {
             return Err("--replay needs --out FILE.csv".into());
         }
-        let session = eyecam::replay::Session::open(dir, args.swap)?;
+        let mut session = eyecam::replay::Session::open(dir, args.swap)?;
         eprintln!("replay {}{}", dir.display(), if session.swapped { " (eye files swapped)" } else { "" });
+        if let Some(fps) = args.resample {
+            session.resample(fps);
+            eprintln!("resampled to {fps} fps: {} L + {} R frames", session.frames(0), session.frames(1));
+        }
         if args.compat {
             return Ok(eyecam::replay::write_compat(&session, &args.out, args.limit)?);
         }
@@ -255,6 +297,11 @@ fn run() -> Result<()> {
             Some(p) => Some(eyecam::live::CalibFile::parse(&fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()))?)?),
             None => None,
         };
+        if let Some(kind) = args.calib_replay {
+            let json = eyecam::replay::replay_calib(&session, kind, &calib.unwrap_or_default(), args.tune)?;
+            fs::write(&args.out, json).map_err(|e| format!("{}: {e}", args.out.display()))?;
+            return Ok(());
+        }
         let opts = eyecam::replay::LiveOpts {
             calib,
             block_steps: args.calib_block,
@@ -427,6 +474,8 @@ impl StatusFile {
                     _ => "",
                 };
                 s.pupil = [0, 1].map(|e| if s.live { l.pupil_share(e) } else { f64::NAN });
+                let now = now_raw();
+                s.cam_fps = [0, 1].map(|e| if s.locked { l.cam_fps(e, now) } else { f64::NAN });
                 s.last_calib = l.last_calib.lock().unwrap().clone();
                 // While idle with the eyes in view, say what the live values are waiting for.
                 if s.state == "idle" && s.live && s.locked && LIVE_IDLE_MESSAGES.contains(&s.message.as_str()) {
@@ -686,6 +735,8 @@ struct Live {
     pitch: [f32; 2],
     pitch_at: f64,
     dropped: u64,
+    /// Each camera's frame rate (status.json cam_fps).
+    rate: [livesvc::CamRate; 2],
 }
 
 impl Live {
@@ -701,6 +752,7 @@ impl Live {
             pitch: [f32::NAN; 2],
             pitch_at: f64::NEG_INFINITY,
             dropped: 0,
+            rate: Default::default(),
         })
     }
 
@@ -726,6 +778,7 @@ impl Live {
         }
         let (header, frame) = buf.split_at(HEADER_BYTES);
         let t_cam_ns = u64::from_le_bytes(header[..8].try_into().unwrap());
+        self.shared.note_camera_frame(eye, &mut self.rate[eye], t_cam_ns as f64 * 1e-9, now);
         let mut data = Vec::with_capacity(WIDTH * HEIGHT);
         for r in 0..HEIGHT {
             data.extend_from_slice(&frame[r * STRIDE..r * STRIDE + WIDTH]);
@@ -1006,6 +1059,7 @@ fn fake(args: &Args, d: &Daemon) {
             let unlocked = args.fake_search.filter(|_| searching);
             let seen = s.live && unlocked.is_none() && !matches!(phase, Phase::Waiting | Phase::Searching(..));
             s.pupil = if seen { [0.97, 0.95] } else { [f64::NAN; 2] };
+            s.cam_fps = if seen { [args.fake_camfps; 2] } else { [f64::NAN; 2] };
             s.search = "";
             // What the last look saw: the ring (8 slots), or where it stopped for --fake-search
             if !matches!(phase, Phase::Waiting) && (seen || unlocked.is_some()) {
@@ -1120,7 +1174,7 @@ fn fake(args: &Args, d: &Daemon) {
             }
             Phase::Running(t, steps, _, calib) if now - t >= total(&steps, calib) => match calib {
                 Some(CalibKind::Wear) => {
-                    let result = fake_last_calib(args.fake_calib);
+                    let result = fake_last_calib(args.fake_calib, args.fake_camfps);
                     let message = format!("（fake）{}", result.message);
                     let failed = result.failed_eye.clone();
                     d.set(|s| {
@@ -1164,26 +1218,38 @@ fn fake_search_detail(reason: Option<&str>) -> status::SearchDetail {
 }
 
 /// The fake `calib wear`'s result: both eyes, without one (--fake-calib L / R), or failed (LR), with made-up numbers.
-fn fake_last_calib(failed: Option<&str>) -> status::LastCalib {
+fn fake_last_calib(failed: Option<&str>, fps: f64) -> status::LastCalib {
+    use eyecam::live::{MSG_PUPIL, NEED_NORMAL, rate_note};
     let failed = failed.unwrap_or("");
     let lost = |e: usize| failed.contains(["L", "R"][e]);
+    // The 5.4 s of normal steps at this rate (486 frames at 90 fps), and the counts scaled from those at 90.
+    let normal = (5.4 * fps).round();
+    let need = NEED_NORMAL.frames(normal as usize, fps);
+    let scaled = |n: f64| (n * fps / 90.0).round().max(1.0);
+    let lost_r = if failed == "LR" { 30.0 } else { 12.0 };
+    let frames = [if lost(0) { scaled(12.0) } else { scaled(470.0) }, if lost(1) { scaled(lost_r) } else { scaled(482.0) }];
     let message = match failed {
-        "L" => "校正できた（左目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]",
-        "R" => "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]",
-        "LR" => "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]",
-        _ => "校正できた（かぶり）",
+        "L" | "R" => {
+            let eye = if failed == "L" { "左" } else { "右" };
+            format!("校正できた（{eye}目は瞳がうまく見えなかったので、前の値を使うよ）[{}/{normal}、{need} 必要]", scaled(12.0))
+        }
+        "LR" => {
+            let both = format!("両目{MSG_PUPIL}[左 {}/{normal}・右 {}/{normal}、{need} 必要]", frames[0], frames[1]);
+            rate_note(fps).map_or(both.clone(), |note| format!("{both}。{note}"))
+        }
+        _ => "校正できた（かぶり）".to_string(),
     };
-    let frames = [if lost(0) { 12.0 } else { 470.0 }, if lost(1) { if failed == "LR" { 30.0 } else { 12.0 } } else { 482.0 }];
     status::LastCalib {
         time: local_stamp().split_once('_').map(|(day, time)| format!("{day} {}", time.replace('-', ":"))).unwrap_or_default(),
         ok: failed != "LR",
         failed_eye: failed.into(),
-        message: message.into(),
+        message,
         pupil_frames: frames,
-        normal_frames: [486.0; 2],
+        normal_frames: [normal; 2],
         pupil_x: [if lost(0) { f64::NAN } else { 238.0 }, if lost(1) { f64::NAN } else { 252.0 }],
         pupil_y: [if lost(0) { f64::NAN } else { 201.0 }, if lost(1) { f64::NAN } else { 194.0 }],
         window: [[186.0, 346.0], [180.0, 340.0]],
+        fps: [fps; 2],
     }
 }
 
@@ -2607,6 +2673,7 @@ mod tests {
             fake: false,
             fake_search: None,
             fake_calib: None,
+            fake_camfps: 90.0,
             run_dir: dir.to_path_buf(),
             replay: None,
             compat: false,
@@ -2617,6 +2684,8 @@ mod tests {
             fit_user: None,
             use_wear: false,
             prewarm: false,
+            resample: None,
+            calib_replay: None,
             tune: eyecam::live::Tune::default(),
             wait_grab: 0.0,
             wait_lock: 300.0,

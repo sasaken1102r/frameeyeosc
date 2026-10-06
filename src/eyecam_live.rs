@@ -38,7 +38,9 @@ const EYES: [usize; 2] = [56, 128];
 // The calibration bits that give this wear a baseline: calibrated (`calib wear`), or learned by itself.
 const CALIB_BASELINE: u32 = 1 | 4;
 // An eye's values are used while captured at most this long before they are read (9 frames at 90 Hz), and not more
-// than CLOCK_AHEAD_NS after (the two clocks are the same; this allows for rounding).
+// than CLOCK_AHEAD_NS after (the two clocks are the same; this allows for rounding). When the eye cameras run slower
+// (Valve's eye tracker sets their rate, as low as 15 frames a second on some headsets, 67 ms apart), the limit is
+// two of their frame intervals instead (FrameGaps).
 const FRESH_NS: u64 = 100_000_000;
 const CLOCK_AHEAD_NS: u64 = 5_000_000;
 // A copy is tried this many times while eyecam-rec writes; then that sample goes without the camera.
@@ -165,12 +167,14 @@ pub struct Live {
 }
 
 impl Live {
-    fn new(record: &Record, now_ns: u64) -> Self {
-        let fresh = record.eyes.map(|eye| {
+    /// The values of `record` at `now_ns`, each eye fresh for `fresh_ns` after it was captured.
+    fn new(record: &Record, now_ns: u64, fresh_ns: [u64; 2]) -> Self {
+        let fresh = [0, 1].map(|e| {
+            let eye = &record.eyes[e];
             record.live
                 && eye.valid
                 && eye.time_ns <= now_ns + CLOCK_AHEAD_NS
-                && now_ns.saturating_sub(eye.time_ns) <= FRESH_NS
+                && now_ns.saturating_sub(eye.time_ns) <= fresh_ns[e]
         });
         Self {
             calib_state: record.calib_state,
@@ -207,6 +211,39 @@ impl Live {
             let Eye { pupil_mm, pupil_dilation, .. } = self.eyes[eye];
             self.fresh[eye] && pupil_mm.is_finite() && pupil_dilation.is_finite()
         })
+    }
+}
+
+/// One eye's frame interval, from the capture times of the values read: the median of the last few gaps (under a
+/// second) between new values. Values read less often than the camera delivers make the gaps longer, which only
+/// makes the limit more lenient.
+#[derive(Default)]
+struct FrameGaps {
+    last_ns: u64,
+    gaps: std::collections::VecDeque<u64>,
+}
+
+impl FrameGaps {
+    const KEEP: usize = 9;
+
+    fn note(&mut self, time_ns: u64) {
+        if time_ns == self.last_ns {
+            return;
+        }
+        if self.last_ns != 0 && time_ns > self.last_ns && time_ns - self.last_ns < 1_000_000_000 {
+            if self.gaps.len() == Self::KEEP {
+                self.gaps.pop_front();
+            }
+            self.gaps.push_back(time_ns - self.last_ns);
+        }
+        self.last_ns = time_ns;
+    }
+
+    /// How long a value stays fresh: FRESH_NS, or two frame intervals when that is longer.
+    fn fresh_ns(&self) -> u64 {
+        let mut gaps: Vec<u64> = self.gaps.iter().copied().collect();
+        gaps.sort_unstable();
+        gaps.get(gaps.len() / 2).map_or(FRESH_NS, |gap| FRESH_NS.max(2 * gap))
     }
 }
 
@@ -275,6 +312,8 @@ pub struct LiveReader {
     next_check: Instant,
     // Another writer was seen: open it again at the next check.
     reopen: bool,
+    // Each eye's frame interval, for how long its values stay fresh.
+    gaps: [FrameGaps; 2],
 }
 
 impl LiveReader {
@@ -286,6 +325,7 @@ impl LiveReader {
             error: None,
             next_check: now,
             reopen: false,
+            gaps: Default::default(),
         }
     }
 
@@ -356,7 +396,10 @@ impl LiveReader {
                     // The same file, so the values still hold
                     self.reopen = true;
                 }
-                Some(Live::new(&record, now_ns))
+                for (gaps, eye) in self.gaps.iter_mut().zip(&record.eyes) {
+                    gaps.note(eye.time_ns);
+                }
+                Some(Live::new(&record, now_ns, self.gaps.each_ref().map(FrameGaps::fresh_ns)))
             }
             Err(_) => {
                 // Rewritten as something else: let go, and say why at the next check
@@ -543,7 +586,9 @@ pub mod tests {
 
     #[test]
     fn only_fresh_values_of_a_running_eyecam_rec_count() {
-        let live = |live: bool, eyes: [TestEye; 2], now: u64| Live::new(&parse(&live_bytes(1, 1, live, eyes)).unwrap(), now);
+        let live = |live: bool, eyes: [TestEye; 2], now: u64| {
+            Live::new(&parse(&live_bytes(1, 1, live, eyes)).unwrap(), now, [FRESH_NS; 2])
+        };
         // The right eye 20 ms old
         let values = live(true, eyes(0.9), NOW);
         assert_eq!(values.fresh, [true, true]);
@@ -567,8 +612,48 @@ pub mod tests {
     }
 
     #[test]
+    fn slow_eye_cameras_keep_their_values_fresh_for_two_frames() {
+        let mut gaps = FrameGaps::default();
+        assert_eq!(gaps.fresh_ns(), FRESH_NS);
+        // 90 frames a second (11.1 ms apart), read several times per frame: 100 ms as before
+        for k in 0..20u64 {
+            for _ in 0..3 {
+                gaps.note(NOW + k * 11_111_111);
+            }
+        }
+        assert_eq!(gaps.fresh_ns(), FRESH_NS);
+        // 15 frames a second (66.7 ms apart): two frames, 133 ms
+        let mut slow = FrameGaps::default();
+        for k in 0..20u64 {
+            slow.note(NOW + k * 66_666_667);
+        }
+        assert_eq!(slow.fresh_ns(), 133_333_334);
+        // A pause of a second or more is not a frame interval
+        slow.note(NOW + 60_000_000_000);
+        assert_eq!(slow.fresh_ns(), 133_333_334);
+        // Through the reader: a value 120 ms old is still used at 15 frames a second
+        let dir = TempDir::new("slow");
+        let path = dir.0.join("live");
+        let start = Instant::now();
+        let mut reader = LiveReader::new(path.clone(), start);
+        let mut values = None;
+        for k in 0..10u64 {
+            let at = NOW + k * 66_666_667;
+            write_live(&path, &live_bytes(1, 1, true, [TestEye::at(at, 0.9, 0.0); 2]));
+            if k == 0 {
+                reader.check(start);
+            }
+            values = reader.read(at + 120_000_000);
+        }
+        assert_eq!(values.unwrap().fresh, [true; 2]);
+        assert_eq!(reader.read(NOW + 9 * 66_666_667 + 140_000_000).unwrap().fresh, [false; 2]);
+    }
+
+    #[test]
     fn eyelids_need_a_wear_calibration_and_pupils_only_fresh_values() {
-        let live = |calib_state: u32, eyes: [TestEye; 2]| Live::new(&parse(&live_bytes(1, calib_state, true, eyes)).unwrap(), NOW);
+        let live = |calib_state: u32, eyes: [TestEye; 2]| {
+            Live::new(&parse(&live_bytes(1, calib_state, true, eyes)).unwrap(), NOW, [FRESH_NS; 2])
+        };
         for (calib_state, lids) in [(0, false), (1, true), (2, false), (3, true), (4, true), (6, true)] {
             let values = live(calib_state, eyes(0.9));
             assert_eq!(values.lids_usable(), [lids; 2], "{calib_state}");
@@ -581,7 +666,7 @@ pub mod tests {
         assert_eq!(values.lids_usable(), [false, false]);
         assert_eq!(values.pupil_usable(), [true, false]);
         // Neither from a stale eye
-        let values = Live::new(&parse(&live_bytes(1, 1, true, eyes(0.9))).unwrap(), NOW + 95_000_000);
+        let values = Live::new(&parse(&live_bytes(1, 1, true, eyes(0.9))).unwrap(), NOW + 95_000_000, [FRESH_NS; 2]);
         assert_eq!((values.lids_usable(), values.pupil_usable()), ([true, false], [true, false]));
     }
 

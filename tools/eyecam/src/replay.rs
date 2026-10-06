@@ -26,6 +26,8 @@ pub struct Session {
     pub valve: Valve,
     /// (label, start t_raw, seconds) per cue, in order ("end" last).
     pub cues: Vec<(String, f64, f64)>,
+    /// After `resample`: per eye, which stored frame each frame is (None: all of them, in order).
+    map: [Option<Vec<usize>>; 2],
 }
 
 /// Valve samples: time, per-eye gaze pitch (degrees) and openness.
@@ -119,16 +121,54 @@ impl Session {
             }
             Err(_) => Vec::new(),
         };
-        Ok(Self { dir: dir.to_path_buf(), swapped, files, t_cam, valve, cues })
+        Ok(Self { dir: dir.to_path_buf(), swapped, files, t_cam, valve, cues, map: [None, None] })
     }
 
     /// Number of frames of an anatomical eye (0 = L, 1 = R).
     pub fn frames(&self, eye: usize) -> usize {
-        self.files[eye].metadata().map_or(0, |m| m.len() as usize / FRAME)
+        match &self.map[eye] {
+            Some(m) => m.len(),
+            None => self.files[eye].metadata().map_or(0, |m| m.len() as usize / FRAME),
+        }
+    }
+
+    /// As if the cameras had run at `fps`: per eye, the stored frame nearest to each tick of an `fps` grid (from the
+    /// session's first frame), stamped with the tick's time. Every 6th frame of a 90 fps session at 15, every 5th at
+    /// 18; at 72 the frames' own spacing would alternate 11 and 22 ms, the ticks' does not. A tick with no frame
+    /// within half a tick (frames lost) is left out. Nothing is copied: frames are read where they are stored.
+    pub fn resample(&mut self, fps: f64) {
+        let t0 = self.t_cam.iter().filter_map(|t| t.iter().copied().find(|v| v.is_finite())).fold(f64::INFINITY, f64::min);
+        for e in 0..2 {
+            // The stored frames by time (two frames can be stored in the other order).
+            let stored = self.frames(e).min(self.t_cam[e].len());
+            let mut order: Vec<(f64, usize)> =
+                (0..stored).filter(|&k| self.t_cam[e][k].is_finite()).map(|k| (self.t_cam[e][k], k)).collect();
+            order.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let t: Vec<f64> = order.iter().map(|o| o.0).collect();
+            let (mut map, mut times) = (Vec::new(), Vec::new());
+            let (mut j, mut last) = (0, None);
+            for tick in 0.. {
+                let g = t0 + tick as f64 / fps;
+                if t.last().is_none_or(|&end| g > end + 0.5 / fps) {
+                    break;
+                }
+                while j + 1 < t.len() && (t[j + 1] - g).abs() <= (t[j] - g).abs() {
+                    j += 1;
+                }
+                if (t[j] - g).abs() <= 0.5 / fps && last.is_none_or(|m| j > m) {
+                    last = Some(j);
+                    map.push(order[j].1);
+                    times.push(g);
+                }
+            }
+            self.map[e] = Some(map);
+            self.t_cam[e] = times;
+        }
     }
 
     /// Frame `k` of an anatomical eye, upright (right eye flipped vertically).
     pub fn read(&self, eye: usize, k: usize, out: &mut [u8]) -> std::io::Result<()> {
+        let k = self.map[eye].as_ref().map_or(k, |m| m[k]);
         self.files[eye].read_exact_at(out, (k * FRAME) as u64)?;
         if eye == 1 {
             for y in 0..H / 2 {
@@ -433,4 +473,153 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
         eprintln!("user calibration written to {}", path.display());
     }
     Ok(busy.as_secs_f64() * 1e3 / processed.max(1) as f64)
+}
+
+/// Which calibration `replay_calib` runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CalibRun {
+    Wear,
+    User,
+}
+
+/// A calibration session (a `calib_*` kept with `dev`, or any session whose cues.csv has the steps) replayed the
+/// way live collects and fits it: the frames labelled by step (the first STEP_DELAY s of each left out), the same
+/// fit and report. `calib` gives what live would have: the history and the user calibration, and for `User` this
+/// wear's levels (`wear`). Returns what calib_result.json would hold (kind, ok, failed_eye, message, values, params).
+pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile, tune: crate::live::Tune) -> Result<String, String> {
+    use crate::live::{self, EyeEngine, Label, Params, Sample};
+    let hist = calib.history_params();
+    let mut engines = [EyeEngine::default(), EyeEngine::default()];
+    let mut params = [Params { tune, ..Params::default() }; 2];
+    for (e, p) in params.iter_mut().enumerate() {
+        p.user = calib.user.map(|u| u[e]);
+        p.hist = hist.map(|h| h[e]);
+        p.pupil_measured = calib.pupil_measured;
+    }
+    let end = s.cues.iter().filter(|c| c.0 != "end").map(|c| c.1 + c.2).fold(f64::NEG_INFINITY, f64::max);
+    let mut samples: [Vec<Sample>; 2] = [Vec::new(), Vec::new()];
+    let mut img = vec![0u8; FRAME];
+    let n = (0..2).map(|e| s.frames(e)).max().unwrap_or(0);
+    for k in 0..n {
+        for e in 0..2 {
+            let Some(&t) = s.t_cam[e].get(k).filter(|_| k < s.frames(e)) else { continue };
+            if t > end {
+                continue;
+            }
+            s.read(e, k, &mut img).map_err(|err| err.to_string())?;
+            let pitch = s.valve.nearest(t).map_or(f64::NAN, |j| s.valve.pitch[e][j]);
+            let o = engines[e].process(&img, pitch, t, &params[e]);
+            if let (Some(l), _) = s.label_at(t, live::STEP_DELAY) {
+                samples[e].push(Sample::from_out(Label::parse(l), &o, t));
+            }
+        }
+    }
+    let (kind_name, result, values, lines, params_json, failed_eye) = match kind {
+        CalibRun::Wear => {
+            let fallback = [0, 1].map(|e| hist.map_or(live::DEFAULT_WIDEN_STEP, |h| h[e].step));
+            let out = live::fit_wear_settled(&samples, fallback, calib.measured_wear(), hist);
+            let (values, lines) = live::wear_report(&samples);
+            let failed = match &out {
+                Ok(o) => o.failed_eye().to_string(),
+                Err(_) => "LR".to_string(),
+            };
+            let params = out.as_ref().ok().map(|o| live::wear_params_json(&o.wear));
+            ("wear", out.map(|o| o.message), values, lines, params, failed)
+        }
+        CalibRun::User => {
+            let wear = calib.wear.ok_or("the calibration file has no wear levels (needed for a user calibration)")?;
+            let out = live::fit_user(&samples, &wear, calib.user, true);
+            let (values, lines) = live::user_report(&samples, &wear);
+            let params = out.as_ref().ok().map(|(u, _)| live::user_params_json(u));
+            let result = out.map(|(_, w)| {
+                if w.is_empty() { "校正できた（ユーザー）".to_string() } else { format!("校正できた（ユーザー）。注意: {}", w.join("、")) }
+            });
+            ("user", result, values, lines, params, String::new())
+        }
+    };
+    for l in &lines {
+        eprintln!("{l}");
+    }
+    let (ok, message) = match &result {
+        Ok(m) => (true, m.as_str()),
+        Err(m) => (false, m.as_str()),
+    };
+    eprintln!("calibration ({kind_name}): {}", if ok { format!("ok: {message}") } else { format!("failed: {message}") });
+    Ok(format!(
+        "{{\n  \"kind\": \"{kind_name}\",\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+        crate::json::string(&failed_eye),
+        crate::json::string(message),
+        params_json.unwrap_or_else(|| "null".into())
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A session folder with `n` frames per eye at `fps`, less the `lost` ones (only frames.csv and the eye files
+    /// matter here). Each frame holds its own number in its first pixel (upright).
+    fn fake_session(name: &str, n: usize, fps: f64, lost: &[usize]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("eyecam-replay-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut csv = String::from("index,eye,eye_index,slot,t_cam,t_raw,t_copy,valve_seq\n");
+        let mut files = [Vec::new(), Vec::new()];
+        let mut stored = [0usize; 2];
+        for k in 0..n {
+            if lost.contains(&k) {
+                continue;
+            }
+            for (e, name) in ["L", "R"].iter().enumerate() {
+                csv += &format!("0,{name},{},0,{:.9},0,0,0\n", stored[e], 100.0 + k as f64 / fps + e as f64 * 1e-4);
+                let mut f = vec![0u8; FRAME];
+                // The right eye is stored upside down.
+                f[if e == 1 { (H - 1) * W } else { 0 }] = (k % 251) as u8;
+                files[e].extend_from_slice(&f);
+                stored[e] += 1;
+            }
+        }
+        fs::write(dir.join("frames.csv"), csv).unwrap();
+        fs::write(dir.join("eye_L.raw"), &files[0]).unwrap();
+        fs::write(dir.join("eye_R.raw"), &files[1]).unwrap();
+        dir
+    }
+
+    fn first_pixels(s: &Session, eye: usize, n: usize) -> Vec<u8> {
+        let mut img = vec![0u8; FRAME];
+        (0..n)
+            .map(|k| {
+                s.read(eye, k, &mut img).unwrap();
+                img[0]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resample_keeps_the_frames_nearest_to_a_slower_grid() {
+        let dir = fake_session("resample", 180, 90.0, &[61]);
+        let mut s = Session::open(&dir, false).unwrap();
+        assert_eq!(s.frames(0), 179);
+        s.resample(15.0);
+        // Every 6th frame (the lost 61 was not needed), both eyes, stamped on the 15 fps grid; the last tick (2 s)
+        // takes the last frame, 11 ms before it.
+        assert_eq!(s.frames(0), 31);
+        assert_eq!(first_pixels(&s, 0, 31)[30], 179);
+        assert_eq!(first_pixels(&s, 0, 30), (0..30).map(|k| (k * 6) as u8).collect::<Vec<_>>());
+        assert_eq!(first_pixels(&s, 1, 3), [0, 6, 12]);
+        assert!(s.t_cam[0].windows(2).all(|w| (w[1] - w[0] - 1.0 / 15.0).abs() < 1e-9));
+        // Two frames stored in the other order (it happens): taken by their times.
+        let mut s = Session::open(&dir, false).unwrap();
+        s.t_cam[0].swap(30, 31);
+        s.resample(15.0);
+        assert_eq!(first_pixels(&s, 0, 7), [0, 6, 12, 18, 24, 31, 36]);
+        // At 72 the ticks are 1.25 frames apart: the frame nearest to each (one in five left out).
+        let mut s = Session::open(&dir, false).unwrap();
+        s.resample(72.0);
+        let picked = first_pixels(&s, 0, 40);
+        assert!(picked.windows(2).all(|w| (1..=2).contains(&(w[1] - w[0]))), "{picked:?}");
+        assert!(picked.iter().enumerate().all(|(i, &k)| (k as f64 - i as f64 * 1.25).abs() <= 0.5 + 1e-9), "{picked:?}");
+        assert!((s.frames(0) as f64 - 180.0 * 72.0 / 90.0).abs() <= 2.0, "{}", s.frames(0));
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

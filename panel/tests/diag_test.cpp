@@ -91,6 +91,9 @@ PanelModel healthy() {
     e.hasPupil = true;
     e.pupil[0] = 0.87;
     e.pupil[1] = 0.84;
+    e.hasCamFps = true;
+    e.camFps[0] = 90.1;
+    e.camFps[1] = 89.8;
     e.searchDetail = {true, true, 8, 90.0, 8, true, "", 128};
     eyecam::LastCalib& c = e.lastCalib;
     c.known = c.present = true;
@@ -122,6 +125,7 @@ PanelModel stuck() {
     e.search = "not_worn";
     e.prox = 2.9;
     e.pupil[0] = e.pupil[1] = NAN;
+    e.camFps[0] = e.camFps[1] = NAN;
     e.searchDetail = {true, true, 0, 0.0, 0, false, "no_candidates", 0};
     e.lastCalib.failedEye = "R";
     e.lastCalib.pupilFrames[1] = 0;
@@ -281,6 +285,7 @@ void testCards() {
         SAME(rowOf(cards, ja.diagRowBlocks).value, "128");
         SAME(rowOf(cards, ja.diagRowProx).value, "31.2 / 20");
         SAME(rowOf(cards, ja.diagRowPupil).value, "左 87% · 右 84%");
+        SAME(rowOf(cards, ja.diagRowCamera).value, "90 枚/秒");
         SAME(rowOf(cards, ja.diagRowLoad).value, "1.6 ms/枚");
         SAME(rowOf(cards, ja.diagRowWhen).value, "10/05 19:51");
         SAME(rowOf(cards, ja.diagRowResult).value, "OK");
@@ -424,6 +429,48 @@ void testCards() {
     }
 }
 
+void testCameraRate() {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    PanelModel m = healthy();
+    eyecam::Status& e = m.eyecam.status;
+    // Slow cameras (issue #23: 15 frames a second): in red, and said to be low
+    e.camFps[0] = 15.02;
+    e.camFps[1] = 14.97;
+    diag::Row row = rowOf(diag::cards(ja, m), ja.diagRowCamera);
+    SAME(row.value, "15 枚/秒（少なめ）");
+    CHECK(row.bad);
+    row = rowOf(diag::cards(en, m), en.diagRowCamera);
+    SAME(row.value, "15 fps (low)");
+    CHECK(row.bad);
+    // 72 is not low; eyes that differ are shown each
+    e.camFps[0] = 72.0;
+    e.camFps[1] = 71.9;
+    row = rowOf(diag::cards(ja, m), ja.diagRowCamera);
+    SAME(row.value, "72 枚/秒");
+    CHECK(!row.bad);
+    e.camFps[1] = 45.0;
+    row = rowOf(diag::cards(ja, m), ja.diagRowCamera);
+    SAME(row.value, "左 72 枚/秒 · 右 45 枚/秒（少なめ）");
+    CHECK(row.bad);
+    // Not locked (null), or an eyecam-rec before cam_fps: unknown, not red
+    e.camFps[0] = e.camFps[1] = NAN;
+    row = rowOf(diag::cards(ja, m), ja.diagRowCamera);
+    SAME(row.value, "—");
+    CHECK(!row.bad);
+    e.hasCamFps = false;
+    e.camFps[0] = e.camFps[1] = 0.0;
+    SAME(rowOf(diag::cards(ja, m), ja.diagRowCamera).value, "—");
+    // eyecam-rec stopped: unknown too
+    m.eyecam.visible = false;
+    SAME(rowOf(diag::cards(ja, m), ja.diagRowCamera).value, "—");
+    // The page redraws when it changes
+    PanelModel a = healthy();
+    PanelModel b = healthy();
+    b.eyecam.status.camFps[0] = b.eyecam.status.camFps[1] = 15.0;
+    CHECK(diag::signature(ja, a) != diag::signature(ja, b));
+}
+
 void testTexts() {
     // Every text of the page, in both languages
     const char* UiText::*const fields[] = {
@@ -447,8 +494,9 @@ void testTexts() {
         &UiText::diagStopFewSlots,
         &UiText::diagChangedFormat, &UiText::diagNotLooked, &UiText::diagUnreadable, &UiText::diagEyesFormat,
         &UiText::diagMsFormat, &UiText::diagOk, &UiText::diagFailedFormat, &UiText::diagPreviousLeft,
-        &UiText::diagPreviousRight, &UiText::diagNoCalib};
-    CHECK(std::size(fields) == 77);
+        &UiText::diagPreviousRight, &UiText::diagNoCalib, &UiText::diagRowCamera, &UiText::diagCameraFpsFormat,
+        &UiText::diagCameraLow};
+    CHECK(std::size(fields) == 80);
     for (const Language language : {Language::Ja, Language::En}) {
         const UiText& t = uiText(language);
         for (const char* UiText::*field : fields) CHECK(t.*field != nullptr && (t.*field)[0] != '\0');
@@ -512,6 +560,7 @@ int main() {
     testSteamos();
     testCode();
     testCards();
+    testCameraRate();
     testTexts();
     testParse();
     if (gFailures > 0) {

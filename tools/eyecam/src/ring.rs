@@ -16,6 +16,8 @@
 //!   - The lower-address group is the left camera, the later (+64) group the right one, in all six sessions.
 //!   - The buffer is a general heap that gets recycled, so a lock needs: the headset worn (checked by the caller),
 //!     at least 20% of the frame lit, and the candidate refreshing for a full second.
+//!   - Valve's eye tracker sets the cameras' frame rate (72, 80, 90, 120, and as low as 15 on some headsets). With
+//!     4 slots per eye, a slot is refilled a quarter as often: 3.75 times a second at 15 fps.
 //!
 //! Changes from framestream.c:
 //!   - Which camera a slot group is comes from the memory layout (`assign_cameras`), not from where the picture
@@ -63,6 +65,11 @@ pub const STOP_NO_CANDIDATES: &str = "no_candidates";
 /// Two or more candidates in all, but fewer than 2 in the buffer holding the most (the rest are elsewhere).
 pub const STOP_SPLIT_BUFFERS: &str = "split_buffers";
 pub const STOP_NOT_REFRESHING: &str = "not_refreshing";
+
+/// A candidate slot has to be refilled at least this often in its second of watching. Each eye has 4 slots, so a
+/// slot is refilled at a quarter of the camera's frame rate: 22.5 times at 90 fps, 3.75 at 15 (3 or 4 in a second).
+/// It was 5, which the cameras at 15 fps could miss; a stale picture is not refilled at all.
+const MIN_REFRESHES: u32 = 3;
 pub const STOP_FEW_SLOTS: &str = "few_slots";
 pub const STOP_ONE_EYE: &str = "one_eye";
 
@@ -278,7 +285,7 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
         return None;
     }
 
-    // ---- 3. Keep only those being refilled (at least 5 times in a second), not stale pictures.
+    // ---- 3. Keep only those being refilled (at least MIN_REFRESHES times in a second), not stale pictures.
     let mut fp: Vec<u64> = cand.iter().map(|&o| arena.fingerprint(o, FRAME_BYTES)).collect();
     let mut hits = vec![0u32; cand.len()];
     let t0 = clock.now();
@@ -297,7 +304,7 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
     sorted.sort_unstable();
     look.refresh_hz = sorted[sorted.len() / 2] as f64 / (clock.now() - t0).max(1.0);
     look.stopped_at = STOP_NOT_REFRESHING;
-    cand = cand.into_iter().zip(&hits).filter(|(_, h)| **h >= 5).map(|(o, _)| o).collect();
+    cand = cand.into_iter().zip(&hits).filter(|(_, h)| **h >= MIN_REFRESHES).map(|(o, _)| o).collect();
     if cand.len() < 2 {
         return None;
     }
@@ -507,10 +514,11 @@ mod tests {
         ORIGIN + slot * PITCH + if slot >= 4 { GROUP_GAP } else { 0 }
     }
 
-    /// A fake camera: writes a new frame into the next slot of each eye at 90 Hz per eye, plus heap churn.
+    /// A fake camera: writes a new frame into the next slot of each eye at `fps` per eye, plus heap churn.
     struct Sim {
         ring: *mut u8,
         other: *mut u8,
+        fps: f64,
         t: f64,
         next: [f64; 2],
         count: [usize; 2],
@@ -576,7 +584,7 @@ mod tests {
             self.t += 0.004;
             for eye in 0..2 {
                 while self.next[eye] <= self.t {
-                    self.next[eye] += 1.0 / 90.0;
+                    self.next[eye] += 1.0 / self.fps;
                     self.write_frame(eye);
                 }
             }
@@ -588,18 +596,24 @@ mod tests {
 
     #[test]
     fn finds_the_ring_and_exact_frame_starts() {
-        find_ring(0, false);
+        find_ring(0, false, 90.0);
     }
 
     #[test]
     fn finds_exact_frame_starts_with_stale_padding() {
         // Nonzero but under the lit threshold (16), so the frame test still sees a plausible lit fraction.
-        find_ring(0x0c, false);
+        find_ring(0x0c, false, 90.0);
     }
 
     #[test]
     fn cameras_follow_the_layout_not_the_picture() {
-        find_ring(0, true);
+        find_ring(0, true, 90.0);
+    }
+
+    #[test]
+    fn finds_the_ring_of_cameras_at_15_fps() {
+        // Each slot is refilled 3.75 times a second.
+        find_ring(0, false, 15.0);
     }
 
     /// A clock that never waits (nothing to look at refreshes).
@@ -646,13 +660,14 @@ mod tests {
         drop(bufs);
     }
 
-    fn find_ring(pad: u8, mirrored: bool) {
+    fn find_ring(pad: u8, mirrored: bool, fps: f64) {
         let mut ring_buf = vec![0u8; 16 << 20];
         let mut other_buf = vec![0u8; 32 << 20];
         let (ring_ptr, other_ptr) = (ring_buf.as_mut_ptr(), other_buf.as_mut_ptr());
         let mut sim = Sim {
             ring: ring_ptr,
             other: other_ptr,
+            fps,
             t: 0.0,
             next: [0.0, 0.005],
             count: [0, 0],
@@ -671,7 +686,8 @@ mod tests {
         }
         let mut arenas =
             unsafe { vec![Arena::new(ring_ptr, ring_buf.len()), Arena::new(other_ptr, other_buf.len())] };
-        for _ in 0..50 {
+        // Long enough for every slot to be rewritten (200 ms at 90 fps)
+        for _ in 0..(50.0 * 90.0 / fps) as usize {
             sim.wait();
         }
         for arena in &mut arenas {
@@ -691,7 +707,7 @@ mod tests {
         assert!(ring.both_eyes);
         // What the panel's diagnostics show of it: the candidates, how often they refreshed, the slots, both eyes
         assert!(look.candidates >= 8, "{look:?}");
-        assert!(look.refresh_hz >= 5.0, "{look:?}");
+        assert!(look.refresh_hz >= if fps < 20.0 { 3.0 } else { 5.0 }, "{look:?}");
         assert_eq!((look.slots, look.both_eyes, look.stopped_at), (8, true, ""), "{look:?}");
         assert!(ring.camera_reason.starts_with("layout: group boundary before slot 4 (spacing 262208+64)"));
         assert!(!ring.camera_reason.contains("WARNING"), "{}", ring.camera_reason);

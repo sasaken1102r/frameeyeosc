@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.5 (2026-10-06)
+
+Eye-camera calibration works when the Frame's eye cameras deliver fewer than 90 frames a second (as few as 15 on some headsets), and the panel shows the camera's frame rate.
+
+日本語: Frame の目のカメラが毎秒 90 枚より少ない（ヘッドセットによっては 15 枚）ときでも、目のカメラの校正が通るようにしました。パネルにカメラの毎秒の枚数を出します。
+
+- Valve's eye tracker sets the eye cameras' frame rate itself: 90 at most, following the display refresh rate down to 80 or 72, and on some headsets only about 15 (cause unknown). The calibration needed a fixed number of frames (90 in the relaxed step, about 5.4 s), so at 15 a second it could never pass: `[L 81/81, R 81/81, 90 needed]` with the pupil seen in every frame (#23). The minimum is now the largest of a share of the frames the step delivered, about 1 second's worth at the measured rate and a small floor, and the message says the real number; at 90 a second the numbers are the same as before. A calibration that fails at under 60 frames a second adds "the eye cameras deliver only N frames a second".
+- Everything eyecam-rec's live processing timed in frames (eyelid holds, the 100 ms before widening counts, medians, the 30-second baseline, the 60-second follow) is now timed in seconds at the measured rate. At 90 frames a second the output is byte for byte the same as before. Replaying the developer's recordings thinned to 72, 45, 18 and 15 frames a second, all 14 wear calibrations pass and widening, squint and pupils come out much as at 90; at 72 Hz it was also checked on a headset. A real 15-frame headset hasn't been tried yet.
+- The search for the eye-camera video counts a slot as live from 3 refreshes a second (was 5), so 15-frame cameras are found.
+- frameeyeosc uses a camera value for up to two of that camera's frame intervals (133 ms at 15 a second; still 100 ms at 90), so slow cameras don't flip between the camera's and Valve's eyelids.
+- `status.json` has `cam_fps` (`[left, right]`, frames a second over the last 2 seconds while locked) and `last_calib.fps`. In `calib_result.json`, `thresholds` now gives each eye's numbers as `[left, right]` plus the `rule` (format change).
+- The panel shows the camera rate on the Diagnostics page ("Camera N /s", red under 60) and in the setup's step 3 ("arriving (15 /s, low)"). `--fake-eyecam …:camfps=N`.
+- For development: `eyecam-rec --replay --resample FPS`, `--replay --calib wear|user`, `--fake-camfps N`.
+
 ## 0.7.4 (2026-10-05)
 
 The eye-camera setup no longer gets stuck at "not seen" for both eyes when the headset's proximity sensor reads low while worn. A new Diagnostics page shows, in one screenshot, what is going on, and the Advanced tab becomes one scrolling page with sections.

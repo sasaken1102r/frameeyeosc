@@ -770,9 +770,10 @@ impl Live {
         }
     }
 
-    /// Hand a new frame (the slot header, then the 512-byte-pitch frame) of camera `eye` (0 = L, 1 = R) to the
-    /// engine. Frames are dropped, not queued, if it falls behind.
-    fn frame(&mut self, eye: usize, buf: &[u8], now: f64) {
+    /// Hand a new frame (the slot header, then the 512-byte-pitch frame) of camera `eye` (0 = L, 1 = R, after --swap)
+    /// to the engine; `upside_down`: its camera stores it upside down (Ring::upside_down, by the camera, not by the
+    /// name). Frames are dropped, not queued, if it falls behind.
+    fn frame(&mut self, eye: usize, upside_down: bool, buf: &[u8], now: f64) {
         if !self.on {
             return;
         }
@@ -784,7 +785,7 @@ impl Live {
             data.extend_from_slice(&frame[r * STRIDE..r * STRIDE + WIDTH]);
         }
         let pitch = if now - self.pitch_at < 0.5 { self.pitch[eye] } else { f32::NAN };
-        if self.tx.try_send(Msg::Frame { eye, t_cam_ns, pitch, data }).is_err() {
+        if self.tx.try_send(Msg::Frame { eye, upside_down, t_cam_ns, pitch, data }).is_err() {
             self.dropped += 1;
         }
     }
@@ -837,7 +838,9 @@ impl Pump {
             match self.slots.poll(arena, &self.ring, k, now, &mut self.buf) {
                 SlotEvent::None => {}
                 SlotEvent::Changed => self.last_change = now,
-                SlotEvent::Frame(_) => live.frame(self.ring.eye[k] as usize ^ swap as usize, &self.buf, now),
+                SlotEvent::Frame(_) => {
+                    live.frame(self.ring.eye[k] as usize ^ swap as usize, self.ring.upside_down(k), &self.buf, now)
+                }
             }
         }
         now - self.last_change <= LOST_AFTER
@@ -2135,7 +2138,7 @@ fn record(
                         s.write_frame(camera, k, t_first, now, shm.as_ref().and_then(Shm::last_sequence), &buf)?;
                     }
                     if let Some(l) = live.as_deref_mut() {
-                        l.frame(camera, &buf, now);
+                        l.frame(camera, ring.upside_down(k), &buf, now);
                     }
                 }
             }
@@ -2542,7 +2545,9 @@ fn write_meta(
     let labels = if args.swap { "camera0=R camera1=L" } else { "camera0=L camera1=R" };
     let width = if args.full_width { STRIDE } else { WIDTH };
     let eye_files = format!("{}={}", eyecam::replay::META_EYE_FILES, eyecam::replay::EYE_FILES_ANATOMICAL);
-    let upside_down = ["L", "R"][eyecam::vision::UPSIDE_DOWN_EYE];
+    // The upside-down camera by the name it has here: --swap renames it, its frames stay as stored (none with one
+    // camera streaming)
+    let upside_down = eyecam::replay::upside_down_name(ring.both_eyes, args.swap);
     writeln!(
         meta,
         "# {what}\nevent={what}\nlocal_time={}\nt_raw={:.9}\neyetracking_pid={}\nbuffer_sizes={:?}\n\
@@ -2554,7 +2559,8 @@ frame_width={width}\nframe_height={HEIGHT}\nframe_bytes={}\n\
 raw_format=eye_L.raw / eye_R.raw: {width}x{HEIGHT} 8-bit grey frames appended in recording order, unflipped; rows of frames.csv with eye L/R give each frame's time (eye_index = position in its file)\n\
 {eye_files}\n\
 eye_files_note=L is the left eye, R the right (slot_camera: 0 = L, 1 = R; the lower addresses are the right eye's camera). Sessions without eye_files (before 2026-10-07) called the lower-address camera L, so their eye_L.raw holds the right eye\n\
-upside_down_eye={upside_down}: stored raw; flip vertically (not 180 degrees) to view upright\n\
+upside_down_eye={upside_down}\n\
+upside_down_note=the file of the camera that stores its picture upside down (the left eye's, slot_camera 0; --swap renames it, the picture stays its camera's; none: one camera streaming, not flipped): stored raw, flip vertically (not 180 degrees) to view upright\n\
 clock=CLOCK_MONOTONIC_RAW seconds (same clock as Valve sample_time); t_cam = camera timestamp from the slot header, t_raw = when the slot started changing, t_copy = when it was copied\n\
 shm_version={}\nproximity={}\n",
         local_stamp(),
@@ -2641,7 +2647,7 @@ mod tests {
         while t0.elapsed() < Duration::from_millis(2500) {
             for eye in 0..2 {
                 s.read(eye, k, &mut img).unwrap();
-                if eyecam::vision::stored_upside_down(eye) {
+                if s.upside_down(eye) {
                     img.reverse(); // back to stored orientation (rows and columns), close enough for a load test
                 }
                 let t = s.t_cam[eye][k];
@@ -2649,7 +2655,7 @@ mod tests {
                 for r in 0..HEIGHT {
                     buf[HEADER_BYTES + r * STRIDE..HEADER_BYTES + r * STRIDE + WIDTH].copy_from_slice(&img[r * WIDTH..(r + 1) * WIDTH]);
                 }
-                live.frame(eye, &buf, now_raw());
+                live.frame(eye, s.upside_down(eye), &buf, now_raw());
             }
             k += 1;
             thread::sleep(Duration::from_micros(11_111));

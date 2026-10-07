@@ -3,7 +3,7 @@ import numpy as np
 from io2 import *
 from ana0 import load
 
-RREF = {'L': 53.5, 'R': 63.5}
+RREF = {'L': 63.5, 'R': 53.5}  # px; io2's anatomical eyes (the right eye's camera was called L before)
 COLORS = {'lead_in': '#dddddd', 'close': '#555555', 'normal': '#ffffff', 'widen': '#ff9f40', 'squint': '#9b59b6',
           'look_up': '#3fa7d6', 'look_down': '#1d5d8c', 'bright': '#ffe066', 'dark': '#8c8c8c'}
 

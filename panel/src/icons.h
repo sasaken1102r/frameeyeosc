@@ -76,9 +76,10 @@ bool any(const std::string& text);
 double advance(Icon which, double size);
 
 /**
- * Whether an icon must not start a line (an arrow between two steps stays at the end of the line before).
+ * Whether an icon must not start a line (an arrow between two steps, or a "›" between two places to go, stays at the
+ * end of the line before).
  * @param which the icon
- * @return true for the arrow
+ * @return true for the arrow and the right chevron
  */
 bool keepsWithPrevious(Icon which);
 

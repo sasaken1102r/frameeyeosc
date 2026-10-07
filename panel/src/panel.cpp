@@ -437,6 +437,19 @@ void drawCameraIcon(const Pen& pen, double cx, double cy, Color c) {
 }
 
 /**
+ * A thin line under a row of the Eyelids tab.
+ * @param pen drawing tools
+ * @param at the row's bottom
+ */
+void drawRowDivider(const Pen& pen, double at) {
+    pen.color(kDivider);
+    cairo_set_line_width(pen.cr, 1);
+    cairo_move_to(pen.cr, kInnerX, at + 0.5);
+    cairo_line_to(pen.cr, kInnerRight, at + 0.5);
+    cairo_stroke(pen.cr);
+}
+
+/**
  * An "i" in a circle (the "when..." box).
  * @param pen drawing tools
  * @param cx center x
@@ -755,6 +768,16 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             recordOpen_.clear();
             recordsAllOpen_ = false;
             return {};
+        case PanelAction::LidsPage:
+            // (from the eye cameras tab's pointer to the widening slider too: the tab opens on it)
+            if (hit.arg < 0 || hit.arg > static_cast<int>(LidsPage::Fine)) return {};
+            setTab(PanelTab::Lids);
+            setLidsPage(static_cast<LidsPage>(hit.arg));
+            historyOpen_ = false;
+            diagOpen_ = false;
+            recordOpen_.clear();
+            recordsAllOpen_ = false;
+            return {};
         case PanelAction::RecordOpen:
             // The caller reads it
             if (hit.arg < 0 || hit.arg >= static_cast<int>(recordNames_.size())) return {};
@@ -806,9 +829,6 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::FitDetailsPage:
             fitDetailsPage_ = hit.arg;
-            return {};
-        case PanelAction::LidMarks:
-            lidMarksOpen_ = !lidMarksOpen_;
             return {};
         case PanelAction::HostKey:
             hostEntryText_ = host_entry::keypadInput(hostEntryText_, hit.arg);
@@ -2155,8 +2175,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
             case Phase::Capturing:
             case Phase::Reopen: break;  // drawn by drawEyeFitRunning
             case Phase::Failed:
-                if (fit.failure == gaze_fit::Failure::Cancelled || fit.failure == gaze_fit::Failure::Left ||
-                    fit.failure == gaze_fit::Failure::DashboardOpened) {
+                if (fitStopped(fit)) {
                     // Stopped by the user: why, not an error
                     title = failureText(t, fit);
                     paragraphs.push_back(t.fitUnchanged);
@@ -2463,24 +2482,26 @@ void EyePanel::drawEyeFitLids(const Pen& pen, const UiText& t, const SettingsVie
 }
 
 void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
-    // "Fine-tune" open: the per-eye scales, the marks, the auto calibration and the smoothing values in the rows' place
-    if (lidMarksOpen_) {
-        drawLidsDetails(pen, t, m, v);
-        return;
+    // Three sub-tabs where the Advanced tab has its own (the first time "Look", then the one open last)
+    const LidsPage pages[3] = {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine};
+    const char* labels[3] = {t.lidsLook, t.lidsBlinks, t.lidsFine};
+    std::vector<Option> options;
+    for (int i = 0; i < 3; ++i) {
+        options.push_back({labels[i], {PanelAction::LidsPage, nullptr, static_cast<int>(pages[i])}});
     }
+    drawPageSwitch(pen, kSubTabY, kSubTabH, options, static_cast<int>(lidsPage_), -1);
+    switch (lidsPage_) {
+        case LidsPage::Look: drawLidsLook(pen, t, m, v, kAdvPageTop); break;
+        case LidsPage::Blinks: drawLidsBlinks(pen, t, m, v, kAdvPageTop); break;
+        case LidsPage::Fine: drawLidsDetails(pen, t, m, v, kAdvPageTop); break;
+    }
+}
+
+void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double top) {
     const EyeStatus& s = m.status;
-    cairo_t* cr = pen.cr;
     const WidenSlider widen = widenSlider(v, s);
     const double cy = (kRowH - kControlH) / 2;
-    // A thin line under each row
-    const auto divider = [&](double at) {
-        pen.color(kDivider);
-        cairo_set_line_width(cr, 1);
-        cairo_move_to(cr, kInnerX, at + 0.5);
-        cairo_line_to(cr, kInnerRight, at + 0.5);
-        cairo_stroke(cr);
-    };
-    double y = kRowTop - 4;
+    double y = top;
 
     // Where the eyelids come from now, and where that is switched
     {
@@ -2511,56 +2532,76 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
         y += h + 10;
     }
     // How easily widening shows: one slider, whatever drives it
-    {
+    if (widen.control == WidenControl::Saturated) {
+        // Nothing to widen by on this SteamOS without the cameras: one row saying so, and the way to the cameras
+        drawRowLabel(pen, t, y, kRowH, t.rowWidenEase, t.widenHintSaturated, false);
+        double textRight = kInnerRight;
+        if (eyecamTab_) {
+            const double bh = 46;
+            const std::string label = std::string(t.lidsCamButton) + "  " ICON_ARROW_RIGHT;
+            const double bw = std::max(160.0, pen.measure(label, 17, true) + 40);
+            const double bx = kInnerRight - bw;
+            drawButton(pen, bx, y + (kRowH - bh) / 2, bw, bh, label,
+                       {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)}, true, false, 17);
+            textRight = bx - 14;
+        }
+        drawInfoIcon(pen, kControlX + 10, y + kRowH / 2, kTextMuted);
+        const double tx = kControlX + 30;
+        const double size = fitSize(pen, t.widenSaturated, 17, 11, textRight - tx, false);
+        pen.text(tx, centerBaseline(y, kRowH, size), t.widenSaturated, size, kText);
+        y += kRowH;
+    } else {
         const double h = 78;
         const bool locked = widen.control == WidenControl::Valve && v.locked(key::kLidWiden);
         const char* hint = widen.control == WidenControl::Camera  ? t.widenHintCamera
                            : widen.control == WidenControl::Mixed ? t.widenHintMixed
-                           : widen.control == WidenControl::Valve ? t.widenHintValve
-                                                                  : t.widenHintSaturated;
+                                                                  : t.widenHintValve;
         drawRowLabel(pen, t, y, h, t.rowWidenEase, hint, locked);
         drawWidenSlider(pen, t, m, v, widen, kControlX, kInnerRight, y + 6, 40);
-        const char* note = widen.control == WidenControl::Saturated ? ""
-                           : widen.unfittedNote                     ? t.widenNoteUnfitted
-                           : widen.control == WidenControl::Valve   ? t.widenNoteValve
-                                                                    : t.widenNoteCamera;
-        if (note[0] != '\0') {
-            pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
-        }
+        const char* note = widen.unfittedNote                   ? t.widenNoteUnfitted
+                           : widen.control == WidenControl::Valve ? t.widenNoteValve
+                                                                  : t.widenNoteCamera;
+        pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
         y += h;
-        // Nothing to widen by on this SteamOS without the cameras: what would, and the way there
-        if (widen.control == WidenControl::Saturated) {
-            const double boxH = 70;
-            fillRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 12, kBg);
-            strokeRounded(pen, kInnerX, y, kInnerRight - kInnerX, boxH, 12, kDivider, 1);
-            drawInfoIcon(pen, kInnerX + 28, y + boxH / 2, kTextMuted);
-            double textRight = kInnerRight - 16;
-            if (eyecamTab_) {
-                const double bh = 46;
-                const std::string label = std::string(t.lidsCamButton) + "  " ICON_ARROW_RIGHT;
-                const double bw = std::max(160.0, pen.measure(label, 17, true) + 40);
-                const double bx = kInnerRight - 14 - bw;
-                drawButton(pen, bx, y + (boxH - bh) / 2, bw, bh, label,
-                           {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)}, true, false, 17);
-                textRight = bx - 14;
-            }
-            const double tx = kInnerX + 52;
-            const double size = std::min(fitSize(pen, t.widenSaturated1, 17, 11, textRight - tx, false),
-                                         fitSize(pen, t.widenSaturated2, 17, 11, textRight - tx, false));
-            pen.text(tx, y + boxH / 2 - 5, t.widenSaturated1, size, kText);
-            pen.text(tx, y + boxH / 2 + size + 3, t.widenSaturated2, size, kText);
-            y += boxH + 10;
-        }
-        divider(y);
     }
+    drawRowDivider(pen, y);
+    // Eyelid smoothing: three presets (the two values themselves on "Fine-tune")
+    {
+        const bool locked = v.locked(key::kLidMinCutoff) || v.locked(key::kLidBeta);
+        const int preset = matchingLidPreset(v);
+        drawRowLabel(pen, t, y, kRowH, t.rowLidSmooth, preset < 0 ? t.custom : t.lidSmoothHint, locked);
+        std::vector<Option> options;
+        const char* names[3] = {t.strengthLight, t.strengthMedium, t.strengthStrong};
+        for (int i = 0; i < 3; ++i) options.push_back({names[i], {PanelAction::LidPreset, nullptr, i}});
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH, options, preset, 20, locked);
+        y += kRowH;
+        drawRowDivider(pen, y);
+    }
+    // Sync both lids: a slider (0 = off)
+    {
+        const bool locked = v.locked(key::kLidSync);
+        drawRowLabel(pen, t, y, kRowH, t.rowSync, t.syncHint, locked);
+        drawNumberSlider(pen, key::kLidSync, numberShown(key::kLidSync, v.number(key::kLidSync)), t.syncOff,
+                         t.syncStrong, kControlX, kInnerRight, y + 12, kRowH - 24, !locked);
+        y += kRowH;
+        drawRowDivider(pen, y);
+    }
+}
+
+void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
+                              double top) {
+    const EyeStatus& s = m.status;
+    const double cy = (kRowH - kControlH) / 2;
+    double y = top;
+
     // Blinks: how long a closed eye stays closed
     {
         const bool locked = v.locked(key::kBlinkHoldMs);
         drawRowLabel(pen, t, y, kRowH, t.rowBlink, t.blinkHint, locked);
         const double labelW = 52;
         const double stepperW = 220;
-        pen.text(kControlX, centerBaseline(y, kRowH, 18), t.blinkHold, fitSize(pen, t.blinkHold, 18, 12, labelW - 6, true),
-                 kText, true);
+        pen.text(kControlX, centerBaseline(y, kRowH, 18), t.blinkHold,
+                 fitSize(pen, t.blinkHold, 18, 12, labelW - 6, true), kText, true);
         const double hold = v.number(key::kBlinkHoldMs);
         char holdText[32];
         std::snprintf(holdText, sizeof(holdText), "%.0f ms", hold);
@@ -2573,7 +2614,7 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
             baseline += 20;
         }
         y += kRowH;
-        divider(y);
+        drawRowDivider(pen, y);
     }
     // ...closing both when one is closed (blink_sync_below; 0 = off)
     {
@@ -2591,49 +2632,36 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
             baseline += 17;
         }
         y += kRowH;
-        divider(y);
+        drawRowDivider(pen, y);
     }
-    // Eyelid smoothing: three presets (the two values themselves under "Fine-tune")
+    // The lowest eyelid while an eye camera sees the eye open (camera_lid_floor; 0 = off). Always there, so it can be
+    // set before the cameras know the eyes; without an eye on the cameras the note says when it takes effect
     {
-        const bool locked = v.locked(key::kLidMinCutoff) || v.locked(key::kLidBeta);
-        const int preset = matchingLidPreset(v);
-        drawRowLabel(pen, t, y, kRowH, t.rowLidSmooth, preset < 0 ? t.custom : t.lidSmoothHint, locked);
-        std::vector<Option> options;
-        const char* names[3] = {t.strengthLight, t.strengthMedium, t.strengthStrong};
-        for (int i = 0; i < 3; ++i) options.push_back({names[i], {PanelAction::LidPreset, nullptr, i}});
-        drawSegmented(pen, kControlX, y + cy, 300, kControlH, options, preset, 20, locked);
+        const bool onCameras = s.running && (s.camera.used[0] || s.camera.used[1]);
+        const bool locked = v.locked(key::kCameraLidFloor);
+        drawRowLabel(pen, t, y, kRowH, t.rowLidFloor, t.lidFloorHint, locked);
+        const double stepperW = 196;
+        const double floor = v.number(key::kCameraLidFloor);
+        drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kCameraLidFloor, floor,
+                    formatSetting(key::kCameraLidFloor, floor), true, locked);
+        const double nx = kControlX + stepperW + 16;
+        const char* note = onCameras ? t.lidFloorNote : t.lidFloorNoteIdle;
+        const std::vector<std::string> lines = wrapText(pen, note, 13, false, kInnerRight - nx, 3);
+        double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
+        for (const std::string& line : lines) {
+            pen.text(nx, baseline, line, 13, kTextMuted);
+            baseline += 17;
+        }
         y += kRowH;
-        divider(y);
-    }
-    // Sync both lids: a slider (0 = off)
-    {
-        const bool locked = v.locked(key::kLidSync);
-        drawRowLabel(pen, t, y, kRowH, t.rowSync, t.syncHint, locked);
-        drawNumberSlider(pen, key::kLidSync, numberShown(key::kLidSync, v.number(key::kLidSync)), t.syncOff,
-                         t.syncStrong, kControlX, kInnerRight, y + 12, kRowH - 24, !locked);
-        y += kRowH;
-        divider(y);
-    }
-    // The rest, folded: "Fine-tune"
-    {
-        drawRowLabel(pen, t, y, kRowH, t.rowOther, t.otherHint, false);
-        const std::string label = std::string(t.fitDetails) + "  " ICON_CHEVRON_DOWN;
-        const double bw = std::max(156.0, pen.measure(label, 18, true) + 44);
-        const double bh = 46;
-        drawButton(pen, kControlX, y + (kRowH - bh) / 2, bw, bh, label, {PanelAction::LidMarks, nullptr, 0}, true, false,
-                   18);
-        const double nx = kControlX + bw + 16;
-        const double size = std::min(fitSize(pen, t.otherText1, 15, 11, kInnerRight - nx, false),
-                                     fitSize(pen, t.otherText2, 15, 11, kInnerRight - nx, false));
-        pen.text(nx, y + kRowH / 2 - 3, t.otherText1, size, kTextMuted);
-        pen.text(nx, y + kRowH / 2 + 17, t.otherText2, size, kTextMuted);
+        drawRowDivider(pen, y);
     }
 }
 
-void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
+                               double top) {
     const EyeStatus& s = m.status;
     cairo_t* cr = pen.cr;
-    double y = kRowTop - 4;
+    double y = top;
     const double cy = (kRowH - kControlH) / 2;
     // Eyes with an eye fit: closing and opening come from the fit, widening from the slider (lid_widen). The learned
     // calibration and marks 3 and 4 only matter for eyes without one
@@ -2641,12 +2669,8 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     const bool anyFitted = widen.fitted[0] || widen.fitted[1];
     const bool fromCameras = lidsFromCameras(s);
 
-    // The title, "Close" back to the rows, and a line on what decides the eyelids
+    // A line on what decides the eyelids (the sub-tab above names the page)
     {
-        pen.text(kInnerX, y + 26, t.detailsTitle, 20, kText, true);
-        const std::string label = std::string(t.detailsClose) + "  " ICON_CHEVRON_UP;
-        const double bw = std::max(130.0, pen.measure(label, 17, true) + 40);
-        drawButton(pen, kInnerRight - bw, y, bw, 40, label, {PanelAction::LidMarks, nullptr, 0}, true, false, 17);
         const char* note = t.marksTitle;
         bool notice = false;
         if (anyFitted) note = t.lidMarksUnused;
@@ -2666,10 +2690,9 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             note = t.lidsCamMarksOpen;
             notice = false;
         }
-        const double nw = kInnerRight - bw - 16 - kInnerX - pen.measure(t.detailsTitle, 20, true) - 18;
-        pen.text(kInnerX + pen.measure(t.detailsTitle, 20, true) + 18, y + 25, note,
-                 fitSize(pen, note, 15, 10, nw, notice), notice ? kText : kTextMuted, notice);
-        y += 52;
+        pen.text(kInnerX + 4, y + 20, note, fitSize(pen, note, 16, 10, kInnerRight - kInnerX - 4, notice),
+                 notice ? kText : kTextMuted, notice);
+        y += 38;
     }
     // Auto calibration: on / off, what it learned, reset (only for eyes without a fit, and not from the cameras)
     if (!anyFitted && !fromCameras) {
@@ -2853,41 +2876,52 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
 void EyePanel::drawSubTabs(const Pen& pen, const UiText& t, const PanelModel& m, double y, double h) {
     const AdvPage pages[4] = {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files};
     const char* labels[4] = {t.advVersion, t.advTrouble, t.advTools, t.advFiles};
+    std::vector<Option> options;
+    int selected = 0;
+    for (int i = 0; i < 4; ++i) {
+        options.push_back({labels[i], {PanelAction::AdvancedPage, nullptr, static_cast<int>(pages[i])}});
+        if (advPage_ == pages[i]) selected = i;
+    }
+    // A new release: a dot after "Version"
+    const bool update = m.update.state == frame_updater::UpdateState::Available;
+    drawPageSwitch(pen, y, h, options, selected, update ? 0 : -1);
+}
+
+void EyePanel::drawPageSwitch(const Pen& pen, double y, double h, const std::vector<Option>& pages, int selected,
+                              int dot) {
+    const int count = static_cast<int>(pages.size());
+    if (count == 0) return;
     const double x0 = kInnerX;
     const double w = kInnerRight - kInnerX;
     fillRounded(pen, x0, y, w, h, h / 2, kBg);
     strokeRounded(pen, x0, y, w, h, h / 2, kBorder, 1.5);
     const double inset = 4;
-    const double segW = (w - inset * 2) / 4;
+    const double segW = (w - inset * 2) / count;
     const double segH = h - inset * 2;
-    // A new release: a dot after "Version"
-    const bool update = m.update.state == frame_updater::UpdateState::Available;
     const double dotW = 16;
-    // One size for all four, the largest at which each fits
+    // One size for all, the largest at which each fits
     double size = 17;
-    for (int i = 0; i < 4; ++i) {
-        const double room = segW - 24 - (i == 0 && update ? dotW : 0);
-        size = std::min(size, fitSize(pen, labels[i], 17, 12, room, true));
+    for (int i = 0; i < count; ++i) {
+        const double room = segW - 24 - (i == dot ? dotW : 0);
+        size = std::min(size, fitSize(pen, pages[i].label, 17, 12, room, true));
     }
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < count; ++i) {
         const double sx = x0 + inset + segW * i;
         const double sy = y + inset;
-        const PanelHit hit {PanelAction::AdvancedPage, nullptr, static_cast<int>(pages[i])};
-        const bool selected = advPage_ == pages[i];
-        const int pointer = selected ? 0 : pointerState(hit);
-        if (selected) {
+        const PanelHit& hit = pages[i].hit;
+        const bool chosen = i == selected;
+        const int pointer = chosen ? 0 : pointerState(hit);
+        if (chosen) {
             fillRounded(pen, sx, sy, segW, segH, segH / 2, kAccent);
         } else if (pointer > 0) {
             fillRounded(pen, sx, sy, segW, segH, segH / 2, kControlHover);
         }
-        const Color color = selected ? kOnAccent : kText;
-        const double textW = pen.measure(labels[i], size, selected) + (i == 0 && update ? dotW : 0);
+        const Color color = chosen ? kOnAccent : kText;
+        const double textW = pen.measure(pages[i].label, size, chosen) + (i == dot ? dotW : 0);
         const double tx = sx + (segW - textW) / 2;
-        pen.text(tx, centerBaseline(sy, segH, size), labels[i], size, color, selected);
-        if (i == 0 && update) {
-            drawDot(pen.cr, tx + textW - dotW / 2 + 3, sy + segH / 2, 4.5, selected ? kOnAccent : kAccent);
-        }
-        addButton(hit, sx, y, segW, h, !selected);
+        pen.text(tx, centerBaseline(sy, segH, size), pages[i].label, size, color, chosen);
+        if (i == dot) drawDot(pen.cr, tx + textW - dotW / 2 + 3, sy + segH / 2, 4.5, chosen ? kOnAccent : kAccent);
+        addButton(hit, sx, y, segW, h, !chosen);
     }
 }
 
@@ -3208,10 +3242,15 @@ void EyePanel::drawRecordRow(const Pen& pen, const UiText& t, const report::Summ
 double EyePanel::drawResultBadge(const Pen& pen, const UiText& t, report::Result result, double right, double cy,
                                  double size) {
     const char* label = report::resultLabel(t, result);
-    const Color fg = result == report::Result::Ok ? kSuccess : result == report::Result::Failed ? kDangerSoft : kAccent;
-    const Color bg = result == report::Result::Ok       ? kSuccessTint
-                     : result == report::Result::Failed ? kDangerTint
-                                                        : kAccentTint;
+    // Stopped (nothing went wrong) in grey, like a paused badge
+    const Color fg = result == report::Result::Ok        ? kSuccess
+                     : result == report::Result::Failed  ? kDangerSoft
+                     : result == report::Result::Stopped ? kTextMuted
+                                                         : kAccent;
+    const Color bg = result == report::Result::Ok        ? kSuccessTint
+                     : result == report::Result::Failed  ? kDangerTint
+                     : result == report::Result::Stopped ? kControl
+                                                         : kAccentTint;
     const double h = size + 14;
     const double w = pen.measure(label, size, true) + 26;
     fillRounded(pen, right - w, cy - h / 2, w, h, h / 2, bg);
@@ -3447,13 +3486,20 @@ void EyePanel::drawRecord(const Pen& pen, const UiText& t, const PanelModel& m) 
                  kTextMuted);
     }
     double y = top + backH + 16;
-    // Why (or what came of it) in a box: red for a failure
+    // Why (or what came of it) in a box: red for a failure, grey for a stop
     {
         const std::string& reason = en && !r.reasonEn.empty() ? r.reasonEn : r.reason;
         const bool failed = r.result == report::Result::Failed;
-        const Color fg = failed ? kDangerSoft : r.result == report::Result::Partial ? kAccent : kSuccess;
-        const Color line = failed ? kDanger : fg;
-        const Color bg = failed ? kDangerTint : r.result == report::Result::Partial ? kAccentTint : kSuccessTint;
+        const bool stopped = r.result == report::Result::Stopped;
+        const Color fg = failed    ? kDangerSoft
+                         : stopped ? kTextMuted
+                         : r.result == report::Result::Partial ? kAccent
+                                                               : kSuccess;
+        const Color line = failed ? kDanger : stopped ? kBorder : fg;
+        const Color bg = failed    ? kDangerTint
+                         : stopped ? kControl
+                         : r.result == report::Result::Partial ? kAccentTint
+                                                               : kSuccessTint;
         const char* label = r.result == report::Result::Ok ? t.recordOutcome : t.recordReason;
         const double padX = 16;
         const double labelW = pen.measure(label, 16, true);
@@ -5379,7 +5425,7 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         y += h;
         if (!user) divider(y);
     }
-    // Widening moved to the Eyelids tab (one slider, whatever drives the eyelids): a pointer there
+    // Widening moved to the Eyelids tab (one slider, whatever drives the eyelids): a pointer there, to its "Look"
     {
         const double boxTop = y + 6;
         const double boxH = 56;
@@ -5390,7 +5436,7 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         const double bw = std::max(130.0, pen.measure(label, 17, true) + 44);
         const double bx = kInnerRight - 10 - bw;
         drawButton(pen, bx, boxTop + (boxH - bh) / 2, bw, bh, label,
-                   {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Lids)}, true, false, 17);
+                   {PanelAction::LidsPage, nullptr, static_cast<int>(LidsPage::Look)}, true, false, 17);
         const double tx = kInnerX + 50;
         pen.text(tx, centerBaseline(boxTop, boxH, 17), t.camWidenNotice,
                  fitSize(pen, t.camWidenNotice, 17, 11, bx - 14 - tx, false), kText);

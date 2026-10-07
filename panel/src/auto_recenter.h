@@ -31,7 +31,7 @@ struct Inputs {
     bool running = false;        ///< frameeyeosc is running
     bool tracking = false;       ///< eye data is coming in (status.json)
     bool dashboardOpen = false;  ///< the SteamVR dashboard is open
-    bool fitActive = false;      ///< an eye fit is waiting or running
+    bool fitActive = false;      ///< an eye fit is running
 };
 
 /** What to do after an update. */

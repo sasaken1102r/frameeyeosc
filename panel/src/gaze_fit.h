@@ -63,6 +63,9 @@ constexpr double kPointSec = 2.5;
 constexpr double kSettleSec = 0.5;
 /** ...of which the dot spends this long gliding over from the previous target. */
 constexpr double kMoveSec = 0.35;
+/** The first dot's first try settles this much longer: the fit starts at the button press, and the eyes are still
+ *  on the button (later dots and tries are unchanged). */
+constexpr double kFirstSettleExtraSec = 1.0;
 /** The rest is measured by frameeyeosc... */
 constexpr double kCaptureSec = kPointSec - kSettleSec;
 /** ...skipping its first samples while the eyes settle on the dot. */
@@ -469,8 +472,11 @@ private:
      */
     void failMovement(Point point);
 
-    /** @return how long the current step settles */
-    double settleSec() const { return point() == Point::Closed ? kCloseSettleSec : kSettleSec; }
+    /** @return how long the current step settles (the first dot's first try longer) */
+    double settleSec() const {
+        if (point() == Point::Closed) return kCloseSettleSec;
+        return index_ == 0 && attempt_ == 1 ? kSettleSec + kFirstSettleExtraSec : kSettleSec;
+    }
 
     /** @return how long the current step's capture lasts */
     double captureSec() const { return point() == Point::Closed ? kClosedSec : kCaptureSec; }

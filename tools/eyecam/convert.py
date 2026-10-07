@@ -41,13 +41,22 @@ def frames(session, eye, width, height):
 
 
 def upside_down_file(meta):
-    """上下逆さまに保存されているファイル（"L" / "R"）。逆さまなのは左目のカメラ（アドレスの後ろのほうのスロット）。"""
+    """上下逆さまに保存されているファイル（"L" / "R"、カメラ 1 台だけなら None）。逆さまなのは左目のカメラ（アドレスの後ろのほうの
+    スロット）で、反転はカメラについていく（--swap で名前が入れ替わっても、そのカメラのファイルが逆さま）。replay.rs と同じ決め方。"""
+    repaired = meta.get("repaired_swap") == "1"
+    # meta.txt の upside_down_eye（L / R / none と書くようになってから）。fix_swap.py をかけたらファイルごと入れ替わっている
+    written = meta.get("upside_down_eye")
+    if written in ("L", "R"):
+        return {"L": "R", "R": "L"}[written] if repaired else written
+    if written == "none" or meta.get("both_eyes") == "false":
+        return None
     anatomical = meta.get("eye_files") == "anatomical"
     # a417dab までは画の位置でカメラを決めていて、L が左目のカメラのこともあった（slot_camera=1,1,1,1,0,0,0,0）
     picture_order = not anatomical and meta.get("slot_camera", "").startswith("1")
-    repaired = meta.get("repaired_swap") == "1"
-    # 古い名前: L = 右目のカメラ。fix_swap.py はファイルを入れ替える
-    left_in_r = (not anatomical and not picture_order) != repaired
+    swap = meta.get("swap") in ("true", "1")
+    # アドレスの後ろのほうのカメラの名前: 2026-10-07 から L、それより前は R（画の位置で決めたときは L）。録画のときの --swap と
+    # fix_swap.py が入れ替える
+    left_in_r = ((not anatomical and not picture_order) != repaired) != swap
     return "R" if left_in_r else "L"
 
 

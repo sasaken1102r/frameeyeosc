@@ -141,6 +141,8 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"records: a failure's box outline (red tint)", kDanger, kDangerTint, ContrastKind::Ui},
         {"records: \"One eye\" badge, its \"Why\" (accent tint)", kAccent, kAccentTint, ContrastKind::Text},
         {"records: \"OK\" badge, its \"Result\" (green tint)", kSuccess, kSuccessTint, ContrastKind::Text},
+        {"records: \"Stopped\" badge, its \"Why\" (pill-colored)", kTextMuted, kControl, ContrastKind::Text},
+        {"records: a stop's box outline (pill-colored)", kBorder, kControl, ContrastKind::Ui},
         {"records: card titles (pill-colored card)", kAccent, kControl, ContrastKind::Text},
         {"records: the saved bar's sheet (pill-colored card)", kSuccess, kControl, ContrastKind::Ui},
     };

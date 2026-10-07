@@ -1,8 +1,9 @@
-// Tests for the records of calibrations and eye fits (report.cpp) and the remembered sub-tab (ui_state.cpp): the
+// Tests for the records of calibrations and eye fits (report.cpp) and the remembered sub-tabs (ui_state.cpp): the
 // journal's and Valve's lines taken apart, the key lines and their words, summary.json, report.txt as printed, the
-// record written from made-up logs (what goes in, what never does), keeping 10, the size caps, status.jsonl a second,
-// the writer's thread and `--report`. Files go to a folder made under the current one, removed at the end. Exits
-// non-zero on failure. Runs in Japan's time zone (JST-9), so the local times are fixed.
+// record written from made-up logs (what goes in, what never does), keeping 10 (only real record folders, only their
+// files, never the one just written), the size caps, status.jsonl a second (its start and end kept), following a
+// calibration, the writer's thread and `--report`. Files go to a folder made under the current one, removed at the
+// end. Exits non-zero on failure. Runs in Japan's time zone (JST-9), so the local times are fixed.
 #include "icons.h"
 #include "report.h"
 #include "ui_state.h"
@@ -11,6 +12,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -159,6 +161,18 @@ bool has(const std::string& text, const std::string& part) {
 }
 
 /**
+ * printf into a string.
+ * @param pattern the format
+ * @param value its number
+ * @return the text
+ */
+std::string format(const char* pattern, int value) {
+    char text[64];
+    std::snprintf(text, sizeof(text), pattern, value);
+    return text;
+}
+
+/**
  * A rule of so many "─".
  * @param n how many
  * @return the rule
@@ -269,7 +283,7 @@ void testNames() {
     }
     Kind k;
     CHECK(!report::parseKind("calib", k));
-    for (const Result result : {Result::Ok, Result::Failed, Result::Partial}) {
+    for (const Result result : {Result::Ok, Result::Failed, Result::Partial, Result::Stopped}) {
         Result back = Result::Ok;
         CHECK(report::parseResult(report::resultName(result), back) && back == result);
     }
@@ -464,6 +478,16 @@ void testSummary() {
     CHECK(report::kindLabel(ja, rewear) == "正面と傾きを合わせ直す");
     CHECK(report::conditionsText(ja, rewear) == "かぶったとき・ダッシュボードを閉じて");
     CHECK(std::string(report::resultLabel(ja, Result::Partial)) == "片目だけ");
+    // Stopped is not a failure: its own word, and its own name in summary.json
+    CHECK(std::string(report::resultLabel(ja, Result::Stopped)) == "止めた");
+    CHECK(std::string(report::resultLabel(en, Result::Stopped)) == "Stopped");
+    {
+        report::Summary stopped = s;
+        stopped.result = Result::Stopped;
+        report::Summary stoppedBack;
+        CHECK(has(report::summaryJson(stopped), "\"result\": \"stopped\""));
+        CHECK(report::parseSummary(report::summaryJson(stopped), stoppedBack) && stoppedBack.result == Result::Stopped);
+    }
 
     // report.txt, as `--report latest` prints it
     const std::string text = report::reportText(ja, s, "~/.local/state/frameeyeosc/reports/fit_2026-10-06_20-45-09/");
@@ -630,11 +654,68 @@ void testRetention() {
     }
     CHECK(!exists(records + "/fit_2026-10-05_08-00-00") && !exists(records + "/calib-wear_2026-10-05_09-00-00"));
     CHECK(exists(records + "/notes/x.txt") && exists(records + "/readme.txt"));
-    // A folder with a folder in it isn't emptied blindly
+    // A folder with something else in it: only the record's files go, the rest (and so the folder) stays
     ::mkdir((records + "/" + kept.back() + "/inner").c_str(), 0700);
+    writeText(records + "/" + kept.back() + "/mine.txt", "mine");
     CHECK(report::prune(records, 9) == 0);
-    CHECK(exists(records + "/" + kept.back() + "/inner"));
-    CHECK(report::list(records).size() == 10);
+    CHECK(exists(records + "/" + kept.back() + "/inner") && exists(records + "/" + kept.back() + "/mine.txt"));
+    CHECK(!exists(records + "/" + kept.back() + "/summary.json"));
+    CHECK(!exists(records + "/" + kept.back() + "/report.txt"));
+    CHECK(report::list(records).size() == 9);
+    removeAll(records + "/" + kept.back());
+
+    // Newest by summary.json's start, not by the local time in the names: written after the time zone moved 21 hours
+    // west, the newest record's name looks the oldest, and yet the oldest by its start is the one deleted
+    const auto writeAt = [&](Kind kind, double start) {
+        report::Pending pending;
+        pending.summary = fitSummary();
+        pending.summary.kind = kind;
+        pending.summary.start = start;
+        pending.summary.end = start + 5;
+        std::string folder;
+        std::string error;
+        CHECK(report::writeRecord(records, pending, sources, folder, error));
+        return folder;
+    };
+    writeAt(Kind::Recenter, jst(2026, 10, 5, 20, 0, 0));
+    CHECK(report::folders(records).size() == 10);
+    ::setenv("TZ", "AOE12", 1);
+    ::tzset();
+    const std::string west = writeAt(Kind::Fit, jst(2026, 10, 5, 21, 0, 0));
+    ::setenv("TZ", "JST-9", 1);
+    ::tzset();
+    CHECK(west == "fit_2026-10-05_00-00-00");
+    std::vector<std::string> now = report::folders(records);
+    CHECK(now.size() == 10 && !now.empty() && now.front() == west);
+    CHECK(exists(records + "/" + west + "/summary.json"));
+    CHECK(!exists(records + "/calib-wear_2026-10-05_11-00-00"));  // the oldest by its start
+    // The clock stepped back: the record just written is the oldest by its start, and still never deleted
+    const std::string back = writeAt(Kind::Recenter, jst(2026, 10, 1, 9, 0, 0));
+    CHECK(exists(records + "/" + back + "/summary.json"));
+    now = report::folders(records);
+    CHECK(now.size() == 11 && !now.empty() && now.back() == back);
+
+    // A link named like a record (to a folder elsewhere) is never one: not listed, and nothing in it deleted
+    const std::string elsewhere = dir + "/elsewhere";
+    ::mkdir(elsewhere.c_str(), 0700);
+    writeText(elsewhere + "/summary.json", report::summaryJson(fitSummary()));
+    writeText(elsewhere + "/report.txt", "mine");
+    const std::string link = records + "/fit_2026-10-07_00-00-00";
+    CHECK(::symlink("../elsewhere", link.c_str()) == 0);
+    for (const std::string& name : report::folders(records)) CHECK(name != "fit_2026-10-07_00-00-00");
+    // A record with a file of someone else's in it: its own files go, the folder stays
+    writeText(records + "/" + now.front() + "/notes.txt", "mine");
+    // Everything pruned
+    CHECK(report::prune(records, 0) == 10);
+    struct stat st {};
+    CHECK(::lstat(link.c_str(), &st) == 0 && S_ISLNK(st.st_mode));
+    CHECK(exists(elsewhere + "/summary.json") && exists(elsewhere + "/report.txt"));
+    CHECK(exists(records + "/" + now.front() + "/notes.txt") && !exists(records + "/" + now.front() + "/summary.json"));
+    CHECK(exists(records + "/notes/x.txt") && exists(records + "/readme.txt"));
+    std::vector<std::string> left = names(records);
+    std::sort(left.begin(), left.end());
+    CHECK(left == std::vector<std::string>({"fit_2026-10-07_00-00-00", now.front(), "notes", "readme.txt"}) ||
+          left == std::vector<std::string>({now.front(), "fit_2026-10-07_00-00-00", "notes", "readme.txt"}));
 }
 
 void testRun() {
@@ -658,12 +739,42 @@ void testRun() {
           "{\"t\":100.000,\"frameeyeosc\":{\"pid\":7,\"rate\":90.5},\"eyecam\":null}\n"
           "{\"t\":101.000,\"frameeyeosc\":{\"pid\":7},\"eyecam\":{\"state\":\"calibrating\"}}\n"
           "{\"t\":102.100,\"frameeyeosc\":null,\"eyecam\":{}}\n");
-    // status.jsonl stops at its cap
+    // A long run: status.jsonl keeps its start (kStatusHeadBytes) and its newest lines, with a line between them
+    // saying how many were left out
     run.begin(Kind::Fit, 0.0);
     const std::string big = "{\"pad\": \"" + std::string(3000, 'x') + "\"}";
-    for (int i = 0; i < 200; ++i) run.sample(i, big, big);
+    const int count = 200;
+    for (int i = 0; i < count; ++i) CHECK(run.sample(i, big, big));
     const report::Pending capped = run.finish(200.0);
-    CHECK(!capped.statusLines.empty() && capped.statusLines.size() <= report::kMaxStatusBytes);
+    CHECK(capped.statusLines.size() <= report::kMaxStatusBytes &&
+          capped.statusLines.size() > report::kMaxStatusBytes - 16 * 1024);
+    {
+        std::vector<std::string> lines;
+        std::istringstream in(capped.statusLines);
+        for (std::string line; std::getline(in, line);) lines.push_back(line);
+        size_t marker = lines.size();
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (lines[i].rfind("{\"left_out\":", 0) == 0) marker = i;
+        }
+        CHECK(marker < lines.size());
+        if (marker < lines.size()) {
+            const int skipped = std::atoi(lines[marker].c_str() + std::strlen("{\"left_out\":"));
+            const int head = static_cast<int>(marker);
+            const int tail = static_cast<int>(lines.size() - marker - 1);
+            CHECK(head > 0 && tail > head && head + skipped + tail == count);
+            CHECK(has(lines[marker], "lines left out") && report::compactJson(lines[marker]) == lines[marker]);
+            // The start, then (after the gap) the newest, each a second apart, up to the last
+            for (int i = 0; i < head; ++i) CHECK(lines[i].rfind(format("{\"t\":%d.000,", i), 0) == 0);
+            for (int i = 0; i < tail; ++i) {
+                CHECK(lines[marker + 1 + i].rfind(format("{\"t\":%d.000,", head + skipped + i), 0) == 0);
+            }
+            CHECK(lines.back().rfind(format("{\"t\":%d.000,", count - 1), 0) == 0);
+            // The start within its share
+            size_t headBytes = 0;
+            for (int i = 0; i < head; ++i) headBytes += lines[i].size() + 1;
+            CHECK(headBytes <= report::kStatusHeadBytes);
+        }
+    }
     // A new run starts afresh
     run.begin(Kind::Recenter, 300.0);
     CHECK(run.finish(301.0).statusLines.empty());
@@ -674,17 +785,17 @@ void testCalibWatch() {
     // Seen calibrating, then idle (or error): over
     {
         CalibWatch w;
-        CHECK(!w.follow(false, false, 0.0));  // nothing followed
+        CHECK(!w.follow(false, true, false, 0.0));  // nothing followed
         w.start(100.0);
         CHECK(w.active());
-        CHECK(!w.follow(false, true, 100.1));   // the reply on its way, eyecam-rec still idle
-        CHECK(!w.follow(false, false, 100.3));  // took it, not calibrating yet
-        CHECK(!w.follow(true, false, 101.0));
-        CHECK(!w.replied(false));               // an error after it began isn't a refusal
-        CHECK(!w.follow(true, false, 119.0));
-        CHECK(w.follow(false, false, 119.1));
-        CHECK(!w.active() && !w.stopped());
-        CHECK(!w.follow(false, false, 119.2));  // once
+        CHECK(!w.follow(false, true, true, 100.1));   // the reply on its way, eyecam-rec still idle
+        CHECK(!w.follow(false, true, false, 100.3));  // took it, not calibrating yet
+        CHECK(!w.follow(true, true, false, 101.0));
+        CHECK(!w.replied(false));                     // an error after it began isn't a refusal
+        CHECK(!w.follow(true, true, false, 119.0));
+        CHECK(w.follow(false, true, false, 119.1));
+        CHECK(!w.active() && !w.stopped() && !w.silent());
+        CHECK(!w.follow(false, true, false, 119.2));  // once
     }
     // Refused: over at once
     {
@@ -699,9 +810,34 @@ void testCalibWatch() {
     {
         CalibWatch w;
         w.start(0.0);
-        CHECK(!w.follow(false, true, CalibWatch::kStartSec + 5));
-        CHECK(!w.follow(false, false, CalibWatch::kStartSec - 1));
-        CHECK(w.follow(false, false, CalibWatch::kStartSec + 1));
+        CHECK(!w.follow(false, true, true, CalibWatch::kStartSec + 5));
+        CHECK(!w.follow(false, true, false, CalibWatch::kStartSec - 1));
+        CHECK(w.follow(false, true, false, CalibWatch::kStartSec + 1));
+    }
+    // eyecam-rec gone mid-calibration (its status.json no longer fresh): a stale "calibrating" or "idle" says nothing;
+    // kSilentSec after it last said "calibrating", over, as silent
+    {
+        CalibWatch w;
+        w.start(0.0);
+        CHECK(!w.follow(true, true, false, 2.0));
+        CHECK(!w.follow(true, false, false, 3.0));    // stale "calibrating"
+        CHECK(!w.follow(false, false, false, 60.0));  // stale anything
+        CHECK(!w.follow(true, false, false, 2.0 + CalibWatch::kSilentSec - 0.1));
+        CHECK(w.active());
+        CHECK(w.follow(true, false, false, 2.0 + CalibWatch::kSilentSec + 0.1));
+        CHECK(!w.active() && w.silent() && !w.stopped());
+        // Fresh again before then: it goes on as before
+        w.start(0.0);
+        CHECK(!w.silent());
+        CHECK(!w.follow(true, true, false, 2.0));
+        CHECK(!w.follow(true, false, false, 100.0));
+        CHECK(!w.follow(true, true, false, 110.0));
+        CHECK(!w.follow(true, false, false, 200.0));  // 90 s since the last fresh "calibrating"
+        CHECK(w.follow(false, true, false, 201.0) && !w.silent());
+        // Never seen calibrating, and nothing fresh after the command: over after kSilentSec, not kStartSec
+        w.start(0.0);
+        CHECK(!w.follow(false, false, false, CalibWatch::kStartSec + 1));
+        CHECK(w.follow(false, false, false, CalibWatch::kSilentSec + 1) && w.silent());
     }
     // "Stop" during it
     {
@@ -709,9 +845,9 @@ void testCalibWatch() {
         w.stop();
         CHECK(!w.stopped());  // nothing followed
         w.start(0.0);
-        w.follow(true, false, 1.0);
+        w.follow(true, true, false, 1.0);
         w.stop();
-        CHECK(w.follow(false, false, 2.0) && w.stopped());
+        CHECK(w.follow(false, true, false, 2.0) && w.stopped());
         w.start(5.0);
         CHECK(!w.stopped());
         w.end();
@@ -803,6 +939,30 @@ void testUiState() {
     AdvPage page = AdvPage::Version;
     CHECK(ui_state::parsePage("trouble", page) && page == AdvPage::Trouble);
     CHECK(!ui_state::parsePage("Trouble", page));
+
+    // The Eyelids tab's: the first time Look, kept beside the Advanced tab's (each write keeps the other)
+    ::unlink(path.c_str());
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Look);
+    for (const LidsPage lids : {LidsPage::Fine, LidsPage::Blinks, LidsPage::Look, LidsPage::Fine}) {
+        CHECK(ui_state::writeLidsPage(path, lids, error));
+        CHECK(ui_state::readLidsPage(path) == lids);
+    }
+    CHECK(has(readText(path), "\"lids_page\": \"fine\""));
+    CHECK(ui_state::writePage(path, AdvPage::Tools, error));
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Fine && ui_state::readPage(path) == AdvPage::Tools);
+    CHECK(ui_state::writeLidsPage(path, LidsPage::Blinks, error));
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Blinks && ui_state::readPage(path) == AdvPage::Tools);
+    // Broken or unknown: Look
+    writeText(path, "{\"lids_page\": \"marks\", \"advanced_page\": \"files\"}");
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Look && ui_state::readPage(path) == AdvPage::Files);
+    writeText(path, "{\"lids_page\": 2}");
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Look);
+    writeText(path, "{\"lids_page\": ");
+    CHECK(ui_state::readLidsPage(path) == LidsPage::Look);
+    CHECK(!exists(path + ".tmp"));
+    LidsPage lids = LidsPage::Look;
+    CHECK(ui_state::parseLidsPage("blinks", lids) && lids == LidsPage::Blinks);
+    CHECK(!ui_state::parseLidsPage("Fine", lids) && lids == LidsPage::Blinks);
 }
 
 }  // namespace

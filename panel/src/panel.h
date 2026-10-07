@@ -59,7 +59,8 @@ enum class PanelAction {
     FitReset,          ///< the fit back to the defaults (fitResetKeys: the gaze fit, lid_fit_*, lid_scale_*)
     FitDetails,        ///< open / close "Fine-tune" (handled inside the panel)
     FitDetailsPage,    ///< show arg (0 gaze, 1 eyelids) under "Fine-tune" (handled inside the panel)
-    LidMarks,          ///< open / close "Fine-tune" on the Eyelids tab (handled inside the panel)
+    LidsPage,          ///< show the Eyelids tab's sub-tab arg (LidsPage; handled inside the panel, which opens the tab;
+                       ///< the caller remembers it, see lidsPage)
     SetLidWiden,       ///< lid_widen = kLidWidenModes[arg]
     LidPreset,         ///< eyelid smoothing preset arg (0 light, 1 medium, 2 strong)
     NumberSlider,      ///< a setting's slider (key): pressed and dragged inside the panel; the caller takes the value
@@ -216,6 +217,15 @@ public:
         advPage_ = page;
     }
 
+    /** @return the Eyelids tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
+    LidsPage lidsPage() const { return lidsPage_; }
+
+    /**
+     * Choose the Eyelids tab's sub-tab (the one remembered from before, at start; or for --lids-page).
+     * @param page the sub-tab
+     */
+    void setLidsPage(LidsPage page) { lidsPage_ = page; }
+
     /**
      * Show a record on the Advanced tab ("Having trouble"), as its "View" does (for --record).
      * @param folder its folder name
@@ -239,12 +249,6 @@ public:
      * @param open whether it is open
      */
     void setFitDetails(bool open) { fitDetails_ = open; }
-
-    /**
-     * Show the lid marks on the Eyelids tab although the eyes are fitted (they are folded away then).
-     * @param open whether they show
-     */
-    void setLidMarks(bool open) { lidMarksOpen_ = open; }
 
     /**
      * Which values "Fine-tune" shows.
@@ -461,7 +465,6 @@ private:
     PanelTab tab_ = PanelTab::Basic;
     bool fitDetails_ = false;  ///< "Fine-tune" is open on the Eye fit tab
     int fitDetailsPage_ = 0;   ///< what "Fine-tune" shows: 0 = gaze, 1 = eyelids
-    bool lidMarksOpen_ = false;  ///< the lid marks show on the Eyelids tab although the eyes are fitted
     bool quitArmed_ = false;
     double quitArmedUntil_ = 0.0;
     bool resetArmed_ = false;
@@ -486,6 +489,7 @@ private:
     double advViewH_ = 0.0;             ///< the height it is shown in
     bool advScrollable_ = false;        ///< the last draw showed the page scrolled, with ▲ / ▼ (it didn't fit)
     AdvPage advPage_ = AdvPage::Version;  ///< the Advanced tab's sub-tab
+    LidsPage lidsPage_ = LidsPage::Look;  ///< the Eyelids tab's sub-tab
     std::string recordOpen_;            ///< the record shown on the Advanced tab ("" = none)
     bool recordsAllOpen_ = false;       ///< all records are listed on the Advanced tab (a record may be open over them)
     std::vector<std::string> recordNames_;  ///< the records as last drawn (RecordOpen's arg is an index)
@@ -660,13 +664,35 @@ private:
                     const PanelHit& hit, bool usable, bool accent, double textSize = 19);
 
     /**
-     * The Eyelids tab.
+     * The Eyelids tab: its sub-tabs, and under them the one chosen.
      * @param pen drawing tools
      * @param t texts
      * @param model the model
      * @param view the settings shown
      */
     void drawLids(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The Eyelids tab's "Look": where the eyelids come from now, how easily widening shows (one row saying it can't
+     * on a SteamOS that caps openness, without the cameras), the smoothing presets and the lid sync slider.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model
+     * @param v the settings shown
+     * @param top where it starts
+     */
+    void drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double top);
+
+    /**
+     * The Eyelids tab's "Blinks & squint": the blink hold, blinking both eyes together and the lowest eyelid when
+     * narrowed, each with its note beside it.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model
+     * @param v the settings shown
+     * @param top where it starts
+     */
+    void drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double top);
 
     /**
      * The Advanced tab.
@@ -687,6 +713,17 @@ private:
      * @param h its height
      */
     void drawSubTabs(const Pen& pen, const UiText& t, const PanelModel& model, double y, double h);
+
+    /**
+     * A tab's sub-tabs: a segmented control across the card, one text size for all (the largest at which each fits).
+     * @param pen drawing tools
+     * @param y its top
+     * @param h its height
+     * @param pages the sub-tabs: their labels and buttons
+     * @param selected the one shown (its button can't be pressed)
+     * @param dot the one with a dot after its label (-1 = none)
+     */
+    void drawPageSwitch(const Pen& pen, double y, double h, const std::vector<Option>& pages, int selected, int dot);
 
     /**
      * A page drawn into a view: as it is when it fits; else a little narrower beside ▲ / ▼, clipped to the view and
@@ -993,14 +1030,16 @@ private:
     double numberAt(const std::string& name, double x) const;
 
     /**
-     * "Fine-tune" on the Eyelids tab, open: the auto calibration (eyes without a fit, not from the cameras), the
-     * per-eye scales, the openness bars with the four marks and their values, and the smoothing values.
+     * The Eyelids tab's "Fine-tune": a line on what decides the eyelids, the auto calibration (eyes without a fit,
+     * not from the cameras), the per-eye scales, the openness bars with the four marks and their values, and the
+     * smoothing values.
      * @param pen drawing tools
      * @param t texts
      * @param m the model
      * @param v the settings shown
+     * @param top where it starts
      */
-    void drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v);
+    void drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double top);
 
     /**
      * A button with an icon before its label (centered together).

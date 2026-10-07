@@ -113,6 +113,8 @@ double iconCenterY(cairo_t* cr, icon::Icon which, double baseline, double size) 
  */
 void drawIcon(cairo_t* cr, icon::Icon which, double x, double baseline, double size, bool bold) {
     using icon::Icon;
+    // Nothing to draw at no size (and scaling by 0 would break cairo's state for what is drawn after)
+    if (!(size > 0)) return;
     const double cx = x + icon::advance(which, size) / 2;
     const double cy = iconCenterY(cr, which, baseline, size);
     const double s = size;

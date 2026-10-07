@@ -164,6 +164,8 @@ pub struct Live {
     /// Whether each eye's values are new enough to use: eyecam-rec processing, the eye valid, and captured at most
     /// FRESH_NS before they were read.
     pub fresh: [bool; 2],
+    /// Each eye camera's frame interval as measured (FrameGaps), in ns; 0 while it is not known yet.
+    pub frame_ns: [u64; 2],
 }
 
 impl Live {
@@ -182,6 +184,7 @@ impl Live {
             live: record.live,
             eyes: record.eyes,
             fresh,
+            frame_ns: [0; 2],
         }
     }
 
@@ -216,9 +219,9 @@ impl Live {
 
 /// One eye's frame interval, from the capture times of the values read: the median of the last few gaps (under a
 /// second) between new values. Values read less often than the camera delivers make the gaps longer, which only
-/// makes the limit more lenient.
+/// makes the limit more lenient. The replay works it out the same way from the recorded ages.
 #[derive(Default)]
-struct FrameGaps {
+pub(crate) struct FrameGaps {
     last_ns: u64,
     gaps: std::collections::VecDeque<u64>,
 }
@@ -226,7 +229,7 @@ struct FrameGaps {
 impl FrameGaps {
     const KEEP: usize = 9;
 
-    fn note(&mut self, time_ns: u64) {
+    pub(crate) fn note(&mut self, time_ns: u64) {
         if time_ns == self.last_ns {
             return;
         }
@@ -239,11 +242,16 @@ impl FrameGaps {
         self.last_ns = time_ns;
     }
 
-    /// How long a value stays fresh: FRESH_NS, or two frame intervals when that is longer.
-    fn fresh_ns(&self) -> u64 {
+    /// The frame interval: the median gap, 0 before there is one.
+    pub(crate) fn frame_ns(&self) -> u64 {
         let mut gaps: Vec<u64> = self.gaps.iter().copied().collect();
         gaps.sort_unstable();
-        gaps.get(gaps.len() / 2).map_or(FRESH_NS, |gap| FRESH_NS.max(2 * gap))
+        gaps.get(gaps.len() / 2).copied().unwrap_or(0)
+    }
+
+    /// How long a value stays fresh: FRESH_NS, or two frame intervals when that is longer.
+    fn fresh_ns(&self) -> u64 {
+        FRESH_NS.max(2 * self.frame_ns())
     }
 }
 
@@ -399,7 +407,9 @@ impl LiveReader {
                 for (gaps, eye) in self.gaps.iter_mut().zip(&record.eyes) {
                     gaps.note(eye.time_ns);
                 }
-                Some(Live::new(&record, now_ns, self.gaps.each_ref().map(FrameGaps::fresh_ns)))
+                let mut live = Live::new(&record, now_ns, self.gaps.each_ref().map(FrameGaps::fresh_ns));
+                live.frame_ns = self.gaps.each_ref().map(FrameGaps::frame_ns);
+                Some(live)
             }
             Err(_) => {
                 // Rewritten as something else: let go, and say why at the next check
@@ -628,6 +638,8 @@ pub mod tests {
             slow.note(NOW + k * 66_666_667);
         }
         assert_eq!(slow.fresh_ns(), 133_333_334);
+        assert_eq!((gaps.frame_ns(), slow.frame_ns()), (11_111_111, 66_666_667));
+        assert_eq!(FrameGaps::default().frame_ns(), 0);
         // A pause of a second or more is not a frame interval
         slow.note(NOW + 60_000_000_000);
         assert_eq!(slow.fresh_ns(), 133_333_334);
@@ -646,6 +658,7 @@ pub mod tests {
             values = reader.read(at + 120_000_000);
         }
         assert_eq!(values.unwrap().fresh, [true; 2]);
+        assert_eq!(values.unwrap().frame_ns, [66_666_667; 2]);
         assert_eq!(reader.read(NOW + 9 * 66_666_667 + 140_000_000).unwrap().fresh, [false; 2]);
     }
 

@@ -76,10 +76,15 @@ python convert.py rec_2026-10-03_15-00-00 --dump   # lock_dump.png（枠合わ�
 2026-10-07 に片目ずつ閉じて確かめた（Valve の目ごとの開き具合は閉じた目で 0 になり、eyecam はもう片方の目を閉じたと言っていた）。
 それまでは小さい方を L と呼んでいて（0.7.2〜）、左右が逆だった（look_up での瞳の動きや虹彩の大きさでは左右を見分けられなかった）。
 決めた理由は meta.txt の `camera_assignment` に残る。画の見た目でグループ分けした結果が並びと食い違ったら、そこに `WARNING` が付く
-（自動では入れ替えない）。万一逆だったら `--swap` を付ける。
+（自動では入れ替えない）。`--swap` は L と R の**名前だけ**を入れ替える（試す用）。上下反転はカメラについていくので、名前を入れ替えても
+左目のカメラ（アドレスが後ろのほう）の画が反転され、もう片方はそのまま。左右がおかしく見えても `--swap` では直らない
+（`camera_assignment` と、片目ずつ閉じたときの Valve の開き具合を見て、issue で知らせてね）。
 raw は無加工で、左目のカメラの画は上下逆さまのまま保存している（convert.py は見る用にだけ上下反転する。180° 回転ではない）。
+どのファイルが逆さまかは meta.txt の `upside_down_eye`（`L` / `R`。`--swap` で録ると `R`。片目しか流れていないときは `none`）。
 2026-10-07 からの録画は meta.txt に `eye_files=anatomical` があり、eye_L.raw が左目。それより前の録画（これがない）は
 eye_L.raw が右目、eye_R.raw が左目（上下逆さま）。`--replay` と convert.py はこれを見て読む。
+片目しか流れていない（`--allow-one-eye` で録る・ライブ処理する）ときは、どちらの目かわからない。L と呼ぶが、画は反転しない
+（2026-10-07 より前と同じ。meta.txt の `camera_assignment` にもそう書く）。
 
 ## 常駐モード（`--serve`）
 
@@ -491,6 +496,8 @@ eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-28-05 --calib user --user-calib
 `eye_files=anatomical` がない古いセッション（eye_L.raw が右目）は自動で入れ替えて読む。画の位置で L/R を決めていたころの
 `slot_camera=1,1,1,1,0,0,0,0` の録画や、`fix_swap.py` をかけた録画（`repaired_swap=1`）も、それぞれのファイルが本当に入っている
 目として読む（`--swap` で反転）。どのカメラの画も、前のビルドと同じ向き・同じ処理で流れて、目の名前だけが正しくなる。
+上下反転はカメラ（ファイル）についていく: `--swap` でファイルと目の組み合わせを入れ替えても、逆さまのカメラのファイルだけが反転される。
+`--swap` で録った録画も、meta.txt の `upside_down_eye`（なければ `swap`）を見て、逆さまのカメラのファイルを反転する。
 
 ### 遅いカメラ（`--resample` で 72・45・18・15 fps にした録画）
 
@@ -700,7 +707,7 @@ dark の合図で暗い画面（暗いシーン、ダッシュボードを閉じ
 
 | ファイル | 中身 |
 |---|---|
-| `eye_L.raw`, `eye_R.raw` | 400×400 の 8bit グレーを記録順にベタ書き（1 フレーム 160000 バイト、ヘッダなし、無反転。左目は上下逆さま）。eye_L.raw が左目（`eye_files=anatomical` がない 2026-10-07 より前の録画は逆） |
+| `eye_L.raw`, `eye_R.raw` | 400×400 の 8bit グレーを記録順にベタ書き（1 フレーム 160000 バイト、ヘッダなし、無反転。左目のカメラの画は上下逆さまで、そのファイルは meta.txt の `upside_down_eye`）。eye_L.raw が左目（`eye_files=anatomical` がない 2026-10-07 より前の録画は逆） |
 | `frames.csv` | 1 フレーム 1 行: `index, eye, eye_index, slot, t_cam, t_raw, t_copy, valve_seq`。`eye_index` がその目の raw の何枚目か。`t_cam` はカメラのタイムスタンプ（スロットのヘッダに入っている）、`t_raw` はスロットが書き換わり始めた時刻、`t_copy` は読み終えた時刻 |
 | `headers.bin` | フレーム直前の 64 バイトヘッダの生データ（frames.csv と同じ順）。先頭 8 バイトが `t_cam`（u64、ns）、残りは今のところ 0 |
 | `valve.csv` | Valve のサンプル 1 件 1 行: `valve_seq, t_seen, sample_time, producer_state, sample_flag, open_l/r, gaze_l/r, cov, fix, pre_l/r, precov, extra_0..7` |
@@ -754,11 +761,11 @@ eye_L.raw と eye_R.raw を名前の付け替えで入れ替え、frames.csv の
 --seconds N        録画時間（既定 120、プロトコルがあればその長さ + 1.5）
 --out DIR          保存先（既定 ~/eyecam）
 --cues FILE        1 回録るモードで、ビープの合図を鳴らして cues.csv に記録
---swap             L と R の割り当てを入れ替える（ふつうは要らない）
+--swap             L と R の名前を入れ替える（上下反転はカメラについたまま。ふつうは要らない）
 --wait-grab N      eyecam-grab を待つ秒数（既定 600。--serve は無期限）
 --wait-lock N      映像が見つかるまで待つ秒数（既定 300、外して再探索するときも同じ）
 --prox-min V       近接センサーがこの値を 1 秒続けて超えたら装着中とみなす（既定 20）。映像を探す間隔と、status.json の search に使う
---allow-one-eye    片目しか流れていなくても録る
+--allow-one-eye    片目しか流れていなくても録る（どちらの目かわからないので L と呼び、画は反転しない）
 --full-width       512 バイトの行のまま保存（パディング込み。枠合わせを疑うとき用）
 --no-beep / --volume V
 ```

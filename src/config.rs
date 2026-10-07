@@ -20,6 +20,8 @@ const GAZE_OFFSET_RANGE: std::ops::RangeInclusive<f32> = -0.5..=0.5;
 const GAZE_GAIN_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 // Allowed headset tilt (degrees).
 const GAZE_ROLL_RANGE: std::ops::RangeInclusive<f32> = -20.0..=20.0;
+// camera_lid_floor, in VRCFT units: up to relaxed open.
+const CAMERA_LID_FLOOR_RANGE: std::ops::RangeInclusive<f32> = 0.0..=0.75;
 // A fitted eye's open readings must be at least this far above its closed one.
 const LID_FIT_MIN_RANGE: f32 = 0.1;
 // A gaze capture's target name is only echoed back, so it is kept short.
@@ -105,8 +107,8 @@ pub struct Settings {
     /// avatars without VRCFT parameters.
     pub native_eyes: bool,
     /// Use eyecam-rec's eye-camera values (see eyecam_live) while they are fresh: each eye's eyelid from relaxed open
-    /// up (widening) and squint once the camera is calibrated for this wear, and its pupil. Closing stays the eye
-    /// server's.
+    /// up (widening), where it sees the eye closed or open through a squint (see main.rs, Smoother::check_lids), and
+    /// its squint, once the camera is calibrated for this wear; and its pupil. Blinks stay the eye server's.
     pub camera_lids: bool,
     /// In LiveLink mode, also send the eye camera's pupils (only those) straight to VRChat over OSC, on port 9000 of
     /// the LiveLink target's host: VRCFT's LiveLink module has no pupils. Ignored by the other outputs.
@@ -142,6 +144,10 @@ pub struct Settings {
     pub blink_hold_ms: f32,
     pub despike: bool,
     pub blink_sync_below: f32,
+    /// While the eye camera's values for an eye are used and it sees the eye open, the sent eyelid (VRCFT) goes no
+    /// lower than this, so a hard squint shows narrowed and the squint parameter carries the rest; closing (a blink
+    /// within the grace period, or the camera seeing the eye closed) still reaches 0. 0 = off.
+    pub camera_lid_floor: f32,
     /// Gaze zero point and how far the gaze goes, on the -1..1 scale (see `correct_gaze`).
     pub gaze_offset_x: f32,
     pub gaze_offset_y: f32,
@@ -221,6 +227,7 @@ impl Default for Settings {
             blink_hold_ms: 80.0,
             despike: true,
             blink_sync_below: 0.35,
+            camera_lid_floor: 0.0,
             gaze_offset_x: 0.0,
             gaze_offset_y: 0.0,
             gaze_gain_x: 1.0,
@@ -306,6 +313,7 @@ impl Settings {
             self.gaze_quality_limit,
             self.blink_hold_ms,
             self.blink_sync_below,
+            self.camera_lid_floor,
             self.gaze_offset_x,
             self.gaze_offset_y,
             self.gaze_gain_x,
@@ -366,6 +374,9 @@ impl Settings {
         }
         if self.gaze_quality_limit < 0.0 || self.blink_hold_ms < 0.0 || self.blink_sync_below < 0.0 {
             return Err("gaze_quality_limit, blink_hold_ms and blink_sync_below must be non-negative".into());
+        }
+        if !CAMERA_LID_FLOOR_RANGE.contains(&self.camera_lid_floor) {
+            return Err("camera_lid_floor must be between 0 and 0.75".into());
         }
         if !(GAZE_OFFSET_RANGE.contains(&self.gaze_offset_x) && GAZE_OFFSET_RANGE.contains(&self.gaze_offset_y)) {
             return Err("gaze_offset_x/y must be between -0.5 and 0.5".into());
@@ -566,6 +577,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
     }
     pin!(
         blink_sync_below,
+        camera_lid_floor,
         gaze_offset_x,
         gaze_offset_y,
         gaze_gain_x,
@@ -835,6 +847,9 @@ mod tests {
         assert!(merged(r#"{"gaze_quality_limit": -0.01}"#, &[]).is_err());
         assert!(merged(r#"{"blink_hold_ms": -1}"#, &[]).is_err());
         assert!(merged(r#"{"blink_sync_below": -0.1}"#, &[]).is_err());
+        assert!(merged(r#"{"camera_lid_floor": -0.05}"#, &[]).is_err());
+        assert!(merged(r#"{"camera_lid_floor": 0.8}"#, &[]).is_err());
+        assert!(merged(r#"{"camera_lid_floor": "low"}"#, &[]).is_err());
         assert!(merged(r#"{"despike": 1}"#, &[]).is_err());
         assert!(merged(r#"{"lid_wide": 1e300}"#, &[]).is_err());
         assert!(merged(r#"{"host": "192.168.0.60:9000"}"#, &[]).is_err());
@@ -907,6 +922,16 @@ mod tests {
         assert_eq!((settings.blink_hold_ms, settings.gaze_quality_limit), (120.0, 0.05));
         assert_eq!(settings.blink_sync_below, 0.0);
         assert_eq!(locked, ["despike", "blink_sync_below"]);
+
+        // camera_lid_floor: off (0) by default, 0 and 0.75 allowed, and the command line wins over the file
+        assert_eq!(merged("{}", &[]).unwrap().0.camera_lid_floor, 0.0);
+        for floor in ["0", "0.75"] {
+            let file = format!(r#"{{"camera_lid_floor": {floor}}}"#);
+            assert_eq!(merged(&file, &[]).unwrap().0.camera_lid_floor, floor.parse::<f32>().unwrap());
+        }
+        let (settings, locked) = merged(r#"{"camera_lid_floor": 0.4}"#, &["--camera-lid-floor", "0.1"]).unwrap();
+        assert_eq!((settings.camera_lid_floor, locked), (0.1, vec!["camera_lid_floor"]));
+        assert!(merged("{}", &["--camera-lid-floor", "0.9"]).is_err());
 
         // Negative numbers work as option values.
         let (settings, locked) = merged("{}", &["--gaze-offset-y", "-0.1", "--gaze-gain-down", "1.2"]).unwrap();

@@ -1,5 +1,6 @@
 // Tests for the Eyelids and eye cameras tabs as drawn (案E): which buttons they offer for each source of the eyelids
-// (the widening slider's routing, "Fine-tune" folded and open, the sensitivity slider moved off the eye cameras page)
+// (the widening slider's routing, its three sub-tabs each with its own controls inside the card and remembered while
+// other tabs show, the sensitivity slider moved off the eye cameras page)
 // and a setting's slider let go of, the setup's (3) with a pupil not found, and a calibration that went through without
 // one eye, the Advanced tab's sub-tabs (switching, remembered while other tabs show, the update notice to "Version",
 // the diagnostics from the eye cameras tab back to "Having trouble"), its pages fitting, the records (the newest three,
@@ -22,6 +23,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -179,48 +181,6 @@ void testWidenRouting(const FontSet& fonts) {
     }
 }
 
-void testFold(const FontSet& fonts) {
-    // Folded: the main rows (presets, the sync slider, "Fine-tune"); no marks, scales or One Euro values
-    EyePanel panel(fonts);
-    panel.setTab(PanelTab::Lids);
-    const PanelModel m = modelWith(Lids::Valve, false);
-    panel.render(m);
-    CHECK(hits(panel, PanelAction::LidMarks).size() == 1);
-    CHECK(hits(panel, PanelAction::LidPreset).size() == 3);
-    CHECK(hits(panel, PanelAction::NumberSlider, key::kLidSync).size() == 1);
-    CHECK(!hits(panel, PanelAction::Step, key::kBlinkHoldMs).empty());
-    CHECK(!hits(panel, PanelAction::Step, key::kBlinkSyncBelow).empty());
-    for (const char* hidden : {key::kLidClosed, key::kLidOpen, key::kLidMinCutoff, key::kLidBeta, key::kLidSync}) {
-        CHECK(hits(panel, PanelAction::Step, hidden).empty());
-    }
-    CHECK(hits(panel, PanelAction::ScaleAuto).empty());
-    CHECK(hits(panel, PanelAction::SetBool, key::kLidCalibration).empty());
-    // "Fine-tune" pressed: the details in their place, and the same button folds them again
-    const EyePanel::HitArea open = hits(panel, PanelAction::LidMarks)[0];
-    panel.pointerDown(open.x + open.w / 2, open.y + open.h / 2, 0.0);
-    panel.pointerUp();
-    panel.render(m);
-    for (const char* shown : {key::kLidClosed, key::kLidOpen, key::kLidMinCutoff, key::kLidBeta}) {
-        CHECK(!hits(panel, PanelAction::Step, shown).empty());
-    }
-    CHECK(hits(panel, PanelAction::ScaleAuto).size() == 1);
-    CHECK(hits(panel, PanelAction::SetBool, key::kLidCalibration).size() == 2);  // on / off (no eye fit)
-    CHECK(hits(panel, PanelAction::SetLidWiden).empty());
-    CHECK(hits(panel, PanelAction::LidPreset).empty());
-    const EyePanel::HitArea close = hits(panel, PanelAction::LidMarks)[0];
-    panel.pointerDown(close.x + close.w / 2, close.y + close.h / 2, 0.0);
-    panel.pointerUp();
-    panel.render(m);
-    CHECK(hits(panel, PanelAction::LidPreset).size() == 3);
-    CHECK(hits(panel, PanelAction::Step, key::kLidClosed).empty());
-    // Open with the cameras driving both: marks 3 and 4 can't be stepped, 1 and 2 can
-    panel.setLidMarks(true);
-    panel.render(modelWith(Lids::Both));
-    CHECK(!hits(panel, PanelAction::Step, key::kLidClosed).empty());
-    CHECK(hits(panel, PanelAction::Step, key::kLidWidenStart).empty());
-    CHECK(hits(panel, PanelAction::Step, key::kLidWide).empty());
-}
-
 void testSliderMoved(const FontSet& fonts) {
     // The eye cameras' page: no sensitivity slider any more, a pointer to the Eyelids tab instead
     EyePanel panel(fonts);
@@ -228,16 +188,17 @@ void testSliderMoved(const FontSet& fonts) {
     panel.setTab(PanelTab::Eyecam);
     panel.render(m);
     CHECK(hits(panel, PanelAction::EyecamSensitivity).empty());
-    CHECK(pointsTo(panel, PanelTab::Lids));
+    const std::vector<EyePanel::HitArea> pointer = hits(panel, PanelAction::LidsPage);
+    CHECK(pointer.size() == 1 && pointer[0].hit.arg == static_cast<int>(LidsPage::Look));
     CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() == 2);
     CHECK(hits(panel, PanelAction::EyecamCalib).size() == 2);
-    // ...the pointer goes there, where the slider is
-    for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) {
-        if (area.hit.arg != static_cast<int>(PanelTab::Lids) || area.y < 100) continue;
-        panel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+    // ...the pointer goes there, to "Look" where the slider is (also when another sub-tab was open last)
+    panel.setLidsPage(LidsPage::Fine);
+    if (pointer.size() == 1) {
+        panel.pointerDown(pointer[0].x + pointer[0].w / 2, pointer[0].y + pointer[0].h / 2, 0.0);
         panel.pointerUp();
-        break;
     }
+    CHECK(panel.tab() == PanelTab::Lids && panel.lidsPage() == LidsPage::Look);
     panel.render(m);
     CHECK(hits(panel, PanelAction::EyecamSensitivity).size() == 1);
 }
@@ -609,6 +570,141 @@ std::vector<int> subTabs(const EyePanel& panel) {
         if (area.y < 200) args.push_back(area.hit.arg);
     }
     return args;
+}
+
+/**
+ * The usable sub-tab buttons of the Eyelids tab as last drawn.
+ * @param panel the panel
+ * @return their args (the pages)
+ */
+std::vector<int> lidsTabs(const EyePanel& panel) {
+    std::vector<int> args;
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::LidsPage)) {
+        if (area.y < 200) args.push_back(area.hit.arg);
+    }
+    return args;
+}
+
+/**
+ * The image below the tabs' card (from 2 px under its edge to the bottom, right of the left column), as last drawn.
+ * @param panel the panel (rendered)
+ * @return its pixels
+ */
+std::vector<uint8_t> belowCard(EyePanel& panel) {
+    const std::vector<uint8_t>& rgba = panel.toRgba();
+    const size_t w = static_cast<size_t>(panel.width());
+    std::vector<uint8_t> band;
+    for (size_t y = 678; y < static_cast<size_t>(panel.height()); ++y) {
+        const size_t from = (y * w + 410) * 4;
+        band.insert(band.end(), rgba.begin() + from, rgba.begin() + (y + 1) * w * 4);
+    }
+    return band;
+}
+
+void testLidsPages(const FontSet& fonts) {
+    // The Eyelids tab's three sub-tabs, for each source of the eyelids: each with its own controls and none of the
+    // others', and nothing drawn or to press below the card
+    for (const Lids lids : {Lids::Valve, Lids::Saturated, Lids::Both, Lids::Left}) {
+        for (const bool eyecam : {true, false}) {
+            for (const Language language : {Language::Ja, Language::En}) {
+                PanelModel m = modelWith(lids, eyecam);
+                m.language = language;
+                // What is below the card on another tab (nothing of a tab's own reaches there)
+                EyePanel basic(fonts);
+                basic.render(m);
+                const std::vector<uint8_t> plain = belowCard(basic);
+                EyePanel panel(fonts);
+                panel.setTab(PanelTab::Lids);
+                for (const LidsPage page : {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine}) {
+                    panel.setLidsPage(page);
+                    panel.render(m);
+                    // The other two sub-tabs can be pressed
+                    std::vector<int> others;
+                    for (int i = 0; i < 3; ++i) {
+                        if (i != static_cast<int>(page)) others.push_back(i);
+                    }
+                    CHECK(lidsTabs(panel) == others);
+                    const bool look = page == LidsPage::Look;
+                    const bool blinks = page == LidsPage::Blinks;
+                    const bool fine = page == LidsPage::Fine;
+                    // Look: the widening (whatever drives it), the smoothing presets, the sync slider
+                    CHECK(hits(panel, PanelAction::LidPreset).size() == (look ? 3u : 0u));
+                    CHECK(hits(panel, PanelAction::NumberSlider, key::kLidSync).size() == (look ? 1u : 0u));
+                    if (!look) {
+                        CHECK(hits(panel, PanelAction::SetLidWiden).empty());
+                        CHECK(hits(panel, PanelAction::EyecamSensitivity).empty());
+                        CHECK(!pointsTo(panel, PanelTab::Eyecam));
+                    } else if (lids == Lids::Valve) {
+                        CHECK(hits(panel, PanelAction::SetLidWiden).size() == 4);
+                    } else if (lids == Lids::Saturated) {
+                        // One row: no slider, the way to the eye cameras while their tab is there
+                        CHECK(hits(panel, PanelAction::SetLidWiden).empty());
+                        CHECK(hits(panel, PanelAction::EyecamSensitivity).empty());
+                        CHECK(pointsTo(panel, PanelTab::Eyecam) == eyecam);
+                    } else {
+                        CHECK(hits(panel, PanelAction::SetLidWiden).empty());
+                        CHECK(hits(panel, PanelAction::EyecamSensitivity).size() == (eyecam ? 1u : 0u));
+                    }
+                    // Blinks & squint: the hold, both eyes together, and the eyelid floor (always there; off, its
+                    // minimum, by default: only + can be pressed)
+                    CHECK(hits(panel, PanelAction::Step, key::kBlinkHoldMs).empty() == !blinks);
+                    CHECK(hits(panel, PanelAction::Step, key::kBlinkSyncBelow).empty() == !blinks);
+                    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == (blinks ? 1u : 0u));
+                    // Fine-tune: the scales, the marks (3 and 4 not while the cameras drive both), the smoothing
+                    // values, and the auto calibration for eyes without a fit, unless the cameras drive both
+                    CHECK(hits(panel, PanelAction::ScaleAuto).size() == (fine ? 1u : 0u));
+                    for (const char* name : {key::kLidClosed, key::kLidOpen, key::kLidMinCutoff, key::kLidBeta}) {
+                        CHECK(hits(panel, PanelAction::Step, name).empty() == !fine);
+                    }
+                    const bool camerasBoth = lids == Lids::Both;
+                    for (const char* name : {key::kLidWidenStart, key::kLidWide}) {
+                        CHECK(hits(panel, PanelAction::Step, name).empty() == (!fine || camerasBoth));
+                    }
+                    const bool calibration = fine && !camerasBoth;
+                    CHECK(hits(panel, PanelAction::SetBool, key::kLidCalibration).size() == (calibration ? 2u : 0u));
+                    // Every button besides the tab row: inside the card, from the sub-tabs down
+                    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                        if (area.hit.action == PanelAction::Tab && area.y < 100) continue;
+                        CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676);
+                    }
+                    CHECK(belowCard(panel) == plain);
+                }
+            }
+        }
+    }
+}
+
+void testLidsRemembered(const FontSet& fonts) {
+    const PanelModel m = modelWith(Lids::Valve, false);
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Lids);
+    panel.render(m);
+    // The first time: "Look"
+    CHECK(panel.lidsPage() == LidsPage::Look);
+    CHECK((lidsTabs(panel) == std::vector<int> {1, 2}));
+    CHECK(pressArg(panel, PanelAction::LidsPage, static_cast<int>(LidsPage::Fine)).action == PanelAction::None);
+    CHECK(panel.lidsPage() == LidsPage::Fine && panel.tab() == PanelTab::Lids);
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::ScaleAuto).size() == 1);
+    // Kept while another tab shows (no sub-tabs there), shown again when the tab is chosen again
+    pressTab(panel, PanelTab::Basic);
+    panel.render(m);
+    CHECK(lidsTabs(panel).empty() && panel.lidsPage() == LidsPage::Fine);
+    pressTab(panel, PanelTab::Lids);
+    CHECK(panel.tab() == PanelTab::Lids && panel.lidsPage() == LidsPage::Fine);
+    // The Advanced tab's sub-tab is its own
+    panel.render(m);
+    pressTab(panel, PanelTab::Advanced);
+    panel.render(m);
+    pressArg(panel, PanelAction::AdvancedPage, static_cast<int>(AdvPage::Files));
+    CHECK(panel.advPage() == AdvPage::Files && panel.lidsPage() == LidsPage::Fine);
+    // As remembered from before (the caller sets it at start)
+    EyePanel next(fonts);
+    next.setLidsPage(LidsPage::Blinks);
+    next.setTab(PanelTab::Lids);
+    next.render(m);
+    CHECK((lidsTabs(next) == std::vector<int> {0, 2}));
+    CHECK(!hits(next, PanelAction::Step, key::kBlinkHoldMs).empty());
 }
 
 void testSubTabs(const FontSet& fonts) {
@@ -1290,17 +1386,26 @@ void testIconText(const FontSet& fonts) {
             CHECK(middle > baseline - size * 0.42 && middle < baseline - size * 0.22);
         }
     }
-    // Wrapping: an arrow never starts a line, and nothing is lost between the lines
+    // Wrapping: an arrow or a "›" never starts a line, nor a closing mark (one with an arrow joined to it, "」→",
+    // neither), and nothing is lost between the lines
     for (const Language language : {Language::Ja, Language::En}) {
         const UiText& t = uiText(language);
         for (const char* text : {t.setupPassKonsoleHow, t.setupCheckFlow, t.setupPassMemoText, t.recordSavedFit,
-                                 t.recordSavedCalib}) {
+                                 t.recordSavedCalib,
+                                 "「詳細」" ICON_ARROW_RIGHT "「困ったとき」" ICON_ARROW_RIGHT "「最近の記録」"}) {
             for (double width = 60; width <= 600; width += 7) {
                 const std::vector<std::string> lines = wrapText(pen, text, 15, false, width, 20);
                 std::string joined;
-                for (const std::string& line : lines) {
+                for (size_t n = 0; n < lines.size(); ++n) {
+                    const std::string& line = lines[n];
                     const size_t first = line.find_first_not_of(' ');
-                    CHECK(first == std::string::npos || icon::at(line, first) != icon::Icon::ArrowRight);
+                    CHECK(first == std::string::npos || (icon::at(line, first) != icon::Icon::ArrowRight &&
+                                                         icon::at(line, first) != icon::Icon::ChevronRight));
+                    if (n > 0 && first != std::string::npos) {
+                        for (const char* mark : {"」", "）", "。", "、"}) {
+                            CHECK(line.compare(first, std::strlen(mark), mark) != 0);
+                        }
+                    }
                     joined += line;
                 }
                 // (unless a word wider than the line was cut)
@@ -1326,7 +1431,8 @@ int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
     testWidenRouting(fonts);
-    testFold(fonts);
+    testLidsPages(fonts);
+    testLidsRemembered(fonts);
     testSliderMoved(fonts);
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);

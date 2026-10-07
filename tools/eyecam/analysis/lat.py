@@ -46,4 +46,4 @@ for s in (1, 2):
             sds.append(np.nanstd(d['skin_up_f'][mm]))
         wid = np.nanmedian(d['skin_up_f'][d['label'] == 'widen']) - np.nanmedian(d['skin_up_f'][d['label'] == 'normal'])
         pj = np.diff(d['pd_n'])[(d['label'][1:] == 'bright') & (d['label'][:-1] == 'bright')]
-        print(f'   skin_up jitter(frame) {jit:.4f} /R = {jit*{"L":53.5,"R":63.5}[e]:.2f}px; normal-seg SD (5-med) {np.mean(sds):.3f}; widen step {wid:.3f}; SNR frame {wid/jit:.1f}, seg {wid/np.mean(sds):.1f}; pupil_n jitter {np.nanstd(pj)/np.sqrt(2):.4f}')
+        print(f'   skin_up jitter(frame) {jit:.4f} /R = {jit*{"L":63.5,"R":53.5}[e]:.2f}px; normal-seg SD (5-med) {np.mean(sds):.3f}; widen step {wid:.3f}; SNR frame {wid/jit:.1f}, seg {wid/np.mean(sds):.1f}; pupil_n jitter {np.nanstd(pj)/np.sqrt(2):.4f}')

@@ -17,8 +17,9 @@ namespace ui_state {
 
 namespace {
 
-/** The member the sub-tab is kept in. */
+/** The members the sub-tabs are kept in. */
 constexpr const char* kPageKey = "advanced_page";
+constexpr const char* kLidsPageKey = "lids_page";
 
 /**
  * Make a folder and the ones above it.
@@ -49,6 +50,42 @@ JsonValue readObject(const std::string& path) {
     std::string error;
     if (text.str().size() <= 64 * 1024 && parseJson(text.str(), parsed, error) && parsed.isObject()) return parsed;
     return root;
+}
+
+/**
+ * Set one member of the file (the others are kept; written through a temporary file and rename).
+ * @param path the file (its folder is made if missing)
+ * @param key the member
+ * @param value its text
+ * @param error why it failed
+ * @return true if written
+ */
+bool writeMember(const std::string& path, const char* key, const char* value, std::string& error) {
+    const size_t slash = path.find_last_of('/');
+    if (slash != std::string::npos && !makeDirs(path.substr(0, slash))) {
+        error = "can't create " + path.substr(0, slash) + ": " + std::strerror(errno);
+        return false;
+    }
+    JsonValue root = readObject(path);
+    root.set(key, JsonValue::makeString(value));
+    const std::string text = writeJson(root);
+    const std::string temp = path + ".tmp";
+    {
+        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
+        out << text;
+        out.close();
+        if (!out) {
+            error = "can't write " + temp;
+            std::remove(temp.c_str());
+            return false;
+        }
+    }
+    if (std::rename(temp.c_str(), path.c_str()) != 0) {
+        error = "can't rename " + temp + ": " + std::strerror(errno);
+        std::remove(temp.c_str());
+        return false;
+    }
+    return true;
 }
 
 }  // namespace
@@ -94,31 +131,38 @@ AdvPage readPage(const std::string& path) {
 }
 
 bool writePage(const std::string& path, AdvPage page, std::string& error) {
-    const size_t slash = path.find_last_of('/');
-    if (slash != std::string::npos && !makeDirs(path.substr(0, slash))) {
-        error = "can't create " + path.substr(0, slash) + ": " + std::strerror(errno);
-        return false;
+    return writeMember(path, kPageKey, pageName(page), error);
+}
+
+const char* lidsPageName(LidsPage page) {
+    switch (page) {
+        case LidsPage::Look: return "look";
+        case LidsPage::Blinks: return "blinks";
+        case LidsPage::Fine: return "fine";
     }
-    JsonValue root = readObject(path);
-    root.set(kPageKey, JsonValue::makeString(pageName(page)));
-    const std::string text = writeJson(root);
-    const std::string temp = path + ".tmp";
-    {
-        std::ofstream out(temp, std::ios::binary | std::ios::trunc);
-        out << text;
-        out.close();
-        if (!out) {
-            error = "can't write " + temp;
-            std::remove(temp.c_str());
-            return false;
+    return "look";
+}
+
+bool parseLidsPage(const std::string& name, LidsPage& page) {
+    for (const LidsPage p : {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine}) {
+        if (name == lidsPageName(p)) {
+            page = p;
+            return true;
         }
     }
-    if (std::rename(temp.c_str(), path.c_str()) != 0) {
-        error = "can't rename " + temp + ": " + std::strerror(errno);
-        std::remove(temp.c_str());
-        return false;
-    }
-    return true;
+    return false;
+}
+
+LidsPage readLidsPage(const std::string& path) {
+    const JsonValue root = readObject(path);
+    const JsonValue* value = root.get(kLidsPageKey);
+    LidsPage page = LidsPage::Look;
+    if (value != nullptr && value->isString()) parseLidsPage(value->text, page);
+    return page;
+}
+
+bool writeLidsPage(const std::string& path, LidsPage page, std::string& error) {
+    return writeMember(path, kLidsPageKey, lidsPageName(page), error);
 }
 
 }  // namespace ui_state

@@ -6,9 +6,11 @@ SESS = {1: 'rec_2026-10-03_23-50-19', 2: 'rec_2026-10-03_23-51-59',
         3: 'rec_2026-10-04_00-34-28', 4: 'rec_2026-10-04_00-38-45', 5: 'rec_2026-10-04_00-41-34'}
 # HMD wear (taken fully off and on between wears); sessions 1 and 2 share one wear
 WEAR = {1: 'A', 2: 'A', 3: 'B', 4: 'C', 5: 'D'}
-# sessions whose eye_L/eye_R files hold the other camera (eyecam-rec numbered the cameras by picture position and
-# got it backwards: meta slot_camera=1,1,1,1,0,0,0,0, frames upside down after the usual flip, iris radii swapped)
-SWAPPED = {5}
+# Eyes are anatomical ('L' = the left eye), as eyecam names them since 2026-10-07. These sessions are older and
+# called the lower-address camera (the right eye's) L, so their eye_L.raw / frames.csv L hold the right eye; except
+# session 5, whose cameras eyecam-rec numbered by picture position (meta slot_camera=1,1,1,1,0,0,0,0): its eye_L.raw
+# holds the left eye (as replay.rs files_swapped reads them)
+SWAPPED = {1, 2, 3, 4}
 
 
 def file_eye(s, eye):
@@ -28,8 +30,8 @@ def frames(s, eye):
 
 
 def canon(img, eye):
-    """Raw -> upright: right eye flipped vertically."""
-    return img[::-1] if eye == 'R' else img
+    """Raw -> upright: the left eye's camera stores its picture upside down, so it is flipped vertically."""
+    return img[::-1] if eye == 'L' else img
 
 
 def read_csv(path):

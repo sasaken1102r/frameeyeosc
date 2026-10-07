@@ -2,9 +2,10 @@
 //! recording back through the same processing (--replay) to compare settings by a few numbers.
 
 use crate::config::{LidFit, Settings};
-use crate::eyecam_live::{Eye, Live};
+use crate::eyecam_live::{Eye, FrameGaps, Live};
 use crate::{
-    CAL_SETTLE, EyeData, LidCalibration, MAX_GAP, NOMINAL_DT, Sample, Saturation, Smoother, TIMEOUT, gaze_angles, step,
+    CAL_SETTLE, EyeData, LidCalibration, LidFrom, MAX_GAP, NOMINAL_DT, Sample, Saturation, Smoother, TIMEOUT,
+    gaze_angles, step,
 };
 use std::error::Error;
 use std::fs::{self, File};
@@ -94,6 +95,18 @@ fn values(data: &EyeData) -> Vec<f64> {
 const CAMERA_EYE_FIELDS: [&str; 10] =
     ["fresh", "valid", "closed", "lid", "wide", "squint", "pupil_mm", "pupil_dilation", "confidence", "age_ms"];
 
+// A recording keeps how old each camera frame was when read (age_ms), not when it was taken, so the replay works the
+// frame intervals out from the sample's time less that age. The same frame read with two samples comes out a little
+// apart that way (at most 2.9 ms over the 2026-10-04 and 10-07 recordings, with frames 11.1 ms apart), so a time
+// within this of the last frame's is that frame.
+const SAME_FRAME_NS: u64 = 4_000_000;
+
+// The last column of recordings made since eyecam names the eyes anatomically (after the eye camera's), "1" on rows with its values: cam_l_* is the
+// left eye. The eyecam of 0.7.2-0.7.5 called the right eye's camera L, so in recordings without this column cam_l_* is
+// the right eye and cam_r_* the left; they are read the other way round (camera_eyes_swapped). Only its name in the
+// header counts.
+const CAMERA_ANATOMICAL: &str = "cam_eyes_anatomical";
+
 /// Names of the eye camera's columns, after the eye server's: each eye's (CAMERA_EYE_FIELDS), then the calibration
 /// state and whether eyecam-rec was processing. Recordings from before there were any have none.
 fn camera_columns() -> Vec<String> {
@@ -122,10 +135,10 @@ fn camera_fields(camera: Option<(&Live, u64)>) -> Vec<String> {
     fields
 }
 
-/// The eye camera's values from a row's cells (in camera_columns order), as they were read for that sample: whether
-/// each eye's were fresh is as recorded, not judged again. None when the cells are empty; Err when they are not
-/// numbers.
-fn camera_from(cells: &[&str]) -> Result<Option<Live>, ()> {
+/// The eye camera's values from a row's cells (in camera_columns order), as they were read for that sample, and each
+/// eye's age_ms: whether each eye's were fresh is as recorded, not judged again. None when the cells are empty; Err
+/// when they are not numbers.
+fn camera_from(cells: &[&str]) -> Result<Option<(Live, [f64; 2])>, ()> {
     if cells.iter().all(|cell| cell.is_empty()) {
         return Ok(None);
     }
@@ -147,13 +160,42 @@ fn camera_from(cells: &[&str]) -> Result<Option<Live>, ()> {
         (value(0) != 0.0, eye)
     };
     let [(fresh_left, left), (fresh_right, right)] = [eye(0), eye(1)];
-    Ok(Some(Live {
+    let live = Live {
         calib_state: values[2 * per_eye] as u32,
         recalib_suggested: false,
         live: values[2 * per_eye + 1] != 0.0,
         eyes: [left, right],
         fresh: [fresh_left, fresh_right],
-    }))
+        frame_ns: [0; 2],
+    };
+    Ok(Some((live, [values[per_eye - 1], values[2 * per_eye - 1]])))
+}
+
+/// Each eye camera's frame interval as it would have been measured live (see FrameGaps), worked out from a recording's
+/// sample times and the ages of the camera frames read with them (see SAME_FRAME_NS).
+#[derive(Default)]
+struct RecordedGaps {
+    last_ns: [Option<u64>; 2],
+    gaps: [FrameGaps; 2],
+}
+
+impl RecordedGaps {
+    /// Note the frames read with the sample at `sample_time` (seconds) at `age_ms` old, and set `live`'s frame intervals.
+    fn note(&mut self, live: &mut Live, sample_time: f64, age_ms: [f64; 2]) {
+        for eye in 0..2 {
+            let taken = sample_time * 1e9 - age_ms[eye] * 1e6;
+            if taken.is_finite() && taken > 0.0 {
+                let taken = taken as u64;
+                let frame = match self.last_ns[eye] {
+                    Some(last) if last.abs_diff(taken) < SAME_FRAME_NS => last,
+                    _ => taken,
+                };
+                self.last_ns[eye] = Some(frame);
+                self.gaps[eye].note(frame);
+            }
+            live.frame_ns[eye] = self.gaps[eye].frame_ns();
+        }
+    }
 }
 
 /// The sample `values` came from.
@@ -191,7 +233,7 @@ pub struct Recorder {
 impl Recorder {
     pub fn create(path: &Path) -> io::Result<Self> {
         let mut out = BufWriter::new(File::create(path)?);
-        writeln!(out, "{},{}", columns().join(","), camera_columns().join(","))?;
+        writeln!(out, "{},{},{CAMERA_ANATOMICAL}", columns().join(","), camera_columns().join(","))?;
         Ok(Self {
             out,
             count: 0,
@@ -208,6 +250,7 @@ impl Recorder {
             .map(|(i, value)| if i == 0 { value.to_string() } else { (*value as f32).to_string() })
             .collect();
         fields.extend(camera_fields(camera));
+        fields.push(if camera.is_some() { "1" } else { "" }.to_owned());
         writeln!(self.out, "{}", fields.join(","))?;
         self.count += 1;
         self.camera_count += u64::from(camera.is_some());
@@ -227,18 +270,28 @@ struct Row {
     camera: Option<Live>,
 }
 
+/// Whether a recording's eye camera columns name the eyes the other way round: it has them, but not
+/// CAMERA_ANATOMICAL (recorded with the eyecam of 0.7.2-0.7.5, whose L was the right eye).
+fn camera_eyes_swapped(header: &[&str]) -> bool {
+    let has = |name: &str| header.contains(&name);
+    camera_columns().iter().all(|name| has(name)) && !has(CAMERA_ANATOMICAL)
+}
+
 /// Read a recording, and whether it has the eye camera's columns. Columns are found by name, so their order does not
-/// matter and extra ones are ignored.
+/// matter and extra ones are ignored. The camera's values of a recording without CAMERA_ANATOMICAL are read with
+/// cam_l_* and cam_r_* exchanged, so each reaches the eye it was of.
 fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
     let mut lines = text.lines().enumerate().filter(|(_, line)| !line.trim().is_empty());
     let (_, header) = lines.next().ok_or("the file is empty")?;
     let header: Vec<&str> = header.split(',').map(str::trim).collect();
+    let swapped = camera_eyes_swapped(&header);
     let position = |name: &String| header.iter().position(|column| column == name);
     let positions = columns()
         .iter()
         .map(|name| position(name).ok_or_else(|| format!("column {name} is missing")))
         .collect::<Result<Vec<_>, _>>()?;
     let camera_positions = camera_columns().iter().map(position).collect::<Option<Vec<_>>>();
+    let mut gaps = RecordedGaps::default();
     let rows = lines
         .map(|(index, line)| {
             let not_numbers = || format!("line {}: not a row of numbers", index + 1);
@@ -248,18 +301,24 @@ fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
                 .map(|position| fields.get(*position)?.parse::<f64>().ok())
                 .collect::<Option<Vec<_>>>()
                 .ok_or_else(not_numbers)?;
+            let data = from_values(&values);
             let camera = match &camera_positions {
                 Some(positions) => {
                     let cells: Vec<&str> =
                         positions.iter().map(|position| fields.get(*position).copied().unwrap_or("")).collect();
-                    camera_from(&cells).map_err(|_| not_numbers())?
+                    camera_from(&cells).map_err(|_| not_numbers())?.map(|(mut live, mut ages)| {
+                        if swapped {
+                            live.eyes.swap(0, 1);
+                            live.fresh.swap(0, 1);
+                            ages.swap(0, 1);
+                        }
+                        gaps.note(&mut live, data.sample_time, ages);
+                        live
+                    })
                 }
                 None => None,
             };
-            Ok(Row {
-                data: from_values(&values),
-                camera,
-            })
+            Ok(Row { data, camera })
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok((rows, camera_positions.is_some()))
@@ -703,8 +762,10 @@ fn report(input: &Path, samples: &[EyeData], skipped: usize, settings: &Settings
 }
 
 /// How the eye camera's values were used over a recording that has them, as report lines: how often there were
-/// values, fresh and with a baseline, how often each eye's eyelid and squint came from them, and how often each eye
-/// went out visibly widened (LID_WIDE) with them (`with`) and without them (`without`, camera_lids off).
+/// values, fresh and with a baseline, how often each eye's eyelid and squint came from them, how often its eyelid
+/// overrode the eye server's (the eye seen open while the eye server read it closing, seen closed, or widened below the
+/// eye server's relaxed open), and how often each eye went out visibly widened (LID_WIDE) with them (`with`) and
+/// without them (`without`, camera_lids off).
 fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -> String {
     let n = cameras.len().max(1) as f64;
     let share = |count: usize| count as f64 * 100.0 / n;
@@ -712,6 +773,10 @@ fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -
     let fresh = [0, 1].map(|eye| share(read.iter().filter(|live| live.fresh[eye]).count()));
     let baseline = share(read.iter().filter(|live| live.baseline()).count());
     let used = [0, 1].map(|eye| share(with.iter().filter(|sample| sample.camera.squint[eye].is_some()).count()));
+    let from = |from: LidFrom| {
+        let [left, right] = [0, 1].map(|eye| share(with.iter().filter(|sample| sample.lid_from[eye] == from).count()));
+        format!("{left:.1}% / {right:.1}%")
+    };
     let wide = |sent: &[Sample]| {
         let [left, right] = [0, 1].map(|eye| share(sent.iter().filter(|sample| sample.lids[eye] >= LID_WIDE).count()));
         format!("{left:.1}% / {right:.1}%")
@@ -720,12 +785,16 @@ fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -
         "\nEye camera (eyecam-rec): values with {:.1}% of the samples; fresh (L / R) {:.1}% / {:.1}%; \
          with a baseline for the wear {baseline:.1}%\n  \
          eyelid and squint from it (L / R)          {:.1}% / {:.1}%\n  \
+         eyelid from it over the eye server's (L / R): seen open {}, seen closed {}, widened {}\n  \
          sent widened, VRCFT {LID_WIDE} or more (L / R)    {} with it, {} without it\n",
         share(read.len()),
         fresh[0],
         fresh[1],
         used[0],
         used[1],
+        from(LidFrom::CameraOpen),
+        from(LidFrom::CameraClosed),
+        from(LidFrom::CameraWidened),
         wide(with),
         wide(without),
     )
@@ -787,6 +856,13 @@ pub fn run(input: &Path, output: Option<&Path>, settings: &Settings, calibration
     let (before, after) = (metrics(&samples, &before), metrics(&samples, &after));
     print!("{}", report(input, &samples, all.len() - samples.len(), settings, &before, &after));
     print!("{}", camera_text.unwrap_or_default());
+    let header: Vec<&str> = text.lines().next().unwrap_or("").split(',').map(str::trim).collect();
+    if camera_eyes_swapped(&header) {
+        println!(
+            "  (no {CAMERA_ANATOMICAL} column: recorded with the eyecam of 0.7.2-0.7.5, which called the right eye L, \
+             so cam_l_* and cam_r_* were read the other way round)"
+        );
+    }
     Ok(())
 }
 
@@ -872,20 +948,52 @@ mod tests {
             },
         ];
         assert_eq!(read, expected);
-        // The camera's columns come last, after the eye server's as before: empty without a live file
+        // The camera's columns come last, after the eye server's as before: empty without a live file; then the
+        // mark that they name the eyes anatomically ("1" with them)
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines[0].starts_with(&(columns().join(",") + ",cam_l_fresh,cam_l_valid,cam_l_closed,cam_l_lid,")));
-        assert!(lines[0].ends_with(",cam_r_confidence,cam_r_age_ms,cam_calib_state,cam_live"));
-        assert!(lines[1].ends_with(&",".repeat(22)), "{}", lines[1]);
+        assert!(lines[0].ends_with(",cam_r_confidence,cam_r_age_ms,cam_calib_state,cam_live,cam_eyes_anatomical"));
+        assert!(lines[1].ends_with(&",".repeat(23)), "{}", lines[1]);
         let cells: Vec<&str> = lines[2].split(',').skip(columns().len()).collect();
         assert_eq!(
             cells,
             [
                 "1", "1", "0", "0.93", "0", "0.25", "4", "0.5", "0", "1012.3",
                 "0", "1", "1", "0.93", "0.72", "0.25", "3.75", "0.4", "0.8", "12.3",
-                "5", "1",
+                "5", "1", "1",
             ]
         );
+    }
+
+    #[test]
+    fn camera_columns_without_the_mark_are_read_the_other_way_round() {
+        // As 0.7.2-0.7.5 recorded them (no cam_eyes_anatomical): their cam_l_* is the right eye, so it is read as R
+        let header = columns().join(",") + "," + &camera_columns().join(",");
+        let left = ["1", "1", "0", "0.9", "0.6", "0.1", "4.5", "0.55", "0.95", "3.2"].join(",");
+        let right = ["0", "1", "1", "0.2", "0", "0.3", "3.5", "0.25", "0.75", "8.1"].join(",");
+        let sample = ["2"; 38].join(",");
+        let old = format!("{header}\n{sample},{left},{right},4,1\n");
+        let (rows, has_camera) = parse(&old).unwrap();
+        let live = rows[0].camera.unwrap();
+        assert!(has_camera && camera_eyes_swapped(&header.split(',').collect::<Vec<_>>()));
+        assert_eq!((live.eyes[0].lid, live.eyes[1].lid, live.fresh), (0.2, 0.9, [false, true]));
+        assert_eq!((live.eyes[0].pupil_mm, live.eyes[1].pupil_mm, live.eyes[0].closed), (3.5, 4.5, true));
+        // With the mark: as named
+        let new = format!("{header},cam_eyes_anatomical\n{sample},{left},{right},4,1,1\n");
+        let live = parse(&new).unwrap().0[0].camera.unwrap();
+        assert_eq!((live.eyes[0].lid, live.eyes[1].lid, live.fresh), (0.9, 0.2, [true, false]));
+        // What the Recorder writes now reads back as written
+        let path = std::env::temp_dir().join(format!("frameeyeosc-record-marked-{}.csv", std::process::id()));
+        let mut recorder = Recorder::create(&path).unwrap();
+        recorder.write(&EyeData::default(), Some((&live, 0))).unwrap();
+        recorder.flush().unwrap();
+        drop(recorder);
+        let text = fs::read_to_string(&path).unwrap();
+        fs::remove_file(path).unwrap();
+        let back = parse(&text).unwrap().0[0].camera.unwrap();
+        assert_eq!((back.eyes[0].lid, back.eyes[1].lid, back.fresh), (0.9, 0.2, [true, false]));
+        // No camera columns at all: nothing to exchange
+        assert!(!camera_eyes_swapped(&columns().iter().map(String::as_str).collect::<Vec<_>>()));
     }
 
     #[test]
@@ -986,6 +1094,10 @@ mod tests {
         let lines = camera_lines(&cameras, &sent, &without);
         assert!(lines.contains("values with 33.3% of the samples; fresh (L / R) 33.3% / 33.3%"), "{lines}");
         assert!(lines.contains("eyelid and squint from it (L / R)          33.3% / 33.3%"), "{lines}");
+        // Here the eye server reads the eyes as open as can be, so the camera's eyelid never overrides it
+        let overrides =
+            "eyelid from it over the eye server's (L / R): seen open 0.0% / 0.0%, seen closed 0.0% / 0.0%, widened 0.0% / 0.0%";
+        assert!(lines.contains(overrides), "{lines}");
         let share = format!("{:.1}%", widened as f64 * 100.0 / 1350.0);
         assert!(lines.contains(&format!("{share} / {share} with it, 0.0% / 0.0% without it")), "{lines}");
         let path = std::env::temp_dir().join(format!("frameeyeosc-camera-processed-{}.csv", std::process::id()));
@@ -1002,6 +1114,22 @@ mod tests {
         assert!(text.lines().last().unwrap().ends_with(",1,1,1,1,0.2,0.2,0.5,0.5,4,4"), "{}", text.lines().last().unwrap());
         // Without the camera's columns, as before
         assert!(plain.lines().next().unwrap().ends_with(",reliable_left,reliable_right"));
+    }
+
+    #[test]
+    fn camera_frame_intervals_come_from_the_recorded_ages() {
+        let mut gaps = RecordedGaps::default();
+        let mut live = crate::tests::camera(0.75, 0.0);
+        // 90 samples a second, the left camera delivering 15 frames a second, each read a few times at a growing
+        // age, with up to 0.8 ms of jitter in when it was read; the right eye's ages are not numbers
+        let frame = 1.0 / 15.0;
+        for i in 0..90 {
+            let time = 100.0 + i as f64 / 90.0;
+            let age_ms = (time % frame) * 1000.0 + if i % 2 == 0 { 0.8 } else { 0.0 };
+            gaps.note(&mut live, time, [age_ms, f64::NAN]);
+        }
+        assert!((65_500_000..68_000_000).contains(&live.frame_ns[0]), "{:?}", live.frame_ns);
+        assert_eq!(live.frame_ns[1], 0);
     }
 
     #[test]

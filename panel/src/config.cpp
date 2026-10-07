@@ -171,6 +171,7 @@ const std::vector<SettingSpec>& settingSpecs() {
         {key::kBlinkHoldMs, SettingType::Number, 80, "", 0.0, 300.0, 10.0, 0},
         {key::kDespike, SettingType::Bool, 1, "", 0, 1, 1, 0},
         {key::kBlinkSyncBelow, SettingType::Number, 0.35, "", 0.0, 0.75, 0.05, 2},
+        {key::kCameraLidFloor, SettingType::Number, 0.0, "", 0.0, 0.75, 0.05, 2},
         {key::kGazeOffsetX, SettingType::Number, 0.0, "", -0.5, 0.5, 0.005, 3},
         {key::kGazeOffsetY, SettingType::Number, 0.0, "", -0.5, 0.5, 0.005, 3},
         {key::kGazeGainX, SettingType::Number, 1.0, "", 0.5, 2.0, 0.05, 2},

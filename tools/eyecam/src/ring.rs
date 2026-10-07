@@ -107,6 +107,16 @@ pub struct Ring {
     pub camera_reason: String,
 }
 
+impl Ring {
+    /// Whether slot `k`'s camera stores its frames upside down: decided by the camera (`eye`, before --swap), never
+    /// by the name --swap gives it (see vision::stored_upside_down). With one camera streaming, which eye it is is
+    /// not known, and its frames are left as stored, as before 2026-10-07 (that camera was called L, and only R was
+    /// flipped).
+    pub fn upside_down(&self, k: usize) -> bool {
+        self.both_eyes && crate::vision::stored_upside_down(self.eye[k] as usize)
+    }
+}
+
 /// Lit fraction and roughness of a frame, sampled on a 4-pixel grid. `p` must hold at least FRAME_BYTES.
 pub fn frame_stats(p: &[u8]) -> (f64, f64) {
     let (mut lit, mut n, mut nr, mut rough) = (0usize, 0usize, 0usize, 0f64);
@@ -475,7 +485,11 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
             "picture: no group boundary in the layout; grouped by similarity, lower addresses = R".into(),
             true,
         ),
-        None => (vec![0; off.len()], "one group only (one camera streaming; which eye is not known, called L)".into(), false),
+        None => (
+            vec![0; off.len()],
+            "one group only (one camera streaming; which eye is not known, called L; its frames are not flipped)".into(),
+            false,
+        ),
     };
     if pictures_differ && similar.iter().map(|&g| g ^ similar[0]).ne(eye.iter().map(|&e| e ^ eye[0])) {
         camera_reason += &format!("; WARNING: picture similarity groups the slots as {similar:?}");
@@ -789,6 +803,27 @@ mod tests {
         assert_eq!(assign_cameras(&even, p).unwrap().0, vec![1, 1, 1, 1, 0, 0, 0, 0]);
         assert!(assign_cameras(&even[..4], p).is_none());
         assert!(assign_cameras(&[off[0], off[1], off[4], off[5] + 128], p).is_none());
+    }
+
+    #[test]
+    fn the_flip_follows_the_camera_and_one_camera_is_never_flipped() {
+        let ring = |eye: Vec<u8>, both_eyes| Ring {
+            arena: 0,
+            pitch: EXPECTED_PITCH,
+            off: (0..eye.len()).map(|k| k * EXPECTED_PITCH).collect(),
+            eye,
+            both_eyes,
+            framing: Framing::default(),
+            camera_reason: String::new(),
+        };
+        // Both cameras: the higher-address group (the left eye's camera, 0) is the upside-down one, whatever --swap
+        // calls it (the caller renames, the slot keeps its flip).
+        let both = ring(vec![1, 1, 1, 1, 0, 0, 0, 0], true);
+        assert_eq!((0..8).map(|k| both.upside_down(k)).collect::<Vec<_>>(), [false, false, false, false, true, true, true, true]);
+        // One camera streaming (--allow-one-eye): called eye 0 = L, but which eye is not known, so not flipped (as
+        // before 2026-10-07).
+        let one = ring(vec![0; 4], false);
+        assert!((0..4).all(|k| !one.upside_down(k)));
     }
 
     #[test]

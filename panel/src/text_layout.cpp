@@ -8,14 +8,15 @@
 namespace {
 
 /**
- * Whether a CJK character may not start a line (closing brackets and punctuation).
- * @param unit one character
- * @return true for 。、）」』，．！？
+ * Whether a unit starts with a CJK character that may not start a line (closing brackets and punctuation; an arrow
+ * may be joined to it, "」→").
+ * @param unit one character, or a word
+ * @return true for 。、）」』，．！？ first
  */
 bool closesLine(const std::string& unit) {
     static const char* const marks[] = {"。", "、", "）", "」", "』", "，", "．", "！", "？"};
     for (const char* mark : marks) {
-        if (unit == mark) return true;
+        if (unit.rfind(mark, 0) == 0) return true;
     }
     return false;
 }
@@ -55,8 +56,8 @@ std::string ellipsize(const Pen& pen, const std::string& text, double size, bool
 
 std::vector<std::string> wrapText(const Pen& pen, const std::string& text, double size, bool bold, double maxWidth,
                                   size_t maxLines) {
-    // Units: a word with its trailing spaces, or one CJK character. An arrow joins the unit before it (and the
-    // spaces after it join too), so it never starts a line
+    // Units: a word with its trailing spaces, or one CJK character. An arrow or a "›" joins the unit before it (and
+    // the spaces after it join too), so it never starts a line
     std::vector<std::string> units;
     std::string word;
     for (size_t i = 0; i < text.size();) {

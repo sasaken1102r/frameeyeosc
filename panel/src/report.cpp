@@ -6,6 +6,7 @@
 #include "json.h"
 
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -195,6 +196,16 @@ std::vector<std::string> entries(const std::string& dir) {
 }
 
 /**
+ * Whether a path is a folder itself (not a link to one).
+ * @param path a path
+ * @return true if it is
+ */
+bool isRealDir(const std::string& path) {
+    struct stat st {};
+    return ::lstat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/**
  * Whether text from a position is "YYYY-MM-DD_HH-MM-SS".
  * @param text the text
  * @param at where it starts
@@ -337,12 +348,13 @@ const char* resultName(Result result) {
         case Result::Ok: return "ok";
         case Result::Failed: return "failed";
         case Result::Partial: return "partial";
+        case Result::Stopped: return "stopped";
     }
     return "failed";
 }
 
 bool parseResult(const std::string& name, Result& result) {
-    for (const Result r : {Result::Ok, Result::Failed, Result::Partial}) {
+    for (const Result r : {Result::Ok, Result::Failed, Result::Partial, Result::Stopped}) {
         if (name == resultName(r)) {
             result = r;
             return true;
@@ -658,6 +670,7 @@ const char* resultLabel(const UiText& t, Result result) {
         case Result::Ok: return t.resultOk;
         case Result::Failed: return t.resultFailed;
         case Result::Partial: return t.resultPartial;
+        case Result::Stopped: return t.resultStopped;
     }
     return t.resultFailed;
 }
@@ -954,7 +967,7 @@ bool writeRecord(const std::string& dir, Pending pending, const Sources& sources
     ok &= writeFile(path + "/report.txt",
                     reportText(uiText(pending.language), s, shortPathOf(path) + "/"));
     if (!ok) error = "couldn't write every file in " + path;
-    prune(dir, kKeep);
+    prune(dir, kKeep, folder);
     return ok;
 }
 
@@ -965,37 +978,57 @@ std::string shortPathOf(const std::string& path) {
     return path.rfind(prefix, 0) == 0 ? "~/" + path.substr(prefix.size()) : path;
 }
 
-int prune(const std::string& dir, int keep) {
+int prune(const std::string& dir, int keep, const std::string& written) {
     const std::vector<std::string> names = folders(dir);
     int deleted = 0;
     for (size_t i = static_cast<size_t>(std::max(0, keep)); i < names.size(); ++i) {
+        if (names[i] == written) continue;
         const std::string path = dir + "/" + names[i];
-        // Only files in it (as written): a folder with anything else is left alone
-        const std::vector<std::string> files = entries(path);
-        const bool plain = std::all_of(files.begin(), files.end(), [&](const std::string& name) {
+        // The folder itself, never through a link (opened without following one, and the files deleted in what was
+        // opened)
+        const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0) continue;
+        // Only a record's own files, as plain files: anything else stays (and so does the folder then)
+        for (const char* name : kFileNames) {
             struct stat st {};
-            return ::lstat((path + "/" + name).c_str(), &st) == 0 && S_ISREG(st.st_mode);
-        });
-        if (!plain) continue;
-        for (const std::string& name : files) ::unlink((path + "/" + name).c_str());
+            if (::fstatat(fd, name, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(st.st_mode)) ::unlinkat(fd, name, 0);
+        }
+        ::close(fd);
         if (::rmdir(path.c_str()) == 0) ++deleted;
     }
     return deleted;
 }
 
 std::vector<std::string> folders(const std::string& dir) {
-    std::vector<std::string> names;
+    // Each record's start: summary.json's start_ms, or the folder's modification time
+    std::vector<std::pair<std::string, double>> found;
     for (const std::string& name : entries(dir)) {
-        if (isFolderName(name) && isDir(dir + "/" + name)) names.push_back(name);
+        const std::string path = dir + "/" + name;
+        if (!isFolderName(name) || !isRealDir(path)) continue;
+        double start = NAN;
+        std::string text;
+        JsonValue root;
+        std::string error;
+        if (readFile(path + "/summary.json", text, 1024 * 1024) && parseJson(text, root, error) && root.isObject()) {
+            start = numberOf(root, "start_ms") / 1000;
+        }
+        if (!std::isfinite(start)) {
+            struct stat st {};
+            start = ::lstat(path.c_str(), &st) == 0 ? static_cast<double>(st.st_mtime) : 0.0;
+        }
+        found.emplace_back(name, start);
     }
-    std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
-        const std::string sa = folderStamp(a);
-        const std::string sb = folderStamp(b);
-        // Newest first; "_2" after the same second's first
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) {
+        // Newest first; at the same time, by the names ("_2" after the same second's first)
+        if (a.second != b.second) return a.second > b.second;
+        const std::string sa = folderStamp(a.first);
+        const std::string sb = folderStamp(b.first);
         if (sa.substr(0, 19) != sb.substr(0, 19)) return sa.substr(0, 19) > sb.substr(0, 19);
         if (sa.size() != sb.size()) return sa.size() > sb.size();
-        return a > b;
+        return a.first > b.first;
     });
+    std::vector<std::string> names;
+    for (const auto& f : found) names.push_back(f.first);
     return names;
 }
 
@@ -1099,6 +1132,10 @@ void Run::begin(Kind kind, double start) {
     pending_.summary.start = start;
     pending_.summary.end = start;
     lastSample_ = -1e18;
+    headFull_ = false;
+    tail_.clear();
+    tailBytes_ = 0;
+    skipped_ = 0;
     active_ = true;
 }
 
@@ -1107,18 +1144,45 @@ bool Run::sample(double when, const std::string& coreStatus, const std::string& 
     lastSample_ = when;
     const std::string core = compactJson(coreStatus);
     const std::string eyecam = compactJson(eyecamStatus);
-    const std::string line = format("{\"t\":%.3f,\"frameeyeosc\":", when) + (core.empty() ? "null" : core) +
-                             ",\"eyecam\":" + (eyecam.empty() ? "null" : eyecam) + "}\n";
-    if (pending_.statusLines.size() + line.size() > kMaxStatusBytes) return false;
-    pending_.statusLines += line;
+    std::string line = format("{\"t\":%.3f,\"frameeyeosc\":", when) + (core.empty() ? "null" : core) +
+                       ",\"eyecam\":" + (eyecam.empty() ? "null" : eyecam) + "}\n";
+    // The start first; then the newest lines, the oldest of them dropped as new ones come (room left for the line
+    // saying how many were left out)
+    if (!headFull_) {
+        if (pending_.statusLines.size() + line.size() <= kStatusHeadBytes) {
+            pending_.statusLines += line;
+            return true;
+        }
+        headFull_ = true;
+    }
+    const size_t room = kMaxStatusBytes - kStatusHeadBytes - kStatusNoteBytes;
+    if (line.size() > room) return false;
+    tailBytes_ += line.size();
+    tail_.push_back(std::move(line));
+    while (tailBytes_ > room) {
+        tailBytes_ -= tail_.front().size();
+        tail_.pop_front();
+        ++skipped_;
+    }
     return true;
 }
 
 Pending Run::finish(double end) {
     active_ = false;
     pending_.summary.end = std::max(end, pending_.summary.start);
+    // A long run: the start, a line saying how many were left out (JSON too, so every line still reads), the end
+    if (skipped_ > 0) {
+        pending_.statusLines += format("{\"left_out\":%zu,\"note\":\"%zu lines left out: status.jsonl keeps its "
+                                       "first %zu KB and its last lines\"}\n",
+                                       skipped_, skipped_, kStatusHeadBytes / 1024);
+    }
+    for (const std::string& line : tail_) pending_.statusLines += line;
     Pending out = std::move(pending_);
     pending_ = Pending();
+    headFull_ = false;
+    tail_.clear();
+    tailBytes_ = 0;
+    skipped_ = 0;
     return out;
 }
 
@@ -1127,8 +1191,13 @@ Writer::Writer(std::string dir, Sources sources) : dir_(std::move(dir)), sources
 }
 
 Writer::~Writer() {
+    finish();
+}
+
+void Writer::finish() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (!queue_.empty()) std::fprintf(stderr, "[report] writing %zu record(s) before exiting\n", queue_.size());
         stop_ = true;
     }
     wake_.notify_all();

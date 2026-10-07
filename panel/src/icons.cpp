@@ -61,7 +61,7 @@ double advance(Icon which, double size) {
 }
 
 bool keepsWithPrevious(Icon which) {
-    return which == Icon::ArrowRight;
+    return which == Icon::ArrowRight || which == Icon::ChevronRight;
 }
 
 std::string plain(const std::string& text) {

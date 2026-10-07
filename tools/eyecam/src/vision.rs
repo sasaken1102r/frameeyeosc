@@ -19,7 +19,10 @@ pub const H: usize = 400;
 /// stored upside down").
 pub const UPSIDE_DOWN_EYE: usize = 0;
 
-/// Whether `eye`'s frames are stored upside down (see UPSIDE_DOWN_EYE).
+/// Whether the camera the slots call `eye` (ring::Ring::eye, from the memory layout: the physical camera, before
+/// any --swap) stores its frames upside down (see UPSIDE_DOWN_EYE). The flip goes with the camera: --swap only
+/// renames the eyes, so a renamed frame keeps its camera's flip (ring::Ring::upside_down, and the replay's
+/// replay::Session::upside_down for a recording).
 pub fn stored_upside_down(eye: usize) -> bool {
     eye == UPSIDE_DOWN_EYE
 }

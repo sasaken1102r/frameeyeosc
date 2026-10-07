@@ -687,9 +687,10 @@ void testCalibText() {
               t.calibUserDoneBody, t.calibDoneButton, t.lidsNowLabel, t.lidsNowBoth, t.lidsNowLeft,
               t.lidsNowRight, t.lidsNowValve, t.lidsNowSwitch, t.lidsNowNoCamera, t.rowWidenEase, t.widenHintCamera,
               t.widenHintMixed, t.widenHintValve, t.widenHintSaturated, t.widenNoteCamera, t.widenNoteValve,
-              t.widenNoteUnfitted, t.widenSaturated1, t.widenSaturated2, t.blinkHint, t.blinkHoldCaption,
-              t.rowBlinkBoth, t.blinkBothHint, t.blinkBothNote, t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
-              t.rowOther, t.otherHint, t.otherText1, t.otherText2, t.detailsTitle, t.detailsClose, t.camPupilLine,
+              t.widenNoteUnfitted, t.widenSaturated, t.blinkHint, t.blinkHoldCaption,
+              t.rowBlinkBoth, t.blinkBothHint, t.blinkBothNote, t.rowLidFloor, t.lidFloorHint, t.lidFloorNote, t.lidFloorNoteIdle,
+              t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
+              t.lidsLook, t.lidsBlinks, t.lidsFine, t.camPupilLine,
               t.camWidenNotice, t.camWidenButton, t.calibCardTitle, t.calibResultTitle, t.calibWearNote,
               t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye}) {
             CHECK(text != nullptr && text[0] != '\0');

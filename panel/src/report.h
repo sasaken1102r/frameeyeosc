@@ -5,14 +5,16 @@
 //   summary.json   what ran, how it ended and why (Japanese and English), the versions, the diagnostic code at the
 //                  end, the conditions (dashboard, camera and tracker rates, time since the headset was put on) and
 //                  the key log lines
-//   status.jsonl   one line a second while it ran: frameeyeosc's and eyecam-rec's status.json (compact)
+//   status.jsonl   one line a second while it ran: frameeyeosc's and eyecam-rec's status.json (compact); a long run
+//                  keeps its start and its last lines, with a line saying how many were left out between them
 //   logs.txt       the run's window (from kBeforeSec before it) of frameeyeosc's, the panel's and eyecam's journals and
 //                  Valve's eye tracker log, merged in time order, each line tagged with its source (at most
 //                  kMaxLogBytes)
 //   calib_result.json  a calibration's numbers, copied from eyecam's calibration folder (never images, never
 //                  calib_samples.csv)
 //   report.txt     the same as summary.json, for reading (frameeyeosc-panel --report latest prints it)
-// Only the newest kKeep are kept. Nothing is sent anywhere. The logs are read after the run, on a worker thread
+// Only the newest kKeep are kept (by summary.json's start, not the folders' local-time names), and only those files
+// are ever deleted. Nothing is sent anywhere. The logs are read after the run, on a worker thread
 // (Writer), with read-only `journalctl --user` calls; the sources can be swapped for tests (Sources). Nothing here
 // talks to OpenVR or cairo (report-test).
 #pragma once
@@ -34,8 +36,13 @@ namespace report {
 constexpr int kKeep = 10;
 /** logs.txt is cut to this size (the start and the end are kept, the middle left out). */
 constexpr size_t kMaxLogBytes = 300 * 1024;
-/** status.jsonl stops growing at this size (a calibration of 18 s writes about 60 KB). */
+/** status.jsonl's size at most (a calibration of 18 s writes about 60 KB): its first kStatusHeadBytes, then its
+ *  newest lines (what is left of it), with a line between them saying how many were left out. */
 constexpr size_t kMaxStatusBytes = 200 * 1024;
+/** ...of which the start kept... */
+constexpr size_t kStatusHeadBytes = 50 * 1024;
+/** ...and the room kept for the line between them. */
+constexpr size_t kStatusNoteBytes = 160;
 /** calib_result.json is only copied when it is at most this big. */
 constexpr size_t kMaxCalibResultBytes = 512 * 1024;
 /** The logs from this long before the run start (the headset being put on, the eye data coming back). */
@@ -54,8 +61,9 @@ constexpr size_t kMaxJournalBytes = 4 * 1024 * 1024;
 /** What ran. */
 enum class Kind { CalibWear, CalibUser, Fit, Recenter };
 
-/** How it ended. */
-enum class Result { Ok, Failed, Partial };
+/** How it ended: Stopped is stopped before the end without anything having gone wrong ("Stop", another tab, the
+ *  panel closing), not a failure. */
+enum class Result { Ok, Failed, Partial, Stopped };
 
 /** Where a log line came from. */
 enum class Source { Core, Panel, Eyecam, Valve };
@@ -75,7 +83,7 @@ bool parseKind(const std::string& name, Kind& kind);
 
 /**
  * @param result the result
- * @return "ok", "failed" or "partial"
+ * @return "ok", "failed", "partial" or "stopped"
  */
 const char* resultName(Result result);
 
@@ -264,7 +272,7 @@ const char* sourceLabel(const UiText& t, Source source);
 std::string kindLabel(const UiText& t, const Summary& summary);
 
 /**
- * A result as shown on its badge ("OK", "失敗", "片目だけ").
+ * A result as shown on its badge ("OK", "失敗", "片目だけ", "止めた").
  * @param t texts
  * @param result the result
  * @return the word
@@ -365,15 +373,18 @@ bool writeRecord(const std::string& dir, Pending pending, const Sources& sources
                  std::string& error);
 
 /**
- * Delete all but the newest records (by their folders' names; only folders named as records, only the files in them).
+ * Delete all but the newest records (in the order of folders()). Only real folders named as records (not a link to
+ * one), only the record's own files in them (kFileNames; anything else is left, and then the folder too).
  * @param dir the records' folder
  * @param keep how many to keep
+ * @param written a folder never deleted (the record just written; "" = none)
  * @return how many were deleted
  */
-int prune(const std::string& dir, int keep = kKeep);
+int prune(const std::string& dir, int keep = kKeep, const std::string& written = "");
 
 /**
- * The records' folder names, newest first.
+ * The records' folder names, newest first: by summary.json's start_ms (the folder's modification time for one
+ * without it), not by the local time in the names (the time zone or the clock may have changed in between).
  * @param dir the records' folder
  * @return the names
  */
@@ -441,7 +452,7 @@ public:
     Summary& summary() { return pending_.summary; }
 
     /**
-     * A line of status.jsonl, at most one a second (status.jsonl stops at kMaxStatusBytes).
+     * A line of status.jsonl, at most one a second (over kMaxStatusBytes, the start and the newest lines are kept).
      * @param when Unix seconds
      * @param coreStatus frameeyeosc's status.json ("" = none)
      * @param eyecamStatus eyecam-rec's ("" = none)
@@ -468,16 +479,24 @@ private:
     bool active_ = false;
     double lastSample_ = -1e18;
     Pending pending_;
+    bool headFull_ = false;          ///< the start (kStatusHeadBytes) is in statusLines; newer lines go to tail_
+    std::deque<std::string> tail_;   ///< the newest lines after the start
+    size_t tailBytes_ = 0;
+    size_t skipped_ = 0;             ///< lines dropped between the start and tail_
 };
 
 /**
  * Follows a calibration sent to eyecam-rec until it ends, for its record (the panel's loop feeds it eyecam-rec's state):
- * it ends when eyecam-rec leaves "calibrating", is refused, or never starts calibrating within kStartSec of its reply.
+ * it ends when eyecam-rec leaves "calibrating", is refused, or never starts calibrating within kStartSec of its reply;
+ * only a fresh status.json counts, and kSilentSec without one (eyecam-rec gone) ends it too (silent()).
  */
 class CalibWatch {
 public:
     /** How long after the command a calibration that never shows as "calibrating" counts as over (s). */
     static constexpr double kStartSec = 10.0;
+    /** How long without a fresh status.json from eyecam-rec (since the command, or since it last said "calibrating")
+     *  before the calibration counts as over (s): a calibration takes about 20 s. */
+    static constexpr double kSilentSec = 120.0;
 
     /**
      * The command went to eyecam-rec.
@@ -487,7 +506,9 @@ public:
         active_ = true;
         seen_ = false;
         stopped_ = false;
+        silent_ = false;
         sentAt_ = now;
+        heardAt_ = now;
     }
 
     /** The panel's "Stop" was pressed (while one is followed). */
@@ -498,16 +519,26 @@ public:
     /**
      * eyecam-rec's state, each time it is read.
      * @param calibrating it says "calibrating"
+     * @param fresh its status.json was written in the last eyecam::kVisibleSec: a stale one says nothing either way
      * @param waitingReply the command's reply hasn't come yet
      * @param now monotonic seconds
      * @return true if the calibration just ended (followed no more)
      */
-    bool follow(bool calibrating, bool waitingReply, double now) {
+    bool follow(bool calibrating, bool fresh, bool waitingReply, double now) {
         if (!active_) return false;
+        if (!fresh) {
+            // eyecam-rec quiet (gone, or stuck): over once that has lasted kSilentSec
+            if (now - heardAt_ < kSilentSec) return false;
+            silent_ = true;
+            active_ = false;
+            return true;
+        }
         if (calibrating) {
             seen_ = true;
+            heardAt_ = now;
             return false;
         }
+        if (!seen_) heardAt_ = now;
         if (!seen_ && (waitingReply || now - sentAt_ <= kStartSec)) return false;
         active_ = false;
         return true;
@@ -533,11 +564,16 @@ public:
     /** @return true if the panel's "Stop" ended it */
     bool stopped() const { return stopped_; }
 
+    /** @return true if it ended with eyecam-rec quiet for kSilentSec (its status then says nothing about it) */
+    bool silent() const { return silent_; }
+
 private:
     bool active_ = false;
     bool seen_ = false;      ///< eyecam-rec was seen calibrating
     bool stopped_ = false;   ///< the panel sent "stop"
+    bool silent_ = false;    ///< it ended with eyecam-rec quiet
     double sentAt_ = 0.0;
+    double heardAt_ = 0.0;   ///< the last fresh status before it was seen calibrating, or the last "calibrating"
 };
 
 /**
@@ -570,6 +606,12 @@ public:
 
     /** @return true while records wait or are being written */
     bool busy();
+
+    /**
+     * Write all that is queued and end the thread (blocking; the destructor does the same). For the panel's exit:
+     * submit nothing after it.
+     */
+    void finish();
 
     /** @return the records' folder */
     const std::string& dir() const { return dir_; }

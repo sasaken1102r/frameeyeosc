@@ -458,12 +458,13 @@ void testCenterAndUsable() {
  * @param now the time (advanced)
  * @param id the next capture id (advanced)
  * @param answer the capture's result
- * @param settle how long the step settles
+ * @param settle how long the step settles (the first dot's first try kFirstSettleExtraSec more)
  * @param gaze whether the answer has a gaze average
  * @return the actions after the answer
  */
 Actions runStep(Session& s, double& now, long long& id, const Measured& answer, double settle = kSettleSec,
                 bool gaze = true, const Dashboard& dashboard = kClosed) {
+    if (gaze && s.view().index == 0 && s.view().attempt == 1) settle += kFirstSettleExtraSec;
     s.tick(now, dashboard, runningWith(0, false, {}));
     now += settle;
     const Actions a = s.tick(now, dashboard, runningWith(0, false, {}));
@@ -488,20 +489,31 @@ void testFullSession() {
     Actions a = s.tick(now, kOpen, runningWith(0, false, {}));
     CHECK(a.showTarget && a.style == TargetStyle::Dot && a.seconds == 0 && near(a.progress, 1.0));
     CHECK(near(a.yawDeg, 0.0) && near(a.pitchDeg, 0.0));
-    now += kSettleSec;
+    // The first dot waits kFirstSettleExtraSec longer (the eyes are still on the button just pressed)
+    const double firstSettle = kSettleSec + kFirstSettleExtraSec;
+    CHECK(near(firstSettle, 1.5));
+    a = s.tick(now + kSettleSec, kOpen, runningWith(0, false, {}));
+    CHECK(!a.writeCapture && s.view().phase == Phase::Settling && a.seconds == 0);
+    CHECK(near(a.progress, (firstSettle - kSettleSec + kCaptureSec) / (firstSettle + kCaptureSec)));
+    a = s.tick(now + firstSettle - 0.01, kOpen, runningWith(0, false, {}));
+    CHECK(!a.writeCapture);
+    now += firstSettle;
     a = s.tick(now, kOpen, runningWith(0, false, {}));
     CHECK(a.writeCapture && std::string(a.target) == "center" && near(a.captureSec, 2.0) && near(a.skipSec, 0.3));
     CHECK(near(kSettleSec + kCaptureSec, 2.5));
     s.captureSent(++id, now);
     // An old capture's result is not ours; the measured seconds count down 2, 1 and the ring runs down evenly
     a = s.tick(now + 0.5, kOpen, runningWith(id - 1 + 100, true, steady(0.3, 0.3)));
-    CHECK(s.view().phase == Phase::Capturing && a.seconds == 2 && near(a.progress, 1.5 / 2.5));
+    CHECK(s.view().phase == Phase::Capturing && a.seconds == 2 && near(a.progress, 1.5 / 3.5));
     a = s.tick(now + 1.0, kOpen, runningWith(id, false, {}));
     a = s.tick(now + 1.5, kOpen, runningWith(id, false, {}));
-    CHECK(a.seconds == 1 && near(a.progress, 0.5 / 2.5));
+    CHECK(a.seconds == 1 && near(a.progress, 0.5 / 3.5));
     now += 2.2;
     a = s.tick(now, kOpen, runningWith(id, true, points[0]));
     CHECK(s.view().point == Point::Up && s.view().phase == Phase::Settling);
+    // Later dots settle as before
+    a = s.tick(now + kSettleSec - 0.01, kOpen, runningWith(0, false, {}));
+    CHECK(!a.writeCapture && near(a.progress, (0.01 + kCaptureSec) / 2.5));
 
     // The dot glides up from the center over kMoveSec
     a = s.tick(now + kMoveSec / 2, kOpen, runningWith(0, false, {}));
@@ -767,9 +779,9 @@ void testFailures() {
         Session s;
         s.start(Mode::Center, Values(), 0.0);
         s.tick(0.1, kClosed, runningWith(0, false, {}));
-        s.tick(1.2, kClosed, runningWith(0, false, {}));
-        s.captureSent(1, 1.2);
-        s.tick(1.2 + kResultTimeoutSec + 0.1, kClosed, runningWith(0, false, {}));
+        CHECK(s.tick(2.2, kClosed, runningWith(0, false, {})).writeCapture);
+        s.captureSent(1, 2.2);
+        s.tick(2.2 + kResultTimeoutSec + 0.1, kClosed, runningWith(0, false, {}));
         CHECK(s.view().failure == Failure::NoResult);
     }
     {
@@ -789,7 +801,7 @@ void testFailures() {
         CHECK(s.view().failure == Failure::Left);
         s.start(Mode::Center, Values(), 0.0);
         s.tick(0.1, kOpen, runningWith(0, false, {}));
-        const Actions a = s.tick(1.2, kOpen, runningWith(0, false, {}));
+        const Actions a = s.tick(2.2, kOpen, runningWith(0, false, {}));
         CHECK(a.writeCapture);
         s.writeFailed();
         CHECK(s.view().failure == Failure::WriteFailed);

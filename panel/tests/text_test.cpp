@@ -1,6 +1,6 @@
-// Tests for checking a typed target PC address (host_entry.cpp), the eye fit's failure texts in both languages
-// (fit_text.cpp), and that no text draws an arrow or symbol as a character (they are icon markers, icons.h). Built with
-// the panel as text-test; exits non-zero on failure.
+// Tests for checking a typed target PC address (host_entry.cpp), the eye fit's failure texts in both languages and
+// how a fit ends in its record (fit_text.cpp), and that no text draws an arrow or symbol as a character (they are icon
+// markers, icons.h). Built with the panel as text-test; exits non-zero on failure.
 #include "fit_text.h"
 #include "host_entry.h"
 #include "icons.h"
@@ -168,6 +168,58 @@ void testFailureTexts() {
 }
 
 /**
+ * How a fit ends in its record: done, failed (red, with the numbers), or stopped (not a failure: grey, why only).
+ */
+void testFitRecord() {
+    using gaze_fit::Failure;
+    gaze_fit::View fit;
+    fit.phase = gaze_fit::Phase::Failed;
+    // Stopped: "Stop", another tab or page, the dashboard opened
+    for (const Failure why : {Failure::Cancelled, Failure::Left, Failure::DashboardOpened}) {
+        fit.failure = why;
+        CHECK(fitStopped(fit));
+        report::Summary s;
+        fillFitResult(s, fit);
+        CHECK(s.result == report::Result::Stopped);
+        SAME(s.reason, failureText(uiText(Language::Ja), fit));
+        SAME(s.reasonEn, failureText(uiText(Language::En), fit));
+        CHECK(s.brief == s.reason && s.briefEn == s.reasonEn);
+    }
+    report::Summary s;
+    fit.failure = Failure::Left;
+    fillFitResult(s, fit);
+    SAME(s.reason, "ほかのタブや画面に移ったので止めました");
+    // A real failure stays one, with its numbers
+    fit.failure = Failure::Unsteady;
+    fit.point = gaze_fit::Point::Center;
+    fit.detail.tries = 3;
+    fit.detail.last.samples = 30;
+    fit.detail.last.spread = 3.4 / 45;
+    CHECK(!fitStopped(fit));
+    fillFitResult(s, fit);
+    CHECK(s.result == report::Result::Failed);
+    SAME(s.brief, "正面 の点で視線が落ち着きませんでした（目を閉じていたかも）");
+    SAME(s.reason, s.brief + " 正面の点: 使えたサンプル 30/45・ばらつき 3.4°（2.7° まで）・3 回");
+    for (const Failure why : {Failure::NotRunning, Failure::NoResult, Failure::WriteFailed}) {
+        fit.failure = why;
+        CHECK(!fitStopped(fit));
+        fillFitResult(s, fit);
+        CHECK(s.result == report::Result::Failed);
+    }
+    // Done
+    fit = gaze_fit::View();
+    fit.phase = gaze_fit::Phase::Done;
+    fit.mode = gaze_fit::Mode::Center;
+    fit.values.offsetX = 0.021;
+    fit.values.offsetY = -0.013;
+    fit.values.rollDeg = 1.2;
+    CHECK(!fitStopped(fit));
+    fillFitResult(s, fit);
+    CHECK(s.result == report::Result::Ok);
+    CHECK(s.reasonEn.find("+0.021") != std::string::npos && s.reasonEn.find("-0.013") != std::string::npos);
+}
+
+/**
  * No text in either table has an arrow or a symbol the panel draws with paths: they are icon markers, so the font
  * never draws them. Kept: "×" for "times" (×0.99) and "＋" as a word ("+ is right", "camera + Valve").
  */
@@ -205,6 +257,7 @@ void testNoSymbolGlyphs() {
 int main() {
     testHosts();
     testFailureTexts();
+    testFitRecord();
     testNoSymbolGlyphs();
     if (gFailures == 0) std::printf("text-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

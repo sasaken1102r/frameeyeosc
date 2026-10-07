@@ -29,8 +29,8 @@ std::string ellipsize(const Pen& pen, const std::string& text, double size, bool
 
 /**
  * Break text into lines that fit a width. Breaks at spaces, and between any two CJK characters, but never before
- * a closing mark (the character before it moves down with it) or an arrow icon (it stays at the end of the line
- * before, with the word in front of it).
+ * a closing mark (the character before it moves down with it, an arrow joined to the mark too) or an arrow or "›"
+ * icon (it stays at the end of the line before, with the word in front of it).
  * The last allowed line is shortened with "…" if the text does not fit.
  * @param pen drawing tools
  * @param text the text

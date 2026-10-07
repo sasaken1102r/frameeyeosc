@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+The eye cameras' left and right were swapped since 0.7.2: widening, squint, pupils and the per-eye calibration messages went to the other eye. They now go to the right one, and saved calibrations are converted once.
+
+日本語: 0.7.2 から目のカメラの左右が逆になっていて、見開き・細め・瞳孔と、校正の目ごとのメッセージがもう片方の目に付いていました。正しい目に付くように直し、保存してある校正は一度だけ入れ替えます。
+
+- eyecam-rec tells the two cameras apart by where their frames sit in memory, and called the lower-address camera the left eye. It is the right eye's: with one eye closed at a time, Valve's openness went to 0 on the closed eye while eyecam said the other one was closed. The cameras' pictures are processed exactly as before; only the eye they are given to changes. The camera's own idea of looking up or down now also uses Valve's gaze of the same eye.
+- `~/.config/eyecam/calib.json` is converted once at start (left and right values, the eye that failed, the warnings) and gets `"eyes": "anatomical"`; `calib_result.json` gets it too. Older `calib_result.json` files (the panel's last calibration after a restart, the widening history) are read the other way round. Going back to an older version after this would read the converted calib.json the wrong way round again.
+- `status.json`'s per-eye fields (`pupil_l` / `pupil_r`, `cam_fps`, `calib_failed_eye`, `last_calib`) and the live shared memory's eyes now follow the real eyes.
+- Recordings: `meta.txt` gets `eye_files=anatomical` and `eye_L.raw` holds the left eye. `eyecam-rec --replay` reads older recordings the other way round, so each camera's frames get the same processing as before; `convert.py` and `fix_swap.py` know the new key.
+
 ## 0.7.5 (2026-10-06)
 
 Eye-camera calibration works when the Frame's eye cameras deliver fewer than 90 frames a second (as few as 15 on some headsets), and the panel shows the camera's frame rate.

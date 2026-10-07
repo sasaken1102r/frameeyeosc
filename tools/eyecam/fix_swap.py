@@ -3,7 +3,9 @@
     python fix_swap.py rec_2026-10-04_00-41-34
 
 a417dab までの eyecam は、どちらのカメラが L かを画の位置で決めていたので、顔の位置しだいで逆になることがあった
-（meta.txt の slot_camera が 1,1,1,1,0,0,0,0 のセッション）。これはそれを直す。
+（meta.txt の slot_camera が 1,1,1,1,0,0,0,0 のセッション）。これはそれを、当時の名前（アドレスの前のほうのカメラが L）に
+そろえる。ただし 2026-10-07 にわかったとおり、そのカメラは本当は右目。eyecam-rec --replay はどちらの状態でも目を正しく読むので、
+ふつうはこれを使わなくていい。meta.txt に eye_files=anatomical がある録画（2026-10-07 以降）は L が左目で正しいので断る。
 - eye_L.raw と eye_R.raw を名前の付け替えで入れ替える（中身はコピーしない）
 - frames.csv の eye 列の L と R を入れ替える（eye_index はそのまま。それぞれのファイルの何枚目かは変わらないため）
 - meta.txt の最後に repaired_swap=1 を書く。2 回目は断る（--force で強行）
@@ -42,6 +44,8 @@ def main():
 
     session = args.session
     meta = load_meta(session)
+    if meta.get("eye_files") == "anatomical" and not args.force:
+        raise SystemExit("eye_files=anatomical の録画（L が左目）。入れ替えは要らない（どうしてもなら --force）")
     if meta.get("repaired_swap") == "1" and not args.force:
         raise SystemExit("もう入れ替え済み（repaired_swap=1）。戻したいなら --force")
     frame = int(meta.get("frame_width", 400)) * int(meta.get("frame_height", 400))

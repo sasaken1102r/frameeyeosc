@@ -13,7 +13,10 @@
 //!   - The 64-byte header starts with the camera timestamp: u64 little-endian nanoseconds of CLOCK_MONOTONIC_RAW
 //!     (frames 11.11 ms apart at 90 Hz). The rest of it was zero.
 //!   - Pixels are never exactly 0 (black level about 4); the row padding and the rest of the slot are 0.
-//!   - The lower-address group is the left camera, the later (+64) group the right one, in all six sessions.
+//!   - The lower-address group is the right eye's camera, the later (+64) group the left eye's. Shown on
+//!     2026-10-07 by closing one eye at a time: Valve's openness went to 0 on the eye that was closed while eyecam
+//!     said the other eye was closed. Until then eyecam called the lower-address group L (the checks against the
+//!     pictures, pupil movement on look_up and iris size, could not tell left from right).
 //!   - The buffer is a general heap that gets recycled, so a lock needs: the headset worn (checked by the caller),
 //!     at least 20% of the frame lit, and the candidate refreshing for a full second.
 //!   - Valve's eye tracker sets the cameras' frame rate (72, 80, 90, 120, and as low as 15 on some headsets). With
@@ -96,7 +99,7 @@ pub struct Ring {
     pub pitch: usize,
     /// The first pixel of each slot's frame, in memory order. The slot's 64-byte header is right before it.
     pub off: Vec<usize>,
-    /// Which camera each slot holds: 0 = L, 1 = R (before --swap), from the memory layout.
+    /// Which eye's camera each slot holds: 0 = left, 1 = right (before --swap), from the memory layout.
     pub eye: Vec<u8>,
     pub both_eyes: bool,
     pub framing: Framing,
@@ -467,12 +470,12 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
     let pitch = pitch as usize;
     let (eye, mut camera_reason, both_eyes) = match assign_cameras(&off, pitch) {
         Some((eye, reason)) => (eye, reason, true),
-        None if pictures_differ => {
-            // No layout cue: group by picture, but still number the groups by address (lower = camera 0).
-            let eye: Vec<u8> = similar.iter().map(|&g| g ^ similar[0]).collect();
-            (eye, "picture: no group boundary in the layout; grouped by similarity, lower addresses = L".into(), true)
-        }
-        None => (vec![0; off.len()], "one group only (one camera streaming)".into(), false),
+        None if pictures_differ => (
+            cameras_by_picture(&similar),
+            "picture: no group boundary in the layout; grouped by similarity, lower addresses = R".into(),
+            true,
+        ),
+        None => (vec![0; off.len()], "one group only (one camera streaming; which eye is not known, called L)".into(), false),
     };
     if pictures_differ && similar.iter().map(|&g| g ^ similar[0]).ne(eye.iter().map(|&e| e ^ eye[0])) {
         camera_reason += &format!("; WARNING: picture similarity groups the slots as {similar:?}");
@@ -484,21 +487,31 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
     Some(Ring { arena: a, pitch, off, eye, both_eyes, framing, camera_reason })
 }
 
-/// Which camera (0 = L, 1 = R) each slot holds, from the layout alone: each camera's four slots are one
+/// The eye (0 = left, 1 = right) of the lower-address slot group: the right eye's camera (2026-10-07: closing one
+/// eye at a time, Valve's openness dropped on the eye eyecam had called the other one while this group was L).
+pub const LOWER_ADDRESS_EYE: u8 = 1;
+
+/// Which eye's camera (0 = left, 1 = right) each slot holds, from the layout alone: each camera's four slots are one
 /// allocation with the regular spacing, and the second allocation starts 64 bytes later than that spacing predicts.
-/// In every session so far the lower-address group was the left camera (checked against the pictures: pupil
-/// movement on look_up, iris size). `off` is in memory order. None when the layout does not show two groups.
+/// The lower-address group is the right eye's (LOWER_ADDRESS_EYE). `off` is in memory order. None when the layout
+/// does not show two groups.
 pub fn assign_cameras(off: &[usize], pitch: usize) -> Option<(Vec<u8>, String)> {
     let breaks: Vec<usize> = (1..off.len()).filter(|&k| off[k] - off[k - 1] != pitch).collect();
     let (boundary, reason) = match breaks[..] {
         [b] => {
             let extra = off[b] as i64 - off[b - 1] as i64 - pitch as i64;
-            (b, format!("layout: group boundary before slot {b} (spacing {pitch}{extra:+}); lower addresses = L"))
+            (b, format!("layout: group boundary before slot {b} (spacing {pitch}{extra:+}); lower addresses = R"))
         }
-        [] if off.len() == 8 => (4, "layout: no boundary in the spacing; 4 + 4 slots by address, lower = L".into()),
+        [] if off.len() == 8 => (4, "layout: no boundary in the spacing; 4 + 4 slots by address, lower = R".into()),
         _ => return None,
     };
-    Some(((0..off.len()).map(|k| (k >= boundary) as u8).collect(), reason))
+    Some(((0..off.len()).map(|k| LOWER_ADDRESS_EYE ^ (k >= boundary) as u8).collect(), reason))
+}
+
+/// The eyes when only the pictures group the slots (`similar`: 0 = like slot 0, 1 = not; slots in memory order):
+/// still numbered by address, the group of slot 0 (the lowest address) being LOWER_ADDRESS_EYE.
+fn cameras_by_picture(similar: &[u8]) -> Vec<u8> {
+    similar.iter().map(|&g| LOWER_ADDRESS_EYE ^ g ^ similar[0]).collect()
 }
 
 #[cfg(test)]
@@ -514,7 +527,8 @@ mod tests {
         ORIGIN + slot * PITCH + if slot >= 4 { GROUP_GAP } else { 0 }
     }
 
-    /// A fake camera: writes a new frame into the next slot of each eye at `fps` per eye, plus heap churn.
+    /// A fake camera: writes a new frame into the next slot of each eye at `fps` per eye, plus heap churn. Its
+    /// `eye` is the slot group: 0 the lower addresses (slots 0-3, the right eye's camera on the device), 1 the later.
     struct Sim {
         ring: *mut u8,
         other: *mut u8,
@@ -525,7 +539,7 @@ mod tests {
         rng: u64,
         /// What the row padding holds (never changes): 0 as on the device, or stale junk.
         pad: u8,
-        /// Draw camera 0's eye on the right and camera 1's on the left (what fooled the old picture rule).
+        /// Draw group 0's eye on the right and group 1's on the left (what fooled the old picture rule).
         mirrored: bool,
     }
 
@@ -545,7 +559,7 @@ mod tests {
             for (i, b) in ((self.t * 1e9) as u64).to_le_bytes().iter().enumerate() {
                 unsafe { *self.ring.add(hdr + i) = *b };
             }
-            // Eye 0 sits left of eye 1; both have a dim, noisy top (which the row-mean search calls dark).
+            // Group 0's eye sits left of group 1's; both have a dim, noisy top (which the row-mean search calls dark).
             let cx = if (eye == 0) != self.mirrored { 150.0 } else { 250.0 };
             for y in 0..HEIGHT {
                 for x in 0..WIDTH {
@@ -703,7 +717,8 @@ mod tests {
         assert_eq!(ring.pitch, PITCH);
         let expected: Vec<usize> = (0..8).map(|k| header_at(k) + HEADER_BYTES).collect();
         assert_eq!(ring.off, expected);
-        assert_eq!(ring.eye, vec![0, 0, 0, 0, 1, 1, 1, 1]);
+        // The lower-address group (slots 0-3) is the right eye's camera.
+        assert_eq!(ring.eye, vec![1, 1, 1, 1, 0, 0, 0, 0]);
         assert!(ring.both_eyes);
         // What the panel's diagnostics show of it: the candidates, how often they refreshed, the slots, both eyes
         assert!(look.candidates >= 8, "{look:?}");
@@ -752,7 +767,7 @@ mod tests {
             assert!(dump[at + 8..at + HEADER_BYTES].iter().all(|&b| b == 0));
         }
         let truth: Vec<usize> = walk.iter().enumerate().map(|(k, &w)| w + if k >= 4 { 64 } else { 0 }).collect();
-        assert_eq!(assign_cameras(&truth, EXPECTED_PITCH).unwrap().0, vec![0, 0, 0, 0, 1, 1, 1, 1]);
+        assert_eq!(assign_cameras(&truth, EXPECTED_PITCH).unwrap().0, vec![1, 1, 1, 1, 0, 0, 0, 0]);
     }
 
     #[test]
@@ -760,17 +775,27 @@ mod tests {
         let p = EXPECTED_PITCH;
         // As on the device: the second group 64 bytes late.
         let off: Vec<usize> = (0..8).map(|k| 0x23_4100 + k * p + if k >= 4 { 64 } else { 0 }).collect();
+        // The lower addresses are the right eye's camera (1), the later group the left eye's (0): on 2026-10-07,
+        // closing one eye at a time, Valve's openness dropped on the eye opposite to the one eyecam had named when
+        // it called the lower group L.
         let (eye, reason) = assign_cameras(&off, p).unwrap();
-        assert_eq!(eye, vec![0, 0, 0, 0, 1, 1, 1, 1]);
-        assert!(reason.contains("before slot 4"), "{reason}");
+        assert_eq!(eye, vec![1, 1, 1, 1, 0, 0, 0, 0]);
+        assert!(reason.contains("before slot 4") && reason.ends_with("lower addresses = R"), "{reason}");
         // A boundary elsewhere (a slot not refreshing was dropped) still splits there.
         let (eye, _) = assign_cameras(&[off[1], off[2], off[3], off[4], off[5]], p).unwrap();
-        assert_eq!(eye, vec![0, 0, 0, 1, 1]);
+        assert_eq!(eye, vec![1, 1, 1, 0, 0]);
         // No boundary: 4 + 4 by address; anything else is left to the caller.
         let even: Vec<usize> = (0..8).map(|k| 0x10_0000 + k * p).collect();
-        assert_eq!(assign_cameras(&even, p).unwrap().0, vec![0, 0, 0, 0, 1, 1, 1, 1]);
+        assert_eq!(assign_cameras(&even, p).unwrap().0, vec![1, 1, 1, 1, 0, 0, 0, 0]);
         assert!(assign_cameras(&even[..4], p).is_none());
         assert!(assign_cameras(&[off[0], off[1], off[4], off[5] + 128], p).is_none());
+    }
+
+    #[test]
+    fn pictures_alone_still_name_the_lower_addresses_right() {
+        // Grouped by similarity to slot 0 (the lowest address): slot 0's group is the right eye's camera.
+        assert_eq!(cameras_by_picture(&[0, 0, 0, 0, 1, 1, 1, 1]), vec![1, 1, 1, 1, 0, 0, 0, 0]);
+        assert_eq!(cameras_by_picture(&[0, 1, 0, 1, 1]), vec![1, 0, 1, 0, 0]);
     }
 
     #[test]

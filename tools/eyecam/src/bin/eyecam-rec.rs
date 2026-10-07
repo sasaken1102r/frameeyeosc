@@ -2541,6 +2541,8 @@ fn write_meta(
     let cams: Vec<String> = ring.eye.iter().map(|e| e.to_string()).collect();
     let labels = if args.swap { "camera0=R camera1=L" } else { "camera0=L camera1=R" };
     let width = if args.full_width { STRIDE } else { WIDTH };
+    let eye_files = format!("{}={}", eyecam::replay::META_EYE_FILES, eyecam::replay::EYE_FILES_ANATOMICAL);
+    let upside_down = ["L", "R"][eyecam::vision::UPSIDE_DOWN_EYE];
     writeln!(
         meta,
         "# {what}\nevent={what}\nlocal_time={}\nt_raw={:.9}\neyetracking_pid={}\nbuffer_sizes={:?}\n\
@@ -2550,7 +2552,9 @@ slot_camera={}\ncamera_assignment={}\nswap={}\nlabels={labels}\nboth_eyes={}\n\
 framing=per_slot\nframing_shift={:?}\nframing_pad_dirty={:?}\nprotocol={protocol}\n\
 frame_width={width}\nframe_height={HEIGHT}\nframe_bytes={}\n\
 raw_format=eye_L.raw / eye_R.raw: {width}x{HEIGHT} 8-bit grey frames appended in recording order, unflipped; rows of frames.csv with eye L/R give each frame's time (eye_index = position in its file)\n\
-right_eye=stored raw; flip vertically (not 180 degrees) to view upright\n\
+{eye_files}\n\
+eye_files_note=L is the left eye, R the right (slot_camera: 0 = L, 1 = R; the lower addresses are the right eye's camera). Sessions without eye_files (before 2026-10-07) called the lower-address camera L, so their eye_L.raw holds the right eye\n\
+upside_down_eye={upside_down}: stored raw; flip vertically (not 180 degrees) to view upright\n\
 clock=CLOCK_MONOTONIC_RAW seconds (same clock as Valve sample_time); t_cam = camera timestamp from the slot header, t_raw = when the slot started changing, t_copy = when it was copied\n\
 shm_version={}\nproximity={}\n",
         local_stamp(),
@@ -2637,7 +2641,7 @@ mod tests {
         while t0.elapsed() < Duration::from_millis(2500) {
             for eye in 0..2 {
                 s.read(eye, k, &mut img).unwrap();
-                if eye == 1 {
+                if eyecam::vision::stored_upside_down(eye) {
                     img.reverse(); // back to stored orientation (rows and columns), close enough for a load test
                 }
                 let t = s.t_cam[eye][k];

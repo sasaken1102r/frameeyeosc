@@ -70,20 +70,25 @@ pub struct LastCalib {
 }
 
 impl LastCalib {
-    /// Read a calib_result.json's text: None if it isn't a wear calibration's.
+    /// Read a calib_result.json's text: None if it isn't a wear calibration's. One from before the eyes were
+    /// anatomical (no `"eyes": "anatomical"`: its L was the right eye) is read for the other eye, its message too.
     pub fn from_result(text: &str) -> Option<Self> {
         use crate::json::Json;
+        use crate::live::{json_eye_key, json_eyes_anatomical, other_eye_name, swap_eye_words};
         let j = crate::json::parse(text).ok()?;
         if j.get("kind").and_then(Json::str) != Some("wear") {
             return None;
         }
+        let anatomical = json_eyes_anatomical(&j);
         let ok = matches!(j.get("ok"), Some(Json::Bool(true)));
+        // (files before failed_eye: only whether it failed is known)
+        let failed_eye = j.get("failed_eye").and_then(Json::str).unwrap_or(if ok { "" } else { "LR" });
+        let message = j.get("message").and_then(Json::str).unwrap_or("");
         let mut c = LastCalib {
             time: j.get("time").and_then(Json::str).unwrap_or("").to_string(),
             ok,
-            // (files before failed_eye: only whether it failed is known)
-            failed_eye: j.get("failed_eye").and_then(Json::str).unwrap_or(if ok { "" } else { "LR" }).to_string(),
-            message: j.get("message").and_then(Json::str).unwrap_or("").to_string(),
+            failed_eye: if anatomical { failed_eye.to_string() } else { other_eye_name(failed_eye) },
+            message: if anatomical { message.to_string() } else { swap_eye_words(message) },
             pupil_frames: [f64::NAN; 2],
             normal_frames: [f64::NAN; 2],
             pupil_x: [f64::NAN; 2],
@@ -91,8 +96,8 @@ impl LastCalib {
             window: [[f64::NAN; 2]; 2],
             fps: [f64::NAN; 2],
         };
-        for (e, name) in ["L", "R"].iter().enumerate() {
-            let Some(v) = j.get("values").and_then(|v| v.get(name)) else { continue };
+        for e in 0..2 {
+            let Some(v) = j.get("values").and_then(|v| v.get(json_eye_key(e, anatomical))) else { continue };
             let n = |x: Option<&Json>| x.and_then(Json::num).unwrap_or(f64::NAN);
             let diag = v.get("diag");
             c.pupil_frames[e] = n(v.get("normal_frames_with_pupil"));
@@ -488,6 +493,7 @@ mod tests {
     /// A calib_result.json as livesvc writes it (a wear calibration that went through without the right eye).
     const RESULT: &str = r#"{
   "kind": "wear",
+  "eyes": "anatomical",
   "time": "2026-10-05 19:51:03",
   "ok": true,
   "failed_eye": "R",
@@ -519,6 +525,22 @@ mod tests {
         let old = LastCalib::from_result(&RESULT.replace("\"failed_eye\": \"R\",", "").replace("\"ok\": true", "\"ok\": false")).unwrap();
         assert_eq!((old.ok, old.failed_eye.as_str()), (false, "LR"));
         assert!(LastCalib::from_result("not json").is_none());
+    }
+
+    #[test]
+    fn an_old_calib_result_is_read_for_the_other_eye() {
+        // Written before 2026-10-07: its "R" (the eye that failed) was the left eye.
+        let old = RESULT.replace("  \"eyes\": \"anatomical\",\r\n", "").replace("  \"eyes\": \"anatomical\",\n", "");
+        assert!(!old.contains("\"eyes\""));
+        let c = LastCalib::from_result(&old).unwrap();
+        assert_eq!(c.failed_eye, "L");
+        assert_eq!(c.message, "校正できた（左目は瞳がうまく見えなかったので、前の値を使うよ）[0/486、90 必要]");
+        assert_eq!(c.pupil_frames, [0.0, 486.0]);
+        assert!(c.pupil_x[0].is_nan() && c.pupil_x[1] == 240.5);
+        assert_eq!(c.window, [[180.0, 340.0], [186.0, 346.0]]);
+        assert_eq!(c.fps, [15.0, 90.0]);
+        let failed = LastCalib::from_result(&old.replace("\"failed_eye\": \"R\",", "").replace("\"ok\": true", "\"ok\": false")).unwrap();
+        assert_eq!(failed.failed_eye, "LR");
     }
 
     #[test]

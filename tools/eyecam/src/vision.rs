@@ -13,6 +13,17 @@
 pub const W: usize = 400;
 pub const H: usize = 400;
 
+/// The eye (0 = left, 1 = right) whose camera stores its picture upside down: its frames are flipped vertically
+/// (not rotated 180 degrees) to be upright, everywhere in the analysis. It is the camera of the higher-address slot
+/// group (see `ring`), which is the left eye's; builds before 2026-10-07 called that camera R ("the right eye is
+/// stored upside down").
+pub const UPSIDE_DOWN_EYE: usize = 0;
+
+/// Whether `eye`'s frames are stored upside down (see UPSIDE_DOWN_EYE).
+pub fn stored_upside_down(eye: usize) -> bool {
+    eye == UPSIDE_DOWN_EYE
+}
+
 /// Half widths of the rows of `cv2.getStructuringElement(MORPH_ELLIPSE, (9, 9))`.
 const SE_HALF: [usize; 9] = [0, 3, 3, 4, 4, 4, 3, 3, 0];
 

@@ -26,7 +26,7 @@ const CAMERA_LID_FLOOR_RANGE: std::ops::RangeInclusive<f32> = 0.0..=0.75;
 const LID_OPEN_SNAP_RANGE: std::ops::RangeInclusive<f32> = 0.0..=0.75;
 // lid_open_snap used to be a share of the eye's open reading (0.70 to 1.00, 0.80 by default). A value above 0.75 in
 // config.json is one of those, and goes over as where it started for a fit that reads this shut and 1.000 open (the
-// owner's eyes read 0.003 and 0.046): 0.80 -> 0.53, the new default; 1.00 -> 0.75, off as before. 0.70 and 0.75 read
+// author's eyes read 0.003 and 0.046): 0.80 -> 0.53, the new default; 1.00 -> 0.75, off as before. 0.70 and 0.75 read
 // as the new kind; anything above 1.00 was never allowed and still isn't.
 const OLD_SNAP_CLOSED: f32 = 0.025;
 // A fitted eye's open readings must be at least this far above its closed one.

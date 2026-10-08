@@ -446,7 +446,7 @@ void testMigrateEyeOffsets() {
         return root;
     };
     std::string log;
-    // The owner's config at 22:47 on 2026-10-08, and the one a minute after the 17° capture
+    // The author's config at 22:47 on 2026-10-08, and the one a minute after the 17° capture
     JsonValue root = withEyes(2, 0.078, 0.082);
     CHECK(configNeedsMigration(root) && migrateEyeOffsets(root, log));
     CHECK(std::fabs(numberIn(root, key::kGazeOffsetXLeft) - 0.08) < 1e-9);

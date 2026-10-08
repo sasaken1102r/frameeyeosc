@@ -226,7 +226,7 @@ Measured centerWithEyes(double left, double right) {
 }
 
 void testEyeSpread() {
-    // What Valve's left - right straight ahead has to be: 4.4° at the owner's 69.5 mm, 4.0° at 63 mm
+    // What Valve's left - right straight ahead has to be: 4.4° at the author's 69.5 mm, 4.0° at 63 mm
     Notes notes;
     noteEyeSpread(centerWithEyes(0.0946, -0.0078), 0.0695, notes);  // the full fit at 22:41 on 2026-10-08
     CHECK(std::fabs(notes.eyeSpreadExpectedDeg - 4.42) < 0.01 && std::fabs(notes.eyeSpreadDeg - 4.61) < 0.01);

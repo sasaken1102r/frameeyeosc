@@ -67,7 +67,7 @@ const DOWN_HOLD_FADE_DEG: f32 = 10.0;
 // right).
 const VERGENCE_DEG: f32 = 2.0;
 // Intentional cross-eye (a finger to the bridge of the nose) still shows with --independent-eyes. On 2026-10-08 the
-// owner's eleven tries read 21-35° left - right on the Frame (its fixation 0.10-0.14 m away), with the eyes fully open
+// author's eleven tries read 21-35° left - right on the Frame (its fixation 0.10-0.14 m away), with the eyes fully open
 // and no more than 12° down. In 37 minutes of everyday recordings, with both eyes at least CROSS_EYE_ENGAGE_OPEN open,
 // Valve's left - right stayed at or above 20° for at most 0.40 s and at or above 25° for at most 0.16 s (with only
 // half-open eyes: 1.54 s and 0.29 s, at the end of one recording, looking 15-27° down). So it is let through once,
@@ -185,7 +185,7 @@ const CAMERA_AGREE_HOLD: f64 = 0.2;
 //   relaxed open, which it reaches LID_OPEN_SNAP_RAMP of the way from there. A fitted eye's eyelid is a straight line
 //   in its reading, so with the ramp ending halfway this is exactly the zone this started as, from 0.80 to 0.90 of the
 //   eye's open reading, wherever it starts. The default, 0.53, is where 0.80 lands through a fit that reads 1.000 open
-//   and 0.00-0.05 shut (0.536-0.525; the owner's two eyes); an eye without a fit at the default lid marks lands at
+//   and 0.00-0.05 shut (0.536-0.525; the author's two eyes); an eye without a fit at the default lid marks lands at
 //   0.51. A squint mostly reads lower than 0.8 there; the cost is a squint the eye tracker reads at 0.80-0.90, which
 //   goes out more open. A fitted eye's scale (a fine-tune after the fit) applies after it, so an eye scaled to 0.9
 //   still goes out 10% less open (see snapped_lids); for an eye without a fit the scale is the mapping itself (the
@@ -193,7 +193,7 @@ const CAMERA_AGREE_HOLD: f64 = 0.2;
 // - Without it, too (see fits_at): further than LID_DOWN_FROM_DEG down, a fitted eye's expected open reading carries
 //   on falling by LID_DOWN_PER_DEG a degree (no lower than half its straight-ahead reading, as expected_open), where
 //   it used to hold at the reading measured 15° down. Looking 24° down an open eye read about 0.82 there and went
-//   out half closed. Both numbers come from one owner's two recordings (2026-10-07 23:23 and 10-08 20:47).
+//   out half closed. Both numbers come from the author's two recordings (2026-10-07 23:23 and 10-08 20:47).
 const LID_OPEN_SNAP_RAMP: f32 = 0.5;
 const LID_DOWN_FROM_DEG: f32 = 17.0;
 const LID_DOWN_PER_DEG: f32 = 0.02;
@@ -225,6 +225,14 @@ const CEILING_JUMP: (f64, f64) = (0.1, 0.2);
 // 0.61 and another's (461 s) from 0.50 to 0.22, with no more of the eyelids at VRCFT 0.7 or less (17.2% / 22.6%) and
 // the flicker while open 0.0049 (0.0050 before).
 const CAMERA_WIDEN_FADE: f32 = 0.05;
+// An eye's camera eyelid that stops coming (stale for a few frames, the pupil lost for a moment) keeps the eye on the
+// rules for eyes with it for up to CAMERA_GAP_HOLD, with the eye server's eyelid still raised to the camera's last one
+// (raised_to_camera; never lowered, closed or widened by it, since the camera often drops out just as the eye
+// narrows), before the eye goes over to the rules for eyes without it (the nearly open easing, the far-down slope);
+// and one that comes back after that is taken once it has kept coming for as long. Switching at once stepped an eye
+// the eye server reads low between the camera's raise and the eased eyelid at every such gap. The same length as
+// CAMERA_AGREE_HOLD, for the same reason: the camera's values come and go for 100-150 ms at a time.
+const CAMERA_GAP_HOLD: f64 = 0.2;
 const VALVE_WIDEN_FADE: f32 = 0.1;
 // The camera's own eyelid goes nearly to 0 in a hard squint (0.00-0.06 with its squint at 1.0 on 2026-10-07), which
 // looks closed on an avatar, so an eye the camera sees open is held at --camera-lid-floor (camera_lid_floor) and the
@@ -674,6 +682,8 @@ struct Smoother {
     lid_doubt: [LidDoubt; 2],
     // Per eye: since when the eye server's reading has been near the ceiling (see check_lids).
     ceiling_since: [Option<f64>; 2],
+    // Per eye: the camera's eyelid held through short gaps (see CAMERA_GAP_HOLD).
+    camera_gap: [CameraGap; 2],
 }
 
 impl Smoother {
@@ -696,6 +706,7 @@ impl Smoother {
             cross_eye: CrossEye::default(),
             lid_doubt: [LidDoubt::default(); 2],
             ceiling_since: [None; 2],
+            camera_gap: [CameraGap::default(); 2],
         }
     }
 
@@ -797,6 +808,24 @@ impl Smoother {
         self.cross_eye = CrossEye::default();
         self.lid_doubt = [LidDoubt::default(); 2];
         self.ceiling_since = [None; 2];
+        self.camera_gap = [CameraGap::default(); 2];
+    }
+
+    /// Start over what only --eye-behavior 2 keeps (the camera's eyelid's doubt and gaps, the ceiling rule, the
+    /// cross-eye gate), for a switch between it and 1; the filters go on, so the eyes don't jump.
+    fn reset_behavior(&mut self) {
+        self.lid_doubt = [LidDoubt::default(); 2];
+        self.ceiling_since = [None; 2];
+        self.cross_eye = CrossEye::default();
+        self.camera_gap = [CameraGap::default(); 2];
+    }
+
+    /// Each eye's camera eyelid at `time` with its short gaps bridged, and the one held through a gap (see
+    /// CAMERA_GAP_HOLD, CameraGap::steady).
+    fn steady_camera(&mut self, time: f64, read: [Option<CameraLid>; 2]) -> ([Option<CameraLid>; 2], [Option<f32>; 2]) {
+        let steady: [(Option<CameraLid>, Option<f32>); 2] =
+            std::array::from_fn(|eye| self.camera_gap[eye].steady(time, read[eye]));
+        (steady.map(|(lid, _)| lid), steady.map(|(_, held)| held))
     }
 
     /// The eye server's VRCFT eyelids (`mapped`) corrected by the eye camera's (`camera`, per eye while it may be used),
@@ -1040,6 +1069,52 @@ struct CameraLid {
     frame: f64,
 }
 
+/// One eye's camera eyelid across short gaps (see CAMERA_GAP_HOLD).
+#[derive(Clone, Copy, Debug, Default)]
+struct CameraGap {
+    // Whether the eye is on the camera's eyelid (None before the first sample: whatever that says).
+    on: Option<bool>,
+    // The eyelid last taken, and when.
+    last: Option<(CameraLid, f64)>,
+    // While off: since when the camera's eyelid has been coming again.
+    back_since: Option<f64>,
+}
+
+impl CameraGap {
+    /// At `time`, from the camera's eyelid as read (`read`): the one to use (None in a gap, and while one that came
+    /// back is not taken yet), and through a gap the last one, to raise the eye server's to only.
+    fn steady(&mut self, time: f64, read: Option<CameraLid>) -> (Option<CameraLid>, Option<f32>) {
+        match (self.on, read) {
+            (None, _) | (Some(true), Some(_)) => {
+                self.on = Some(read.is_some());
+                self.last = read.map(|lid| (lid, time));
+                self.back_since = None;
+                (read, None)
+            }
+            (Some(true), None) => match self.last {
+                Some((lid, at)) if time - at <= CAMERA_GAP_HOLD => (None, Some(lid.lid)),
+                _ => {
+                    self.on = Some(false);
+                    (None, None)
+                }
+            },
+            (Some(false), Some(lid)) => {
+                if time - *self.back_since.get_or_insert(time) < CAMERA_GAP_HOLD {
+                    return (None, None);
+                }
+                self.on = Some(true);
+                self.last = Some((lid, time));
+                self.back_since = None;
+                (read, None)
+            }
+            (Some(false), None) => {
+                self.back_since = None;
+                (None, None)
+            }
+        }
+    }
+}
+
 /// Per eye, how the eye server's eyelid and the eye camera's have agreed lately (see Smoother::check_lids).
 #[derive(Clone, Copy, Debug, Default)]
 struct LidDoubt {
@@ -1239,6 +1314,14 @@ fn snapped_lids(
         };
         lid_to_vrcft(value * scales[eye], settings)
     })
+}
+
+/// Which eyes' readings near 1.000 say no more than "open", for the ceiling rule (see CEILING_FROM): a fitted eye whose
+/// open reading is at or above CEILING_FROM, and one without a fit while the openness is saturated (see Saturation).
+/// An eye that reads 0.85 open has room above it, and 0.90 or more there is widening, which the rule held back for up
+/// to CEILING_JUMP.1.
+fn ceiling_eyes(settings: &Settings, saturated: bool) -> [bool; 2] {
+    settings.lid_fit().map(|fit| fit.map_or(saturated, |fit| fit.open >= CEILING_FROM))
 }
 
 /// How far an eye server's reading is toward the ceiling, for Smoother::check_lids: none up to CEILING_FROM, all of the
@@ -1520,13 +1603,16 @@ fn lid_inputs_with(
 /// The eye fits for a sample with the eyes at `vertical` (-1..1): as fitted, but for the eyes in `extended` (those
 /// without the eye camera's eyelid) further than LID_DOWN_FROM_DEG down, where the expected open reading carries on
 /// falling by LID_DOWN_PER_DEG a degree (see LID_OPEN_SNAP_RAMP). expected_open holds the down reading from 15° down, so
-/// that lower reading stands in for it there, and its own floor (half the straight-ahead reading) still applies.
+/// that lower reading stands in for it there, and its own floor (half the straight-ahead reading) still applies. Only
+/// for an eye that can't widen (widen_room: --lid-widen off, or an open reading near the openness ceiling, as on SteamOS
+/// 0.4.3 where it reads 1.000): the expected open reading is also where widening starts (fitted_lid), and lowering it
+/// made an eye with room to widen go out fully widened looking 24° down at a reading of 0.80.
 fn fits_at(settings: &Settings, vertical: f32, extended: [bool; 2]) -> [Option<LidFit>; 2] {
     let beyond = -vertical * 45.0 - LID_DOWN_FROM_DEG;
     let fits = settings.lid_fit();
     std::array::from_fn(|eye| {
         fits[eye].map(|fit| {
-            if !extended[eye] || beyond <= 0.0 {
+            if !extended[eye] || beyond <= 0.0 || widen_room(&fit, settings.lid_widen) {
                 return fit;
             }
             LidFit {
@@ -2570,6 +2656,9 @@ fn process(
         let dt = smoother.advance(data.sample_time);
         // After advance(), which starts the smoothing over after a gap
         let (camera_lids, camera) = smoother.camera.take(settings, camera, true);
+        // With --eye-behavior 2 short gaps in the camera's eyelid are bridged (see CAMERA_GAP_HOLD)
+        let (camera_lids, held) =
+            if v2 { smoother.steady_camera(data.sample_time, camera_lids) } else { (camera_lids, [None; 2]) };
         // Before anything else, so the filters see the gaze the way it will be sent.
         let open = data.openness.iter().all(|openness| *openness >= settings.gaze_hold_below);
         let trusted = reliable.map(|reliable| reliable && open);
@@ -2601,7 +2690,7 @@ fn process(
         smoother.lid_vertical = Some(vertical);
         // For eyes without the camera's eyelid, eyelids near relaxed open count as open, and far down less is
         // expected (see LID_OPEN_SNAP_RAMP)
-        let zoned = camera_lids.map(|camera| v2 && camera.is_none());
+        let zoned = [0, 1].map(|eye| v2 && camera_lids[eye].is_none() && held[eye].is_none());
         let fits = fits_at(settings, vertical, zoned);
         let mapped = if v2 {
             snapped_lids(openness, vertical, scales, settings, fits, zoned)
@@ -2612,12 +2701,25 @@ fn process(
         // Corrected by the camera where it sees an eye closed, or open for longer than a blink while the eye server
         // reads it closing; everything after this (closing, the blink sync, lid_sync) goes by the corrected eyelids
         // (and where the eye server reads it at the ceiling, which says no more than open)
-        let ceiling = openness.map(ceiling_share);
+        // Only for eyes whose open reading is itself at the ceiling (see ceiling_eyes)
+        let at_ceiling = ceiling_eyes(settings, saturated);
+        let ceiling = [0, 1].map(|eye| if at_ceiling[eye] { ceiling_share(openness[eye]) } else { 0.0 });
         let (mapped, mut lid_from, floored) = if v2 {
             smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, settings)
         } else {
             (mapped, [LidFrom::EyeServer; 2], [false; 2])
         };
+        // Through a short gap in the camera's eyelid, the eye server's is still raised to the camera's last one
+        let mapped = [0, 1].map(|eye| match held[eye] {
+            Some(camera) => {
+                let (lid, raised) = raised_to_camera(mapped[eye], camera, doubt_line(settings));
+                if raised {
+                    lid_from[eye] = LidFrom::CameraRaised;
+                }
+                lid
+            }
+            None => mapped[eye],
+        });
         // From relaxed open up (or widened on the camera while not closing), an eye the camera sees takes the camera's
         // eyelid; a closing one stays the eye server's. Widening in one eye only is halved (see share_widening)
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
@@ -3215,6 +3317,9 @@ impl Bridge {
         // All the bits again with the next sample, wherever they go now and however many
         self.pupil_bits.reset();
         self.smoother.configure(&settings);
+        if settings.eye_behavior != self.settings.eye_behavior {
+            self.smoother.reset_behavior();
+        }
         if reset_calibration {
             eprintln!("Starting eyelid calibration over");
             self.calibration.reset(settings.lid_open);
@@ -3842,6 +3947,134 @@ mod tests {
         assert!(sent[280].cross_eye && !sent[290].cross_eye);
         assert!((sent_vergence(&sent[310]) - VERGENCE_DEG).abs() < 1e-3);
         assert!(!sent[332].cross_eye && sent[337].cross_eye);
+    }
+
+    #[test]
+    fn far_down_slope_leaves_an_eye_that_can_widen_alone() {
+        // Room to widen (0.85 + 0.07 <= 0.97): looking 24° down at a reading of 0.80, the eye is normally open, not
+        // widened (the slope would have moved where widening starts down to 0.66)
+        let room = Settings {
+            lid_fit_closed_left: Some(0.2),
+            lid_fit_up_left: Some(0.85),
+            lid_fit_open_left: Some(0.85),
+            lid_fit_down_left: Some(0.8),
+            ..settings()
+        };
+        let down = -24.0 / 45.0;
+        let lid = |settings: &Settings| {
+            let fits = fits_at(settings, down, [true; 2]);
+            lid_to_vrcft(lid_inputs_with([0.8; 2], down, [1.0; 2], settings, fits)[0], settings)
+        };
+        assert!(widen_room(&room.lid_fit()[0].unwrap(), room.lid_widen));
+        assert!((lid(&room) - LID_RELAXED).abs() < 1e-3, "{}", lid(&room));
+        assert_eq!(fits_at(&room, down, [true; 2])[0], room.lid_fit()[0]);
+        // No room (--lid-widen off, or an open reading at the ceiling): the slope applies as before
+        let off = Settings {
+            lid_widen: Widen::Off,
+            ..room.clone()
+        };
+        assert!(fits_at(&off, down, [true; 2])[0].unwrap().down < 0.8 - 0.1);
+        let saturated = Settings {
+            lid_fit_open_left: Some(1.0),
+            lid_fit_up_left: Some(1.0),
+            ..room
+        };
+        assert!(fits_at(&saturated, down, [true; 2])[0].unwrap().down < 0.8 - 0.1);
+    }
+
+    #[test]
+    fn the_ceiling_rule_is_for_eyes_whose_open_reading_is_at_the_ceiling() {
+        let fitted_at = |open: f32| Settings {
+            lid_fit_closed_left: Some(0.0),
+            lid_fit_up_left: Some(open),
+            lid_fit_open_left: Some(open),
+            lid_fit_down_left: Some(open),
+            ..settings()
+        };
+        // A fitted eye that reads 0.85 open: 0.90 and up is widening there, never a jump to the ceiling
+        assert_eq!(ceiling_eyes(&fitted_at(0.85), true), [false, true]);
+        assert_eq!(ceiling_eyes(&fitted_at(1.0), false), [true, false]);
+        assert_eq!(ceiling_eyes(&fitted_at(0.9), false)[0], true);
+        // Without a fit it goes by the saturation
+        assert_eq!(ceiling_eyes(&settings(), false), [false; 2]);
+        assert_eq!(ceiling_eyes(&settings(), true), [true; 2]);
+    }
+
+    #[test]
+    fn a_camera_eyelid_is_held_through_short_gaps() {
+        let lid = |lid: f32| Some(CameraLid { lid, closed: false, frame: 0.011 });
+        let mut gap = CameraGap::default();
+        // The first sample says which it is
+        assert_eq!(gap.steady(0.0, lid(0.6)), (lid(0.6), None));
+        // A gap of up to 0.2 s keeps the last eyelid to raise to; longer, and the eye is off the camera
+        assert_eq!(gap.steady(0.1, None), (None, Some(0.6)));
+        assert_eq!(gap.steady(0.2, None), (None, Some(0.6)));
+        assert_eq!(gap.steady(0.21, None), (None, None));
+        // Back: taken once it has kept coming for 0.2 s
+        assert_eq!(gap.steady(0.3, lid(0.5)), (None, None));
+        assert_eq!(gap.steady(0.45, lid(0.5)), (None, None));
+        assert_eq!(gap.steady(0.51, lid(0.55)), (lid(0.55), None));
+        // A blip back while off starts that over
+        let mut off = CameraGap::default();
+        assert_eq!(off.steady(0.0, None), (None, None));
+        assert_eq!(off.steady(0.1, lid(0.5)), (None, None));
+        assert_eq!(off.steady(0.15, None), (None, None));
+        assert_eq!(off.steady(0.2, lid(0.5)), (None, None));
+        assert_eq!(off.steady(0.35, lid(0.5)), (None, None));
+        assert_eq!(off.steady(0.41, lid(0.5)), (lid(0.5), None));
+        // Through the pipeline: an eye the eye server reads low (0.85 through a fit that reads 1.000 open) and the
+        // camera sees open keeps the camera's raise through a 0.1 s gap, instead of stepping down to the eye server's
+        let fitted = Settings {
+            lid_fit_closed_left: Some(0.0),
+            lid_fit_up_left: Some(1.0),
+            lid_fit_open_left: Some(1.0),
+            lid_fit_down_left: Some(1.0),
+            lid_fit_closed_right: Some(0.0),
+            lid_fit_up_right: Some(1.0),
+            lid_fit_open_right: Some(1.0),
+            lid_fit_down_right: Some(1.0),
+            lid_open_snap: LID_RELAXED,
+            lid_calibration: false,
+            ..settings()
+        };
+        let mut smoother = Smoother::new(&fitted);
+        let seen = camera_samples(&fitted, &mut smoother, 10.0, 1.0, |_| [0.85; 2], |_| Some(camera(0.75, 0.0)));
+        assert!(seen.last().unwrap().lids.iter().all(|lid| (lid - LID_RELAXED).abs() < 0.01));
+        let gap = camera_samples(&fitted, &mut smoother, 11.0, 0.1, |_| [0.85; 2], |_| None);
+        assert!(gap.iter().all(|sample| sample.lids.iter().all(|lid| (lid - LID_RELAXED).abs() < 0.01)), "{:?}", gap[8].lids);
+    }
+
+    #[test]
+    fn switching_eye_behavior_starts_over_what_only_v2_keeps() {
+        let mut bridge = test_bridge(settings());
+        let mark = |bridge: &mut Bridge| {
+            bridge.smoother.lid_doubt[0].camera = true;
+            bridge.smoother.ceiling_since[1] = Some(1.0);
+            bridge.smoother.cross_eye.engaged = true;
+            bridge.smoother.camera_gap[0].on = Some(true);
+            bridge.smoother.last_time = Some(5.0);
+        };
+        let cleared = |bridge: &Bridge| {
+            !bridge.smoother.lid_doubt[0].camera
+                && bridge.smoother.ceiling_since == [None; 2]
+                && !bridge.smoother.cross_eye.engaged
+                && bridge.smoother.camera_gap[0].on.is_none()
+                // The filters go on
+                && bridge.smoother.last_time == Some(5.0)
+        };
+        let v1 = Settings {
+            eye_behavior: 1,
+            ..settings()
+        };
+        for next in [v1.clone(), settings()] {
+            mark(&mut bridge);
+            bridge.apply(reload(&next)).unwrap();
+            assert!(cleared(&bridge));
+        }
+        // Another change keeps them
+        mark(&mut bridge);
+        bridge.apply(reload(&Settings { lid_sync: 0.3, ..settings() })).unwrap();
+        assert!(bridge.smoother.cross_eye.engaged && bridge.smoother.lid_doubt[0].camera);
     }
 
     #[test]
@@ -6803,16 +7036,16 @@ mod tests {
         assert!(sent.last().unwrap().lids.iter().all(|lid| (lid - 0.75).abs() < 1e-3), "{:?}", sent.last().unwrap().lids);
         let before = lid_to_vrcft(lid_inputs([0.82; 2], degrees(24.0), [1.0; 2], &settings)[0], &settings);
         assert!(before < 0.65, "{before}");
-        // One owner's fit (1.000 open looking up, ahead and down): 0.86 is expected 24° down, so 0.82 is nearly open
-        let owner = Settings {
+        // The author's fit (1.000 open looking up, ahead and down): 0.86 is expected 24° down, so 0.82 is nearly open
+        let author = Settings {
             lid_fit_closed_left: Some(0.003),
             lid_fit_down_left: Some(1.0),
             lid_fit_closed_right: Some(0.046),
             lid_fit_down_right: Some(1.0),
             ..settings.clone()
         };
-        let sent = camera_samples_down(&owner, 24.0, 2.0, |_| [0.82; 2], |_| None);
-        let before = lid_to_vrcft(lid_inputs([0.82; 2], degrees(24.0), [1.0; 2], &owner)[0], &owner);
+        let sent = camera_samples_down(&author, 24.0, 2.0, |_| [0.82; 2], |_| None);
+        let before = lid_to_vrcft(lid_inputs([0.82; 2], degrees(24.0), [1.0; 2], &author)[0], &author);
         assert!(sent.last().unwrap().lids.iter().all(|lid| *lid > 0.7) && before < 0.6, "{:?} {before}", sent.last().unwrap().lids);
         // Up to 15° down nothing changes: the same eyelids with the snap off as without this
         let off = Settings { lid_open_snap: LID_RELAXED, ..settings.clone() };
@@ -7261,8 +7494,9 @@ mod tests {
         let mut smoother = saturated_smoother(&settings);
         let wide = camera_samples(&settings, &mut smoother, 100.0, 1.0, |_| [1.0; 2], |_| Some(camera(1.0, 0.0)));
         assert!(wide.last().unwrap().lids.iter().all(|lid| *lid > 0.99));
-        // The left eye's values go stale: it is capped again at once, though the right eye stays widened (and
-        // lid_sync would pull the left one toward it)
+        // The left eye's values go stale: it is capped again at once (a gap bridges only the raise to the camera's
+        // eyelid, never its widening), though the right eye stays widened (and lid_sync would pull the left one toward
+        // it)
         let left_stale = Live {
             fresh: [false, true],
             ..camera(1.0, 0.0)

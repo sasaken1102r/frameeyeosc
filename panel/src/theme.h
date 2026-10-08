@@ -46,6 +46,10 @@ constexpr Color kAccentPressed = hexColor(0xc45fe0);  ///< while pressed (a litt
 constexpr Color kOnAccent = hexColor(0x0d1117);       ///< text on an accent fill (white is only 2.4:1)
 constexpr double kAccentTintAlpha = 0.20;             ///< light accent fill and glow
 constexpr Color kAccentTint = blendColor(kAccent, kCard, kAccentTintAlpha);  ///< light accent fill on a card
+/** A second accent for mark ⑤ (lid_open_snap) on the eyelid bars and its row, a blue apart from the pink marks */
+constexpr Color kSnap = hexColor(0x79c0ff);
+/** Mark ⑤ for an eye the cameras supply (it doesn't apply there): the blue sunk into the card */
+constexpr Color kSnapFaded = blendColor(kSnap, kCard, 0.4);
 // ---- States (never by color alone; there is always a symbol or a word) ----
 /** The debug gaze dots: combined, left eye (light cyan) and right eye (a darker orange), told apart by lightness too */
 constexpr Color kDotBoth = hexColor(0xe6edf3);
@@ -55,6 +59,7 @@ constexpr Color kSuccess = hexColor(0x3fb950);    ///< sending
 constexpr Color kSuccessTint = blendColor(kSuccess, kCard, 0.15);
 constexpr Color kDanger = hexColor(0xf85149);     ///< errors, not running
 constexpr Color kDangerTint = blendColor(kDanger, kCard, 0.15);
+constexpr Color kDangerSoft = hexColor(0xff8a8a); ///< red text on the red tint (kDanger is only 4.4:1 there)
 constexpr Color kQuitFill = blendColor(kDanger, kCard, 0.12);  ///< quit / reset buttons (quiet)
 // ---- The eye capture's full-view overlay (a light stimulus, not UI) ----
 // Pure white and black for the bright and dark steps, and the instruction on them on purpose faint, so it barely

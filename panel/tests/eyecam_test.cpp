@@ -4,7 +4,8 @@
 // calibrations (their commands, what ran last), the setup checklist (its step for every combination, how the setup's
 // calibration ends, the screens, the Konsole command lines it starts), the pupils per eye and the eyes a calibration
 // failed on (or went through without), and the control socket against a stand-in recorder in a temporary folder
-// (never the real one; nothing is started). Built with the panel as eyecam-test; exits non-zero on failure.
+// (never the real one; nothing is started), and a recording's step chips (eyecam's protocol files, which of them fit).
+// Built with the panel as eyecam-test; exits non-zero on failure.
 #include "eyecam.h"
 #include "json.h"
 #include "setup_tools.h"
@@ -25,8 +26,10 @@
 #include <ctime>
 #include <fstream>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -687,9 +690,10 @@ void testCalibText() {
               t.calibUserDoneBody, t.calibDoneButton, t.lidsNowLabel, t.lidsNowBoth, t.lidsNowLeft,
               t.lidsNowRight, t.lidsNowValve, t.lidsNowSwitch, t.lidsNowNoCamera, t.rowWidenEase, t.widenHintCamera,
               t.widenHintMixed, t.widenHintValve, t.widenHintSaturated, t.widenNoteCamera, t.widenNoteValve,
-              t.widenNoteUnfitted, t.widenSaturated1, t.widenSaturated2, t.blinkHint, t.blinkHoldCaption,
-              t.rowBlinkBoth, t.blinkBothHint, t.blinkBothNote, t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
-              t.rowOther, t.otherHint, t.otherText1, t.otherText2, t.detailsTitle, t.detailsClose, t.camPupilLine,
+              t.widenNoteUnfitted, t.widenSaturated, t.blinkHint, t.blinkHoldCaption,
+              t.rowBlinkBoth, t.blinkBothHint, t.blinkBothNote, t.rowLidFloor, t.lidFloorHint, t.lidFloorNote, t.lidFloorNoteIdle,
+              t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
+              t.lidsLook, t.lidsBlinks, t.lidsFine, t.camPupilLine,
               t.camWidenNotice, t.camWidenButton, t.calibCardTitle, t.calibResultTitle, t.calibWearNote,
               t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye}) {
             CHECK(text != nullptr && text[0] != '\0');
@@ -1661,6 +1665,186 @@ void testReadFile() {
     ::rmdir(dir.c_str());
 }
 
+/**
+ * Read a file whole.
+ * @param path the file
+ * @return its text ("" if it can't be read)
+ */
+std::string fileText(const std::string& path) {
+    std::ifstream file(path, std::ios::binary);
+    std::ostringstream text;
+    text << file.rdbuf();
+    return text.str();
+}
+
+/**
+ * A recording's status as eyecam-rec writes it.
+ * @param state "recording", ...
+ * @param protocol its protocol's name
+ * @param count step_count
+ * @param index step_index
+ * @return the status
+ */
+Status recordingStep(const std::string& state, const std::string& protocol, int count, int index) {
+    return setupStatus(state, ", \"protocol\": \"" + protocol + "\", \"step_count\": " + std::to_string(count) +
+                                  ", \"step_index\": " + std::to_string(index));
+}
+
+void testProtocolFile() {
+    // eyecam's own files, as install.sh puts them beside eyecam-rec: a countdown, then the steps
+    const std::vector<std::string> widen = eyecam::parseProtocol(fileText(EYECAM_SOURCE_DIR "/protocol_widen.txt"));
+    CHECK((widen == std::vector<std::string> {"lead_in", "close",  "normal",    "widen",  "close",  "normal",
+                                              "widen",   "close",  "normal",    "widen",  "squint", "look_up",
+                                              "look_down", "normal", "bright", "dark",   "bright"}));
+    const std::vector<std::string> noLight =
+        eyecam::parseProtocol(fileText(EYECAM_SOURCE_DIR "/protocol_widen_nolight.txt"));
+    CHECK(noLight.size() == 14 && std::equal(noLight.begin(), noLight.end(), widen.begin()));
+    CHECK((eyecam::parseProtocol(fileText(EYECAM_SOURCE_DIR "/protocol_free.txt")) ==
+           std::vector<std::string> {"normal"}));
+    // Read the way eyecam-rec reads them: comments, blank lines, spaces, CRLF, words joined with "_"
+    CHECK((eyecam::parseProtocol("# a comment\n\n  3   lead_in  # the countdown\r\n5 look up\n1.5 widen\n1e1 dark") ==
+           std::vector<std::string> {"lead_in", "look_up", "widen", "dark"}));
+    // Anything malformed (or nothing at all): no steps, as eyecam-rec refuses the file
+    for (const char* bad : {"", "# only a comment\n", "5\n", "x normal\n", "0 normal\n", "-2 normal\n", "5s normal\n",
+                            "nan normal\n", "inf normal\n", "3 lead_in\nwiden\n"}) {
+        CHECK(eyecam::parseProtocol(bad).empty());
+    }
+}
+
+void testFollowProtocol() {
+    const std::string dir = tempDir();
+    const std::string path = dir + "/protocol_widen.txt";
+    {
+        std::ofstream file(path);
+        file << "3 lead_in\n2 close\n5 widen\n";
+    }
+    eyecam::View view;
+    // Not recording: nothing read
+    view.status = recordingStep("idle", "widen", 3, -1);
+    eyecam::followProtocol(view, dir);
+    CHECK(view.protocol.name.empty() && view.protocol.steps.empty());
+    // Searching and recording: read once for its protocol
+    view.status = recordingStep("searching", "widen", 3, -1);
+    eyecam::followProtocol(view, dir);
+    SAME(view.protocol.name, "widen");
+    CHECK((view.protocol.steps == std::vector<std::string> {"lead_in", "close", "widen"}));
+    {
+        std::ofstream file(path);
+        file << "3 lead_in\n2 squint\n";
+    }
+    view.status = recordingStep("recording", "widen", 3, 1);
+    eyecam::followProtocol(view, dir);
+    CHECK(view.protocol.steps.size() == 3);
+    // Done: forgotten, so the next run reads the file again
+    view.status = recordingStep("idle", "widen", 3, -1);
+    eyecam::followProtocol(view, dir);
+    CHECK(view.protocol.name.empty() && view.protocol.steps.empty());
+    view.status = recordingStep("recording", "widen", 2, 0);
+    eyecam::followProtocol(view, dir);
+    CHECK((view.protocol.steps == std::vector<std::string> {"lead_in", "squint"}));
+    // No such file, a name that is no plain word, too large a file: no steps (and not tried again this run)
+    for (const char* name : {"other", "../widen", "wid en", ""}) {
+        view.status = recordingStep("recording", name, 3, 1);
+        eyecam::followProtocol(view, dir);
+        CHECK(view.protocol.steps.empty());
+    }
+    {
+        std::ofstream file(dir + "/protocol_big.txt");
+        for (size_t i = 0; i < eyecam::kMaxProtocolBytes / 8 + 1; ++i) file << "5 normal\n";
+    }
+    view.status = recordingStep("recording", "big", 3, 1);
+    eyecam::followProtocol(view, dir);
+    CHECK(view.protocol.name == "big" && view.protocol.steps.empty());
+    ::unlink((dir + "/protocol_big.txt").c_str());
+    ::unlink(path.c_str());
+    ::rmdir(dir.c_str());
+}
+
+void testRecordingChips() {
+    eyecam::View view;
+    view.protocol.name = "widen";
+    view.protocol.steps = eyecam::parseProtocol(fileText(EYECAM_SOURCE_DIR "/protocol_widen.txt"));
+    // At step 4 of 17 (the first widen): the 16 steps after the countdown, the third of them now
+    view.status = recordingStep("recording", "widen", 17, 3);
+    eyecam::StepChips chips = eyecam::recordingChips(view);
+    CHECK(chips.labels.size() == 16 && chips.labels.front() == "close" && chips.labels.back() == "bright");
+    CHECK(chips.current == 2);
+    // The countdown: none of them yet; the end: all done
+    view.status = recordingStep("recording", "widen", 17, 0);
+    CHECK(eyecam::recordingChips(view).current == -1);
+    view.status = recordingStep("recording", "widen", 17, 17);
+    CHECK(eyecam::recordingChips(view).current == 16);
+    // Another count, another protocol than was read, or not recording: no chips
+    for (const Status& other : {recordingStep("recording", "widen", 18, 3), recordingStep("recording", "free", 17, 3),
+                                recordingStep("searching", "widen", 17, -1),
+                                recordingStep("calibrating", "widen", 17, 3)}) {
+        view.status = other;
+        CHECK(eyecam::recordingChips(view).labels.empty());
+    }
+    // Steps that couldn't be read: none
+    view.protocol.steps.clear();
+    view.status = recordingStep("recording", "widen", 0, 0);
+    CHECK(eyecam::recordingChips(view).labels.empty());
+    // A protocol without a countdown keeps its first step
+    view.protocol = {"free", {"normal"}};
+    view.status = recordingStep("recording", "free", 1, 0);
+    chips = eyecam::recordingChips(view);
+    CHECK(chips.labels == std::vector<std::string> {"normal"} && chips.current == 0);
+    // The chips' texts: bright and dark besides the calibrations' ones; an unknown label as written
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    SAME(eyecam::chipLabel(ja, "bright"), "明るい所");
+    SAME(eyecam::chipLabel(ja, "dark"), "暗い所");
+    SAME(eyecam::chipLabel(en, "bright"), "Bright");
+    SAME(eyecam::chipLabel(en, "dark"), "Dark");
+    SAME(eyecam::chipLabel(ja, "look_down"), ja.setupChipLookDown);
+    SAME(eyecam::chipLabel(en, "widen"), en.setupChipWiden);
+    SAME(eyecam::chipLabel(en, "blink"), "blink");
+}
+
+void testChipWindow() {
+    using eyecam::ChipWindow;
+    // 16 chips 80 wide, 22 apart, marks 50 wide, in 715 (the recording view's width)
+    const std::vector<double> even(16, 80.0);
+    const auto window = [&](int current, double width) {
+        const ChipWindow w = eyecam::chipWindow(even, current, width, 22, 50);
+        return std::make_pair(w.first, w.end);
+    };
+    // Early: one before the one now, then as many after it as fit (with the marks: 5 chips)
+    CHECK(window(2, 715) == std::make_pair(1, 6));
+    // The first (and the countdown before it): nothing before, so one more after
+    CHECK(window(0, 715) == std::make_pair(0, 6));
+    CHECK(window(-1, 715) == std::make_pair(0, 6));
+    // Late: up to the last, and more before it in the room left
+    CHECK(window(13, 715) == std::make_pair(10, 16));
+    CHECK(window(15, 715) == std::make_pair(10, 16));
+    CHECK(window(16, 715) == std::make_pair(10, 16));
+    // Too narrow for one before it: the one now alone, however narrow
+    CHECK(window(2, 330) == std::make_pair(1, 3));
+    CHECK(window(2, 300) == std::make_pair(2, 3));
+    CHECK(window(2, 100) == std::make_pair(2, 3));
+    // Room for all: all
+    CHECK(window(7, 2000) == std::make_pair(0, 16));
+    CHECK(window(3, 0) == std::make_pair(3, 4));
+    // None
+    const ChipWindow none = eyecam::chipWindow({}, 0, 715, 22, 50);
+    CHECK(none.first == 0 && none.end == 0);
+    // Uneven widths, every step: the one now always in, and the row (with its marks) within the width once it has
+    // more than that one
+    const std::vector<double> uneven {74, 58, 74, 74, 58, 74, 74, 58, 74, 74, 101, 92, 104, 58, 90, 74};
+    for (int current = -1; current <= 16; ++current) {
+        const ChipWindow w = eyecam::chipWindow(uneven, current, 715, 22, 60);
+        const int now = std::clamp(current, 0, 15);
+        CHECK(w.first <= now && now < w.end && w.end <= 16);
+        double span = 0;
+        for (int i = w.first; i < w.end; ++i) span += uneven[static_cast<size_t>(i)] + (i > w.first ? 22 : 0);
+        if (w.first > 0) span += 60 + 22;
+        if (w.end < 16) span += 22 + 60;
+        CHECK(span <= 715);
+        CHECK(current < 1 || w.first == current - 1 || w.end == 16);
+    }
+}
+
 /** A stand-in recorder: listens on a socket and answers each connection once. */
 class FakeRecorder {
 public:
@@ -2163,6 +2347,10 @@ int main() {
     testReply();
     testUtf8();
     testReadFile();
+    testProtocolFile();
+    testFollowProtocol();
+    testRecordingChips();
+    testChipWindow();
     testControl();
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);

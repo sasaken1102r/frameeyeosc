@@ -6,7 +6,9 @@
     python convert.py rec_2026-10-03_15-00-00 --mp4          # eye_L.mp4 / eye_R.mp4（ffmpeg が PATH に要る）
     python convert.py rec_2026-10-03_15-00-00 --dump         # lock_dump.bin を画像化（枠合わせの確認用）
 
-raw は無加工（右目は上下逆さま）で保存されているので、見る用にだけ右目を上下反転する（180° 回転ではない）。
+raw は無加工（左目のカメラの画は上下逆さま）で保存されているので、見る用にだけそれを上下反転する（180° 回転ではない）。
+2026-10-07 より前の録画（meta.txt に eye_files=anatomical がない）は右目のカメラを L と呼んでいたので、eye_L.raw が右目、
+eye_R.raw が左目（上下逆さま）。どちらのファイルが逆さまかは meta.txt から決める。
 """
 
 import argparse
@@ -38,10 +40,30 @@ def frames(session, eye, width, height):
     return data[: data.size // (width * height) * width * height].reshape(-1, height, width)
 
 
-def for_view(frame, eye):
-    """見る用: パディング列を落とし、右目は上下反転する。"""
+def upside_down_file(meta):
+    """上下逆さまに保存されているファイル（"L" / "R"、カメラ 1 台だけなら None）。逆さまなのは左目のカメラ（アドレスの後ろのほうの
+    スロット）で、反転はカメラについていく（--swap で名前が入れ替わっても、そのカメラのファイルが逆さま）。replay.rs と同じ決め方。"""
+    repaired = meta.get("repaired_swap") == "1"
+    # meta.txt の upside_down_eye（L / R / none と書くようになってから）。fix_swap.py をかけたらファイルごと入れ替わっている
+    written = meta.get("upside_down_eye")
+    if written in ("L", "R"):
+        return {"L": "R", "R": "L"}[written] if repaired else written
+    if written == "none" or meta.get("both_eyes") == "false":
+        return None
+    anatomical = meta.get("eye_files") == "anatomical"
+    # a417dab までは画の位置でカメラを決めていて、L が左目のカメラのこともあった（slot_camera=1,1,1,1,0,0,0,0）
+    picture_order = not anatomical and meta.get("slot_camera", "").startswith("1")
+    swap = meta.get("swap") in ("true", "1")
+    # アドレスの後ろのほうのカメラの名前: 2026-10-07 から L、それより前は R（画の位置で決めたときは L）。録画のときの --swap と
+    # fix_swap.py が入れ替える
+    left_in_r = ((not anatomical and not picture_order) != repaired) != swap
+    return "R" if left_in_r else "L"
+
+
+def for_view(frame, eye, upside_down):
+    """見る用: パディング列を落とし、上下逆さまのファイル（upside_down）なら上下反転する。"""
     frame = frame[:, :400]
-    return np.flipud(frame) if eye == "R" else frame
+    return np.flipud(frame) if eye == upside_down else frame
 
 
 def measured_fps(session, eye):
@@ -67,6 +89,7 @@ def main():
         print("注意: 09fbf3d までの eyecam で録ったセッション。スロット 0-3 の目（ふつうは L）は 64 列ずれて保存されていて、"
               "左端 64 列が欠け、右端 64 列はパディング（真っ黒）になっている。復元はできない。README の「古いセッション」参照")
     width, height = int(meta.get("frame_width", 400)), int(meta.get("frame_height", 400))
+    upside_down = upside_down_file(meta)
 
     if args.dump:
         dump = np.fromfile(session / "lock_dump.bin", dtype=np.uint8)
@@ -90,14 +113,14 @@ def main():
                    "-r", f"{fps:.3f}", "-i", "-", "-pix_fmt", "yuv420p", "-crf", "18", str(out)]
             with subprocess.Popen(cmd, stdin=subprocess.PIPE) as proc:
                 for frame in video:
-                    proc.stdin.write(np.ascontiguousarray(for_view(frame, eye)).tobytes())
+                    proc.stdin.write(np.ascontiguousarray(for_view(frame, eye, upside_down)).tobytes())
                 proc.stdin.close()
             print(f"{out}: {len(video)} frames at {fps:.1f} fps")
         else:
             out_dir = session / f"png_{eye}"
             out_dir.mkdir(exist_ok=True)
             for i in range(0, len(video), args.every):
-                Image.fromarray(for_view(video[i], eye)).save(out_dir / f"{i:06d}.png")
+                Image.fromarray(for_view(video[i], eye, upside_down)).save(out_dir / f"{i:06d}.png")
             print(f"{out_dir}: {len(range(0, len(video), args.every))} of {len(video)} frames")
 
 

@@ -214,7 +214,7 @@ bool migrateGazePresets(JsonValue& root, std::string& log) {
     log.clear();
     if (root.type != JsonValue::Type::Object) return false;
     const JsonValue* version = root.get(key::kVersion);
-    if (version != nullptr && version->isNumber() && version->number >= kConfigVersion) return false;
+    if (version != nullptr && version->isNumber() && version->number >= kGazePresetsVersion) return false;
     const char* keys[3] = {key::kGazeMinCutoff, key::kGazeBeta, key::kGazeDCutoff};
     double values[3];
     bool written = true;
@@ -246,7 +246,63 @@ bool migrateGazePresets(JsonValue& root, std::string& log) {
         }
         break;
     }
+    root.set(key::kVersion, JsonValue::makeNumber(kGazePresetsVersion, true));
+    return true;
+}
+
+bool migrateEyeOffsets(JsonValue& root, std::string& log) {
+    log.clear();
+    if (root.type != JsonValue::Type::Object) return false;
+    const JsonValue* version = root.get(key::kVersion);
+    if (version != nullptr && version->isNumber() && version->number >= kConfigVersion) return false;
+    const JsonValue* left = root.get(key::kGazeOffsetXLeft);
+    const JsonValue* right = root.get(key::kGazeOffsetXRight);
+    if (left != nullptr && right != nullptr && left->isNumber() && right->isNumber() &&
+        std::fabs(left->number - right->number) > 1e-9) {
+        const double mean = std::round((left->number + right->number) / 2.0 * 1000.0) / 1000.0;
+        char text[160];
+        std::snprintf(text, sizeof(text), "gaze_offset_x_left / _right %+.3f / %+.3f -> %+.3f (one zero point for both)",
+                      left->number, right->number, mean);
+        log = text;
+        root.set(key::kGazeOffsetXLeft, JsonValue::makeNumber(mean));
+        root.set(key::kGazeOffsetXRight, JsonValue::makeNumber(mean));
+    }
     root.set(key::kVersion, JsonValue::makeNumber(kConfigVersion, true));
+    return true;
+}
+
+namespace {
+
+/** lid_open_snap values above this (and at most kOldSnapMax) are a share of the open reading (see migrateLidOpenSnap). */
+constexpr double kSnapMax = 0.75;
+constexpr double kOldSnapMax = 1.0;
+/** The fit the old share is converted through: this shut, 1.000 open, and the fit's closed margin. */
+constexpr double kOldSnapClosed = 0.025;
+constexpr double kFitClosedMargin = 0.3;
+
+/**
+ * Whether a lid_open_snap is a share of the open reading from before it took the sent eyelid.
+ * @param root the config's root object
+ * @return true if it is
+ */
+bool snapIsShare(const JsonValue& root) {
+    const JsonValue* snap = root.get(key::kLidOpenSnap);
+    return snap != nullptr && snap->isNumber() && snap->number > kSnapMax + 1e-9 && snap->number <= kOldSnapMax + 1e-9;
+}
+
+}  // namespace
+
+bool migrateLidOpenSnap(JsonValue& root, std::string& log) {
+    log.clear();
+    if (root.type != JsonValue::Type::Object || !snapIsShare(root)) return false;
+    const double share = root.get(key::kLidOpenSnap)->number;
+    const double fraction = (share - kOldSnapClosed) / (1.0 - kOldSnapClosed);
+    const double lid = kSnapMax * (fraction - kFitClosedMargin) / (1.0 - kFitClosedMargin);
+    const double snap = std::clamp(std::round(lid * 100.0) / 100.0, 0.0, kSnapMax);
+    root.set(key::kLidOpenSnap, JsonValue::makeNumber(snap));
+    char text[96];
+    std::snprintf(text, sizeof(text), "lid_open_snap %.2f -> %.2f (now the sent eyelid)", share, snap);
+    log = text;
     return true;
 }
 
@@ -254,7 +310,13 @@ bool configNeedsMigration(const JsonValue& root) {
     if (root.type != JsonValue::Type::Object) return false;
     const JsonValue* version = root.get(key::kVersion);
     const bool current = version != nullptr && version->isNumber() && version->number >= kConfigVersion;
-    return root.get(key::kLidWiden) == nullptr || !current;
+    return root.get(key::kLidWiden) == nullptr || !current || snapIsShare(root);
+}
+
+double snapOnBar(double snap, double lidClosed, double lidOpen, double scale) {
+    // frameeyeosc's LID_RELAXED
+    constexpr double kRelaxed = 0.75;
+    return (lidClosed + snap / kRelaxed * (lidOpen - lidClosed)) * scale;
 }
 
 WidenState widenState(const SettingsView& view) {

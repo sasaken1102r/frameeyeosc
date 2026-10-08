@@ -1,9 +1,14 @@
 //! Reading a recorded session (eye_L.raw / eye_R.raw, frames.csv, valve.csv, cues.csv, meta.txt) and running the
 //! feature pipeline over it offline.
 //!
-//! Eyes are anatomical: sessions recorded by builds up to a417dab may hold the right camera in eye_L.raw
-//! (meta.txt slot_camera=1,1,1,1,0,0,0,0 and no repaired_swap=1); those are read swapped automatically, and
-//! `swap` flips the choice again. The right eye is flipped vertically to be upright, as everywhere in the analysis.
+//! Eyes are anatomical (0 = left). Sessions recorded since 2026-10-07 say so in meta.txt (`eye_files=anatomical`):
+//! eye_L.raw holds the left eye. Older ones named the lower-address camera L, and it is the right eye (see `ring`),
+//! so eye_L.raw holds the right eye; except that builds up to a417dab sometimes named the cameras the other way
+//! (slot_camera=1,1,1,1,0,0,0,0), and fix_swap.py exchanges the files (repaired_swap=1). All of that is read so
+//! that each file reaches the eye it holds; `swap` flips the choice again. The left eye's camera (the higher-address
+//! slot group) stores its picture upside down: it is flipped vertically to be upright, as everywhere in the analysis
+//! (vision::UPSIDE_DOWN_EYE). The flip goes with the camera, so with the file that holds it (`upside_down_file`):
+//! --swap, when recording or here, renames the files' eyes but never moves a flip to the other camera.
 
 use crate::feat::{self, Extractor, Features, Pupil};
 use crate::vision::{self, H, W};
@@ -15,12 +20,64 @@ use std::path::{Path, PathBuf};
 
 pub const FRAME: usize = W * H;
 
+/// meta.txt's key and value saying eye_L.raw / eye_R.raw (and frames.csv's L / R) are the anatomical left and right
+/// eye. Sessions without it named the lower-address camera (the right eye) L.
+pub const META_EYE_FILES: &str = "eye_files";
+pub const EYE_FILES_ANATOMICAL: &str = "anatomical";
+
+/// meta.txt's `upside_down_eye`: the name (L or R) of the camera that stores its picture upside down, as a session
+/// recorded with or without --swap names it (--swap renames it), or "none" with one camera streaming (which eye it
+/// is is not known; its frames are not flipped).
+pub fn upside_down_name(both_eyes: bool, swap: bool) -> &'static str {
+    if !both_eyes {
+        return "none";
+    }
+    ["L", "R"][vision::UPSIDE_DOWN_EYE ^ swap as usize]
+}
+
+/// Which file (0 = eye_L.raw, 1 = eye_R.raw) holds the camera that stores its picture upside down (the higher-address
+/// slot group, the left eye's camera), None if none does (one camera streaming). meta.txt's `upside_down_eye` says
+/// so since it is written as L, R or none; before that it follows from how the session named its cameras: the
+/// higher-address group was L since 2026-10-07 and R before (L when named by picture), and --swap when recording
+/// renamed it. fix_swap.py exchanging the files moves it either way.
+pub fn upside_down_file(meta: &HashMap<String, String>) -> Option<usize> {
+    let repaired = meta.get("repaired_swap").is_some_and(|v| v == "1");
+    match meta.get("upside_down_eye").map(String::as_str) {
+        Some("L") => return Some(repaired as usize),
+        Some("R") => return Some(1 ^ repaired as usize),
+        Some("none") => return None,
+        // Not written yet, or as the first builds of 2026-10-07 wrote it ("L: stored raw; ...", even under --swap)
+        _ => {}
+    }
+    if meta.get("both_eyes").is_some_and(|v| v == "false") {
+        return None;
+    }
+    let anatomical = meta.get(META_EYE_FILES).is_some_and(|v| v == EYE_FILES_ANATOMICAL);
+    let picture_order = !anatomical && meta.get("slot_camera").is_some_and(|s| s.starts_with('1'));
+    let swap = meta.get("swap").is_some_and(|v| v == "true" || v == "1");
+    // The slots' own name for the higher-address group, then what --swap and fix_swap.py did to it
+    let higher = if anatomical { vision::UPSIDE_DOWN_EYE } else if picture_order { 0 } else { 1 };
+    Some(higher ^ swap as usize ^ repaired as usize)
+}
+
+/// Whether eye_L.raw of a session with this meta.txt holds the right eye (and eye_R.raw the left), before `--swap`.
+pub fn files_swapped(meta: &HashMap<String, String>) -> bool {
+    let anatomical = meta.get(META_EYE_FILES).is_some_and(|v| v == EYE_FILES_ANATOMICAL);
+    // Builds up to a417dab could name the cameras by picture, the other way round (L = the higher addresses).
+    let picture_order = !anatomical && meta.get("slot_camera").is_some_and(|s| s.starts_with('1'));
+    let repaired = meta.get("repaired_swap").is_some_and(|v| v == "1");
+    // Old names: L = the lower addresses = the right eye, unless named by picture; fix_swap.py exchanged the files.
+    (!anatomical && !picture_order) != repaired
+}
+
 /// A recorded session.
 pub struct Session {
     pub dir: PathBuf,
     /// Whether eye_L.raw holds the right eye (and eye_R.raw the left).
     pub swapped: bool,
     files: [File; 2],
+    /// Per anatomical eye, whether its file holds the camera that stores its picture upside down (upside_down_file).
+    upside_down: [bool; 2],
     /// Camera timestamps (t_cam) by eye_index, per anatomical eye.
     pub t_cam: [Vec<f64>; 2],
     pub valve: Valve,
@@ -80,12 +137,13 @@ impl Session {
         if meta.get("frame_width").is_some_and(|w| w != "400") {
             return Err("only 400-pixel-wide sessions are supported".into());
         }
-        let wrong_order = meta.get("slot_camera").is_some_and(|s| s.starts_with('1'));
-        let repaired = meta.get("repaired_swap").is_some_and(|v| v == "1");
-        let swapped = (wrong_order && !repaired) != swap;
+        let swapped = files_swapped(&meta) != swap;
         let file = |e: &str| File::open(dir.join(format!("eye_{e}.raw"))).map_err(|err| format!("eye_{e}.raw: {err}"));
         let (fl, fr) = (file("L")?, file("R")?);
         let files = if swapped { [fr, fl] } else { [fl, fr] };
+        // The flip stays with the file (its camera), whichever eye it is read as
+        let flipped = upside_down_file(&meta);
+        let upside_down = [0, 1].map(|eye| flipped == Some(eye ^ swapped as usize));
 
         let (h, rows) = read_csv(&dir.join("frames.csv"))?;
         let (ie, ii, it) = (col(&h, "eye")?, col(&h, "eye_index")?, col(&h, "t_cam")?);
@@ -121,7 +179,7 @@ impl Session {
             }
             Err(_) => Vec::new(),
         };
-        Ok(Self { dir: dir.to_path_buf(), swapped, files, t_cam, valve, cues, map: [None, None] })
+        Ok(Self { dir: dir.to_path_buf(), swapped, files, upside_down, t_cam, valve, cues, map: [None, None] })
     }
 
     /// Number of frames of an anatomical eye (0 = L, 1 = R).
@@ -166,11 +224,16 @@ impl Session {
         }
     }
 
-    /// Frame `k` of an anatomical eye, upright (right eye flipped vertically).
+    /// Whether an anatomical eye's file holds the camera that stores its picture upside down (read flips it).
+    pub fn upside_down(&self, eye: usize) -> bool {
+        self.upside_down[eye]
+    }
+
+    /// Frame `k` of an anatomical eye, upright (the upside-down camera's flipped vertically: the left eye's).
     pub fn read(&self, eye: usize, k: usize, out: &mut [u8]) -> std::io::Result<()> {
         let k = self.map[eye].as_ref().map_or(k, |m| m[k]);
         self.files[eye].read_exact_at(out, (k * FRAME) as u64)?;
-        if eye == 1 {
+        if self.upside_down[eye] {
             for y in 0..H / 2 {
                 let (a, b) = out.split_at_mut((H - 1 - y) * W);
                 a[y * W..(y + 1) * W].swap_with_slice(&mut b[..W]);
@@ -546,7 +609,8 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
     };
     eprintln!("calibration ({kind_name}): {}", if ok { format!("ok: {message}") } else { format!("failed: {message}") });
     Ok(format!(
-        "{{\n  \"kind\": \"{kind_name}\",\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+        "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+        crate::live::JSON_EYES_ANATOMICAL,
         crate::json::string(&failed_eye),
         crate::json::string(message),
         params_json.unwrap_or_else(|| "null".into())
@@ -557,8 +621,9 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
 mod tests {
     use super::*;
 
-    /// A session folder with `n` frames per eye at `fps`, less the `lost` ones (only frames.csv and the eye files
-    /// matter here). Each frame holds its own number in its first pixel (upright).
+    /// A session folder with `n` frames per eye at `fps`, less the `lost` ones (only frames.csv, the eye files and
+    /// meta.txt's eye_files matter here), as recorded now. Each frame holds its own number in its first pixel
+    /// (upright).
     fn fake_session(name: &str, n: usize, fps: f64, lost: &[usize]) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("eyecam-replay-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
@@ -573,8 +638,8 @@ mod tests {
             for (e, name) in ["L", "R"].iter().enumerate() {
                 csv += &format!("0,{name},{},0,{:.9},0,0,0\n", stored[e], 100.0 + k as f64 / fps + e as f64 * 1e-4);
                 let mut f = vec![0u8; FRAME];
-                // The right eye is stored upside down.
-                f[if e == 1 { (H - 1) * W } else { 0 }] = (k % 251) as u8;
+                // The left eye is stored upside down.
+                f[if vision::stored_upside_down(e) { (H - 1) * W } else { 0 }] = (k % 251) as u8;
                 files[e].extend_from_slice(&f);
                 stored[e] += 1;
             }
@@ -582,7 +647,128 @@ mod tests {
         fs::write(dir.join("frames.csv"), csv).unwrap();
         fs::write(dir.join("eye_L.raw"), &files[0]).unwrap();
         fs::write(dir.join("eye_R.raw"), &files[1]).unwrap();
+        fs::write(dir.join("meta.txt"), format!("slot_camera=1,1,1,1,0,0,0,0\n{META_EYE_FILES}={EYE_FILES_ANATOMICAL}\n")).unwrap();
         dir
+    }
+
+    /// A session as builds before 2026-10-07 wrote it (no eye_files in meta.txt). The right eye's camera (the lower
+    /// addresses) stores its frames upright, with 100 + k in the first pixel; the left eye's stores them upside
+    /// down, with 200 + k in the first pixel once upright, its camera times 0.5 ms earlier. `left_in_l`: eye_L.raw
+    /// holds the left eye's camera (named by picture by builds up to a417dab, or exchanged by fix_swap.py), else the
+    /// right eye's (the usual old naming: L = the lower addresses).
+    fn old_session(name: &str, meta: &str, left_in_l: bool) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("eyecam-replay-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (l, r) = if left_in_l { ("R", "L") } else { ("L", "R") };
+        let mut csv = String::from("index,eye,eye_index,slot,t_cam,t_raw,t_copy,valve_seq\n");
+        let (mut right, mut left) = (Vec::new(), Vec::new());
+        for k in 0..5 {
+            let mut f = vec![0u8; FRAME];
+            f[0] = 100 + k as u8;
+            right.extend_from_slice(&f);
+            let mut f = vec![0u8; FRAME];
+            f[(H - 1) * W] = 200 + k as u8;
+            left.extend_from_slice(&f);
+            csv += &format!("0,{l},{k},0,{:.9},0,0,0\n0,{r},{k},4,{:.9},0,0,0\n", 10.0005 + k as f64 / 90.0, 10.0 + k as f64 / 90.0);
+        }
+        fs::write(dir.join("frames.csv"), csv).unwrap();
+        let (file_l, file_r) = if left_in_l { (left, right) } else { (right, left) };
+        fs::write(dir.join("eye_L.raw"), file_l).unwrap();
+        fs::write(dir.join("eye_R.raw"), file_r).unwrap();
+        fs::write(dir.join("meta.txt"), meta).unwrap();
+        dir
+    }
+
+    #[test]
+    fn old_sessions_are_read_swapped_so_each_camera_keeps_its_flip() {
+        let dir = old_session("old", "slot_camera=0,0,0,0,1,1,1,1\nlabels=camera0=L camera1=R\n", false);
+        let s = Session::open(&dir, false).unwrap();
+        assert!(s.swapped);
+        // The left eye (eye_R.raw, upside down) comes out upright; the right eye (eye_L.raw) as stored.
+        assert_eq!(first_pixels(&s, 0, 5), [200, 201, 202, 203, 204]);
+        assert_eq!(first_pixels(&s, 1, 5), [100, 101, 102, 103, 104]);
+        assert!((s.t_cam[0][1] - (10.0 + 1.0 / 90.0)).abs() < 1e-9, "{:?}", s.t_cam);
+        assert!((s.t_cam[1][1] - (10.0005 + 1.0 / 90.0)).abs() < 1e-9, "{:?}", s.t_cam);
+        // --swap turns it back: each file then goes to the other eye, still flipped as its camera is (eye_L.raw, the
+        // right eye's camera, upright; eye_R.raw, the left eye's, flipped).
+        let s = Session::open(&dir, true).unwrap();
+        assert!(!s.swapped);
+        assert_eq!((s.upside_down(0), s.upside_down(1)), (false, true));
+        let mut img = vec![0u8; FRAME];
+        s.read(0, 2, &mut img).unwrap();
+        assert_eq!((img[0], img[(H - 1) * W]), (102, 0));
+        assert_eq!(first_pixels(&s, 1, 2), [200, 201]);
+        fs::remove_dir_all(&dir).unwrap();
+        // Named by picture by builds up to a417dab (L = the higher addresses, the left eye): read as stored ...
+        let dir = old_session("picture", "slot_camera=1,1,1,1,0,0,0,0\n", true);
+        let s = Session::open(&dir, false).unwrap();
+        assert!(!s.swapped);
+        assert_eq!((first_pixels(&s, 0, 2), first_pixels(&s, 1, 2)), (vec![200, 201], vec![100, 101]));
+        fs::remove_dir_all(&dir).unwrap();
+        // ... and such a session after fix_swap.py exchanged its files (repaired_swap=1) as an ordinary old one.
+        let dir = old_session("repaired", "slot_camera=1,1,1,1,0,0,0,0\n# fix_swap.py\nrepaired_swap=1\n", false);
+        let s = Session::open(&dir, false).unwrap();
+        assert!(s.swapped);
+        assert_eq!((first_pixels(&s, 0, 2), first_pixels(&s, 1, 2)), (vec![200, 201], vec![100, 101]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn new_sessions_are_read_as_named() {
+        let dir = fake_session("new", 3, 90.0, &[]);
+        let s = Session::open(&dir, false).unwrap();
+        assert!(!s.swapped);
+        assert_eq!((first_pixels(&s, 0, 3), first_pixels(&s, 1, 3)), (vec![0, 1, 2], vec![0, 1, 2]));
+        // Only the left eye is flipped: its stored frame has the number in the last row.
+        let mut raw = vec![0u8; FRAME];
+        s.files[0].read_exact_at(&mut raw, FRAME as u64).unwrap();
+        assert_eq!((raw[0], raw[(H - 1) * W]), (0, 1));
+        s.files[1].read_exact_at(&mut raw, FRAME as u64).unwrap();
+        assert_eq!((raw[0], raw[(H - 1) * W]), (1, 0));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_flip_stays_with_the_camera_under_swap() {
+        // Recorded with --swap (since 2026-10-07): the left eye's camera (upside down) was named R, so eye_R.raw holds
+        // it; read as recorded, the eye named R is the one flipped, and the right eye's camera (eye_L.raw) is not.
+        let swapped = "slot_camera=1,1,1,1,0,0,0,0\nswap=true\neye_files=anatomical\n";
+        let dir = old_session("swap", &format!("{swapped}upside_down_eye=R\n"), false);
+        let s = Session::open(&dir, false).unwrap();
+        assert!(!s.swapped);
+        assert_eq!((s.upside_down(0), s.upside_down(1)), (false, true));
+        assert_eq!((first_pixels(&s, 0, 2), first_pixels(&s, 1, 2)), (vec![100, 101], vec![200, 201]));
+        fs::remove_dir_all(&dir).unwrap();
+        // The same from the first builds of that day (upside_down_eye=L written even under --swap): from swap=true
+        let dir = old_session("swap-early", &format!("{swapped}upside_down_eye=L: stored raw\n"), false);
+        let s = Session::open(&dir, false).unwrap();
+        assert_eq!((first_pixels(&s, 0, 2), first_pixels(&s, 1, 2)), (vec![100, 101], vec![200, 201]));
+        fs::remove_dir_all(&dir).unwrap();
+        // What meta.txt gets: the upside-down camera's name, renamed by --swap; none with one camera
+        assert_eq!((upside_down_name(true, false), upside_down_name(true, true), upside_down_name(false, true)), ("L", "R", "none"));
+        let file = |text: &str| {
+            let meta: HashMap<String, String> =
+                text.split(';').filter_map(|l| l.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))).collect();
+            upside_down_file(&meta)
+        };
+        assert_eq!(file("eye_files=anatomical;swap=false;upside_down_eye=L"), Some(0));
+        assert_eq!(file("eye_files=anatomical;swap=true;upside_down_eye=R"), Some(1));
+        assert_eq!(file("eye_files=anatomical;swap=false"), Some(0));
+        // Old sessions: their R was the left eye's camera; --swap made it L; fix_swap.py exchanged the files
+        assert_eq!(file("slot_camera=0,0,0,0,1,1,1,1;swap=false"), Some(1));
+        assert_eq!(file("slot_camera=0,0,0,0,1,1,1,1;swap=true"), Some(0));
+        assert_eq!(file("slot_camera=1,1,1,1,0,0,0,0;swap=false"), Some(0));
+        assert_eq!(file("slot_camera=1,1,1,1,0,0,0,0;repaired_swap=1"), Some(1));
+        assert_eq!(file("eye_files=anatomical;upside_down_eye=L;repaired_swap=1"), Some(1));
+        // One camera streaming: nothing flipped, as recorded or from both_eyes=false
+        assert_eq!(file("eye_files=anatomical;upside_down_eye=none"), None);
+        assert_eq!(file("eye_files=anatomical;both_eyes=false;upside_down_eye=L: stored raw"), None);
+        let dir = old_session("one", "slot_camera=0,0,0,0\nboth_eyes=false\neye_files=anatomical\nupside_down_eye=none\n", false);
+        let s = Session::open(&dir, false).unwrap();
+        assert_eq!((s.upside_down(0), s.upside_down(1)), (false, false));
+        assert_eq!(first_pixels(&s, 0, 2), [100, 101]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     fn first_pixels(s: &Session, eye: usize, n: usize) -> Vec<u8> {

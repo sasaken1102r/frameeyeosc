@@ -79,12 +79,14 @@ void testGeometry() {
     const double side = kDistanceM / std::sqrt(3.0);
     CHECK(near(pose.position.x, side) && near(pose.position.y, side) && near(pose.position.z, -side));
     CHECK(near(pose.yawDeg, 45.0) && near(pose.pitchDeg, std::asin(1 / std::sqrt(3.0)) * 180 / M_PI));
-    // Eyes turned in the way the eye fit expects for a dot straight ahead: both dots meet near it
-    const Pose left = dotPose(gaze_fit::eyeAngle(0.0, 0, 0.063), 0.0, -1, 0.063, kDistanceM);
-    const Pose right = dotPose(gaze_fit::eyeAngle(0.0, 1, 0.063), 0.0, 1, 0.063, kDistanceM);
-    // (2 m along each ray, and the dot is 2 m ahead: they differ by micrometres)
+    // Eyes turned in the way the eye fit expects for its dot straight ahead (gaze_fit::kTargetDistanceM, 0.9 m):
+    // both dots, that far along their rays, meet near it
+    const double fitM = gaze_fit::kTargetDistanceM;
+    const Pose left = dotPose(gaze_fit::eyeAngle(0.0, 0, 0.063), 0.0, -1, 0.063, fitM);
+    const Pose right = dotPose(gaze_fit::eyeAngle(0.0, 1, 0.063), 0.0, 1, 0.063, fitM);
+    // (0.9 m along each ray, and the dot is 0.9 m ahead: they differ by a fraction of a millimetre)
     CHECK(near(left.position.x, 0.0, 1e-4) && near(right.position.x, 0.0, 1e-4));
-    CHECK(near(left.position.z, -kDistanceM, 1e-3) && left.yawDeg > 0 && right.yawDeg < 0);
+    CHECK(near(left.position.z, -fitM, 1e-3) && left.yawDeg > 0 && right.yawDeg < 0);
 
     // At another distance: the same ray from the same eye and the same facing, only nearer
     for (const double distance : {0.5, 1.07, 2.0}) {
@@ -101,11 +103,11 @@ void testGeometry() {
         // The same angular size: width over distance stays put
         CHECK(near(dotWidth(distance) / distance, kWidthM / kWidthAtM));
     }
-    // The two eyes' dots for a point straight ahead at 2 m, shown at 1 m: each on its own ray, so they sit apart
-    // by half the IPD (the eyes cross 2 m away, behind them)
-    const Pose leftNear = dotPose(gaze_fit::eyeAngle(0.0, 0, 0.063), 0.0, -1, 0.063, 1.0);
-    const Pose rightNear = dotPose(gaze_fit::eyeAngle(0.0, 1, 0.063), 0.0, 1, 0.063, 1.0);
-    CHECK(near(leftNear.position.x, -0.01575, 1e-4) && near(rightNear.position.x, 0.01575, 1e-4));
+    // The two eyes' dots for the fit's dot straight ahead (0.9 m), shown twice as far: each on its own ray, so they
+    // have crossed over, each as far to the other side as its eye (the eyes cross 0.9 m away, in front of them)
+    const Pose leftFar = dotPose(gaze_fit::eyeAngle(0.0, 0, 0.063), 0.0, -1, 0.063, 2 * fitM);
+    const Pose rightFar = dotPose(gaze_fit::eyeAngle(0.0, 1, 0.063), 0.0, 1, 0.063, 2 * fitM);
+    CHECK(near(leftFar.position.x, 0.0315, 1e-4) && near(rightFar.position.x, -0.0315, 1e-4));
 
     // Which distance: the setting, 1 m if unset, kept within 0.3..2 m
     CHECK(near(dotDistance(std::nan("")), 1.0) && near(kDefaultDistanceM, 1.0));

@@ -40,15 +40,19 @@ add_executable(frameeyeosc-panel
   src/fit_text.cpp
   src/host_entry.cpp
   src/i18n.cpp
+  src/icons.cpp
   src/json.cpp
   src/model.cpp
   src/panel.cpp
   src/recorder.cpp
+  src/report.cpp
   src/setup_tools.cpp
   src/sounds.cpp
   src/status.cpp
   src/target.cpp
+  src/text_layout.cpp
   src/theme.cpp
+  src/ui_state.cpp
   src/vk_texture.cpp
   src/vr_overlay.cpp
   ${FRAME_UPDATER_DIR}/cpp/update_check.cpp
@@ -126,13 +130,17 @@ add_executable(panel-test tests/panel_test.cpp
   src/gaze_fit.cpp
   src/host_entry.cpp
   src/i18n.cpp
+  src/icons.cpp
   src/json.cpp
   src/model.cpp
   src/panel.cpp
   src/recorder.cpp
+  src/report.cpp
   src/setup_tools.cpp
   src/status.cpp
+  src/text_layout.cpp
   src/theme.cpp
+  src/ui_state.cpp
   ${FRAME_UPDATER_DIR}/cpp/update_check.cpp
 )
 target_include_directories(panel-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
@@ -142,9 +150,10 @@ target_link_libraries(panel-test PRIVATE PkgConfig::CAIRO PkgConfig::FREETYPE Th
 add_custom_command(TARGET panel-test POST_BUILD COMMAND panel-test VERBATIM)
 add_test(NAME panel COMMAND panel-test)
 
-# Checking a typed target PC and the eye fit's failure texts (both languages): panel/build/text-test
-add_executable(text-test tests/text_test.cpp src/host_entry.cpp src/fit_text.cpp src/i18n.cpp src/gaze_fit.cpp
-  src/status.cpp src/json.cpp)
+# Checking a typed target PC, the eye fit's failure texts (both languages) and that no text has an arrow or symbol as a
+# character (icon markers instead): panel/build/text-test
+add_executable(text-test tests/text_test.cpp src/host_entry.cpp src/fit_text.cpp src/i18n.cpp src/icons.cpp
+  src/gaze_fit.cpp src/status.cpp src/json.cpp)
 target_include_directories(text-test PRIVATE src)
 target_compile_options(text-test PRIVATE -Wall -Wextra)
 add_test(NAME text COMMAND text-test)
@@ -162,6 +171,8 @@ add_test(NAME changelog COMMAND changelog-test)
 add_executable(eyecam-test tests/eyecam_test.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/setup_tools.cpp
   src/recorder.cpp)
 target_include_directories(eyecam-test PRIVATE src)
+# (eyecam's own protocol files, read as the panel reads the installed copies)
+target_compile_definitions(eyecam-test PRIVATE EYECAM_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../tools/eyecam")
 target_compile_options(eyecam-test PRIVATE -Wall -Wextra)
 target_link_libraries(eyecam-test PRIVATE Threads::Threads)
 add_test(NAME eyecam COMMAND eyecam-test)
@@ -174,3 +185,13 @@ target_include_directories(diag-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp)
 target_compile_options(diag-test PRIVATE -Wall -Wextra)
 target_link_libraries(diag-test PRIVATE Threads::Threads)
 add_test(NAME diag COMMAND diag-test)
+
+# The records of calibrations and eye fits (report.{h,cpp}: parsing the journal and Valve's log, the key lines, the
+# files, keeping 10, report.txt, --report) and the remembered sub-tab (ui_state), with made-up logs in a folder under
+# the current one: panel/build/report-test
+add_executable(report-test tests/report_test.cpp src/report.cpp src/ui_state.cpp src/i18n.cpp src/icons.cpp
+  src/json.cpp src/command.cpp)
+target_include_directories(report-test PRIVATE src)
+target_compile_options(report-test PRIVATE -Wall -Wextra)
+target_link_libraries(report-test PRIVATE Threads::Threads)
+add_test(NAME report COMMAND report-test)

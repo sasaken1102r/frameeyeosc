@@ -10,11 +10,23 @@
 #include "gaze_fit.h"
 #include "i18n.h"
 #include "recorder.h"
+#include "report.h"
 #include "status.h"
 #include "update_check.h"
 
 #include <string>
 #include <vector>
+
+/** The records of calibrations and eye fits as the panel shows them (report.h). */
+struct RecordsView {
+    std::string dir;                      ///< the records' folder (report::defaultDir, or --reports-dir)
+    std::vector<report::Summary> list;    ///< newest first, as last read
+    report::Summary opened;               ///< the record shown (its view)
+    bool openedFound = false;             ///< ...its summary.json was read
+    std::vector<report::FileInfo> files;  ///< ...its files with their sizes
+    std::string lastFit;                  ///< the last eye fit's record, once written ("" = none since the start)
+    std::string lastCalib;                ///< the last calibration's
+};
 
 /** Everything one frame of the panel is drawn from. */
 struct PanelModel {
@@ -34,6 +46,7 @@ struct PanelModel {
     eyecam::View eyecam;         ///< eyecam-rec, for the developer tab "Eye capture" (only shown while it runs)
     std::string eyecamDir;       ///< its folder (status.json and ctl.sock; eyecam::defaultDir or --eyecam-dir)
     diag::System system;         ///< SteamOS's version and the camera tool's checksum (the diagnostics page)
+    RecordsView records;         ///< the records (the Advanced tab's "Having trouble", and the failure screens' bar)
 };
 
 /**
@@ -123,6 +136,19 @@ FitInConfig fitInConfig(const SettingsView& view);
  */
 bool fitKeysLocked(const SettingsView& view);
 
+/**
+ * Where lid_open_snap (a sent eyelid, VRCFT: 0.75 relaxed open) lands on the Eyelids tab's bars, which show each eye's openness on the --lid-* scale after its scale (frameeyeosc's openness_scaled): below
+ * relaxed open the sent eyelid is a straight line from lid_closed (0) to lid_open (0.75), so this is that line turned
+ * round, times the eye's scale for a fitted eye (frameeyeosc eases a fitted eye before its scale, an eye without a fit
+ * after it; see snapped_lids there).
+ * @param snap lid_open_snap
+ * @param lidClosed lid_closed
+ * @param lidOpen lid_open
+ * @param scale the eye's scale for a fitted eye, 1 without a fit
+ * @return where it lands (the bars' value)
+ */
+double snapOnBar(double snap, double lidClosed, double lidOpen, double scale);
+
 /** Whether each eye can widen by itself (lid_widen, for eyes with an eye fit). */
 struct WidenState {
     int mode = 2;                        ///< index into kLidWidenModes (0 = off)
@@ -162,7 +188,31 @@ bool migrateLidScales(JsonValue& root, std::string& log);
 bool migrateGazePresets(JsonValue& root, std::string& log);
 
 /**
- * Whether a settings file still needs migrateLidScales or migrateGazePresets (no lid_widen, or a version below 2).
+ * Bring lid_open_snap from when it was a share of the eye's open reading (0.70 to 1.00) over to the sent eyelid
+ * (VRCFT, 0 to 0.75), once: a value above 0.75 (and at most 1.00) becomes where it started for a fit that reads 0.025
+ * shut and 1.000 open, to 0.01 (0.80 -> 0.53, the new default; 1.00 -> 0.75, off). frameeyeosc reads such a value
+ * the same way (config.rs, snap_from_share). 0.70 and 0.75 already read as the new kind.
+ * @param root the config's root object (changed in place)
+ * @param log what was changed, for the log
+ * @return true if root changed
+ */
+bool migrateLidOpenSnap(JsonValue& root, std::string& log);
+
+/**
+ * Give both eyes one sideways zero point, once (a version below 3): fits used to set each eye's own from Valve's
+ * per-eye gaze straight ahead, which put whatever it read as how far away you look into it (+4° to -13° of turning in
+ * or out on 2026-10-08). Differing gaze_offset_x_left / _right become their mean (to 0.001); each eye's gain stays.
+ * version is then written as 3, which marks the file as done (zero points set apart by hand afterwards stay). Run after
+ * migrateGazePresets, which only looks at files below version 2.
+ * @param root the config's root object (changed in place)
+ * @param log what was changed, for the log (empty if nothing but the version)
+ * @return true if root changed (the version was older)
+ */
+bool migrateEyeOffsets(JsonValue& root, std::string& log);
+
+/**
+ * Whether a settings file still needs migrateLidScales, migrateGazePresets, migrateEyeOffsets or migrateLidOpenSnap
+ * (no lid_widen, a version below 3, or a lid_open_snap above 0.75).
  * @param root the config's root object
  * @return true if one of them would change it
  */

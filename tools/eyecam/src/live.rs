@@ -1353,6 +1353,49 @@ pub struct CalibFile {
     pub setup_done: bool,
 }
 
+/// What calib.json and calib_result.json say about their eyes: L is the left eye. Files without it were written
+/// before 2026-10-07, when eyecam called the right eye's camera L (see `ring`): their L and R are the other eye's.
+pub const JSON_EYES_ANATOMICAL: &str = "\"eyes\": \"anatomical\"";
+
+/// Whether a calib.json / calib_result.json says its L and R are the anatomical eyes (JSON_EYES_ANATOMICAL).
+pub fn json_eyes_anatomical(j: &Json) -> bool {
+    j.get("eyes").and_then(Json::str) == Some("anatomical")
+}
+
+/// The key ("L" / "R") holding an eye's values (0 = left) in a file whose eyes are `anatomical` or not (an old file
+/// keeps the left eye's under "R").
+pub fn json_eye_key(eye: usize, anatomical: bool) -> &'static str {
+    ["L", "R"][eye ^ !anatomical as usize]
+}
+
+/// The other eye's name: "L" <-> "R" (anything else as it is).
+pub fn other_eye_name(name: &str) -> String {
+    match name {
+        "L" => "R".into(),
+        "R" => "L".into(),
+        n => n.into(),
+    }
+}
+
+/// A message of an old file (from before the eyes were anatomical) about the eyes it really meant: 左 and 右
+/// exchanged ("左目" <-> "右目", "[左 a・右 b]" -> "[右 a・左 b]"), "左右" kept.
+pub fn swap_eye_words(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '左' if chars.peek() == Some(&'右') => {
+                chars.next();
+                out.push_str("左右");
+            }
+            '左' => out.push('右'),
+            '右' => out.push('左'),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn median_of(v: impl Iterator<Item = f64>) -> f64 {
     let mut v: Vec<f64> = v.filter(|x| x.is_finite()).collect();
     vision::median(&mut v)
@@ -1446,7 +1489,7 @@ impl CalibFile {
     }
 
     pub fn to_json(&self) -> String {
-        let mut s = format!("{{\n  \"version\": 1,\n  \"setup_done\": {}", self.setup_done);
+        let mut s = format!("{{\n  \"version\": 2,\n  {JSON_EYES_ANATOMICAL},\n  \"setup_done\": {}", self.setup_done);
         if let Some(u) = &self.user {
             s += &format!(
                 ",\n  \"user\": {{\"time\": {}, \"pupil_measured\": {}, \"warnings\": [{}], \"L\": {}, \"R\": {}}}",
@@ -1490,20 +1533,39 @@ impl CalibFile {
     }
 
     pub fn parse(text: &str) -> Result<Self, String> {
+        Self::parse_converting(text).map(|(c, _)| c)
+    }
+
+    /// Parse, and say whether the file was written before the eyes were anatomical (JSON_EYES_ANATOMICAL): its
+    /// per-eye values, failed eye and warnings were then read for the other eye, and the caller should save it
+    /// again (with the marker) so it is converted once.
+    pub fn parse_converting(text: &str) -> Result<(Self, bool), String> {
         let j = json::parse(text)?;
+        let anatomical = json_eyes_anatomical(&j);
+        let (l, r) = (json_eye_key(0, anatomical), json_eye_key(1, anatomical));
         let mut c = CalibFile::default();
         if let Some(u) = j.get("user") {
-            c.user = Some([parse_user(u.get("L").ok_or("user.L")?)?, parse_user(u.get("R").ok_or("user.R")?)?]);
+            c.user = Some([
+                parse_user(u.get(l).ok_or_else(|| format!("user.{l}"))?)?,
+                parse_user(u.get(r).ok_or_else(|| format!("user.{r}"))?)?,
+            ]);
             c.user_time = u.get("time").and_then(Json::str).unwrap_or("").to_string();
             c.pupil_measured = matches!(u.get("pupil_measured"), Some(Json::Bool(true)));
             c.user_warnings = u
                 .get("warnings")
                 .and_then(Json::arr)
-                .map(|a| a.iter().filter_map(|w| w.str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|w| w.str().map(|w| if anatomical { w.to_string() } else { swap_eye_words(w) }))
+                        .collect()
+                })
                 .unwrap_or_default();
         }
         if let Some(w) = j.get("wear") {
-            c.wear = Some([parse_wear(w.get("L").ok_or("wear.L")?)?, parse_wear(w.get("R").ok_or("wear.R")?)?]);
+            c.wear = Some([
+                parse_wear(w.get(l).ok_or_else(|| format!("wear.{l}"))?)?,
+                parse_wear(w.get(r).ok_or_else(|| format!("wear.{r}"))?)?,
+            ]);
             c.wear_time = w.get("time").and_then(Json::str).unwrap_or("").to_string();
             c.wear_widen_measured = match w.get("widen").and_then(Json::str) {
                 Some("measured") => Some(true),
@@ -1511,7 +1573,8 @@ impl CalibFile {
                 _ => None,
             };
             c.wear_failed_eye = match w.get("failed_eye").and_then(Json::str) {
-                Some(e @ ("L" | "R")) => e.to_string(),
+                Some(e @ ("L" | "R")) if anatomical => e.to_string(),
+                Some(e @ ("L" | "R")) => other_eye_name(e),
                 _ => String::new(),
             };
         }
@@ -1521,8 +1584,8 @@ impl CalibFile {
                 Some(WearRecord { step: e.get("step")?.num()?, gap: e.get("gap")?.num()?, r_px: e.get("r_px")?.num()? })
             };
             for it in items {
-                if let (Some(l), Some(r)) = (rec(it.get("L")), rec(it.get("R"))) {
-                    c.history.push((it.get("time").and_then(Json::str).unwrap_or("").to_string(), [l, r]));
+                if let (Some(rl), Some(rr)) = (rec(it.get(l)), rec(it.get(r))) {
+                    c.history.push((it.get("time").and_then(Json::str).unwrap_or("").to_string(), [rl, rr]));
                 }
             }
         } else if let Some(w) = &c.wear {
@@ -1530,11 +1593,11 @@ impl CalibFile {
             c.history.push((c.wear_time.clone(), [WearRecord::of(&w[0]), WearRecord::of(&w[1])]));
         }
         c.setup_done = matches!(j.get("setup_done"), Some(Json::Bool(true))) || !c.history.is_empty();
-        Ok(c)
+        Ok((c, !anatomical))
     }
 
     /// History entries from saved calibration attempts (`<dir>/calib_*/calib_result.json`, successful wear ones),
-    /// for a calib.json that has none yet.
+    /// for a calib.json that has none yet. Old results (before the eyes were anatomical) are read the other way round.
     pub fn history_from_results(dir: &std::path::Path) -> Vec<(String, [WearRecord; 2])> {
         let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
         let mut names: Vec<String> =
@@ -1551,7 +1614,9 @@ impl CalibFile {
                 let v = j.get("values")?.get(e)?;
                 Some(WearRecord { step: v.get("widen_step")?.num()?, gap: v.get("open_gap")?.num()?, r_px: v.get("r_px")?.num()? })
             };
-            if let (Some(l), Some(r)) = (rec("L"), rec("R")) {
+            // A result from before the eyes were anatomical has the left eye's values under "R".
+            let anatomical = json_eyes_anatomical(&j);
+            if let (Some(l), Some(r)) = (rec(json_eye_key(0, anatomical)), rec(json_eye_key(1, anatomical))) {
                 let time = j.get("time").and_then(Json::str).unwrap_or(&n).to_string();
                 out.push((time, [l, r]));
             }
@@ -2476,6 +2541,87 @@ mod tests {
         }
         assert_eq!(file.history.len(), HISTORY_MAX);
         assert!((file.history.last().unwrap().1[0].step - 0.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn calib_files_from_before_anatomical_eyes_are_read_for_the_other_eye() {
+        let rec = |step, gap, r| WearRecord { step, gap, r_px: r };
+        let wl = WearParams { r_px: 51.0, b_n: 0.8, b_w: 1.0, ap_n: 1.5, ap_cl: 0.6, pitch_n: -14.0, lower_px: 240.0 };
+        let wr = WearParams { r_px: 61.0, b_n: 0.7, b_w: 0.9, ap_n: 1.4, ap_cl: 0.5, pitch_n: -12.0, lower_px: 230.0 };
+        let ul = UserParams { f_sq: 0.31, pd_min: 2.0, pd_max: 6.0, ..UserParams::default() };
+        let ur = UserParams { f_sq: 0.42, pd_min: 2.5, pd_max: 6.5, ..UserParams::default() };
+        let file = CalibFile {
+            user: Some([ul, ur]),
+            user_time: "u".into(),
+            user_warnings: vec![format!("左目{MSG_SQUINT_SHALLOW}[f_sq 0.95]"), "左右の差が大きい [下を見たとき 0.39、細め 0.08]".into()],
+            pupil_measured: true,
+            wear: Some([wl, wr]),
+            wear_time: "w".into(),
+            wear_widen_measured: Some(true),
+            wear_failed_eye: "L".into(),
+            history: vec![("a".into(), [rec(0.20, 0.9, 50.0), rec(0.18, 0.8, 60.0)])],
+            setup_done: true,
+        };
+        // Written now: marked, read back as it is.
+        let text = file.to_json();
+        assert!(text.contains(&format!("\n  {JSON_EYES_ANATOMICAL},\n")), "{text}");
+        let (back, converted) = CalibFile::parse_converting(&text).unwrap();
+        assert!(!converted);
+        assert_eq!((back.user, back.wear, &back.history), (file.user, file.wear, &file.history));
+        assert_eq!((back.wear_failed_eye.as_str(), &back.user_warnings), ("L", &file.user_warnings));
+        // The same file as builds before 2026-10-07 wrote it (no marker): its L was the right eye.
+        let old = text.replace(&format!("  {JSON_EYES_ANATOMICAL},\n"), "").replace("\"version\": 2", "\"version\": 1");
+        assert!(!old.contains("\"eyes\""), "{old}");
+        let (conv, converted) = CalibFile::parse_converting(&old).unwrap();
+        assert!(converted);
+        assert_eq!(conv.user, Some([ur, ul]));
+        assert_eq!(conv.wear, Some([wr, wl]));
+        assert_eq!(conv.history, vec![("a".to_string(), [rec(0.18, 0.8, 60.0), rec(0.20, 0.9, 50.0)])]);
+        assert_eq!(conv.wear_failed_eye, "R");
+        assert_eq!(conv.user_warnings, [format!("右目{MSG_SQUINT_SHALLOW}[f_sq 0.95]"), "左右の差が大きい [下を見たとき 0.39、細め 0.08]".into()]);
+        assert_eq!((conv.pupil_measured, conv.setup_done, conv.wear_widen_measured), (true, true, Some(true)));
+        // Saved again it is marked, and read as it is from then on.
+        let (again, converted) = CalibFile::parse_converting(&conv.to_json()).unwrap();
+        assert!(!converted);
+        assert_eq!((again.user, again.wear, again.wear_failed_eye.as_str()), (Some([ur, ul]), Some([wr, wl]), "R"));
+        // An old file from before the history: its last wear calibration becomes the history, swapped too.
+        let older = CalibFile { history: Vec::new(), ..file.clone() }.to_json().replace(&format!("  {JSON_EYES_ANATOMICAL},\n"), "");
+        let (conv, _) = CalibFile::parse_converting(&older).unwrap();
+        assert_eq!(conv.history[0].1, [WearRecord::of(&wr), WearRecord::of(&wl)]);
+    }
+
+    #[test]
+    fn eye_words_of_old_messages_trade_places() {
+        assert_eq!(
+            swap_eye_words("校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[0/486、90 必要]"),
+            "校正できた（左目は瞳がうまく見えなかったので、前の値を使うよ）[0/486、90 必要]"
+        );
+        assert_eq!(
+            swap_eye_words(&format!("両目{MSG_PUPIL}[左 12/486・右 30/486、90 必要]。左右の差が大きい")),
+            format!("両目{MSG_PUPIL}[右 12/486・左 30/486、90 必要]。左右の差が大きい")
+        );
+        assert_eq!(other_eye_name("L"), "R");
+        assert_eq!(other_eye_name("LR"), "LR");
+    }
+
+    #[test]
+    fn history_from_old_results_is_read_for_the_other_eye() {
+        let dir = std::env::temp_dir().join(format!("eyecam-history-results-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let values = r#""values": {"L": {"widen_step": 0.2, "open_gap": 0.9, "r_px": 50}, "R": {"widen_step": 0.3, "open_gap": 1.1, "r_px": 60}}"#;
+        for (name, marker) in [("calib_2026-10-05_19-51-03", String::new()), ("calib_2026-10-08_09-00-00", format!("{JSON_EYES_ANATOMICAL}, "))] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            let text = format!("{{\"kind\": \"wear\", {marker}\"time\": \"{name}\", \"ok\": true, {values}}}");
+            std::fs::write(dir.join(name).join("calib_result.json"), text).unwrap();
+        }
+        let h = CalibFile::history_from_results(&dir);
+        let (a, b) = (rec_of(0.2, 0.9, 50.0), rec_of(0.3, 1.1, 60.0));
+        assert_eq!(h, vec![("calib_2026-10-05_19-51-03".to_string(), [b, a]), ("calib_2026-10-08_09-00-00".to_string(), [a, b])]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn rec_of(step: f64, gap: f64, r_px: f64) -> WearRecord {
+        WearRecord { step, gap, r_px }
     }
 
     #[test]

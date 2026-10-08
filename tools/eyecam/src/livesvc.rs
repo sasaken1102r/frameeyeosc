@@ -81,8 +81,10 @@ pub enum CollectKind {
 }
 
 pub enum Msg {
-    /// A raw frame of an anatomical eye (0 = L, 1 = R), 400x400 as stored (the right eye upside down).
-    Frame { eye: usize, t_cam_ns: u64, pitch: f32, data: Vec<u8> },
+    /// A raw frame of an anatomical eye (0 = L, 1 = R), 400x400 as stored; `upside_down`: its camera stores it upside
+    /// down (the left eye's, see vision::UPSIDE_DOWN_EYE; decided by the camera, so --swap renaming the eyes does not
+    /// move it, ring::Ring::upside_down).
+    Frame { eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, data: Vec<u8> },
     /// Start collecting labelled samples for a calibration.
     Collect(CollectKind),
     /// A protocol step began at `t0` (CLOCK_MONOTONIC_RAW seconds, the camera clock).
@@ -267,6 +269,50 @@ pub fn calib_path() -> PathBuf {
     home.join(".config/eyecam/calib.json")
 }
 
+/// Read the calibration file (a missing or unreadable one is empty). A file from before the eyes were anatomical
+/// (no `"eyes": "anatomical"`: its L was the right eye) is read for the other eye and saved again with the marker,
+/// so it is converted once. The file as it was is kept first as `calib.json.pre-anatomical` (pre_anatomical_path;
+/// one already there is never overwritten): an older eyecam saves calib.json again without the marker, and a newer
+/// one would then exchange its eyes a second time; that copy is the way back.
+fn load_calib(path: &Path) -> CalibFile {
+    let Ok(text) = std::fs::read_to_string(path) else { return CalibFile::default() };
+    match CalibFile::parse_converting(&text) {
+        Ok((file, false)) => file,
+        Ok((file, true)) => {
+            let backup = pre_anatomical_path(path);
+            let kept = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&backup)
+                .and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
+            match kept {
+                Ok(()) => eprintln!("eyecam-rec: kept {} as {}", path.display(), backup.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    eprintln!("eyecam-rec: {} is there already: left as it is", backup.display())
+                }
+                Err(e) => eprintln!("eyecam-rec: {}: {e}", backup.display()),
+            }
+            match save_calib(path, &file) {
+                Ok(()) => eprintln!("eyecam-rec: {}: converted to anatomical eyes (its L and R were the other eye)", path.display()),
+                Err(e) => eprintln!("eyecam-rec: {e}"),
+            }
+            file
+        }
+        Err(e) => {
+            eprintln!("eyecam-rec: ignoring {}: {e}", path.display());
+            CalibFile::default()
+        }
+    }
+}
+
+/// Where load_calib keeps a calibration file from before the eyes were anatomical: next to it, `.pre-anatomical`
+/// added to its name (calib.json.pre-anatomical).
+fn pre_anatomical_path(path: &Path) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".pre-anatomical");
+    path.with_file_name(name)
+}
+
 fn save_calib(path: &Path, file: &CalibFile) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -372,7 +418,7 @@ impl Worker {
         });
     }
 
-    fn frame(&mut self, eye: usize, t_cam_ns: u64, pitch: f32, data: &[u8]) {
+    fn frame(&mut self, eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, data: &[u8]) {
         if !self.live || data.len() != W * H {
             return;
         }
@@ -392,7 +438,7 @@ impl Worker {
         }
         self.last_t[eye] = t;
         self.last_seen[eye] = Some(Instant::now());
-        let img: &[u8] = if eye == 1 {
+        let img: &[u8] = if upside_down {
             for y in 0..H {
                 self.flipped[y * W..(y + 1) * W].copy_from_slice(&data[(H - 1 - y) * W..(H - y) * W]);
             }
@@ -492,7 +538,8 @@ impl Worker {
             CollectKind::Pupil => "pupil",
         };
         let json = format!(
-            "{{\n  \"kind\": \"{kind_name}\",\n  \"time\": {},\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+            "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"time\": {},\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+            live::JSON_EYES_ANATOMICAL,
             crate::json::string(&stamp()),
             crate::json::string(failed_eye),
             crate::json::string(message),
@@ -692,13 +739,7 @@ pub fn spawn(
 ) -> Result<(mpsc::SyncSender<Msg>, std::thread::JoinHandle<()>), String> {
     let writer = LiveWriter::create(&run_dir.join("live"))?;
     let (tx, rx) = mpsc::sync_channel::<Msg>(16);
-    let mut calib_file = match std::fs::read_to_string(&calib) {
-        Ok(text) => CalibFile::parse(&text).unwrap_or_else(|e| {
-            eprintln!("eyecam-rec: ignoring {}: {e}", calib.display());
-            CalibFile::default()
-        }),
-        Err(_) => CalibFile::default(),
-    };
+    let mut calib_file = load_calib(&calib);
     if calib_file.history.is_empty()
         && let Some(dir) = data_dir
     {
@@ -788,7 +829,9 @@ pub fn spawn(
             w.publish_state();
             loop {
                 match rx.recv_timeout(Duration::from_millis(50)) {
-                    Ok(Msg::Frame { eye, t_cam_ns, pitch, data }) => w.frame(eye, t_cam_ns, pitch, &data),
+                    Ok(Msg::Frame { eye, upside_down, t_cam_ns, pitch, data }) => {
+                        w.frame(eye, upside_down, t_cam_ns, pitch, &data)
+                    }
                     Ok(Msg::Collect(kind)) => {
                         w.collect = Some(kind);
                         w.steps.clear();
@@ -892,6 +935,58 @@ mod tests {
     }
 
     #[test]
+    fn an_old_calib_file_is_converted_once() {
+        let dir = std::env::temp_dir().join(format!("eyecam-calib-convert-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("calib.json");
+        // As builds before 2026-10-07 saved it: no "eyes", L = the right eye.
+        let old = r#"{
+  "version": 1,
+  "setup_done": true,
+  "wear": {"time": "w", "widen": "measured", "failed_eye": "R", "L": {"r_px": 61, "b_n": 0.7, "b_w": 0.9, "ap_n": 1.4, "ap_cl": 0.5, "pitch_n": -12, "lower_px": 230}, "R": {"r_px": 51, "b_n": 0.8, "b_w": 1, "ap_n": 1.5, "ap_cl": 0.6, "pitch_n": -14, "lower_px": 240}},
+  "history": [
+    {"time": "a", "L": {"step": 0.18, "gap": 0.8, "r_px": 60}, "R": {"step": 0.2, "gap": 0.9, "r_px": 50}}
+  ]
+}
+"#;
+        std::fs::write(&path, old).unwrap();
+        let file = load_calib(&path);
+        let w = file.wear.unwrap();
+        assert_eq!((w[0].r_px, w[1].r_px, file.wear_failed_eye.as_str()), (51.0, 61.0, "L"));
+        assert_eq!((file.history[0].1[0].r_px, file.history[0].1[1].r_px), (50.0, 60.0));
+        // Saved with the marker: the same values from then on, never swapped again.
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(saved.contains(live::JSON_EYES_ANATOMICAL), "{saved}");
+        // The file as it was, kept next to it first
+        let backup = dir.join("calib.json.pre-anatomical");
+        assert_eq!(pre_anatomical_path(&path), backup);
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), old);
+        let again = load_calib(&path);
+        assert_eq!((again.wear, again.history.clone(), again.wear_failed_eye.as_str()), (file.wear, file.history.clone(), "L"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        // A file written now is left as it is.
+        let now = file.to_json();
+        std::fs::write(&path, &now).unwrap();
+        let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let read = load_calib(&path);
+        assert_eq!((read.wear, read.wear_failed_eye.as_str()), (file.wear, "L"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), now);
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), before);
+        // An older eyecam saved it again without the marker (its own L = the right eye): converted again, and the
+        // first copy kept, not overwritten by this one.
+        let older = old.replace("\"r_px\": 61", "\"r_px\": 62");
+        std::fs::write(&path, &older).unwrap();
+        let reread = load_calib(&path);
+        assert_eq!(reread.wear.unwrap()[1].r_px, 62.0);
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), old);
+        // None at all: empty, nothing written.
+        std::fs::remove_file(&path).unwrap();
+        assert!(load_calib(&path).wear.is_none() && !path.exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     #[ignore]
     fn worker_on_a_session() {
         let s = Session::open(Path::new(&std::env::var("EYECAM_SESSION").unwrap()), false).unwrap();
@@ -915,7 +1010,7 @@ mod tests {
                     continue;
                 }
                 s.read(e, k, &mut img).unwrap();
-                if e == 1 {
+                if s.upside_down(e) {
                     // Back to the stored (upside-down) orientation, as the polling loop sends it.
                     let mut raw = vec![0u8; W * H];
                     for y in 0..H {
@@ -924,7 +1019,8 @@ mod tests {
                     img = raw;
                 }
                 let pitch = s.valve.nearest(t).map_or(f32::NAN, |j| s.valve.pitch[e][j] as f32);
-                tx.send(Msg::Frame { eye: e, t_cam_ns: (t * 1e9) as u64, pitch, data: img.clone() }).unwrap();
+                let upside_down = s.upside_down(e);
+                tx.send(Msg::Frame { eye: e, upside_down, t_cam_ns: (t * 1e9) as u64, pitch, data: img.clone() }).unwrap();
             }
         }
         let (rtx, rrx) = mpsc::channel();

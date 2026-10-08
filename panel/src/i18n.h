@@ -1,5 +1,6 @@
 // On-screen text in Japanese and English. Drawing code never contains text itself; it takes it from here.
-// Logs stay in English and are not in this table.
+// Logs stay in English and are not in this table. Arrows and other symbols are icon markers (icons.h: ICON_ARROW_RIGHT
+// and the like), drawn with paths; report.txt and --report turn them back into characters (icon::plain).
 #pragma once
 
 #include <string>
@@ -87,7 +88,8 @@ struct UiText {
     const char* outputLivelink;
     const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
-    /** Each card's three lines (VRChat, LiveLink, ETVR): wide eyes, sync, VRCFT. A leading "✓ " or "✗ " is drawn. */
+    /** Each card's three lines (VRChat, LiveLink, ETVR): wide eyes, sync, VRCFT. A leading ICON_CHECK or ICON_CROSS
+     *  and a space hang in front of the lines (icons.h). */
     const char* outputMarks[3][3];
     const char* rowActiveType;      ///< how EyeTrackingActive is sent
     const char* hintActiveType;
@@ -152,6 +154,17 @@ struct UiText {
     const char* hintDeadzone;
     const char* rowHold;
     const char* hintHold;
+    const char* rowEyeBehavior;       ///< Advanced > Version: "How the eyes move" (eye_behavior)...
+    const char* hintEyeBehavior;      ///< ...its hint
+    const char* eyeBehaviorV2;        ///< ...the segments: v2 (recommended)...
+    const char* eyeBehaviorV1;        ///< ...and v1 (up to 0.7.5)
+    const char* eyeBehaviorV2Line;    ///< ...and a line under it on what each does
+    const char* eyeBehaviorV1Line;
+    const char* eyeBehaviorLeftV1;    ///< the left column while v1 is on
+    const char* snapV2Only;           ///< Eyelids > Fine-tune, in v1: (5) is not used
+    const char* floorV2Only;          ///< Eyelids > Blinks & squint, in v1: the floor is not used
+    const char* toVersionPage;        ///< the button beside them: "Advanced > Version"
+    const char* hintIndependentV1;    ///< "Move eyes separately" in v1
     const char* rowIndependent;
     const char* hintIndependent;
     const char* hintIndependentOneEye;  ///< instead, while the Frame tracks one eye alone (both eyes get its gaze)
@@ -168,15 +181,13 @@ struct UiText {
     const char* fitCenterOnly;       ///< small button: re-center the gaze only...
     const char* fitCenterTilt;       ///< ...or re-center and measure the tilt (as auto_recenter says)
     const char* fitStop;
-    const char* fitIntro;            ///< before any fit
+    const char* fitIntro;            ///< before any fit (fitHowTo follows it)
     const char* fitNeedsRunning;
     const char* fitLocked;
-    const char* fitWaiting;          ///< "Close the dashboard to start"
-    const char* fitHowTo;            ///< while waiting / running (full fit)
-    const char* fitWaitingCenter;    ///< while waiting / running (re-centering)
-    const char* fitWaitingTilt;      ///< while waiting / running (re-centering and the tilt)
-    const char* fitRunningFormat;    ///< "Measuring: %s (%d of %d)"
-    const char* fitRetryFormat;      ///< appended: ", try %d"
+    const char* fitRunningTitle;     ///< while a fit runs: the one calm line ("Look at the dot")...
+    const char* fitHowTo;            ///< ...and under it, what to do (full fit)
+    const char* fitHowToCenter;      ///< (re-centering)
+    const char* fitHowToTilt;        ///< (re-centering and the tilt)
     const char* fitDone;             ///< right after a full fit
     const char* fitDoneCenter;       ///< right after re-centering
     const char* fitDoneTilt;         ///< right after re-centering and the tilt
@@ -188,9 +199,15 @@ struct UiText {
     const char* fitEyeXFormat;       ///< "Each eye: L %s x%s, R %s x%s" (zero point, gain)
     const char* fitLidFormat;        ///< "Eyelid %s: open %s, closed %s, looking down %s"
     const char* fitLidsNone;
+    const char* fitRollJumpFormat;      ///< re-wear tilt not used: "Tilt read %s, too far from the last one (%s)..."
+    const char* fitRollDisagreeFormat;  ///< full fit tilt not used: "Tilt read %s up/down but %s sideways..."
+    const char* fitEyeSpreadFormat;     ///< Valve's per-eye x off straight ahead: "...%s apart (%s at the dot)..."
+    const char* fitEyeSpreadKeptFormat; ///< the same, each eye's gain kept (full fit)
     const char* fitFailed;
-    const char* failCancelled;
-    const char* failWaitTimedOut;
+    const char* failCancelled;       ///< "Stop" pressed
+    const char* fitUnchanged;        ///< under a stop (Cancelled, Left, DashboardOpened): "Nothing was changed"
+    const char* failLeft;            ///< another tab or dashboard page
+    const char* failDashboardOpened; ///< opened while the fit ran without it
     const char* failNotRunning;
     const char* failNoResult;
     const char* failUnsteadyFormat;  ///< %s = the point
@@ -309,6 +326,88 @@ struct UiText {
     const char* historyTitle;       ///< the version history's title
     const char* historyClose;       ///< its button back to the Advanced tab
     const char* historyMissing;     ///< no CHANGELOG.md (or CHANGELOG.ja.md) was found
+    // The Advanced tab's sub-tabs (a segmented control at its top)
+    const char* advVersion;         ///< the version, updates and the version history
+    const char* advTrouble;         ///< the diagnostics and the recent records
+    const char* advTools;           ///< the gaze dots, the eye log and the eye capture
+    const char* advFiles;           ///< the files and the process
+    const char* updateToFormat;     ///< the update button: "%s に更新する" (the new version)
+    const char* updateNotesFormat;  ///< over the new release's summary: "%s の内容"
+    // Records of calibrations and eye fits (report.h): the "Having trouble" page, a record, all records, report.txt
+    const char* recordsTitle;       ///< "Recent records"
+    const char* recordsHint;        ///< beside it
+    const char* recordsNone;        ///< none yet
+    const char* recordView;         ///< a row's button
+    const char* recordsAllFormat;   ///< the button to all of them: "すべての記録（%s）" and a chevron (the count)
+    const char* recordsAllTitleFormat;  ///< their page's title: "すべての記録（%s）"
+    const char* recordsKept;        ///< beside it: how many are kept
+    const char* recordsSsh;         ///< how to read them over SSH
+    const char* recordBack;         ///< a chevron and " Back" on a record and on all records
+    const char* recordReason;       ///< before a failure's reason
+    const char* recordOutcome;      ///< before what came of a run that went well
+    const char* recordFlow;         ///< over the key log lines
+    const char* recordFlowNone;     ///< no key log lines
+    const char* recordContents;     ///< over the files
+    const char* recordFileReport;   ///< what each file is
+    const char* recordFileLogs;
+    const char* recordFileStatus;
+    const char* recordFileCalib;
+    const char* recordCode;         ///< before the diagnostic code
+    const char* recordMissing;      ///< the record's folder is gone
+    const char* recordSavedFit;     ///< the bar on a failed fit
+    const char* recordSavedCalib;   ///< ...and on a failed calibration
+    const char* recordShow;         ///< its button
+    const char* recordStopped;      ///< the reason of a run stopped partway
+    const char* recordPanelClosed;  ///< ...of one still running when the panel closed
+    const char* recordCalibSilent;  ///< ...of a calibration eyecam-rec stopped answering during
+    const char* recordNoStartFormat;  ///< a calibration eyecam-rec refused: "始められなかった: %s"
+    const char* resultOk;           ///< the badges
+    const char* resultFailed;
+    const char* resultPartial;
+    const char* resultStopped;      ///< stopped before the end, nothing wrong (grey, not red)
+    const char* kindFit;            ///< what ran
+    const char* kindRecenter;
+    const char* kindRecenterTilt;
+    const char* kindCalibWear;
+    const char* kindCalibUser;
+    const char* condDashOpen;       ///< the conditions
+    const char* condDashClosed;
+    const char* condAuto;           ///< the re-wear fit run by itself
+    const char* condCameraFormat;   ///< "カメラ %.0f 枚/秒"
+    const char* condPutOnFormat;    ///< "かぶってから %.0f 秒"
+    const char* condSeparator;      ///< between them: "・"
+    const char* reportTitle;        ///< report.txt's first line
+    const char* reportKind;         ///< its labels
+    const char* reportTime;
+    const char* reportResult;
+    const char* reportVersions;
+    const char* reportCode;
+    const char* reportEyeData;
+    const char* reportBefore;
+    const char* reportFlow;
+    const char* reportFiles;
+    const char* reportParenFormat;    ///< an aside after the kind: "（%s）"
+    const char* reportSecondsFormat;  ///< after the times: "（%.1f 秒）"
+    const char* reportTrackerFormat;  ///< "Valve %.0f 回/秒"
+    const char* reportMissedFormat;   ///< "（取りこぼし %.0f）"
+    const char* reportOffFormat;      ///< "（目のデータ %.0f 秒ぶりに再開）"
+    const char* sourceCore;         ///< the logs' names
+    const char* sourcePanel;
+    const char* sourceEyecam;
+    const char* sourceValve;
+    const char* flowStartFormat;    ///< the key lines in the panel's words: "%s 開始（%s）"
+    const char* flowDashOpen;
+    const char* flowDashClosed;
+    const char* flowFit;
+    const char* flowRecenter;
+    const char* flowTilt;
+    const char* flowTryFormat;      ///< "%s %d 回目 %d/%d", an arrow, "%s"
+    const char* flowAgain;
+    const char* flowFailed;
+    const char* flowOk;
+    const char* flowDotHiddenFormat;  ///< "点を消した（%.1f 秒）"
+    const char* flowResumedFormat;    ///< "目のデータ 再開（%.0f 秒ぶり）"
+    const char* flowPutOnFormat;      ///< "かぶった（%.0f 秒ぶり）"
     // The diagnostics page (diag.h; the Advanced tab's "Diagnostics")
     const char* diagButton;              ///< opens the diagnostics page (Advanced tab; eye cameras' "no video")
     const char* diagTitle;               ///< the diagnostics page's title
@@ -526,6 +625,9 @@ struct UiText {
     const char* setupChipSquint;  ///< ...the user calibration's
     const char* setupChipLookUp;
     const char* setupChipLookDown;
+    const char* setupChipBright;  ///< ...a recording's (the developer recording on the Advanced tab) besides these
+    const char* setupChipDark;
+    const char* eyecamChipsMoreFormat;  ///< after a recording's chips, the steps left out at the end ("+%d")
     const char* setupLeftBefore;  ///< ...the seconds left: before the number...
     const char* setupLeftAfter;  ///< ...and after it
     const char* setupLearnStepFormat;  ///< ..."Step %d of %d · %d s in all"
@@ -612,7 +714,10 @@ struct UiText {
     const char* camHelp3Do;
     const char* lidsCamButton;
     const char* lidsCamMarks;  ///< ...the folded marks' line
-    const char* lidsNowLabel;  ///< the Eyelids tab (案E): the band at its top, "now"
+    const char* lidsLook;  ///< the Eyelids tab's sub-tabs: the look (widening, smoothing, sync)
+    const char* lidsBlinks;  ///< ...blinks and squints
+    const char* lidsFine;  ///< ...the values by hand
+    const char* lidsNowLabel;  ///< the Eyelids tab (案E): the band at the top of "Look", "now"
     const char* lidsNowBoth;  ///< ...from both cameras
     const char* lidsNowLeft;  ///< ...the left camera, Valve for the right
     const char* lidsNowRight;  ///< ...the right camera, Valve for the left
@@ -627,23 +732,23 @@ struct UiText {
     const char* widenNoteCamera;  ///< ...the line under it: the cameras
     const char* widenNoteValve;  ///< ...Valve's values (four stops)
     const char* widenNoteUnfitted;  ///< ...an eye without an eye fit
-    const char* widenSaturated1;  ///< ...on a SteamOS that caps openness: the box
-    const char* widenSaturated2;
+    const char* widenSaturated;  ///< ...on a SteamOS that caps openness: the line in the slider's place
     const char* blinkHint;  ///< the blink row: its hint
     const char* blinkHoldCaption;  ///< ...beside the hold
     const char* rowBlinkBoth;  ///< blink_sync_below
     const char* blinkBothHint;  ///< ...its hint
     const char* blinkBothNote;  ///< ...beside it
+    const char* rowLidFloor;  ///< camera_lid_floor (shown while an eye camera is used)
+    const char* lidFloorHint;  ///< ...its hint
+    const char* lidFloorNote;  ///< ...beside it
+    const char* lidFloorNoteIdle;  ///< ...beside it while no eye is on the cameras
+    const char* rowLidOpenSnap;  ///< lid_open_snap (Fine-tune, under the marks; a sent eyelid, VRCFT)
+    const char* lidOpenSnapHint;  ///< ...its hint
+    const char* lidOpenSnapNote;  ///< ...beside it
     const char* lidSmoothHint;  ///< the eyelid smoothing presets: hint
     const char* syncOff;  ///< the lid sync slider: its left end
     const char* syncStrong;  ///< ...its right end
     const char* syncHint;  ///< ...the row hint
-    const char* rowOther;  ///< the row that opens Fine-tune
-    const char* otherHint;  ///< ...its hint
-    const char* otherText1;  ///< ...beside its button
-    const char* otherText2;
-    const char* detailsTitle;  ///< Fine-tune open: its title
-    const char* detailsClose;  ///< ...the button back
     const char* camPupilLine;  ///< the eye cameras page: under "Now" while the pupils go straight to VRChat
     const char* camWidenNotice;  ///< ...the pointer to the Eyelids tab
     const char* camWidenButton;  ///< ...its button

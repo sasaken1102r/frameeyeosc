@@ -209,32 +209,38 @@ void testSteamos() {
 }
 
 void testCode() {
-    SAME(diag::code(healthy()), "OK·P31·B128·G1·C1·F1");
-    SAME(diag::code(stuck()), "NW·P3·B0·G1·C1R·F1");
+    SAME(diag::code(healthy()), "OK·P31·B128·G1·C1·F1·V2");
+    SAME(diag::code(stuck()), "NW·P3·B0·G1·C1R·F1·V2");
+    // The eyes as up to 0.7.5 (eye_behavior 1) end it with V1
+    {
+        PanelModel v1 = healthy();
+        v1.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
+        SAME(diag::code(v1), "OK·P31·B128·G1·C1·F1·V1");
+    }
     {
         // The video not there although worn; one eye only; searching before the first look (an older eyecam-rec)
         PanelModel m = stuck();
         m.eyecam.status.search = "no_video";
         m.eyecam.status.prox = 30.6;
-        SAME(diag::code(m), "NV·P31·B0·G1·C1R·F1");
+        SAME(diag::code(m), "NV·P31·B0·G1·C1R·F1·V2");
         m.eyecam.status.search = "one_eye";
         m.eyecam.status.searchDetail = {true, true, 4, 90.0, 4, false, "one_eye", 64};
-        SAME(diag::code(m), "OE·P31·B64·G1·C1R·F1");
+        SAME(diag::code(m), "OE·P31·B64·G1·C1R·F1·V2");
         m.eyecam.status.search.clear();
         m.eyecam.status.searchDetail = {};
         m.eyecam.status.prox = -1;
-        SAME(diag::code(m), "SR·P-·B-·G1·C1R·F1");
+        SAME(diag::code(m), "SR·P-·B-·G1·C1R·F1·V2");
         m.eyecam.status.live = false;
-        SAME(diag::code(m), "LO·P-·B-·G1·C1R·F1");
+        SAME(diag::code(m), "LO·P-·B-·G1·C1R·F1·V2");
     }
     {
         // A failed calibration, and none yet
         PanelModel m = healthy();
         m.eyecam.status.lastCalib.ok = false;
         m.eyecam.status.lastCalib.failedEye = "LR";
-        SAME(diag::code(m), "OK·P31·B128·G1·C0·F1");
+        SAME(diag::code(m), "OK·P31·B128·G1·C0·F1·V2");
         m.eyecam.status.lastCalib.present = false;
-        SAME(diag::code(m), "OK·P31·B128·G1·C-·F1");
+        SAME(diag::code(m), "OK·P31·B128·G1·C-·F1·V2");
     }
     {
         // Waiting for the tool; eyecam-rec not running at all
@@ -244,23 +250,23 @@ void testCode() {
         e.locked = false;
         e.hasBuffers = false;
         e.autoGrab = "waiting_tracker";
-        SAME(diag::code(m), "WF·P31·B128·G0·C1·F1");
+        SAME(diag::code(m), "WF·P31·B128·G0·C1·F1·V2");
         m.eyecam.visible = false;
-        SAME(diag::code(m), "NR·P-·B-·G0·C-·F1");
+        SAME(diag::code(m), "NR·P-·B-·G0·C-·F1·V2");
     }
     {
         // frameeyeosc: waiting for eye data, no target, paused, an error, not running
         PanelModel m = healthy();
         m.status.tracking = false;
-        SAME(diag::code(m), "OK·P31·B128·G1·C1·FW");
+        SAME(diag::code(m), "OK·P31·B128·G1·C1·FW·V2");
         m.status.target.clear();
-        SAME(diag::code(m), "OK·P31·B128·G1·C1·FT");
+        SAME(diag::code(m), "OK·P31·B128·G1·C1·FT·V2");
         m.status.sending = false;
-        SAME(diag::code(m), "OK·P31·B128·G1·C1·FP");
+        SAME(diag::code(m), "OK·P31·B128·G1·C1·FP·V2");
         m.status.sourceError = "unsupported eye shared-memory version 6; supported: 4, 5";
-        SAME(diag::code(m), "OK·P31·B128·G1·C1·FE");
+        SAME(diag::code(m), "OK·P31·B128·G1·C1·FE·V2");
         m.status.running = false;
-        SAME(diag::code(m), "OK·P31·B128·G1·C1·F0");
+        SAME(diag::code(m), "OK·P31·B128·G1·C1·F0·V2");
     }
 }
 

@@ -387,6 +387,7 @@ std::string code(const PanelModel& m) {
         case Core::Error: out += std::string(kDot) + "FE"; break;
         case Core::NotRunning: out += std::string(kDot) + "F0"; break;
     }
+    out += std::string(kDot) + (std::lround(SettingsView(m).number(key::kEyeBehavior)) == 1 ? "V1" : "V2");
     return out;
 }
 

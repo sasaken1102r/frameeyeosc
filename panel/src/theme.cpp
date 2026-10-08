@@ -93,6 +93,9 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"selected choice fill (pill)", kAccent, kControl, ContrastKind::Ui},
         {"selected tab fill and notch (panel background)", kAccent, kBg, ContrastKind::Ui},
         {"learning dot, tab notch (card)", kAccent, kCard, ContrastKind::Ui},
+        {"mark 5 line on the eyelid bars (bar track)", kSnap, kBg, ContrastKind::Ui},
+        {"mark 5 badge, its stepper's outline (card)", kSnap, kCard, ContrastKind::Ui},
+        {"mark 5 badge number", kOnAccent, kSnap, ContrastKind::Text},
         {"new release notice outline and dot (accent tint)", kAccent, kAccentTint, ContrastKind::Ui},
         {"eye camera calibration: chip outline and check, the note's button (accent tint)", kAccent, kAccentTint,
          ContrastKind::Ui},
@@ -135,6 +138,16 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"left eye's sent gaze dot (gaze pad)", kDotLeft, kBg, ContrastKind::Ui},
         {"right eye's sent gaze dot (gaze pad)", kDotRight, kBg, ContrastKind::Ui},
         {"eye colors in the gaze legend (card)", kDotRight, kCard, ContrastKind::Ui},
+        // The Advanced tab's sub-tabs and the records
+        {"Advanced tab's sub-tabs: outline (panel background)", kBorder, kBg, ContrastKind::Ui},
+        {"records: \"Failed\" badge, a failure's \"Why\" (red tint)", kDangerSoft, kDangerTint, ContrastKind::Text},
+        {"records: a failure's box outline (red tint)", kDanger, kDangerTint, ContrastKind::Ui},
+        {"records: \"One eye\" badge, its \"Why\" (accent tint)", kAccent, kAccentTint, ContrastKind::Text},
+        {"records: \"OK\" badge, its \"Result\" (green tint)", kSuccess, kSuccessTint, ContrastKind::Text},
+        {"records: \"Stopped\" badge, its \"Why\" (pill-colored)", kTextMuted, kControl, ContrastKind::Text},
+        {"records: a stop's box outline (pill-colored)", kBorder, kControl, ContrastKind::Ui},
+        {"records: card titles (pill-colored card)", kAccent, kControl, ContrastKind::Text},
+        {"records: the saved bar's sheet (pill-colored card)", kSuccess, kControl, ContrastKind::Ui},
     };
     return pairs;
 }

@@ -20,6 +20,15 @@ const GAZE_OFFSET_RANGE: std::ops::RangeInclusive<f32> = -0.5..=0.5;
 const GAZE_GAIN_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 // Allowed headset tilt (degrees).
 const GAZE_ROLL_RANGE: std::ops::RangeInclusive<f32> = -20.0..=20.0;
+// camera_lid_floor, in VRCFT units: up to relaxed open.
+const CAMERA_LID_FLOOR_RANGE: std::ops::RangeInclusive<f32> = 0.0..=0.75;
+// lid_open_snap, in VRCFT units: relaxed open (0.75) is off.
+const LID_OPEN_SNAP_RANGE: std::ops::RangeInclusive<f32> = 0.0..=0.75;
+// lid_open_snap used to be a share of the eye's open reading (0.70 to 1.00, 0.80 by default). A value above 0.75 in
+// config.json is one of those, and goes over as where it started for a fit that reads this shut and 1.000 open (the
+// author's eyes read 0.003 and 0.046): 0.80 -> 0.53, the new default; 1.00 -> 0.75, off as before. 0.70 and 0.75 read
+// as the new kind; anything above 1.00 was never allowed and still isn't.
+const OLD_SNAP_CLOSED: f32 = 0.025;
 // A fitted eye's open readings must be at least this far above its closed one.
 const LID_FIT_MIN_RANGE: f32 = 0.1;
 // A gaze capture's target name is only echoed back, so it is kept short.
@@ -105,8 +114,8 @@ pub struct Settings {
     /// avatars without VRCFT parameters.
     pub native_eyes: bool,
     /// Use eyecam-rec's eye-camera values (see eyecam_live) while they are fresh: each eye's eyelid from relaxed open
-    /// up (widening) and squint once the camera is calibrated for this wear, and its pupil. Closing stays the eye
-    /// server's.
+    /// up (widening), where it sees the eye closed or open through a squint (see main.rs, Smoother::check_lids), and
+    /// its squint, once the camera is calibrated for this wear; and its pupil. Blinks stay the eye server's.
     pub camera_lids: bool,
     /// In LiveLink mode, also send the eye camera's pupils (only those) straight to VRChat over OSC, on port 9000 of
     /// the LiveLink target's host: VRCFT's LiveLink module has no pupils. Ignored by the other outputs.
@@ -117,6 +126,9 @@ pub struct Settings {
     pub pupil_bits: u8,
     /// How easily a fitted eye widens.
     pub lid_widen: Widen,
+    /// How the eyes move: 2 (the default) as now; 1 as up to 0.7.5, the gaze and eyelid processing of that release
+    /// (see main.rs, process). Fixes since (the eye cameras' left and right, the eye fit) apply either way.
+    pub eye_behavior: u8,
     /// The settings file has no `lid_widen` (written by 0.5.x or earlier, whose lid_scale_* did nothing for fitted
     /// eyes): a fitted eye's scale is then ignored (see main.rs, lid_scales). Not a setting of its own.
     #[serde(skip)]
@@ -142,6 +154,14 @@ pub struct Settings {
     pub blink_hold_ms: f32,
     pub despike: bool,
     pub blink_sync_below: f32,
+    /// While the eye camera's values for an eye are used and it sees the eye open, the sent eyelid (VRCFT) goes no
+    /// lower than this, so a hard squint shows narrowed and the squint parameter carries the rest; closing (a blink
+    /// within the grace period, or the camera seeing the eye closed) still reaches 0. 0 = off.
+    pub camera_lid_floor: f32,
+    /// For eyes without the eye camera's eyelid: an eyelid (VRCFT, as the fit or the lid marks map it) at least this
+    /// open eases smoothly up to relaxed open, so an open eye the eye tracker reads a little low goes out open (see
+    /// main.rs, snapped_open). 0.75 = off.
+    pub lid_open_snap: f32,
     /// Gaze zero point and how far the gaze goes, on the -1..1 scale (see `correct_gaze`).
     pub gaze_offset_x: f32,
     pub gaze_offset_y: f32,
@@ -154,9 +174,9 @@ pub struct Settings {
     /// Degrees below straight ahead (the tracker's own, before the zero point and gains) from where the
     /// sideways gaze is held; 0 disables. See `Smoother::hold_down_x`.
     pub gaze_down_hold_x_deg: f32,
-    /// Each eye's own sideways zero point and gain, for the per-eye gaze (--independent-eyes). None
-    /// uses gaze_offset_x / gaze_gain_x. The Frame shares the up/down gaze between the eyes, so there
-    /// is no per-eye y.
+    /// Each eye's own sideways zero point and gain, used only for an eye's own gaze when it stands in for the other
+    /// (that one's gaze unreliable). None uses gaze_offset_x / gaze_gain_x. The Frame shares the up/down gaze
+    /// between the eyes, so there is no per-eye y. The panel's fits write the same zero point for both eyes.
     pub gaze_offset_x_left: Option<f32>,
     pub gaze_offset_x_right: Option<f32>,
     pub gaze_gain_x_left: Option<f32>,
@@ -198,6 +218,7 @@ impl Default for Settings {
             camera_lids: true,
             pupils_to_vrchat: true,
             pupil_bits: 0,
+            eye_behavior: 2,
             lid_widen: Widen::Normal,
             scales_predate_fit: false,
             raw: false,
@@ -221,6 +242,8 @@ impl Default for Settings {
             blink_hold_ms: 80.0,
             despike: true,
             blink_sync_below: 0.35,
+            camera_lid_floor: 0.0,
+            lid_open_snap: 0.53,
             gaze_offset_x: 0.0,
             gaze_offset_y: 0.0,
             gaze_gain_x: 1.0,
@@ -248,6 +271,11 @@ impl Default for Settings {
 impl Settings {
     pub fn port(&self) -> u16 {
         self.port.unwrap_or(self.output.default_port())
+    }
+
+    /// Whether the eyes move as now (eye_behavior 2), not as up to 0.7.5 (1).
+    pub fn v2(&self) -> bool {
+        self.eye_behavior >= 2
     }
 
     /// Each eye's fit, if all four of its readings are set.
@@ -306,6 +334,8 @@ impl Settings {
             self.gaze_quality_limit,
             self.blink_hold_ms,
             self.blink_sync_below,
+            self.camera_lid_floor,
+            self.lid_open_snap,
             self.gaze_offset_x,
             self.gaze_offset_y,
             self.gaze_gain_x,
@@ -358,6 +388,9 @@ impl Settings {
         if !scales.iter().flatten().all(|scale| *scale > 0.0) {
             return Err("lid_scale_left/right must be positive".into());
         }
+        if !(1..=2).contains(&self.eye_behavior) {
+            return Err("eye_behavior must be 1 (as up to 0.7.5) or 2".into());
+        }
         if self.pupil_bits > MAX_PUPIL_BITS {
             return Err(format!("pupil_bits must be 0 (a float only) to {MAX_PUPIL_BITS}"));
         }
@@ -366,6 +399,12 @@ impl Settings {
         }
         if self.gaze_quality_limit < 0.0 || self.blink_hold_ms < 0.0 || self.blink_sync_below < 0.0 {
             return Err("gaze_quality_limit, blink_hold_ms and blink_sync_below must be non-negative".into());
+        }
+        if !CAMERA_LID_FLOOR_RANGE.contains(&self.camera_lid_floor) {
+            return Err("camera_lid_floor must be between 0 and 0.75".into());
+        }
+        if !LID_OPEN_SNAP_RANGE.contains(&self.lid_open_snap) {
+            return Err("lid_open_snap must be between 0 and 0.75 (0.75 = off)".into());
         }
         if !(GAZE_OFFSET_RANGE.contains(&self.gaze_offset_x) && GAZE_OFFSET_RANGE.contains(&self.gaze_offset_y)) {
             return Err("gaze_offset_x/y must be between -0.5 and 0.5".into());
@@ -464,6 +503,11 @@ fn parse(text: &str) -> Result<(Settings, Asked), String> {
         .iter()
         .any(|name| written.get(name).is_some_and(|value| !value.is_null()));
     settings.scales_predate_fit = scaled && written.get("lid_widen").is_none();
+    if let Some(share) = written.get("lid_open_snap").and_then(serde_json::Value::as_f64) {
+        if share > f64::from(*LID_OPEN_SNAP_RANGE.end()) && share <= 1.0 {
+            settings.lid_open_snap = snap_from_share(share as f32);
+        }
+    }
     let requests: Requests = serde_json::from_str(text).map_err(|error| error.to_string())?;
     let (capture_id, capture) = requests.gaze_capture();
     let asked = Asked {
@@ -472,6 +516,14 @@ fn parse(text: &str) -> Result<(Settings, Asked), String> {
         capture,
     };
     Ok((settings, asked))
+}
+
+/// Where a lid_open_snap from when it was a share of the eye's open reading started, as an eyelid (VRCFT, to 0.01):
+/// for a fit that reads OLD_SNAP_CLOSED shut and 1.000 open, through the fit's closed margin.
+pub fn snap_from_share(share: f32) -> f32 {
+    let fraction = (share - OLD_SNAP_CLOSED) / (1.0 - OLD_SNAP_CLOSED);
+    let lid = crate::LID_RELAXED * (fraction - crate::LID_FIT_CLOSED_MARGIN) / (1.0 - crate::LID_FIT_CLOSED_MARGIN);
+    ((lid * 100.0).round() / 100.0).clamp(*LID_OPEN_SNAP_RANGE.start(), *LID_OPEN_SNAP_RANGE.end())
 }
 
 /// Ids of the options that were typed on the command line rather than left at their defaults.
@@ -505,7 +557,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
             }
         )*};
     }
-    pin!(output, eye_tracking_active, steamlink_params, native_eyes, lid_widen, pupil_bits);
+    pin!(output, eye_tracking_active, steamlink_params, native_eyes, lid_widen, pupil_bits, eye_behavior);
     // Given on the command line: this is 0.6.0 or later, whatever the file says
     if given.contains("lid_widen") {
         settings.scales_predate_fit = false;
@@ -566,6 +618,8 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
     }
     pin!(
         blink_sync_below,
+        camera_lid_floor,
+        lid_open_snap,
         gaze_offset_x,
         gaze_offset_y,
         gaze_gain_x,
@@ -835,6 +889,9 @@ mod tests {
         assert!(merged(r#"{"gaze_quality_limit": -0.01}"#, &[]).is_err());
         assert!(merged(r#"{"blink_hold_ms": -1}"#, &[]).is_err());
         assert!(merged(r#"{"blink_sync_below": -0.1}"#, &[]).is_err());
+        assert!(merged(r#"{"camera_lid_floor": -0.05}"#, &[]).is_err());
+        assert!(merged(r#"{"camera_lid_floor": 0.8}"#, &[]).is_err());
+        assert!(merged(r#"{"camera_lid_floor": "low"}"#, &[]).is_err());
         assert!(merged(r#"{"despike": 1}"#, &[]).is_err());
         assert!(merged(r#"{"lid_wide": 1e300}"#, &[]).is_err());
         assert!(merged(r#"{"host": "192.168.0.60:9000"}"#, &[]).is_err());
@@ -908,6 +965,33 @@ mod tests {
         assert_eq!(settings.blink_sync_below, 0.0);
         assert_eq!(locked, ["despike", "blink_sync_below"]);
 
+        // lid_open_snap: 0.53 by default, 0 to 0.75 (0.75 = off) allowed, and the command line wins over the file
+        assert_eq!(merged("{}", &[]).unwrap().0.lid_open_snap, 0.53);
+        for snap in ["0", "0.5", "0.7", "0.75"] {
+            let file = format!(r#"{{"lid_open_snap": {snap}}}"#);
+            assert_eq!(merged(&file, &[]).unwrap().0.lid_open_snap, snap.parse::<f32>().unwrap());
+        }
+        for snap in ["-0.01", "1.05", "\"on\""] {
+            assert!(merged(&format!(r#"{{"lid_open_snap": {snap}}}"#), &[]).is_err(), "{snap}");
+        }
+        // A share of the open reading from before (above 0.75): where it started, as an eyelid
+        for (share, lid) in [("0.8", 0.53), ("0.85", 0.59), ("0.9", 0.64), ("1.0", 0.75), ("1", 0.75)] {
+            assert_eq!(merged(&format!(r#"{{"lid_open_snap": {share}}}"#), &[]).unwrap().0.lid_open_snap, lid, "{share}");
+        }
+        let (settings, locked) = merged(r#"{"lid_open_snap": 0.9}"#, &["--lid-open-snap", "0.6"]).unwrap();
+        assert_eq!((settings.lid_open_snap, locked), (0.6, vec!["lid_open_snap"]));
+        assert!(merged("{}", &["--lid-open-snap", "0.8"]).is_err());
+
+        // camera_lid_floor: off (0) by default, 0 and 0.75 allowed, and the command line wins over the file
+        assert_eq!(merged("{}", &[]).unwrap().0.camera_lid_floor, 0.0);
+        for floor in ["0", "0.75"] {
+            let file = format!(r#"{{"camera_lid_floor": {floor}}}"#);
+            assert_eq!(merged(&file, &[]).unwrap().0.camera_lid_floor, floor.parse::<f32>().unwrap());
+        }
+        let (settings, locked) = merged(r#"{"camera_lid_floor": 0.4}"#, &["--camera-lid-floor", "0.1"]).unwrap();
+        assert_eq!((settings.camera_lid_floor, locked), (0.1, vec!["camera_lid_floor"]));
+        assert!(merged("{}", &["--camera-lid-floor", "0.9"]).is_err());
+
         // Negative numbers work as option values.
         let (settings, locked) = merged("{}", &["--gaze-offset-y", "-0.1", "--gaze-gain-down", "1.2"]).unwrap();
         assert_eq!((settings.gaze_offset_y, settings.gaze_gain_down), (-0.1, 1.2));
@@ -964,6 +1048,19 @@ mod tests {
         let (settings, locked) = merged(r#"{"camera_lids": true}"#, &["--no-camera-lids"]).unwrap();
         assert!(!settings.camera_lids);
         assert_eq!(locked, ["camera_lids"]);
+    }
+
+    #[test]
+    fn eye_behavior_is_2_unless_set_to_1() {
+        assert_eq!(merged("{}", &[]).unwrap().0.eye_behavior, 2);
+        assert!(merged("{}", &[]).unwrap().0.v2());
+        let (v1, _) = merged(r#"{"eye_behavior": 1}"#, &[]).unwrap();
+        assert!(v1.eye_behavior == 1 && !v1.v2());
+        for bad in ["0", "3", "\"v1\"", "1.5"] {
+            assert!(merged(&format!(r#"{{"eye_behavior": {bad}}}"#), &[]).is_err(), "{bad}");
+        }
+        let (settings, locked) = merged(r#"{"eye_behavior": 1}"#, &["--eye-behavior", "2"]).unwrap();
+        assert_eq!((settings.eye_behavior, locked), (2, vec!["eye_behavior"]));
     }
 
     #[test]

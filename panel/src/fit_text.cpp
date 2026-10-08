@@ -69,7 +69,8 @@ std::string failureText(const UiText& t, const gaze_fit::View& fit) {
     switch (fit.failure) {
         case Failure::None: return "";
         case Failure::Cancelled: return t.failCancelled;
-        case Failure::WaitTimedOut: return t.failWaitTimedOut;
+        case Failure::Left: return t.failLeft;
+        case Failure::DashboardOpened: return t.failDashboardOpened;
         case Failure::NotRunning: return t.failNotRunning;
         case Failure::NoResult: return t.failNoResult;
         case Failure::Unsteady: return format(t.failUnsteadyFormat, pointName(t, fit.point));
@@ -126,5 +127,39 @@ std::string failureDetailText(const UiText& t, const gaze_fit::View& fit) {
                                       gaze_fit::kMinLidRange));
         }
         default: return "";
+    }
+}
+
+bool fitStopped(const gaze_fit::View& fit) {
+    using gaze_fit::Failure;
+    if (fit.phase != gaze_fit::Phase::Failed) return false;
+    return fit.failure == Failure::Cancelled || fit.failure == Failure::Left || fit.failure == Failure::DashboardOpened;
+}
+
+void fillFitResult(report::Summary& s, const gaze_fit::View& fit) {
+    const UiText* tables[2] = {&uiText(Language::Ja), &uiText(Language::En)};
+    if (fit.phase == gaze_fit::Phase::Done) {
+        s.result = report::Result::Ok;
+        for (int i = 0; i < 2; ++i) {
+            const UiText& t = *tables[i];
+            const char* title = fit.mode == gaze_fit::Mode::Center ? t.fitDoneCenter
+                                : fit.mode == gaze_fit::Mode::Tilt ? t.fitDoneTilt
+                                                                   : t.fitDone;
+            const std::string line = format(t.fitGazeCenterFormat, format("%+.3f", fit.values.offsetX).c_str(),
+                                            format("%+.3f", fit.values.offsetY).c_str(),
+                                            format("%+.1f°", fit.values.rollDeg).c_str());
+            (i == 0 ? s.reason : s.reasonEn) = std::string(title) + t.condSeparator + line;
+        }
+        return;
+    }
+    const bool stopped = fitStopped(fit);
+    s.result = stopped ? report::Result::Stopped : report::Result::Failed;
+    for (int i = 0; i < 2; ++i) {
+        const UiText& t = *tables[i];
+        const std::string why = failureText(t, fit);
+        // Stopped: why only (there are no numbers behind it)
+        const std::string detail = stopped ? std::string() : failureDetailText(t, fit);
+        (i == 0 ? s.brief : s.briefEn) = why;
+        (i == 0 ? s.reason : s.reasonEn) = why + (detail.empty() ? "" : " " + detail);
     }
 }

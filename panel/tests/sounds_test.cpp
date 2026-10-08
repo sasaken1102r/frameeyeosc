@@ -136,6 +136,7 @@ struct Run {
     double now = 0.0;
     long long id = 0;
     std::vector<std::pair<double, Cue>> heard;
+    gaze_fit::Dashboard dashboard {true, true};  ///< started from the panel: the dashboard open on it
 
     /**
      * Tick one frame.
@@ -143,7 +144,7 @@ struct Run {
      * @return the actions
      */
     Actions frame(const EyeStatus& status) {
-        const Actions a = session.tick(now, false, status);
+        const Actions a = session.tick(now, dashboard, status);
         for (Cue cue : cues.update(session.view(), a)) heard.emplace_back(now, cue);
         now += 1.0 / 90;
         return a;
@@ -179,14 +180,14 @@ struct Run {
 void testFullFitCues() {
     Run run;
     run.session.start(gaze_fit::Mode::Full, gaze_fit::Values(), 0.0);
-    // The dashboard is still open: nothing sounds
-    run.session.tick(0.0, true, idle());
+    // Started with the dashboard open; it is closed halfway through, and the fit goes on
     const double side = gaze_fit::kSideDeg / gaze_fit::kFullScaleDeg;
     const double upDown = gaze_fit::kUpDownDeg / gaze_fit::kFullScaleDeg;
     run.step(steady(0, 0));
     run.step(steady(0, upDown, 0.2));  // unsteady: measured again
     run.step(steady(0, upDown));
     run.step(steady(0, -upDown));
+    run.dashboard = {};
     run.step(steady(-side, 0));
     run.step(steady(side, 0));
     Measured shut = steady(0, 0);
@@ -224,14 +225,23 @@ void testFullFitCues() {
 }
 
 void testStopCues() {
-    // Opening the dashboard during the run: the falling tones
+    // Opening the dashboard during a run started without it (re-centering when the headset is put on): the falling
+    // tones
     Run run;
+    run.dashboard = {};
     run.session.start(gaze_fit::Mode::Center, gaze_fit::Values(), 0.0);
     run.frame(idle());
-    run.session.tick(run.now, true, idle());
-    const std::vector<Cue> cues = run.cues.update(run.session.view(), Actions());
+    run.session.tick(run.now, {true, true}, idle());
+    std::vector<Cue> cues = run.cues.update(run.session.view(), Actions());
     CHECK(cues.size() == 1 && cues[0] == Cue::Fail);
     CHECK(run.count(Cue::Pop) == 1);
+    // "Stop" pressed on the panel: the same
+    Run stopped;
+    stopped.session.start(gaze_fit::Mode::Full, gaze_fit::Values(), 0.0);
+    stopped.frame(idle());
+    stopped.session.cancel();
+    cues = stopped.cues.update(stopped.session.view(), Actions());
+    CHECK(cues.size() == 1 && cues[0] == Cue::Fail);
     // Re-centering done: a pip is not needed next to the chime
     Run center;
     center.session.start(gaze_fit::Mode::Center, gaze_fit::Values(), 0.0);

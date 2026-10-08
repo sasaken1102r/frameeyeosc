@@ -37,10 +37,12 @@ constexpr const char* kFontPath = "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular
 constexpr const char* kBoldFontPath = "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc";
 
 /**
- * config.json's "version": 2 from the 0.7.0 gaze presets (see migrateGazePresets); a file without it, or with 1, is
- * brought up to date once. frameeyeosc does not read it.
+ * config.json's "version": 2 from the 0.7.0 gaze presets (see migrateGazePresets), 3 from one sideways zero point for
+ * both eyes (see migrateEyeOffsets); an older file is brought up to date once. frameeyeosc does not read it.
  */
-constexpr int kConfigVersion = 2;
+constexpr int kConfigVersion = 3;
+/** The version that has the 0.7.0 gaze presets. */
+constexpr int kGazePresetsVersion = 2;
 
 /** Keys the panel writes (the names are shared with frameeyeosc). */
 namespace key {
@@ -62,6 +64,7 @@ constexpr const char* kPupilsToVrchat = "pupils_to_vrchat";
  * avatars that take it bit-packed; 0 (the default) sends the float only.
  */
 constexpr const char* kPupilBits = "pupil_bits";
+constexpr const char* kEyeBehavior = "eye_behavior";  ///< 2 (the default) as now, 1 as up to 0.7.5
 /** Eyelids (and squint) from the eye cameras where eyecam-rec reads them live and is calibrated (default on). */
 constexpr const char* kCameraLids = "camera_lids";
 constexpr const char* kRaw = "raw";
@@ -85,6 +88,8 @@ constexpr const char* kGazeQualityLimit = "gaze_quality_limit";
 constexpr const char* kBlinkHoldMs = "blink_hold_ms";
 constexpr const char* kDespike = "despike";
 constexpr const char* kBlinkSyncBelow = "blink_sync_below";
+constexpr const char* kCameraLidFloor = "camera_lid_floor";
+constexpr const char* kLidOpenSnap = "lid_open_snap";
 constexpr const char* kGazeOffsetX = "gaze_offset_x";
 constexpr const char* kGazeOffsetY = "gaze_offset_y";
 constexpr const char* kGazeGainX = "gaze_gain_x";

@@ -7,6 +7,7 @@
 // tested on its own (auto_recenter_test.cpp).
 #pragma once
 
+#include <cmath>
 #include <string>
 
 namespace auto_recenter {
@@ -30,7 +31,7 @@ struct Inputs {
     bool running = false;        ///< frameeyeosc is running
     bool tracking = false;       ///< eye data is coming in (status.json)
     bool dashboardOpen = false;  ///< the SteamVR dashboard is open
-    bool fitActive = false;      ///< an eye fit is waiting or running
+    bool fitActive = false;      ///< an eye fit is running
 };
 
 /** What to do after an update. */
@@ -59,6 +60,18 @@ public:
 
     /** @return true while waiting to re-center for this wearing */
     bool armed() const { return armed_; }
+
+    /**
+     * For the records (report.h): how long the eyes have been tracked without a break, as of the last update.
+     * @return seconds, NaN while they aren't (or before the first update with frameeyeosc running)
+     */
+    double trackedSec() const { return started_ && tracking_ ? onFor_ : NAN; }
+
+    /**
+     * ...and how long they weren't before that (the headset off, or the Frame asleep).
+     * @return seconds, NaN while they aren't tracked
+     */
+    double offBeforeSec() const { return started_ && tracking_ ? offFor_ : NAN; }
 
 private:
     bool started_ = false;       ///< update has run once

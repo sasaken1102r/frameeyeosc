@@ -1,5 +1,6 @@
 //! Per-eye, per-frame classical features: a port of tools/eyecam/analysis/feat2.py (the "base" variant the
-//! cross-wear evaluation chose). Works on upright 400x400 frames (the right eye flipped vertically).
+//! cross-wear evaluation chose). Works on upright 400x400 frames (the left eye flipped vertically, see
+//! `vision::UPSIDE_DOWN_EYE`).
 //!
 //! Pipeline: grey opening 9x9 (removes glints) -> darkest compact blob = pupil -> 64 rays from the blob centre,
 //! sub-pixel pupil->iris crossing, robust ellipse (diameter = 2a) -> iris radius from the limbus -> upper lid

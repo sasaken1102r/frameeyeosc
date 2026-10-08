@@ -127,6 +127,7 @@ struct Options {
     bool fakeWriteError = false;
     bool fakeCustom = false;
     bool fakeIndependent = false; ///< --fake-independent: independent_eyes on, the gaze pad per eye
+    bool fakeV1 = false;          ///< --fake-v1: eye_behavior 1 (the eyes as up to 0.7.5)
     std::string fakeDominantEye;  ///< --fake-dominant-eye: "left" / "right" ("Track Dominant Eye Only")
     bool fakeOpennessSaturated = false;  ///< --fake-openness-saturated: a relaxed open eye reads 1.0
     std::string fakePrompt;       ///< vrchat / etvr / livelink
@@ -264,6 +265,7 @@ void printUsage() {
         "      --fake-write-error  The panel failed to write config.json\n"
         "      --fake-custom     Gaze smoothing values that match no preset\n"
         "      --fake-independent  Move eyes separately (the left column shows each eye's gaze)\n"
+        "      --fake-v1         The eyes move as up to 0.7.5 (eye_behavior 1)\n"
         "      --fake-dominant-eye left|right  \"Track Dominant Eye Only\" is on with that eye\n"
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
         "      --fake-prompt vrchat|etvr|livelink  The recommended-settings question\n"
@@ -672,6 +674,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeCustom = true;
         } else if (arg == "--fake-independent") {
             options.fake = options.fakeIndependent = true;
+        } else if (arg == "--fake-v1") {
+            options.fake = options.fakeV1 = true;
         } else if (arg == "--fake-dominant-eye" && hasNext) {
             options.fakeDominantEye = argv[++i];
             if (options.fakeDominantEye != "left" && options.fakeDominantEye != "right") {
@@ -1276,6 +1280,7 @@ PanelModel fakeModel(const Options& options) {
     }
     if (options.fakeBroken) m.config.error = "expected , or } between members (near character 212)";
     if (options.fakeIndependent) root.set(key::kIndependentEyes, JsonValue::makeBool(true));
+    if (options.fakeV1) root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
     if (options.fakeRecord == "recording") {
         m.recording.recording = true;
         m.recording.elapsedSec = 83.4;
@@ -1625,7 +1630,7 @@ std::vector<report::Summary> fakeRecordList() {
         s.reasonEn = reasonEn;
         s.version = FRAMEEYEOSC_VERSION;
         s.steamos = "0.4.3 (20260930.6234839)";
-        s.code = "OK·P24·B128·G1·C1·FW";
+        s.code = "OK·P24·B128·G1·C1·FW·V2";
         s.mode = kind == Kind::Fit ? "full" : kind == Kind::Recenter ? "center" : "";
         s.conditions.dashboardOpen = 1;
         s.conditions.cameraFps = 90;

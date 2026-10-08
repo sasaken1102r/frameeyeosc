@@ -324,6 +324,24 @@ void drawPlusMinus(cairo_t* cr, double cx, double cy, double s, bool plus, Color
  * @param number 1..5
  * @param fill its color (⑤ has its own)
  */
+/**
+ * Whether the eyes move as up to 0.7.5 (eye_behavior 1), where the eyelid rules since don't apply.
+ * @param v the settings
+ * @return true for v1
+ */
+bool eyesV1(const SettingsView& v) {
+    return std::lround(v.number(key::kEyeBehavior)) == 1;
+}
+
+/**
+ * Paint what was drawn since cairo_push_group faded (a row that doesn't apply now).
+ * @param pen drawing tools
+ */
+void fadeGroup(const Pen& pen) {
+    cairo_pop_group_to_source(pen.cr);
+    cairo_paint_with_alpha(pen.cr, 0.45);
+}
+
 void drawNumberBadge(const Pen& pen, double cx, double cy, int number, Color fill = kAccent) {
     drawDot(pen.cr, cx, cy, 10, fill);
     const std::string text = std::to_string(number);
@@ -1328,7 +1346,13 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
                                          (s.target.empty() ? std::string(t.searchingPc) : s.target);
         const double size = fitSize(pen, destination, 19, 13, x1 - x0, true);
         pen.text(x0, 180, destination, size, kText, true);
-        pen.text(x0, 204, s.targetMode == "fixed" ? t.modeFixed : t.modeAuto, 15, kTextMuted);
+        const double modeW = pen.text(x0, 204, s.targetMode == "fixed" ? t.modeFixed : t.modeAuto, 15, kTextMuted);
+        // v1 (as up to 0.7.5) said on the same line, so it is not forgotten
+        if (eyesV1(SettingsView(m))) {
+            const double room = x1 - x0 - modeW - 12;
+            pen.text(x1, 204, t.eyeBehaviorLeftV1, fitSize(pen, t.eyeBehaviorLeftV1, 15, 11, room, true), kAccent, true,
+                     true);
+        }
     }
     pen.text(x0, 228, t.rateLabel, 15, kTextMuted, true);
     {
@@ -2150,7 +2174,8 @@ void EyePanel::drawGaze(const Pen& pen, const UiText& t, const PanelModel& m, co
     {
         const bool locked = v.locked(key::kIndependentEyes);
         const bool oneEye = m.status.running && !m.status.dominantEye.empty();
-        drawRowLabel(pen, t, y, kRowH, t.rowIndependent, oneEye ? t.hintIndependentOneEye : t.hintIndependent, locked);
+        const char* hint = oneEye ? t.hintIndependentOneEye : eyesV1(v) ? t.hintIndependentV1 : t.hintIndependent;
+        drawRowLabel(pen, t, y, kRowH, t.rowIndependent, hint, locked);
         drawSegmented(pen, kControlX, y + cy, 300, kControlH,
                       {{t.on, {PanelAction::SetBool, key::kIndependentEyes, 1}},
                        {t.off, {PanelAction::SetBool, key::kIndependentEyes, 0}}},
@@ -2749,18 +2774,26 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
     {
         const bool onCameras = s.running && (s.camera.used[0] || s.camera.used[1]);
         const bool locked = v.locked(key::kCameraLidFloor);
+        // A v2 rule: faded in v1, with why and the way to the switch beside it
+        const bool v1 = eyesV1(v);
+        if (v1) cairo_push_group(pen.cr);
         drawRowLabel(pen, t, y, kRowH, t.rowLidFloor, t.lidFloorHint, locked);
         const double stepperW = 196;
         const double floor = v.number(key::kCameraLidFloor);
         drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kCameraLidFloor, floor,
-                    formatSetting(key::kCameraLidFloor, floor), true, locked);
+                    formatSetting(key::kCameraLidFloor, floor), !v1, locked);
+        if (v1) fadeGroup(pen);
         const double nx = kControlX + stepperW + 16;
-        const char* note = onCameras ? t.lidFloorNote : t.lidFloorNoteIdle;
-        const std::vector<std::string> lines = wrapText(pen, note, 13, false, kInnerRight - nx, 3);
-        double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
-        for (const std::string& line : lines) {
-            pen.text(nx, baseline, line, 13, kTextMuted);
-            baseline += 17;
+        if (v1) {
+            drawV2OnlyNote(pen, t, t.floorV2Only, nx, y, kRowH);
+        } else {
+            const char* note = onCameras ? t.lidFloorNote : t.lidFloorNoteIdle;
+            const std::vector<std::string> lines = wrapText(pen, note, 13, false, kInnerRight - nx, 3);
+            double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
+            for (const std::string& line : lines) {
+                pen.text(nx, baseline, line, 13, kTextMuted);
+                baseline += 17;
+            }
         }
         y += kRowH;
         drawRowDivider(pen, y);
@@ -2899,7 +2932,8 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         snapMark_ = {};
         const double snap = v.number(key::kLidOpenSnap);
         const SettingSpec* snapSpec = findSetting(key::kLidOpenSnap);
-        if (std::isfinite(snap) && snapSpec != nullptr && snap < snapSpec->max - 1e-9) {
+        // (not in v1, where it doesn't apply)
+        if (!eyesV1(v) && std::isfinite(snap) && snapSpec != nullptr && snap < snapSpec->max - 1e-9) {
             const char* scaleKeys[2] = {key::kLidScaleLeft, key::kLidScaleRight};
             for (int eye = 0; eye < 2; ++eye) {
                 const double fixed = v.number(scaleKeys[eye]);
@@ -2994,20 +3028,28 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     // From which Valve openness an eye without the cameras' eyelid goes out fully open (lid_open_snap; 1.00 = off).
     // Always there, like the marks: it is the openness the bars show for eyes without a fit
     {
-        // Led by ⑤, the mark it sets on the bars, in that mark's color (so are the stepper's edges)
+        // Led by ⑤, the mark it sets on the bars, in that mark's color (so are the stepper's edges). A v2 rule: faded
+        // in v1, with why and the way to the switch beside it
         const bool locked = v.locked(key::kLidOpenSnap);
+        const bool v1 = eyesV1(v);
+        if (v1) cairo_push_group(pen.cr);
         drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 5, kSnap);
         drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked, 26);
         const double stepperW = 150;
         const double snap = v.number(key::kLidOpenSnap);
         drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kLidOpenSnap, snap,
-                    formatSetting(key::kLidOpenSnap, snap), true, locked, -1e9, 1e9, &kSnap);
+                    formatSetting(key::kLidOpenSnap, snap), !v1, locked, -1e9, 1e9, &kSnap);
+        if (v1) fadeGroup(pen);
         const double nx = kControlX + stepperW + 16;
-        const std::vector<std::string> lines = wrapText(pen, t.lidOpenSnapNote, 13, false, kInnerRight - nx, 3);
-        double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
-        for (const std::string& line : lines) {
-            pen.text(nx, baseline, line, 13, kTextMuted);
-            baseline += 17;
+        if (v1) {
+            drawV2OnlyNote(pen, t, t.snapV2Only, nx, y, kRowH);
+        } else {
+            const std::vector<std::string> lines = wrapText(pen, t.lidOpenSnapNote, 13, false, kInnerRight - nx, 3);
+            double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
+            for (const std::string& line : lines) {
+                pen.text(nx, baseline, line, 13, kTextMuted);
+                baseline += 17;
+            }
         }
         y += kRowH + kRowGap;
     }
@@ -3189,6 +3231,20 @@ double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelMo
     return 0.0;
 }
 
+void EyePanel::drawV2OnlyNote(const Pen& pen, const UiText& t, const char* note, double x, double y, double h) {
+    const double bh = 34;
+    const double bw = pen.measure(t.toVersionPage, 14, true) + 28;
+    const double bx = kInnerRight - bw;
+    drawButton(pen, bx, y + (h - bh) / 2, bw, bh, t.toVersionPage,
+               {PanelAction::AdvancedPage, nullptr, static_cast<int>(AdvPage::Version)}, true, false, 14);
+    const std::vector<std::string> lines = wrapText(pen, note, 13, false, bx - 12 - x, 3);
+    double baseline = y + h / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
+    for (const std::string& line : lines) {
+        pen.text(x, baseline, line, 13, kText);
+        baseline += 17;
+    }
+}
+
 double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
                                  double top, double right) {
     using frame_updater::UpdateState;
@@ -3340,7 +3396,27 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
     // (not while a check or an install runs)
     drawButton(pen, right - checkW, rowTop, checkW, rowH, t.updateCheckNow, {PanelAction::UpdateCheck, nullptr, 0},
                !u.checking && u.state != UpdateState::Installing, false, 16);
-    return rowTop + rowH + 8 - top;
+    // How the eyes move (eye_behavior): v2, or v1 as up to 0.7.5, and a line on what each does
+    double ey = rowTop + rowH + 16;
+    {
+        const double h = 46;
+        const bool locked = v.locked(key::kEyeBehavior);
+        const double segW = std::min(420.0, right - kInnerX - 260);
+        const double labelW = right - segW - 16 - kInnerX;
+        const std::string hint = locked ? t.locked : t.hintEyeBehavior;
+        pen.text(kInnerX, ey + 20, t.rowEyeBehavior, fitSize(pen, t.rowEyeBehavior, 18, 13, labelW, true), kText, true);
+        pen.text(kInnerX, ey + 40, hint, fitSize(pen, hint, 14, 11, labelW, false), kTextMuted);
+        drawSegmented(pen, right - segW, ey + 2, segW, 42,
+                      {{t.eyeBehaviorV2, {PanelAction::SetInteger, key::kEyeBehavior, 2}},
+                       {t.eyeBehaviorV1, {PanelAction::SetInteger, key::kEyeBehavior, 1}}},
+                      eyesV1(v) ? 1 : 0, 16, locked);
+        ey += h + 4;
+        for (const char* line : {t.eyeBehaviorV2Line, t.eyeBehaviorV1Line}) {
+            ey += 19;
+            pen.text(kInnerX, ey, line, fitSize(pen, line, 14, 11, right - kInnerX, false), kTextMuted);
+        }
+    }
+    return ey + 8 - top;
 }
 
 double EyePanel::drawTroublePage(const Pen& pen, const UiText& t, const PanelModel& m, double top, double right) {

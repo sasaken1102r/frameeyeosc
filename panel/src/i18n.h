@@ -154,6 +154,17 @@ struct UiText {
     const char* hintDeadzone;
     const char* rowHold;
     const char* hintHold;
+    const char* rowEyeBehavior;       ///< Advanced > Version: "How the eyes move" (eye_behavior)...
+    const char* hintEyeBehavior;      ///< ...its hint
+    const char* eyeBehaviorV2;        ///< ...the segments: v2 (recommended)...
+    const char* eyeBehaviorV1;        ///< ...and v1 (up to 0.7.5)
+    const char* eyeBehaviorV2Line;    ///< ...and a line under it on what each does
+    const char* eyeBehaviorV1Line;
+    const char* eyeBehaviorLeftV1;    ///< the left column while v1 is on
+    const char* snapV2Only;           ///< Eyelids > Fine-tune, in v1: (5) is not used
+    const char* floorV2Only;          ///< Eyelids > Blinks & squint, in v1: the floor is not used
+    const char* toVersionPage;        ///< the button beside them: "Advanced > Version"
+    const char* hintIndependentV1;    ///< "Move eyes separately" in v1
     const char* rowIndependent;
     const char* hintIndependent;
     const char* hintIndependentOneEye;  ///< instead, while the Frame tracks one eye alone (both eyes get its gaze)

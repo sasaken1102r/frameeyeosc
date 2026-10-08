@@ -771,8 +771,20 @@ private:
                             double top, double right);
 
     /**
+     * Beside a v2-only row in v1: why it is faded, and a button to the switch (Advanced > Version).
+     * @param pen drawing tools
+     * @param t texts
+     * @param note why
+     * @param x left of the note
+     * @param y row top
+     * @param h row height
+     */
+    void drawV2OnlyNote(const Pen& pen, const UiText& t, const char* note, double x, double y, double h);
+
+    /**
      * "Version": the version (large), when it was last checked and what came of it, the update button and the new
-     * release's summary, and under them "Version history", the automatic check's chip and "Check now".
+     * release's summary, under them "Version history", the automatic check's chip and "Check now", and last how the
+     * eyes move (eye_behavior: v2 or v1) with a line on each.
      * @param pen drawing tools
      * @param t texts
      * @param model the model

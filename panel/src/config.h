@@ -64,6 +64,7 @@ constexpr const char* kPupilsToVrchat = "pupils_to_vrchat";
  * avatars that take it bit-packed; 0 (the default) sends the float only.
  */
 constexpr const char* kPupilBits = "pupil_bits";
+constexpr const char* kEyeBehavior = "eye_behavior";  ///< 2 (the default) as now, 1 as up to 0.7.5
 /** Eyelids (and squint) from the eye cameras where eyecam-rec reads them live and is calibrated (default on). */
 constexpr const char* kCameraLids = "camera_lids";
 constexpr const char* kRaw = "raw";

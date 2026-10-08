@@ -653,6 +653,49 @@ void testSnapMark(const FontSet& fonts) {
     CHECK(!panel.snapMark().shown);
 }
 
+void testEyeBehavior(const FontSet& fonts) {
+    // Advanced > Version: "How the eyes move", v2 (the default) or v1; both segments to press, nothing when locked
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Advanced);
+    panel.setAdvPage(AdvPage::Version);
+    PanelModel m = modelWith(Lids::Valve, false);
+    panel.render(m);
+    std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetInteger, key::kEyeBehavior);
+    CHECK(found.size() == 2 && found[0].hit.arg == 2 && found[1].hit.arg == 1);
+    for (const EyePanel::HitArea& area : found) CHECK(area.y >= 110 && area.y + area.h <= 676);
+    PanelModel locked = m;
+    locked.status.locked.push_back(key::kEyeBehavior);
+    panel.render(locked);
+    CHECK(hits(panel, PanelAction::SetInteger, key::kEyeBehavior).empty());
+
+    // v1: the Eyelids rows that only v2 uses are faded (nothing to press) with a button to that switch, and (5) is not
+    // drawn on the bars; v2 has them as usual
+    PanelModel v1 = m;
+    v1.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
+    const auto toVersion = [&]() {
+        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AdvancedPage)) {
+            if (area.hit.arg == static_cast<int>(AdvPage::Version) && area.y > 100) return true;
+        }
+        return false;
+    };
+    panel.setTab(PanelTab::Lids);
+    panel.setLidsPage(LidsPage::Fine);
+    panel.render(m);
+    CHECK(panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 2 && !toVersion());
+    panel.render(v1);
+    CHECK(!panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).empty() && toVersion());
+    panel.setLidsPage(LidsPage::Blinks);
+    m.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));
+    v1.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == 2 && !toVersion());
+    panel.render(v1);
+    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).empty() && toVersion());
+    // The button goes there
+    pressArg(panel, PanelAction::AdvancedPage, static_cast<int>(AdvPage::Version));
+    CHECK(panel.tab() == PanelTab::Advanced && panel.advPage() == AdvPage::Version);
+}
+
 void testLidsPages(const FontSet& fonts) {
     // The Eyelids tab's three sub-tabs, for each source of the eyelids: each with its own controls and none of the
     // others', and nothing drawn or to press below the card
@@ -1488,6 +1531,7 @@ int main() {
     testWidenRouting(fonts);
     testLidsPages(fonts);
     testSnapMark(fonts);
+    testEyeBehavior(fonts);
     testLidsRemembered(fonts);
     testSliderMoved(fonts);
     testNumberSlider(fonts);

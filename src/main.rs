@@ -448,9 +448,15 @@ struct Args {
     #[arg(long, default_value_t = 0.5)]
     gaze_hold_below: f32,
     /// Turn the eyes in a little toward each other (about 2 m away) instead of sending the combined gaze for both eyes;
-    /// each keeps its own up / down (the Frame's own per-eye sideways gaze is too unsteady to send)
+    /// each keeps its own up / down (the Frame's own per-eye sideways gaze is too unsteady to send). With
+    /// --eye-behavior 1, each eye's own gaze as the Frame reads it
     #[arg(long)]
     independent_eyes: bool,
+    /// How the eyes move: 2 (the default) as now; 1 as up to 0.7.5 (each eye's own gaze with --independent-eyes, no
+    /// cross-eye gate, and none of the eyelid rules added since: the eye camera only widens, nothing eases nearly open
+    /// eyelids up, no --camera-lid-floor or --lid-open-snap)
+    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=2))]
+    eye_behavior: u8,
     /// One Euro minimum cutoff in Hz for eyelids
     #[arg(long, default_value_t = 6.0)]
     lid_min_cutoff: f32,
@@ -1123,6 +1129,15 @@ fn mix_lid(valve: f32, camera: Option<f32>) -> f32 {
     mix_lid_by(valve, valve, camera)
 }
 
+/// mix_lid as it was up to 0.7.5, for --eye-behavior 1: from relaxed open up, the camera's eyelid, kept at relaxed open
+/// or above; below it, the eye server's.
+fn mix_lid_v1(valve: f32, camera: Option<f32>) -> f32 {
+    match camera {
+        Some(camera) if valve >= LID_RELAXED => camera.clamp(LID_RELAXED, 1.0),
+        _ => valve,
+    }
+}
+
 /// mix_lid with the eye server's side of camera_widen_share going by `read` instead of `valve`: for an eyelid
 /// raised_to_camera raised, the eyelid before that, so the raising doesn't let all of the camera's widening through
 /// where the eye server read the eye well below relaxed open (on 2026-10-08 22:20, 2 of the right eye's 16% of samples
@@ -1557,15 +1572,18 @@ fn gaze_quality(data: &EyeData, limit: f32) -> [bool; 2] {
 /// Each eye wobbles on its own (L/R changes correlate only ~0.35), so both share the combined gaze
 /// unless --independent-eyes is given. An eye with unreliable gaze is left out of the combined gaze and the other eye
 /// stands in for it. With --independent-eyes each eye looks the combined way, turned in by half of VERGENCE_DEG (the
-/// Frame's own per-eye x is no good for that), and keeps its own up / down; an unreliable eye takes the other's.
-fn choose_gaze(angles: [f32; 6], reliable: [bool; 2], independent: bool) -> [f32; 6] {
+/// Frame's own per-eye x is no good for that), and keeps its own up / down; an unreliable eye takes the other's. With
+/// --eye-behavior 1 (`v2` false), each eye's own gaze as it is, as up to 0.7.5 (an unreliable one is held instead).
+fn choose_gaze(angles: [f32; 6], reliable: [bool; 2], independent: bool, v2: bool) -> [f32; 6] {
     let [left_x, left_y, right_x, right_y, x, y] = angles;
     let [x, y] = match reliable {
         [true, false] => [left_x, left_y],
         [false, true] => [right_x, right_y],
         _ => [x, y],
     };
-    if independent {
+    if independent && !v2 {
+        [left_x, left_y, right_x, right_y, x, y]
+    } else if independent {
         let [left_y, right_y] = match reliable {
             [true, false] => [left_y, left_y],
             [false, true] => [right_y, right_y],
@@ -2496,15 +2514,22 @@ fn process(
     let raw_gaze = [left[0], left[1], right[0], right[1], x, y];
     let reliable = gaze_quality(data, settings.gaze_quality_limit);
     let blink_stages = settings.blink_hold_ms > 0.0 || settings.blink_sync_below > 0.0;
+    // --eye-behavior 1 is 0.7.5's processing: each eye's own gaze, and of the eyelid rules since, none (no nearly open
+    // easing or far-down slope, the camera only for widening, no floor, no ceiling rule, no shared widening)
+    let v2 = settings.v2();
     let mut cross_eye = false;
     let (gaze, lids, gaze_held, openness_scaled, camera, lid_from) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
         let corrected = correct_gaze(raw_gaze, settings);
-        let gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes);
-        let zoned = camera_lids.map(|camera| camera.is_none());
+        let gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes, v2);
+        let zoned = camera_lids.map(|camera| v2 && camera.is_none());
         let fits = fits_at(settings, corrected[5], zoned);
         let openness_scaled = lid_inputs_with(data.openness, corrected[5], scales, settings, fits);
-        let mapped = snapped_lids(data.openness, corrected[5], scales, settings, fits, zoned);
+        let mapped = if v2 {
+            snapped_lids(data.openness, corrected[5], scales, settings, fits, zoned)
+        } else {
+            openness_scaled.map(|openness| lid_to_vrcft(openness, settings))
+        };
         let valve = mapped;
         // Without the timed stages, the camera's eyelid does not take over from a closing eye server's (that waits
         // longer than a blink); an eye it sees closed still closes, and one it sees open while the eye server does
@@ -2512,9 +2537,10 @@ fn process(
         let mut lid_from = [LidFrom::EyeServer; 2];
         let floor = settings.camera_lid_floor;
         let line = doubt_line(settings);
-        let floored = [0, 1]
-            .map(|eye| floor > 0.0 && camera_lids[eye].is_some_and(|camera| !camera.closed && mapped[eye] >= line));
-        let mapped = [0, 1].map(|eye| match camera_lids[eye] {
+        let floored = [0, 1].map(|eye| {
+            v2 && floor > 0.0 && camera_lids[eye].is_some_and(|camera| !camera.closed && mapped[eye] >= line)
+        });
+        let mapped = [0, 1].map(|eye| match camera_lids[eye].filter(|_| v2) {
             Some(camera) if camera.closed => {
                 if mapped[eye] > 0.0 {
                     lid_from[eye] = LidFrom::CameraClosed;
@@ -2531,10 +2557,7 @@ fn process(
             None => mapped[eye],
         });
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
-        let basis = widen_basis(mapped, valve, lid_from);
-        let mixed =
-            share_widening([0, 1].map(|eye| mix_lid_by(mapped[eye], basis[eye], camera_lid[eye])), camera_lid);
-        mark_widened(&mut lid_from, basis, camera_lid);
+        let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from, v2);
         let shut = sync_blinks(mapped.map(|lid| lid <= 0.0), mapped, settings.blink_sync_below);
         let mut lids = sync_lids(mixed, settings.lid_sync);
         keep_floor(&mut lids, mixed, floored, floor);
@@ -2558,12 +2581,15 @@ fn process(
         let readings = if settings.despike { despiked } else { readings };
         let angles: [f32; 6] = std::array::from_fn(|i| readings[i]);
         let openness = [readings[6], readings[7]];
-        let mut gaze = choose_gaze(angles, reliable, settings.independent_eyes);
-        // One unreliable eye takes the other's gaze (choose_gaze), so only both being unreliable holds it
+        let mut gaze = choose_gaze(angles, reliable, settings.independent_eyes, v2);
+        // One unreliable eye takes the other's gaze (choose_gaze), so only both being unreliable holds it; with
+        // --eye-behavior 1 each eye's own gaze is held while it is unreliable
         let hold = if openness.iter().any(|openness| *openness < settings.gaze_hold_below)
             || reliable == [false; 2]
         {
             [true; 3]
+        } else if settings.independent_eyes && !v2 {
+            [!reliable[0], !reliable[1], false]
         } else {
             [false; 3]
         };
@@ -2575,23 +2601,27 @@ fn process(
         smoother.lid_vertical = Some(vertical);
         // For eyes without the camera's eyelid, eyelids near relaxed open count as open, and far down less is
         // expected (see LID_OPEN_SNAP_RAMP)
-        let zoned = camera_lids.map(|camera| camera.is_none());
+        let zoned = camera_lids.map(|camera| v2 && camera.is_none());
         let fits = fits_at(settings, vertical, zoned);
-        let mapped = snapped_lids(openness, vertical, scales, settings, fits, zoned);
+        let mapped = if v2 {
+            snapped_lids(openness, vertical, scales, settings, fits, zoned)
+        } else {
+            lid_inputs(openness, vertical, scales, settings).map(|openness| lid_to_vrcft(openness, settings))
+        };
         let valve = mapped;
         // Corrected by the camera where it sees an eye closed, or open for longer than a blink while the eye server
         // reads it closing; everything after this (closing, the blink sync, lid_sync) goes by the corrected eyelids
         // (and where the eye server reads it at the ceiling, which says no more than open)
         let ceiling = openness.map(ceiling_share);
-        let (mapped, mut lid_from, floored) =
-            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, settings);
+        let (mapped, mut lid_from, floored) = if v2 {
+            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, settings)
+        } else {
+            (mapped, [LidFrom::EyeServer; 2], [false; 2])
+        };
         // From relaxed open up (or widened on the camera while not closing), an eye the camera sees takes the camera's
         // eyelid; a closing one stays the eye server's. Widening in one eye only is halved (see share_widening)
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
-        let basis = widen_basis(mapped, valve, lid_from);
-        let mixed =
-            share_widening([0, 1].map(|eye| mix_lid_by(mapped[eye], basis[eye], camera_lid[eye])), camera_lid);
-        mark_widened(&mut lid_from, basis, camera_lid);
+        let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from, v2);
         // While the openness is saturated, nothing above relaxed open is widening, except where the camera says so.
         // Capped before the widen sustain and the filter, so the filter rests at relaxed open (a closing eye starts
         // closing at once) and a widen starts over once it isn't saturated any more; and the filter itself right after
@@ -2609,7 +2639,7 @@ fn process(
         let usable = reliable == [true; 2] && data.openness.iter().all(|openness| *openness >= open_line);
         let wide = data.openness.iter().all(|openness| *openness >= CROSS_EYE_ENGAGE_OPEN);
         let vergence = smoother.cross_eye.step(data.sample_time, dt, (raw_gaze[0] - raw_gaze[2]) * 45.0, usable, wide);
-        if settings.independent_eyes {
+        if settings.independent_eyes && v2 {
             let extra = (vergence - VERGENCE_DEG) / 2.0 / 45.0;
             gaze[0] = (gaze[0] + extra).clamp(-1.0, 1.0);
             gaze[2] = (gaze[2] - extra).clamp(-1.0, 1.0);
@@ -2649,6 +2679,25 @@ fn process(
         lid_from,
         cross_eye,
     }
+}
+
+/// The eyelids with the eye camera's widening mixed in (`camera`, each eye's camera eyelid while it may be used), from
+/// the corrected ones (`mapped`) and the eye server's before that (`valve`), marking where widening came from the
+/// camera: camera_widen_share's fade and share_widening. With --eye-behavior 1 (`v2` false), 0.7.5's mix_lid_v1.
+fn mixed_lids(
+    mapped: [f32; 2],
+    valve: [f32; 2],
+    camera: [Option<f32>; 2],
+    lid_from: &mut [LidFrom; 2],
+    v2: bool,
+) -> [f32; 2] {
+    if !v2 {
+        return [0, 1].map(|eye| mix_lid_v1(mapped[eye], camera[eye]));
+    }
+    let basis = widen_basis(mapped, valve, *lid_from);
+    let mixed = share_widening([0, 1].map(|eye| mix_lid_by(mapped[eye], basis[eye], camera[eye])), camera);
+    mark_widened(lid_from, basis, camera);
+    mixed
 }
 
 /// Below this VRCFT eyelid the eye server reads an eye as closing, for Smoother::check_lids: CAMERA_DOUBT_BELOW, or
@@ -3695,14 +3744,14 @@ mod tests {
     #[test]
     fn unreliable_eye_gives_way_to_the_other() {
         let angles = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        assert_eq!(choose_gaze(angles, [true; 2], false), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
-        assert_eq!(choose_gaze(angles, [true, false], false), [1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
-        assert_eq!(choose_gaze(angles, [false; 2], false), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
+        assert_eq!(choose_gaze(angles, [true; 2], false, true), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
+        assert_eq!(choose_gaze(angles, [true, false], false, true), [1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
+        assert_eq!(choose_gaze(angles, [false; 2], false, true), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
         // Each eye on its own: the unreliable left eye takes the right eye's up / down, and both turn in from the
         // right eye's sideways gaze
         let half = VERGENCE_DEG / 2.0 / 45.0;
         let angles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
-        assert_eq!(choose_gaze(angles, [false, true], true), [0.3 + half, 0.4, 0.3 - half, 0.4, 0.3, 0.4]);
+        assert_eq!(choose_gaze(angles, [false, true], true, true), [0.3 + half, 0.4, 0.3 - half, 0.4, 0.3, 0.4]);
     }
 
     /// Both eyes open, the combined gaze straight ahead, and Valve's per-eye x `vergence` degrees apart at sample `index`.
@@ -3796,16 +3845,44 @@ mod tests {
     }
 
     #[test]
+    fn eye_behavior_1_sends_each_eyes_own_gaze_and_0_7_5s_eyelids() {
+        let v1 = Settings {
+            eye_behavior: 1,
+            ..independent()
+        };
+        // Each eye's own gaze as the Frame reads it, an unreliable one held (choose_gaze leaves it as it is)
+        let angles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+        assert_eq!(choose_gaze(angles, [true; 2], true, false), angles);
+        assert_eq!(choose_gaze(angles, [false, true], true, false), [0.1, 0.2, 0.3, 0.4, 0.3, 0.4]);
+        // Valve's 10° apart goes out 10° apart (not the fixed vergence), and 30° held is no cross-eye gate
+        let apart: Vec<EyeData> = (0..90).map(|i| crossed(i, 10.0, [0.9; 2])).collect();
+        let sent = run(&v1, &apart);
+        assert!((sent_vergence(&sent[89]) - 10.0).abs() < 0.05, "{}", sent_vergence(&sent[89]));
+        let crossed_long: Vec<EyeData> = (0..180).map(|i| crossed(i, 30.0, [0.9; 2])).collect();
+        assert!(run(&v1, &crossed_long).iter().all(|sample| !sample.cross_eye));
+        // A nearly open eyelid (VRCFT 0.6 at the default lid marks) is not eased up to relaxed open
+        let nearly: Vec<EyeData> = (0..120).map(|i| reading(i, [0.0, 0.0], [0.7; 2])).collect();
+        let lid = |settings: &Settings| run(settings, &nearly)[119].lids[0];
+        assert!((lid(&v1) - 0.6).abs() < 1e-3, "{}", lid(&v1));
+        assert!(lid(&independent()) > 0.65);
+        // From relaxed open up the camera's eyelid, kept at relaxed open or above; below it the eye server's
+        assert_eq!(mix_lid_v1(0.8, Some(0.7)), LID_RELAXED);
+        assert_eq!(mix_lid_v1(0.8, Some(0.9)), 0.9);
+        assert_eq!(mix_lid_v1(0.6, Some(0.9)), 0.6);
+        assert_eq!(mix_lid_v1(0.8, None), 0.8);
+    }
+
+    #[test]
     fn independent_eyes_turn_in_by_the_fixed_vergence_from_the_combined_gaze() {
         let half = VERGENCE_DEG / 2.0 / 45.0;
         // The Frame's own per-eye x 17° apart (as at 22:44 on 2026-10-08): only the combined x counts
         let angles = [0.11, -0.1, -0.276, -0.1, -0.083, -0.1];
-        assert_eq!(choose_gaze(angles, [true; 2], true), [-0.083 + half, -0.1, -0.083 - half, -0.1, -0.083, -0.1]);
+        assert_eq!(choose_gaze(angles, [true; 2], true, true), [-0.083 + half, -0.1, -0.083 - half, -0.1, -0.083, -0.1]);
         // Each eye keeps its own up / down
         let angles = [0.0, 0.2, 0.0, 0.25, 0.0, 0.22];
-        assert_eq!(choose_gaze(angles, [true; 2], true)[1..4], [0.2, -half, 0.25]);
+        assert_eq!(choose_gaze(angles, [true; 2], true, true)[1..4], [0.2, -half, 0.25]);
         // Never past the end of the range
-        assert_eq!(choose_gaze([1.0, 0.0, 1.0, 0.0, 1.0, 0.0], [true; 2], true)[0], 1.0);
+        assert_eq!(choose_gaze([1.0, 0.0, 1.0, 0.0, 1.0, 0.0], [true; 2], true, true)[0], 1.0);
         // Through the filters: the left - right sent stays the vergence whatever the per-eye readings do
         let settings = Settings {
             independent_eyes: true,

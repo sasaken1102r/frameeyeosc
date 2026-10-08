@@ -126,6 +126,9 @@ pub struct Settings {
     pub pupil_bits: u8,
     /// How easily a fitted eye widens.
     pub lid_widen: Widen,
+    /// How the eyes move: 2 (the default) as now; 1 as up to 0.7.5, the gaze and eyelid processing of that release
+    /// (see main.rs, process). Fixes since (the eye cameras' left and right, the eye fit) apply either way.
+    pub eye_behavior: u8,
     /// The settings file has no `lid_widen` (written by 0.5.x or earlier, whose lid_scale_* did nothing for fitted
     /// eyes): a fitted eye's scale is then ignored (see main.rs, lid_scales). Not a setting of its own.
     #[serde(skip)]
@@ -215,6 +218,7 @@ impl Default for Settings {
             camera_lids: true,
             pupils_to_vrchat: true,
             pupil_bits: 0,
+            eye_behavior: 2,
             lid_widen: Widen::Normal,
             scales_predate_fit: false,
             raw: false,
@@ -267,6 +271,11 @@ impl Default for Settings {
 impl Settings {
     pub fn port(&self) -> u16 {
         self.port.unwrap_or(self.output.default_port())
+    }
+
+    /// Whether the eyes move as now (eye_behavior 2), not as up to 0.7.5 (1).
+    pub fn v2(&self) -> bool {
+        self.eye_behavior >= 2
     }
 
     /// Each eye's fit, if all four of its readings are set.
@@ -378,6 +387,9 @@ impl Settings {
         }
         if !scales.iter().flatten().all(|scale| *scale > 0.0) {
             return Err("lid_scale_left/right must be positive".into());
+        }
+        if !(1..=2).contains(&self.eye_behavior) {
+            return Err("eye_behavior must be 1 (as up to 0.7.5) or 2".into());
         }
         if self.pupil_bits > MAX_PUPIL_BITS {
             return Err(format!("pupil_bits must be 0 (a float only) to {MAX_PUPIL_BITS}"));
@@ -545,7 +557,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
             }
         )*};
     }
-    pin!(output, eye_tracking_active, steamlink_params, native_eyes, lid_widen, pupil_bits);
+    pin!(output, eye_tracking_active, steamlink_params, native_eyes, lid_widen, pupil_bits, eye_behavior);
     // Given on the command line: this is 0.6.0 or later, whatever the file says
     if given.contains("lid_widen") {
         settings.scales_predate_fit = false;
@@ -1036,6 +1048,19 @@ mod tests {
         let (settings, locked) = merged(r#"{"camera_lids": true}"#, &["--no-camera-lids"]).unwrap();
         assert!(!settings.camera_lids);
         assert_eq!(locked, ["camera_lids"]);
+    }
+
+    #[test]
+    fn eye_behavior_is_2_unless_set_to_1() {
+        assert_eq!(merged("{}", &[]).unwrap().0.eye_behavior, 2);
+        assert!(merged("{}", &[]).unwrap().0.v2());
+        let (v1, _) = merged(r#"{"eye_behavior": 1}"#, &[]).unwrap();
+        assert!(v1.eye_behavior == 1 && !v1.v2());
+        for bad in ["0", "3", "\"v1\"", "1.5"] {
+            assert!(merged(&format!(r#"{{"eye_behavior": {bad}}}"#), &[]).is_err(), "{bad}");
+        }
+        let (settings, locked) = merged(r#"{"eye_behavior": 1}"#, &["--eye-behavior", "2"]).unwrap();
+        assert_eq!((settings.eye_behavior, locked), (2, vec!["eye_behavior"]));
     }
 
     #[test]

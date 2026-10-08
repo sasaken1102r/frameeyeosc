@@ -161,6 +161,7 @@ Settings are in `~/.config/frameeyeosc/config.json`. The panel writes it, and yo
 | `gaze_deadzone` | `--gaze-deadzone` | `0.005` | Gaze changes smaller than this are ignored (1.0 = 45°); the gaze can stop up to this far short of where the eyes landed |
 | `gaze_hold_below` | `--gaze-hold-below` | `0.5` | Hold the gaze while either eye's openness is below this; `0` turns it off |
 | `independent_eyes` | `--independent-eyes` | `false` | Instead of the shared gaze for both eyes, turn the eyes in by a fixed 2° between them (as if looking about 2 m away), around the shared sideways gaze; each eye keeps its own up/down, and an eye whose gaze is unreliable takes the other's. The Frame's own per-eye sideways gaze isn't used: with the eyes on a dot 0.9 m away (4.4° between them) it read 0.1-17.3° apart, and while recording it swung between under 1° and over 4° 20-32 times a minute (the avatar went cross-eyed, 13-19° at the p95). Intentional cross-eye still shows: Valve's left - right is let through once it has stayed at 20° or more for 0.5 s (or 25° or more for 0.25 s) with both eyes at least 0.7 open, until it stays below 15° for 0.15 s. While the "Track Dominant Eye Only" setting is on, both eyes get the tracked eye's gaze either way |
+| `eye_behavior` | `--eye-behavior` | `2` | How the eyes move: `2` as now (v2), `1` as up to 0.7.5 (v1: each eye's own gaze from Valve as it is, and none of the eyelid rules added after 0.7.5: the eye cameras' closing, open and widening rules, `lid_open_snap`, `camera_lid_floor`, how open an eye looking far down is expected to be). Switched on the panel's Advanced › Version page. See [Going back to v1](#going-back-to-v1-or-to-an-earlier-release) |
 | `gaze_quality_limit` | `--gaze-quality-limit` | `0` (off) | Optional safety net: ignore an eye's gaze while the Frame's own uncertainty (covariance) for it is above this (for example `0.03`). The other eye moves both, and if both are above it the gaze is held. Eyelids aren't affected. On a well-fitted headset it made no measurable difference, because the uncertainty only rises while the eyes are mostly shut, where `gaze_hold_below` already holds the gaze |
 | `despike` | `--no-despike` | `true` | Remove one-sample glitches in gaze and openness (median of 3 samples; everything arrives ~11 ms later) |
 | `lid_min_cutoff` / `lid_beta` | `--lid-min-cutoff` / `--lid-beta` | `6.0` / `5.0` | Eyelid smoothing, the same way as for gaze |
@@ -368,7 +369,7 @@ If it differs, don't type the password (close Konsole) and reinstall frameeyeosc
 ## Troubleshooting
 
 - Logs: `journalctl --user -u frameeyeosc -f` (the panel: `journalctl --user -u frameeyeosc-panel -f`)
-- Stuck and asking for help: on the panel's Advanced tab, under "Having trouble", press "Open" on the "Diagnostics" row (or "Diagnostics" next to the eye cameras' "why no eye video" line), then send a screenshot of that page. It shows the versions, the eye data, the eye cameras' last search for their video, and the last calibration, plus a short diagnostic code to type into a reply, such as `NW·P3·B0·G1·C1R·F1` (what each part means: [panel/README.md](panel/README.md#診断コード)). With a fixed host, the screenshot shows your PC's LAN IP address, and it can show file paths too. If a calibration or an eye fit failed, its record helps too: "View record" on the failure screen, or `frameeyeosc-panel --report latest` over SSH (it prints the reason and the log lines around it; with a fixed host the logs can show your PC's LAN IP address as well).
+- Stuck and asking for help: on the panel's Advanced tab, under "Having trouble", press "Open" on the "Diagnostics" row (or "Diagnostics" next to the eye cameras' "why no eye video" line), then send a screenshot of that page. It shows the versions, the eye data, the eye cameras' last search for their video, and the last calibration, plus a short diagnostic code to type into a reply, such as `NW·P3·B0·G1·C1R·F1·V2` (what each part means: [panel/README.md](panel/README.md#診断コード)). With a fixed host, the screenshot shows your PC's LAN IP address, and it can show file paths too. If a calibration or an eye fit failed, its record helps too: "View record" on the failure screen, or `frameeyeosc-panel --report latest` over SSH (it prints the reason and the log lines around it; with a fixed host the logs can show your PC's LAN IP address as well).
 - `No Steam Link connection found; waiting for one`: Steam Link isn't streaming yet, or set a fixed host.
 - `Can't send OSC to ... yet (Network is unreachable)` or `Sending OSC to ... failed (...)`: the network isn't up yet (for example Wi-Fi right after boot) or the PC can't be reached. frameeyeosc keeps running and tries again; `... works again` follows once it can send.
 - The left column shows "Eye data" as low (red, below 60 a second; 46 and 15 have been seen instead of 90), or the eye fit fails at the first dot with few samples: the line under the rate says which side was slow. "frameeyeosc can't keep up": frameeyeosc missed samples the eye tracker published, or took too long over one. "The Frame itself sends few": the eye tracker delivered fewer samples than usual, and frameeyeosc read them all. After 10 seconds of a low rate frameeyeosc logs one line with the numbers (`Eye data has been low for 10 s: …` in `journalctl --user -u frameeyeosc`). Please report that line, and whether the PC was streaming over Steam Link at the time.
@@ -383,6 +384,33 @@ If it differs, don't type the password (close Konsole) and reinstall frameeyeosc
 - Both eyes look the same way, or one eye's gaze seems to follow the other: the "Track Dominant Eye Only" setting (VR Settings > General, advanced; SteamOS 0.4.3) is on. The Frame then tracks that eye alone and gives both eyes its gaze (the eyelids stay each eye's own). The left column of the panel says so ("Frame setting: tracking the right eye only"); turn the setting off to track both eyes. frameeyeosc only reads this setting, it never changes it.
 - Nothing moves while the headset is off your face: expected, the Frame only tracks while worn.
 - The panel says "frameeyeosc is not running": check `systemctl --user status frameeyeosc`. Changes made in the panel are still saved and apply once it runs.
+
+## Going back to v1, or to an earlier release
+
+From 0.7.6 you can choose how the eyes move: **v2** (the new behaviour) or **v1** (as up to 0.7.5). If you liked it better before, first set "How the eyes move" on the panel's Advanced › Version page to **v1**. It only changes a setting (`eye_behavior`), so you can go back to v2 any time.
+
+- v2: both eyes move together (the shared gaze ± a fixed 2° of turn-in; Valve's left - right only for intentional cross-eye), and the eye cameras and nearly open eyes keep the eyelids from drooping (the cameras' closing, open and widening rules, ⑤ "Treat nearly open as open", how open an eye looking far down is expected to be, "Lowest eyelid when narrowed")
+- v1: the processing of 0.7.5. "Move eyes separately" sends each eye's own gaze from Valve as it is, and the eye cameras only add widening. ⑤ and "Lowest eyelid when narrowed" are not used (the panel shows them faded). Fixes made after 0.7.5 stay in v1 too (the eye cameras' left and right, one sideways zero point for both eyes in the eye fit, not taking a tilt that jumped). Replaying the same recording with the same settings, what v1 sends is byte for byte what 0.7.5 sent (recordings from 0.7.5 or earlier without the eye cameras' left / right mark differ only by reading left and right the right way round)
+
+### Installing an earlier release itself (if you really want to go back)
+
+1. From GitHub's [Releases](https://github.com/sasaken1102r/frameeyeosc/releases/tag/v0.7.5), download that release's `frameeyeosc-0.7.5-steamframe-aarch64.tar.gz` and `SHA256SUMS` onto the Frame
+2. In Konsole, keep a copy of your settings first
+   ```sh
+   cp -a ~/.config/frameeyeosc ~/frameeyeosc-config-0.7.6
+   cp -a ~/.config/eyecam ~/eyecam-config-0.7.6
+   ```
+3. Unpack and install (the tar.gz holds a `frameeyeosc` folder)
+   ```sh
+   sha256sum -c SHA256SUMS
+   tar xzf frameeyeosc-0.7.5-steamframe-aarch64.tar.gz
+   cd frameeyeosc && ./install.sh --with-panel
+   ```
+4. If you use the eye cameras, calibrate them again on the panel's Eye cameras tab
+
+Note: 0.7.6 fixed the eye cameras' left and right being swapped and rewrote `~/.config/eyecam/calib.json` once for it. Going back to 0.7.5 or earlier reads that calibration the wrong way round: calibrate again, or copy the `calib.json.pre-anatomical` 0.7.6 left back to `calib.json`. 0.7.6 also gives both eyes one sideways zero point in the eye fit (earlier releases use it as it is).
+
+To update again later, use the panel's update button or the usual install command.
 
 ## Known issues
 

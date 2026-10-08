@@ -150,6 +150,7 @@ const std::vector<SettingSpec>& settingSpecs() {
         {key::kCameraLids, SettingType::Bool, 1, "", 0, 1, 1, 0},
         {key::kPupilsToVrchat, SettingType::Bool, 1, "", 0, 1, 1, 0},
         {key::kPupilBits, SettingType::Integer, 0, "", 0, 4, 1, 0},
+        {key::kEyeBehavior, SettingType::Integer, 2, "", 1, 2, 1, 0},
         {key::kRaw, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kGazeMinCutoff, SettingType::Number, 0.3, "", 0.05, 5.0, 0.05, 2},
         {key::kGazeBeta, SettingType::Number, 1.5, "", 0.0, 10.0, 0.1, 2},

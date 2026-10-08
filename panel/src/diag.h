@@ -17,7 +17,8 @@
 //      C- none
 //   F  frameeyeosc: F1 sending / FW waiting for eye data / FT no target found / FP paused / FE an error (the eye data
 //      can't be read, or the config) / F0 not running
-// e.g. "OK·P31·B128·G1·C1·F1" (all well), "NW·P3·B0·G1·C1R·F1" (stuck: not worn by the sensor, nothing written).
+//   V  how the eyes move (eye_behavior): V2 as now / V1 as up to 0.7.5
+// e.g. "OK·P31·B128·G1·C1·F1·V2" (all well), "NW·P3·B0·G1·C1R·F1·V2" (stuck: not worn by the sensor, nothing written).
 #pragma once
 
 #include "i18n.h"

@@ -656,6 +656,9 @@ void testLidsPages(const FontSet& fonts) {
                     for (const char* name : {key::kLidClosed, key::kLidOpen, key::kLidMinCutoff, key::kLidBeta}) {
                         CHECK(hits(panel, PanelAction::Step, name).empty() == !fine);
                     }
+                    // ...and "Treat nearly open as open" (lid_open_snap, 0.80 by default: both ways), whatever drives
+                    // the eyelids
+                    CHECK(hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == (fine ? 2u : 0u));
                     const bool camerasBoth = lids == Lids::Both;
                     for (const char* name : {key::kLidWidenStart, key::kLidWide}) {
                         CHECK(hits(panel, PanelAction::Step, name).empty() == (!fine || camerasBoth));

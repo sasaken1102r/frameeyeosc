@@ -490,6 +490,90 @@ void drawChevron(const Pen& pen, double cx, double cy, double size, double width
     cairo_stroke(cr);
 }
 
+/** The text size of a step chip, and the room between two (a chevron in its middle). */
+constexpr double kStepChipSize = 16;
+constexpr double kStepChipGap = 22;
+
+/**
+ * A step chip's width (a calibration's steps, and a recording's).
+ * @param pen drawing tools
+ * @param label its text
+ * @param past done (it has a check)
+ * @param now running now (bold)
+ * @return the width
+ */
+double stepChipWidth(const Pen& pen, const std::string& label, bool past, bool now) {
+    return pen.measure(label, kStepChipSize, now) + 26 + (past ? 22 : 0);
+}
+
+/**
+ * Draw a step chip: done (a check, on the control color), running now (in the accent) or still to come (an outline).
+ * @param pen drawing tools
+ * @param x left
+ * @param baseline its text's baseline (the chip is 32 high, from 22 above it)
+ * @param label its text
+ * @param past done
+ * @param now running now
+ * @return its width
+ */
+double drawStepChip(const Pen& pen, double x, double baseline, const std::string& label, bool past, bool now) {
+    const double h = 32;
+    const double check = past ? 22 : 0;
+    const double w = stepChipWidth(pen, label, past, now);
+    if (now) {
+        fillRounded(pen, x, baseline - 22, w, h, h / 2, kAccent);
+    } else if (past) {
+        fillRounded(pen, x, baseline - 22, w, h, h / 2, kControl);
+        drawCheck(pen.cr, x + 19, baseline - 6, 14, kSuccess);
+    } else {
+        strokeRounded(pen, x, baseline - 22, w, h, h / 2, kDivider, 1.5);
+    }
+    pen.text(x + 13 + check, baseline - 1, label, kStepChipSize, now ? kOnAccent : kTextMuted, now);
+    return w;
+}
+
+/**
+ * A recording's step chips in one row from kInnerX: the ones eyecam::chipWindow picks, chevrons between them, and a
+ * mark for the steps left out at either end ("…" before them, how many after them).
+ * @param pen drawing tools
+ * @param t texts
+ * @param chips the chips
+ * @param baseline their text's baseline
+ * @param width the row's width
+ */
+void drawRunChips(const Pen& pen, const UiText& t, const eyecam::StepChips& chips, double baseline, double width) {
+    const int count = static_cast<int>(chips.labels.size());
+    std::vector<std::string> labels;
+    std::vector<double> widths;
+    for (int i = 0; i < count; ++i) {
+        labels.push_back(eyecam::chipLabel(t, chips.labels[static_cast<size_t>(i)]));
+        widths.push_back(stepChipWidth(pen, labels.back(), i < chips.current, i == chips.current));
+    }
+    const auto more = [&](int hidden) {
+        char text[64];
+        std::snprintf(text, sizeof(text), t.eyecamChipsMoreFormat, hidden);
+        return std::string(text);
+    };
+    const std::string before = "…";
+    // (as wide as either mark can be)
+    const double markW = std::max(pen.measure(before, kStepChipSize), pen.measure(more(count), kStepChipSize));
+    const eyecam::ChipWindow shown = eyecam::chipWindow(widths, chips.current, width, kStepChipGap, markW);
+    double x = kInnerX;
+    const auto chevron = [&]() {
+        drawChevron(pen, x + kStepChipGap / 2, baseline - 6, 10, 1.8, kBorder);
+        x += kStepChipGap;
+    };
+    if (shown.first > 0) {
+        x += pen.text(x, baseline - 1, before, kStepChipSize, kTextMuted);
+        chevron();
+    }
+    for (int i = shown.first; i < shown.end; ++i) {
+        x += drawStepChip(pen, x, baseline, labels[static_cast<size_t>(i)], i < chips.current, i == chips.current);
+        if (i + 1 < count) chevron();
+    }
+    if (shown.end < count) pen.text(x, baseline - 1, more(count - shown.end), kStepChipSize, kTextMuted);
+}
+
 /**
  * What drives the eyelids now, as the eye cameras' page says it.
  * @param t texts
@@ -2818,17 +2902,41 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         }
         y += kCaptionRowH + kRowGap;
     }
-    // Eyelid smoothing: the two One Euro values behind the presets
+    // From which Valve openness an eye without the cameras' eyelid goes out fully open (lid_open_snap; 1.00 = off).
+    // Always there, like the marks: it is the openness the bars show for eyes without a fit
     {
-        drawRowLabel(pen, t, y, kCaptionRowH, t.rowLidSmooth, t.lowerSmoother, false);
+        const bool locked = v.locked(key::kLidOpenSnap);
+        drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked);
+        const double stepperW = 150;
+        const double snap = v.number(key::kLidOpenSnap);
+        drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kLidOpenSnap, snap,
+                    formatSetting(key::kLidOpenSnap, snap), true, locked);
+        const double nx = kControlX + stepperW + 16;
+        const std::vector<std::string> lines = wrapText(pen, t.lidOpenSnapNote, 13, false, kInnerRight - nx, 3);
+        double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
+        for (const std::string& line : lines) {
+            pen.text(nx, baseline, line, 13, kTextMuted);
+            baseline += 17;
+        }
+        y += kRowH + kRowGap;
+    }
+    // Eyelid smoothing: the two One Euro values behind the presets, each named on its left (one row high, so the
+    // page fits with the row above)
+    {
+        drawRowLabel(pen, t, y, kRowH, t.rowLidSmooth, t.lowerSmoother, false);
         const char* keys[2] = {key::kLidMinCutoff, key::kLidBeta};
         const char* captions[2] = {t.capStill, t.capFast};
+        const double stepperW = 140;
+        const double half = (kControlW - 16) / 2;
         for (int i = 0; i < 2; ++i) {
-            const double x = kControlX + i * 232;
-            drawCaption(pen, x + 4, y + 17, captions[i], 0, v.locked(keys[i]));
+            const double x = kControlX + i * (half + 16);
+            const double captionW = half - stepperW - 8;
+            const bool locked = v.locked(keys[i]);
+            const double size = fitSize(pen, captions[i], 15, 10, captionW, false);
+            pen.text(x, centerBaseline(y, kRowH, size), captions[i], size, locked ? kTextDisabled : kTextMuted);
             const double value = v.number(keys[i]);
-            drawStepper(pen, x, y + 28, 220, kControlH, keys[i], value, formatSetting(keys[i], value), true,
-                        v.locked(keys[i]));
+            drawStepper(pen, x + captionW + 8, y + cy, stepperW, kControlH, keys[i], value,
+                        formatSetting(keys[i], value), true, locked);
         }
     }
 }
@@ -4283,6 +4391,13 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
             }
             pen.text(kInnerRight, y + 22, fpsLine, fitSize(pen, fpsLine, 18, 12, width / 2, false), kTextMuted, false,
                      true);
+            // A recording's steps under it, as chips (as many as fit around the one now; none when eyecam's protocol
+            // file can't be read), and everything below that lower down
+            const eyecam::StepChips chips = calibrating ? eyecam::StepChips() : eyecam::recordingChips(view);
+            if (!chips.labels.empty()) {
+                drawRunChips(pen, t, chips, y + 66, width);
+                y += 40;
+            }
             // The instruction, as large as it fits
             centered(y + 150, eyecam::instruction(t, s.stepLabel), 96, 36, kText, true);
             // The seconds left of the step; while the cameras lost the eyes (the headset came off; the time runs on),
@@ -4866,34 +4981,17 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             const int count = static_cast<int>(chips.size());
             if (count > 0) {
                 y += 40;
-                const double h = 32;
                 double cx = x0;
                 for (int i = 0; i < count; ++i) {
-                    const eyecam::Step chip = eyecam::parseStep(chips[i]);
-                    const char* label = chip == eyecam::Step::Close      ? t.setupChipClose
-                                        : chip == eyecam::Step::Widen    ? t.setupChipWiden
-                                        : chip == eyecam::Step::Squint   ? t.setupChipSquint
-                                        : chip == eyecam::Step::LookUp   ? t.setupChipLookUp
-                                        : chip == eyecam::Step::LookDown ? t.setupChipLookDown
-                                                                         : t.setupChipNormal;
+                    const std::string label = eyecam::chipLabel(t, chips[i]);
                     const bool past = i < s.stepIndex - 1;
                     const bool now = i == s.stepIndex - 1;
-                    const double check = past ? 22 : 0;
-                    const double chipW = pen.measure(label, 16, now) + 26 + check;
-                    if (draw) {
-                        if (now) {
-                            fillRounded(pen, cx, y - 22, chipW, h, h / 2, kAccent);
-                        } else if (past) {
-                            fillRounded(pen, cx, y - 22, chipW, h, h / 2, kControl);
-                            drawCheck(cr, cx + 19, y - 6, 14, kSuccess);
-                        } else {
-                            strokeRounded(pen, cx, y - 22, chipW, h, h / 2, kDivider, 1.5);
-                        }
-                        pen.text(cx + 13 + check, y - 1, label, 16, now ? kOnAccent : (past ? kTextMuted : kTextMuted),
-                                 now);
-                        if (i + 1 < count) drawChevron(pen, cx + chipW + 11, y - 6, 10, 1.8, kBorder);
+                    const double chipW = draw ? drawStepChip(pen, cx, y, label, past, now)
+                                              : stepChipWidth(pen, label, past, now);
+                    if (draw && i + 1 < count) {
+                        drawChevron(pen, cx + chipW + kStepChipGap / 2, y - 6, 10, 1.8, kBorder);
                     }
-                    cx += chipW + 22;
+                    cx += chipW + kStepChipGap;
                 }
             }
             // The seconds left of this step (or the call to put the headset back on), and the whole run

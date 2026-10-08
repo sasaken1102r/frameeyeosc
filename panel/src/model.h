@@ -175,7 +175,19 @@ bool migrateLidScales(JsonValue& root, std::string& log);
 bool migrateGazePresets(JsonValue& root, std::string& log);
 
 /**
- * Whether a settings file still needs migrateLidScales or migrateGazePresets (no lid_widen, or a version below 2).
+ * Bring lid_open_snap from when it was a share of the eye's open reading (0.70 to 1.00) over to the sent eyelid
+ * (VRCFT, 0 to 0.75), once: a value above 0.75 (and at most 1.00) becomes where it started for a fit that reads 0.025
+ * shut and 1.000 open, to 0.01 (0.80 -> 0.53, the new default; 1.00 -> 0.75, off). frameeyeosc reads such a value
+ * the same way (config.rs, snap_from_share). 0.70 and 0.75 already read as the new kind.
+ * @param root the config's root object (changed in place)
+ * @param log what was changed, for the log
+ * @return true if root changed
+ */
+bool migrateLidOpenSnap(JsonValue& root, std::string& log);
+
+/**
+ * Whether a settings file still needs migrateLidScales, migrateGazePresets or migrateLidOpenSnap (no lid_widen, a
+ * version below 2, or a lid_open_snap above 0.75).
  * @param root the config's root object
  * @return true if one of them would change it
  */

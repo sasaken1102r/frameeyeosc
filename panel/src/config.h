@@ -86,6 +86,7 @@ constexpr const char* kBlinkHoldMs = "blink_hold_ms";
 constexpr const char* kDespike = "despike";
 constexpr const char* kBlinkSyncBelow = "blink_sync_below";
 constexpr const char* kCameraLidFloor = "camera_lid_floor";
+constexpr const char* kLidOpenSnap = "lid_open_snap";
 constexpr const char* kGazeOffsetX = "gaze_offset_x";
 constexpr const char* kGazeOffsetY = "gaze_offset_y";
 constexpr const char* kGazeGainX = "gaze_gain_x";

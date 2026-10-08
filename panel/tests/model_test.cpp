@@ -284,6 +284,39 @@ void testLidPresets() {
     CHECK(snapValue(*sync, -0.3) == 0.0 && snapValue(*sync, 1.7) == 1.0);
 }
 
+/** lid_open_snap as a share of the open reading (0.70-1.00) goes over to the sent eyelid, once. */
+void testMigrateLidOpenSnap() {
+    const auto withSnap = [](double snap) {
+        JsonValue root;
+        root.type = JsonValue::Type::Object;
+        root.set(key::kLidWiden, JsonValue::makeString("normal"));
+        root.set(key::kVersion, JsonValue::makeNumber(kConfigVersion, true));
+        root.set(key::kLidOpenSnap, JsonValue::makeNumber(snap));
+        return root;
+    };
+    const double cases[][2] = {{0.8, 0.53}, {0.85, 0.59}, {0.9, 0.64}, {0.95, 0.70}, {1.0, 0.75}};
+    for (const auto& c : cases) {
+        JsonValue root = withSnap(c[0]);
+        std::string log;
+        CHECK(configNeedsMigration(root));
+        CHECK(migrateLidOpenSnap(root, log));
+        CHECK(std::fabs(numberIn(root, key::kLidOpenSnap) - c[1]) < 1e-9);
+        CHECK(log.find("lid_open_snap") != std::string::npos);
+        // Once only
+        CHECK(!configNeedsMigration(root) && !migrateLidOpenSnap(root, log));
+    }
+    // The new kind (0.70 and 0.75 included), none, and values never allowed: left alone
+    for (const double snap : {0.0, 0.53, 0.7, 0.75, 1.2}) {
+        JsonValue root = withSnap(snap);
+        std::string log;
+        CHECK(!configNeedsMigration(root) && !migrateLidOpenSnap(root, log));
+        CHECK(numberIn(root, key::kLidOpenSnap) == snap);
+    }
+    // The default is the new kind's
+    CHECK(std::fabs(findSetting(key::kLidOpenSnap)->defaultNumber - 0.53) < 1e-9);
+    CHECK(findSetting(key::kLidOpenSnap)->max == 0.75 && findSetting(key::kLidOpenSnap)->step == 0.01);
+}
+
 /** A 0.5.x config: scales next to a lid fit go, once. */
 void testMigrateLidScales() {
     JsonValue root;
@@ -814,6 +847,7 @@ int main() {
     testWidenSlider();
     testLidPresets();
     testMigrateLidScales();
+    testMigrateLidOpenSnap();
     testSourceError();
     testDominantEyeAndSaturation();
     testTrackerRateCause();

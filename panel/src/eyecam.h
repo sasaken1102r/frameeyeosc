@@ -142,6 +142,27 @@ enum class PageScreen {
 /** The most of status.json that is read (eyecam-rec writes one line of well under 2 KB). */
 constexpr size_t kMaxStatusBytes = 64 * 1024;
 
+/** The most of a protocol file that is read (eyecam's own are under 1 KB). */
+constexpr size_t kMaxProtocolBytes = 16 * 1024;
+
+/** A recording's steps as the panel read them from eyecam's protocol file (protocol_<name>.txt), for the chips. */
+struct Protocol {
+    std::string name;                ///< the protocol they were read for ("" = none read yet)
+    std::vector<std::string> steps;  ///< its step labels in order, lead_in first (empty: the file couldn't be read)
+};
+
+/** Which of a row of step chips show: [first, end), with the rest left out at either end. */
+struct ChipWindow {
+    int first = 0;
+    int end = 0;
+};
+
+/** A recording's step chips: the steps after its countdown, and which one runs now. */
+struct StepChips {
+    std::vector<std::string> labels;  ///< "close", ... (empty = no chips)
+    int current = -1;                 ///< the index into labels running now (-1: the countdown; labels' size: done)
+};
+
 /** The last look for the eyes' video ("search_detail"; for the diagnostics page). */
 struct SearchDetail {
     bool known = false;       ///< "search_detail" is there (an object, or null before the first look; an older
@@ -329,6 +350,7 @@ struct View {
     SetupFlow flow;           ///< the setup's calibration
     bool readyNotice = false; ///< the left column says "ready" (flow.readyNotice, set by the loop)
     std::string spawnError;   ///< why a Konsole for the setup didn't open ("" = none)
+    Protocol protocol;        ///< the running recording's steps (followProtocol)
 };
 
 /**
@@ -577,6 +599,60 @@ std::vector<std::string> calibChips(const Status& status, Calib calib);
  * @return the calibration
  */
 Calib calibOf(Run run);
+
+/**
+ * Where install.sh puts eyecam-rec and the protocol files it reads beside itself ($HOME/.local/lib/eyecam).
+ * @return the folder
+ */
+std::string libDir();
+
+/**
+ * The step labels of a protocol file, read the way eyecam-rec reads it: one step per line, "seconds label" (the
+ * seconds a number above 0, the label's words joined with "_"), "#" starts a comment, blank lines skipped.
+ * @param text the file's text
+ * @return the labels in order (empty if any line is malformed, or there are none)
+ */
+std::vector<std::string> parseProtocol(const std::string& text);
+
+/**
+ * Read the steps of the protocol a recording runs (status "protocol"; dir/protocol_<name>.txt) into view.protocol, once
+ * per run: while eyecam-rec is searching or recording and they weren't read for that protocol yet. Any other state
+ * forgets them, so the next run reads its file again. A name that isn't a plain word (letters, digits, "_") or a file
+ * that can't be read leaves no steps.
+ * @param view the recorder
+ * @param dir eyecam's folder (libDir)
+ */
+void followProtocol(View& view, const std::string& dir);
+
+/**
+ * The chips of a recording: its steps after the countdown (lead_in) and the one running now, while it records and its
+ * steps were read for its protocol with as many steps as status.json counts; else none (the view shows only the step
+ * number, as without them).
+ * @param view the recorder
+ * @return the chips
+ */
+StepChips recordingChips(const View& view);
+
+/**
+ * Which of a row of chips fit in a width: the one now, one before it, then as many after it as fit, then (at the end
+ * of the row) more before it. Hidden ones at either end take a mark (one gap and markWidth). The one now always shows,
+ * even alone; with no one now (-1: before the first; the count: after the last) the first or the last stands in.
+ * @param widths each chip's width
+ * @param current the chip now (-1 .. the count)
+ * @param width the width there is
+ * @param gap between chips (and between a mark and a chip)
+ * @param markWidth a mark's width
+ * @return the chips to show
+ */
+ChipWindow chipWindow(const std::vector<double>& widths, int current, double width, double gap, double markWidth);
+
+/**
+ * A step chip's text, in the panel's language.
+ * @param t the text table
+ * @param label the step label as written (an unknown one is shown as is)
+ * @return the text
+ */
+std::string chipLabel(const UiText& t, const std::string& label);
 
 /**
  * What the usual page shows: a calibration running, its error (with its run), how the last one ended, or the page.

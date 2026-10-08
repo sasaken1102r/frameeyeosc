@@ -763,9 +763,10 @@ fn report(input: &Path, samples: &[EyeData], skipped: usize, settings: &Settings
 
 /// How the eye camera's values were used over a recording that has them, as report lines: how often there were
 /// values, fresh and with a baseline, how often each eye's eyelid and squint came from them, how often its eyelid
-/// overrode the eye server's (the eye seen open while the eye server read it closing, seen closed, or widened below the
-/// eye server's relaxed open), and how often each eye went out visibly widened (LID_WIDE) with them (`with`) and
-/// without them (`without`, camera_lids off).
+/// overrode the eye server's (the eye seen open while the eye server read it closing, seen closed, widened below the
+/// eye server's relaxed open, narrowed on the camera while the eye server's reading jumped to 1.000, or raised to the
+/// camera's where the eye server read the open eye lower), and how often each eye went out visibly widened (LID_WIDE)
+/// with them (`with`) and without them (`without`, camera_lids off).
 fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -> String {
     let n = cameras.len().max(1) as f64;
     let share = |count: usize| count as f64 * 100.0 / n;
@@ -785,7 +786,8 @@ fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -
         "\nEye camera (eyecam-rec): values with {:.1}% of the samples; fresh (L / R) {:.1}% / {:.1}%; \
          with a baseline for the wear {baseline:.1}%\n  \
          eyelid and squint from it (L / R)          {:.1}% / {:.1}%\n  \
-         eyelid from it over the eye server's (L / R): seen open {}, seen closed {}, widened {}\n  \
+         eyelid from it over the eye server's (L / R): seen open {}, seen closed {}, widened {}, at 1.000 {}, \
+         raised to it {}\n  \
          sent widened, VRCFT {LID_WIDE} or more (L / R)    {} with it, {} without it\n",
         share(read.len()),
         fresh[0],
@@ -795,6 +797,8 @@ fn camera_lines(cameras: &[Option<Live>], with: &[Sample], without: &[Sample]) -
         from(LidFrom::CameraOpen),
         from(LidFrom::CameraClosed),
         from(LidFrom::CameraWidened),
+        from(LidFrom::CameraAtCeiling),
+        from(LidFrom::CameraRaised),
         wide(with),
         wide(without),
     )
@@ -1094,9 +1098,10 @@ mod tests {
         let lines = camera_lines(&cameras, &sent, &without);
         assert!(lines.contains("values with 33.3% of the samples; fresh (L / R) 33.3% / 33.3%"), "{lines}");
         assert!(lines.contains("eyelid and squint from it (L / R)          33.3% / 33.3%"), "{lines}");
-        // Here the eye server reads the eyes as open as can be, so the camera's eyelid never overrides it
-        let overrides =
-            "eyelid from it over the eye server's (L / R): seen open 0.0% / 0.0%, seen closed 0.0% / 0.0%, widened 0.0% / 0.0%";
+        // Here the eye server reads the eyes as open as can be and the camera sees them widened, so the camera's
+        // eyelid never overrides the usual mix
+        let overrides = "eyelid from it over the eye server's (L / R): seen open 0.0% / 0.0%, seen closed 0.0% / 0.0%, \
+                         widened 0.0% / 0.0%, at 1.000 0.0% / 0.0%";
         assert!(lines.contains(overrides), "{lines}");
         let share = format!("{:.1}%", widened as f64 * 100.0 / 1350.0);
         assert!(lines.contains(&format!("{share} / {share} with it, 0.0% / 0.0% without it")), "{lines}");

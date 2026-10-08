@@ -445,6 +445,109 @@ Calib calibOf(Run run) {
     return run == Run::CalibUser ? Calib::User : Calib::Wear;
 }
 
+std::string libDir() {
+    const char* home = std::getenv("HOME");
+    return std::string(home != nullptr ? home : "") + "/.local/lib/eyecam";
+}
+
+std::vector<std::string> parseProtocol(const std::string& text) {
+    std::vector<std::string> labels;
+    std::istringstream lines(text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        std::istringstream words(line.substr(0, line.find('#')));
+        std::string seconds;
+        if (!(words >> seconds)) continue;
+        // A number above 0, the whole word
+        char* end = nullptr;
+        const double value = std::strtod(seconds.c_str(), &end);
+        if (end == seconds.c_str() || *end != '\0' || !std::isfinite(value) || value <= 0) return {};
+        std::string label;
+        for (std::string word; words >> word;) label += (label.empty() ? "" : "_") + word;
+        if (label.empty()) return {};
+        // (drawn on a chip as it is when it isn't one of eyecam's)
+        labels.push_back(validUtf8(label));
+    }
+    return labels;
+}
+
+void followProtocol(View& view, const std::string& dir) {
+    const Status& s = view.status;
+    if (s.state != State::Searching && s.state != State::Recording) {
+        view.protocol = Protocol();
+        return;
+    }
+    if (s.protocol.empty() || s.protocol == view.protocol.name) return;
+    view.protocol = Protocol();
+    view.protocol.name = s.protocol;
+    // eyecam-rec takes only a plain word as a protocol's name; anything else names no file of its
+    const bool plain = s.protocol.size() <= 64 && std::all_of(s.protocol.begin(), s.protocol.end(), [](char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    });
+    if (!plain) return;
+    std::ifstream file(dir + "/protocol_" + s.protocol + ".txt", std::ios::binary);
+    if (!file) return;
+    std::string text(kMaxProtocolBytes + 1, '\0');
+    file.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<size_t>(file.gcount()));
+    if (text.size() > kMaxProtocolBytes) return;
+    view.protocol.steps = parseProtocol(text);
+}
+
+StepChips recordingChips(const View& view) {
+    const Status& s = view.status;
+    const std::vector<std::string>& steps = view.protocol.steps;
+    if (s.state != State::Recording || view.protocol.name != s.protocol || steps.empty() ||
+        static_cast<int>(steps.size()) != s.stepCount) {
+        return {};
+    }
+    // The countdown first, as eyecam's protocols have it, is no chip
+    const int skip = parseStep(steps.front()) == Step::LeadIn ? 1 : 0;
+    StepChips chips;
+    chips.labels.assign(steps.begin() + skip, steps.end());
+    if (chips.labels.empty()) return {};
+    chips.current = std::clamp(s.stepIndex - skip, -1, static_cast<int>(chips.labels.size()));
+    return chips;
+}
+
+ChipWindow chipWindow(const std::vector<double>& widths, int current, double width, double gap, double markWidth) {
+    const int count = static_cast<int>(widths.size());
+    if (count == 0) return {};
+    const int now = std::clamp(current, 0, count - 1);
+    // The width of [first, end), with a mark for the hidden ones at either end
+    const auto span = [&](int first, int end) {
+        double w = 0;
+        for (int i = first; i < end; ++i) w += widths[static_cast<size_t>(i)] + (i > first ? gap : 0);
+        if (first > 0) w += markWidth + gap;
+        if (end < count) w += gap + markWidth;
+        return w;
+    };
+    ChipWindow window {std::max(0, now - 1), now + 1};
+    if (span(window.first, window.end) > width) window.first = now;
+    while (window.end < count && span(window.first, window.end + 1) <= width) ++window.end;
+    if (window.end == count) {
+        while (window.first > 0 && span(window.first - 1, window.end) <= width) --window.first;
+    }
+    return window;
+}
+
+std::string chipLabel(const UiText& t, const std::string& label) {
+    switch (parseStep(label)) {
+        case Step::Close: return t.setupChipClose;
+        case Step::Normal: return t.setupChipNormal;
+        case Step::Widen: return t.setupChipWiden;
+        case Step::Squint: return t.setupChipSquint;
+        case Step::LookUp: return t.setupChipLookUp;
+        case Step::LookDown: return t.setupChipLookDown;
+        case Step::Bright: return t.setupChipBright;
+        case Step::Dark: return t.setupChipDark;
+        case Step::LeadIn:
+        case Step::End:
+        case Step::Unknown: break;
+    }
+    return label;
+}
+
 PageScreen pageScreen(const View& view) {
     const Status& s = view.status;
     if (s.state == State::Calibrating) return PageScreen::Calibrating;

@@ -281,7 +281,8 @@ void printUsage() {
         "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
         "                        A made-up eyecam-rec for the eye cameras tab (confirm: idle with the recording's\n"
         "                        light warning open, on the Advanced tab; LABEL: lead_in, normal, widen, close,\n"
-        "                        squint, look_up, look_down, bright, dark, end; calibrating without a label: waiting\n"
+        "                        squint, look_up, look_down, bright, dark, end (recording: that label's first step\n"
+        "                        of eyecam's protocol, with its step chips); calibrating without a label: waiting\n"
         "                        for the video; calib-error: a failed user calibration). Flags after it, each with\n"
         "                        \":\": unlocked (the cameras lost the eyes), nolight (recording without the light),\n"
         "                        user (calibrating / calib-error: the user's calibration; wear: this wear's),\n"
@@ -1007,18 +1008,35 @@ eyecam::View fakeEyecam(const std::string& text) {
             s.fpsR = 29.9;
         }
     } else {
-        // recording:<label>, at that step of the default run (9 steps, 120 s)
-        static const char* const kLabels[] = {"normal",    "widen",  "close", "squint", "look_up",
-                                              "look_down", "bright", "dark",  "end"};
+        // recording:<label>, at that label's first step of eyecam's default protocol (protocol_widen.txt: 17 steps,
+        // 83 s; without the light protocol_widen_nolight.txt, its first 14), with its steps as the panel reads them
+        // from that file (the chips); "end" after the last
+        static const struct {
+            const char* label;
+            double seconds;
+        } kSteps[] = {
+            {"lead_in", 3}, {"close", 2},     {"normal", 5}, {"widen", 5},  {"close", 2},  {"normal", 5},
+            {"widen", 5},   {"close", 2},     {"normal", 5}, {"widen", 5},  {"squint", 5}, {"look_up", 5},
+            {"look_down", 5}, {"normal", 5}, {"bright", 8}, {"dark", 8},   {"bright", 8},
+        };
+        const int count = fake.noLight ? 14 : static_cast<int>(std::size(kSteps));
         s.stateText = "recording";
         s.stepLabel = fake.label;
-        if (fake.noLight) s.protocol = eyecam::kNoLightProtocol;
-        s.stepCount = static_cast<int>(std::size(kLabels));
-        s.stepIndex = static_cast<int>(std::find(std::begin(kLabels), std::end(kLabels), s.stepLabel) -
-                                       std::begin(kLabels));
-        s.stepRemainingS = 3.4;
-        s.totalS = 120.0;
-        s.elapsedS = s.stepIndex * 13.0 + 9.6;
+        s.protocol = fake.noLight ? eyecam::kNoLightProtocol : "widen";
+        view.protocol.name = s.protocol;
+        s.stepCount = count;
+        s.stepIndex = 0;
+        double before = 0.0;
+        while (s.stepIndex < count && kSteps[s.stepIndex].label != fake.label) before += kSteps[s.stepIndex++].seconds;
+        double total = 0.0;
+        for (int i = 0; i < count; ++i) {
+            view.protocol.steps.push_back(kSteps[i].label);
+            total += kSteps[i].seconds;
+        }
+        s.stepRemainingS = s.stepIndex < count ? 3.4 : 0.0;
+        // (eyecam-rec records 1.5 s past the last step)
+        s.totalS = total + 1.5;
+        s.elapsedS = s.stepIndex < count ? before + kSteps[s.stepIndex].seconds - s.stepRemainingS : total;
         s.fpsL = 30.0;
         s.fpsR = 29.9;
         s.sessionDir = "/home/steamos/eyecam/2026-10-03_12-00-00";
@@ -1680,6 +1698,7 @@ int runDumpPng(const Options& options) {
             // eyecam-rec as it is now (its tab shows only while it runs; --eyecam-dir to try it on a test folder)
             model.eyecamDir = options.eyecamDir;
             model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+            eyecam::followProtocol(model.eyecam, eyecam::libDir());
             model.eyecam.visible = eyecam::tabVisible(model.eyecam.status, unixNow());
             model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
             model.update.current = FRAMEEYEOSC_VERSION;
@@ -1766,6 +1785,7 @@ int runDumpPng(const Options& options) {
                     model.eyecam.lastRun = eyecam::runOfCommand(r.command);
                 }
                 model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+                eyecam::followProtocol(model.eyecam, eyecam::libDir());
                 model.eyecam.visible = eyecam::tabVisible(model.eyecam.status, unixNow());
                 model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
             }
@@ -2074,21 +2094,25 @@ long long writeCaptureRequest(PanelModel& model, const char* target, double seco
 }
 
 /**
- * Bring an older config.json up to date, once (see migrateLidScales and migrateGazePresets), and read it again.
+ * Bring an older config.json up to date, once (see migrateLidScales, migrateGazePresets and migrateLidOpenSnap), and
+ * read it again.
  * @param model the model (its config is re-read after a write)
  */
 void migrateConfig(PanelModel& model) {
     if (!model.config.exists || !model.config.error.empty() || !configNeedsMigration(model.config.root)) return;
     std::string lidLog;
     std::string gazeLog;
+    std::string snapLog;
     bool lids = false;
     bool gaze = false;
+    bool snap = false;
     std::string error;
     const bool ok = updateConfigFile(
         model.configPath,
         [&](JsonValue& root) {
             lids = migrateLidScales(root, lidLog);
             gaze = migrateGazePresets(root, gazeLog);
+            snap = migrateLidOpenSnap(root, snapLog);
         },
         error);
     if (!ok) {
@@ -2103,6 +2127,7 @@ void migrateConfig(PanelModel& model) {
         std::fprintf(stderr, "[config] gaze presets from before version 2: %s\n",
                      gazeLog.empty() ? "own values, kept" : gazeLog.c_str());
     }
+    if (snap) std::fprintf(stderr, "[config] %s\n", snapLog.c_str());
     model.config = readConfigFile(model.configPath);
 }
 
@@ -3299,6 +3324,8 @@ int runOverlay(const Options& options) {
             if (nowSeconds() >= lastEyecamRead + (running ? kEyecamReadSec : kEyecamIdleReadSec)) {
                 lastEyecamRead = nowSeconds();
                 model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+                // (the recording's steps for its chips, read from eyecam's protocol file once a run)
+                eyecam::followProtocol(model.eyecam, eyecam::libDir());
                 model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
             }
             const double now = unixNow();

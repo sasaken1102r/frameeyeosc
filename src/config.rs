@@ -22,6 +22,13 @@ const GAZE_GAIN_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 const GAZE_ROLL_RANGE: std::ops::RangeInclusive<f32> = -20.0..=20.0;
 // camera_lid_floor, in VRCFT units: up to relaxed open.
 const CAMERA_LID_FLOOR_RANGE: std::ops::RangeInclusive<f32> = 0.0..=0.75;
+// lid_open_snap, in VRCFT units: relaxed open (0.75) is off.
+const LID_OPEN_SNAP_RANGE: std::ops::RangeInclusive<f32> = 0.0..=0.75;
+// lid_open_snap used to be a share of the eye's open reading (0.70 to 1.00, 0.80 by default). A value above 0.75 in
+// config.json is one of those, and goes over as where it started for a fit that reads this shut and 1.000 open (the
+// owner's eyes read 0.003 and 0.046): 0.80 -> 0.53, the new default; 1.00 -> 0.75, off as before. 0.70 and 0.75 read
+// as the new kind; anything above 1.00 was never allowed and still isn't.
+const OLD_SNAP_CLOSED: f32 = 0.025;
 // A fitted eye's open readings must be at least this far above its closed one.
 const LID_FIT_MIN_RANGE: f32 = 0.1;
 // A gaze capture's target name is only echoed back, so it is kept short.
@@ -148,6 +155,10 @@ pub struct Settings {
     /// lower than this, so a hard squint shows narrowed and the squint parameter carries the rest; closing (a blink
     /// within the grace period, or the camera seeing the eye closed) still reaches 0. 0 = off.
     pub camera_lid_floor: f32,
+    /// For eyes without the eye camera's eyelid: an eyelid (VRCFT, as the fit or the lid marks map it) at least this
+    /// open eases smoothly up to relaxed open, so an open eye the eye tracker reads a little low goes out open (see
+    /// main.rs, snapped_open). 0.75 = off.
+    pub lid_open_snap: f32,
     /// Gaze zero point and how far the gaze goes, on the -1..1 scale (see `correct_gaze`).
     pub gaze_offset_x: f32,
     pub gaze_offset_y: f32,
@@ -228,6 +239,7 @@ impl Default for Settings {
             despike: true,
             blink_sync_below: 0.35,
             camera_lid_floor: 0.0,
+            lid_open_snap: 0.53,
             gaze_offset_x: 0.0,
             gaze_offset_y: 0.0,
             gaze_gain_x: 1.0,
@@ -314,6 +326,7 @@ impl Settings {
             self.blink_hold_ms,
             self.blink_sync_below,
             self.camera_lid_floor,
+            self.lid_open_snap,
             self.gaze_offset_x,
             self.gaze_offset_y,
             self.gaze_gain_x,
@@ -377,6 +390,9 @@ impl Settings {
         }
         if !CAMERA_LID_FLOOR_RANGE.contains(&self.camera_lid_floor) {
             return Err("camera_lid_floor must be between 0 and 0.75".into());
+        }
+        if !LID_OPEN_SNAP_RANGE.contains(&self.lid_open_snap) {
+            return Err("lid_open_snap must be between 0 and 0.75 (0.75 = off)".into());
         }
         if !(GAZE_OFFSET_RANGE.contains(&self.gaze_offset_x) && GAZE_OFFSET_RANGE.contains(&self.gaze_offset_y)) {
             return Err("gaze_offset_x/y must be between -0.5 and 0.5".into());
@@ -475,6 +491,11 @@ fn parse(text: &str) -> Result<(Settings, Asked), String> {
         .iter()
         .any(|name| written.get(name).is_some_and(|value| !value.is_null()));
     settings.scales_predate_fit = scaled && written.get("lid_widen").is_none();
+    if let Some(share) = written.get("lid_open_snap").and_then(serde_json::Value::as_f64) {
+        if share > f64::from(*LID_OPEN_SNAP_RANGE.end()) && share <= 1.0 {
+            settings.lid_open_snap = snap_from_share(share as f32);
+        }
+    }
     let requests: Requests = serde_json::from_str(text).map_err(|error| error.to_string())?;
     let (capture_id, capture) = requests.gaze_capture();
     let asked = Asked {
@@ -483,6 +504,14 @@ fn parse(text: &str) -> Result<(Settings, Asked), String> {
         capture,
     };
     Ok((settings, asked))
+}
+
+/// Where a lid_open_snap from when it was a share of the eye's open reading started, as an eyelid (VRCFT, to 0.01):
+/// for a fit that reads OLD_SNAP_CLOSED shut and 1.000 open, through the fit's closed margin.
+pub fn snap_from_share(share: f32) -> f32 {
+    let fraction = (share - OLD_SNAP_CLOSED) / (1.0 - OLD_SNAP_CLOSED);
+    let lid = crate::LID_RELAXED * (fraction - crate::LID_FIT_CLOSED_MARGIN) / (1.0 - crate::LID_FIT_CLOSED_MARGIN);
+    ((lid * 100.0).round() / 100.0).clamp(*LID_OPEN_SNAP_RANGE.start(), *LID_OPEN_SNAP_RANGE.end())
 }
 
 /// Ids of the options that were typed on the command line rather than left at their defaults.
@@ -578,6 +607,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
     pin!(
         blink_sync_below,
         camera_lid_floor,
+        lid_open_snap,
         gaze_offset_x,
         gaze_offset_y,
         gaze_gain_x,
@@ -922,6 +952,23 @@ mod tests {
         assert_eq!((settings.blink_hold_ms, settings.gaze_quality_limit), (120.0, 0.05));
         assert_eq!(settings.blink_sync_below, 0.0);
         assert_eq!(locked, ["despike", "blink_sync_below"]);
+
+        // lid_open_snap: 0.53 by default, 0 to 0.75 (0.75 = off) allowed, and the command line wins over the file
+        assert_eq!(merged("{}", &[]).unwrap().0.lid_open_snap, 0.53);
+        for snap in ["0", "0.5", "0.7", "0.75"] {
+            let file = format!(r#"{{"lid_open_snap": {snap}}}"#);
+            assert_eq!(merged(&file, &[]).unwrap().0.lid_open_snap, snap.parse::<f32>().unwrap());
+        }
+        for snap in ["-0.01", "1.05", "\"on\""] {
+            assert!(merged(&format!(r#"{{"lid_open_snap": {snap}}}"#), &[]).is_err(), "{snap}");
+        }
+        // A share of the open reading from before (above 0.75): where it started, as an eyelid
+        for (share, lid) in [("0.8", 0.53), ("0.85", 0.59), ("0.9", 0.64), ("1.0", 0.75), ("1", 0.75)] {
+            assert_eq!(merged(&format!(r#"{{"lid_open_snap": {share}}}"#), &[]).unwrap().0.lid_open_snap, lid, "{share}");
+        }
+        let (settings, locked) = merged(r#"{"lid_open_snap": 0.9}"#, &["--lid-open-snap", "0.6"]).unwrap();
+        assert_eq!((settings.lid_open_snap, locked), (0.6, vec!["lid_open_snap"]));
+        assert!(merged("{}", &["--lid-open-snap", "0.8"]).is_err());
 
         // camera_lid_floor: off (0) by default, 0 and 0.75 allowed, and the command line wins over the file
         assert_eq!(merged("{}", &[]).unwrap().0.camera_lid_floor, 0.0);

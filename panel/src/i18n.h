@@ -610,6 +610,9 @@ struct UiText {
     const char* setupChipSquint;  ///< ...the user calibration's
     const char* setupChipLookUp;
     const char* setupChipLookDown;
+    const char* setupChipBright;  ///< ...a recording's (the developer recording on the Advanced tab) besides these
+    const char* setupChipDark;
+    const char* eyecamChipsMoreFormat;  ///< after a recording's chips, the steps left out at the end ("+%d")
     const char* setupLeftBefore;  ///< ...the seconds left: before the number...
     const char* setupLeftAfter;  ///< ...and after it
     const char* setupLearnStepFormat;  ///< ..."Step %d of %d · %d s in all"
@@ -724,6 +727,9 @@ struct UiText {
     const char* lidFloorHint;  ///< ...its hint
     const char* lidFloorNote;  ///< ...beside it
     const char* lidFloorNoteIdle;  ///< ...beside it while no eye is on the cameras
+    const char* rowLidOpenSnap;  ///< lid_open_snap (Fine-tune, under the marks; a sent eyelid, VRCFT)
+    const char* lidOpenSnapHint;  ///< ...its hint
+    const char* lidOpenSnapNote;  ///< ...beside it
     const char* lidSmoothHint;  ///< the eyelid smoothing presets: hint
     const char* syncOff;  ///< the lid sync slider: its left end
     const char* syncStrong;  ///< ...its right end

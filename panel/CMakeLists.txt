@@ -171,6 +171,8 @@ add_test(NAME changelog COMMAND changelog-test)
 add_executable(eyecam-test tests/eyecam_test.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/setup_tools.cpp
   src/recorder.cpp)
 target_include_directories(eyecam-test PRIVATE src)
+# (eyecam's own protocol files, read as the panel reads the installed copies)
+target_compile_definitions(eyecam-test PRIVATE EYECAM_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../tools/eyecam")
 target_compile_options(eyecam-test PRIVATE -Wall -Wextra)
 target_link_libraries(eyecam-test PRIVATE Threads::Threads)
 add_test(NAME eyecam COMMAND eyecam-test)

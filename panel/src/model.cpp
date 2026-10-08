@@ -250,11 +250,46 @@ bool migrateGazePresets(JsonValue& root, std::string& log) {
     return true;
 }
 
+namespace {
+
+/** lid_open_snap values above this (and at most kOldSnapMax) are a share of the open reading (see migrateLidOpenSnap). */
+constexpr double kSnapMax = 0.75;
+constexpr double kOldSnapMax = 1.0;
+/** The fit the old share is converted through: this shut, 1.000 open, and the fit's closed margin. */
+constexpr double kOldSnapClosed = 0.025;
+constexpr double kFitClosedMargin = 0.3;
+
+/**
+ * Whether a lid_open_snap is a share of the open reading from before it took the sent eyelid.
+ * @param root the config's root object
+ * @return true if it is
+ */
+bool snapIsShare(const JsonValue& root) {
+    const JsonValue* snap = root.get(key::kLidOpenSnap);
+    return snap != nullptr && snap->isNumber() && snap->number > kSnapMax + 1e-9 && snap->number <= kOldSnapMax + 1e-9;
+}
+
+}  // namespace
+
+bool migrateLidOpenSnap(JsonValue& root, std::string& log) {
+    log.clear();
+    if (root.type != JsonValue::Type::Object || !snapIsShare(root)) return false;
+    const double share = root.get(key::kLidOpenSnap)->number;
+    const double fraction = (share - kOldSnapClosed) / (1.0 - kOldSnapClosed);
+    const double lid = kSnapMax * (fraction - kFitClosedMargin) / (1.0 - kFitClosedMargin);
+    const double snap = std::clamp(std::round(lid * 100.0) / 100.0, 0.0, kSnapMax);
+    root.set(key::kLidOpenSnap, JsonValue::makeNumber(snap));
+    char text[96];
+    std::snprintf(text, sizeof(text), "lid_open_snap %.2f -> %.2f (now the sent eyelid)", share, snap);
+    log = text;
+    return true;
+}
+
 bool configNeedsMigration(const JsonValue& root) {
     if (root.type != JsonValue::Type::Object) return false;
     const JsonValue* version = root.get(key::kVersion);
     const bool current = version != nullptr && version->isNumber() && version->number >= kConfigVersion;
-    return root.get(key::kLidWiden) == nullptr || !current;
+    return root.get(key::kLidWiden) == nullptr || !current || snapIsShare(root);
 }
 
 WidenState widenState(const SettingsView& view) {

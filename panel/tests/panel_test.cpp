@@ -601,6 +601,59 @@ std::vector<uint8_t> belowCard(EyePanel& panel) {
     return band;
 }
 
+/** Mark ⑤ (lid_open_snap) on the Fine-tune page's bars: where it lands, faded with the cameras, gone when off. */
+void testSnapMark(const FontSet& fonts) {
+    // The left eye fitted with a fine-tune of 0.9 (the snap comes before it), the right one without a fit; the lid
+    // marks 0.30 / 0.80 and the snap 0.53 (the defaults)
+    PanelModel m = modelWith(Lids::Valve, false);
+    const double fit[4] = {0.0, 1.0, 1.0, 1.0};
+    for (int i = 0; i < 4; ++i) m.config.root.set(kLidFitKeys[0][i], JsonValue::makeNumber(fit[i]));
+    m.config.root.set(key::kLidScaleLeft, JsonValue::makeNumber(0.9));
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Lids);
+    panel.setLidsPage(LidsPage::Fine);
+    panel.render(m);
+    const EyePanel::SnapMark& mark = panel.snapMark();
+    CHECK(mark.shown);
+    // On the bars' scale: 0.30 + 0.53 / 0.75 * 0.50 = 0.6533, times 0.9 for the fitted eye = 0.588; the bars run from
+    // x 472 over 682 px for 0..1.2, so 806 and 843; the bands end where the ease reaches 0.75 (0.64: 0.7267 / 0.654)
+    CHECK(mark.x[0] == 806 && mark.x[1] == 843);
+    CHECK(mark.endX[0] == std::round(472 + 0.7267 * 0.9 / 1.2 * 682) && mark.endX[1] == std::round(472 + 0.7267 / 1.2 * 682));
+    CHECK(!mark.faded[0] && !mark.faded[1]);
+    const SnapOnBar at = snapOnBar(0.53, 0.3, 0.8, 1.0);
+    CHECK(std::fabs(at.start - (0.3 + 0.53 / 0.75 * 0.5)) < 1e-12 && std::fabs(at.end - (0.3 + 0.64 / 0.75 * 0.5)) < 1e-12);
+    // The badge sits on its line (nothing of ① to ④ near), and the row's stepper is there
+    CHECK(mark.badgeX == mark.x[0]);
+    CHECK(hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 2);
+    // Next to ②: the badge moves aside
+    m.config.root.set(key::kLidScaleLeft, JsonValue::makeNumber(1.2));
+    panel.render(m);
+    const double open = std::round(472 + 0.8 / 1.2 * 682);
+    CHECK(std::fabs(panel.snapMark().badgeX - open) >= 22 - 1e-9);
+    m.config.root.set(key::kLidScaleLeft, JsonValue::makeNumber(0.9));
+    // The cameras on the left eye: that eye's mark faded, the badge over the right eye's line
+    PanelModel camera = modelWith(Lids::Left, false);
+    camera.config = m.config;
+    panel.render(camera);
+    CHECK(panel.snapMark().shown && panel.snapMark().faded[0] && !panel.snapMark().faded[1]);
+    CHECK(panel.snapMark().badgeX == panel.snapMark().x[1]);
+    // Both on the cameras: both faded, still shown
+    PanelModel both = modelWith(Lids::Both, false);
+    both.config = m.config;
+    panel.render(both);
+    CHECK(panel.snapMark().shown && panel.snapMark().faded[0] && panel.snapMark().faded[1]);
+    // Off (0.75): no mark, no band; the row stays
+    m.config.root.set(key::kLidOpenSnap, JsonValue::makeNumber(0.75));
+    panel.render(m);
+    CHECK(!panel.snapMark().shown && std::isnan(panel.snapMark().x[0]));
+    CHECK(hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 1);
+    // Other pages: nothing
+    m.config.root.set(key::kLidOpenSnap, JsonValue::makeNumber(0.53));
+    panel.setLidsPage(LidsPage::Look);
+    panel.render(m);
+    CHECK(!panel.snapMark().shown);
+}
+
 void testLidsPages(const FontSet& fonts) {
     // The Eyelids tab's three sub-tabs, for each source of the eyelids: each with its own controls and none of the
     // others', and nothing drawn or to press below the card
@@ -1435,6 +1488,7 @@ int main() {
     fonts.load(kFontPath, kBoldFontPath);
     testWidenRouting(fonts);
     testLidsPages(fonts);
+    testSnapMark(fonts);
     testLidsRemembered(fonts);
     testSliderMoved(fonts);
     testNumberSlider(fonts);

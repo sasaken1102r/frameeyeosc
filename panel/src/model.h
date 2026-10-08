@@ -136,6 +136,26 @@ FitInConfig fitInConfig(const SettingsView& view);
  */
 bool fitKeysLocked(const SettingsView& view);
 
+/** Where lid_open_snap lands on the Eyelids tab's bars (see snapOnBar). */
+struct SnapOnBar {
+    double start = 0;  ///< the snap itself
+    double end = 0;    ///< where its ease reaches relaxed open (halfway from the snap to 0.75)
+};
+
+/**
+ * Where lid_open_snap (a sent eyelid, VRCFT: 0.75 relaxed open) and the end of its ease land on the Eyelids tab's
+ * bars, which show each eye's openness on the --lid-* scale after its scale (frameeyeosc's openness_scaled): below
+ * relaxed open the sent eyelid is a straight line from lid_closed (0) to lid_open (0.75), so this is that line turned
+ * round, times the eye's scale for a fitted eye (frameeyeosc eases a fitted eye before its scale, an eye without a fit
+ * after it; see snapped_lids there).
+ * @param snap lid_open_snap
+ * @param lidClosed lid_closed
+ * @param lidOpen lid_open
+ * @param scale the eye's scale for a fitted eye, 1 without a fit
+ * @return where they land
+ */
+SnapOnBar snapOnBar(double snap, double lidClosed, double lidOpen, double scale);
+
 /** Whether each eye can widen by itself (lid_widen, for eyes with an eye fit). */
 struct WidenState {
     int mode = 2;                        ///< index into kLidWidenModes (0 = off)

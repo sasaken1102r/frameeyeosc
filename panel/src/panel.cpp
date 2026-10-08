@@ -317,14 +317,15 @@ void drawPlusMinus(cairo_t* cr, double cx, double cy, double s, bool plus, Color
 }
 
 /**
- * A numbered circle (the lid marks ① to ④).
+ * A numbered circle (the lid marks ① to ⑤).
  * @param pen drawing tools
  * @param cx center x
  * @param cy center y
- * @param number 1..4
+ * @param number 1..5
+ * @param fill its color (⑤ has its own)
  */
-void drawNumberBadge(const Pen& pen, double cx, double cy, int number) {
-    drawDot(pen.cr, cx, cy, 10, kAccent);
+void drawNumberBadge(const Pen& pen, double cx, double cy, int number, Color fill = kAccent) {
+    drawDot(pen.cr, cx, cy, 10, fill);
     const std::string text = std::to_string(number);
     textCentered(pen, cx, cy + 5, text, 14, kOnAccent, true);
 }
@@ -1146,21 +1147,23 @@ void EyePanel::armResetForPreview() {
 }
 
 void EyePanel::drawRowLabel(const Pen& pen, const UiText& t, double y, double h, const std::string& title,
-                            const std::string& hint, bool locked) {
-    const double titleSize = fitSize(pen, title, 20, 14, kLabelW, true);
+                            const std::string& hint, bool locked, double indent) {
+    const double left = kInnerX + indent;
+    const double width = kLabelW - indent;
+    const double titleSize = fitSize(pen, title, 20, 14, width, true);
     if (hint.empty() && !locked) {
-        pen.text(kInnerX, centerBaseline(y, h, titleSize), title, titleSize, kText, true);
+        pen.text(left, centerBaseline(y, h, titleSize), title, titleSize, kText, true);
         return;
     }
-    pen.text(kInnerX, y + h / 2 - 3, title, titleSize, kText, true);
+    pen.text(left, y + h / 2 - 3, title, titleSize, kText, true);
     const double hintY = y + h / 2 + 19;
     if (locked) {
-        drawLock(pen, kInnerX, hintY, 16, kTextMuted);
-        const double x = kInnerX + 20;
-        pen.text(x, hintY, t.locked, fitSize(pen, t.locked, 15, 11, kLabelW - 20, false), kTextMuted);
+        drawLock(pen, left, hintY, 16, kTextMuted);
+        const double x = left + 20;
+        pen.text(x, hintY, t.locked, fitSize(pen, t.locked, 15, 11, width - 20, false), kTextMuted);
         return;
     }
-    pen.text(kInnerX, hintY, hint, fitSize(pen, hint, 15, 11, kLabelW, false), kTextMuted);
+    pen.text(left, hintY, hint, fitSize(pen, hint, 15, 11, width, false), kTextMuted);
 }
 
 void EyePanel::drawSegmented(const Pen& pen, double x, double y, double w, double h,
@@ -1206,7 +1209,8 @@ void EyePanel::drawSegmented(const Pen& pen, double x, double y, double w, doubl
 }
 
 void EyePanel::drawStepper(const Pen& pen, double x, double y, double w, double h, const char* name, double value,
-                           const std::string& text, bool usable, bool locked, double low, double high) {
+                           const std::string& text, bool usable, bool locked, double low, double high,
+                           const Color* outline) {
     const SettingSpec* spec = findSetting(name);
     const bool active = usable && !locked;
     const double lower = spec != nullptr ? std::max(spec->min, low) : low;
@@ -1215,7 +1219,7 @@ void EyePanel::drawStepper(const Pen& pen, double x, double y, double w, double 
     const bool canPlus = active && (!std::isfinite(value) || value < upper - 1e-9);
     const double r = h / 2;
     fillRounded(pen, x, y, w, h, r, kControl);
-    if (active) strokeRounded(pen, x, y, w, h, r, kBorder, 2);
+    if (active) strokeRounded(pen, x, y, w, h, r, outline != nullptr ? *outline : kBorder, 2);
     const double buttonW = std::min(h, std::max(40.0, w * 0.28));
     const PanelHit minus {PanelAction::Step, name, -1};
     const PanelHit plus {PanelAction::Step, name, 1};
@@ -2867,6 +2871,45 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         if (!live) {
             textCentered(pen, barX + barW / 2, centerBaseline(top + 50, 20, 14), t.noEyeData, 14, kTextMuted, false);
         }
+        // Mark ⑤, lid_open_snap: where it lands on each eye's bar (snapOnBar; a fitted eye's own scale moves it), a
+        // light band on to where its ease reaches relaxed open, faded for an eye the cameras supply (it doesn't apply
+        // there); one line through both bars where they agree, else a tick on each. None while off (0.75)
+        snapMark_ = {};
+        const double snap = v.number(key::kLidOpenSnap);
+        const SettingSpec* snapSpec = findSetting(key::kLidOpenSnap);
+        if (std::isfinite(snap) && snapSpec != nullptr && snap < snapSpec->max - 1e-9) {
+            const char* scaleKeys[2] = {key::kLidScaleLeft, key::kLidScaleRight};
+            for (int eye = 0; eye < 2; ++eye) {
+                const double fixed = v.number(scaleKeys[eye]);
+                const double scale = widen.fitted[eye] && std::isfinite(fixed) ? fixed : 1.0;
+                const SnapOnBar at = snapOnBar(snap, v.number(key::kLidClosed), v.number(key::kLidOpen), scale);
+                snapMark_.x[eye] = std::round(xOf(at.start));
+                snapMark_.endX[eye] = std::round(xOf(at.end));
+                snapMark_.faded[eye] = s.running && s.camera.used[eye];
+            }
+            snapMark_.shown = true;
+            const double dash[2] = {5, 4};
+            const bool together = snapMark_.x[0] == snapMark_.x[1] && snapMark_.faded[0] == snapMark_.faded[1];
+            for (int eye = 0; eye < 2; ++eye) {
+                const double by = top + 50 + eye * 28;
+                const double x = snapMark_.x[eye];
+                const double alpha = snapMark_.faded[eye] ? 0.35 : 1.0;
+                cairo_set_source_rgba(cr, kSnap.r, kSnap.g, kSnap.b, 0.25 * alpha);
+                cairo_rectangle(cr, x, by + 1, std::max(0.0, snapMark_.endX[eye] - x), 18);
+                cairo_fill(cr);
+                if (together && eye == 1) continue;
+                // Dashes with dark edges, like the marks' lines, so they show on the accent fill too
+                cairo_set_dash(cr, dash, 2, 0);
+                for (const bool edge : {true, false}) {
+                    pen.color(edge ? kBg : (snapMark_.faded[eye] ? kSnapFaded : kSnap));
+                    cairo_set_line_width(cr, edge ? 5 : 2);
+                    cairo_move_to(cr, x, together ? top + 44 : by - 4);
+                    cairo_line_to(cr, x, together ? top + 104 : by + 24);
+                    cairo_stroke(cr);
+                }
+                cairo_set_dash(cr, nullptr, 0, 0);
+            }
+        }
         // Mark lines: a light line with dark edges, visible on the accent fill and on the dark track
         for (int i = 0; i < 4; ++i) {
             const double x = std::round(xOf(v.number(marks[i])));
@@ -2881,6 +2924,35 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             cairo_line_to(cr, x, top + 104);
             cairo_stroke(cr);
             drawNumberBadge(pen, x, top + 34, i + 1);
+        }
+        // ⑤'s badge over the line of an eye it applies to (the left one if neither), moved aside from ① to ④ where it
+        // would overlap them, with a short lead back to its line
+        if (snapMark_.shown) {
+            const int eye = !snapMark_.faded[0] || snapMark_.faded[1] ? 0 : 1;
+            const double lineX = snapMark_.x[eye];
+            double badgeX = lineX;
+            for (int pass = 0; pass < 4; ++pass) {
+                bool moved = false;
+                for (int i = 0; i < 4; ++i) {
+                    const double markX = std::round(xOf(v.number(marks[i])));
+                    if (std::abs(badgeX - markX) < 22) {
+                        badgeX = lineX <= markX ? markX - 22 : markX + 22;
+                        moved = true;
+                    }
+                }
+                if (!moved) break;
+            }
+            badgeX = std::clamp(badgeX, barX + 10, barX + barW - 10);
+            const Color fill = snapMark_.faded[eye] ? kSnapFaded : kSnap;
+            if (std::abs(badgeX - lineX) > 0.5) {
+                pen.color(fill);
+                cairo_set_line_width(cr, 2);
+                cairo_move_to(cr, badgeX, top + 40);
+                cairo_line_to(cr, lineX, top + 46);
+                cairo_stroke(cr);
+            }
+            drawNumberBadge(pen, badgeX, top + 34, 5, fill);
+            snapMark_.badgeX = badgeX;
         }
         y = top + 110;
     }
@@ -2905,12 +2977,14 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     // From which Valve openness an eye without the cameras' eyelid goes out fully open (lid_open_snap; 1.00 = off).
     // Always there, like the marks: it is the openness the bars show for eyes without a fit
     {
+        // Led by ⑤, the mark it sets on the bars, in that mark's color (so are the stepper's edges)
         const bool locked = v.locked(key::kLidOpenSnap);
-        drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked);
+        drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 5, kSnap);
+        drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked, 26);
         const double stepperW = 150;
         const double snap = v.number(key::kLidOpenSnap);
         drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kLidOpenSnap, snap,
-                    formatSetting(key::kLidOpenSnap, snap), true, locked);
+                    formatSetting(key::kLidOpenSnap, snap), true, locked, -1e9, 1e9, &kSnap);
         const double nx = kControlX + stepperW + 16;
         const std::vector<std::string> lines = wrapText(pen, t.lidOpenSnapNote, 13, false, kInnerRight - nx, 3);
         double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
@@ -5723,6 +5797,7 @@ void EyePanel::render(const PanelModel& model) {
     const UiText& t = uiText(model.language);
     const SettingsView view(model);
     buttons_.clear();
+    snapMark_ = {};
 
     // Opaque background (the contrast ratios assume it)
     cairo_save(cr_);

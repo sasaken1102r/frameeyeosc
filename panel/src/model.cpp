@@ -292,6 +292,14 @@ bool configNeedsMigration(const JsonValue& root) {
     return root.get(key::kLidWiden) == nullptr || !current || snapIsShare(root);
 }
 
+SnapOnBar snapOnBar(double snap, double lidClosed, double lidOpen, double scale) {
+    // frameeyeosc's LID_RELAXED and LID_OPEN_SNAP_RAMP
+    constexpr double kRelaxed = 0.75;
+    constexpr double kRamp = 0.5;
+    const auto onBar = [&](double lid) { return (lidClosed + lid / kRelaxed * (lidOpen - lidClosed)) * scale; };
+    return {onBar(snap), onBar(snap + kRamp * (kRelaxed - snap))};
+}
+
 WidenState widenState(const SettingsView& view) {
     // frameeyeosc's WIDEN_LOW / WIDEN_NORMAL / WIDEN_HIGH starts and WIDEN_ROOM_LIMIT
     constexpr double kWidenStart[4] = {NAN, 0.10, 0.07, 0.04};

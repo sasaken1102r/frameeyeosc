@@ -6,6 +6,7 @@
 #include "ui_state.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -15,6 +16,7 @@
 
 class FontSet;
 struct Pen;
+struct Color;
 typedef struct _cairo cairo_t;
 typedef struct _cairo_surface cairo_surface_t;
 
@@ -440,6 +442,21 @@ public:
      */
     std::vector<HitArea> hitAreas() const;
 
+    /** Mark ⑤ (lid_open_snap) on the Eyelids tab's bars as last drawn. */
+    struct SnapMark {
+        bool shown = false;                 ///< drawn (the "Fine-tune" page, and the snap not off)
+        double x[2] = {NAN, NAN};           ///< each eye's line (px)
+        double endX[2] = {NAN, NAN};        ///< where each eye's band ends (px)
+        bool faded[2] = {false, false};     ///< the cameras supply that eye, so it doesn't apply there
+        double badgeX = NAN;                ///< the ⑤ badge's center (moved aside from ① to ④ where it would overlap)
+    };
+
+    /**
+     * Mark ⑤ as last drawn (panel-test checks where it goes).
+     * @return it
+     */
+    const SnapMark& snapMark() const { return snapMark_; }
+
 private:
     /** Hit area of one button. */
     struct Button {
@@ -490,6 +507,7 @@ private:
     bool advScrollable_ = false;        ///< the last draw showed the page scrolled, with ▲ / ▼ (it didn't fit)
     AdvPage advPage_ = AdvPage::Version;  ///< the Advanced tab's sub-tab
     LidsPage lidsPage_ = LidsPage::Look;  ///< the Eyelids tab's sub-tab
+    SnapMark snapMark_;                   ///< mark ⑤ as last drawn
     std::string recordOpen_;            ///< the record shown on the Advanced tab ("" = none)
     bool recordsAllOpen_ = false;       ///< all records are listed on the Advanced tab (a record may be open over them)
     std::vector<std::string> recordNames_;  ///< the records as last drawn (RecordOpen's arg is an index)
@@ -1128,9 +1146,10 @@ private:
      * @param title the title
      * @param hint the hint (may be empty)
      * @param locked show the lock note instead of the hint
+     * @param indent how far right of the usual place (room for a numbered circle before it)
      */
     void drawRowLabel(const Pen& pen, const UiText& t, double y, double h, const std::string& title,
-                      const std::string& hint, bool locked);
+                      const std::string& hint, bool locked, double indent = 0);
 
     /**
      * A pill with 2 or more choices; the chosen one gets the accent fill, a check mark and bold text.
@@ -1161,9 +1180,11 @@ private:
      * @param locked locked by the command line
      * @param low extra lower bound
      * @param high extra upper bound
+     * @param outline its outline while usable (nullptr: the usual border)
      */
     void drawStepper(const Pen& pen, double x, double y, double w, double h, const char* name, double value,
-                     const std::string& text, bool usable, bool locked, double low = -1e9, double high = 1e9);
+                     const std::string& text, bool usable, bool locked, double low = -1e9, double high = 1e9,
+                     const Color* outline = nullptr);
 
     /**
      * A caption above a stepper, optionally led by a numbered circle (the lid marks).

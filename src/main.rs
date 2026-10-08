@@ -57,6 +57,42 @@ const MAX_GAP: f64 = 0.25;
 const LID_D_CUTOFF: f32 = 1.0;
 // The sideways gaze hold (--gaze-down-hold-x-deg) fades in over this many degrees further down.
 const DOWN_HOLD_FADE_DEG: f32 = 10.0;
+// With --independent-eyes, how far the eyes turn in from each other (degrees, both together): the eyes on something
+// about 2 m away. Fixed, because the Frame's own per-eye sideways gaze can't show it: on 2026-10-08, with the eyes on
+// a fit dot 0.9 m away (4.4° at a 69.5 mm IPD), its left - right read 0.1-1.1° looking up, 0.6-17.3° straight ahead
+// and 3.9-9.5° looking down, and while recording it swung between "far" (under 1°) and "near" (over 4°) 20-32 times
+// a minute, with medians of 5-7° and a p95 of 12-18°. Sent as it was, the avatar went cross-eyed (p95 of 13-19°)
+// and every eye fit baked a different +4° to -13° into it. The eye cameras' pupils agree better with the fused gaze
+// than with that eye's own reading (R² 0.84-0.89 against 0.78-0.80 on the left, 0.69-0.80 against 0.54-0.73 on the
+// right).
+const VERGENCE_DEG: f32 = 2.0;
+// Intentional cross-eye (a finger to the bridge of the nose) still shows with --independent-eyes. On 2026-10-08 the
+// owner's eleven tries read 21-35° left - right on the Frame (its fixation 0.10-0.14 m away), with the eyes fully open
+// and no more than 12° down. In 37 minutes of everyday recordings, with both eyes at least CROSS_EYE_ENGAGE_OPEN open,
+// Valve's left - right stayed at or above 20° for at most 0.40 s and at or above 25° for at most 0.16 s (with only
+// half-open eyes: 1.54 s and 0.29 s, at the end of one recording, looking 15-27° down). So it is let through once,
+// with both eyes reliable and at least that open, it has stayed at or above CROSS_EYE_ENGAGE_DEG for
+// CROSS_EYE_ENGAGE_S, or at or above CROSS_EYE_FAST_DEG for CROSS_EYE_FAST_S: ten of the eleven tries, 0.43-1.01 s
+// after they reached 15°, and never in the everyday recordings. The one missed stayed at or above 20° for 0.39 s
+// (peak 22°), which the everyday noise matches...
+const CROSS_EYE_ENGAGE_DEG: f32 = 20.0;
+const CROSS_EYE_ENGAGE_S: f64 = 0.5;
+const CROSS_EYE_FAST_DEG: f32 = 25.0;
+const CROSS_EYE_FAST_S: f64 = 0.25;
+const CROSS_EYE_ENGAGE_OPEN: f32 = 0.7;
+// ...until it has stayed below CROSS_EYE_EXIT_DEG for CROSS_EYE_EXIT_S (looking down at a phone read 6-12°, which is
+// not told apart from the noise and stays at VERGENCE_DEG; 12° kept the tries no more than 0.2 s longer, but let the
+// way back down show as cross-eye for up to 0.6 s instead of 0.2 s)...
+const CROSS_EYE_EXIT_DEG: f32 = 15.0;
+const CROSS_EYE_EXIT_S: f64 = 0.15;
+// ...smoothed over this long (s), and blending in and out over this long (s), from and back to VERGENCE_DEG.
+const CROSS_EYE_SMOOTH_S: f32 = 0.1;
+const CROSS_EYE_RAMP_S: f32 = 0.2;
+// Eyes shut or unreliable while it shows hold the vergence for up to this long (s); longer, and it stops.
+const CROSS_EYE_HOLD_S: f64 = 0.3;
+// Both eyes count as open for holding and smoothing it from this Frame openness, or from --gaze-hold-below when that is
+// set (CROSS_EYE_ENGAGE_OPEN to start it).
+const CROSS_EYE_OPEN: f32 = 0.5;
 // The eye fit measures openness with the eyes on targets this far up and down (15° of 45°).
 const LID_FIT_PITCH: f32 = 15.0 / 45.0;
 // A fitted eye counts as closed from this share of the way from its closed reading to its open one,
@@ -411,7 +447,8 @@ struct Args {
     /// Hold the gaze while either eye's Frame openness is below this; 0 disables
     #[arg(long, default_value_t = 0.5)]
     gaze_hold_below: f32,
-    /// Send each eye's own gaze instead of the combined gaze for both eyes (jittery on the Frame)
+    /// Turn the eyes in a little toward each other (about 2 m away) instead of sending the combined gaze for both eyes;
+    /// each keeps its own up / down (the Frame's own per-eye sideways gaze is too unsteady to send)
     #[arg(long)]
     independent_eyes: bool,
     /// One Euro minimum cutoff in Hz for eyelids
@@ -625,6 +662,8 @@ struct Smoother {
     saturation: Saturation,
     // The eye camera's squint and pupils, smoothed.
     camera: CameraSmoother,
+    // Whether intentional cross-eye is let through, and how far.
+    cross_eye: CrossEye,
     // Per eye: how the eye server's eyelid and the camera's have agreed lately (see check_lids).
     lid_doubt: [LidDoubt; 2],
     // Per eye: since when the eye server's reading has been near the ceiling (see check_lids).
@@ -648,6 +687,7 @@ impl Smoother {
             wide_last: [f64::NEG_INFINITY; 2],
             saturation: Saturation::default(),
             camera: CameraSmoother::default(),
+            cross_eye: CrossEye::default(),
             lid_doubt: [LidDoubt::default(); 2],
             ceiling_since: [None; 2],
         }
@@ -748,6 +788,7 @@ impl Smoother {
         self.wide_since = [None; 2];
         self.wide_last = [f64::NEG_INFINITY; 2];
         self.camera = CameraSmoother::default();
+        self.cross_eye = CrossEye::default();
         self.lid_doubt = [LidDoubt::default(); 2];
         self.ceiling_since = [None; 2];
     }
@@ -906,6 +947,66 @@ impl Smoother {
             out[pair * 2] = live * x + (1.0 - live) * held;
         }
         out
+    }
+}
+
+/// Intentional cross-eye for --independent-eyes: Valve's own left - right is let through only while it stays far beyond
+/// what its noise reaches (see CROSS_EYE_ENGAGE_DEG); otherwise the eyes keep VERGENCE_DEG.
+#[derive(Default)]
+struct CrossEye {
+    // Valve's left - right (degrees), smoothed over CROSS_EYE_SMOOTH_S while both eyes are open and reliable.
+    smoothed: Option<f32>,
+    // Since when it has been past the lines that switch it: CROSS_EYE_ENGAGE_DEG and CROSS_EYE_FAST_DEG up, or
+    // CROSS_EYE_EXIT_DEG down (the first).
+    since: [Option<f64>; 2],
+    // While it shows: since when the eyes have been shut or unreliable.
+    held_since: Option<f64>,
+    engaged: bool,
+    // How much of it shows, 0 (VERGENCE_DEG) to 1, moving at 1 / CROSS_EYE_RAMP_S.
+    share: f32,
+}
+
+impl CrossEye {
+    /// The left - right to send (degrees) after a sample at `time`, `dt` after the one before, with Valve's left - right
+    /// `raw` (degrees), whether both eyes are open and reliable (`usable`), and whether they are open enough to start it
+    /// (`wide`: CROSS_EYE_ENGAGE_OPEN).
+    fn step(&mut self, time: f64, dt: f32, raw: f32, usable: bool, wide: bool) -> f32 {
+        if usable {
+            self.held_since = None;
+            let alpha = 1.0 - (-dt / CROSS_EYE_SMOOTH_S).exp();
+            self.smoothed = Some(self.smoothed.map_or(raw, |smoothed| smoothed + alpha * (raw - smoothed)));
+            let lines = if self.engaged {
+                [(raw < CROSS_EYE_EXIT_DEG, CROSS_EYE_EXIT_S), (false, 0.0)]
+            } else {
+                [
+                    (wide && raw >= CROSS_EYE_ENGAGE_DEG, CROSS_EYE_ENGAGE_S),
+                    (wide && raw >= CROSS_EYE_FAST_DEG, CROSS_EYE_FAST_S),
+                ]
+            };
+            let mut switch = false;
+            for ((past, wait), since) in lines.into_iter().zip(&mut self.since) {
+                if !past {
+                    *since = None;
+                } else if time - *since.get_or_insert(time) >= wait - 1e-9 {
+                    switch = true;
+                }
+            }
+            if switch {
+                self.engaged = !self.engaged;
+                self.since = [None; 2];
+            }
+        } else {
+            // A blink breaks the stretch toward engaging; while engaged, the vergence holds for a while
+            self.since = [None; 2];
+            if self.engaged && time - *self.held_since.get_or_insert(time) > CROSS_EYE_HOLD_S {
+                self.engaged = false;
+                self.held_since = None;
+            }
+        }
+        let step = dt / CROSS_EYE_RAMP_S;
+        self.share = if self.engaged { (self.share + step).min(1.0) } else { (self.share - step).max(0.0) };
+        let through = self.smoothed.unwrap_or(VERGENCE_DEG);
+        VERGENCE_DEG + self.share * (through - VERGENCE_DEG)
     }
 }
 
@@ -1454,8 +1555,9 @@ fn gaze_quality(data: &EyeData, limit: f32) -> [bool; 2] {
 
 /// The six gaze values to send (left x/y, right x/y, combined x/y) from the same layout of readings.
 /// Each eye wobbles on its own (L/R changes correlate only ~0.35), so both share the combined gaze
-/// unless --independent-eyes is given. An eye with unreliable gaze is left out of the combined gaze and the other eye stands in for it;
-/// without --independent-eyes that also moves both eyes.
+/// unless --independent-eyes is given. An eye with unreliable gaze is left out of the combined gaze and the other eye
+/// stands in for it. With --independent-eyes each eye looks the combined way, turned in by half of VERGENCE_DEG (the
+/// Frame's own per-eye x is no good for that), and keeps its own up / down; an unreliable eye takes the other's.
 fn choose_gaze(angles: [f32; 6], reliable: [bool; 2], independent: bool) -> [f32; 6] {
     let [left_x, left_y, right_x, right_y, x, y] = angles;
     let [x, y] = match reliable {
@@ -1464,7 +1566,13 @@ fn choose_gaze(angles: [f32; 6], reliable: [bool; 2], independent: bool) -> [f32
         _ => [x, y],
     };
     if independent {
-        [left_x, left_y, right_x, right_y, x, y]
+        let [left_y, right_y] = match reliable {
+            [true, false] => [left_y, left_y],
+            [false, true] => [right_y, right_y],
+            _ => [left_y, right_y],
+        };
+        let half = VERGENCE_DEG / 2.0 / 45.0;
+        [(x + half).clamp(-1.0, 1.0), left_y, (x - half).clamp(-1.0, 1.0), right_y, x, y]
     } else {
         [x, y, x, y, x, y]
     }
@@ -2325,6 +2433,8 @@ struct Sample {
     camera: CameraValues,
     // Where each eyelid came from, where the camera overrode the usual mix.
     lid_from: [LidFrom; 2],
+    // Whether intentional cross-eye was let through (--independent-eyes; see CrossEye).
+    cross_eye: bool,
 }
 
 /// Per-eye multipliers as lid_inputs applies them. An unfitted eye: the fixed one, else the learned one, else 1.
@@ -2386,6 +2496,7 @@ fn process(
     let raw_gaze = [left[0], left[1], right[0], right[1], x, y];
     let reliable = gaze_quality(data, settings.gaze_quality_limit);
     let blink_stages = settings.blink_hold_ms > 0.0 || settings.blink_sync_below > 0.0;
+    let mut cross_eye = false;
     let (gaze, lids, gaze_held, openness_scaled, camera, lid_from) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
         let corrected = correct_gaze(raw_gaze, settings);
@@ -2448,12 +2559,11 @@ fn process(
         let angles: [f32; 6] = std::array::from_fn(|i| readings[i]);
         let openness = [readings[6], readings[7]];
         let mut gaze = choose_gaze(angles, reliable, settings.independent_eyes);
+        // One unreliable eye takes the other's gaze (choose_gaze), so only both being unreliable holds it
         let hold = if openness.iter().any(|openness| *openness < settings.gaze_hold_below)
             || reliable == [false; 2]
         {
             [true; 3]
-        } else if settings.independent_eyes {
-            [!reliable[0], !reliable[1], false]
         } else {
             [false; 3]
         };
@@ -2493,6 +2603,18 @@ fn process(
         let mut lids = [0, 1].map(|eye| if capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
         lids = smoother.sustain_widen(data.sample_time, lids);
         smoother.filter(dt, &mut gaze, &mut lids, hold);
+        // Intentional cross-eye: Valve's own left - right, split evenly around the combined gaze, after the gaze filter
+        // (which would only slow it down)
+        let open_line = if settings.gaze_hold_below > 0.0 { settings.gaze_hold_below } else { CROSS_EYE_OPEN };
+        let usable = reliable == [true; 2] && data.openness.iter().all(|openness| *openness >= open_line);
+        let wide = data.openness.iter().all(|openness| *openness >= CROSS_EYE_ENGAGE_OPEN);
+        let vergence = smoother.cross_eye.step(data.sample_time, dt, (raw_gaze[0] - raw_gaze[2]) * 45.0, usable, wide);
+        if settings.independent_eyes {
+            let extra = (vergence - VERGENCE_DEG) / 2.0 / 45.0;
+            gaze[0] = (gaze[0] + extra).clamp(-1.0, 1.0);
+            gaze[2] = (gaze[2] - extra).clamp(-1.0, 1.0);
+            cross_eye = smoother.cross_eye.engaged;
+        }
         smoother.cap_lids(&mut lids, capped);
         let filtered = lids;
         let mut lids = sync_lids(lids, settings.lid_sync);
@@ -2525,6 +2647,7 @@ fn process(
         gaze_held,
         camera,
         lid_from,
+        cross_eye,
     }
 }
 
@@ -3574,8 +3697,133 @@ mod tests {
         let angles = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         assert_eq!(choose_gaze(angles, [true; 2], false), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
         assert_eq!(choose_gaze(angles, [true, false], false), [1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
-        assert_eq!(choose_gaze(angles, [false, true], true), [1.0, 2.0, 3.0, 4.0, 3.0, 4.0]);
         assert_eq!(choose_gaze(angles, [false; 2], false), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
+        // Each eye on its own: the unreliable left eye takes the right eye's up / down, and both turn in from the
+        // right eye's sideways gaze
+        let half = VERGENCE_DEG / 2.0 / 45.0;
+        let angles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+        assert_eq!(choose_gaze(angles, [false, true], true), [0.3 + half, 0.4, 0.3 - half, 0.4, 0.3, 0.4]);
+    }
+
+    /// Both eyes open, the combined gaze straight ahead, and Valve's per-eye x `vergence` degrees apart at sample `index`.
+    fn crossed(index: usize, vergence: f32, openness: [f32; 2]) -> EyeData {
+        let half = (vergence / 2.0).to_radians().tan();
+        let mut data = reading(index, [0.0, 0.0], openness);
+        data.gaze = [[half, 0.0, -1.0], [-half, 0.0, -1.0]];
+        data
+    }
+
+    /// The left - right sent, in degrees.
+    fn sent_vergence(sample: &Sample) -> f32 {
+        (sample.gaze[0] - sample.gaze[2]) * 45.0
+    }
+
+    fn independent() -> Settings {
+        Settings {
+            independent_eyes: true,
+            gaze_deadzone: 0.0,
+            ..settings()
+        }
+    }
+
+    #[test]
+    fn intentional_cross_eye_shows_once_it_lasts() {
+        // 1 s straight ahead, 1 s turning in to 30°, 3 s held there, then straight ahead again (90 samples a second)
+        let vergence = |i: usize| match i {
+            0..90 => 0.0,
+            90..180 => (i - 90) as f32 / 90.0 * 30.0,
+            180..450 => 30.0,
+            _ => 0.0,
+        };
+        let readings: Vec<EyeData> = (0..600).map(|i| crossed(i, vergence(i), [0.9; 2])).collect();
+        let sent = run(&independent(), &readings);
+        // 20° is reached at sample 150 and 25° at 165: it shows 0.25 s (23 samples) after 25°, before 0.5 s at 20°
+        assert!(sent[..187].iter().all(|sample| !sample.cross_eye && (sent_vergence(sample) - VERGENCE_DEG).abs() < 1e-3));
+        assert!(sent[189].cross_eye);
+        // Blended in over 0.2 s, then Valve's 30°, split evenly around the combined gaze
+        assert!((sent_vergence(&sent[240]) - 30.0).abs() < 0.2, "{}", sent_vergence(&sent[240]));
+        assert!((sent[300].gaze[0] + sent[300].gaze[2]).abs() < 1e-4);
+        // Back below 15° at sample 450: gone 0.15 s later, and back to the fixed vergence 0.2 s after that
+        assert!(sent[455].cross_eye && !sent[466].cross_eye);
+        assert!((sent_vergence(&sent[500]) - VERGENCE_DEG).abs() < 1e-3);
+        // Without --independent-eyes nothing of it shows
+        assert!(run(&settings(), &readings).iter().all(|sample| !sample.cross_eye && sample.gaze[0] == sample.gaze[2]));
+    }
+
+    #[test]
+    fn a_shallow_cross_eye_shows_after_half_a_second() {
+        // 22° (the shallowest tries): 0.5 s (45 samples) at or above 20°
+        let readings: Vec<EyeData> = (0..120).map(|i| crossed(i, 22.0, [1.0; 2])).collect();
+        let sent = run(&independent(), &readings);
+        assert!(!sent[43].cross_eye && sent[46].cross_eye);
+        assert!((sent_vergence(&sent[100]) - 22.0).abs() < 0.2);
+    }
+
+    #[test]
+    fn noise_does_not_look_like_cross_eye() {
+        // A 0.2 s spike to 30° (everyday stretches at or above 25° lasted up to 0.16 s), 19° held for 3 s, and 22° held
+        // for 3 s with the eyes only 0.6 open (as at the end of one everyday recording)
+        let spike: Vec<EyeData> = (0..180).map(|i| crossed(i, if (60..78).contains(&i) { 30.0 } else { 0.0 }, [0.9; 2])).collect();
+        let steady: Vec<EyeData> = (0..360).map(|i| crossed(i, 19.0, [0.9; 2])).collect();
+        let narrowed: Vec<EyeData> = (0..360).map(|i| crossed(i, 22.0, [0.6; 2])).collect();
+        // 0.6 s at 22° with a blink in the middle starts over after it
+        let broken: Vec<EyeData> = (0..60)
+            .map(|i| crossed(i, 22.0, if (20..24).contains(&i) { [0.2; 2] } else { [0.9; 2] }))
+            .collect();
+        for readings in [spike, steady, narrowed, broken] {
+            for sample in run(&independent(), &readings) {
+                assert!(!sample.cross_eye && (sent_vergence(&sample) - VERGENCE_DEG).abs() < 1e-3);
+            }
+        }
+    }
+
+    #[test]
+    fn a_blink_while_cross_eyed_holds_it_and_a_long_one_ends_it() {
+        // 1 s cross-eyed (it shows from sample 23), a 0.2 s blink (Valve's per-eye x wild meanwhile), 1 s cross-eyed,
+        // then a 0.6 s blink and cross-eyed again
+        let blinking = |i: usize| (150..168).contains(&i) || (258..312).contains(&i);
+        let readings: Vec<EyeData> = (0..400)
+            .map(|i| if blinking(i) { crossed(i, 0.0, [0.1; 2]) } else { crossed(i, 30.0, [0.9; 2]) })
+            .collect();
+        let sent = run(&independent(), &readings);
+        assert!(sent[100].cross_eye && (sent_vergence(&sent[100]) - 30.0).abs() < 0.2);
+        // The short blink holds it
+        assert!(sent[150..200].iter().all(|sample| sample.cross_eye && (sent_vergence(sample) - 30.0).abs() < 0.2));
+        // The long one ends it after 0.3 s and the vergence goes back to the fixed one; it shows again 0.25 s after
+        assert!(sent[280].cross_eye && !sent[290].cross_eye);
+        assert!((sent_vergence(&sent[310]) - VERGENCE_DEG).abs() < 1e-3);
+        assert!(!sent[332].cross_eye && sent[337].cross_eye);
+    }
+
+    #[test]
+    fn independent_eyes_turn_in_by_the_fixed_vergence_from_the_combined_gaze() {
+        let half = VERGENCE_DEG / 2.0 / 45.0;
+        // The Frame's own per-eye x 17° apart (as at 22:44 on 2026-10-08): only the combined x counts
+        let angles = [0.11, -0.1, -0.276, -0.1, -0.083, -0.1];
+        assert_eq!(choose_gaze(angles, [true; 2], true), [-0.083 + half, -0.1, -0.083 - half, -0.1, -0.083, -0.1]);
+        // Each eye keeps its own up / down
+        let angles = [0.0, 0.2, 0.0, 0.25, 0.0, 0.22];
+        assert_eq!(choose_gaze(angles, [true; 2], true)[1..4], [0.2, -half, 0.25]);
+        // Never past the end of the range
+        assert_eq!(choose_gaze([1.0, 0.0, 1.0, 0.0, 1.0, 0.0], [true; 2], true)[0], 1.0);
+        // Through the filters: the left - right sent stays the vergence whatever the per-eye readings do
+        let settings = Settings {
+            independent_eyes: true,
+            gaze_deadzone: 0.0,
+            ..settings()
+        };
+        let readings: Vec<EyeData> = (0..60)
+            .map(|i| {
+                let mut data = reading(i, [0.1, -0.05], [0.8; 2]);
+                let wobble = if i % 20 < 10 { 0.3 } else { 0.0 };
+                data.gaze = [[0.1 + wobble, -0.05, -1.0], [0.1 - wobble, -0.05, -1.0]];
+                data
+            })
+            .collect();
+        for sample in run(&settings, &readings) {
+            let vergence = (sample.gaze[0] - sample.gaze[2]) * 45.0;
+            assert!((vergence - VERGENCE_DEG).abs() < 1e-3, "{vergence}");
+        }
     }
 
     #[test]
@@ -3593,7 +3841,8 @@ mod tests {
         assert_eq!(sent[10].gaze, sent[9].gaze);
         assert_eq!(sent[10].reliable, [false; 2]);
 
-        // With per-eye gaze only the unreliable eye is held; the other one moves both combined values.
+        // With each eye on its own, the reliable eye moves both: the unreliable one follows it, still turned in by
+        // the vergence, rather than being held where it was.
         let independent = Settings {
             independent_eyes: true,
             gaze_deadzone: 0.0,
@@ -3601,8 +3850,8 @@ mod tests {
         };
         readings[10].pre_fusion_covariance = [[1.0; 3], [0.0; 3]];
         let sent = run(&independent, &readings);
-        assert_eq!(sent[10].gaze[..2], sent[9].gaze[..2]);
-        assert!(sent[10].gaze[2] < sent[9].gaze[2] && sent[10].gaze[4] < sent[9].gaze[4]);
+        assert!(sent[10].gaze.iter().step_by(2).zip(sent[9].gaze.iter().step_by(2)).all(|(now, before)| now < before));
+        assert!(((sent[10].gaze[0] - sent[10].gaze[2]) * 45.0 - VERGENCE_DEG).abs() < 1e-3);
     }
 
     #[test]
@@ -4634,6 +4883,7 @@ mod tests {
             gaze_held: false,
             camera: CameraValues::default(),
             lid_from: [LidFrom::EyeServer; 2],
+            cross_eye: false,
         }
     }
 

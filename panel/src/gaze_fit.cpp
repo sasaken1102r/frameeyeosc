@@ -253,47 +253,70 @@ void level(double dx, double dy, double rollDeg, double& x, double& y) {
     y = -dx * s + dy * c;
 }
 
-double eyeOffset(const Measured& center, int eye, double offsetY, double rollDeg, double gain, double ipd) {
-    // frameeyeosc sends ((xEye - offset)·cosθ + (y - offsetY)·sinθ)·gain; straight ahead that has to be the eye's own
-    // angle to the dot
-    const double roll = rollDeg * M_PI / 180.0;
-    return center.xEye[eye] + (center.y - offsetY) * std::tan(roll) - eyeAngle(0.0, eye, ipd) / (gain * std::cos(roll));
+void noteEyeSpread(const Measured& center, double ipd, Notes& notes) {
+    if (!center.hasEyeX) return;
+    notes.eyeSpreadDeg = (center.xEye[0] - center.xEye[1]) * kFullScaleDeg;
+    notes.eyeSpreadExpectedDeg = (eyeAngle(0.0, 0, ipd) - eyeAngle(0.0, 1, ipd)) * kFullScaleDeg;
+    notes.eyeSpreadOff = !(std::fabs(notes.eyeSpreadDeg - notes.eyeSpreadExpectedDeg) <= kEyeSpreadToleranceDeg);
 }
 
-bool fitEyes(const Measured points[kPointCount], double ipd, Values& out, FailureDetail* detail) {
+bool fitEyes(const Measured points[kPointCount], double ipd, Values& out, FailureDetail* detail, const Values* previous,
+             Notes* notes) {
     if (!haveEyeX(points)) return true;  // an older frameeyeosc: nothing to fit, not a failure
+    Notes noted;
+    noteEyeSpread(at(points, Point::Center), ipd, noted);
     Values fitted = out;
     for (int eye = 0; eye < 2; ++eye) {
         if (!eyeMoved(points, eye, out.rollDeg, ipd, detail)) return false;
-        // The leveled span sets the gain, and the center then lands on the eye's own angle
+        // The leveled span sets the gain, unless Valve's per-eye x was off straight ahead
         const double expectedSpan = eyeAngle(kSideDeg, eye, ipd) - eyeAngle(-kSideDeg, eye, ipd);
-        const double gain = gainSetting(expectedSpan / eyeSpan(points, eye, out.rollDeg));
-        fitted.eyeGainX[eye] = gain;
-        fitted.eyeOffsetX[eye] =
-            offsetSetting(eyeOffset(at(points, Point::Center), eye, out.offsetY, out.rollDeg, gain, ipd));
+        const bool had = previous != nullptr && previous->hasEyeX;
+        fitted.eyeGainX[eye] = !noted.eyeSpreadOff ? gainSetting(expectedSpan / eyeSpan(points, eye, out.rollDeg))
+                               : had               ? previous->eyeGainX[eye]
+                                                   : out.gainX;
+        // One zero point for both: frameeyeosc turns the eyes in by itself
+        fitted.eyeOffsetX[eye] = out.offsetX;
     }
     fitted.hasEyeX = true;
     out = fitted;
+    if (notes != nullptr) {
+        notes->eyeSpreadDeg = noted.eyeSpreadDeg;
+        notes->eyeSpreadExpectedDeg = noted.eyeSpreadExpectedDeg;
+        notes->eyeSpreadOff = noted.eyeSpreadOff;
+        notes->eyeGainsKept = noted.eyeSpreadOff;
+    }
     return true;
 }
 
-Values fitCenter(const Measured& center, const Values& current, double ipd) {
+Values fitCenter(const Measured& center, const Values& current, double ipd, Notes* notes) {
     Values values = current;
     values.offsetX = offsetSetting(center.x);
     values.offsetY = offsetSetting(center.y);
-    if (current.hasEyeX && center.hasEyeX) {
-        for (int eye = 0; eye < 2; ++eye) {
-            values.eyeOffsetX[eye] =
-                offsetSetting(eyeOffset(center, eye, values.offsetY, current.rollDeg, current.eyeGainX[eye], ipd));
-        }
+    if (current.hasEyeX) {
+        for (double& offset : values.eyeOffsetX) offset = values.offsetX;
     }
+    if (notes != nullptr) noteEyeSpread(center, ipd, *notes);
     return values;
 }
 
-bool fitGaze(const Measured points[kPointCount], Values& out, Point& failed, FailureDetail* detail) {
+double fullFitRoll(const Measured points[kPointCount], double previousDeg, Notes* notes) {
+    const double upDown = rollFromUpDown(at(points, Point::Up), at(points, Point::Down));
+    const double sides = rollFromSides(at(points, Point::Left), at(points, Point::Right));
+    const bool agree = std::fabs(upDown - sides) <= kRollAgreeDeg;
+    if (notes != nullptr) {
+        notes->rollUpDownDeg = upDown;
+        notes->rollSidesDeg = sides;
+        notes->rollPreviousDeg = previousDeg;
+        notes->rollKept = notes->rollDisagreed = !agree;
+    }
+    if (!agree) return previousDeg;
+    return roundTo(std::clamp((upDown + sides) / 2.0, -kRollLimitDeg, kRollLimitDeg), 1);
+}
+
+bool fitGaze(const Measured points[kPointCount], Values& out, Point& failed, FailureDetail* detail, Notes* notes) {
     const double side = kSideDeg / kFullScaleDeg;
     const double upDown = kUpDownDeg / kFullScaleDeg;
-    const double roll = rollFromUpDown(at(points, Point::Up), at(points, Point::Down));
+    const double roll = fullFitRoll(points, out.rollDeg, notes);
     // How far each point moved from the center, leveled and counted in its own direction
     const Point checks[4] = {Point::Up, Point::Down, Point::Left, Point::Right};
     if (!pointsMoved(points, checks, 4, roll, failed, detail)) return false;
@@ -310,8 +333,11 @@ bool fitGaze(const Measured points[kPointCount], Values& out, Point& failed, Fai
 }
 
 bool fitTilt(const Measured points[kPointCount], const Values& current, double ipd, Values& out, Point& failed,
-             FailureDetail* detail) {
-    const double roll = rollFromUpDown(at(points, Point::Up), at(points, Point::Down));
+             FailureDetail* detail, Notes* notes) {
+    const double measured = rollFromUpDown(at(points, Point::Up), at(points, Point::Down));
+    // Further than kRollJumpDeg from the tilt now is more likely the per-eye gaze than the headset: keep the tilt
+    const bool jumped = std::fabs(measured - current.rollDeg) > kRollJumpDeg;
+    const double roll = jumped ? current.rollDeg : measured;
     const Point checks[2] = {Point::Up, Point::Down};
     if (!pointsMoved(points, checks, 2, roll, failed, detail)) return false;
     Values values = current;
@@ -319,14 +345,18 @@ bool fitTilt(const Measured points[kPointCount], const Values& current, double i
     values.offsetX = offsetSetting(center.x);
     values.offsetY = offsetSetting(center.y);
     values.rollDeg = roll;
-    // Each eye's own zero point for the new tilt, keeping its gain
-    if (current.hasEyeX && center.hasEyeX) {
-        for (int eye = 0; eye < 2; ++eye) {
-            values.eyeOffsetX[eye] =
-                offsetSetting(eyeOffset(center, eye, values.offsetY, roll, current.eyeGainX[eye], ipd));
-        }
+    // Each eye keeps its gain and takes the shared zero point
+    if (current.hasEyeX) {
+        for (double& offset : values.eyeOffsetX) offset = values.offsetX;
     }
     out = values;
+    if (notes != nullptr) {
+        notes->rollUpDownDeg = measured;
+        notes->rollPreviousDeg = current.rollDeg;
+        notes->rollKept = jumped;
+        notes->rollDisagreed = false;
+        noteEyeSpread(center, ipd, *notes);
+    }
     return true;
 }
 
@@ -438,32 +468,43 @@ void Session::finish(Actions& actions) {
         if (!actions.log.empty()) actions.log += '\n';
         actions.log += line;
     };
-    char text[128];
+    char text[160];
     Point failed = Point::Center;
+    notes_ = Notes();
     if (mode_ == Mode::Center) {
-        result_ = fitCenter(measured_[static_cast<int>(Point::Center)], current_, ipd_);
+        result_ = fitCenter(measured_[static_cast<int>(Point::Center)], current_, ipd_, &notes_);
     } else if (mode_ == Mode::Tilt) {
         std::snprintf(text, sizeof(text), "tilt %+.1f° from up/down (was %+.1f°)",
                       rollFromUpDown(at(measured_, Point::Up), at(measured_, Point::Down)), current_.rollDeg);
         note(text);
-        if (!fitTilt(measured_, current_, ipd_, result_, failed, &detail_)) {
+        if (!fitTilt(measured_, current_, ipd_, result_, failed, &detail_, &notes_)) {
             failMovement(failed);
             return;
+        }
+        if (notes_.rollKept) {
+            std::snprintf(text, sizeof(text), "tilt kept at %+.1f°: more than %.0f° from it", current_.rollDeg,
+                          kRollJumpDeg);
+            note(text);
         }
     } else {
-        // Both ways of seeing the tilt, to tell how well they agree (only the up / down one is used)
-        std::snprintf(text, sizeof(text), "tilt %+.1f° from up/down, %+.1f° from the sides",
-                      rollFromUpDown(at(measured_, Point::Up), at(measured_, Point::Down)),
-                      rollFromSides(at(measured_, Point::Left), at(measured_, Point::Right)));
-        note(text);
         result_ = current_;
-        if (!fitGaze(measured_, result_, failed, &detail_)) {
+        if (!fitGaze(measured_, result_, failed, &detail_, &notes_)) {
             failMovement(failed);
             return;
         }
+        // Both ways of seeing the tilt, and what came of them
+        if (notes_.rollKept) {
+            std::snprintf(text, sizeof(text),
+                          "tilt %+.1f° from up/down, %+.1f° from the sides: more than %.0f° apart, kept at %+.1f°",
+                          notes_.rollUpDownDeg, notes_.rollSidesDeg, kRollAgreeDeg, result_.rollDeg);
+        } else {
+            std::snprintf(text, sizeof(text), "tilt %+.1f° from up/down, %+.1f° from the sides: %+.1f°",
+                          notes_.rollUpDownDeg, notes_.rollSidesDeg, result_.rollDeg);
+        }
+        note(text);
         // Each eye's own sideways fit replaces the one before; without per-eye data there is none
         result_.hasEyeX = false;
-        if (!fitEyes(measured_, ipd_, result_, &detail_)) {
+        if (!fitEyes(measured_, ipd_, result_, &detail_, &current_, &notes_)) {
             failMovement(Point::Right);
             return;
         }
@@ -471,6 +512,14 @@ void Session::finish(Actions& actions) {
             fail(Failure::NoLidRange);
             return;
         }
+    }
+    if (std::isfinite(notes_.eyeSpreadDeg)) {
+        std::snprintf(text, sizeof(text), "each eye straight ahead: left - right %+.1f° (%.1f° at the dot's distance)%s",
+                      notes_.eyeSpreadDeg, notes_.eyeSpreadExpectedDeg,
+                      !notes_.eyeSpreadOff  ? ""
+                      : notes_.eyeGainsKept ? ", off: each eye's gain kept"
+                                            : ", off (not used)");
+        note(text);
     }
     phase_ = Phase::Done;
     actions.writeValues = true;
@@ -610,6 +659,7 @@ View Session::view() const {
     view.failure = failure_;
     view.detail = detail_;
     view.values = result_;
+    view.notes = notes_;
     return view;
 }
 

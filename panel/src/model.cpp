@@ -214,7 +214,7 @@ bool migrateGazePresets(JsonValue& root, std::string& log) {
     log.clear();
     if (root.type != JsonValue::Type::Object) return false;
     const JsonValue* version = root.get(key::kVersion);
-    if (version != nullptr && version->isNumber() && version->number >= kConfigVersion) return false;
+    if (version != nullptr && version->isNumber() && version->number >= kGazePresetsVersion) return false;
     const char* keys[3] = {key::kGazeMinCutoff, key::kGazeBeta, key::kGazeDCutoff};
     double values[3];
     bool written = true;
@@ -245,6 +245,27 @@ bool migrateGazePresets(JsonValue& root, std::string& log) {
             log += text;
         }
         break;
+    }
+    root.set(key::kVersion, JsonValue::makeNumber(kGazePresetsVersion, true));
+    return true;
+}
+
+bool migrateEyeOffsets(JsonValue& root, std::string& log) {
+    log.clear();
+    if (root.type != JsonValue::Type::Object) return false;
+    const JsonValue* version = root.get(key::kVersion);
+    if (version != nullptr && version->isNumber() && version->number >= kConfigVersion) return false;
+    const JsonValue* left = root.get(key::kGazeOffsetXLeft);
+    const JsonValue* right = root.get(key::kGazeOffsetXRight);
+    if (left != nullptr && right != nullptr && left->isNumber() && right->isNumber() &&
+        std::fabs(left->number - right->number) > 1e-9) {
+        const double mean = std::round((left->number + right->number) / 2.0 * 1000.0) / 1000.0;
+        char text[160];
+        std::snprintf(text, sizeof(text), "gaze_offset_x_left / _right %+.3f / %+.3f -> %+.3f (one zero point for both)",
+                      left->number, right->number, mean);
+        log = text;
+        root.set(key::kGazeOffsetXLeft, JsonValue::makeNumber(mean));
+        root.set(key::kGazeOffsetXRight, JsonValue::makeNumber(mean));
     }
     root.set(key::kVersion, JsonValue::makeNumber(kConfigVersion, true));
     return true;

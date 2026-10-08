@@ -399,9 +399,10 @@ void testMigrateGazePresets() {
         CHECK(migrateGazePresets(root, log));
         CHECK(presetOf(root) == i);
         CHECK(std::fabs(numberIn(root, key::kGazeDeadzone) - 0.005) < 1e-9);
-        CHECK(numberIn(root, key::kVersion) == kConfigVersion && root.get(key::kVersion)->integer);
+        CHECK(numberIn(root, key::kVersion) == kGazePresetsVersion && root.get(key::kVersion)->integer);
         CHECK(log.find(" -> ") != std::string::npos && log.find("gaze_deadzone 0.02 -> 0.005") != std::string::npos);
-        CHECK(!configNeedsMigration(root));
+        std::string eyeLog;
+        CHECK(configNeedsMigration(root) && migrateEyeOffsets(root, eyeLog) && !configNeedsMigration(root));
         // Once only: the old values written again afterwards (by hand) stay
         root = gazeRoot(old[i][0], old[i][1], old[i][2], 0.02, kConfigVersion);
         CHECK(!migrateGazePresets(root, log) && numberIn(root, key::kGazeBeta) == old[i][1]);
@@ -413,7 +414,7 @@ void testMigrateGazePresets() {
     JsonValue own = gazeRoot(0.2, 0.4, 0.35, 0.02, 1);
     CHECK(migrateGazePresets(own, log) && log.empty());
     CHECK(numberIn(own, key::kGazeDCutoff) == 0.35 && numberIn(own, key::kGazeDeadzone) == 0.02);
-    CHECK(numberIn(own, key::kVersion) == kConfigVersion);
+    CHECK(numberIn(own, key::kVersion) == kGazePresetsVersion);
     // A preset with a deadzone of one's own: the preset moves, the deadzone stays
     JsonValue tuned = gazeRoot(0.2, 0.4, 0.3, 0.015, 1);
     CHECK(migrateGazePresets(tuned, log) && presetOf(tuned) == 2 && numberIn(tuned, key::kGazeDeadzone) == 0.015);
@@ -428,6 +429,52 @@ void testMigrateGazePresets() {
     noWiden.type = JsonValue::Type::Object;
     noWiden.set(key::kVersion, JsonValue::makeNumber(kConfigVersion, true));
     CHECK(configNeedsMigration(noWiden));
+}
+
+/** Each eye's own sideways zero point from before becomes one for both, once; the gains stay. */
+void testMigrateEyeOffsets() {
+    const auto withEyes = [](double version, double left, double right) {
+        JsonValue root;
+        root.type = JsonValue::Type::Object;
+        root.set(key::kLidWiden, JsonValue::makeString("normal"));
+        if (version > 0) root.set(key::kVersion, JsonValue::makeNumber(version, true));
+        root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.077));
+        root.set(key::kGazeOffsetXLeft, JsonValue::makeNumber(left));
+        root.set(key::kGazeOffsetXRight, JsonValue::makeNumber(right));
+        root.set(key::kGazeGainXLeft, JsonValue::makeNumber(1.03));
+        root.set(key::kGazeGainXRight, JsonValue::makeNumber(0.93));
+        return root;
+    };
+    std::string log;
+    // The owner's config at 22:47 on 2026-10-08, and the one a minute after the 17° capture
+    JsonValue root = withEyes(2, 0.078, 0.082);
+    CHECK(configNeedsMigration(root) && migrateEyeOffsets(root, log));
+    CHECK(std::fabs(numberIn(root, key::kGazeOffsetXLeft) - 0.08) < 1e-9);
+    CHECK(std::fabs(numberIn(root, key::kGazeOffsetXRight) - 0.08) < 1e-9);
+    CHECK(numberIn(root, key::kGazeGainXLeft) == 1.03 && numberIn(root, key::kGazeGainXRight) == 0.93);
+    CHECK(numberIn(root, key::kGazeOffsetX) == 0.077);
+    CHECK(numberIn(root, key::kVersion) == kConfigVersion && root.get(key::kVersion)->integer);
+    CHECK(log.find("+0.078 / +0.082 -> +0.080") != std::string::npos);
+    CHECK(!configNeedsMigration(root));
+    JsonValue apart = withEyes(2, 0.061, -0.223);
+    CHECK(migrateEyeOffsets(apart, log) && std::fabs(numberIn(apart, key::kGazeOffsetXLeft) + 0.081) < 1e-9);
+    // Once only: zero points set apart by hand afterwards stay
+    JsonValue later = withEyes(kConfigVersion, 0.01, 0.03);
+    CHECK(!configNeedsMigration(later) && !migrateEyeOffsets(later, log));
+    CHECK(numberIn(later, key::kGazeOffsetXLeft) == 0.01 && numberIn(later, key::kGazeOffsetXRight) == 0.03);
+    // Already the same, or never fitted per eye: only the version is written
+    JsonValue same = withEyes(2, 0.05, 0.05);
+    CHECK(migrateEyeOffsets(same, log) && log.empty() && numberIn(same, key::kGazeOffsetXLeft) == 0.05);
+    JsonValue plain;
+    plain.type = JsonValue::Type::Object;
+    plain.set(key::kVersion, JsonValue::makeNumber(2, true));
+    CHECK(migrateEyeOffsets(plain, log) && log.empty() && plain.get(key::kGazeOffsetXLeft) == nullptr);
+    CHECK(numberIn(plain, key::kVersion) == kConfigVersion);
+    // A version 1 file goes through the gaze presets first, then this
+    JsonValue old = withEyes(1, 0.0, 0.02);
+    std::string gazeLog;
+    CHECK(migrateGazePresets(old, gazeLog) && numberIn(old, key::kVersion) == kGazePresetsVersion);
+    CHECK(migrateEyeOffsets(old, log) && std::fabs(numberIn(old, key::kGazeOffsetXRight) - 0.01) < 1e-9);
 }
 
 /** The destination cards' button arguments stand for the output types both ways. */
@@ -853,6 +900,7 @@ int main() {
     testTrackerRateCause();
     testGazePresets();
     testMigrateGazePresets();
+    testMigrateEyeOffsets();
     testSteamlinkParams();
     testNativeEyes();
     testCameraLids();

@@ -171,9 +171,9 @@ pub struct Settings {
     /// Degrees below straight ahead (the tracker's own, before the zero point and gains) from where the
     /// sideways gaze is held; 0 disables. See `Smoother::hold_down_x`.
     pub gaze_down_hold_x_deg: f32,
-    /// Each eye's own sideways zero point and gain, for the per-eye gaze (--independent-eyes). None
-    /// uses gaze_offset_x / gaze_gain_x. The Frame shares the up/down gaze between the eyes, so there
-    /// is no per-eye y.
+    /// Each eye's own sideways zero point and gain, used only for an eye's own gaze when it stands in for the other
+    /// (that one's gaze unreliable). None uses gaze_offset_x / gaze_gain_x. The Frame shares the up/down gaze
+    /// between the eyes, so there is no per-eye y. The panel's fits write the same zero point for both eyes.
     pub gaze_offset_x_left: Option<f32>,
     pub gaze_offset_x_right: Option<f32>,
     pub gaze_gain_x_left: Option<f32>,

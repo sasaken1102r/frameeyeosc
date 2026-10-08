@@ -153,7 +153,7 @@ UiText makeJapanese() {
     t.rowHold = "まばたき中は視線を止める";
     t.hintHold = "この値より閉じたら止める";
     t.rowIndependent = "左右の目を別々に動かす";
-    t.hintIndependent = "目を合わせてから使うと自然";
+    t.hintIndependent = "少し寄り目にして、上下は目ごと";
     t.hintIndependentOneEye = "片目だけ追跡中は両目が同じ向き";
     t.rowQuality = "不確かな視線を使わない";
     t.hintQuality = "この値より不確かな目は無視";
@@ -185,6 +185,10 @@ UiText makeJapanese() {
     t.fitEyeXFormat = "目ごとの左右: 左 %s・×%s　右 %s・×%s";
     t.fitLidFormat = "まぶた %s: 開 %s・閉 %s・下を見ると %s";
     t.fitLidsNone = "まぶた: 合わせていません（自動で覚えています）";
+    t.fitRollJumpFormat = "傾き %s は前の %s から離れすぎなので、前のままです";
+    t.fitRollDisagreeFormat = "傾きが上下 %s・左右 %s で合わないので、前のままです";
+    t.fitEyeSpreadFormat = "Valve の左右差 %s（点なら %s）は使いません";
+    t.fitEyeSpreadKeptFormat = "Valve の左右差 %s（点なら %s）。目ごとの幅は前のまま";
     t.fitFailed = "合わせられませんでした";
     t.failCancelled = "止めました";
     t.fitUnchanged = "設定は変わっていません";
@@ -242,7 +246,7 @@ UiText makeJapanese() {
     t.detailsGaze = "視線";
     t.detailsLids = "まぶた";
     t.rowEyeX = "目ごとの左右";
-    t.hintEyeX = "左右の目を別々に動かすときに使う";
+    t.hintEyeX = "片目が読めないときだけ使う";
     t.rowDownHold = "真下で左右を止める";
     t.hintDownHold = "0 = オフ";
     t.rowTilt = "傾き";
@@ -962,7 +966,7 @@ UiText makeEnglish() {
     t.rowHold = "Hold gaze while blinking";
     t.hintHold = "Holds below this openness";
     t.rowIndependent = "Move eyes separately";
-    t.hintIndependent = "Natural after an Eye fit";
+    t.hintIndependent = "Turned in a little, up/down per eye";
     t.hintIndependentOneEye = "Both follow the one tracked eye";
     t.rowQuality = "Skip unreliable gaze";
     t.hintQuality = "Ignores an eye less sure than this";
@@ -995,6 +999,10 @@ UiText makeEnglish() {
     t.fitEyeXFormat = "Each eye sideways: L %s x%s, R %s x%s";
     t.fitLidFormat = "Eyelid %s: open %s, closed %s, looking down %s";
     t.fitLidsNone = "Eyelids: not fitted (learned automatically)";
+    t.fitRollJumpFormat = "Tilt read %s, too far from %s: the last one was kept";
+    t.fitRollDisagreeFormat = "Tilt read %s up/down, %s sideways: the last one was kept";
+    t.fitEyeSpreadFormat = "Valve read the eyes %s apart (%s at the dot): not used";
+    t.fitEyeSpreadKeptFormat = "Valve read the eyes %s apart (%s at the dot): eye widths kept";
     t.fitFailed = "Could not fit";
     t.failCancelled = "Stopped";
     t.fitUnchanged = "Nothing was changed";
@@ -1052,7 +1060,7 @@ UiText makeEnglish() {
     t.detailsGaze = "Gaze";
     t.detailsLids = "Eyelids";
     t.rowEyeX = "Each eye sideways";
-    t.hintEyeX = "Used when the eyes move separately";
+    t.hintEyeX = "Only when one eye stands in";
     t.rowDownHold = "Hold sideways far down";
     t.hintDownHold = "0 = off";
     t.rowTilt = "Tilt";

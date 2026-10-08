@@ -199,8 +199,20 @@ bool migrateGazePresets(JsonValue& root, std::string& log);
 bool migrateLidOpenSnap(JsonValue& root, std::string& log);
 
 /**
- * Whether a settings file still needs migrateLidScales, migrateGazePresets or migrateLidOpenSnap (no lid_widen, a
- * version below 2, or a lid_open_snap above 0.75).
+ * Give both eyes one sideways zero point, once (a version below 3): fits used to set each eye's own from Valve's
+ * per-eye gaze straight ahead, which put whatever it read as how far away you look into it (+4° to -13° of turning in
+ * or out on 2026-10-08). Differing gaze_offset_x_left / _right become their mean (to 0.001); each eye's gain stays.
+ * version is then written as 3, which marks the file as done (zero points set apart by hand afterwards stay). Run after
+ * migrateGazePresets, which only looks at files below version 2.
+ * @param root the config's root object (changed in place)
+ * @param log what was changed, for the log (empty if nothing but the version)
+ * @return true if root changed (the version was older)
+ */
+bool migrateEyeOffsets(JsonValue& root, std::string& log);
+
+/**
+ * Whether a settings file still needs migrateLidScales, migrateGazePresets, migrateEyeOffsets or migrateLidOpenSnap
+ * (no lid_widen, a version below 3, or a lid_open_snap above 0.75).
  * @param root the config's root object
  * @return true if one of them would change it
  */

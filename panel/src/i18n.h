@@ -188,6 +188,10 @@ struct UiText {
     const char* fitEyeXFormat;       ///< "Each eye: L %s x%s, R %s x%s" (zero point, gain)
     const char* fitLidFormat;        ///< "Eyelid %s: open %s, closed %s, looking down %s"
     const char* fitLidsNone;
+    const char* fitRollJumpFormat;      ///< re-wear tilt not used: "Tilt read %s, too far from the last one (%s)..."
+    const char* fitRollDisagreeFormat;  ///< full fit tilt not used: "Tilt read %s up/down but %s sideways..."
+    const char* fitEyeSpreadFormat;     ///< Valve's per-eye x off straight ahead: "...%s apart (%s at the dot)..."
+    const char* fitEyeSpreadKeptFormat; ///< the same, each eye's gain kept (full fit)
     const char* fitFailed;
     const char* failCancelled;       ///< "Stop" pressed
     const char* fitUnchanged;        ///< under a stop (Cancelled, Left, DashboardOpened): "Nothing was changed"

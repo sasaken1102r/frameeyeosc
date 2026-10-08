@@ -386,6 +386,8 @@ struct Metrics {
     // median left minus right sent x (vergence; positive when the eyes turn toward each other), in degrees.
     eye_jitter: f64,
     vergence: f64,
+    // Stretches where intentional cross-eye was let through: seconds from the start, and how long.
+    cross_eye: Vec<(f64, f64)>,
 }
 
 fn median(values: &mut [f64]) -> f64 {
@@ -590,7 +592,26 @@ fn metrics(samples: &[EyeData], sent: &[Sample]) -> Metrics {
         far_down_x,
         eye_jitter: median(&mut eye_spreads),
         vergence: median(&mut vergences),
+        cross_eye: cross_eye_stretches(&times, sent),
     }
+}
+
+/// Where intentional cross-eye was let through: (seconds from the start, how long) for each stretch.
+fn cross_eye_stretches(times: &[f64], sent: &[Sample]) -> Vec<(f64, f64)> {
+    let mut stretches = Vec::new();
+    let mut start: Option<usize> = None;
+    for i in 0..=sent.len() {
+        let on = i < sent.len() && sent[i].cross_eye;
+        match (on, start) {
+            (true, None) => start = Some(i),
+            (false, Some(from)) => {
+                stretches.push((times[from] - times[0], times[i - 1] - times[from] + f64::from(NOMINAL_DT)));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    stretches
 }
 
 /// The median of each eye's openness over the samples that `keep` picks; None with too few.
@@ -726,6 +747,13 @@ fn report(input: &Path, samples: &[EyeData], skipped: usize, settings: &Settings
     row(&mut text, "closing while looking down (stretches)", before.down_closes.to_string(), after.down_closes.to_string());
     row(&mut text, "each eye's jitter while fixating (deg)", format!("{:.3}", before.eye_jitter), format!("{:.3}", after.eye_jitter));
     row(&mut text, "left - right while fixating (median deg)", format!("{:+.2}", before.vergence), format!("{:+.2}", after.vergence));
+    let crossed = |m: &Metrics| format!("{} ({:.1} s)", m.cross_eye.len(), m.cross_eye.iter().map(|(_, long)| long).sum::<f64>() + 0.0);
+    row(&mut text, "cross-eye let through (times, total)", crossed(before), crossed(after));
+    if !after.cross_eye.is_empty() {
+        let shown: Vec<String> =
+            after.cross_eye.iter().take(8).map(|(at, long)| format!("{at:.1} s for {long:.2} s")).collect();
+        text.push_str(&format!("  cross-eye at {}\n", shown.join(", ")));
+    }
     let far = |m: &Metrics| format!("{:.1}", m.far_down_x);
     row(&mut text, "sideways gaze looking 32°+ down (median deg)", far(before), far(after));
     match estimate_lid_fit(samples) {

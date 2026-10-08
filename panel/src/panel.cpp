@@ -2286,6 +2286,27 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                                                         : fit.mode == Mode::Tilt ? t.fitDoneTilt
                                                                                  : t.fitDone);
                     const gaze_fit::Values& r = saved.values;
+                    // Right after a fit, what it noticed first: a tilt it didn't use, Valve's eyes read apart
+                    const bool noted = fit.phase == Phase::Done && (fit.notes.rollKept || fit.notes.eyeSpreadOff);
+                    if (fit.phase == Phase::Done && fit.notes.rollKept) {
+                        if (fit.notes.rollDisagreed) {
+                            std::snprintf(text, sizeof(text), t.fitRollDisagreeFormat,
+                                          rollText(fit.notes.rollUpDownDeg).c_str(),
+                                          rollText(fit.notes.rollSidesDeg).c_str());
+                        } else {
+                            std::snprintf(text, sizeof(text), t.fitRollJumpFormat,
+                                          rollText(fit.notes.rollUpDownDeg).c_str(),
+                                          rollText(fit.notes.rollPreviousDeg).c_str());
+                        }
+                        paragraphs.push_back(text);
+                    }
+                    if (fit.phase == Phase::Done && fit.notes.eyeSpreadOff) {
+                        std::snprintf(text, sizeof(text),
+                                      fit.notes.eyeGainsKept ? t.fitEyeSpreadKeptFormat : t.fitEyeSpreadFormat,
+                                      rollText(fit.notes.eyeSpreadDeg).c_str(),
+                                      rollText(fit.notes.eyeSpreadExpectedDeg).c_str());
+                        paragraphs.push_back(text);
+                    }
                     // One line each: the gaze center, the gaze range, and each eye's lid readings
                     if (saved.gazeFitted) {
                         std::snprintf(text, sizeof(text), t.fitGazeCenterFormat, offsetText(r.offsetX).c_str(),
@@ -2294,7 +2315,8 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                         std::snprintf(text, sizeof(text), t.fitGazeRangeFormat, twoDecimals(r.gainX).c_str(),
                                       twoDecimals(r.gainUp).c_str(), twoDecimals(r.gainDown).c_str());
                         paragraphs.push_back(text);
-                        if (r.hasEyeX) {
+                        // Each eye's own sideways values only while there is room
+                        if (r.hasEyeX && !noted) {
                             std::snprintf(text, sizeof(text), t.fitEyeXFormat, offsetText(r.eyeOffsetX[0]).c_str(),
                                           twoDecimals(r.eyeGainX[0]).c_str(), offsetText(r.eyeOffsetX[1]).c_str(),
                                           twoDecimals(r.eyeGainX[1]).c_str());

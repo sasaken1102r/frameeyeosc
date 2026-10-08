@@ -273,7 +273,7 @@ void printUsage() {
         "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
         "                        English and Japanese, English only, or both cut at 300 characters\n"
         "      --fake-fit running|running-center|running-tilt|running-closed|done|done-center|done-tilt|\n"
-        "                 fitted|fitted-gaze|\n"
+        "                 done-tilt-kept|done-notes|fitted|fitted-gaze|\n"
         "                 failed-unsteady|failed-notclosed|failed-movement|failed-lidrange|failed-cancelled|\n"
         "                 failed-left|failed-opened|failed-noresult  A made-up eye fit (Eye fit tab)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
@@ -781,9 +781,9 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fakeFit = argv[++i];
             static const char* const kFitStates[] = {
                 "running",          "running-center",  "running-tilt",     "running-closed",  "done",
-                "done-center",      "done-tilt",       "fitted",           "fitted-gaze",     "failed-unsteady",
-                "failed-notclosed", "failed-movement", "failed-lidrange",  "failed-cancelled", "failed-left",
-                "failed-opened",    "failed-noresult"};
+                "done-center",      "done-tilt",       "done-tilt-kept",   "done-notes",      "fitted",
+                "fitted-gaze",      "failed-unsteady", "failed-notclosed", "failed-movement", "failed-lidrange",
+                "failed-cancelled", "failed-left",     "failed-opened",    "failed-noresult"};
             if (std::find(std::begin(kFitStates), std::end(kFitStates), options.fakeFit) == std::end(kFitStates)) {
                 std::fprintf(stderr, "--fake-fit: unknown state %s\n", options.fakeFit.c_str());
                 return false;
@@ -1332,6 +1332,25 @@ PanelModel fakeModel(const Options& options) {
             fit.point = Point::Closed;
         } else if (state.rfind("done", 0) == 0) {
             fit.phase = Phase::Done;
+            // What a fit noticed: the re-wear fit's tilt jump and Valve's eyes read apart (22:44-22:45 on 2026-10-08),
+            // or the full fit's tilts disagreeing (a logged fit: +2.0° and -3.8°) with each eye's gain kept
+            gaze_fit::Notes& notes = fit.notes;
+            if (state == "done-tilt-kept") {
+                notes.rollKept = true;
+                notes.rollUpDownDeg = -9.0;
+                notes.rollPreviousDeg = -2.5;
+                notes.eyeSpreadOff = true;
+                notes.eyeSpreadDeg = 17.3;
+                notes.eyeSpreadExpectedDeg = 4.4;
+            } else if (state == "done-notes") {
+                notes.rollKept = notes.rollDisagreed = true;
+                notes.rollUpDownDeg = 2.0;
+                notes.rollSidesDeg = -3.8;
+                notes.rollPreviousDeg = 6.7;
+                notes.eyeSpreadOff = notes.eyeGainsKept = true;
+                notes.eyeSpreadDeg = 0.6;
+                notes.eyeSpreadExpectedDeg = 4.4;
+            }
         } else if (saved) {
             fit.phase = Phase::Idle;
         } else {
@@ -2094,8 +2113,8 @@ long long writeCaptureRequest(PanelModel& model, const char* target, double seco
 }
 
 /**
- * Bring an older config.json up to date, once (see migrateLidScales, migrateGazePresets and migrateLidOpenSnap), and
- * read it again.
+ * Bring an older config.json up to date, once (see migrateLidScales, migrateGazePresets, migrateEyeOffsets and
+ * migrateLidOpenSnap), and read it again.
  * @param model the model (its config is re-read after a write)
  */
 void migrateConfig(PanelModel& model) {
@@ -2103,15 +2122,18 @@ void migrateConfig(PanelModel& model) {
     std::string lidLog;
     std::string gazeLog;
     std::string snapLog;
+    std::string eyeLog;
     bool lids = false;
     bool gaze = false;
     bool snap = false;
+    bool eyes = false;
     std::string error;
     const bool ok = updateConfigFile(
         model.configPath,
         [&](JsonValue& root) {
             lids = migrateLidScales(root, lidLog);
             gaze = migrateGazePresets(root, gazeLog);
+            eyes = migrateEyeOffsets(root, eyeLog);
             snap = migrateLidOpenSnap(root, snapLog);
         },
         error);
@@ -2127,6 +2149,7 @@ void migrateConfig(PanelModel& model) {
         std::fprintf(stderr, "[config] gaze presets from before version 2: %s\n",
                      gazeLog.empty() ? "own values, kept" : gazeLog.c_str());
     }
+    if (eyes && !eyeLog.empty()) std::fprintf(stderr, "[config] %s\n", eyeLog.c_str());
     if (snap) std::fprintf(stderr, "[config] %s\n", snapLog.c_str());
     model.config = readConfigFile(model.configPath);
 }

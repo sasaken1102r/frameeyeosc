@@ -94,6 +94,17 @@ constexpr double kGainMin = 0.5;
 constexpr double kGainMax = 2.0;
 /** The largest tilt written either way (degrees; the same as frameeyeosc's gaze_roll_deg). */
 constexpr double kRollLimitDeg = 20.0;
+/** The full fit takes the tilt from the up / down dots and from the side dots together when they are at most this far
+ *  apart (degrees), and keeps the previous tilt otherwise. Four logged fits had them 1.5-5.8° apart. */
+constexpr double kRollAgreeDeg = 5.0;
+/** Re-centering with the tilt keeps the previous tilt when it measures one further from it than this (degrees): on
+ *  2026-10-08 it read -2.5°, -9.0°, -10.1° and +3.0° within 12 minutes, after a full fit that read -2.5° and -2.9°.
+ *  A headset tilted that much more needs the full fit. */
+constexpr double kRollJumpDeg = 5.0;
+/** How far Valve's left - right sideways gaze straight ahead may be from what the dot's distance makes it (degrees)
+ *  before the fit says so (and the full fit keeps each eye's previous gain): on 2026-10-08, 20 captures of a dot that
+ *  needed 4.4° read 0.1-17.3°. */
+constexpr double kEyeSpreadToleranceDeg = 3.0;
 
 /**
  * A step's target.
@@ -178,6 +189,19 @@ bool usable(const Measured& measured);
  */
 bool usableClosed(const Measured& closed, const Measured& center);
 
+/** What a fit noticed about its own captures and did about it, for the result and the log. */
+struct Notes {
+    double eyeSpreadDeg = NAN;          ///< Valve's left - right sideways gaze at the straight-ahead dot (NaN: no per-eye x)
+    double eyeSpreadExpectedDeg = NAN;  ///< what the dot's distance and the IPD make it
+    bool eyeSpreadOff = false;          ///< more than kEyeSpreadToleranceDeg apart
+    bool eyeGainsKept = false;          ///< the full fit kept each eye's previous gain because of that
+    double rollUpDownDeg = NAN;         ///< the tilt from the up / down dots (Tilt and Full)
+    double rollSidesDeg = NAN;          ///< the tilt from the side dots (Full)
+    bool rollKept = false;              ///< the tilt measured was not used: the previous one was kept...
+    bool rollDisagreed = false;         ///< ...because up / down and the sides disagreed (Full), else it jumped (Tilt)
+    double rollPreviousDeg = NAN;       ///< the tilt before
+};
+
 /** The settings a fit writes. */
 struct Values {
     double offsetX = 0.0;
@@ -209,8 +233,9 @@ double eyeAngle(double yawDeg, int eye, double ipd);
 
 /**
  * The headset's tilt from the up / down dots: tilted by θ, the move from the down dot to the up one leans the other
- * way (dx = -sinθ·dy). Only these dots are used, so the full fit and the re-wear fit agree; they gave a steadier tilt
- * than the side dots between fits (+2.0°, +2.4°, +1.7° against -3.8°, +2.7°, -2.1°).
+ * way (dx = -sinθ·dy). The re-wear fit uses only these dots; they gave a steadier tilt than the side dots between
+ * fits (+2.0°, +2.4°, +1.7° against -3.8°, +2.7°, -2.1°), but a per-eye gaze that turns in looking down shifts them
+ * too (fullFitRoll, kRollJumpDeg).
  * @param up the up capture
  * @param down the down capture
  * @return the setting (within ±kRollLimitDeg, 0.1° steps); positive: looking right reads higher
@@ -218,7 +243,7 @@ double eyeAngle(double yawDeg, int eye, double ipd);
 double rollFromUpDown(const Measured& up, const Measured& down);
 
 /**
- * The tilt as the side dots see it (the angle of the line from the left dot to the right one), for the log only.
+ * The tilt as the side dots see it (the angle of the line from the left dot to the right one), for fullFitRoll.
  * @param left the left capture
  * @param right the right capture
  * @return degrees, not rounded
@@ -236,66 +261,83 @@ double rollFromSides(const Measured& left, const Measured& right);
 void level(double dx, double dy, double rollDeg, double& x, double& y);
 
 /**
- * An eye's own sideways zero point, so that its corrected x (level, then times its gain) points straight ahead the
- * way that eye really has to (see eyeAngle).
- * @param center the straight-ahead capture (xEye and y)
- * @param eye 0 = left, 1 = right
- * @param offsetY the up / down zero point
- * @param rollDeg the tilt
- * @param gain the eye's sideways gain
+ * Valve's left - right sideways gaze at the straight-ahead dot against what it has to be, into notes.
+ * @param center the straight-ahead capture
  * @param ipd the distance between the eyes (m)
- * @return the zero point (not rounded)
+ * @param notes where it goes (nothing without per-eye x)
  */
-double eyeOffset(const Measured& center, int eye, double offsetY, double rollDeg, double gain, double ipd);
+void noteEyeSpread(const Measured& center, double ipd, Notes& notes);
 
 /**
- * Each eye's own sideways zero point and gain, so that after them the eye points at each target the way it
- * really had to (see eyeAngle). Needs every gaze point's per-eye x; otherwise nothing is set. Uses the up / down
- * zero point and the tilt already in `out` (fitGaze first): the Frame reports the same up / down angle for both
- * eyes, so each eye is leveled with the combined y.
+ * Each eye's own sideways gain, from how far its own x moved between the side dots against how far it had to (see
+ * eyeAngle). Both eyes get the shared zero point (out.offsetX): the Frame's per-eye x straight ahead says more about
+ * where its estimate of how far away you look happened to be than about the eye (a dot needing 4.4° between the eyes
+ * read 0.1-17.3°), and frameeyeosc turns the eyes in by a fixed amount instead. When Valve's left - right straight
+ * ahead is more than kEyeSpreadToleranceDeg off, each eye keeps the gain it had (`previous`, if it had one; else the
+ * shared gain). Needs every gaze point's per-eye x; otherwise nothing is set. Uses the tilt already in `out` (fitGaze
+ * first).
  * @param points the captures, indexed by Point
  * @param ipd the distance between the eyes (m)
  * @param out where they go (hasEyeX set when fitted)
  * @param detail on failure, which eye and how far it moved (may be null)
+ * @param previous the settings before the fit, for the gains kept (may be null)
+ * @param notes what was noticed (may be null)
  * @return false if an eye did not move far enough the right way between the side targets
  */
-bool fitEyes(const Measured points[kPointCount], double ipd, Values& out, FailureDetail* detail = nullptr);
+bool fitEyes(const Measured points[kPointCount], double ipd, Values& out, FailureDetail* detail = nullptr,
+             const Values* previous = nullptr, Notes* notes = nullptr);
 
 /**
- * The zero point from the center capture; everything else (the tilt too) stays as it is. Each eye's own zero point
- * moves too when there is one, keeping its gain.
+ * The zero point from the center capture; everything else (the tilt too) stays as it is. Each eye's own zero point,
+ * when there is one, becomes the shared one, keeping its gain.
  * @param center the center capture
  * @param current the settings now
  * @param ipd the distance between the eyes (m)
+ * @param notes what was noticed (may be null)
  * @return the new settings (rounded, within range)
  */
-Values fitCenter(const Measured& center, const Values& current, double ipd = kDefaultIpdM);
+Values fitCenter(const Measured& center, const Values& current, double ipd = kDefaultIpdM, Notes* notes = nullptr);
 
 /**
- * The zero point, the tilt (rollFromUpDown) and the three gains from the five gaze captures. Every point is leveled
- * around the center first; each gain then makes the target angle come out as that angle:
- * gain = target / (point - center), with left and right averaged into one gain.
+ * The tilt a full fit uses: the mean of rollFromUpDown and rollFromSides when they are at most kRollAgreeDeg apart,
+ * else the previous one.
  * @param points the captures, indexed by Point
- * @param out the new gaze settings (rounded, within range); the lid readings are left alone
+ * @param previousDeg the tilt before the fit
+ * @param notes what was noticed (may be null)
+ * @return the tilt (within ±kRollLimitDeg, 0.1° steps)
+ */
+double fullFitRoll(const Measured points[kPointCount], double previousDeg, Notes* notes = nullptr);
+
+/**
+ * The zero point, the tilt (fullFitRoll, with out.rollDeg as the previous one) and the three gains from the five
+ * gaze captures. Every point is leveled around the center first; each gain then makes the target angle come out as
+ * that angle: gain = target / (point - center), with left and right averaged into one gain.
+ * @param points the captures, indexed by Point
+ * @param out the settings before the fit in; the new gaze settings out (rounded, within range), the lid readings
+ *            left alone
  * @param failed the first point that did not move far enough the right way
+ * @param notes what was noticed (may be null)
  * @return false if a point did not move far enough the right way
  */
-bool fitGaze(const Measured points[kPointCount], Values& out, Point& failed, FailureDetail* detail = nullptr);
+bool fitGaze(const Measured points[kPointCount], Values& out, Point& failed, FailureDetail* detail = nullptr,
+             Notes* notes = nullptr);
 
 /**
- * The re-wear fit: the zero point from the center capture and the tilt from the up / down captures; each eye's own
- * zero point follows with its gain kept. The gains and the eyelids stay as they are. The up / down dots must move as
- * far as in the full fit.
+ * The re-wear fit: the zero point from the center capture and the tilt from the up / down captures, unless that is
+ * more than kRollJumpDeg from the tilt now (then the tilt now stays); each eye's own zero point becomes the shared one
+ * with its gain kept. The gains and the eyelids stay as they are. The up / down dots must move as far as in the full
+ * fit.
  * @param points the captures, indexed by Point (Center, Up and Down used)
  * @param current the settings now
  * @param ipd the distance between the eyes (m)
  * @param out the new settings (rounded, within range)
  * @param failed the point that did not move far enough the right way
  * @param detail on failure, how far it moved (may be null)
+ * @param notes what was noticed (may be null)
  * @return false if the up or the down point did not move far enough
  */
 bool fitTilt(const Measured points[kPointCount], const Values& current, double ipd, Values& out, Point& failed,
-             FailureDetail* detail = nullptr);
+             FailureDetail* detail = nullptr, Notes* notes = nullptr);
 
 /**
  * Each eye's lid fit: the eyes-shut reading, and the open readings looking up, straight ahead and down.
@@ -350,6 +392,7 @@ struct View {
     Failure failure = Failure::None;
     FailureDetail detail;      ///< the numbers behind the failure
     Values values;             ///< the settings written (Done)
+    Notes notes;               ///< what the fit noticed (Done)
 };
 
 /** What the caller does after a tick. */
@@ -436,6 +479,7 @@ private:
     int attempt_ = 1;
     Point failedPoint_ = Point::Center;
     FailureDetail detail_;
+    Notes notes_;
     Point previousPoint_ = Point::Center;  ///< where the dot glides from
     bool dashboardSeen_ = false;   ///< a tick has said whether the dashboard is open...
     bool dashboardWasOpen_ = false;  ///< ...and it was, at the last tick

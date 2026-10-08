@@ -616,12 +616,11 @@ void testSnapMark(const FontSet& fonts) {
     const EyePanel::SnapMark& mark = panel.snapMark();
     CHECK(mark.shown);
     // On the bars' scale: 0.30 + 0.53 / 0.75 * 0.50 = 0.6533, times 0.9 for the fitted eye = 0.588; the bars run from
-    // x 472 over 682 px for 0..1.2, so 806 and 843; the bands end where the ease reaches 0.75 (0.64: 0.7267 / 0.654)
+    // x 472 over 682 px for 0..1.2, so 806 and 843
     CHECK(mark.x[0] == 806 && mark.x[1] == 843);
-    CHECK(mark.endX[0] == std::round(472 + 0.7267 * 0.9 / 1.2 * 682) && mark.endX[1] == std::round(472 + 0.7267 / 1.2 * 682));
     CHECK(!mark.faded[0] && !mark.faded[1]);
-    const SnapOnBar at = snapOnBar(0.53, 0.3, 0.8, 1.0);
-    CHECK(std::fabs(at.start - (0.3 + 0.53 / 0.75 * 0.5)) < 1e-12 && std::fabs(at.end - (0.3 + 0.64 / 0.75 * 0.5)) < 1e-12);
+    CHECK(std::fabs(snapOnBar(0.53, 0.3, 0.8, 1.0) - (0.3 + 0.53 / 0.75 * 0.5)) < 1e-12);
+    CHECK(std::fabs(snapOnBar(0.53, 0.3, 0.8, 0.9) - (0.3 + 0.53 / 0.75 * 0.5) * 0.9) < 1e-12);
     // The badge sits on its line (nothing of ① to ④ near), and the row's stepper is there
     CHECK(mark.badgeX == mark.x[0]);
     CHECK(hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 2);

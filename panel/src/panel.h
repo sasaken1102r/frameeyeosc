@@ -446,7 +446,6 @@ public:
     struct SnapMark {
         bool shown = false;                 ///< drawn (the "Fine-tune" page, and the snap not off)
         double x[2] = {NAN, NAN};           ///< each eye's line (px)
-        double endX[2] = {NAN, NAN};        ///< where each eye's band ends (px)
         bool faded[2] = {false, false};     ///< the cameras supply that eye, so it doesn't apply there
         double badgeX = NAN;                ///< the ⑤ badge's center (moved aside from ① to ④ where it would overlap)
     };

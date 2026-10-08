@@ -2871,9 +2871,9 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         if (!live) {
             textCentered(pen, barX + barW / 2, centerBaseline(top + 50, 20, 14), t.noEyeData, 14, kTextMuted, false);
         }
-        // Mark ⑤, lid_open_snap: where it lands on each eye's bar (snapOnBar; a fitted eye's own scale moves it), a
-        // light band on to where its ease reaches relaxed open, faded for an eye the cameras supply (it doesn't apply
-        // there); one line through both bars where they agree, else a tick on each. None while off (0.75)
+        // Mark ⑤, lid_open_snap: where it lands on each eye's bar (snapOnBar; a fitted eye's own scale moves it), faded
+        // for an eye the cameras supply (it doesn't apply there); one line through both bars where they agree, else a
+        // tick on each. None while off (0.75)
         snapMark_ = {};
         const double snap = v.number(key::kLidOpenSnap);
         const SettingSpec* snapSpec = findSetting(key::kLidOpenSnap);
@@ -2882,9 +2882,8 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             for (int eye = 0; eye < 2; ++eye) {
                 const double fixed = v.number(scaleKeys[eye]);
                 const double scale = widen.fitted[eye] && std::isfinite(fixed) ? fixed : 1.0;
-                const SnapOnBar at = snapOnBar(snap, v.number(key::kLidClosed), v.number(key::kLidOpen), scale);
-                snapMark_.x[eye] = std::round(xOf(at.start));
-                snapMark_.endX[eye] = std::round(xOf(at.end));
+                const double value = snapOnBar(snap, v.number(key::kLidClosed), v.number(key::kLidOpen), scale);
+                snapMark_.x[eye] = std::round(xOf(value));
                 snapMark_.faded[eye] = s.running && s.camera.used[eye];
             }
             snapMark_.shown = true;
@@ -2893,10 +2892,6 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             for (int eye = 0; eye < 2; ++eye) {
                 const double by = top + 50 + eye * 28;
                 const double x = snapMark_.x[eye];
-                const double alpha = snapMark_.faded[eye] ? 0.35 : 1.0;
-                cairo_set_source_rgba(cr, kSnap.r, kSnap.g, kSnap.b, 0.25 * alpha);
-                cairo_rectangle(cr, x, by + 1, std::max(0.0, snapMark_.endX[eye] - x), 18);
-                cairo_fill(cr);
                 if (together && eye == 1) continue;
                 // Dashes with dark edges, like the marks' lines, so they show on the accent fill too
                 cairo_set_dash(cr, dash, 2, 0);

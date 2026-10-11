@@ -126,6 +126,11 @@ pub struct Settings {
     /// In LiveLink mode, also send the eye camera's pupils (only those) straight to VRChat over OSC, on port 9000 of
     /// the LiveLink target's host: VRCFT's LiveLink module has no pupils. Ignored by the other outputs.
     pub pupils_to_vrchat: bool,
+    /// The eye camera's "closed" in one eye only is used once it is a blink (the other eye's camera saw its eye closed
+    /// too, or the eye tracker reads the other eye closing) or has lasted long enough to be a wink, and while looking
+    /// down no "closed" of the cameras is used unless the eye tracker reads an eye closing; see main.rs, CloseGate.
+    /// false: every "closed" at once.
+    pub camera_close_gate: bool,
     /// How the pupil dilation goes to VRChat besides the float: 0 = only the float, 1..=4 = also as that many bool
     /// parameters (PupilDilation1, 2, 4, 8), for avatars that take it bit-packed the way VRCFT does. One value for
     /// every avatar: the headset can't see which parameters the avatar has.
@@ -230,6 +235,7 @@ impl Default for Settings {
             native_eyes: false,
             camera_lids: true,
             pupils_to_vrchat: true,
+            camera_close_gate: true,
             pupil_bits: 0,
             eye_behavior: 2,
             lid_widen: Widen::Normal,
@@ -645,6 +651,10 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
     if given.contains("no_pupils_to_vrchat") {
         settings.pupils_to_vrchat = !args.no_pupils_to_vrchat;
         locked.push("pupils_to_vrchat");
+    }
+    if given.contains("no_camera_close_gate") {
+        settings.camera_close_gate = !args.no_camera_close_gate;
+        locked.push("camera_close_gate");
     }
     pin!(
         blink_sync_below,
@@ -1157,6 +1167,16 @@ mod tests {
         let (settings, locked) = merged(r#"{"pupils_to_vrchat": true}"#, &["--no-pupils-to-vrchat"]).unwrap();
         assert!(!settings.pupils_to_vrchat);
         assert_eq!(locked, ["pupils_to_vrchat"]);
+    }
+
+    #[test]
+    fn the_camera_close_gate_is_on_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.camera_close_gate);
+        assert!(!merged(r#"{"camera_close_gate": false}"#, &[]).unwrap().0.camera_close_gate);
+        assert!(merged(r#"{"camera_close_gate": 0}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"camera_close_gate": true}"#, &["--no-camera-close-gate"]).unwrap();
+        assert!(!settings.camera_close_gate);
+        assert_eq!(locked, ["camera_close_gate"]);
     }
 
     #[test]

@@ -356,6 +356,23 @@ const CAMERA_CLOSED_DOUBT_UNSURE_S: f64 = 0.25;
 // kept the wobble's low points: 15-50% more time partly closed.
 const CAMERA_RAISE_PEAK_S: f64 = 0.3;
 const CAMERA_RAISE_SHUT: f32 = 0.5;
+// The eye camera's "closed" for one eye (see CloseGate, camera_close_gate): used at once while the other eye's camera
+// sees its eye closed too or did within CLOSE_PAIR_S (a blink: in one wearer's recordings the two cameras' flags came
+// 10-40 ms apart), or the eye tracker reads the other eye closing (openness below CLOSE_WINK_OPEN: it catches one eye
+// of some blinks); in one eye only, once it has lasted CLOSE_WINK_S (a wink). Before that, the camera goes on as seeing
+// the eye as it last saw it open. Where the camera found an eye's pupil in only part of the frames (one wearer's right
+// eye: 1-2% of the frames), its "closed" fired while the eye was open, Valve reading it open with the pupil tracked: 61
+// times in 99 s, median 56 ms; too short for CAMERA_CLOSED_DOUBT_S, and not looking to the side. Winks need no word
+// from the eye tracker: on SteamOS 0.4.3 it read winked eyes 0.85-1.00 (6 cued winks of 2 s; the eye cameras saw every
+// one, 100% of each, in the winking eye only). Looking down further than CLOSE_DOWN_DEG (the eye tracker's own pitch,
+// before the eye fit) the upper lid follows the gaze over the pupil, and both cameras read the eyes closed (in cued
+// glances down: 57% of the time below -25 degrees, 6% from -25 to -18, under 0.3% above); there no "closed" of the
+// cameras is used unless the eye tracker reads an eye closing (a blink while looking down). The gate takes the camera's
+// eyelids as SideCheck leaves them (it goes first, from the camera's own).
+const CLOSE_PAIR_S: f64 = 0.15;
+const CLOSE_WINK_S: f64 = 0.2;
+const CLOSE_WINK_OPEN: f32 = 0.5;
+const CLOSE_DOWN_DEG: f32 = 18.0;
 // The camera's own eyelid goes nearly to 0 in a hard squint (0.00-0.06 with its squint at 1.0 on 2026-10-07), which
 // looks closed on an avatar, so an eye the camera sees open is held at --camera-lid-floor (camera_lid_floor) and the
 // squint parameter carries the rest; see Smoother::check_lids for when.
@@ -642,6 +659,10 @@ struct Args {
     /// In LiveLink mode, don't send the eye camera's pupils straight to VRChat (port 9000 of the target's host)
     #[arg(long)]
     no_pupils_to_vrchat: bool,
+    /// Act on every "closed" of the eye camera at once (by default one in one eye only waits until it is a blink or a
+    /// wink, and while looking down none is used unless the eye tracker reads an eye closing)
+    #[arg(long)]
+    no_camera_close_gate: bool,
     /// Where eyecam-rec's eye-camera values are read from [default: $XDG_RUNTIME_DIR/eyecam/live]
     #[arg(long, value_name = "PATH")]
     eyecam_live: Option<PathBuf>,
@@ -826,6 +847,8 @@ struct Smoother {
     side: SideCheck,
     // The camera's eyelid the eye server's is raised to (see CAMERA_RAISE_PEAK_S).
     raise_peak: RaisePeak,
+    // The camera's "closed" in one eye held back until it is a blink or a wink (see CLOSE_PAIR_S).
+    close_gate: CloseGate,
 }
 
 impl Smoother {
@@ -851,6 +874,7 @@ impl Smoother {
             camera_gap: [CameraGap::default(); 2],
             side: SideCheck::default(),
             raise_peak: RaisePeak::default(),
+            close_gate: CloseGate::default(),
         }
     }
 
@@ -955,11 +979,12 @@ impl Smoother {
         self.camera_gap = [CameraGap::default(); 2];
         self.side = SideCheck::default();
         self.raise_peak = RaisePeak::default();
+        self.close_gate = CloseGate::default();
     }
 
     /// Start over what only --eye-behavior 2 keeps (the camera's eyelid's doubt and gaps, the ceiling rule, the
-    /// cross-eye gate but for what the wear reads), for a switch between it and 1; the filters go on, so the eyes don't
-    /// jump.
+    /// cross-eye gate but for what the wear reads, the camera's held-back "closed"), for a switch between it and 1; the
+    /// filters go on, so the eyes don't jump.
     fn reset_behavior(&mut self) {
         self.lid_doubt = [LidDoubt::default(); 2];
         self.ceiling_since = [None; 2];
@@ -967,6 +992,24 @@ impl Smoother {
         self.camera_gap = [CameraGap::default(); 2];
         self.side = SideCheck::default();
         self.raise_peak = RaisePeak::default();
+        self.close_gate = CloseGate::default();
+    }
+
+    /// The camera's eyelids with a "closed" in one eye that is not yet a blink or a wink held back (see CloseGate), and
+    /// which eyes that held back; as they are with --eye-behavior 1 (which leaves the camera's "closed" alone) or
+    /// camera_close_gate off.
+    fn gate_closed(
+        &mut self,
+        settings: &Settings,
+        data: &EyeData,
+        lids: [Option<CameraLid>; 2],
+    ) -> ([Option<CameraLid>; 2], [bool; 2]) {
+        if settings.v2() && settings.camera_close_gate {
+            let pitch = gaze_angles(data.fixation_point)[1] * 45.0;
+            self.close_gate.check(data.sample_time, lids, data.openness, pitch)
+        } else {
+            (lids, [false; 2])
+        }
     }
 
     /// Each eye's camera eyelid at `time` with its short gaps bridged, and the one held through a gap (see
@@ -1513,6 +1556,86 @@ fn outward_degrees(data: &EyeData) -> [f32; 2] {
 /// server is of that eye. Infinite where either is not a number, which gaze_quality counts as unreliable too.
 fn gaze_variance(data: &EyeData) -> [f32; 2] {
     data.pre_fusion_covariance.map(|[x, y, _]| if x.is_finite() && y.is_finite() { x.max(y) } else { f32::INFINITY })
+}
+
+/// The eye camera's "closed" in one eye only, held back unless it is a blink or a held wink (see CLOSE_PAIR_S).
+#[derive(Clone, Copy, Debug)]
+struct CloseGate {
+    // Per eye: since when the camera has said closed, when it last did, whether this closing is a blink, and the
+    // camera's eyelid when it last saw the eye not closed.
+    since: [Option<f64>; 2],
+    last: [f64; 2],
+    paired: [bool; 2],
+    open_lid: [f32; 2],
+}
+
+impl Default for CloseGate {
+    fn default() -> Self {
+        Self {
+            since: [None; 2],
+            last: [f64::NEG_INFINITY; 2],
+            paired: [false; 2],
+            open_lid: [LID_RELAXED; 2],
+        }
+    }
+}
+
+/// Whether the eye tracker reads an eye closing, for CloseGate: openness below CLOSE_WINK_OPEN. Not its own gaze
+/// variance (its pupil hidden at 0.02 or more): on one headset the left eye's runs 0.0125 at the median and 0.023 at
+/// p90 while open (over 150 s), so it said "closing" a tenth of the time and paired false right-eye "closed" with it as
+/// blinks.
+fn tracker_reads_closing(openness: f32) -> bool {
+    openness < CLOSE_WINK_OPEN
+}
+
+impl CloseGate {
+    /// The camera's eyelids at `time` (`lids`, as CameraSmoother::take gives them) with a "closed" that is not a blink
+    /// or a wink replaced by the eye's last eyelid before it (so the camera carries on as seeing the eye open, not as a
+    /// gap, and a wink that is let through closes at once), and which eyes that held back. `openness` is the eye
+    /// tracker's per eye and `pitch` its gaze up/down (degrees, + up) for the same sample. A blink, let through to the
+    /// end of the closing: the other eye's camera saw its eye closed now or within CLOSE_PAIR_S, or the eye tracker
+    /// reads the other eye closing. A wink: CLOSE_WINK_S on. Neither while looking down (CLOSE_DOWN_DEG) unless the eye
+    /// tracker reads an eye closing.
+    fn check(
+        &mut self,
+        time: f64,
+        lids: [Option<CameraLid>; 2],
+        openness: [f32; 2],
+        pitch: f32,
+    ) -> ([Option<CameraLid>; 2], [bool; 2]) {
+        for (eye, lid) in lids.iter().enumerate() {
+            match lid {
+                Some(lid) if lid.closed => {
+                    if self.since[eye].is_none() {
+                        self.since[eye] = Some(time);
+                        self.paired[eye] = false;
+                    }
+                    self.last[eye] = time;
+                }
+                Some(lid) => {
+                    self.since[eye] = None;
+                    self.open_lid[eye] = lid.lid;
+                }
+                None => self.since[eye] = None,
+            }
+        }
+        let tracker = openness.map(tracker_reads_closing);
+        let down = pitch < -CLOSE_DOWN_DEG && !tracker.contains(&true);
+        let mut held = [false; 2];
+        let lids = std::array::from_fn(|eye| {
+            let lid = lids[eye]?;
+            let Some(since) = self.since[eye] else {
+                return Some(lid);
+            };
+            // Without the other eye's camera values there is nothing to pair with: as without the gate
+            let other = 1 - eye;
+            self.paired[eye] |= lids[other].is_none() || time - self.last[other] <= CLOSE_PAIR_S || tracker[other];
+            let wink = time - since >= CLOSE_WINK_S - 1e-9;
+            held[eye] = down || !(self.paired[eye] || wink);
+            Some(if held[eye] { CameraLid { lid: self.open_lid[eye], closed: false, ..lid } } else { lid })
+        });
+        (lids, held)
+    }
 }
 
 /// Per eye, how the eye server's eyelid and the eye camera's have agreed lately (see Smoother::check_lids).
@@ -3062,6 +3185,9 @@ struct Sample {
     closed_overruled: [bool; 2],
     // Whether intentional cross-eye was let through (--independent-eyes; see CrossEye).
     cross_eye: bool,
+    // Per eye: the camera's "closed" was held back, not a blink or a wink yet (see CloseGate). The replay reads it.
+    #[cfg_attr(not(test), allow(dead_code))]
+    close_held: [bool; 2],
 }
 
 impl Sample {
@@ -3173,9 +3299,10 @@ fn process(
     // easing or far-down slope, the camera only for widening, no floor, no ceiling rule, no shared widening)
     let v2 = settings.v2();
     let mut cross_eye = false;
-    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from) = if settings.raw {
+    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
         let camera_lids = side_checked(smoother, data, camera_lids, v2);
+        let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
         let corrected = correct_gaze(raw_gaze, settings);
         let unscaled_gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes, v2);
         let gaze = scale_gaze(unscaled_gaze, settings);
@@ -3222,12 +3349,14 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let shut_eyes = data.openness.iter().any(|openness| *openness < settings.gaze_hold_below);
-        (gaze, unscaled_gaze, lids, shut_eyes, openness_scaled, camera, lid_from)
+        (gaze, unscaled_gaze, lids, shut_eyes, openness_scaled, camera, lid_from, close_held)
     } else {
         let dt = smoother.advance(data.sample_time);
         // After advance(), which starts the smoothing over after a gap
         let (camera_lids, camera) = smoother.camera.take(settings, camera, true);
         let camera_lids = side_checked(smoother, data, camera_lids, v2);
+        // A "closed" in one eye that is not a blink or a wink yet: the camera's last open eyelid (see CloseGate)
+        let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
         let raise_to = if v2 { smoother.raise_peak.step(data.sample_time, data.openness, camera_lids) } else { [None; 2] };
         // With --eye-behavior 2 short gaps in the camera's eyelid are bridged (see CAMERA_GAP_HOLD)
         let (camera_lids, held) =
@@ -3350,7 +3479,7 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let openness_scaled = lid_inputs_with(data.openness, vertical, scales, settings, fits);
-        (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from)
+        (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from, close_held)
     };
     Sample {
         openness: data.openness,
@@ -3365,6 +3494,7 @@ fn process(
         lid_from,
         closed_overruled: if v2 { smoother.side.overruled } else { [false; 2] },
         cross_eye,
+        close_held,
     }
 }
 
@@ -6196,6 +6326,7 @@ mod tests {
             lid_from: [LidFrom::EyeServer; 2],
             closed_overruled: [false; 2],
             cross_eye: false,
+            close_held: [false; 2],
         }
     }
 
@@ -8078,6 +8209,93 @@ mod tests {
         }
     }
 
+    /// Two seconds of samples with the camera's "closed" per eye from `closed(sample index)` (eyelid 0 then, else
+    /// relaxed open) and the eye tracker's openness from `openness`.
+    fn closed_run(
+        settings: &Settings,
+        closed: impl Fn(usize) -> [bool; 2],
+        openness: impl Fn(usize) -> [f32; 2],
+    ) -> Vec<Sample> {
+        let mut smoother = Smoother::new(settings);
+        camera_samples(settings, &mut smoother, 100.0, 2.0, openness, |i| {
+            let [left, right] = closed(i).map(|closed| (if closed { 0.0 } else { 0.75 }, 0.0, closed));
+            Some(camera_eyes([left, right]))
+        })
+    }
+
+    #[test]
+    fn the_cameras_closed_in_one_eye_waits_until_it_is_a_blink_or_a_wink() {
+        let settings = camera_settings();
+        let open = |_: usize| [1.0; 2];
+        // The right eye's camera says closed for 5 samples while the left one sees its eye open and the eye tracker
+        // reads both open: held back, the right eye stays open
+        let flicker = |i: usize| [false, (40..45).contains(&i)];
+        let sent = closed_run(&settings, flicker, open);
+        assert!(sent.iter().all(|sample| sample.lids[1] > 0.7), "{:?}", sent[43].lids);
+        assert!(sent[40..45].iter().all(|sample| sample.close_held == [false, true]));
+        assert!(!sent[45].close_held[1] && !sent[39].close_held[1]);
+        // As before without the gate: closed at once
+        let ungated = Settings { camera_close_gate: false, ..settings.clone() };
+        let sent = closed_run(&ungated, flicker, open);
+        assert_eq!(sent[41].lids[1], 0.0);
+        assert!(sent.iter().all(|sample| sample.close_held == [false; 2]));
+        // Both cameras closed (a blink), also two samples apart: both eyes close
+        let sent = closed_run(&settings, |i| [(40..55).contains(&i), (40..55).contains(&i)], open);
+        assert_eq!(sent[41].lids, [0.0; 2]);
+        let sent = closed_run(&settings, |i| [(40..55).contains(&i), (42..57).contains(&i)], open);
+        assert_eq!(sent[40].close_held, [true, false]);
+        assert_eq!(sent[43].lids, [0.0; 2]);
+        // ...and once let through, a closing stays through to its end, also after the other eye has opened
+        assert_eq!(sent[56].lids[1], 0.0);
+        // The eye tracker reads the other eye closing (it caught that eye of the blink, the camera this one): a blink
+        let sent = closed_run(&settings, flicker, |i| if (38..47).contains(&i) { [0.4, 1.0] } else { [1.0; 2] });
+        let closed = |sample: &Sample| sample.lids[1] == 0.0 && !sample.close_held[1];
+        assert!(sent[40..45].iter().all(closed), "{:?}", sent[41].lids);
+        // A wink, which the eye tracker reads open all along (SteamOS 0.4.3): closed from CLOSE_WINK_S (18 samples) on,
+        // the other eye open (shorter than CAMERA_CLOSED_DOUBT_S: these samples have the eye server sure of the eye,
+        // and a longer one is SideCheck's to doubt)
+        let wink = |i: usize| [false, (40..84).contains(&i)];
+        let sent = closed_run(&settings, wink, open);
+        assert!(sent[40..57].iter().all(|sample| sample.lids[1] > 0.1 && sample.close_held[1]), "{:?}", sent[50].lids);
+        let winked = |sample: &Sample| sample.lids[1] == 0.0 && sample.lids[0] > 0.7;
+        assert!(sent[59..84].iter().all(winked), "{:?}", sent[60].lids);
+        // Looking 25 degrees down both cameras read closed: held back, the eyes stay open...
+        let both = |i: usize| [(40..130).contains(&i); 2];
+        let down = camera_samples_down(&settings, 25.0, 2.0, open, |i| {
+            let [left, right] = both(i).map(|closed| (if closed { 0.0 } else { 0.75 }, 0.0, closed));
+            Some(camera_eyes([left, right]))
+        });
+        // (from CAMERA_CLOSED_DOUBT_S on, with the eye server sure of open eyes, SideCheck takes them as open first)
+        let held_open = |sample: &Sample| {
+            (sample.close_held == [true; 2] || sample.closed_overruled == [true; 2])
+                && sample.lids.iter().all(|lid| *lid > 0.5)
+        };
+        assert!(down[40..130].iter().all(held_open), "{:?}", down[60].lids);
+        assert!(down[40..80].iter().all(|sample| sample.close_held == [true; 2]));
+        // ...unless the eye tracker reads an eye closing: a blink while looking down closes
+        let shut = |i: usize| if (40..55).contains(&i) { [0.3; 2] } else { [1.0; 2] };
+        let blink_down = camera_samples_down(&settings, 25.0, 2.0, shut, |i| {
+            let closed = (40..55).contains(&i);
+            Some(camera_eyes([(if closed { 0.0 } else { 0.75 }, 0.0, closed); 2]))
+        });
+        assert!(blink_down[42..55].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", blink_down[45].lids);
+        // 10 degrees down is not far enough for that: a blink of both cameras closes
+        let blink_10 = camera_samples_down(&settings, 10.0, 2.0, open, |i| {
+            let closed = (40..55).contains(&i);
+            Some(camera_eyes([(if closed { 0.0 } else { 0.75 }, 0.0, closed); 2]))
+        });
+        assert!(blink_10[41..55].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", blink_10[45].lids);
+        // Without the other eye's camera values there is nothing to pair with: closed at once, as before
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 1.0, open, |i| {
+            let closed = (40..45).contains(&i);
+            let mut live = camera_eyes([(0.75, 0.0, false), (if closed { 0.0 } else { 0.75 }, 0.0, closed)]);
+            live.fresh[0] = false;
+            Some(live)
+        });
+        assert_eq!(sent[41].lids[1], 0.0);
+    }
+
     #[test]
     fn a_blink_the_camera_sees_open_still_closes() {
         let settings = camera_settings();
@@ -8247,7 +8465,8 @@ mod tests {
 
     #[test]
     fn the_cameras_closed_is_doubted_while_looking_to_the_side() {
-        let settings = camera_settings();
+        // One eye's camera only: without the close gate, which holds such a "closed" back until it is a wink
+        let settings = Settings { camera_close_gate: false, ..camera_settings() };
         let run = |deg: f32, shut: [std::ops::Range<usize>; 2]| side_samples(&settings, deg, shut, 90..270);
         // gaze_angles' x is positive to the right: looking left is the left eye outward, the right eye inward
         let left = EyeData { gaze: [[-(25f32.to_radians().tan()), 0.0, -1.0]; 2], ..EyeData::default() };
@@ -8419,7 +8638,8 @@ mod tests {
 
     #[test]
     fn a_long_closed_of_the_cameras_is_doubted_while_the_eye_server_reads_the_eye_open_and_is_sure() {
-        let settings = camera_settings();
+        // One eye's camera only: without the close gate, which holds such a "closed" back until it is a wink
+        let settings = Settings { camera_close_gate: false, ..camera_settings() };
         let sure = |_| 0.001;
         // 2026-10-12 01:01, lying: the camera reads the open left eye closed for 3.3 s; the eye server reads it open
         let sent = doubt_samples(&settings, |_| [0.9; 2], sure, 90..390);
@@ -8437,7 +8657,8 @@ mod tests {
 
     #[test]
     fn a_blink_the_eye_server_misses_still_closes_however_sure_it_is() {
-        let settings = camera_settings();
+        // One eye's camera only: without the close gate, which holds such a "closed" back until it is a wink
+        let settings = Settings { camera_close_gate: false, ..camera_settings() };
         // 0.1, 0.3 and 0.45 s (blinks are 70-400 ms): closed all along
         for samples in [9, 27, 40] {
             let sent = doubt_samples(&settings, |_| [0.9; 2], |_| 0.001, 90..90 + samples);
@@ -8448,7 +8669,8 @@ mod tests {
 
     #[test]
     fn the_cameras_closed_stands_where_the_eye_server_read_the_eye_closing_in_it() {
-        let settings = camera_settings();
+        // One eye's camera only: without the close gate, which holds such a "closed" back until it is a wink
+        let settings = Settings { camera_close_gate: false, ..camera_settings() };
         let sure = |_| 0.001;
         // The eye server reads the left eye closing for a moment 1.2 s into the camera's 3.3 s closed: closed to its end
         let dip = |i: usize| if (198..203).contains(&i) { [0.4, 0.9] } else { [0.9; 2] };
@@ -8468,7 +8690,8 @@ mod tests {
 
     #[test]
     fn a_long_closed_of_the_cameras_that_began_with_a_blink_is_doubted_from_the_blinks_end() {
-        let settings = camera_settings();
+        // One eye's camera only: without the close gate, which holds such a "closed" back until it is a wink
+        let settings = Settings { camera_close_gate: false, ..camera_settings() };
         let sure = |_| 0.001;
         // The eye server reads a blink over the first 0.1 s of the camera's closed (which goes on for 3.3 s): closed until
         // CAMERA_CLOSED_DOUBT_S after its last sample below CAMERA_CLOSED_DOUBT_OPEN (99), then its last open eyelid
@@ -8486,7 +8709,8 @@ mod tests {
 
     #[test]
     fn the_cameras_closed_stands_while_the_eye_server_is_unsure_of_the_eye() {
-        let settings = camera_settings();
+        // One eye's camera only: without the close gate, which holds such a "closed" back until it is a wink
+        let settings = Settings { camera_close_gate: false, ..camera_settings() };
         // Once taken as open, the variance's spikes shorter than CAMERA_CLOSED_DOUBT_UNSURE_S leave it open
         let spikes = |i: usize| if (200..202).contains(&i) || (250..270).contains(&i) { 0.05 } else { 0.001 };
         let sent = doubt_samples(&settings, |_| [0.9; 2], spikes, 90..390);
@@ -8562,7 +8786,9 @@ mod tests {
 
     #[test]
     fn an_eye_the_camera_sees_closed_is_closed() {
-        let settings = camera_settings();
+        // Without the close gate: in one eye only, which the gate holds back unless it is a blink or a wink (see
+        // the_cameras_closed_in_one_eye_waits_until_it_is_a_blink_or_a_wink)
+        let settings = Settings { camera_close_gate: false, ..camera_settings() };
         // The eye server misses a 100 ms blink of the left eye (9 samples) that the camera sees
         let cameras = |i: usize| {
             Some(if (90..99).contains(&i) { camera_eyes([(0.0, 0.0, true), (0.75, 0.0, false)]) } else { camera(0.75, 0.0) })
@@ -8852,9 +9078,11 @@ mod tests {
             |i| Some(if (45..63).contains(&i) { camera(0.05, 0.0) } else { camera(0.75, 0.0) }),
         );
         assert!(sent[46..64].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", sent[60].lids);
-        // The camera sees the left eye closed while the eye server reads it open
-        let mut smoother = Smoother::new(&settings);
-        let sent = camera_samples(&settings, &mut smoother, 100.0, 1.0, |_| [0.8; 2], |i| {
+        // The camera sees the left eye closed while the eye server reads it open (without the close gate, which would
+        // hold a "closed" in one eye this short back)
+        let ungated = Settings { camera_close_gate: false, ..settings.clone() };
+        let mut smoother = Smoother::new(&ungated);
+        let sent = camera_samples(&ungated, &mut smoother, 100.0, 1.0, |_| [0.8; 2], |i| {
             Some(if (45..54).contains(&i) { camera_eyes([(0.0, 0.0, true), (0.75, 0.0, false)]) } else { camera(0.75, 0.0) })
         });
         assert!(sent[45..54].iter().all(|sample| sample.lids[0] == 0.0));

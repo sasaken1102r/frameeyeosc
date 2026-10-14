@@ -299,7 +299,7 @@ FrameEyeOSC is a VRCFaceTracking module made for frameeyeosc (its own repository
 
 Notes:
 
-- Each sample goes out as one small UDP packet (72 bytes; the layout is in [docs/protocol.md](docs/protocol.md)): per eye the gaze, the eyelid (0 closed, 0.75 relaxed, 1 widened, as in VRChat mode), and with the eye cameras the squint and the pupil (in mm and as a dilation). VRCFaceTracking's eyelids, gaze, squint and pupil parameters then come out the same as in VRChat mode.
+- Each sample goes out as one small UDP packet (76 bytes; the layout is in [docs/protocol.md](docs/protocol.md)): per eye the gaze, the eyelid (0 closed, 0.75 relaxed, 1 widened, as in VRChat mode), and with the eye cameras the squint and the pupil (in mm and as a dilation). VRCFaceTracking's eyelids, gaze, squint and pupil parameters then come out the same as in VRChat mode.
 - Every eye sample is sent (90 or more a second): the module takes in all that arrived and keeps the newest, so it doesn't fall behind.
 - No pupils go straight to VRChat in this mode, so `pupils_to_vrchat` and `pupil_bits` don't apply, and neither do `prefix`, `eye_tracking_active` and `steamlink_params`.
 - The module doesn't smooth anything, so frameeyeosc's own smoothing settings apply as they are.

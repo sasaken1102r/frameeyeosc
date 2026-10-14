@@ -299,7 +299,7 @@ FrameEyeOSC は frameeyeosc 専用の VRCFaceTracking モジュールです（�
 
 注意:
 
-- 1 サンプルを小さな UDP パケット 1 つ（72 バイト。中身は [docs/protocol.md](docs/protocol.md)）で送ります: 左右それぞれの視線、まぶた（VRChat モードと同じ 0 閉じ、0.75 普通に開いた目、1 見開き）、目のカメラを使っているときは細めと瞳孔（mm と開き具合）。VRCFaceTracking のまぶた・視線・細め・瞳孔のパラメータは VRChat モードと同じ値になります
+- 1 サンプルを小さな UDP パケット 1 つ（76 バイト。中身は [docs/protocol.md](docs/protocol.md)）で送ります: 左右それぞれの視線、まぶた（VRChat モードと同じ 0 閉じ、0.75 普通に開いた目、1 見開き）、目のカメラを使っているときは細めと瞳孔（mm と開き具合）。VRCFaceTracking のまぶた・視線・細め・瞳孔のパラメータは VRChat モードと同じ値になります
 - 目のデータは全部（毎秒 90 回以上）送ります。モジュールは届いた分をまとめて読んでいちばん新しい値を使うので、遅れていきません
 - このモードでは瞳孔を VRChat に直接は送らないので、`pupils_to_vrchat` と `pupil_bits` は関係ありません。`prefix`、`eye_tracking_active`、`steamlink_params` も関係ありません
 - モジュールは何もなめらかにしないので、frameeyeosc のなめらかさの設定がそのまま効きます

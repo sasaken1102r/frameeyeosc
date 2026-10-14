@@ -20,18 +20,19 @@ The same file is kept in both repositories (frameeyeosc `docs/protocol.md` and V
 
 ## Layout
 
-72 bytes, little-endian, no padding. `f32` is IEEE 754 single precision.
+76 bytes, little-endian, no padding. `f32` is IEEE 754 single precision.
 
 | Offset | Size | Type | Field | Meaning |
 |---:|---:|---|---|---|
 | 0 | 4 | `u8[4]` | magic | ASCII `FEO1` (`46 45 4F 31`) |
 | 4 | 2 | `u16` | version | `1` |
-| 6 | 2 | `u16` | length | Bytes of the packet: `72` |
+| 6 | 2 | `u16` | length | Bytes of the packet: `76` |
 | 8 | 4 | `u32` | sequence | +1 per packet, wraps; starts at 0 when frameeyeosc starts |
 | 12 | 4 | `u32` | flags | See below |
 | 16 | 8 | `u64` | time_us | Sender's wall clock, microseconds since the Unix epoch (diagnostics only) |
 | 24 | 24 | eye | left | The left eye |
 | 48 | 24 | eye | right | The right eye |
+| 72 | 4 | `u32` | session | Random and not 0, new each time frameeyeosc starts (see "Ordering") |
 
 Each eye (24 bytes):
 
@@ -61,12 +62,16 @@ frameeyeosc's other outputs).
 ## Receiving rules
 
 - Drop a datagram that is shorter than 24 bytes, does not start with `FEO1`, has another `version`, has `length`
-  below 72, or is shorter than `length`. Bytes after the first 72 (a later compatible version) are ignored.
+  below 72, or is shorter than `length`. Bytes after the first 76 (a later compatible version) are ignored. A packet
+  with `length` 72 to 75 (the first draft, without `session`) is read with `session` 0.
 - Drop a packet with any non-finite float.
 - Compatible additions append fields and raise `length`; an incompatible change raises `version`.
-- Ordering: a packet whose `sequence` is at most 1000 behind the newest one taken (`(int32)(sequence - newest)` in
-  -1000..0) is a duplicate or late and is dropped; anything else is taken (a jump back further than that is
-  frameeyeosc restarting). After a timeout, any packet is taken.
+- Ordering: a packet whose `session` differs from the newest one taken is taken, and the window below starts over
+  from it: frameeyeosc started again, and its `sequence` with it. From then on a packet from the session before (not
+  0) is a straggler from the old run and is dropped. Within one session, a packet whose `sequence` is at
+  most 1000 behind the newest one taken (`(int32)(sequence - newest)` in -1000..0) is a duplicate or late and is
+  dropped; anything else is taken (a jump back further than that is also read as a restart, for senders without a
+  `session`). After a timeout, any packet is taken.
 
 ## How the module maps it to VRCFT
 
@@ -89,12 +94,13 @@ Per eye, from a `TRACKING` packet:
 ## Example
 
 Sequence 7, flags `TRACKING | LEFT_CAMERA_LID | LEFT_PUPIL | RIGHT_PUPIL` (27), time_us 1700000000123456;
-left eye 0.25, -0.5, 0.875, 0.5, 4.0, 0.25; right eye 0.125, -0.5, 0.375, 0.0, 3.5, 0.75:
+left eye 0.25, -0.5, 0.875, 0.5, 4.0, 0.25; right eye 0.125, -0.5, 0.375, 0.0, 3.5, 0.75; session 0x2a5f11c3:
 
 ```
-46454f3101004800070000001b00000040222018240a0600
+46454f3101004c00070000001b00000040222018240a0600
 0000803e000000bf0000603f0000003f000080400000803e
 0000003e000000bf0000c03e00000000000060400000403f
+c3115f2a
 ```
 
 Both repositories' tests check these bytes.

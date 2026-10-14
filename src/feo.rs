@@ -1,15 +1,17 @@
 //! FrameEyeOSC packets (FEO1, version 1), for the FrameEyeOSC module for VRCFaceTracking (`--output frameeyeosc`).
 //!
 //! The layout, and how the module (VRCFT-FrameEyeOSC, FrameEyeOSC/EyeMapper.cs) turns a packet into VRCFT's eye data,
-//! are in docs/protocol.md. In short: 72 bytes, little-endian; a header (magic, version, length, sequence, flags, time)
-//! and per eye the gaze, the VRCFT eyelid, the eye camera's squint and the pupil in mm and as a dilation, with flags
-//! saying which of the camera's values are there. Unlike the LiveLink module, this one has pupils, so VRCFT sends them
+//! are in docs/protocol.md. In short: 76 bytes, little-endian; a header (magic, version, length, sequence, flags, time),
+//! per eye the gaze, the VRCFT eyelid, the eye camera's squint and the pupil in mm and as a dilation, with flags saying
+//! which of the camera's values are there, and a session number new each time frameeyeosc starts (so the module takes a
+//! restarted frameeyeosc, whose sequence starts over, at once). Unlike the LiveLink module, this one has pupils, so VRCFT sends them
 //! to each avatar in the form it takes them.
 
+use std::hash::{BuildHasher, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_PORT: u16 = 11112;
-pub const PACKET_LEN: usize = 72;
+pub const PACKET_LEN: usize = 76;
 const MAGIC: &[u8; 4] = b"FEO1";
 const VERSION: u16 = 1;
 // Flags
@@ -42,13 +44,23 @@ impl Eye {
     };
 }
 
+/// A session number for this run: random, never 0. RandomState is seeded from the OS's random source once per
+/// process, and the time and process id go in too.
+pub fn new_session() -> u32 {
+    let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+    hasher.write_u64(time_us(SystemTime::now()));
+    hasher.write_u32(std::process::id());
+    (hasher.finish() as u32).max(1)
+}
+
 /// Microseconds since the Unix epoch (the packet's time stamp, only for diagnostics).
 pub fn time_us(now: SystemTime) -> u64 {
     now.duration_since(UNIX_EPOCH).map_or(0, |since| since.as_micros() as u64)
 }
 
-/// One packet. `tracking` false says the eye values are not live (they should then be `Eye::NEUTRAL`).
-pub fn packet(sequence: u32, tracking: bool, time_us: u64, eyes: [Eye; 2]) -> [u8; PACKET_LEN] {
+/// One packet of this run's `session`. `tracking` false says the eye values are not live (they should then be
+/// `Eye::NEUTRAL`).
+pub fn packet(session: u32, sequence: u32, tracking: bool, time_us: u64, eyes: [Eye; 2]) -> [u8; PACKET_LEN] {
     let mut flags = if tracking { TRACKING } else { 0 };
     for (side, eye) in eyes.iter().enumerate() {
         if eye.squint.is_some() {
@@ -73,6 +85,7 @@ pub fn packet(sequence: u32, tracking: bool, time_us: u64, eyes: [Eye; 2]) -> [u
             packet[at..at + 4].copy_from_slice(&value.to_le_bytes());
         }
     }
+    packet[72..76].copy_from_slice(&session.to_le_bytes());
     packet
 }
 
@@ -108,6 +121,7 @@ pub mod tests {
             return None;
         }
         let length = usize::from(u16_at(6));
+        // (the session only decides which packets are taken, see SequenceFilter.cs)
         if length < 72 || packet.len() < length {
             return None;
         }
@@ -154,17 +168,18 @@ pub mod tests {
             squint: None,
             pupil: Some((3.5, 0.75)),
         };
-        let packet = packet(7, true, 1_700_000_000_123_456, [left, right]);
-        let expected = "46454f3101004800070000001b00000040222018240a0600\
+        let packet = packet(0x2a5f_11c3, 7, true, 1_700_000_000_123_456, [left, right]);
+        let expected = "46454f3101004c00070000001b00000040222018240a0600\
                         0000803e000000bf0000603f0000003f000080400000803e\
-                        0000003e000000bf0000c03e00000000000060400000403f";
+                        0000003e000000bf0000c03e00000000000060400000403f\
+                        c3115f2a";
         let hex: String = packet.iter().map(|byte| format!("{byte:02x}")).collect();
         assert_eq!(hex, expected);
     }
 
     #[test]
     fn flags_say_which_camera_values_are_there() {
-        let flags = |tracking, eyes| u32::from_le_bytes(packet(0, tracking, 0, eyes)[12..16].try_into().unwrap());
+        let flags = |tracking, eyes| u32::from_le_bytes(packet(1, 0, tracking, 0, eyes)[12..16].try_into().unwrap());
         assert_eq!(flags(false, [Eye::NEUTRAL; 2]), 0);
         assert_eq!(flags(true, [Eye::NEUTRAL; 2]), 1);
         let squint = Eye { squint: Some(0.2), ..Eye::NEUTRAL };
@@ -174,17 +189,21 @@ pub mod tests {
         assert_eq!(flags(true, [pupil, Eye::NEUTRAL]), 1 | 8);
         assert_eq!(flags(true, [Eye::NEUTRAL, pupil]), 1 | 16);
         // Values that are not there go out as 0
-        let packet = packet(0, true, 0, [Eye { lid: 0.5, ..Eye::NEUTRAL }; 2]);
+        let packet = packet(1, 0, true, 0, [Eye { lid: 0.5, ..Eye::NEUTRAL }; 2]);
         assert_eq!(packet[36..48], [0; 12]);
         assert_eq!(packet[60..72], [0; 12]);
     }
 
     #[test]
     fn the_header_counts_and_stamps() {
-        let packet = packet(0xffff_ffff, true, 5, [Eye::NEUTRAL; 2]);
-        assert_eq!(&packet[0..8], b"FEO1\x01\x00\x48\x00");
+        let packet = packet(9, 0xffff_ffff, true, 5, [Eye::NEUTRAL; 2]);
+        assert_eq!(&packet[0..8], b"FEO1\x01\x00\x4c\x00");
         assert_eq!(packet[8..12], [0xff; 4]);
         assert_eq!(packet[16..24], 5u64.to_le_bytes());
+        assert_eq!(packet[72..76], 9u32.to_le_bytes());
+        // A new session each run, never 0
+        let sessions: std::collections::HashSet<u32> = (0..20).map(|_| new_session()).collect();
+        assert!(sessions.len() > 15 && !sessions.contains(&0));
         let time = UNIX_EPOCH + std::time::Duration::from_micros(1_700_000_000_123_456);
         assert_eq!(time_us(time), 1_700_000_000_123_456);
         assert_eq!(time_us(UNIX_EPOCH - std::time::Duration::from_secs(1)), 0);
@@ -195,7 +214,7 @@ pub mod tests {
         for lid in [0.0, 0.1, 0.375, 0.6, 0.75, 0.8, 0.875, 1.0] {
             let left = Eye { gaze: [0.2, -0.3], lid, ..Eye::NEUTRAL };
             let right = Eye { gaze: [0.25, -0.3], lid: 1.0 - lid, ..Eye::NEUTRAL };
-            let ([left, right], pupils) = module_eyes(&packet(1, true, 0, [left, right])).unwrap();
+            let ([left, right], pupils) = module_eyes(&packet(1, 1, true, 0, [left, right])).unwrap();
             // VRCFT's EyeLid is the eyelid --output vrchat sends
             assert!((left.vrcft_lid() - lid).abs() < 1e-6, "{lid}: {left:?}");
             assert!((right.vrcft_lid() - (1.0 - lid)).abs() < 1e-6, "{lid}: {right:?}");
@@ -206,14 +225,14 @@ pub mod tests {
         // Squint and pupils: VRCFT's PupilDiameterLeft/Right are --output vrchat's (cm), its PupilDilation the mean
         let left = Eye { squint: Some(0.4), pupil: Some((4.0, 0.25)), ..Eye::NEUTRAL };
         let right = Eye { pupil: Some((3.0, 0.75)), ..Eye::NEUTRAL };
-        let ([left, right], pupils) = module_eyes(&packet(1, true, 0, [left, right])).unwrap();
+        let ([left, right], pupils) = module_eyes(&packet(1, 1, true, 0, [left, right])).unwrap();
         assert_eq!((left.squint, right.squint), (0.4, 0.0));
         let [diameter_left, diameter_right, dilation] = pupils.unwrap();
         assert_eq!((diameter_left, diameter_right), (0.4, 0.3));
         assert!((dilation - 0.5).abs() < 1e-6);
         // One eye's pupil stands for both
         let right = Eye { pupil: Some((3.0, 0.75)), ..Eye::NEUTRAL };
-        let (_, pupils) = module_eyes(&packet(1, true, 0, [Eye::NEUTRAL, right])).unwrap();
+        let (_, pupils) = module_eyes(&packet(1, 1, true, 0, [Eye::NEUTRAL, right])).unwrap();
         let [diameter_left, diameter_right, dilation] = pupils.unwrap();
         assert_eq!((diameter_left, diameter_right), (0.3, 0.3));
         assert!((dilation - 0.75).abs() < 1e-6);
@@ -222,14 +241,14 @@ pub mod tests {
     #[test]
     fn not_tracking_is_relaxed_open_and_straight_ahead() {
         let neutral = ModuleEye { gaze: [0.0; 2], openness: 1.0, wide: 0.0, squint: 0.0 };
-        let (eyes, pupils) = module_eyes(&packet(3, false, 0, [Eye::NEUTRAL; 2])).unwrap();
+        let (eyes, pupils) = module_eyes(&packet(1, 3, false, 0, [Eye::NEUTRAL; 2])).unwrap();
         assert_eq!((eyes, pupils), ([neutral; 2], None));
         assert_eq!(neutral.vrcft_lid(), 0.75);
         // So is a tracking packet with neutral eyes
-        let (eyes, _) = module_eyes(&packet(3, true, 0, [Eye::NEUTRAL; 2])).unwrap();
+        let (eyes, _) = module_eyes(&packet(1, 3, true, 0, [Eye::NEUTRAL; 2])).unwrap();
         assert_eq!(eyes, [neutral; 2]);
         // The module drops what is not a packet
-        assert!(module_eyes(&packet(3, true, 0, [Eye::NEUTRAL; 2])[..71]).is_none());
+        assert!(module_eyes(&packet(1, 3, true, 0, [Eye::NEUTRAL; 2])[..75]).is_none());
         assert!(module_eyes(b"FEO2").is_none());
     }
 }

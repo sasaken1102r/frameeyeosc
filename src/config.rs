@@ -131,6 +131,11 @@ pub struct Settings {
     /// down no "closed" of the cameras is used unless the eye tracker reads an eye closing; see main.rs, CloseGate.
     /// false: every "closed" at once.
     pub camera_close_gate: bool,
+    /// The eye camera's "closed" for an eye the eye server has read open, and been sure of, for longer than a blink is
+    /// taken as open (lying down, the camera loses the pupil at its window's edge); see main.rs, CAMERA_CLOSED_DOUBT_S.
+    /// false: it is not, for a headset whose eye server reads a closed eye open and is sure of it. Looking to the side
+    /// (CAMERA_SIDE_DEG) is checked either way.
+    pub camera_closed_doubt: bool,
     /// How the pupil dilation goes to VRChat besides the float: 0 = only the float, 1..=4 = also as that many bool
     /// parameters (PupilDilation1, 2, 4, 8), for avatars that take it bit-packed the way VRCFT does. One value for
     /// every avatar: the headset can't see which parameters the avatar has.
@@ -236,6 +241,7 @@ impl Default for Settings {
             camera_lids: true,
             pupils_to_vrchat: true,
             camera_close_gate: true,
+            camera_closed_doubt: true,
             pupil_bits: 0,
             eye_behavior: 2,
             lid_widen: Widen::Normal,
@@ -655,6 +661,10 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
     if given.contains("no_camera_close_gate") {
         settings.camera_close_gate = !args.no_camera_close_gate;
         locked.push("camera_close_gate");
+    }
+    if given.contains("no_camera_closed_doubt") {
+        settings.camera_closed_doubt = !args.no_camera_closed_doubt;
+        locked.push("camera_closed_doubt");
     }
     pin!(
         blink_sync_below,
@@ -1177,6 +1187,15 @@ mod tests {
         let (settings, locked) = merged(r#"{"camera_close_gate": true}"#, &["--no-camera-close-gate"]).unwrap();
         assert!(!settings.camera_close_gate);
         assert_eq!(locked, ["camera_close_gate"]);
+    }
+
+    #[test]
+    fn the_camera_closed_doubt_is_on_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.camera_closed_doubt);
+        assert!(!merged(r#"{"camera_closed_doubt": false}"#, &[]).unwrap().0.camera_closed_doubt);
+        let (settings, locked) = merged(r#"{"camera_closed_doubt": true}"#, &["--no-camera-closed-doubt"]).unwrap();
+        assert!(!settings.camera_closed_doubt);
+        assert_eq!(locked, ["camera_closed_doubt"]);
     }
 
     #[test]

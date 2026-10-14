@@ -663,6 +663,10 @@ struct Args {
     /// wink, and while looking down none is used unless the eye tracker reads an eye closing)
     #[arg(long)]
     no_camera_close_gate: bool,
+    /// Don't take the eye camera's "closed" as open where the eye server has read the eye open, and been sure of it,
+    /// for longer than a blink (for a headset whose eye server reads winks and shut eyes as open)
+    #[arg(long)]
+    no_camera_closed_doubt: bool,
     /// Where eyecam-rec's eye-camera values are read from [default: $XDG_RUNTIME_DIR/eyecam/live]
     #[arg(long, value_name = "PATH")]
     eyecam_live: Option<PathBuf>,
@@ -1400,6 +1404,8 @@ struct SideCheck {
     // Per eye: whether its camera "closed" was taken as open at the last sample because the eye server read the eye
     // open and was sure of it (CAMERA_CLOSED_DOUBT_S), where looking to the side did not already; for the replay.
     overruled: [bool; 2],
+    // camera_closed_doubt off: a "closed" is taken as open only where the eye looks to the side.
+    doubt_off: bool,
 }
 
 impl SideCheck {
@@ -1408,8 +1414,8 @@ impl SideCheck {
     /// camera's eyelids as read (`camera`), with a "closed" turned into that eye's last open one (relaxed open if there
     /// was none, and at most) where the eye looks to the side, or where the camera has read it closed for longer than
     /// CAMERA_CLOSED_DOUBT_S while the eye server read it open (but for the blink it began with) and was sure of it
-    /// (see doubt_closed); either unless the eye server read that eye shut lately or the other eye closing with it in a
-    /// blink (see CAMERA_SIDE_BLINK_SYNC).
+    /// (see doubt_closed; not with `doubt_off`, camera_closed_doubt); either unless the eye server read that eye shut
+    /// lately or the other eye closing with it in a blink (see CAMERA_SIDE_BLINK_SYNC).
     fn step(
         &mut self,
         time: f64,
@@ -1454,7 +1460,7 @@ impl SideCheck {
             }
             let shut = self.shut_at[eye].is_some_and(|at| time - at <= CAMERA_SIDE_SHUT_RECENT);
             let side = outward_deg[eye].abs() > CAMERA_SIDE_DEG;
-            if (side || self.doubting[eye]) && !shut && !self.blink_with_other(eye, time) {
+            if (side || (self.doubting[eye] && !self.doubt_off)) && !shut && !self.blink_with_other(eye, time) {
                 self.overruled[eye] = !side;
                 // No wider than relaxed open, like eyecam-rec's own hold at the lens edge
                 let held = self.open_lid[eye].unwrap_or(LID_RELAXED).min(LID_RELAXED);
@@ -3301,7 +3307,7 @@ fn process(
     let mut cross_eye = false;
     let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
-        let camera_lids = side_checked(smoother, data, camera_lids, v2);
+        let camera_lids = side_checked(smoother, data, camera_lids, v2, settings.camera_closed_doubt);
         let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
         let corrected = correct_gaze(raw_gaze, settings);
         let unscaled_gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes, v2);
@@ -3354,7 +3360,7 @@ fn process(
         let dt = smoother.advance(data.sample_time);
         // After advance(), which starts the smoothing over after a gap
         let (camera_lids, camera) = smoother.camera.take(settings, camera, true);
-        let camera_lids = side_checked(smoother, data, camera_lids, v2);
+        let camera_lids = side_checked(smoother, data, camera_lids, v2, settings.camera_closed_doubt);
         // A "closed" in one eye that is not a blink or a wink yet: the camera's last open eyelid (see CloseGate)
         let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
         let raise_to = if v2 { smoother.raise_peak.step(data.sample_time, data.openness, camera_lids) } else { [None; 2] };
@@ -3505,8 +3511,10 @@ fn side_checked(
     data: &EyeData,
     camera: [Option<CameraLid>; 2],
     v2: bool,
+    doubt: bool,
 ) -> [Option<CameraLid>; 2] {
     if v2 {
+        smoother.side.doubt_off = !doubt;
         smoother.side.step(data.sample_time, data.openness, gaze_variance(data), outward_degrees(data), camera)
     } else {
         camera
@@ -8705,6 +8713,19 @@ mod tests {
         let sent = doubt_samples(&settings, edge, sure, 90..390);
         assert!(sent[90..170].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[165].lids);
         assert!(sent[172..390].iter().all(|sample| sample.closed_overruled[0]), "{:?}", sent[172].closed_overruled);
+    }
+
+    #[test]
+    fn camera_closed_doubt_off_leaves_a_long_closed_of_the_cameras_closed() {
+        // As in a_long_closed_of_the_cameras_is_doubted_..., without the doubt: closed all along (a wink or shut eyes
+        // the eye server reads open and is sure of)
+        let settings = Settings { camera_close_gate: false, camera_closed_doubt: false, ..camera_settings() };
+        let sent = doubt_samples(&settings, |_| [0.9; 2], |_| 0.001, 90..390);
+        assert!(sent[90..390].iter().all(|sample| sample.lids[0] == 0.0 && !sample.closed_overruled[0]));
+        // Looking to the side is still checked
+        let side = Settings { camera_closed_doubt: false, ..settings };
+        let run = side_samples(&side, 25.0, [0..0, 0..0], 90..270);
+        assert!(run[90..270].iter().all(|sample| sample.lids[0] > 0.5), "{:?}", run[150].lids);
     }
 
     #[test]

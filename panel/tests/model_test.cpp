@@ -605,11 +605,9 @@ void testOutputArgs() {
     CHECK(std::string(outputOfArg(2)) == kOutputLivelink);
     CHECK(std::string(outputOfArg(3)) == kOutputModule);
     CHECK(argOfOutput("osc") == -1);
-    // The FrameEyeOSC module shares the LiveLink card on the Basic tab, and the Output tab chooses between the two
-    CHECK(cardOfOutput(kOutputModule) == 2 && cardOfOutput(kOutputLivelink) == 2);
-    CHECK(cardOfOutput(kOutputVrchat) == 0 && cardOfOutput(kOutputEtvr) == 1 && cardOfOutput("osc") == -1);
-    CHECK(vrcftModuleRowShown(kOutputLivelink) && vrcftModuleRowShown(kOutputModule));
-    CHECK(!vrcftModuleRowShown(kOutputVrchat) && !vrcftModuleRowShown(kOutputEtvr) && !vrcftModuleRowShown(""));
+    // ETVR is going away: the Basic tab warns while it is the output (it still works)
+    CHECK(outputDeprecated(kOutputEtvr));
+    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule, ""}) CHECK(!outputDeprecated(output));
     // Its own default port
     PanelModel m;
     m.config.root.type = JsonValue::Type::Object;

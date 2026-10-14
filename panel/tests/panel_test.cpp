@@ -1741,60 +1741,77 @@ bool inCard(const EyePanel& panel) {
     return false;
 }
 
-void testVrcftModuleRow(const FontSet& fonts) {
-    // The Output tab's "VRCFT module" (LiveLink or FrameEyeOSC): there for both, nothing else changes the output there
+void testOutputCards(const FontSet& fonts) {
+    // The Basic tab: three cards (VRChat, LiveLink, FrameEyeOSC), and ETVR as a small button under them with its notice
+    // between the two only while it is the output
     for (Language language : {Language::Ja, Language::En}) {
         EyePanel panel(fonts);
-        panel.setTab(PanelTab::Output);
-        PanelModel livelink = modelWith(Lids::Both);
-        livelink.language = language;
-        livelink.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
-        panel.render(livelink);
+        PanelModel m = modelWith(Lids::Both);
+        m.language = language;
+        const auto with = [&](const char* output) {
+            PanelModel copy = m;
+            copy.config.root.set(key::kOutput, JsonValue::makeString(output));
+            return copy;
+        };
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule, kOutputEtvr}) {
+            panel.render(with(output));
+            const std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetOutput);
+            CHECK(found.size() == 4);
+            if (found.size() != 4) continue;
+            // The cards in a row, as wide as each other, in the order VRChat, LiveLink, FrameEyeOSC
+            const int args[3] = {0, 2, 3};
+            for (int c = 0; c < 3; ++c) {
+                CHECK(found[c].hit.arg == args[c]);
+                CHECK(found[c].y == found[0].y && std::fabs(found[c].w - found[0].w) < 0.5 && found[c].h > 100);
+                if (c > 0) CHECK(found[c].x > found[c - 1].x + found[c - 1].w);
+            }
+            // ETVR: a small button under them
+            const EyePanel::HitArea& etvr = found[3];
+            CHECK(etvr.hit.arg == 1 && etvr.w < found[0].w && etvr.h >= 40 && etvr.h < 50);
+            CHECK(etvr.x == found[0].x);
+            // ...right under the cards, or under the notice (between the two) while ETVR is the output
+            const double gap = etvr.y - (found[0].y + found[0].h);
+            if (std::string(output) == kOutputEtvr) {
+                CHECK(gap > 60 && gap < 90);
+            } else {
+                CHECK(gap > 0 && gap < 20);
+            }
+            CHECK(outputDeprecated(output) == (std::string(output) == kOutputEtvr));
+            // Everything still fits, the rows below too
+            CHECK(allInsideAndTall(panel));
+            CHECK(hits(panel, PanelAction::ResetAll).size() == 1 && hits(panel, PanelAction::Quit).size() == 1);
+            CHECK(hits(panel, PanelAction::Language).size() == 2 && hits(panel, PanelAction::AutostartOn).size() <= 1);
+            const std::vector<EyePanel::HitArea> quit = hits(panel, PanelAction::Quit);
+            if (!quit.empty()) CHECK(quit[0].y + quit[0].h <= 664);
+        }
+        // Pressing the small button switches to ETVR; a card to its output
+        panel.render(with(kOutputLivelink));
         std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetOutput);
-        CHECK(found.size() == 2);
-        if (found.size() == 2) CHECK(found[0].hit.arg == 2 && found[1].hit.arg == 3);
-        CHECK(allInsideAndTall(panel));
-        // (LiveLink keeps its pupil rows under it)
-        CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).size() == 2);
-        CHECK(hits(panel, PanelAction::SetInteger, key::kPupilBits).size() == 5);
-        // FrameEyeOSC: the same row, its port, no pupil rows (VRCFT sends them as the avatar takes them)
-        PanelModel module = livelink;
-        module.config.root.set(key::kOutput, JsonValue::makeString(kOutputModule));
-        panel.render(module);
-        found = hits(panel, PanelAction::SetOutput);
-        CHECK(found.size() == 2);
-        if (found.size() == 2) CHECK(found[0].hit.arg == 2 && found[1].hit.arg == 3);
-        CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).empty());
-        CHECK(hits(panel, PanelAction::SetInteger, key::kPupilBits).empty());
-        CHECK(hits(panel, PanelAction::PrefixFt).empty() && hits(panel, PanelAction::SetActiveType).empty());
-        CHECK(allInsideAndTall(panel));
-        // ...without the eye cameras too
-        PanelModel noCameras = module;
-        noCameras.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
-        panel.render(noCameras);
-        CHECK(hits(panel, PanelAction::SetOutput).size() == 2 && allInsideAndTall(panel));
+        if (found.size() == 4) {
+            const PanelHit pressed = panel.pointerDown(found[3].x + found[3].w / 2, found[3].y + found[3].h / 2, 0.0);
+            panel.pointerUp();
+            CHECK(pressed.action == PanelAction::SetOutput && pressed.arg == 1);
+            const PanelHit card = panel.pointerDown(found[2].x + found[2].w / 2, found[2].y + found[2].h / 2, 0.0);
+            panel.pointerUp();
+            CHECK(card.action == PanelAction::SetOutput && card.arg == 3);
+        }
         // Locked: drawn, nothing to press
-        PanelModel locked = module;
+        PanelModel locked = with(kOutputEtvr);
         locked.status.locked.push_back(key::kOutput);
         panel.render(locked);
         CHECK(hits(panel, PanelAction::SetOutput).empty());
-        // Not there for VRChat directly or ETVR
-        for (const char* output : {kOutputVrchat, kOutputEtvr}) {
-            PanelModel other = livelink;
-            other.config.root.set(key::kOutput, JsonValue::makeString(output));
-            panel.render(other);
-            CHECK(hits(panel, PanelAction::SetOutput).empty());
+        // The Output tab has no module row any more: the destination is chosen on the cards alone
+        panel.setTab(PanelTab::Output);
+        for (const char* output : {kOutputLivelink, kOutputModule, kOutputEtvr}) {
+            panel.render(with(output));
+            CHECK(hits(panel, PanelAction::SetOutput).empty() && allInsideAndTall(panel));
         }
-        // The Basic tab: the LiveLink card stands for the module (pressing it keeps the module)
-        panel.setTab(PanelTab::Basic);
-        panel.render(module);
-        found = hits(panel, PanelAction::SetOutput);
-        CHECK(found.size() == 3);
-        if (found.size() == 3) CHECK(found[0].hit.arg == 0 && found[1].hit.arg == 3 && found[2].hit.arg == 1);
-        CHECK(allInsideAndTall(panel));
-        panel.render(livelink);
-        found = hits(panel, PanelAction::SetOutput);
-        if (found.size() == 3) CHECK(found[1].hit.arg == 2);
+        // (FrameEyeOSC: no pupil rows, VRCFT sends them as the avatar takes them; LiveLink keeps its)
+        panel.render(with(kOutputModule));
+        CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).empty());
+        CHECK(hits(panel, PanelAction::SetInteger, key::kPupilBits).empty());
+        panel.render(with(kOutputLivelink));
+        CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).size() == 2);
     }
 }
 
@@ -2488,7 +2505,7 @@ int main() {
     testSliderMoved(fonts);
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);
-    testVrcftModuleRow(fonts);
+    testOutputCards(fonts);
     testToolNotice(fonts);
     testErrorBack(fonts);
     testWayOut(fonts);

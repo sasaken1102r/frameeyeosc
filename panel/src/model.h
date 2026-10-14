@@ -330,19 +330,12 @@ const char* outputOfArg(int arg);
 int argOfOutput(const std::string& output);
 
 /**
- * The Basic tab's destination card an output type belongs to, as that card's usual button argument: the VRCFT
- * (LiveLink) card also stands for the FrameEyeOSC module, which the Output tab chooses in its place.
- * @param output the "output" value
- * @return 0 VRChat, 1 ETVR, 2 LiveLink or FrameEyeOSC; -1 for anything else
- */
-int cardOfOutput(const std::string& output);
-
-/**
- * Whether the Output tab shows "VRCFT module" (LiveLink or FrameEyeOSC): while either of them is the output.
+ * Whether the Basic tab warns that the output is going away (ETVR: deprecated, removed in the next version), between
+ * the destination cards and the small ETVR button.
  * @param output the "output" setting
- * @return true to show it
+ * @return true to show the notice
  */
-bool vrcftModuleRowShown(const std::string& output);
+bool outputDeprecated(const std::string& output);
 
 /**
  * The recommended settings of an output type (asked once after switching). Locked keys are left out.

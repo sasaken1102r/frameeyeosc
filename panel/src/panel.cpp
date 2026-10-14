@@ -2027,6 +2027,22 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
     // The eye cameras: the way to set them up, or their switch
     drawEyeCamerasRow(pen, t, m, v, y, kRowH);
     y += kRowH + kRowGap;
+    // Reset all / quit (both ask for a second press), at the right end of the next two rows: the destination's ETVR
+    // button and notice leave no room for a row of their own
+    const auto dangerButton = [&](bool isQuit, double rowY) {
+        const PanelHit hit {isQuit ? PanelAction::Quit : PanelAction::ResetAll, nullptr, 0};
+        const bool armed = isQuit ? quitArmed_ : resetArmed_;
+        const double x = kControlX + 300 + 14;
+        const double w = kInnerRight - x;
+        const double by = rowY + cy;
+        const int pointer = pointerState(hit);
+        const std::string label = isQuit ? (armed ? t.quitConfirm : t.quit) : (armed ? t.resetConfirm : t.resetAll);
+        fillRounded(pen, x, by, w, kControlH, kControlH / 2, armed ? kDanger : (pointer > 0 ? kControlHover : kQuitFill));
+        strokeRounded(pen, x, by, w, kControlH, kControlH / 2, kDanger, 2);
+        const double size = fitSize(pen, label, 19, 12, w - 24, true);
+        textCentered(pen, x + w / 2, centerBaseline(by, kControlH, size), label, size, armed ? kOnAccent : kText, true);
+        addButton(hit, x, by, w, kControlH);
+    };
     // Language (each name in its own language)
     {
         drawRowLabel(pen, t, y, kRowH, t.rowLanguage, "", false);
@@ -2034,6 +2050,7 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
                       {{"日本語", {PanelAction::Language, key::kLanguage, 0}},
                        {"English", {PanelAction::Language, key::kLanguage, 1}}},
                       m.language == Language::Ja ? 0 : 1, 20);
+        dangerButton(false, y);
     }
     y += kRowH + kRowGap;
     // Start with SteamVR
@@ -2048,26 +2065,14 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
                       {{t.on, {PanelAction::AutostartOn, nullptr, 0}, usable},
                        {t.off, {PanelAction::AutostartOff, nullptr, 0}, usable}},
                       a == Autostart::Enabled ? 0 : (a == Autostart::Disabled ? 1 : -1), 20);
+        dangerButton(true, y);
     }
-    y += kRowH + kRowGap + 2;
-    // Reset all / quit (both ask for a second press)
-    for (int i = 0; i < 2; ++i) {
-        const bool isQuit = i == 1;
-        const PanelHit hit {isQuit ? PanelAction::Quit : PanelAction::ResetAll, nullptr, 0};
-        const bool armed = isQuit ? quitArmed_ : resetArmed_;
-        const double w = 250;
-        const double x = isQuit ? kInnerRight - w : kInnerX;
-        const int pointer = pointerState(hit);
-        const std::string label = isQuit ? (armed ? t.quitConfirm : t.quit) : (armed ? t.resetConfirm : t.resetAll);
-        fillRounded(pen, x, y, w, kControlH, kControlH / 2, armed ? kDanger : (pointer > 0 ? kControlHover : kQuitFill));
-        strokeRounded(pen, x, y, w, kControlH, kControlH / 2, kDanger, 2);
-        const double size = fitSize(pen, label, 19, 12, w - 24, true);
-        textCentered(pen, x + w / 2, centerBaseline(y, kControlH, size), label, size, armed ? kOnAccent : kText, true);
-        addButton(hit, x, y, w, kControlH);
-    }
-    y += kControlH + 28;
+    y += kRowH + 22;
+    // What pressing does, where there is room for it (not under the ETVR notice)
     const std::vector<std::string> lines = wrapText(pen, t.footer, 15, false, kInnerRight - kInnerX, 2);
-    for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
+    if (y + (lines.size() - 1) * 22 + 6 <= kContentY + kContentH - 10) {
+        for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
+    }
 }
 
 void EyePanel::drawEyeCamerasRow(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
@@ -2116,14 +2121,12 @@ void EyePanel::drawEyeCamerasRow(const Pen& pen, const UiText& t, const PanelMod
 
 double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& v, double y, bool camera) {
     const bool locked = v.locked(key::kOutput);
-    // The FrameEyeOSC module is chosen on the Output tab in LiveLink's place: its card then stands for it (title and
-    // button), so pressing it keeps the module
-    const bool module = v.text(key::kOutput) == kOutputModule;
-    const int selected = cardOfOutput(v.text(key::kOutput));
+    const std::string output = v.text(key::kOutput);
+    const int selected = argOfOutput(output);
     // The title, and after it what "sync" on the cards means (or the lock note). The cards take the whole width
     // under it, so their names and lines stay large enough to read
     const double titleSize = fitSize(pen, t.rowOutput, 20, 14, kLabelW, true);
-    const double titleBaseline = y + 30;
+    const double titleBaseline = y + 28;
     const double hintX = kInnerX + pen.measure(t.rowOutput, titleSize, true) + 16;
     pen.text(kInnerX, titleBaseline, t.rowOutput, titleSize, kText, true);
     if (locked) {
@@ -2135,21 +2138,22 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
                  kTextMuted);
     }
 
-    // The cards in the order VRChat, LiveLink, ETVR (their button arguments are 0, 2, 1)
-    const int args[3] = {0, 2, 1};
-    const char* titles[3] = {t.outputVrchat, module ? t.outputModule : t.outputLivelink, t.outputEtvr};
-    const int marks[3] = {0, 1, 2};  // rows of t.outputMarks
+    // The cards in the order VRChat, LiveLink, FrameEyeOSC (their button arguments are 0, 2, 3); ETVR (1) is the small
+    // button under them
+    const int args[3] = {0, 2, 3};
+    const char* titles[3] = {t.outputVrchat, t.outputLivelink, t.outputModule};
+    const int marks[3] = {0, 1, 3};  // rows of t.outputMarks
     const double gap = 12;
     const double cardW = (kInnerRight - kInnerX - gap * 2) / 3;
-    const double pad = 16;
+    const double pad = 14;
     const double innerW = cardW - pad * 2;
-    const double top = y + 52;  // room for the "Recommended" tag, which sits on the card's top edge
+    const double top = y + 44;  // room for the "Recommended" tag, which sits on the card's top edge
     // One title size for all three cards
     double cardTitleSize = 20;
     for (const char* title : titles) cardTitleSize = std::min(cardTitleSize, fitSize(pen, title, 20, 14, innerW, true));
     // Each card's lines: a drawn mark on the first line of a marked text, the rest indented after it
     const double lineSize = 16;
-    const double lineStep = 22;
+    const double lineStep = 21;
     const double markW = 20;
     struct Line {
         LineMark mark;
@@ -2178,12 +2182,12 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         }
         most = std::max(most, lines[c].size());
     }
-    const double cardH = pad + cardTitleSize + 10 + most * lineStep + pad - 4;
+    const double cardH = pad + cardTitleSize + 8 + most * lineStep + pad - 4;
 
     for (int c = 0; c < 3; ++c) {
         const double cx = kInnerX + c * (cardW + gap);
         const bool isSelected = selected == args[c];
-        const PanelHit hit {PanelAction::SetOutput, key::kOutput, module && args[c] == 2 ? 3 : args[c]};
+        const PanelHit hit {PanelAction::SetOutput, key::kOutput, args[c]};
         const bool usable = !locked;
         const int pointer = usable ? pointerState(hit) : 0;
         Color fill = kControl;
@@ -2205,7 +2209,7 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         // Muted lines only on the plain card; on the accent tint or the hover fill that would be too faint
         const Color lineColor = locked ? kTextDisabled : (isSelected || pointer > 0 ? kText : kTextMuted);
         pen.text(cx + pad, top + pad + cardTitleSize * 0.9, titles[c], cardTitleSize, titleColor, true);
-        double baseline = top + pad + cardTitleSize + 10 + lineSize * 0.9;
+        double baseline = top + pad + cardTitleSize + 8 + lineSize * 0.9;
         for (size_t i = 0; i < lines[c].size(); ++i) {
             const Line& line = lines[c][i];
             // The widening line without the cameras: dimmer, and on one line
@@ -2232,7 +2236,83 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         }
         addButton(hit, cx, top, cardW, cardH, usable);
     }
-    return top + cardH - y + 8;
+    double by = top + cardH + 10;
+
+    // While ETVR is the output: it goes away in the next version, pick another of the three
+    if (outputDeprecated(output)) {
+        const double boxW = kInnerRight - kInnerX;
+        const double boxH = 56;
+        fillRounded(pen, kInnerX, by, boxW, boxH, 12, kWarningTint);
+        strokeRounded(pen, kInnerX, by, boxW, boxH, 12, kWarning, 2);
+        // A warning triangle with an exclamation mark
+        const double ix = kInnerX + 26;
+        const double iy = by + boxH / 2;
+        pen.color(kWarning);
+        cairo_set_line_width(pen.cr, 2);
+        cairo_set_line_join(pen.cr, CAIRO_LINE_JOIN_ROUND);
+        cairo_set_line_cap(pen.cr, CAIRO_LINE_CAP_ROUND);
+        cairo_move_to(pen.cr, ix, iy - 10);
+        cairo_line_to(pen.cr, ix + 11, iy + 9);
+        cairo_line_to(pen.cr, ix - 11, iy + 9);
+        cairo_close_path(pen.cr);
+        cairo_stroke(pen.cr);
+        cairo_move_to(pen.cr, ix, iy - 3);
+        cairo_line_to(pen.cr, ix, iy + 2);
+        cairo_move_to(pen.cr, ix, iy + 5.5);
+        cairo_line_to(pen.cr, ix, iy + 6);
+        cairo_stroke(pen.cr);
+        const double tx = kInnerX + 50;
+        const double textW = kInnerRight - 16 - tx;
+        pen.text(tx, by + 24, t.etvrNotice1, fitSize(pen, t.etvrNotice1, 15, 11, textW, true), kWarningText, true);
+        pen.text(tx, by + 45, t.etvrNotice2, fitSize(pen, t.etvrNotice2, 14, 11, textW, false), kWarningTextSoft);
+        by += boxH + 8;
+    }
+
+    // ETVR: a small button, "Deprecated", and what it carries
+    {
+        const bool isSelected = selected == argOfOutput(kOutputEtvr);
+        const PanelHit hit {PanelAction::SetOutput, key::kOutput, argOfOutput(kOutputEtvr)};
+        const bool usable = !locked;
+        const int pointer = usable ? pointerState(hit) : 0;
+        const std::string label = std::string(isSelected ? ICON_CHECK " " : "") + t.outputEtvr;
+        const double size = 16;
+        const double bh = 40;
+        const double bw = pen.measure(label, size, isSelected) + 32;
+        Color fill = kCard;
+        if (isSelected && !locked) {
+            fill = kWarningTint;
+        } else if (pointer > 0) {
+            fill = kControlHover;
+        }
+        fillRounded(pen, kInnerX, by, bw, bh, bh / 2, fill);
+        strokeRounded(pen, kInnerX, by, bw, bh, bh / 2, isSelected && !locked ? kWarning : kBorder, isSelected ? 2 : 1.5);
+        const Color textColor = locked ? kTextDisabled : (isSelected ? kWarningText : kTextMuted);
+        textCentered(pen, kInnerX + bw / 2, centerBaseline(by, bh, size), label, size, textColor, isSelected);
+        addButton(hit, kInnerX, by, bw, bh, usable);
+        // "Deprecated"
+        const double tagSize = 13;
+        const double tagH = 24;
+        const double tagX = kInnerX + bw + 12;
+        const double tagW = pen.measure(t.outputDeprecated, tagSize, false) + 16;
+        strokeRounded(pen, tagX, by + (bh - tagH) / 2, tagW, tagH, 8, kBorder, 1);
+        textCentered(pen, tagX + tagW / 2, centerBaseline(by + (bh - tagH) / 2, tagH, tagSize), t.outputDeprecated,
+                     tagSize, kTextMuted, false);
+        // Its three lines on one (the leading marks only go on the cards)
+        std::string carries;
+        for (int k = 0; k < 3; ++k) {
+            std::string rest;
+            splitMark(t.outputMarks[2][k], rest);  // (row 2: ETVR)
+            if (k > 0) carries += t.outputMarkSeparator;
+            carries += rest;
+        }
+        const double cx = tagX + tagW + 14;
+        const double room = kInnerRight - cx;
+        const double carriesSize = fitSize(pen, carries, 14, 11, room, false);
+        pen.text(cx, centerBaseline(by, bh, carriesSize), ellipsize(pen, carries, carriesSize, false, room, false),
+                 carriesSize, kTextMuted);
+        by += bh;
+    }
+    return by - y + 8;
 }
 
 void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
@@ -2268,16 +2348,6 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         return rowY + kRowH + 24;
     };
 
-    // LiveLink and FrameEyeOSC: which VRCFT module receives (the Basic tab's card is the same for both)
-    if (vrcftModuleRowShown(output)) {
-        const bool locked = v.locked(key::kOutput);
-        drawRowLabel(pen, t, y, kRowH, t.rowVrcftModule, t.hintVrcftModule, locked);
-        drawSegmented(pen, kControlX, y + cy, kControlW, kControlH,
-                      {{"LiveLink", {PanelAction::SetOutput, key::kOutput, argOfOutput(kOutputLivelink)}},
-                       {"FrameEyeOSC", {PanelAction::SetOutput, key::kOutput, argOfOutput(kOutputModule)}}},
-                      module ? 1 : 0, 20, locked);
-        y += kRowH + kRowGap;
-    }
     // Target PC: automatic, fixed to the PC frameeyeosc sends to now, or typed on the keypad; any host set by hand
     // shows in the third choice
     {
@@ -2438,7 +2508,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const auto boxHeight = [&] {
         return pad + titleSize + 14 + stepLineCount * stepStep + 8 + noteLines.size() * 21 + pad - 6;
     };
-    // The note goes where it doesn't fit (LiveLink with the eye cameras, under its two pupil rows): the steps matter
+    // The note goes where it doesn't fit (under LiveLink's two pupil rows, should they grow): the steps matter
     if (top + boxHeight() > kContentY + kContentH - 12) noteLines.clear();
     const double boxH = boxHeight();
     strokeRounded(pen, boxX, top, boxW, boxH, 14, kDivider, 2);

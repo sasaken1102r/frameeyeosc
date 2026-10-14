@@ -111,12 +111,17 @@ struct UiText {
     const char* hintOutput;         ///< what "sync" means on the cards
     const char* outputVrchat;       ///< the destination cards' titles
     const char* outputLivelink;
-    const char* outputModule;       ///< the LiveLink card's title while the FrameEyeOSC module is chosen instead
+    const char* outputModule;
     const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
-    /** Each card's three lines (VRChat, LiveLink, ETVR): wide eyes, sync, VRCFT. A leading ICON_CHECK or ICON_CROSS
-     *  and a space hang in front of the lines (icons.h). */
-    const char* outputMarks[3][3];
+    /** Each output's three lines (VRChat, LiveLink, ETVR, FrameEyeOSC): wide eyes, sync, VRCFT. A leading ICON_CHECK
+     *  or ICON_CROSS and a space hang in front of the lines on a card (icons.h). ETVR's go on one line after its
+     *  small button, joined by outputMarkSeparator. */
+    const char* outputMarks[4][3];
+    const char* outputMarkSeparator;
+    const char* outputDeprecated;    ///< the label after the small ETVR button under the cards
+    const char* etvrNotice1;         ///< the notice while ETVR is the output: it goes away in the next version...
+    const char* etvrNotice2;         ///< ...and to pick another destination above
     const char* outputCameraSuffix;  ///< after a card's wide-eyes line while the eye cameras aren't in use ("（カメラ）")
     // The Basic tab's eye cameras row: not set up (a way to their tab), or set up (the camera_lids switch)
     const char* rowEyeCameras;
@@ -143,8 +148,6 @@ struct UiText {
     const char* rowSteamlink;       ///< also send the avatar parameters Steam Link's own OSC sends
     const char* hintSteamlink;
     const char* steamlinkNoPrefix;  ///< after its example address: the prefix is never added
-    const char* rowVrcftModule;  ///< LiveLink and FrameEyeOSC: which VRCFT module receives (the output)
-    const char* hintVrcftModule;  ///< ...under its title
     const char* rowPupils;  ///< LiveLink output: send the pupils straight to VRChat (pupils_to_vrchat)
     const char* hintPupils;  ///< ...why, under it
     const char* pupilsTargetFormat;  ///< ...where they go now ("to %s")

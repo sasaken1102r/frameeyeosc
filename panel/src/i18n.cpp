@@ -112,6 +112,13 @@ UiText makeJapanese() {
     t.outputMarks[2][0] = "見開き " ICON_CROSS;
     t.outputMarks[2][1] = "同期 " ICON_RING;
     t.outputMarks[2][2] = "VRCFT 必要";
+    t.outputMarks[3][0] = "見開き " ICON_RING;
+    t.outputMarks[3][1] = "同期 " ICON_RING;
+    t.outputMarks[3][2] = "VRCFT＋モジュール";
+    t.outputMarkSeparator = " ・ ";
+    t.outputDeprecated = "削除予定";
+    t.etvrNotice1 = "いまは VRCFT（ETVR）に送っています。次の版で ETVR はなくなります";
+    t.etvrNotice2 = "上の 3 つから、ほかの送り先を選び直してください";
     t.outputCameraSuffix = "（カメラ）";
     t.rowEyeCameras = "目のカメラ";
     t.hintEyeCamerasNew = "見開きと瞳孔をカメラで取る";
@@ -136,8 +143,6 @@ UiText makeJapanese() {
     t.rowSteamlink = "Steam Link の名前も送る";
     t.hintSteamlink = "Steam Link 向けのアバター用";
     t.steamlinkNoPrefix = "（頭はつけない）";
-    t.rowVrcftModule = "VRCFT のモジュール";
-    t.hintVrcftModule = "FrameEyeOSC は瞳孔も届く";
     t.rowPupils = "瞳孔は VRChat に直接送る";
     t.hintPupils = "LiveLink では瞳孔が送れないので、瞳孔だけ VRChat へ";
     t.pupilsTargetFormat = "送り先: %s";
@@ -1031,6 +1036,13 @@ UiText makeEnglish() {
     t.outputMarks[2][0] = ICON_CROSS " No wide eyes";
     t.outputMarks[2][1] = ICON_CHECK " Synced to others";
     t.outputMarks[2][2] = "Needs VRCFT";
+    t.outputMarks[3][0] = ICON_CHECK " Wide eyes";
+    t.outputMarks[3][1] = ICON_CHECK " Synced to others";
+    t.outputMarks[3][2] = "Needs VRCFT + module";
+    t.outputMarkSeparator = " · ";
+    t.outputDeprecated = "Deprecated";
+    t.etvrNotice1 = "You're sending to VRCFT (ETVR), which goes away in the next version.";
+    t.etvrNotice2 = "Please pick another destination from the three above.";
     t.outputCameraSuffix = " (camera)";
     t.rowEyeCameras = "Eye cameras";
     t.hintEyeCamerasNew = "Widening and pupils by camera";
@@ -1055,8 +1067,6 @@ UiText makeEnglish() {
     t.rowSteamlink = "Steam Link names too";
     t.hintSteamlink = "For Steam Link avatars";
     t.steamlinkNoPrefix = " (never prefixed)";
-    t.rowVrcftModule = "VRCFT module";
-    t.hintVrcftModule = "FrameEyeOSC carries pupils too";
     t.rowPupils = "Send pupils straight to VRChat";
     t.hintPupils = "LiveLink has no pupils, so they go to VRChat directly";
     t.pupilsTargetFormat = "To %s";

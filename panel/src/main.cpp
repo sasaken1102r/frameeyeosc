@@ -2743,15 +2743,13 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             break;
         case PanelAction::SetOutput: {
             const std::string output = outputOfArg(hit.arg);
-            const std::string before = view.text(key::kOutput);
-            if (before == output) return;
+            if (view.text(key::kOutput) == output) return;
             // A new output type starts from its own default port
             change = [output](JsonValue& root) {
                 root.set(key::kOutput, JsonValue::makeString(output));
                 root.set(key::kPort, JsonValue::makeNull());
             };
-            // Between the LiveLink and FrameEyeOSC modules (the Output tab) the recommended settings stay the same
-            if (!(vrcftModuleRowShown(before) && vrcftModuleRowShown(output))) openPrompt = output;
+            openPrompt = output;
             break;
         }
         case PanelAction::SetActiveType: {

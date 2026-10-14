@@ -154,12 +154,8 @@ int argOfOutput(const std::string& output) {
     return -1;
 }
 
-int cardOfOutput(const std::string& output) {
-    return output == kOutputModule ? 2 : argOfOutput(output);
-}
-
-bool vrcftModuleRowShown(const std::string& output) {
-    return output == kOutputLivelink || output == kOutputModule;
+bool outputDeprecated(const std::string& output) {
+    return output == kOutputEtvr;
 }
 
 std::vector<SettingChange> recommendedSettings(const std::string& output, const SettingsView& view) {

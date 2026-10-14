@@ -1589,6 +1589,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     } else {
         const char* receiver = s.output == kOutputEtvr       ? t.outputEtvrShort
                                : s.output == kOutputLivelink ? t.outputLivelinkShort
+                               : s.output == kOutputModule   ? t.outputModuleShort
                                                              : t.outputVrchatShort;
         const std::string destination = std::string(receiver) + " " ICON_ARROW_RIGHT " " +
                                          (s.target.empty() ? std::string(t.searchingPc) : s.target);
@@ -2115,7 +2116,10 @@ void EyePanel::drawEyeCamerasRow(const Pen& pen, const UiText& t, const PanelMod
 
 double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& v, double y, bool camera) {
     const bool locked = v.locked(key::kOutput);
-    const int selected = argOfOutput(v.text(key::kOutput));
+    // The FrameEyeOSC module is chosen on the Output tab in LiveLink's place: its card then stands for it (title and
+    // button), so pressing it keeps the module
+    const bool module = v.text(key::kOutput) == kOutputModule;
+    const int selected = cardOfOutput(v.text(key::kOutput));
     // The title, and after it what "sync" on the cards means (or the lock note). The cards take the whole width
     // under it, so their names and lines stay large enough to read
     const double titleSize = fitSize(pen, t.rowOutput, 20, 14, kLabelW, true);
@@ -2133,7 +2137,7 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
 
     // The cards in the order VRChat, LiveLink, ETVR (their button arguments are 0, 2, 1)
     const int args[3] = {0, 2, 1};
-    const char* titles[3] = {t.outputVrchat, t.outputLivelink, t.outputEtvr};
+    const char* titles[3] = {t.outputVrchat, module ? t.outputModule : t.outputLivelink, t.outputEtvr};
     const int marks[3] = {0, 1, 2};  // rows of t.outputMarks
     const double gap = 12;
     const double cardW = (kInnerRight - kInnerX - gap * 2) / 3;
@@ -2179,7 +2183,7 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
     for (int c = 0; c < 3; ++c) {
         const double cx = kInnerX + c * (cardW + gap);
         const bool isSelected = selected == args[c];
-        const PanelHit hit {PanelAction::SetOutput, key::kOutput, args[c]};
+        const PanelHit hit {PanelAction::SetOutput, key::kOutput, module && args[c] == 2 ? 3 : args[c]};
         const bool usable = !locked;
         const int pointer = usable ? pointerState(hit) : 0;
         Color fill = kControl;
@@ -2237,6 +2241,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const double cy = (kRowH - kControlH) / 2;
     const std::string output = v.text(key::kOutput);
     const bool livelink = output == kOutputLivelink;
+    const bool module = output == kOutputModule;
     const bool etvr = output == kOutputEtvr;
     // The pupils come from the eye cameras: their rows only while those are in use (with the badge), else one line
     const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
@@ -2263,6 +2268,16 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         return rowY + kRowH + 24;
     };
 
+    // LiveLink and FrameEyeOSC: which VRCFT module receives (the Basic tab's card is the same for both)
+    if (vrcftModuleRowShown(output)) {
+        const bool locked = v.locked(key::kOutput);
+        drawRowLabel(pen, t, y, kRowH, t.rowVrcftModule, t.hintVrcftModule, locked);
+        drawSegmented(pen, kControlX, y + cy, kControlW, kControlH,
+                      {{"LiveLink", {PanelAction::SetOutput, key::kOutput, argOfOutput(kOutputLivelink)}},
+                       {"FrameEyeOSC", {PanelAction::SetOutput, key::kOutput, argOfOutput(kOutputModule)}}},
+                      module ? 1 : 0, 20, locked);
+        y += kRowH + kRowGap;
+    }
     // Target PC: automatic, fixed to the PC frameeyeosc sends to now, or typed on the keypad; any host set by hand
     // shows in the third choice
     {
@@ -2283,7 +2298,9 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     {
         const bool locked = v.locked(key::kPort);
         const bool isDefault = v.portIsDefault();
-        const char* hint = livelink ? t.portDefaultLivelink : (etvr ? t.portDefaultEtvr : t.portDefaultVrchat);
+        const char* hint = livelink ? t.portDefaultLivelink
+                           : module ? t.portDefaultModule
+                                    : (etvr ? t.portDefaultEtvr : t.portDefaultVrchat);
         drawRowLabel(pen, t, y, kRowH, t.rowPort, hint, locked);
         drawStepper(pen, kControlX, y + cy, 220, kControlH, key::kPort, v.port(), std::to_string(v.port()), true,
                     locked);
@@ -2301,7 +2318,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     }
     y += kRowH + kRowGap;
 
-    if (!livelink && !etvr) {
+    if (!livelink && !module && !etvr) {
         // VRChat directly: the parameter prefix...
         {
             const bool locked = v.locked(key::kPrefix);
@@ -2374,6 +2391,8 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     // LiveLink with the eye cameras: their pupils straight to VRChat (the LiveLink module has none). The hint and where
     // they go now under the control, like the VRChat rows' examples
     if (livelink && pupilsLineShown(output, camera)) y += drawCameraLine(pen, t.cameraLinePupils, y + 2) + 4;
+    // FrameEyeOSC carries the pupils itself (through VRCFT): only the line while the eye cameras aren't in use
+    if (module && pupilsLineShown(output, camera)) y += drawCameraLine(pen, t.cameraLinePupils, y + 2) + 4;
     if (livelink && pupilsRowShown(output, camera)) {
         const bool locked = v.locked(key::kPupilsToVrchat);
         const bool on = v.flag(key::kPupilsToVrchat);
@@ -2391,7 +2410,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         y = pupilBits(y);
     }
 
-    // LiveLink and ETVR: what to set up in VRCFT on the PC (nothing else is set here)
+    // LiveLink, FrameEyeOSC and ETVR: what to set up in VRCFT on the PC (nothing else is set here)
     const double boxX = kInnerX;
     const double boxW = kInnerRight - kInnerX;
     const double pad = 20;
@@ -2400,7 +2419,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const double stepStep = 26;
     const double badgeW = 32;
     const double textW = boxW - pad * 2 - badgeW;
-    const char* const* steps = livelink ? t.vrcftStepsLivelink : t.vrcftStepsEtvr;
+    const char* const* steps = livelink ? t.vrcftStepsLivelink : (module ? t.vrcftStepsModule : t.vrcftStepsEtvr);
     std::vector<std::vector<std::string>> stepLines;
     size_t stepLineCount = 0;
     for (int i = 0; i < 3; ++i) {
@@ -2408,14 +2427,20 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         stepLineCount += stepLines.back().size();
     }
     std::string note = t.vrcftSetupNote;
-    if (etvr) {
+    const char* more = etvr ? t.vrcftNoWide : (module && camera ? t.vrcftModulePupils : nullptr);
+    if (more != nullptr) {
         // A space between English sentences, none after "。"
         if (!note.empty() && note.back() == '.') note += " ";
-        note += t.vrcftNoWide;
+        note += more;
     }
-    const std::vector<std::string> noteLines = wrapText(pen, note, 15, false, boxW - pad * 2, 3);
+    std::vector<std::string> noteLines = wrapText(pen, note, 15, false, boxW - pad * 2, 3);
     const double titleSize = fitSize(pen, t.vrcftSetupTitle, 19, 14, boxW - pad * 2, true);
-    const double boxH = pad + titleSize + 14 + stepLineCount * stepStep + 8 + noteLines.size() * 21 + pad - 6;
+    const auto boxHeight = [&] {
+        return pad + titleSize + 14 + stepLineCount * stepStep + 8 + noteLines.size() * 21 + pad - 6;
+    };
+    // The note goes where it doesn't fit (LiveLink with the eye cameras, under its two pupil rows): the steps matter
+    if (top + boxHeight() > kContentY + kContentH - 12) noteLines.clear();
+    const double boxH = boxHeight();
     strokeRounded(pen, boxX, top, boxW, boxH, 14, kDivider, 2);
     double baseline = top + pad + titleSize * 0.9;
     pen.text(boxX + pad, baseline, t.vrcftSetupTitle, titleSize, kText, true);
@@ -4981,17 +5006,27 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     const bool update = !updatePromptVersion_.empty();
     const bool etvr = promptOutput_ == kOutputEtvr;
     const bool livelink = promptOutput_ == kOutputLivelink;
+    const bool module = promptOutput_ == kOutputModule;
     const double w = 760;
     const double h = 270;
     const double x = (kWidth - w) / 2;
     const double y = (kHeight - h) / 2;
     drawCard(pen, x, y, w, h, 24, kCard, kAccent, 2);
     const std::string title = update ? formatText(t.updateConfirmFormat, updatePromptVersion_)
-                                     : (etvr ? t.promptEtvr : (livelink ? t.promptLivelink : t.promptVrchat));
+                                     : etvr       ? t.promptEtvr
+                                     : livelink   ? t.promptLivelink
+                                     : module     ? t.promptModule
+                                                  : t.promptVrchat;
     const double titleSize = fitSize(pen, title, 24, 16, w - 60, true);
     textCentered(pen, x + w / 2, y + 62, title, titleSize, kText, true);
-    std::string detail1 = etvr ? t.promptEtvrDetail1 : (livelink ? t.promptLivelinkDetail1 : t.promptVrchatDetail1);
-    std::string detail2 = etvr ? t.promptEtvrDetail2 : (livelink ? t.promptLivelinkDetail2 : t.promptVrchatDetail2);
+    std::string detail1 = etvr       ? t.promptEtvrDetail1
+                          : livelink ? t.promptLivelinkDetail1
+                          : module   ? t.promptModuleDetail1
+                                     : t.promptVrchatDetail1;
+    std::string detail2 = etvr       ? t.promptEtvrDetail2
+                          : livelink ? t.promptLivelinkDetail2
+                          : module   ? t.promptModuleDetail2
+                                     : t.promptVrchatDetail2;
     if (update) {
         const std::vector<std::string> lines = wrapText(pen, t.updateConfirmHint, 17, false, w - 60, 2);
         detail1 = lines.empty() ? "" : lines[0];

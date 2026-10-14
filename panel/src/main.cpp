@@ -129,6 +129,7 @@ struct Options {
     bool fakeSlowTracker = false; ///< --fake-slow-tracker: the eye tracker delivers 15 samples a second
     bool fakeEtvr = false;
     bool fakeLivelink = false;
+    bool fakeModule = false;
     bool fakePupilsOff = false;   ///< --fake-pupils-off: pupils_to_vrchat off
     int fakePupilBits = -1;       ///< --fake-pupil-bits N: pupil_bits (-1 = as the file says)
     bool fakeFixed = false;
@@ -289,6 +290,7 @@ void printUsage() {
         "      --fake            Draw a made-up state (running, sending to VRChat) instead of the files.\n"
         "                        Each --fake-* below implies --fake\n"
         "      --fake-not-running / --fake-paused / --fake-no-tracking / --fake-etvr / --fake-livelink / --fake-fixed\n"
+        "      --fake-frameeyeosc  Sending to VRCFT's FrameEyeOSC module\n"
         "      --fake-target-null  Auto target not found yet\n"
         "      --fake-pupils-off  pupils_to_vrchat off (the Output tab's row for LiveLink with the eye cameras)\n"
         "      --fake-pupil-bits N  pupil_bits 0..4 (the Output tab's \"pupils as bits\" row, with the eye cameras)\n"
@@ -308,7 +310,7 @@ void printUsage() {
         "      --fake-rings-off  The dots' rings off (gaze_debug_rings)\n"
         "      --fake-dominant-eye left|right  \"Track Dominant Eye Only\" is on with that eye\n"
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
-        "      --fake-prompt vrchat|etvr|livelink  The recommended-settings question\n"
+        "      --fake-prompt vrchat|etvr|livelink|frameeyeosc  The recommended-settings question\n"
         "      --fake-autostart on|off|missing|unknown\n"
         "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed\n"
         "                        A made-up update state (the version row on the Advanced tab)\n"
@@ -886,6 +888,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeEtvr = true;
         } else if (arg == "--fake-livelink") {
             options.fake = options.fakeLivelink = true;
+        } else if (arg == "--fake-frameeyeosc") {
+            options.fake = options.fakeModule = true;
         } else if (arg == "--fake-pupils-off") {
             options.fake = options.fakePupilsOff = true;
         } else if (arg == "--fake-pupil-bits" && hasNext) {
@@ -955,8 +959,9 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--fake-prompt" && hasNext) {
             options.fakePrompt = argv[++i];
             if (options.fakePrompt != kOutputVrchat && options.fakePrompt != kOutputEtvr &&
-                options.fakePrompt != kOutputLivelink) {
-                std::fprintf(stderr, "--fake-prompt must be vrchat, etvr or livelink: %s\n", options.fakePrompt.c_str());
+                options.fakePrompt != kOutputLivelink && options.fakePrompt != kOutputModule) {
+                std::fprintf(stderr, "--fake-prompt must be vrchat, etvr, livelink or frameeyeosc: %s\n",
+                             options.fakePrompt.c_str());
                 return false;
             }
         } else if (arg == "--fake-autostart" && hasNext) {
@@ -1580,6 +1585,7 @@ PanelModel fakeModel(const Options& options) {
     JsonValue& root = m.config.root;
     if (options.fakeEtvr) root.set(key::kOutput, JsonValue::makeString(kOutputEtvr));
     if (options.fakeLivelink) root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+    if (options.fakeModule) root.set(key::kOutput, JsonValue::makeString(kOutputModule));
     if (options.fakePupilsOff) root.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
     if (options.fakePupilBits >= 0) root.set(key::kPupilBits, JsonValue::makeNumber(options.fakePupilBits, true));
     if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
@@ -1703,11 +1709,17 @@ PanelModel fakeModel(const Options& options) {
         s.time = now;
         s.started = now - 4980;
         s.sending = !options.fakePaused;
-        s.output = etvr ? kOutputEtvr : (options.fakeLivelink ? kOutputLivelink : kOutputVrchat);
+        s.output = etvr                   ? kOutputEtvr
+                   : options.fakeLivelink ? kOutputLivelink
+                   : options.fakeModule   ? kOutputModule
+                                          : kOutputVrchat;
         s.targetMode = options.fakeFixed ? "fixed" : "auto";
         if (!options.fakeTargetNull) {
             s.target = std::string("192.168.0.60:") +
-                       (etvr ? "8889" : options.fakeLivelink ? "11111" : (options.fakeCustom ? "9001" : "9000"));
+                       (etvr                   ? "8889"
+                        : options.fakeLivelink ? "11111"
+                        : options.fakeModule   ? "11112"
+                                               : (options.fakeCustom ? "9001" : "9000"));
         }
         s.trackerRate = options.fakeSlowTracker ? 15.0 : 89.6;
         s.missedRate = 0;
@@ -2731,13 +2743,15 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             break;
         case PanelAction::SetOutput: {
             const std::string output = outputOfArg(hit.arg);
-            if (view.text(key::kOutput) == output) return;
+            const std::string before = view.text(key::kOutput);
+            if (before == output) return;
             // A new output type starts from its own default port
             change = [output](JsonValue& root) {
                 root.set(key::kOutput, JsonValue::makeString(output));
                 root.set(key::kPort, JsonValue::makeNull());
             };
-            openPrompt = output;
+            // Between the LiveLink and FrameEyeOSC modules (the Output tab) the recommended settings stay the same
+            if (!(vrcftModuleRowShown(before) && vrcftModuleRowShown(output))) openPrompt = output;
             break;
         }
         case PanelAction::SetActiveType: {

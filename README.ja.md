@@ -19,7 +19,7 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 - まぶたは使っているうちに自動で調整されます。左右それぞれの普段の開き具合を覚えるので、顔や被り方のせいで片目だけ開いて見える人でも、アバターでは揃って見えます。ウインクはそのまま伝わります
 - サービスとして常駐し、SteamVR と一緒に起動します。止まっても自動で再起動します
 - 設定はファイルに置き、動いたまま反映します。SteamVR のダッシュボードに出すパネル（入れなくてもよい）で、被ったまま変えられます
-- VRCFaceTracking 用の ETVR Tracking Module が読む形式でも送れます（[VRCFaceTracking（ETVR）モード](#vrcfacetrackingetvrモード)）。VRCFaceTracking の LiveLink モジュール向けに Live Link Face の形式でも送れて、こちらは見開きも伝わります（[VRCFaceTracking（LiveLink）モード](#vrcfacetrackinglivelinkモード)）
+- VRCFaceTracking 用の ETVR Tracking Module が読む形式でも送れます（[VRCFaceTracking（ETVR）モード](#vrcfacetrackingetvrモード)）。VRCFaceTracking の LiveLink モジュール向けに Live Link Face の形式でも送れて、こちらは見開きも伝わります（[VRCFaceTracking（LiveLink）モード](#vrcfacetrackinglivelinkモード)）。frameeyeosc 専用の VRCFaceTracking モジュール FrameEyeOSC にも送れて、こちらは細めと瞳孔も伝わります（[VRCFaceTracking（FrameEyeOSC）モード](#vrcfacetrackingframeeyeoscモード)）
 - 使いたい人は、Frame の目のカメラも使えます（一緒に入る道具 eyecam を使います）。SteamOS 0.4.3 でも見開きが届くようになり、目を細めた動きと瞳孔の大きさも送れます。パネルで最初に一度だけ準備がいります（[目のカメラ](#目のカメラ)）
 
 ## Steam Link 標準の OSC との違い
@@ -46,7 +46,7 @@ SteamVR の Steam Link は、自分でもアイトラッキングを OSC で送�
 - 開発者モードを有効にして SSH で入れる Steam Frame（設定 → システム → 開発者モードを有効化、開発者の項目でパスワードを設定）。SSH を有効にすると、同じネットワークにいてパスワードを知っている人は誰でもヘッドセットに入れるので、推測されにくいパスワードにしてください
 - Steam Link でストリーミングしている PC 版 VRChat（Action Menu → Options → OSC → Enabled）
 - VRCFaceTracking の目のパラメータ（`FT/v2/EyeLeftX`、`EyeLidLeft` など）を float で持つアバター。VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」のアバターには対応していません（目のカメラの瞳孔だけは対応しています。[ビットで受け取るアバターの瞳孔](#ビットで受け取るアバターの瞳孔)）。`EyeTrackingActive` は bool で送ります。これを float で持つアバターは bool が届くと止まるので、送り方タブの「EyeTrackingActive の型」で［Float］を選んでください（`eye_tracking_active`）。［送らない］にすると送りません。SteamVR の Steam Link が自分で送る OSC（`LeftEyeX`、`RightEyeLid` など）に合わせて作ったアバターも、送り方タブの「Steam Link の名前も送る」をオンにすれば動きます（[Steam Link の OSC 向けのアバター](#steam-link-の-osc-向けのアバター)）。これらのパラメータを持たないアバターは、VRChat 自身のアイトラッキング入力で目を動かせます（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)）
-- VRCFaceTracking（ETVR）モードで使うときは、PC に VRCFaceTracking と ETVR Tracking Module。LiveLink モードなら VRCFaceTracking と LiveLink モジュール
+- VRCFaceTracking（ETVR）モードで使うときは、PC に VRCFaceTracking と ETVR Tracking Module。LiveLink モードなら VRCFaceTracking と LiveLink モジュール。FrameEyeOSC モードなら VRCFaceTracking と FrameEyeOSC モジュール
 
 ## インストール
 
@@ -87,7 +87,7 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.loc
 
 リリースには目のカメラの道具 eyecam も入っていて、`~/.local/lib/eyecam` に入ります。初めて入れたときに、ユーザーサービス（`eyecam.service`）として有効にして動かします。更新では、動いていれば再起動するだけで、自分でオフにしたものはオフのままにします（[止める・取り除く](#止める取り除く)）。パネルで目のカメラの準備をするまでは待っているだけで、何も変わりません（[目のカメラ](#目のカメラ)）。sudo がいるのはその準備の 1 回だけで、それも自分で実行します。`install.sh` が sudo を使うことはありません。
 
-インストールしたら、PC 側で Steam Link の OSC 送信を OFF にしてください（SteamVR の設定 → Steam Link → OSC）。Steam Link もスムージングなしの目のデータを VRChat に送っているので、両方が動いているとアバターの目を2つのデータが取り合ってしまいます。ETVR モードと LiveLink モードでも同じです（アバターの目を動かすのが VRCFaceTracking になるだけです）。
+インストールしたら、PC 側で Steam Link の OSC 送信を OFF にしてください（SteamVR の設定 → Steam Link → OSC）。Steam Link もスムージングなしの目のデータを VRChat に送っているので、両方が動いているとアバターの目を2つのデータが取り合ってしまいます。ETVR・LiveLink・FrameEyeOSC モードでも同じです（アバターの目を動かすのが VRCFaceTracking になるだけです）。
 
 #### 0.4.0 より前の版から更新するとき
 
@@ -119,8 +119,8 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.loc
 
 - 左の列には、いつでも今の状態が出ます: 送信中か止めているか、送り先、毎秒の送信回数、目のデータが毎秒何回来ているか（60 未満は赤で「少なめ」。その下に、遅いのが本体か Frame か）、左右のまぶたと視線（生の値と送った値）、設定のエラー。「Track Dominant Eye Only」の設定がオンのあいだは、視線の見出しの行に、Frame がどちらの目で追っているかが出ます（「Frame の設定: 右目だけで追っています」）
 - 目のプレビュー: 左の列のいちばん下のボタンで、タブの上にシートを開き、両目の動きをそのまま描きます: まぶた（0.75 がふだんの開き。見開くとまぶたが上がる）、細め（下まぶたが上がる）、瞳孔の大きさ、目の向き。描く値は「送る値」「生の値」（Valve の開き具合と、なめらかにする前の視線）「カメラの値」（目のカメラが読んだ値）から選べます。目の下に、まぶたの値・どこから来たか（「Valve」か「カメラ」）・瞳孔の mm。「鏡で見る」（最初はオン）は鏡に映した向きで、右目が右に出ます（オフでほかの人や正面のアバターから見た向きになり、右目が左に出ます）。「止める」で描くのを止めます。目のカメラを使っているときは「カメラ映像」（うっかり映らないよう、開くたびにオフから）で、目ごとの今のカメラの映像と、eyecam が見つけた瞳（緑の丸）・瞳を探す範囲（黄色の枠）・「閉じてる判定」も出します。映像は表示するだけで保存しません（[プライバシー](#プライバシー)）。アバターの目の形は人によって違うので、動きの確認用です。タブ・✕・ダッシュボードを閉じると閉じます
-- 基本: 送信の一時停止、送り先（3 枚のカード: VRChat に直接・VRCFT（LiveLink、おすすめ）・VRCFT（ETVR）。それぞれ見開きが届くか、ほかの人からの見え方、VRCFaceTracking が要るかを表示。目のカメラを使っていないときは、見開きの行を薄くして「（カメラ）」を付けます）、目のカメラ（準備前は「使っていない」と目のカメラタブへの［はじめる →］、準備後は「使う / 使わない」（`camera_lids`）と「左・右 OK」などの短い状態）、言語（日本語 / English）、SteamVR と一緒に起動、すべて既定に戻す、アプリを終了
-- 送り方: 送り先の PC（自動、今送っている PC で固定、または入力。下を参照）とポート。VRChat に直接のときはパラメーター名の頭、EyeTrackingActive の型、Steam Link の名前も送るか、VRChat 標準の目も動かすか、LiveLink と ETVR のときは PC の VRCFaceTracking で準備すること。LiveLink で目のカメラを使っているときは「瞳孔は VRChat に直接送る」（`pupils_to_vrchat`）も。目のカメラを使っていて VRChat に直接か LiveLink のときは「瞳孔の受け取り方」（`pupil_bits`）も。こういう目のカメラがないと使えない行には緑の「カメラ」バッジが付き、カメラを使っていないとき（準備前か「使わない」）は、代わりに点線の 1 行（押すと目のカメラタブ）が出ます
+- 基本: 送信の一時停止、送り先（3 枚のカード: VRChat に直接・VRCFT（LiveLink、おすすめ。送り方タブで FrameEyeOSC を選んでいるときは「VRCFT（FrameEyeOSC）」）・VRCFT（ETVR）。それぞれ見開きが届くか、ほかの人からの見え方、VRCFaceTracking が要るかを表示。目のカメラを使っていないときは、見開きの行を薄くして「（カメラ）」を付けます）、目のカメラ（準備前は「使っていない」と目のカメラタブへの［はじめる →］、準備後は「使う / 使わない」（`camera_lids`）と「左・右 OK」などの短い状態）、言語（日本語 / English）、SteamVR と一緒に起動、すべて既定に戻す、アプリを終了
+- 送り方: LiveLink と FrameEyeOSC のときは最初に受け取る VRCFaceTracking のモジュール（「VRCFT のモジュール」: LiveLink / FrameEyeOSC）。それから送り先の PC（自動、今送っている PC で固定、または入力。下を参照）とポート。VRChat に直接のときはパラメーター名の頭、EyeTrackingActive の型、Steam Link の名前も送るか、VRChat 標準の目も動かすか、LiveLink・FrameEyeOSC・ETVR のときは PC の VRCFaceTracking で準備すること。LiveLink で目のカメラを使っているときは「瞳孔は VRChat に直接送る」（`pupils_to_vrchat`）も。目のカメラを使っていて VRChat に直接か LiveLink のときは「瞳孔の受け取り方」（`pupil_bits`）も。こういう目のカメラがないと使えない行には緑の「カメラ」バッジが付き、カメラを使っていないとき（準備前か「使わない」）は、代わりに点線の 1 行（押すと目のカメラタブ）が出ます
 - 視線: いちばん上の切り替えで 3 ページ（初めては「動き」、あとは最後に開いたページ。パネルを起動し直しても開きます）。「動き」: スムージングのオン / オフ、なめらかさの弱 / 中 / 強と 3 つの値、見つめている時の遊び。「動く範囲」: 視線の倍率（目が左・右・上・下へどこまで動くか。5〜200 %。目合わせのあとに掛け、目合わせでは変わりません。左右・上下のあいだの鍵を閉じているあいだは、両方いっしょに変わります）、左右の目を別々に動かす。「乱れ対策」: まばたき中は視線を止める、不確かな視線を使わない、一瞬の途切れを消す
 - 目を合わせる: ボタン 1 つで正面・上の幅・まぶたを約 20 秒で合わせる（[目を合わせる](#目を合わせる) を参照）、［真ん中だけ合わせ直す］（真ん中の点 1 つ）、被ったときに自動で合わせ直すもの（「被ったとき」: 何もしない・真ん中だけ）、結果と［元に戻す］、「細かく直す」の中で値を手で直す（閉じているあいだは、合わせ方の箱が出ます）
 - まぶた: いちばん上の切り替えで 3 ページ（初めては「見た目」、あとは最後に開いたページ。パネルを起動し直しても開きます）。「見た目」: いまのまぶたがどこから来ているか（目のカメラ・片目だけ目のカメラ・Valve の値。カメラのオン / オフは「基本」タブで）、目のカメラを使っているときは「見開きの出やすさ」（鈍い〜敏感のスライダー 1 本。カメラの目にはその感度、Valve の値の目には目を合わせた目の 4 段階（しない / 控えめ / ふつう / 出やすい、`lid_widen`））、まぶたのなめらかさ（弱 / 中 / 強）、左右をそろえる強さ（`lid_sync`）。「まばたき・細め」: まばたきを届ける（閉じたまま保つ時間）、まばたきを両目でそろえる（`blink_sync_below`）、目のカメラを使っているときは細めたときのまぶたの下限（`camera_lid_floor`。効くのはカメラの目があるとき）。「細かく直す」: 自動キャリブレーションと覚えた値、左右の倍率、左右の今の開き具合の上に重ねた 4 つの目盛り（目を閉じたり見開いたりしながら合わせる。③④は目を合わせた目とカメラの目では灰色）、「ほぼ開いてたら全開にする」（`lid_open_snap`）、なめらかさの 2 つの値
@@ -145,9 +145,9 @@ sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.loc
 | キー | オプション | 既定値 | 内容 |
 |---|---|---|---|
 | `sending` | | `true` | `false` で送信を一時停止（VRChat モードでは `EyeTrackingActive` の「無効」を `eye_tracking_active` の型で 1 回送る。LiveLink モードでは普通に開いて正面を見た目を 1 回送る） |
-| `output` | `--output` | `"vrchat"` | `"vrchat"` は VRChat にアバターパラメータを送る、`"etvr"` は VRCFaceTracking の ETVR Tracking Module に送る、`"livelink"` は VRCFaceTracking の LiveLink モジュールに Live Link Face の形式で送る |
+| `output` | `--output` | `"vrchat"` | `"vrchat"` は VRChat にアバターパラメータを送る、`"etvr"` は VRCFaceTracking の ETVR Tracking Module に送る、`"livelink"` は VRCFaceTracking の LiveLink モジュールに Live Link Face の形式で送る、`"frameeyeosc"` は VRCFaceTracking の FrameEyeOSC モジュールに送る |
 | `host` | `--target` | `"auto"` | `"auto"` は Steam Link の接続先 PC。それ以外は IP アドレスかホスト名（ポートは付けない） |
-| `port` | `--port`、`--target` | `null` | `null` は `vrchat` なら 9000、`etvr` なら 8889、`livelink` なら 11111 |
+| `port` | `--port`、`--target` | `null` | `null` は `vrchat` なら 9000、`etvr` なら 8889、`livelink` なら 11111、`frameeyeosc` なら 11112 |
 | `prefix` | `--prefix` | `"/FT"` | パラメータ名の頭。`""` で頭なし。LiveLink モードでは、VRChat に直接送る瞳孔（`pupils_to_vrchat`）にだけ使う |
 | `eye_tracking_active` | `--eye-tracking-active` | `"bool"` | VRChat モードで `EyeTrackingActive` をどう送るか: `"bool"`（true / false）、`"float"`（1.0 / 0.0。アバターによってはこちらが必要）、`"off"`（送らない。止めたときや目を見失ったときの 1 回の「無効」も送らない）。ETVR モードと LiveLink モードではもともと送らない |
 | `steamlink_params` | `--steamlink-params` | `false` | VRChat モードで、SteamVR の Steam Link が自分の OSC で送るアバターのパラメータ（`LeftEyeX`、`RightEyeLid` など）も送る。それに合わせて作ったアバター用（[Steam Link の OSC 向けのアバター](#steam-link-の-osc-向けのアバター)）。頭（`prefix`）は付けない。ETVR モードと LiveLink モードでは使わない |
@@ -285,6 +285,26 @@ frameeyeosc は、VRCFaceTracking の LiveLink モジュールに Live Link Face
 - VRCFaceTracking は最後に受け取った値を持ち続けます。なので目のデータが止まったとき（ヘッドセットを外したとき）や、送信を止めたとき・送り先の種類を変えたときは、普通に開いて正面を見た目を 1 回送ります。送信中で目のデータがない間は、それを 1 秒に 2 回送り続けます。モジュールは VRCFaceTracking が読み込んでから 180 秒以内に何か届かないと動き出さないためです（あきらめてしまったら VRCFaceTracking でモジュールを読み込み直してください）。一時停止中は何も送りません
 - `eye_tracking_active` と `steamlink_params` は関係ありません。`prefix` も、上の瞳孔にだけ使います。アバターのパラメータは VRCFaceTracking が送ります
 
+## VRCFaceTracking（FrameEyeOSC）モード
+
+FrameEyeOSC は frameeyeosc 専用の VRCFaceTracking モジュールです（リポジトリは別の VRCFT-FrameEyeOSC）。LiveLink モードと同じく見開きが伝わり、さらに目のカメラの細めと瞳孔の大きさも運びます。瞳孔も VRCFaceTracking がアバターごとに合った形（小数か、ビットに詰めた形か）で送るので、アバターごとに「瞳孔の受け取り方」を選ぶ必要がありません。
+
+1. PC で、モジュールの `FrameEyeOSC.dll` を VRCFaceTracking の `CustomLibs` フォルダ（`%APPDATA%\VRCFaceTracking\CustomLibs`）に入れて、VRCFaceTracking を起動し直します（モジュールの一覧にはまだありません）。ほかの目のモジュール（LiveLink や ETVR Tracking Module など）は止めるか外してください。UDP 11112 番で受けます
+2. パネルの基本タブの「送り先」で「VRCFT（LiveLink）」を選んでから、送り方タブの「VRCFT のモジュール」で「FrameEyeOSC」を選びます。`"output": "frameeyeosc"`（または `--output frameeyeosc`）でも同じです。左の列に「VRCFT（FrameEyeOSC）→ …」と出て、送り方タブにこの手順が出ます。送り先の PC はいつもどおり（Steam Link の相手か固定）、ポートは 11112 です
+3. Windows Defender ファイアウォールで UDP 11112 を通します。上の LiveLink と同じ注意があります（このモジュールも `VRCFaceTracking.ModuleProcess.exe` の中で動きます）:
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "VRCFT FrameEyeOSC (UDP 11112)" -Direction Inbound -Action Allow -Protocol UDP -LocalPort 11112 -RemoteAddress LocalSubnet -Profile Private,Public
+   ```
+
+注意:
+
+- 1 サンプルを小さな UDP パケット 1 つ（72 バイト。中身は [docs/protocol.md](docs/protocol.md)）で送ります: 左右それぞれの視線、まぶた（VRChat モードと同じ 0 閉じ、0.75 普通に開いた目、1 見開き）、目のカメラを使っているときは細めと瞳孔（mm と開き具合）。VRCFaceTracking のまぶた・視線・細め・瞳孔のパラメータは VRChat モードと同じ値になります
+- 目のデータは全部（毎秒 90 回以上）送ります。モジュールは届いた分をまとめて読んでいちばん新しい値を使うので、遅れていきません
+- このモードでは瞳孔を VRChat に直接は送らないので、`pupils_to_vrchat` と `pupil_bits` は関係ありません。`prefix`、`eye_tracking_active`、`steamlink_params` も関係ありません
+- モジュールは何もなめらかにしないので、frameeyeosc のなめらかさの設定がそのまま効きます
+- 送信中で目のデータがない間（ヘッドセットを外したときなど）は、そのことを 1 秒に 2 回モジュールに伝え、モジュールは普通に開いて正面を見た目にします。1 秒何も届かないとき（frameeyeosc を止めたときなど）も同じです。目のデータが止まったときや、送信を止めたとき・送り先の種類を変えたときは、すぐに伝えます
+
 ## 目を合わせる
 
 アバターの目が少しずれる（下を向きすぎる、下を見るとまぶたが閉じる、など）ときは、パネルの「目を合わせる」タブで合わせられます。［目を合わせる］を押すと、すぐに点が出ます。ダッシュボードは開いたままで大丈夫です（点はダッシュボードより手前に出ます）。押したあとはコントローラーを下ろし、レーザーが点の近くに来ないようにしてください:
@@ -315,7 +335,7 @@ Frame には、目ごとに赤外線のカメラが付いています。frameeye
 
 - 見開きが届きます。Valve の開き具合では見開きが出ない SteamOS 0.4.3 でもです（[うまく動かないとき](#うまく動かないとき)）。普通に開いた目から上はカメラの値を使います。カメラが見開いていると見て、Valve の値が 3 分の 2 以上開いていると読む目もカメラの値です。それより下は、まばたきを速く捉える Valve の値ですが、例外が 2 つあります: カメラが閉じていると見た目は閉じて送ります（Valve の値はまばたきの片目を取りこぼすことがあるため）。Valve の値がまばたきより長く（0.3 秒。カメラが遅いときはもっと）閉じかけと読んでいて、カメラは開いていると見ている目（目を細めたときなど）は、両方がまた合うまでカメラのまぶたを使うので、細めた目が閉じた目として送られたり、もう片方の目と一緒に閉じられたりしません。`camera_lid_floor`（既定はオフ。たとえば 0.25）を決めると、カメラが開いていると見ているあいだはまぶたをそれより下げないので、カメラ自身のまぶたが 0 近くになる強い細めでも細めた目に見えます。Valve の値が 1.000 に跳ねたとき（SteamOS 0.4.3 では「開いている」としか言っていない）、カメラがその目をはっきり細めていると見ていれば、最初の 0.1 秒はカメラのまぶたまで下げるので、半分閉じた目が一瞬開いて見えることはありません。開いている目をこれで下げることはありません。カメラの見開きは、入る・入らないの切り替えではなく、狭い幅（カメラのまぶたが普通に開いた目から 0.05 上まで、Valve のまぶたが 0.5〜0.6）でだんだん効きます。片目だけの見開きは半分にします: カメラが両目を見ているとき、どちらの目も、普通に開いた目より上へは 2 つのカメラの見開きの平均までしか上げません（本当の見開きはほとんど両目です）。カメラが開いていると見ている目を、Valve の値が普通に開いた目より下、でも閉じかけではないと読んでいるとき（SteamOS 0.4.x は開いた目を 0.6〜0.95 と読むことがよくあり、たいていは下を見ているとき）、まぶたをカメラのまぶたより下げずに送ります（上は普通に開いた目まで）。上げるだけなので、細め・まばたき・ウインクは Valve の値のままです。目ごとに決めるので、カメラが今使えない目は Valve の値になります
 - 目を細めた動きを送ります（VRChat モードの `v2/EyeSquintLeft` / `EyeSquintRight` / `EyeSquint`）。下のユーザー校正をしたあとです
-- 瞳孔の大きさを送ります（VRChat モードの `v2/PupilDilation` と `v2/PupilDiameterLeft` / `PupilDiameterRight` / `PupilDiameter`。LiveLink モードでは VRChat に直接。[VRCFaceTracking（LiveLink）モード](#vrcfacetrackinglivelinkモード)）。ETVR モードでは、細めも瞳孔も送りません
+- 瞳孔の大きさを送ります（VRChat モードの `v2/PupilDilation` と `v2/PupilDiameterLeft` / `PupilDiameterRight` / `PupilDiameter`。LiveLink モードでは VRChat に直接。[VRCFaceTracking（LiveLink）モード](#vrcfacetrackinglivelinkモード)。FrameEyeOSC モードでは VRCFaceTracking から送られ、細めも伝わります。[VRCFaceTracking（FrameEyeOSC）モード](#vrcfacetrackingframeeyeoscモード)）。ETVR モードでは、細めも瞳孔も送りません
 
 準備が済めば、かぶるたびにすることはありません。かぶってから、目を開けてふつうに前を見ている約 35 秒ぶんでふだんの目を覚え、それまでは Valve の値を使います。かぶり直すと、また覚え直します。
 
@@ -418,7 +438,7 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 
 ## 既知の問題
 
-- VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」の VRCFT アバターには対応していません（目のカメラの瞳孔だけは `pupil_bits` で対応）。ETVR モードと LiveLink モードでは、アバター側は VRCFaceTracking しだいです。見開きも伝えたいときは LiveLink モードを使ってください
+- VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」の VRCFT アバターには対応していません（目のカメラの瞳孔だけは `pupil_bits` で対応）。ETVR・LiveLink・FrameEyeOSC モードでは、アバター側は VRCFaceTracking しだいです。見開きも伝えたいときは LiveLink か FrameEyeOSC モードを使ってください
 
 ## プライバシー
 

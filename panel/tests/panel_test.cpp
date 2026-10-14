@@ -1741,6 +1741,63 @@ bool inCard(const EyePanel& panel) {
     return false;
 }
 
+void testVrcftModuleRow(const FontSet& fonts) {
+    // The Output tab's "VRCFT module" (LiveLink or FrameEyeOSC): there for both, nothing else changes the output there
+    for (Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Output);
+        PanelModel livelink = modelWith(Lids::Both);
+        livelink.language = language;
+        livelink.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+        panel.render(livelink);
+        std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetOutput);
+        CHECK(found.size() == 2);
+        if (found.size() == 2) CHECK(found[0].hit.arg == 2 && found[1].hit.arg == 3);
+        CHECK(allInsideAndTall(panel));
+        // (LiveLink keeps its pupil rows under it)
+        CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).size() == 2);
+        CHECK(hits(panel, PanelAction::SetInteger, key::kPupilBits).size() == 5);
+        // FrameEyeOSC: the same row, its port, no pupil rows (VRCFT sends them as the avatar takes them)
+        PanelModel module = livelink;
+        module.config.root.set(key::kOutput, JsonValue::makeString(kOutputModule));
+        panel.render(module);
+        found = hits(panel, PanelAction::SetOutput);
+        CHECK(found.size() == 2);
+        if (found.size() == 2) CHECK(found[0].hit.arg == 2 && found[1].hit.arg == 3);
+        CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).empty());
+        CHECK(hits(panel, PanelAction::SetInteger, key::kPupilBits).empty());
+        CHECK(hits(panel, PanelAction::PrefixFt).empty() && hits(panel, PanelAction::SetActiveType).empty());
+        CHECK(allInsideAndTall(panel));
+        // ...without the eye cameras too
+        PanelModel noCameras = module;
+        noCameras.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
+        panel.render(noCameras);
+        CHECK(hits(panel, PanelAction::SetOutput).size() == 2 && allInsideAndTall(panel));
+        // Locked: drawn, nothing to press
+        PanelModel locked = module;
+        locked.status.locked.push_back(key::kOutput);
+        panel.render(locked);
+        CHECK(hits(panel, PanelAction::SetOutput).empty());
+        // Not there for VRChat directly or ETVR
+        for (const char* output : {kOutputVrchat, kOutputEtvr}) {
+            PanelModel other = livelink;
+            other.config.root.set(key::kOutput, JsonValue::makeString(output));
+            panel.render(other);
+            CHECK(hits(panel, PanelAction::SetOutput).empty());
+        }
+        // The Basic tab: the LiveLink card stands for the module (pressing it keeps the module)
+        panel.setTab(PanelTab::Basic);
+        panel.render(module);
+        found = hits(panel, PanelAction::SetOutput);
+        CHECK(found.size() == 3);
+        if (found.size() == 3) CHECK(found[0].hit.arg == 0 && found[1].hit.arg == 3 && found[2].hit.arg == 1);
+        CHECK(allInsideAndTall(panel));
+        panel.render(livelink);
+        found = hits(panel, PanelAction::SetOutput);
+        if (found.size() == 3) CHECK(found[1].hit.arg == 2);
+    }
+}
+
 void testCameraRows(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         // Not set up: the Basic tab's row leads to the eye cameras tab (no switch yet)
@@ -1767,7 +1824,7 @@ void testCameraRows(const FontSet& fonts) {
         panel.render(none);
         CHECK(!inCard(panel));  // nothing there only for the cameras
         panel.setTab(PanelTab::Output);
-        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) {
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, kOutputModule}) {
             PanelModel m = none;
             m.config.root.set(key::kOutput, JsonValue::makeString(output));
             panel.render(m);
@@ -2431,6 +2488,7 @@ int main() {
     testSliderMoved(fonts);
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);
+    testVrcftModuleRow(fonts);
     testToolNotice(fonts);
     testErrorBack(fonts);
     testWayOut(fonts);

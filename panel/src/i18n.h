@@ -33,6 +33,7 @@ struct UiText {
     const char* outputVrchatShort;  ///< "VRChat" in the destination line
     const char* outputEtvrShort;    ///< "VRCFaceTracking" in the destination line
     const char* outputLivelinkShort;  ///< "VRCFT (LiveLink)" in the destination line
+    const char* outputModuleShort;  ///< "VRCFT (FrameEyeOSC)" in the destination line
     const char* searchingPc;        ///< auto target not found yet
     const char* modeAuto;           ///< target chosen automatically
     const char* modeFixed;          ///< target fixed
@@ -110,6 +111,7 @@ struct UiText {
     const char* hintOutput;         ///< what "sync" means on the cards
     const char* outputVrchat;       ///< the destination cards' titles
     const char* outputLivelink;
+    const char* outputModule;       ///< the LiveLink card's title while the FrameEyeOSC module is chosen instead
     const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
     /** Each card's three lines (VRChat, LiveLink, ETVR): wide eyes, sync, VRCFT. A leading ICON_CHECK or ICON_CROSS
@@ -141,6 +143,8 @@ struct UiText {
     const char* rowSteamlink;       ///< also send the avatar parameters Steam Link's own OSC sends
     const char* hintSteamlink;
     const char* steamlinkNoPrefix;  ///< after its example address: the prefix is never added
+    const char* rowVrcftModule;  ///< LiveLink and FrameEyeOSC: which VRCFT module receives (the output)
+    const char* hintVrcftModule;  ///< ...under its title
     const char* rowPupils;  ///< LiveLink output: send the pupils straight to VRChat (pupils_to_vrchat)
     const char* hintPupils;  ///< ...why, under it
     const char* pupilsTargetFormat;  ///< ...where they go now ("to %s")
@@ -165,14 +169,17 @@ struct UiText {
     const char* rowPort;
     const char* portDefaultVrchat;  ///< the port row's hint: the default port of the output type
     const char* portDefaultLivelink;
+    const char* portDefaultModule;
     const char* portDefaultEtvr;
     const char* portReset;          ///< back to default port
-    // Output tab, for LiveLink and ETVR: what to set up in VRCFT on the PC
+    // Output tab, for LiveLink, FrameEyeOSC and ETVR: what to set up in VRCFT on the PC
     const char* vrcftSetupTitle;
     const char* vrcftStepsLivelink[3];
+    const char* vrcftStepsModule[3];
     const char* vrcftStepsEtvr[3];
     const char* vrcftSetupNote;     ///< the parameter names and syncing are up to VRCFT
     const char* vrcftNoWide;        ///< ETVR: widened eyes don't come through
+    const char* vrcftModulePupils;  ///< FrameEyeOSC with the eye cameras: the pupils go through VRCFT too
     const char* rowLanguage;
     const char* rowAutostart;
     const char* hintAutostart;
@@ -866,6 +873,9 @@ struct UiText {
     const char* promptLivelink;
     const char* promptLivelinkDetail1;
     const char* promptLivelinkDetail2;
+    const char* promptModule;
+    const char* promptModuleDetail1;
+    const char* promptModuleDetail2;
     const char* promptYes;
     const char* promptNo;
 

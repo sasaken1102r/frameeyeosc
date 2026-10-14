@@ -317,23 +317,38 @@ struct SettingChange {
 
 /**
  * The output type a SetOutput / PromptYes button stands for.
- * @param arg 0 VRChat, 1 ETVR, 2 LiveLink (anything else is VRChat)
- * @return kOutputVrchat, kOutputEtvr or kOutputLivelink
+ * @param arg 0 VRChat, 1 ETVR, 2 LiveLink, 3 FrameEyeOSC (anything else is VRChat)
+ * @return kOutputVrchat, kOutputEtvr, kOutputLivelink or kOutputModule
  */
 const char* outputOfArg(int arg);
 
 /**
  * The button argument of an output type (the other way round from outputOfArg).
  * @param output the "output" value
- * @return 0 VRChat, 1 ETVR, 2 LiveLink; -1 for anything else
+ * @return 0 VRChat, 1 ETVR, 2 LiveLink, 3 FrameEyeOSC; -1 for anything else
  */
 int argOfOutput(const std::string& output);
 
 /**
+ * The Basic tab's destination card an output type belongs to, as that card's usual button argument: the VRCFT
+ * (LiveLink) card also stands for the FrameEyeOSC module, which the Output tab chooses in its place.
+ * @param output the "output" value
+ * @return 0 VRChat, 1 ETVR, 2 LiveLink or FrameEyeOSC; -1 for anything else
+ */
+int cardOfOutput(const std::string& output);
+
+/**
+ * Whether the Output tab shows "VRCFT module" (LiveLink or FrameEyeOSC): while either of them is the output.
+ * @param output the "output" setting
+ * @return true to show it
+ */
+bool vrcftModuleRowShown(const std::string& output);
+
+/**
  * The recommended settings of an output type (asked once after switching). Locked keys are left out.
- * VRChat and LiveLink: the default gaze and eyelid smoothing (the LiveLink module smooths nothing). ETVR: default
- * gaze smoothing and lighter eyelid smoothing, because the ETVR module already smooths the eyelids.
- * @param output kOutputVrchat, kOutputEtvr or kOutputLivelink
+ * VRChat, LiveLink and FrameEyeOSC: the default gaze and eyelid smoothing (those modules smooth nothing). ETVR:
+ * default gaze smoothing and lighter eyelid smoothing, because the ETVR module already smooths the eyelids.
+ * @param output kOutputVrchat, kOutputEtvr, kOutputLivelink or kOutputModule
  * @param view the settings (to skip locked keys)
  * @return the changes
  */
@@ -508,7 +523,8 @@ bool pupilsRowShown(const std::string& output, bool camera);
 
 /**
  * Whether the Output tab shows the dashed line "with the eye cameras, pupil size goes out too" in place of its pupil
- * rows: where those would be (VRChat directly, LiveLink) while the eye cameras aren't in use.
+ * rows: where those would be (VRChat directly, LiveLink) while the eye cameras aren't in use, and for FrameEyeOSC, which
+ * carries them too (through VRCFT, so it has no pupil rows).
  * @param output the "output" setting
  * @param camera the eye cameras are in use
  * @return true to show it
@@ -517,7 +533,8 @@ bool pupilsLineShown(const std::string& output, bool camera);
 
 /** How the Output tab shows "How the avatar takes pupils" (pupil_bits). */
 enum class PupilBitsRow {
-    Hidden,  ///< not there: the eye cameras not in use, or ETVR (no pupils go to VRChat)
+    Hidden,  ///< not there: the eye cameras not in use, ETVR (no pupils go to VRChat), or FrameEyeOSC (VRCFT sends
+             ///< them in whatever form the avatar takes)
     Greyed,  ///< there, but the pupils don't go straight to VRChat now (LiveLink with pupils_to_vrchat off)
     Usable,  ///< there and in effect
 };

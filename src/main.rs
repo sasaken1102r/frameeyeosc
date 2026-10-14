@@ -5,6 +5,7 @@ mod config;
 mod dots;
 mod eyecam_ctl;
 mod eyecam_live;
+mod feo;
 mod livelink;
 mod replay;
 mod status;
@@ -49,6 +50,10 @@ const LIVELINK_IDLE_INTERVAL: Duration = Duration::from_millis(500);
 // filled its socket queue until the eyes lagged by seconds. Samples in between are dropped, never queued: each packet
 // is the newest sample.
 const LIVELINK_MAX_HZ: u32 = 50;
+// While sending to VRCFT's FrameEyeOSC module without eye data, a packet without TRACKING (relaxed open eyes looking
+// ahead) this often, so the module tells "no eye data" from "frameeyeosc gone" (it relaxes the eyes after a second
+// without packets). Every eye sample goes to it: the module takes in all queued packets and keeps the newest.
+const FEO_IDLE_INTERVAL: Duration = Duration::from_millis(500);
 // The eye server produces samples at ~90 Hz.
 const NOMINAL_DT: f32 = 1.0 / 90.0;
 // Gaps longer than this restart the filters instead of smearing across them.
@@ -523,8 +528,8 @@ fn shm_layout(version: u32) -> Result<ShmLayout, String> {
 #[derive(Parser)]
 #[command(about = "Send Steam Frame eye tracking from shared memory over OSC")]
 struct Args {
-    /// What to send: VRChat avatar parameters, VRCFaceTracking's ETVR Tracking Module format, or Live Link Face
-    /// packets for VRCFaceTracking's LiveLink module
+    /// What to send: VRChat avatar parameters, VRCFaceTracking's ETVR Tracking Module format, Live Link Face
+    /// packets for VRCFaceTracking's LiveLink module, or FEO1 packets for VRCFaceTracking's FrameEyeOSC module
     #[arg(long, value_enum, default_value_t = OutputKind::Vrchat)]
     output: OutputKind,
     /// How EyeTrackingActive is sent in VRChat mode: a bool, a float (1.0 / 0.0; some avatars
@@ -550,7 +555,8 @@ struct Args {
     /// OSC destination as HOST:PORT, or "auto" for the PC that Steam Link is streaming from
     #[arg(long, default_value = "auto")]
     target: String,
-    /// OSC port used with --target auto [default: 9000 for vrchat, 8889 for etvr, 11111 for livelink]
+    /// OSC port used with --target auto [default: 9000 for vrchat, 8889 for etvr, 11111 for livelink, 11112 for
+    /// frameeyeosc]
     #[arg(long)]
     port: Option<u16>,
     /// Parameter name prefix; "" or "/" for none
@@ -3434,10 +3440,10 @@ fn shut_lids(lids: &mut [f32; 2], shut: [bool; 2]) {
 }
 
 /// Eyelids on the scale of the given output. LiveLink gets the VRCFT eyelids, split into blink and widening in the
-/// packet (VRCFT puts the same eyelid back together).
+/// packet (VRCFT puts the same eyelid back together), and the FrameEyeOSC module the VRCFT eyelids as they are.
 fn output_lids(output: OutputKind, lids: [f32; 2]) -> [f32; 2] {
     match output {
-        OutputKind::Vrchat | OutputKind::LiveLink => lids,
+        OutputKind::Vrchat | OutputKind::LiveLink | OutputKind::FrameEyeOsc => lids,
         OutputKind::Etvr => lids.map(lid_to_etvr),
     }
 }
@@ -3449,6 +3455,22 @@ fn livelink_packet(sample: &Sample, time: f64) -> Vec<u8> {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
     let lids = output_lids(OutputKind::LiveLink, sample.lids);
     livelink::packet(time, &livelink::shapes(lids, [left_x, left_y, right_x, right_y]))
+}
+
+/// The FrameEyeOSC packet for one sample: the same gaze and eyelids as the Live Link packet (each eye's gaze its own
+/// with "move eyes separately", else the combined one), with the eye camera's squint and pupils for the eyes they are
+/// used for. VRCFT then sends the pupils to each avatar in the form it takes them, so none go straight to VRChat.
+fn feo_packet(sample: &Sample, sequence: u32, time_us: u64) -> [u8; feo::PACKET_LEN] {
+    let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
+    let lids = output_lids(OutputKind::FrameEyeOsc, sample.lids);
+    let camera = &sample.camera;
+    let eye = |side: usize, gaze: [f32; 2]| feo::Eye {
+        gaze,
+        lid: lids[side],
+        squint: camera.squint[side],
+        pupil: camera.pupil_diameter[side].zip(camera.pupil_dilation[side]),
+    };
+    feo::packet(sequence, true, time_us, [eye(0, [left_x, left_y]), eye(1, [right_x, right_y])])
 }
 
 /// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set with the eye camera's squint and pupils (see
@@ -3773,6 +3795,13 @@ fn livelink_stream(settings: &Settings) -> Option<(&str, u16)> {
     (settings.sending && settings.output == OutputKind::LiveLink).then(|| (settings.host.as_str(), settings.port()))
 }
 
+/// Where VRCFT's FrameEyeOSC module is being sent to, if anywhere. When this changes while eye tracking runs, the old
+/// destination gets a packet without TRACKING (relaxed open eyes, straight ahead) at once, instead of after the
+/// module's one-second timeout.
+fn feo_stream(settings: &Settings) -> Option<(&str, u16)> {
+    (settings.sending && settings.output == OutputKind::FrameEyeOsc).then(|| (settings.host.as_str(), settings.port()))
+}
+
 /// Why the samples stopped, for the log line when tracking is lost.
 fn lost_reason(next: &Next) -> String {
     match next {
@@ -3858,6 +3887,9 @@ struct Bridge {
     livelink_neutral: Option<Instant>,
     // Keeps the Live Link samples at or below LIVELINK_MAX_HZ.
     livelink_throttle: Throttle,
+    // The next FrameEyeOSC packet's sequence number, and when the last one without TRACKING went out.
+    feo_sequence: u32,
+    feo_idle: Option<Instant>,
     // Whether frameeyeosc keeps up with the eye tracker.
     pace: Pace,
     // eyecam-rec's live eye-camera values, and the newest read of them.
@@ -3904,6 +3936,10 @@ impl Bridge {
         let stream = livelink_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != livelink_stream(&settings) {
             self.send_livelink_neutral();
+        }
+        let stream = feo_stream(&self.settings);
+        if self.active_since.is_some() && stream.is_some() && stream != feo_stream(&settings) {
+            self.send_feo_idle();
         }
         self.output.set_target(Target::of(&settings));
         // Nothing to set back when the pupils stop going there: they just hold
@@ -3958,6 +3994,10 @@ impl Bridge {
                     }
                 }
                 ready
+            } else if self.settings.output == OutputKind::FrameEyeOsc {
+                let packet = feo_packet(&sample, self.next_feo_sequence(), feo::time_us(SystemTime::now()));
+                self.output.send_datagram(&packet);
+                true
             } else {
                 for (addr, arg) in osc_messages(&self.settings, &sample) {
                     self.output.send(addr, vec![arg])?;
@@ -4035,6 +4075,9 @@ impl Bridge {
         if livelink_stream(&self.settings).is_some() {
             self.send_livelink_neutral();
         }
+        if feo_stream(&self.settings).is_some() {
+            self.send_feo_idle();
+        }
         self.smoother.reset();
         // The next wear may read differently; reset keeps what this one reads only over short gaps
         self.smoother.cross_eye.level = CrossEyeLevel::default();
@@ -4106,6 +4149,30 @@ impl Bridge {
         }
     }
 
+    /// The sequence number for the next FrameEyeOSC packet.
+    fn next_feo_sequence(&mut self) -> u32 {
+        let sequence = self.feo_sequence;
+        self.feo_sequence = sequence.wrapping_add(1);
+        sequence
+    }
+
+    /// A FrameEyeOSC packet without TRACKING: relaxed open eyes looking straight ahead.
+    fn send_feo_idle(&mut self) {
+        let sequence = self.next_feo_sequence();
+        let packet = feo::packet(sequence, false, feo::time_us(SystemTime::now()), [feo::Eye::NEUTRAL; 2]);
+        self.output.send_datagram(&packet);
+        self.feo_idle = Some(Instant::now());
+    }
+
+    /// While sending to VRCFT's FrameEyeOSC module without eye data, keep telling it so (see FEO_IDLE_INTERVAL).
+    /// Paused, nothing goes out.
+    fn keep_feo_alive(&mut self) {
+        let due = self.feo_idle.is_none_or(|sent| sent.elapsed() >= FEO_IDLE_INTERVAL);
+        if self.active_since.is_none() && feo_stream(&self.settings).is_some() && due {
+            self.send_feo_idle();
+        }
+    }
+
     /// `source_error`: why the eye tracker's shared memory can't be read, if it can't; `dominant_eye`: the eye the
     /// Frame tracks alone, if "Track Dominant Eye Only" is on.
     fn status<'a>(&'a self, source_error: Option<&'a str>, dominant_eye: Option<DominantEye>) -> Status<'a> {
@@ -4117,6 +4184,8 @@ impl Bridge {
         let settings = &self.settings;
         let pair = |values: [f32; 6], first: usize| status::round([values[first], values[first + 1]]);
         let vrchat = settings.output == OutputKind::Vrchat;
+        // The FrameEyeOSC module gets the squint and pupils like VRChat directly
+        let camera_out = vrchat || settings.output == OutputKind::FrameEyeOsc;
         let pupils = pupil_stream(settings).is_some();
         let camera = self.latest.as_ref().map(|sample| sample.camera).unwrap_or_default();
         let live = self.camera_live.as_ref();
@@ -4149,9 +4218,9 @@ impl Bridge {
                 gaze: pair(sample.gaze, 4),
                 gaze_left: pair(sample.gaze, 0),
                 gaze_right: pair(sample.gaze, 2),
-                squint: (vrchat && camera.squint != [None; 2])
+                squint: (camera_out && camera.squint != [None; 2])
                     .then(|| status::round(camera.squint.map(|squint| squint.unwrap_or(0.0)))),
-                pupil_dilation: mean(camera.pupil_dilation).filter(|_| vrchat || pupils).map(status::round_one),
+                pupil_dilation: mean(camera.pupil_dilation).filter(|_| camera_out || pupils).map(status::round_one),
             }),
             calibration: CalibrationStatus {
                 enabled: settings.lid_calibration,
@@ -4302,6 +4371,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         dots: dots::DotStream::new(status::status_path().parent().unwrap_or(Path::new("/tmp"))),
         livelink_neutral: None,
         livelink_throttle: Throttle::default(),
+        feo_sequence: 0,
+        feo_idle: None,
         pace: Pace::default(),
         camera: LiveReader::new(camera_path, Instant::now()),
         camera_live: None,
@@ -4360,6 +4431,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         bridge.check_capture();
         bridge.keep_livelink_alive();
+        bridge.keep_feo_alive();
         if status_file.due() {
             if let Some(line) = eye.refresh_dominant_eye() {
                 eprintln!("{line}");
@@ -6272,6 +6344,8 @@ mod tests {
             dots: dots::DotStream::new(Path::new("/nonexistent")),
             livelink_neutral: None,
             livelink_throttle: Throttle::default(),
+            feo_sequence: 0,
+            feo_idle: None,
             pace: Pace::default(),
             camera: LiveReader::new(PathBuf::from("/nonexistent"), Instant::now()),
             camera_live: None,
@@ -9071,6 +9145,172 @@ mod tests {
         assert!(json["pupil_target"].is_null() && json["sent"]["pupil_dilation"].is_null());
         bridge.on_lost("test").unwrap();
         assert!(osc_received(&vrchat_listener).is_empty());
+    }
+
+    #[test]
+    fn frameeyeosc_packets_carry_the_sample_with_its_camera_values() {
+        let camera = CameraValues {
+            squint: [Some(0.3), None],
+            pupil_dilation: [Some(0.25), Some(0.75)],
+            pupil_diameter: [Some(4.0), Some(3.0)],
+        };
+        let seen = Sample { camera, ..sample() };
+        let packet = feo_packet(&seen, 41, 1_700_000_000_000_000);
+        assert_eq!(packet[8..12], 41u32.to_le_bytes());
+        assert_eq!(packet[16..24], 1_700_000_000_000_000u64.to_le_bytes());
+        let ([left, right], pupils) = feo::tests::module_eyes(&packet).unwrap();
+        // The gaze and eyelids the Live Link packet carries, as VRCFT reads them back
+        let [livelink_left, livelink_right] = livelink::tests::module_eyes(&livelink_packet(&seen, 0.0)).unwrap();
+        for (eye, (openness, wide, x, y)) in [(left, livelink_left), (right, livelink_right)] {
+            assert_eq!(eye.gaze, [x, y]);
+            assert!((eye.openness - openness).abs() < 1e-6 && (eye.wide - wide).abs() < 1e-6, "{eye:?}");
+        }
+        assert!((left.vrcft_lid() - seen.lids[0]).abs() < 1e-6);
+        // The squint of the eye whose eyelid is the camera's; the pupils as --output vrchat sends them
+        assert_eq!((left.squint, right.squint), (0.3, 0.0));
+        let direct = osc_messages(&settings(), &seen);
+        let [diameter_left, diameter_right, dilation] = pupils.unwrap();
+        let names = ["PupilDiameterLeft", "PupilDiameterRight", "PupilDilation"];
+        for (name, value) in names.into_iter().zip([diameter_left, diameter_right, dilation]) {
+            let expected = param(&direct, &format!("/avatar/parameters/FT/v2/{name}")).unwrap();
+            assert!((value - expected).abs() < 1e-6, "{name}: {value} vs {expected}");
+        }
+        // Without the eye cameras: no squint or pupils
+        let (_, pupils) = feo::tests::module_eyes(&feo_packet(&sample(), 0, 0)).unwrap();
+        assert!(pupils.is_none());
+        assert_eq!(packet[12..16], (1u32 | 2 | 8 | 16).to_le_bytes());
+        assert_eq!(feo_packet(&sample(), 0, 0)[12..16], 1u32.to_le_bytes());
+    }
+
+    #[test]
+    fn frameeyeosc_mode_sends_every_sample_and_says_when_the_eyes_stop() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let vrchat_listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let module = Settings {
+            output: OutputKind::FrameEyeOsc,
+            host: "127.0.0.1".into(),
+            port: Some(listener.local_addr().unwrap().port()),
+            lid_calibration: false,
+            ..settings()
+        };
+        let mut bridge = test_bridge(module.clone());
+        // Nothing goes straight to VRChat in this mode
+        assert!(pupil_stream(&module).is_none());
+        let vrchat_port = vrchat_listener.local_addr().unwrap().port();
+        bridge.pupil_output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port: vrchat_port });
+        bridge.pupil_output.refresh();
+        let idle = |packet: &[u8]| packet[12..16] == [0; 4] && feo::tests::module_eyes(packet).is_some();
+        let sequence = |packet: &[u8]| u32::from_le_bytes(packet[8..12].try_into().unwrap());
+        // Before any eye data: a packet without TRACKING, twice a second
+        bridge.keep_feo_alive();
+        let first = receive(&listener).unwrap();
+        assert!(idle(&first) && sequence(&first) == 0);
+        bridge.keep_feo_alive();
+        assert!(receive(&listener).is_none());
+        // Every sample goes out at once (no rate limit), numbered on
+        let look = [(std::f32::consts::PI / 8.0).tan(), -(std::f32::consts::PI / 8.0).tan()];
+        for index in 0..5 {
+            bridge.on_sample(reading(index, look, [1.0, 0.55])).unwrap();
+        }
+        for index in 0..5 {
+            let packet = receive(&listener).unwrap();
+            assert_eq!(packet.len(), feo::PACKET_LEN);
+            assert_eq!(sequence(&packet), index + 1);
+            assert!(!idle(&packet));
+            let ([left, right], _) = feo::tests::module_eyes(&packet).unwrap();
+            assert!(left.gaze[0] > 0.0 && left.gaze[1] < 0.0 && right.openness < 1.0);
+        }
+        assert!(receive(&listener).is_none());
+        assert_eq!((bridge.received.len(), bridge.sent.len()), (5, 5));
+        // Tracking runs, so nothing in between
+        bridge.keep_feo_alive();
+        assert!(receive(&listener).is_none());
+        // The packet is the sample's (time stamp aside)
+        bridge.on_sample(reading(5, look, [1.0, 0.55])).unwrap();
+        let packet = receive(&listener).unwrap();
+        let sample = bridge.latest.as_ref().unwrap();
+        assert_eq!(packet[..16], feo_packet(sample, 6, 0)[..16]);
+        assert_eq!(packet[24..], feo_packet(sample, 6, 0)[24..]);
+        // Losing the eye data: one idle packet at once, then again only after FEO_IDLE_INTERVAL
+        bridge.on_lost("test").unwrap();
+        assert!(idle(&receive(&listener).unwrap()));
+        bridge.keep_feo_alive();
+        assert!(receive(&listener).is_none());
+        bridge.feo_idle = Some(Instant::now() - FEO_IDLE_INTERVAL);
+        bridge.keep_feo_alive();
+        assert!(idle(&receive(&listener).unwrap()));
+        // Pausing while tracking: one idle packet, and nothing after it
+        bridge.on_sample(reading(6, look, [1.0, 0.55])).unwrap();
+        receive(&listener).unwrap();
+        let paused = Settings {
+            sending: false,
+            ..module.clone()
+        };
+        bridge.apply(reload(&paused)).unwrap();
+        assert!(idle(&receive(&listener).unwrap()));
+        bridge.on_sample(reading(7, look, [1.0, 0.55])).unwrap();
+        bridge.on_lost("test").unwrap();
+        bridge.feo_idle = None;
+        bridge.keep_feo_alive();
+        assert!(receive(&listener).is_none());
+        // Switching to LiveLink while tracking: a last idle packet, then Live Link packets
+        bridge.apply(reload(&module)).unwrap();
+        bridge.on_sample(reading(8, look, [1.0, 0.55])).unwrap();
+        assert!(!idle(&receive(&listener).unwrap()));
+        let livelink = Settings {
+            output: OutputKind::LiveLink,
+            pupils_to_vrchat: false,
+            ..module.clone()
+        };
+        bridge.apply(reload(&livelink)).unwrap();
+        assert!(idle(&receive(&listener).unwrap()));
+        bridge.on_sample(reading(9, look, [1.0, 0.55])).unwrap();
+        assert!(livelink::tests::module_eyes(&receive(&listener).unwrap()).is_some());
+        bridge.feo_idle = None;
+        bridge.keep_feo_alive();
+        while receive(&listener).is_some_and(|packet| packet[..4] != *b"FEO1") {}
+        assert!(receive(&listener).is_none());
+        assert!(osc_received(&vrchat_listener).is_empty());
+    }
+
+    #[test]
+    fn frameeyeosc_mode_sends_the_eye_cameras_pupils_in_the_packet() {
+        use eyecam_live::tests::{TempDir, TestEye, live_bytes, write_live};
+        let dir = TempDir::new("feo-pupils");
+        let path = dir.0.join("live");
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let module = Settings {
+            output: OutputKind::FrameEyeOsc,
+            host: "127.0.0.1".into(),
+            port: Some(listener.local_addr().unwrap().port()),
+            lid_calibration: false,
+            ..settings()
+        };
+        let mut bridge = test_bridge(module);
+        bridge.camera = LiveReader::new(path.clone(), Instant::now());
+        bridge.on_sample(reading(0, [0.0, 0.0], [0.8; 2])).unwrap();
+        let (_, pupils) = feo::tests::module_eyes(&receive(&listener).unwrap()).unwrap();
+        assert!(pupils.is_none());
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert!(json["sent"]["pupil_dilation"].is_null() && json["pupil_target"].is_null());
+        let now = eyecam_live::monotonic_ns();
+        let mut eyes = [TestEye::at(now, 0.9, 0.2); 2];
+        eyes[1].pupil_mm = 5.0;
+        write_live(&path, &live_bytes(7, 1, true, eyes));
+        bridge.camera = LiveReader::new(path.clone(), Instant::now());
+        bridge.on_sample(reading(1, [0.0, 0.0], [0.8; 2])).unwrap();
+        let packet = receive(&listener).unwrap();
+        let (_, pupils) = feo::tests::module_eyes(&packet).unwrap();
+        let [diameter_left, diameter_right, dilation] = pupils.unwrap();
+        assert!((diameter_left - 0.4).abs() < 1e-6 && (diameter_right - 0.5).abs() < 1e-6);
+        assert!((dilation - 0.5).abs() < 1e-6);
+        // What the panel shows as sent: the pupils, and the squint the packet carries
+        let json = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(json["sent"]["pupil_dilation"], 0.5);
+        assert_eq!(json["output"], "frameeyeosc");
+        let squint = bridge.latest.as_ref().unwrap().camera.squint;
+        assert_eq!(json["sent"]["squint"].is_null(), squint == [None; 2]);
+        assert_eq!(packet[12] & 0b110 != 0, squint != [None; 2]);
     }
 
     #[test]

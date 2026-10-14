@@ -55,6 +55,9 @@ pub enum OutputKind {
     /// VRCFaceTracking's LiveLink module (Live Link Face packets: eyelids, widening and gaze per eye)
     #[value(name = "livelink")]
     LiveLink,
+    /// VRCFaceTracking's FrameEyeOSC module (FEO1 packets: gaze, eyelids, squint and pupils per eye)
+    #[value(name = "frameeyeosc")]
+    FrameEyeOsc,
 }
 
 impl OutputKind {
@@ -63,6 +66,7 @@ impl OutputKind {
             Self::Vrchat => 9000,
             Self::Etvr => 8889,
             Self::LiveLink => crate::livelink::DEFAULT_PORT,
+            Self::FrameEyeOsc => crate::feo::DEFAULT_PORT,
         }
     }
 }
@@ -984,6 +988,19 @@ mod tests {
         // The status file and the panel spell it the same way
         assert_eq!(serde_json::to_string(&OutputKind::LiveLink).unwrap(), r#""livelink""#);
         assert!(merged(r#"{"output": "live-link"}"#, &[]).is_err());
+    }
+
+    #[test]
+    fn frameeyeosc_module_is_an_output() {
+        let (settings, _) = merged(r#"{"output": "frameeyeosc"}"#, &[]).unwrap();
+        assert_eq!(settings.output, OutputKind::FrameEyeOsc);
+        assert_eq!(settings.port(), 11112);
+        let (settings, locked) = merged(r#"{"output": "livelink"}"#, &["--output", "frameeyeosc"]).unwrap();
+        assert_eq!(settings.output, OutputKind::FrameEyeOsc);
+        assert_eq!(locked, ["output"]);
+        // The status file and the panel spell it the same way
+        assert_eq!(serde_json::to_string(&OutputKind::FrameEyeOsc).unwrap(), r#""frameeyeosc""#);
+        assert!(merged(r#"{"output": "frame-eye-osc"}"#, &[]).is_err());
     }
 
     #[test]

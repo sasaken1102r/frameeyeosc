@@ -415,6 +415,7 @@ std::vector<Card> cards(const UiText& t, const PanelModel& m) {
         const SettingsView settings(m);
         const std::string output = settings.text(key::kOutput);
         const std::string name = output == kOutputLivelink ? t.outputLivelink
+                                 : output == kOutputModule ? t.outputModule
                                  : output == kOutputEtvr   ? t.outputEtvr
                                                            : t.outputVrchat;
         const std::string host = settings.text(key::kHost);

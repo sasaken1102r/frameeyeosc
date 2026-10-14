@@ -601,9 +601,27 @@ void testMigrateFitPolicy() {
 
 /** The destination cards' button arguments stand for the output types both ways. */
 void testOutputArgs() {
-    for (int arg = 0; arg < 3; ++arg) CHECK(argOfOutput(outputOfArg(arg)) == arg);
+    for (int arg = 0; arg < 4; ++arg) CHECK(argOfOutput(outputOfArg(arg)) == arg);
     CHECK(std::string(outputOfArg(2)) == kOutputLivelink);
+    CHECK(std::string(outputOfArg(3)) == kOutputModule);
     CHECK(argOfOutput("osc") == -1);
+    // The FrameEyeOSC module shares the LiveLink card on the Basic tab, and the Output tab chooses between the two
+    CHECK(cardOfOutput(kOutputModule) == 2 && cardOfOutput(kOutputLivelink) == 2);
+    CHECK(cardOfOutput(kOutputVrchat) == 0 && cardOfOutput(kOutputEtvr) == 1 && cardOfOutput("osc") == -1);
+    CHECK(vrcftModuleRowShown(kOutputLivelink) && vrcftModuleRowShown(kOutputModule));
+    CHECK(!vrcftModuleRowShown(kOutputVrchat) && !vrcftModuleRowShown(kOutputEtvr) && !vrcftModuleRowShown(""));
+    // Its own default port
+    PanelModel m;
+    m.config.root.type = JsonValue::Type::Object;
+    m.config.root.set(key::kOutput, JsonValue::makeString(kOutputModule));
+    CHECK(SettingsView(m).port() == 11112 && SettingsView(m).portIsDefault());
+    // The same recommended settings as LiveLink (neither module smooths)
+    const std::vector<SettingChange> module = recommendedSettings(kOutputModule, SettingsView(m));
+    const std::vector<SettingChange> livelink = recommendedSettings(kOutputLivelink, SettingsView(m));
+    CHECK(module.size() == livelink.size());
+    for (size_t i = 0; i < module.size() && i < livelink.size(); ++i) {
+        CHECK(std::string(module[i].key) == livelink[i].key && module[i].value.number == livelink[i].value.number);
+    }
 }
 
 /** status.json says why frameeyeosc can't read the eye tracker in source_error; null or missing means it can. */
@@ -802,7 +820,12 @@ void testPupilsToVrchat() {
     // ...and in their place, without them, the one dashed line (where pupils could go: VRChat directly and LiveLink)
     CHECK(pupilsLineShown(kOutputLivelink, false) && pupilsLineShown(kOutputVrchat, false));
     CHECK(!pupilsLineShown(kOutputEtvr, false) && !pupilsLineShown("", false));
-    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) CHECK(!pupilsLineShown(output, true));
+    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, kOutputModule}) {
+        CHECK(!pupilsLineShown(output, true));
+    }
+    // The FrameEyeOSC module carries the pupils itself (through VRCFT): the line without the cameras, never the row
+    CHECK(pupilsLineShown(kOutputModule, false));
+    CHECK(!pupilsRowShown(kOutputModule, true) && !pupilsRowShown(kOutputModule, false));
 }
 
 /** The short state after the Basic tab's eye camera switch follows the eye cameras page's "Now" row. */
@@ -859,6 +882,9 @@ void testPupilBits() {
         CHECK(pupilBitsRow(output, false, true) == PupilBitsRow::Hidden);  // not in use (camera_lids off too)
     }
     CHECK(pupilBitsRow(kOutputEtvr, true, true) == PupilBitsRow::Hidden);
+    // FrameEyeOSC: VRCFT sends the pupils in whatever form the avatar takes them
+    CHECK(pupilBitsRow(kOutputModule, true, true) == PupilBitsRow::Hidden);
+    CHECK(pupilBitsRow(kOutputModule, true, false) == PupilBitsRow::Hidden);
 }
 
 /** The bottom sentence of the eye cameras' page, for every case, in its order. */

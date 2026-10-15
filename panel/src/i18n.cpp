@@ -1016,7 +1016,7 @@ UiText makeEnglish() {
     t.send = "Send";
     t.stop = "Pause";
     t.rowOutput = "Send to";
-    t.hintOutput = "Sync = how other players see your eyes (" ICON_DOUBLE_RING " squint and pupils too)";
+    t.hintOutput = "Sync = how other players see your eyes";
     t.outputVrchat = "VRChat direct";
     t.outputLivelink = "VRCFT (LiveLink)";
     t.outputModule = "VRCFT (FrameEyeOSC)";
@@ -1028,7 +1028,7 @@ UiText makeEnglish() {
     t.outputMarks[1][1] = "Needs VRCFT";
     t.outputMarks[2][0] = ICON_CHECK " Synced to others";
     t.outputMarks[2][1] = "Needs VRCFT";
-    t.outputMarks[3][0] = ICON_DOUBLE_RING " Synced to others";
+    t.outputMarks[3][0] = ICON_CHECK " Synced, pupils too";
     t.outputMarks[3][1] = "Needs VRCFT + module";
     t.outputMarkSeparator = " · ";
     t.outputDeprecated = "Deprecated";

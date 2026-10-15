@@ -326,14 +326,16 @@ void testOutputMarks() {
                 CHECK(std::string(line).find("ide eyes") == std::string::npos);
             }
         }
-        CHECK(std::string(t->hintOutput).find(ICON_DOUBLE_RING) != std::string::npos);
     }
+    // ◎ is a Japanese grading mark; English says it in words with the check
+    CHECK(std::string(ja.hintOutput).find(ICON_DOUBLE_RING) != std::string::npos);
+    CHECK(std::string(en.hintOutput).find(ICON_DOUBLE_RING) == std::string::npos);
     SAME(ja.outputMarks[0][0], "同期 " ICON_TRIANGLE_OUTLINE);
     SAME(ja.outputMarks[1][0], "同期 " ICON_RING);
     SAME(ja.outputMarks[2][0], "同期 " ICON_RING);
     SAME(ja.outputMarks[3][0], "同期 " ICON_DOUBLE_RING);
     SAME(en.outputMarks[1][0], ICON_CHECK " Synced to others");
-    SAME(en.outputMarks[3][0], ICON_DOUBLE_RING " Synced to others");
+    SAME(en.outputMarks[3][0], ICON_CHECK " Synced, pupils too");
     CHECK(std::string(ja.hintOutput).find(ICON_TRIANGLE_OUTLINE) != std::string::npos);
 }
 

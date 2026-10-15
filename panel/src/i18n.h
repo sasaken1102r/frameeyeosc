@@ -114,8 +114,8 @@ struct UiText {
     const char* outputModule;
     const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
-    /** Each output's two lines (VRChat, LiveLink, ETVR, FrameEyeOSC): sync, VRCFT. A leading ICON_CHECK or
-     *  ICON_DOUBLE_RING and a space hang in front of the lines on a card (icons.h). ETVR's go on one line after its
+    /** Each output's two lines (VRChat, LiveLink, ETVR, FrameEyeOSC): sync, VRCFT. A leading ICON_CHECK and a
+     *  space hang in front of the lines on a card (icons.h). ETVR's go on one line after its
      *  small button, joined by outputMarkSeparator. */
     const char* outputMarks[4][2];
     const char* outputMarkSeparator;

@@ -207,8 +207,8 @@ void drawCheck(cairo_t* cr, double cx, double cy, double s, Color c) {
     cairo_stroke(cr);
 }
 
-/** A leading check or double ring icon (and a space) on a destination card's line, hung in front of the lines. */
-enum class LineMark { None, Check, DoubleRing };
+/** A leading check icon (and a space) on a destination card's line, hung in front of the lines. */
+enum class LineMark { None, Check };
 
 /**
  * Split a card line into its leading mark and the rest.
@@ -218,14 +218,9 @@ enum class LineMark { None, Check, DoubleRing };
  */
 LineMark splitMark(const std::string& text, std::string& rest) {
     static const std::string check = ICON_CHECK " ";
-    static const std::string doubleRing = ICON_DOUBLE_RING " ";
     if (text.compare(0, check.size(), check) == 0) {
         rest = text.substr(check.size());
         return LineMark::Check;
-    }
-    if (text.compare(0, doubleRing.size(), doubleRing) == 0) {
-        rest = text.substr(doubleRing.size());
-        return LineMark::DoubleRing;
     }
     rest = text;
     return LineMark::None;
@@ -2185,11 +2180,6 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
             const double tx = cx + pad + (line.indent ? markW : 0);
             const double markX = cx + pad + markW * 0.4;
             if (line.mark == LineMark::Check) drawCheck(pen.cr, markX, baseline - lineSize * 0.36, lineSize, kText);
-            if (line.mark == LineMark::DoubleRing) {
-                // The icon itself (bold, nearer the check's weight), centred where the check is
-                pen.text(markX - icon::advance(icon::Icon::DoubleRing, lineSize) / 2, baseline, ICON_DOUBLE_RING,
-                         lineSize, kText, true);
-            }
             pen.text(tx, baseline, line.text, lineSize, lineColor);
             baseline += lineStep;
         }

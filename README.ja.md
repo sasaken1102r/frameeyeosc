@@ -382,7 +382,7 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 `install_grab.sh` が写すのは `~/.local/lib/eyecam/eyecam-grab` で、このフォルダーはあなたのユーザーで動くプログラムならどれでも書き換えられます。なので、権限を付ける前に、リリースのファイルそのものか確かめてください。その sha256 が、GitHub のリリースノート（入れた・更新した版のもの）にある `eyecam-grab` の sha256 と同じなら大丈夫です。
 
 - ［Konsole で開く］で開く Konsole には、Enter を押してパスワードを打つ前に、コマンドの上に出ます
-- SSH なら、`sudo ~/.local/lib/eyecam/install_grab.sh` の前に `sha256sum ~/.local/lib/eyecam/eyecam-grab` を実行します
+- SSH なら、`sudo .local/lib/eyecam/install_grab.sh` の前に `sha256sum .local/lib/eyecam/eyecam-grab` を実行します
 - `install_grab.sh` も同じ値を（「入れるファイル:」のあとに）もう一度出し、最後に入れたコピーの値も出します
 
 違っていたら、パスワードは打たずに Konsole を閉じて、リリースから frameeyeosc を入れ直してください。もう入れてしまっていたら、先に `sudo ~/.local/lib/eyecam/install_grab.sh --uninstall` で取り除きます。
@@ -397,7 +397,7 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 ## うまく動かないとき
 
 - ログ: `journalctl --user -u frameeyeosc -f`（パネルは `journalctl --user -u frameeyeosc-panel -f`）
-- 困って相談するとき: パネルの「詳細」タブの「困ったとき」にある「診断」の行の［開く］（目のカメラのタブで映像が見つからない理由が出ているときは、その横の［診断を見る］）を押して、そのページのスクショを送ってください。版、目のデータ、目のカメラが映像を最後に探したときの様子、最後の校正と、返信に書ける短い「診断コード」（例 `NW·P3·B0·G1·C1R·F1·V2`。読み方は [panel/README.md](panel/README.md#診断コード)）が 1 枚に出ます。送り先の PC を固定していると、そのスクショに LAN の IP アドレスが写り、ファイルの場所（パス）も写ることがあります。校正や目合わせが失敗したときは、その記録も手がかりになります: 失敗の画面の［記録を見る］か、SSH で `~/.local/bin/frameeyeosc-panel --report latest`（理由と、そのときのログの主な行が出ます。送り先を固定していると、ログにも PC の LAN の IP アドレスが出ることがあります）
+- 困って相談するとき: パネルの「詳細」タブの「困ったとき」にある「診断」の行の［開く］（目のカメラのタブで映像が見つからない理由が出ているときは、その横の［診断を見る］）を押して、そのページのスクショを送ってください。版、目のデータ、目のカメラが映像を最後に探したときの様子、最後の校正と、返信に書ける短い「診断コード」（例 `NW·P3·B0·G1·C1R·F1·V2`。読み方は [panel/README.md](panel/README.md#診断コード)）が 1 枚に出ます。送り先の PC を固定していると、そのスクショに LAN の IP アドレスが写り、ファイルの場所（パス）も写ることがあります。校正や目合わせが失敗したときは、その記録も手がかりになります: 失敗の画面の［記録を見る］か、SSH で `.local/bin/frameeyeosc-panel --report latest`（理由と、そのときのログの主な行が出ます。送り先を固定していると、ログにも PC の LAN の IP アドレスが出ることがあります）
 - `No Steam Link connection found; waiting for one`: Steam Link がまだつながっていません。または送り先の PC を固定してください
 - `Can't send OSC to ... yet (Network is unreachable)` や `Sending OSC to ... failed (...)`: ネットワークがまだつながっていない（起動直後の Wi-Fi など）か、PC に届きません。frameeyeosc は動き続けて送り直し、送れるようになると `... works again` と出ます
 - 左の列の「目のデータ」が少なめ（赤、毎秒 60 未満。90 のはずが 46 や 15 のことがありました）、または目を合わせると最初の点でサンプルが足りずに止まる: 回数の下の行に、どちらが遅いかが出ます。「本体の処理が追いついていません」なら、目のトラッカーが出したサンプルを frameeyeosc が読みそびれたか、1 つに時間がかかりすぎています。「Frame から届く数が少なめです」なら、目のトラッカーから届く数そのものが少なく、frameeyeosc は全部読めています。少なめが 10 秒続くと、数字を 1 行ログに残します（`journalctl --user -u frameeyeosc` に `Eye data has been low for 10 s: …`）。その行と、PC から Steam Link で送っていたかどうかを知らせてください

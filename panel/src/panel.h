@@ -366,7 +366,7 @@ public:
     bool previewPictures() const { return previewOpen_ && previewCamera_; }
 
     /** The eye cameras can't give pictures now: their switch goes off (pressed again once they can, not by itself). */
-    void stopPreviewPictures() { previewCamera_ = false; }
+    void stopPreviewPictures() { previewCamera_ = previewCameraKept_ = false; }
 
     /**
      * For --preview-sheet: how the sheet is set.
@@ -690,8 +690,9 @@ private:
     bool previewOpen_ = false;          ///< the eye preview is shown over the tabs' content
     eye_preview::Source previewSource_ = eye_preview::Source::Sent;  ///< ...which values drive its eyes
     bool previewMirror_ = true;         ///< ...as in a mirror (the right eye on the right; off: seen from the front)
-    bool previewCamera_ = false;        ///< ...with the eye cameras' pictures (off each time it opens, and whenever
-                                        ///< the cameras can't give them)
+    bool previewCamera_ = false;        ///< ...with the eye cameras' pictures (off whenever the cameras can't give them)
+    bool previewCameraKept_ = false;    ///< ...the pictures' switch as last pressed, for the next time it opens (this
+                                        ///< run of the panel only; the cameras going away turns it off too)
     bool previewFrozen_ = false;        ///< ...stopped where it was
     bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
     eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at

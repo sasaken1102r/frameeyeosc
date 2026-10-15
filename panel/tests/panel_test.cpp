@@ -2377,7 +2377,15 @@ void testPreview(const FontSet& fonts) {
         panel.render(m);
         press(panel, PanelAction::PreviewCamera);
         CHECK(panel.previewPictures());
-        // Closed and opened again: off again
+        // Closed and opened again: still on (the switch is kept while the panel runs)
+        press(panel, PanelAction::PreviewClose);
+        panel.render(m);
+        press(panel, PanelAction::PreviewOpen);
+        CHECK(panel.previewOpen() && panel.previewPictures());
+        panel.render(m);
+        // Turned off, closed and opened again: off
+        press(panel, PanelAction::PreviewCamera);
+        CHECK(!panel.previewPictures());
         press(panel, PanelAction::PreviewClose);
         panel.render(m);
         press(panel, PanelAction::PreviewOpen);

@@ -897,6 +897,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::PreviewCamera:
             previewCamera_ = !previewCamera_;
+            previewCameraKept_ = previewCamera_;
             return {};
         case PanelAction::PreviewFreeze:
             // Stopped at what the next draw shows (the model isn't at hand here)
@@ -1234,8 +1235,9 @@ void EyePanel::openAppsList() {
 void EyePanel::openPreview() {
     previewOpen_ = true;
     previewFrozen_ = false;
-    // The eye pictures start off each time, so an eye never shows by accident (in a screenshot or a stream)
-    previewCamera_ = false;
+    // The eye pictures start off, so an eye never shows by accident (in a screenshot or a stream); once turned on, they
+    // come back each time it opens until the panel restarts or they are turned off (also by the cameras going away)
+    previewCamera_ = previewCameraKept_;
     previewFreezePending_ = false;
     // (over whatever shows; the light warning before a recording doesn't stay behind it)
     eyecamConfirm_.close();
@@ -6893,7 +6895,7 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
     // ("Camera" while the camera's values can't be had shows the values as sent)
     const Source source = previewSource_ == Source::Camera && !cameraValues ? Source::Sent : previewSource_;
     // The eye cameras can't give pictures: their switch goes off, to be pressed again once they can (as the loop does)
-    if (camera != CameraState::Available) previewCamera_ = false;
+    if (camera != CameraState::Available) stopPreviewPictures();
     const bool pictures = previewCamera_;
     // A sheet over the content card (the tabs and the left column stay), like the other Frame apps' list
     drawCard(pen, kRightX, kContentY, kRight - kRightX, kContentH, 20, kCard, kBorder, 2);

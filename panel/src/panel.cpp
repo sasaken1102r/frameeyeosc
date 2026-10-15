@@ -2183,15 +2183,16 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
             pen.text(tx, baseline, line.text, lineSize, lineColor);
             baseline += lineStep;
         }
-        // The recommended one gets a tag on its top edge
-        if (args[c] == 2) {
+        // LiveLink (recommended) and FrameEyeOSC (all-in-one) get a tag on their top edge
+        const char* tag = args[c] == 2 ? t.outputRecommended : args[c] == 3 ? t.outputAllInOne : nullptr;
+        if (tag != nullptr) {
             const double tagSize = 13;
             const double tagH = 22;
-            const double tagW = pen.measure(t.outputRecommended, tagSize, true) + 16;
+            const double tagW = pen.measure(tag, tagSize, true) + 16;
             const double tagX = cx + cardW - tagW - 10;
             fillRounded(pen, tagX, top - tagH / 2, tagW, tagH, 7, kAccent);
-            textCentered(pen, tagX + tagW / 2, centerBaseline(top - tagH / 2, tagH, tagSize), t.outputRecommended,
-                         tagSize, kOnAccent, true);
+            textCentered(pen, tagX + tagW / 2, centerBaseline(top - tagH / 2, tagH, tagSize), tag, tagSize, kOnAccent,
+                         true);
         }
         addButton(hit, cx, top, cardW, cardH, usable);
     }

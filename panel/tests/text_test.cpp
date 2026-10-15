@@ -337,6 +337,8 @@ void testOutputMarks() {
     SAME(en.outputMarks[1][0], ICON_CHECK " Synced to others");
     SAME(en.outputMarks[3][0], ICON_CHECK " Synced, pupils too");
     CHECK(std::string(ja.hintOutput).find(ICON_TRIANGLE_OUTLINE) != std::string::npos);
+    SAME(ja.outputAllInOne, "全部入り");
+    SAME(en.outputAllInOne, "All-in-one");
 }
 
 }  // namespace

@@ -103,6 +103,7 @@ UiText makeJapanese() {
     t.outputModule = "VRCFT（FrameEyeOSC）";
     t.outputEtvr = "VRCFT（ETVR）";
     t.outputRecommended = "おすすめ";
+    t.outputAllInOne = "全部入り";
     t.outputMarks[0][0] = "同期 " ICON_TRIANGLE_OUTLINE;
     t.outputMarks[0][1] = "VRCFT 不要";
     t.outputMarks[1][0] = "同期 " ICON_RING;
@@ -1022,6 +1023,7 @@ UiText makeEnglish() {
     t.outputModule = "VRCFT (FrameEyeOSC)";
     t.outputEtvr = "VRCFT (ETVR)";
     t.outputRecommended = "Recommended";
+    t.outputAllInOne = "All-in-one";
     t.outputMarks[0][0] = "Sync: depends on avatar";
     t.outputMarks[0][1] = "No VRCFT needed";
     t.outputMarks[1][0] = ICON_CHECK " Synced to others";

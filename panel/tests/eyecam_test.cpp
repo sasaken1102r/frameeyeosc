@@ -1644,6 +1644,9 @@ void testSetupTools() {
     SAME(video[2], "org.chromium.Chromium");
     SAME(video[3], "https://example.com/v");
     SAME(setup_tools::kVideoUrl, "");
+    // The Output tab's link: the page it opens is the one the panel shows (without https://)
+    SAME(std::string("https://") + uiText(Language::Ja).vrcftModuleLink, setup_tools::kModulePageUrl);
+    SAME(std::string("https://") + uiText(Language::En).vrcftModuleLink, setup_tools::kModulePageUrl);
 }
 
 void testReply() {

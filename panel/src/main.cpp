@@ -2920,13 +2920,15 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             model.eyecam.flow.proceed();
             return;
         case PanelAction::SetupKonsole:
-        case PanelAction::SetupVideo: {
+        case PanelAction::SetupVideo:
+        case PanelAction::OpenModulePage: {
             // Konsole with the command typed in (the user presses Enter and types the password: the panel never runs
-            // sudo or passwd), or the video in Chromium. Only in VR: --dump-png (vr null) only says what it would run
+            // sudo or passwd), or the video or the module's page in Chromium. Only in VR: --dump-png (vr null) only
+            // says what it would run
             const std::vector<std::string> argv =
-                hit.action == PanelAction::SetupVideo
-                    ? setup_tools::videoArgv(setup_tools::kVideoUrl)
-                    : setup_tools::setupKonsoleArgv(hit.arg, model.language);
+                hit.action == PanelAction::SetupVideo       ? setup_tools::videoArgv(setup_tools::kVideoUrl)
+                : hit.action == PanelAction::OpenModulePage ? setup_tools::videoArgv(setup_tools::kModulePageUrl)
+                                                            : setup_tools::setupKonsoleArgv(hit.arg, model.language);
             std::string line;
             for (const std::string& arg : argv) line += (line.empty() ? "" : " | ") + arg;
             if (vr == nullptr) {

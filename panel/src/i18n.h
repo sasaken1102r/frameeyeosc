@@ -177,9 +177,11 @@ struct UiText {
     const char* portReset;          ///< back to default port
     // Output tab, for LiveLink, FrameEyeOSC and ETVR: what to set up in VRCFT on the PC
     const char* vrcftSetupTitle;
-    const char* vrcftStepsLivelink[3];
-    const char* vrcftStepsModule[3];
-    const char* vrcftStepsEtvr[3];
+    // Up to four steps each; the ones not used stay nullptr
+    const char* vrcftStepsLivelink[4];
+    const char* vrcftStepsModule[4];
+    const char* vrcftStepsEtvr[4];
+    const char* vrcftModuleLink;    ///< where the FrameEyeOSC module's zip is, under its first step
     const char* vrcftSetupNote;     ///< the parameter names and syncing are up to VRCFT
     const char* vrcftNoWide;        ///< ETVR: widened eyes don't come through
     const char* vrcftModulePupils;  ///< FrameEyeOSC with the eye cameras: the pupils go through VRCFT too

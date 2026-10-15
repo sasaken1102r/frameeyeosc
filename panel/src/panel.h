@@ -93,6 +93,7 @@ enum class PanelAction {
     SetupKonsole,      ///< the eye cameras' setup: open a Konsole with the command typed in (arg 0 = the tool's install,
                        ///< 1 = passwd; the caller starts it, never from --dump-png)
     SetupVideo,        ///< ...open the setup video (only shown with a video URL)
+    OpenModulePage,    ///< Output tab: open the FrameEyeOSC module's releases page in the Frame's Chromium
     SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
     SetupBegin,        ///< "Get started" under what the eye cameras add: on to the setup checklist (handled inside)
     EyecamBack,        ///< "Back" on a failed calibration's or recording's error: dismiss it in the panel only

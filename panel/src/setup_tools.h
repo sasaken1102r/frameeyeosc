@@ -22,6 +22,8 @@ constexpr const char* kShownInstallCommand = "sudo ~/.local/lib/eyecam/install_g
 constexpr const char* kPasswdCommand = "passwd";
 /** The setup video. None yet: while it is empty, its button and the line under it don't show. */
 constexpr const char* kVideoUrl = "";
+// Where the FrameEyeOSC module's zip is (the Output tab's link; i18n's vrcftModuleLink shows it without https://)
+constexpr const char* kModulePageUrl = "https://github.com/sasaken1102r/VRCFT-FrameEyeOSC/releases";
 /** How often the password is checked again while the setup may need it, at first (s)... */
 constexpr double kPasswordCheckSec = 4.0;
 /** ...doubling while it stays the same, up to this (s). */

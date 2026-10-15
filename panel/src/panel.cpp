@@ -2452,10 +2452,13 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const char* const* steps = livelink ? t.vrcftStepsLivelink : (module ? t.vrcftStepsModule : t.vrcftStepsEtvr);
     std::vector<std::vector<std::string>> stepLines;
     size_t stepLineCount = 0;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4 && steps[i] != nullptr; ++i) {
         stepLines.push_back(wrapText(pen, steps[i], stepSize, false, textW, 2));
         stepLineCount += stepLines.back().size();
     }
+    // FrameEyeOSC isn't in VRCFT's registry: where its zip is, in the accent color under the first step
+    const bool link = module && t.vrcftModuleLink != nullptr;
+    if (link) ++stepLineCount;
     std::string note = t.vrcftSetupNote;
     const char* more = etvr ? t.vrcftNoWide : (module && camera ? t.vrcftModulePupils : nullptr);
     if (more != nullptr) {
@@ -2475,10 +2478,24 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     double baseline = top + pad + titleSize * 0.9;
     pen.text(boxX + pad, baseline, t.vrcftSetupTitle, titleSize, kText, true);
     baseline += 14 + stepStep * 0.75;
-    for (int i = 0; i < 3; ++i) {
-        drawNumberBadge(pen, boxX + pad + 10, baseline - 6, i + 1);
+    for (size_t i = 0; i < stepLines.size(); ++i) {
+        drawNumberBadge(pen, boxX + pad + 10, baseline - 6, static_cast<int>(i) + 1);
         for (const std::string& line : stepLines[i]) {
             pen.text(boxX + pad + badgeW, baseline, line, stepSize, kText);
+            baseline += stepStep;
+        }
+        if (i == 0 && link) {
+            // Pressed, the page opens in the Frame's Chromium (the zip is for the PC, but the page says what to do)
+            const std::string label = std::string(t.vrcftModuleLink) + " " ICON_CHEVRON_RIGHT;
+            const double size = fitSize(pen, label.c_str(), stepSize, 13, textW - 12, true);
+            const PanelHit hit {PanelAction::OpenModulePage, nullptr, 0};
+            const double bx = boxX + pad + badgeW - 8;
+            const double bw = pen.measure(label, size, true) + 16;
+            const double bh = 40;  // the panel's smallest button: it reaches over the steps around it
+            const double by = baseline - size * 0.8 - (bh - size) / 2;
+            if (pointerState(hit) > 0) fillRounded(pen, bx, by, bw, bh, 10, kControlHover);
+            pen.text(boxX + pad + badgeW, baseline, label, size, kAccent, true);
+            addButton(hit, bx, by, bw, bh, true);
             baseline += stepStep;
         }
     }

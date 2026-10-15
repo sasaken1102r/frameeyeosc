@@ -1762,7 +1762,7 @@ void testOutputCards(const FontSet& fonts) {
             const int args[3] = {0, 2, 3};
             for (int c = 0; c < 3; ++c) {
                 CHECK(found[c].hit.arg == args[c]);
-                CHECK(found[c].y == found[0].y && std::fabs(found[c].w - found[0].w) < 0.5 && found[c].h > 100);
+                CHECK(found[c].y == found[0].y && std::fabs(found[c].w - found[0].w) < 0.5 && found[c].h > 80);
                 if (c > 0) CHECK(found[c].x > found[c - 1].x + found[c - 1].w);
             }
             // ETVR: a small button under them
@@ -1971,7 +1971,7 @@ void testIconText(const FontSet& fonts) {
               0.5);
     }
     // Drawing: each icon puts ink inside its own box only, around the middle of the line
-    for (int k = 1; k <= 16; ++k) {
+    for (int k = 1; k <= 17; ++k) {
         cairo_save(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
         cairo_paint(cr);

@@ -831,17 +831,15 @@ private:
     void drawBasic(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
 
     /**
-     * The Basic tab's destination: three cards (VRChat directly, VRCFT LiveLink, VRCFT ETVR), each with what it
-     * carries in three short lines. Widening needs the eye cameras: while they aren't in use, that line is dimmer and
-     * says so ("（カメラ）"), on one line.
+     * The Basic tab's destination: three cards (VRChat directly, VRCFT LiveLink, VRCFT FrameEyeOSC), each with what it
+     * carries in two short lines (how others see the eyes, and what VRCFT needs).
      * @param pen drawing tools
      * @param t texts
      * @param view the settings shown
      * @param y top
-     * @param camera the eye cameras are in use
      * @return the height used
      */
-    double drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& view, double y, bool camera);
+    double drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& view, double y);
 
     /**
      * The Basic tab's eye cameras row: not set up, what they add, "not in use" and the way to their tab; set up, a

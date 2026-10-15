@@ -8,7 +8,7 @@
 #include <cstddef>
 #include <string>
 
-// The markers: U+E000 to U+E00F (3 bytes in UTF-8, "\xEE\x80\x80" to "\xEE\x80\x8F")
+// The markers: U+E000 to U+E010 (3 bytes in UTF-8, "\xEE\x80\x80" to "\xEE\x80\x90")
 #define ICON_CHEVRON_LEFT "\xEE\x80\x80"    ///< ‹ (back)
 #define ICON_CHEVRON_RIGHT "\xEE\x80\x81"   ///< › (go to)
 #define ICON_CHEVRON_UP "\xEE\x80\x82"      ///< ˄
@@ -25,6 +25,7 @@
 #define ICON_DOT "\xEE\x80\x8D"             ///< ● (a small dot)
 #define ICON_RING "\xEE\x80\x8E"            ///< ◯ (yes)
 #define ICON_TRIANGLE_OUTLINE "\xEE\x80\x8F"  ///< △ (partly)
+#define ICON_DOUBLE_RING "\xEE\x80\x90"     ///< ◎ (yes, and more)
 
 namespace icon {
 
@@ -47,6 +48,7 @@ enum class Icon {
     Dot,
     Ring,
     TriangleOutline,
+    DoubleRing,
 };
 
 /** The bytes of one marker in UTF-8. */

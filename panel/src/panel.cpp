@@ -207,45 +207,25 @@ void drawCheck(cairo_t* cr, double cx, double cy, double s, Color c) {
     cairo_stroke(cr);
 }
 
-/**
- * Draw a cross with lines (no font needed), the counterpart of drawCheck.
- * @param cr cairo
- * @param cx center x
- * @param cy center y
- * @param s size (px)
- * @param c color
- */
-void drawCross(cairo_t* cr, double cx, double cy, double s, Color c) {
-    cairo_set_source_rgb(cr, c.r, c.g, c.b);
-    cairo_set_line_width(cr, s * 0.16);
-    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-    const double r = s * 0.28;
-    cairo_move_to(cr, cx - r, cy - r);
-    cairo_line_to(cr, cx + r, cy + r);
-    cairo_move_to(cr, cx + r, cy - r);
-    cairo_line_to(cr, cx - r, cy + r);
-    cairo_stroke(cr);
-}
-
-/** A leading check or cross icon (and a space) on a destination card's line, hung in front of the lines. */
-enum class LineMark { None, Check, Cross };
+/** A leading check or double ring icon (and a space) on a destination card's line, hung in front of the lines. */
+enum class LineMark { None, Check, DoubleRing };
 
 /**
  * Split a card line into its leading mark and the rest.
- * @param text the line (ICON_CHECK " Wide eyes")
+ * @param text the line (ICON_CHECK " Synced to others")
  * @param rest the text after the mark (written)
  * @return the mark
  */
 LineMark splitMark(const std::string& text, std::string& rest) {
     static const std::string check = ICON_CHECK " ";
-    static const std::string cross = ICON_CROSS " ";
+    static const std::string doubleRing = ICON_DOUBLE_RING " ";
     if (text.compare(0, check.size(), check) == 0) {
         rest = text.substr(check.size());
         return LineMark::Check;
     }
-    if (text.compare(0, cross.size(), cross) == 0) {
-        rest = text.substr(cross.size());
-        return LineMark::Cross;
+    if (text.compare(0, doubleRing.size(), doubleRing) == 0) {
+        rest = text.substr(doubleRing.size());
+        return LineMark::DoubleRing;
     }
     rest = text;
     return LineMark::None;
@@ -2021,9 +2001,8 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
                       v.flag(key::kSending) ? 0 : 1, 20, locked);
     }
     y += kRowH + kRowGap;
-    // Where to send: three cards (widening needs the eye cameras)
-    const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
-    y += drawOutputCards(pen, t, v, y, camera) + kRowGap;
+    // Where to send: three cards
+    y += drawOutputCards(pen, t, v, y) + kRowGap;
     // The eye cameras: the way to set them up, or their switch
     drawEyeCamerasRow(pen, t, m, v, y, kRowH);
     y += kRowH + kRowGap;
@@ -2119,7 +2098,7 @@ void EyePanel::drawEyeCamerasRow(const Pen& pen, const UiText& t, const PanelMod
              good ? kText : kTextMuted, good);
 }
 
-double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& v, double y, bool camera) {
+double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& v, double y) {
     const bool locked = v.locked(key::kOutput);
     const std::string output = v.text(key::kOutput);
     const int selected = argOfOutput(output);
@@ -2161,20 +2140,12 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         std::string text;
     };
     std::vector<Line> lines[3];
-    double cameraLineSize[3] = {lineSize, lineSize, lineSize};  // the widening line without the cameras (one line)
     size_t most = 0;
     for (int c = 0; c < 3; ++c) {
-        for (int k = 0; k < 3; ++k) {
+        for (const char* text : t.outputMarks[marks[c]]) {
             std::string rest;
-            const LineMark mark = splitMark(t.outputMarks[marks[c]][k], rest);
+            const LineMark mark = splitMark(text, rest);
             const double indent = mark == LineMark::None ? 0 : markW;
-            if (k == 0 && !camera) {
-                // Widening comes from the eye cameras: said after it, never wrapped
-                rest += t.outputCameraSuffix;
-                cameraLineSize[c] = fitSize(pen, rest, lineSize, 11, innerW - indent, false);
-                lines[c].push_back({mark, mark != LineMark::None, rest});
-                continue;
-            }
             const std::vector<std::string> wrapped = wrapText(pen, rest, lineSize, false, innerW - indent, 2);
             for (size_t i = 0; i < wrapped.size(); ++i) {
                 lines[c].push_back({i == 0 ? mark : LineMark::None, mark != LineMark::None, wrapped[i]});
@@ -2210,18 +2181,16 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         const Color lineColor = locked ? kTextDisabled : (isSelected || pointer > 0 ? kText : kTextMuted);
         pen.text(cx + pad, top + pad + cardTitleSize * 0.9, titles[c], cardTitleSize, titleColor, true);
         double baseline = top + pad + cardTitleSize + 8 + lineSize * 0.9;
-        for (size_t i = 0; i < lines[c].size(); ++i) {
-            const Line& line = lines[c][i];
-            // The widening line without the cameras: dimmer, and on one line
-            const bool dim = i == 0 && !camera;
-            const double size = dim ? cameraLineSize[c] : lineSize;
-            const Color color = !dim ? lineColor : (!locked && (isSelected || pointer > 0) ? kTextMuted : kTextDisabled);
+        for (const Line& line : lines[c]) {
             const double tx = cx + pad + (line.indent ? markW : 0);
-            const double midY = baseline - lineSize * 0.36;
-            const Color markColor = dim ? color : kText;
-            if (line.mark == LineMark::Check) drawCheck(pen.cr, cx + pad + markW * 0.4, midY, lineSize, markColor);
-            if (line.mark == LineMark::Cross) drawCross(pen.cr, cx + pad + markW * 0.4, midY, lineSize, markColor);
-            pen.text(tx, baseline, line.text, size, color);
+            const double markX = cx + pad + markW * 0.4;
+            if (line.mark == LineMark::Check) drawCheck(pen.cr, markX, baseline - lineSize * 0.36, lineSize, kText);
+            if (line.mark == LineMark::DoubleRing) {
+                // The icon itself (bold, nearer the check's weight), centred where the check is
+                pen.text(markX - icon::advance(icon::Icon::DoubleRing, lineSize) / 2, baseline, ICON_DOUBLE_RING,
+                         lineSize, kText, true);
+            }
+            pen.text(tx, baseline, line.text, lineSize, lineColor);
             baseline += lineStep;
         }
         // The recommended one gets a tag on its top edge
@@ -2297,12 +2266,12 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         strokeRounded(pen, tagX, by + (bh - tagH) / 2, tagW, tagH, 8, kBorder, 1);
         textCentered(pen, tagX + tagW / 2, centerBaseline(by + (bh - tagH) / 2, tagH, tagSize), t.outputDeprecated,
                      tagSize, kTextMuted, false);
-        // Its three lines on one (the leading marks only go on the cards)
+        // Its two lines on one (the leading marks only go on the cards)
         std::string carries;
-        for (int k = 0; k < 3; ++k) {
+        for (const char* text : t.outputMarks[2]) {  // (row 2: ETVR)
             std::string rest;
-            splitMark(t.outputMarks[2][k], rest);  // (row 2: ETVR)
-            if (k > 0) carries += t.outputMarkSeparator;
+            splitMark(text, rest);
+            if (!carries.empty()) carries += t.outputMarkSeparator;
             carries += rest;
         }
         const double cx = tagX + tagW + 14;

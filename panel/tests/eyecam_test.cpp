@@ -709,7 +709,7 @@ void testCalibText() {
               t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
               t.lidsLook, t.lidsBlinks, t.lidsFine, t.camPupilLine,
               t.camWidenNotice, t.camWidenButton, t.calibCardTitle, t.calibResultTitle, t.calibWearNote,
-              t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye, t.outputCameraSuffix,
+              t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye,
               t.rowEyeCameras, t.hintEyeCamerasNew, t.eyeCamerasUnused, t.eyeCamerasStart, t.hintEyeCamerasOn,
               t.eyeCamerasUse, t.eyeCamerasDontUse, t.camBriefBoth, t.camBriefLeft, t.camBriefRight, t.camBriefOff,
               t.camBriefWarming, t.camBriefWaiting, t.cameraBadge, t.cameraLineWiden, t.cameraLineFloor,

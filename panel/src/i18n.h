@@ -114,15 +114,14 @@ struct UiText {
     const char* outputModule;
     const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
-    /** Each output's three lines (VRChat, LiveLink, ETVR, FrameEyeOSC): wide eyes, sync, VRCFT. A leading ICON_CHECK
-     *  or ICON_CROSS and a space hang in front of the lines on a card (icons.h). ETVR's go on one line after its
+    /** Each output's two lines (VRChat, LiveLink, ETVR, FrameEyeOSC): sync, VRCFT. A leading ICON_CHECK or
+     *  ICON_DOUBLE_RING and a space hang in front of the lines on a card (icons.h). ETVR's go on one line after its
      *  small button, joined by outputMarkSeparator. */
-    const char* outputMarks[4][3];
+    const char* outputMarks[4][2];
     const char* outputMarkSeparator;
     const char* outputDeprecated;    ///< the label after the small ETVR button under the cards
     const char* etvrNotice1;         ///< the notice while ETVR is the output: it goes away in the next version...
     const char* etvrNotice2;         ///< ...and to pick another destination above
-    const char* outputCameraSuffix;  ///< after a card's wide-eyes line while the eye cameras aren't in use ("（カメラ）")
     // The Basic tab's eye cameras row: not set up (a way to their tab), or set up (the camera_lids switch)
     const char* rowEyeCameras;
     const char* hintEyeCamerasNew;   ///< ...not set up: what they add

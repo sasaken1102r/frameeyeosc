@@ -67,8 +67,8 @@ frameeyeosc's other outputs).
 - Drop a packet with any non-finite float.
 - Compatible additions append fields and raise `length`; an incompatible change raises `version`.
 - Ordering: a packet whose `session` differs from the newest one taken is taken, and the window below starts over
-  from it: frameeyeosc started again, and its `sequence` with it. From then on a packet from the session before (not
-  0) is a straggler from the old run and is dropped. Within one session, a packet whose `sequence` is at
+  from it: frameeyeosc started again, and its `sequence` with it. From then on a packet from a session before (not 0;
+  the module remembers the last 4) is a straggler from an old run and is dropped. Within one session, a packet whose `sequence` is at
   most 1000 behind the newest one taken (`(int32)(sequence - newest)` in -1000..0) is a duplicate or late and is
   dropped; anything else is taken (a jump back further than that is also read as a restart, for senders without a
   `session`). After a timeout, any packet is taken.

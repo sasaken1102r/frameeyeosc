@@ -410,7 +410,7 @@ UiText makeJapanese() {
     t.recordsAllFormat = "すべての記録（%s）" ICON_CHEVRON_RIGHT;
     t.recordsAllTitleFormat = "すべての記録（%s）";
     t.recordsKept = "新しい 10 件を残すよ";
-    t.recordsSsh = "SSH なら frameeyeosc-panel --report latest";
+    t.recordsSsh = "SSH なら ~/.local/bin/frameeyeosc-panel --report latest";
     t.recordBack = ICON_CHEVRON_LEFT " 戻る";
     t.recordReason = "理由：";
     t.recordOutcome = "結果：";
@@ -1329,7 +1329,7 @@ UiText makeEnglish() {
     t.recordsAllFormat = "All records (%s) " ICON_CHEVRON_RIGHT;
     t.recordsAllTitleFormat = "All records (%s)";
     t.recordsKept = "The newest 10 are kept";
-    t.recordsSsh = "Over SSH: frameeyeosc-panel --report latest";
+    t.recordsSsh = "Over SSH: ~/.local/bin/frameeyeosc-panel --report latest";
     t.recordBack = ICON_CHEVRON_LEFT " Back";
     t.recordReason = "Why: ";
     t.recordOutcome = "Result: ";

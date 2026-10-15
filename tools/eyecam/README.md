@@ -10,8 +10,8 @@ frameeyeosc 向けの共有メモリに書く（「ライブ処理」の節）�
 
 使い方は 2 通り:
 
-- **1 回録って終わる**（ターミナルで操作）: `eyecam-rec --cues protocol_widen.txt` → `sudo eyecam-grab`
-- **常駐して VR パネルから録る**: `eyecam-rec --serve` を起動して、SteamVR を起動するたびに 1 回 `sudo eyecam-grab`。
+- **1 回録って終わる**（ターミナルで操作）: `~/.local/lib/eyecam/eyecam-rec --cues protocol_widen.txt` → `sudo /home/.eyecam/eyecam-grab`
+- **常駐して VR パネルから録る**: `~/.local/lib/eyecam/eyecam-rec --serve` を起動して、SteamVR を起動するたびに 1 回 `sudo /home/.eyecam/eyecam-grab`。
   あとはパネルが `ctl.sock` に `start` を送るたびに録画する（仕様は下の「パネル向け仕様」）。その間ずっと、ライブ処理の結果が
   `/run/user/1000/eyecam/live` に出る
 
@@ -98,7 +98,7 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
 1. 起動直後は `waiting_fds`。SteamVR が動いている状態で `sudo /home/steamos/eyecam-src/target/release/eyecam-grab` を 1 回
 2. バッファを受け取ると `idle`。以後はパネルから `start` / `stop`
 3. アイトラッカーが終了・再起動したり、かぶっているのにバッファが 2 分間まったく更新されなかったりしたら、
-   バッファを手放して `waiting_fds` に戻る（grab 用ソケットも作り直す）。道具が入っていれば自動で取り直す。入っていなければもう一度 `sudo eyecam-grab` してね。
+   バッファを手放して `waiting_fds` に戻る（grab 用ソケットも作り直す）。道具が入っていれば自動で取り直す。入っていなければもう一度 `sudo /home/.eyecam/eyecam-grab` してね。
    ここで「かぶっている」は、近接センサーが `--prox-min` を超えているか、Valve のアイトラッカーが新しいサンプル（`producer_state` 1）を
    出している（カメラが動いている）こと。どちらも机に置いたままでは起きないので、置いてある間に取り直しをくり返すことはない
 4. 止めるときは `systemctl --user stop eyecam`（または `kill`）。録画中なら、そのセッションをきちんと閉じてから終わる。
@@ -152,7 +152,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 
 > 安全のための下限: `src/autograb.rs` の `MIN_SAFE_GRAB_VERSION` より古い eyecam-grab は、入っていても自動では起動しない（`auto_grab` が `too_old`、`grab_outdated` も true）。eyecam-grab に安全上の問題が見つかったときだけこの下限を上げる。ふつうの変更は `EYECAM_GRAB_VERSION` を上げるだけ（入れ直しのお知らせが出るが、古い道具のまま動き続ける）。
 
-| `has_buffers` | bool | バッファを持っている（`sudo eyecam-grab` が成功した）。映像が流れているかどうかとは別。`waiting_fds` のときだけ false |
+| `has_buffers` | bool | バッファを持っている（`sudo /home/.eyecam/eyecam-grab` が成功した）。映像が流れているかどうかとは別。`waiting_fds` のときだけ false |
 | `message_en` | string | `message` と同じ内容の英語（パネルを英語で表示するとき用）。例: `Put the headset on (waiting for the eye cameras)`、`Recording`、`Saved: rec_…`、`Calibrated`、`Calibrated (couldn't measure widening, using the usual width)`。訳は `src/message_en.rs` にまとめてあり、訳のない文が来たら日本語のまま入る |
 | `message` | string | そのまま表示できる日本語の短文。例: `パネルの「目のカメラ」タブで、目のカメラの道具を入れてね`、`HMD をかぶってね（目の映像を待ってるよ）`、`録画中`、`保存した: rec_…`、`保存した（途中で止めた）: rec_…`、`中止した`。`idle` でかぶっていてライブ処理がオンのときは、`見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね`（`calib_saved` が false）/ `見開きの基準を覚えているところ（目を開けて、ふつうに前を見ていてね）`（`warming`）/ `目の値を出しているよ` |
 | `locked` | bool | 目の映像の位置をつかんでいて、今も流れている。**`recording` / `calibrating` 中に false** なら、映像が止まって（HMD を外したなど）探し直している。そのとき `message` は `search` に合わせた文（ふつうは `HMD をかぶってね（目の映像を待ってるよ）`）。時間・合図・`step_*` はそのまま進む。`idle` でもライブ処理がオンなら、かぶっている間は true |
@@ -421,7 +421,7 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 - 読み方: `O_RDONLY` で開いて `mmap(PROT_READ, MAP_SHARED)`。**書かないこと**。`seq` を読む（奇数なら書いている途中）→ 全体を写す →
   もう一度 `seq` を読み、変わっていたら読み直す（live と同じ seqlock）。`magic` / `version` / 大きさを確かめる。消えた・inode が変わったら開き直す
 - 鮮度: 目ごとの `t_mono_ns` と `CLOCK_MONOTONIC` の差で（パネルは 0.5 秒より古ければ出さない）
-- `eyecam-rec --replay DIR --out x.csv --preview RUNDIR` で、録画を録画の速さで流しながら同じファイルを `RUNDIR/preview` に書ける（開発用。ライブと同じく
+- `~/.local/lib/eyecam/eyecam-rec --replay DIR --out x.csv --preview RUNDIR` で、録画を録画の速さで流しながら同じファイルを `RUNDIR/preview` に書ける（開発用。ライブと同じく
   tmpfs のフォルダだけ。/dev/shm/… など。終わると消す）。パネルの `--fake-preview --preview-sheet --eyecam-dir RUNDIR --dump-png …` で、その映像で描ける
 
 ファイル（リトルエンディアン、81920 バイト = 20 ページ。使うのは先頭の 64 + 2 × 40064 バイト）:
@@ -606,7 +606,7 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   瞳がなかったフレームの理由 `no_blob`〔暗い塊なし。うち落とした塊が `no_blob_edge` 枠の端に触れた / `no_blob_too_big` 大きすぎ /
   `no_blob_shape` 形〕・`refine_failed`〔塊はあったが瞳の縁が取れない〕・`gated`〔閉じたまぶたのしわとして除いた〕、
   `left_edge_pupils`〔枠の左端にかかって見つかった瞳〕・`retried`〔目安なしで探し直した〕・`prior_resets`〔探す目安を忘れた〕）。
-  `dev` で残した校正は `eyecam-rec --replay ~/eyecam/calib_… --out x.csv` でそのまま流し直せる。serve のログにも目ごとの見開きの幅としきい値、
+  `dev` で残した校正は `~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/calib_… --out x.csv` でそのまま流し直せる。serve のログにも目ごとの見開きの幅としきい値、
   瞳が見えた数と見えなかった理由が 1 行ずつ出る（`journalctl --user -u eyecam | grep 'calib wear'`）
 - 保存先: `~/.config/eyecam/calib.json`（user の校正、最後のかぶりの校正、`history`: 成功した `calib wear` ごとの目ごとの見開きの幅 `step`・
   閉じた開き `gap`（虹彩の半径の単位）・虹彩の半径 `r_px`。新しい 100 回分）。`history` がない calib.json は、起動したときに
@@ -642,24 +642,24 @@ GaussianBlur とオープニングは OpenCV とビット単位で同じ（`visi
 
 ```sh
 # 試作と同じ手順の特徴量（一致の確認用）
-eyecam-rec --replay ~/eyecam/rec_2026-10-03_23-50-19 --compat --out compat.csv
+~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_2026-10-03_23-50-19 --compat --out compat.csv
 # ライブ処理をそのまま通す。参照セッションから user 校正を作り、別のセッションを最初の 4 段（15 秒）で wear 校正して評価
-eyecam-rec --replay ~/eyecam/rec_A --fit-user calib_A.json --out full_A.csv
-eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_A.json --calib-block 4 --out test_A_B.csv
+~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_A --fit-user calib_A.json --out full_A.csv
+~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_A.json --calib-block 4 --out test_A_B.csv
 # 校正なし: 1 回目で基準線を覚えてから最初から流し直す（セッションの前に 30 秒かぶっていたことにする）
-eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_with_history.json --prewarm --out test_auto.csv
+~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_with_history.json --prewarm --out test_auto.csv
 # 評価用のつまみ: --no-track（追従しない）、--no-gaze-drop（下を見たときの保持なし）、--no-edge-hold（枠の端で見失った瞳も閉じたにする。CSV の edge_held 列で保持したフレーム）、--no-ext-search（枠の外を探さない。CSV の search_x_min 列が広げた左端、ext 列が 1 なら広げた探索の瞳、2 なら取らなかった瞳）、--wide-curve 0.25,0.5（見開きの曲線）、--widen-sensitivity 0.8（感度で曲線を決める）
 python eval_live.py DIR   # DIR の test_r*_t*.csv を xwear.py と同じ指標で集計（フレームレートは t_cam から測る）
 # 遅いカメラのふり: 15 fps の刻みにいちばん近いフレームだけを使う（90 fps の録画なら 6 枚に 1 枚。目の画像はコピーしない）
-eyecam-rec --replay ~/eyecam/rec_B --resample 15 --user-calib calib_A.json --calib-block 4 --out test_A_B_15.csv
+~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --resample 15 --user-calib calib_A.json --calib-block 4 --out test_A_B_15.csv
 # 校正を流し直す（dev で画像を残した calib_*）: ライブと同じ段の切り方・当てはめで、calib_result.json と同じ中身を書く
-eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-27-31 --calib wear --user-calib ~/.config/eyecam/calib.json --out wear.json
-eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-28-05 --calib user --user-calib calib_with_wear.json --out user.json
+~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-27-31 --calib wear --user-calib ~/.config/eyecam/calib.json --out wear.json
+~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/calib_2026-10-04_03-28-05 --calib user --user-calib calib_with_wear.json --out user.json
 # パネルの目のプレビューの映像を、録画の速さで流しながら tmpfs のフォルダの preview に書く（終わると消す。上の「目のプレビュー」）
 mkdir -m 700 /dev/shm/eyecam-preview
-eyecam-rec --replay ~/eyecam/rec_B --limit 1800 --out x.csv --preview /dev/shm/eyecam-preview
+~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --limit 1800 --out x.csv --preview /dev/shm/eyecam-preview
 # ドリフトの記録も書く（下の「ドリフトの記録」。wall_unix は空）
-eyecam-rec --replay ~/eyecam/rec_B --out x.csv --driftlog drift_B.csv
+~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --out x.csv --driftlog drift_B.csv
 ```
 
 `eye_files=anatomical` がない古いセッション（eye_L.raw が右目）は自動で入れ替えて読む。画の位置で L/R を決めていたころの
@@ -817,7 +817,7 @@ lead_in・close・normal・widen）で wear 校正して、残りの段（step >
 
 ## sudo なしで使う（自動 grab と systemd）
 
-毎回の `sudo eyecam-grab` をなくすための、一度だけの設定。
+毎回の `sudo /home/.eyecam/eyecam-grab` をなくすための、一度だけの設定。
 
 ### 1. eyecam-grab をインストールする（一度だけ sudo）
 
@@ -847,7 +847,7 @@ sudo ./install_grab.sh target-next/release/eyecam-grab   # ビルドしたもの
 
 | 値 | 意味 |
 |---|---|
-| `missing` | インストールされていない（`message` は「パネルの「目のカメラ」タブで、目のカメラの道具を入れてね」。手で `sudo eyecam-grab` してもいい） |
+| `missing` | インストールされていない（`message` は「パネルの「目のカメラ」タブで、目のカメラの道具を入れてね」。手で `sudo /home/.eyecam/eyecam-grab` してもいい） |
 | `no_cap` | 置いてあるが能力が付いていない |
 | `unsafe: …` | root 所有でない・書き込める人がいる、など。使わない |
 | `waiting_tracker` | アイトラッカー（SteamVR のアイトラッキング）が始まるのを待っている |

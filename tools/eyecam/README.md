@@ -10,8 +10,8 @@ frameeyeosc 向けの共有メモリに書く（「ライブ処理」の節）�
 
 使い方は 2 通り:
 
-- **1 回録って終わる**（ターミナルで操作）: `~/.local/lib/eyecam/eyecam-rec --cues protocol_widen.txt` → `sudo /home/.eyecam/eyecam-grab`
-- **常駐して VR パネルから録る**: `~/.local/lib/eyecam/eyecam-rec --serve` を起動して、SteamVR を起動するたびに 1 回 `sudo /home/.eyecam/eyecam-grab`。
+- **1 回録って終わる**（ターミナルで操作）: `~/.local/lib/eyecam/eyecam-rec --cues protocol_widen.txt` → `sudo ~/.local/lib/eyecam/eyecam-grab`
+- **常駐して VR パネルから録る**: `~/.local/lib/eyecam/eyecam-rec --serve` を起動して、SteamVR を起動するたびに 1 回 `sudo ~/.local/lib/eyecam/eyecam-grab`。
   あとはパネルが `ctl.sock` に `start` を送るたびに録画する（仕様は下の「パネル向け仕様」）。その間ずっと、ライブ処理の結果が
   `/run/user/1000/eyecam/live` に出る
 
@@ -98,7 +98,7 @@ nohup ~/eyecam-src/target/release/eyecam-rec --serve > /tmp/eyecam-rec.log 2>&1 
 1. 起動直後は `waiting_fds`。SteamVR が動いている状態で `sudo /home/steamos/eyecam-src/target/release/eyecam-grab` を 1 回
 2. バッファを受け取ると `idle`。以後はパネルから `start` / `stop`
 3. アイトラッカーが終了・再起動したり、かぶっているのにバッファが 2 分間まったく更新されなかったりしたら、
-   バッファを手放して `waiting_fds` に戻る（grab 用ソケットも作り直す）。道具が入っていれば自動で取り直す。入っていなければもう一度 `sudo /home/.eyecam/eyecam-grab` してね。
+   バッファを手放して `waiting_fds` に戻る（grab 用ソケットも作り直す）。道具が入っていれば自動で取り直す。入っていなければもう一度 `sudo ~/.local/lib/eyecam/eyecam-grab` してね。
    ここで「かぶっている」は、近接センサーが `--prox-min` を超えているか、Valve のアイトラッカーが新しいサンプル（`producer_state` 1）を
    出している（カメラが動いている）こと。どちらも机に置いたままでは起きないので、置いてある間に取り直しをくり返すことはない
 4. 止めるときは `systemctl --user stop eyecam`（または `kill`）。録画中なら、そのセッションをきちんと閉じてから終わる。
@@ -152,7 +152,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 
 > 安全のための下限: `src/autograb.rs` の `MIN_SAFE_GRAB_VERSION` より古い eyecam-grab は、入っていても自動では起動しない（`auto_grab` が `too_old`、`grab_outdated` も true）。eyecam-grab に安全上の問題が見つかったときだけこの下限を上げる。ふつうの変更は `EYECAM_GRAB_VERSION` を上げるだけ（入れ直しのお知らせが出るが、古い道具のまま動き続ける）。
 
-| `has_buffers` | bool | バッファを持っている（`sudo /home/.eyecam/eyecam-grab` が成功した）。映像が流れているかどうかとは別。`waiting_fds` のときだけ false |
+| `has_buffers` | bool | バッファを持っている（`sudo ~/.local/lib/eyecam/eyecam-grab` が成功した）。映像が流れているかどうかとは別。`waiting_fds` のときだけ false |
 | `message_en` | string | `message` と同じ内容の英語（パネルを英語で表示するとき用）。例: `Put the headset on (waiting for the eye cameras)`、`Recording`、`Saved: rec_…`、`Calibrated`、`Calibrated (couldn't measure widening, using the usual width)`。訳は `src/message_en.rs` にまとめてあり、訳のない文が来たら日本語のまま入る |
 | `message` | string | そのまま表示できる日本語の短文。例: `パネルの「目のカメラ」タブで、目のカメラの道具を入れてね`、`HMD をかぶってね（目の映像を待ってるよ）`、`録画中`、`保存した: rec_…`、`保存した（途中で止めた）: rec_…`、`中止した`。`idle` でかぶっていてライブ処理がオンのときは、`見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね`（`calib_saved` が false）/ `見開きの基準を覚えているところ（目を開けて、ふつうに前を見ていてね）`（`warming`）/ `目の値を出しているよ` |
 | `locked` | bool | 目の映像の位置をつかんでいて、今も流れている。**`recording` / `calibrating` 中に false** なら、映像が止まって（HMD を外したなど）探し直している。そのとき `message` は `search` に合わせた文（ふつうは `HMD をかぶってね（目の映像を待ってるよ）`）。時間・合図・`step_*` はそのまま進む。`idle` でもライブ処理がオンなら、かぶっている間は true |
@@ -817,7 +817,7 @@ lead_in・close・normal・widen）で wear 校正して、残りの段（step >
 
 ## sudo なしで使う（自動 grab と systemd）
 
-毎回の `sudo /home/.eyecam/eyecam-grab` をなくすための、一度だけの設定。
+毎回の `sudo ~/.local/lib/eyecam/eyecam-grab` をなくすための、一度だけの設定。
 
 ### 1. eyecam-grab をインストールする（一度だけ sudo）
 
@@ -847,7 +847,7 @@ sudo ./install_grab.sh target-next/release/eyecam-grab   # ビルドしたもの
 
 | 値 | 意味 |
 |---|---|
-| `missing` | インストールされていない（`message` は「パネルの「目のカメラ」タブで、目のカメラの道具を入れてね」。手で `sudo /home/.eyecam/eyecam-grab` してもいい） |
+| `missing` | インストールされていない（`message` は「パネルの「目のカメラ」タブで、目のカメラの道具を入れてね」。手で `sudo ~/.local/lib/eyecam/eyecam-grab` してもいい） |
 | `no_cap` | 置いてあるが能力が付いていない |
 | `unsafe: …` | root 所有でない・書き込める人がいる、など。使わない |
 | `waiting_tracker` | アイトラッカー（SteamVR のアイトラッキング）が始まるのを待っている |

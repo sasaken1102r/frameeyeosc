@@ -1769,10 +1769,13 @@ void testOutputCards(const FontSet& fonts) {
             const EyePanel::HitArea& etvr = found[3];
             CHECK(etvr.hit.arg == 1 && etvr.w < found[0].w && etvr.h >= 40 && etvr.h < 50);
             CHECK(etvr.x == found[0].x);
-            // ...right under the cards, or under the notice (between the two) while ETVR is the output
+            // ...right under the cards, or under the notice (between the two) while ETVR is the output, or under the
+            // one-line hint (where to go if the eyes don't move) while VRChat directly is
             const double gap = etvr.y - (found[0].y + found[0].h);
             if (std::string(output) == kOutputEtvr) {
                 CHECK(gap > 60 && gap < 90);
+            } else if (std::string(output) == kOutputVrchat) {
+                CHECK(gap > 30 && gap < 50);
             } else {
                 CHECK(gap > 0 && gap < 20);
             }

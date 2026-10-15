@@ -2230,6 +2230,15 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         by += boxH + 8;
     }
 
+    // VRChat directly: an avatar that takes its eye parameters as bits (or with other names) doesn't move; VRCFT fits
+    // them to each avatar. Plain grey: a way out, not a warning
+    if (selected == argOfOutput(kOutputVrchat)) {
+        const double textW = kInnerRight - kInnerX;
+        pen.text(kInnerX + 4, by + 15, t.vrchatDirectHint, fitSize(pen, t.vrchatDirectHint, 15, 11, textW - 4, false),
+                 kTextMuted);
+        by += 28;
+    }
+
     // ETVR: a small button, "Deprecated", and what it carries
     {
         const bool isSelected = selected == argOfOutput(kOutputEtvr);

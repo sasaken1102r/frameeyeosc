@@ -115,6 +115,7 @@ struct UiText {
     const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
     const char* outputAllInOne;     ///< the tag on the FrameEyeOSC card
+    const char* vrchatDirectHint;   ///< under the cards while sending to VRChat directly: where to go if eyes don't move
     /** Each output's two lines (VRChat, LiveLink, ETVR, FrameEyeOSC): sync, VRCFT. A leading ICON_CHECK and a
      *  space hang in front of the lines on a card (icons.h). ETVR's go on one line after its
      *  small button, joined by outputMarkSeparator. */

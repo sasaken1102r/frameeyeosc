@@ -104,6 +104,7 @@ UiText makeJapanese() {
     t.outputEtvr = "VRCFT（ETVR）";
     t.outputRecommended = "おすすめ";
     t.outputAllInOne = "全部入り";
+    t.vrchatDirectHint = "目が動かないアバターは、VRCFT（LiveLink か FrameEyeOSC）にすると動きます";
     t.outputMarks[0][0] = "同期 " ICON_TRIANGLE_OUTLINE;
     t.outputMarks[0][1] = "VRCFT 不要";
     t.outputMarks[1][0] = "同期 " ICON_RING;
@@ -1026,6 +1027,7 @@ UiText makeEnglish() {
     t.outputEtvr = "VRCFT (ETVR)";
     t.outputRecommended = "Recommended";
     t.outputAllInOne = "All-in-one";
+    t.vrchatDirectHint = "If your avatar's eyes don't move, switch to VRCFT (LiveLink or FrameEyeOSC).";
     t.outputMarks[0][0] = "Sync: depends on avatar";
     t.outputMarks[0][1] = "No VRCFT needed";
     t.outputMarks[1][0] = ICON_CHECK " Synced to others";

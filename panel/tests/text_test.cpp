@@ -338,6 +338,10 @@ void testOutputMarks() {
     SAME(en.outputMarks[3][0], ICON_CHECK " Synced, pupils too");
     CHECK(std::string(ja.hintOutput).find(ICON_TRIANGLE_OUTLINE) != std::string::npos);
     SAME(ja.outputAllInOne, "全部入り");
+    for (const UiText* t : {&ja, &en}) {
+        CHECK(std::string(t->vrchatDirectHint).find("LiveLink") != std::string::npos);
+        CHECK(std::string(t->vrchatDirectHint).find("FrameEyeOSC") != std::string::npos);
+    }
     SAME(en.outputAllInOne, "All-in-one");
 }
 

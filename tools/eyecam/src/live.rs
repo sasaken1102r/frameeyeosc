@@ -174,6 +174,30 @@ pub const DEFAULT_WIDEN_STEP: f64 = 0.19;
 pub const DEFAULT_OPEN_GAP: f64 = 0.88; // normal aperture - closed aperture, in R
 pub const DEFAULT_PITCH_N: f64 = -14.4; // Valve gaze pitch while looking "normal", degrees
 
+/// Looking down narrows an open eye: the upper lid follows the eye down faster than the pupil moves in the picture
+/// (1.3 x, the lower lid 0.7 x), so the aperture shrinks with the gaze, and a pitch correction that is too shallow
+/// reads an open eye looking down as half shut. The user calibration's curve (`calib user`) often is: in 6 of the 11
+/// left-eye looks down on record the lower lid was found as far below the pupil as straight ahead (within 0.1 iris
+/// radii; 0.16-0.47 nearer in every right-eye one), so the aperture seemed to narrow too little (2026-10-14: 0.18 iris
+/// radii at -37 degrees, where an open eye's narrows by 0.39 in the median over the recordings, 27 degrees below its
+/// typical pitch). So below the wearer's typical pitch the curve counts for at least LID_PITCH_PER_DEG iris radii a
+/// degree beyond LID_PITCH_FROM_DEG (up to LID_PITCH_MAX_DEG beyond) and at most LID_PITCH_CAP times that, and for
+/// nothing nearer; looking up it may only say narrower. On the recordings of 2026-10-07 to 10-14 (one wearer) the
+/// aperture stays within 0.05 down to 10-15 degrees below the typical pitch and then narrows by 0.028 a degree (the
+/// median of 16 guided looks down; 0.016-0.057 in the six user calibrations). The hinge sits at 8, not 10, so that
+/// glances 3-13 degrees down read about as with the calibration's own curve (free recordings, eyelid below 0.6 in
+/// 10.4% of those frames, 9.9% with the curve, 11.2% with the hinge at 10). Replayed with the 2026-10-14 calibration
+/// (before in brackets): the look-down steps of 5 guided recordings, both eyes, read 0.75 in the median (0.72), below
+/// 0.6 in 12% of the frames (30%), the worst eye 0.51 (0.27); the squint steps 0.32 (0.32), below 0.6 in 97% (98%);
+/// EyeSquint looking down 0.00 (0.06); free recordings looking more than 25 degrees down below 0.6 in 6.2% (9.4%),
+/// looking up in 12.7% (14.6%); the calibrations themselves come out the same. Looking up, the curve could take the
+/// eyelid down where the aperture is as wide or wider (one of six calibrations, fitted through its three steps, to
+/// 0.59 in the look-up steps).
+const LID_PITCH_FROM_DEG: f64 = 8.0;
+const LID_PITCH_PER_DEG: f64 = 0.028;
+const LID_PITCH_MAX_DEG: f64 = 30.0;
+const LID_PITCH_CAP: f64 = 1.5;
+
 /// Per-wear levels for one eye (feature units: iris radii; lower_px in image pixels).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WearParams {
@@ -189,7 +213,8 @@ pub struct WearParams {
 /// Per-user shape parameters for one eye.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UserParams {
-    /// Aperture vs Valve pitch (degrees): a0 + a1 p + a2 p^2; only differences are used.
+    /// Aperture vs Valve pitch (degrees): a0 + a1 p + a2 p^2; only differences are used, and only within the
+    /// downgaze bounds (`pitch_drop`).
     pub pitch_c: [f64; 3],
     pub pitch_lo: f64,
     pub pitch_hi: f64,
@@ -209,6 +234,19 @@ impl UserParams {
     fn pitch_curve(&self, p: f64) -> f64 {
         let p = p.clamp(self.pitch_lo, self.pitch_hi);
         self.pitch_c[0] + self.pitch_c[1] * p + self.pitch_c[2] * p * p
+    }
+
+    /// How much narrower (iris radii) an open eye's aperture is at `pitch` than at the wearer's typical pitch `p0`,
+    /// from the curve. Below `p0` it is held between LID_PITCH_PER_DEG a degree beyond LID_PITCH_FROM_DEG and
+    /// LID_PITCH_CAP times that (so nothing nearer `p0`); above it, looking up, the curve may say narrower (up to
+    /// LID_PITCH_CAP x LID_PITCH_PER_DEG a degree) but never wider.
+    fn pitch_drop(&self, pitch: f64, p0: f64) -> f64 {
+        let drop = self.pitch_curve(p0) - self.pitch_curve(pitch);
+        if pitch > p0 {
+            return drop.clamp(0.0, LID_PITCH_CAP * LID_PITCH_PER_DEG * (pitch - p0).min(LID_PITCH_MAX_DEG));
+        }
+        let floor = LID_PITCH_PER_DEG * (p0 - pitch - LID_PITCH_FROM_DEG).clamp(0.0, LID_PITCH_MAX_DEG);
+        drop.clamp(floor, LID_PITCH_CAP * floor)
     }
 }
 
@@ -939,7 +977,7 @@ impl EyeEngine {
 
         // Squint and openness from the pitch-corrected aperture (the user's curve is in iris radii).
         let p0 = if p_typ.is_finite() { p_typ } else { DEFAULT_PITCH_N };
-        let apc = if pitch.is_finite() { ap_px - (user.pitch_curve(pitch) - user.pitch_curve(p0)) * r } else { ap_px };
+        let apc = if pitch.is_finite() { ap_px + user.pitch_drop(pitch, p0) * r } else { ap_px };
         let ap_cl_px = ap_n_px - gap_px;
         let ap_sq = ap_cl_px + user.f_sq * (ap_n_px - ap_cl_px);
         // Without a user calibration (squint depth, pitch curve) the aperture alone is not trusted: no squint, and the
@@ -2917,6 +2955,59 @@ mod tests {
         let o = run(&mut e, 160..250, 3.0);
         assert!(o.eye_squint > 0.9 && o.eye_lid < 0.3, "{o:?}");
         assert!((e.baseline_px().unwrap().1 - ap_low).abs() < 0.5);
+    }
+
+    #[test]
+    fn the_pitch_correction_is_held_between_the_downgaze_floor_and_its_cap() {
+        let flat = UserParams::default();
+        let floor = |below: f64| LID_PITCH_PER_DEG * (below - LID_PITCH_FROM_DEG);
+        // A curve flatter than the floor (or none) gets the floor, nothing within LID_PITCH_FROM_DEG of the typical pitch
+        assert!((flat.pitch_drop(-37.0, -10.0) - floor(27.0)).abs() < 1e-12);
+        assert_eq!((flat.pitch_drop(-10.0 - LID_PITCH_FROM_DEG, -10.0), flat.pitch_drop(-10.0, -10.0)), (0.0, 0.0));
+        let steep = |slope: f64| UserParams { pitch_c: [1.5, slope, 0.0], ..UserParams::default() };
+        assert!((steep(0.005).pitch_drop(-37.0, -10.0) - floor(27.0)).abs() < 1e-12);
+        // A steeper one counts, up to LID_PITCH_CAP times the floor
+        assert!((steep(0.025).pitch_drop(-37.0, -10.0) - 0.025 * 27.0).abs() < 1e-12);
+        assert!((steep(0.06).pitch_drop(-37.0, -10.0) - LID_PITCH_CAP * floor(27.0)).abs() < 1e-12);
+        // Far down it stops growing
+        assert!((flat.pitch_drop(-90.0, -10.0) - LID_PITCH_PER_DEG * LID_PITCH_MAX_DEG).abs() < 1e-12);
+        // Looking up: a curve that says narrower counts, one that says wider does not
+        assert!((steep(-0.01).pitch_drop(20.0, -10.0) - 0.3).abs() < 1e-12);
+        assert_eq!((steep(0.01).pitch_drop(20.0, -10.0), flat.pitch_drop(20.0, -10.0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn an_open_eye_looking_down_reads_open_with_a_shallow_curve_and_a_squint_still_shows() {
+        // A user calibration whose curve narrows the eye by only 0.01 iris radii a degree going down (and widens it
+        // going up), 15 frames a second
+        let p = Params {
+            user: Some(UserParams { pitch_c: [1.5, 0.01, 0.0], ..UserParams::default() }),
+            ..Params::default()
+        };
+        let mut e = EyeEngine::default();
+        let mut t = 0.0;
+        let mut run = |e: &mut EyeEngine, opening: std::ops::Range<usize>, pitch: f64, seconds: f64| {
+            let mut last = None;
+            for _ in 0..(seconds * 15.0) as usize {
+                t += 1.0 / 15.0;
+                last = Some(e.process(&lid_frame_between(Some((250.0, 200.0)), opening.clone()), pitch, t, &p));
+            }
+            last.unwrap()
+        };
+        let o = run(&mut e, 130..270, -10.0, 7.0);
+        e.seed_px(o.skin_up * o.r, o.aperture * o.r);
+        let o = run(&mut e, 130..270, -10.0, 2.0);
+        assert!(o.eye_lid > 0.74 && o.eye_squint < 0.01, "{o:?}");
+        // 27 degrees down the upper lid comes 25 px lower (0.45 iris radii; the floor there is 0.53): still open
+        let o = run(&mut e, 155..270, -37.0, 3.0);
+        assert!(25.0 / o.r < LID_PITCH_PER_DEG * (27.0 - LID_PITCH_FROM_DEG), "{}", o.r);
+        assert!(o.eye_lid > 0.74 && o.eye_squint < 0.01, "{o:?}");
+        // A squint down there still shows
+        let o = run(&mut e, 165..240, -37.0, 3.0);
+        assert!(o.eye_squint > 0.6 && o.eye_lid < 0.45, "{o:?}");
+        // Looking up with the lids where they were: the curve's "wider up there" no longer takes the eyelid down
+        let o = run(&mut e, 130..270, 20.0, 3.0);
+        assert!(o.eye_lid > 0.74 && o.eye_squint < 0.01, "{o:?}");
     }
 
     #[test]

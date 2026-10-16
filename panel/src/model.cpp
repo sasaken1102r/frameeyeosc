@@ -663,6 +663,14 @@ bool pupilsLineShown(const std::string& output, bool camera) {
     return !camera && (output == kOutputVrchat || output == kOutputLivelink || output == kOutputModule);
 }
 
+void noteSpawnResult(PanelModel& model, bool modulePage, const std::string& error) {
+    (modulePage ? model.moduleLinkError : model.eyecam.spawnError) = error;
+}
+
+bool moduleLinkErrorShown(const std::string& output, const std::string& error) {
+    return output == kOutputModule && !error.empty();
+}
+
 PupilBitsRow pupilBitsRow(const std::string& output, bool camera, bool pupilsToVrchat) {
     const bool livelink = output == kOutputLivelink;
     if (!camera || (output != kOutputVrchat && !livelink)) return PupilBitsRow::Hidden;

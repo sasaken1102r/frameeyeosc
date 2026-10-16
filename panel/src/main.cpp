@@ -140,6 +140,7 @@ struct Options {
     bool fakeCoreError = false;   ///< --fake-core-error: frameeyeosc's last_error
     bool fakeBroken = false;
     bool fakeWriteError = false;
+    bool fakeModuleLinkError = false;  ///< --fake-module-link-error: the Output tab's module link couldn't open Chromium
     bool fakeCustom = false;
     bool fakeIndependent = false; ///< --fake-independent: independent_eyes on, the gaze pad per eye
     bool fakeV1 = false;          ///< --fake-v1: eye_behavior 1 (the eyes as up to 0.7.5)
@@ -301,6 +302,7 @@ void printUsage() {
         "      --fake-core-error  frameeyeosc logged a problem 2 minutes ago (its last_error)\n"
         "      --fake-broken     config.json can't be parsed\n"
         "      --fake-write-error  The panel failed to write config.json\n"
+        "      --fake-module-link-error  The Output tab's module link couldn't open the browser (with --fake-frameeyeosc)\n"
         "      --fake-custom     Gaze smoothing values that match no preset\n"
         "      --fake-independent  Move eyes separately (the left column shows each eye's gaze)\n"
         "      --fake-v1         The eyes move as up to 0.7.5 (eye_behavior 1)\n"
@@ -916,6 +918,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeBroken = true;
         } else if (arg == "--fake-write-error") {
             options.fake = options.fakeWriteError = true;
+        } else if (arg == "--fake-module-link-error") {
+            options.fake = options.fakeModuleLinkError = true;
         } else if (arg == "--fake-custom") {
             options.fake = options.fakeCustom = true;
         } else if (arg == "--fake-independent") {
@@ -1838,6 +1842,7 @@ PanelModel fakeModel(const Options& options) {
     m.autostart.autostart = options.fakeAutostart;
     m.language = configLanguage(m.config);
     if (options.fakeWriteError) m.panelError = "rename failed: Read-only file system";
+    if (options.fakeModuleLinkError) m.moduleLinkError = "flatpak not found";
     m.update = fakeUpdate(options.fakeUpdate, options.fakeUpdateNotes);
     if (options.fakeUpdate.empty()) m.update.state = frame_updater::UpdateState::UpToDate;
     // The diagnostics page's SteamOS and camera tool, as on the developer's headset
@@ -2750,6 +2755,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
                 root.set(key::kPort, JsonValue::makeNull());
             };
             openPrompt = output;
+            model.moduleLinkError.clear();  // (it was about the output before)
             break;
         }
         case PanelAction::SetActiveType: {
@@ -2935,13 +2941,16 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
                 std::printf("setup: would start %s\n", line.c_str());
                 return;
             }
+            // The module link's failure shows under the link on the Output tab, the setup's on the setup's screens
+            const bool modulePage = hit.action == PanelAction::OpenModulePage;
+            const char* const tag = modulePage ? "[output]" : "[setup]";
             std::string error;
             if (setup_tools::spawnDetached(argv, error)) {
-                std::fprintf(stderr, "[setup] started %s\n", line.c_str());
-                model.eyecam.spawnError.clear();
+                std::fprintf(stderr, "%s started %s\n", tag, line.c_str());
+                noteSpawnResult(model, modulePage, "");
             } else {
-                std::fprintf(stderr, "[setup] couldn't start %s: %s\n", argv[0].c_str(), error.c_str());
-                model.eyecam.spawnError = argv[0] + ": " + error;
+                std::fprintf(stderr, "%s couldn't start %s: %s\n", tag, argv[0].c_str(), error.c_str());
+                noteSpawnResult(model, modulePage, modulePage ? error : argv[0] + ": " + error);
             }
             return;
         }
@@ -3591,6 +3600,11 @@ int runOverlay(const Options& options) {
                 if (panel.historyOpen() && model.history.japanese != (model.language == Language::Ja)) {
                     loadHistory(model);
                 }
+                dirty = true;
+            }
+            // The module link's failure goes with the output it was for (changed in the file or on the command line)
+            if (!model.moduleLinkError.empty() && SettingsView(model).text(key::kOutput) != kOutputModule) {
+                model.moduleLinkError.clear();
                 dirty = true;
             }
         }

@@ -186,6 +186,7 @@ struct UiText {
     const char* vrcftSetupNote;     ///< the parameter names and syncing are up to VRCFT
     const char* vrcftNoWide;        ///< ETVR: widened eyes don't come through
     const char* vrcftModulePupils;  ///< FrameEyeOSC with the eye cameras: the pupils go through VRCFT too
+    const char* vrcftModuleLinkFailedFormat;  ///< the link couldn't open Chromium ("Couldn't open the browser: %s")
     const char* rowLanguage;
     const char* rowAutostart;
     const char* hintAutostart;

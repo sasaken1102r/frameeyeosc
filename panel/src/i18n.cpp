@@ -181,6 +181,7 @@ UiText makeJapanese() {
     t.vrcftSetupNote = "パラメーター名や同期のしかたは、VRCFT がアバターに合わせて決めます。";
     t.vrcftNoWide = "この形式では見開きは届きません。";
     t.vrcftModulePupils = "瞳孔の大きさも、VRCFT がアバターに合った形で送ります。";
+    t.vrcftModuleLinkFailedFormat = "ブラウザーを開けませんでした: %s";
     t.portReset = "既定に戻す";
     t.rowLanguage = "言語";
     t.rowAutostart = "SteamVR と一緒に起動";
@@ -1104,6 +1105,7 @@ UiText makeEnglish() {
     t.vrcftSetupNote = "VRCFT picks the parameter names and how they sync for your avatar, so there is nothing to set here.";
     t.vrcftNoWide = "Wide eyes don't come through in this format.";
     t.vrcftModulePupils = "Pupil size goes through VRCFT too, in the form your avatar takes it.";
+    t.vrcftModuleLinkFailedFormat = "Couldn't open the browser: %s";
     t.portReset = "Default";
     t.rowLanguage = "Language";
     t.rowAutostart = "Start with SteamVR";

@@ -59,6 +59,8 @@ struct PanelModel {
     RecordsView records;         ///< the records (the Advanced tab's "Having trouble", and the failure screens' bar)
     AppsView apps;               ///< the other Frame apps (the row at the bottom of "Version" and the list it opens)
     eye_preview::View preview;   ///< the eye preview's values and pictures (only while its sheet is open)
+    std::string moduleLinkError; ///< why the Output tab's module link didn't open the browser ("" = none; its own
+                                 ///< line under the link, never the eye cameras' setup's eyecam.spawnError)
 };
 
 /**
@@ -523,6 +525,25 @@ bool pupilsRowShown(const std::string& output, bool camera);
  * @return true to show it
  */
 bool pupilsLineShown(const std::string& output, bool camera);
+
+/**
+ * Note how starting a program outside the panel went (setup_tools::spawnDetached): the Output tab's module link writes
+ * and clears only its own line (moduleLinkError), the eye cameras' setup (its Konsole, the video) only eyecam.spawnError,
+ * so neither shows up on the other's screen.
+ * @param model the model
+ * @param modulePage the module link (PanelAction::OpenModulePage) started it, not the setup
+ * @param error why it didn't start ("" = it started: that line is cleared)
+ */
+void noteSpawnResult(PanelModel& model, bool modulePage, const std::string& error);
+
+/**
+ * Whether the Output tab shows the red line under the module link: only for FrameEyeOSC (the link is there), and only
+ * while the last press of the link failed.
+ * @param output the "output" setting
+ * @param error moduleLinkError
+ * @return true to show it
+ */
+bool moduleLinkErrorShown(const std::string& output, const std::string& error);
 
 /** How the Output tab shows "How the avatar takes pupils" (pupil_bits). */
 enum class PupilBitsRow {

@@ -1818,6 +1818,94 @@ void testOutputCards(const FontSet& fonts) {
     }
 }
 
+/**
+ * The red pixels (kDanger's, anti-aliased edges left out) right of the left column, as last drawn.
+ * @param panel the panel (rendered)
+ * @return how many there are
+ */
+int redRight(EyePanel& panel) {
+    const std::vector<uint8_t>& rgba = panel.toRgba();
+    const size_t w = static_cast<size_t>(panel.width());
+    int count = 0;
+    for (size_t y = 0; y < static_cast<size_t>(panel.height()); ++y) {
+        for (size_t x = 410; x < w; ++x) {
+            const uint8_t* p = &rgba[(y * w + x) * 4];
+            if (p[0] > 200 && p[1] < 120 && p[2] < 110) ++count;
+        }
+    }
+    return count;
+}
+
+void testModuleLinkError(const FontSet& fonts) {
+    // A failed module link writes its own line and leaves the eye cameras' setup's alone (and the other way round)
+    {
+        PanelModel m = modelWith(Lids::Both);
+        noteSpawnResult(m, true, "flatpak not found");
+        CHECK(m.moduleLinkError == "flatpak not found" && m.eyecam.spawnError.empty());
+        noteSpawnResult(m, false, "konsole: konsole not found");
+        CHECK(m.eyecam.spawnError == "konsole: konsole not found" && m.moduleLinkError == "flatpak not found");
+        // Opened the next time: only its own line goes
+        noteSpawnResult(m, true, "");
+        CHECK(m.moduleLinkError.empty() && m.eyecam.spawnError == "konsole: konsole not found");
+        noteSpawnResult(m, false, "");
+        CHECK(m.eyecam.spawnError.empty());
+    }
+    // Drawn only for FrameEyeOSC (where the link is), and only with a failure
+    CHECK(moduleLinkErrorShown(kOutputModule, "flatpak not found"));
+    CHECK(!moduleLinkErrorShown(kOutputModule, ""));
+    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) {
+        CHECK(!moduleLinkErrorShown(output, "flatpak not found"));
+    }
+    for (Language language : {Language::Ja, Language::En}) {
+        for (const bool camera : {true, false}) {
+            EyePanel panel(fonts);
+            PanelModel m = modelWith(camera ? Lids::Both : Lids::Valve);
+            m.language = language;
+            m.config.root.set(key::kOutput, JsonValue::makeString(kOutputModule));
+            panel.setTab(PanelTab::Output);
+            panel.render(m);
+            const int before = redRight(panel);
+            const std::vector<EyePanel::HitArea> link = hits(panel, PanelAction::OpenModulePage);
+            // The red line under the link on the Output tab, the link where it was, everything still inside
+            PanelModel failed = m;
+            noteSpawnResult(failed, true, "flatpak not found");
+            panel.render(failed);
+            CHECK(redRight(panel) > before + 100);
+            const std::vector<EyePanel::HitArea> still = hits(panel, PanelAction::OpenModulePage);
+            CHECK(link.size() == 1 && still.size() == 1);
+            if (link.size() == 1 && still.size() == 1) CHECK(link[0].y == still[0].y && link[0].x == still[0].x);
+            CHECK(allInsideAndTall(panel));
+            // ...and nowhere else: the Basic tab, and the eye cameras' setup at (2) (where the setup's own failure shows)
+            // look as they did
+            for (PanelModel* model : {&m, &failed}) model->eyecam.status = notSetUp().eyecam.status;
+            panel.setSetupBegun(true);
+            for (const PanelTab tab : {PanelTab::Basic, PanelTab::Eyecam}) {
+                panel.setTab(tab);
+                panel.render(m);
+                const std::vector<uint8_t> clean = panel.toRgba();
+                panel.render(failed);
+                CHECK(panel.toRgba() == clean);
+                if (tab != PanelTab::Eyecam) continue;
+                // (the setup's own failure does show there)
+                CHECK(hits(panel, PanelAction::SetupKonsole).size() == 1);
+                PanelModel setupFailed = m;
+                noteSpawnResult(setupFailed, false, "konsole: konsole not found");
+                panel.render(setupFailed);
+                CHECK(panel.toRgba() != clean);
+            }
+            // Another output: no line (the link isn't there either)
+            PanelModel other = m;
+            other.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+            failed.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+            panel.setTab(PanelTab::Output);
+            panel.render(other);
+            const std::vector<uint8_t> clean = panel.toRgba();
+            panel.render(failed);
+            CHECK(hits(panel, PanelAction::OpenModulePage).empty() && panel.toRgba() == clean);
+        }
+    }
+}
+
 void testCameraRows(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         // Not set up: the Basic tab's row leads to the eye cameras tab (no switch yet)
@@ -2517,6 +2605,7 @@ int main() {
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);
     testOutputCards(fonts);
+    testModuleLinkError(fonts);
     testToolNotice(fonts);
     testErrorBack(fonts);
     testWayOut(fonts);

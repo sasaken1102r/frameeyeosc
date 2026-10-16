@@ -2470,6 +2470,9 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     // FrameEyeOSC isn't in VRCFT's registry: where its zip is, in the accent color under the first step
     const bool link = module && t.vrcftModuleLink != nullptr;
     if (link) ++stepLineCount;
+    // ...and, when pressing it couldn't open the browser, why, in red right under it (one line)
+    const bool linkFailed = link && moduleLinkErrorShown(output, m.moduleLinkError);
+    if (linkFailed) ++stepLineCount;
     std::string note = t.vrcftSetupNote;
     const char* more = etvr ? t.vrcftNoWide : (module && camera ? t.vrcftModulePupils : nullptr);
     if (more != nullptr) {
@@ -2508,6 +2511,12 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
             pen.text(boxX + pad + badgeW, baseline, label, size, kAccent, true);
             addButton(hit, bx, by, bw, bh, true);
             baseline += stepStep;
+            if (linkFailed) {
+                const std::string failed = formatText(t.vrcftModuleLinkFailedFormat, m.moduleLinkError);
+                pen.text(boxX + pad + badgeW, baseline - 2, ellipsize(pen, failed, 14, true, textW, false), 14, kDanger,
+                         true);
+                baseline += stepStep;
+            }
         }
     }
     baseline += 8 - stepStep * 0.75 + 21 * 0.8;

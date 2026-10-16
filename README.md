@@ -109,13 +109,13 @@ From 0.4.0 on, the panel's "Update" button does the update. The panel's Advanced
 
 | Basic | Output |
 |---|---|
-| ![The Basic tab](docs/images/panel-basic-en_2026-10-09_22-30-00.png) | ![The Output tab](docs/images/panel-output-en_2026-10-09_22-30-00.png) |
+| ![The Basic tab](docs/images/panel-basic-en_2026-10-16_23-30-00.png) | ![The Output tab](docs/images/panel-output-en_2026-10-16_23-30-00.png) |
 | **Gaze** | **Eye fit** |
-| ![The Gaze tab](docs/images/panel-gaze-en_2026-10-09_22-30-00.png) | ![The Eye fit tab](docs/images/panel-eyefit-en_2026-10-09_22-30-00.png) |
+| ![The Gaze tab](docs/images/panel-gaze-en_2026-10-16_23-30-00.png) | ![The Eye fit tab](docs/images/panel-eyefit-en_2026-10-16_23-30-00.png) |
 | **Eyelids** | **Eye cameras** |
-| ![The Eyelids tab](docs/images/panel-lids-en_2026-10-09_22-30-00.png) | ![The Eye cameras tab](docs/images/panel-eyecam-en_2026-10-09_22-30-00.png) |
+| ![The Eyelids tab](docs/images/panel-lids-en_2026-10-16_23-30-00.png) | ![The Eye cameras tab](docs/images/panel-eyecam-en_2026-10-16_23-30-00.png) |
 | **Advanced** | |
-| ![The Advanced tab](docs/images/panel-advanced-en_2026-10-09_22-30-00.png) | |
+| ![The Advanced tab](docs/images/panel-advanced-en_2026-10-16_23-30-00.png) | |
 
 - The left column always shows what frameeyeosc is doing: sending or paused, where it sends to, messages per second, how many samples a second the eye tracker delivers (marked "low" below 60, with a line under it saying whether frameeyeosc or the Frame was the slow one), both eyelids and the gaze (raw and sent), and a config error if there is one. While the "Track Dominant Eye Only" setting is on, the gaze title line says which eye the Frame tracks ("Frame setting: tracking the right eye only").
 - Eye preview: the button at the bottom of the left column opens a sheet over the tabs that draws both eyes as they move: the eyelid (0.75 is relaxed open; widening raises the lid), the squint (the lower lid rises), the pupil's size and where the eye looks, from the values as sent, as read ("Raw": Valve's openness and the gaze before smoothing) or as the eye cameras read them ("Camera"). Under each eye: its eyelid, where it came from ("Valve" or "Camera") and its pupil in mm. "Mirror" (on at first) shows the eyes as in a mirror, your right eye on the right (off: as someone facing you, or your avatar from the front, sees them, your right eye on the left); "Freeze" stops the drawing. With the eye cameras in use, "Camera picture" (off at first, so your eyes never show by accident; once you turn it on, it stays on each time the preview opens until the panel restarts, you turn it off, or the cameras stop) also shows each eye's live camera picture with the pupil eyecam found (green circle), where it looks for it (yellow frame) and "Read as closed". The picture is only shown, never saved (see [Privacy](#privacy)). Avatars' eyes differ, so the drawing is for checking the movement. Any tab, the cross or closing the dashboard closes it.

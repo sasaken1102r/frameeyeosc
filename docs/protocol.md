@@ -16,7 +16,9 @@ The same file is kept in both repositories (frameeyeosc `docs/protocol.md` and V
 - frameeyeosc sends every eye sample (about 90 a second, up to ~136 while streaming). The module reads every queued
   datagram each update and keeps the newest, so it never falls behind.
 - While frameeyeosc has no eye data (the headset off, the eye server stopped) it sends a packet without the
-  `TRACKING` flag every 500 ms, with relaxed open eyes looking ahead, and once more when it stops sending there.
+  `TRACKING` flag every 500 ms, with relaxed open eyes looking ahead. It sends one such packet at once when the eye
+  data stops, and when it stops sending there (paused, or the output or destination switched). A frameeyeosc that is
+  killed sends nothing more; the module's 1 s timeout (below) covers that.
 
 ## Layout
 

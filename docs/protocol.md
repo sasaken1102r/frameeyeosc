@@ -20,19 +20,22 @@ The same file is kept in both repositories (frameeyeosc `docs/protocol.md` and V
 
 ## Layout
 
-76 bytes, little-endian, no padding. `f32` is IEEE 754 single precision.
+108 bytes with brows, else 76 (the packet stops after `session`); little-endian, no padding. `f32` is IEEE 754
+single precision. frameeyeosc sends 76-byte packets for now; the brows block is for brows from the eye camera later.
 
 | Offset | Size | Type | Field | Meaning |
 |---:|---:|---|---|---|
 | 0 | 4 | `u8[4]` | magic | ASCII `FEO1` (`46 45 4F 31`) |
 | 4 | 2 | `u16` | version | `1` |
-| 6 | 2 | `u16` | length | Bytes of the packet: `76` |
+| 6 | 2 | `u16` | length | Bytes of the packet: `108` with brows, else `76` |
 | 8 | 4 | `u32` | sequence | +1 per packet, wraps; starts at 0 when frameeyeosc starts |
 | 12 | 4 | `u32` | flags | See below |
 | 16 | 8 | `u64` | time_us | Sender's wall clock, microseconds since the Unix epoch (diagnostics only) |
 | 24 | 24 | eye | left | The left eye |
 | 48 | 24 | eye | right | The right eye |
 | 72 | 4 | `u32` | session | Random and not 0, new each time frameeyeosc starts (see "Ordering") |
+| 76 | 16 | brow | left_brow | The left eye's brow (only in a 108-byte packet) |
+| 92 | 16 | brow | right_brow | The right eye's brow (only in a 108-byte packet) |
 
 Each eye (24 bytes):
 
@@ -48,6 +51,15 @@ Each eye (24 bytes):
 Each eye's gaze is its own with frameeyeosc's "move eyes separately", else both carry the combined gaze (as in
 frameeyeosc's other outputs).
 
+Each brow (16 bytes):
+
+| Offset | Type | Field | Range | Meaning |
+|---:|---|---|---|---|
+| +0 | `f32` | brow_inner_up | 0..1 | Inner brow raised; 0 unless the eye's `BROW` flag is set |
+| +4 | `f32` | brow_outer_up | 0..1 | Outer brow raised; 0 unless `BROW` is set |
+| +8 | `f32` | brow_lowerer | 0..1 | Brow lowered; 0 unless `BROW` is set |
+| +12 | `f32` | brow_pinch | 0..1 | Brows pinched together; 0 unless `BROW` is set |
+
 ### Flags
 
 | Bit | Name | Meaning |
@@ -57,14 +69,19 @@ frameeyeosc's other outputs).
 | 2 | `RIGHT_CAMERA_LID` | The same for the right eye |
 | 3 | `LEFT_PUPIL` | The left eye's `pupil_mm` and `pupil_dilation` are valid |
 | 4 | `RIGHT_PUPIL` | The same for the right eye |
-| 5-31 | | Reserved: sent as 0, ignored by receivers |
+| 5 | `LEFT_BROW` | The left eye's brow fields are valid (only counts in a packet with the brows block) |
+| 6 | `RIGHT_BROW` | The same for the right eye |
+| 7-31 | | Reserved: sent as 0, ignored by receivers |
 
 ## Receiving rules
 
 - Drop a datagram that is shorter than 24 bytes, does not start with `FEO1`, has another `version`, has `length`
-  below 72, or is shorter than `length`. Bytes after the first 76 (a later compatible version) are ignored. A packet
+  below 72, or is shorter than `length`. Bytes after the first 108 (a later compatible version) are ignored. A packet
   with `length` 72 to 75 (the first draft, without `session`) is read with `session` 0.
-- Drop a packet with any non-finite float.
+- The brows block is read only when `length` is at least 108. A packet with `length` 72 to 107 has no brows, whatever
+  its `BROW` flags say, and anything after `session` in it is ignored.
+- Drop a packet with any non-finite float, the brow floats included when the brows block is read.
+- Brow values are clamped to 0..1.
 - Compatible additions append fields and raise `length`; an incompatible change raises `version`.
 - Ordering: a packet whose `session` differs from the newest one taken is taken, and the window below starts over
   from it: frameeyeosc started again, and its `sequence` with it. From then on a packet from a session before (not 0;
@@ -88,13 +105,18 @@ Per eye, from a `TRACKING` packet:
   `v2/PupilDilation` (`(A - min) / (max - min)`) is the mean `pupil_dilation` `D`: `min = A - D * S`,
   `max = min + S`, with `S` = 2.655 mm (eyecam's default dilation range, pupil-to-iris ratio 0.60..1.05 of a 5.9 mm
   iris radius). Without any `PUPIL` the pupils are left as they were.
+- Brows, while the packet has the brows block and the eye's `BROW` flag is set: the `BrowInnerUp`, `BrowOuterUp`,
+  `BrowLowerer` and `BrowPinch` shapes `= brow_inner_up`, `brow_outer_up`, `brow_lowerer`, `brow_pinch`. Otherwise
+  that eye's 4 brow shapes are left alone (unset, so VRCFT leaves the brows to whatever else drives them), except that
+  brows this module set before are set to 0 once, so a brow doesn't stick when the brows stop coming.
 - A packet without `TRACKING`, or no packet for 1 s: relaxed open eyes looking ahead (`Openness` 1, `EyeWide` 0,
-  `EyeSquint` 0, `Gaze` 0); the pupils stay.
+  `EyeSquint` 0, `Gaze` 0); the pupils stay; brows as without `BROW` (set to 0 once if this module set them).
 
 ## Example
 
 Sequence 7, flags `TRACKING | LEFT_CAMERA_LID | LEFT_PUPIL | RIGHT_PUPIL` (27), time_us 1700000000123456;
-left eye 0.25, -0.5, 0.875, 0.5, 4.0, 0.25; right eye 0.125, -0.5, 0.375, 0.0, 3.5, 0.75; session 0x2a5f11c3:
+left eye 0.25, -0.5, 0.875, 0.5, 4.0, 0.25; right eye 0.125, -0.5, 0.375, 0.0, 3.5, 0.75; session 0x2a5f11c3; no
+brows (76 bytes):
 
 ```
 46454f3101004c00070000001b00000040222018240a0600

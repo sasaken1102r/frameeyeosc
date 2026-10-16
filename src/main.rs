@@ -367,12 +367,19 @@ const CAMERA_RAISE_SHUT: f32 = 0.5;
 // one, 100% of each, in the winking eye only). Looking down further than CLOSE_DOWN_DEG (the eye tracker's own pitch,
 // before the eye fit) the upper lid follows the gaze over the pupil, and both cameras read the eyes closed (in cued
 // glances down: 57% of the time below -25 degrees, 6% from -25 to -18, under 0.3% above); there no "closed" of the
-// cameras is used unless the eye tracker reads an eye closing (a blink while looking down). The gate takes the camera's
-// eyelids as SideCheck leaves them (it goes first, from the camera's own).
+// cameras is used unless the eye tracker reads an eye shut (a blink while looking down: openness below
+// CLOSE_DOWN_OPEN in either eye). That is lower than CLOSE_WINK_OPEN: looking down, the eye tracker's own eyelid follows
+// the gaze too, and on one wearer (2026-10-16 00:47, 61 s) it read the open left eye 0.40-0.55, crossing 0.5 sample by
+// sample, so a false "closed" of the right eye's camera went through and back 1.7 times a second (sent 0 <-> 0.73);
+// that eye tracker's blinks while looking down reach 0.00-0.04 in at least one eye (the other at times stays 0.6-1.0).
+// Both "looking down" and "a blink there" last CLOSE_DOWN_HOLD_S past their last sample, so neither chatters at its
+// edge. The gate takes the camera's eyelids as SideCheck leaves them (it goes first, from the camera's own).
 const CLOSE_PAIR_S: f64 = 0.15;
 const CLOSE_WINK_S: f64 = 0.2;
 const CLOSE_WINK_OPEN: f32 = 0.5;
 const CLOSE_DOWN_DEG: f32 = 18.0;
+const CLOSE_DOWN_OPEN: f32 = 0.25;
+const CLOSE_DOWN_HOLD_S: f64 = 0.15;
 // The camera's own eyelid goes nearly to 0 in a hard squint (0.00-0.06 with its squint at 1.0 on 2026-10-07), which
 // looks closed on an avatar, so an eye the camera sees open is held at --camera-lid-floor (camera_lid_floor) and the
 // squint parameter carries the rest; see Smoother::check_lids for when.
@@ -660,7 +667,7 @@ struct Args {
     #[arg(long)]
     no_pupils_to_vrchat: bool,
     /// Act on every "closed" of the eye camera at once (by default one in one eye only waits until it is a blink or a
-    /// wink, and while looking down none is used unless the eye tracker reads an eye closing)
+    /// wink, and while looking down none is used unless the eye tracker reads an eye shut)
     #[arg(long)]
     no_camera_close_gate: bool,
     /// Don't take the eye camera's "closed" as open where the eye server has read the eye open, and been sure of it,
@@ -1573,6 +1580,9 @@ struct CloseGate {
     last: [f64; 2],
     paired: [bool; 2],
     open_lid: [f32; 2],
+    // When the eye tracker last looked further down than CLOSE_DOWN_DEG, and last read an eye shut (CLOSE_DOWN_OPEN).
+    down_at: f64,
+    shut_at: f64,
 }
 
 impl Default for CloseGate {
@@ -1582,6 +1592,8 @@ impl Default for CloseGate {
             last: [f64::NEG_INFINITY; 2],
             paired: [false; 2],
             open_lid: [LID_RELAXED; 2],
+            down_at: f64::NEG_INFINITY,
+            shut_at: f64::NEG_INFINITY,
         }
     }
 }
@@ -1601,7 +1613,7 @@ impl CloseGate {
     /// tracker's per eye and `pitch` its gaze up/down (degrees, + up) for the same sample. A blink, let through to the
     /// end of the closing: the other eye's camera saw its eye closed now or within CLOSE_PAIR_S, or the eye tracker
     /// reads the other eye closing. A wink: CLOSE_WINK_S on. Neither while looking down (CLOSE_DOWN_DEG) unless the eye
-    /// tracker reads an eye closing.
+    /// tracker reads an eye shut (CLOSE_DOWN_OPEN); both last CLOSE_DOWN_HOLD_S.
     fn check(
         &mut self,
         time: f64,
@@ -1626,7 +1638,14 @@ impl CloseGate {
             }
         }
         let tracker = openness.map(tracker_reads_closing);
-        let down = pitch < -CLOSE_DOWN_DEG && !tracker.contains(&true);
+        if pitch < -CLOSE_DOWN_DEG {
+            self.down_at = time;
+        }
+        if openness.iter().any(|&o| o < CLOSE_DOWN_OPEN) {
+            self.shut_at = time;
+        }
+        let held_for = |at: f64| time - at <= CLOSE_DOWN_HOLD_S + 1e-9;
+        let down = held_for(self.down_at) && !held_for(self.shut_at);
         let mut held = [false; 2];
         let lids = std::array::from_fn(|eye| {
             let lid = lids[eye]?;
@@ -8280,13 +8299,22 @@ mod tests {
         };
         assert!(down[40..130].iter().all(held_open), "{:?}", down[60].lids);
         assert!(down[40..80].iter().all(|sample| sample.close_held == [true; 2]));
-        // ...unless the eye tracker reads an eye closing: a blink while looking down closes
-        let shut = |i: usize| if (40..55).contains(&i) { [0.3; 2] } else { [1.0; 2] };
+        // ...unless the eye tracker reads an eye shut: a blink while looking down closes (it may catch one eye only)
+        let shut = |i: usize| if (40..55).contains(&i) { [0.0, 0.6] } else { [1.0; 2] };
         let blink_down = camera_samples_down(&settings, 25.0, 2.0, shut, |i| {
             let closed = (40..55).contains(&i);
             Some(camera_eyes([(if closed { 0.0 } else { 0.75 }, 0.0, closed); 2]))
         });
         assert!(blink_down[42..55].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", blink_down[45].lids);
+        // Looking down, the eye tracker's own eyelid of the open left eye goes 0.45 / 0.52 sample by sample (one wearer,
+        // 2026-10-16) while the right eye's camera says closed: not a blink, the right eye stays open all along
+        let hover = |i: usize| [if i % 2 == 0 { 0.45 } else { 0.52 }, 0.7];
+        let right = |i: usize| [false, (40..130).contains(&i)];
+        let hovering = camera_samples_down(&settings, 25.0, 2.0, hover, |i| {
+            let [left, right] = right(i).map(|closed| (if closed { 0.0 } else { 0.75 }, 0.0, closed));
+            Some(camera_eyes([left, right]))
+        });
+        assert!(hovering[40..130].iter().all(|sample| sample.lids[1] > 0.5), "{:?}", hovering[61].lids);
         // 10 degrees down is not far enough for that: a blink of both cameras closes
         let blink_10 = camera_samples_down(&settings, 10.0, 2.0, open, |i| {
             let closed = (40..55).contains(&i);

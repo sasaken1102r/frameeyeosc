@@ -128,7 +128,7 @@ pub struct Settings {
     pub pupils_to_vrchat: bool,
     /// The eye camera's "closed" in one eye only is used once it is a blink (the other eye's camera saw its eye closed
     /// too, or the eye tracker reads the other eye closing) or has lasted long enough to be a wink, and while looking
-    /// down no "closed" of the cameras is used unless the eye tracker reads an eye closing; see main.rs, CloseGate.
+    /// down no "closed" of the cameras is used unless the eye tracker reads an eye shut; see main.rs, CloseGate.
     /// false: every "closed" at once.
     pub camera_close_gate: bool,
     /// The eye camera's "closed" for an eye the eye server has read open, and been sure of, for longer than a blink is

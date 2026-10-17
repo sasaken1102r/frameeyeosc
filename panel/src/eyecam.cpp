@@ -354,6 +354,11 @@ bool userCalibAllowed(const Status& status) {
     return (status.calibState & kCalibWearBit) != 0;
 }
 
+bool relearnAllowed(bool fresh, const Status& status, bool cameraLids, bool inUse) {
+    return fresh && status.state == State::Idle && status.live && status.locked && status.hasBaseline && cameraLids &&
+           inUse;
+}
+
 Run runOfCommand(const std::string& command) {
     if (command == kCalibWearCommand) return Run::CalibWear;
     if (command == kCalibUserCommand) return Run::CalibUser;

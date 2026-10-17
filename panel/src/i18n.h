@@ -764,6 +764,8 @@ struct UiText {
     const char* camRowState;  ///< the eye cameras page: rows (title, hint)
     const char* camRowStateHint;
     const char* camLearned;  ///< ...the baseline learned (green pill)
+    const char* camRelearnButton;  ///< ...the button under it: learn the relaxed eyes again (eyecam "relearn")
+    const char* camRelearnHint;    ///< ...what it does, left of it
     const char* camRowCalib;
     const char* camRowCalibHint;
     const char* camCalibButton;

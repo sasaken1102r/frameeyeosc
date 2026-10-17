@@ -88,6 +88,7 @@ enum class PanelAction {
     EyecamStop,        ///< eye capture tab: send "stop"
     EyecamCalib,       ///< a calibration: arg = eyecam::Calib (the panel shows the eye capture tab; the caller sends
                        ///< eyecam::calibCommand)
+    EyecamRelearn,     ///< "Relearn my eyes": the caller sends eyecam::kRelearnCommand
     EyecamSensitivity, ///< the widening sensitivity slider: pressed and dragged inside the panel; the caller takes
                        ///< the value with takeSensitivity / sensitivityDragging
     SetupKonsole,      ///< the eye cameras' setup: open a Konsole with the command typed in (arg 0 = the tool's install,

@@ -477,6 +477,14 @@ bool warmingShown(bool warming, CameraUse use);
 bool learnedShown(bool learned, bool live, CameraUse use);
 
 /**
+ * Whether the eye cameras are in use for "Relearn my eyes": they drive one or both eyelids, or eyecam-rec is learning
+ * the relaxed eyes before they do (Warming).
+ * @param use what drives the eyelids (cameraUse)
+ * @return true if so
+ */
+bool relearnUse(CameraUse use);
+
+/**
  * How many rows of the eye cameras' "When..." box fit between `top` and `bottom` (0: leave the box out). The box is
  * 40 px plus 30 per row; `bottom` is where it must end (the caller keeps its gap to what is under it).
  * @param top the box's top

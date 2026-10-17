@@ -35,6 +35,8 @@ constexpr const char* kNoLightProtocol = "widen_nolight";
 constexpr const char* kCalibWearCommand = "calib wear";
 /** The user's own calibration (18 s): once, after a calibration for this wear. */
 constexpr const char* kCalibUserCommand = "calib user";
+/** Learn the relaxed eyes again (the baseline's warm-up, ~30 s, as on a new wear; this wear's calibration kept). */
+constexpr const char* kRelearnCommand = "relearn";
 /** calib_state's bits: calibrated for this wear (cleared when the headset comes off), and for the user. */
 constexpr int kCalibWearBit = 1;
 constexpr int kCalibUserBit = 2;
@@ -492,6 +494,18 @@ std::string calibCommand(Calib calib);
  * @return true if calibrated for this wear
  */
 bool userCalibAllowed(const Status& status);
+
+/**
+ * Whether "Relearn my eyes" can be pressed: eyecam-rec there (its status fresh), idle and reading the cameras live with
+ * the eye video, an eyecam-rec that learns the relaxed eyes by itself, camera_lids on, and the cameras driving the
+ * eyelids or learning to (relearnUse). Also what `--action relearn` needs.
+ * @param fresh the status is fresh (tabVisible)
+ * @param status the status
+ * @param cameraLids camera_lids is on
+ * @param inUse the eye cameras drive the eyelids, or learn the relaxed eyes to (relearnUse(cameraUse(...)))
+ * @return true if it can
+ */
+bool relearnAllowed(bool fresh, const Status& status, bool cameraLids, bool inUse);
 
 /**
  * The run a command starts, if the recorder takes it.

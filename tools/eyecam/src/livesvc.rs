@@ -20,6 +20,11 @@ const STALE_AFTER: f64 = 0.25;
 const PUPIL_SHARE_S: f64 = 2.0;
 /// status.json's cam_fps is null once an eye's last frame is older than this (s).
 const CAM_FPS_FRESH: f64 = 0.5;
+/// `relearn`'s refusals: live processing off (camera_lids off, or no buffers), no eye video coming in, a calibration
+/// running.
+pub const RELEARN_NOT_LIVE: &str = "目の値を出していないので、普段の目を覚え直せない";
+pub const RELEARN_NO_VIDEO: &str = "目の映像が来ていないので、普段の目を覚え直せない";
+pub const RELEARN_CALIBRATING: &str = "校正中なので、普段の目を覚え直せない";
 /// Pupils react together: both eyes' diameters differ by less than this (recordings: median 0.3-0.6 mm, 99th
 /// percentile 1.3-1.8 mm, part of it a fixed per-eye scale difference).
 const PUPIL_LR_MAX_MM: f64 = 1.5;
@@ -102,6 +107,9 @@ pub enum Msg {
     SetLive(bool),
     /// Whether eyecam-rec holds the camera buffers (the shared memory's `live` needs both this and live on).
     Buffers(bool),
+    /// `relearn`: start the auto baseline's warm-up again for both eyes (Worker::relearn); the reply is the reason
+    /// when it can't.
+    Relearn(mpsc::Sender<Result<(), String>>),
     Shutdown,
 }
 
@@ -393,6 +401,42 @@ struct Worker {
 }
 
 impl Worker {
+    /// A worker that hasn't seen a frame yet (live on, no buffers).
+    fn new(writer: LiveWriter, shared: Arc<Shared>, calib_path: PathBuf, calib: CalibFile, preview_path: PathBuf) -> Self {
+        Self {
+            writer,
+            shared,
+            calib_path,
+            calib,
+            engines: [EyeEngine::default(), EyeEngine::default()],
+            params: [Params::default(); 2],
+            sensitivity: f64::NAN,
+            live: true,
+            buffers: false,
+            last_t: [f64::NEG_INFINITY; 2],
+            last_seen: [None; 2],
+            frames: [0; 2],
+            collect: None,
+            steps: Vec::new(),
+            samples: [Vec::new(), Vec::new()],
+            flipped: vec![0; W * H],
+            pupils: [PupilTrack::default(), PupilTrack::default()],
+            pupil_seen: [PupilSeen::default(), PupilSeen::default()],
+            pupil_offset: PupilOffset::default(),
+            pupil_conflicts: 0,
+            pupil_pairs: 0,
+            mono_minus_raw: 0,
+            offset_at: Instant::now() - Duration::from_secs(5),
+            busy: Duration::ZERO,
+            busy_n: 0,
+            busy_since: Instant::now(),
+            log_n: 0,
+            log_us: 0,
+            log_since: Instant::now(),
+            preview: Preview::new(preview_path),
+        }
+    }
+
     fn calib_state(&self) -> u32 {
         let ready = self.calib.setup_done && self.engines.iter().all(EyeEngine::baseline_ready);
         self.params[0].wear.is_some() as u32 | (self.params[0].user.is_some() as u32) << 1 | (ready as u32) << 2
@@ -430,6 +474,35 @@ impl Worker {
             s.recalib_suggested = recalib as u32;
             s.live = live as u32;
         });
+    }
+
+    /// `relearn`: learn the relaxed eyes again, the auto baseline's warm-up started over for both eyes as on a new
+    /// wear, while the eye video comes in. Unlike a new wear, this wear stays as it is: its calibration (params.wear,
+    /// so calib_state bit 0 and the step and gap it measured), calib.json and its history (nothing is written), the
+    /// geometry each engine learnt (lens edge, search window, iris radius, the closed-eye checks), the wearer's typical
+    /// pitch, and the pupil checks. Only the open-eye levels go, so calib_state bit 2 and `baseline: ready` until the
+    /// warm-up is over (status.json shows it counting down again); meanwhile EyeWide and squint are held at 0, as in
+    /// any warm-up, and blinks still show.
+    fn relearn(&mut self) -> Result<(), String> {
+        if !(self.live && self.buffers) {
+            return Err(RELEARN_NOT_LIVE.into());
+        }
+        if self.collect.is_some() {
+            return Err(RELEARN_CALIBRATING.into());
+        }
+        if self.last_seen.iter().all(Option::is_none) {
+            return Err(RELEARN_NO_VIDEO.into());
+        }
+        for e in &mut self.engines {
+            e.relearn();
+        }
+        self.publish_state();
+        eprintln!(
+            "eyecam-rec: relearning the relaxed eyes ({:.0} s warm-up; this wear's calibration kept: {})",
+            live::WARMUP_S,
+            if self.params[0].wear.is_some() { "yes" } else { "none" }
+        );
+        Ok(())
     }
 
     fn invalidate(&mut self, eye: Option<usize>) {
@@ -860,38 +933,7 @@ pub fn spawn(
         .spawn(move || {
             let cores = big_cores();
             pin_to(&cores);
-            let mut w = Worker {
-                writer,
-                shared: sh,
-                calib_path: calib,
-                calib: calib_file,
-                engines: [EyeEngine::default(), EyeEngine::default()],
-                params: [Params::default(); 2],
-                sensitivity: f64::NAN,
-                live: true,
-                buffers: false,
-                last_t: [f64::NEG_INFINITY; 2],
-                last_seen: [None; 2],
-                frames: [0; 2],
-                collect: None,
-                steps: Vec::new(),
-                samples: [Vec::new(), Vec::new()],
-                flipped: vec![0; W * H],
-                pupils: [PupilTrack::default(), PupilTrack::default()],
-                pupil_seen: [PupilSeen::default(), PupilSeen::default()],
-                pupil_offset: PupilOffset::default(),
-                pupil_conflicts: 0,
-                pupil_pairs: 0,
-                mono_minus_raw: 0,
-                offset_at: Instant::now() - Duration::from_secs(5),
-                busy: Duration::ZERO,
-                busy_n: 0,
-                busy_since: Instant::now(),
-                log_n: 0,
-                log_us: 0,
-                log_since: Instant::now(),
-                preview: Preview::new(preview_path),
-            };
+            let mut w = Worker::new(writer, sh, calib, calib_file, preview_path);
             w.apply_calib();
             w.publish_state();
             loop {
@@ -939,6 +981,9 @@ pub fn spawn(
                             w.invalidate(None);
                         }
                         w.publish_state();
+                    }
+                    Ok(Msg::Relearn(reply)) => {
+                        let _ = reply.send(w.relearn());
                     }
                     Ok(Msg::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -1128,6 +1173,61 @@ mod tests {
             assert_eq!(col(r, "pupil_share"), "0.000", "{r}");
             assert!(col(r, "wall_unix").parse::<f64>().unwrap() > 1.7e9, "{r}");
         }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn relearn_keeps_this_wears_calibration() {
+        let dir = std::env::temp_dir().join(format!("eyecam-relearn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("calib.json");
+        let wl = live::WearParams { r_px: 50.0, b_n: 0.8, b_w: 1.0, ap_n: 1.6, ap_cl: 0.5, pitch_n: -12.0, lower_px: 240.0 };
+        let wr = live::WearParams { r_px: 52.0, b_n: 0.7, b_w: 0.9, ap_n: 1.5, ap_cl: 0.4, pitch_n: -13.0, lower_px: 236.0 };
+        let mut file = CalibFile { wear: Some([wl, wr]), setup_done: true, ..CalibFile::default() };
+        file.push_history("2026-10-17 10:00:00", &[wl, wr]);
+        save_calib(&path, &file).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        let shared = Arc::new(Shared::default());
+        let writer = LiveWriter::create(&dir.join("live")).unwrap();
+        let mut w = Worker::new(writer, shared.clone(), path.clone(), load_calib(&path), dir.join("preview"));
+        w.apply_calib();
+        // Calibrated this wear: as Worker::fit leaves it
+        for ((p, wp), eng) in w.params.iter_mut().zip([wl, wr]).zip(&mut w.engines) {
+            p.wear = Some(wp);
+            eng.seed(&wp);
+        }
+        w.publish_state();
+        assert_eq!(shared.calib_state.load(Ordering::Relaxed), 1 | 4);
+        assert!(shared.baseline_ready.load(Ordering::Relaxed));
+        let wear = w.params.map(|p| p.wear);
+        // Refused: no buffers, no video, a calibration running
+        assert_eq!(w.relearn(), Err(RELEARN_NOT_LIVE.to_string()));
+        w.buffers = true;
+        assert_eq!(w.relearn(), Err(RELEARN_NO_VIDEO.to_string()));
+        w.last_seen[1] = Some(Instant::now());
+        w.collect = Some(CollectKind::Wear);
+        assert_eq!(w.relearn(), Err(RELEARN_CALIBRATING.to_string()));
+        w.collect = None;
+        w.live = false;
+        assert_eq!(w.relearn(), Err(RELEARN_NOT_LIVE.to_string()));
+        w.live = true;
+        assert!(shared.baseline_ready.load(Ordering::Relaxed), "nothing changed by a refusal");
+        // Relearnt: both eyes warm up again...
+        assert_eq!(w.relearn(), Ok(()));
+        assert!(w.engines.iter().all(|e| !e.baseline_ready() && e.warmup_remaining_s() == live::WARMUP_S));
+        assert!(!shared.baseline_ready.load(Ordering::Relaxed));
+        assert_eq!(shared.warmup_ms.load(Ordering::Relaxed), (live::WARMUP_S * 1000.0) as u32);
+        // ...this wear's calibration, the history and calib.json kept (calib_state: calibrated, no baseline yet)
+        assert_eq!(w.params.map(|p| p.wear), wear);
+        assert_eq!(shared.calib_state.load(Ordering::Relaxed), 1);
+        assert!(shared.calib_saved.load(Ordering::Relaxed) && shared.setup_done.load(Ordering::Relaxed));
+        assert_eq!(w.calib.history.len(), 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
+        // A wear calibration afterwards seeds the levels at once, as before
+        w.engines[0].seed(&wl);
+        assert!(w.engines[0].baseline_ready());
+        drop(w);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

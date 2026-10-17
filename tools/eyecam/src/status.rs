@@ -398,8 +398,8 @@ pub enum Command {
     DriftLogOn(Option<String>),
     /// `driftlog off`: stop it (the same).
     DriftLogOff,
-    /// `relearn`: learn the relaxed eyes again (the auto baseline's warm-up, as on a new wear), keeping this wear's
-    /// calibration. Only while idle with the eye video coming in.
+    /// `relearn`: learn the relaxed eyes again (a new warm-up of the auto baseline; levels already known stay in use
+    /// until it is over), keeping this wear's calibration. Only while idle with the eye video coming in.
     Relearn,
 }
 

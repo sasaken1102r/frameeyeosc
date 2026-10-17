@@ -135,6 +135,9 @@ const WIDE_ON_S: f64 = 9.0 / FPS;
 const WIDE_OFF: f64 = 0.3;
 /// Auto baseline: seconds of usable frames before EyeWide is enabled (about 35 s of wearing).
 pub const WARMUP_S: f64 = 30.0;
+/// After a manual relearn's warm-up (`relearn` with open-eye levels already known), the levels in use go from the old
+/// ones to the new ones over this many seconds (a straight line), so the eyelid, EyeWide and squint don't jump.
+pub const RELEARN_RAMP_S: f64 = 2.0;
 /// Usable frames for the baseline: Valve pitch within this many degrees of the wearer's typical pitch.
 const PITCH_GATE: f64 = 15.0;
 /// After warm-up the skin line's baseline follows the skin line with this time constant (s), at most half a widen step
@@ -538,6 +541,12 @@ struct AutoBase {
     ready: bool,
     /// The wearer's typical Valve pitch: median over the last minute of frames with the pupil seen.
     pitch_typ: LongMedian,
+    /// A manual relearn's new warm-up (`relearn` while the levels above were known): the levels above stay in use
+    /// (and keep being followed) until it is ready, then its levels replace them through `ramp`.
+    next: Option<Box<AutoBase>>,
+    /// The switch to a relearn's new levels: the old skin line and aperture levels (px) and the seconds since the
+    /// switch; the levels in use go from those to `b` / `ap_n` over RELEARN_RAMP_S.
+    ramp: Option<(f64, f64, f64)>,
 }
 
 impl Default for AutoBase {
@@ -551,6 +560,8 @@ impl Default for AutoBase {
             ap_n: f64::NAN,
             ready: false,
             pitch_typ: LongMedian::new(60.0),
+            next: None,
+            ramp: None,
         }
     }
 }
@@ -585,8 +596,52 @@ fn mode_est(v: &[f64], bw: f64) -> f64 {
 }
 
 impl AutoBase {
+    /// Seconds of the warm-up still to go: this wear's first one, or a relearn's while the old levels stay in use.
     fn warmup_remaining_s(&self) -> f64 {
+        if let Some(next) = &self.next {
+            return next.warmup_remaining_s();
+        }
         if self.ready { 0.0 } else { (WARMUP_S - self.seconds).clamp(0.0, WARMUP_S) }
+    }
+
+    /// The open-eye levels in use (skin line height, aperture; px): `b` / `ap_n`, or on the way to them from the old
+    /// ones for RELEARN_RAMP_S after a relearn (an old level that was never known is not ramped from).
+    fn levels(&self) -> (f64, f64) {
+        match self.ramp {
+            Some((b0, ap0, s)) => {
+                let k = (s / RELEARN_RAMP_S).clamp(0.0, 1.0);
+                let lerp = |from: f64, to: f64| if from.is_finite() && to.is_finite() { from + (to - from) * k } else { to };
+                (lerp(b0, self.b), lerp(ap0, self.ap_n))
+            }
+            None => (self.b, self.ap_n),
+        }
+    }
+
+    /// One frame (`dt` s) further into the ramp after a relearn, if one runs.
+    fn tick(&mut self, dt: f64) {
+        if let Some((_, _, s)) = &mut self.ramp {
+            *s += dt;
+            if *s >= RELEARN_RAMP_S {
+                self.ramp = None;
+            }
+        }
+    }
+
+    /// One usable frame for a relearn's warm-up (as `warm`), if one runs; once it is ready its levels replace the old
+    /// ones (through the ramp; an aperture level it could not work out keeps the old one).
+    fn warm_next(&mut self, skin: f64, ap: f64, bw: f64, dt: f64) {
+        let Some(next) = &mut self.next else { return };
+        next.warm(skin, ap, bw, dt);
+        if next.ready {
+            let (b, ap_n) = (next.b, next.ap_n);
+            self.next = None;
+            let (b0, ap0) = self.levels();
+            self.ramp = Some((b0, ap0, 0.0));
+            self.b = b;
+            if ap_n.is_finite() {
+                self.ap_n = ap_n;
+            }
+        }
     }
 
     /// Add one usable frame's levels during warm-up (`bw`: histogram bin, px; `dt`: the frame interval, s). The
@@ -616,10 +671,19 @@ impl AutoBase {
         }
     }
 
-    /// Learn the open-eye levels again from a fresh warm-up, as at the start of a wear. The wearer's typical pitch
-    /// stays: it is about where they look, not how open their eyes are, and it decides which frames the warm-up may
-    /// use (cleared, the first frames with a pitch would wait for it to fill again).
+    /// Learn the open-eye levels again from a fresh warm-up. With levels already known, they stay in use (and keep
+    /// being followed) while the new warm-up runs in `next`, and are replaced once it is ready; a relearn during a
+    /// relearn starts the new warm-up over and keeps the levels in use (a ramp still running ends where it is).
+    /// Without levels yet, the warm-up just starts over, as at the start of a wear. The wearer's typical pitch stays
+    /// either way: it is about where they look, not how open their eyes are, and it decides which frames the warm-up
+    /// may use (cleared, the first frames with a pitch would wait for it to fill again).
     fn relearn(&mut self) {
+        if self.ready {
+            (self.b, self.ap_n) = self.levels();
+            self.ramp = None;
+            self.next = Some(Box::new(Self { pitch_typ: LongMedian::new(0.0), ..Self::default() }));
+            return;
+        }
         let pitch_typ = std::mem::replace(&mut self.pitch_typ, LongMedian::new(0.0));
         *self = Self { pitch_typ, ..Self::default() };
     }
@@ -629,6 +693,9 @@ impl AutoBase {
             (self.b, self.ap_n, self.ready) = (b, ap_n, true);
             self.skin = Vec::new();
             self.ap = Vec::new();
+            // A calibration's levels win over a relearn still warming up, at once
+            self.next = None;
+            self.ramp = None;
         }
     }
 }
@@ -708,13 +775,20 @@ impl EyeEngine {
         *self = Self { ex: std::mem::take(&mut self.ex), ..Self::default() };
     }
 
-    /// Learn this wear's open-eye levels again (`relearn` on ctl.sock): the auto baseline's warm-up starts over, as at
-    /// the start of a wear, and EyeWide waits for it again. Unlike `reset`, everything else learnt about the wear
-    /// stays (lens edge, search window, iris radius, the open eye's pupil size, darkness and iris-box brightness that
-    /// tell a closed eye, the wearer's typical pitch): only the levels the wearer's eyes rest at are relearnt, and
-    /// blinks keep working meanwhile.
+    /// Learn this wear's open-eye levels again (`relearn` on ctl.sock): a new warm-up of the auto baseline. With
+    /// levels already known (warmed up or seeded), the eyelid, EyeWide and squint keep working from them meanwhile,
+    /// and the new levels take over once the warm-up is done (over RELEARN_RAMP_S); without them yet, the warm-up
+    /// starts over as at the start of a wear and EyeWide waits for it. Unlike `reset`, everything else learnt about
+    /// the wear stays (lens edge, search window, iris radius, the open eye's pupil size, darkness and iris-box
+    /// brightness that tell a closed eye, the wearer's typical pitch): only the levels the wearer's eyes rest at are
+    /// relearnt, and blinks keep working meanwhile.
     pub fn relearn(&mut self) {
         self.base.relearn();
+    }
+
+    /// A relearn's warm-up runs while the old open-eye levels stay in use (`warmup_remaining_s` counts it down).
+    pub fn relearning(&self) -> bool {
+        self.base.next.is_some()
     }
 
     /// Forget where the pupil was (the search prior, the last pupil the lids are measured around, the run of frames
@@ -776,19 +850,21 @@ impl EyeEngine {
         self.rate.fps()
     }
 
-    /// The open-eye levels are known (warm-up over, or seeded by a calibration).
+    /// The open-eye levels are known (warm-up over, or seeded by a calibration; also while a relearn's warm-up runs
+    /// with the old ones in use).
     pub fn baseline_ready(&self) -> bool {
         self.base.ready
     }
 
-    /// Seconds of usable frames still needed before EyeWide is enabled (0 when ready).
+    /// Seconds of usable frames still needed before EyeWide is enabled (0 when ready), or, during a relearn, before
+    /// its new levels take over.
     pub fn warmup_remaining_s(&self) -> f64 {
         self.base.warmup_remaining_s()
     }
 
-    /// The open-eye levels (skin line height, aperture; px) once ready.
+    /// The open-eye levels in use (skin line height, aperture; px) once ready.
     pub fn baseline_px(&self) -> Option<(f64, f64)> {
-        self.base.ready.then_some((self.base.b, self.base.ap_n))
+        self.base.ready.then(|| self.base.levels())
     }
 
     /// Start from these open-eye levels (px) instead of warming up; they are followed from there.
@@ -964,21 +1040,26 @@ impl EyeEngine {
         let usable = open_seen && (!pitch.is_finite() || (p_typ.is_finite() && (pitch - p_typ).abs() < PITCH_GATE));
         if usable && !self.base.ready {
             self.base.warm(skin_px, ap_px, 0.01 * r, 1.0 / fps);
-        } else if usable && params.tune.track && step_px > 0.0 {
-            // One frame's share of the time constant.
-            let k = 1.0 / (TRACK_TAU_S * fps);
-            self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
-            let k_ap = 1.0 / (TRACK_AP_TAU_S * fps);
-            if self.last_wide < TRACK_AP_MAX
-                && self.last_sq < TRACK_AP_MAX
-                && ap_px.is_finite()
-                && self.base.ap_n.is_finite()
-            {
-                self.base.ap_n += (ap_px - self.base.ap_n).clamp(-0.25 * gap_px, 0.25 * gap_px) * k_ap;
+        } else if usable {
+            // A relearn's warm-up, if one runs (the levels below stay in use until it is ready)
+            self.base.warm_next(skin_px, ap_px, 0.01 * r, 1.0 / fps);
+            if params.tune.track && step_px > 0.0 {
+                // One frame's share of the time constant.
+                let k = 1.0 / (TRACK_TAU_S * fps);
+                self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
+                let k_ap = 1.0 / (TRACK_AP_TAU_S * fps);
+                if self.last_wide < TRACK_AP_MAX
+                    && self.last_sq < TRACK_AP_MAX
+                    && ap_px.is_finite()
+                    && self.base.ap_n.is_finite()
+                {
+                    self.base.ap_n += (ap_px - self.base.ap_n).clamp(-0.25 * gap_px, 0.25 * gap_px) * k_ap;
+                }
             }
         }
+        self.base.tick(1.0 / fps);
         let ready = self.base.ready;
-        let (b_px, ap_n_px) = (self.base.b, self.base.ap_n);
+        let (b_px, ap_n_px) = self.base.levels();
 
         let tune = params.tune;
         let wide = if hold || !ready || gaze_hold {
@@ -3532,20 +3613,117 @@ mod tests {
         let pitch = e.base.pitch_typ.value;
         assert!(pitch.is_finite());
         e.relearn();
-        // The warm-up again, from nothing: no open-eye levels until it is over
-        assert!(!e.baseline_ready());
+        // A new warm-up, counted down, while the old levels stay in use
+        assert!(e.baseline_ready() && e.relearning());
         assert_eq!(e.warmup_remaining_s(), WARMUP_S);
-        assert_eq!(e.baseline_px(), None);
-        assert!(e.base.b.is_nan() && e.base.ap_n.is_nan() && e.base.skin.is_empty() && e.base.seconds == 0.0);
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)));
+        let next = e.base.next.as_ref().unwrap();
+        assert!(next.b.is_nan() && next.ap_n.is_nan() && next.skin.is_empty() && next.seconds == 0.0 && !next.ready);
         // ...the rest of the wear kept
         assert_eq!((e.xmax, e.x_min, e.find_x_min, e.t_first), (300.0, 120.0, 110.0, 3.0));
         assert_eq!((e.r_est.value, e.box_open.value, e.a_open.value), (50.0, 90.0, 12.0));
         assert_eq!((e.base.pitch_typ.len(), e.base.pitch_typ.value), (100, pitch));
-        // A wear calibration seeds it again at once, as before
+        // A wear calibration seeds it again at once, as before (and ends the relearn)
         e.seed(&w);
-        assert!(e.baseline_ready());
+        assert!(e.baseline_ready() && !e.relearning() && e.warmup_remaining_s() == 0.0);
         // reset (a new wear) forgets the wear too
         e.reset();
         assert!(e.base.pitch_typ.value.is_nan() && e.r_est.value.is_nan() && e.xmax == 346.0);
+    }
+
+    /// `n` seconds of usable frames at 90 fps with these levels (px) for a relearn's warm-up.
+    fn warm_next_for(base: &mut AutoBase, seconds: f64, skin: f64, ap: f64) {
+        for _ in 0..(seconds * FPS).round() as usize {
+            base.warm_next(skin, ap, 0.5, 1.0 / FPS);
+        }
+    }
+
+    #[test]
+    fn relearn_keeps_the_old_levels_until_the_new_ones_are_learnt() {
+        let mut e = EyeEngine::default();
+        let w = WearParams { r_px: 50.0, b_n: 0.8, b_w: 1.0, ap_n: 1.6, ap_cl: 0.5, pitch_n: -12.0, lower_px: 240.0 };
+        e.seed(&w);
+        e.relearn();
+        // Half the warm-up: the old levels in use, the new warm-up counting down
+        warm_next_for(&mut e.base, 15.0, 46.0, 86.0);
+        assert!(e.relearning() && e.baseline_ready());
+        assert!((e.warmup_remaining_s() - 15.0).abs() < 0.02, "{}", e.warmup_remaining_s());
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)));
+        // process() uses them: it reports what an engine with the old levels and no relearn reports, and an engine with
+        // the new ones something else (the same frames for all three, so the same iris radius; the levels are not
+        // followed here, to compare them exactly)
+        let mut p = Params::default();
+        p.tune.track = false;
+        let eye = disc_frame(Some((250.0, 200.0, 25.0)));
+        let (mut old, mut new) = (EyeEngine::default(), EyeEngine::default());
+        old.seed(&w);
+        new.seed(&w);
+        new.seed_px(46.0, 86.0);
+        let o = e.process(&eye, f64::NAN, 0.0, &p);
+        let (o_old, o_new) = (old.process(&eye, f64::NAN, 0.0, &p), new.process(&eye, f64::NAN, 0.0, &p));
+        assert!(o.b_n.is_finite() && o.b_n == o_old.b_n && o.b_n < o_new.b_n, "{} {} {}", o.b_n, o_old.b_n, o_new.b_n);
+        assert_eq!((o.b_w, o.eye_lid, o.eye_wide, o.eye_squint), (o_old.b_w, o_old.eye_lid, o_old.eye_wide, o_old.eye_squint));
+        // Pressed again: the new warm-up starts over, the old levels still in use
+        e.relearn();
+        assert_eq!(e.warmup_remaining_s(), WARMUP_S);
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)));
+        warm_next_for(&mut e.base, 29.5, 46.0, 86.0);
+        assert!(e.relearning() && e.baseline_px() == Some((40.0, 80.0)));
+        // Ready: the new levels take over, from the old ones over RELEARN_RAMP_S
+        warm_next_for(&mut e.base, 0.5, 46.0, 86.0);
+        assert!(!e.relearning() && e.baseline_ready() && e.warmup_remaining_s() == 0.0);
+        assert_eq!((e.base.b, e.base.ap_n), (46.0, 86.0));
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)), "no jump at the switch");
+        for _ in 0..(0.5 * RELEARN_RAMP_S * FPS).round() as usize {
+            e.base.tick(1.0 / FPS);
+        }
+        let (b, ap) = e.baseline_px().unwrap();
+        assert!((b - 43.0).abs() < 1e-6 && (ap - 83.0).abs() < 1e-6, "halfway: {b} {ap}");
+        // ...also through process(): its level moves on with the frames from the old engine's to the new one's, and
+        // stays at the new one's after the ramp
+        let mut last = 0.5;
+        for k in 1..=(RELEARN_RAMP_S * FPS) as usize {
+            let t = k as f64 / FPS;
+            let o = e.process(&eye, f64::NAN, t, &p);
+            let (o_old, o_new) = (old.process(&eye, f64::NAN, t, &p), new.process(&eye, f64::NAN, t, &p));
+            let f = (o.b_n - o_old.b_n) / (o_new.b_n - o_old.b_n);
+            assert!(f >= last - 1e-9 && f <= 1.0 + 1e-9, "{k}: {f}");
+            last = f;
+        }
+        assert!((last - 1.0).abs() < 1e-9, "{last}");
+        assert!(e.base.ramp.is_none() && e.baseline_px() == Some((46.0, 86.0)));
+        let (o, o_new) = (e.process(&eye, f64::NAN, 3.0, &p), new.process(&eye, f64::NAN, 3.0, &p));
+        assert_eq!((o.b_n, o.b_w, o.eye_lid, o.eye_wide), (o_new.b_n, o_new.b_w, o_new.eye_lid, o_new.eye_wide));
+        // A relearn during a ramp starts from where the ramp is
+        e.base.ramp = Some((40.0, 80.0, 0.5 * RELEARN_RAMP_S));
+        e.relearn();
+        assert_eq!(e.baseline_px(), Some((43.0, 83.0)));
+        assert!(e.base.ramp.is_none() && e.relearning());
+    }
+
+    #[test]
+    fn relearn_without_levels_and_a_new_wear_start_the_warm_up_over() {
+        // No levels yet (just put on): the warm-up starts over, nothing in use meanwhile, as before
+        let mut e = EyeEngine::default();
+        for _ in 0..(10.0 * FPS) as usize {
+            e.base.warm(46.0, 86.0, 0.5, 1.0 / FPS);
+        }
+        assert!(!e.baseline_ready() && (e.warmup_remaining_s() - 20.0).abs() < 0.02);
+        e.relearn();
+        assert!(!e.baseline_ready() && !e.relearning() && e.baseline_px().is_none());
+        assert_eq!(e.warmup_remaining_s(), WARMUP_S);
+        assert!(e.base.b.is_nan() && e.base.skin.is_empty() && e.base.seconds == 0.0);
+        let p = Params::default();
+        let o = e.process(&disc_frame(Some((250.0, 200.0, 25.0))), f64::NAN, 0.0, &p);
+        assert!(o.b_n.is_nan() && o.eye_wide == 0.0 && o.eye_squint == 0.0);
+        // A new wear (reset) during a relearn: everything goes, the warm-up from nothing, as before
+        let w = WearParams { r_px: 50.0, b_n: 0.8, b_w: 1.0, ap_n: 1.6, ap_cl: 0.5, pitch_n: -12.0, lower_px: 240.0 };
+        e.seed(&w);
+        e.relearn();
+        warm_next_for(&mut e.base, 10.0, 46.0, 86.0);
+        e.reset();
+        assert!(!e.baseline_ready() && !e.relearning() && e.baseline_px().is_none());
+        assert_eq!(e.warmup_remaining_s(), WARMUP_S);
+        assert!(e.base.ramp.is_none() && e.base.b.is_nan() && e.base.seconds == 0.0);
     }
 }

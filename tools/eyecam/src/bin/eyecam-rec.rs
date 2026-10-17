@@ -1147,9 +1147,10 @@ fn fake(args: &Args, d: &Daemon) {
             let from = relearn_at.unwrap_or(t0 + 5.0);
             let left = (eyecam::live::WARMUP_S - (now - from)).clamp(0.0, eyecam::live::WARMUP_S);
             let ready = live_on && left == 0.0 || (relearn_at.is_none() && calib_state & 1 != 0);
-            // As live: the auto baseline only counts in calib_state once the setup (a calib wear) is done.
+            // As live: the auto baseline only counts in calib_state once the setup (a calib wear) is done, and a
+            // relearn keeps the levels in use (bit 2) while status.json counts its warm-up down.
             let setup = calib_state & 1 != 0;
-            s.calib_state = calib_state | ((ready && setup) as u32) << 2;
+            s.calib_state = calib_state | (((ready || relearn_at.is_some()) && setup) as u32) << 2;
             s.baseline = if ready { "ready" } else { "warming" };
             s.warmup_remaining_s = if ready { 0.0 } else { left };
             s.calib_saved = setup;

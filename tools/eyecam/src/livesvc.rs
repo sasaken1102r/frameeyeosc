@@ -451,9 +451,10 @@ impl Worker {
         }
     }
 
-    /// The auto baseline's progress and whether a step history exists, for status.json.
+    /// The auto baseline's progress and whether a step history exists, for status.json. While a relearn's warm-up
+    /// runs, status.json says `warming` and counts it down, though the old levels stay in use (calib_state keeps 4).
     fn publish_baseline(&self) {
-        let ready = self.engines.iter().all(EyeEngine::baseline_ready);
+        let ready = self.engines.iter().all(|e| e.baseline_ready() && !e.relearning());
         let left = self.engines.iter().map(EyeEngine::warmup_remaining_s).fold(0.0, f64::max);
         self.shared.baseline_ready.store(ready, Ordering::Relaxed);
         self.shared.warmup_ms.store((left * 1000.0) as u32, Ordering::Relaxed);
@@ -476,13 +477,14 @@ impl Worker {
         });
     }
 
-    /// `relearn`: learn the relaxed eyes again, the auto baseline's warm-up started over for both eyes as on a new
-    /// wear, while the eye video comes in. Unlike a new wear, this wear stays as it is: its calibration (params.wear,
-    /// so calib_state bit 0 and the step and gap it measured), calib.json and its history (nothing is written), the
-    /// geometry each engine learnt (lens edge, search window, iris radius, the closed-eye checks), the wearer's typical
-    /// pitch, and the pupil checks. Only the open-eye levels go, so calib_state bit 2 and `baseline: ready` until the
-    /// warm-up is over (status.json shows it counting down again); meanwhile EyeWide and squint are held at 0, as in
-    /// any warm-up, and blinks still show.
+    /// `relearn`: learn the relaxed eyes again, a new warm-up of the auto baseline for both eyes, while the eye video
+    /// comes in. Unlike a new wear, this wear stays as it is: its calibration (params.wear, so calib_state bit 0 and
+    /// the step and gap it measured), calib.json and its history (nothing is written), the geometry each engine learnt
+    /// (lens edge, search window, iris radius, the closed-eye checks), the wearer's typical pitch, and the pupil
+    /// checks. An eye with open-eye levels keeps using them (calib_state keeps bit 2; the eyelid, EyeWide and squint
+    /// work as before) until its new ones are learnt, then moves over to those (EyeEngine::relearn); status.json says
+    /// `baseline: warming` and counts the warm-up down meanwhile. Pressed again, the new warm-up starts over. An eye
+    /// without levels yet warms up from the start as on a new wear (EyeWide and squint held at 0, blinks still show).
     fn relearn(&mut self) -> Result<(), String> {
         if !(self.live && self.buffers) {
             return Err(RELEARN_NOT_LIVE.into());
@@ -1214,20 +1216,26 @@ mod tests {
         assert_eq!(w.relearn(), Err(RELEARN_NOT_LIVE.to_string()));
         w.live = true;
         assert!(shared.baseline_ready.load(Ordering::Relaxed), "nothing changed by a refusal");
-        // Relearnt: both eyes warm up again...
+        // Relearnt: both eyes warm up again, status.json counting it down, the old levels still in use...
         assert_eq!(w.relearn(), Ok(()));
-        assert!(w.engines.iter().all(|e| !e.baseline_ready() && e.warmup_remaining_s() == live::WARMUP_S));
+        assert!(w.engines.iter().all(|e| e.relearning() && e.baseline_ready() && e.warmup_remaining_s() == live::WARMUP_S));
+        assert_eq!(w.engines[0].baseline_px(), Some((40.0, 80.0)));
         assert!(!shared.baseline_ready.load(Ordering::Relaxed));
         assert_eq!(shared.warmup_ms.load(Ordering::Relaxed), (live::WARMUP_S * 1000.0) as u32);
-        // ...this wear's calibration, the history and calib.json kept (calib_state: calibrated, no baseline yet)
+        // ...this wear's calibration, the history and calib.json kept (calib_state: calibrated, levels in use)
         assert_eq!(w.params.map(|p| p.wear), wear);
-        assert_eq!(shared.calib_state.load(Ordering::Relaxed), 1);
+        assert_eq!(shared.calib_state.load(Ordering::Relaxed), 1 | 4);
         assert!(shared.calib_saved.load(Ordering::Relaxed) && shared.setup_done.load(Ordering::Relaxed));
         assert_eq!(w.calib.history.len(), 1);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), saved);
         // A wear calibration afterwards seeds the levels at once, as before
         w.engines[0].seed(&wl);
-        assert!(w.engines[0].baseline_ready());
+        assert!(w.engines[0].baseline_ready() && !w.engines[0].relearning());
+        // An eye without levels yet (just put on) warms up from the start, as on a new wear
+        w.engines[1].reset();
+        assert_eq!(w.relearn(), Ok(()));
+        assert!(!w.engines[1].baseline_ready() && !w.engines[1].relearning());
+        assert_eq!(shared.calib_state.load(Ordering::Relaxed), 1);
         drop(w);
         std::fs::remove_dir_all(&dir).unwrap();
     }

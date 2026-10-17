@@ -757,7 +757,7 @@ UiText makeJapanese() {
     t.camRowStateHint = "オン・オフは「基本」タブで";
     t.camLearned = "普段の目を覚えたよ";
     t.camRelearnButton = "普段の目を覚え直す";
-    t.camRelearnHint = "約 30 秒、かぶり直したときと同じ";
+    t.camRelearnHint = "約 30 秒。そのあいだも今の値で動くよ";
     t.camRowCalib = "違和感があるとき";
     t.camRowCalibHint = "ふだんは要らないよ";
     t.camCalibButton = "目のカメラの校正（18秒）";
@@ -1694,7 +1694,7 @@ UiText makeEnglish() {
     t.camRowStateHint = "On / off on the Basic tab";
     t.camLearned = "Learned your relaxed eyes";
     t.camRelearnButton = "Relearn my eyes";
-    t.camRelearnHint = "About 30 s, as when you put the headset on";
+    t.camRelearnHint = "About 30 s, using the old values meanwhile";
     t.camRowCalib = "When something feels off";
     t.camRowCalibHint = "Not needed normally";
     t.camCalibButton = "Calibrate the cameras (18 s)";

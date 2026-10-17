@@ -514,7 +514,8 @@ impl Worker {
         if self.collect.is_some() {
             let label = self.steps.iter().rev().find(|(_, t0, sec)| t >= t0 + live::STEP_DELAY && t < t0 + sec).map(|s| s.0);
             if let Some(l) = label {
-                self.samples[eye].push(Sample::from_out(l, &o, t));
+                let smp = self.engines[eye].calib_sample(l, &o, t);
+                self.samples[eye].push(smp);
             }
         }
         if self.offset_at.elapsed() > Duration::from_secs(1) {

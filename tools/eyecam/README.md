@@ -600,7 +600,14 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   普段の段で瞳が見えたフレーム数 `normal_frames_with_pupil` とそのうち上まぶたの線も取れた数 `normal_frames_with_lid_line`、
   user なら細めの深さや下を見たときの開きの比、それぞれのしきい値・できた校正の値）と
   `calib_samples.csv`（当てはめに使った各フレーム: 目・時刻・段・瞳の有無・skin_up・開き・瞳孔・視線・下まぶた・R、
-  瞳の中心・瞳がなかった理由・探した枠のコントラスト・枠の左端・目安を忘れたか）。
+  瞳の中心・瞳がなかった理由・探した枠のコントラスト・枠の左端・目安を忘れたか、そのフレームの上まぶたの線の inlier の割合 `upper_frac`、
+  線が探す範囲の端に張り付いて「線なし」にしたか `lid_edge`、見開き用の高い範囲で探した線 `skin_up2` とその `upper_frac2`〔普段・見開きの段の
+  瞳があるフレームだけ。ほかは空〕）。
+  見開きの段で、瞳が見えたフレームの半分以上に普段の線の近く（普段より虹彩の半径の 0.2 倍下まで）の線がないときは、まぶたが探す範囲の
+  上に出たとみて、高い範囲（瞳の中心から虹彩の半径の 1.6〜3.2 倍上）の線から見開きを測る（inlier 0.75 以上、普段から 1.5 倍以内、
+  前後のフレームと 0.1 以内、普段の段にも同じ高さで出る線〔しわ・眉〕は除く）。足りなければ今までどおり。目ごとの `widen_source`
+  （`main` / `upper` / `fallback`）と数（`widen_frames_no_line_near_normal`・`widen_frames_upper_good`・`widen_frames_upper_used`・
+  `widen_upper_fixed_line`）が calib_result.json に入る。
   wear の `calib_result.json` には目ごとに瞳の探し方の診断 `diag` も入る（目の画像がなくても、瞳が見えなかった原因をこれで見分ける）:
   `fps`（フレームレート）、`search_x_min` / `search_xmax`（使った枠の左右）、`normal_pupil_x` / `normal_pupil_y`（普段の段の瞳の位置の中央値）、
   `normal_contrast`（普段の段の、枠の明るさの中央値 − 暗いところ。開発者で 60〜100）、`steps`（段ごとに `frames`・`pupil`・`lid_line`、

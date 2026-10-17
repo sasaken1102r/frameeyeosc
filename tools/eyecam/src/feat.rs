@@ -45,6 +45,19 @@ const RETRY_MIN_JUMP: f64 = 40.0;
 pub const EXT_EDGE_PX: f64 = 16.0;
 /// The largest pupil semi-axis (px) the extended search looks for (`refine_pupil` takes up to 60).
 const EXT_MAX_A: f64 = 60.0;
+/// An upper lid line whose path runs along its search band's first or last LID_EDGE_ROWS + 1 rows for at least
+/// LID_EDGE_SHARE of its inlier columns is not a line at all: with nothing to follow in the band, the path is pushed
+/// against one of its edges. With the pupil seen, such a frame has no upper lid line (`Features::upper_edge`; live
+/// holds the last values, a calibration leaves the frame out). One wearer's widened lid (2026-10-17, a 0.7.9 wear
+/// calibration) left the band above for whole widen steps: the left eye's line sat on the band's bottom row
+/// (-0.43 to -0.47 R, under the pupil centre) in 302 of 396 widen frames and read as an eye almost shut. The
+/// developer's 84 calibrations have no frame at either edge (lines within -0.40 .. 1.5 R, the band -0.43 .. 2.1).
+/// Not without the pupil: a closing lid really does come down to the band's bottom.
+pub const LID_EDGE_SHARE: f64 = 0.5;
+const LID_EDGE_ROWS: usize = 1;
+/// The calibration's second, higher search band for a widened upper lid (`Extractor::upper_high`): rows from
+/// cy - HIGH_BAND.0 r to cy - HIGH_BAND.1 r (the usual band is cy - 2.1 r .. cy + 0.45 r). See live::widen_fit.
+pub const HIGH_BAND: (f64, f64) = (3.2, 1.6);
 
 /// What a pupil from the extended search must be like to be taken (the live engine fills it in from what it knows of
 /// the open eye; see live::EXT_MAX_PX). A pupil it refuses is not found: the lids and the box are measured where the
@@ -194,13 +207,22 @@ pub struct Pupil {
     pub vis: f64,
 }
 
-/// One lid line: quadratic over the iris columns, its height at the pupil column, inlier share, edge strength.
+/// One lid line: quadratic over the iris columns, its height at the pupil column, inlier share, edge strength, and
+/// the share of its inliers on the search band's first or last rows (LID_EDGE_SHARE).
 #[derive(Clone, Copy, Debug)]
 struct Lid {
     coef: Quad,
     y_at: f64,
     frac: f64,
     grad: f64,
+    edge: f64,
+}
+
+impl Lid {
+    /// Pushed against its band's edge: no line (LID_EDGE_SHARE).
+    fn on_edge(&self) -> bool {
+        self.edge >= LID_EDGE_SHARE
+    }
 }
 
 /// The per-frame features (NaN = not measured), named as in the prototype's CSV.
@@ -220,6 +242,9 @@ pub struct Features {
     pub upper_frac: f64,
     pub lower_frac: f64,
     pub box_mean: f64,
+    /// The pupil was seen, and the upper lid line found was pushed against its band's edge (LID_EDGE_SHARE): left out,
+    /// the upper lid has no line on this frame.
+    pub upper_edge: bool,
     /// How the search went (not part of the prototype's features).
     pub diag: Diag,
 }
@@ -243,6 +268,7 @@ impl Default for Features {
             upper_frac: n,
             lower_frac: n,
             box_mean: n,
+            upper_edge: false,
         }
     }
 }
@@ -342,6 +368,8 @@ pub struct Extractor {
     pub search: Search,
     /// First column of `opf` computed for the current frame (left of it: zeros, or an earlier frame's pixels).
     opf_x0: usize,
+    /// The iris radius the current frame's lids were searched with (`upper_high` uses the same).
+    lid_r: f64,
 }
 
 impl Default for Extractor {
@@ -350,6 +378,7 @@ impl Default for Extractor {
             cands: Vec::new(),
             search: Search::LEGACY,
             opf_x0: OPF_X0,
+            lid_r: f64::NAN,
             op: Vec::new(),
             opf: Vec::new(),
             smf: Vec::new(),
@@ -456,7 +485,8 @@ impl Extractor {
         f.iris_n = n;
         let rn = r_ref.unwrap_or(if r.is_finite() { r } else { 2.0 * p.a });
         let (upper, lower, margin) = self.lids(&p, rn, xmax);
-        if let Some(u) = upper {
+        f.upper_edge = upper.is_some_and(|u| u.on_edge());
+        if let Some(u) = upper.filter(|u| !u.on_edge()) {
             f.upper_skin_y = u.y_at;
             f.upper_y = u.y_at + margin.unwrap_or(MARGIN_OFF);
             f.upper_frac = u.frac;
@@ -771,9 +801,9 @@ impl Extractor {
     /// Upper lid skin line (bright skin -> dark going down), its margin offset, and the lower lid (dark -> bright),
     /// over the iris columns with the pupil masked (feat2.lids, base variant).
     fn lids(&mut self, p: &Pupil, r: f64, xmax: f64) -> (Option<Lid>, Option<Lid>, Option<f64>) {
-        let (cx, cy) = (p.cx, p.cy);
-        let xa = pint((cx - 1.1 * r).max(self.search.x_min)).max(0) as usize;
-        let xb = pint((xmax - 3.0).min(cx + 1.45 * r)).clamp(0, W as isize) as usize;
+        self.lid_r = r;
+        let cy = p.cy;
+        let (xa, xb) = self.lid_cols(p, r, xmax);
         if xb < xa + 20 {
             return (None, None, None);
         }
@@ -786,8 +816,6 @@ impl Extractor {
             self.grad_image(Rect { x0: xa, y0: top, x1: xb, y1: bottom });
         }
         let gy_ok = (top, bottom);
-        let xs: Vec<f64> = (xa..xb).map(|x| x as f64).collect();
-        let nx = xb - xa;
         let mut out = [None, None];
         for (which, slot) in out.iter_mut().enumerate() {
             let (ya, yb) = if which == 0 {
@@ -795,40 +823,82 @@ impl Extractor {
             } else {
                 (pint(cy + 0.25 * r), pint((cy + 1.9 * r).min(396.0)))
             };
-            let (ya, yb) = (ya.clamp(0, H as isize) as usize, yb.clamp(0, H as isize) as usize);
-            if yb < ya + 6 {
-                continue;
-            }
-            let ny = yb - ya;
-            if ya < gy_ok.0 || yb > gy_ok.1 {
-                continue;
-            }
-            let inside = p.ell.inside_test(8.0);
-            let mut e = vec![0u8; ny * nx];
-            let mut hist = [0u32; 256];
-            for y in ya..yb {
-                for x in xa..xb {
-                    let g = self.gy[y * W + x] as i32;
-                    let v = if which == 0 { -g } else { g }.clamp(0, 255) as u8;
-                    let v = if inside(x as f64, y as f64) { 0 } else { v };
-                    e[(y - ya) * nx + (x - xa)] = v;
-                    hist[v as usize] += 1;
-                }
-            }
-            let nrm = vision::percentile_hist(&hist, 99.0) + 1e-3;
-            let path = dp_path(&e, ny, nx, nrm);
-            let ys: Vec<f64> = path.iter().map(|&y| (y + ya) as f64).collect();
-            let strength: Vec<f64> = path.iter().enumerate().map(|(j, &y)| e[y * nx + j] as f64).collect();
-            let good: Vec<bool> = strength.iter().map(|&s| s > 0.2 * nrm).collect();
-            let Some((coef, w)) = robust_parabola(&xs, &ys, good) else { continue };
-            let mut sw: Vec<f64> = strength.iter().zip(&w).filter(|(_, k)| **k).map(|(s, _)| *s).collect();
-            let frac = w.iter().filter(|&&k| k).count() as f64 / w.len() as f64;
-            let grad = if sw.is_empty() { 0.0 } else { vision::median(&mut sw) };
-            *slot = Some(Lid { coef, y_at: coef.at(cx), frac, grad });
+            *slot = self.lid_line(p, (xa, xb), (ya, yb), gy_ok, which == 0);
         }
         let [upper, lower] = out;
         let margin = upper.and_then(|u| self.margin(p, &u, xa, xb, gy_ok));
         (upper, lower, margin)
+    }
+
+    /// The iris columns the lids are searched over.
+    fn lid_cols(&self, p: &Pupil, r: f64, xmax: f64) -> (usize, usize) {
+        let xa = pint((p.cx - 1.1 * r).max(self.search.x_min)).max(0) as usize;
+        let xb = pint((xmax - 3.0).min(p.cx + 1.45 * r)).clamp(0, W as isize) as usize;
+        (xa, xb)
+    }
+
+    /// One lid line in rows `ya..yb` over columns `xa..xb` (gy computed over rows `gy_ok`): the upper lid's (bright ->
+    /// dark going down) or the lower lid's (dark -> bright).
+    fn lid_line(&self, p: &Pupil, (xa, xb): (usize, usize), (ya, yb): (isize, isize), gy_ok: (usize, usize), upper: bool) -> Option<Lid> {
+        let (ya, yb) = (ya.clamp(0, H as isize) as usize, yb.clamp(0, H as isize) as usize);
+        if yb < ya + 6 {
+            return None;
+        }
+        let ny = yb - ya;
+        if ya < gy_ok.0 || yb > gy_ok.1 {
+            return None;
+        }
+        let xs: Vec<f64> = (xa..xb).map(|x| x as f64).collect();
+        let nx = xb - xa;
+        let inside = p.ell.inside_test(8.0);
+        let mut e = vec![0u8; ny * nx];
+        let mut hist = [0u32; 256];
+        for y in ya..yb {
+            for x in xa..xb {
+                let g = self.gy[y * W + x] as i32;
+                let v = if upper { -g } else { g }.clamp(0, 255) as u8;
+                let v = if inside(x as f64, y as f64) { 0 } else { v };
+                e[(y - ya) * nx + (x - xa)] = v;
+                hist[v as usize] += 1;
+            }
+        }
+        let nrm = vision::percentile_hist(&hist, 99.0) + 1e-3;
+        let path = dp_path(&e, ny, nx, nrm);
+        let ys: Vec<f64> = path.iter().map(|&y| (y + ya) as f64).collect();
+        let strength: Vec<f64> = path.iter().enumerate().map(|(j, &y)| e[y * nx + j] as f64).collect();
+        let good: Vec<bool> = strength.iter().map(|&s| s > 0.2 * nrm).collect();
+        let (coef, w) = robust_parabola(&xs, &ys, good)?;
+        let mut sw: Vec<f64> = strength.iter().zip(&w).filter(|(_, k)| **k).map(|(s, _)| *s).collect();
+        let n_in = w.iter().filter(|&&k| k).count();
+        let frac = n_in as f64 / w.len() as f64;
+        let grad = if sw.is_empty() { 0.0 } else { vision::median(&mut sw) };
+        let at_edge = path.iter().zip(&w).filter(|(y, k)| **k && (**y <= LID_EDGE_ROWS || **y + 1 + LID_EDGE_ROWS >= ny)).count();
+        let edge = at_edge as f64 / n_in.max(1) as f64;
+        Some(Lid { coef, y_at: coef.at(p.cx), frac, grad, edge })
+    }
+
+    /// The calibration's second search for a widened upper lid, on the frame `extract` just ran on (its pupil `p`):
+    /// the upper lid line in the higher band HIGH_BAND, searched as the usual one is, at the radius the frame's lids
+    /// used. Returns its height at the pupil column (px) and its inlier share, or None (no line, or one pushed against
+    /// the band's edge). See live::widen_fit.
+    pub fn upper_high(&mut self, p: &Pupil, xmax: f64) -> Option<(f64, f64)> {
+        let r = self.lid_r;
+        if !r.is_finite() || r <= 0.0 {
+            return None;
+        }
+        let (xa, xb) = self.lid_cols(p, r, xmax);
+        if xb < xa + 20 {
+            return None;
+        }
+        let ya = pint((p.cy - HIGH_BAND.0 * r).max(4.0));
+        let yb = pint(p.cy - HIGH_BAND.1 * r);
+        let rows = (ya.clamp(0, H as isize) as usize, yb.clamp(0, H as isize) as usize);
+        if rows.1 < rows.0 + 6 {
+            return None;
+        }
+        self.grad_image(Rect { x0: xa, y0: rows.0, x1: xb, y1: rows.1 });
+        let u = self.lid_line(p, (xa, xb), (ya, yb), rows, true)?;
+        (!u.on_edge()).then_some((u.y_at, u.frac))
     }
 
     /// The thin dark band below the skin line has a nearly constant width: measure where the eyeball step below it
@@ -1012,11 +1082,79 @@ mod tests {
         assert!(f.ok_pupil);
         // The skin line is the bright -> darker step 45 px above the pupil centre.
         assert!((f.upper_skin_y - 155.0).abs() < 3.0, "{f:?}");
+        assert!(!f.upper_edge);
         // Without a pupil, lids are still measured at the last pupil's geometry.
         let blank = vec![120u8; W * H];
         let (f2, p2) = ex.extract(&blank, xmax, Some((250.0, 200.0)), Some(55.0), Some(&p));
         assert!(p2.is_none() && !f2.ok_pupil);
         assert!((f2.box_mean - 120.0).abs() < 1e-9);
+    }
+
+    /// A pupil at (250, 200), radius 25, on skin that is 150 above row `step` and 120 from it down (no iris).
+    fn eye_with_step(step: usize) -> Vec<u8> {
+        let mut img = vec![0u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let d = (x as f64 - 250.0).hypot(y as f64 - 200.0);
+                img[y * W + x] = if x >= 350 {
+                    4
+                } else if d < 25.0 {
+                    12
+                } else if y < step {
+                    150
+                } else {
+                    120
+                };
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn an_upper_lid_line_pushed_against_the_band_edge_is_no_line() {
+        let mut ex = Extractor::default();
+        // Lids at R = 55: the upper band is rows 84..224. A step through the middle of it is the line.
+        let (f, p) = ex.extract(&eye_with_step(200), 347.0, None, Some(55.0), None);
+        assert!(p.is_some() && !f.upper_edge && (f.upper_skin_y - 200.0).abs() < 3.0, "{f:?}");
+        // The only step on the band's last rows: the path is pushed against its edge, no upper lid line.
+        let (f, p) = ex.extract(&eye_with_step(223), 347.0, None, Some(55.0), None);
+        assert!(p.is_some() && f.ok_pupil && f.upper_edge, "{f:?}");
+        assert!(f.upper_skin_y.is_nan() && f.upper_y.is_nan() && f.upper_frac.is_nan(), "{f:?}");
+        // The rows of a band as the path sees them: a line on its first two or last two rows is on the edge, one row
+        // further in it is a line.
+        let pupil = p.unwrap();
+        let mut at = |row: usize| {
+            ex.gy.iter_mut().for_each(|g| *g = 0);
+            for x in 150..300 {
+                ex.gy[row * W + x] = -100;
+            }
+            ex.lid_line(&pupil, (150, 300), (100, 160), (100, 160), true).map(|u| (u.y_at.round(), u.on_edge()))
+        };
+        assert_eq!(at(130), Some((130.0, false)));
+        assert_eq!(at(102), Some((102.0, false)));
+        assert_eq!(at(157), Some((157.0, false)));
+        assert_eq!(at(101), Some((101.0, true)));
+        assert_eq!(at(100), Some((100.0, true)));
+        assert_eq!(at(158), Some((158.0, true)));
+        assert_eq!(at(159), Some((159.0, true)));
+        // Nothing in the band: no line either way.
+        ex.gy.iter_mut().for_each(|g| *g = 0);
+        assert!(ex.lid_line(&pupil, (150, 300), (100, 160), (100, 160), true).is_none());
+    }
+
+    #[test]
+    fn the_higher_band_finds_a_widened_lid_above_the_usual_one() {
+        let mut ex = Extractor::default();
+        // A lid 2.6 R (143 px) above the pupil centre: above the usual band (from row 84), inside the higher one
+        // (rows 24..112).
+        let (f, p) = ex.extract(&eye_with_step(57), 347.0, None, Some(55.0), None);
+        let p = p.expect("pupil");
+        assert!(f.upper_skin_y.is_nan() || f.upper_skin_y > 84.0, "the usual band does not reach it: {f:?}");
+        let (y, frac) = ex.upper_high(&p, 347.0).expect("a line in the higher band");
+        assert!((y - 57.0).abs() < 3.0 && frac > 0.9, "{y} {frac}");
+        // A lid in the usual band (1.0 R): the higher band has nothing.
+        let (_, p) = ex.extract(&eye_with_step(145), 347.0, None, Some(55.0), None);
+        assert_eq!(ex.upper_high(&p.unwrap(), 347.0), None);
     }
 
     /// Temporal shading: everything left of x = 186 as dark as a pupil, with a 40 x 70 bulge into the search window.

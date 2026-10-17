@@ -480,7 +480,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             }
             let (label, step) = s.label_at(t, live::STEP_DELAY);
             if let Some(l) = label {
-                let smp = Sample::from_out(Label::parse(l), &o, t);
+                let smp = engines[e].calib_sample(Label::parse(l), &o, t);
                 if opts.block_steps.is_some_and(|nb| (step as usize) < nb) {
                     block[e].push(smp);
                 }
@@ -637,7 +637,8 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
             let open = j.map_or(f64::NAN, |j| s.valve.open[e][j]);
             let o = engines[e].process_open(&img, pitch, open, t, &params[e]);
             if let (Some(l), _) = s.label_at(t, live::STEP_DELAY) {
-                samples[e].push(Sample::from_out(Label::parse(l), &o, t));
+                let smp = engines[e].calib_sample(Label::parse(l), &o, t);
+                samples[e].push(smp);
             }
         }
     }

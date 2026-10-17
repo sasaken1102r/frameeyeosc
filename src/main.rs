@@ -2953,11 +2953,11 @@ impl Output {
 
     /// Send one message. A network error (unreachable, refused, no address yet...) is logged when it
     /// starts and ends, and never returned: the next sample simply tries again.
-    fn send(&mut self, addr: String, args: Vec<OscType>) -> Result<(), Box<dyn Error>> {
+    fn send(&mut self, addr: &str, args: &[OscType]) -> Result<(), Box<dyn Error>> {
         if self.socket.is_none() {
             return Ok(());
         }
-        osc::encode(&addr, &args, &mut self.packet);
+        osc::encode(addr, args, &mut self.packet);
         // Taken out while it is sent, as send_datagram borrows the whole sender
         let packet = std::mem::take(&mut self.packet);
         self.send_datagram(&packet);
@@ -3615,7 +3615,7 @@ fn output_lids(output: OutputKind, lids: [f32; 2]) -> [f32; 2] {
 /// The Live Link packet for one sample, stamped `time` seconds into the day. Each eye's gaze is its own with
 /// "move eyes separately", else the combined one (as for the other outputs). Nothing else goes to LiveLink: no
 /// EyeTrackingActive and no parameter prefix, which only VRChat reads.
-fn livelink_packet(sample: &Sample, time: f64) -> Vec<u8> {
+fn livelink_packet(sample: &Sample, time: f64) -> [u8; livelink::PACKET_LEN] {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
     let lids = output_lids(OutputKind::LiveLink, sample.lids);
     livelink::packet(time, &livelink::shapes(lids, [left_x, left_y, right_x, right_y]))
@@ -3853,7 +3853,7 @@ fn active_message(settings: &Settings, active: bool) -> Option<(String, OscType)
 /// The one-time "not active" on pausing, switching away or losing tracking (nothing with "off").
 fn send_inactive(output: &mut Output, settings: &Settings) -> Result<(), Box<dyn Error>> {
     match active_message(settings, false) {
-        Some((addr, value)) => output.send(addr, vec![value]),
+        Some((addr, value)) => output.send(&addr, &[value]),
         None => Ok(()),
     }
 }
@@ -3910,7 +3910,7 @@ fn steamlink_stream(settings: &Settings) -> Option<(&str, u16)> {
 /// where they were (shut, if tracking was lost in a blink).
 fn send_steamlink_neutral(output: &mut Output) -> Result<(), Box<dyn Error>> {
     for (addr, arg) in steamlink_messages([0.0; 6], [LID_RELAXED; 2]) {
-        output.send(addr, vec![arg])?;
+        output.send(&addr, &[arg])?;
     }
     Ok(())
 }
@@ -3927,7 +3927,7 @@ fn native_stream(settings: &Settings) -> Option<(&str, u16)> {
 /// eyes would otherwise stay where they were (shut, if tracking was lost in a blink) until then.
 fn send_native_neutral(output: &mut Output, settings: &Settings) -> Result<(), Box<dyn Error>> {
     for (addr, args) in native_messages(settings, [0.0; 6], [0.75; 2]) {
-        output.send(addr, args)?;
+        output.send(&addr, &args)?;
     }
     Ok(())
 }
@@ -4155,7 +4155,7 @@ impl Bridge {
                     if pupil_stream(&self.settings).is_some() {
                         let bits = self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now);
                         for (addr, arg) in pupil_messages(&self.settings, &sample.camera).into_iter().chain(bits) {
-                            self.pupil_output.send(addr, vec![arg])?;
+                            self.pupil_output.send(&addr, &[arg])?;
                         }
                     }
                 }
@@ -4167,20 +4167,20 @@ impl Bridge {
                 true
             } else {
                 for (addr, arg) in osc_messages(&self.settings, &sample) {
-                    self.output.send(addr, vec![arg])?;
+                    self.output.send(&addr, &[arg])?;
                 }
                 if self.settings.output == OutputKind::Vrchat {
                     for (addr, arg) in self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now) {
-                        self.output.send(addr, vec![arg])?;
+                        self.output.send(&addr, &[arg])?;
                     }
                     for (addr, arg) in squint_release(&self.settings, self.squint_out, sample.camera.squint) {
-                        self.output.send(addr, vec![arg])?;
+                        self.output.send(&addr, &[arg])?;
                     }
                     self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
                 }
                 if native_stream(&self.settings).is_some() {
                     for (addr, args) in native_messages(&self.settings, sample.gaze, sample.lids) {
-                        self.output.send(addr, args)?;
+                        self.output.send(&addr, &args)?;
                     }
                 }
                 true
@@ -4256,7 +4256,7 @@ impl Bridge {
     /// Set the squint that went out back to 0 (see squint_release), where it went with the current settings.
     fn release_squint(&mut self) -> Result<(), Box<dyn Error>> {
         for (addr, arg) in squint_release(&self.settings, self.squint_out, [None; 2]) {
-            self.output.send(addr, vec![arg])?;
+            self.output.send(&addr, &[arg])?;
         }
         self.squint_out = [false; 2];
         Ok(())
@@ -6060,13 +6060,13 @@ mod tests {
         output.refresh();
         assert_eq!(output.addr().map(|addr| addr.port()), Some(port));
         for _ in 0..5 {
-            assert!(output.send("/avatar/parameters/FT/v2/EyeLeftX".into(), vec![OscType::Float(0.1)]).is_ok());
+            assert!(output.send("/avatar/parameters/FT/v2/EyeLeftX", &[OscType::Float(0.1)]).is_ok());
         }
         // A target that can't be looked up just waits (no socket, no error).
         let mut nowhere = Output::new(Target::Fixed { host: "no-such-host.invalid".into(), port: 9000 });
         nowhere.refresh();
         assert!(nowhere.addr().is_none());
-        assert!(nowhere.send("/x".into(), vec![OscType::Bool(true)]).is_ok());
+        assert!(nowhere.send("/x", &[OscType::Bool(true)]).is_ok());
     }
 
     #[test]
@@ -6139,7 +6139,7 @@ mod tests {
         assert_eq!(output.addr(), Some(addr));
         assert_eq!(output.health.failing, None);
         assert_eq!(output.last_resolve, resolved);
-        assert!(output.send("/x".into(), vec![OscType::Bool(true)]).is_ok());
+        assert!(output.send("/x", &[OscType::Bool(true)]).is_ok());
         let mut buf = [0u8; 64];
         let (_, from) = listener.recv_from(&mut buf).unwrap();
         assert_eq!(from.ip(), loopback(1));
@@ -6960,7 +6960,7 @@ mod tests {
         let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
         output.refresh();
         for (addr, arg) in osc_messages(&steamlink(), &sample()) {
-            output.send(addr, vec![arg]).unwrap();
+            output.send(&addr, &[arg]).unwrap();
         }
         let mut buffer = [0u8; 256];
         let mut received = Vec::new();
@@ -7020,7 +7020,7 @@ mod tests {
         output.refresh();
         let mut buffer = [0u8; 256];
         for (addr, args) in messages.iter().take(60) {
-            output.send(addr.clone(), args.clone()).unwrap();
+            output.send(addr, args).unwrap();
             let size = listener.recv(&mut buffer).unwrap();
             assert_eq!(buffer[..size], rosc_encode(addr, args), "{addr}");
         }
@@ -7554,6 +7554,29 @@ mod tests {
         status::log_error("Could not save /nowhere/calibration: No such file or directory (os error 2)");
         let json = serde_json::to_value(bridge.status(None, None)).unwrap();
         assert!(json["last_error"]["text"].is_string() && json["last_error"]["time"].as_f64().unwrap() > 1.7e9, "{json}");
+    }
+
+    #[test]
+    fn status_file_replaces_longer_records_and_recovers_after_its_directory_is_removed() {
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-status-test-{}", std::process::id()));
+        let path = dir.join("status.json");
+        let mut file = StatusFile::new(path.clone());
+        let bridge = test_bridge(settings());
+        let error = "read error ".repeat(1000);
+        let mut status = bridge.status(Some(&error), None);
+        file.write(&status);
+        assert_eq!(fs::read(&path).unwrap(), serde_json::to_vec(&status).unwrap());
+        status.source_error = None;
+        status.raw = None;
+        status.sent = None;
+        file.write(&status);
+        assert_eq!(fs::read(&path).unwrap(), serde_json::to_vec(&status).unwrap());
+        assert!(!path.with_extension("json.tmp").exists());
+        // Removing the runtime directory is allowed: the next write recreates it with the same atomic replacement.
+        fs::remove_dir_all(&dir).unwrap();
+        file.write(&status);
+        assert_eq!(fs::read(&path).unwrap(), serde_json::to_vec(&status).unwrap());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

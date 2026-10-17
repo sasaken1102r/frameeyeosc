@@ -32,6 +32,33 @@ const SUBJECT_NAME: &str = "SteamFrame";
 // The frame time is only a time stamp here (nobody reads it); the eye server's nominal rate.
 const FRAME_RATE: i32 = 90;
 pub const BLENDSHAPES: usize = 61;
+pub const PACKET_LEN: usize = 1 + 4 + DEVICE_ID.len() + 4 + SUBJECT_NAME.len() + 16 + 1 + BLENDSHAPES * 4;
+const FRAME_OFFSET: usize = 1 + 4 + DEVICE_ID.len() + 4 + SUBJECT_NAME.len();
+const SHAPES_OFFSET: usize = FRAME_OFFSET + 17;
+
+// Everything before the blendshapes is fixed except the frame and subframe.
+const HEADER: [u8; SHAPES_OFFSET] = {
+    const fn append(header: &mut [u8; SHAPES_OFFSET], at: &mut usize, bytes: &[u8]) {
+        let mut i = 0;
+        while i < bytes.len() {
+            header[*at] = bytes[i];
+            *at += 1;
+            i += 1;
+        }
+    }
+    let mut header = [0; SHAPES_OFFSET];
+    let mut at = 0;
+    append(&mut header, &mut at, &[PACKET_VERSION]);
+    append(&mut header, &mut at, &(DEVICE_ID.len() as i32).to_be_bytes());
+    append(&mut header, &mut at, DEVICE_ID.as_bytes());
+    append(&mut header, &mut at, &(SUBJECT_NAME.len() as i32).to_be_bytes());
+    append(&mut header, &mut at, SUBJECT_NAME.as_bytes());
+    at += 8; // Frame and subframe are filled for each packet.
+    append(&mut header, &mut at, &FRAME_RATE.to_be_bytes());
+    append(&mut header, &mut at, &1i32.to_be_bytes());
+    append(&mut header, &mut at, &[BLENDSHAPES as u8]);
+    header
+};
 // Indices in ARKit / Live Link order (the module's Constants.LiveLinkNames).
 const EYE_BLINK_LEFT: usize = 0;
 const EYE_SQUINT_LEFT: usize = 5;
@@ -95,22 +122,15 @@ pub fn time_of_day(now: SystemTime) -> f64 {
 }
 
 /// One Live Link Face packet (version 6, network byte order) at `time` seconds.
-pub fn packet(time: f64, shapes: &[f32; BLENDSHAPES]) -> Vec<u8> {
+pub fn packet(time: f64, shapes: &[f32; BLENDSHAPES]) -> [u8; PACKET_LEN] {
     let frames = time.max(0.0) * f64::from(FRAME_RATE);
-    let mut packet = Vec::with_capacity(1 + 4 + DEVICE_ID.len() + 4 + SUBJECT_NAME.len() + 16 + 1 + BLENDSHAPES * 4);
-    packet.push(PACKET_VERSION);
-    for text in [DEVICE_ID, SUBJECT_NAME] {
-        packet.extend_from_slice(&(text.len() as i32).to_be_bytes());
-        packet.extend_from_slice(text.as_bytes());
-    }
+    let mut packet = [0; PACKET_LEN];
+    packet[..SHAPES_OFFSET].copy_from_slice(&HEADER);
     // A day at 90 fps is 7.8 million frames, well within an i32.
-    packet.extend_from_slice(&(frames.floor() as i32).to_be_bytes());
-    packet.extend_from_slice(&(frames.fract() as f32).to_be_bytes());
-    packet.extend_from_slice(&FRAME_RATE.to_be_bytes());
-    packet.extend_from_slice(&1i32.to_be_bytes());
-    packet.push(BLENDSHAPES as u8);
-    for value in shapes {
-        packet.extend_from_slice(&value.to_be_bytes());
+    packet[FRAME_OFFSET..FRAME_OFFSET + 4].copy_from_slice(&(frames.floor() as i32).to_be_bytes());
+    packet[FRAME_OFFSET + 4..FRAME_OFFSET + 8].copy_from_slice(&(frames.fract() as f32).to_be_bytes());
+    for (bytes, value) in packet[SHAPES_OFFSET..].chunks_exact_mut(4).zip(shapes) {
+        bytes.copy_from_slice(&value.to_be_bytes());
     }
     packet
 }
@@ -165,7 +185,7 @@ pub mod tests {
         for i in 0..61 {
             expected.extend_from_slice(&(i as f32 / 100.0).to_be_bytes());
         }
-        assert_eq!(packet, expected);
+        assert_eq!(packet.as_slice(), expected);
         assert_eq!(packet.len(), 291);
         // Big-endian floats: the second blendshape, 0.01, is 0x3c23d70a
         assert_eq!(packet[51..55], [0x3c, 0x23, 0xd7, 0x0a]);
@@ -173,6 +193,36 @@ pub mod tests {
         let later = super::packet(1000.5 + 0.25 / 90.0, &shapes);
         assert_eq!(later[30..34], 90045i32.to_be_bytes());
         assert_eq!(later[34..38], 0.25f32.to_be_bytes());
+    }
+
+    #[test]
+    fn every_shape_preserves_its_bits_at_timestamp_boundaries() {
+        let mut shapes = [0.0; BLENDSHAPES];
+        let mut bits = 0x1234_5678u32;
+        for value in &mut shapes {
+            bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *value = f32::from_bits(bits);
+        }
+        shapes[..6].copy_from_slice(&[
+            0.0, -0.0, f32::INFINITY, f32::NEG_INFINITY,
+            f32::from_bits(0x7fc1_2345), f32::from_bits(0xffc5_4321),
+        ]);
+        for time in [-1.0, -0.0, 0.0, 0.25 / 90.0, 86_399.999, f64::INFINITY, f64::NAN] {
+            // The previous growable serialization of the protocol fields, independent of the fixed offsets/header.
+            let frames = time.max(0.0) * 90.0;
+            let mut expected = vec![6];
+            for name in ["frameeyeosc", "SteamFrame"] {
+                expected.extend_from_slice(&(name.len() as i32).to_be_bytes());
+                expected.extend_from_slice(name.as_bytes());
+            }
+            expected.extend_from_slice(&(frames.floor() as i32).to_be_bytes());
+            expected.extend_from_slice(&(frames.fract() as f32).to_be_bytes());
+            expected.extend_from_slice(&[0, 0, 0, 90, 0, 0, 0, 1, 61]);
+            for value in shapes {
+                expected.extend_from_slice(&value.to_be_bytes());
+            }
+            assert_eq!(packet(time, &shapes).as_slice(), expected, "{time:?}");
+        }
     }
 
     #[test]

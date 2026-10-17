@@ -219,3 +219,10 @@ target_include_directories(report-test PRIVATE src)
 target_compile_options(report-test PRIVATE -Wall -Wextra)
 target_link_libraries(report-test PRIVATE Threads::Threads)
 add_test(NAME report COMMAND report-test)
+
+# Reading a whole file with a size limit (file_io.h, used for status.json, config.json, the panel's state and
+# eyecam-rec's files): panel/build/file-io-test
+add_executable(file-io-test tests/file_io_test.cpp)
+target_include_directories(file-io-test PRIVATE src)
+target_compile_options(file-io-test PRIVATE -Wall -Wextra)
+add_test(NAME file-io COMMAND file-io-test)

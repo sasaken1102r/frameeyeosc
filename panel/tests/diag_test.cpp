@@ -285,6 +285,11 @@ void testCards() {
         SAME(rowOf(cards, ja.diagRowSend).value, "90 回/秒 · 捨てた 0");
         SAME(rowOf(cards, ja.diagRowCap).value, "あり（0.4.3）");
         SAME(rowOf(cards, ja.diagRowLids).value, "両目カメラ");
+        // Widening off (widen) is said after it
+        PanelModel off = healthy();
+        off.config.root.set(key::kWiden, JsonValue::makeBool(false));
+        SAME(rowOf(diag::cards(ja, off), ja.diagRowLids).value, "両目カメラ · 見開きしない");
+        SAME(rowOf(diag::cards(en, off), en.diagRowLids).value, "both cameras · widening off");
         SAME(rowOf(cards, ja.diagRowCoreError).value, "なし");
         SAME(rowOf(cards, ja.diagRowState).value, "映像あり（8 スロット）");
         SAME(rowOf(cards, ja.diagRowSearch).value, "候補 8 · 毎秒 90 · 8 スロット · 両目");
@@ -501,8 +506,8 @@ void testTexts() {
         &UiText::diagChangedFormat, &UiText::diagNotLooked, &UiText::diagUnreadable, &UiText::diagEyesFormat,
         &UiText::diagMsFormat, &UiText::diagOk, &UiText::diagFailedFormat, &UiText::diagPreviousLeft,
         &UiText::diagPreviousRight, &UiText::diagNoCalib, &UiText::diagRowCamera, &UiText::diagCameraFpsFormat,
-        &UiText::diagCameraLow};
-    CHECK(std::size(fields) == 80);
+        &UiText::diagCameraLow, &UiText::diagNoWiden};
+    CHECK(std::size(fields) == 81);
     for (const Language language : {Language::Ja, Language::En}) {
         const UiText& t = uiText(language);
         for (const char* UiText::*field : fields) CHECK(t.*field != nullptr && (t.*field)[0] != '\0');

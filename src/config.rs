@@ -142,6 +142,9 @@ pub struct Settings {
     pub pupil_bits: u8,
     /// How easily a fitted eye widens.
     pub lid_widen: Widen,
+    /// Whether any eye widens at all. false: no eyelid goes out above relaxed open (VRCFT 0.75), whatever the eye
+    /// camera, lid_widen or the lid marks say; closing and the camera's squint stay as they are (see main.rs, process).
+    pub widen: bool,
     /// How the eyes move: 2 (the default) as now; 1 as up to 0.7.5, the gaze and eyelid processing of that release
     /// (see main.rs, process). Fixes since (the eye cameras' left and right, the eye fit) apply either way.
     pub eye_behavior: u8,
@@ -245,6 +248,7 @@ impl Default for Settings {
             pupil_bits: 0,
             eye_behavior: 2,
             lid_widen: Widen::Normal,
+            widen: true,
             scales_predate_fit: false,
             raw: false,
             gaze_min_cutoff: 0.3,
@@ -650,6 +654,10 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
         settings.despike = !args.no_despike;
         locked.push("despike");
     }
+    if given.contains("no_widen") {
+        settings.widen = !args.no_widen;
+        locked.push("widen");
+    }
     if given.contains("no_camera_lids") {
         settings.camera_lids = !args.no_camera_lids;
         locked.push("camera_lids");
@@ -890,6 +898,19 @@ mod tests {
         assert!(merged(r#"{"lid_widen": "max"}"#, &[]).is_err());
         let (settings, locked) = merged(r#"{"lid_widen": "off"}"#, &["--lid-widen", "high"]).unwrap();
         assert_eq!((settings.lid_widen, locked), (Widen::High, vec!["lid_widen"]));
+    }
+
+    #[test]
+    fn widening_is_on_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.widen);
+        assert!(!merged(r#"{"widen": false}"#, &[]).unwrap().0.widen);
+        assert!(merged(r#"{"widen": 0}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"widen": true}"#, &["--no-widen"]).unwrap();
+        assert!(!settings.widen);
+        assert_eq!(locked, ["widen"]);
+        // lid_widen is a setting of its own
+        let (settings, _) = merged(r#"{"widen": false}"#, &[]).unwrap();
+        assert_eq!(settings.lid_widen, Widen::Normal);
     }
 
     #[test]

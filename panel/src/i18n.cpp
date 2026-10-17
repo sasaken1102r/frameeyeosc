@@ -527,6 +527,7 @@ UiText makeJapanese() {
     t.diagLidsLeft = "左目カメラ + Valve";
     t.diagLidsRight = "右目カメラ + Valve";
     t.diagLidsValve = "Valve";
+    t.diagNoWiden = "見開きしない";
     t.diagNone = "なし";
     t.diagCoreNotRunning = "本体が動いていない";
     t.diagCoreNoTarget = "送り先が見つからない";
@@ -768,6 +769,7 @@ UiText makeJapanese() {
     t.camUserNeedsCalib = "先に目のカメラの校正をしてね";
     t.camLineBothVrchat = "カメラで両目を見て、見開きを VRChat に送ってるよ";
     t.camLineBoth = "カメラで両目を見て、見開きを送ってるよ";
+    t.camLineBothNoWiden = "カメラで両目を見て、まぶたを送ってるよ（見開きはしない）";
     t.camLineLeft = "左目だけカメラで見てるよ（右は Valve の値）";
     t.camLineRight = "右目だけカメラで見てるよ（左は Valve の値）";
     t.camLineWarmingFormat = "普段の目を覚えてるところだよ（あと %d 秒）。普段どおりにしててね";
@@ -820,6 +822,11 @@ UiText makeJapanese() {
     t.widenNoteValve = "左端は見開きなし。右ほど出やすいよ（4 段階）";
     t.widenNoteUnfitted = "目を合わせていない目は、「細かく直す」の目盛りで決まるよ";
     t.widenSaturated = "Valve の値だけだと見開きが出ないよ";
+    t.rowWidenSwitch = "見開き";
+    t.widenSwitchHint = "閉じ・細めはそのまま";
+    t.widenSwitchOn = "する";
+    t.widenSwitchOff = "しない";
+    t.widenNoteOff = "「見開き」が「しない」なので、いまは使わないよ";
     t.blinkHint = "短いまばたきも逃さない";
     t.blinkHoldCaption = "閉じたまま保つ時間";
     t.rowBlinkBoth = "まばたきを両目でそろえる";
@@ -1451,6 +1458,7 @@ UiText makeEnglish() {
     t.diagLidsLeft = "left camera + Valve";
     t.diagLidsRight = "right camera + Valve";
     t.diagLidsValve = "Valve";
+    t.diagNoWiden = "widening off";
     t.diagNone = "none";
     t.diagCoreNotRunning = "not running";
     t.diagCoreNoTarget = "no target found";
@@ -1696,6 +1704,7 @@ UiText makeEnglish() {
     t.camUserNeedsCalib = "Calibrate the cameras first";
     t.camLineBothVrchat = "The cameras watch both eyes and send widening to VRChat";
     t.camLineBoth = "The cameras watch both eyes and send widening";
+    t.camLineBothNoWiden = "The cameras watch both eyes and send the eyelids (widening Off)";
     t.camLineLeft = "Only the left eye is on the cameras (right: Valve's values)";
     t.camLineRight = "Only the right eye is on the cameras (left: Valve's values)";
     t.camLineWarmingFormat = "Learning your relaxed eyes (%d s left). Just act as usual";
@@ -1748,6 +1757,11 @@ UiText makeEnglish() {
     t.widenNoteValve = "Far left: no widening. Further right widens more easily (4 stops)";
     t.widenNoteUnfitted = "Eyes without an eye fit follow the marks on \"Fine-tune\"";
     t.widenSaturated = "Valve's values alone can't widen";
+    t.rowWidenSwitch = "Widening";
+    t.widenSwitchHint = "Blinks and squint stay";
+    t.widenSwitchOn = "On";
+    t.widenSwitchOff = "Off";
+    t.widenNoteOff = "Not used while Widening is Off";
     t.blinkHint = "Don't miss short blinks";
     t.blinkHoldCaption = "How long a closed eye stays closed";
     t.rowBlinkBoth = "Blink both eyes together";

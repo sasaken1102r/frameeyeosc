@@ -152,6 +152,7 @@ struct Options {
     std::string fakeFit;          ///< a made-up eye fit state (see printUsage)
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
+    bool fakeNoWiden = false;     ///< --fake-no-widen: widen off (no widening at all)
     std::vector<double> fakeGazeScale;  ///< --fake-gaze-scale: gaze_scale_left, _right, _up, _down (empty = defaults)
     bool fakeGazeDots = false;    ///< --fake-gaze-dots: gaze_debug_dots on
     bool fakeRingsOff = false;    ///< --fake-rings-off: gaze_debug_rings off
@@ -326,6 +327,7 @@ void printUsage() {
         "                        stopped, tried again once it is closed)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
+        "      --fake-no-widen   widen off in the made-up settings (no eye widens; the Eyelids tab's \"Widening\")\n"
         "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
         "                        A made-up eyecam-rec for the eye cameras tab (confirm: idle with the recording's\n"
         "                        light warning open, on the Advanced tab; LABEL: lead_in, normal, widen, close,\n"
@@ -926,6 +928,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeIndependent = true;
         } else if (arg == "--fake-v1") {
             options.fake = options.fakeV1 = true;
+        } else if (arg == "--fake-no-widen") {
+            options.fake = options.fakeNoWiden = true;
         } else if (arg == "--fake-gaze-dots") {
             options.fake = options.fakeGazeDots = true;
         } else if (arg == "--fake-rings-off") {
@@ -1594,6 +1598,7 @@ PanelModel fakeModel(const Options& options) {
     if (options.fakePupilBits >= 0) root.set(key::kPupilBits, JsonValue::makeNumber(options.fakePupilBits, true));
     if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
     if (!options.fakeWiden.empty()) root.set(key::kLidWiden, JsonValue::makeString(options.fakeWiden));
+    if (options.fakeNoWiden) root.set(key::kWiden, JsonValue::makeBool(false));
     if (options.fakePaused) root.set(key::kSending, JsonValue::makeBool(false));
     if (options.fakeCustom) {
         root.set(key::kGazeMinCutoff, JsonValue::makeNumber(0.3));

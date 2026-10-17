@@ -191,6 +191,7 @@ const std::vector<SettingSpec>& settingSpecs() {
         {key::kFitSounds, SettingType::Bool, 1, "", 0, 1, 1, 0},
         {key::kAutoRecenter, SettingType::String, 0, "center", 0, 0, 0, 0},
         {key::kLidWiden, SettingType::String, 0, "normal", 0, 0, 0, 0},
+        {key::kWiden, SettingType::Bool, 1, "", 0, 1, 1, 0},
         {key::kGazeOffsetXLeft, SettingType::NullableNumber, 0, "", -0.5, 0.5, 0.005, 3},
         {key::kGazeOffsetXRight, SettingType::NullableNumber, 0, "", -0.5, 0.5, 0.005, 3},
         {key::kGazeGainXLeft, SettingType::NullableNumber, 0, "", 0.5, 2.0, 0.05, 2},

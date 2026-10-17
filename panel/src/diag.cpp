@@ -442,10 +442,13 @@ std::vector<Card> cards(const UiText& t, const PanelModel& m) {
             card.rows.push_back({t.diagRowCap, s.opennessSaturated ? t.diagCapOn : t.diagCapOff});
             const bool left = s.camera.used[0];
             const bool right = s.camera.used[1];
-            card.rows.push_back({t.diagRowLids, left && right ? t.diagLidsBoth
-                                                : left        ? t.diagLidsLeft
-                                                : right       ? t.diagLidsRight
-                                                              : t.diagLidsValve});
+            std::string lids = left && right ? t.diagLidsBoth
+                               : left        ? t.diagLidsLeft
+                               : right       ? t.diagLidsRight
+                                             : t.diagLidsValve;
+            // Widening off (widen) changes how the eyelids look whatever drives them
+            if (!SettingsView(m).flag(key::kWiden)) lids += std::string(" ") + kDot + " " + t.diagNoWiden;
+            card.rows.push_back({t.diagRowLids, lids});
         } else {
             for (const char* label : {t.diagRowGaze, t.diagRowSend, t.diagRowCap, t.diagRowLids}) {
                 card.rows.push_back({label, unknown});

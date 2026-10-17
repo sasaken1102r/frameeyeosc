@@ -474,6 +474,43 @@ std::vector<report::Summary> records(int count) {
     return list;
 }
 
+void testWidenSwitch(const FontSet& fonts) {
+    // "Widening" on the Eyelids tab's "Look": On / Off (widen), whatever drives the eyelids; Off greys the slider
+    for (const Lids lids : {Lids::Valve, Lids::Saturated, Lids::Both, Lids::Left}) {
+        for (const bool eyecam : {true, false}) {
+            for (const Language language : {Language::Ja, Language::En}) {
+                EyePanel panel(fonts);
+                panel.setTab(PanelTab::Lids);
+                panel.setLidsPage(LidsPage::Look);
+                PanelModel m = modelWith(lids, eyecam);
+                m.language = language;
+                panel.render(m);
+                std::vector<EyePanel::HitArea> both = hits(panel, PanelAction::SetBool, key::kWiden);
+                CHECK(both.size() == 2);
+                if (both.size() == 2) CHECK(both[0].hit.arg == 1 && both[1].hit.arg == 0);
+                // Pressing "Off" asks for widen = false
+                const PanelHit off = pressArg(panel, PanelAction::SetBool, 0);
+                CHECK(off.action == PanelAction::SetBool && off.arg == 0 && std::string(off.key) == key::kWiden);
+                // Off: the slider can't be moved (nothing it sets shows), the switch still can
+                m.config.root.set(key::kWiden, JsonValue::makeBool(false));
+                panel.render(m);
+                CHECK(hits(panel, PanelAction::SetBool, key::kWiden).size() == 2);
+                CHECK(hits(panel, PanelAction::EyecamSensitivity).empty());
+                CHECK(hits(panel, PanelAction::SetLidWiden).empty());
+                for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                    if (area.hit.action == PanelAction::Tab && area.y < 100) continue;
+                    if (area.hit.action == PanelAction::PreviewOpen) continue;
+                    CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676);
+                }
+                // Locked by frameeyeosc's command line (--no-widen): nothing to press
+                m.status.locked.push_back(key::kWiden);
+                panel.render(m);
+                CHECK(hits(panel, PanelAction::SetBool, key::kWiden).empty());
+            }
+        }
+    }
+}
+
 void testDiagPage(const FontSet& fonts) {
     // The Advanced tab offers it, with eyecam-rec and without
     for (const bool eyecam : {true, false}) {
@@ -730,6 +767,8 @@ void testLidsPages(const FontSet& fonts) {
                     const bool fine = page == LidsPage::Fine;
                     // Look: the widening (whatever drives it), the smoothing presets, the sync slider
                     CHECK(hits(panel, PanelAction::LidPreset).size() == (look ? 3u : 0u));
+                    // ...and widening at all (widen), with the eye cameras or without
+                    CHECK(hits(panel, PanelAction::SetBool, key::kWiden).size() == (look ? 2u : 0u));
                     CHECK(hits(panel, PanelAction::NumberSlider, key::kLidSync).size() == (look ? 1u : 0u));
                     if (!look) {
                         CHECK(hits(panel, PanelAction::SetLidWiden).empty());
@@ -2595,6 +2634,7 @@ int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
     testWidenRouting(fonts);
+    testWidenSwitch(fonts);
     testLidsPages(fonts);
     testSnapMark(fonts);
     testEyeBehavior(fonts);

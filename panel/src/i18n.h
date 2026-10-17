@@ -533,6 +533,7 @@ struct UiText {
     const char* diagLidsLeft;
     const char* diagLidsRight;
     const char* diagLidsValve;
+    const char* diagNoWiden;             ///< ...after it, while widening is off (widen)
     const char* diagNone;                ///< no error
     const char* diagCoreNotRunning;      ///< frameeyeosc isn't running
     const char* diagCoreNoTarget;        ///< no target PC found (Steam Link's)
@@ -777,6 +778,7 @@ struct UiText {
     const char* camUserNeedsCalib;  ///< ...instead while it can't be pressed
     // The sentence at the bottom of the eye cameras' page (cameraLine)
     const char* camLineBothVrchat;
+    const char* camLineBothNoWiden;  ///< ...the cameras drive both eyes, with widening off (widen)
     const char* camLineBoth;
     const char* camLineLeft;
     const char* camLineRight;
@@ -827,6 +829,11 @@ struct UiText {
     const char* widenNoteValve;  ///< ...Valve's values (four stops)
     const char* widenNoteUnfitted;  ///< ...an eye without an eye fit
     const char* widenSaturated;  ///< ...on a SteamOS that caps openness: the line in the slider's place
+    const char* rowWidenSwitch;  ///< whether any eye widens at all (widen): the row above the slider...
+    const char* widenSwitchHint;  ///< ...its hint
+    const char* widenSwitchOn;  ///< ...its two choices
+    const char* widenSwitchOff;
+    const char* widenNoteOff;  ///< the line under the slider while widening is off (the slider greyed)
     const char* blinkHint;  ///< the blink row: its hint
     const char* blinkHoldCaption;  ///< ...beside the hold
     const char* rowBlinkBoth;  ///< blink_sync_below

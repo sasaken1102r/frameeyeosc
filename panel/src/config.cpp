@@ -1,5 +1,6 @@
 // Reading and writing config.json.
 #include "config.h"
+#include "file_io.h"
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -10,9 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <limits>
-#include <sstream>
 
 namespace {
 
@@ -124,14 +123,7 @@ JsonValue defaultObject() {
  * @param text the contents
  * @return false if it could not be opened
  */
-bool readWholeFile(const std::string& path, std::string& text) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) return false;
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    text = buffer.str();
-    return true;
-}
+bool readWholeFile(const std::string& path, std::string& text) { return file_io::read(path, text); }
 
 }  // namespace
 

@@ -204,6 +204,8 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 ./build/changelog-test                           # 更新履歴の読み方（英語と日本語の形、「日本語:」を飛ばす、最初の文、マークダウン、英語で補う）のテスト
 ./build/eyecam-test                              # 目の撮影タブ（状態ファイル、出す・消す条件、指示の文、全面の光とそのフェード、光の注意と送るコマンド、/tmp の偽ソケット）のテスト
 ./build/report-test                              # 記録（ジャーナルと Valve のログの読み方、主な行とその言葉、summary.json、report.txt、作り物のログからの記録、10 件、大きさの上限、--report）と最後の小タブのテスト
+./build/file-io-test                             # ファイルをまとめて読む file_io（上限、NUL、4 KiB の境目、無いファイル）のテスト
+ctest --test-dir build --output-on-failure       # 登録したテストをぜんぶ（package.sh もこれで回す）
 ./build/frameeyeosc-panel --report latest        # いちばん新しい記録の report.txt（list で一覧、フォルダ名でその記録）
 ./build/frameeyeosc-panel --dump-png out/trouble_2026-10-06_00-00-00.png --tab advanced --adv-page trouble --fake --fake-records
 ./build/frameeyeosc-panel --dump-png out/record_2026-10-06_00-00-00.png --tab advanced --fake --fake-records --record 1   # 記録を開いたところ

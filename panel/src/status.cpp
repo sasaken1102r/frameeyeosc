@@ -1,5 +1,6 @@
 // Reading status.json.
 #include "status.h"
+#include "file_io.h"
 
 #include <signal.h>
 #include <unistd.h>
@@ -8,9 +9,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
-#include <fstream>
 #include <limits>
-#include <sstream>
 
 namespace {
 
@@ -253,13 +252,11 @@ TrackerRateCause trackerRateCause(const EyeStatus& s) {
 }
 
 EyeStatus readStatus(const std::string& path, double now) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
+    std::string text;
+    if (!file_io::read(path, text)) {
         EyeStatus status = parseStatus("", now, false);  // an empty status with every value missing
         status.readError = "no status file";
         return status;
     }
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    return parseStatus(buffer.str(), now, true);
+    return parseStatus(text, now, true);
 }

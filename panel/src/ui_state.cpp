@@ -2,6 +2,7 @@
 #include "ui_state.h"
 
 #include "json.h"
+#include "file_io.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -11,7 +12,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -52,13 +52,14 @@ JsonValue readObject(const std::string& path, bool* broken = nullptr) {
     JsonValue root;
     root.type = JsonValue::Type::Object;
     if (broken != nullptr) *broken = false;
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return root;
-    std::ostringstream text;
-    text << in.rdbuf();
+    std::FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) return root;
+    std::string text;
+    const bool read = file_io::read(file, text, 64 * 1024);
+    std::fclose(file);
     JsonValue parsed;
     std::string error;
-    if (text.str().size() <= 64 * 1024 && parseJson(text.str(), parsed, error) && parsed.isObject()) return parsed;
+    if (read && parseJson(text, parsed, error) && parsed.isObject()) return parsed;
     if (broken != nullptr) *broken = true;
     return root;
 }

@@ -562,6 +562,17 @@ std::string updateNotes(const frame_updater::UpdateStatus& update, Language lang
     return update.notes;
 }
 
+TestVersionView testVersionView(const frame_updater::UpdateStatus& update, bool betaOn) {
+    TestVersionView view;
+    view.using_ = frame_updater::isPrerelease(update.current);
+    view.keepHint = !betaOn && view.using_;
+    view.offered = update.state == frame_updater::UpdateState::Available && update.prerelease;
+    // Only off (on, the update row itself says so), and only for a version newer than the running one
+    view.badge = !betaOn && !update.testVersion.empty() &&
+                 frame_updater::compareVersions(update.testVersion, update.current) > 0;
+    return view;
+}
+
 CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming) {
     const CameraStatus& c = status.camera;
     if (!status.running || !c.known) return CameraUse::Unknown;

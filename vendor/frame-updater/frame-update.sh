@@ -5,15 +5,19 @@
 # carries a copy (vendor/frame-updater/, see UPSTREAM there). POSIX sh; needs curl, tar, sha256sum
 # and python3 (only to read the GitHub API's JSON). Writes nothing outside the user's home.
 #
-#   frame-update.sh --app A --repo O/R --current V [--asset P] [--force] check
-#   frame-update.sh --app A --repo O/R --current V --asset P [--install-arg X]... [--detach] install
+#   frame-update.sh --app A --repo O/R --current V [--asset P] [--channel C] [--force] check
+#   frame-update.sh --app A --repo O/R --current V --asset P [--channel C] [--install-arg X]... [--detach] install
 #   frame-update.sh --app A status
 #   frame-update.sh --version
 #
 # --asset is the release file name with {version} in place of the version, e.g.
-# "frameeyeosc-{version}-steamframe-aarch64.tar.gz". Every command prints one line of JSON on
-# stdout (see README.md). Files, with C = ${XDG_CACHE_HOME:-~/.cache}/A:
+# "frameeyeosc-{version}-steamframe-aarch64.tar.gz". --channel is "stable" (the default: GitHub's
+# latest release, never a prerelease) or "beta" (the highest version among the newest releases,
+# prereleases such as v0.7.11-beta.1 included). Versions order by x.y.z, and a pre-release part after
+# "-" comes before its final version: 0.7.10 < 0.7.11-beta.1 < 0.7.11-beta.2 < 0.7.11. Every command
+# prints one line of JSON on stdout (see README.md). Files, with C = ${XDG_CACHE_HOME:-~/.cache}/A:
 #   C/update-check.json  last answer from GitHub, reused for 55 minutes (errors for 1 hour)
+#   C/update-check-beta.json  the same for --channel beta
 #   C/update-state.json  progress of the last install: running (with step) / done / failed
 #                        (a "done" older than 24 hours is dropped at the next check or install)
 #   C/update.log         log of the last install, including install.sh's output
@@ -27,7 +31,7 @@
 # FRAME_UPDATE_ALLOW_INSECURE=1 (allow http:// and any host), FRAME_UPDATE_CHECK_TTL (3300),
 # FRAME_UPDATE_ERROR_TTL (3600).
 
-FRAME_UPDATE_VERSION=0.3.0
+FRAME_UPDATE_VERSION=0.4.0
 
 api_base=${FRAME_UPDATE_API_URL:-https://api.github.com}
 insecure=${FRAME_UPDATE_ALLOW_INSECURE:-0}
@@ -46,8 +50,8 @@ cr=$(printf '\r')
 usage() {
     cat >&2 <<'EOF'
 Usage:
-  frame-update.sh --app A --repo O/R --current V [--asset P] [--force] check
-  frame-update.sh --app A --repo O/R --current V --asset P [--install-arg X]... [--detach] install
+  frame-update.sh --app A --repo O/R --current V [--asset P] [--channel stable|beta] [--force] check
+  frame-update.sh --app A --repo O/R --current V --asset P [--channel stable|beta] [--install-arg X]... [--detach] install
   frame-update.sh --app A status
   frame-update.sh --version
 EOF
@@ -111,6 +115,87 @@ version_core() {
         '' | *[!0-9.]* | .* | *. | *..* | *.*.*.* | *[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) return 1 ;;
     esac
     printf '%s\n' "$_v"
+}
+
+# True if V can be a release's version: an x.y.z core (version_core), then nothing, or "-" and a
+# pre-release part and/or "+" and a build part, made of letters, digits, dots and hyphens.
+version_ok() {
+    _core=$(version_core "$1") || return 1
+    _rest=${1#[vV]}
+    _rest=${_rest#"$_core"}
+    case $_rest in
+        '') return 0 ;;
+        [-+]*) case ${_rest#?} in '' | *[!0-9A-Za-z.+-]*) return 1 ;; esac ;;
+        *) return 1 ;;
+    esac
+    return 0
+}
+
+# Print the pre-release part of a version ("v0.7.11-beta.2+abc" -> "beta.2"; nothing for 0.7.11).
+version_pre() {
+    _v=${1#[vV]}
+    _v=${_v%%+*}
+    case $_v in *-*) printf '%s\n' "${_v#*-}" ;; esac
+}
+
+# True if string A sorts before string B, byte by byte.
+str_lt() {
+    LC_ALL=C expr "x$1" \< "x$2" >/dev/null
+}
+
+# Compare two pre-release parts (from version_pre) as semantic versioning orders them; print -1, 0
+# or 1. None (a final version) is above any. Otherwise the dot-separated identifiers are compared one
+# by one: numbers by value and below words, words byte by byte; when all of one match the start of
+# the other, the longer is above. So beta.2 < beta.10 < rc.1, and beta < beta.1.
+precmp() {
+    _p=$1
+    _q=$2
+    if [ -z "$_p" ] || [ -z "$_q" ]; then
+        if [ "$_p" = "$_q" ]; then echo 0; elif [ -z "$_p" ]; then echo 1; else echo -1; fi
+        return
+    fi
+    while :; do
+        if [ -z "$_p" ] && [ -z "$_q" ]; then echo 0; return; fi
+        if [ -z "$_p" ]; then echo -1; return; fi
+        if [ -z "$_q" ]; then echo 1; return; fi
+        _x=${_p%%.*}
+        _y=${_q%%.*}
+        case $_p in *.*) _p=${_p#*.} ;; *) _p= ;; esac
+        case $_q in *.*) _q=${_q#*.} ;; *) _q= ;; esac
+        _xnum=0
+        _ynum=0
+        case $_x in '' | *[!0-9]*) ;; *) _xnum=1 ;; esac
+        case $_y in '' | *[!0-9]*) ;; *) _ynum=1 ;; esac
+        if [ "$_xnum" != "$_ynum" ]; then
+            # A number is below a word
+            if [ "$_xnum" = 1 ]; then echo -1; else echo 1; fi
+            return
+        fi
+        if [ "$_xnum" = 1 ]; then
+            # By value, however long: without leading zeros, the longer one is bigger (then byte by byte)
+            while :; do case $_x in 0?*) _x=${_x#0} ;; *) break ;; esac; done
+            while :; do case $_y in 0?*) _y=${_y#0} ;; *) break ;; esac; done
+            if [ "${#_x}" -ne "${#_y}" ]; then
+                if [ "${#_x}" -gt "${#_y}" ]; then echo 1; else echo -1; fi
+                return
+            fi
+        fi
+        if [ "$_x" != "$_y" ]; then
+            if str_lt "$_x" "$_y"; then echo -1; else echo 1; fi
+            return
+        fi
+    done
+}
+
+# Compare two whole versions (accepted by version_core): the x.y.z cores (vercmp), then the
+# pre-release parts (precmp); a build part ("+abc") is ignored. Print -1, 0 or 1.
+vercmp_full() {
+    _c=$(vercmp "$(version_core "$1")" "$(version_core "$2")")
+    if [ "$_c" != 0 ]; then
+        echo "$_c"
+        return
+    fi
+    precmp "$(version_pre "$1")" "$(version_pre "$2")"
 }
 
 # Compare two version cores (from version_core); print -1, 0 or 1. Missing parts count as 0.
@@ -189,11 +274,21 @@ download() { # url file max-seconds
     return 0
 }
 
-# Ask GitHub for the latest release. Sets rel_tag rel_page rel_draft rel_pre rel_asset_url
+# The API address asked for the channel's newest release: GitHub's latest release (stable), or the
+# list of the newest releases (beta), from which the highest version is picked.
+releases_url() {
+    if [ "$channel" = beta ]; then
+        echo "$api_base/repos/$repo/releases?per_page=30"
+    else
+        echo "$api_base/repos/$repo/releases/latest"
+    fi
+}
+
+# Ask GitHub for the channel's newest release. Sets rel_tag rel_page rel_draft rel_pre rel_asset_url
 # rel_sums_url rel_asset_name, and rel_notes / rel_notes_ja (its summary and the Japanese one, from
 # the release text; may be empty). On failure sets err_code/err_msg and returns 1.
 fetch_release() {
-    rel_url="$api_base/repos/$repo/releases/latest"
+    rel_url=$(releases_url)
     if ! url_allowed "$rel_url"; then
         err_code=bad-url
         err_msg="refusing to contact $rel_url"
@@ -229,12 +324,14 @@ fetch_release() {
         err_msg="python3 is needed to read GitHub's answer"
         return 1
     fi
-    _fields=$(python3 - "$_json" "$asset_pattern" <<'EOF'
+    _fields=$(python3 - "$_json" "$asset_pattern" "$channel" <<'EOF'
 import json
 import re
 import sys
 
 NOTES_MAX = 300
+# A version as version_ok takes it: x.y.z (1 to 3 numbers), then a pre-release and a build part
+VERSION = re.compile(r"[vV]?([0-9]{1,9}(?:\.[0-9]{1,9}){0,2})(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.+-]+)?")
 JA_PREFIX = re.compile(r"(?:日本語|japanese)\s*[:：]\s*", re.IGNORECASE)
 SKIPPED = re.compile(r"([-*+]|\d+[.)])(\s|$)|#|```|~~~|\||<!--|>")
 
@@ -262,6 +359,33 @@ def cap(text):
     if space >= NOTES_MAX * 2 // 3:
         cut = cut[:space]
     return cut.rstrip(" ,.;:、。，．") + "…"
+
+
+def version_key(tag):
+    """Sort key of a release tag (None if it isn't a version), in vercmp_full's order: the x.y.z numbers, then a
+    final version above its pre-releases, whose dot-separated parts compare one by one (numbers by value and below
+    words, words by character; the longer is above when the shorter matches its start)."""
+    match = VERSION.fullmatch(tag) if isinstance(tag, str) else None
+    if not match:
+        return None
+    core = [int(n) for n in match.group(1).split(".")]
+    core += [0] * (3 - len(core))
+    pre = match.group(2)
+    if pre is None:
+        return (core, 1, ())
+    return (core, 0, tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in pre.split(".")))
+
+
+def newest(releases):
+    """The release with the highest version; drafts and tags that aren't versions are left out (None if none)."""
+    best = best_key = None
+    for release in releases:
+        if not isinstance(release, dict) or release.get("draft"):
+            continue
+        key = version_key(release.get("tag_name"))
+        if key is not None and (best_key is None or key > best_key):
+            best, best_key = release, key
+    return best
 
 
 def notes_of(body):
@@ -293,6 +417,13 @@ def notes_of(body):
 try:
     with open(sys.argv[1], encoding="utf-8") as f:
         release = json.load(f)
+    if sys.argv[3] == "beta":
+        # The list of releases, newest first: the highest version among them, prereleases included
+        if not isinstance(release, list):
+            raise ValueError("not a list of releases")
+        release = newest(release)
+        if release is None:
+            sys.exit(3)
     tag = release["tag_name"]
     version = tag[1:] if tag[:1] in ("v", "V") else tag
     name = sys.argv[2].replace("{version}", version) if sys.argv[2] else ""
@@ -322,6 +453,11 @@ EOF
 )
     _rc=$?
     rm -f "$_json"
+    if [ "$_rc" -eq 3 ]; then
+        err_code=not-found
+        err_msg="no published release with a version in $repo"
+        return 1
+    fi
     if [ "$_rc" -ne 0 ]; then
         err_code=bad-response
         err_msg="cannot read GitHub's answer"
@@ -363,21 +499,26 @@ report_check() { # cached(true/false)
     _checked=$(json_raw "$check_file" checked_at)
     _err=$(json_str "$check_file" error)
     if [ -n "$_err" ]; then
-        printf '{"status":"error","error":"%s","message":"%s","current":"%s","cached":%s,"checked_at":%s}\n' \
-            "$_err" "$(json_str "$check_file" message)" "$(json_safe "$current")" "$1" "${_checked:-0}"
+        printf '{"status":"error","error":"%s","message":"%s","current":"%s","channel":"%s","cached":%s,"checked_at":%s}\n' \
+            "$_err" "$(json_str "$check_file" message)" "$(json_safe "$current")" "$channel" "$1" "${_checked:-0}"
         exit 1
     fi
     _latest=$(json_str "$check_file" latest)
     _page=$(json_str "$check_file" url)
     _extra=
     _status=up-to-date
+    # Whether the newest release is a prerelease (a test version); a cache from before 0.4.0 has no such field
+    _pre=$(json_raw "$check_file" prerelease)
+    [ "$_pre" = true ] || _pre=false
     if [ -n "$_latest" ]; then
-        if ! _latest_core=$(version_core "$_latest"); then
-            printf '{"status":"error","error":"bad-version","message":"%s","current":"%s","cached":%s,"checked_at":%s}\n' \
-                "release tag $(json_safe "$_latest") is not a version" "$(json_safe "$current")" "$1" "${_checked:-0}"
+        if ! version_ok "$_latest"; then
+            printf '{"status":"error","error":"bad-version","message":"%s","current":"%s","channel":"%s","cached":%s,"checked_at":%s}\n' \
+                "release tag $(json_safe "$_latest") is not a version" "$(json_safe "$current")" "$channel" "$1" "${_checked:-0}"
             exit 1
         fi
-        if [ "$(vercmp "$_latest_core" "$current_core")" = 1 ]; then
+        # Only a newer one: on a test version above the newest release (back on stable) it is up to date, never
+        # a downgrade
+        if [ "$(vercmp_full "$_latest" "$current")" = 1 ]; then
             _status=update-available
             if [ -n "$asset_pattern" ]; then
                 if [ "$(json_raw "$check_file" has_asset)" != true ]; then
@@ -392,15 +533,15 @@ report_check() { # cached(true/false)
             _extra="$_extra,\"notes\":\"$(json_str "$check_file" notes)\",\"notes_ja\":\"$(json_str "$check_file" notes_ja)\""
         fi
     fi
-    printf '{"status":"%s","current":"%s","latest":"%s","url":"%s"%s,"cached":%s,"checked_at":%s}\n' \
-        "$_status" "$(json_safe "$current")" "$_latest" "$_page" "$_extra" "$1" "${_checked:-0}"
+    printf '{"status":"%s","current":"%s","latest":"%s","url":"%s"%s,"prerelease":%s,"channel":"%s","cached":%s,"checked_at":%s}\n' \
+        "$_status" "$(json_safe "$current")" "$_latest" "$_page" "$_extra" "$_pre" "$channel" "$1" "${_checked:-0}"
     exit 0
 }
 
 cmd_check() {
     mkdir -p "$cache_dir" || usage_error "cannot create $cache_dir"
     clear_stale_done
-    _source="$(json_safe "$api_base/repos/$repo/releases/latest") $(json_safe "$asset_pattern")"
+    _source="$(json_safe "$(releases_url)") $(json_safe "$asset_pattern")"
     # An answer kept by frame-update 0.1.0 has no notes: ask GitHub again once
     if [ "$force" != 1 ] && [ -f "$check_file" ] && [ "$(json_str "$check_file" source)" = "$_source" ] &&
         { [ -n "$(json_str "$check_file" error)" ] || grep -q '"notes":' "$check_file"; }; then
@@ -415,14 +556,18 @@ cmd_check() {
     _tmp="$check_file.tmp.$$"
     if fetch_release; then
         _latest=$(json_safe "${rel_tag#[vV]}")
-        # /releases/latest skips drafts and prereleases already; this is only a safety net
-        [ "$rel_draft$rel_pre" = 00 ] || _latest=
+        # /releases/latest skips drafts and prereleases already, and beta drafts; this is only a safety net
+        if [ "$rel_draft" != 0 ] || { [ "$channel" != beta ] && [ "$rel_pre" != 0 ]; }; then
+            _latest=
+        fi
+        _pre=false
+        [ "$rel_pre" = 0 ] || _pre=true
         _has_asset=false
         _has_sums=false
         [ -z "$rel_asset_url" ] || _has_asset=true
         [ -z "$rel_sums_url" ] || _has_sums=true
-        printf '{"source":"%s","latest":"%s","url":"%s","has_asset":%s,"has_sums":%s,"notes":"%s","notes_ja":"%s","checked_at":%s}\n' \
-            "$_source" "$_latest" "$(json_safe "$rel_page")" "$_has_asset" "$_has_sums" \
+        printf '{"source":"%s","latest":"%s","url":"%s","prerelease":%s,"has_asset":%s,"has_sums":%s,"notes":"%s","notes_ja":"%s","checked_at":%s}\n' \
+            "$_source" "$_latest" "$(json_safe "$rel_page")" "$_pre" "$_has_asset" "$_has_sums" \
             "$(json_safe "$rel_notes")" "$(json_safe "$rel_notes_ja")" "$(now)" >"$_tmp"
     else
         log "check failed: $err_msg"
@@ -600,7 +745,8 @@ cmd_detach() {
             set -- "$@" "--setenv=$_var=$_val"
         fi
     done
-    set -- "$@" -- /bin/sh "$_copy" --app "$app" --repo "$repo" --current "$current" --asset "$asset_pattern"
+    set -- "$@" -- /bin/sh "$_copy" --app "$app" --repo "$repo" --current "$current" --asset "$asset_pattern" \
+        --channel "$channel"
     _old_ifs=$IFS
     IFS=$nl
     for _arg in $install_args; do
@@ -644,16 +790,18 @@ cmd_install() {
     write_state running start "" "" ""
 
     fetch_release || fail "$err_code" "$err_msg"
-    [ "$rel_draft$rel_pre" = 00 ] || fail not-found "the latest release is a draft or prerelease"
-    latest_core=$(version_core "$rel_tag") || fail bad-version "release tag $rel_tag is not a version"
+    [ "$rel_draft" = 0 ] || fail not-found "the latest release is a draft"
+    [ "$channel" = beta ] || [ "$rel_pre" = 0 ] || fail not-found "the latest release is a prerelease"
+    version_ok "$rel_tag" || fail bad-version "release tag $rel_tag is not a version"
+    latest_core=$(version_core "$rel_tag")
     target_version=${rel_tag#[vV]}
-    if [ "$(vercmp "$latest_core" "$current_core")" != 1 ]; then
+    if [ "$(vercmp_full "$target_version" "$current")" != 1 ]; then
         fail not-newer "the latest release $target_version is not newer than $current"
     fi
     asset_name=$rel_asset_name
     [ -n "$rel_asset_url" ] || fail no-asset "release $rel_tag has no $asset_name"
     [ -n "$rel_sums_url" ] || fail no-checksums "release $rel_tag has no SHA256SUMS; update by hand"
-    log "latest release: $rel_tag ($rel_page)"
+    log "latest release ($channel): $rel_tag ($rel_page)"
 
     ver_dir="$update_dir/$latest_core"
     rm -rf "$ver_dir"
@@ -737,15 +885,17 @@ main() {
     repo=
     current=
     asset_pattern=
+    channel=stable
     force=0
     detach=0
     install_args=
     cmd=
     while [ $# -gt 0 ]; do
         case $1 in
-            --app | --repo | --current | --asset | --install-arg)
+            --app | --repo | --current | --asset | --channel | --install-arg)
                 [ $# -ge 2 ] || usage_error "$1 needs a value"
                 case $1 in
+                    --channel) channel=$2 ;;
                     --app) app=$2 ;;
                     --repo) repo=$2 ;;
                     --current) current=$2 ;;
@@ -767,10 +917,10 @@ main() {
                 shift
                 ;;
             vercmp)
-                # For tests: frame-update.sh vercmp A B
+                # For tests: frame-update.sh vercmp A B (whole versions, pre-release parts included)
                 [ $# -eq 3 ] || usage_error "vercmp needs two versions"
-                _a=$(version_core "$2") && _b=$(version_core "$3") || usage_error "not a version"
-                vercmp "$_a" "$_b"
+                version_core "$2" >/dev/null && version_core "$3" >/dev/null || usage_error "not a version"
+                vercmp_full "$2" "$3"
                 exit 0
                 ;;
             *) usage_error "unknown argument: $1" ;;
@@ -779,13 +929,16 @@ main() {
     [ -n "$cmd" ] || usage_error "no command (check, install or status)"
     case $app in '' | .* | *[!a-z0-9._-]*) usage_error "--app must be a name like frameeyeosc" ;; esac
     case $asset_pattern in */* | *\\*) usage_error "--asset must be a file name" ;; esac
+    case $channel in stable | beta) ;; *) usage_error "--channel must be stable or beta" ;; esac
     for _ttl in "$check_ttl" "$error_ttl"; do
         case $_ttl in '' | *[!0-9]*) usage_error "FRAME_UPDATE_*_TTL must be a number of seconds" ;; esac
     done
 
     cache_dir="${XDG_CACHE_HOME:-$HOME/.cache}/$app"
     config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/$app"
+    # One answer kept per channel: switching back and forth doesn't throw the other one away
     check_file="$cache_dir/update-check.json"
+    [ "$channel" != beta ] || check_file="$cache_dir/update-check-beta.json"
     state_file="$cache_dir/update-state.json"
     update_dir="$cache_dir/update"
     work_dir="$update_dir"

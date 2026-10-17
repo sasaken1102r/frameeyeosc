@@ -651,3 +651,18 @@ double widenStop(int level);
  * @return the text, or "" when no newer release is available or it has no summary
  */
 std::string updateNotes(const frame_updater::UpdateStatus& update, Language language);
+
+/** What the Version page says about test versions (frame-updater's beta channel). */
+struct TestVersionView {
+    bool badge = false;      ///< "Test version available" beside "Get test versions": it is off and a newer one exists
+    bool using_ = false;     ///< the running version is a test version ("Using test version X" when up to date)
+    bool keepHint = false;   ///< the hint says the test version stays (it is off while a test version runs)
+    bool offered = false;    ///< the offered new version is a test version ("Test version X is available")
+};
+
+/**
+ * @param update the update status (testVersion is filled while "Get test versions" is off)
+ * @param betaOn whether "Get test versions" is on
+ * @return what to show
+ */
+TestVersionView testVersionView(const frame_updater::UpdateStatus& update, bool betaOn);

@@ -913,6 +913,12 @@ UiText makeJapanese() {
     t.updateRetry = "もう一度";
     t.updateDismiss = "閉じる";
     t.updateLogHint = "くわしくは ~/.cache/frameeyeosc/update.log";
+    t.rowUpdateBeta = "テスト版も受け取る";
+    t.hintUpdateBeta = "試してほしい人向けの版も届きます。ふつうはオフのままで大丈夫";
+    t.hintUpdateBetaKeep = "オフにしても、今のテスト版はそのまま。次の本番の版が出たら届きます";
+    t.updateTestAvailable = "テスト版あり";
+    t.updateAvailableTestFormat = "新しいテスト版 %s があります";
+    t.updateUsingTestFormat = "テスト版 %s を使っています";
     t.stepStart = "準備中";
     t.stepDownload = "ダウンロード中";
     t.stepVerify = "ファイルを確認中";
@@ -1850,6 +1856,12 @@ UiText makeEnglish() {
     t.updateRetry = "Try again";
     t.updateDismiss = "Close";
     t.updateLogHint = "Details: ~/.cache/frameeyeosc/update.log";
+    t.rowUpdateBeta = "Get test versions";
+    t.hintUpdateBeta = "Also offers versions made for testing. Leave it Off unless asked";
+    t.hintUpdateBetaKeep = "Your test version stays; the next regular version will be offered";
+    t.updateTestAvailable = "Test version available";
+    t.updateAvailableTestFormat = "Test version %s is available";
+    t.updateUsingTestFormat = "Using test version %s";
     t.stepStart = "Preparing";
     t.stepDownload = "Downloading";
     t.stepVerify = "Verifying";

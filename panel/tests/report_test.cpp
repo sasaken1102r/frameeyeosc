@@ -982,6 +982,23 @@ void testUiState() {
     CHECK(ui_state::parseGazePage("glitch", gaze) && gaze == GazePage::Glitch);
     CHECK(!ui_state::parseGazePage("Reach", gaze) && gaze == GazePage::Glitch);
 
+    // "Get test versions": off the first time, when missing, broken or not a boolean; kept beside the others
+    ::unlink(path.c_str());
+    CHECK(!ui_state::readUpdateBeta(path));
+    CHECK(ui_state::writePage(path, AdvPage::Tools, error));
+    CHECK(!ui_state::readUpdateBeta(path));
+    CHECK(ui_state::writeUpdateBeta(path, true, error) && ui_state::readUpdateBeta(path));
+    CHECK(has(readText(path), "\"update_beta\": true") && ui_state::readPage(path) == AdvPage::Tools);
+    CHECK(ui_state::writeGazePage(path, GazePage::Reach, error) && ui_state::readUpdateBeta(path));
+    CHECK(ui_state::writeUpdateBeta(path, false, error) && !ui_state::readUpdateBeta(path));
+    CHECK(has(readText(path), "\"update_beta\": false") && ui_state::readGazePage(path) == GazePage::Reach);
+    writeText(path, "{\"update_beta\": \"yes\"}");
+    CHECK(!ui_state::readUpdateBeta(path));
+    writeText(path, "{\"update_beta\": ");
+    CHECK(!ui_state::readUpdateBeta(path));
+    CHECK(ui_state::writeUpdateBeta(path, true, error) && ui_state::readUpdateBeta(path));
+    CHECK(!exists(path + ".tmp"));
+
     // The gaze scale's locks: linked the first time (and when broken), each pair kept, the other members too
     ::unlink(path.c_str());
     bool linked[2] = {false, false};

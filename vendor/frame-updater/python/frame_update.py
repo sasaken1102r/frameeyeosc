@@ -28,7 +28,7 @@ class Updater:
     """Runs frame-update.sh for one app."""
 
     def __init__(self, script: str | Path, app: str, repo: str, current: str, asset: str,
-                 default_install_args: tuple[str, ...] = ()) -> None:
+                 default_install_args: tuple[str, ...] = (), channel: str = "stable") -> None:
         """
         script: path of the installed frame-update.sh
         app: app name (cache/config folder and systemd unit name)
@@ -36,6 +36,7 @@ class Updater:
         current: version of the running app
         asset: release file name with {version} for the version
         default_install_args: install.sh options when ~/.config/<app>/install-args is missing
+        channel: "stable" (GitHub's latest release) or "beta" (test versions too); may be changed later
         """
         self.script = str(script)
         self.app = app
@@ -43,13 +44,18 @@ class Updater:
         self.current = current
         self.asset = asset
         self.default_install_args = tuple(default_install_args)
+        self.channel = channel
         cache = os.environ.get("XDG_CACHE_HOME", "")
         self.cache_dir = (Path(cache) if cache.startswith("/") else Path.home() / ".cache") / app
         self.log_path = self.cache_dir / "update.log"
 
     def _base(self) -> list[str]:
-        return ["sh", self.script, "--app", self.app, "--repo", self.repo, "--current", self.current,
+        args = ["sh", self.script, "--app", self.app, "--repo", self.repo, "--current", self.current,
                 "--asset", self.asset]
+        # Only when asked: the default leaves the call as before frame-update 0.4.0
+        if self.channel == "beta":
+            args += ["--channel", "beta"]
+        return args
 
     async def _run(self, args: list[str], timeout: float, failed: dict) -> dict:
         """Run the script and parse the last line of its output; on any failure return `failed`."""
@@ -76,7 +82,8 @@ class Updater:
     async def check(self, force: bool = False) -> dict:
         """Check for a newer release: {"status": "up-to-date" | "update-available" | "error", ...}.
         "update-available" also has "notes" and "notes_ja": the release's summary in English and Japanese
-        (plain text on one line, "" if the release text has none)."""
+        (plain text on one line, "" if the release text has none). Since frame-update 0.4.0 every answer has
+        "channel", and one with "latest" has "prerelease" (true: the newest release is a test version)."""
         args = self._base() + (["--force"] if force else []) + ["check"]
         return await self._run(args, CHECK_TIMEOUT_SECONDS, {"status": "error"})
 

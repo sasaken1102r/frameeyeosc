@@ -1216,6 +1216,64 @@ void testUpdateNotice(const FontSet& fonts) {
     }
 }
 
+void testUpdateBeta(const FontSet& fonts) {
+    // "Get test versions" on the Version page: On / Off, kept by the panel (the caller saves it); the page fits with the
+    // badge, the keep-hint and a test version on offer, in both languages and every update state
+    EyePanel panel(fonts);
+    PanelModel m = modelWith(Lids::Both, false);
+    m.update.state = frame_updater::UpdateState::UpToDate;
+    m.update.current = "0.7.10";
+    m.update.latest = "0.7.10";
+    panel.setTab(PanelTab::Advanced);
+    panel.setAdvPage(AdvPage::Version);
+    panel.render(m);
+    CHECK(!panel.updateBeta());
+    CHECK(hits(panel, PanelAction::UpdateBeta).size() == 2);
+    const PanelHit on = pressArg(panel, PanelAction::UpdateBeta, 1);
+    CHECK(on.action == PanelAction::UpdateBeta && on.arg == 1 && panel.updateBeta());
+    panel.render(m);
+    // Pressing the chosen one again changes nothing (nothing to save)
+    CHECK(pressArg(panel, PanelAction::UpdateBeta, 1).action == PanelAction::None && panel.updateBeta());
+    panel.render(m);
+    CHECK(pressArg(panel, PanelAction::UpdateBeta, 0).action == PanelAction::UpdateBeta && !panel.updateBeta());
+
+    using frame_updater::UpdateState;
+    for (const bool beta : {false, true}) {
+        for (const Language language : {Language::Ja, Language::En}) {
+            for (const UpdateState state : {UpdateState::Unknown, UpdateState::UpToDate, UpdateState::Available,
+                                            UpdateState::Installing, UpdateState::Installed, UpdateState::CheckFailed,
+                                            UpdateState::InstallFailed}) {
+                for (const bool onTest : {false, true}) {
+                    PanelModel u = m;
+                    u.language = language;
+                    u.update.state = state;
+                    u.update.checkedAt = 1791287109;
+                    u.update.error = "network";
+                    u.update.version = "0.7.11-beta.1";
+                    u.update.step = "download";
+                    u.update.installable = true;
+                    u.update.notes = std::string(400, 'x');
+                    u.update.current = onTest ? "0.7.11-beta.2" : "0.7.10";
+                    u.update.latest = beta ? "0.7.11-beta.12" : "0.7.11";
+                    u.update.prerelease = beta;
+                    u.update.testVersion = beta ? "" : "0.7.11-beta.12";
+                    EyePanel p(fonts);
+                    p.setUpdateBeta(beta);
+                    p.setTab(PanelTab::Advanced);
+                    p.setAdvPage(AdvPage::Version);
+                    p.render(u);
+                    CHECK(p.advancedMaxScroll() == 0.0 && !p.wantsScroll());
+                    CHECK(hits(p, PanelAction::UpdateBeta).size() == 2);
+                    for (const EyePanel::HitArea& area : p.hitAreas()) {
+                        if (area.hit.action == PanelAction::Tab || area.x < 400) continue;
+                        CHECK(area.y >= 110 && area.y + area.h <= 676);
+                    }
+                }
+            }
+        }
+    }
+}
+
 void testDiagFromEyecam(const FontSet& fonts) {
     // The eye cameras tab's "Diagnostics": the page on the Advanced tab, "Back" to "Having trouble"
     EyePanel panel(fonts);
@@ -2705,6 +2763,7 @@ int main() {
     testSubTabs(fonts);
     testGazeRingsRow(fonts);
     testUpdateNotice(fonts);
+    testUpdateBeta(fonts);
     testDiagFromEyecam(fonts);
     testPagesFit(fonts);
     testRecords(fonts);

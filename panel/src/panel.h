@@ -53,6 +53,7 @@ enum class PanelAction {
     UpdateConfirm,     ///< install it (the prompt closes itself)
     UpdateCancel,
     UpdateDismiss,     ///< close the "installed" / "failed" message
+    UpdateBeta,        ///< "Get test versions": arg 1 on, 0 off (the panel keeps it, updateBeta; the caller saves it)
     FitStart,          ///< eye fit: the whole fit (the caller starts the session)
     FitCenter,         ///< eye fit: the re-wear fit, as auto_recenter says (re-center only when it is off)
     FitStop,           ///< eye fit: stop the running fit
@@ -277,6 +278,15 @@ public:
     void setGazeScaleLinked(int pair, bool linked) {
         if (pair >= 0 && pair < 2) gazeScaleLinked_[pair] = linked;
     }
+
+    /** @return whether "Get test versions" is on (update checks use frame-updater's beta channel) */
+    bool updateBeta() const { return updateBeta_; }
+
+    /**
+     * Set "Get test versions" (at start: as panel.json remembers it).
+     * @param on whether it is on
+     */
+    void setUpdateBeta(bool on) { updateBeta_ = on; }
 
     /**
      * Show a record on the Advanced tab ("Having trouble"), as its "View" does (for --record).
@@ -653,6 +663,7 @@ private:
     LidsPage lidsPage_ = LidsPage::Look;  ///< the Eyelids tab's sub-tab
     GazePage gazePage_ = GazePage::Motion;  ///< the Gaze tab's sub-tab
     bool gazeScaleLinked_[2] = {true, true};  ///< the gaze scale's locks: left / right, up / down
+    bool updateBeta_ = false;             ///< "Get test versions" (panel.json's update_beta)
     SnapMark snapMark_;                   ///< mark ⑤ as last drawn
     std::string recordOpen_;            ///< the record shown on the Advanced tab ("" = none)
     bool recordsAllOpen_ = false;       ///< all records are listed on the Advanced tab (a record may be open over them)

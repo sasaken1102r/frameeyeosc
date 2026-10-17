@@ -150,6 +150,7 @@ struct Options {
     std::string fakePrompt;       ///< vrchat / etvr / livelink
     std::string fakeUpdate;       ///< a made-up update state (see printUsage)
     std::string fakeUpdateNotes;  ///< --fake-update-notes: the new release's summary ("both", "en" or "long")
+    bool updateBeta = false;      ///< --update-beta: "Get test versions" on (instead of panel.json's)
     std::string fakeFit;          ///< a made-up eye fit state (see printUsage)
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
@@ -316,8 +317,12 @@ void printUsage() {
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
         "      --fake-prompt vrchat|etvr|livelink|frameeyeosc  The recommended-settings question\n"
         "      --fake-autostart on|off|missing|unknown\n"
-        "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed\n"
-        "                        A made-up update state (the version row on the Advanced tab)\n"
+        "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed|\n"
+        "                    test|testbadge|onbeta\n"
+        "                        A made-up update state (the version row on the Advanced tab). test: the new version\n"
+        "                        is a test version; testbadge: up to date and a newer test version exists (the badge\n"
+        "                        while \"Get test versions\" is off); onbeta: running test version 0.7.11-beta.2\n"
+        "      --update-beta     \"Get test versions\" on (with --dump-png; else as panel.json says)\n"
         "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
         "                        English and Japanese, English only, or both cut at 300 characters\n"
         "      --fake-fit running|running-center|running-closed|done|done-center|done-standin|\n"
@@ -1001,12 +1006,15 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--fake-update" && hasNext) {
             options.fakeUpdate = argv[++i];
             static const char* const kStates[] = {"checking",  "uptodate",  "available",   "manual",
-                                                  "installing", "installed", "checkfailed", "installfailed"};
+                                                  "installing", "installed", "checkfailed", "installfailed",
+                                                  "test",       "testbadge", "onbeta"};
             if (std::find(std::begin(kStates), std::end(kStates), options.fakeUpdate) == std::end(kStates)) {
                 std::fprintf(stderr, "--fake-update: unknown state %s\n", options.fakeUpdate.c_str());
                 return false;
             }
             options.fake = true;
+        } else if (arg == "--update-beta") {
+            options.updateBeta = true;
         } else if (arg == "--fake-update-notes" && hasNext) {
             options.fakeUpdateNotes = argv[++i];
             if (options.fakeUpdateNotes != "both" && options.fakeUpdateNotes != "en" && options.fakeUpdateNotes != "long") {
@@ -1144,9 +1152,11 @@ Language configLanguage(const ConfigFile& config) {
 /**
  * The update checker's settings: frame-update.sh as install.sh puts it, this release's tarball name and the
  * install.sh option used when ~/.config/frameeyeosc/install-args is missing (0.3.x did not write it).
+ * @param beta "Get test versions" (panel.json): the beta channel; off, the stable one, which also looks at the beta
+ *             channel to tell whether a newer test version exists (the badge)
  * @return the settings
  */
-frame_updater::UpdaterConfig updaterConfig() {
+frame_updater::UpdaterConfig updaterConfig(bool beta) {
     frame_updater::UpdaterConfig c;
     const char* data = std::getenv("XDG_DATA_HOME");
     const char* home = std::getenv("HOME");
@@ -1159,6 +1169,8 @@ frame_updater::UpdaterConfig updaterConfig() {
     c.assetPattern = "frameeyeosc-{version}-steamframe-aarch64.tar.gz";
     // The update button is only in the panel, so whoever uses it has the panel installed
     c.defaultInstallArgs = {"--with-panel"};
+    c.channel = beta ? "beta" : "stable";
+    c.watchTestVersions = true;
     return c;
 }
 
@@ -1204,6 +1216,19 @@ frame_updater::UpdateStatus fakeUpdate(const std::string& state, const std::stri
             for (int i = 0; i < 299; ++i) u.notesJa += "長";
             u.notesJa += "…";
         }
+    } else if (state == "test") {
+        u.state = UpdateState::Available;
+        u.latest = "9.9.9-beta.1";
+        u.prerelease = true;
+        u.installable = true;
+    } else if (state == "testbadge") {
+        u.state = UpdateState::UpToDate;
+        u.testVersion = "9.9.9-beta.1";
+    } else if (state == "onbeta") {
+        u.state = UpdateState::UpToDate;
+        u.current = "0.7.11-beta.2";
+        u.latest = u.current;
+        u.prerelease = true;
     } else if (state == "installing") {
         u.state = UpdateState::Installing;
         u.step = "download";
@@ -2186,10 +2211,11 @@ int runDumpPng(const Options& options) {
         if (options.previewReset) panel.armResetForPreview();
         if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
         if (options.previewUpdatePrompt) panel.showUpdatePrompt(model.update.latest);
+        panel.setUpdateBeta(options.updateBeta);
         std::unique_ptr<frame_updater::UpdateChecker> updater;
         const bool updateCheck = model.config.flag(key::kUpdateCheck);
         if (options.updateLive) {
-            updater = std::make_unique<frame_updater::UpdateChecker>(updaterConfig());
+            updater = std::make_unique<frame_updater::UpdateChecker>(updaterConfig(panel.updateBeta()));
             updater->tick(updateCheck);
             settleUpdater(*updater, updateCheck);
             model.update = updater->status();
@@ -2917,6 +2943,11 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::UpdateDismiss:
             if (updater != nullptr) updater->dismiss();
             return;
+        case PanelAction::UpdateBeta:
+            // Switched in the panel; the loop saves it to panel.json
+            std::fprintf(stderr, "[update] test versions %s\n", panel.updateBeta() ? "on" : "off");
+            if (updater != nullptr) updater->setChannel(panel.updateBeta() ? "beta" : "stable");
+            return;
         case PanelAction::FitStart:
         case PanelAction::FitCenter: {
             const bool full = hit.action == PanelAction::FitStart;
@@ -3207,9 +3238,12 @@ void logUpdate(const frame_updater::UpdateStatus& u) {
     std::string line;
     switch (u.state) {
         case frame_updater::UpdateState::Unknown: return;
-        case frame_updater::UpdateState::UpToDate: line = "up to date (" + u.current + ")"; break;
+        case frame_updater::UpdateState::UpToDate:
+            line = "up to date (" + u.current + ")" + (u.testVersion.empty() ? "" : "; test version " + u.testVersion);
+            break;
         case frame_updater::UpdateState::Available:
-            line = "new release " + u.latest + (u.installable ? "" : " (not installable: " + u.reason + ")");
+            line = "new release " + u.latest + (u.prerelease ? " (a test version)" : "") +
+                   (u.installable ? "" : " (not installable: " + u.reason + ")");
             break;
         case frame_updater::UpdateState::Installing: line = "installing " + u.version + ": " + u.step; break;
         case frame_updater::UpdateState::Installed: line = "installed " + u.version + "; reopen to use it"; break;
@@ -3404,9 +3438,12 @@ int runOverlay(const Options& options) {
     model.records.dir = options.reportsDir;
     AutostartWorker autostart;
     autostart.start();
-    frame_updater::UpdateChecker updater(updaterConfig());
-    std::fprintf(stderr, "[update] frameeyeosc-panel %s, checking %s\n", FRAMEEYEOSC_VERSION,
-                 model.config.flag(key::kUpdateCheck) ? "on" : "off");
+    // "Get test versions", as left
+    bool savedBeta = ui_state::readUpdateBeta(uiStatePath);
+    panel.setUpdateBeta(savedBeta);
+    frame_updater::UpdateChecker updater(updaterConfig(savedBeta));
+    std::fprintf(stderr, "[update] frameeyeosc-panel %s, checking %s, %s channel\n", FRAMEEYEOSC_VERSION,
+                 model.config.flag(key::kUpdateCheck) ? "on" : "off", savedBeta ? "beta" : "stable");
     // The other Frame apps (the bottom of "Version"): which are installed and run, and their list from the site, fetched
     // only while update checks are on (at most hourly, shared by the apps; else the last one or the built-in one)
     frame_apps::AppsManager apps(appsManagerConfig());
@@ -4413,6 +4450,12 @@ int runOverlay(const Options& options) {
             if (!ui_state::writeGazeScaleLinks(uiStatePath, savedLinks, error)) {
                 std::fprintf(stderr, "[panel] %s\n", error.c_str());
             }
+        }
+        // ...and "Get test versions" (the checker was switched when it was pressed)
+        if (panel.updateBeta() != savedBeta) {
+            savedBeta = panel.updateBeta();
+            std::string error;
+            if (!ui_state::writeUpdateBeta(uiStatePath, savedBeta, error)) std::fprintf(stderr, "[panel] %s\n", error.c_str());
         }
 
         // The diagnostics page: redrawn when anything on it changes (the tool's checksum is looked at again too, which

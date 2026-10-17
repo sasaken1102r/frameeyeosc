@@ -7,6 +7,7 @@ mod eyecam_ctl;
 mod eyecam_live;
 mod feo;
 mod livelink;
+mod osc;
 mod replay;
 mod status;
 
@@ -15,7 +16,7 @@ use clap::{CommandFactory, FromArgMatches, Parser};
 use config::{ActiveType, Config, LidFit, OutputKind, Reload, Settings, Widen};
 use eyecam_live::{Live, LiveReader};
 use memmap2::{MmapMut, MmapOptions};
-use rosc::{OscMessage, OscPacket, OscType, encoder};
+use osc::Value as OscType;
 use status::{CalibrationStatus, CameraStatus, RawValues, SentValues, Status, StatusFile};
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
@@ -2811,6 +2812,8 @@ struct Output {
     // is logged once per reason.
     connect_error: Option<String>,
     resolve_error: Option<String>,
+    // The OSC message being sent, its buffer kept from one message to the next.
+    packet: Vec<u8>,
 }
 
 impl Output {
@@ -2825,6 +2828,7 @@ impl Output {
             drops: Drops::default(),
             connect_error: None,
             resolve_error: None,
+            packet: Vec::new(),
         }
     }
 
@@ -2953,8 +2957,11 @@ impl Output {
         if self.socket.is_none() {
             return Ok(());
         }
-        let packet = OscPacket::Message(OscMessage { addr, args });
-        self.send_datagram(&encoder::encode(&packet)?);
+        osc::encode(&addr, &args, &mut self.packet);
+        // Taken out while it is sent, as send_datagram borrows the whole sender
+        let packet = std::mem::take(&mut self.packet);
+        self.send_datagram(&packet);
+        self.packet = packet;
         Ok(())
     }
 
@@ -4611,6 +4618,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use osc::tests::{from_rosc, rosc_encode};
+    use rosc::OscPacket;
+
+    /// A received datagram as rosc reads it: the address and the arguments (as ours).
+    fn decode_osc(datagram: &[u8]) -> (String, Vec<OscType>) {
+        let (_, packet) = rosc::decoder::decode_udp(datagram).unwrap();
+        let OscPacket::Message(message) = packet else { panic!("not a message") };
+        (message.addr, message.args.into_iter().map(from_rosc).collect())
+    }
 
     fn settings() -> Settings {
         Settings::default()
@@ -6432,10 +6448,9 @@ mod tests {
         send_inactive(&mut output, &float).unwrap();
         let mut buffer = [0u8; 256];
         let size = listener.recv(&mut buffer).unwrap();
-        let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-        let OscPacket::Message(message) = packet else { panic!("not a message") };
-        assert_eq!(message.addr, "/avatar/parameters/FT/EyeTrackingActive");
-        assert_eq!(message.args, [OscType::Float(0.0)]);
+        let (addr, args) = decode_osc(&buffer[..size]);
+        assert_eq!(addr, "/avatar/parameters/FT/EyeTrackingActive");
+        assert_eq!(args, [OscType::Float(0.0)]);
         let off = Settings {
             eye_tracking_active: ActiveType::Off,
             ..settings()
@@ -6613,15 +6628,13 @@ mod tests {
         bridge.apply(reload(&vrchat)).unwrap();
         assert!(neutral(receive(&listener).unwrap()));
         bridge.on_sample(reading(6, look, [1.0, 0.55])).unwrap();
-        let (_, packet) = rosc::decoder::decode_udp(&receive(&listener).unwrap()).unwrap();
-        let OscPacket::Message(message) = packet else { panic!("not a message") };
-        assert_eq!(message.addr, "/avatar/parameters/FT/EyeTrackingActive");
+        let (addr, _) = decode_osc(&receive(&listener).unwrap());
+        assert_eq!(addr, "/avatar/parameters/FT/EyeTrackingActive");
         while receive(&listener).is_some() {}
         // VRChat mode never gets the neutral packet while idle
         bridge.on_lost("test").unwrap();
-        let (_, packet) = rosc::decoder::decode_udp(&receive(&listener).unwrap()).unwrap();
-        let OscPacket::Message(message) = packet else { panic!("not a message") };
-        assert_eq!(message.args, [OscType::Bool(false)]);
+        let (_, args) = decode_osc(&receive(&listener).unwrap());
+        assert_eq!(args, [OscType::Bool(false)]);
         bridge.livelink_neutral = None;
         bridge.keep_livelink_alive();
         assert!(receive(&listener).is_none());
@@ -6782,16 +6795,14 @@ mod tests {
         let receive = || {
             let mut buffer = [0u8; 256];
             let size = listener.recv(&mut buffer).unwrap();
-            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-            let OscPacket::Message(message) = packet else { panic!("not a message") };
-            message
+            decode_osc(&buffer[..size])
         };
-        let look = receive();
-        assert_eq!(look.addr, "/tracking/eye/CenterVec");
-        assert_eq!(look.args, [OscType::Float(0.0), OscType::Float(0.0), OscType::Float(1.0)]);
-        let lids = receive();
-        assert_eq!(lids.addr, "/tracking/eye/EyesClosedAmount");
-        assert_eq!(lids.args, [OscType::Float(0.0)]);
+        let (addr, args) = receive();
+        assert_eq!(addr, "/tracking/eye/CenterVec");
+        assert_eq!(args, [OscType::Float(0.0), OscType::Float(0.0), OscType::Float(1.0)]);
+        let (addr, args) = receive();
+        assert_eq!(addr, "/tracking/eye/EyesClosedAmount");
+        assert_eq!(args, [OscType::Float(0.0)]);
     }
 
     #[test]
@@ -6821,9 +6832,7 @@ mod tests {
         for _ in 0..12 {
             let mut buffer = [0u8; 256];
             let size = listener.recv(&mut buffer).unwrap();
-            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-            let OscPacket::Message(message) = packet else { panic!("not a message") };
-            received.push((message.addr, message.args));
+            received.push(decode_osc(&buffer[..size]));
         }
         let value = |name: &str| {
             received
@@ -6890,11 +6899,7 @@ mod tests {
         assert_eq!(messages[9..], expected);
         // On the wire: the toggles are int32, the rest float32, one value each
         for (addr, value) in &messages[9..] {
-            let bytes = encoder::encode(&OscPacket::Message(OscMessage {
-                addr: addr.clone(),
-                args: vec![value.clone()],
-            }))
-            .unwrap();
+            let bytes = rosc_encode(addr, &[*value]);
             let tag = if addr.ends_with("Toggle") { b",i\0\0" } else { b",f\0\0" };
             assert!(bytes.windows(4).any(|window| window == tag), "{addr}");
         }
@@ -6960,9 +6965,7 @@ mod tests {
         let mut buffer = [0u8; 256];
         let mut received = Vec::new();
         while let Ok(size) = listener.recv(&mut buffer) {
-            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-            let OscPacket::Message(message) = packet else { panic!("not a message") };
-            received.push((message.addr, message.args));
+            received.push(decode_osc(&buffer[..size]));
             if received.len() == 21 {
                 break;
             }
@@ -6970,6 +6973,57 @@ mod tests {
         assert_eq!(received.len(), 21);
         assert!(received.contains(&("/avatar/parameters/RightEyeY".into(), vec![OscType::Float(-0.4)])));
         assert!(received.contains(&("/avatar/parameters/LeftEyeSqueezeToggle".into(), vec![OscType::Int(0)])));
+    }
+
+    #[test]
+    fn every_message_goes_out_byte_for_byte_as_rosc_encoded_it() {
+        // Every builder, with the settings that change the addresses and arguments, without and with the camera
+        let camera = CameraValues {
+            squint: [Some(0.2), None],
+            pupil_dilation: [Some(0.5), Some(1.0)],
+            pupil_diameter: [Some(4.0), Some(12.0)],
+        };
+        let one = |list: Vec<(String, OscType)>| list.into_iter().map(|(addr, value)| (addr, vec![value]));
+        let mut messages: Vec<(String, Vec<OscType>)> = Vec::new();
+        for settings in [
+            settings(),
+            steamlink(),
+            Settings { prefix: String::new(), ..steamlink() },
+            Settings { prefix: "/x".into(), ..settings() },
+            Settings { output: OutputKind::Etvr, ..settings() },
+            Settings { eye_tracking_active: ActiveType::Float, ..settings() },
+            Settings { pupil_bits: 4, ..settings() },
+            Settings { independent_eyes: true, ..settings() },
+        ] {
+            for sample in [sample(), Sample { camera, ..sample() }] {
+                messages.extend(one(osc_messages(&settings, &sample)));
+                messages.extend(one(pupil_messages(&settings, &sample.camera)));
+                let dilation = pupil_dilation(&sample.camera);
+                messages.extend(one(PupilBits::default().messages(&settings, dilation, Instant::now())));
+                messages.extend(native_messages(&settings, sample.gaze, sample.lids));
+            }
+            messages.extend(one(squint_release(&settings, [true; 2], [None; 2])));
+            messages.extend(one(active_message(&settings, false).into_iter().collect()));
+        }
+        messages.extend(one(steamlink_messages([0.0; 6], [LID_RELAXED; 2])));
+        assert!(messages.len() > 300, "{}", messages.len());
+        let mut packet = Vec::new();
+        for (addr, args) in &messages {
+            osc::encode(addr, args, &mut packet);
+            assert_eq!(packet, rosc_encode(addr, args), "{addr} {args:?}");
+        }
+        // And through a real socket, as the sender sends them: one datagram each, the same bytes
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
+        output.refresh();
+        let mut buffer = [0u8; 256];
+        for (addr, args) in messages.iter().take(60) {
+            output.send(addr.clone(), args.clone()).unwrap();
+            let size = listener.recv(&mut buffer).unwrap();
+            assert_eq!(buffer[..size], rosc_encode(addr, args), "{addr}");
+        }
     }
 
     #[test]
@@ -9765,9 +9819,8 @@ mod tests {
         let mut buffer = [0u8; 1024];
         let mut received = Vec::new();
         while let Ok(size) = listener.recv(&mut buffer) {
-            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-            let OscPacket::Message(message) = packet else { panic!("not a message") };
-            received.push((message.addr, message.args[0].clone()));
+            let (addr, args) = decode_osc(&buffer[..size]);
+            received.push((addr, args[0]));
         }
         received
     }

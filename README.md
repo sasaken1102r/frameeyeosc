@@ -419,6 +419,9 @@ To update again later, use the panel's update button or the usual install comman
 ## Known issues
 
 - Avatars that use binary (bit-packed) VRCFT parameters are not supported when sending to VRChat directly, except for the eye cameras' pupils (`pupil_bits`). In the ETVR and LiveLink modes, the avatar side is up to VRCFaceTracking; use the LiveLink mode for widened eyes.
+- On Linux, if VRCFaceTracking's LiveLink module fails to load, choose **VRChat directly** (`output: vrchat`, UDP 9000) and enable OSC in VRChat. This bypasses VRCFaceTracking and needs an avatar with float eye parameters. See [#29](https://github.com/sasaken1102r/frameeyeosc/issues/29).
+- Prescription inserts can obscure the eye cameras or change their illumination. A failed camera calibration can keep the previous or provisional camera levels; it does not automatically switch that eye to Valve-only eyelids. To use Valve's values only, set **Eye cameras** to **Don't use** on the Basic tab (`camera_lids: false`); this also disables camera-based widening, squint and pupils. See [#32](https://github.com/sasaken1102r/frameeyeosc/issues/32).
+- VRChat's Android build currently fails to start OSC under Lepton on the Frame. Sending to localhost cannot help until VRChat opens its OSC listener. See [#5](https://github.com/sasaken1102r/frameeyeosc/issues/5).
 
 ## Privacy
 
@@ -458,6 +461,8 @@ cmake -G Ninja -S panel -B panel/build && ninja -C panel/build
 panel/build/gaze-fit-test   # the panel's eye fit logic
 scripts/package.sh   # builds dist/frameeyeosc-<version>-steamframe-aarch64.tar.gz with both, and dist/SHA256SUMS
 ```
+
+Release Rust builds use LTO and one codegen unit. The sender uses `opt-level = "z"` for size; eyecam retains the default speed optimization level for its image processing. The panel uses `-Os`, section garbage collection and LTO when supported (`-DFRAMEEYEOSC_SIZE_OPTIMIZED=OFF` keeps the ordinary compiler defaults). Packaging strips only its staged panel binary; debug builds are unchanged. `-DBUILD_TESTING=OFF` skips the panel test executables for build-only use; packaging always enables and runs them. The Linux CI runs the Rust and panel tests on x64 and ARM64; its Ubuntu binaries are validation artifacts, not SteamOS release packages.
 
 `vendor/frame-updater/` is a copy of the update checker shared by my Steam Frame apps, and `vendor/frame-apps/` of the list of my other Frame apps on Advanced › Version. Don't edit them here: `scripts/package.sh` stops if either differs from what its `MANIFEST.sha256` records.
 

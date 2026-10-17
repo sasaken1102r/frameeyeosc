@@ -1,0 +1,80 @@
+name: Linux tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Optional source commit for a matched baseline build
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build libcairo2-dev libfreetype-dev libvulkan-dev fonts-noto-cjk
+          mkdir -p "$RUNNER_TEMP/openvr"
+          case "$(uname -m)" in
+            aarch64) sdk_arch=linuxarm64 ;;
+            x86_64) sdk_arch=linux64 ;;
+            *) exit 1 ;;
+          esac
+          curl --fail --location --retry 3 "https://raw.githubusercontent.com/ValveSoftware/openvr/0924064316de3effbcd1acf1e309182a2deb1c05/lib/$sdk_arch/libopenvr_api.so" -o "$RUNNER_TEMP/openvr/libopenvr_api.so"
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version --verbose
+          c++ --version
+          sha256sum "$RUNNER_TEMP/openvr/libopenvr_api.so"
+      - name: Rust tests and release builds
+        run: |
+          cargo test --release --locked
+          cargo build --release --locked
+          cargo test --release --locked --manifest-path tools/eyecam/Cargo.toml
+          CARGO_PROFILE_RELEASE_STRIP=true cargo build --release --locked --manifest-path tools/eyecam/Cargo.toml
+      - name: Panel tests and release build
+        run: |
+          cmake -G Ninja -S panel -B panel/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DOPENVR_LIB_DIR="$RUNNER_TEMP/openvr"
+          cmake --build panel/build --parallel 4
+          ctest --test-dir panel/build --output-on-failure
+          sh vendor/frame-updater/verify.sh --local-only
+          sh vendor/frame-apps/verify.sh --local-only
+      - name: Record binary sizes
+        run: |
+          mkdir -p ci-results
+          for bin in target/release/frameeyeosc panel/build/frameeyeosc-panel tools/eyecam/target/release/eyecam-rec tools/eyecam/target/release/eyecam-grab; do
+            cp "$bin" "ci-results/$(basename "$bin")"
+          done
+          cp ci-results/frameeyeosc-panel ci-results/panel-unstripped
+          strip ci-results/frameeyeosc-panel
+          stat -c '%n %s' ci-results/* | tee ci-results/sizes.txt
+          sha256sum ci-results/frame* ci-results/eyecam-* | tee ci-results/SHA256SUMS
+          readelf -d ci-results/frameeyeosc-panel >ci-results/panel-dependencies.txt
+          rustc --version --verbose >ci-results/rust-version.txt
+          c++ --version >ci-results/cxx-version.txt
+          git rev-parse HEAD >ci-results/source-commit.txt
+          cargo tree --locked --target aarch64-unknown-linux-gnu -e normal,no-proc-macro >ci-results/runtime-crates.txt
+          scripts/third-party-licenses.sh
+          cp THIRD_PARTY_LICENSES.md ci-results/THIRD_PARTY_LICENSES.generated.md
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: validation-${{ matrix.runner }}
+          path: |
+            ci-results/
+            panel/build/Testing/Temporary/LastTest.log
+          retention-days: 14

@@ -419,6 +419,9 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 ## 既知の問題
 
 - VRChat に直接送るときは、パラメータをビットに詰める「バイナリパラメータ」の VRCFT アバターには対応していません（目のカメラの瞳孔だけは `pupil_bits` で対応）。ETVR モードと LiveLink モードでは、アバター側は VRCFaceTracking しだいです。見開きも伝えたいときは LiveLink モードを使ってください
+- Linux で VRCFaceTracking の LiveLink モジュールが読み込めない場合は、送り先を「VRChat に直接」（`output: vrchat`、UDP 9000）にして、VRChat の OSC を有効にしてください。VRCFaceTracking を経由しないので、小数の目のパラメータに対応するアバターが必要です。[#29](https://github.com/sasaken1102r/frameeyeosc/issues/29)
+- 度付きレンズは、目のカメラを遮ったり照明を変えたりすることがあります。カメラの調整が失敗した目は、前の値や仮の値を使うことがあり、自動で Valve のまぶただけに戻るわけではありません。Valve の値だけを使うには、基本タブの「目のカメラ」を「使わない」（`camera_lids: false`）にしてください。カメラによる見開き・細め・瞳孔もオフになります。[#32](https://github.com/sasaken1102r/frameeyeosc/issues/32)
+- Frame の Lepton 上では、VRChat の Android 版が現在 OSC を開始できません。VRChat が受信を開始するまでは localhost に送っても届きません。[#5](https://github.com/sasaken1102r/frameeyeosc/issues/5)
 
 ## プライバシー
 

@@ -134,6 +134,33 @@ The panel writes `config.json` and reads the status file. To pick its default la
 
 "Auto" sends to the PC Steam Link is streaming from. If that is the wrong PC, press "Enter IP" in the Target PC row on the Output tab. A keypad opens: type the PC's IPv4 address (for example `192.168.1.20`) and press "OK". Leave the port out; it goes in the Port row. The panel writes it to `host` in `config.json`, and the row shows "Manual 192.168.1.20". "Auto" switches back. To use a host name instead of an address, set `host` in `config.json` by hand; the row then shows "Manual" and the name, and "Auto" still switches back.
 
+### Starting the eye fit from another app
+
+Other apps on the Frame (a button on the controller, say) can start the panel's eye fit buttons with a command. The panel has to be running; the command never starts it:
+
+```sh
+~/.local/bin/frameeyeosc-panel --action recenter   # "Re-center only" (the middle dot, about 2.5 s)
+~/.local/bin/frameeyeosc-panel --action fit        # "Fit my eyes" / "Fit again" (about 20 s)
+~/.local/bin/frameeyeosc-panel --action stop       # "Stop" for the one running
+~/.local/bin/frameeyeosc-panel --action open       # open the panel (as launching it a second time does)
+```
+
+Each works like pressing the button, with the dashboard closed too: the dots show as for the automatic re-center when the headset is put on, and the dashboard stays closed (opening it then stops the fit, as always). With the dashboard open, the panel switches to its Eye fit tab, where "Stop" is. The command prints one short line to stderr (for example `recenter: started` or `fit: busy (a fit is running; use --action stop)`) and exits with:
+
+| Code | Meaning |
+|---|---|
+| 0 | Done: the re-center or fit started, `stop` stopped one, `open` showed the panel |
+| 1 | Unknown action or bad arguments |
+| 2 | The panel isn't running (or is 0.7.9 or earlier, without this command) |
+| 3 | No answer from the panel within 2 seconds |
+| 4 | frameeyeosc isn't running, or no eye data comes in |
+| 5 | `recenter` before any gaze fit: run `fit` first |
+| 6 | Busy: a fit or re-center is already running (`stop` it first) |
+| 7 | `stop` with nothing running |
+| 8 | The fit's values are locked by frameeyeosc's command line (the buttons are grey too) |
+
+It talks to the running panel over a socket only you can use (`$XDG_RUNTIME_DIR/frameeyeosc-panel.sock`, details in [panel/README.md](panel/README.md#ほかのアプリから動かす--action)). The panel only looks at that socket while it waits; a request makes it read the status file and `config.json` once. `--version` tells which panel is installed.
+
 ## Settings
 
 Settings are in `~/.config/frameeyeosc/config.json`. The panel writes it, and you can also edit it by hand. frameeyeosc checks it 10 times a second and applies changes without a restart. Missing keys use the defaults and unknown keys are ignored. If the file is broken or a value is out of range, frameeyeosc keeps the previous settings and reports the error (in the panel and in the status file).

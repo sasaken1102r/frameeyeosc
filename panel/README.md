@@ -121,6 +121,7 @@ frameeyeosc の設定を、Steam Frame を被ったまま SteamVR のダッシ�
 | 更新 | `~/.local/share/frameeyeosc/frame-update.sh`、`~/.cache/frameeyeosc/`（`update-check.json`・`update-state.json`・`update.log`） | スクリプトを動かし、状態ファイルを読む |
 | 変更履歴 `CHANGELOG.md`・`CHANGELOG.ja.md` | パネルの隣、開発ビルドならリポジトリ、`~/.local/share/frameeyeosc/`（上の「更新履歴」を参照） | 更新履歴を開いたときに読むだけ |
 | 記録 | `$XDG_STATE_HOME/frameeyeosc/reports/`（無ければ `~/.local/state/frameeyeosc/reports/`。上の「記録」を参照） | 校正と目合わせのたびに書く。新しい 10 件だけ残す |
+| `--action` のソケット `frameeyeosc-panel.sock` | `$XDG_RUNTIME_DIR/`（無ければ `/run/user/<uid>/`） | 常駐の間だけ開いて聞く（下の「ほかのアプリから動かす」） |
 | パネルの状態 `panel.json` | `$XDG_STATE_HOME/frameeyeosc/panel.json`（無ければ `~/.local/state/frameeyeosc/panel.json`） | 最後に開いた詳細タブ・まぶたタブ・視線タブの小タブ、視線の倍率の鍵、上の幅の履歴を書く・読む |
 | ログ | `journalctl --user`（frameeyeosc・frameeyeosc-panel・eyecam）、`~/.local/share/Steam/logs/eyetracking.txt` | 記録を作るときにその時間の分を読むだけ |
 | 目のプレビュー | 値は状態ファイルのフォルダの `gaze-dots.sock`（パネルが開く）、映像は eyecam-rec のフォルダの `preview` | 目のプレビューが見えている間だけ受け取る・読む（映像は読み取り専用、書かない） |
@@ -168,6 +169,7 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 - SteamVR が終わる（`VREvent_Quit`）と静かに終わる（終了コード 0）
 - すでに常駐しているときにもう一度起動すると、SteamVR にはつながず、常駐しているほうに SIGUSR1 を送ってすぐ終わる。常駐側はダッシュボードを開いてパネルを出す
 - 常駐の見分けは `$XDG_RUNTIME_DIR/frameeyeosc-panel.lock` のロック（flock）と、そこに書いた PID
+- ほかのアプリからボタンを押してもらうのは `--action recenter|fit|stop|open`（下の「ほかのアプリから動かす」）
 
 確認用のオプション（`--probe` 系以外は OpenVR なしで動く）:
 
@@ -217,6 +219,8 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 ./build/frameeyeosc-panel --dot-png out/dot_2026-09-28_00-00-00.png --dot-kind left
 ./build/frameeyeosc-panel --dot-png out/ring_2026-10-14_00-00-00.png --dot-kind left --dot-ring   # 倍率の前の視線の輪
 ./build/frameeyeosc-panel --version               # 版（Cargo.toml から）
+./build/frameeyeosc-panel --action recenter       # 常駐しているパネルに合わせ直しを頼む（fit / stop / open も。下を参照）
+./build/action-socket-test                        # --action の判断・終了コード・ソケットのテスト
 ./build/frameeyeosc-panel --contrast-report       # 色の組み合わせごとのコントラスト比と合否
 ./build/frameeyeosc-panel --probe                 # 常駐しているパネルを SteamVR 経由で探して状態を出す
 ./build/frameeyeosc-panel --probe-switch-away 3   # ダッシュボードを一時的な別のオーバーレイに切り替える（閉じたときの確認用）
@@ -249,6 +253,28 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 - **全面の光**: `recording` で `step_label` が `bright` か `dark` の間だけ、ダッシュボードとは別のオーバーレイ（`sasaken.frameeyeosc-panel.eyecam-fill`）を出す。ヘッドセットに固定（`SetOverlayTransformTrackedDeviceRelative`、HMD）で正面 0.9 m、幅 4 m の正方形（左右・上下とも約 131°）、真っ白か真っ黒で、真ん中に指示を薄く出す（1024 px 四方、ステップか言語が変わったときだけ描き直す）
   - **フェード**: 出るときは `SetOverlayAlpha` を 0 から 1 へ 0.7 秒かけて上げる（0 にしてから `ShowOverlay`）。録画が続いたままステップが変わったときは 0.5 秒かけて 0 へ下げてから隠す。明るい↔暗いが続くときも白から黒へ一気に変えず、今の光を 0.5 秒で消してから次の光を 0.7 秒で出す。アルファは前の周からの経過時間で動かす（`eyecam::stepLight`。1 回に進める時間は 0.1 秒まで、なのでループが詰まっても一気に明るくならない）。フェードの間はループを表示のフレームごと（約 90 Hz）に回す
   - **すぐ隠す**: 状態ファイルが 1 秒より古い・タブが消えた・録画していない（止まった・失敗した・idle に戻った）・［中止］を送った（返事を待たずに）のどれかなら、フェードせずにその周で隠す（`eyecam::hideLightAtOnce`）。パネルの終了時（どの終わり方でも）は真っ先に隠し、終了処理で `DestroyOverlay` する。プロセスが落ちたときは SteamVR が消す
+
+## ほかのアプリから動かす（--action）
+
+`frameeyeosc-panel --action NAME` で、常駐しているパネルにボタンを押してもらう（Frame のほかのアプリ、例えば aux のボタンの「押す = 合わせ直し、長押し = 目合わせ」のため）。パネルを起動はしない。`action_socket.{h,cpp}`。
+
+| NAME | パネルでいうと | すること |
+|---|---|---|
+| `recenter` | ［真ん中だけ合わせ直す］（`PanelAction::FitCenter`） | `startFit(…, gaze_fit::Mode::Center)`（真ん中の点、約 2.5 秒） |
+| `fit` | ［目を合わせる］／［もう一度合わせる］（`FitStart`） | `startFit(…, gaze_fit::Mode::Full)`（約 20 秒） |
+| `stop` | 目合わせ中の［やめる］（`FitStop`） | `fit.cancel()`（`Failure::Cancelled`） |
+| `open` | 2 回目の起動（SIGUSR1） | `vr.showPanel()` |
+
+- 終了コード（固定。ほかのアプリがコードごとに文を出す）: 0 受け付けた（始めた・止めた・パネルを出した）、1 知らない動作か引数の間違い（`--action NAME` ちょうど 2 つだけ）、2 パネルが動いていない（ソケットが無い・誰も聞いていない。0.7.9 以前のパネルもこれ）、3 返事が無い（2 秒）か返事の形でない、4 本体が動いていない（`status.running`）か目のデータが来ていない（`status.tracking`）、5 `recenter` で視線をまだ合わせていない（`FitInConfig::gazeFitted`）、6 目合わせか合わせ直しが動いている（`fit.active()`。先に `stop`）、7 `stop` で動いているものが無い、8 目合わせの値が本体のコマンドで固定中（`fitKeysLocked`）
+- 条件はボタンと同じ: 目合わせのボタンは本体が動いていて固定中でないときだけ押せ、動いている間は［やめる］しか出ない。それに加えて、目のデータが来ていなければ 4（測れないので）、`recenter` は視線を合わせてあるときだけ（被ったときの自動の合わせ直しと同じ。パネルの［真ん中だけ合わせ直す］は合わせていなくても押せる）。調べる順は 6 → 4 → 8 → 5
+- 標準エラーに 1 行: `recenter: started`、`fit: busy (a fit is running; use --action stop)`、`stop: nothing to stop`、`stop: stopped the eye fit`、`open: panel shown`、`recenter: no gaze fit yet (use --action fit first)`、`fit: frameeyeosc is not running`、`fit: no eye data from frameeyeosc`、`fit: locked (the fit's values are set on frameeyeosc's command line)`、`recenter: panel not running`、`recenter: no answer from the panel`、`bogus: unknown action (use recenter|fit|stop|open)`
+- ダッシュボードが閉じていれば閉じたまま、自動の合わせ直しと同じように点を出す（点はダッシュボードと関係なく出る。目合わせ全体も閉じたまま動く）。そのあとダッシュボードを開くと、いつもどおり止まる（`Failure::DashboardOpened`）。開いていれば「目を合わせる」タブにして（別のアプリのページなら `ShowDashboard` でこのパネルに。別のページのままだと 0.5 秒で止まるため）、［やめる］が押せるようにする
+- 記録（`summary.json`）の `trigger` は `"command"`
+- **ソケット**: `$XDG_RUNTIME_DIR/frameeyeosc-panel.sock`（無ければ `/run/user/<uid>/`。`/tmp` には作らない）、Unix ストリーム。SteamVR につながってから開き、終わるとき（どの終わり方でも、終了処理の最初に）消す。ロックを持っている常駐だけが開くので、残っていたソケットは落ちたパネルのものとして置き換える（ソケットでないファイルは消さずに、聞かない）。消すのは自分が作ったファイル（i-node が同じ）のときだけ
+- **安全**: 0600、フォルダはユーザーのもの（0700）、つないできた相手の uid を `SO_PEERCRED` で確かめる。読むのは決まった単語だけで、1 行 128 バイトまで。長すぎる行・1 秒以内に行が来ない接続は返事なしで閉じ、同時に待つ接続は 8 つまで
+- **やりとり**（ASCII、1 行ずつ、パネルが閉じる）: 要求は動作の名前と改行（`recenter\n`）、返事はコード・空白・短い英語（`0 started\n`、`6 busy (…)\n`）。知らない名前には `1 unknown action`（新しいコマンドと古いパネルのため）。コマンドは返事のコードでそのまま終わる（0〜99。表に無い新しいコードもそのまま）
+- **パネルの側**: メインループで毎周 `accept` と読み取り（ノンブロッキング。描画は待たない）。要求が来た周は、ダッシュボードが閉じていても状態ファイルと設定を読み直してから答える。閉じている間のループは 0.25 秒おきなので、返事はそれ以内
+- 試す: `./build/action-socket-test`（判断と終了コード、返事の行、パネルが無い・残ったソケット・黙っている・壊れた返事、本物の接続でのソケット。ソケットは今のフォルダに作って消す）
 
 ## ＋（プログラムを起動）から使う
 
@@ -342,6 +368,7 @@ systemctl --user daemon-reload
 | `src/status.*` | `status.json` の読み込みと、本体が動いているかの判断 |
 | `src/eye_preview.*` | 目のプレビュー: どの値で両目を描くか、まぶた・瞳孔・視線の形、eyecam-rec の `preview` ファイルの読み方（mmap・seqlock・確かめ）、映像が出せるか、`preview on` / `off` の送り方、`--fake-preview` の作り物 |
 | `src/eyecam.*` | 目の撮影タブ（開発用）: eyecam-rec の `status.json` の読み込み、タブと全面の光を出す条件と光のフェード、光の注意（始める前の確認と送るコマンド）、指示の文、`ctl.sock` への送信 |
+| `src/action_socket.*` | `--action`: 動作ごとの判断と終了コード、1 行のやりとり、コマンドの側（つないで 2 秒待つ）、パネルの側のソケット（ノンブロッキング、uid の確認） |
 | `src/autostart.*` | `systemctl --user` で自動起動を読む・切り替えるワーカースレッド |
 | `src/command.*` | fork＋execvp・パイプ・タイムアウト・waitpid |
 | `src/report.*` | 校正と目合わせの記録: ジャーナルと Valve のログの読み方、主な行、`summary.json`・`report.txt`、10 件だけ残す、書くスレッド、`--report` |

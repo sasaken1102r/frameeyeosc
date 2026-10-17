@@ -37,6 +37,7 @@ pkg_check_modules(VULKAN REQUIRED IMPORTED_TARGET vulkan)
 
 add_executable(frameeyeosc-panel
   src/main.cpp
+  src/action_socket.cpp
   src/auto_recenter.cpp
   src/autostart.cpp
   src/changelog.cpp
@@ -122,6 +123,15 @@ add_executable(auto-recenter-test tests/auto_recenter_test.cpp src/auto_recenter
 target_include_directories(auto-recenter-test PRIVATE src)
 target_compile_options(auto-recenter-test PRIVATE -Wall -Wextra)
 add_test(NAME auto-recenter COMMAND auto-recenter-test)
+
+# Actions from outside the panel (frameeyeosc-panel --action): what each one does in each state (the exit codes), the
+# reply line, the command against no panel, a stale socket, a silent or broken one, and the panel's socket with real
+# connections (made in the current folder): panel/build/action-socket-test
+add_executable(action-socket-test tests/action_socket_test.cpp src/action_socket.cpp)
+target_include_directories(action-socket-test PRIVATE src)
+target_compile_options(action-socket-test PRIVATE -Wall -Wextra)
+target_link_libraries(action-socket-test PRIVATE Threads::Threads)
+add_test(NAME action-socket COMMAND action-socket-test)
 
 # The eye log: starting, stopping and reaping the recording child (a stand-in, or a real frameeyeosc given as the
 # argument): panel/build/recorder-test [target/release/frameeyeosc]

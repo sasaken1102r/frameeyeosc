@@ -1,5 +1,6 @@
 // frameeyeosc-panel: a SteamVR dashboard panel for frameeyeosc's settings. It only writes config.json and reads
 // status.json; frameeyeosc keeps sending when the panel is closed, crashes or is not installed.
+#include "action_socket.h"
 #include "auto_recenter.h"
 #include "autostart.h"
 #include "config.h"
@@ -380,6 +381,13 @@ void printUsage() {
         "  --probe               Diagnostics: connect to SteamVR as a background app and describe the resident panel\n"
         "  --probe-switch-away [S]  Diagnostics: switch the dashboard to a temporary overlay for S s (default 3)\n"
         "  --version             Print the version\n"
+        "  --action recenter|fit|stop|open  Ask the running panel to start the gaze re-center, start the eye fit,\n"
+        "                        stop the one running, or open the panel (as its buttons do; the dashboard may stay\n"
+        "                        closed). Never starts the panel. Prints one line to stderr and exits with:\n"
+        "                        0 accepted (started / stopped / shown), 1 unknown action or bad arguments,\n"
+        "                        2 panel not running, 3 no answer from the panel, 4 frameeyeosc not running or no eye\n"
+        "                        data, 5 re-center before any gaze fit, 6 busy (a fit or re-center runs; stop it\n"
+        "                        first), 7 nothing to stop, 8 the fit's values are locked by frameeyeosc's command line\n"
         "  --config PATH         Config file (default ~/.config/frameeyeosc/config.json)\n"
         "  --status PATH         Status file (default $XDG_RUNTIME_DIR/frameeyeosc/status.json)\n");
 }
@@ -3438,13 +3446,26 @@ int runOverlay(const Options& options) {
         vr.logOverlayState("after connecting");
     }
 
+    // Requests from `frameeyeosc-panel --action` (action_socket.h), taken from now on: the actions need SteamVR (the
+    // targets, the dashboard), so before this the command finds no socket and says the panel isn't running
+    action_socket::Server actionServer;
+    {
+        std::string error;
+        const std::string path = action_socket::defaultSocketPath();
+        if (actionServer.open(path, error)) {
+            std::fprintf(stderr, "[action] listening on %s\n", path.c_str());
+        } else {
+            std::fprintf(stderr, "[action] not listening: %s\n", error.c_str());
+        }
+    }
+
     gaze_fit::Session fit;
     // The records of calibrations and eye fits (report.h): each run's start and its status a second, then the logs
     // read and written on the writer's own thread after it
     report::Writer writer(model.records.dir, report::systemSources());
     report::Run fitRun;
     report::Run calibRun;
-    std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself
+    std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself, "command" for --action
     bool fitRetryShown = false;        // the last fit was a re-wear fit the dashboard stopped, to be tried again
     std::string calibCommand;          // the calibration's command, to know its reply
     report::CalibWatch calibWatch;     // ...until it ends
@@ -3562,6 +3583,11 @@ int runOverlay(const Options& options) {
             break;
         }
 
+        // Requests from `--action`: taken in now, answered below once the files are read (read for them even when
+        // nothing else reads them, so the answer goes by the state now)
+        const std::vector<action_socket::Request> requests = actionServer.poll(nowSeconds());
+        for (const std::string& line : actionServer.takeLog()) std::fprintf(stderr, "[action] %s\n", line.c_str());
+
         // Files are only read while the panel is visible, or while an eye fit runs (the dashboard open or closed)
         const bool visible = vr.panelVisible();
         autostart.setActive(visible);
@@ -3572,7 +3598,9 @@ int runOverlay(const Options& options) {
         const bool watching =
             autoRecenter(model.config) != AutoRecenter::Off && fitInConfig(SettingsView(model)).gazeFitted;
         const double readEvery = often ? kStatusReadSec : kWatchStatusReadSec;
-        if ((often || watching) && ((visible && !wasVisible) || nowSeconds() >= lastStatusRead + readEvery)) {
+        const bool asked = !requests.empty();
+        if ((often || watching || asked) &&
+            (asked || (visible && !wasVisible) || nowSeconds() >= lastStatusRead + readEvery)) {
             lastStatusRead = nowSeconds();
             model.status = readStatus(model.statusPath, unixNow());
             if (model.status.running != lastRunning) {
@@ -3745,7 +3773,46 @@ int runOverlay(const Options& options) {
             }
         }
 
-        // A fit started (from the panel or by itself): its record starts
+        // ...and from `--action`, each as if its button were pressed, with the button's conditions (action_socket.h)
+        for (const action_socket::Request& request : requests) {
+            using action_socket::Effect;
+            const SettingsView view(model);
+            action_socket::State state;
+            state.running = model.status.running;
+            state.tracking = model.status.tracking;
+            state.locked = fitKeysLocked(view);
+            state.gazeFitted = fitInConfig(view).gazeFitted;
+            state.fitActive = fit.active();
+            state.fitIsRecenter = fit.view().mode == gaze_fit::Mode::Center;
+            const action_socket::Decision decision = action_socket::decide(request.action, state);
+            std::fprintf(stderr, "[action] %s (from PID %d): %s\n", action_socket::actionName(request.action),
+                         request.peerPid, decision.text.c_str());
+            switch (decision.effect) {
+                case Effect::StartRecenter:
+                case Effect::StartFit:
+                    // With the dashboard open, onto this panel's Eye fit tab as if pressed there (its "Stop" shows,
+                    // and another page showing would stop the fit). Closed, it stays closed: the targets show without
+                    // it, as for the automatic re-center, and opening it stops the fit
+                    if (dashboardOpen) {
+                        panel.setTab(PanelTab::EyeFit);
+                        if (!visible) vr.showPanel();
+                        dirty = true;
+                    }
+                    fitTrigger = "command";
+                    startFit(fit, decision.effect == Effect::StartFit ? gaze_fit::Mode::Full : gaze_fit::Mode::Center,
+                             view, &vr);
+                    break;
+                case Effect::StopFit:
+                    std::fprintf(stderr, "[fit] stopped\n");
+                    fit.cancel();
+                    break;
+                case Effect::ShowPanel: vr.showPanel(); break;
+                case Effect::None: break;
+            }
+            actionServer.answer(request.id, decision.code, decision.text);
+        }
+
+        // A fit started (from the panel, by itself or from --action): its record starts
         if (fit.active() && !fitRun.active()) {
             const gaze_fit::View started = fit.view();
             fitRun.begin(started.mode == gaze_fit::Mode::Full ? report::Kind::Fit : report::Kind::Recenter, unixNow());
@@ -4359,7 +4426,9 @@ int runOverlay(const Options& options) {
     }
 
     // The same shutdown for SIGTERM / SIGINT, SteamVR quitting, vrserver gone, "close" and "Quit"; a recording is
-    // stopped (and its file written out) first. The eye capture's light goes first of all (shutdown also destroys it)
+    // stopped (and its file written out) first. The eye capture's light goes first of all (shutdown also destroys it),
+    // and the --action socket with it (a command from now on hears the panel isn't running, not a timeout)
+    actionServer.close();
     if (vr.fillShown()) std::fprintf(stderr, "[eyecam] light off (quitting)\n");
     vr.hideFill();
     eyeLog.shutdown();
@@ -4415,6 +4484,16 @@ int main(int argc, char** argv) {
     // Line-buffered stderr so journald gets each line at once
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
     installSignalHandlers();
+
+    // `--action NAME` talks to the running panel and exits with its own codes (1 for bad arguments, not the usage's 2)
+    const std::vector<std::string> args(argv + 1, argv + argc);
+    if (std::find(args.begin(), args.end(), "--action") != args.end()) {
+        std::string line;
+        const int code =
+            action_socket::runCommand(args, action_socket::defaultSocketPath(), action_socket::kReplyTimeoutMs, line);
+        std::fprintf(stderr, "%s\n", line.c_str());
+        return code;
+    }
 
     Options options;
     if (!parseOptions(argc, argv, options)) {

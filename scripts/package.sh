@@ -26,6 +26,7 @@ panel/build/eye-preview-test
 panel/build/sounds-test
 panel/build/text-test
 panel/build/auto-recenter-test
+panel/build/action-socket-test
 panel/build/recorder-test
 panel/build/model-test
 panel/build/changelog-test

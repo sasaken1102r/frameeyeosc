@@ -72,6 +72,12 @@ add_executable(frameeyeosc-panel
 target_include_directories(frameeyeosc-panel PRIVATE third_party/openvr ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_definitions(frameeyeosc-panel PRIVATE FRAMEEYEOSC_VERSION="${FRAMEEYEOSC_VERSION}")
 target_compile_options(frameeyeosc-panel PRIVATE -Wall -Wextra)
+
+# Discard unused functions/data at link time without lowering the optimization level.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  target_compile_options(frameeyeosc-panel PRIVATE -ffunction-sections -fdata-sections)
+  target_link_options(frameeyeosc-panel PRIVATE -Wl,--gc-sections)
+endif()
 target_link_libraries(frameeyeosc-panel PRIVATE
   PkgConfig::CAIRO
   PkgConfig::FREETYPE

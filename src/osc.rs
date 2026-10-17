@@ -14,6 +14,7 @@ pub enum Value {
 
 pub type Sink<'a> = dyn FnMut(&[&str], &[Value]) + 'a;
 
+#[inline(always)]
 pub fn encode(address: &[&str], args: &[Value], packet: &mut Vec<u8>) {
     packet.clear();
     for part in address {

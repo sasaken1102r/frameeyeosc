@@ -33,6 +33,19 @@
 | `updateDismiss` | `Installed` / `InstallFailed` を閉じる | 閉じる | Close |
 | `updateLogHint` | 失敗したときの補足 | くわしくは ~/.cache/<アプリ>/update.log | Details: ~/.cache/<app>/update.log |
 
+## テスト版（0.4.0 から。使うアプリだけ）
+
+設定の「テスト版も受け取る」（既定オフ。オンで `--channel beta` / `setChannel("beta")`）と、その周りの文言。オフのあいだは `watchTestVersions` で beta チャンネルも見て、今より新しいテスト版があるときだけ「テスト版あり」の印を出す（ずっと出しておく「NEW」の印は付けない）。オンのときは印を出さず、更新の行が「新しいテスト版 … があります」になる。
+
+| キー | いつ | 日本語 | English |
+|---|---|---|---|
+| `rowUpdateBeta` | 設定の名前 | テスト版も受け取る | Get test versions |
+| `hintUpdateBeta` | その説明 | 試してほしい人向けの版も届きます。ふつうはオフのままで大丈夫 | Also offers versions made for testing. Leave it Off unless asked |
+| `hintUpdateBetaKeep` | テスト版を使っていて、設定がオフ | オフにしても、今のテスト版はそのまま。次の本番の版が出たら届きます | Your test version stays; the next regular version will be offered |
+| `updateTestAvailable` | 設定がオフで、今より新しいテスト版がある（`testVersion`）。設定の名前の横の小さな印 | テスト版あり | Test version available |
+| `updateAvailableTestFormat` | `Available` で `prerelease`（新しい版がテスト版）。`updateAvailableFormat` の代わり | 新しいテスト版 %s があります | Test version %s is available |
+| `updateUsingTestFormat` | `UpToDate` で、動いている版がテスト版（`isPrerelease(current)`）。「最新版です」の代わり | テスト版 %s を使っています | Using test version %s |
+
 ## 新しい版の要約（`UpdateStatus::notes` / `notesJa`、0.2.0 から）
 
 `Available` のとき、更新の行の下に新しい版の要約を出す（リリースの本文から frame-update.sh が取る。訳さずにそのまま出す）。

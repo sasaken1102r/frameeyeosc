@@ -184,6 +184,54 @@ void testWidenRouting(const FontSet& fonts) {
     }
 }
 
+void testRelearnButton(const FontSet& fonts) {
+    // "Relearn my eyes" at the right of the eye cameras' state row: usable while eyecam-rec reads the cameras live
+    // with the eye video and the cameras drive the eyelids (or learn to)
+    EyePanel panel(fonts);
+    PanelModel m = modelWith(Lids::Both);
+    panel.setTab(PanelTab::Eyecam);
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).empty());  // not live yet
+    eyecam::Status& e = m.eyecam.status;
+    e.live = e.locked = true;
+    e.hasBaseline = true;
+    e.baseline = "ready";
+    panel.render(m);
+    const std::vector<EyePanel::HitArea> relearn = hits(panel, PanelAction::EyecamRelearn);
+    CHECK(relearn.size() == 1);
+    // ...on the card, within the panel's right edge, at the state row (above the calibration buttons)
+    const std::vector<EyePanel::HitArea> calib = hits(panel, PanelAction::EyecamCalib);
+    if (relearn.size() == 1 && !calib.empty()) {
+        CHECK(relearn[0].x + relearn[0].w <= panel.width() && relearn[0].y + relearn[0].h <= calib[0].y);
+    }
+    // While learning (the countdown in the pill) it can be pressed again; not while a command waits, nor with the
+    // cameras unused, camera_lids off or no eye video
+    e.baseline = "warming";
+    e.warmupRemainingS = 12;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).size() == 1);
+    m.eyecam.busy = true;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).empty());
+    m.eyecam.busy = false;
+    e.locked = false;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).empty());
+    e.locked = true;
+    PanelModel valve = modelWith(Lids::Valve);
+    valve.eyecam.status = e;
+    valve.status.camera.calibState = 5;
+    panel.render(valve);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).empty());
+    // The model's rule: the cameras in use, or learning to
+    CHECK(relearnUse(CameraUse::Both) && relearnUse(CameraUse::Left) && relearnUse(CameraUse::Right) &&
+          relearnUse(CameraUse::Warming));
+    for (CameraUse other : {CameraUse::Unknown, CameraUse::Off, CameraUse::NotCalibrated, CameraUse::NoCamera,
+                            CameraUse::Error, CameraUse::Valve}) {
+        CHECK(!relearnUse(other));
+    }
+}
+
 void testSliderMoved(const FontSet& fonts) {
     // The eye cameras' page: no sensitivity slider any more, a pointer to the Eyelids tab instead
     EyePanel panel(fonts);
@@ -474,6 +522,43 @@ std::vector<report::Summary> records(int count) {
     return list;
 }
 
+void testWidenSwitch(const FontSet& fonts) {
+    // "Widening" on the Eyelids tab's "Look": On / Off (widen), whatever drives the eyelids; Off greys the slider
+    for (const Lids lids : {Lids::Valve, Lids::Saturated, Lids::Both, Lids::Left}) {
+        for (const bool eyecam : {true, false}) {
+            for (const Language language : {Language::Ja, Language::En}) {
+                EyePanel panel(fonts);
+                panel.setTab(PanelTab::Lids);
+                panel.setLidsPage(LidsPage::Look);
+                PanelModel m = modelWith(lids, eyecam);
+                m.language = language;
+                panel.render(m);
+                std::vector<EyePanel::HitArea> both = hits(panel, PanelAction::SetBool, key::kWiden);
+                CHECK(both.size() == 2);
+                if (both.size() == 2) CHECK(both[0].hit.arg == 1 && both[1].hit.arg == 0);
+                // Pressing "Off" asks for widen = false
+                const PanelHit off = pressArg(panel, PanelAction::SetBool, 0);
+                CHECK(off.action == PanelAction::SetBool && off.arg == 0 && std::string(off.key) == key::kWiden);
+                // Off: the slider can't be moved (nothing it sets shows), the switch still can
+                m.config.root.set(key::kWiden, JsonValue::makeBool(false));
+                panel.render(m);
+                CHECK(hits(panel, PanelAction::SetBool, key::kWiden).size() == 2);
+                CHECK(hits(panel, PanelAction::EyecamSensitivity).empty());
+                CHECK(hits(panel, PanelAction::SetLidWiden).empty());
+                for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                    if (area.hit.action == PanelAction::Tab && area.y < 100) continue;
+                    if (area.hit.action == PanelAction::PreviewOpen) continue;
+                    CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676);
+                }
+                // Locked by frameeyeosc's command line (--no-widen): nothing to press
+                m.status.locked.push_back(key::kWiden);
+                panel.render(m);
+                CHECK(hits(panel, PanelAction::SetBool, key::kWiden).empty());
+            }
+        }
+    }
+}
+
 void testDiagPage(const FontSet& fonts) {
     // The Advanced tab offers it, with eyecam-rec and without
     for (const bool eyecam : {true, false}) {
@@ -730,6 +815,8 @@ void testLidsPages(const FontSet& fonts) {
                     const bool fine = page == LidsPage::Fine;
                     // Look: the widening (whatever drives it), the smoothing presets, the sync slider
                     CHECK(hits(panel, PanelAction::LidPreset).size() == (look ? 3u : 0u));
+                    // ...and widening at all (widen), with the eye cameras or without
+                    CHECK(hits(panel, PanelAction::SetBool, key::kWiden).size() == (look ? 2u : 0u));
                     CHECK(hits(panel, PanelAction::NumberSlider, key::kLidSync).size() == (look ? 1u : 0u));
                     if (!look) {
                         CHECK(hits(panel, PanelAction::SetLidWiden).empty());
@@ -1124,6 +1211,64 @@ void testUpdateNotice(const FontSet& fonts) {
                 CHECK(hits(panel, PanelAction::UpdateCheck).size() ==
                       (checking || state == UpdateState::Installing ? 0u : 1u));
                 CHECK(hits(panel, PanelAction::HistoryOpen).size() == 1);
+            }
+        }
+    }
+}
+
+void testUpdateBeta(const FontSet& fonts) {
+    // "Get test versions" on the Version page: On / Off, kept by the panel (the caller saves it); the page fits with the
+    // badge, the keep-hint and a test version on offer, in both languages and every update state
+    EyePanel panel(fonts);
+    PanelModel m = modelWith(Lids::Both, false);
+    m.update.state = frame_updater::UpdateState::UpToDate;
+    m.update.current = "0.7.10";
+    m.update.latest = "0.7.10";
+    panel.setTab(PanelTab::Advanced);
+    panel.setAdvPage(AdvPage::Version);
+    panel.render(m);
+    CHECK(!panel.updateBeta());
+    CHECK(hits(panel, PanelAction::UpdateBeta).size() == 2);
+    const PanelHit on = pressArg(panel, PanelAction::UpdateBeta, 1);
+    CHECK(on.action == PanelAction::UpdateBeta && on.arg == 1 && panel.updateBeta());
+    panel.render(m);
+    // Pressing the chosen one again changes nothing (nothing to save)
+    CHECK(pressArg(panel, PanelAction::UpdateBeta, 1).action == PanelAction::None && panel.updateBeta());
+    panel.render(m);
+    CHECK(pressArg(panel, PanelAction::UpdateBeta, 0).action == PanelAction::UpdateBeta && !panel.updateBeta());
+
+    using frame_updater::UpdateState;
+    for (const bool beta : {false, true}) {
+        for (const Language language : {Language::Ja, Language::En}) {
+            for (const UpdateState state : {UpdateState::Unknown, UpdateState::UpToDate, UpdateState::Available,
+                                            UpdateState::Installing, UpdateState::Installed, UpdateState::CheckFailed,
+                                            UpdateState::InstallFailed}) {
+                for (const bool onTest : {false, true}) {
+                    PanelModel u = m;
+                    u.language = language;
+                    u.update.state = state;
+                    u.update.checkedAt = 1791287109;
+                    u.update.error = "network";
+                    u.update.version = "0.7.11-beta.1";
+                    u.update.step = "download";
+                    u.update.installable = true;
+                    u.update.notes = std::string(400, 'x');
+                    u.update.current = onTest ? "0.7.11-beta.2" : "0.7.10";
+                    u.update.latest = beta ? "0.7.11-beta.12" : "0.7.11";
+                    u.update.prerelease = beta;
+                    u.update.testVersion = beta ? "" : "0.7.11-beta.12";
+                    EyePanel p(fonts);
+                    p.setUpdateBeta(beta);
+                    p.setTab(PanelTab::Advanced);
+                    p.setAdvPage(AdvPage::Version);
+                    p.render(u);
+                    CHECK(p.advancedMaxScroll() == 0.0 && !p.wantsScroll());
+                    CHECK(hits(p, PanelAction::UpdateBeta).size() == 2);
+                    for (const EyePanel::HitArea& area : p.hitAreas()) {
+                        if (area.hit.action == PanelAction::Tab || area.x < 400) continue;
+                        CHECK(area.y >= 110 && area.y + area.h <= 676);
+                    }
+                }
             }
         }
     }
@@ -2595,6 +2740,7 @@ int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
     testWidenRouting(fonts);
+    testWidenSwitch(fonts);
     testLidsPages(fonts);
     testSnapMark(fonts);
     testEyeBehavior(fonts);
@@ -2602,6 +2748,7 @@ int main() {
     testGazePages(fonts);
     testGazeScaleLocks(fonts);
     testSliderMoved(fonts);
+    testRelearnButton(fonts);
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);
     testOutputCards(fonts);
@@ -2616,6 +2763,7 @@ int main() {
     testSubTabs(fonts);
     testGazeRingsRow(fonts);
     testUpdateNotice(fonts);
+    testUpdateBeta(fonts);
     testDiagFromEyecam(fonts);
     testPagesFit(fonts);
     testRecords(fonts);

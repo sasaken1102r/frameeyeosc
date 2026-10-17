@@ -7,6 +7,7 @@ mod eyecam_ctl;
 mod eyecam_live;
 mod feo;
 mod livelink;
+mod osc;
 mod replay;
 mod status;
 
@@ -15,7 +16,7 @@ use clap::{CommandFactory, FromArgMatches, Parser};
 use config::{ActiveType, Config, LidFit, OutputKind, Reload, Settings, Widen};
 use eyecam_live::{Live, LiveReader};
 use memmap2::{MmapMut, MmapOptions};
-use rosc::{OscMessage, OscPacket, OscType, encoder};
+use osc::Value as OscType;
 use status::{CalibrationStatus, CameraStatus, RawValues, SentValues, Status, StatusFile};
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
@@ -576,6 +577,10 @@ struct Args {
     /// and --lid-wide)
     #[arg(long, value_enum, default_value_t = Widen::Normal)]
     lid_widen: Widen,
+    /// Never widen: no eyelid goes out above relaxed open (VRCFT 0.75), whatever the eye camera, --lid-widen or the
+    /// lid marks say. Closing and the eye camera's squint are unchanged
+    #[arg(long)]
+    no_widen: bool,
     /// OSC destination as HOST:PORT, or "auto" for the PC that Steam Link is streaming from
     #[arg(long, default_value = "auto")]
     target: String,
@@ -2811,6 +2816,8 @@ struct Output {
     // is logged once per reason.
     connect_error: Option<String>,
     resolve_error: Option<String>,
+    // The OSC message being sent, its buffer kept from one message to the next.
+    packet: Vec<u8>,
 }
 
 impl Output {
@@ -2825,6 +2832,7 @@ impl Output {
             drops: Drops::default(),
             connect_error: None,
             resolve_error: None,
+            packet: Vec::new(),
         }
     }
 
@@ -2949,12 +2957,15 @@ impl Output {
 
     /// Send one message. A network error (unreachable, refused, no address yet...) is logged when it
     /// starts and ends, and never returned: the next sample simply tries again.
-    fn send(&mut self, addr: String, args: Vec<OscType>) -> Result<(), Box<dyn Error>> {
+    fn send(&mut self, addr: &str, args: &[OscType]) -> Result<(), Box<dyn Error>> {
         if self.socket.is_none() {
             return Ok(());
         }
-        let packet = OscPacket::Message(OscMessage { addr, args });
-        self.send_datagram(&encoder::encode(&packet)?);
+        osc::encode(addr, args, &mut self.packet);
+        // Taken out while it is sent, as send_datagram borrows the whole sender
+        let packet = std::mem::take(&mut self.packet);
+        self.send_datagram(&packet);
+        self.packet = packet;
         Ok(())
     }
 
@@ -3368,6 +3379,8 @@ fn process(
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
         let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from, v2);
         let shut = sync_blinks(mapped.map(|lid| lid <= 0.0), mapped, settings.blink_sync_below);
+        // With widening off nothing goes above relaxed open (`widen`); below it nothing changes
+        let mixed = if settings.widen { mixed } else { mixed.map(|lid| lid.min(LID_RELAXED)) };
         let mut lids = sync_lids(mixed, settings.lid_sync);
         keep_floor(&mut lids, mixed, floored, floor);
         if blink_stages {
@@ -3457,8 +3470,9 @@ fn process(
         // it, for the sample it turns on (or the camera stops) while a widen is still in the filter. The filter only
         // averages, so nothing goes above it meanwhile; lid_sync could lift a capped eye toward the other eye's camera
         // widening, so it is capped again after that. Closing, half-closed and blinks are below relaxed open and
-        // untouched. The widen sustain applies to the camera's widening too.
-        let capped = camera_lids.map(|camera| saturated && camera.is_none());
+        // untouched. The widen sustain applies to the camera's widening too. With widening off (`widen`) every eye is
+        // capped the same way, the camera's included, so its closing and squint stay as they are.
+        let capped = camera_lids.map(|camera| !settings.widen || (saturated && camera.is_none()));
         let mut lids = [0, 1].map(|eye| if capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
         lids = smoother.sustain_widen(data.sample_time, lids);
         smoother.filter(dt, &mut gaze, &mut lids, hold);
@@ -3608,7 +3622,7 @@ fn output_lids(output: OutputKind, lids: [f32; 2]) -> [f32; 2] {
 /// The Live Link packet for one sample, stamped `time` seconds into the day. Each eye's gaze is its own with
 /// "move eyes separately", else the combined one (as for the other outputs). Nothing else goes to LiveLink: no
 /// EyeTrackingActive and no parameter prefix, which only VRChat reads.
-fn livelink_packet(sample: &Sample, time: f64) -> Vec<u8> {
+fn livelink_packet(sample: &Sample, time: f64) -> [u8; livelink::PACKET_LEN] {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
     let lids = output_lids(OutputKind::LiveLink, sample.lids);
     livelink::packet(time, &livelink::shapes(lids, [left_x, left_y, right_x, right_y]))
@@ -3846,7 +3860,7 @@ fn active_message(settings: &Settings, active: bool) -> Option<(String, OscType)
 /// The one-time "not active" on pausing, switching away or losing tracking (nothing with "off").
 fn send_inactive(output: &mut Output, settings: &Settings) -> Result<(), Box<dyn Error>> {
     match active_message(settings, false) {
-        Some((addr, value)) => output.send(addr, vec![value]),
+        Some((addr, value)) => output.send(&addr, &[value]),
         None => Ok(()),
     }
 }
@@ -3903,7 +3917,7 @@ fn steamlink_stream(settings: &Settings) -> Option<(&str, u16)> {
 /// where they were (shut, if tracking was lost in a blink).
 fn send_steamlink_neutral(output: &mut Output) -> Result<(), Box<dyn Error>> {
     for (addr, arg) in steamlink_messages([0.0; 6], [LID_RELAXED; 2]) {
-        output.send(addr, vec![arg])?;
+        output.send(&addr, &[arg])?;
     }
     Ok(())
 }
@@ -3920,7 +3934,7 @@ fn native_stream(settings: &Settings) -> Option<(&str, u16)> {
 /// eyes would otherwise stay where they were (shut, if tracking was lost in a blink) until then.
 fn send_native_neutral(output: &mut Output, settings: &Settings) -> Result<(), Box<dyn Error>> {
     for (addr, args) in native_messages(settings, [0.0; 6], [0.75; 2]) {
-        output.send(addr, args)?;
+        output.send(&addr, &args)?;
     }
     Ok(())
 }
@@ -4148,7 +4162,7 @@ impl Bridge {
                     if pupil_stream(&self.settings).is_some() {
                         let bits = self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now);
                         for (addr, arg) in pupil_messages(&self.settings, &sample.camera).into_iter().chain(bits) {
-                            self.pupil_output.send(addr, vec![arg])?;
+                            self.pupil_output.send(&addr, &[arg])?;
                         }
                     }
                 }
@@ -4160,20 +4174,20 @@ impl Bridge {
                 true
             } else {
                 for (addr, arg) in osc_messages(&self.settings, &sample) {
-                    self.output.send(addr, vec![arg])?;
+                    self.output.send(&addr, &[arg])?;
                 }
                 if self.settings.output == OutputKind::Vrchat {
                     for (addr, arg) in self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now) {
-                        self.output.send(addr, vec![arg])?;
+                        self.output.send(&addr, &[arg])?;
                     }
                     for (addr, arg) in squint_release(&self.settings, self.squint_out, sample.camera.squint) {
-                        self.output.send(addr, vec![arg])?;
+                        self.output.send(&addr, &[arg])?;
                     }
                     self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
                 }
                 if native_stream(&self.settings).is_some() {
                     for (addr, args) in native_messages(&self.settings, sample.gaze, sample.lids) {
-                        self.output.send(addr, args)?;
+                        self.output.send(&addr, &args)?;
                     }
                 }
                 true
@@ -4249,7 +4263,7 @@ impl Bridge {
     /// Set the squint that went out back to 0 (see squint_release), where it went with the current settings.
     fn release_squint(&mut self) -> Result<(), Box<dyn Error>> {
         for (addr, arg) in squint_release(&self.settings, self.squint_out, [None; 2]) {
-            self.output.send(addr, vec![arg])?;
+            self.output.send(&addr, &[arg])?;
         }
         self.squint_out = [false; 2];
         Ok(())
@@ -4611,6 +4625,15 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use osc::tests::{from_rosc, rosc_encode};
+    use rosc::OscPacket;
+
+    /// A received datagram as rosc reads it: the address and the arguments (as ours).
+    fn decode_osc(datagram: &[u8]) -> (String, Vec<OscType>) {
+        let (_, packet) = rosc::decoder::decode_udp(datagram).unwrap();
+        let OscPacket::Message(message) = packet else { panic!("not a message") };
+        (message.addr, message.args.into_iter().map(from_rosc).collect())
+    }
 
     fn settings() -> Settings {
         Settings::default()
@@ -6044,13 +6067,13 @@ mod tests {
         output.refresh();
         assert_eq!(output.addr().map(|addr| addr.port()), Some(port));
         for _ in 0..5 {
-            assert!(output.send("/avatar/parameters/FT/v2/EyeLeftX".into(), vec![OscType::Float(0.1)]).is_ok());
+            assert!(output.send("/avatar/parameters/FT/v2/EyeLeftX", &[OscType::Float(0.1)]).is_ok());
         }
         // A target that can't be looked up just waits (no socket, no error).
         let mut nowhere = Output::new(Target::Fixed { host: "no-such-host.invalid".into(), port: 9000 });
         nowhere.refresh();
         assert!(nowhere.addr().is_none());
-        assert!(nowhere.send("/x".into(), vec![OscType::Bool(true)]).is_ok());
+        assert!(nowhere.send("/x", &[OscType::Bool(true)]).is_ok());
     }
 
     #[test]
@@ -6123,7 +6146,7 @@ mod tests {
         assert_eq!(output.addr(), Some(addr));
         assert_eq!(output.health.failing, None);
         assert_eq!(output.last_resolve, resolved);
-        assert!(output.send("/x".into(), vec![OscType::Bool(true)]).is_ok());
+        assert!(output.send("/x", &[OscType::Bool(true)]).is_ok());
         let mut buf = [0u8; 64];
         let (_, from) = listener.recv_from(&mut buf).unwrap();
         assert_eq!(from.ip(), loopback(1));
@@ -6432,10 +6455,9 @@ mod tests {
         send_inactive(&mut output, &float).unwrap();
         let mut buffer = [0u8; 256];
         let size = listener.recv(&mut buffer).unwrap();
-        let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-        let OscPacket::Message(message) = packet else { panic!("not a message") };
-        assert_eq!(message.addr, "/avatar/parameters/FT/EyeTrackingActive");
-        assert_eq!(message.args, [OscType::Float(0.0)]);
+        let (addr, args) = decode_osc(&buffer[..size]);
+        assert_eq!(addr, "/avatar/parameters/FT/EyeTrackingActive");
+        assert_eq!(args, [OscType::Float(0.0)]);
         let off = Settings {
             eye_tracking_active: ActiveType::Off,
             ..settings()
@@ -6613,15 +6635,13 @@ mod tests {
         bridge.apply(reload(&vrchat)).unwrap();
         assert!(neutral(receive(&listener).unwrap()));
         bridge.on_sample(reading(6, look, [1.0, 0.55])).unwrap();
-        let (_, packet) = rosc::decoder::decode_udp(&receive(&listener).unwrap()).unwrap();
-        let OscPacket::Message(message) = packet else { panic!("not a message") };
-        assert_eq!(message.addr, "/avatar/parameters/FT/EyeTrackingActive");
+        let (addr, _) = decode_osc(&receive(&listener).unwrap());
+        assert_eq!(addr, "/avatar/parameters/FT/EyeTrackingActive");
         while receive(&listener).is_some() {}
         // VRChat mode never gets the neutral packet while idle
         bridge.on_lost("test").unwrap();
-        let (_, packet) = rosc::decoder::decode_udp(&receive(&listener).unwrap()).unwrap();
-        let OscPacket::Message(message) = packet else { panic!("not a message") };
-        assert_eq!(message.args, [OscType::Bool(false)]);
+        let (_, args) = decode_osc(&receive(&listener).unwrap());
+        assert_eq!(args, [OscType::Bool(false)]);
         bridge.livelink_neutral = None;
         bridge.keep_livelink_alive();
         assert!(receive(&listener).is_none());
@@ -6782,16 +6802,14 @@ mod tests {
         let receive = || {
             let mut buffer = [0u8; 256];
             let size = listener.recv(&mut buffer).unwrap();
-            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-            let OscPacket::Message(message) = packet else { panic!("not a message") };
-            message
+            decode_osc(&buffer[..size])
         };
-        let look = receive();
-        assert_eq!(look.addr, "/tracking/eye/CenterVec");
-        assert_eq!(look.args, [OscType::Float(0.0), OscType::Float(0.0), OscType::Float(1.0)]);
-        let lids = receive();
-        assert_eq!(lids.addr, "/tracking/eye/EyesClosedAmount");
-        assert_eq!(lids.args, [OscType::Float(0.0)]);
+        let (addr, args) = receive();
+        assert_eq!(addr, "/tracking/eye/CenterVec");
+        assert_eq!(args, [OscType::Float(0.0), OscType::Float(0.0), OscType::Float(1.0)]);
+        let (addr, args) = receive();
+        assert_eq!(addr, "/tracking/eye/EyesClosedAmount");
+        assert_eq!(args, [OscType::Float(0.0)]);
     }
 
     #[test]
@@ -6821,9 +6839,7 @@ mod tests {
         for _ in 0..12 {
             let mut buffer = [0u8; 256];
             let size = listener.recv(&mut buffer).unwrap();
-            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-            let OscPacket::Message(message) = packet else { panic!("not a message") };
-            received.push((message.addr, message.args));
+            received.push(decode_osc(&buffer[..size]));
         }
         let value = |name: &str| {
             received
@@ -6890,11 +6906,7 @@ mod tests {
         assert_eq!(messages[9..], expected);
         // On the wire: the toggles are int32, the rest float32, one value each
         for (addr, value) in &messages[9..] {
-            let bytes = encoder::encode(&OscPacket::Message(OscMessage {
-                addr: addr.clone(),
-                args: vec![value.clone()],
-            }))
-            .unwrap();
+            let bytes = rosc_encode(addr, &[*value]);
             let tag = if addr.ends_with("Toggle") { b",i\0\0" } else { b",f\0\0" };
             assert!(bytes.windows(4).any(|window| window == tag), "{addr}");
         }
@@ -6955,14 +6967,12 @@ mod tests {
         let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
         output.refresh();
         for (addr, arg) in osc_messages(&steamlink(), &sample()) {
-            output.send(addr, vec![arg]).unwrap();
+            output.send(&addr, &[arg]).unwrap();
         }
         let mut buffer = [0u8; 256];
         let mut received = Vec::new();
         while let Ok(size) = listener.recv(&mut buffer) {
-            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-            let OscPacket::Message(message) = packet else { panic!("not a message") };
-            received.push((message.addr, message.args));
+            received.push(decode_osc(&buffer[..size]));
             if received.len() == 21 {
                 break;
             }
@@ -6970,6 +6980,57 @@ mod tests {
         assert_eq!(received.len(), 21);
         assert!(received.contains(&("/avatar/parameters/RightEyeY".into(), vec![OscType::Float(-0.4)])));
         assert!(received.contains(&("/avatar/parameters/LeftEyeSqueezeToggle".into(), vec![OscType::Int(0)])));
+    }
+
+    #[test]
+    fn every_message_goes_out_byte_for_byte_as_rosc_encoded_it() {
+        // Every builder, with the settings that change the addresses and arguments, without and with the camera
+        let camera = CameraValues {
+            squint: [Some(0.2), None],
+            pupil_dilation: [Some(0.5), Some(1.0)],
+            pupil_diameter: [Some(4.0), Some(12.0)],
+        };
+        let one = |list: Vec<(String, OscType)>| list.into_iter().map(|(addr, value)| (addr, vec![value]));
+        let mut messages: Vec<(String, Vec<OscType>)> = Vec::new();
+        for settings in [
+            settings(),
+            steamlink(),
+            Settings { prefix: String::new(), ..steamlink() },
+            Settings { prefix: "/x".into(), ..settings() },
+            Settings { output: OutputKind::Etvr, ..settings() },
+            Settings { eye_tracking_active: ActiveType::Float, ..settings() },
+            Settings { pupil_bits: 4, ..settings() },
+            Settings { independent_eyes: true, ..settings() },
+        ] {
+            for sample in [sample(), Sample { camera, ..sample() }] {
+                messages.extend(one(osc_messages(&settings, &sample)));
+                messages.extend(one(pupil_messages(&settings, &sample.camera)));
+                let dilation = pupil_dilation(&sample.camera);
+                messages.extend(one(PupilBits::default().messages(&settings, dilation, Instant::now())));
+                messages.extend(native_messages(&settings, sample.gaze, sample.lids));
+            }
+            messages.extend(one(squint_release(&settings, [true; 2], [None; 2])));
+            messages.extend(one(active_message(&settings, false).into_iter().collect()));
+        }
+        messages.extend(one(steamlink_messages([0.0; 6], [LID_RELAXED; 2])));
+        assert!(messages.len() > 300, "{}", messages.len());
+        let mut packet = Vec::new();
+        for (addr, args) in &messages {
+            osc::encode(addr, args, &mut packet);
+            assert_eq!(packet, rosc_encode(addr, args), "{addr} {args:?}");
+        }
+        // And through a real socket, as the sender sends them: one datagram each, the same bytes
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        listener.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut output = Output::new(Target::Fixed { host: "127.0.0.1".into(), port });
+        output.refresh();
+        let mut buffer = [0u8; 256];
+        for (addr, args) in messages.iter().take(60) {
+            output.send(addr, args).unwrap();
+            let size = listener.recv(&mut buffer).unwrap();
+            assert_eq!(buffer[..size], rosc_encode(addr, args), "{addr}");
+        }
     }
 
     #[test]
@@ -7500,6 +7561,29 @@ mod tests {
         status::log_error("Could not save /nowhere/calibration: No such file or directory (os error 2)");
         let json = serde_json::to_value(bridge.status(None, None)).unwrap();
         assert!(json["last_error"]["text"].is_string() && json["last_error"]["time"].as_f64().unwrap() > 1.7e9, "{json}");
+    }
+
+    #[test]
+    fn status_file_replaces_longer_records_and_recovers_after_its_directory_is_removed() {
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-status-test-{}", std::process::id()));
+        let path = dir.join("status.json");
+        let mut file = StatusFile::new(path.clone());
+        let bridge = test_bridge(settings());
+        let error = "read error ".repeat(1000);
+        let mut status = bridge.status(Some(&error), None);
+        file.write(&status);
+        assert_eq!(fs::read(&path).unwrap(), serde_json::to_vec(&status).unwrap());
+        status.source_error = None;
+        status.raw = None;
+        status.sent = None;
+        file.write(&status);
+        assert_eq!(fs::read(&path).unwrap(), serde_json::to_vec(&status).unwrap());
+        assert!(!path.with_extension("json.tmp").exists());
+        // Removing the runtime directory is allowed: the next write recreates it with the same atomic replacement.
+        fs::remove_dir_all(&dir).unwrap();
+        file.write(&status);
+        assert_eq!(fs::read(&path).unwrap(), serde_json::to_vec(&status).unwrap());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -9765,9 +9849,8 @@ mod tests {
         let mut buffer = [0u8; 1024];
         let mut received = Vec::new();
         while let Ok(size) = listener.recv(&mut buffer) {
-            let (_, packet) = rosc::decoder::decode_udp(&buffer[..size]).unwrap();
-            let OscPacket::Message(message) = packet else { panic!("not a message") };
-            received.push((message.addr, message.args[0].clone()));
+            let (addr, args) = decode_osc(&buffer[..size]);
+            received.push((addr, args[0]));
         }
         received
     }
@@ -9860,5 +9943,103 @@ mod tests {
         let json = serde_json::to_value(bridge.status(None, None)).unwrap();
         assert_eq!(json["camera"]["present"], false);
         assert!(json["camera"]["error"].as_str().unwrap().contains("magic"), "{}", json["camera"]);
+    }
+
+    /// Three seconds of samples as `settings` work them through, from a fresh smoother: the eye tracker's openness from
+    /// `openness` and the eye camera's values from `camera` (by sample index).
+    fn widen_run(
+        settings: &Settings,
+        openness: impl Fn(usize) -> [f32; 2],
+        camera: impl Fn(usize) -> Option<Live>,
+    ) -> Vec<Sample> {
+        let mut smoother = Smoother::new(settings);
+        camera_samples(settings, &mut smoother, 100.0, 3.0, openness, camera)
+    }
+
+    /// Every output's widening for a sample, as the receivers see it: VRChat's eyelid parameters above relaxed open
+    /// and any widen parameter (Steam Link's WidenToggle is a switch it always sends as 1, not an amount), the LiveLink
+    /// module's EyeWide, and the FrameEyeOSC module's EyeWide.
+    fn widening_sent(sample: &Sample) -> f32 {
+        let vrchat = Settings { steamlink_params: true, ..Settings::default() };
+        let mut most: f32 = 0.0;
+        for (addr, value) in osc_messages(&vrchat, sample) {
+            let OscType::Float(value) = value else { continue };
+            if addr.ends_with("/v2/EyeLidLeft") || addr.ends_with("/v2/EyeLidRight") {
+                most = most.max(value - LID_RELAXED);
+            }
+            if addr.contains("Wide") && !addr.ends_with("WidenToggle") {
+                most = most.max(value);
+            }
+        }
+        let [left, right] = livelink::tests::module_eyes(&livelink_packet(sample, 12.0)).unwrap();
+        most = most.max(left.1).max(right.1);
+        let (eyes, _) = feo::tests::module_eyes(&feo_packet(sample, 1, 0, 0)).unwrap();
+        for eye in eyes {
+            most = most.max(eye.wide).max(eye.vrcft_lid() - LID_RELAXED);
+        }
+        // The ETVR Tracking Module's eyelid stops at relaxed open (1.0) anyway
+        assert!(output_lids(OutputKind::Etvr, sample.lids).iter().all(|lid| *lid <= 1.0));
+        most
+    }
+
+    #[test]
+    fn widening_off_keeps_every_output_at_relaxed_open_or_below_and_closing_and_squint_as_they_are() {
+        // The camera: widened, then squinting (eyelid 0.4, squint 0.6), widened, closed (a blink), widened
+        let camera_widened = |i: usize| {
+            Some(match i {
+                60..90 => camera(0.4, 0.6),
+                120..130 => camera_eyes([(0.0, 0.0, true); 2]),
+                _ => camera(1.0, 0.0),
+            })
+        };
+        let blink = |open: f32| move |i: usize| if (120..130).contains(&i) { [0.1; 2] } else { [open; 2] };
+        // Valve's values alone, read fully widened (no eye fit: by the lid marks)
+        let no_camera = |_| None;
+        // Nothing widened anywhere: the camera at relaxed open, squinting for a while, and a blink
+        let camera_relaxed = |i: usize| {
+            Some(match i {
+                60..90 => camera(0.4, 0.6),
+                120..130 => camera_eyes([(0.0, 0.0, true); 2]),
+                _ => camera(0.75, 0.0),
+            })
+        };
+        for (behavior, raw) in [(2, false), (1, false), (2, true), (1, true)] {
+            let on = Settings { eye_behavior: behavior, raw, ..camera_settings() };
+            let off = Settings { widen: false, ..on.clone() };
+            let label = format!("eye_behavior {behavior}, raw {raw}");
+            let runs: [(&str, Vec<Sample>, Vec<Sample>); 2] = [
+                ("camera", widen_run(&on, blink(0.8), camera_widened), widen_run(&off, blink(0.8), camera_widened)),
+                ("valve", widen_run(&on, blink(1.0), no_camera), widen_run(&off, blink(1.0), no_camera)),
+            ];
+            for (name, with, without) in &runs {
+                // It would widen...
+                assert!(with.iter().any(|sample| widening_sent(sample) > 0.5), "{label}, {name}: never widened");
+                // ...but nothing goes out widened, in any output
+                assert!(all_relaxed_or_below(without), "{label}, {name}");
+                assert!(without.iter().all(|sample| widening_sent(sample) == 0.0), "{label}, {name}");
+                for (i, (with, without)) in with.iter().zip(without).enumerate() {
+                    // The camera's squint and pupils, and where the eyelids came from, are untouched
+                    assert_eq!(with.camera, without.camera, "{label}, {name}: sample {i}");
+                    assert_eq!(with.lid_from, without.lid_from, "{label}, {name}: sample {i}");
+                    // Closing: shut at the same samples
+                    let shut = |sample: &Sample| sample.lids.map(|lid| lid == 0.0);
+                    assert_eq!(shut(with), shut(without), "{label}, {name}: sample {i}");
+                }
+                // The squint goes out as before, and the eyelid with it once the widening has settled out of the
+                // filter
+                if *name == "camera" {
+                    assert!(without[85].camera.squint.iter().all(|squint| squint.is_some_and(|squint| squint > 0.3)), "{label}: {:?}", without[85].camera);
+                    let (a, b) = (with[85].lids, without[85].lids);
+                    assert!((0..2).all(|eye| (a[eye] - b[eye]).abs() < 1e-3), "{label}: {a:?} {b:?}");
+                }
+            }
+            // Without any widening to take away, everything goes out exactly the same
+            let with = widen_run(&on, blink(0.8), camera_relaxed);
+            let without = widen_run(&off, blink(0.8), camera_relaxed);
+            for (i, (with, without)) in with.iter().zip(&without).enumerate() {
+                assert_eq!(with.lids.map(f32::to_bits), without.lids.map(f32::to_bits), "{label}: sample {i}");
+                assert_eq!(osc_messages(&on, with), osc_messages(&off, without), "{label}: sample {i}");
+            }
+        }
     }
 }

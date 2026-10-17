@@ -37,6 +37,7 @@ pkg_check_modules(VULKAN REQUIRED IMPORTED_TARGET vulkan)
 
 add_executable(frameeyeosc-panel
   src/main.cpp
+  src/action_socket.cpp
   src/auto_recenter.cpp
   src/autostart.cpp
   src/changelog.cpp
@@ -123,6 +124,15 @@ target_include_directories(auto-recenter-test PRIVATE src)
 target_compile_options(auto-recenter-test PRIVATE -Wall -Wextra)
 add_test(NAME auto-recenter COMMAND auto-recenter-test)
 
+# Actions from outside the panel (frameeyeosc-panel --action): what each one does in each state (the exit codes), the
+# reply line, the command against no panel, a stale socket, a silent or broken one, and the panel's socket with real
+# connections (made in the current folder): panel/build/action-socket-test
+add_executable(action-socket-test tests/action_socket_test.cpp src/action_socket.cpp)
+target_include_directories(action-socket-test PRIVATE src)
+target_compile_options(action-socket-test PRIVATE -Wall -Wextra)
+target_link_libraries(action-socket-test PRIVATE Threads::Threads)
+add_test(NAME action-socket COMMAND action-socket-test)
+
 # The eye log: starting, stopping and reaping the recording child (a stand-in, or a real frameeyeosc given as the
 # argument): panel/build/recorder-test [target/release/frameeyeosc]
 add_executable(recorder-test tests/recorder_test.cpp src/recorder.cpp)
@@ -133,7 +143,7 @@ add_test(NAME recorder COMMAND recorder-test)
 # The shared rules: what an eye fit writes and "Reset" clears, the re-wear fit auto_recenter asks for, the output
 # cards' arguments: panel/build/model-test
 add_executable(model-test tests/model_test.cpp src/model.cpp src/config.cpp src/json.cpp src/gaze_fit.cpp
-  src/status.cpp)
+  src/status.cpp ${FRAME_UPDATER_DIR}/cpp/update_check.cpp)
 target_include_directories(model-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_options(model-test PRIVATE -Wall -Wextra)
 add_test(NAME model COMMAND model-test)
@@ -204,7 +214,8 @@ add_test(NAME eyecam COMMAND eyecam-test)
 # The diagnostics page's texts and code (diag.{h,cpp}: the cards, the diagnostic code, SteamOS's version, SHA-256),
 # without cairo: panel/build/diag-test
 add_executable(diag-test tests/diag_test.cpp src/diag.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/status.cpp
-  src/model.cpp src/config.cpp src/gaze_fit.cpp src/setup_tools.cpp src/recorder.cpp)
+  src/model.cpp src/config.cpp src/gaze_fit.cpp src/setup_tools.cpp src/recorder.cpp
+  ${FRAME_UPDATER_DIR}/cpp/update_check.cpp)
 target_include_directories(diag-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_options(diag-test PRIVATE -Wall -Wextra)
 target_link_libraries(diag-test PRIVATE Threads::Threads)
@@ -219,3 +230,10 @@ target_include_directories(report-test PRIVATE src)
 target_compile_options(report-test PRIVATE -Wall -Wextra)
 target_link_libraries(report-test PRIVATE Threads::Threads)
 add_test(NAME report COMMAND report-test)
+
+# Reading a whole file with a size limit (file_io.h, used for status.json, config.json, the panel's state and
+# eyecam-rec's files): panel/build/file-io-test
+add_executable(file-io-test tests/file_io_test.cpp)
+target_include_directories(file-io-test PRIVATE src)
+target_compile_options(file-io-test PRIVATE -Wall -Wextra)
+add_test(NAME file-io COMMAND file-io-test)

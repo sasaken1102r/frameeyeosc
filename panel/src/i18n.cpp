@@ -527,6 +527,7 @@ UiText makeJapanese() {
     t.diagLidsLeft = "左目カメラ + Valve";
     t.diagLidsRight = "右目カメラ + Valve";
     t.diagLidsValve = "Valve";
+    t.diagNoWiden = "見開きしない";
     t.diagNone = "なし";
     t.diagCoreNotRunning = "本体が動いていない";
     t.diagCoreNoTarget = "送り先が見つからない";
@@ -755,6 +756,8 @@ UiText makeJapanese() {
     t.camRowState = "いまの状態";
     t.camRowStateHint = "オン・オフは「基本」タブで";
     t.camLearned = "普段の目を覚えたよ";
+    t.camRelearnButton = "普段の目を覚え直す";
+    t.camRelearnHint = "約 30 秒。そのあいだも今の値で動くよ";
     t.camRowCalib = "違和感があるとき";
     t.camRowCalibHint = "ふだんは要らないよ";
     t.camCalibButton = "目のカメラの校正（18秒）";
@@ -768,6 +771,7 @@ UiText makeJapanese() {
     t.camUserNeedsCalib = "先に目のカメラの校正をしてね";
     t.camLineBothVrchat = "カメラで両目を見て、見開きを VRChat に送ってるよ";
     t.camLineBoth = "カメラで両目を見て、見開きを送ってるよ";
+    t.camLineBothNoWiden = "カメラで両目を見て、まぶたを送ってるよ（見開きはしない）";
     t.camLineLeft = "左目だけカメラで見てるよ（右は Valve の値）";
     t.camLineRight = "右目だけカメラで見てるよ（左は Valve の値）";
     t.camLineWarmingFormat = "普段の目を覚えてるところだよ（あと %d 秒）。普段どおりにしててね";
@@ -820,6 +824,11 @@ UiText makeJapanese() {
     t.widenNoteValve = "左端は見開きなし。右ほど出やすいよ（4 段階）";
     t.widenNoteUnfitted = "目を合わせていない目は、「細かく直す」の目盛りで決まるよ";
     t.widenSaturated = "Valve の値だけだと見開きが出ないよ";
+    t.rowWidenSwitch = "見開き";
+    t.widenSwitchHint = "閉じ・細めはそのまま";
+    t.widenSwitchOn = "する";
+    t.widenSwitchOff = "しない";
+    t.widenNoteOff = "「見開き」が「しない」なので、いまは使わないよ";
     t.blinkHint = "短いまばたきも逃さない";
     t.blinkHoldCaption = "閉じたまま保つ時間";
     t.rowBlinkBoth = "まばたきを両目でそろえる";
@@ -904,6 +913,12 @@ UiText makeJapanese() {
     t.updateRetry = "もう一度";
     t.updateDismiss = "閉じる";
     t.updateLogHint = "くわしくは ~/.cache/frameeyeosc/update.log";
+    t.rowUpdateBeta = "テスト版も受け取る";
+    t.hintUpdateBeta = "試してほしい人向けの版も届きます。ふつうはオフのままで大丈夫";
+    t.hintUpdateBetaKeep = "オフにしても、今のテスト版はそのまま。次の本番の版が出たら届きます";
+    t.updateTestAvailable = "テスト版あり";
+    t.updateAvailableTestFormat = "新しいテスト版 %s があります";
+    t.updateUsingTestFormat = "テスト版 %s を使っています";
     t.stepStart = "準備中";
     t.stepDownload = "ダウンロード中";
     t.stepVerify = "ファイルを確認中";
@@ -1451,6 +1466,7 @@ UiText makeEnglish() {
     t.diagLidsLeft = "left camera + Valve";
     t.diagLidsRight = "right camera + Valve";
     t.diagLidsValve = "Valve";
+    t.diagNoWiden = "widening off";
     t.diagNone = "none";
     t.diagCoreNotRunning = "not running";
     t.diagCoreNoTarget = "no target found";
@@ -1683,6 +1699,8 @@ UiText makeEnglish() {
     t.camRowState = "Now";
     t.camRowStateHint = "On / off on the Basic tab";
     t.camLearned = "Learned your relaxed eyes";
+    t.camRelearnButton = "Relearn my eyes";
+    t.camRelearnHint = "About 30 s, using the old values meanwhile";
     t.camRowCalib = "When something feels off";
     t.camRowCalibHint = "Not needed normally";
     t.camCalibButton = "Calibrate the cameras (18 s)";
@@ -1696,6 +1714,7 @@ UiText makeEnglish() {
     t.camUserNeedsCalib = "Calibrate the cameras first";
     t.camLineBothVrchat = "The cameras watch both eyes and send widening to VRChat";
     t.camLineBoth = "The cameras watch both eyes and send widening";
+    t.camLineBothNoWiden = "The cameras watch both eyes and send the eyelids (widening Off)";
     t.camLineLeft = "Only the left eye is on the cameras (right: Valve's values)";
     t.camLineRight = "Only the right eye is on the cameras (left: Valve's values)";
     t.camLineWarmingFormat = "Learning your relaxed eyes (%d s left). Just act as usual";
@@ -1748,6 +1767,11 @@ UiText makeEnglish() {
     t.widenNoteValve = "Far left: no widening. Further right widens more easily (4 stops)";
     t.widenNoteUnfitted = "Eyes without an eye fit follow the marks on \"Fine-tune\"";
     t.widenSaturated = "Valve's values alone can't widen";
+    t.rowWidenSwitch = "Widening";
+    t.widenSwitchHint = "Blinks and squint stay";
+    t.widenSwitchOn = "On";
+    t.widenSwitchOff = "Off";
+    t.widenNoteOff = "Not used while Widening is Off";
     t.blinkHint = "Don't miss short blinks";
     t.blinkHoldCaption = "How long a closed eye stays closed";
     t.rowBlinkBoth = "Blink both eyes together";
@@ -1832,6 +1856,12 @@ UiText makeEnglish() {
     t.updateRetry = "Try again";
     t.updateDismiss = "Close";
     t.updateLogHint = "Details: ~/.cache/frameeyeosc/update.log";
+    t.rowUpdateBeta = "Get test versions";
+    t.hintUpdateBeta = "Also offers versions made for testing. Leave it Off unless asked";
+    t.hintUpdateBetaKeep = "Your test version stays; the next regular version will be offered";
+    t.updateTestAvailable = "Test version available";
+    t.updateAvailableTestFormat = "Test version %s is available";
+    t.updateUsingTestFormat = "Using test version %s";
     t.stepStart = "Preparing";
     t.stepDownload = "Downloading";
     t.stepVerify = "Verifying";

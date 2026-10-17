@@ -122,6 +122,11 @@ constexpr const char* kFitSounds = "fit_sounds";
 constexpr const char* kAutoRecenter = "auto_recenter";
 /** How easily an eye with an eye fit widens: see kLidWidenModes. */
 constexpr const char* kLidWiden = "lid_widen";
+/**
+ * Whether any eye widens at all (default on). Off: no eyelid goes out above relaxed open, whatever the eye cameras,
+ * lid_widen or the lid marks say; closing and the cameras' squint are unchanged (the Eyelids tab's "Widening").
+ */
+constexpr const char* kWiden = "widen";
 constexpr const char* kLidFitClosedLeft = "lid_fit_closed_left";
 constexpr const char* kLidFitClosedRight = "lid_fit_closed_right";
 constexpr const char* kLidFitUpLeft = "lid_fit_up_left";

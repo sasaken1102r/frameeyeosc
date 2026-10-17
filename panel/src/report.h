@@ -128,7 +128,8 @@ struct Conditions {
 /** One record's summary.json. */
 struct Summary {
     Kind kind = Kind::Fit;
-    std::string trigger = "panel";  ///< "panel" (pressed) or "auto" (the re-wear fit when the headset was put on)
+    std::string trigger = "panel";  ///< "panel" (pressed), "auto" (the re-wear fit when the headset was put on) or
+                                    ///< "command" (frameeyeosc-panel --action)
     std::string mode;               ///< eye fits: "full" or "center" ("tilt" in records from before 0.7.7)
     double start = 0.0;             ///< Unix seconds
     double end = 0.0;

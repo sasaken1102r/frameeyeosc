@@ -41,6 +41,9 @@ const EXACT: &[(&str, &str)] = &[
     ("視線と目の開きの関係が求められなかった（もう一度）", "Couldn't work out how gaze changes the eye opening (try again)"),
     ("目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ", "The eye preview is only written to a folder in memory (tmpfs)"),
     ("ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で", "The drift log's name must be eyes_YYYY-MM-DD_HH-MM-SS"),
+    ("目の値を出していないので、普段の目を覚え直せない", "Not reading the eye cameras, so can't relearn your eyes"),
+    ("目の映像が来ていないので、普段の目を覚え直せない", "No eye video, so can't relearn your eyes"),
+    ("校正中なので、普段の目を覚え直せない", "Calibrating, so can't relearn your eyes now"),
 ];
 
 /// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
@@ -293,6 +296,9 @@ mod tests {
             "プロトコルが見つからない: protocol_x.txt",
             "ドリフトの記録を始められなかった: /home/steamos/eyecam/drift: Permission denied (os error 13)",
             "ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で",
+            crate::livesvc::RELEARN_NOT_LIVE,
+            crate::livesvc::RELEARN_NO_VIDEO,
+            crate::livesvc::RELEARN_CALIBRATING,
         ];
         for ja in all {
             let en = message_en(ja);

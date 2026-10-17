@@ -3,6 +3,7 @@
 // its control socket.
 #include "eyecam.h"
 
+#include "file_io.h"
 #include "json.h"
 
 #include <sys/socket.h>
@@ -16,7 +17,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <sstream>
 
@@ -251,23 +251,25 @@ Status parseStatus(const std::string& text, double mtime) {
 
 Status readStatus(const std::string& dir) {
     const std::string path = dir + "/status.json";
-    // The file is replaced by a rename, so the open file and its time are one version of it
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
+    // The file is replaced by a rename, so the open file and its time are one version of it: the time is taken from
+    // the opened file (fstat), not the path, which may already be the next version
+    std::FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) {
         Status status = parseStatus("", 0.0);
         status.readError = "no status file";
         return status;
     }
     struct stat info {};
     double mtime = 0.0;
-    if (::stat(path.c_str(), &info) == 0) mtime = info.st_mtim.tv_sec + info.st_mtim.tv_nsec / 1e9;
+    if (::fstat(::fileno(file), &info) == 0) mtime = info.st_mtim.tv_sec + info.st_mtim.tv_nsec / 1e9;
     // At most kMaxStatusBytes (eyecam-rec writes one short line): a bigger file isn't eyecam-rec's
-    std::string text(kMaxStatusBytes + 1, '\0');
-    file.read(text.data(), static_cast<std::streamsize>(text.size()));
-    text.resize(static_cast<size_t>(file.gcount()));
-    if (text.size() > kMaxStatusBytes) {
+    std::string text;
+    const bool read = file_io::read(file, text, kMaxStatusBytes);
+    const bool tooLarge = !read && errno == EFBIG;
+    std::fclose(file);
+    if (!read) {
         Status status = parseStatus("", mtime);
-        status.readError = "status.json is too large";
+        status.readError = tooLarge ? "status.json is too large" : "can't read status.json";
         return status;
     }
     return parseStatus(text, mtime);
@@ -352,6 +354,11 @@ std::string calibCommand(Calib calib) {
 
 bool userCalibAllowed(const Status& status) {
     return (status.calibState & kCalibWearBit) != 0;
+}
+
+bool relearnAllowed(bool fresh, const Status& status, bool cameraLids, bool inUse) {
+    return fresh && status.state == State::Idle && status.live && status.locked && status.hasBaseline && cameraLids &&
+           inUse;
 }
 
 Run runOfCommand(const std::string& command) {
@@ -519,12 +526,8 @@ void followProtocol(View& view, const std::string& dir) {
         return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
     });
     if (!plain) return;
-    std::ifstream file(dir + "/protocol_" + s.protocol + ".txt", std::ios::binary);
-    if (!file) return;
-    std::string text(kMaxProtocolBytes + 1, '\0');
-    file.read(text.data(), static_cast<std::streamsize>(text.size()));
-    text.resize(static_cast<size_t>(file.gcount()));
-    if (text.size() > kMaxProtocolBytes) return;
+    std::string text;
+    if (!file_io::read(dir + "/protocol_" + s.protocol + ".txt", text, kMaxProtocolBytes)) return;
     view.protocol.steps = parseProtocol(text);
 }
 

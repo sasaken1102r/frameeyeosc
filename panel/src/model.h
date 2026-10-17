@@ -477,6 +477,14 @@ bool warmingShown(bool warming, CameraUse use);
 bool learnedShown(bool learned, bool live, CameraUse use);
 
 /**
+ * Whether the eye cameras are in use for "Relearn my eyes": they drive one or both eyelids, or eyecam-rec is learning
+ * the relaxed eyes before they do (Warming).
+ * @param use what drives the eyelids (cameraUse)
+ * @return true if so
+ */
+bool relearnUse(CameraUse use);
+
+/**
  * How many rows of the eye cameras' "When..." box fit between `top` and `bottom` (0: leave the box out). The box is
  * 40 px plus 30 per row; `bottom` is where it must end (the caller keeps its gap to what is under it).
  * @param top the box's top
@@ -643,3 +651,18 @@ double widenStop(int level);
  * @return the text, or "" when no newer release is available or it has no summary
  */
 std::string updateNotes(const frame_updater::UpdateStatus& update, Language language);
+
+/** What the Version page says about test versions (frame-updater's beta channel). */
+struct TestVersionView {
+    bool badge = false;      ///< "Test version available" beside "Get test versions": it is off and a newer one exists
+    bool using_ = false;     ///< the running version is a test version ("Using test version X" when up to date)
+    bool keepHint = false;   ///< the hint says the test version stays (it is off while a test version runs)
+    bool offered = false;    ///< the offered new version is a test version ("Test version X is available")
+};
+
+/**
+ * @param update the update status (testVersion is filled while "Get test versions" is off)
+ * @param betaOn whether "Get test versions" is on
+ * @return what to show
+ */
+TestVersionView testVersionView(const frame_updater::UpdateStatus& update, bool betaOn);

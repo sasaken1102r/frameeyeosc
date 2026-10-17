@@ -2,6 +2,7 @@
 #include "ui_state.h"
 
 #include "json.h"
+#include "file_io.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -11,7 +12,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
-#include <sstream>
 #include <utility>
 #include <vector>
 
@@ -27,6 +27,8 @@ constexpr const char* kGazePageKey = "gaze_page";
 constexpr const char* kGazeScaleLinkKeys[2] = {"gaze_scale_link_x", "gaze_scale_link_y"};
 /** The up gains the last whole eye fits measured, oldest first (an array of numbers). */
 constexpr const char* kUpGainsKey = "fit_up_gains";
+/** "Get test versions" on the Version page (true / false; missing: off). */
+constexpr const char* kUpdateBetaKey = "update_beta";
 
 /**
  * Make a folder and the ones above it.
@@ -52,13 +54,14 @@ JsonValue readObject(const std::string& path, bool* broken = nullptr) {
     JsonValue root;
     root.type = JsonValue::Type::Object;
     if (broken != nullptr) *broken = false;
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return root;
-    std::ostringstream text;
-    text << in.rdbuf();
+    std::FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) return root;
+    std::string text;
+    const bool read = file_io::read(file, text, 64 * 1024);
+    std::fclose(file);
     JsonValue parsed;
     std::string error;
-    if (text.str().size() <= 64 * 1024 && parseJson(text.str(), parsed, error) && parsed.isObject()) return parsed;
+    if (read && parseJson(text, parsed, error) && parsed.isObject()) return parsed;
     if (broken != nullptr) *broken = true;
     return root;
 }
@@ -265,6 +268,16 @@ bool writeUpGains(const std::string& path, const std::vector<double>& gains, std
     list.type = JsonValue::Type::Array;
     for (double gain : gains) list.items.push_back(JsonValue::makeNumber(gain));
     return writeMembers(path, {{kUpGainsKey, list}}, error);
+}
+
+bool readUpdateBeta(const std::string& path) {
+    const JsonValue root = readObject(path);
+    const JsonValue* value = root.get(kUpdateBetaKey);
+    return value != nullptr && value->isBool() && value->boolean;
+}
+
+bool writeUpdateBeta(const std::string& path, bool on, std::string& error) {
+    return writeMembers(path, {{kUpdateBetaKey, JsonValue::makeBool(on)}}, error);
 }
 
 }  // namespace ui_state

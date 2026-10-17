@@ -208,6 +208,7 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `calib wear` | `ok`（state は `calibrating` → `idle`。結果は `message` に「校正できた（かぶり）」か、`error` でやり直しの理由）または `err <理由>` |
 | `calib user` | 同上。このかぶりの `calib wear` がまだなら `err 先に calib wear をしてね` |
 | `live on` / `live off` | `ok`。ライブ処理（共有メモリ `live` の更新）のオン/オフ。既定はオン |
+| `relearn` | `ok`（普段の目を覚え直す: 自動の基準線の覚え始め〔`WARMUP_S` = 30 秒〕を両目でもう一度する。status.json は `baseline` が `warming`・`warmup_remaining_s` が 30 から数え直しになる。もう覚えていた目は、新しい値を覚え終わるまで前の値をそのまま使い〔`calib_state` の 4 もそのまま〕、覚え終わったら 2 秒〔`RELEARN_RAMP_S`〕かけて新しい値に移る。覚えている途中にもう一度送ると、新しい覚え始めだけやり直す〔前の値は使い続ける〕。まだ覚えていない目〔かぶってすぐなど〕は、かぶり直したときと同じく最初から覚え、`calib_state` の 4 が落ちる）または `err <理由>`。かぶり直しと違って、このかぶりの `calib wear` の値（`calib_state` の 1）、`calib.json` と履歴（書き換えない）、目ごとに覚えた形（レンズの縁・探す範囲・虹彩の半径・閉じた目の見分け）、ふだんの視線の上下、瞳孔の左右の見比べはそのまま。覚え直している 30 秒も、前の値のある目は `eye_lid`・`eye_wide`・`eye_squint` がふだんどおり出る（前の値のない目は、ほかの覚え始めと同じく `eye_wide`・`eye_squint` が 0。まばたきはどちらも出る）。`idle` で目の映像が来ているときだけ: ライブ処理がオフなら `err 目の値を出していないので、普段の目を覚え直せない`、映像が来ていなければ `err 目の映像が来ていないので、普段の目を覚え直せない` |
 | `preview on` / `preview off` | `ok`。パネルの目のプレビューの映像（下の「目のプレビュー」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は 3 秒だけ効くので、映像を見ているあいだは 1 秒ごとに送り直す（送り直しが止まれば、フレームが来ていなくても 3 秒で止まる）。`off` ですぐ止まる。run フォルダが tmpfs でなければ `on` は `err 目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ` |
 | `set widen_sensitivity <0〜1>` | `ok` または `err widen_sensitivity は 0 から 1 の数で`。見開きの感度（下の「見開きの感度」）。**どの state でもすぐ受け付けてすぐ返る**（スライダーを動かしながら送ってよい）。すぐにライブの値に効き、`~/.config/eyecam/settings.json` に保存される（新しいファイルに書いて rename）。次に起動したときもその値。保存できなければ `err 保存できなかった: …` |
 | `driftlog on` / `driftlog on <stem>` / `driftlog off` | `on` は `ok <ファイルのパス>`（例 `ok /home/steamos/eyecam/drift/drift_2026-10-12_13-00-00.csv`）。`<stem>` はパネルの目のログの名前 `eyes_YYYY-MM-DD_HH-MM-SS` だけで、ファイルは `<stem>.eyecam.csv`（例 `ok /home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv`）。その形でない名前は `err ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で`。ファイルが作れなければ `err ドリフトの記録を始められなかった: …`。`off` は `ok`（記録していなくても）。調査用のドリフトの記録（下の「ドリフトの記録」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は毎回新しいファイルを作る（書いている途中のファイルは閉じる） |
@@ -216,10 +217,10 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 
 | state | `start` / `calib …` | `stop` | `live on/off` |
 |---|---|---|---|
-| `waiting_fds` | `err まだバッファを受け取ってない`（予約はしない。grab のあとで送り直す） | `err 録画していない` | `err まだバッファを受け取ってない` |
+| `waiting_fds` | `err まだバッファを受け取ってない`（予約はしない。grab のあとで送り直す） | `err 録画していない` | `err まだバッファを受け取ってない`（`relearn` も） |
 | `idle` / `error` | `ok`。ファイルが無ければ `err プロトコルが見つからない: protocol_<名前>.txt` | `err 録画していない` | `ok` |
-| `searching` / `recording` | `err 録画中` | `ok` | `err 録画中` |
-| `calibrating` | `err 校正中` | `ok` | `err 校正中` |
+| `searching` / `recording` | `err 録画中` | `ok` | `err 録画中`（`relearn` も） |
+| `calibrating` | `err 校正中` | `ok` | `err 校正中`（`relearn` も） |
 
 `set widen_sensitivity` と `preview on` / `preview off` と `driftlog on` / `driftlog off` は上の表に関係なく、どの state（`waiting_fds` も）でも答える。
 
@@ -599,7 +600,14 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   普段の段で瞳が見えたフレーム数 `normal_frames_with_pupil` とそのうち上まぶたの線も取れた数 `normal_frames_with_lid_line`、
   user なら細めの深さや下を見たときの開きの比、それぞれのしきい値・できた校正の値）と
   `calib_samples.csv`（当てはめに使った各フレーム: 目・時刻・段・瞳の有無・skin_up・開き・瞳孔・視線・下まぶた・R、
-  瞳の中心・瞳がなかった理由・探した枠のコントラスト・枠の左端・目安を忘れたか）。
+  瞳の中心・瞳がなかった理由・探した枠のコントラスト・枠の左端・目安を忘れたか、そのフレームの上まぶたの線の inlier の割合 `upper_frac`、
+  線が探す範囲の端に張り付いて「線なし」にしたか `lid_edge`、見開き用の高い範囲で探した線 `skin_up2` とその `upper_frac2`〔普段・見開きの段の
+  瞳があるフレームだけ。ほかは空〕）。
+  見開きの段で、瞳が見えたフレームの半分以上に普段の線の近く（普段より虹彩の半径の 0.2 倍下まで）の線がないときは、まぶたが探す範囲の
+  上に出たとみて、高い範囲（瞳の中心から虹彩の半径の 1.6〜3.2 倍上）の線から見開きを測る（inlier 0.75 以上、普段から 1.5 倍以内、
+  前後のフレームと 0.1 以内、普段の段にも同じ高さで出る線〔しわ・眉〕は除く）。足りなければ今までどおり。目ごとの `widen_source`
+  （`main` / `upper` / `fallback`）と数（`widen_frames_no_line_near_normal`・`widen_frames_upper_good`・`widen_frames_upper_used`・
+  `widen_upper_fixed_line`）が calib_result.json に入る。
   wear の `calib_result.json` には目ごとに瞳の探し方の診断 `diag` も入る（目の画像がなくても、瞳が見えなかった原因をこれで見分ける）:
   `fps`（フレームレート）、`search_x_min` / `search_xmax`（使った枠の左右）、`normal_pupil_x` / `normal_pupil_y`（普段の段の瞳の位置の中央値）、
   `normal_contrast`（普段の段の、枠の明るさの中央値 − 暗いところ。開発者で 60〜100）、`steps`（段ごとに `frames`・`pupil`・`lid_line`、

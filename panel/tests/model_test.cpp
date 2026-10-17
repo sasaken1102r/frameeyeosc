@@ -747,6 +747,34 @@ void testCameraLids() {
     CHECK(SettingsView(m).locked(key::kCameraLids) && !SettingsView(m).flag(key::kCameraLids));
 }
 
+/** widen (the Eyelids tab's "Widening"): on by default, read from config.json and written back as a bool, and
+ *  frameeyeosc's own value while its command line (--no-widen) locks it. */
+void testWiden() {
+    const SettingSpec* spec = findSetting(key::kWiden);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 1);
+    CHECK(spec != nullptr && defaultValue(*spec).isBool() && defaultValue(*spec).boolean);
+    PanelModel m;
+    m.config.root = JsonValue();
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(SettingsView(m).flag(key::kWiden));
+    m.config.root.set(key::kWiden, JsonValue::makeBool(false));
+    CHECK(!SettingsView(m).flag(key::kWiden) && !SettingsView(m).locked(key::kWiden));
+    // Through the file and back: "widen": false, as frameeyeosc reads it
+    const std::string text = writeJson(m.config.root);
+    CHECK(text.find("\"widen\": false") != std::string::npos);
+    JsonValue back;
+    std::string error;
+    CHECK(parseJson(text, back, error) && back.get(key::kWiden) != nullptr && back.get(key::kWiden)->isBool() &&
+          !back.get(key::kWiden)->boolean);
+    // lid_widen is a setting of its own
+    CHECK(SettingsView(m).text(key::kLidWiden) == "normal");
+    // Not a boolean: the default
+    m.config.root.set(key::kWiden, JsonValue::makeString("no"));
+    CHECK(SettingsView(m).flag(key::kWiden));
+    m.status = parseStatus("{\"pid\": 1, \"locked\": [\"widen\"], \"effective\": {\"widen\": false}}", 0, false);
+    CHECK(SettingsView(m).locked(key::kWiden) && !SettingsView(m).flag(key::kWiden));
+}
+
 /** gaze_debug_rings (the rings by the debug gaze dots, Advanced > Debug tools): the panel's own, like the dots'
  *  distance; on by default and read from config.json, off only when the file says false. */
 void testGazeDebugRings() {
@@ -1079,6 +1107,64 @@ void testUpdateNotes() {
     }
 }
 
+/** Test versions on the Version page: the "Test version available" badge only while "Get test versions" is off and a
+ *  test version newer than the running one exists; "Using test version" and the keep-hint on a test version. */
+void testTestVersionView() {
+    frame_updater::UpdateStatus u;
+    u.state = frame_updater::UpdateState::UpToDate;
+    u.current = "0.7.10";
+    u.latest = "0.7.10";
+    // Nothing newer on the beta channel: no badge, either way
+    TestVersionView v = testVersionView(u, false);
+    CHECK(!v.badge && !v.using_ && !v.keepHint && !v.offered);
+    CHECK(!testVersionView(u, true).badge);
+    // A newer test version: the badge while off, none while on (the update row says it then)
+    u.testVersion = "0.7.11-beta.1";
+    CHECK(testVersionView(u, false).badge);
+    CHECK(!testVersionView(u, true).badge);
+    // Also beside an available regular version
+    u.state = frame_updater::UpdateState::Available;
+    u.current = "0.7.9";
+    CHECK(testVersionView(u, false).badge && !testVersionView(u, false).offered);
+    // Not newer than the running one (a stale answer after updating): no badge
+    u.current = "0.7.11-beta.1";
+    CHECK(!testVersionView(u, false).badge);
+    u.current = "0.7.11";
+    CHECK(!testVersionView(u, false).badge);
+    // No version known yet
+    u.state = frame_updater::UpdateState::Unknown;
+    u.current = "0.7.10";
+    u.testVersion.clear();
+    CHECK(!testVersionView(u, false).badge);
+
+    // Running a test version: "Using test version"; off, the hint says it stays until the next regular version
+    u.state = frame_updater::UpdateState::UpToDate;
+    u.current = "0.7.11-beta.2";
+    u.latest = "0.7.10";
+    v = testVersionView(u, false);
+    CHECK(v.using_ && v.keepHint && !v.badge);
+    v = testVersionView(u, true);
+    CHECK(v.using_ && !v.keepHint);
+    // A newer test version on top of the running one (off): the badge too
+    u.testVersion = "0.7.11-beta.3";
+    CHECK(testVersionView(u, false).badge);
+    u.testVersion.clear();
+
+    // The beta channel offers a test version: "Test version X is available"; a regular one: not
+    u.state = frame_updater::UpdateState::Available;
+    u.current = "0.7.10";
+    u.latest = "0.7.11-beta.1";
+    u.prerelease = true;
+    CHECK(testVersionView(u, true).offered && !testVersionView(u, true).badge);
+    u.latest = "0.7.11";
+    u.prerelease = false;
+    CHECK(!testVersionView(u, true).offered);
+    // Only while it is available
+    u.prerelease = true;
+    u.state = frame_updater::UpdateState::Installing;
+    CHECK(!testVersionView(u, true).offered);
+}
+
 }  // namespace
 
 /**
@@ -1223,6 +1309,7 @@ int main() {
     testSteamlinkParams();
     testNativeEyes();
     testCameraLids();
+    testWiden();
     testGazeDebugRings();
     testCameraStatus();
     testLidsFromCameras();
@@ -1233,6 +1320,7 @@ int main() {
     testPupilBits();
     testLearnedAndHelpRows();
     testUpdateNotes();
+    testTestVersionView();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

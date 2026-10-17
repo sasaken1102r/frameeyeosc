@@ -135,6 +135,9 @@ const WIDE_ON_S: f64 = 9.0 / FPS;
 const WIDE_OFF: f64 = 0.3;
 /// Auto baseline: seconds of usable frames before EyeWide is enabled (about 35 s of wearing).
 pub const WARMUP_S: f64 = 30.0;
+/// After a manual relearn's warm-up (`relearn` with open-eye levels already known), the levels in use go from the old
+/// ones to the new ones over this many seconds (a straight line), so the eyelid, EyeWide and squint don't jump.
+pub const RELEARN_RAMP_S: f64 = 2.0;
 /// Usable frames for the baseline: Valve pitch within this many degrees of the wearer's typical pitch.
 const PITCH_GATE: f64 = 15.0;
 /// After warm-up the skin line's baseline follows the skin line with this time constant (s), at most half a widen step
@@ -538,6 +541,12 @@ struct AutoBase {
     ready: bool,
     /// The wearer's typical Valve pitch: median over the last minute of frames with the pupil seen.
     pitch_typ: LongMedian,
+    /// A manual relearn's new warm-up (`relearn` while the levels above were known): the levels above stay in use
+    /// (and keep being followed) until it is ready, then its levels replace them through `ramp`.
+    next: Option<Box<AutoBase>>,
+    /// The switch to a relearn's new levels: the old skin line and aperture levels (px) and the seconds since the
+    /// switch; the levels in use go from those to `b` / `ap_n` over RELEARN_RAMP_S.
+    ramp: Option<(f64, f64, f64)>,
 }
 
 impl Default for AutoBase {
@@ -551,6 +560,8 @@ impl Default for AutoBase {
             ap_n: f64::NAN,
             ready: false,
             pitch_typ: LongMedian::new(60.0),
+            next: None,
+            ramp: None,
         }
     }
 }
@@ -585,8 +596,52 @@ fn mode_est(v: &[f64], bw: f64) -> f64 {
 }
 
 impl AutoBase {
+    /// Seconds of the warm-up still to go: this wear's first one, or a relearn's while the old levels stay in use.
     fn warmup_remaining_s(&self) -> f64 {
+        if let Some(next) = &self.next {
+            return next.warmup_remaining_s();
+        }
         if self.ready { 0.0 } else { (WARMUP_S - self.seconds).clamp(0.0, WARMUP_S) }
+    }
+
+    /// The open-eye levels in use (skin line height, aperture; px): `b` / `ap_n`, or on the way to them from the old
+    /// ones for RELEARN_RAMP_S after a relearn (an old level that was never known is not ramped from).
+    fn levels(&self) -> (f64, f64) {
+        match self.ramp {
+            Some((b0, ap0, s)) => {
+                let k = (s / RELEARN_RAMP_S).clamp(0.0, 1.0);
+                let lerp = |from: f64, to: f64| if from.is_finite() && to.is_finite() { from + (to - from) * k } else { to };
+                (lerp(b0, self.b), lerp(ap0, self.ap_n))
+            }
+            None => (self.b, self.ap_n),
+        }
+    }
+
+    /// One frame (`dt` s) further into the ramp after a relearn, if one runs.
+    fn tick(&mut self, dt: f64) {
+        if let Some((_, _, s)) = &mut self.ramp {
+            *s += dt;
+            if *s >= RELEARN_RAMP_S {
+                self.ramp = None;
+            }
+        }
+    }
+
+    /// One usable frame for a relearn's warm-up (as `warm`), if one runs; once it is ready its levels replace the old
+    /// ones (through the ramp; an aperture level it could not work out keeps the old one).
+    fn warm_next(&mut self, skin: f64, ap: f64, bw: f64, dt: f64) {
+        let Some(next) = &mut self.next else { return };
+        next.warm(skin, ap, bw, dt);
+        if next.ready {
+            let (b, ap_n) = (next.b, next.ap_n);
+            self.next = None;
+            let (b0, ap0) = self.levels();
+            self.ramp = Some((b0, ap0, 0.0));
+            self.b = b;
+            if ap_n.is_finite() {
+                self.ap_n = ap_n;
+            }
+        }
     }
 
     /// Add one usable frame's levels during warm-up (`bw`: histogram bin, px; `dt`: the frame interval, s). The
@@ -616,11 +671,31 @@ impl AutoBase {
         }
     }
 
+    /// Learn the open-eye levels again from a fresh warm-up. With levels already known, they stay in use (and keep
+    /// being followed) while the new warm-up runs in `next`, and are replaced once it is ready; a relearn during a
+    /// relearn starts the new warm-up over and keeps the levels in use (a ramp still running ends where it is).
+    /// Without levels yet, the warm-up just starts over, as at the start of a wear. The wearer's typical pitch stays
+    /// either way: it is about where they look, not how open their eyes are, and it decides which frames the warm-up
+    /// may use (cleared, the first frames with a pitch would wait for it to fill again).
+    fn relearn(&mut self) {
+        if self.ready {
+            (self.b, self.ap_n) = self.levels();
+            self.ramp = None;
+            self.next = Some(Box::new(Self { pitch_typ: LongMedian::new(0.0), ..Self::default() }));
+            return;
+        }
+        let pitch_typ = std::mem::replace(&mut self.pitch_typ, LongMedian::new(0.0));
+        *self = Self { pitch_typ, ..Self::default() };
+    }
+
     fn seed(&mut self, b: f64, ap_n: f64) {
         if b.is_finite() && ap_n.is_finite() {
             (self.b, self.ap_n, self.ready) = (b, ap_n, true);
             self.skin = Vec::new();
             self.ap = Vec::new();
+            // A calibration's levels win over a relearn still warming up, at once
+            self.next = None;
+            self.ramp = None;
         }
     }
 }
@@ -700,6 +775,22 @@ impl EyeEngine {
         *self = Self { ex: std::mem::take(&mut self.ex), ..Self::default() };
     }
 
+    /// Learn this wear's open-eye levels again (`relearn` on ctl.sock): a new warm-up of the auto baseline. With
+    /// levels already known (warmed up or seeded), the eyelid, EyeWide and squint keep working from them meanwhile,
+    /// and the new levels take over once the warm-up is done (over RELEARN_RAMP_S); without them yet, the warm-up
+    /// starts over as at the start of a wear and EyeWide waits for it. Unlike `reset`, everything else learnt about
+    /// the wear stays (lens edge, search window, iris radius, the open eye's pupil size, darkness and iris-box
+    /// brightness that tell a closed eye, the wearer's typical pitch): only the levels the wearer's eyes rest at are
+    /// relearnt, and blinks keep working meanwhile.
+    pub fn relearn(&mut self) {
+        self.base.relearn();
+    }
+
+    /// A relearn's warm-up runs while the old open-eye levels stay in use (`warmup_remaining_s` counts it down).
+    pub fn relearning(&self) -> bool {
+        self.base.next.is_some()
+    }
+
     /// Forget where the pupil was (the search prior, the last pupil the lids are measured around, the run of frames
     /// without one), so that a calibration starts from a clean search. What belongs to the wear stays: lens edge,
     /// search window, iris radius, open-eye levels, and the open eye's pupil size, darkness and iris-box brightness
@@ -759,19 +850,21 @@ impl EyeEngine {
         self.rate.fps()
     }
 
-    /// The open-eye levels are known (warm-up over, or seeded by a calibration).
+    /// The open-eye levels are known (warm-up over, or seeded by a calibration; also while a relearn's warm-up runs
+    /// with the old ones in use).
     pub fn baseline_ready(&self) -> bool {
         self.base.ready
     }
 
-    /// Seconds of usable frames still needed before EyeWide is enabled (0 when ready).
+    /// Seconds of usable frames still needed before EyeWide is enabled (0 when ready), or, during a relearn, before
+    /// its new levels take over.
     pub fn warmup_remaining_s(&self) -> f64 {
         self.base.warmup_remaining_s()
     }
 
-    /// The open-eye levels (skin line height, aperture; px) once ready.
+    /// The open-eye levels in use (skin line height, aperture; px) once ready.
     pub fn baseline_px(&self) -> Option<(f64, f64)> {
-        self.base.ready.then_some((self.base.b, self.base.ap_n))
+        self.base.ready.then(|| self.base.levels())
     }
 
     /// Start from these open-eye levels (px) instead of warming up; they are followed from there.
@@ -947,21 +1040,26 @@ impl EyeEngine {
         let usable = open_seen && (!pitch.is_finite() || (p_typ.is_finite() && (pitch - p_typ).abs() < PITCH_GATE));
         if usable && !self.base.ready {
             self.base.warm(skin_px, ap_px, 0.01 * r, 1.0 / fps);
-        } else if usable && params.tune.track && step_px > 0.0 {
-            // One frame's share of the time constant.
-            let k = 1.0 / (TRACK_TAU_S * fps);
-            self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
-            let k_ap = 1.0 / (TRACK_AP_TAU_S * fps);
-            if self.last_wide < TRACK_AP_MAX
-                && self.last_sq < TRACK_AP_MAX
-                && ap_px.is_finite()
-                && self.base.ap_n.is_finite()
-            {
-                self.base.ap_n += (ap_px - self.base.ap_n).clamp(-0.25 * gap_px, 0.25 * gap_px) * k_ap;
+        } else if usable {
+            // A relearn's warm-up, if one runs (the levels below stay in use until it is ready)
+            self.base.warm_next(skin_px, ap_px, 0.01 * r, 1.0 / fps);
+            if params.tune.track && step_px > 0.0 {
+                // One frame's share of the time constant.
+                let k = 1.0 / (TRACK_TAU_S * fps);
+                self.base.b += (skin_px - self.base.b).clamp(-0.5 * step_px, 0.5 * step_px) * k;
+                let k_ap = 1.0 / (TRACK_AP_TAU_S * fps);
+                if self.last_wide < TRACK_AP_MAX
+                    && self.last_sq < TRACK_AP_MAX
+                    && ap_px.is_finite()
+                    && self.base.ap_n.is_finite()
+                {
+                    self.base.ap_n += (ap_px - self.base.ap_n).clamp(-0.25 * gap_px, 0.25 * gap_px) * k_ap;
+                }
             }
         }
+        self.base.tick(1.0 / fps);
         let ready = self.base.ready;
-        let (b_px, ap_n_px) = (self.base.b, self.base.ap_n);
+        let (b_px, ap_n_px) = self.base.levels();
 
         let tune = params.tune;
         let wide = if hold || !ready || gaze_hold {
@@ -1055,6 +1153,23 @@ impl EyeEngine {
     }
 }
 
+impl EyeEngine {
+    /// A calibration's sample of the frame `process_open` just returned `o` for: `Sample::from_out`, and on normal
+    /// and widen frames with the pupil the second, higher search for a widened upper lid (`widen_fit`), on the same
+    /// frame (only during a calibration: live never runs it).
+    pub fn calib_sample(&mut self, label: Label, o: &Out, t: f64) -> Sample {
+        let mut s = Sample::from_out(label, o, t);
+        if matches!(label, Label::Normal | Label::Widen)
+            && o.f.ok_pupil
+            && let Some(p) = self.prev_p
+            && let Some((y, frac)) = self.ex.upper_high(&p, self.xmax)
+        {
+            (s.skin2, s.frac2) = ((p.cy - y) / o.r, frac);
+        }
+        s
+    }
+}
+
 // ------------------------------------------------------------------------------------------------- calibration
 
 /// One labelled frame collected during a calibration (or a recording with bright/dark steps).
@@ -1075,6 +1190,15 @@ pub struct Sample {
     pub t: f64,
     /// What the pupil search saw.
     pub seen: Seen,
+    /// This frame's own upper lid line: its inlier share (NaN without one), and whether it was pushed against its
+    /// band's edge (feat::LID_EDGE_SHARE: then `skin` and `ap` are NaN, the frame has no line).
+    pub frac: f64,
+    pub edge: bool,
+    /// The second, higher search for a widened lid (feat::HIGH_BAND; normal and widen frames with the pupil, see
+    /// `widen_fit`): its skin line (normalised by `r`, as `skin`, this frame alone) and inlier share; NaN when it
+    /// did not run or found nothing.
+    pub skin2: f64,
+    pub frac2: f64,
 }
 
 /// Why a frame has no pupil.
@@ -1161,7 +1285,7 @@ impl Sample {
     /// The same sample in units of radius `r`.
     fn rescaled(&self, r: f64) -> Sample {
         let k = self.r / r;
-        Sample { skin: self.skin * k, ap: self.ap * k, pd: self.pd * k, r, ..*self }
+        Sample { skin: self.skin * k, ap: self.ap * k, pd: self.pd * k, skin2: self.skin2 * k, r, ..*self }
     }
 }
 
@@ -1204,11 +1328,14 @@ impl Label {
 
 impl Sample {
     pub fn from_out(label: Label, o: &Out, t: f64) -> Self {
+        // A frame whose upper lid line was pushed against its band's edge is left out (its 5-frame medians may still
+        // have a value from the frames around it).
+        let edge = o.f.upper_edge;
         Sample {
             label,
             ok: o.f.ok_pupil,
-            skin: o.skin_up,
-            ap: o.aperture,
+            skin: if edge { f64::NAN } else { o.skin_up },
+            ap: if edge { f64::NAN } else { o.aperture },
             pd: if o.f.ok_pupil { 2.0 * o.f.pupil_a / o.r } else { f64::NAN },
             pitch: o.pitch,
             lower_px: o.f.lower_y,
@@ -1216,6 +1343,10 @@ impl Sample {
             iris_r: if o.f.ok_pupil && o.f.iris_n >= 4 { o.f.iris_r } else { f64::NAN },
             t,
             seen: Seen::of(o),
+            frac: o.f.upper_frac,
+            edge,
+            skin2: f64::NAN,
+            frac2: f64::NAN,
         }
     }
 }
@@ -1337,11 +1468,11 @@ pub fn fit_wear_eyes(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> [Ey
         let s = &s;
         let is = |l: Label| move |x: &Sample| x.label == l;
         let normal: Vec<Sample> = s.iter().copied().filter(is(Label::Normal)).collect();
-        let widen: Vec<Sample> = s.iter().copied().filter(is(Label::Widen)).collect();
         let close: Vec<Sample> = s.iter().copied().filter(is(Label::Close)).collect();
         let n_pupil = normal.iter().filter(|x| x.ok).count();
         let (b_n, nn) = med_of(&normal, |x| x.ok.then_some(x.skin));
-        let (b_w, nw) = widen_level(&widen, b_n);
+        let wf = widen_fit(s, b_n, need.widen);
+        let (b_w, nw) = (wf.b_w, wf.n);
         let (ap_n, _) = med_of(&normal, |x| x.ok.then_some(x.ap));
         let (ap_cl, nc) = med_of(&close, |x| Some(x.ap));
         if n_pupil < need.normal {
@@ -1907,6 +2038,101 @@ fn widen_level(s: &[Sample], b_n: f64) -> (f64, usize) {
     med_of(s, |x| (x.label == Label::Widen && x.ok && x.skin >= b_n - WIDEN_MIN_BELOW_N).then_some(x.skin))
 }
 
+/// When at least this share of an eye's widen frames with the pupil have no upper lid line within WIDEN_MIN_BELOW_N of
+/// the normal level (one lower, or none: feat::LID_EDGE_SHARE), the widened lid has left the search band, and the
+/// widen level comes from the higher band (feat::HIGH_BAND) instead. One wearer's 0.7.9 wear calibration
+/// (2026-10-17): 789 of 792 widen frames (both eyes); the lid was seen at 1.87 R in the 3 others and at 2.00 to 2.04
+/// (the band's top) in a guided capture. The developer's 84 calibrations: at most 15 of 396 (3.8%, half blinks).
+pub const WIDEN_LOW_SHARE: f64 = 0.5;
+/// A line from the higher band counts toward the widen level only with at least this inlier share (a lid line ~0.85,
+/// another line the search settled on ~0.46: the same wearer's guided capture, 2026-10-17), ...
+pub const WIDEN_HIGH_MIN_FRAC: f64 = 0.75;
+/// ... at most this far (iris radii) above the normal level (a brow or a crease further up is not the lid), ...
+pub const WIDEN_HIGH_MAX_STEP: f64 = 1.5;
+/// ... within this of the line on the frame before or after it (a lid held wide does not jump), ...
+pub const WIDEN_HIGH_NEIGHBOUR: f64 = 0.1;
+/// ... and not within WIDEN_HIGH_FIXED of a line that the higher band also finds in at least WIDEN_HIGH_FIXED_SHARE
+/// of the normal frames with the pupil (a crease or the brow, there whether the eye widens or not).
+pub const WIDEN_HIGH_FIXED: f64 = 0.15;
+pub const WIDEN_HIGH_FIXED_SHARE: f64 = 0.25;
+
+/// Where a wear calibration's widen level came from (calib_result.json's `widen_source`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WidenSource {
+    /// The usual band (`widen_level`): the widen frames mostly have their lid line in it.
+    Main,
+    /// The higher band: most widen frames had no lid line near the normal level in the usual one (WIDEN_LOW_SHARE).
+    Upper,
+    /// As for `Upper`, but the higher band had too few good lines: the usual band's level as before (`widen_level`;
+    /// with too few frames there too, the usual step).
+    Fallback,
+}
+
+impl WidenSource {
+    pub fn name(self) -> &'static str {
+        match self {
+            WidenSource::Main => "main",
+            WidenSource::Upper => "upper",
+            WidenSource::Fallback => "fallback",
+        }
+    }
+}
+
+/// One eye's widen level (`widen_fit`): the level and how many frames it is from (NEED_WIDEN counts them), where it
+/// came from, the widen frames with the pupil and those of them without a lid line near the normal level (the
+/// trigger), the higher band's good lines and those taken, and the line it also finds in the normal frames (NaN: none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WidenFit {
+    pub b_w: f64,
+    pub n: usize,
+    pub source: WidenSource,
+    pub with_pupil: usize,
+    pub low: usize,
+    pub high_good: usize,
+    pub high_used: usize,
+    pub fixed: f64,
+}
+
+/// The widen level from one eye's samples `s` (all steps, in one radius) for normal level `b_n`, `need` frames
+/// needed. Usually `widen_level`. When most widen frames with the pupil have no lid line near the normal level
+/// (WIDEN_LOW_SHARE), the median of the higher band's lines (`Sample::skin2`) that pass the WIDEN_HIGH_* checks; with
+/// fewer than `need` of those, `widen_level` as before. For a wearer whose lid stays in the usual band this is
+/// `widen_level` exactly.
+pub fn widen_fit(s: &[Sample], b_n: f64, need: usize) -> WidenFit {
+    let widen: Vec<&Sample> = s.iter().filter(|x| x.label == Label::Widen).collect();
+    let with_pupil = widen.iter().filter(|x| x.ok).count();
+    let low = widen.iter().filter(|x| x.ok && (x.skin.is_nan() || x.skin < b_n - WIDEN_MIN_BELOW_N)).count();
+    let main = |source| {
+        let (b_w, n) = widen_level(s, b_n);
+        WidenFit { b_w, n, source, with_pupil, low, high_good: 0, high_used: 0, fixed: f64::NAN }
+    };
+    if with_pupil == 0 || (low as f64) < WIDEN_LOW_SHARE * with_pupil as f64 {
+        return main(WidenSource::Main);
+    }
+    let good =
+        |x: &Sample| x.ok && x.skin2.is_finite() && x.frac2 >= WIDEN_HIGH_MIN_FRAC && x.skin2 - b_n <= WIDEN_HIGH_MAX_STEP;
+    // A line the higher band finds in the normal frames too is not the widened lid.
+    let normal_ok = s.iter().filter(|x| x.label == Label::Normal && x.ok).count();
+    let (fixed, n_fixed) = med_of(s, |x| (x.label == Label::Normal && good(x)).then_some(x.skin2));
+    let fixed = if n_fixed > 0 && n_fixed as f64 >= WIDEN_HIGH_FIXED_SHARE * normal_ok as f64 { fixed } else { f64::NAN };
+    let cand: Vec<bool> = widen.iter().map(|x| good(x) && (fixed.is_nan() || (x.skin2 - fixed).abs() >= WIDEN_HIGH_FIXED)).collect();
+    let high_good = widen.iter().filter(|x| good(x)).count();
+    // Neighbours: the widen frames just before and after (the same step: under 0.1 s apart).
+    let near = |i: usize, j: usize| {
+        cand[j] && (widen[i].t - widen[j].t).abs() < 0.1 && (widen[i].skin2 - widen[j].skin2).abs() <= WIDEN_HIGH_NEIGHBOUR
+    };
+    let mut used: Vec<f64> = (0..widen.len())
+        .filter(|&i| cand[i] && ((i > 0 && near(i, i - 1)) || (i + 1 < widen.len() && near(i, i + 1))))
+        .map(|i| widen[i].skin2)
+        .collect();
+    let high_used = used.len();
+    if high_used < need.max(1) {
+        return WidenFit { high_good, high_used, fixed, ..main(WidenSource::Fallback) };
+    }
+    let b_w = vision::median(&mut used);
+    WidenFit { b_w, n: high_used, source: WidenSource::Upper, with_pupil, low, high_good, high_used, fixed }
+}
+
 /// How many frames a calibration check needs, relative to what the cameras delivered: at least `share` of the
 /// step's frames, `seconds` worth at the cameras' frame rate, and `floor`. The cameras run at 90 frames a second on
 /// most headsets but as slowly as 15 on some, where the old fixed counts could never be met (a 5.4 s normal step
@@ -2046,7 +2272,8 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(r_px)).collect();
         let n_pupil = s.iter().filter(|x| x.label == Label::Normal && x.ok).count();
         let (b_n, nn) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.skin));
-        let (b_w, nw) = widen_level(&s, b_n);
+        let wf = widen_fit(&s, b_n, need.widen);
+        let (b_w, nw) = (wf.b_w, wf.n);
         let below = s.iter().filter(|x| x.label == Label::Widen && x.ok && x.skin < b_n - WIDEN_MIN_BELOW_N).count();
         let (ap_n, _) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.ap));
         let (ap_cl, nc) = med_of(&s, |x| (x.label == Label::Close).then_some(x.ap));
@@ -2059,7 +2286,9 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         eyes.push(format!(
             "\"{}\": {{\"r_px\": {}, \"b_n\": {}, \"b_w\": {}, \"widen_step\": {}, \"ap_n\": {}, \"ap_cl\": {}, \"open_gap\": {}, \
 \"normal_frames_with_pupil\": {n_pupil}, \"normal_frames_with_lid_line\": {nn}, \"widen_frames_with_pupil\": {nw}, \"widen_frames_below_normal\": {below}, \"close_frames_with_lids\": {nc}, \
-\"pupil_seen_share\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}, \"diag\": {}}}",
+\"pupil_seen_share\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}, \"diag\": {}, \
+\"widen_source\": \"{}\", \"widen_frames_no_line_near_normal\": {}, \"widen_frames_upper_good\": {}, \"widen_frames_upper_used\": {}, \
+\"widen_upper_fixed_line\": {}}}",
             ["L", "R"][e],
             json::num(r_px),
             json::num(b_n),
@@ -2072,10 +2301,15 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
             json::num(ok_share(Label::Widen)),
             json::num(ok_share(Label::Close)),
             d.json,
+            wf.source.name(),
+            wf.low,
+            wf.high_good,
+            wf.high_used,
+            json::num(wf.fixed),
         ));
         lines.push(format!(
             "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
-frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, R {:.1} px; {}",
+frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, widen from {} (no line near normal {} of {}, upper good {} / used {}), R {:.1} px; {}",
             ["L", "R"][e],
             b_w - b_n,
             b_n,
@@ -2086,6 +2320,11 @@ frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {
             need.widen,
             need.close,
             need.fps,
+            wf.source.name(),
+            wf.low,
+            wf.with_pupil,
+            wf.high_good,
+            wf.high_used,
             r_px,
             d.line
         ));
@@ -2250,12 +2489,12 @@ pub fn user_report(samples: &[Vec<Sample>; 2], wear: &[WearParams; 2]) -> (Strin
 
 /// The collected samples as CSV (one row per eye and frame).
 pub fn samples_csv(samples: &[Vec<Sample>; 2]) -> String {
-    let mut out = String::from("eye,t,label,ok,skin_up,aperture,pupil_ratio,pitch,lower_px,r,iris_r,pupil_x,pupil_y,miss,rejected,contrast,x_min,prior_reset\n");
+    let mut out = String::from("eye,t,label,ok,skin_up,aperture,pupil_ratio,pitch,lower_px,r,iris_r,pupil_x,pupil_y,miss,rejected,contrast,x_min,prior_reset,upper_frac,lid_edge,skin_up2,upper_frac2\n");
     let f = |v: f64| if v.is_finite() { format!("{v:.5}") } else { String::new() };
     for (e, s) in samples.iter().enumerate() {
         for x in s {
             out += &format!(
-                "{},{:.6},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{:.6},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 ["L", "R"][e],
                 x.t,
                 x.label.name(),
@@ -2273,7 +2512,11 @@ pub fn samples_csv(samples: &[Vec<Sample>; 2]) -> String {
                 x.seen.rejected,
                 f(x.seen.contrast),
                 f(x.seen.x_min),
-                x.seen.prior_reset as u8
+                x.seen.prior_reset as u8,
+                f(x.frac),
+                x.edge as u8,
+                f(x.skin2),
+                f(x.frac2)
             );
         }
     }
@@ -2365,6 +2608,10 @@ mod tests {
                 iris_r: if ok { 55.0 } else { f64::NAN },
                 t: i as f64 / 90.0,
                 seen: Seen::default(),
+                frac: 1.0,
+                edge: false,
+                skin2: f64::NAN,
+                frac2: f64::NAN,
             })
             .collect()
     }
@@ -2405,6 +2652,109 @@ mod tests {
         let (plain, n) = med_of(&usual, |x| (x.label == Label::Widen && x.ok).then_some(x.skin));
         assert!(measured && n == 200 && w[0].b_w == plain && (plain - 1.25).abs() < 1e-9, "{:?}", w[0]);
         assert!(wear_report(&[usual.clone(), usual]).0.contains("\"widen_frames_below_normal\": 0"));
+    }
+
+    /// `n` widen frames whose usual band has no line near normal (skin NaN, as when the line was pushed against the
+    /// band's edge) and whose higher band has the line at `skin2` (+ a little jitter), inlier share `frac2`.
+    fn widen_high(n: usize, skin2: f64, frac2: f64) -> Vec<Sample> {
+        let mut v = samples(Label::Widen, n, f64::NAN, 2.4, -14.0, 252.0, true);
+        for (i, x) in v.iter_mut().enumerate() {
+            (x.edge, x.skin2, x.frac2) = (true, skin2 + (i % 3) as f64 * 0.01, frac2);
+        }
+        v
+    }
+
+    /// One eye's wear steps: normal 1.0 R, closed 0.56, and the given widen frames.
+    fn wear_widen(widen: Vec<Sample>) -> Vec<Sample> {
+        let mut eye = samples(Label::Normal, 300, 1.0, 1.7, -14.0, 250.0, true);
+        eye.extend(widen);
+        eye.extend(samples(Label::Close, 80, f64::NAN, 0.56, -14.0, 240.0, false));
+        eye
+    }
+
+    #[test]
+    fn a_widened_lid_above_the_band_is_measured_in_the_higher_band() {
+        // A user's 0.7.9 wear calibration (2026-10-17): during the widen the lid line never entered the band; the
+        // search found its bottom edge (now no line) or the floor (-0.3). The higher band has the lid at 1.9.
+        let mut widen = widen_high(250, 1.9, 0.85);
+        widen.extend(samples(Label::Widen, 100, -0.3, 2.4, -14.0, 252.0, true));
+        let eye = wear_widen(widen);
+        let wf = widen_fit(&eye, 1.0, 60);
+        assert_eq!((wf.source, wf.with_pupil, wf.low, wf.high_good, wf.high_used), (WidenSource::Upper, 350, 350, 250, 250));
+        assert!((wf.b_w - 1.91).abs() < 1e-9, "{wf:?}");
+        let both = [eye.clone(), eye];
+        let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
+        assert!(measured && (w[0].b_w - 1.91).abs() < 1e-9, "{:?}", w[0]);
+        let (report, lines) = wear_report(&both);
+        assert!(report.contains("\"widen_source\": \"upper\"") && report.contains("\"widen_frames_upper_used\": 250"), "{report}");
+        assert!(report.contains("\"widen_frames_below_normal\": 100"), "the existing key counts as before: {report}");
+        assert!(lines[0].contains("widen from upper (no line near normal 350 of 350, upper good 250 / used 250)"), "{}", lines[0]);
+        // The CSV has the new columns: this frame's line share, the edge flag, the higher band's line.
+        let csv = samples_csv(&both);
+        assert!(csv.lines().next().unwrap().ends_with(",prior_reset,upper_frac,lid_edge,skin_up2,upper_frac2"));
+        assert!(csv.lines().any(|l| l.starts_with("L,") && l.contains(",widen,") && l.ends_with(",1.00000,1,1.90000,0.85000")), "{csv}");
+    }
+
+    #[test]
+    fn the_higher_band_is_not_used_when_most_widen_frames_have_the_lid() {
+        // The developer's calibrations: the lid in the band, a few frames of a half blink below normal (at most 15 of
+        // 396). Whatever the higher band sees (here a brow at 2.4 in every frame), the widen level is 0.7.9's.
+        let mut widen = samples(Label::Widen, 381, 1.25, 2.4, -14.0, 252.0, true);
+        widen.extend(samples(Label::Widen, 15, 0.6, 1.2, -14.0, 252.0, true));
+        for x in &mut widen {
+            (x.skin2, x.frac2) = (2.4, 0.95);
+        }
+        let eye = wear_widen(widen);
+        let wf = widen_fit(&eye, 1.0, 60);
+        let (plain, n) = widen_level(&eye, 1.0);
+        assert_eq!((wf.source, wf.low, wf.b_w, wf.n), (WidenSource::Main, 15, plain, n));
+        assert!((plain - 1.25).abs() < 1e-9 && n == 381);
+        let both = [eye.clone(), eye];
+        assert!(wear_report(&both).0.contains("\"widen_source\": \"main\""));
+        // Half of them low is enough to look higher (WIDEN_LOW_SHARE), less is not.
+        let mut half = samples(Label::Widen, 100, 1.25, 2.4, -14.0, 252.0, true);
+        half.extend(widen_high(99, 1.9, 0.85));
+        assert_eq!(widen_fit(&wear_widen(half.clone()), 1.0, 60).source, WidenSource::Main);
+        half.extend(widen_high(1, 1.9, 0.85));
+        assert_eq!(widen_fit(&wear_widen(half), 1.0, 60).source, WidenSource::Upper);
+    }
+
+    #[test]
+    fn without_a_good_line_in_the_higher_band_the_widen_falls_back_as_before() {
+        // Nothing found up there: as 0.7.9 (too few frames near normal: the usual step).
+        let mut widen = widen_high(250, f64::NAN, f64::NAN);
+        widen.extend(samples(Label::Widen, 50, 1.85, 2.4, -14.0, 252.0, true));
+        let eye = wear_widen(widen);
+        let wf = widen_fit(&eye, 1.0, 60);
+        assert_eq!((wf.source, wf.high_good, wf.n), (WidenSource::Fallback, 0, 50));
+        let (w, measured) = fit_wear(&[eye.clone(), eye.clone()], [0.19; 2]).unwrap();
+        assert!(!measured && (w[0].b_w - w[0].b_n - 0.19).abs() < 1e-9, "{:?}", w[0]);
+        assert!(wear_report(&[eye.clone(), eye]).0.contains("\"widen_source\": \"fallback\""));
+        let fit = |widen: Vec<Sample>| widen_fit(&wear_widen(widen), 1.0, 60);
+        // Weak lines (another line the search settled on) do not count.
+        assert_eq!(fit(widen_high(250, 1.9, 0.5)).source, WidenSource::Fallback);
+        // Nor one more than 1.5 R above normal (a brow).
+        assert_eq!(fit(widen_high(250, 2.6, 0.9)).source, WidenSource::Fallback);
+        // Nor a line that jumps from frame to frame.
+        let mut jumpy = widen_high(250, 1.9, 0.9);
+        for (i, x) in jumpy.iter_mut().enumerate() {
+            x.skin2 = 1.7 + 0.3 * (i % 3) as f64;
+        }
+        assert_eq!(fit(jumpy).source, WidenSource::Fallback);
+        // Nor a line the higher band also finds in the normal frames (a crease): there whether widened or not.
+        let mut eye = wear_widen(widen_high(250, 1.9, 0.9));
+        for x in eye.iter_mut().filter(|x| x.label == Label::Normal).take(100) {
+            (x.skin2, x.frac2) = (1.95, 0.9);
+        }
+        let wf = widen_fit(&eye, 1.0, 60);
+        assert_eq!((wf.source, wf.high_good, wf.high_used), (WidenSource::Fallback, 250, 0), "{wf:?}");
+        assert!((wf.fixed - 1.95).abs() < 1e-9);
+        // In a few normal frames only, it is not a fixed line.
+        let mut eye = wear_widen(widen_high(250, 1.9, 0.9));
+        for x in eye.iter_mut().filter(|x| x.label == Label::Normal).take(50) {
+            (x.skin2, x.frac2) = (1.95, 0.9);
+        }
+        assert_eq!(widen_fit(&eye, 1.0, 60).source, WidenSource::Upper);
     }
 
     #[test]
@@ -3240,5 +3590,140 @@ mod tests {
         let mut c = AutoBase::default();
         c.seed(41.0, 79.0);
         assert!(c.ready && c.b == 41.0);
+    }
+
+    #[test]
+    fn relearn_restarts_only_the_warm_up() {
+        let mut e = EyeEngine::default();
+        // A wear calibration's levels, and what the engine learnt about the wear meanwhile
+        let w = WearParams { r_px: 50.0, b_n: 0.8, b_w: 1.0, ap_n: 1.6, ap_cl: 0.5, pitch_n: -12.0, lower_px: 240.0 };
+        e.seed(&w);
+        assert!(e.baseline_ready() && e.warmup_remaining_s() == 0.0);
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)));
+        e.xmax = 300.0;
+        e.x_min = 120.0;
+        e.find_x_min = 110.0;
+        for k in 0..100 {
+            e.base.pitch_typ.push(-10.0 + (k % 3) as f64, 45.0);
+            e.r_est.push(50.0, 45.0);
+            e.box_open.push(90.0, 45.0);
+            e.a_open.push(12.0, 45.0);
+        }
+        e.t_first = 3.0;
+        let pitch = e.base.pitch_typ.value;
+        assert!(pitch.is_finite());
+        e.relearn();
+        // A new warm-up, counted down, while the old levels stay in use
+        assert!(e.baseline_ready() && e.relearning());
+        assert_eq!(e.warmup_remaining_s(), WARMUP_S);
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)));
+        let next = e.base.next.as_ref().unwrap();
+        assert!(next.b.is_nan() && next.ap_n.is_nan() && next.skin.is_empty() && next.seconds == 0.0 && !next.ready);
+        // ...the rest of the wear kept
+        assert_eq!((e.xmax, e.x_min, e.find_x_min, e.t_first), (300.0, 120.0, 110.0, 3.0));
+        assert_eq!((e.r_est.value, e.box_open.value, e.a_open.value), (50.0, 90.0, 12.0));
+        assert_eq!((e.base.pitch_typ.len(), e.base.pitch_typ.value), (100, pitch));
+        // A wear calibration seeds it again at once, as before (and ends the relearn)
+        e.seed(&w);
+        assert!(e.baseline_ready() && !e.relearning() && e.warmup_remaining_s() == 0.0);
+        // reset (a new wear) forgets the wear too
+        e.reset();
+        assert!(e.base.pitch_typ.value.is_nan() && e.r_est.value.is_nan() && e.xmax == 346.0);
+    }
+
+    /// `n` seconds of usable frames at 90 fps with these levels (px) for a relearn's warm-up.
+    fn warm_next_for(base: &mut AutoBase, seconds: f64, skin: f64, ap: f64) {
+        for _ in 0..(seconds * FPS).round() as usize {
+            base.warm_next(skin, ap, 0.5, 1.0 / FPS);
+        }
+    }
+
+    #[test]
+    fn relearn_keeps_the_old_levels_until_the_new_ones_are_learnt() {
+        let mut e = EyeEngine::default();
+        let w = WearParams { r_px: 50.0, b_n: 0.8, b_w: 1.0, ap_n: 1.6, ap_cl: 0.5, pitch_n: -12.0, lower_px: 240.0 };
+        e.seed(&w);
+        e.relearn();
+        // Half the warm-up: the old levels in use, the new warm-up counting down
+        warm_next_for(&mut e.base, 15.0, 46.0, 86.0);
+        assert!(e.relearning() && e.baseline_ready());
+        assert!((e.warmup_remaining_s() - 15.0).abs() < 0.02, "{}", e.warmup_remaining_s());
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)));
+        // process() uses them: it reports what an engine with the old levels and no relearn reports, and an engine with
+        // the new ones something else (the same frames for all three, so the same iris radius; the levels are not
+        // followed here, to compare them exactly)
+        let mut p = Params::default();
+        p.tune.track = false;
+        let eye = disc_frame(Some((250.0, 200.0, 25.0)));
+        let (mut old, mut new) = (EyeEngine::default(), EyeEngine::default());
+        old.seed(&w);
+        new.seed(&w);
+        new.seed_px(46.0, 86.0);
+        let o = e.process(&eye, f64::NAN, 0.0, &p);
+        let (o_old, o_new) = (old.process(&eye, f64::NAN, 0.0, &p), new.process(&eye, f64::NAN, 0.0, &p));
+        assert!(o.b_n.is_finite() && o.b_n == o_old.b_n && o.b_n < o_new.b_n, "{} {} {}", o.b_n, o_old.b_n, o_new.b_n);
+        assert_eq!((o.b_w, o.eye_lid, o.eye_wide, o.eye_squint), (o_old.b_w, o_old.eye_lid, o_old.eye_wide, o_old.eye_squint));
+        // Pressed again: the new warm-up starts over, the old levels still in use
+        e.relearn();
+        assert_eq!(e.warmup_remaining_s(), WARMUP_S);
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)));
+        warm_next_for(&mut e.base, 29.5, 46.0, 86.0);
+        assert!(e.relearning() && e.baseline_px() == Some((40.0, 80.0)));
+        // Ready: the new levels take over, from the old ones over RELEARN_RAMP_S
+        warm_next_for(&mut e.base, 0.5, 46.0, 86.0);
+        assert!(!e.relearning() && e.baseline_ready() && e.warmup_remaining_s() == 0.0);
+        assert_eq!((e.base.b, e.base.ap_n), (46.0, 86.0));
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)), "no jump at the switch");
+        for _ in 0..(0.5 * RELEARN_RAMP_S * FPS).round() as usize {
+            e.base.tick(1.0 / FPS);
+        }
+        let (b, ap) = e.baseline_px().unwrap();
+        assert!((b - 43.0).abs() < 1e-6 && (ap - 83.0).abs() < 1e-6, "halfway: {b} {ap}");
+        // ...also through process(): its level moves on with the frames from the old engine's to the new one's, and
+        // stays at the new one's after the ramp
+        let mut last = 0.5;
+        for k in 1..=(RELEARN_RAMP_S * FPS) as usize {
+            let t = k as f64 / FPS;
+            let o = e.process(&eye, f64::NAN, t, &p);
+            let (o_old, o_new) = (old.process(&eye, f64::NAN, t, &p), new.process(&eye, f64::NAN, t, &p));
+            let f = (o.b_n - o_old.b_n) / (o_new.b_n - o_old.b_n);
+            assert!(f >= last - 1e-9 && f <= 1.0 + 1e-9, "{k}: {f}");
+            last = f;
+        }
+        assert!((last - 1.0).abs() < 1e-9, "{last}");
+        assert!(e.base.ramp.is_none() && e.baseline_px() == Some((46.0, 86.0)));
+        let (o, o_new) = (e.process(&eye, f64::NAN, 3.0, &p), new.process(&eye, f64::NAN, 3.0, &p));
+        assert_eq!((o.b_n, o.b_w, o.eye_lid, o.eye_wide), (o_new.b_n, o_new.b_w, o_new.eye_lid, o_new.eye_wide));
+        // A relearn during a ramp starts from where the ramp is
+        e.base.ramp = Some((40.0, 80.0, 0.5 * RELEARN_RAMP_S));
+        e.relearn();
+        assert_eq!(e.baseline_px(), Some((43.0, 83.0)));
+        assert!(e.base.ramp.is_none() && e.relearning());
+    }
+
+    #[test]
+    fn relearn_without_levels_and_a_new_wear_start_the_warm_up_over() {
+        // No levels yet (just put on): the warm-up starts over, nothing in use meanwhile, as before
+        let mut e = EyeEngine::default();
+        for _ in 0..(10.0 * FPS) as usize {
+            e.base.warm(46.0, 86.0, 0.5, 1.0 / FPS);
+        }
+        assert!(!e.baseline_ready() && (e.warmup_remaining_s() - 20.0).abs() < 0.02);
+        e.relearn();
+        assert!(!e.baseline_ready() && !e.relearning() && e.baseline_px().is_none());
+        assert_eq!(e.warmup_remaining_s(), WARMUP_S);
+        assert!(e.base.b.is_nan() && e.base.skin.is_empty() && e.base.seconds == 0.0);
+        let p = Params::default();
+        let o = e.process(&disc_frame(Some((250.0, 200.0, 25.0))), f64::NAN, 0.0, &p);
+        assert!(o.b_n.is_nan() && o.eye_wide == 0.0 && o.eye_squint == 0.0);
+        // A new wear (reset) during a relearn: everything goes, the warm-up from nothing, as before
+        let w = WearParams { r_px: 50.0, b_n: 0.8, b_w: 1.0, ap_n: 1.6, ap_cl: 0.5, pitch_n: -12.0, lower_px: 240.0 };
+        e.seed(&w);
+        e.relearn();
+        warm_next_for(&mut e.base, 10.0, 46.0, 86.0);
+        e.reset();
+        assert!(!e.baseline_ready() && !e.relearning() && e.baseline_px().is_none());
+        assert_eq!(e.warmup_remaining_s(), WARMUP_S);
+        assert!(e.base.ramp.is_none() && e.base.b.is_nan() && e.base.seconds == 0.0);
     }
 }

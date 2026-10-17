@@ -1,5 +1,6 @@
 // frameeyeosc-panel: a SteamVR dashboard panel for frameeyeosc's settings. It only writes config.json and reads
 // status.json; frameeyeosc keeps sending when the panel is closed, crashes or is not installed.
+#include "action_socket.h"
 #include "auto_recenter.h"
 #include "autostart.h"
 #include "config.h"
@@ -149,9 +150,11 @@ struct Options {
     std::string fakePrompt;       ///< vrchat / etvr / livelink
     std::string fakeUpdate;       ///< a made-up update state (see printUsage)
     std::string fakeUpdateNotes;  ///< --fake-update-notes: the new release's summary ("both", "en" or "long")
+    bool updateBeta = false;      ///< --update-beta: "Get test versions" on (instead of panel.json's)
     std::string fakeFit;          ///< a made-up eye fit state (see printUsage)
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
+    bool fakeNoWiden = false;     ///< --fake-no-widen: widen off (no widening at all)
     std::vector<double> fakeGazeScale;  ///< --fake-gaze-scale: gaze_scale_left, _right, _up, _down (empty = defaults)
     bool fakeGazeDots = false;    ///< --fake-gaze-dots: gaze_debug_dots on
     bool fakeRingsOff = false;    ///< --fake-rings-off: gaze_debug_rings off
@@ -314,8 +317,12 @@ void printUsage() {
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
         "      --fake-prompt vrchat|etvr|livelink|frameeyeosc  The recommended-settings question\n"
         "      --fake-autostart on|off|missing|unknown\n"
-        "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed\n"
-        "                        A made-up update state (the version row on the Advanced tab)\n"
+        "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed|\n"
+        "                    test|testbadge|onbeta\n"
+        "                        A made-up update state (the version row on the Advanced tab). test: the new version\n"
+        "                        is a test version; testbadge: up to date and a newer test version exists (the badge\n"
+        "                        while \"Get test versions\" is off); onbeta: running test version 0.7.11-beta.2\n"
+        "      --update-beta     \"Get test versions\" on (with --dump-png; else as panel.json says)\n"
         "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
         "                        English and Japanese, English only, or both cut at 300 characters\n"
         "      --fake-fit running|running-center|running-closed|done|done-center|done-standin|\n"
@@ -326,6 +333,7 @@ void printUsage() {
         "                        stopped, tried again once it is closed)\n"
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
+        "      --fake-no-widen   widen off in the made-up settings (no eye widens; the Eyelids tab's \"Widening\")\n"
         "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
         "                        A made-up eyecam-rec for the eye cameras tab (confirm: idle with the recording's\n"
         "                        light warning open, on the Advanced tab; LABEL: lead_in, normal, widen, close,\n"
@@ -380,6 +388,16 @@ void printUsage() {
         "  --probe               Diagnostics: connect to SteamVR as a background app and describe the resident panel\n"
         "  --probe-switch-away [S]  Diagnostics: switch the dashboard to a temporary overlay for S s (default 3)\n"
         "  --version             Print the version\n"
+        "  --action recenter|fit|stop|relearn|open  Ask the running panel to start the gaze re-center, start the eye\n"
+        "                        fit, stop the fit or re-center running, relearn the relaxed eyes on the eye cameras,\n"
+        "                        or open the panel (as its buttons do; the dashboard may stay closed). Never starts the\n"
+        "                        panel. Prints one line to stderr and exits with:\n"
+        "                        0 accepted (started / stopped / shown), 1 unknown action or bad arguments (any usage\n"
+        "                        error of this program exits 1), 2 panel not running, 3 no answer from the panel,\n"
+        "                        4 frameeyeosc not running, 5 re-center before any gaze fit, 6 busy: an eye fit is\n"
+        "                        running (stop it first), 7 nothing to stop, 8 the fit's values are locked by\n"
+        "                        frameeyeosc's command line, 9 no eye data (the headset off?), 10 busy: a re-center is\n"
+        "                        running, 11 relearn: the eye cameras aren't in use or ready\n"
         "  --config PATH         Config file (default ~/.config/frameeyeosc/config.json)\n"
         "  --status PATH         Status file (default $XDG_RUNTIME_DIR/frameeyeosc/status.json)\n");
 }
@@ -926,6 +944,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeIndependent = true;
         } else if (arg == "--fake-v1") {
             options.fake = options.fakeV1 = true;
+        } else if (arg == "--fake-no-widen") {
+            options.fake = options.fakeNoWiden = true;
         } else if (arg == "--fake-gaze-dots") {
             options.fake = options.fakeGazeDots = true;
         } else if (arg == "--fake-rings-off") {
@@ -986,12 +1006,15 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--fake-update" && hasNext) {
             options.fakeUpdate = argv[++i];
             static const char* const kStates[] = {"checking",  "uptodate",  "available",   "manual",
-                                                  "installing", "installed", "checkfailed", "installfailed"};
+                                                  "installing", "installed", "checkfailed", "installfailed",
+                                                  "test",       "testbadge", "onbeta"};
             if (std::find(std::begin(kStates), std::end(kStates), options.fakeUpdate) == std::end(kStates)) {
                 std::fprintf(stderr, "--fake-update: unknown state %s\n", options.fakeUpdate.c_str());
                 return false;
             }
             options.fake = true;
+        } else if (arg == "--update-beta") {
+            options.updateBeta = true;
         } else if (arg == "--fake-update-notes" && hasNext) {
             options.fakeUpdateNotes = argv[++i];
             if (options.fakeUpdateNotes != "both" && options.fakeUpdateNotes != "en" && options.fakeUpdateNotes != "long") {
@@ -1129,9 +1152,11 @@ Language configLanguage(const ConfigFile& config) {
 /**
  * The update checker's settings: frame-update.sh as install.sh puts it, this release's tarball name and the
  * install.sh option used when ~/.config/frameeyeosc/install-args is missing (0.3.x did not write it).
+ * @param beta "Get test versions" (panel.json): the beta channel; off, the stable one, which also looks at the beta
+ *             channel to tell whether a newer test version exists (the badge)
  * @return the settings
  */
-frame_updater::UpdaterConfig updaterConfig() {
+frame_updater::UpdaterConfig updaterConfig(bool beta) {
     frame_updater::UpdaterConfig c;
     const char* data = std::getenv("XDG_DATA_HOME");
     const char* home = std::getenv("HOME");
@@ -1144,6 +1169,8 @@ frame_updater::UpdaterConfig updaterConfig() {
     c.assetPattern = "frameeyeosc-{version}-steamframe-aarch64.tar.gz";
     // The update button is only in the panel, so whoever uses it has the panel installed
     c.defaultInstallArgs = {"--with-panel"};
+    c.channel = beta ? "beta" : "stable";
+    c.watchTestVersions = true;
     return c;
 }
 
@@ -1189,6 +1216,19 @@ frame_updater::UpdateStatus fakeUpdate(const std::string& state, const std::stri
             for (int i = 0; i < 299; ++i) u.notesJa += "長";
             u.notesJa += "…";
         }
+    } else if (state == "test") {
+        u.state = UpdateState::Available;
+        u.latest = "9.9.9-beta.1";
+        u.prerelease = true;
+        u.installable = true;
+    } else if (state == "testbadge") {
+        u.state = UpdateState::UpToDate;
+        u.testVersion = "9.9.9-beta.1";
+    } else if (state == "onbeta") {
+        u.state = UpdateState::UpToDate;
+        u.current = "0.7.11-beta.2";
+        u.latest = u.current;
+        u.prerelease = true;
     } else if (state == "installing") {
         u.state = UpdateState::Installing;
         u.step = "download";
@@ -1594,6 +1634,7 @@ PanelModel fakeModel(const Options& options) {
     if (options.fakePupilBits >= 0) root.set(key::kPupilBits, JsonValue::makeNumber(options.fakePupilBits, true));
     if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
     if (!options.fakeWiden.empty()) root.set(key::kLidWiden, JsonValue::makeString(options.fakeWiden));
+    if (options.fakeNoWiden) root.set(key::kWiden, JsonValue::makeBool(false));
     if (options.fakePaused) root.set(key::kSending, JsonValue::makeBool(false));
     if (options.fakeCustom) {
         root.set(key::kGazeMinCutoff, JsonValue::makeNumber(0.3));
@@ -2170,10 +2211,11 @@ int runDumpPng(const Options& options) {
         if (options.previewReset) panel.armResetForPreview();
         if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
         if (options.previewUpdatePrompt) panel.showUpdatePrompt(model.update.latest);
+        panel.setUpdateBeta(options.updateBeta);
         std::unique_ptr<frame_updater::UpdateChecker> updater;
         const bool updateCheck = model.config.flag(key::kUpdateCheck);
         if (options.updateLive) {
-            updater = std::make_unique<frame_updater::UpdateChecker>(updaterConfig());
+            updater = std::make_unique<frame_updater::UpdateChecker>(updaterConfig(panel.updateBeta()));
             updater->tick(updateCheck);
             settleUpdater(*updater, updateCheck);
             model.update = updater->status();
@@ -2195,7 +2237,7 @@ int runDumpPng(const Options& options) {
             }
             // Wait for eyecam-rec's reply, and show the folder as it is after it
             if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop ||
-                hit.action == PanelAction::EyecamCalib) {
+                hit.action == PanelAction::EyecamCalib || hit.action == PanelAction::EyecamRelearn) {
                 while (eyecamControl.busy()) {
                     eyecamControl.poll(nowSeconds());
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -2368,7 +2410,7 @@ int runReportMake(const Options& options) {
         !parseLocalTime(a[2], s.end) || !report::parseResult(a[3], s.result) || s.end < s.start) {
         std::fprintf(stderr, "--report-make KIND START END RESULT REASON: KIND fit|recenter|calib-wear|calib-user, "
                              "START / END \"YYYY-MM-DD HH:MM:SS\", RESULT ok|failed|partial|stopped\n");
-        return 2;
+        return 1;
     }
     s.mode = s.kind == report::Kind::Fit ? "full" : s.kind == report::Kind::Recenter ? "center" : "";
     s.reason = s.reasonEn = a[4];
@@ -2901,6 +2943,11 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::UpdateDismiss:
             if (updater != nullptr) updater->dismiss();
             return;
+        case PanelAction::UpdateBeta:
+            // Switched in the panel; the loop saves it to panel.json
+            std::fprintf(stderr, "[update] test versions %s\n", panel.updateBeta() ? "on" : "off");
+            if (updater != nullptr) updater->setChannel(panel.updateBeta() ? "beta" : "stable");
+            return;
         case PanelAction::FitStart:
         case PanelAction::FitCenter: {
             const bool full = hit.action == PanelAction::FitStart;
@@ -3019,14 +3066,16 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             return;
         case PanelAction::EyecamChoose:
         case PanelAction::EyecamStop:
-        case PanelAction::EyecamCalib: {
-            // One line to its socket ("start" or "start widen_nolight" from the light warning, "stop", or a
-            // calibration); the reply is read by the loop (eyecam::Control never waits)
+        case PanelAction::EyecamCalib:
+        case PanelAction::EyecamRelearn: {
+            // One line to its socket ("start" or "start widen_nolight" from the light warning, "stop", a calibration,
+            // or "relearn"); the reply is read by the loop (eyecam::Control never waits)
             if (eyecamControl == nullptr) return;
             const std::string command =
-                hit.action == PanelAction::EyecamStop    ? std::string("stop")
-                : hit.action == PanelAction::EyecamCalib ? eyecam::calibCommand(static_cast<eyecam::Calib>(hit.arg))
-                                                         : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
+                hit.action == PanelAction::EyecamStop      ? std::string("stop")
+                : hit.action == PanelAction::EyecamRelearn ? std::string(eyecam::kRelearnCommand)
+                : hit.action == PanelAction::EyecamCalib   ? eyecam::calibCommand(static_cast<eyecam::Calib>(hit.arg))
+                                                           : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
             if (command.empty()) return;
             const std::string socket = model.eyecamDir + "/ctl.sock";
             std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
@@ -3189,9 +3238,12 @@ void logUpdate(const frame_updater::UpdateStatus& u) {
     std::string line;
     switch (u.state) {
         case frame_updater::UpdateState::Unknown: return;
-        case frame_updater::UpdateState::UpToDate: line = "up to date (" + u.current + ")"; break;
+        case frame_updater::UpdateState::UpToDate:
+            line = "up to date (" + u.current + ")" + (u.testVersion.empty() ? "" : "; test version " + u.testVersion);
+            break;
         case frame_updater::UpdateState::Available:
-            line = "new release " + u.latest + (u.installable ? "" : " (not installable: " + u.reason + ")");
+            line = "new release " + u.latest + (u.prerelease ? " (a test version)" : "") +
+                   (u.installable ? "" : " (not installable: " + u.reason + ")");
             break;
         case frame_updater::UpdateState::Installing: line = "installing " + u.version + ": " + u.step; break;
         case frame_updater::UpdateState::Installed: line = "installed " + u.version + "; reopen to use it"; break;
@@ -3386,9 +3438,12 @@ int runOverlay(const Options& options) {
     model.records.dir = options.reportsDir;
     AutostartWorker autostart;
     autostart.start();
-    frame_updater::UpdateChecker updater(updaterConfig());
-    std::fprintf(stderr, "[update] frameeyeosc-panel %s, checking %s\n", FRAMEEYEOSC_VERSION,
-                 model.config.flag(key::kUpdateCheck) ? "on" : "off");
+    // "Get test versions", as left
+    bool savedBeta = ui_state::readUpdateBeta(uiStatePath);
+    panel.setUpdateBeta(savedBeta);
+    frame_updater::UpdateChecker updater(updaterConfig(savedBeta));
+    std::fprintf(stderr, "[update] frameeyeosc-panel %s, checking %s, %s channel\n", FRAMEEYEOSC_VERSION,
+                 model.config.flag(key::kUpdateCheck) ? "on" : "off", savedBeta ? "beta" : "stable");
     // The other Frame apps (the bottom of "Version"): which are installed and run, and their list from the site, fetched
     // only while update checks are on (at most hourly, shared by the apps; else the last one or the built-in one)
     frame_apps::AppsManager apps(appsManagerConfig());
@@ -3438,13 +3493,30 @@ int runOverlay(const Options& options) {
         vr.logOverlayState("after connecting");
     }
 
+    // Requests from `frameeyeosc-panel --action` (action_socket.h), taken from now on: the actions need SteamVR (the
+    // targets, the dashboard), so before this the command finds no socket and says the panel isn't running
+    action_socket::Server actionServer;
+    // ...and "relearn" on eyecam-rec's control socket for them (a connection of its own, so the Eye cameras tab's
+    // replies stay its own), answered once eyecam-rec has
+    eyecam::Control relearnControl;
+    int relearnRequest = 0;  // the request waiting for it (0: none)
+    {
+        std::string error;
+        const std::string path = action_socket::defaultSocketPath();
+        if (actionServer.open(path, error)) {
+            std::fprintf(stderr, "[action] listening on %s\n", path.c_str());
+        } else {
+            std::fprintf(stderr, "[action] not listening: %s\n", error.c_str());
+        }
+    }
+
     gaze_fit::Session fit;
     // The records of calibrations and eye fits (report.h): each run's start and its status a second, then the logs
     // read and written on the writer's own thread after it
     report::Writer writer(model.records.dir, report::systemSources());
     report::Run fitRun;
     report::Run calibRun;
-    std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself
+    std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself, "command" for --action
     bool fitRetryShown = false;        // the last fit was a re-wear fit the dashboard stopped, to be tried again
     std::string calibCommand;          // the calibration's command, to know its reply
     report::CalibWatch calibWatch;     // ...until it ends
@@ -3562,6 +3634,11 @@ int runOverlay(const Options& options) {
             break;
         }
 
+        // Requests from `--action`: taken in now, answered below once the files are read (read for them even when
+        // nothing else reads them, so the answer goes by the state now)
+        const std::vector<action_socket::Request> requests = actionServer.poll(nowSeconds());
+        for (const std::string& line : actionServer.takeLog()) std::fprintf(stderr, "[action] %s\n", line.c_str());
+
         // Files are only read while the panel is visible, or while an eye fit runs (the dashboard open or closed)
         const bool visible = vr.panelVisible();
         autostart.setActive(visible);
@@ -3572,7 +3649,9 @@ int runOverlay(const Options& options) {
         const bool watching =
             autoRecenter(model.config) != AutoRecenter::Off && fitInConfig(SettingsView(model)).gazeFitted;
         const double readEvery = often ? kStatusReadSec : kWatchStatusReadSec;
-        if ((often || watching) && ((visible && !wasVisible) || nowSeconds() >= lastStatusRead + readEvery)) {
+        const bool asked = !requests.empty();
+        if ((often || watching || asked) &&
+            (asked || (visible && !wasVisible) || nowSeconds() >= lastStatusRead + readEvery)) {
             lastStatusRead = nowSeconds();
             model.status = readStatus(model.statusPath, unixNow());
             if (model.status.running != lastRunning) {
@@ -3745,7 +3824,85 @@ int runOverlay(const Options& options) {
             }
         }
 
-        // A fit started (from the panel or by itself): its record starts
+        // ...and from `--action`, each as if its button were pressed, with the button's conditions (action_socket.h)
+        for (const action_socket::Request& request : requests) {
+            using action_socket::Effect;
+            const SettingsView view(model);
+            action_socket::State state;
+            state.running = model.status.running;
+            state.tracking = model.status.tracking;
+            state.locked = fitKeysLocked(view);
+            state.gazeFitted = fitInConfig(view).gazeFitted;
+            state.fitActive = fit.active();
+            state.fitIsRecenter = fit.view().mode == gaze_fit::Mode::Center;
+            if (request.action == action_socket::Action::Relearn) {
+                // eyecam-rec's status as it is now (it is read once a second while nothing runs)
+                model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+                lastEyecamRead = nowSeconds();
+                const bool lids = view.flag(key::kCameraLids);
+                const bool warming = eyecam::baselineWarming(model.eyecam.status);
+                state.camerasReady =
+                    eyecam::relearnAllowed(eyecam::tabVisible(model.eyecam.status, unixNow()), model.eyecam.status, lids,
+                                           relearnUse(cameraUse(model.status, lids, warming)));
+            }
+            action_socket::Decision decision = action_socket::decide(request.action, state);
+            std::fprintf(stderr, "[action] %s (from PID %d): %s\n", action_socket::actionName(request.action),
+                         request.peerPid, decision.text.c_str());
+            switch (decision.effect) {
+                case Effect::StartRecenter:
+                case Effect::StartFit:
+                    // With the dashboard open, onto this panel's Eye fit tab as if pressed there (its "Stop" shows,
+                    // and another page showing would stop the fit). Closed, it stays closed: the targets show without
+                    // it, as for the automatic re-center, and opening it stops the fit
+                    if (dashboardOpen) {
+                        panel.setTab(PanelTab::EyeFit);
+                        if (!visible) vr.showPanel();
+                        dirty = true;
+                    }
+                    fitTrigger = "command";
+                    startFit(fit, decision.effect == Effect::StartFit ? gaze_fit::Mode::Full : gaze_fit::Mode::Center,
+                             view, &vr);
+                    break;
+                case Effect::StopFit:
+                    std::fprintf(stderr, "[fit] stopped\n");
+                    fit.cancel();
+                    break;
+                case Effect::ShowPanel: vr.showPanel(); break;
+                case Effect::Relearn: {
+                    // Answered once eyecam-rec has (below), unless it can't even be asked
+                    const std::string socket = model.eyecamDir + "/ctl.sock";
+                    if (relearnRequest != 0 || relearnControl.busy()) {
+                        decision = {action_socket::Code::NoCameras, "eye cameras not ready (a relearn is on its way)",
+                                    Effect::None};
+                    } else if (relearnControl.send(socket, eyecam::kRelearnCommand, nowSeconds(),
+                                                   action_socket::kEyecamReplySec)) {
+                        std::fprintf(stderr, "[eyecam] sending \"%s\" to %s (--action)\n", eyecam::kRelearnCommand,
+                                     socket.c_str());
+                        relearnRequest = request.id;
+                        continue;
+                    } else {
+                        decision = action_socket::relearnAnswer(false, relearnControl.reply().error);
+                    }
+                    std::fprintf(stderr, "[action] relearn: %s\n", decision.text.c_str());
+                    break;
+                }
+                case Effect::None: break;
+            }
+            actionServer.answer(request.id, decision.code, decision.text);
+        }
+        // ...and the relearn's, once eyecam-rec has answered (or kEyecamReplySec has gone by)
+        if (relearnControl.poll(nowSeconds()) && relearnRequest != 0) {
+            const eyecam::Reply& r = relearnControl.reply();
+            const action_socket::Decision answer = action_socket::relearnAnswer(r.ok, r.error);
+            std::fprintf(stderr, "[eyecam] %s -> %s%s; [action] relearn: %s\n", r.command.c_str(), r.ok ? "ok" : "err ",
+                         r.error.c_str(), answer.text.c_str());
+            actionServer.answer(relearnRequest, answer.code, answer.text);
+            relearnRequest = 0;
+            // (the Eye cameras tab's countdown follows from eyecam-rec's status, read again now)
+            lastEyecamRead = -1e9;
+        }
+
+        // A fit started (from the panel, by itself or from --action): its record starts
         if (fit.active() && !fitRun.active()) {
             const gaze_fit::View started = fit.view();
             fitRun.begin(started.mode == gaze_fit::Mode::Full ? report::Kind::Fit : report::Kind::Recenter, unixNow());
@@ -4294,6 +4451,12 @@ int runOverlay(const Options& options) {
                 std::fprintf(stderr, "[panel] %s\n", error.c_str());
             }
         }
+        // ...and "Get test versions" (the checker was switched when it was pressed)
+        if (panel.updateBeta() != savedBeta) {
+            savedBeta = panel.updateBeta();
+            std::string error;
+            if (!ui_state::writeUpdateBeta(uiStatePath, savedBeta, error)) std::fprintf(stderr, "[panel] %s\n", error.c_str());
+        }
 
         // The diagnostics page: redrawn when anything on it changes (the tool's checksum is looked at again too, which
         // costs a stat unless the file changed)
@@ -4359,7 +4522,9 @@ int runOverlay(const Options& options) {
     }
 
     // The same shutdown for SIGTERM / SIGINT, SteamVR quitting, vrserver gone, "close" and "Quit"; a recording is
-    // stopped (and its file written out) first. The eye capture's light goes first of all (shutdown also destroys it)
+    // stopped (and its file written out) first. The eye capture's light goes first of all (shutdown also destroys it),
+    // and the --action socket with it (a command from now on hears the panel isn't running, not a timeout)
+    actionServer.close();
     if (vr.fillShown()) std::fprintf(stderr, "[eyecam] light off (quitting)\n");
     vr.hideFill();
     eyeLog.shutdown();
@@ -4416,10 +4581,21 @@ int main(int argc, char** argv) {
     std::setvbuf(stderr, nullptr, _IOLBF, 0);
     installSignalHandlers();
 
+    // `--action NAME` talks to the running panel and exits with its own codes (1 for bad arguments, not the usage's 2)
+    const std::vector<std::string> args(argv + 1, argv + argc);
+    if (std::find(args.begin(), args.end(), "--action") != args.end()) {
+        std::string line;
+        const int code =
+            action_socket::runCommand(args, action_socket::defaultSocketPath(), action_socket::kReplyTimeoutMs, line);
+        std::fprintf(stderr, "%s\n", line.c_str());
+        return code;
+    }
+
+    // Every usage error exits 1 (2 is --action's "panel not running")
     Options options;
     if (!parseOptions(argc, argv, options)) {
         printUsage();
-        return 2;
+        return 1;
     }
     switch (options.mode) {
         case Options::Mode::Help: printUsage(); return 0;

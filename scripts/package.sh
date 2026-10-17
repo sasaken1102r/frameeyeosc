@@ -16,21 +16,12 @@ sh vendor/frame-updater/verify.sh
 # ...and the other Frame apps' list (built into the panel) what frame-apps' sync.sh put there
 sh vendor/frame-apps/verify.sh
 
-"$cargo" test --release
-"$cargo" build --release
+"$cargo" test --release --locked
+"$cargo" build --release --locked
 cmake -G Ninja -S panel -B panel/build -DCMAKE_BUILD_TYPE=Release
 ninja -C panel/build
-panel/build/gaze-fit-test
-panel/build/gaze-dots-test
-panel/build/eye-preview-test
-panel/build/sounds-test
-panel/build/text-test
-panel/build/auto-recenter-test
-panel/build/recorder-test
-panel/build/model-test
-panel/build/changelog-test
-panel/build/eyecam-test
-panel/build/report-test
+# Every panel test CMakeLists.txt registers (add_test), so a new one can't be left out here
+ctest --test-dir panel/build --output-on-failure
 # eyecam, the eye-camera tool (tools/eyecam): its own crate and lockfile, built into its own target folder.
 # Stripped like frameeyeosc (its Cargo.toml is a vendored copy, so the profile is set here)
 eyecam_target=tools/eyecam/target
@@ -45,6 +36,7 @@ cp target/release/frameeyeosc install.sh contrib/frameeyeosc.service contrib/fra
     LICENSE THIRD_PARTY_LICENSES.md README.md README.ja.md CHANGELOG.md CHANGELOG.ja.md "$stage/frameeyeosc/"
 cp panel/build/frameeyeosc-panel panel/contrib/frameeyeosc-panel.service panel/contrib/frameeyeosc-panel.desktop \
     "$stage/frameeyeosc/"
+"${STRIP:-strip}" "$stage/frameeyeosc/frameeyeosc-panel"
 cp panel/contrib/icons/frameeyeosc-panel-{48,128,256}.png "$stage/frameeyeosc/icons/"
 cp vendor/frame-updater/frame-update.sh "$stage/frameeyeosc/"
 # install.sh puts these in ~/.local/lib/eyecam (install_grab.sh is run once by the user, with sudo)

@@ -945,6 +945,11 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             if (hit.arg < 0 || hit.arg > 1) return {};
             gazeScaleLinked_[hit.arg] = !gazeScaleLinked_[hit.arg];
             return hit;
+        case PanelAction::UpdateBeta:
+            // Switched here; the caller saves it and tells the update checker
+            if (updateBeta_ == (hit.arg != 0)) return {};
+            updateBeta_ = hit.arg != 0;
+            return hit;
         case PanelAction::RecordOpen:
             // The caller reads it
             if (hit.arg < 0 || hit.arg >= static_cast<int>(recordNames_.size())) return {};
@@ -1903,7 +1908,7 @@ void EyePanel::drawUpdateNotice(const Pen& pen, const UiText& t, const frame_upd
     std::string text;
     switch (u.state) {
         case frame_updater::UpdateState::Available:
-            text = formatText(t.updateAvailableFormat, bareVersion(u.latest));
+            text = formatText(u.prerelease ? t.updateAvailableTestFormat : t.updateAvailableFormat, bareVersion(u.latest));
             break;
         case frame_updater::UpdateState::Installing:
             text = formatText(t.updateInstallingFormat, updateStepText(t, u.step));
@@ -3112,6 +3117,19 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         pen.text(x, centerBaseline(y, h, size), source, size, kText, true);
         y += h + 10;
     }
+    // Widening at all (widen): with the cameras or without. Off: no eyelid above relaxed open, closing and squint as
+    // they are; the slider below is greyed meanwhile
+    const bool widens = v.flag(key::kWiden);
+    {
+        const bool locked = v.locked(key::kWiden);
+        drawRowLabel(pen, t, y, kRowH, t.rowWidenSwitch, t.widenSwitchHint, locked);
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                      {{t.widenSwitchOn, {PanelAction::SetBool, key::kWiden, 1}},
+                       {t.widenSwitchOff, {PanelAction::SetBool, key::kWiden, 0}}},
+                      widens ? 0 : 1, 20, locked);
+        y += kRowH;
+        drawRowDivider(pen, y);
+    }
     // How easily widening shows: one slider, whatever drives it (only with the eye cameras: a line at the end otherwise)
     if (camera && widen.control == WidenControl::Saturated) {
         // Nothing to widen by on this SteamOS without the cameras: one row saying so, and the way to the cameras
@@ -3139,7 +3157,8 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
                                                                   : t.widenHintValve;
         drawRowLabel(pen, t, y, h, t.rowWidenEase, hint, locked, 0, true);
         drawWidenSlider(pen, t, m, v, widen, kControlX, kInnerRight, y + 6, 40);
-        const char* note = widen.unfittedNote                   ? t.widenNoteUnfitted
+        const char* note = !widens                              ? t.widenNoteOff
+                           : widen.unfittedNote                   ? t.widenNoteUnfitted
                            : widen.control == WidenControl::Valve ? t.widenNoteValve
                                                                   : t.widenNoteCamera;
         pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
@@ -3715,6 +3734,7 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
     const frame_updater::UpdateStatus& u = m.update;
     const std::string current = bareVersion(u.current);
     const std::string latest = bareVersion(u.latest);
+    const TestVersionView test = testVersionView(u, updateBeta_);
 
     /** A button beside the version. */
     struct RowButton {
@@ -3732,9 +3752,11 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
         case UpdateState::Unknown:
             if (u.checking) primary = t.updateChecking;
             break;
-        case UpdateState::UpToDate: primary = formatText(t.updateUpToDateFormat, current); break;
+        case UpdateState::UpToDate:
+            primary = formatText(test.using_ ? t.updateUsingTestFormat : t.updateUpToDateFormat, current);
+            break;
         case UpdateState::Available:
-            primary = formatText(t.updateAvailableFormat, latest);
+            primary = formatText(test.offered ? t.updateAvailableTestFormat : t.updateAvailableFormat, latest);
             if (u.installable) {
                 buttons.push_back({install, formatText(t.updateToFormat, latest), true});
             } else {
@@ -3860,8 +3882,34 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
     // (not while a check or an install runs)
     drawButton(pen, right - checkW, rowTop, checkW, rowH, t.updateCheckNow, {PanelAction::UpdateCheck, nullptr, 0},
                !u.checking && u.state != UpdateState::Installing, false, 16);
-    // How the eyes move (eye_behavior): v2, or v1 as up to 0.7.5, and a line on what each does
     double ey = rowTop + rowH + 16;
+    // "Get test versions" (panel.json, not config.json): On / Off, with a small badge while it is off and a test version
+    // newer than the running one exists
+    {
+        const double h = 46;
+        const double segW = std::min(200.0, right - kInnerX - 300);
+        const double labelW = right - segW - 16 - kInnerX;
+        const double badgeSize = 13;
+        const double badgeW = test.badge ? pen.measure(t.updateTestAvailable, badgeSize, true) + 20 : 0.0;
+        const double labelSize = fitSize(pen, t.rowUpdateBeta, 18, 13, labelW - (test.badge ? badgeW + 10 : 0.0), true);
+        pen.text(kInnerX, ey + 20, t.rowUpdateBeta, labelSize, kText, true);
+        if (test.badge) {
+            const double bx = kInnerX + pen.measure(t.rowUpdateBeta, labelSize, true) + 10;
+            const double bh = 22;
+            const double by = ey + 13 - bh / 2;
+            fillRounded(pen, bx, by, badgeW, bh, bh / 2, kAccentTint);
+            strokeRounded(pen, bx, by, badgeW, bh, bh / 2, kAccent, 1.5);
+            textCentered(pen, bx + badgeW / 2, centerBaseline(by, bh, badgeSize), t.updateTestAvailable, badgeSize, kAccent,
+                         true);
+        }
+        const char* hint = test.keepHint ? t.hintUpdateBetaKeep : t.hintUpdateBeta;
+        pen.text(kInnerX, ey + 40, hint, fitSize(pen, hint, 14, 10, labelW, false), kTextMuted);
+        drawSegmented(pen, right - segW, ey + 2, segW, 42,
+                      {{t.on, {PanelAction::UpdateBeta, nullptr, 1}}, {t.off, {PanelAction::UpdateBeta, nullptr, 0}}},
+                      updateBeta_ ? 0 : 1, 16, false);
+        ey += h + 14;
+    }
+    // How the eyes move (eye_behavior): v2, or v1 as up to 0.7.5, and a line on what each does
     {
         const double h = 46;
         const bool locked = v.locked(key::kEyeBehavior);
@@ -6249,6 +6297,8 @@ void EyePanel::drawWidenSlider(const Pen& pen, const UiText& t, const PanelModel
     } else if (widen.control == WidenControl::Valve) {
         usable = !v.locked(key::kLidWiden);
     }
+    // Widening off (widen): nothing it sets shows, so it is greyed like a slider that can't be moved
+    if (!v.flag(key::kWiden)) usable = false;
     const double mid = y + h / 2;
     const double endSize = 15;
     const double dullW = pen.measure(t.eyecamSensitivityDull, endSize, false);
@@ -6468,6 +6518,22 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
             pen.text(tx, centerBaseline(py, pillH, pillSize), pillText, pillSize, learned ? kSuccess : kText);
         }
         y += h;
+        // Under it: learn the relaxed eyes again (eyecam-rec's "relearn": the warm-up as when the headset is put on,
+        // this wear's calibration kept), while the cameras are read with the eye video; the pill then counts down
+        // again. A line of its own, so the state and the pill's seconds keep their room
+        {
+            const double rh = 48;
+            const double rbH = 38;
+            const double rbW = pen.measure(t.camRelearnButton, 16, true) + 40;
+            const double rbX = kInnerRight - rbW;
+            const bool canRelearn = eyecam::relearnAllowed(view.visible, s, v.flag(key::kCameraLids), relearnUse(use));
+            drawButton(pen, rbX, y + (rh - rbH) / 2 - 4, rbW, rbH, t.camRelearnButton,
+                       {PanelAction::EyecamRelearn, nullptr, 0}, canRelearn && !busy, false, 16);
+            const double room = rbX - 14 - textX;
+            pen.text(textX, centerBaseline(y - 4, rh, 15), ellipsize(pen, t.camRelearnHint, 15, false, room, false), 15,
+                     kTextMuted);
+            y += rh;
+        }
         divider(y);
     }
     // A calibration when something feels off, and the user's own (optional, for squinting)
@@ -6545,8 +6611,10 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
     bool whyLine = false;
     if (s.state == eyecam::State::Idle) {
         switch (cameraLine(use, warming, s.live, s.locked, v.text(key::kOutput) == kOutputVrchat)) {
-            case CameraLine::BothVrchat: sentence = t.camLineBothVrchat; break;
-            case CameraLine::Both: sentence = t.camLineBoth; break;
+            case CameraLine::BothVrchat:
+                sentence = v.flag(key::kWiden) ? t.camLineBothVrchat : t.camLineBothNoWiden;
+                break;
+            case CameraLine::Both: sentence = v.flag(key::kWiden) ? t.camLineBoth : t.camLineBothNoWiden; break;
             case CameraLine::Left: sentence = t.camLineLeft; break;
             case CameraLine::Right: sentence = t.camLineRight; break;
             case CameraLine::Warming: {

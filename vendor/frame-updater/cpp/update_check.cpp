@@ -8,6 +8,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <cstdlib>
 #include <ctime>
@@ -41,16 +42,25 @@ std::string get(const std::map<std::string, std::string>& map, const std::string
 }
 
 /**
- * Parse the numeric core of a version into up to three numbers.
- * @param text the version ("0.4.0", "v0.4.0-rc1")
+ * Parse a version into the numbers of its core and its pre-release part.
+ * @param text the version ("0.4.0", "v0.4.0-rc1", "0.7.11-beta.2+abc")
  * @param parts receives the numbers (missing ones are 0)
+ * @param pre receives the pre-release part ("rc1", "beta.2"; "" for a final version)
  * @return false if it is not a version
  */
-bool parseVersion(const std::string& text, long parts[3]) {
+bool parseVersion(const std::string& text, long parts[3], std::string& pre) {
     std::string core = text;
     if (!core.empty() && (core[0] == 'v' || core[0] == 'V')) core.erase(0, 1);
+    pre.clear();
     const size_t suffix = core.find_first_of("-+");
-    if (suffix != std::string::npos) core.erase(suffix);
+    if (suffix != std::string::npos) {
+        if (core[suffix] == '-') {
+            pre = core.substr(suffix + 1);
+            const size_t build = pre.find('+');
+            if (build != std::string::npos) pre.erase(build);
+        }
+        core.erase(suffix);
+    }
     parts[0] = parts[1] = parts[2] = 0;
     int index = 0;
     size_t digits = 0;
@@ -66,6 +76,49 @@ bool parseVersion(const std::string& text, long parts[3]) {
         }
     }
     return digits > 0;
+}
+
+/**
+ * Compare two pre-release parts as frame-update.sh's precmp: none (a final version) above any, else identifier by
+ * identifier (split at "."), numbers by value and below words, words byte by byte, the longer above when the shorter
+ * matches its start.
+ * @return -1, 0 or 1
+ */
+int comparePre(const std::string& a, const std::string& b) {
+    if (a.empty() || b.empty()) return a == b ? 0 : (a.empty() ? 1 : -1);
+    size_t i = 0;
+    size_t j = 0;
+    while (true) {
+        const bool endA = i > a.size();
+        const bool endB = j > b.size();
+        if (endA || endB) return endA == endB ? 0 : (endA ? -1 : 1);
+        size_t ni = a.find('.', i);
+        size_t nj = b.find('.', j);
+        if (ni == std::string::npos) ni = a.size();
+        if (nj == std::string::npos) nj = b.size();
+        std::string x = a.substr(i, ni - i);
+        std::string y = b.substr(j, nj - j);
+        i = ni + 1;
+        j = nj + 1;
+        const auto numeric = [](const std::string& s) {
+            if (s.empty()) return false;
+            for (const char c : s) {
+                if (c < '0' || c > '9') return false;
+            }
+            return true;
+        };
+        const bool nx = numeric(x);
+        const bool ny = numeric(y);
+        if (nx != ny) return nx ? -1 : 1;  // a number is below a word
+        if (nx) {
+            // By value, however long: without leading zeros the longer is bigger
+            x.erase(0, std::min(x.find_first_not_of('0'), x.size() - 1));
+            y.erase(0, std::min(y.find_first_not_of('0'), y.size() - 1));
+            if (x.size() != y.size()) return x.size() > y.size() ? 1 : -1;
+        }
+        const int c = x.compare(y);
+        if (c != 0) return c > 0 ? 1 : -1;
+    }
 }
 
 /**
@@ -248,7 +301,7 @@ bool UpdateStatus::operator==(const UpdateStatus& o) const {
     return state == o.state && checking == o.checking && current == o.current && latest == o.latest &&
            url == o.url && installable == o.installable && reason == o.reason && step == o.step &&
            version == o.version && error == o.error && message == o.message && checkedAt == o.checkedAt &&
-           notes == o.notes && notesJa == o.notesJa;
+           notes == o.notes && notesJa == o.notesJa && prerelease == o.prerelease && testVersion == o.testVersion;
 }
 
 std::map<std::string, std::string> parseFlatJson(const std::string& text) {
@@ -292,11 +345,19 @@ std::map<std::string, std::string> parseFlatJson(const std::string& text) {
 int compareVersions(const std::string& a, const std::string& b) {
     long x[3];
     long y[3];
-    if (!parseVersion(a, x) || !parseVersion(b, y)) return 0;
+    std::string preX;
+    std::string preY;
+    if (!parseVersion(a, x, preX) || !parseVersion(b, y, preY)) return 0;
     for (int i = 0; i < 3; ++i) {
         if (x[i] != y[i]) return x[i] > y[i] ? 1 : -1;
     }
-    return 0;
+    return comparePre(preX, preY);
+}
+
+bool isPrerelease(const std::string& version) {
+    long parts[3];
+    std::string pre;
+    return parseVersion(version, parts, pre) && !pre.empty();
 }
 
 UpdateChecker::UpdateChecker(UpdaterConfig config) : config_(std::move(config)) {
@@ -308,12 +369,14 @@ UpdateChecker::UpdateChecker(UpdaterConfig config) : config_(std::move(config)) 
         cacheDir_ = std::string(home != nullptr ? home : "") + "/.cache";
     }
     cacheDir_ += "/" + config_.app;
+    if (config_.channel != "beta") config_.channel = "stable";
     status_.current = config_.currentVersion;
     startedAt_ = static_cast<long long>(std::time(nullptr));
 }
 
 UpdateChecker::~UpdateChecker() {
     killChild(check_);
+    killChild(peek_);
     // "install --detach" only starts the unit and exits within moments; let it finish
     if (installer_.pid > 0) {
         for (int i = 0; i < 50 && !finished(installer_, kInstallStartTimeoutSeconds); ++i) ::usleep(100 * 1000);
@@ -420,21 +483,63 @@ void UpdateChecker::killChild(Child& child) {
 }
 
 std::vector<std::string> UpdateChecker::baseArgs() const {
-    return {"sh",     config_.script, "--app",   config_.app,
-            "--repo", config_.repo,   "--current", config_.currentVersion,
-            "--asset", config_.assetPattern};
+    std::vector<std::string> args = {"sh",     config_.script, "--app",   config_.app,
+                                     "--repo", config_.repo,   "--current", config_.currentVersion,
+                                     "--asset", config_.assetPattern};
+    // Only when asked: the stable call is the same as before frame-update 0.4.0
+    if (config_.channel == "beta") {
+        args.push_back("--channel");
+        args.push_back("beta");
+    }
+    return args;
 }
 
 void UpdateChecker::startCheck(bool force) {
     if (check_.pid > 0) return;
     lastCheck_ = Clock::now();
     checkedOnce_ = true;
+    recheckPending_ = false;
+    checkChannel_ = config_.channel;
+    // The beta channel is looked at after this check (one at a time), from the script's cache when it is fresh
+    if (config_.watchTestVersions && config_.channel != "beta") peekPending_ = true;
     std::vector<std::string> args = baseArgs();
     if (force) args.push_back("--force");
     args.push_back("check");
     if (!spawn(args, check_)) {
         checkResult_ = {{"status", "error"}, {"error", "spawn-failed"}, {"message", "cannot run " + config_.script}};
     }
+}
+
+void UpdateChecker::startPeek() {
+    peekPending_ = false;
+    if (peek_.pid > 0 || !config_.watchTestVersions || config_.channel == "beta") return;
+    std::vector<std::string> args = baseArgs();
+    args.push_back("--channel");
+    args.push_back("beta");
+    args.push_back("check");
+    if (!spawn(args, peek_)) peekResult_.clear();
+}
+
+void UpdateChecker::setChannel(const std::string& channel) {
+    const std::string next = channel == "beta" ? "beta" : "stable";
+    if (next == config_.channel) return;
+    config_.channel = next;
+    // The other channel's answer says nothing about this one (a running check's is dropped when it ends)
+    checkResult_.clear();
+    if (checkedOnce_) recheckPending_ = true;
+    recompute();
+}
+
+void UpdateChecker::setWatchTestVersions(bool watch) {
+    if (watch == config_.watchTestVersions) return;
+    config_.watchTestVersions = watch;
+    if (!watch) {
+        peekResult_.clear();
+        peekPending_ = false;
+    } else if (checkedOnce_) {
+        peekPending_ = true;
+    }
+    recompute();
 }
 
 void UpdateChecker::checkNow() {
@@ -492,12 +597,18 @@ void UpdateChecker::tick(bool checkEnabled) {
         if (result.empty()) {
             result = {{"status", "error"}, {"error", "script-failed"}, {"message", "no answer from " + config_.script}};
         }
-        checkResult_ = std::move(result);
+        // Asked about a channel since left (setChannel while it ran): its answer is not shown
+        if (checkChannel_ == config_.channel) checkResult_ = std::move(result);
+    }
+    if (peek_.pid > 0 && finished(peek_, kCheckTimeoutSeconds)) {
+        peekResult_ = parseFlatJson(lastLine(peek_.out));
     }
     if (forcePending_ && check_.pid <= 0) {
         forcePending_ = false;
         startCheck(true);
     }
+    if (recheckPending_ && check_.pid <= 0) startCheck(false);
+    if (peekPending_ && check_.pid <= 0 && peek_.pid <= 0) startPeek();
     if (installer_.pid > 0 && finished(installer_, kInstallStartTimeoutSeconds)) {
         auto reply = parseFlatJson(lastLine(installer_.out));
         if (reply.empty()) {
@@ -521,17 +632,24 @@ void UpdateChecker::tick(bool checkEnabled) {
 void UpdateChecker::recompute() {
     UpdateStatus next;
     next.current = config_.currentVersion;
-    next.checking = check_.pid > 0 || forcePending_;
+    next.checking = check_.pid > 0 || forcePending_ || recheckPending_;
     next.checkedAt = std::atoll(get(checkResult_, "checked_at").c_str());
 
     // The check's answer is the base; an install in progress or just finished overrides it
     const std::string checkStatus = get(checkResult_, "status");
     next.latest = get(checkResult_, "latest");
     next.url = get(checkResult_, "url");
+    // A test version newer than the running one, seen on the beta channel while this one is stable
+    if (config_.watchTestVersions && config_.channel != "beta" && get(peekResult_, "status") == "update-available" &&
+        get(peekResult_, "prerelease") == "true") {
+        next.testVersion = get(peekResult_, "latest");
+    }
     if (checkStatus == "up-to-date") {
         next.state = UpdateState::UpToDate;
+        next.prerelease = get(checkResult_, "prerelease") == "true";
     } else if (checkStatus == "update-available") {
         next.state = UpdateState::Available;
+        next.prerelease = get(checkResult_, "prerelease") == "true";
         next.installable = get(checkResult_, "installable") == "true";
         next.reason = get(checkResult_, "reason");
         next.notes = get(checkResult_, "notes");

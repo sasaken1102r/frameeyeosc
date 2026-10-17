@@ -1,6 +1,6 @@
 // What the panel remembers of itself between starts (not a setting): which sub-tab of the Gaze, Eyelids and Advanced
-// tabs was open last, whether the gaze scale's pairs are linked (their locks), and the up gains the last whole eye fits
-// measured (the fit writes their mean, gaze_fit::meanUpGain).
+// tabs was open last, whether the gaze scale's pairs are linked (their locks), the up gains the last whole eye fits
+// measured (the fit writes their mean, gaze_fit::meanUpGain), and whether "Get test versions" is on.
 // Kept in its own small file, $XDG_STATE_HOME/frameeyeosc/panel.json (~/.local/state/frameeyeosc/panel.json), next to
 // the records, so config.json isn't rewritten for it: frameeyeosc never sees it, and "Reset all" leaves it alone.
 #pragma once
@@ -143,5 +143,21 @@ std::vector<double> readUpGains(const std::string& path);
  * @return true if written
  */
 bool writeUpGains(const std::string& path, const std::vector<double>& gains, std::string& error);
+
+/**
+ * Whether "Get test versions" is on ("update_beta"): update checks then use frame-updater's beta channel.
+ * @param path the file
+ * @return it (false, off, the first time or when the file is missing or broken)
+ */
+bool readUpdateBeta(const std::string& path);
+
+/**
+ * Remember "Get test versions" (the file's other members are kept).
+ * @param path the file (its folder is made if missing)
+ * @param on whether it is on
+ * @param error why it failed
+ * @return true if written
+ */
+bool writeUpdateBeta(const std::string& path, bool on, std::string& error);
 
 }  // namespace ui_state

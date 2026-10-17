@@ -533,6 +533,7 @@ struct UiText {
     const char* diagLidsLeft;
     const char* diagLidsRight;
     const char* diagLidsValve;
+    const char* diagNoWiden;             ///< ...after it, while widening is off (widen)
     const char* diagNone;                ///< no error
     const char* diagCoreNotRunning;      ///< frameeyeosc isn't running
     const char* diagCoreNoTarget;        ///< no target PC found (Steam Link's)
@@ -764,6 +765,8 @@ struct UiText {
     const char* camRowState;  ///< the eye cameras page: rows (title, hint)
     const char* camRowStateHint;
     const char* camLearned;  ///< ...the baseline learned (green pill)
+    const char* camRelearnButton;  ///< ...the button under it: learn the relaxed eyes again (eyecam "relearn")
+    const char* camRelearnHint;    ///< ...what it does, left of it
     const char* camRowCalib;
     const char* camRowCalibHint;
     const char* camCalibButton;
@@ -777,6 +780,7 @@ struct UiText {
     const char* camUserNeedsCalib;  ///< ...instead while it can't be pressed
     // The sentence at the bottom of the eye cameras' page (cameraLine)
     const char* camLineBothVrchat;
+    const char* camLineBothNoWiden;  ///< ...the cameras drive both eyes, with widening off (widen)
     const char* camLineBoth;
     const char* camLineLeft;
     const char* camLineRight;
@@ -827,6 +831,11 @@ struct UiText {
     const char* widenNoteValve;  ///< ...Valve's values (four stops)
     const char* widenNoteUnfitted;  ///< ...an eye without an eye fit
     const char* widenSaturated;  ///< ...on a SteamOS that caps openness: the line in the slider's place
+    const char* rowWidenSwitch;  ///< whether any eye widens at all (widen): the row above the slider...
+    const char* widenSwitchHint;  ///< ...its hint
+    const char* widenSwitchOn;  ///< ...its two choices
+    const char* widenSwitchOff;
+    const char* widenNoteOff;  ///< the line under the slider while widening is off (the slider greyed)
     const char* blinkHint;  ///< the blink row: its hint
     const char* blinkHoldCaption;  ///< ...beside the hold
     const char* rowBlinkBoth;  ///< blink_sync_below
@@ -915,6 +924,13 @@ struct UiText {
     const char* updateRetry;
     const char* updateDismiss;
     const char* updateLogHint;
+    // Test versions (frame-updater's beta channel; strings.md's "テスト版" section)
+    const char* rowUpdateBeta;              ///< "Get test versions" (panel.json's update_beta)
+    const char* hintUpdateBeta;             ///< under it
+    const char* hintUpdateBetaKeep;         ///< under it instead, while it is off and a test version runs
+    const char* updateTestAvailable;        ///< a small badge beside it: off, and a newer test version exists
+    const char* updateAvailableTestFormat;  ///< Available, the new version a test version: "Test version %s is available"
+    const char* updateUsingTestFormat;      ///< UpToDate on a test version, instead of "Up to date": "Using test version %s"
     // Install steps (UpdateStatus::step)
     const char* stepStart;
     const char* stepDownload;

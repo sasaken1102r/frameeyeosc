@@ -105,8 +105,11 @@ Per eye, from a `TRACKING` packet:
   `PupilDiameter_MM = pupil_mm` (VRCFT's `v2/PupilDiameterLeft/Right/PupilDiameter` are those in cm, like
   frameeyeosc's VRChat output), and VRCFT's dilation range is set around their mean `A` so that its
   `v2/PupilDilation` (`(A - min) / (max - min)`) is the mean `pupil_dilation` `D`: `min = A - D * S`,
-  `max = min + S`, with `S` = 2.655 mm (eyecam's default dilation range, pupil-to-iris ratio 0.60..1.05 of a 5.9 mm
-  iris radius). Without any `PUPIL` the pupils are left as they were.
+  `max = min + S`. The default `S` is 2.655 mm (eyecam's default dilation range). If floating-point rounding changes
+  `D`, the module tries a power-of-two range with `D * S` between `A` and `2A` (or `S = 1` when `A = 0`). It uses
+  that range only if its bounds are finite, avoid VRCFT's reserved "unset" value and recover `D` exactly. This preserves
+  boolean and bit-packed thresholds without changing either measured diameter. Negative mean diameters and extreme
+  inputs that cannot use a finite exact range retain the default bounds. Without any `PUPIL` the pupils are left as they were.
 - Brows, while the packet has the brows block and the eye's `BROW` flag is set: the `BrowInnerUp`, `BrowOuterUp`,
   `BrowLowerer` and `BrowPinch` shapes `= brow_inner_up`, `brow_outer_up`, `brow_lowerer`, `brow_pinch`. Otherwise
   that eye's 4 brow shapes are left alone (unset, so VRCFT leaves the brows to whatever else drives them), except that

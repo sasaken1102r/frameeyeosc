@@ -6,6 +6,7 @@ mod dots;
 mod eyecam_ctl;
 mod eyecam_live;
 mod livelink;
+mod osc;
 mod replay;
 mod status;
 
@@ -14,7 +15,9 @@ use clap::{CommandFactory, FromArgMatches, Parser};
 use config::{ActiveType, Config, LidFit, OutputKind, Reload, Settings, Widen};
 use eyecam_live::{Live, LiveReader};
 use memmap2::{MmapMut, MmapOptions};
-use rosc::{OscMessage, OscPacket, OscType, encoder};
+use osc::{Sink, Value as OscType};
+#[cfg(test)]
+use rosc::{OscMessage, OscPacket, encoder};
 use status::{CalibrationStatus, CameraStatus, RawValues, SentValues, Status, StatusFile};
 use std::collections::{HashSet, VecDeque};
 use std::error::Error;
@@ -1226,6 +1229,8 @@ impl CrossEye {
 struct CrossEyeLevel {
     // The samples it is taken from, (time, degrees), oldest first.
     recent: VecDeque<(f64, f32)>,
+    // Reused when finding the median, without disturbing the time-ordered samples.
+    values: Vec<f32>,
     // Their median, once there were CROSS_EYE_LEVEL_MIN of them.
     level: Option<f32>,
     // When it is worked out next.
@@ -1247,9 +1252,10 @@ impl CrossEyeLevel {
             self.next = Some(time + CROSS_EYE_LEVEL_EVERY_S);
             // With fewer, the last level holds
             if self.recent.len() >= CROSS_EYE_LEVEL_MIN {
-                let mut values: Vec<f32> = self.recent.iter().map(|(_, value)| *value).collect();
-                let middle = values.len() / 2;
-                self.level = Some(*values.select_nth_unstable_by(middle, f32::total_cmp).1);
+                self.values.clear();
+                self.values.extend(self.recent.iter().map(|(_, value)| *value));
+                let middle = self.values.len() / 2;
+                self.level = Some(*self.values.select_nth_unstable_by(middle, f32::total_cmp).1);
             }
         }
         self.level
@@ -2657,6 +2663,7 @@ struct Output {
     // is logged once per reason.
     connect_error: Option<String>,
     resolve_error: Option<String>,
+    packet: Vec<u8>,
 }
 
 impl Output {
@@ -2671,6 +2678,7 @@ impl Output {
             drops: Drops::default(),
             connect_error: None,
             resolve_error: None,
+            packet: Vec::new(),
         }
     }
 
@@ -2795,12 +2803,20 @@ impl Output {
 
     /// Send one message. A network error (unreachable, refused, no address yet...) is logged when it
     /// starts and ends, and never returned: the next sample simply tries again.
-    fn send(&mut self, addr: String, args: Vec<OscType>) -> Result<(), Box<dyn Error>> {
+    fn send_osc(&mut self, address: &[&str], args: &[OscType]) {
         if self.socket.is_none() {
-            return Ok(());
+            return;
         }
-        let packet = OscPacket::Message(OscMessage { addr, args });
-        self.send_datagram(&encoder::encode(&packet)?);
+        osc::encode(address, args, &mut self.packet);
+        // Take ownership briefly so health/drop accounting can borrow the whole sender.
+        let packet = std::mem::take(&mut self.packet);
+        self.send_datagram(&packet);
+        self.packet = packet;
+    }
+
+    #[cfg(test)]
+    fn send(&mut self, addr: String, args: Vec<OscType>) -> Result<(), Box<dyn Error>> {
+        self.send_osc(&[&addr], &args);
         Ok(())
     }
 
@@ -2860,7 +2876,8 @@ fn moved_source(current: IpAddr, route: &io::Result<IpAddr>) -> Option<IpAddr> {
 
 /// How many of these times fall in the last RATE_WINDOW (one second): a rate a second.
 fn per_second(times: &VecDeque<Instant>) -> f32 {
-    times.iter().filter(|time| time.elapsed() < RATE_WINDOW).count() as f32
+    let now = Instant::now();
+    times.iter().filter(|time| now.duration_since(**time) < RATE_WINDOW).count() as f32
 }
 
 /// A UDP socket connected to `addr` (connecting only sets where packets go; it fails without a route). It never
@@ -2915,9 +2932,9 @@ fn vrlink_socket_inodes() -> HashSet<u64> {
 /// table whose inode is in `inodes`.
 fn connected_udp_peer(table: &str, inodes: &HashSet<u64>) -> Option<IpAddr> {
     table.lines().skip(1).find_map(|line| {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        let (remote, state, inode) = (fields.get(2)?, fields.get(3)?, fields.get(9)?);
-        if *state != "01" || !inodes.contains(&inode.parse().ok()?) {
+        let mut fields = line.split_whitespace();
+        let remote = fields.nth(2)?;
+        if fields.next()? != "01" || !inodes.contains(&fields.nth(5)?.parse().ok()?) {
             return None;
         }
         let ip = parse_proc_ip(remote.split(':').next()?)?;
@@ -2927,18 +2944,13 @@ fn connected_udp_peer(table: &str, inodes: &HashSet<u64>) -> Option<IpAddr> {
 
 /// /proc/net writes addresses as 32-bit words in host (little-endian) byte order, in hex.
 fn parse_proc_ip(hex: &str) -> Option<IpAddr> {
-    if !hex.len().is_multiple_of(8) {
-        return None;
-    }
-    let words = (0..hex.len() / 8)
-        .map(|i| u32::from_str_radix(hex.get(i * 8..i * 8 + 8)?, 16).ok())
-        .collect::<Option<Vec<u32>>>()?;
-    match words[..] {
-        [word] => Some(IpAddr::V4(Ipv4Addr::from(word.to_le_bytes()))),
-        [_, _, _, _] => {
+    let word = |i| u32::from_str_radix(hex.get(i * 8..i * 8 + 8)?, 16).ok();
+    match hex.len() {
+        8 => Some(IpAddr::V4(Ipv4Addr::from(word(0)?.to_le_bytes()))),
+        32 => {
             let mut bytes = [0u8; 16];
-            for (chunk, word) in bytes.chunks_mut(4).zip(&words) {
-                chunk.copy_from_slice(&word.to_le_bytes());
+            for (i, chunk) in bytes.chunks_mut(4).enumerate() {
+                chunk.copy_from_slice(&word(i)?.to_le_bytes());
             }
             let ip = Ipv6Addr::from(bytes);
             Some(ip.to_ipv4_mapped().map_or(IpAddr::V6(ip), IpAddr::V4))
@@ -3445,7 +3457,7 @@ fn output_lids(output: OutputKind, lids: [f32; 2]) -> [f32; 2] {
 /// The Live Link packet for one sample, stamped `time` seconds into the day. Each eye's gaze is its own with
 /// "move eyes separately", else the combined one (as for the other outputs). Nothing else goes to LiveLink: no
 /// EyeTrackingActive and no parameter prefix, which only VRChat reads.
-fn livelink_packet(sample: &Sample, time: f64) -> Vec<u8> {
+fn livelink_packet(sample: &Sample, time: f64) -> [u8; livelink::PACKET_SIZE] {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
     let lids = output_lids(OutputKind::LiveLink, sample.lids);
     livelink::packet(time, &livelink::shapes(lids, [left_x, left_y, right_x, right_y]))
@@ -3454,52 +3466,50 @@ fn livelink_packet(sample: &Sample, time: f64) -> Vec<u8> {
 /// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set with the eye camera's squint and pupils (see
 /// camera_params), and with `steamlink_params` Steam Link's names after it. The ETVR Tracking Module gets per-eye
 /// values only: EyeX/EyeY switch it to a single-eye mode that reads an eyelid we do not send.
-fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> {
-    let prefix = format!("/avatar/parameters{}", settings.prefix);
+fn emit_osc(settings: &Settings, sample: &Sample, emit: &mut Sink<'_>) {
     let [left_x, left_y, right_x, right_y, x, y] = sample.gaze;
     let [lid_left, lid_right] = output_lids(settings.output, sample.lids);
-    let mut values = vec![
+    if settings.output == OutputKind::Vrchat {
+        emit_active(settings, true, emit);
+    }
+    for (suffix, value) in [
         ("EyeLeftX", left_x),
         ("EyeLeftY", left_y),
         ("EyeRightX", right_x),
         ("EyeRightY", right_y),
         ("EyeLidLeft", lid_left),
         ("EyeLidRight", lid_right),
-    ];
-    let mut messages = Vec::with_capacity(21);
+    ] {
+        emit_parameter(settings, suffix, OscType::Float(value), emit);
+    }
     if settings.output == OutputKind::Vrchat {
-        messages.extend(active_message(settings, true));
-        values.extend([("EyeX", x), ("EyeY", y)]);
-        values.extend(camera_params(&sample.camera));
+        for (suffix, value) in [("EyeX", x), ("EyeY", y)].into_iter().chain(camera_params(&sample.camera)) {
+            emit_parameter(settings, suffix, OscType::Float(value), emit);
+        }
     }
-    messages.extend(
-        values
-            .into_iter()
-            .map(|(suffix, value)| (format!("{prefix}/v2/{suffix}"), OscType::Float(value))),
-    );
     if settings.output == OutputKind::Vrchat && settings.steamlink_params {
-        messages.extend(steamlink_messages(sample.gaze, sample.lids));
+        emit_steamlink(sample.gaze, sample.lids, emit);
     }
-    messages
+}
+
+fn emit_parameter(settings: &Settings, suffix: &str, value: OscType, emit: &mut Sink<'_>) {
+    emit(&["/avatar/parameters", &settings.prefix, "/v2/", suffix], &[value]);
 }
 
 /// The eye camera's values as VRCFT v2 parameters: each eye's squint while the camera drives its eyelid, and the
 /// combined squint (the mean of those eyes); the pupil dilation and each eye's pupil diameter (in cm, 0..1) for the
 /// eyes whose pupil is used, and the combined diameter (the mean of those). Nothing for an eye the camera's values are
 /// not used for: see squint_release for the squint it leaves behind.
-fn camera_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
-    let mut params = per_eye_params(["EyeSquintLeft", "EyeSquintRight", "EyeSquint"], camera.squint);
-    params.extend(pupil_params(camera));
-    params
+fn camera_params(camera: &CameraValues) -> impl Iterator<Item = (&'static str, f32)> {
+    per_eye_params(["EyeSquintLeft", "EyeSquintRight", "EyeSquint"], camera.squint).chain(pupil_params(camera))
 }
 
 /// The pupil part of camera_params: the dilation and each eye's pupil diameter (in cm, 0..1) for the eyes whose pupil
 /// is used, and the combined diameter.
-fn pupil_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
+fn pupil_params(camera: &CameraValues) -> impl Iterator<Item = (&'static str, f32)> {
     let diameter = camera.pupil_diameter.map(|mm| mm.map(|mm| (mm / PUPIL_MM_PER_UNIT).min(1.0)));
-    let mut params: Vec<_> = pupil_dilation(camera).map(|dilation| ("PupilDilation", dilation)).into_iter().collect();
-    params.extend(per_eye_params(["PupilDiameterLeft", "PupilDiameterRight", "PupilDiameter"], diameter));
-    params
+    pupil_dilation(camera).map(|dilation| ("PupilDilation", dilation)).into_iter()
+        .chain(per_eye_params(["PupilDiameterLeft", "PupilDiameterRight", "PupilDiameter"], diameter))
 }
 
 /// The pupil dilation that goes out (PupilDilation, and its bits): the mean of the eyes whose pupil is used.
@@ -3510,11 +3520,10 @@ fn pupil_dilation(camera: &CameraValues) -> Option<f32> {
 /// A value 0..1 as `bits` bools the way VRCFT's BinaryBaseParameter makes them (VRCFaceTracking.Core, OSC/DataTypes/
 /// BinaryBaseParameter.cs, ProcessBinary): above 0.99999 every bit is set, else bit k of (int)(value * 2^bits).
 /// Negative values give no bits: pupils are never negative, so there is no Negative parameter.
-fn binary_bits(value: f32, bits: u8) -> Vec<bool> {
-    let all = value > 0.99999;
-    // as i64 truncates toward zero like C#'s (int), and saturates instead of overflowing
-    let big = if value > 0.0 { (value * f32::from(1u8 << bits)) as i64 } else { 0 };
-    (0..bits).map(|k| all || (big >> k) & 1 == 1).collect()
+fn binary_value(value: f32, bits: u8) -> u8 {
+    if value > 0.99999 { (1u8 << bits) - 1 }
+    else if value > 0.0 { (value * f32::from(1u8 << bits)) as u8 }
+    else { 0 }
 }
 
 /// The pupil dilation as bool parameters, for avatars that take it bit-packed (pupil_bits): PupilDilation1, 2, 4
@@ -3524,60 +3533,62 @@ fn binary_bits(value: f32, bits: u8) -> Vec<bool> {
 #[derive(Default)]
 struct PupilBits {
     // The bits as they last went out, and when all of them last did.
-    sent: Vec<bool>,
+    sent: u8,
+    count: u8,
     sent_all: Option<Instant>,
 }
 
 impl PupilBits {
     /// The messages for this sample's dilation (None: no eye's pupil is used).
-    fn messages(&mut self, settings: &Settings, dilation: Option<f32>, now: Instant) -> Vec<(String, OscType)> {
+    fn emit(&mut self, settings: &Settings, dilation: Option<f32>, now: Instant, emit: &mut Sink<'_>) {
         let Some(dilation) = dilation.filter(|_| settings.pupil_bits > 0) else {
-            return Vec::new();
+            return;
         };
-        let bits = binary_bits(dilation, settings.pupil_bits);
-        let all = bits.len() != self.sent.len()
+        let bits = binary_value(dilation, settings.pupil_bits);
+        let all = settings.pupil_bits != self.count
             || self.sent_all.is_none_or(|at| now.saturating_duration_since(at) >= PUPIL_BITS_RESEND);
-        let prefix = format!("/avatar/parameters{}/v2/PupilDilation", settings.prefix);
-        let messages = bits
-            .iter()
-            .enumerate()
-            .filter(|&(k, bit)| all || self.sent[k] != *bit)
-            .map(|(k, &bit)| (format!("{prefix}{}", 1u8 << k), OscType::Bool(bit)))
-            .collect();
+        for (k, suffix) in ["1", "2", "4", "8"].into_iter().take(usize::from(settings.pupil_bits)).enumerate() {
+            let mask = 1 << k;
+            if all || (bits ^ self.sent) & mask != 0 {
+                emit(&["/avatar/parameters", &settings.prefix, "/v2/PupilDilation", suffix], &[OscType::Bool(bits & mask != 0)]);
+            }
+        }
         if all {
             self.sent_all = Some(now);
         }
         self.sent = bits;
-        messages
+        self.count = settings.pupil_bits;
     }
 
     /// Send all of them with the next sample (the settings or the target changed).
     fn reset(&mut self) {
         *self = Self::default();
     }
+
+    #[cfg(test)]
+    fn messages(&mut self, settings: &Settings, dilation: Option<f32>, now: Instant) -> Vec<(String, OscType)> {
+        collect_values(|emit| self.emit(settings, dilation, now, emit))
+    }
 }
 
 /// The left, right and combined (`names`) of per-eye values, for the eyes that have one; the combined one is their
 /// mean.
-fn per_eye_params(names: [&'static str; 3], values: [Option<f32>; 2]) -> Vec<(&'static str, f32)> {
+fn per_eye_params(names: [&'static str; 3], values: [Option<f32>; 2]) -> impl Iterator<Item = (&'static str, f32)> {
     let [left, right] = values;
     [left, right, mean(values)]
         .into_iter()
         .zip(names)
         .filter_map(|(value, name)| Some((name, value?)))
-        .collect()
 }
 
 /// In LiveLink mode, the eye camera's pupils as VRChat avatar parameters (the ones `--output vrchat` sends, with the
 /// prefix), to go straight to VRChat next to the Live Link packets: VRCFT's LiveLink module has no pupils of its own
 /// (it gives a fixed 5 mm, which VRCFT sends once, as it only sends a parameter when it changes, so these don't
 /// fight it). Only pupils: the eyelids and gaze go through VRCFT. Nothing when no eye's pupil is used.
-fn pupil_messages(settings: &Settings, camera: &CameraValues) -> Vec<(String, OscType)> {
-    let prefix = format!("/avatar/parameters{}/v2", settings.prefix);
-    pupil_params(camera)
-        .into_iter()
-        .map(|(name, value)| (format!("{prefix}/{name}"), OscType::Float(value)))
-        .collect()
+fn emit_pupils(settings: &Settings, camera: &CameraValues, emit: &mut Sink<'_>) {
+    for (name, value) in pupil_params(camera) {
+        emit_parameter(settings, name, OscType::Float(value), emit);
+    }
 }
 
 /// Where the eye camera's pupils go straight to VRChat, if anywhere: in LiveLink mode with pupils_to_vrchat, VRChat's
@@ -3607,18 +3618,18 @@ fn mean(values: [Option<f32>; 2]) -> Option<f32> {
 
 /// Squint 0 for each eye whose squint went out (`out`) but does not with this sample (`squint`), and for the combined
 /// one once no eye's does: VRChat keeps a parameter's last value, so the avatar would otherwise stay squinting.
-fn squint_release(settings: &Settings, out: [bool; 2], squint: [Option<f32>; 2]) -> Vec<(String, OscType)> {
+fn emit_squint_release(settings: &Settings, out: [bool; 2], squint: [Option<f32>; 2], emit: &mut Sink<'_>) {
     let stopped = [0, 1].map(|eye| out[eye] && squint[eye].is_none());
     let names = [
         ("EyeSquintLeft", stopped[0]),
         ("EyeSquintRight", stopped[1]),
         ("EyeSquint", out.contains(&true) && squint == [None; 2]),
     ];
-    names
-        .into_iter()
-        .filter(|(_, stopped)| *stopped)
-        .map(|(name, _)| (format!("/avatar/parameters{}/v2/{name}", settings.prefix), OscType::Float(0.0)))
-        .collect()
+    for (name, stopped) in names {
+        if stopped {
+            emit_parameter(settings, name, OscType::Float(0.0), emit);
+        }
+    }
 }
 
 /// How closed an eye is the way Steam Link sends it (0 open, 1 shut), from a VRCFT eyelid: 0.75 (relaxed open) and
@@ -3632,44 +3643,40 @@ fn steamlink_closed(lid: f32) -> f32 {
 /// (+ is down). Its eyelid is how closed the eye is; the squeeze and widen values follow from that as Steam Link
 /// works them out (it always sends WidenToggle 1). Each eye's gaze is its own with "move eyes separately", like
 /// the VRCFT ones.
-fn steamlink_messages(gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, OscType)> {
+fn emit_steamlink(gaze: [f32; 6], lids: [f32; 2], emit: &mut Sink<'_>) {
     let [left_x, left_y, right_x, right_y, _, _] = gaze;
     let [closed_left, closed_right] = lids.map(steamlink_closed);
-    let param = |name: &str, value: OscType| (format!("/avatar/parameters/{name}"), value);
-    let mut messages = vec![
-        param("LeftEyeX", OscType::Float(left_x)),
-        param("LeftEyeY", OscType::Float(-left_y)),
-        param("RightEyeX", OscType::Float(right_x)),
-        param("RightEyeY", OscType::Float(-right_y)),
-    ];
-    for (eye, closed) in [("Right", closed_right), ("Left", closed_left)] {
-        let shut = closed > 0.5;
-        messages.extend([
-            param(&format!("{eye}EyeLid"), OscType::Float(closed)),
-            param(&format!("{eye}EyeLidExpandedSqueeze"), OscType::Float(if shut { 0.0 } else { 0.8 })),
-            param(&format!("{eye}EyeSqueezeToggle"), OscType::Int(i32::from(shut))),
-            param(&format!("{eye}EyeWidenToggle"), OscType::Int(1)),
-        ]);
+    let mut param = |name: &str, value: OscType| emit(&["/avatar/parameters/", name], &[value]);
+    for (name, value) in [("LeftEyeX", left_x), ("LeftEyeY", -left_y), ("RightEyeX", right_x), ("RightEyeY", -right_y)] {
+        param(name, OscType::Float(value));
     }
-    messages
+    for (names, closed) in [
+        (["RightEyeLid", "RightEyeLidExpandedSqueeze", "RightEyeSqueezeToggle", "RightEyeWidenToggle"], closed_right),
+        (["LeftEyeLid", "LeftEyeLidExpandedSqueeze", "LeftEyeSqueezeToggle", "LeftEyeWidenToggle"], closed_left),
+    ] {
+        let shut = closed > 0.5;
+        for (name, value) in names.into_iter().zip([
+            OscType::Float(closed), OscType::Float(if shut { 0.0 } else { 0.8 }), OscType::Int(i32::from(shut)), OscType::Int(1),
+        ]) {
+            param(name, value);
+        }
+    }
 }
 
 /// `EyeTrackingActive` as the settings want it sent (a bool, a float, or nothing).
-fn active_message(settings: &Settings, active: bool) -> Option<(String, OscType)> {
+fn emit_active(settings: &Settings, active: bool, emit: &mut Sink<'_>) {
     let value = match settings.eye_tracking_active {
         ActiveType::Bool => OscType::Bool(active),
         ActiveType::Float => OscType::Float(if active { 1.0 } else { 0.0 }),
-        ActiveType::Off => return None,
+        ActiveType::Off => return,
     };
-    Some((format!("/avatar/parameters{}/EyeTrackingActive", settings.prefix), value))
+    emit(&["/avatar/parameters", &settings.prefix, "/EyeTrackingActive"], &[value]);
 }
 
 /// The one-time "not active" on pausing, switching away or losing tracking (nothing with "off").
 fn send_inactive(output: &mut Output, settings: &Settings) -> Result<(), Box<dyn Error>> {
-    match active_message(settings, false) {
-        Some((addr, value)) => output.send(addr, vec![value]),
-        None => Ok(()),
-    }
+    emit_active(settings, false, &mut |addr, args| output.send_osc(addr, args));
+    Ok(())
 }
 
 /// Where VRChat is being told that eye tracking is active, if anywhere. When this changes,
@@ -3695,21 +3702,19 @@ fn gaze_vector([x, y]: [f32; 2]) -> [f32; 3] {
 /// VRCFT parameters, but one that also has Eyelids set up in Eye Look can close its eyelids twice as far (turn
 /// native_eyes off for it). SteamVR's own Steam Link OSC sends these same addresses, so it should stay off. Each eye's
 /// gaze is its own with "move eyes separately", else the combined one.
-fn native_messages(settings: &Settings, gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
-    let floats = |values: &[f32]| -> Vec<OscType> { values.iter().copied().map(OscType::Float).collect() };
+fn emit_native(settings: &Settings, gaze: [f32; 6], lids: [f32; 2], emit: &mut Sink<'_>) {
     let [left_x, left_y, right_x, right_y, x, y] = gaze;
-    let look = if settings.independent_eyes {
+    if settings.independent_eyes {
         let [left, right] = [[left_x, left_y], [right_x, right_y]].map(gaze_vector);
-        ("/tracking/eye/LeftRightVec", floats(&[left, right].concat()))
+        let [lx, ly, lz] = left;
+        let [rx, ry, rz] = right;
+        emit(&["/tracking/eye/LeftRightVec"], &[lx, ly, lz, rx, ry, rz].map(OscType::Float));
     } else {
-        ("/tracking/eye/CenterVec", floats(&gaze_vector([x, y])))
-    };
+        emit(&["/tracking/eye/CenterVec"], &gaze_vector([x, y]).map(OscType::Float));
+    }
     // One value for both eyes, 0 open to 1 closed; VRChat has nothing for widening or winks.
     let open = (lids[0] + lids[1]) / 2.0 / 0.75;
-    vec![
-        (look.0.into(), look.1),
-        ("/tracking/eye/EyesClosedAmount".into(), floats(&[(1.0 - open).clamp(0.0, 1.0)])),
-    ]
+    emit(&["/tracking/eye/EyesClosedAmount"], &[OscType::Float((1.0 - open).clamp(0.0, 1.0))]);
 }
 
 /// Where Steam Link's avatar parameters are being sent to, if anywhere. When this changes while eye tracking runs,
@@ -3723,9 +3728,7 @@ fn steamlink_stream(settings: &Settings) -> Option<(&str, u16)> {
 /// have no `EyeTrackingActive` to fall back on, and VRChat keeps the last values, so the eyes would otherwise stay
 /// where they were (shut, if tracking was lost in a blink).
 fn send_steamlink_neutral(output: &mut Output) -> Result<(), Box<dyn Error>> {
-    for (addr, arg) in steamlink_messages([0.0; 6], [LID_RELAXED; 2]) {
-        output.send(addr, vec![arg])?;
-    }
+    emit_steamlink([0.0; 6], [LID_RELAXED; 2], &mut |addr, args| output.send_osc(addr, args));
     Ok(())
 }
 
@@ -3740,9 +3743,7 @@ fn native_stream(settings: &Settings) -> Option<(&str, u16)> {
 /// it and keeps the last values until its own timeout hands the eyes back to its automatic eye movement, so the
 /// eyes would otherwise stay where they were (shut, if tracking was lost in a blink) until then.
 fn send_native_neutral(output: &mut Output, settings: &Settings) -> Result<(), Box<dyn Error>> {
-    for (addr, args) in native_messages(settings, [0.0; 6], [0.75; 2]) {
-        output.send(addr, args)?;
-    }
+    emit_native(settings, [0.0; 6], [0.75; 2], &mut |addr, args| output.send_osc(addr, args));
     Ok(())
 }
 
@@ -3951,30 +3952,22 @@ impl Bridge {
                     self.output.send_datagram(&livelink_packet(&sample, livelink::time_of_day(SystemTime::now())));
                     // At the same pace
                     if pupil_stream(&self.settings).is_some() {
-                        let bits = self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now);
-                        for (addr, arg) in pupil_messages(&self.settings, &sample.camera).into_iter().chain(bits) {
-                            self.pupil_output.send(addr, vec![arg])?;
-                        }
+                        let mut send = |addr: &[&str], args: &[OscType]| self.pupil_output.send_osc(addr, args);
+                        emit_pupils(&self.settings, &sample.camera, &mut send);
+                        self.pupil_bits.emit(&self.settings, pupil_dilation(&sample.camera), now, &mut send);
                     }
                 }
                 ready
             } else {
-                for (addr, arg) in osc_messages(&self.settings, &sample) {
-                    self.output.send(addr, vec![arg])?;
-                }
+                let mut send = |addr: &[&str], args: &[OscType]| self.output.send_osc(addr, args);
+                emit_osc(&self.settings, &sample, &mut send);
                 if self.settings.output == OutputKind::Vrchat {
-                    for (addr, arg) in self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now) {
-                        self.output.send(addr, vec![arg])?;
-                    }
-                    for (addr, arg) in squint_release(&self.settings, self.squint_out, sample.camera.squint) {
-                        self.output.send(addr, vec![arg])?;
-                    }
+                    self.pupil_bits.emit(&self.settings, pupil_dilation(&sample.camera), now, &mut send);
+                    emit_squint_release(&self.settings, self.squint_out, sample.camera.squint, &mut send);
                     self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
                 }
                 if native_stream(&self.settings).is_some() {
-                    for (addr, args) in native_messages(&self.settings, sample.gaze, sample.lids) {
-                        self.output.send(addr, args)?;
-                    }
+                    emit_native(&self.settings, sample.gaze, sample.lids, &mut send);
                 }
                 true
             };
@@ -3984,7 +3977,7 @@ impl Bridge {
         }
         self.received.push_back(now);
         for times in [&mut self.sent, &mut self.received] {
-            while times.front().is_some_and(|time| time.elapsed() >= RATE_WINDOW) {
+            while times.front().is_some_and(|time| now.duration_since(*time) >= RATE_WINDOW) {
                 times.pop_front();
             }
         }
@@ -4045,9 +4038,7 @@ impl Bridge {
 
     /// Set the squint that went out back to 0 (see squint_release), where it went with the current settings.
     fn release_squint(&mut self) -> Result<(), Box<dyn Error>> {
-        for (addr, arg) in squint_release(&self.settings, self.squint_out, [None; 2]) {
-            self.output.send(addr, vec![arg])?;
-        }
+        emit_squint_release(&self.settings, self.squint_out, [None; 2], &mut |addr, args| self.output.send_osc(addr, args));
         self.squint_out = [false; 2];
         Ok(())
     }
@@ -4372,6 +4363,58 @@ fn main() -> Result<(), Box<dyn Error>> {
             status_file.write(&bridge.status(eye.error.as_deref(), eye.dominant_eye));
         }
     }
+}
+
+// Existing protocol tests collect the same messages that the live sender streams into its reusable buffer.
+#[cfg(test)]
+fn collect_messages(visit: impl FnOnce(&mut Sink<'_>)) -> Vec<(String, Vec<OscType>)> {
+    let mut messages = Vec::new();
+    visit(&mut |address, args| messages.push((address.concat(), args.to_vec())));
+    messages
+}
+
+#[cfg(test)]
+fn collect_values(visit: impl FnOnce(&mut Sink<'_>)) -> Vec<(String, OscType)> {
+    collect_messages(visit).into_iter().map(|(address, mut args)| {
+        assert_eq!(args.len(), 1);
+        (address, args.remove(0))
+    }).collect()
+}
+
+#[cfg(test)]
+fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> {
+    collect_values(|emit| emit_osc(settings, sample, emit))
+}
+
+#[cfg(test)]
+fn pupil_messages(settings: &Settings, camera: &CameraValues) -> Vec<(String, OscType)> {
+    collect_values(|emit| emit_pupils(settings, camera, emit))
+}
+
+#[cfg(test)]
+fn squint_release(settings: &Settings, out: [bool; 2], squint: [Option<f32>; 2]) -> Vec<(String, OscType)> {
+    collect_values(|emit| emit_squint_release(settings, out, squint, emit))
+}
+
+#[cfg(test)]
+fn steamlink_messages(gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, OscType)> {
+    collect_values(|emit| emit_steamlink(gaze, lids, emit))
+}
+
+#[cfg(test)]
+fn native_messages(settings: &Settings, gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
+    collect_messages(|emit| emit_native(settings, gaze, lids, emit))
+}
+
+#[cfg(test)]
+fn active_message(settings: &Settings, active: bool) -> Option<(String, OscType)> {
+    collect_values(|emit| emit_active(settings, active, emit)).pop()
+}
+
+#[cfg(test)]
+fn binary_bits(value: f32, bits: u8) -> Vec<bool> {
+    let value = binary_value(value, bits);
+    (0..bits).map(|k| value & (1 << k) != 0).collect()
 }
 
 #[cfg(test)]

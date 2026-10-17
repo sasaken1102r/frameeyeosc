@@ -32,6 +32,7 @@ const SUBJECT_NAME: &str = "SteamFrame";
 // The frame time is only a time stamp here (nobody reads it); the eye server's nominal rate.
 const FRAME_RATE: i32 = 90;
 pub const BLENDSHAPES: usize = 61;
+pub const PACKET_SIZE: usize = 1 + 4 + DEVICE_ID.len() + 4 + SUBJECT_NAME.len() + 16 + 1 + BLENDSHAPES * 4;
 // Indices in ARKit / Live Link order (the module's Constants.LiveLinkNames).
 const EYE_BLINK_LEFT: usize = 0;
 const EYE_SQUINT_LEFT: usize = 5;
@@ -95,22 +96,27 @@ pub fn time_of_day(now: SystemTime) -> f64 {
 }
 
 /// One Live Link Face packet (version 6, network byte order) at `time` seconds.
-pub fn packet(time: f64, shapes: &[f32; BLENDSHAPES]) -> Vec<u8> {
+pub fn packet(time: f64, shapes: &[f32; BLENDSHAPES]) -> [u8; PACKET_SIZE] {
     let frames = time.max(0.0) * f64::from(FRAME_RATE);
-    let mut packet = Vec::with_capacity(1 + 4 + DEVICE_ID.len() + 4 + SUBJECT_NAME.len() + 16 + 1 + BLENDSHAPES * 4);
-    packet.push(PACKET_VERSION);
+    let mut packet = [0; PACKET_SIZE];
+    let mut at = 0;
+    let mut append = |bytes: &[u8]| {
+        packet[at..at + bytes.len()].copy_from_slice(bytes);
+        at += bytes.len();
+    };
+    append(&[PACKET_VERSION]);
     for text in [DEVICE_ID, SUBJECT_NAME] {
-        packet.extend_from_slice(&(text.len() as i32).to_be_bytes());
-        packet.extend_from_slice(text.as_bytes());
+        append(&(text.len() as i32).to_be_bytes());
+        append(text.as_bytes());
     }
     // A day at 90 fps is 7.8 million frames, well within an i32.
-    packet.extend_from_slice(&(frames.floor() as i32).to_be_bytes());
-    packet.extend_from_slice(&(frames.fract() as f32).to_be_bytes());
-    packet.extend_from_slice(&FRAME_RATE.to_be_bytes());
-    packet.extend_from_slice(&1i32.to_be_bytes());
-    packet.push(BLENDSHAPES as u8);
+    append(&(frames.floor() as i32).to_be_bytes());
+    append(&(frames.fract() as f32).to_be_bytes());
+    append(&FRAME_RATE.to_be_bytes());
+    append(&1i32.to_be_bytes());
+    append(&[BLENDSHAPES as u8]);
     for value in shapes {
-        packet.extend_from_slice(&value.to_be_bytes());
+        append(&value.to_be_bytes());
     }
     packet
 }
@@ -165,7 +171,7 @@ pub mod tests {
         for i in 0..61 {
             expected.extend_from_slice(&(i as f32 / 100.0).to_be_bytes());
         }
-        assert_eq!(packet, expected);
+        assert_eq!(packet.as_slice(), expected);
         assert_eq!(packet.len(), 291);
         // Big-endian floats: the second blendshape, 0.01, is 0x3c23d70a
         assert_eq!(packet[51..55], [0x3c, 0x23, 0xd7, 0x0a]);

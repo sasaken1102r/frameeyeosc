@@ -172,6 +172,8 @@ pub fn status_path() -> PathBuf {
 /// Replaces the status file atomically so the panel never reads a half-written one.
 pub struct StatusFile {
     path: PathBuf,
+    temporary: PathBuf,
+    json: Vec<u8>,
     last_write: Option<Instant>,
     failing: bool,
 }
@@ -179,7 +181,9 @@ pub struct StatusFile {
 impl StatusFile {
     pub fn new(path: PathBuf) -> Self {
         Self {
+            temporary: path.with_extension("json.tmp"),
             path,
+            json: Vec::new(),
             last_write: None,
             failing: false,
         }
@@ -203,17 +207,17 @@ impl StatusFile {
         }
     }
 
-    fn replace(&self, status: &Status) -> io::Result<()> {
-        let json = serde_json::to_vec(status)?;
-        let temporary = self.path.with_extension("json.tmp");
-        if let Err(error) = fs::write(&temporary, &json) {
+    fn replace(&mut self, status: &Status) -> io::Result<()> {
+        self.json.clear();
+        serde_json::to_writer(&mut self.json, status)?;
+        if let Err(error) = fs::write(&self.temporary, &self.json) {
             let Some(dir) = self.path.parent().filter(|_| error.kind() == io::ErrorKind::NotFound)
             else {
                 return Err(error);
             };
             DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-            fs::write(&temporary, &json)?;
+            fs::write(&self.temporary, &self.json)?;
         }
-        fs::rename(temporary, &self.path)
+        fs::rename(&self.temporary, &self.path)
     }
 }

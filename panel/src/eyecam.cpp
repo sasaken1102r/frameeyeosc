@@ -251,20 +251,21 @@ Status parseStatus(const std::string& text, double mtime) {
 
 Status readStatus(const std::string& dir) {
     const std::string path = dir + "/status.json";
-    // The file is replaced by a rename, so the open file and its time are one version of it
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
+    // The file is replaced by a rename, so the open file and its time are one version of it: the time is taken from
+    // the opened file (fstat), not the path, which may already be the next version
+    std::FILE* file = std::fopen(path.c_str(), "rb");
+    if (file == nullptr) {
         Status status = parseStatus("", 0.0);
         status.readError = "no status file";
         return status;
     }
     struct stat info {};
     double mtime = 0.0;
-    if (::stat(path.c_str(), &info) == 0) mtime = info.st_mtim.tv_sec + info.st_mtim.tv_nsec / 1e9;
+    if (::fstat(::fileno(file), &info) == 0) mtime = info.st_mtim.tv_sec + info.st_mtim.tv_nsec / 1e9;
     // At most kMaxStatusBytes (eyecam-rec writes one short line): a bigger file isn't eyecam-rec's
     std::string text(kMaxStatusBytes + 1, '\0');
-    file.read(text.data(), static_cast<std::streamsize>(text.size()));
-    text.resize(static_cast<size_t>(file.gcount()));
+    text.resize(std::fread(text.data(), 1, text.size(), file));
+    std::fclose(file);
     if (text.size() > kMaxStatusBytes) {
         Status status = parseStatus("", mtime);
         status.readError = "status.json is too large";

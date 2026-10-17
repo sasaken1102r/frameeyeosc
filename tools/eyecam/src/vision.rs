@@ -204,10 +204,9 @@ pub fn gauss_u8(src: &[u8], w: usize, h: usize, kernel: &[u32], rect: Rect, bufs
     // Rows the vertical pass needs (before reflection), horizontally filtered: 8-bit x 8.8 -> 8.8 in 16 bits
     // (the kernel sums to 256, so 255 * 256 fits).
     let (hy0, hy1) = (y0 as isize - r as isize, y1 as isize + r as isize);
-    let rows: Vec<usize> = (hy0..hy1).map(|y| reflect101(y, h)).collect();
-    bufs.h.resize(rows.len() * rw, 0);
-    let k16: Vec<u16> = kernel.iter().map(|&k| k as u16).collect();
-    for (ri, &y) in rows.iter().enumerate() {
+    bufs.h.resize((hy1 - hy0) as usize * rw, 0);
+    for (ri, y) in (hy0..hy1).enumerate() {
+        let y = reflect101(y, h);
         let row = &src[y * w..(y + 1) * w];
         let o = &mut bufs.h[ri * rw..(ri + 1) * rw];
         // Columns whose whole window lies inside the image: shifted-slice accumulation (vectorises).
@@ -216,7 +215,8 @@ pub fn gauss_u8(src: &[u8], w: usize, h: usize, kernel: &[u32], rect: Rect, bufs
             let m = ib - ia;
             let oi = &mut o[ia - x0..ib - x0];
             oi.fill(0);
-            for (k, &kv) in k16.iter().enumerate() {
+            for (k, &kv) in kernel.iter().enumerate() {
+                let kv = kv as u16;
                 for (a, &v) in oi.iter_mut().zip(&row[ia - r + k..ia - r + k + m]) {
                     *a += kv * v as u16;
                 }
@@ -224,8 +224,8 @@ pub fn gauss_u8(src: &[u8], w: usize, h: usize, kernel: &[u32], rect: Rect, bufs
         }
         for x in (x0..x1).filter(|&x| x < ia || x >= ib.max(ia)) {
             let mut acc = 0u16;
-            for (k, &kv) in k16.iter().enumerate() {
-                acc += kv * row[reflect101(x as isize + k as isize - r as isize, w)] as u16;
+            for (k, &kv) in kernel.iter().enumerate() {
+                acc += kv as u16 * row[reflect101(x as isize + k as isize - r as isize, w)] as u16;
             }
             o[x - x0] = acc;
         }
@@ -291,8 +291,8 @@ pub fn median(v: &mut [f64]) -> f64 {
     if n == 0 {
         return f64::NAN;
     }
-    v.sort_unstable_by(|a, b| a.total_cmp(b));
-    if n % 2 == 1 { v[n / 2] } else { 0.5 * (v[n / 2 - 1] + v[n / 2]) }
+    let (lower, mid, _) = v.select_nth_unstable_by(n / 2, f64::total_cmp);
+    if n % 2 == 1 { *mid } else { 0.5 * (lower.iter().copied().max_by(f64::total_cmp).unwrap() + *mid) }
 }
 
 /// numpy.percentile (linear) of finite values. Reorders `v`.
@@ -637,6 +637,47 @@ mod tests {
         assert!((percentile_hist(&hist, 90.0) - 7.6).abs() < 1e-12); // np.percentile([1,2,3,4,10], 90)
         let mut v = vec![1.0, 2.0, 3.0, 4.0, 10.0];
         assert!((percentile(&mut v, 90.0) - 7.6).abs() < 1e-12);
+    }
+
+    #[test]
+    fn median_matches_full_sort() {
+        let check = |mut values: Vec<f64>| {
+            let mut sorted = values.clone();
+            sorted.sort_unstable_by(f64::total_cmp);
+            let n = sorted.len();
+            let expected = if n == 0 { f64::NAN } else if n % 2 == 1 {
+                sorted[n / 2]
+            } else {
+                0.5 * (sorted[n / 2 - 1] + sorted[n / 2])
+            };
+            let actual = median(&mut values);
+            if expected.is_nan() {
+                assert!(actual.is_nan());
+            } else {
+                assert_eq!(actual.to_bits(), expected.to_bits(), "n={n}");
+            }
+        };
+        // Ordered, reversed, repeated and random histories, with both odd and even lengths.
+        let mut seed = 0xabc123u64;
+        for n in (0..257).chain([900, 5400, 10800]) {
+            check((0..n).map(|i| i as f64).collect());
+            check((0..n).rev().map(|i| i as f64).collect());
+            check(vec![3.0; n]);
+            check((0..n).map(|_| {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                ((seed >> 32) as i32 % 97) as f64
+            }).collect());
+        }
+        // Keep total_cmp's ordering, including signed zeros and non-finite values.
+        for values in [
+            vec![-0.0, 0.0],
+            vec![0.0, -0.0, -0.0],
+            vec![f64::NEG_INFINITY, f64::INFINITY],
+            vec![f64::NAN, -2.0, 3.0],
+            vec![-f64::NAN, 1.0, f64::NAN, -1.0],
+        ] {
+            check(values);
+        }
     }
 
     #[test]

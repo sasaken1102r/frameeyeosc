@@ -8,6 +8,11 @@ publish = false
 # Standalone: not part of the frameeyeosc package or any workspace.
 [workspace]
 
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+
 [dependencies]
 libc = "0.2"
 

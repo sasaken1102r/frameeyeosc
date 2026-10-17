@@ -697,6 +697,7 @@ impl Extractor {
         let mut res: Vec<(f64, bool)> = Vec::new();
         let mut prof: Vec<f64> = Vec::with_capacity(nr);
         let mut rok: Vec<f64> = Vec::with_capacity(nr);
+        let mut sm: Vec<f64> = Vec::with_capacity(nr);
         let degs = (0..17).map(|i| -40 + 5 * i).chain((0..17).map(|i| 140 + 5 * i));
         for deg in degs {
             let th = (deg as f64).to_radians();
@@ -715,27 +716,27 @@ impl Extractor {
                 continue;
             }
             // np.convolve(prof, ones(3)/3, 'same'): zero outside.
-            let sm: Vec<f64> = (0..n)
-                .map(|i| {
-                    let a = if i > 0 { prof[i - 1] } else { 0.0 };
-                    let c = if i + 1 < n { prof[i + 1] } else { 0.0 };
-                    (a + prof[i] + c) / 3.0
-                })
-                .collect();
+            sm.clear();
+            sm.extend((0..n).map(|i| {
+                let a = if i > 0 { prof[i - 1] } else { 0.0 };
+                let c = if i + 1 < n { prof[i + 1] } else { 0.0 };
+                (a + prof[i] + c) / 3.0
+            }));
             let large_x = d.0 > 0.0;
-            let gg: Vec<f64> = (0..n - 3)
-                .map(|i| {
-                    let g = sm[i + 3] - sm[i];
-                    if large_x || g > 0.0 { g } else { -0.8 * g }
-                })
-                .collect();
+            let gradient = |i: usize| {
+                let g = sm[i + 3] - sm[i];
+                if large_x || g > 0.0 { g } else { -0.8 * g }
+            };
             let mut k = 2;
-            for i in 2..gg.len() - 2 {
-                if gg[i] > gg[k] {
+            let mut best = gradient(k);
+            for i in 2..n - 5 {
+                let g = gradient(i);
+                if g > best {
                     k = i;
+                    best = g;
                 }
             }
-            if gg[k] < if large_x { 12.0 } else { 9.0 } {
+            if best < if large_x { 12.0 } else { 9.0 } {
                 continue;
             }
             let r = rok[k + 1] + 0.375;
@@ -748,7 +749,7 @@ impl Extractor {
         }
         let large_x_n = res.iter().filter(|r| r.1).count();
         let mut rho: Vec<f64> = res.iter().filter(|r| large_x_n < 4 || r.1).map(|r| r.0).collect();
-        let med = vision::median(&mut rho.clone());
+        let med = vision::median(&mut rho);
         rho.retain(|&r| (r - med).abs() < 6.0);
         let n = rho.len() as u32;
         let r = if n >= 3 { vision::median(&mut rho) } else { f64::NAN };
@@ -861,12 +862,12 @@ impl Extractor {
         if offs.len() < 6 {
             return None;
         }
-        let o = vision::median(&mut offs.clone());
-        let mut inl: Vec<f64> = offs.into_iter().filter(|v| (v - o).abs() < 3.0).collect();
-        if inl.len() < 6 {
+        let o = vision::median(&mut offs);
+        offs.retain(|v| (v - o).abs() < 3.0);
+        if offs.len() < 6 {
             return None;
         }
-        Some(vision::median(&mut inl))
+        Some(vision::median(&mut offs))
     }
 
     /// Mean of the opened image in the box where the iris should be.

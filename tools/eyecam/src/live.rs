@@ -364,8 +364,11 @@ impl FrameRate {
         }
         self.dt.push_back(d);
         if self.dt.len() >= RATE_MIN {
-            let mut v: Vec<f64> = self.dt.iter().copied().collect();
-            self.fps = (1.0 / vision::median(&mut v)).round().max(1.0);
+            let mut v = [0.0; RATE_WINDOW];
+            for (dst, &dt) in v.iter_mut().zip(&self.dt) {
+                *dst = dt;
+            }
+            self.fps = (1.0 / vision::median(&mut v[..self.dt.len()])).round().max(1.0);
         }
     }
 
@@ -378,11 +381,12 @@ impl FrameRate {
 /// A NaN-aware causal running median over the last `n` frames (`n` may change from frame to frame).
 struct Win {
     v: VecDeque<f64>,
+    scratch: Vec<f64>,
 }
 
 impl Win {
     fn new() -> Self {
-        Self { v: VecDeque::with_capacity(8) }
+        Self { v: VecDeque::with_capacity(8), scratch: Vec::with_capacity(8) }
     }
 
     fn push(&mut self, x: f64, n: usize) -> f64 {
@@ -390,14 +394,16 @@ impl Win {
             self.v.pop_front();
         }
         self.v.push_back(x);
-        let mut f: Vec<f64> = self.v.iter().copied().filter(|x| x.is_finite()).collect();
-        vision::median(&mut f)
+        self.scratch.clear();
+        self.scratch.extend(self.v.iter().copied().filter(|x| x.is_finite()));
+        vision::median(&mut self.scratch)
     }
 }
 
 /// A long-run median over the last `span_s` seconds of samples, recomputed about once a second.
 struct LongMedian {
     v: VecDeque<f64>,
+    scratch: Vec<f64>,
     span_s: f64,
     since: usize,
     pub value: f64,
@@ -405,7 +411,7 @@ struct LongMedian {
 
 impl LongMedian {
     fn new(span_s: f64) -> Self {
-        Self { v: VecDeque::new(), span_s, since: 0, value: f64::NAN }
+        Self { v: VecDeque::new(), scratch: Vec::new(), span_s, since: 0, value: f64::NAN }
     }
 
     /// Add a sample, samples coming `hz` times a second: it keeps the last `span_s * hz` (at 45 a second: 45 x
@@ -424,8 +430,9 @@ impl LongMedian {
         // Recompute often while warming up, then once per `every` samples.
         if self.since >= every || self.v.len() < 64 {
             self.since = 0;
-            let mut s: Vec<f64> = self.v.iter().copied().collect();
-            self.value = vision::median(&mut s);
+            self.scratch.clear();
+            self.scratch.extend(self.v.iter().copied());
+            self.value = vision::median(&mut self.scratch);
         }
     }
 

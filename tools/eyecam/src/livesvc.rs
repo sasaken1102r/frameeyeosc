@@ -29,6 +29,7 @@ const PUPIL_LR_MAX_MM: f64 = 1.5;
 #[derive(Default)]
 struct PupilOffset {
     recent: std::collections::VecDeque<(f64, f64)>,
+    scratch: Vec<f64>,
 }
 
 impl PupilOffset {
@@ -40,12 +41,13 @@ impl PupilOffset {
     }
 
     /// The median once a second's worth of pairs is in (`fps`: the cameras' frame rate; 90 pairs at 90 fps), else 0.
-    fn value(&self, fps: f64) -> f64 {
+    fn value(&mut self, fps: f64) -> f64 {
         if self.recent.len() < (fps.round() as usize).max(12) {
             return 0.0;
         }
-        let mut v: Vec<f64> = self.recent.iter().map(|x| x.1).collect();
-        crate::vision::median(&mut v)
+        self.scratch.clear();
+        self.scratch.extend(self.recent.iter().map(|x| x.1));
+        crate::vision::median(&mut self.scratch)
     }
 }
 
@@ -58,12 +60,14 @@ struct PupilTrack {
     latest: Option<(f64, f64)>,
     /// The last accepted (ratio, mm, dilation).
     held: Option<(f64, f64, f64)>,
+    scratch: Vec<f64>,
 }
 
 impl PupilTrack {
-    fn median(&self) -> f64 {
-        let mut v: Vec<f64> = self.recent.iter().map(|x| x.1).collect();
-        crate::vision::median(&mut v)
+    fn median(&mut self) -> f64 {
+        self.scratch.clear();
+        self.scratch.extend(self.recent.iter().map(|x| x.1));
+        crate::vision::median(&mut self.scratch)
     }
 
     fn accept(&mut self, t: f64, o: &live::Out) {
@@ -959,6 +963,24 @@ pub fn spawn(
 mod tests {
     use super::*;
     use crate::replay::Session;
+
+    #[test]
+    fn pupil_offset_median_keeps_its_time_window_and_warmup() {
+        let mut offset = PupilOffset::default();
+        for k in 0..11 {
+            offset.push(k as f64, k as f64);
+        }
+        assert_eq!(offset.value(12.0), 0.0);
+        offset.push(11.0, 11.0);
+        assert_eq!(offset.value(12.0), 5.5);
+        offset.push(12.0, 12.0);
+        assert_eq!(offset.value(12.0), 6.0);
+        offset.push(61.0, 100.0); // t=1 is still in the sixty-second window, t=0 is not.
+        assert_eq!(offset.value(12.0), 7.0);
+        assert_eq!(offset.value(90.0), 0.0);
+        offset.push(122.0, 8.0);
+        assert_eq!(offset.value(12.0), 0.0);
+    }
 
     #[test]
     fn pupil_share_covers_the_last_two_seconds() {

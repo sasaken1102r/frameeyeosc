@@ -3112,6 +3112,19 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         pen.text(x, centerBaseline(y, h, size), source, size, kText, true);
         y += h + 10;
     }
+    // Widening at all (widen): with the cameras or without. Off: no eyelid above relaxed open, closing and squint as
+    // they are; the slider below is greyed meanwhile
+    const bool widens = v.flag(key::kWiden);
+    {
+        const bool locked = v.locked(key::kWiden);
+        drawRowLabel(pen, t, y, kRowH, t.rowWidenSwitch, t.widenSwitchHint, locked);
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                      {{t.widenSwitchOn, {PanelAction::SetBool, key::kWiden, 1}},
+                       {t.widenSwitchOff, {PanelAction::SetBool, key::kWiden, 0}}},
+                      widens ? 0 : 1, 20, locked);
+        y += kRowH;
+        drawRowDivider(pen, y);
+    }
     // How easily widening shows: one slider, whatever drives it (only with the eye cameras: a line at the end otherwise)
     if (camera && widen.control == WidenControl::Saturated) {
         // Nothing to widen by on this SteamOS without the cameras: one row saying so, and the way to the cameras
@@ -3139,7 +3152,8 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
                                                                   : t.widenHintValve;
         drawRowLabel(pen, t, y, h, t.rowWidenEase, hint, locked, 0, true);
         drawWidenSlider(pen, t, m, v, widen, kControlX, kInnerRight, y + 6, 40);
-        const char* note = widen.unfittedNote                   ? t.widenNoteUnfitted
+        const char* note = !widens                              ? t.widenNoteOff
+                           : widen.unfittedNote                   ? t.widenNoteUnfitted
                            : widen.control == WidenControl::Valve ? t.widenNoteValve
                                                                   : t.widenNoteCamera;
         pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
@@ -6249,6 +6263,8 @@ void EyePanel::drawWidenSlider(const Pen& pen, const UiText& t, const PanelModel
     } else if (widen.control == WidenControl::Valve) {
         usable = !v.locked(key::kLidWiden);
     }
+    // Widening off (widen): nothing it sets shows, so it is greyed like a slider that can't be moved
+    if (!v.flag(key::kWiden)) usable = false;
     const double mid = y + h / 2;
     const double endSize = 15;
     const double dullW = pen.measure(t.eyecamSensitivityDull, endSize, false);
@@ -6561,8 +6577,10 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
     bool whyLine = false;
     if (s.state == eyecam::State::Idle) {
         switch (cameraLine(use, warming, s.live, s.locked, v.text(key::kOutput) == kOutputVrchat)) {
-            case CameraLine::BothVrchat: sentence = t.camLineBothVrchat; break;
-            case CameraLine::Both: sentence = t.camLineBoth; break;
+            case CameraLine::BothVrchat:
+                sentence = v.flag(key::kWiden) ? t.camLineBothVrchat : t.camLineBothNoWiden;
+                break;
+            case CameraLine::Both: sentence = v.flag(key::kWiden) ? t.camLineBoth : t.camLineBothNoWiden; break;
             case CameraLine::Left: sentence = t.camLineLeft; break;
             case CameraLine::Right: sentence = t.camLineRight; break;
             case CameraLine::Warming: {

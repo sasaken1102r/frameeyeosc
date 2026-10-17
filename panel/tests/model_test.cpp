@@ -747,6 +747,34 @@ void testCameraLids() {
     CHECK(SettingsView(m).locked(key::kCameraLids) && !SettingsView(m).flag(key::kCameraLids));
 }
 
+/** widen (the Eyelids tab's "Widening"): on by default, read from config.json and written back as a bool, and
+ *  frameeyeosc's own value while its command line (--no-widen) locks it. */
+void testWiden() {
+    const SettingSpec* spec = findSetting(key::kWiden);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 1);
+    CHECK(spec != nullptr && defaultValue(*spec).isBool() && defaultValue(*spec).boolean);
+    PanelModel m;
+    m.config.root = JsonValue();
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(SettingsView(m).flag(key::kWiden));
+    m.config.root.set(key::kWiden, JsonValue::makeBool(false));
+    CHECK(!SettingsView(m).flag(key::kWiden) && !SettingsView(m).locked(key::kWiden));
+    // Through the file and back: "widen": false, as frameeyeosc reads it
+    const std::string text = writeJson(m.config.root);
+    CHECK(text.find("\"widen\": false") != std::string::npos);
+    JsonValue back;
+    std::string error;
+    CHECK(parseJson(text, back, error) && back.get(key::kWiden) != nullptr && back.get(key::kWiden)->isBool() &&
+          !back.get(key::kWiden)->boolean);
+    // lid_widen is a setting of its own
+    CHECK(SettingsView(m).text(key::kLidWiden) == "normal");
+    // Not a boolean: the default
+    m.config.root.set(key::kWiden, JsonValue::makeString("no"));
+    CHECK(SettingsView(m).flag(key::kWiden));
+    m.status = parseStatus("{\"pid\": 1, \"locked\": [\"widen\"], \"effective\": {\"widen\": false}}", 0, false);
+    CHECK(SettingsView(m).locked(key::kWiden) && !SettingsView(m).flag(key::kWiden));
+}
+
 /** gaze_debug_rings (the rings by the debug gaze dots, Advanced > Debug tools): the panel's own, like the dots'
  *  distance; on by default and read from config.json, off only when the file says false. */
 void testGazeDebugRings() {
@@ -1223,6 +1251,7 @@ int main() {
     testSteamlinkParams();
     testNativeEyes();
     testCameraLids();
+    testWiden();
     testGazeDebugRings();
     testCameraStatus();
     testLidsFromCameras();

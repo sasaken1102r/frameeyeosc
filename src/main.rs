@@ -576,6 +576,10 @@ struct Args {
     /// and --lid-wide)
     #[arg(long, value_enum, default_value_t = Widen::Normal)]
     lid_widen: Widen,
+    /// Never widen: no eyelid goes out above relaxed open (VRCFT 0.75), whatever the eye camera, --lid-widen or the
+    /// lid marks say. Closing and the eye camera's squint are unchanged
+    #[arg(long)]
+    no_widen: bool,
     /// OSC destination as HOST:PORT, or "auto" for the PC that Steam Link is streaming from
     #[arg(long, default_value = "auto")]
     target: String,
@@ -3368,6 +3372,8 @@ fn process(
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
         let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from, v2);
         let shut = sync_blinks(mapped.map(|lid| lid <= 0.0), mapped, settings.blink_sync_below);
+        // With widening off nothing goes above relaxed open (`widen`); below it nothing changes
+        let mixed = if settings.widen { mixed } else { mixed.map(|lid| lid.min(LID_RELAXED)) };
         let mut lids = sync_lids(mixed, settings.lid_sync);
         keep_floor(&mut lids, mixed, floored, floor);
         if blink_stages {
@@ -3457,8 +3463,9 @@ fn process(
         // it, for the sample it turns on (or the camera stops) while a widen is still in the filter. The filter only
         // averages, so nothing goes above it meanwhile; lid_sync could lift a capped eye toward the other eye's camera
         // widening, so it is capped again after that. Closing, half-closed and blinks are below relaxed open and
-        // untouched. The widen sustain applies to the camera's widening too.
-        let capped = camera_lids.map(|camera| saturated && camera.is_none());
+        // untouched. The widen sustain applies to the camera's widening too. With widening off (`widen`) every eye is
+        // capped the same way, the camera's included, so its closing and squint stay as they are.
+        let capped = camera_lids.map(|camera| !settings.widen || (saturated && camera.is_none()));
         let mut lids = [0, 1].map(|eye| if capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
         lids = smoother.sustain_widen(data.sample_time, lids);
         smoother.filter(dt, &mut gaze, &mut lids, hold);
@@ -9860,5 +9867,103 @@ mod tests {
         let json = serde_json::to_value(bridge.status(None, None)).unwrap();
         assert_eq!(json["camera"]["present"], false);
         assert!(json["camera"]["error"].as_str().unwrap().contains("magic"), "{}", json["camera"]);
+    }
+
+    /// Three seconds of samples as `settings` work them through, from a fresh smoother: the eye tracker's openness from
+    /// `openness` and the eye camera's values from `camera` (by sample index).
+    fn widen_run(
+        settings: &Settings,
+        openness: impl Fn(usize) -> [f32; 2],
+        camera: impl Fn(usize) -> Option<Live>,
+    ) -> Vec<Sample> {
+        let mut smoother = Smoother::new(settings);
+        camera_samples(settings, &mut smoother, 100.0, 3.0, openness, camera)
+    }
+
+    /// Every output's widening for a sample, as the receivers see it: VRChat's eyelid parameters above relaxed open
+    /// and any widen parameter (Steam Link's WidenToggle is a switch it always sends as 1, not an amount), the LiveLink
+    /// module's EyeWide, and the FrameEyeOSC module's EyeWide.
+    fn widening_sent(sample: &Sample) -> f32 {
+        let vrchat = Settings { steamlink_params: true, ..Settings::default() };
+        let mut most: f32 = 0.0;
+        for (addr, value) in osc_messages(&vrchat, sample) {
+            let OscType::Float(value) = value else { continue };
+            if addr.ends_with("/v2/EyeLidLeft") || addr.ends_with("/v2/EyeLidRight") {
+                most = most.max(value - LID_RELAXED);
+            }
+            if addr.contains("Wide") && !addr.ends_with("WidenToggle") {
+                most = most.max(value);
+            }
+        }
+        let [left, right] = livelink::tests::module_eyes(&livelink_packet(sample, 12.0)).unwrap();
+        most = most.max(left.1).max(right.1);
+        let (eyes, _) = feo::tests::module_eyes(&feo_packet(sample, 1, 0, 0)).unwrap();
+        for eye in eyes {
+            most = most.max(eye.wide).max(eye.vrcft_lid() - LID_RELAXED);
+        }
+        // The ETVR Tracking Module's eyelid stops at relaxed open (1.0) anyway
+        assert!(output_lids(OutputKind::Etvr, sample.lids).iter().all(|lid| *lid <= 1.0));
+        most
+    }
+
+    #[test]
+    fn widening_off_keeps_every_output_at_relaxed_open_or_below_and_closing_and_squint_as_they_are() {
+        // The camera: widened, then squinting (eyelid 0.4, squint 0.6), widened, closed (a blink), widened
+        let camera_widened = |i: usize| {
+            Some(match i {
+                60..90 => camera(0.4, 0.6),
+                120..130 => camera_eyes([(0.0, 0.0, true); 2]),
+                _ => camera(1.0, 0.0),
+            })
+        };
+        let blink = |open: f32| move |i: usize| if (120..130).contains(&i) { [0.1; 2] } else { [open; 2] };
+        // Valve's values alone, read fully widened (no eye fit: by the lid marks)
+        let no_camera = |_| None;
+        // Nothing widened anywhere: the camera at relaxed open, squinting for a while, and a blink
+        let camera_relaxed = |i: usize| {
+            Some(match i {
+                60..90 => camera(0.4, 0.6),
+                120..130 => camera_eyes([(0.0, 0.0, true); 2]),
+                _ => camera(0.75, 0.0),
+            })
+        };
+        for (behavior, raw) in [(2, false), (1, false), (2, true), (1, true)] {
+            let on = Settings { eye_behavior: behavior, raw, ..camera_settings() };
+            let off = Settings { widen: false, ..on.clone() };
+            let label = format!("eye_behavior {behavior}, raw {raw}");
+            let runs: [(&str, Vec<Sample>, Vec<Sample>); 2] = [
+                ("camera", widen_run(&on, blink(0.8), camera_widened), widen_run(&off, blink(0.8), camera_widened)),
+                ("valve", widen_run(&on, blink(1.0), no_camera), widen_run(&off, blink(1.0), no_camera)),
+            ];
+            for (name, with, without) in &runs {
+                // It would widen...
+                assert!(with.iter().any(|sample| widening_sent(sample) > 0.5), "{label}, {name}: never widened");
+                // ...but nothing goes out widened, in any output
+                assert!(all_relaxed_or_below(without), "{label}, {name}");
+                assert!(without.iter().all(|sample| widening_sent(sample) == 0.0), "{label}, {name}");
+                for (i, (with, without)) in with.iter().zip(without).enumerate() {
+                    // The camera's squint and pupils, and where the eyelids came from, are untouched
+                    assert_eq!(with.camera, without.camera, "{label}, {name}: sample {i}");
+                    assert_eq!(with.lid_from, without.lid_from, "{label}, {name}: sample {i}");
+                    // Closing: shut at the same samples
+                    let shut = |sample: &Sample| sample.lids.map(|lid| lid == 0.0);
+                    assert_eq!(shut(with), shut(without), "{label}, {name}: sample {i}");
+                }
+                // The squint goes out as before, and the eyelid with it once the widening has settled out of the
+                // filter
+                if *name == "camera" {
+                    assert!(without[85].camera.squint.iter().all(|squint| squint.is_some_and(|squint| squint > 0.3)), "{label}: {:?}", without[85].camera);
+                    let (a, b) = (with[85].lids, without[85].lids);
+                    assert!((0..2).all(|eye| (a[eye] - b[eye]).abs() < 1e-3), "{label}: {a:?} {b:?}");
+                }
+            }
+            // Without any widening to take away, everything goes out exactly the same
+            let with = widen_run(&on, blink(0.8), camera_relaxed);
+            let without = widen_run(&off, blink(0.8), camera_relaxed);
+            for (i, (with, without)) in with.iter().zip(&without).enumerate() {
+                assert_eq!(with.lids.map(f32::to_bits), without.lids.map(f32::to_bits), "{label}: sample {i}");
+                assert_eq!(osc_messages(&on, with), osc_messages(&off, without), "{label}: sample {i}");
+            }
+        }
     }
 }

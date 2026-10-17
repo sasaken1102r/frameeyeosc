@@ -36,6 +36,7 @@ cp target/release/frameeyeosc install.sh contrib/frameeyeosc.service contrib/fra
     LICENSE THIRD_PARTY_LICENSES.md README.md README.ja.md CHANGELOG.md CHANGELOG.ja.md "$stage/frameeyeosc/"
 cp panel/build/frameeyeosc-panel panel/contrib/frameeyeosc-panel.service panel/contrib/frameeyeosc-panel.desktop \
     "$stage/frameeyeosc/"
+"${STRIP:-strip}" "$stage/frameeyeosc/frameeyeosc-panel"
 cp panel/contrib/icons/frameeyeosc-panel-{48,128,256}.png "$stage/frameeyeosc/icons/"
 cp vendor/frame-updater/frame-update.sh "$stage/frameeyeosc/"
 # install.sh puts these in ~/.local/lib/eyecam (install_grab.sh is run once by the user, with sudo)

@@ -222,6 +222,32 @@ pub struct Status {
     pub last_error_unix: f64,
     /// The drift log (`driftlog on` / `off`): whether it is on, its file, how much is in it.
     pub driftlog: crate::driftlog::DriftStatus,
+    /// The eyelid veto (settings.json `lid_veto`) and what it has done.
+    pub lid_veto: LidVeto,
+}
+
+/// status.json `lid_veto`: whether the eyelid veto is on, its CNN runs a second (both eyes, over the last second),
+/// the vetoes fired, and the CNN's time per run (mean and max, ms), since live processing started.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LidVeto {
+    pub on: bool,
+    pub runs_per_s: f64,
+    pub fired: u64,
+    pub ms_mean: f64,
+    pub ms_max: f64,
+}
+
+impl LidVeto {
+    fn to_json(&self) -> String {
+        format!(
+            "{{\"on\":{},\"runs_per_s\":{},\"fired\":{},\"ms_mean\":{},\"ms_max\":{}}}",
+            self.on,
+            num(self.runs_per_s),
+            self.fired,
+            num(self.ms_mean),
+            num(self.ms_max)
+        )
+    }
 }
 
 impl Default for Status {
@@ -266,6 +292,7 @@ impl Default for Status {
             last_error: String::new(),
             last_error_unix: 0.0,
             driftlog: Default::default(),
+            lid_veto: LidVeto::default(),
         }
     }
 }
@@ -298,7 +325,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"driftlog\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"driftlog\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -342,6 +369,7 @@ impl Status {
             json_str(&self.last_error),
             json_str(&crate::message_en::message_en(&self.last_error)),
             num(self.last_error_unix),
+            self.lid_veto.to_json(),
             self.driftlog.to_json(),
             num(updated_unix),
         )
@@ -537,6 +565,10 @@ mod tests {
             json.contains(",\"driftlog\":{\"on\":false,\"path\":\"\",\"rows\":0,\"bytes\":0,\"full\":false,\"error\":\"\"},\"pid\":7,"),
             "{json}"
         );
+        assert!(json.contains(",\"lid_veto\":{\"on\":false,\"runs_per_s\":0.000,\"fired\":0,\"ms_mean\":0.000,\"ms_max\":0.000},\"driftlog\":"), "{json}");
+        let veto = LidVeto { on: true, runs_per_s: 12.5, fired: 3, ms_mean: 0.31, ms_max: 1.2 };
+        let on = Status { lid_veto: veto, ..Status::default() }.to_json(1.5, 7);
+        assert!(on.contains("\"lid_veto\":{\"on\":true,\"runs_per_s\":12.500,\"fired\":3,\"ms_mean\":0.310,\"ms_max\":1.200}") && crate::json::parse(&on).is_ok(), "{on}");
         let drift = crate::driftlog::DriftStatus { on: true, path: "/home/steamos/eyecam/drift/drift_x.csv".into(), rows: 12, bytes: 3400, full: false, error: String::new() };
         let on = Status { driftlog: drift, ..Status::default() }.to_json(1.5, 7);
         assert!(on.contains("\"driftlog\":{\"on\":true,\"path\":\"/home/steamos/eyecam/drift/drift_x.csv\",\"rows\":12,") && crate::json::parse(&on).is_ok(), "{on}");

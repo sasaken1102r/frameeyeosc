@@ -33,22 +33,27 @@ size_t utf8Length(unsigned char lead) {
 
 std::string ellipsize(const Pen& pen, const std::string& text, double size, bool bold, double maxWidth, bool keepEnd) {
     if (pen.measure(text, size, bold) <= maxWidth) return text;
-    // One entry a character (an icon marker is one 3-byte character, so it goes as a whole)
-    std::vector<std::string> chars;
+    // Keep byte boundaries, not a separately allocated string for every character. Reuse the candidate's
+    // capacity while trimming (an icon marker is one 3-byte character, so it still goes as a whole).
+    std::vector<size_t> ends;
     for (size_t i = 0; i < text.size();) {
         const size_t n = std::min(utf8Length(static_cast<unsigned char>(text[i])), text.size() - i);
-        chars.push_back(text.substr(i, n));
         i += n;
+        ends.push_back(i);
     }
-    while (!chars.empty()) {
+    std::string candidate;
+    candidate.reserve(text.size() + 3);
+    if (keepEnd) candidate = "…" + text;
+    else candidate = text;
+    size_t first = 0;
+    for (size_t left = ends.size(); left > 0; --left) {
         if (keepEnd) {
-            chars.erase(chars.begin());
+            candidate.erase(3, ends[ends.size() - left] - first);
+            first = ends[ends.size() - left];
         } else {
-            chars.pop_back();
+            candidate.resize(left > 1 ? ends[left - 2] : 0);
+            candidate += "…";
         }
-        std::string joined;
-        for (const auto& c : chars) joined += c;
-        const std::string candidate = keepEnd ? "…" + joined : joined + "…";
         if (pen.measure(candidate, size, bold) <= maxWidth) return candidate;
     }
     return "…";
@@ -62,9 +67,9 @@ std::vector<std::string> wrapText(const Pen& pen, const std::string& text, doubl
     std::string word;
     for (size_t i = 0; i < text.size();) {
         const size_t n = std::min(utf8Length(static_cast<unsigned char>(text[i])), text.size() - i);
-        const std::string ch = text.substr(i, n);
+        const size_t start = i;
         i += n;
-        if (icon::keepsWithPrevious(icon::at(ch, 0))) {
+        if (icon::keepsWithPrevious(icon::at(text, start))) {
             if (word.empty() && !units.empty()) {
                 word = units.back();
                 units.pop_back();
@@ -74,17 +79,17 @@ std::vector<std::string> wrapText(const Pen& pen, const std::string& text, doubl
                     units.pop_back();
                 }
             }
-            word += ch;
+            word.append(text, start, n);
         } else if (n >= 3) {
             if (!word.empty()) units.push_back(word);
             word.clear();
-            units.push_back(ch);
-        } else if (ch == " ") {
-            word += ch;
+            units.push_back(text.substr(start, n));
+        } else if (text[start] == ' ') {
+            word += ' ';
             units.push_back(word);
             word.clear();
         } else {
-            word += ch;
+            word.append(text, start, n);
         }
     }
     if (!word.empty()) units.push_back(word);

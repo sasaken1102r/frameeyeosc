@@ -1881,6 +1881,34 @@ void testIconText(const FontSet& fonts) {
     cairo_t* cr = cairo_create(surface);
     const Pen pen {cr, &fonts};
     const Color white {1, 1, 1};
+    // Compare both truncation directions with the original character-by-character implementation.
+    // This guards exact UTF-8/icon boundaries and the chosen substring, not just its resulting width.
+    const auto originalEllipsize = [&](const std::string& text, double width, bool keepEnd) {
+        if (pen.measure(text, 14, false) <= width) return text;
+        std::vector<std::string> chars;
+        for (size_t i = 0; i < text.size();) {
+            const size_t n = std::min(utf8Length(static_cast<unsigned char>(text[i])), text.size() - i);
+            chars.push_back(text.substr(i, n));
+            i += n;
+        }
+        while (!chars.empty()) {
+            if (keepEnd) chars.erase(chars.begin());
+            else chars.pop_back();
+            std::string joined;
+            for (const std::string& ch : chars) joined += ch;
+            const std::string candidate = keepEnd ? "…" + joined : joined + "…";
+            if (pen.measure(candidate, 14, false) <= width) return candidate;
+        }
+        return std::string("…");
+    };
+    for (const char* text : {"", "A", "long English text to cut at either end", "日本語とéと😀の文",
+                             "正面 1 回目 0/153 " ICON_ARROW_RIGHT " もう一度"}) {
+        for (const bool keepEnd : {false, true}) {
+            for (double width = -1; width <= 300; width += 7) {
+                CHECK(ellipsize(pen, text, 14, false, width, keepEnd) == originalEllipsize(text, width, keepEnd));
+            }
+        }
+    }
     // Measuring: an icon is its own width between the runs of text (the font isn't asked for it)
     for (const bool bold : {false, true}) {
         const double size = 17;
@@ -2418,6 +2446,33 @@ void testPreview(const FontSet& fonts) {
     }
 }
 
+void testSurfaceRgba() {
+    // Every alpha/channel combination, including invalid premultiplied values, matches the original rounding
+    // and clamping. Also exercise all-opaque and transparent pixels through the fast path and the table.
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 256, 256);
+    uint8_t* data = cairo_image_surface_get_data(surface);
+    const int stride = cairo_image_surface_get_stride(surface);
+    for (uint32_t a = 0; a < 256; ++a) {
+        auto* row = reinterpret_cast<uint32_t*>(data + a * stride);
+        for (uint32_t c = 0; c < 256; ++c) row[c] = a << 24 | c << 16 | (255 - c) << 8 | c;
+    }
+    cairo_surface_mark_dirty(surface);
+    std::vector<uint8_t> rgba;
+    surfaceToRgba(surface, rgba);
+    CHECK(rgba.size() == 256 * 256 * 4);
+    for (uint32_t a = 0; a < 256; ++a) {
+        const auto straight = [a](uint32_t c) {
+            return a == 0 ? 0 : std::min<uint32_t>(255, (c * 255 + a / 2) / a);
+        };
+        for (uint32_t c = 0; c < 256; ++c) {
+            const size_t at = (a * 256 + c) * 4;
+            CHECK(rgba[at] == straight(c) && rgba[at + 1] == straight(255 - c) &&
+                  rgba[at + 2] == straight(c) && rgba[at + 3] == a);
+        }
+    }
+    cairo_surface_destroy(surface);
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -2452,6 +2507,7 @@ int main() {
     testIconText(fonts);
     testApps(fonts);
     testPreview(fonts);
+    testSurfaceRgba();
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

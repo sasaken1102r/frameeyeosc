@@ -2,6 +2,7 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -24,14 +25,14 @@ struct JsonValue {
      * @param key the key to find
      * @return pointer to the value found, or nullptr if not an object or the key is missing
      */
-    const JsonValue* get(const std::string& key) const;
+    const JsonValue* get(std::string_view key) const;
 
     /**
      * Set a member of an object, replacing it in place or appending it at the end (keeps the other members' order).
      * @param key the key
      * @param value the new value
      */
-    void set(const std::string& key, JsonValue value);
+    void set(std::string_view key, JsonValue value);
 
     /**
      * Make a number value.

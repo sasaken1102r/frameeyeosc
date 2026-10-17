@@ -58,7 +58,7 @@ constexpr const char* kPrefix = "prefix";
 constexpr const char* kEyeTrackingActive = "eye_tracking_active";
 /** VRChat output: also send Steam Link's own avatar parameter names (LeftEyeX, RightEyeLid, ...; no prefix). */
 constexpr const char* kSteamlinkParams = "steamlink_params";
-/** VRChat output: also send VRChat's own eye tracking input (/tracking/eye/*), for avatars without VRCFT parameters. */
+/** VRChat output: also send VRChat's own /tracking/eye/ inputs, for avatars without VRCFT parameters. */
 constexpr const char* kNativeEyes = "native_eyes";
 /** LiveLink output: send the eye cameras' pupils straight to VRChat (the LiveLink module has none; default on). */
 constexpr const char* kPupilsToVrchat = "pupils_to_vrchat";

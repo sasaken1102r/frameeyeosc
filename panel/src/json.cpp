@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -287,10 +288,10 @@ private:
 
 }  // namespace
 
-const JsonValue* JsonValue::get(const std::string& key) const {
+const JsonValue* JsonValue::get(std::string_view key) const {
     if (type != Type::Object) return nullptr;
     for (const auto& member : members) {
-        if (member.first == key) return &member.second;
+        if (std::string_view(member.first) == key) return &member.second;
     }
     return nullptr;
 }
@@ -350,18 +351,18 @@ bool parseJson(const std::string& source, JsonValue& out, std::string& error) {
     return parser.parseDocument(out, error);
 }
 
-void JsonValue::set(const std::string& key, JsonValue value) {
+void JsonValue::set(std::string_view key, JsonValue value) {
     if (type != Type::Object) {
         *this = JsonValue();
         type = Type::Object;
     }
     for (auto& member : members) {
-        if (member.first == key) {
+        if (std::string_view(member.first) == key) {
             member.second = std::move(value);
             return;
         }
     }
-    members.emplace_back(key, std::move(value));
+    members.emplace_back(std::string(key), std::move(value));
 }
 
 JsonValue JsonValue::makeNumber(double value, bool isInteger) {
@@ -434,7 +435,7 @@ void writeNumber(const JsonValue& value, std::string& out) {
     }
     std::snprintf(text, sizeof(text), "%.6g", value.number);
     out += text;
-    if (std::string(text).find_first_of(".eE") == std::string::npos) out += ".0";
+    if (std::strpbrk(text, ".eE") == nullptr) out += ".0";
 }
 
 /**
@@ -444,8 +445,6 @@ void writeNumber(const JsonValue& value, std::string& out) {
  * @param out where to append
  */
 void writeValue(const JsonValue& value, int depth, std::string& out) {
-    const std::string pad(static_cast<size_t>(depth + 1) * 2, ' ');
-    const std::string closePad(static_cast<size_t>(depth) * 2, ' ');
     switch (value.type) {
         case JsonValue::Type::Null: out += "null"; return;
         case JsonValue::Type::Bool: out += value.boolean ? "true" : "false"; return;
@@ -458,11 +457,12 @@ void writeValue(const JsonValue& value, int depth, std::string& out) {
             }
             out += "[\n";
             for (size_t i = 0; i < value.items.size(); ++i) {
-                out += pad;
+                out.append(static_cast<size_t>(depth + 1) * 2, ' ');
                 writeValue(value.items[i], depth + 1, out);
                 out += i + 1 < value.items.size() ? ",\n" : "\n";
             }
-            out += closePad + "]";
+            out.append(static_cast<size_t>(depth) * 2, ' ');
+            out += ']';
             return;
         case JsonValue::Type::Object:
             if (value.members.empty()) {
@@ -471,13 +471,14 @@ void writeValue(const JsonValue& value, int depth, std::string& out) {
             }
             out += "{\n";
             for (size_t i = 0; i < value.members.size(); ++i) {
-                out += pad;
+                out.append(static_cast<size_t>(depth + 1) * 2, ' ');
                 writeString(value.members[i].first, out);
                 out += ": ";
                 writeValue(value.members[i].second, depth + 1, out);
                 out += i + 1 < value.members.size() ? ",\n" : "\n";
             }
-            out += closePad + "}";
+            out.append(static_cast<size_t>(depth) * 2, ' ');
+            out += '}';
             return;
     }
 }

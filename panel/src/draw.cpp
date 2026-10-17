@@ -382,10 +382,18 @@ void surfaceToRgba(cairo_surface_t* surface, std::vector<uint8_t>& out) {
             // cairo stores premultiplied ARGB (native-endian 32-bit); un-premultiply and reorder to RGBA
             const uint32_t p = row[x];
             const uint32_t a = p >> 24;
-            const uint8_t* line = unpremultiply.data() + a * 256;
-            dst[0] = line[(p >> 16) & 0xFF];
-            dst[1] = line[(p >> 8) & 0xFF];
-            dst[2] = line[p & 0xFF];
+            // Most of the panel is opaque. Those channels are already straight-alpha values, so avoid
+            // three dependent table reads for every background/text pixel.
+            if (a == 255) {
+                dst[0] = static_cast<uint8_t>(p >> 16);
+                dst[1] = static_cast<uint8_t>(p >> 8);
+                dst[2] = static_cast<uint8_t>(p);
+            } else {
+                const uint8_t* line = unpremultiply.data() + a * 256;
+                dst[0] = line[(p >> 16) & 0xFF];
+                dst[1] = line[(p >> 8) & 0xFF];
+                dst[2] = line[p & 0xFF];
+            }
             dst[3] = static_cast<uint8_t>(a);
             dst += 4;
         }

@@ -3460,7 +3460,7 @@ fn output_lids(output: OutputKind, lids: [f32; 2]) -> [f32; 2] {
 fn livelink_packet(sample: &Sample, time: f64) -> [u8; livelink::PACKET_SIZE] {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
     let lids = output_lids(OutputKind::LiveLink, sample.lids);
-    livelink::packet(time, &livelink::shapes(lids, [left_x, left_y, right_x, right_y]))
+    livelink::eye_packet(time, lids, [left_x, left_y, right_x, right_y])
 }
 
 /// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set with the eye camera's squint and pupils (see

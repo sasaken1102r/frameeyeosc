@@ -20,6 +20,22 @@ pub fn encode(address: &[&str], args: &[Value], packet: &mut Vec<u8>) {
         packet.extend_from_slice(part.as_bytes());
     }
     pad(packet);
+    // Nearly every tracking message has one scalar. Its typetag is always four
+    // bytes, so avoid walking the argument slice twice for these messages.
+    if let [arg] = args {
+        let (tag, value) = match arg {
+            Value::Float(value) => (b'f', Some(value.to_be_bytes())),
+            Value::Int(value) => (b'i', Some(value.to_be_bytes())),
+            Value::Bool(value) => (if *value { b'T' } else { b'F' }, None),
+            #[cfg(test)]
+            _ => panic!("unsupported output argument"),
+        };
+        packet.extend_from_slice(&[b',', tag, 0, 0]);
+        if let Some(bytes) = value {
+            packet.extend_from_slice(&bytes);
+        }
+        return;
+    }
     packet.push(b',');
     for arg in args {
         packet.push(match arg {
@@ -57,14 +73,17 @@ mod tests {
     fn matches_rosc_for_every_output_type_and_address_alignment() {
         let mut packet = Vec::new();
         let floats = [0.0, -0.0, 0.75, -1.25, f32::INFINITY, f32::NEG_INFINITY, f32::from_bits(0x7fc12345)];
-        let cases = [
+        let mut cases = vec![
             vec![],
             vec![Value::Bool(false)],
             vec![Value::Bool(true)],
+            vec![Value::Int(i32::MIN)],
+            vec![Value::Int(i32::MAX)],
             vec![Value::Int(i32::MIN), Value::Int(0), Value::Int(i32::MAX)],
             floats.map(Value::Float).into(),
             vec![Value::Bool(true), Value::Float(-0.0), Value::Int(-1), Value::Bool(false)],
         ];
+        cases.extend(floats.map(|value| vec![Value::Float(value)]));
         for prefix in ["", "/FT", "/x", "/xx", "/日本語", "/with\0zero"] {
             let address = ["/avatar/parameters", prefix, "/v2/EyeLeftX"];
             for args in &cases {

@@ -33,6 +33,32 @@ const SUBJECT_NAME: &str = "SteamFrame";
 const FRAME_RATE: i32 = 90;
 pub const BLENDSHAPES: usize = 61;
 pub const PACKET_SIZE: usize = 1 + 4 + DEVICE_ID.len() + 4 + SUBJECT_NAME.len() + 16 + 1 + BLENDSHAPES * 4;
+const FRAME_OFFSET: usize = 1 + 4 + DEVICE_ID.len() + 4 + SUBJECT_NAME.len();
+const SHAPES_OFFSET: usize = FRAME_OFFSET + 17;
+
+// Build the fixed header once at compile time. Only frame and subframe vary.
+const HEADER: [u8; SHAPES_OFFSET] = {
+    const fn append(header: &mut [u8; SHAPES_OFFSET], at: &mut usize, bytes: &[u8]) {
+        let mut i = 0;
+        while i < bytes.len() {
+            header[*at] = bytes[i];
+            *at += 1;
+            i += 1;
+        }
+    }
+    let mut header = [0; SHAPES_OFFSET];
+    let mut at = 0;
+    append(&mut header, &mut at, &[PACKET_VERSION]);
+    append(&mut header, &mut at, &(DEVICE_ID.len() as i32).to_be_bytes());
+    append(&mut header, &mut at, DEVICE_ID.as_bytes());
+    append(&mut header, &mut at, &(SUBJECT_NAME.len() as i32).to_be_bytes());
+    append(&mut header, &mut at, SUBJECT_NAME.as_bytes());
+    at += 8; // Frame and subframe are filled for each packet.
+    append(&mut header, &mut at, &FRAME_RATE.to_be_bytes());
+    append(&mut header, &mut at, &1i32.to_be_bytes());
+    append(&mut header, &mut at, &[BLENDSHAPES as u8]);
+    header
+};
 // Indices in ARKit / Live Link order (the module's Constants.LiveLinkNames).
 const EYE_BLINK_LEFT: usize = 0;
 const EYE_SQUINT_LEFT: usize = 5;
@@ -95,28 +121,36 @@ pub fn time_of_day(now: SystemTime) -> f64 {
     now.duration_since(UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64() % 86_400.0)
 }
 
-/// One Live Link Face packet (version 6, network byte order) at `time` seconds.
-pub fn packet(time: f64, shapes: &[f32; BLENDSHAPES]) -> [u8; PACKET_SIZE] {
+fn packet_header(time: f64) -> [u8; PACKET_SIZE] {
     let frames = time.max(0.0) * f64::from(FRAME_RATE);
     let mut packet = [0; PACKET_SIZE];
-    let mut at = 0;
-    let mut append = |bytes: &[u8]| {
-        packet[at..at + bytes.len()].copy_from_slice(bytes);
-        at += bytes.len();
-    };
-    append(&[PACKET_VERSION]);
-    for text in [DEVICE_ID, SUBJECT_NAME] {
-        append(&(text.len() as i32).to_be_bytes());
-        append(text.as_bytes());
-    }
+    packet[..SHAPES_OFFSET].copy_from_slice(&HEADER);
     // A day at 90 fps is 7.8 million frames, well within an i32.
-    append(&(frames.floor() as i32).to_be_bytes());
-    append(&(frames.fract() as f32).to_be_bytes());
-    append(&FRAME_RATE.to_be_bytes());
-    append(&1i32.to_be_bytes());
-    append(&[BLENDSHAPES as u8]);
-    for value in shapes {
-        append(&value.to_be_bytes());
+    packet[FRAME_OFFSET..FRAME_OFFSET + 4].copy_from_slice(&(frames.floor() as i32).to_be_bytes());
+    packet[FRAME_OFFSET + 4..FRAME_OFFSET + 8].copy_from_slice(&(frames.fract() as f32).to_be_bytes());
+    packet
+}
+
+/// One Live Link Face packet (version 6, network byte order) at `time` seconds.
+pub fn packet(time: f64, shapes: &[f32; BLENDSHAPES]) -> [u8; PACKET_SIZE] {
+    let mut packet = packet_header(time);
+    for (bytes, value) in packet[SHAPES_OFFSET..].chunks_exact_mut(4).zip(shapes) {
+        bytes.copy_from_slice(&value.to_be_bytes());
+    }
+    packet
+}
+
+/// The eye sample directly in its packet: only eight of the 61 shapes vary.
+pub fn eye_packet(time: f64, [left, right]: [f32; 2], [lx, ly, rx, ry]: [f32; 4]) -> [u8; PACKET_SIZE] {
+    let mut packet = packet_header(time);
+    for (index, value) in [
+        (EYE_BLINK_LEFT, blink(left)), (EYE_WIDE_LEFT, wide(left)),
+        (EYE_BLINK_RIGHT, blink(right)), (EYE_WIDE_RIGHT, wide(right)),
+        (EYE_YAW_LEFT, lx), (EYE_PITCH_LEFT, -ly),
+        (EYE_YAW_RIGHT, rx), (EYE_PITCH_RIGHT, -ry),
+    ] {
+        let at = SHAPES_OFFSET + index * 4;
+        packet[at..at + 4].copy_from_slice(&value.to_be_bytes());
     }
     packet
 }
@@ -179,6 +213,52 @@ pub mod tests {
         let later = super::packet(1000.5 + 0.25 / 90.0, &shapes);
         assert_eq!(later[30..34], 90045i32.to_be_bytes());
         assert_eq!(later[34..38], 0.25f32.to_be_bytes());
+    }
+
+    #[test]
+    fn every_shape_preserves_its_bits_and_timestamp_edges_match_the_wire_format() {
+        let mut shapes = [0.0; BLENDSHAPES];
+        let mut bits = 0x1234_5678u32;
+        for value in &mut shapes {
+            bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *value = f32::from_bits(bits);
+        }
+        shapes[..6].copy_from_slice(&[
+            0.0, -0.0, f32::INFINITY, f32::NEG_INFINITY,
+            f32::from_bits(0x7fc1_2345), f32::from_bits(0xffc5_4321),
+        ]);
+        for time in [-1.0, -0.0, 0.0, 0.25 / 90.0, 86_399.999, f64::INFINITY, f64::NAN] {
+            // Independent, growable serialization of the protocol's fields.
+            let frames = time.max(0.0) * 90.0;
+            let mut expected = vec![6];
+            for name in ["frameeyeosc", "SteamFrame"] {
+                expected.extend_from_slice(&(name.len() as i32).to_be_bytes());
+                expected.extend_from_slice(name.as_bytes());
+            }
+            expected.extend_from_slice(&(frames.floor() as i32).to_be_bytes());
+            expected.extend_from_slice(&(frames.fract() as f32).to_be_bytes());
+            expected.extend_from_slice(&[0, 0, 0, 90, 0, 0, 0, 1, 61]);
+            for value in shapes {
+                expected.extend_from_slice(&value.to_be_bytes());
+            }
+            assert_eq!(packet(time, &shapes).as_slice(), expected, "{time:?}");
+        }
+    }
+
+    #[test]
+    fn eye_packets_match_the_full_shape_serializer() {
+        let values = [
+            0.0, -0.0, 0.375, 0.75, 0.875, 1.0, -0.25, 1.25,
+            f32::INFINITY, f32::NEG_INFINITY,
+            f32::from_bits(0x7fc1_2345), f32::from_bits(0xffc5_4321),
+        ];
+        for i in 0..values.len() {
+            let lids = [values[i], values[(i + 1) % values.len()]];
+            let gaze = std::array::from_fn(|j| values[(i + j + 2) % values.len()]);
+            for time in [0.0, 0.25 / 90.0, 86_399.999] {
+                assert_eq!(eye_packet(time, lids, gaze), packet(time, &shapes(lids, gaze)), "sample {i}");
+            }
+        }
     }
 
     #[test]

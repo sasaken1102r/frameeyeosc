@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.10 (unreleased)
+## 0.7.10 (2026-10-17)
 
 Other apps on the Frame can now press the panel's eye fit buttons and the new "Relearn my eyes" with `frameeyeosc-panel --action`; frame-aux-shortcuts, my app for shortcuts on the aux button, can use it to put a re-center or an eye fit on a press of that button. "Relearn my eyes" on the Eye cameras tab learns your relaxed eyes again in about 30 s without a calibration, and the eyelids, widening and squint keep working from the old values meanwhile. Widening can now be turned off altogether (Eyelids › Widening: Off). With the eye cameras, eyecam no longer reads a widened eye as almost shut when the upper lid goes above the area it searches, and the wear calibration measures widening for wearers whose lid goes up there. You can also opt in to test versions (Advanced › Version) when you're asked to try a fix.
 

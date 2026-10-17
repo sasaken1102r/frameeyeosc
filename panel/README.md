@@ -169,7 +169,7 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 - SteamVR が終わる（`VREvent_Quit`）と静かに終わる（終了コード 0）
 - すでに常駐しているときにもう一度起動すると、SteamVR にはつながず、常駐しているほうに SIGUSR1 を送ってすぐ終わる。常駐側はダッシュボードを開いてパネルを出す
 - 常駐の見分けは `$XDG_RUNTIME_DIR/frameeyeosc-panel.lock` のロック（flock）と、そこに書いた PID
-- ほかのアプリからボタンを押してもらうのは `--action recenter|fit|stop|open`（下の「ほかのアプリから動かす」）
+- ほかのアプリからボタンを押してもらうのは `--action recenter|fit|stop|relearn|open`（下の「ほかのアプリから動かす」）
 
 確認用のオプション（`--probe` 系以外は OpenVR なしで動く）:
 

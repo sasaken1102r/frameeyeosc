@@ -65,7 +65,7 @@ enum class Action {
 
 /**
  * The action with this name.
- * @param name as on the command line and in a request ("recenter", "fit", "stop", "open")
+ * @param name as on the command line and in a request ("recenter", "fit", "stop", "relearn", "open")
  * @param action set if known
  * @return false for an unknown name
  */

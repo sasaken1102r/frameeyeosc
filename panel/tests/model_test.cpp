@@ -1107,6 +1107,64 @@ void testUpdateNotes() {
     }
 }
 
+/** Test versions on the Version page: the "Test version available" badge only while "Get test versions" is off and a
+ *  test version newer than the running one exists; "Using test version" and the keep-hint on a test version. */
+void testTestVersionView() {
+    frame_updater::UpdateStatus u;
+    u.state = frame_updater::UpdateState::UpToDate;
+    u.current = "0.7.10";
+    u.latest = "0.7.10";
+    // Nothing newer on the beta channel: no badge, either way
+    TestVersionView v = testVersionView(u, false);
+    CHECK(!v.badge && !v.using_ && !v.keepHint && !v.offered);
+    CHECK(!testVersionView(u, true).badge);
+    // A newer test version: the badge while off, none while on (the update row says it then)
+    u.testVersion = "0.7.11-beta.1";
+    CHECK(testVersionView(u, false).badge);
+    CHECK(!testVersionView(u, true).badge);
+    // Also beside an available regular version
+    u.state = frame_updater::UpdateState::Available;
+    u.current = "0.7.9";
+    CHECK(testVersionView(u, false).badge && !testVersionView(u, false).offered);
+    // Not newer than the running one (a stale answer after updating): no badge
+    u.current = "0.7.11-beta.1";
+    CHECK(!testVersionView(u, false).badge);
+    u.current = "0.7.11";
+    CHECK(!testVersionView(u, false).badge);
+    // No version known yet
+    u.state = frame_updater::UpdateState::Unknown;
+    u.current = "0.7.10";
+    u.testVersion.clear();
+    CHECK(!testVersionView(u, false).badge);
+
+    // Running a test version: "Using test version"; off, the hint says it stays until the next regular version
+    u.state = frame_updater::UpdateState::UpToDate;
+    u.current = "0.7.11-beta.2";
+    u.latest = "0.7.10";
+    v = testVersionView(u, false);
+    CHECK(v.using_ && v.keepHint && !v.badge);
+    v = testVersionView(u, true);
+    CHECK(v.using_ && !v.keepHint);
+    // A newer test version on top of the running one (off): the badge too
+    u.testVersion = "0.7.11-beta.3";
+    CHECK(testVersionView(u, false).badge);
+    u.testVersion.clear();
+
+    // The beta channel offers a test version: "Test version X is available"; a regular one: not
+    u.state = frame_updater::UpdateState::Available;
+    u.current = "0.7.10";
+    u.latest = "0.7.11-beta.1";
+    u.prerelease = true;
+    CHECK(testVersionView(u, true).offered && !testVersionView(u, true).badge);
+    u.latest = "0.7.11";
+    u.prerelease = false;
+    CHECK(!testVersionView(u, true).offered);
+    // Only while it is available
+    u.prerelease = true;
+    u.state = frame_updater::UpdateState::Installing;
+    CHECK(!testVersionView(u, true).offered);
+}
+
 }  // namespace
 
 /**
@@ -1262,6 +1320,7 @@ int main() {
     testPupilBits();
     testLearnedAndHelpRows();
     testUpdateNotes();
+    testTestVersionView();
     if (gFailures == 0) std::printf("model-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

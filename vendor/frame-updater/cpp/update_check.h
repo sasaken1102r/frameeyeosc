@@ -32,6 +32,13 @@ struct UpdaterConfig {
     std::string assetPattern;                     ///< release file, {version} for the version
     std::vector<std::string> defaultInstallArgs;  ///< install.sh options when ~/.config/<app>/install-args is missing
     int recheckSeconds = 3600;                    ///< how often tick() asks the script (it reuses GitHub's answer for 55 min, so about hourly)
+    /// "stable" (GitHub's latest release, the default) or "beta" (test versions too: prereleases such as
+    /// v0.7.11-beta.1). May be changed later with UpdateChecker::setChannel()
+    std::string channel = "stable";
+    /// On the stable channel, also look at the beta one (after each check, with the script's own cache for it, so at
+    /// most one more GitHub request an hour) to tell whether a test version newer than the running one exists
+    /// (UpdateStatus::testVersion). May be changed later with UpdateChecker::setWatchTestVersions()
+    bool watchTestVersions = false;
 };
 
 /** Overall state, for choosing what to show. */
@@ -61,6 +68,8 @@ struct UpdateStatus {
     long long checkedAt = 0;   ///< when GitHub last answered (Unix time; 0 = never). A cached answer keeps its time
     std::string notes;         ///< Available: the new release's summary, one line of plain text ("" if it has none)
     std::string notesJa;       ///< Available: the same in Japanese, if the release text has a "日本語:" paragraph ("" if not)
+    bool prerelease = false;   ///< UpToDate / Available: `latest` is a prerelease (a test version; only on the beta channel)
+    std::string testVersion;   ///< watchTestVersions on the stable channel: a test version newer than the running one ("" if none)
 
     bool operator==(const UpdateStatus& other) const;
     bool operator!=(const UpdateStatus& other) const { return !(*this == other); }
@@ -95,6 +104,24 @@ public:
      * forced one starts right after it. status().checking is true until the answer arrives.
      */
     void checkNow();
+
+    /**
+     * Switch the channel ("beta": test versions too; anything else: "stable"). The other channel's answer is dropped
+     * and, if a check was done before, the new channel is checked at the next tick (the script keeps an answer per
+     * channel, so this asks GitHub only when that one is older than 55 minutes). Install uses the channel too.
+     * @param channel "stable" or "beta"
+     */
+    void setChannel(const std::string& channel);
+
+    /**
+     * Turn UpdaterConfig::watchTestVersions on or off. On, after a check was done: the beta channel is looked at at
+     * the next tick.
+     * @param watch whether to look
+     */
+    void setWatchTestVersions(bool watch);
+
+    /** @return the channel in use ("stable" or "beta") */
+    const std::string& channel() const { return config_.channel; }
 
     /**
      * Start installing the newest release (after the user confirmed). Returns at once; the
@@ -135,15 +162,21 @@ private:
     void killChild(Child& child);
     std::vector<std::string> baseArgs() const;
     void startCheck(bool force);
+    void startPeek();
     void readStateFile();
     void recompute();
 
     UpdaterConfig config_;
     std::string cacheDir_;
     Child check_;
+    Child peek_;                                      ///< the beta channel's check, for testVersion
     Child installer_;
     bool checkedOnce_ = false;
     bool forcePending_ = false;                       ///< checkNow() while another check ran
+    bool recheckPending_ = false;                     ///< the channel changed: check it at the next tick
+    bool peekPending_ = false;                        ///< look at the beta channel once no check runs
+    std::string checkChannel_;                        ///< the channel the running (or last) check asked about
+    std::map<std::string, std::string> peekResult_;   ///< last output of "--channel beta check" (watchTestVersions)
     Clock::time_point lastCheck_;
     Clock::time_point lastStateRead_;
     bool stateReadOnce_ = false;
@@ -167,9 +200,17 @@ private:
 std::map<std::string, std::string> parseFlatJson(const std::string& text);
 
 /**
- * Compare two versions by their numeric x.y.z part ("v0.4.0-rc1" counts as 0.4.0).
+ * Compare two versions as frame-update.sh does: by their numeric x.y.z part, then a pre-release part after "-" comes
+ * before the final version and pre-release parts compare as semantic versioning says (0.7.10 < 0.7.11-beta.1 <
+ * 0.7.11-beta.2 < 0.7.11-beta.10 < 0.7.11). A leading "v" and a build part ("+abc") are ignored.
  * @return -1, 0 or 1; 0 also when either is not a version
  */
 int compareVersions(const std::string& a, const std::string& b);
+
+/**
+ * @param version a version ("0.7.11-beta.1", "v0.7.11")
+ * @return true if it has a pre-release part (a test version)
+ */
+bool isPrerelease(const std::string& version);
 
 }  // namespace frame_updater

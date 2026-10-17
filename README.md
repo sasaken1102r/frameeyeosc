@@ -101,6 +101,12 @@ To remove it: `./install.sh --uninstall` (removes the panel too; add `--purge` t
 
 From 0.4.0 on, the panel's "Update" button does the update. The panel's Advanced tab shows the installed version on its "Version" page. At start and then every hour, the panel asks GitHub whether a newer release exists. "Check now" asks right away. When a newer release exists, the "Version" page shows its summary in a box under the version (in Japanese on a Japanese panel when the release has one), and the left column shows a notice that opens that page, and "Update" downloads it, checks it against the release's `SHA256SUMS`, and runs its `install.sh` with the options of your last install (kept in `~/.config/frameeyeosc/install-args`). frameeyeosc and the panel restart on the new version. If anything fails before `install.sh` runs, nothing changes; the log is in `~/.cache/frameeyeosc/update.log`. Turn "Check for updates" off to stop the hourly check (the "Check now" button still works). The update itself only runs when you press the button.
 
+##### Test versions
+
+Before a new version comes out for everyone, a test version (such as `0.7.11-beta.1`) may come out for the people who offered to try it. To get them, turn on "Get test versions" on the "Version" page (it's off by default; the setting is kept in `~/.local/state/frameeyeosc/panel.json`). The update checks then also offer test versions, marked "Test version"; the update itself works as above. While it's off, a small "Test version available" badge beside it tells you when a test version newer than yours exists; nothing is installed unless you turn it on and press "Update".
+
+To go back, turn "Get test versions" off. Your test version stays installed (nothing is downgraded), and when the regular version comes out (`0.7.11` after `0.7.11-beta.2`), it's offered as usual. To return to the previous regular version right away, install it by hand from its release page as described above.
+
 `SHA256SUMS` is a checksum file from the same release, not a signature. It catches a corrupted or incomplete download. It can't catch a release that was replaced on GitHub, because the checksum would be replaced along with it.
 
 ## Panel

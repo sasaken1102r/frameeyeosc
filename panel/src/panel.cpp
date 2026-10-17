@@ -945,6 +945,11 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             if (hit.arg < 0 || hit.arg > 1) return {};
             gazeScaleLinked_[hit.arg] = !gazeScaleLinked_[hit.arg];
             return hit;
+        case PanelAction::UpdateBeta:
+            // Switched here; the caller saves it and tells the update checker
+            if (updateBeta_ == (hit.arg != 0)) return {};
+            updateBeta_ = hit.arg != 0;
+            return hit;
         case PanelAction::RecordOpen:
             // The caller reads it
             if (hit.arg < 0 || hit.arg >= static_cast<int>(recordNames_.size())) return {};
@@ -1903,7 +1908,7 @@ void EyePanel::drawUpdateNotice(const Pen& pen, const UiText& t, const frame_upd
     std::string text;
     switch (u.state) {
         case frame_updater::UpdateState::Available:
-            text = formatText(t.updateAvailableFormat, bareVersion(u.latest));
+            text = formatText(u.prerelease ? t.updateAvailableTestFormat : t.updateAvailableFormat, bareVersion(u.latest));
             break;
         case frame_updater::UpdateState::Installing:
             text = formatText(t.updateInstallingFormat, updateStepText(t, u.step));
@@ -3729,6 +3734,7 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
     const frame_updater::UpdateStatus& u = m.update;
     const std::string current = bareVersion(u.current);
     const std::string latest = bareVersion(u.latest);
+    const TestVersionView test = testVersionView(u, updateBeta_);
 
     /** A button beside the version. */
     struct RowButton {
@@ -3746,9 +3752,11 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
         case UpdateState::Unknown:
             if (u.checking) primary = t.updateChecking;
             break;
-        case UpdateState::UpToDate: primary = formatText(t.updateUpToDateFormat, current); break;
+        case UpdateState::UpToDate:
+            primary = formatText(test.using_ ? t.updateUsingTestFormat : t.updateUpToDateFormat, current);
+            break;
         case UpdateState::Available:
-            primary = formatText(t.updateAvailableFormat, latest);
+            primary = formatText(test.offered ? t.updateAvailableTestFormat : t.updateAvailableFormat, latest);
             if (u.installable) {
                 buttons.push_back({install, formatText(t.updateToFormat, latest), true});
             } else {
@@ -3874,8 +3882,34 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
     // (not while a check or an install runs)
     drawButton(pen, right - checkW, rowTop, checkW, rowH, t.updateCheckNow, {PanelAction::UpdateCheck, nullptr, 0},
                !u.checking && u.state != UpdateState::Installing, false, 16);
-    // How the eyes move (eye_behavior): v2, or v1 as up to 0.7.5, and a line on what each does
     double ey = rowTop + rowH + 16;
+    // "Get test versions" (panel.json, not config.json): On / Off, with a small badge while it is off and a test version
+    // newer than the running one exists
+    {
+        const double h = 46;
+        const double segW = std::min(200.0, right - kInnerX - 300);
+        const double labelW = right - segW - 16 - kInnerX;
+        const double badgeSize = 13;
+        const double badgeW = test.badge ? pen.measure(t.updateTestAvailable, badgeSize, true) + 20 : 0.0;
+        const double labelSize = fitSize(pen, t.rowUpdateBeta, 18, 13, labelW - (test.badge ? badgeW + 10 : 0.0), true);
+        pen.text(kInnerX, ey + 20, t.rowUpdateBeta, labelSize, kText, true);
+        if (test.badge) {
+            const double bx = kInnerX + pen.measure(t.rowUpdateBeta, labelSize, true) + 10;
+            const double bh = 22;
+            const double by = ey + 13 - bh / 2;
+            fillRounded(pen, bx, by, badgeW, bh, bh / 2, kAccentTint);
+            strokeRounded(pen, bx, by, badgeW, bh, bh / 2, kAccent, 1.5);
+            textCentered(pen, bx + badgeW / 2, centerBaseline(by, bh, badgeSize), t.updateTestAvailable, badgeSize, kAccent,
+                         true);
+        }
+        const char* hint = test.keepHint ? t.hintUpdateBetaKeep : t.hintUpdateBeta;
+        pen.text(kInnerX, ey + 40, hint, fitSize(pen, hint, 14, 10, labelW, false), kTextMuted);
+        drawSegmented(pen, right - segW, ey + 2, segW, 42,
+                      {{t.on, {PanelAction::UpdateBeta, nullptr, 1}}, {t.off, {PanelAction::UpdateBeta, nullptr, 0}}},
+                      updateBeta_ ? 0 : 1, 16, false);
+        ey += h + 14;
+    }
+    // How the eyes move (eye_behavior): v2, or v1 as up to 0.7.5, and a line on what each does
     {
         const double h = 46;
         const bool locked = v.locked(key::kEyeBehavior);

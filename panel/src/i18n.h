@@ -924,6 +924,13 @@ struct UiText {
     const char* updateRetry;
     const char* updateDismiss;
     const char* updateLogHint;
+    // Test versions (frame-updater's beta channel; strings.md's "テスト版" section)
+    const char* rowUpdateBeta;              ///< "Get test versions" (panel.json's update_beta)
+    const char* hintUpdateBeta;             ///< under it
+    const char* hintUpdateBetaKeep;         ///< under it instead, while it is off and a test version runs
+    const char* updateTestAvailable;        ///< a small badge beside it: off, and a newer test version exists
+    const char* updateAvailableTestFormat;  ///< Available, the new version a test version: "Test version %s is available"
+    const char* updateUsingTestFormat;      ///< UpToDate on a test version, instead of "Up to date": "Using test version %s"
     // Install steps (UpdateStatus::step)
     const char* stepStart;
     const char* stepDownload;

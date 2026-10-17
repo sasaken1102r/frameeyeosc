@@ -143,7 +143,7 @@ add_test(NAME recorder COMMAND recorder-test)
 # The shared rules: what an eye fit writes and "Reset" clears, the re-wear fit auto_recenter asks for, the output
 # cards' arguments: panel/build/model-test
 add_executable(model-test tests/model_test.cpp src/model.cpp src/config.cpp src/json.cpp src/gaze_fit.cpp
-  src/status.cpp)
+  src/status.cpp ${FRAME_UPDATER_DIR}/cpp/update_check.cpp)
 target_include_directories(model-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_options(model-test PRIVATE -Wall -Wextra)
 add_test(NAME model COMMAND model-test)
@@ -214,7 +214,8 @@ add_test(NAME eyecam COMMAND eyecam-test)
 # The diagnostics page's texts and code (diag.{h,cpp}: the cards, the diagnostic code, SteamOS's version, SHA-256),
 # without cairo: panel/build/diag-test
 add_executable(diag-test tests/diag_test.cpp src/diag.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/status.cpp
-  src/model.cpp src/config.cpp src/gaze_fit.cpp src/setup_tools.cpp src/recorder.cpp)
+  src/model.cpp src/config.cpp src/gaze_fit.cpp src/setup_tools.cpp src/recorder.cpp
+  ${FRAME_UPDATER_DIR}/cpp/update_check.cpp)
 target_include_directories(diag-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_options(diag-test PRIVATE -Wall -Wextra)
 target_link_libraries(diag-test PRIVATE Threads::Threads)

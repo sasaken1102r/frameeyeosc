@@ -132,7 +132,8 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --no-gaze-drop     with --replay: no EyeWide hold after a downward glance (evaluation)
   --no-edge-hold     with --replay: a pupil lost at the window's (temporal) edge may count as closed (the old rule; evaluation)
   --no-ext-search    with --replay: no pupil search past the window's (temporal) edge (the old rule; evaluation)
-  --no-lid-veto      with --replay: no eyelid veto (the classical EyeLid only, as settings.json's lid_veto false; evaluation)
+  --lid-veto         with --replay: the eyelid veto on (as settings.json's lid_veto true; off by default, as live)
+  --no-lid-veto      with --replay: no eyelid veto (the default; kept for older evaluation scripts)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
   --preview DIR      with --replay: also write the panel's eye preview (DIR/preview, as `preview on` does live), the
@@ -226,6 +227,7 @@ fn parse_args() -> Result<Args> {
             "--no-gaze-drop" => args.tune.gaze_drop = false,
             "--no-edge-hold" => args.tune.edge_hold = false,
             "--no-ext-search" => args.tune.ext_search = false,
+            "--lid-veto" => args.tune.lid_veto = true,
             "--no-lid-veto" => args.tune.lid_veto = false,
             "--widen-sensitivity" => {
                 let v = number(value("--widen-sensitivity")?, "--widen-sensitivity")?;

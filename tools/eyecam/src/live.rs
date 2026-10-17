@@ -277,14 +277,15 @@ pub struct Tune {
     pub edge_hold: bool,
     /// Look for a pupil the window's left edge cuts past it (see EXT_MAX_PX).
     pub ext_search: bool,
-    /// The eyelid veto (`veto`): the CNN may cancel a low EyeLid it is sure is an open eye (settings.json `lid_veto`).
+    /// The eyelid veto (`veto`): the CNN may cancel a low EyeLid it is sure is an open eye (settings.json `lid_veto`,
+    /// off by default: trained on one wearer's recordings only).
     pub lid_veto: bool,
 }
 
 impl Default for Tune {
     fn default() -> Self {
         let (wide_start, wide_width) = wide_curve(DEFAULT_WIDEN_SENSITIVITY);
-        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true, lid_veto: true }
+        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true, lid_veto: false }
     }
 }
 

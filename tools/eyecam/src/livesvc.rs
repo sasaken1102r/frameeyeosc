@@ -183,7 +183,7 @@ impl Default for Shared {
             preview_until: AtomicU64::new(0),
             preview_on: AtomicBool::new(false),
             driftlog: Mutex::new(driftlog::Control::default()),
-            lid_veto: AtomicBool::new(true),
+            lid_veto: AtomicBool::new(false),
             veto_runs_per_s: AtomicU32::new(0f32.to_bits()),
             veto_fired: AtomicU64::new(0),
             veto_us_mean: AtomicU32::new(0),

@@ -12,13 +12,13 @@ pub struct Settings {
     /// Developer mode: calibrations also keep their eye images (eye_*.raw, headers.bin, lock_dump.bin), as
     /// recordings do. Off for ordinary users, whose calibrations keep only the small text files.
     pub dev: bool,
-    /// The eyelid veto (`veto`): on unless switched off here (followed while running).
+    /// The eyelid veto (`veto`): off unless switched on here (followed while running).
     pub lid_veto: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false, lid_veto: true }
+        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false, lid_veto: false }
     }
 }
 
@@ -123,10 +123,10 @@ mod tests {
         ];
         for (text, widen, dev) in cases {
             std::fs::write(&p, text).unwrap();
-            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: widen, dev, lid_veto: true }, "{text}");
+            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: widen, dev, lid_veto: false }, "{text}");
         }
-        // lid_veto: on unless false (not a bool: on).
-        for (text, on) in [("{\"lid_veto\": false}", false), ("{\"lid_veto\": true}", true), ("{\"lid_veto\": 0}", true), ("{}", true)] {
+        // lid_veto: off unless true (not a bool: off).
+        for (text, on) in [("{\"lid_veto\": false}", false), ("{\"lid_veto\": true}", true), ("{\"lid_veto\": 1}", false), ("{}", false)] {
             std::fs::write(&p, text).unwrap();
             assert_eq!(Settings::load(&p).lid_veto, on, "{text}");
         }

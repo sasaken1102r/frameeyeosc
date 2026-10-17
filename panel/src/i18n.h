@@ -33,6 +33,7 @@ struct UiText {
     const char* outputVrchatShort;  ///< "VRChat" in the destination line
     const char* outputEtvrShort;    ///< "VRCFaceTracking" in the destination line
     const char* outputLivelinkShort;  ///< "VRCFT (LiveLink)" in the destination line
+    const char* outputModuleShort;  ///< "VRCFT (FrameEyeOSC)" in the destination line
     const char* searchingPc;        ///< auto target not found yet
     const char* modeAuto;           ///< target chosen automatically
     const char* modeFixed;          ///< target fixed
@@ -110,12 +111,19 @@ struct UiText {
     const char* hintOutput;         ///< what "sync" means on the cards
     const char* outputVrchat;       ///< the destination cards' titles
     const char* outputLivelink;
+    const char* outputModule;
     const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
-    /** Each card's three lines (VRChat, LiveLink, ETVR): wide eyes, sync, VRCFT. A leading ICON_CHECK or ICON_CROSS
-     *  and a space hang in front of the lines (icons.h). */
-    const char* outputMarks[3][3];
-    const char* outputCameraSuffix;  ///< after a card's wide-eyes line while the eye cameras aren't in use ("（カメラ）")
+    const char* outputAllInOne;     ///< the tag on the FrameEyeOSC card
+    const char* vrchatDirectHint;   ///< under the cards while sending to VRChat directly: where to go if eyes don't move
+    /** Each output's two lines (VRChat, LiveLink, ETVR, FrameEyeOSC): sync, VRCFT. A leading ICON_CHECK and a
+     *  space hang in front of the lines on a card (icons.h). ETVR's go on one line after its
+     *  small button, joined by outputMarkSeparator. */
+    const char* outputMarks[4][2];
+    const char* outputMarkSeparator;
+    const char* outputDeprecated;    ///< the label after the small ETVR button under the cards
+    const char* etvrNotice1;         ///< the notice while ETVR is the output: it goes away in the next version...
+    const char* etvrNotice2;         ///< ...and to pick another destination above
     // The Basic tab's eye cameras row: not set up (a way to their tab), or set up (the camera_lids switch)
     const char* rowEyeCameras;
     const char* hintEyeCamerasNew;   ///< ...not set up: what they add
@@ -165,14 +173,20 @@ struct UiText {
     const char* rowPort;
     const char* portDefaultVrchat;  ///< the port row's hint: the default port of the output type
     const char* portDefaultLivelink;
+    const char* portDefaultModule;
     const char* portDefaultEtvr;
     const char* portReset;          ///< back to default port
-    // Output tab, for LiveLink and ETVR: what to set up in VRCFT on the PC
+    // Output tab, for LiveLink, FrameEyeOSC and ETVR: what to set up in VRCFT on the PC
     const char* vrcftSetupTitle;
-    const char* vrcftStepsLivelink[3];
-    const char* vrcftStepsEtvr[3];
+    // Up to four steps each; the ones not used stay nullptr
+    const char* vrcftStepsLivelink[4];
+    const char* vrcftStepsModule[4];
+    const char* vrcftStepsEtvr[4];
+    const char* vrcftModuleLink;    ///< where the FrameEyeOSC module's zip is, under its first step
     const char* vrcftSetupNote;     ///< the parameter names and syncing are up to VRCFT
     const char* vrcftNoWide;        ///< ETVR: widened eyes don't come through
+    const char* vrcftModulePupils;  ///< FrameEyeOSC with the eye cameras: the pupils go through VRCFT too
+    const char* vrcftModuleLinkFailedFormat;  ///< the link couldn't open Chromium ("Couldn't open the browser: %s")
     const char* rowLanguage;
     const char* rowAutostart;
     const char* hintAutostart;
@@ -866,6 +880,9 @@ struct UiText {
     const char* promptLivelink;
     const char* promptLivelinkDetail1;
     const char* promptLivelinkDetail2;
+    const char* promptModule;
+    const char* promptModuleDetail1;
+    const char* promptModuleDetail2;
     const char* promptYes;
     const char* promptNo;
 

@@ -1741,6 +1741,171 @@ bool inCard(const EyePanel& panel) {
     return false;
 }
 
+void testOutputCards(const FontSet& fonts) {
+    // The Basic tab: three cards (VRChat, LiveLink, FrameEyeOSC), and ETVR as a small button under them with its notice
+    // between the two only while it is the output
+    for (Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        PanelModel m = modelWith(Lids::Both);
+        m.language = language;
+        const auto with = [&](const char* output) {
+            PanelModel copy = m;
+            copy.config.root.set(key::kOutput, JsonValue::makeString(output));
+            return copy;
+        };
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule, kOutputEtvr}) {
+            panel.render(with(output));
+            const std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetOutput);
+            CHECK(found.size() == 4);
+            if (found.size() != 4) continue;
+            // The cards in a row, as wide as each other, in the order VRChat, LiveLink, FrameEyeOSC
+            const int args[3] = {0, 2, 3};
+            for (int c = 0; c < 3; ++c) {
+                CHECK(found[c].hit.arg == args[c]);
+                CHECK(found[c].y == found[0].y && std::fabs(found[c].w - found[0].w) < 0.5 && found[c].h > 80);
+                if (c > 0) CHECK(found[c].x > found[c - 1].x + found[c - 1].w);
+            }
+            // ETVR: a small button under them
+            const EyePanel::HitArea& etvr = found[3];
+            CHECK(etvr.hit.arg == 1 && etvr.w < found[0].w && etvr.h >= 40 && etvr.h < 50);
+            CHECK(etvr.x == found[0].x);
+            // ...right under the cards, or under the notice (between the two) while ETVR is the output, or under the
+            // one-line hint (where to go if the eyes don't move) while VRChat directly is
+            const double gap = etvr.y - (found[0].y + found[0].h);
+            if (std::string(output) == kOutputEtvr) {
+                CHECK(gap > 60 && gap < 90);
+            } else if (std::string(output) == kOutputVrchat) {
+                CHECK(gap > 30 && gap < 50);
+            } else {
+                CHECK(gap > 0 && gap < 20);
+            }
+            CHECK(outputDeprecated(output) == (std::string(output) == kOutputEtvr));
+            // Everything still fits, the rows below too
+            CHECK(allInsideAndTall(panel));
+            CHECK(hits(panel, PanelAction::ResetAll).size() == 1 && hits(panel, PanelAction::Quit).size() == 1);
+            CHECK(hits(panel, PanelAction::Language).size() == 2 && hits(panel, PanelAction::AutostartOn).size() <= 1);
+            const std::vector<EyePanel::HitArea> quit = hits(panel, PanelAction::Quit);
+            if (!quit.empty()) CHECK(quit[0].y + quit[0].h <= 664);
+        }
+        // Pressing the small button switches to ETVR; a card to its output
+        panel.render(with(kOutputLivelink));
+        std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetOutput);
+        if (found.size() == 4) {
+            const PanelHit pressed = panel.pointerDown(found[3].x + found[3].w / 2, found[3].y + found[3].h / 2, 0.0);
+            panel.pointerUp();
+            CHECK(pressed.action == PanelAction::SetOutput && pressed.arg == 1);
+            const PanelHit card = panel.pointerDown(found[2].x + found[2].w / 2, found[2].y + found[2].h / 2, 0.0);
+            panel.pointerUp();
+            CHECK(card.action == PanelAction::SetOutput && card.arg == 3);
+        }
+        // Locked: drawn, nothing to press
+        PanelModel locked = with(kOutputEtvr);
+        locked.status.locked.push_back(key::kOutput);
+        panel.render(locked);
+        CHECK(hits(panel, PanelAction::SetOutput).empty());
+        // The Output tab has no module row any more: the destination is chosen on the cards alone
+        panel.setTab(PanelTab::Output);
+        for (const char* output : {kOutputLivelink, kOutputModule, kOutputEtvr}) {
+            panel.render(with(output));
+            CHECK(hits(panel, PanelAction::SetOutput).empty() && allInsideAndTall(panel));
+        }
+        // (FrameEyeOSC: no pupil rows, VRCFT sends them as the avatar takes them; LiveLink keeps its)
+        panel.render(with(kOutputModule));
+        CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).empty());
+        CHECK(hits(panel, PanelAction::SetInteger, key::kPupilBits).empty());
+        panel.render(with(kOutputLivelink));
+        CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).size() == 2);
+    }
+}
+
+/**
+ * The red pixels (kDanger's, anti-aliased edges left out) right of the left column, as last drawn.
+ * @param panel the panel (rendered)
+ * @return how many there are
+ */
+int redRight(EyePanel& panel) {
+    const std::vector<uint8_t>& rgba = panel.toRgba();
+    const size_t w = static_cast<size_t>(panel.width());
+    int count = 0;
+    for (size_t y = 0; y < static_cast<size_t>(panel.height()); ++y) {
+        for (size_t x = 410; x < w; ++x) {
+            const uint8_t* p = &rgba[(y * w + x) * 4];
+            if (p[0] > 200 && p[1] < 120 && p[2] < 110) ++count;
+        }
+    }
+    return count;
+}
+
+void testModuleLinkError(const FontSet& fonts) {
+    // A failed module link writes its own line and leaves the eye cameras' setup's alone (and the other way round)
+    {
+        PanelModel m = modelWith(Lids::Both);
+        noteSpawnResult(m, true, "flatpak not found");
+        CHECK(m.moduleLinkError == "flatpak not found" && m.eyecam.spawnError.empty());
+        noteSpawnResult(m, false, "konsole: konsole not found");
+        CHECK(m.eyecam.spawnError == "konsole: konsole not found" && m.moduleLinkError == "flatpak not found");
+        // Opened the next time: only its own line goes
+        noteSpawnResult(m, true, "");
+        CHECK(m.moduleLinkError.empty() && m.eyecam.spawnError == "konsole: konsole not found");
+        noteSpawnResult(m, false, "");
+        CHECK(m.eyecam.spawnError.empty());
+    }
+    // Drawn only for FrameEyeOSC (where the link is), and only with a failure
+    CHECK(moduleLinkErrorShown(kOutputModule, "flatpak not found"));
+    CHECK(!moduleLinkErrorShown(kOutputModule, ""));
+    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) {
+        CHECK(!moduleLinkErrorShown(output, "flatpak not found"));
+    }
+    for (Language language : {Language::Ja, Language::En}) {
+        for (const bool camera : {true, false}) {
+            EyePanel panel(fonts);
+            PanelModel m = modelWith(camera ? Lids::Both : Lids::Valve);
+            m.language = language;
+            m.config.root.set(key::kOutput, JsonValue::makeString(kOutputModule));
+            panel.setTab(PanelTab::Output);
+            panel.render(m);
+            const int before = redRight(panel);
+            const std::vector<EyePanel::HitArea> link = hits(panel, PanelAction::OpenModulePage);
+            // The red line under the link on the Output tab, the link where it was, everything still inside
+            PanelModel failed = m;
+            noteSpawnResult(failed, true, "flatpak not found");
+            panel.render(failed);
+            CHECK(redRight(panel) > before + 100);
+            const std::vector<EyePanel::HitArea> still = hits(panel, PanelAction::OpenModulePage);
+            CHECK(link.size() == 1 && still.size() == 1);
+            if (link.size() == 1 && still.size() == 1) CHECK(link[0].y == still[0].y && link[0].x == still[0].x);
+            CHECK(allInsideAndTall(panel));
+            // ...and nowhere else: the Basic tab, and the eye cameras' setup at (2) (where the setup's own failure shows)
+            // look as they did
+            for (PanelModel* model : {&m, &failed}) model->eyecam.status = notSetUp().eyecam.status;
+            panel.setSetupBegun(true);
+            for (const PanelTab tab : {PanelTab::Basic, PanelTab::Eyecam}) {
+                panel.setTab(tab);
+                panel.render(m);
+                const std::vector<uint8_t> clean = panel.toRgba();
+                panel.render(failed);
+                CHECK(panel.toRgba() == clean);
+                if (tab != PanelTab::Eyecam) continue;
+                // (the setup's own failure does show there)
+                CHECK(hits(panel, PanelAction::SetupKonsole).size() == 1);
+                PanelModel setupFailed = m;
+                noteSpawnResult(setupFailed, false, "konsole: konsole not found");
+                panel.render(setupFailed);
+                CHECK(panel.toRgba() != clean);
+            }
+            // Another output: no line (the link isn't there either)
+            PanelModel other = m;
+            other.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+            failed.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+            panel.setTab(PanelTab::Output);
+            panel.render(other);
+            const std::vector<uint8_t> clean = panel.toRgba();
+            panel.render(failed);
+            CHECK(hits(panel, PanelAction::OpenModulePage).empty() && panel.toRgba() == clean);
+        }
+    }
+}
+
 void testCameraRows(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         // Not set up: the Basic tab's row leads to the eye cameras tab (no switch yet)
@@ -1767,7 +1932,7 @@ void testCameraRows(const FontSet& fonts) {
         panel.render(none);
         CHECK(!inCard(panel));  // nothing there only for the cameras
         panel.setTab(PanelTab::Output);
-        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) {
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, kOutputModule}) {
             PanelModel m = none;
             m.config.root.set(key::kOutput, JsonValue::makeString(output));
             panel.render(m);
@@ -1897,7 +2062,7 @@ void testIconText(const FontSet& fonts) {
               0.5);
     }
     // Drawing: each icon puts ink inside its own box only, around the middle of the line
-    for (int k = 1; k <= 16; ++k) {
+    for (int k = 1; k <= 17; ++k) {
         cairo_save(cr);
         cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
         cairo_paint(cr);
@@ -2303,7 +2468,15 @@ void testPreview(const FontSet& fonts) {
         panel.render(m);
         press(panel, PanelAction::PreviewCamera);
         CHECK(panel.previewPictures());
-        // Closed and opened again: off again
+        // Closed and opened again: still on (the switch is kept while the panel runs)
+        press(panel, PanelAction::PreviewClose);
+        panel.render(m);
+        press(panel, PanelAction::PreviewOpen);
+        CHECK(panel.previewOpen() && panel.previewPictures());
+        panel.render(m);
+        // Turned off, closed and opened again: off
+        press(panel, PanelAction::PreviewCamera);
+        CHECK(!panel.previewPictures());
         press(panel, PanelAction::PreviewClose);
         panel.render(m);
         press(panel, PanelAction::PreviewOpen);
@@ -2431,6 +2604,8 @@ int main() {
     testSliderMoved(fonts);
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);
+    testOutputCards(fonts);
+    testModuleLinkError(fonts);
     testToolNotice(fonts);
     testErrorBack(fonts);
     testWayOut(fonts);

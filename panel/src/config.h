@@ -141,6 +141,7 @@ constexpr const char* kUpdateCheck = "update_check";  ///< panel only: look for 
 constexpr const char* kOutputVrchat = "vrchat";
 constexpr const char* kOutputEtvr = "etvr";
 constexpr const char* kOutputLivelink = "livelink";  ///< Live Link Face packets for VRCFaceTracking's LiveLink module
+constexpr const char* kOutputModule = "frameeyeosc";  ///< FEO1 packets for VRCFaceTracking's FrameEyeOSC module
 /** eye_tracking_active values: how EyeTrackingActive is sent in VRChat mode */
 constexpr const char* kActiveTypes[3] = {"bool", "float", "off"};
 /** auto_recenter values, in the order the Eye fit tab's "When put on" row shows them: nothing, or one dot (the
@@ -152,6 +153,7 @@ constexpr const char* kLidWidenModes[4] = {"off", "low", "normal", "high"};
 constexpr int kPortVrchat = 9000;
 constexpr int kPortEtvr = 8889;
 constexpr int kPortLivelink = 11111;
+constexpr int kPortModule = 11112;
 
 /**
  * All keys in the order a new config.json is written.

@@ -417,6 +417,8 @@ void testKeyLines() {
     CHECK(icon::plain(report::flowText(ja, tryLine)) == "正面 1 回目 0/153 → もう一度");
     CHECK(icon::plain(ICON_CHEVRON_LEFT " Back · " ICON_TRIANGLE_DOWN ICON_NOTE "x") == "‹ Back · ▼♪x");
     CHECK(icon::plain("no icons → here") == "no icons → here");
+    CHECK(icon::plain("同期 " ICON_DOUBLE_RING "・" ICON_RING) == "同期 ◎・◯");
+    CHECK(icon::at(ICON_DOUBLE_RING, 0) == icon::Icon::DoubleRing && icon::at("\xEE\x80\x91", 0) == icon::Icon::None);
     CHECK(!icon::any("正面 → OK") && icon::any("a" ICON_DOT));
     CHECK(report::flowText(ja, {0.0, Source::Panel, "[fit] up try 3: 12 of 40 samples usable at 15 Hz (needs 24) -> failed"}) ==
           "上 3 回目 12/40 " ICON_ARROW_RIGHT " 失敗");

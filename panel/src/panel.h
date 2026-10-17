@@ -93,6 +93,7 @@ enum class PanelAction {
     SetupKonsole,      ///< the eye cameras' setup: open a Konsole with the command typed in (arg 0 = the tool's install,
                        ///< 1 = passwd; the caller starts it, never from --dump-png)
     SetupVideo,        ///< ...open the setup video (only shown with a video URL)
+    OpenModulePage,    ///< Output tab: open the FrameEyeOSC module's releases page in the Frame's Chromium
     SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
     SetupBegin,        ///< "Get started" under what the eye cameras add: on to the setup checklist (handled inside)
     EyecamBack,        ///< "Back" on a failed calibration's or recording's error: dismiss it in the panel only
@@ -365,7 +366,7 @@ public:
     bool previewPictures() const { return previewOpen_ && previewCamera_; }
 
     /** The eye cameras can't give pictures now: their switch goes off (pressed again once they can, not by itself). */
-    void stopPreviewPictures() { previewCamera_ = false; }
+    void stopPreviewPictures() { previewCamera_ = previewCameraKept_ = false; }
 
     /**
      * For --preview-sheet: how the sheet is set.
@@ -689,8 +690,9 @@ private:
     bool previewOpen_ = false;          ///< the eye preview is shown over the tabs' content
     eye_preview::Source previewSource_ = eye_preview::Source::Sent;  ///< ...which values drive its eyes
     bool previewMirror_ = true;         ///< ...as in a mirror (the right eye on the right; off: seen from the front)
-    bool previewCamera_ = false;        ///< ...with the eye cameras' pictures (off each time it opens, and whenever
-                                        ///< the cameras can't give them)
+    bool previewCamera_ = false;        ///< ...with the eye cameras' pictures (off whenever the cameras can't give them)
+    bool previewCameraKept_ = false;    ///< ...the pictures' switch as last pressed, for the next time it opens (this
+                                        ///< run of the panel only; the cameras going away turns it off too)
     bool previewFrozen_ = false;        ///< ...stopped where it was
     bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
     eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at
@@ -831,17 +833,15 @@ private:
     void drawBasic(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
 
     /**
-     * The Basic tab's destination: three cards (VRChat directly, VRCFT LiveLink, VRCFT ETVR), each with what it
-     * carries in three short lines. Widening needs the eye cameras: while they aren't in use, that line is dimmer and
-     * says so ("（カメラ）"), on one line.
+     * The Basic tab's destination: three cards (VRChat directly, VRCFT LiveLink, VRCFT FrameEyeOSC), each with what it
+     * carries in two short lines (how others see the eyes, and what VRCFT needs).
      * @param pen drawing tools
      * @param t texts
      * @param view the settings shown
      * @param y top
-     * @param camera the eye cameras are in use
      * @return the height used
      */
-    double drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& view, double y, bool camera);
+    double drawOutputCards(const Pen& pen, const UiText& t, const SettingsView& view, double y);
 
     /**
      * The Basic tab's eye cameras row: not set up, what they add, "not in use" and the way to their tab; set up, a

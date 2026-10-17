@@ -87,7 +87,7 @@ double iconStroke(double size, bool bold) {
 /**
  * Where an icon's middle sits. Arrows and the small marks: halfway between the middle of the x-height and the middle
  * of the capitals (about 0.32 em up), so they line up with lowercase, capitals and kana alike. The full-width marks
- * (◯ and △, which stand among kana like a character): the middle of the capitals (about 0.37 em). Read from the font
+ * (◯, ◎ and △, which stand among kana like a character): the middle of the capitals (about 0.37 em). Read from the font
  * in use.
  * @param cr cairo, with the text's font and size set
  * @param which the icon
@@ -102,7 +102,9 @@ double iconCenterY(cairo_t* cr, icon::Icon which, double baseline, double size) 
     cairo_text_extents(cr, "H", &cap);
     const double xHeight = x.height > 0 ? -x.y_bearing : size * 0.54;
     const double capHeight = cap.height > 0 ? -cap.y_bearing : size * 0.73;
-    if (which == icon::Icon::Ring || which == icon::Icon::TriangleOutline) return baseline - capHeight / 2;
+    if (which == icon::Icon::Ring || which == icon::Icon::DoubleRing || which == icon::Icon::TriangleOutline) {
+        return baseline - capHeight / 2;
+    }
     return baseline - (xHeight + capHeight) / 4;
 }
 
@@ -231,6 +233,13 @@ void drawIcon(cairo_t* cr, icon::Icon which, double x, double baseline, double s
             break;
         case Icon::Ring:
             cairo_arc(cr, cx, cy, s * 0.44, 0, 2 * M_PI);
+            cairo_stroke(cr);
+            break;
+        case Icon::DoubleRing:
+            // The ring, and one half its size inside it (still clear of it at 11 px)
+            cairo_arc(cr, cx, cy, s * 0.44, 0, 2 * M_PI);
+            cairo_new_sub_path(cr);
+            cairo_arc(cr, cx, cy, s * 0.22, 0, 2 * M_PI);
             cairo_stroke(cr);
             break;
         case Icon::TriangleOutline: {

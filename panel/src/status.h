@@ -63,7 +63,7 @@ struct EyeStatus {
     double time = 0.0;      ///< when it was written (Unix seconds)
     double started = 0.0;   ///< when frameeyeosc started (Unix seconds)
     bool sending = false;
-    std::string output;     ///< "vrchat" / "etvr" / "livelink"
+    std::string output;     ///< "vrchat" / "etvr" / "livelink" / "frameeyeosc"
     std::string targetMode; ///< "auto" / "fixed"
     std::string target;     ///< "IP:PORT"; empty while the Steam Link PC is not found
     double rate = 0.0;      ///< samples sent in the last second

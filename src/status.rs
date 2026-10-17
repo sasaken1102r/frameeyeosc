@@ -114,9 +114,11 @@ pub struct SentValues {
     pub gaze: [f32; 2],
     pub gaze_left: [f32; 2],
     pub gaze_right: [f32; 2],
-    /// Each eye's squint (0 for an eye whose squint is not sent); None while no squint goes out (VRChat only).
+    /// Each eye's squint (0 for an eye whose squint is not sent); None while no squint goes out (VRChat directly and
+    /// the FrameEyeOSC module only).
     pub squint: Option<[f32; 2]>,
-    /// The pupil dilation; None while it does not go out (to VRChat, directly or next to LiveLink).
+    /// The pupil dilation; None while it does not go out (to VRChat, directly or next to LiveLink, or to the
+    /// FrameEyeOSC module).
     pub pupil_dilation: Option<f32>,
 }
 

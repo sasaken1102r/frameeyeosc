@@ -822,6 +822,15 @@ fn camera_lines(cameras: &[Option<Live>], samples: &[EyeData], with: &[Sample], 
         let [left, right] = [0, 1].map(|eye| share(sent.iter().filter(|sample| sample.lids[eye] >= LID_WIDE).count()));
         format!("{left:.1}% / {right:.1}%")
     };
+    // The camera's "closed" held back by the close gate: the share of samples, and how many times it started
+    let held = {
+        let [left, right] = [0, 1].map(|eye| {
+            let samples = with.iter().filter(|sample| sample.close_held[eye]).count();
+            let starts = with.windows(2).filter(|pair| pair[1].close_held[eye] && !pair[0].close_held[eye]).count();
+            format!("{:.1}% ({starts}x)", share(samples))
+        });
+        format!("{left} / {right}")
+    };
     format!(
         "\nEye camera (eyecam-rec): values with {:.1}% of the samples; fresh (L / R) {:.1}% / {:.1}%; \
          with a baseline for the wear {baseline:.1}%\n  \
@@ -829,6 +838,7 @@ fn camera_lines(cameras: &[Option<Live>], samples: &[EyeData], with: &[Sample], 
          eyelid from it over the eye server's (L / R): seen open {}, seen closed {}, widened {}, at 1.000 {}, \
          raised to it {}\n  \
          its closed taken as open, the eye server sure (L / R)  {:.1} s / {:.1} s\n  \
+         its \"closed\" held back, not a blink or a wink yet (L / R): {held}\n  \
          sent widened, VRCFT {LID_WIDE} or more (L / R)    {} with it, {} without it\n",
         share(read.len()),
         fresh[0],

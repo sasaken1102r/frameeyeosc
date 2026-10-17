@@ -709,7 +709,7 @@ void testCalibText() {
               t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
               t.lidsLook, t.lidsBlinks, t.lidsFine, t.camPupilLine,
               t.camWidenNotice, t.camWidenButton, t.calibCardTitle, t.calibResultTitle, t.calibWearNote,
-              t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye, t.outputCameraSuffix,
+              t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye,
               t.rowEyeCameras, t.hintEyeCamerasNew, t.eyeCamerasUnused, t.eyeCamerasStart, t.hintEyeCamerasOn,
               t.eyeCamerasUse, t.eyeCamerasDontUse, t.camBriefBoth, t.camBriefLeft, t.camBriefRight, t.camBriefOff,
               t.camBriefWarming, t.camBriefWaiting, t.cameraBadge, t.cameraLineWiden, t.cameraLineFloor,
@@ -1644,6 +1644,9 @@ void testSetupTools() {
     SAME(video[2], "org.chromium.Chromium");
     SAME(video[3], "https://example.com/v");
     SAME(setup_tools::kVideoUrl, "");
+    // The Output tab's link: the page it opens is the one the panel shows (without https://)
+    SAME(std::string("https://") + uiText(Language::Ja).vrcftModuleLink, setup_tools::kModulePageUrl);
+    SAME(std::string("https://") + uiText(Language::En).vrcftModuleLink, setup_tools::kModulePageUrl);
 }
 
 void testReply() {

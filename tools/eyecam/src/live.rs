@@ -174,6 +174,30 @@ pub const DEFAULT_WIDEN_STEP: f64 = 0.19;
 pub const DEFAULT_OPEN_GAP: f64 = 0.88; // normal aperture - closed aperture, in R
 pub const DEFAULT_PITCH_N: f64 = -14.4; // Valve gaze pitch while looking "normal", degrees
 
+/// Looking down narrows an open eye: the upper lid follows the eye down faster than the pupil moves in the picture
+/// (1.3 x, the lower lid 0.7 x), so the aperture shrinks with the gaze, and a pitch correction that is too shallow
+/// reads an open eye looking down as half shut. The user calibration's curve (`calib user`) often is: in 6 of the 11
+/// left-eye looks down on record the lower lid was found as far below the pupil as straight ahead (within 0.1 iris
+/// radii; 0.16-0.47 nearer in every right-eye one), so the aperture seemed to narrow too little (2026-10-14: 0.18 iris
+/// radii at -37 degrees, where an open eye's narrows by 0.39 in the median over the recordings, 27 degrees below its
+/// typical pitch). So below the wearer's typical pitch the curve counts for at least LID_PITCH_PER_DEG iris radii a
+/// degree beyond LID_PITCH_FROM_DEG (up to LID_PITCH_MAX_DEG beyond) and at most LID_PITCH_CAP times that, and for
+/// nothing nearer; looking up it may only say narrower. On the recordings of 2026-10-07 to 10-14 (one wearer) the
+/// aperture stays within 0.05 down to 10-15 degrees below the typical pitch and then narrows by 0.028 a degree (the
+/// median of 16 guided looks down; 0.016-0.057 in the six user calibrations). The hinge sits at 8, not 10, so that
+/// glances 3-13 degrees down read about as with the calibration's own curve (free recordings, eyelid below 0.6 in
+/// 10.4% of those frames, 9.9% with the curve, 11.2% with the hinge at 10). Replayed with the 2026-10-14 calibration
+/// (before in brackets): the look-down steps of 5 guided recordings, both eyes, read 0.75 in the median (0.72), below
+/// 0.6 in 12% of the frames (30%), the worst eye 0.51 (0.27); the squint steps 0.32 (0.32), below 0.6 in 97% (98%);
+/// EyeSquint looking down 0.00 (0.06); free recordings looking more than 25 degrees down below 0.6 in 6.2% (9.4%),
+/// looking up in 12.7% (14.6%); the calibrations themselves come out the same. Looking up, the curve could take the
+/// eyelid down where the aperture is as wide or wider (one of six calibrations, fitted through its three steps, to
+/// 0.59 in the look-up steps).
+const LID_PITCH_FROM_DEG: f64 = 8.0;
+const LID_PITCH_PER_DEG: f64 = 0.028;
+const LID_PITCH_MAX_DEG: f64 = 30.0;
+const LID_PITCH_CAP: f64 = 1.5;
+
 /// Per-wear levels for one eye (feature units: iris radii; lower_px in image pixels).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WearParams {
@@ -189,7 +213,8 @@ pub struct WearParams {
 /// Per-user shape parameters for one eye.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct UserParams {
-    /// Aperture vs Valve pitch (degrees): a0 + a1 p + a2 p^2; only differences are used.
+    /// Aperture vs Valve pitch (degrees): a0 + a1 p + a2 p^2; only differences are used, and only within the
+    /// downgaze bounds (`pitch_drop`).
     pub pitch_c: [f64; 3],
     pub pitch_lo: f64,
     pub pitch_hi: f64,
@@ -209,6 +234,19 @@ impl UserParams {
     fn pitch_curve(&self, p: f64) -> f64 {
         let p = p.clamp(self.pitch_lo, self.pitch_hi);
         self.pitch_c[0] + self.pitch_c[1] * p + self.pitch_c[2] * p * p
+    }
+
+    /// How much narrower (iris radii) an open eye's aperture is at `pitch` than at the wearer's typical pitch `p0`,
+    /// from the curve. Below `p0` it is held between LID_PITCH_PER_DEG a degree beyond LID_PITCH_FROM_DEG and
+    /// LID_PITCH_CAP times that (so nothing nearer `p0`); above it, looking up, the curve may say narrower (up to
+    /// LID_PITCH_CAP x LID_PITCH_PER_DEG a degree) but never wider.
+    fn pitch_drop(&self, pitch: f64, p0: f64) -> f64 {
+        let drop = self.pitch_curve(p0) - self.pitch_curve(pitch);
+        if pitch > p0 {
+            return drop.clamp(0.0, LID_PITCH_CAP * LID_PITCH_PER_DEG * (pitch - p0).min(LID_PITCH_MAX_DEG));
+        }
+        let floor = LID_PITCH_PER_DEG * (p0 - pitch - LID_PITCH_FROM_DEG).clamp(0.0, LID_PITCH_MAX_DEG);
+        drop.clamp(floor, LID_PITCH_CAP * floor)
     }
 }
 
@@ -939,7 +977,7 @@ impl EyeEngine {
 
         // Squint and openness from the pitch-corrected aperture (the user's curve is in iris radii).
         let p0 = if p_typ.is_finite() { p_typ } else { DEFAULT_PITCH_N };
-        let apc = if pitch.is_finite() { ap_px - (user.pitch_curve(pitch) - user.pitch_curve(p0)) * r } else { ap_px };
+        let apc = if pitch.is_finite() { ap_px + user.pitch_drop(pitch, p0) * r } else { ap_px };
         let ap_cl_px = ap_n_px - gap_px;
         let ap_sq = ap_cl_px + user.f_sq * (ap_n_px - ap_cl_px);
         // Without a user calibration (squint depth, pitch curve) the aperture alone is not trusted: no squint, and the
@@ -1303,7 +1341,7 @@ pub fn fit_wear_eyes(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> [Ey
         let close: Vec<Sample> = s.iter().copied().filter(is(Label::Close)).collect();
         let n_pupil = normal.iter().filter(|x| x.ok).count();
         let (b_n, nn) = med_of(&normal, |x| x.ok.then_some(x.skin));
-        let (b_w, nw) = med_of(&widen, |x| x.ok.then_some(x.skin));
+        let (b_w, nw) = widen_level(&widen, b_n);
         let (ap_n, _) = med_of(&normal, |x| x.ok.then_some(x.ap));
         let (ap_cl, nc) = med_of(&close, |x| Some(x.ap));
         if n_pupil < need.normal {
@@ -1850,6 +1888,24 @@ impl CalibFile {
 /// Thresholds of the calibration checks (fit_wear / fit_user use the same numbers).
 pub const MIN_WIDEN_STEP: f64 = 0.05;
 pub const MIN_OPEN_GAP: f64 = 0.2;
+/// A widen frame whose upper lid line lies more than this (iris radii) below the normal level is left out of the
+/// widen level: a widened lid is never lower than the normal one, so such a line is not the lid. Some wearers' lid
+/// line is faint enough that the search sometimes takes another line in its band instead: the band's floor (about
+/// 15 to 23 px under the pupil centre, -0.26 to -0.40 R) or the pupil's own upper rim (+0.45 R), both 0.5 R or more
+/// under a normal level of about 1.0. A user's wear calibration of 2026-10-14 took the floor in more than half of its
+/// widen frames and measured a widen level of -0.398 on both eyes ("見開きは取れなかった"); the same user's guided capture of
+/// 2026-10-17 has the pupil rim in about a fifth of the right eye's widen frames (its third widen: 0.47, the real
+/// lid 1.95). A real widen raises the line (the developer's by +0.25, that user's by +0.75 to 0.9), and 0.2 leaves room
+/// for a widen held weakly around the normal level; frames lowered further than that are not a widen (a blink, a
+/// look down), so leaving them out is right either way.
+pub const WIDEN_MIN_BELOW_N: f64 = 0.2;
+
+/// The widen level of the widen frames among `s`: the median upper lid line of those with the pupil and a line no
+/// more than WIDEN_MIN_BELOW_N below the normal level `b_n`, and how many those are (they are what NEED_WIDEN counts,
+/// so too few of them falls back to the usual widen step as before).
+fn widen_level(s: &[Sample], b_n: f64) -> (f64, usize) {
+    med_of(s, |x| (x.label == Label::Widen && x.ok && x.skin >= b_n - WIDEN_MIN_BELOW_N).then_some(x.skin))
+}
 
 /// How many frames a calibration check needs, relative to what the cameras delivered: at least `share` of the
 /// step's frames, `seconds` worth at the cameras' frame rate, and `floor`. The cameras run at 90 frames a second on
@@ -1990,7 +2046,8 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(r_px)).collect();
         let n_pupil = s.iter().filter(|x| x.label == Label::Normal && x.ok).count();
         let (b_n, nn) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.skin));
-        let (b_w, nw) = med_of(&s, |x| (x.label == Label::Widen && x.ok).then_some(x.skin));
+        let (b_w, nw) = widen_level(&s, b_n);
+        let below = s.iter().filter(|x| x.label == Label::Widen && x.ok && x.skin < b_n - WIDEN_MIN_BELOW_N).count();
         let (ap_n, _) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.ap));
         let (ap_cl, nc) = med_of(&s, |x| (x.label == Label::Close).then_some(x.ap));
         let all = |l: Label| s.iter().filter(|x| x.label == l).count();
@@ -2001,7 +2058,7 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         let d = diag_report(&s);
         eyes.push(format!(
             "\"{}\": {{\"r_px\": {}, \"b_n\": {}, \"b_w\": {}, \"widen_step\": {}, \"ap_n\": {}, \"ap_cl\": {}, \"open_gap\": {}, \
-\"normal_frames_with_pupil\": {n_pupil}, \"normal_frames_with_lid_line\": {nn}, \"widen_frames_with_pupil\": {nw}, \"close_frames_with_lids\": {nc}, \
+\"normal_frames_with_pupil\": {n_pupil}, \"normal_frames_with_lid_line\": {nn}, \"widen_frames_with_pupil\": {nw}, \"widen_frames_below_normal\": {below}, \"close_frames_with_lids\": {nc}, \
 \"pupil_seen_share\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}, \"diag\": {}}}",
             ["L", "R"][e],
             json::num(r_px),
@@ -2018,7 +2075,7 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         ));
         lines.push(format!(
             "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
-frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), R {:.1} px; {}",
+frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, R {:.1} px; {}",
             ["L", "R"][e],
             b_w - b_n,
             b_n,
@@ -2310,6 +2367,44 @@ mod tests {
                 seen: Seen::default(),
             })
             .collect()
+    }
+
+    /// One eye's wear steps with a user's levels: normal 1.0 R, closed aperture 0.56, and the given widen frames.
+    fn wear_eye_with_widen(widen: &[(usize, f64)]) -> Vec<Sample> {
+        let mut eye = samples(Label::Normal, 300, 1.0, 1.7, -14.0, 250.0, true);
+        for &(n, skin) in widen {
+            eye.extend(samples(Label::Widen, n, skin, 2.4, -14.0, 252.0, true));
+        }
+        eye.extend(samples(Label::Close, 80, f64::NAN, 0.56, -14.0, 240.0, false));
+        eye
+    }
+
+    #[test]
+    fn widen_frames_with_the_lid_line_below_normal_are_left_out() {
+        // A user's guided capture of 2026-10-17: in some widen frames the line found is the search band's floor
+        // (-0.35 R) or the pupil's upper rim (+0.45 R), not the widened lid (1.85 R). Taken together their median
+        // was the rim (0.45), below normal: no widen. Without them it is the lid.
+        let faint = wear_eye_with_widen(&[(90, 1.85), (60, -0.35), (50, 0.45)]);
+        let both = [faint.clone(), faint];
+        let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
+        assert!(measured);
+        assert!((w[0].b_w - 1.85).abs() < 1e-9 && (w[0].b_n - 1.0).abs() < 1e-9, "{:?}", w[0]);
+        // The report has the same widen level, and how many frames were left out.
+        let (report, lines) = wear_report(&both);
+        assert!(report.contains("\"widen_step\": 0.85") && report.contains("\"widen_frames_below_normal\": 110"), "{report}");
+        assert!(lines[0].contains("widen 90 (need ") && lines[0].contains("widen below normal left out 110,"), "{}", lines[0]);
+        // The same user's wear calibration of 2026-10-14 (-0.398 on both eyes): mostly the floor, too few frames left for a
+        // widen. It falls back to the usual step as it did before, and does not fail.
+        let floor = wear_eye_with_widen(&[(50, 1.85), (150, -0.398)]);
+        let (w, measured) = fit_wear(&[floor.clone(), floor], [0.19; 2]).unwrap();
+        assert!(!measured && (w[0].b_w - w[0].b_n - 0.19).abs() < 1e-9, "{:?}", w[0]);
+        // A wearer whose lid line is found: a few frames a little under normal (a weak start, a half blink) stay in,
+        // and the widen level is the plain median as before.
+        let usual = wear_eye_with_widen(&[(150, 1.25), (30, 1.2), (20, 0.85)]);
+        let (w, measured) = fit_wear(&[usual.clone(), usual.clone()], [0.19; 2]).unwrap();
+        let (plain, n) = med_of(&usual, |x| (x.label == Label::Widen && x.ok).then_some(x.skin));
+        assert!(measured && n == 200 && w[0].b_w == plain && (plain - 1.25).abs() < 1e-9, "{:?}", w[0]);
+        assert!(wear_report(&[usual.clone(), usual]).0.contains("\"widen_frames_below_normal\": 0"));
     }
 
     #[test]
@@ -2917,6 +3012,59 @@ mod tests {
         let o = run(&mut e, 160..250, 3.0);
         assert!(o.eye_squint > 0.9 && o.eye_lid < 0.3, "{o:?}");
         assert!((e.baseline_px().unwrap().1 - ap_low).abs() < 0.5);
+    }
+
+    #[test]
+    fn the_pitch_correction_is_held_between_the_downgaze_floor_and_its_cap() {
+        let flat = UserParams::default();
+        let floor = |below: f64| LID_PITCH_PER_DEG * (below - LID_PITCH_FROM_DEG);
+        // A curve flatter than the floor (or none) gets the floor, nothing within LID_PITCH_FROM_DEG of the typical pitch
+        assert!((flat.pitch_drop(-37.0, -10.0) - floor(27.0)).abs() < 1e-12);
+        assert_eq!((flat.pitch_drop(-10.0 - LID_PITCH_FROM_DEG, -10.0), flat.pitch_drop(-10.0, -10.0)), (0.0, 0.0));
+        let steep = |slope: f64| UserParams { pitch_c: [1.5, slope, 0.0], ..UserParams::default() };
+        assert!((steep(0.005).pitch_drop(-37.0, -10.0) - floor(27.0)).abs() < 1e-12);
+        // A steeper one counts, up to LID_PITCH_CAP times the floor
+        assert!((steep(0.025).pitch_drop(-37.0, -10.0) - 0.025 * 27.0).abs() < 1e-12);
+        assert!((steep(0.06).pitch_drop(-37.0, -10.0) - LID_PITCH_CAP * floor(27.0)).abs() < 1e-12);
+        // Far down it stops growing
+        assert!((flat.pitch_drop(-90.0, -10.0) - LID_PITCH_PER_DEG * LID_PITCH_MAX_DEG).abs() < 1e-12);
+        // Looking up: a curve that says narrower counts, one that says wider does not
+        assert!((steep(-0.01).pitch_drop(20.0, -10.0) - 0.3).abs() < 1e-12);
+        assert_eq!((steep(0.01).pitch_drop(20.0, -10.0), flat.pitch_drop(20.0, -10.0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn an_open_eye_looking_down_reads_open_with_a_shallow_curve_and_a_squint_still_shows() {
+        // A user calibration whose curve narrows the eye by only 0.01 iris radii a degree going down (and widens it
+        // going up), 15 frames a second
+        let p = Params {
+            user: Some(UserParams { pitch_c: [1.5, 0.01, 0.0], ..UserParams::default() }),
+            ..Params::default()
+        };
+        let mut e = EyeEngine::default();
+        let mut t = 0.0;
+        let mut run = |e: &mut EyeEngine, opening: std::ops::Range<usize>, pitch: f64, seconds: f64| {
+            let mut last = None;
+            for _ in 0..(seconds * 15.0) as usize {
+                t += 1.0 / 15.0;
+                last = Some(e.process(&lid_frame_between(Some((250.0, 200.0)), opening.clone()), pitch, t, &p));
+            }
+            last.unwrap()
+        };
+        let o = run(&mut e, 130..270, -10.0, 7.0);
+        e.seed_px(o.skin_up * o.r, o.aperture * o.r);
+        let o = run(&mut e, 130..270, -10.0, 2.0);
+        assert!(o.eye_lid > 0.74 && o.eye_squint < 0.01, "{o:?}");
+        // 27 degrees down the upper lid comes 25 px lower (0.45 iris radii; the floor there is 0.53): still open
+        let o = run(&mut e, 155..270, -37.0, 3.0);
+        assert!(25.0 / o.r < LID_PITCH_PER_DEG * (27.0 - LID_PITCH_FROM_DEG), "{}", o.r);
+        assert!(o.eye_lid > 0.74 && o.eye_squint < 0.01, "{o:?}");
+        // A squint down there still shows
+        let o = run(&mut e, 165..240, -37.0, 3.0);
+        assert!(o.eye_squint > 0.6 && o.eye_lid < 0.45, "{o:?}");
+        // Looking up with the lids where they were: the curve's "wider up there" no longer takes the eyelid down
+        let o = run(&mut e, 130..270, 20.0, 3.0);
+        assert!(o.eye_lid > 0.74 && o.eye_squint < 0.01, "{o:?}");
     }
 
     #[test]

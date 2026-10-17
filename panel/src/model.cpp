@@ -91,6 +91,7 @@ int SettingsView::port() const {
     const std::string output = text(key::kOutput);
     if (output == kOutputEtvr) return kPortEtvr;
     if (output == kOutputLivelink) return kPortLivelink;
+    if (output == kOutputModule) return kPortModule;
     return kPortVrchat;
 }
 
@@ -141,6 +142,7 @@ int matchingLidPreset(const SettingsView& view) {
 const char* outputOfArg(int arg) {
     if (arg == 1) return kOutputEtvr;
     if (arg == 2) return kOutputLivelink;
+    if (arg == 3) return kOutputModule;
     return kOutputVrchat;
 }
 
@@ -148,7 +150,12 @@ int argOfOutput(const std::string& output) {
     if (output == kOutputVrchat) return 0;
     if (output == kOutputEtvr) return 1;
     if (output == kOutputLivelink) return 2;
+    if (output == kOutputModule) return 3;
     return -1;
+}
+
+bool outputDeprecated(const std::string& output) {
+    return output == kOutputEtvr;
 }
 
 std::vector<SettingChange> recommendedSettings(const std::string& output, const SettingsView& view) {
@@ -653,7 +660,15 @@ bool pupilsRowShown(const std::string& output, bool camera) {
 }
 
 bool pupilsLineShown(const std::string& output, bool camera) {
-    return !camera && (output == kOutputVrchat || output == kOutputLivelink);
+    return !camera && (output == kOutputVrchat || output == kOutputLivelink || output == kOutputModule);
+}
+
+void noteSpawnResult(PanelModel& model, bool modulePage, const std::string& error) {
+    (modulePage ? model.moduleLinkError : model.eyecam.spawnError) = error;
+}
+
+bool moduleLinkErrorShown(const std::string& output, const std::string& error) {
+    return output == kOutputModule && !error.empty();
 }
 
 PupilBitsRow pupilBitsRow(const std::string& output, bool camera, bool pupilsToVrchat) {

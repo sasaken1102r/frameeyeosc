@@ -59,6 +59,8 @@ struct PanelModel {
     RecordsView records;         ///< the records (the Advanced tab's "Having trouble", and the failure screens' bar)
     AppsView apps;               ///< the other Frame apps (the row at the bottom of "Version" and the list it opens)
     eye_preview::View preview;   ///< the eye preview's values and pictures (only while its sheet is open)
+    std::string moduleLinkError; ///< why the Output tab's module link didn't open the browser ("" = none; its own
+                                 ///< line under the link, never the eye cameras' setup's eyecam.spawnError)
 };
 
 /**
@@ -317,23 +319,31 @@ struct SettingChange {
 
 /**
  * The output type a SetOutput / PromptYes button stands for.
- * @param arg 0 VRChat, 1 ETVR, 2 LiveLink (anything else is VRChat)
- * @return kOutputVrchat, kOutputEtvr or kOutputLivelink
+ * @param arg 0 VRChat, 1 ETVR, 2 LiveLink, 3 FrameEyeOSC (anything else is VRChat)
+ * @return kOutputVrchat, kOutputEtvr, kOutputLivelink or kOutputModule
  */
 const char* outputOfArg(int arg);
 
 /**
  * The button argument of an output type (the other way round from outputOfArg).
  * @param output the "output" value
- * @return 0 VRChat, 1 ETVR, 2 LiveLink; -1 for anything else
+ * @return 0 VRChat, 1 ETVR, 2 LiveLink, 3 FrameEyeOSC; -1 for anything else
  */
 int argOfOutput(const std::string& output);
 
 /**
+ * Whether the Basic tab warns that the output is going away (ETVR: deprecated, removed in the next version), between
+ * the destination cards and the small ETVR button.
+ * @param output the "output" setting
+ * @return true to show the notice
+ */
+bool outputDeprecated(const std::string& output);
+
+/**
  * The recommended settings of an output type (asked once after switching). Locked keys are left out.
- * VRChat and LiveLink: the default gaze and eyelid smoothing (the LiveLink module smooths nothing). ETVR: default
- * gaze smoothing and lighter eyelid smoothing, because the ETVR module already smooths the eyelids.
- * @param output kOutputVrchat, kOutputEtvr or kOutputLivelink
+ * VRChat, LiveLink and FrameEyeOSC: the default gaze and eyelid smoothing (those modules smooth nothing). ETVR:
+ * default gaze smoothing and lighter eyelid smoothing, because the ETVR module already smooths the eyelids.
+ * @param output kOutputVrchat, kOutputEtvr, kOutputLivelink or kOutputModule
  * @param view the settings (to skip locked keys)
  * @return the changes
  */
@@ -508,16 +518,37 @@ bool pupilsRowShown(const std::string& output, bool camera);
 
 /**
  * Whether the Output tab shows the dashed line "with the eye cameras, pupil size goes out too" in place of its pupil
- * rows: where those would be (VRChat directly, LiveLink) while the eye cameras aren't in use.
+ * rows: where those would be (VRChat directly, LiveLink) while the eye cameras aren't in use, and for FrameEyeOSC, which
+ * carries them too (through VRCFT, so it has no pupil rows).
  * @param output the "output" setting
  * @param camera the eye cameras are in use
  * @return true to show it
  */
 bool pupilsLineShown(const std::string& output, bool camera);
 
+/**
+ * Note how starting a program outside the panel went (setup_tools::spawnDetached): the Output tab's module link writes
+ * and clears only its own line (moduleLinkError), the eye cameras' setup (its Konsole, the video) only eyecam.spawnError,
+ * so neither shows up on the other's screen.
+ * @param model the model
+ * @param modulePage the module link (PanelAction::OpenModulePage) started it, not the setup
+ * @param error why it didn't start ("" = it started: that line is cleared)
+ */
+void noteSpawnResult(PanelModel& model, bool modulePage, const std::string& error);
+
+/**
+ * Whether the Output tab shows the red line under the module link: only for FrameEyeOSC (the link is there), and only
+ * while the last press of the link failed.
+ * @param output the "output" setting
+ * @param error moduleLinkError
+ * @return true to show it
+ */
+bool moduleLinkErrorShown(const std::string& output, const std::string& error);
+
 /** How the Output tab shows "How the avatar takes pupils" (pupil_bits). */
 enum class PupilBitsRow {
-    Hidden,  ///< not there: the eye cameras not in use, or ETVR (no pupils go to VRChat)
+    Hidden,  ///< not there: the eye cameras not in use, ETVR (no pupils go to VRChat), or FrameEyeOSC (VRCFT sends
+             ///< them in whatever form the avatar takes)
     Greyed,  ///< there, but the pupils don't go straight to VRChat now (LiveLink with pupils_to_vrchat off)
     Usable,  ///< there and in effect
 };

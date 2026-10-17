@@ -55,6 +55,9 @@ pub enum OutputKind {
     /// VRCFaceTracking's LiveLink module (Live Link Face packets: eyelids, widening and gaze per eye)
     #[value(name = "livelink")]
     LiveLink,
+    /// VRCFaceTracking's FrameEyeOSC module (FEO1 packets: gaze, eyelids, squint and pupils per eye)
+    #[value(name = "frameeyeosc")]
+    FrameEyeOsc,
 }
 
 impl OutputKind {
@@ -63,6 +66,7 @@ impl OutputKind {
             Self::Vrchat => 9000,
             Self::Etvr => 8889,
             Self::LiveLink => crate::livelink::DEFAULT_PORT,
+            Self::FrameEyeOsc => crate::feo::DEFAULT_PORT,
         }
     }
 }
@@ -122,6 +126,16 @@ pub struct Settings {
     /// In LiveLink mode, also send the eye camera's pupils (only those) straight to VRChat over OSC, on port 9000 of
     /// the LiveLink target's host: VRCFT's LiveLink module has no pupils. Ignored by the other outputs.
     pub pupils_to_vrchat: bool,
+    /// The eye camera's "closed" in one eye only is used once it is a blink (the other eye's camera saw its eye closed
+    /// too, or the eye tracker reads the other eye closing) or has lasted long enough to be a wink, and while looking
+    /// down no "closed" of the cameras is used unless the eye tracker reads an eye shut; see main.rs, CloseGate.
+    /// false: every "closed" at once.
+    pub camera_close_gate: bool,
+    /// The eye camera's "closed" for an eye the eye server has read open, and been sure of, for longer than a blink is
+    /// taken as open (lying down, the camera loses the pupil at its window's edge); see main.rs, CAMERA_CLOSED_DOUBT_S.
+    /// false: it is not, for a headset whose eye server reads a closed eye open and is sure of it. Looking to the side
+    /// (CAMERA_SIDE_DEG) is checked either way.
+    pub camera_closed_doubt: bool,
     /// How the pupil dilation goes to VRChat besides the float: 0 = only the float, 1..=4 = also as that many bool
     /// parameters (PupilDilation1, 2, 4, 8), for avatars that take it bit-packed the way VRCFT does. One value for
     /// every avatar: the headset can't see which parameters the avatar has.
@@ -226,6 +240,8 @@ impl Default for Settings {
             native_eyes: false,
             camera_lids: true,
             pupils_to_vrchat: true,
+            camera_close_gate: true,
+            camera_closed_doubt: true,
             pupil_bits: 0,
             eye_behavior: 2,
             lid_widen: Widen::Normal,
@@ -642,6 +658,14 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
         settings.pupils_to_vrchat = !args.no_pupils_to_vrchat;
         locked.push("pupils_to_vrchat");
     }
+    if given.contains("no_camera_close_gate") {
+        settings.camera_close_gate = !args.no_camera_close_gate;
+        locked.push("camera_close_gate");
+    }
+    if given.contains("no_camera_closed_doubt") {
+        settings.camera_closed_doubt = !args.no_camera_closed_doubt;
+        locked.push("camera_closed_doubt");
+    }
     pin!(
         blink_sync_below,
         camera_lid_floor,
@@ -987,6 +1011,19 @@ mod tests {
     }
 
     #[test]
+    fn frameeyeosc_module_is_an_output() {
+        let (settings, _) = merged(r#"{"output": "frameeyeosc"}"#, &[]).unwrap();
+        assert_eq!(settings.output, OutputKind::FrameEyeOsc);
+        assert_eq!(settings.port(), 11112);
+        let (settings, locked) = merged(r#"{"output": "livelink"}"#, &["--output", "frameeyeosc"]).unwrap();
+        assert_eq!(settings.output, OutputKind::FrameEyeOsc);
+        assert_eq!(locked, ["output"]);
+        // The status file and the panel spell it the same way
+        assert_eq!(serde_json::to_string(&OutputKind::FrameEyeOsc).unwrap(), r#""frameeyeosc""#);
+        assert!(merged(r#"{"output": "frame-eye-osc"}"#, &[]).is_err());
+    }
+
+    #[test]
     fn command_line_options_win_and_are_locked() {
         let file = r#"{"output": "etvr", "host": "10.0.0.2", "port": 9100, "raw": false,
             "lid_open": 0.85, "lid_calibration": true, "gaze_beta": 2.0}"#;
@@ -1140,6 +1177,25 @@ mod tests {
         let (settings, locked) = merged(r#"{"pupils_to_vrchat": true}"#, &["--no-pupils-to-vrchat"]).unwrap();
         assert!(!settings.pupils_to_vrchat);
         assert_eq!(locked, ["pupils_to_vrchat"]);
+    }
+
+    #[test]
+    fn the_camera_close_gate_is_on_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.camera_close_gate);
+        assert!(!merged(r#"{"camera_close_gate": false}"#, &[]).unwrap().0.camera_close_gate);
+        assert!(merged(r#"{"camera_close_gate": 0}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"camera_close_gate": true}"#, &["--no-camera-close-gate"]).unwrap();
+        assert!(!settings.camera_close_gate);
+        assert_eq!(locked, ["camera_close_gate"]);
+    }
+
+    #[test]
+    fn the_camera_closed_doubt_is_on_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.camera_closed_doubt);
+        assert!(!merged(r#"{"camera_closed_doubt": false}"#, &[]).unwrap().0.camera_closed_doubt);
+        let (settings, locked) = merged(r#"{"camera_closed_doubt": true}"#, &["--no-camera-closed-doubt"]).unwrap();
+        assert!(!settings.camera_closed_doubt);
+        assert_eq!(locked, ["camera_closed_doubt"]);
     }
 
     #[test]

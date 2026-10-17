@@ -286,7 +286,7 @@ void testLidFitLines() {
 
 void testNoSymbolGlyphs() {
     static_assert(sizeof(UiText) % sizeof(const char*) == 0, "UiText holds only strings");
-    const char* const glyphs[] = {"‹", "›", "▲", "▼", "△", "▽", "→", "←", "♪", "✓", "✗", "◯", "●", "▶", "▷"};
+    const char* const glyphs[] = {"‹", "›", "▲", "▼", "△", "▽", "→", "←", "♪", "✓", "✗", "◯", "◎", "●", "▶", "▷"};
     int markers = 0;
     for (const Language language : {Language::Ja, Language::En}) {
         const UiText& t = uiText(language);
@@ -309,6 +309,42 @@ void testNoSymbolGlyphs() {
     CHECK(markers >= 20);
 }
 
+/**
+ * The destination cards' lines: two each (sync, VRCFT), no widening any more, and FrameEyeOSC's sync is the double
+ * ring (VRChat's the triangle, the other two the ring or a check), which the hint above the cards explains.
+ */
+void testOutputMarks() {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    static_assert(sizeof(ja.outputMarks[0]) / sizeof(ja.outputMarks[0][0]) == 2, "two lines a card");
+    for (const UiText* t : {&ja, &en}) {
+        for (const auto& lines : t->outputMarks) {
+            for (const char* line : lines) {
+                CHECK(line != nullptr && line[0] != '\0');
+                if (line == nullptr) continue;
+                CHECK(std::string(line).find("見開き") == std::string::npos);
+                CHECK(std::string(line).find("ide eyes") == std::string::npos);
+            }
+        }
+    }
+    // ◎ is a Japanese grading mark; English says it in words with the check
+    CHECK(std::string(ja.hintOutput).find(ICON_DOUBLE_RING) != std::string::npos);
+    CHECK(std::string(en.hintOutput).find(ICON_DOUBLE_RING) == std::string::npos);
+    SAME(ja.outputMarks[0][0], "同期 " ICON_TRIANGLE_OUTLINE);
+    SAME(ja.outputMarks[1][0], "同期 " ICON_RING);
+    SAME(ja.outputMarks[2][0], "同期 " ICON_RING);
+    SAME(ja.outputMarks[3][0], "同期 " ICON_DOUBLE_RING);
+    SAME(en.outputMarks[1][0], ICON_CHECK " Synced to others");
+    SAME(en.outputMarks[3][0], ICON_CHECK " Synced, pupils too");
+    CHECK(std::string(ja.hintOutput).find(ICON_TRIANGLE_OUTLINE) != std::string::npos);
+    SAME(ja.outputAllInOne, "全部入り");
+    for (const UiText* t : {&ja, &en}) {
+        CHECK(std::string(t->vrchatDirectHint).find("LiveLink") != std::string::npos);
+        CHECK(std::string(t->vrchatDirectHint).find("FrameEyeOSC") != std::string::npos);
+    }
+    SAME(en.outputAllInOne, "All-in-one");
+}
+
 }  // namespace
 
 /**
@@ -321,6 +357,7 @@ int main() {
     testFitRecord();
     testLidFitLines();
     testNoSymbolGlyphs();
+    testOutputMarks();
     if (gFailures == 0) std::printf("text-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

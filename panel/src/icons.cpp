@@ -19,7 +19,7 @@ constexpr Spec kSpecs[] = {
     {Icon::ArrowRight, 0.96, "→"},      {Icon::Play, 0.72, "▶"},           {Icon::Check, 0.82, "✓"},
     {Icon::Cross, 0.74, "×"},           {Icon::Plus, 0.74, "+"},           {Icon::Minus, 0.74, "-"},
     {Icon::Note, 0.78, "♪"},            {Icon::Dot, 0.50, "●"},            {Icon::Ring, 1.06, "◯"},
-    {Icon::TriangleOutline, 1.06, "△"},
+    {Icon::TriangleOutline, 1.06, "△"}, {Icon::DoubleRing, 1.06, "◎"},
 };
 constexpr size_t kCount = sizeof(kSpecs) / sizeof(kSpecs[0]);
 

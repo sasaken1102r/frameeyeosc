@@ -478,22 +478,7 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
         .collect::<Vec<_>>()));
     let pictures_differ = dmax - dmin >= 0.8;
     let pitch = pitch as usize;
-    let (eye, mut camera_reason, both_eyes) = match assign_cameras(&off, pitch) {
-        Some((eye, reason)) => (eye, reason, true),
-        None if pictures_differ => (
-            cameras_by_picture(&similar),
-            "picture: no group boundary in the layout; grouped by similarity, lower addresses = R".into(),
-            true,
-        ),
-        None => (
-            vec![0; off.len()],
-            "one group only (one camera streaming; which eye is not known, called L; its frames are not flipped)".into(),
-            false,
-        ),
-    };
-    if pictures_differ && similar.iter().map(|&g| g ^ similar[0]).ne(eye.iter().map(|&e| e ^ eye[0])) {
-        camera_reason += &format!("; WARNING: picture similarity groups the slots as {similar:?}");
-    }
+    let (eye, camera_reason, both_eyes) = cameras_for(&off, pitch, pictures_differ.then_some(&similar[..]));
     log(format!("cameras {eye:?}: {camera_reason}"));
     look.slots = off.len();
     look.both_eyes = both_eyes;
@@ -505,11 +490,65 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
 /// eye at a time, Valve's openness dropped on the eye eyecam had called the other one while this group was L).
 pub const LOWER_ADDRESS_EYE: u8 = 1;
 
+/// Each camera's slot count: four slots per eye (see the module notes).
+pub const SLOTS_PER_CAMERA: usize = 4;
+
+/// Which camera each slot holds, whether both cameras stream, and how that was decided (for meta.txt), from the
+/// slots' exact starts `off` (memory order), the spacing measured on the ring walk (`pitch`) and, when the pictures
+/// show two groups, which slots look like slot 0 (`similar`: 0 = like it). The layout decides (assign_cameras). A
+/// full ring (2 x SLOTS_PER_CAMERA slots) is always split 4 + 4 by address, each camera having four slots: on
+/// 2026-10-17 a spacing measured 1 byte off (262209) left the layout without a boundary, and the pictures (both eyes,
+/// lying down) put a right-eye slot with the left eye's (slot_camera 1,0,1,1,0,0,0,0: one frame in five of the left
+/// eye was the right eye's). The pictures decide only for a partial ring without a layout boundary; a disagreement
+/// with them is noted as a WARNING either way.
+pub fn cameras_for(off: &[usize], pitch: usize, similar: Option<&[u8]>) -> (Vec<u8>, String, bool) {
+    let full = off.len() == 2 * SLOTS_PER_CAMERA;
+    let (eye, mut reason, both_eyes) = match assign_cameras(off, pitch) {
+        Some((eye, reason)) if !full || eye.iter().filter(|&&e| e == LOWER_ADDRESS_EYE).count() == SLOTS_PER_CAMERA => {
+            (eye, reason, true)
+        }
+        Some((_, layout)) => {
+            (by_address(off.len()), format!("4 + 4 slots by address, lower = R (the {layout} is not 4 + 4)"), true)
+        }
+        None if full && similar.is_some() => {
+            (by_address(off.len()), "4 + 4 slots by address, lower = R (no group boundary in the layout)".into(), true)
+        }
+        None => match similar {
+            Some(similar) => (
+                cameras_by_picture(similar),
+                "picture: no group boundary in the layout; grouped by similarity, lower addresses = R".into(),
+                true,
+            ),
+            None => (
+                vec![0; off.len()],
+                "one group only (one camera streaming; which eye is not known, called L; its frames are not flipped)".into(),
+                false,
+            ),
+        },
+    };
+    if let Some(similar) = similar
+        && similar.iter().map(|&g| g ^ similar[0]).ne(eye.iter().map(|&e| e ^ eye[0]))
+    {
+        reason += &format!("; WARNING: picture similarity groups the slots as {similar:?}");
+    }
+    (eye, reason, both_eyes)
+}
+
+/// A full ring split 4 + 4 by address, the lower addresses LOWER_ADDRESS_EYE.
+fn by_address(n: usize) -> Vec<u8> {
+    (0..n).map(|k| LOWER_ADDRESS_EYE ^ (k >= n / 2) as u8).collect()
+}
+
 /// Which eye's camera (0 = left, 1 = right) each slot holds, from the layout alone: each camera's four slots are one
 /// allocation with the regular spacing, and the second allocation starts 64 bytes later than that spacing predicts.
-/// The lower-address group is the right eye's (LOWER_ADDRESS_EYE). `off` is in memory order. None when the layout
-/// does not show two groups.
+/// The regular spacing is the one most of the slots have (ties: the one nearest `pitch`, the spacing measured on the
+/// ring walk), not `pitch` itself: that was measured 1 byte off on 2026-10-17 (262209 against 262208), which made
+/// every slot a break. The lower-address group is the right eye's (LOWER_ADDRESS_EYE). `off` is in memory order. None
+/// when the layout does not show two groups.
 pub fn assign_cameras(off: &[usize], pitch: usize) -> Option<(Vec<u8>, String)> {
+    let gaps: Vec<usize> = off.windows(2).map(|w| w[1] - w[0]).collect();
+    let count = |g: usize| gaps.iter().filter(|&&x| x == g).count();
+    let pitch = gaps.iter().copied().max_by_key(|&g| (count(g), std::cmp::Reverse(g.abs_diff(pitch)))).unwrap_or(pitch);
     let breaks: Vec<usize> = (1..off.len()).filter(|&k| off[k] - off[k - 1] != pitch).collect();
     let (boundary, reason) = match breaks[..] {
         [b] => {
@@ -803,6 +842,51 @@ mod tests {
         assert_eq!(assign_cameras(&even, p).unwrap().0, vec![1, 1, 1, 1, 0, 0, 0, 0]);
         assert!(assign_cameras(&even[..4], p).is_none());
         assert!(assign_cameras(&[off[0], off[1], off[4], off[5] + 128], p).is_none());
+    }
+
+    #[test]
+    fn a_spacing_measured_a_byte_off_still_finds_the_boundary() {
+        // 2026-10-17 12:26 and 12:28 (lying down): the ring walk measured 262209, the slots sit 262208 apart with the
+        // second group 64 bytes late. Every slot was a break, and the pictures grouped them 1,0,1,1,0,0,0,0.
+        let off = [0x23_4100, 0x27_4140, 0x2b_4180, 0x2f_41c0, 0x33_4240, 0x37_4280, 0x3b_42c0, 0x3f_4300];
+        let (eye, reason) = assign_cameras(&off, EXPECTED_PITCH + 1).unwrap();
+        assert_eq!(eye, vec![1, 1, 1, 1, 0, 0, 0, 0]);
+        assert!(reason.contains("before slot 4") && reason.contains("spacing 262208+64"), "{reason}");
+        // Off by a byte the other way, and an even ring measured off: the same
+        assert_eq!(assign_cameras(&off, EXPECTED_PITCH - 1).unwrap().0, vec![1, 1, 1, 1, 0, 0, 0, 0]);
+        let even: Vec<usize> = (0..8).map(|k| 0x10_0000 + k * EXPECTED_PITCH).collect();
+        assert_eq!(assign_cameras(&even, EXPECTED_PITCH + 1).unwrap().0, vec![1, 1, 1, 1, 0, 0, 0, 0]);
+        // Three slots with the boundary between them: the tie goes to the spacing nearest the measured one
+        assert_eq!(assign_cameras(&off[2..5], EXPECTED_PITCH + 1).unwrap().0, vec![1, 1, 0]);
+    }
+
+    #[test]
+    fn a_full_ring_is_always_four_and_four() {
+        let p = EXPECTED_PITCH;
+        // No layout boundary at all, the pictures saying 1,0,1,1,0,0,0,0 (the 2026-10-17 grouping): 4 + 4
+        let jumbled: Vec<usize> = (0..8).map(|k| 0x10_0000 + k * p + k * k).collect();
+        assert!(assign_cameras(&jumbled, p).is_none());
+        let (eye, reason, both) = cameras_for(&jumbled, p, Some(&[0, 1, 0, 0, 1, 1, 1, 1]));
+        assert_eq!((eye, both), (vec![1, 1, 1, 1, 0, 0, 0, 0], true));
+        assert!(reason.starts_with("4 + 4 slots by address") && reason.contains("WARNING"), "{reason}");
+        // A layout boundary that is not 4 + 4 in a full ring is not taken either
+        let late: Vec<usize> = (0..8).map(|k| 0x10_0000 + k * p + if k >= 5 { 64 } else { 0 }).collect();
+        assert_eq!(assign_cameras(&late, p).unwrap().0, vec![1, 1, 1, 1, 1, 0, 0, 0]);
+        let (eye, reason, _) = cameras_for(&late, p, None);
+        assert_eq!(eye, vec![1, 1, 1, 1, 0, 0, 0, 0]);
+        assert!(reason.contains("is not 4 + 4"), "{reason}");
+        // The device's usual layout with the pictures agreeing: as before, no warning
+        let off: Vec<usize> = (0..8).map(|k| 0x23_4100 + k * p + if k >= 4 { 64 } else { 0 }).collect();
+        let (eye, reason, _) = cameras_for(&off, p, Some(&[0, 0, 0, 0, 1, 1, 1, 1]));
+        assert_eq!(eye, vec![1, 1, 1, 1, 0, 0, 0, 0]);
+        assert!(reason.contains("before slot 4") && !reason.contains("WARNING"), "{reason}");
+        // A partial ring (a slot dropped) still follows its layout boundary, and without one the pictures
+        assert_eq!(cameras_for(&off[1..6], p, None).0, vec![1, 1, 1, 0, 0]);
+        let (eye, _, both) = cameras_for(&jumbled[..5], p, Some(&[0, 1, 0, 0, 1]));
+        assert_eq!((eye, both), (vec![1, 0, 1, 1, 0], true));
+        // One camera streaming: one group, not flipped
+        let (eye, _, both) = cameras_for(&off[..4], p, None);
+        assert_eq!((eye, both), (vec![0; 4], false));
     }
 
     #[test]

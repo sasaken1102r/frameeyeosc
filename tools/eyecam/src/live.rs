@@ -1341,7 +1341,7 @@ pub fn fit_wear_eyes(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> [Ey
         let close: Vec<Sample> = s.iter().copied().filter(is(Label::Close)).collect();
         let n_pupil = normal.iter().filter(|x| x.ok).count();
         let (b_n, nn) = med_of(&normal, |x| x.ok.then_some(x.skin));
-        let (b_w, nw) = med_of(&widen, |x| x.ok.then_some(x.skin));
+        let (b_w, nw) = widen_level(&widen, b_n);
         let (ap_n, _) = med_of(&normal, |x| x.ok.then_some(x.ap));
         let (ap_cl, nc) = med_of(&close, |x| Some(x.ap));
         if n_pupil < need.normal {
@@ -1888,6 +1888,24 @@ impl CalibFile {
 /// Thresholds of the calibration checks (fit_wear / fit_user use the same numbers).
 pub const MIN_WIDEN_STEP: f64 = 0.05;
 pub const MIN_OPEN_GAP: f64 = 0.2;
+/// A widen frame whose upper lid line lies more than this (iris radii) below the normal level is left out of the
+/// widen level: a widened lid is never lower than the normal one, so such a line is not the lid. Some wearers' lid
+/// line is faint enough that the search sometimes takes another line in its band instead: the band's floor (about
+/// 15 to 23 px under the pupil centre, -0.26 to -0.40 R) or the pupil's own upper rim (+0.45 R), both 0.5 R or more
+/// under a normal level of about 1.0. A user's wear calibration of 2026-10-14 took the floor in more than half of its
+/// widen frames and measured a widen level of -0.398 on both eyes ("見開きは取れなかった"); the same user's guided capture of
+/// 2026-10-17 has the pupil rim in about a fifth of the right eye's widen frames (its third widen: 0.47, the real
+/// lid 1.95). A real widen raises the line (the developer's by +0.25, that user's by +0.75 to 0.9), and 0.2 leaves room
+/// for a widen held weakly around the normal level; frames lowered further than that are not a widen (a blink, a
+/// look down), so leaving them out is right either way.
+pub const WIDEN_MIN_BELOW_N: f64 = 0.2;
+
+/// The widen level of the widen frames among `s`: the median upper lid line of those with the pupil and a line no
+/// more than WIDEN_MIN_BELOW_N below the normal level `b_n`, and how many those are (they are what NEED_WIDEN counts,
+/// so too few of them falls back to the usual widen step as before).
+fn widen_level(s: &[Sample], b_n: f64) -> (f64, usize) {
+    med_of(s, |x| (x.label == Label::Widen && x.ok && x.skin >= b_n - WIDEN_MIN_BELOW_N).then_some(x.skin))
+}
 
 /// How many frames a calibration check needs, relative to what the cameras delivered: at least `share` of the
 /// step's frames, `seconds` worth at the cameras' frame rate, and `floor`. The cameras run at 90 frames a second on
@@ -2028,7 +2046,8 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(r_px)).collect();
         let n_pupil = s.iter().filter(|x| x.label == Label::Normal && x.ok).count();
         let (b_n, nn) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.skin));
-        let (b_w, nw) = med_of(&s, |x| (x.label == Label::Widen && x.ok).then_some(x.skin));
+        let (b_w, nw) = widen_level(&s, b_n);
+        let below = s.iter().filter(|x| x.label == Label::Widen && x.ok && x.skin < b_n - WIDEN_MIN_BELOW_N).count();
         let (ap_n, _) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.ap));
         let (ap_cl, nc) = med_of(&s, |x| (x.label == Label::Close).then_some(x.ap));
         let all = |l: Label| s.iter().filter(|x| x.label == l).count();
@@ -2039,7 +2058,7 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         let d = diag_report(&s);
         eyes.push(format!(
             "\"{}\": {{\"r_px\": {}, \"b_n\": {}, \"b_w\": {}, \"widen_step\": {}, \"ap_n\": {}, \"ap_cl\": {}, \"open_gap\": {}, \
-\"normal_frames_with_pupil\": {n_pupil}, \"normal_frames_with_lid_line\": {nn}, \"widen_frames_with_pupil\": {nw}, \"close_frames_with_lids\": {nc}, \
+\"normal_frames_with_pupil\": {n_pupil}, \"normal_frames_with_lid_line\": {nn}, \"widen_frames_with_pupil\": {nw}, \"widen_frames_below_normal\": {below}, \"close_frames_with_lids\": {nc}, \
 \"pupil_seen_share\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}, \"diag\": {}}}",
             ["L", "R"][e],
             json::num(r_px),
@@ -2056,7 +2075,7 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         ));
         lines.push(format!(
             "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
-frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), R {:.1} px; {}",
+frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, R {:.1} px; {}",
             ["L", "R"][e],
             b_w - b_n,
             b_n,
@@ -2348,6 +2367,44 @@ mod tests {
                 seen: Seen::default(),
             })
             .collect()
+    }
+
+    /// One eye's wear steps with a user's levels: normal 1.0 R, closed aperture 0.56, and the given widen frames.
+    fn wear_eye_with_widen(widen: &[(usize, f64)]) -> Vec<Sample> {
+        let mut eye = samples(Label::Normal, 300, 1.0, 1.7, -14.0, 250.0, true);
+        for &(n, skin) in widen {
+            eye.extend(samples(Label::Widen, n, skin, 2.4, -14.0, 252.0, true));
+        }
+        eye.extend(samples(Label::Close, 80, f64::NAN, 0.56, -14.0, 240.0, false));
+        eye
+    }
+
+    #[test]
+    fn widen_frames_with_the_lid_line_below_normal_are_left_out() {
+        // A user's guided capture of 2026-10-17: in some widen frames the line found is the search band's floor
+        // (-0.35 R) or the pupil's upper rim (+0.45 R), not the widened lid (1.85 R). Taken together their median
+        // was the rim (0.45), below normal: no widen. Without them it is the lid.
+        let faint = wear_eye_with_widen(&[(90, 1.85), (60, -0.35), (50, 0.45)]);
+        let both = [faint.clone(), faint];
+        let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
+        assert!(measured);
+        assert!((w[0].b_w - 1.85).abs() < 1e-9 && (w[0].b_n - 1.0).abs() < 1e-9, "{:?}", w[0]);
+        // The report has the same widen level, and how many frames were left out.
+        let (report, lines) = wear_report(&both);
+        assert!(report.contains("\"widen_step\": 0.85") && report.contains("\"widen_frames_below_normal\": 110"), "{report}");
+        assert!(lines[0].contains("widen 90 (need ") && lines[0].contains("widen below normal left out 110,"), "{}", lines[0]);
+        // The same user's wear calibration of 2026-10-14 (-0.398 on both eyes): mostly the floor, too few frames left for a
+        // widen. It falls back to the usual step as it did before, and does not fail.
+        let floor = wear_eye_with_widen(&[(50, 1.85), (150, -0.398)]);
+        let (w, measured) = fit_wear(&[floor.clone(), floor], [0.19; 2]).unwrap();
+        assert!(!measured && (w[0].b_w - w[0].b_n - 0.19).abs() < 1e-9, "{:?}", w[0]);
+        // A wearer whose lid line is found: a few frames a little under normal (a weak start, a half blink) stay in,
+        // and the widen level is the plain median as before.
+        let usual = wear_eye_with_widen(&[(150, 1.25), (30, 1.2), (20, 0.85)]);
+        let (w, measured) = fit_wear(&[usual.clone(), usual.clone()], [0.19; 2]).unwrap();
+        let (plain, n) = med_of(&usual, |x| (x.label == Label::Widen && x.ok).then_some(x.skin));
+        assert!(measured && n == 200 && w[0].b_w == plain && (plain - 1.25).abs() < 1e-9, "{:?}", w[0]);
+        assert!(wear_report(&[usual.clone(), usual]).0.contains("\"widen_frames_below_normal\": 0"));
     }
 
     #[test]

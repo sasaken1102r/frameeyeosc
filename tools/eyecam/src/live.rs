@@ -616,6 +616,14 @@ impl AutoBase {
         }
     }
 
+    /// Learn the open-eye levels again from a fresh warm-up, as at the start of a wear. The wearer's typical pitch
+    /// stays: it is about where they look, not how open their eyes are, and it decides which frames the warm-up may
+    /// use (cleared, the first frames with a pitch would wait for it to fill again).
+    fn relearn(&mut self) {
+        let pitch_typ = std::mem::replace(&mut self.pitch_typ, LongMedian::new(0.0));
+        *self = Self { pitch_typ, ..Self::default() };
+    }
+
     fn seed(&mut self, b: f64, ap_n: f64) {
         if b.is_finite() && ap_n.is_finite() {
             (self.b, self.ap_n, self.ready) = (b, ap_n, true);
@@ -698,6 +706,15 @@ impl EyeEngine {
     /// Forget everything learnt about the current wear (lens edge, R, open levels).
     pub fn reset(&mut self) {
         *self = Self { ex: std::mem::take(&mut self.ex), ..Self::default() };
+    }
+
+    /// Learn this wear's open-eye levels again (`relearn` on ctl.sock): the auto baseline's warm-up starts over, as at
+    /// the start of a wear, and EyeWide waits for it again. Unlike `reset`, everything else learnt about the wear
+    /// stays (lens edge, search window, iris radius, the open eye's pupil size, darkness and iris-box brightness that
+    /// tell a closed eye, the wearer's typical pitch): only the levels the wearer's eyes rest at are relearnt, and
+    /// blinks keep working meanwhile.
+    pub fn relearn(&mut self) {
+        self.base.relearn();
     }
 
     /// Forget where the pupil was (the search prior, the last pupil the lids are measured around, the run of frames
@@ -3240,5 +3257,43 @@ mod tests {
         let mut c = AutoBase::default();
         c.seed(41.0, 79.0);
         assert!(c.ready && c.b == 41.0);
+    }
+
+    #[test]
+    fn relearn_restarts_only_the_warm_up() {
+        let mut e = EyeEngine::default();
+        // A wear calibration's levels, and what the engine learnt about the wear meanwhile
+        let w = WearParams { r_px: 50.0, b_n: 0.8, b_w: 1.0, ap_n: 1.6, ap_cl: 0.5, pitch_n: -12.0, lower_px: 240.0 };
+        e.seed(&w);
+        assert!(e.baseline_ready() && e.warmup_remaining_s() == 0.0);
+        assert_eq!(e.baseline_px(), Some((40.0, 80.0)));
+        e.xmax = 300.0;
+        e.x_min = 120.0;
+        e.find_x_min = 110.0;
+        for k in 0..100 {
+            e.base.pitch_typ.push(-10.0 + (k % 3) as f64, 45.0);
+            e.r_est.push(50.0, 45.0);
+            e.box_open.push(90.0, 45.0);
+            e.a_open.push(12.0, 45.0);
+        }
+        e.t_first = 3.0;
+        let pitch = e.base.pitch_typ.value;
+        assert!(pitch.is_finite());
+        e.relearn();
+        // The warm-up again, from nothing: no open-eye levels until it is over
+        assert!(!e.baseline_ready());
+        assert_eq!(e.warmup_remaining_s(), WARMUP_S);
+        assert_eq!(e.baseline_px(), None);
+        assert!(e.base.b.is_nan() && e.base.ap_n.is_nan() && e.base.skin.is_empty() && e.base.seconds == 0.0);
+        // ...the rest of the wear kept
+        assert_eq!((e.xmax, e.x_min, e.find_x_min, e.t_first), (300.0, 120.0, 110.0, 3.0));
+        assert_eq!((e.r_est.value, e.box_open.value, e.a_open.value), (50.0, 90.0, 12.0));
+        assert_eq!((e.base.pitch_typ.len(), e.base.pitch_typ.value), (100, pitch));
+        // A wear calibration seeds it again at once, as before
+        e.seed(&w);
+        assert!(e.baseline_ready());
+        // reset (a new wear) forgets the wear too
+        e.reset();
+        assert!(e.base.pitch_typ.value.is_nan() && e.r_est.value.is_nan() && e.xmax == 346.0);
     }
 }

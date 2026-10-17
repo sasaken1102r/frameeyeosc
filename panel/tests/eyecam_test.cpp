@@ -550,6 +550,26 @@ void testCalib() {
     for (int bits = 0; bits <= 3; ++bits) {
         CHECK(eyecam::userCalibAllowed(calibStatus("idle", bits)) == ((bits & 1) != 0));
     }
+    // "Relearn my eyes": eyecam-rec there, idle and live with the eye video, one that learns the relaxed eyes by
+    // itself, camera_lids on and the cameras in use (or learning to); calibrated or not
+    CHECK(std::string(eyecam::kRelearnCommand) == "relearn");
+    const Status relearnable = calibStatus("idle", 5, ", \"baseline\": \"ready\"");
+    CHECK(eyecam::relearnAllowed(true, relearnable, true, true));
+    CHECK(eyecam::relearnAllowed(true, calibStatus("idle", 0, ", \"baseline\": \"warming\""), true, true));
+    CHECK(!eyecam::relearnAllowed(false, relearnable, true, true));   // stale or stopped
+    CHECK(!eyecam::relearnAllowed(true, relearnable, false, true));   // camera_lids off
+    CHECK(!eyecam::relearnAllowed(true, relearnable, true, false));   // the cameras not in use
+    CHECK(!eyecam::relearnAllowed(true, calibStatus("idle", 5), true, true));  // an eyecam-rec before "baseline"
+    for (const char* busyState : {"calibrating", "recording", "searching", "error", "waiting_fds"}) {
+        CHECK(!eyecam::relearnAllowed(true, calibStatus(busyState, 5, ", \"baseline\": \"ready\""), true, true));
+    }
+    CHECK(!eyecam::relearnAllowed(
+        true, eyecam::parseStatus("{\"state\": \"idle\", \"locked\": false, \"live\": true, \"baseline\": \"ready\"}", kNow),
+        true, true));  // no eye video
+    CHECK(!eyecam::relearnAllowed(
+        true, eyecam::parseStatus("{\"state\": \"idle\", \"locked\": true, \"live\": false, \"baseline\": \"ready\"}", kNow),
+        true, true));  // not reading the cameras
+    CHECK(eyecam::runOfCommand(eyecam::kRelearnCommand) == eyecam::Run::None);  // not a run of its own
 
     // The run a command starts
     CHECK(eyecam::runOfCommand("calib wear") == Run::CalibWear);

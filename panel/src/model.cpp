@@ -618,6 +618,10 @@ bool learnedShown(bool learned, bool live, CameraUse use) {
     return learned && live && use != CameraUse::NoCamera;
 }
 
+bool relearnUse(CameraUse use) {
+    return use == CameraUse::Both || use == CameraUse::Left || use == CameraUse::Right || use == CameraUse::Warming;
+}
+
 double helpBoxHeight(int rows) {
     return 40 + rows * 30;
 }

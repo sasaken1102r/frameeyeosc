@@ -398,6 +398,9 @@ pub enum Command {
     DriftLogOn(Option<String>),
     /// `driftlog off`: stop it (the same).
     DriftLogOff,
+    /// `relearn`: learn the relaxed eyes again (the auto baseline's warm-up, as on a new wear), keeping this wear's
+    /// calibration. Only while idle with the eye video coming in.
+    Relearn,
 }
 
 /// The reply to `driftlog on <stem>` with a stem that isn't an eye log's name.
@@ -418,6 +421,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         }
         (Some("stop"), None) => Command::Stop,
         (Some("status"), None) => Command::Status,
+        (Some("relearn"), None) => Command::Relearn,
         (Some("calib"), Some("wear")) => Command::Calib(CalibKind::Wear),
         (Some("calib"), Some("user")) => Command::Calib(CalibKind::User),
         (Some("live"), Some("on")) => Command::Live(true),
@@ -454,6 +458,8 @@ mod tests {
         assert_eq!(parse_command("status"), Ok(Command::Status));
         assert_eq!(parse_command("calib wear"), Ok(Command::Calib(CalibKind::Wear)));
         assert_eq!(parse_command("calib user"), Ok(Command::Calib(CalibKind::User)));
+        assert_eq!(parse_command("relearn\n"), Ok(Command::Relearn));
+        assert!(parse_command("relearn now").is_err() && parse_command("relearn_").is_err());
         assert_eq!(parse_command("live off"), Ok(Command::Live(false)));
         assert!(parse_command("calib").is_err() && parse_command("live maybe").is_err());
         assert_eq!(parse_command("preview on\n"), Ok(Command::Preview(true)));

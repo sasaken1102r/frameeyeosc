@@ -184,6 +184,54 @@ void testWidenRouting(const FontSet& fonts) {
     }
 }
 
+void testRelearnButton(const FontSet& fonts) {
+    // "Relearn my eyes" at the right of the eye cameras' state row: usable while eyecam-rec reads the cameras live
+    // with the eye video and the cameras drive the eyelids (or learn to)
+    EyePanel panel(fonts);
+    PanelModel m = modelWith(Lids::Both);
+    panel.setTab(PanelTab::Eyecam);
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).empty());  // not live yet
+    eyecam::Status& e = m.eyecam.status;
+    e.live = e.locked = true;
+    e.hasBaseline = true;
+    e.baseline = "ready";
+    panel.render(m);
+    const std::vector<EyePanel::HitArea> relearn = hits(panel, PanelAction::EyecamRelearn);
+    CHECK(relearn.size() == 1);
+    // ...on the card, within the panel's right edge, at the state row (above the calibration buttons)
+    const std::vector<EyePanel::HitArea> calib = hits(panel, PanelAction::EyecamCalib);
+    if (relearn.size() == 1 && !calib.empty()) {
+        CHECK(relearn[0].x + relearn[0].w <= panel.width() && relearn[0].y + relearn[0].h <= calib[0].y);
+    }
+    // While learning (the countdown in the pill) it can be pressed again; not while a command waits, nor with the
+    // cameras unused, camera_lids off or no eye video
+    e.baseline = "warming";
+    e.warmupRemainingS = 12;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).size() == 1);
+    m.eyecam.busy = true;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).empty());
+    m.eyecam.busy = false;
+    e.locked = false;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).empty());
+    e.locked = true;
+    PanelModel valve = modelWith(Lids::Valve);
+    valve.eyecam.status = e;
+    valve.status.camera.calibState = 5;
+    panel.render(valve);
+    CHECK(hits(panel, PanelAction::EyecamRelearn).empty());
+    // The model's rule: the cameras in use, or learning to
+    CHECK(relearnUse(CameraUse::Both) && relearnUse(CameraUse::Left) && relearnUse(CameraUse::Right) &&
+          relearnUse(CameraUse::Warming));
+    for (CameraUse other : {CameraUse::Unknown, CameraUse::Off, CameraUse::NotCalibrated, CameraUse::NoCamera,
+                            CameraUse::Error, CameraUse::Valve}) {
+        CHECK(!relearnUse(other));
+    }
+}
+
 void testSliderMoved(const FontSet& fonts) {
     // The eye cameras' page: no sensitivity slider any more, a pointer to the Eyelids tab instead
     EyePanel panel(fonts);
@@ -2602,6 +2650,7 @@ int main() {
     testGazePages(fonts);
     testGazeScaleLocks(fonts);
     testSliderMoved(fonts);
+    testRelearnButton(fonts);
     testNumberSlider(fonts);
     testPupilBitsRow(fonts);
     testOutputCards(fonts);

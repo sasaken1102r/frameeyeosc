@@ -381,13 +381,16 @@ void printUsage() {
         "  --probe               Diagnostics: connect to SteamVR as a background app and describe the resident panel\n"
         "  --probe-switch-away [S]  Diagnostics: switch the dashboard to a temporary overlay for S s (default 3)\n"
         "  --version             Print the version\n"
-        "  --action recenter|fit|stop|open  Ask the running panel to start the gaze re-center, start the eye fit,\n"
-        "                        stop the one running, or open the panel (as its buttons do; the dashboard may stay\n"
-        "                        closed). Never starts the panel. Prints one line to stderr and exits with:\n"
-        "                        0 accepted (started / stopped / shown), 1 unknown action or bad arguments,\n"
-        "                        2 panel not running, 3 no answer from the panel, 4 frameeyeosc not running or no eye\n"
-        "                        data, 5 re-center before any gaze fit, 6 busy (a fit or re-center runs; stop it\n"
-        "                        first), 7 nothing to stop, 8 the fit's values are locked by frameeyeosc's command line\n"
+        "  --action recenter|fit|stop|relearn|open  Ask the running panel to start the gaze re-center, start the eye\n"
+        "                        fit, stop the fit or re-center running, relearn the relaxed eyes on the eye cameras,\n"
+        "                        or open the panel (as its buttons do; the dashboard may stay closed). Never starts the\n"
+        "                        panel. Prints one line to stderr and exits with:\n"
+        "                        0 accepted (started / stopped / shown), 1 unknown action or bad arguments (any usage\n"
+        "                        error of this program exits 1), 2 panel not running, 3 no answer from the panel,\n"
+        "                        4 frameeyeosc not running, 5 re-center before any gaze fit, 6 busy: an eye fit is\n"
+        "                        running (stop it first), 7 nothing to stop, 8 the fit's values are locked by\n"
+        "                        frameeyeosc's command line, 9 no eye data (the headset off?), 10 busy: a re-center is\n"
+        "                        running, 11 relearn: the eye cameras aren't in use or ready\n"
         "  --config PATH         Config file (default ~/.config/frameeyeosc/config.json)\n"
         "  --status PATH         Status file (default $XDG_RUNTIME_DIR/frameeyeosc/status.json)\n");
 }
@@ -2203,7 +2206,7 @@ int runDumpPng(const Options& options) {
             }
             // Wait for eyecam-rec's reply, and show the folder as it is after it
             if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop ||
-                hit.action == PanelAction::EyecamCalib) {
+                hit.action == PanelAction::EyecamCalib || hit.action == PanelAction::EyecamRelearn) {
                 while (eyecamControl.busy()) {
                     eyecamControl.poll(nowSeconds());
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -2376,7 +2379,7 @@ int runReportMake(const Options& options) {
         !parseLocalTime(a[2], s.end) || !report::parseResult(a[3], s.result) || s.end < s.start) {
         std::fprintf(stderr, "--report-make KIND START END RESULT REASON: KIND fit|recenter|calib-wear|calib-user, "
                              "START / END \"YYYY-MM-DD HH:MM:SS\", RESULT ok|failed|partial|stopped\n");
-        return 2;
+        return 1;
     }
     s.mode = s.kind == report::Kind::Fit ? "full" : s.kind == report::Kind::Recenter ? "center" : "";
     s.reason = s.reasonEn = a[4];
@@ -3027,14 +3030,16 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             return;
         case PanelAction::EyecamChoose:
         case PanelAction::EyecamStop:
-        case PanelAction::EyecamCalib: {
-            // One line to its socket ("start" or "start widen_nolight" from the light warning, "stop", or a
-            // calibration); the reply is read by the loop (eyecam::Control never waits)
+        case PanelAction::EyecamCalib:
+        case PanelAction::EyecamRelearn: {
+            // One line to its socket ("start" or "start widen_nolight" from the light warning, "stop", a calibration,
+            // or "relearn"); the reply is read by the loop (eyecam::Control never waits)
             if (eyecamControl == nullptr) return;
             const std::string command =
-                hit.action == PanelAction::EyecamStop    ? std::string("stop")
-                : hit.action == PanelAction::EyecamCalib ? eyecam::calibCommand(static_cast<eyecam::Calib>(hit.arg))
-                                                         : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
+                hit.action == PanelAction::EyecamStop      ? std::string("stop")
+                : hit.action == PanelAction::EyecamRelearn ? std::string(eyecam::kRelearnCommand)
+                : hit.action == PanelAction::EyecamCalib   ? eyecam::calibCommand(static_cast<eyecam::Calib>(hit.arg))
+                                                           : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
             if (command.empty()) return;
             const std::string socket = model.eyecamDir + "/ctl.sock";
             std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
@@ -3449,6 +3454,10 @@ int runOverlay(const Options& options) {
     // Requests from `frameeyeosc-panel --action` (action_socket.h), taken from now on: the actions need SteamVR (the
     // targets, the dashboard), so before this the command finds no socket and says the panel isn't running
     action_socket::Server actionServer;
+    // ...and "relearn" on eyecam-rec's control socket for them (a connection of its own, so the Eye cameras tab's
+    // replies stay its own), answered once eyecam-rec has
+    eyecam::Control relearnControl;
+    int relearnRequest = 0;  // the request waiting for it (0: none)
     {
         std::string error;
         const std::string path = action_socket::defaultSocketPath();
@@ -3784,7 +3793,17 @@ int runOverlay(const Options& options) {
             state.gazeFitted = fitInConfig(view).gazeFitted;
             state.fitActive = fit.active();
             state.fitIsRecenter = fit.view().mode == gaze_fit::Mode::Center;
-            const action_socket::Decision decision = action_socket::decide(request.action, state);
+            if (request.action == action_socket::Action::Relearn) {
+                // eyecam-rec's status as it is now (it is read once a second while nothing runs)
+                model.eyecam.status = eyecam::readStatus(model.eyecamDir);
+                lastEyecamRead = nowSeconds();
+                const bool lids = view.flag(key::kCameraLids);
+                const bool warming = eyecam::baselineWarming(model.eyecam.status);
+                state.camerasReady =
+                    eyecam::relearnAllowed(eyecam::tabVisible(model.eyecam.status, unixNow()), model.eyecam.status, lids,
+                                           relearnUse(cameraUse(model.status, lids, warming)));
+            }
+            action_socket::Decision decision = action_socket::decide(request.action, state);
             std::fprintf(stderr, "[action] %s (from PID %d): %s\n", action_socket::actionName(request.action),
                          request.peerPid, decision.text.c_str());
             switch (decision.effect) {
@@ -3807,9 +3826,38 @@ int runOverlay(const Options& options) {
                     fit.cancel();
                     break;
                 case Effect::ShowPanel: vr.showPanel(); break;
+                case Effect::Relearn: {
+                    // Answered once eyecam-rec has (below), unless it can't even be asked
+                    const std::string socket = model.eyecamDir + "/ctl.sock";
+                    if (relearnRequest != 0 || relearnControl.busy()) {
+                        decision = {action_socket::Code::NoCameras, "eye cameras not ready (a relearn is on its way)",
+                                    Effect::None};
+                    } else if (relearnControl.send(socket, eyecam::kRelearnCommand, nowSeconds(),
+                                                   action_socket::kEyecamReplySec)) {
+                        std::fprintf(stderr, "[eyecam] sending \"%s\" to %s (--action)\n", eyecam::kRelearnCommand,
+                                     socket.c_str());
+                        relearnRequest = request.id;
+                        continue;
+                    } else {
+                        decision = action_socket::relearnAnswer(false, relearnControl.reply().error);
+                    }
+                    std::fprintf(stderr, "[action] relearn: %s\n", decision.text.c_str());
+                    break;
+                }
                 case Effect::None: break;
             }
             actionServer.answer(request.id, decision.code, decision.text);
+        }
+        // ...and the relearn's, once eyecam-rec has answered (or kEyecamReplySec has gone by)
+        if (relearnControl.poll(nowSeconds()) && relearnRequest != 0) {
+            const eyecam::Reply& r = relearnControl.reply();
+            const action_socket::Decision answer = action_socket::relearnAnswer(r.ok, r.error);
+            std::fprintf(stderr, "[eyecam] %s -> %s%s; [action] relearn: %s\n", r.command.c_str(), r.ok ? "ok" : "err ",
+                         r.error.c_str(), answer.text.c_str());
+            actionServer.answer(relearnRequest, answer.code, answer.text);
+            relearnRequest = 0;
+            // (the Eye cameras tab's countdown follows from eyecam-rec's status, read again now)
+            lastEyecamRead = -1e9;
         }
 
         // A fit started (from the panel, by itself or from --action): its record starts
@@ -4495,10 +4543,11 @@ int main(int argc, char** argv) {
         return code;
     }
 
+    // Every usage error exits 1 (2 is --action's "panel not running")
     Options options;
     if (!parseOptions(argc, argv, options)) {
         printUsage();
-        return 2;
+        return 1;
     }
     switch (options.mode) {
         case Options::Mode::Help: printUsage(); return 0;

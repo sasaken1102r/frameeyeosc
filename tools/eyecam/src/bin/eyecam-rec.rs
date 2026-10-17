@@ -880,6 +880,13 @@ impl Live {
         self.send(Msg::SetLive(on));
     }
 
+    /// `relearn`: the worker starts the auto baseline's warm-up again (or says why not).
+    fn relearn(&self) -> std::result::Result<(), String> {
+        let (tx, rx) = mpsc::channel();
+        self.send(Msg::Relearn(tx));
+        rx.recv_timeout(Duration::from_secs(2)).unwrap_or_else(|_| Err("応答がない".into()))
+    }
+
     fn wear_calibrated(&self) -> bool {
         self.shared.calib_state.load(Ordering::Relaxed) & 1 != 0
     }
@@ -986,6 +993,16 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                 }
                 Command::Stop | Command::Status => {
                     answer(req, "err 録画していない");
+                    continue;
+                }
+                // Only with the eye video coming in (a ring locked); the worker checks the rest (live, its frames)
+                Command::Relearn => {
+                    let reply = match (live.on, pump.is_some()) {
+                        (false, _) => format!("err {}", livesvc::RELEARN_NOT_LIVE),
+                        (true, false) => format!("err {}", livesvc::RELEARN_NO_VIDEO),
+                        (true, true) => live.relearn().map_or_else(|e| format!("err {e}"), |()| "ok".into()),
+                    };
+                    answer(req, &reply);
                     continue;
                 }
                 // Answered by the control thread; never sent here.
@@ -1123,10 +1140,13 @@ fn fake(args: &Args, d: &Daemon) {
     let mut calib_state = 0u32;
     let mut live_on = true;
     let mut failed_calib = false;
-    let render = |phase: &Phase, now: f64, calib_state: u32, live_on: bool, failed_calib: bool| {
+    // When `relearn` started the made-up warm-up again (it then counts even after a calib wear, as the real one)
+    let mut relearn_at: Option<f64> = None;
+    let render = |phase: &Phase, now: f64, calib_state: u32, live_on: bool, failed_calib: bool, relearn_at: Option<f64>| {
         d.set(|s| {
-            let left = (eyecam::live::WARMUP_S - (now - t0 - 5.0)).clamp(0.0, eyecam::live::WARMUP_S);
-            let ready = live_on && left == 0.0 || calib_state & 1 != 0;
+            let from = relearn_at.unwrap_or(t0 + 5.0);
+            let left = (eyecam::live::WARMUP_S - (now - from)).clamp(0.0, eyecam::live::WARMUP_S);
+            let ready = live_on && left == 0.0 || (relearn_at.is_none() && calib_state & 1 != 0);
             // As live: the auto baseline only counts in calib_state once the setup (a calib wear) is done.
             let setup = calib_state & 1 != 0;
             s.calib_state = calib_state | ((ready && setup) as u32) << 2;
@@ -1234,6 +1254,13 @@ fn fake(args: &Args, d: &Daemon) {
                     let name = if kind == CalibKind::Wear { "calib wear" } else { "calib user" };
                     (Phase::Searching(now, calib_steps(kind), name.into(), Some(kind)), "ok".into())
                 }
+                (Phase::Idle(message), Command::Relearn) if live_on => {
+                    relearn_at = Some(now);
+                    (Phase::Idle(message), "ok".into())
+                }
+                (Phase::Idle(message), Command::Relearn) => {
+                    (Phase::Idle(message), format!("err {}", livesvc::RELEARN_NOT_LIVE))
+                }
                 (Phase::Idle(message), _) => (Phase::Idle(message), "err 録画していない".into()),
                 (Phase::Searching(_, _, _, calib), Command::Stop) => {
                     let msg = if calib.is_some() { "（fake）校正を中止した" } else { "（fake）中止した" };
@@ -1248,7 +1275,7 @@ fn fake(args: &Args, d: &Daemon) {
                 (p, _) => (p, "err 録画中".into()),
             };
             // The state changes before the reply goes out, so status.json already shows it.
-            render(&phase, now, calib_state, live_on, failed_calib);
+            render(&phase, now, calib_state, live_on, failed_calib, relearn_at);
             let _ = reply.send(text);
         }
         phase = match phase {
@@ -1269,6 +1296,7 @@ fn fake(args: &Args, d: &Daemon) {
                     failed_calib = failed == "LR";
                     if !failed_calib {
                         calib_state |= 1;
+                        relearn_at = None;
                     }
                     Phase::Idle(message)
                 }
@@ -1283,7 +1311,7 @@ fn fake(args: &Args, d: &Daemon) {
             },
             p => p,
         };
-        render(&phase, now, calib_state, live_on, failed_calib);
+        render(&phase, now, calib_state, live_on, failed_calib, relearn_at);
         thread::sleep(Duration::from_millis(50));
     }
 }
@@ -1446,7 +1474,7 @@ fn receive_buffers(wait: f64, ctl: Option<&Daemon>) -> Result<(proto::Header, Ve
         while let Some(req) = ctl.and_then(Daemon::request) {
             let reply = match req.command {
                 Command::Start(_) | Command::Calib(_) => "err まだバッファを受け取ってない",
-                Command::Live(_) => "err まだバッファを受け取ってない",
+                Command::Live(_) | Command::Relearn => "err まだバッファを受け取ってない",
                 _ => "err 録画していない",
             };
             answer(req, reply);

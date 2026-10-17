@@ -6468,6 +6468,22 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
             pen.text(tx, centerBaseline(py, pillH, pillSize), pillText, pillSize, learned ? kSuccess : kText);
         }
         y += h;
+        // Under it: learn the relaxed eyes again (eyecam-rec's "relearn": the warm-up as when the headset is put on,
+        // this wear's calibration kept), while the cameras are read with the eye video; the pill then counts down
+        // again. A line of its own, so the state and the pill's seconds keep their room
+        {
+            const double rh = 48;
+            const double rbH = 38;
+            const double rbW = pen.measure(t.camRelearnButton, 16, true) + 40;
+            const double rbX = kInnerRight - rbW;
+            const bool canRelearn = eyecam::relearnAllowed(view.visible, s, v.flag(key::kCameraLids), relearnUse(use));
+            drawButton(pen, rbX, y + (rh - rbH) / 2 - 4, rbW, rbH, t.camRelearnButton,
+                       {PanelAction::EyecamRelearn, nullptr, 0}, canRelearn && !busy, false, 16);
+            const double room = rbX - 14 - textX;
+            pen.text(textX, centerBaseline(y - 4, rh, 15), ellipsize(pen, t.camRelearnHint, 15, false, room, false), 15,
+                     kTextMuted);
+            y += rh;
+        }
         divider(y);
     }
     // A calibration when something feels off, and the user's own (optional, for squinting)

@@ -1,5 +1,6 @@
 // Actions from outside the panel: `frameeyeosc-panel --action NAME` asks the resident panel to do what one of its
-// buttons does (start the gaze re-center or the eye fit, stop it, open the panel), for other apps on the Frame (the
+// buttons does (start the gaze re-center or the eye fit, stop it, relearn the relaxed eyes on the eye cameras, open
+// the panel), for other apps on the Frame (the
 // aux button of frame-aux-shortcuts: press for the re-center, hold for the eye fit). The resident panel listens on a
 // Unix stream socket in $XDG_RUNTIME_DIR (only the same user can reach it: the folder is the user's, the socket is
 // 0600 and each connection's uid is checked); the command connects, sends one line, waits for one line and exits with
@@ -8,7 +9,8 @@
 // without OpenVR (action_socket_test.cpp).
 //
 // The line protocol (ASCII, one line each way, then the panel closes the connection):
-//   request: the action's name ("recenter", "fit", "stop", "open"), at most kMaxLine bytes with the newline
+//   request: the action's name ("recenter", "fit", "stop", "relearn", "open"), at most kMaxLine bytes with the
+//            newline
 //   reply:   the exit code, a space and a short English text ("0 started", "6 busy (a fit is running; ...)")
 // An unknown name is answered with code 1 (a newer command talking to an older panel); anything longer than kMaxLine,
 // or not a line at all, is dropped without an answer.
@@ -23,25 +25,33 @@ namespace action_socket {
 constexpr const char* kSocketName = "frameeyeosc-panel.sock";
 /** The longest a request or reply line may be (bytes, with the newline). Longer ones are not read. */
 constexpr size_t kMaxLine = 128;
-/** How long the command waits for the panel's answer (ms). The panel answers within one pass of its loop
- *  (0.25 s with the dashboard closed). */
+/** How long the command waits for the panel's answer (ms). The panel answers within one pass of its loop (at most
+ *  0.25 s apart, with the dashboard closed), "relearn" once eyecam-rec has answered (kEyecamReplySec at most). */
 constexpr int kReplyTimeoutMs = 2000;
+/** How long the panel waits for eyecam-rec's answer to "relearn" (s), so its own answer stays within kReplyTimeoutMs.
+ *  eyecam-rec answers in tens of ms. */
+constexpr double kEyecamReplySec = 1.0;
 /** How long the panel keeps a connection that hasn't sent its line (s), so a stuck client can't pile up. */
 constexpr double kRequestTimeoutSec = 1.0;
 /** At most this many connections wait for their line at once; more are closed at once. */
 constexpr size_t kMaxClients = 8;
 
-/** The exit codes of `--action` (fixed: other apps show a message per code). */
+/** The exit codes of `--action` (fixed: other apps show a message per code; new ones only go at the end). Every usage
+ *  error of the program, not only of --action, exits with Usage. */
 enum class Code {
-    Accepted = 0,     ///< the action started (stop: it stopped something; open: the panel was shown)
-    Usage = 1,        ///< an unknown action or bad arguments
-    NotRunning = 2,   ///< the panel isn't running (no socket, or nobody listening on it)
-    NoAnswer = 3,     ///< the panel didn't answer in time, or not in this protocol
-    NoEyeData = 4,    ///< frameeyeosc isn't running, or no eye data comes in
-    NotFitted = 5,    ///< the re-center needs a gaze fit first
-    Busy = 6,         ///< a fit or re-center is already running (send stop first)
-    NothingToStop = 7,  ///< stop, with no fit or re-center running
-    Locked = 8,       ///< the fit's values are set on frameeyeosc's command line (the panel's fit buttons are grey)
+    Accepted = 0,      ///< the action started (stop: it stopped something; open: the panel was shown)
+    Usage = 1,         ///< an unknown action, an unknown option or bad arguments
+    NotRunning = 2,    ///< the panel isn't running (no socket, or nobody listening on it)
+    NoAnswer = 3,      ///< the panel didn't answer in time, or not in this protocol
+    NoFrameeyeosc = 4, ///< frameeyeosc isn't running
+    NotFitted = 5,     ///< the re-center needs a gaze fit first
+    BusyFit = 6,       ///< an eye fit is running (send stop first)
+    NothingToStop = 7, ///< stop, with no fit or re-center running
+    Locked = 8,        ///< the fit's values are set on frameeyeosc's command line (the panel's fit buttons are grey)
+    NoEyeData = 9,     ///< frameeyeosc runs, but no eye data comes in (the headset off, or eye tracking stopped)
+    BusyRecenter = 10, ///< a re-center is running (also the automatic one after putting the headset on)
+    NoCameras = 11,    ///< relearn: the eye cameras aren't in use or not ready (off, not set up, eyecam-rec not running
+                       ///< or busy, no eye video), or eyecam-rec said no
 };
 
 /** The actions (more can follow: pause / resume sending, the eye cameras' calibration, the gaze dots). */
@@ -50,6 +60,7 @@ enum class Action {
     Fit,       ///< the eye fit, as "Fit again" (~20 s)
     Stop,      ///< stop a running fit or re-center, as its "Stop"
     Open,      ///< open the panel, as a second launch does
+    Relearn,   ///< relearn the relaxed eyes on the eye cameras (~30 s), as "Relearn my eyes" on the Eye cameras tab
 };
 
 /**
@@ -67,7 +78,7 @@ bool parseAction(const std::string& name, Action& action);
  */
 const char* actionName(Action action);
 
-/** @return the names joined with '|' for the usage line ("recenter|fit|stop|open") */
+/** @return the names joined with '|' for the usage line ("recenter|fit|stop|relearn|open") */
 std::string actionNames();
 
 /** What the panel's buttons look at, at the moment a request comes in. */
@@ -78,6 +89,9 @@ struct State {
     bool gazeFitted = false;  ///< the gaze has been fitted (FitInConfig::gazeFitted)
     bool fitActive = false;   ///< a fit or re-center runs (gaze_fit::Session::active)
     bool fitIsRecenter = false;  ///< ...and it is a re-center (the middle dot only)
+    /** The eye cameras drive the eyelids (or learn to) and eyecam-rec reads them live, idle with the eye video
+     *  (eyecam::relearnAllowed: what the "Relearn my eyes" button needs) */
+    bool camerasReady = false;
 };
 
 /** What the panel then does. */
@@ -87,6 +101,7 @@ enum class Effect {
     StartFit,       ///< start the whole eye fit (gaze_fit::Mode::Full)
     StopFit,        ///< stop the running one, as "Stop" does
     ShowPanel,      ///< open the dashboard on the panel, as a second launch does
+    Relearn,        ///< send "relearn" to eyecam-rec, and answer with what it says (relearnAnswer)
 };
 
 /** The answer to a request, and what to do for it. */
@@ -100,11 +115,21 @@ struct Decision {
  * Decide what an action does now, with the conditions of the button it stands for: the fit buttons need frameeyeosc
  * running and their values not locked, and not while a fit runs (they are hidden then; only "Stop" shows). The
  * re-center also needs a gaze fit, like the automatic one after putting the headset on, and both need eye data.
+ * Relearning needs the eye cameras ready, and waits for a fit too (the fit measures the eyelids). Checked in that
+ * order: busy, frameeyeosc, eye data, then the action's own.
  * @param action the action
  * @param state the panel's state now
  * @return the code, the reply's text and what to do
  */
 Decision decide(Action action, const State& state);
+
+/**
+ * The answer to "relearn" once eyecam-rec has replied to it.
+ * @param ok it said "ok"
+ * @param error otherwise why ("err"'s reason, Japanese; or what went wrong talking to it, English)
+ * @return Accepted, or NoCameras with a short English text
+ */
+Decision relearnAnswer(bool ok, const std::string& error);
 
 /**
  * The reply line for an answer.

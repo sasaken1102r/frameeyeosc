@@ -27,6 +27,7 @@ constexpr Named kActions[] = {
     {Action::Recenter, "recenter"},
     {Action::Fit, "fit"},
     {Action::Stop, "stop"},
+    {Action::Relearn, "relearn"},
     {Action::Open, "open"},
 };
 
@@ -104,7 +105,6 @@ std::string actionNames() {
 }
 
 Decision decide(Action action, const State& state) {
-    const char* const running = state.fitIsRecenter ? "re-center" : "fit";
     switch (action) {
         case Action::Stop:
             if (!state.fitActive) return {Code::NothingToStop, "nothing to stop", Effect::None};
@@ -113,13 +113,24 @@ Decision decide(Action action, const State& state) {
         case Action::Open: return {Code::Accepted, "panel shown", Effect::ShowPanel};
         case Action::Recenter:
         case Action::Fit:
-            // While a fit runs the panel shows only its "Stop", so a new one waits for that first
-            if (state.fitActive) {
-                return {Code::Busy, std::string("busy (a ") + running + " is running; use --action stop)", Effect::None};
+        case Action::Relearn:
+            // While a fit runs the panel shows only its "Stop", so a new one waits for that first (and the eyelids
+            // aren't relearnt while a fit measures them)
+            if (state.fitActive && state.fitIsRecenter) {
+                return {Code::BusyRecenter, "busy (a re-center is running; use --action stop)", Effect::None};
             }
-            // The buttons are grey while frameeyeosc doesn't run; without eye data the fit couldn't measure anything
-            if (!state.running) return {Code::NoEyeData, "frameeyeosc is not running", Effect::None};
-            if (!state.tracking) return {Code::NoEyeData, "no eye data from frameeyeosc", Effect::None};
+            if (state.fitActive) return {Code::BusyFit, "busy (a fit is running; use --action stop)", Effect::None};
+            // The buttons are grey while frameeyeosc doesn't run; without eye data (the headset off, most often)
+            // nothing could be measured
+            if (!state.running) return {Code::NoFrameeyeosc, "frameeyeosc is not running", Effect::None};
+            if (!state.tracking) return {Code::NoEyeData, "no eye data (is the headset on?)", Effect::None};
+            if (action == Action::Relearn) {
+                if (!state.camerasReady) {
+                    return {Code::NoCameras, "eye cameras not in use or not ready (see the panel's Eye cameras tab)",
+                            Effect::None};
+                }
+                return {Code::Accepted, "started", Effect::Relearn};
+            }
             if (state.locked) {
                 return {Code::Locked, "locked (the fit's values are set on frameeyeosc's command line)", Effect::None};
             }
@@ -131,6 +142,19 @@ Decision decide(Action action, const State& state) {
             return {Code::Accepted, "started", action == Action::Fit ? Effect::StartFit : Effect::StartRecenter};
     }
     return {Code::Usage, "unknown action", Effect::None};
+}
+
+Decision relearnAnswer(bool ok, const std::string& error) {
+    if (ok) return {Code::Accepted, "started (learning your relaxed eyes, about 30 s)", Effect::None};
+    // eyecam-rec's reasons are Japanese (its own English is in status.json): the usual ones named here
+    const char* why = error.find("映像") != std::string::npos      ? "no eye video"
+                      : error.find("校正中") != std::string::npos   ? "calibrating"
+                      : error.find("録画中") != std::string::npos   ? "recording"
+                      : error.find("目の値を出していない") != std::string::npos ? "not reading the cameras"
+                      : error.find("知らないコマンド") != std::string::npos ? "eyecam-rec too old for it"
+                      : error.find("no reply") != std::string::npos ? "no answer from eyecam-rec"
+                                                                    : "eyecam-rec said no";
+    return {Code::NoCameras, std::string("eye cameras not ready (") + why + ")", Effect::None};
 }
 
 std::string formatReply(Code code, const std::string& text) {

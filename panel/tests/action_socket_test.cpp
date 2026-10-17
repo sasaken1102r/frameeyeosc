@@ -5,6 +5,7 @@
 // on failure.
 #include "action_socket.h"
 
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -112,10 +113,11 @@ void testNames() {
     CHECK(parseAction("fit", action) && action == Action::Fit);
     CHECK(parseAction("stop", action) && action == Action::Stop);
     CHECK(parseAction("open", action) && action == Action::Open);
+    CHECK(parseAction("relearn", action) && action == Action::Relearn);
     CHECK(!parseAction("bogus", action) && !parseAction("", action) && !parseAction("Recenter", action) &&
           !parseAction("fit ", action));
     CHECK(std::string(actionName(Action::Recenter)) == "recenter");
-    CHECK(actionNames() == "recenter|fit|stop|open");
+    CHECK(actionNames() == "recenter|fit|stop|relearn|open");
 }
 
 void testDecide() {
@@ -134,14 +136,16 @@ void testDecide() {
     CHECK(decide(Action::Fit, unfitted).code == Code::Accepted);
     d = decide(Action::Recenter, unfitted);
     CHECK(d.code == Code::NotFitted && d.effect == Effect::None);
-    // Busy: a fit or a re-center (by itself, say) runs; stop it first. Stop says which it stopped
+    // Busy: a fit, or a re-center (by itself, say), runs; stop it first. Stop says which it stopped
     State fitting = ready;
     fitting.fitActive = true;
     d = decide(Action::Fit, fitting);
-    CHECK(d.code == Code::Busy && d.effect == Effect::None && d.text == "busy (a fit is running; use --action stop)");
+    CHECK(d.code == Code::BusyFit && d.effect == Effect::None && d.text == "busy (a fit is running; use --action stop)");
+    CHECK(decide(Action::Recenter, fitting).code == Code::BusyFit);
     fitting.fitIsRecenter = true;
     d = decide(Action::Recenter, fitting);
-    CHECK(d.code == Code::Busy && d.text == "busy (a re-center is running; use --action stop)");
+    CHECK(d.code == Code::BusyRecenter && d.text == "busy (a re-center is running; use --action stop)");
+    CHECK(decide(Action::Fit, fitting).code == Code::BusyRecenter);
     d = decide(Action::Stop, fitting);
     CHECK(d.code == Code::Accepted && d.effect == Effect::StopFit && d.text == "stopped the re-center");
     fitting.fitIsRecenter = false;
@@ -150,15 +154,16 @@ void testDecide() {
     d = decide(Action::Stop, ready);
     CHECK(d.code == Code::NothingToStop && d.effect == Effect::None && d.text == "nothing to stop");
     CHECK(decide(Action::Stop, State()).code == Code::NothingToStop);
-    // frameeyeosc not running, or no eye data
+    // frameeyeosc not running (4), or running without eye data (9: the headset off, most often)
     State stopped = ready;
     stopped.running = false;
     d = decide(Action::Fit, stopped);
-    CHECK(d.code == Code::NoEyeData && d.text == "frameeyeosc is not running");
+    CHECK(d.code == Code::NoFrameeyeosc && d.text == "frameeyeosc is not running");
     State blind = ready;
     blind.tracking = false;
     d = decide(Action::Recenter, blind);
-    CHECK(d.code == Code::NoEyeData && d.text == "no eye data from frameeyeosc");
+    CHECK(d.code == Code::NoEyeData && d.text == "no eye data (is the headset on?)");
+    CHECK(decide(Action::Fit, blind).code == Code::NoEyeData);
     // Locked by frameeyeosc's command line (the buttons are grey)
     State locked = ready;
     locked.locked = true;
@@ -166,7 +171,40 @@ void testDecide() {
     // Busy goes before the rest (the panel shows only "Stop" then)
     State busyStopped = fitting;
     busyStopped.running = false;
-    CHECK(decide(Action::Fit, busyStopped).code == Code::Busy);
+    CHECK(decide(Action::Fit, busyStopped).code == Code::BusyFit);
+    // Relearn: the eye cameras ready (the "Relearn my eyes" button's conditions), not during a fit, with eye data;
+    // no gaze fit or unlocked values needed
+    State cameras = ready;
+    cameras.camerasReady = true;
+    cameras.gazeFitted = false;
+    cameras.locked = true;
+    d = decide(Action::Relearn, cameras);
+    CHECK(d.code == Code::Accepted && d.effect == Effect::Relearn && d.text == "started");
+    d = decide(Action::Relearn, ready);
+    CHECK(d.code == Code::NoCameras && d.effect == Effect::None &&
+          d.text == "eye cameras not in use or not ready (see the panel's Eye cameras tab)");
+    State camerasFitting = cameras;
+    camerasFitting.fitActive = true;
+    CHECK(decide(Action::Relearn, camerasFitting).code == Code::BusyFit);
+    camerasFitting.fitIsRecenter = true;
+    CHECK(decide(Action::Relearn, camerasFitting).code == Code::BusyRecenter);
+    State camerasStopped = cameras;
+    camerasStopped.running = false;
+    CHECK(decide(Action::Relearn, camerasStopped).code == Code::NoFrameeyeosc);
+    State camerasBlind = cameras;
+    camerasBlind.tracking = false;
+    CHECK(decide(Action::Relearn, camerasBlind).code == Code::NoEyeData);
+    // ...then what eyecam-rec answered
+    d = relearnAnswer(true, "");
+    CHECK(d.code == Code::Accepted && d.text == "started (learning your relaxed eyes, about 30 s)");
+    CHECK(relearnAnswer(false, "目の映像が来ていないので、普段の目を覚え直せない").text ==
+          "eye cameras not ready (no eye video)");
+    CHECK(relearnAnswer(false, "校正中").text == "eye cameras not ready (calibrating)");
+    CHECK(relearnAnswer(false, "録画中").text == "eye cameras not ready (recording)");
+    CHECK(relearnAnswer(false, "知らないコマンド").text == "eye cameras not ready (eyecam-rec too old for it)");
+    CHECK(relearnAnswer(false, "no reply in time").text == "eye cameras not ready (no answer from eyecam-rec)");
+    CHECK(relearnAnswer(false, "connect /run/user/1000/eyecam/ctl.sock: No such file or directory").code ==
+          Code::NoCameras);
     // Open always opens; in any state
     d = decide(Action::Open, State());
     CHECK(d.code == Code::Accepted && d.effect == Effect::ShowPanel);
@@ -174,13 +212,30 @@ void testDecide() {
     // The fixed numbers other apps rely on
     CHECK(static_cast<int>(Code::Accepted) == 0 && static_cast<int>(Code::Usage) == 1 &&
           static_cast<int>(Code::NotRunning) == 2 && static_cast<int>(Code::NoAnswer) == 3 &&
-          static_cast<int>(Code::NoEyeData) == 4 && static_cast<int>(Code::NotFitted) == 5 &&
-          static_cast<int>(Code::Busy) == 6 && static_cast<int>(Code::NothingToStop) == 7 &&
-          static_cast<int>(Code::Locked) == 8);
+          static_cast<int>(Code::NoFrameeyeosc) == 4 && static_cast<int>(Code::NotFitted) == 5 &&
+          static_cast<int>(Code::BusyFit) == 6 && static_cast<int>(Code::NothingToStop) == 7 &&
+          static_cast<int>(Code::Locked) == 8 && static_cast<int>(Code::NoEyeData) == 9 &&
+          static_cast<int>(Code::BusyRecenter) == 10 && static_cast<int>(Code::NoCameras) == 11);
+    // Every result has its text (relearn's two, the rest from decide)
+    for (const Action a : {Action::Recenter, Action::Fit, Action::Stop, Action::Relearn, Action::Open}) {
+        for (int bits = 0; bits < 128; ++bits) {
+            State any;
+            any.running = bits & 1;
+            any.tracking = bits & 2;
+            any.locked = bits & 4;
+            any.gazeFitted = bits & 8;
+            any.fitActive = bits & 16;
+            any.fitIsRecenter = bits & 32;
+            any.camerasReady = bits & 64;
+            const Decision each = decide(a, any);
+            CHECK(!each.text.empty() && static_cast<int>(each.code) != 2 && static_cast<int>(each.code) != 3);
+            CHECK((each.code == Code::Accepted) == (each.effect != Effect::None));
+        }
+    }
 }
 
 void testReplyLine() {
-    CHECK(formatReply(Code::Busy, "busy (a fit is running; use --action stop)") ==
+    CHECK(formatReply(Code::BusyFit, "busy (a fit is running; use --action stop)") ==
           "6 busy (a fit is running; use --action stop)\n");
     // Control characters never go out; the line stays within kMaxLine
     CHECK(formatReply(Code::Accepted, "a\nb\tc") == "0 abc\n");
@@ -219,11 +274,22 @@ void testCommandWithoutPanel() {
     std::string line;
     // Bad arguments and unknown actions: 1, without connecting
     CHECK(runCommand({"--action"}, "unused.sock", 100, line) == 1);
-    CHECK(line == "action: bad arguments (usage: frameeyeosc-panel --action recenter|fit|stop|open)");
+    CHECK(line == "action: bad arguments (usage: frameeyeosc-panel --action recenter|fit|stop|relearn|open)");
     CHECK(runCommand({"--action", "fit", "extra"}, "unused.sock", 100, line) == 1);
     CHECK(runCommand({"--version", "--action", "fit"}, "unused.sock", 100, line) == 1);
     CHECK(runCommand({"--action", "bogus"}, "unused.sock", 100, line) == 1);
-    CHECK(line == "bogus: unknown action (use recenter|fit|stop|open)");
+    CHECK(line == "bogus: unknown action (use recenter|fit|stop|relearn|open)");
+    // ...rejected before connecting: a listening socket sees no connection at all
+    {
+        const std::string probe = testPath("probe");
+        const int listener = rawListener(probe);
+        CHECK(runCommand({"--action", "bogus"}, probe, 500, line) == 1);
+        CHECK(runCommand({"--action", "bogus", "x"}, probe, 500, line) == 1);
+        pollfd waiting {listener, POLLIN, 0};
+        CHECK(::poll(&waiting, 1, 50) == 0);  // nothing to accept
+        ::close(listener);
+        ::unlink(probe.c_str());
+    }
     // No socket file: the panel isn't running (or is one without this socket)
     const std::string path = testPath("none");
     ::unlink(path.c_str());
@@ -323,11 +389,18 @@ void testServer() {
     CHECK(roundTrip(server, path, "recenter", ready, line, effect) == 0);
     CHECK(line == "recenter: started" && effect == Effect::StartRecenter);
     CHECK(roundTrip(server, path, "fit", ready, line, effect) == 0 && effect == Effect::StartFit);
-    // Busy
+    // Busy: an eye fit (6) or a re-center (10)
     State fitting = ready;
     fitting.fitActive = true;
     CHECK(roundTrip(server, path, "fit", fitting, line, effect) == 6);
     CHECK(line == "fit: busy (a fit is running; use --action stop)" && effect == Effect::None);
+    State recentering = fitting;
+    recentering.fitIsRecenter = true;
+    CHECK(roundTrip(server, path, "recenter", recentering, line, effect) == 10);
+    CHECK(line == "recenter: busy (a re-center is running; use --action stop)");
+    // stop stops a re-center too
+    CHECK(roundTrip(server, path, "stop", recentering, line, effect) == 0 && effect == Effect::StopFit);
+    CHECK(line == "stop: stopped the re-center");
     // Stop with nothing running, then with a fit running
     CHECK(roundTrip(server, path, "stop", ready, line, effect) == 7);
     CHECK(line == "stop: nothing to stop");
@@ -340,6 +413,14 @@ void testServer() {
     CHECK(line == "recenter: no gaze fit yet (use --action fit first)");
     CHECK(roundTrip(server, path, "fit", State(), line, effect) == 4);
     CHECK(line == "fit: frameeyeosc is not running");
+    State headsetOff = ready;
+    headsetOff.tracking = false;
+    CHECK(roundTrip(server, path, "recenter", headsetOff, line, effect) == 9);
+    CHECK(line == "recenter: no eye data (is the headset on?)");
+    CHECK(roundTrip(server, path, "relearn", ready, line, effect) == 11);
+    State cameras = ready;
+    cameras.camerasReady = true;
+    CHECK(roundTrip(server, path, "relearn", cameras, line, effect) == 0 && effect == Effect::Relearn);
     State locked = ready;
     locked.locked = true;
     CHECK(roundTrip(server, path, "recenter", locked, line, effect) == 8);

@@ -1062,7 +1062,12 @@ impl Smoother {
             Some(last) if time > last && time - last < MAX_GAP => (time - last) as f32,
             Some(last) if time <= last => NOMINAL_DT,
             _ => {
+                // The brows start over from where they were sent, not from rest: they ease down (or stay up)
+                // through BrowRaise as usual instead of dropping in one sample. (Lost eye data resets them fully: the
+                // brows went out at 0 then.)
+                let brows = self.brows.value;
                 self.reset();
+                self.brows.value = brows;
                 NOMINAL_DT
             }
         };
@@ -10330,6 +10335,35 @@ mod tests {
         // --raw (no dt): the eyelid's brows at once
         let mut raw = BrowRaise::default();
         assert_eq!(raw.step(1.0, None, [1.0, LID_RELAXED], open, &settings), [0.8, 0.0]);
+    }
+
+    #[test]
+    fn brows_ease_down_after_a_gap_in_the_samples() {
+        let settings = brow_settings();
+        let mut smoother = Smoother::new(&settings);
+        let mut time = 100.0;
+        let open = [false; 2];
+        smoother.advance(time);
+        let up = *brow_steps(&mut smoother.brows, &settings, &mut time, 120, [1.0; 2], open).last().unwrap();
+        assert!(up.iter().all(|brow| (brow - 0.8).abs() < 0.01), "{up:?}");
+        // A gap starts the filters over, but the brows go on from where they were...
+        time += MAX_GAP + 0.1;
+        smoother.advance(time);
+        assert_eq!(smoother.brows.value, up);
+        // ...down through the usual delay and smoothing once the eyes are back at relaxed open (not to 0 at once)
+        let down = brow_steps(&mut smoother.brows, &settings, &mut time, 90, [LID_RELAXED; 2], open);
+        assert!(down[..8].iter().all(|brow| *brow == up), "{:?}", &down[..10]);
+        assert!(down[12][0] < up[0] && down[12][0] > 0.4, "{:?}", down[12]);
+        assert!(down.last().unwrap().iter().all(|brow| *brow < 0.001));
+        // ...or still up while they stay widened
+        let mut widened = Smoother::new(&settings);
+        let mut time = 100.0;
+        widened.advance(time);
+        brow_steps(&mut widened.brows, &settings, &mut time, 120, [1.0; 2], open);
+        time += MAX_GAP + 0.1;
+        widened.advance(time);
+        let after = brow_steps(&mut widened.brows, &settings, &mut time, 60, [1.0; 2], open);
+        assert!(after.iter().flatten().all(|brow| (brow - 0.8).abs() < 0.01), "{after:?}");
     }
 
     #[test]

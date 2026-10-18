@@ -6974,6 +6974,20 @@ void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, 
     pen.color(kBorder);
     cairo_set_line_width(cr, 1.5);
     cairo_stroke(cr);
+    // The brow, while one is sent: an arch over the middle of the eye, resting just above it and raised with the brow
+    // (the room above the box is the caller's: eye_preview::kBrowHeadroom)
+    if (std::isfinite(eye.brow)) {
+        const double peak = y - (eye_preview::kBrowRest + eye_preview::browLift(eye.brow)) * h;
+        const double ends = peak + eye_preview::kBrowArch * h;
+        const double control = peak - eye_preview::kBrowArch * h / 3;
+        pen.color(kEyeBrow);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_set_line_width(cr, eye_preview::kBrowThickness * h);
+        cairo_new_path(cr);
+        cairo_move_to(cr, x + w * 0.22, ends);
+        cairo_curve_to(cr, x + w * 0.4, control, x + w * 0.6, control, x + w * 0.78, ends);
+        cairo_stroke(cr);
+    }
     if (!eye.known) fadeGroup(pen);
 }
 
@@ -7117,15 +7131,27 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
 
     // Both eyes, each with its chips, and under them its camera picture; without the pictures, in the middle of the
     // space. In a mirror the right eye is on the right, seen from the front on the left (eye_preview::drawnColumn)
-    const double eyeW = 255;
-    const double eyeH = 170;
+    const eye_preview::Shown shown = pv.hasPacket ? eye_preview::shown(pv.packet, source) : eye_preview::Shown {};
+    double eyeW = 255;
+    double eyeH = 170;
     const double chipsH = 28;
     const double pictureSide = 176;
     const double footer = kContentY + kContentH - 36;
     const double areaTop = rowY + rowH + (why != nullptr ? 34 : 12);
-    const double blockH = eyeH + 6 + chipsH + (pictures ? 10 + pictureSide : 0);
-    const double top = pictures ? areaTop : areaTop + std::max(0.0, (footer - 22 - areaTop - blockH) / 2);
-    const eye_preview::Shown shown = pv.hasPacket ? eye_preview::shown(pv.packet, source) : eye_preview::Shown {};
+    const double belowEye = 6 + chipsH + (pictures ? 10 + pictureSide : 0);
+    // While brows are sent, room above the eyes for them raised all the way; where the space is short (the pictures
+    // on), the eyes are drawn smaller to make it (as wide for their height)
+    double browRoom = 0;
+    if (shown.brows) {
+        const double space = footer - 22 - areaTop - belowEye - 2;
+        const double fitH = std::floor(space / (1 + eye_preview::kBrowHeadroom));
+        eyeW = eyeW * std::min(eyeH, fitH) / eyeH;
+        eyeH = std::min(eyeH, fitH);
+        browRoom = std::ceil(eye_preview::kBrowHeadroom * eyeH) + 2;
+    }
+    const double blockH = browRoom + eyeH + belowEye;
+    const double blockTop = pictures ? areaTop : areaTop + std::max(0.0, (footer - 22 - areaTop - blockH) / 2);
+    const double top = blockTop + browRoom;
     const double half = (kInnerRight - kInnerX) / 2;
     for (int at = 0; at < 2; ++at) {
         const int eye = eye_preview::drawnColumn(0, previewMirror_) == at ? 0 : 1;

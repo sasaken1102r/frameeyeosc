@@ -2792,6 +2792,55 @@ void testPreview(const FontSet& fonts) {
         panel.render(moved);
         CHECK(panel.toRgba() != frozen);
 
+        // Brows sent: drawn over the eyes (a picture of its own), the sheet's buttons where they were; frozen with the
+        // rest, and the brow's level shows
+        {
+            PanelModel browed = moved;
+            eye_preview::fakeBrows(browed.preview, 0.0);
+            pressArg(panel, PanelAction::PreviewSource, static_cast<int>(eye_preview::Source::Sent));
+            panel.pointerLeave();
+            panel.render(moved);
+            const std::vector<uint8_t> plain = panel.toRgba();
+            const std::vector<EyePanel::HitArea> before = previewButtons(panel);
+            panel.render(browed);
+            const std::vector<uint8_t> rest = panel.toRgba();
+            CHECK(rest != plain);
+            const std::vector<EyePanel::HitArea> after = previewButtons(panel);
+            CHECK(after.size() == before.size());
+            for (size_t i = 0; i < after.size() && i < before.size(); ++i) {
+                CHECK(after[i].x == before[i].x && after[i].y == before[i].y && after[i].w == before[i].w);
+            }
+            eye_preview::fakeBrows(browed.preview, 1.0);
+            panel.render(browed);
+            const std::vector<uint8_t> raised = panel.toRgba();
+            CHECK(raised != rest);
+            press(panel, PanelAction::PreviewFreeze);
+            panel.pointerLeave();
+            panel.render(browed);
+            const std::vector<uint8_t> held = panel.toRgba();
+            eye_preview::fakeBrows(browed.preview, 0.0);
+            panel.render(browed);
+            CHECK(panel.toRgba() == held);
+            press(panel, PanelAction::PreviewFreeze);
+            panel.pointerLeave();
+            panel.render(browed);
+            CHECK(panel.toRgba() == rest);
+            // Raw: no brows drawn (nothing measures them), but the eyes stay where they are with brows
+            pressArg(panel, PanelAction::PreviewSource, static_cast<int>(eye_preview::Source::Raw));
+            panel.pointerLeave();
+            eye_preview::fakeBrows(browed.preview, 1.0);
+            panel.render(browed);
+            const std::vector<uint8_t> rawUp = panel.toRgba();
+            eye_preview::fakeBrows(browed.preview, 0.0);
+            panel.render(browed);
+            CHECK(panel.toRgba() == rawUp);
+            // Brows off again: exactly as without
+            pressArg(panel, PanelAction::PreviewSource, static_cast<int>(eye_preview::Source::Sent));
+            panel.pointerLeave();
+            panel.render(moved);
+            CHECK(panel.toRgba() == plain);
+        }
+
         // Without the eye cameras in use: no pictures' switch and no "Camera" values to press, the rest as before
         CHECK(panel.previewPictures());
         for (const int why : {0, 1, 2, 3}) {

@@ -71,6 +71,7 @@ constexpr Color kEyeWhite = hexColor(0xd8dee4);     ///< the white of the drawn 
 constexpr Color kEyeIris = hexColor(0x3f6fb5);      ///< the drawn iris
 constexpr Color kEyeIrisRim = hexColor(0x24497f);   ///< ...its rim
 constexpr Color kEyeDark = hexColor(0x0d1117);      ///< the drawn pupil and the upper lid's edge
+constexpr Color kEyeBrow = hexColor(0x8b949e);      ///< the drawn brows (over the card), while brows are sent
 /** The pupil eyecam-rec found, as a circle on its picture (green), and where it looked for it (a yellow frame) */
 constexpr Color kPreviewPupil = hexColor(0x5fd38a);
 constexpr Color kPreviewWindow = hexColor(0xf2d25a);

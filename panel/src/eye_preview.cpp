@@ -89,6 +89,7 @@ double orElse(double value, double fallback) {
 Shown shown(const gaze_dots::Packet& packet, Source source) {
     Shown s;
     s.valid = true;
+    s.brows = packet.brows;
     // The camera gives frameeyeosc no gaze: Valve's before smoothing, as Raw
     const float* gaze = source == Source::Sent ? packet.gaze : packet.rawGaze;
     s.gazeX = gaze[4];
@@ -108,6 +109,7 @@ Shown shown(const gaze_dots::Packet& packet, Source source) {
                 out.pupilMm = in.pupilMm;
                 // (LidFrom: 0 the eye server's usual mix, anything else the camera overrode it)
                 out.camera = in.lidFrom != 0;
+                if (packet.brows) out.brow = std::clamp(orElse(in.brow, 0.0), 0.0, 1.0);
                 break;
             case Source::Raw:
                 // Valve's openness after the eye's scale: 1.0 (an open eye) drawn as relaxed open
@@ -138,6 +140,10 @@ double upperLidOpen(double lid) {
 
 double lowerLidRise(double squint) {
     return std::clamp(orElse(squint, 0.0), 0.0, 1.0) * kMaxSquintRise;
+}
+
+double browLift(double brow) {
+    return std::clamp(orElse(brow, 0.0), 0.0, 1.0) * kBrowRise;
 }
 
 double pupilRadius(double irisRadius, double mm) {
@@ -449,6 +455,11 @@ void fake(View& view, uint64_t nowNs) {
     view.hasPictures = true;
     view.nowNs = nowNs;
     view.refused = false;
+}
+
+void fakeBrows(View& view, double level) {
+    view.packet.brows = true;
+    for (gaze_dots::PacketEye& eye : view.packet.eyes) eye.brow = static_cast<float>(level);
 }
 
 }  // namespace eye_preview

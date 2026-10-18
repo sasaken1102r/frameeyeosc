@@ -110,6 +110,7 @@ struct Options {
     bool previewSheet = false;    ///< --preview-sheet: the eye preview open...
     std::string previewSpec;      ///< ...as SOURCE[:nomirror][:nocamera][:frozen] ("" = as it opens)
     std::string fakePreview;      ///< --fake-preview: made-up preview values and pictures ("ok" or a state)
+    double fakePreviewBrows = NAN;  ///< --fake-preview-brows: brows sent at this level in them (NaN: none)
     int previewBench = 0;         ///< --preview-bench N: time N draws of the panel with the eye preview open
     std::string fakeAppsState;    ///< --fake-apps-state: made-up states of the other apps (KEY=STATE,...)
     std::string fakeAppsLaunch;   ///< --fake-apps-launch: why Konsole didn't open (on the confirmation)
@@ -287,6 +288,8 @@ void printUsage() {
         "      --fake-preview [ok|noeyecam|nopicture|closed|nodata]  Made-up preview values and grey pictures (not an\n"
         "                        eye), with the eye cameras set up: all there (ok), eyecam-rec not running, no picture\n"
         "                        yet, the left eye read closed, or no samples from frameeyeosc. Implies --fake\n"
+        "      --fake-preview-brows LEVEL  Brows sent in the made-up preview values, both at LEVEL (0 at rest ..\n"
+        "                        1 raised all the way). Implies --fake-preview (ok unless given) and --fake-brows\n"
         "      --preview-bench N  Time N draws of the panel with the eye preview open (with --preview-sheet)\n"
         "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
         "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
@@ -821,6 +824,16 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 }
             }
             options.fake = true;
+        } else if (arg == "--fake-preview-brows" && hasNext) {
+            const double level = std::atof(argv[++i]);
+            if (!(level >= 0.0 && level <= 1.0)) {
+                std::fprintf(stderr, "--fake-preview-brows takes a level from 0 to 1: %s\n", argv[i]);
+                return false;
+            }
+            options.fakePreviewBrows = level;
+            // (a --fake-preview STATE given too, before or after, is kept)
+            if (options.fakePreview.empty()) options.fakePreview = "ok";
+            options.fake = options.fakeBrows = true;
         } else if (arg == "--preview-bench" && hasNext) {
             options.previewBench = std::max(0, std::min(10000, std::atoi(argv[++i])));
         } else if (arg == "--apps-sheet" && hasNext) {
@@ -1893,6 +1906,7 @@ PanelModel fakeModel(const Options& options) {
     }
     if (!options.fakePreview.empty()) {
         eye_preview::fake(m.preview, eye_preview::monotonicNs());
+        if (std::isfinite(options.fakePreviewBrows)) eye_preview::fakeBrows(m.preview, options.fakePreviewBrows);
         const std::string& state = options.fakePreview;
         if (state == "nopicture") {
             m.preview.hasPictures = false;

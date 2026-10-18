@@ -845,6 +845,83 @@ void testEyeBehavior(const FontSet& fonts) {
     CHECK(panel.tab() == PanelTab::Advanced && panel.advPage() == AdvPage::Version);
 }
 
+void testBrowsPage(const FontSet& fonts) {
+    // The Eyelids tab's "Brows": "Raise brows when widening" On / Off (brow_from_widen), whatever drives the eyelids and
+    // whatever "Widening" says; "Brow raise strength" (brow_strength) only while it is on
+    for (const Lids lids : {Lids::Valve, Lids::Saturated, Lids::Both, Lids::Left}) {
+        for (const bool eyecam : {true, false}) {
+            for (const Language language : {Language::Ja, Language::En}) {
+                for (const bool widen : {true, false}) {
+                    EyePanel panel(fonts);
+                    panel.setTab(PanelTab::Lids);
+                    panel.setLidsPage(LidsPage::Brows);
+                    PanelModel m = modelWith(lids, eyecam);
+                    m.language = language;
+                    if (!widen) m.config.root.set(key::kWiden, JsonValue::makeBool(false));
+                    panel.render(m);
+                    // The four sub-tabs side by side in the bar, the others pressable, in order
+                    CHECK((lidsTabs(panel) == std::vector<int> {0, 1, 2}));
+                    std::vector<EyePanel::HitArea> tabs;
+                    for (const EyePanel::HitArea& area : hits(panel, PanelAction::LidsPage)) {
+                        if (area.y < 200) tabs.push_back(area);
+                    }
+                    for (size_t i = 1; i < tabs.size(); ++i) CHECK(tabs[i].x >= tabs[i - 1].x + tabs[i - 1].w - 1);
+                    std::vector<EyePanel::HitArea> both = hits(panel, PanelAction::SetBool, key::kBrowFromWiden);
+                    CHECK(both.size() == 2);
+                    if (both.size() == 2) CHECK(both[0].hit.arg == 1 && both[1].hit.arg == 0);
+                    CHECK(hits(panel, PanelAction::NumberSlider, key::kBrowStrength).empty());
+                    // Pressing "On" asks for brow_from_widen = true
+                    const PanelHit on = pressArg(panel, PanelAction::SetBool, 1);
+                    CHECK(on.action == PanelAction::SetBool && on.arg == 1 && std::string(on.key) == key::kBrowFromWiden);
+                    // On: the strength's slider below it; nothing else of the Eyelids tab's here
+                    m.config.root.set(key::kBrowFromWiden, JsonValue::makeBool(true));
+                    panel.render(m);
+                    CHECK(hits(panel, PanelAction::SetBool, key::kBrowFromWiden).size() == 2);
+                    const std::vector<EyePanel::HitArea> sliders = hits(panel, PanelAction::NumberSlider, key::kBrowStrength);
+                    CHECK(sliders.size() == 1);
+                    if (sliders.size() == 1) CHECK(sliders[0].y > both[0].y + both[0].h + 30);
+                    CHECK(hits(panel, PanelAction::SetBool, key::kWiden).empty());
+                    CHECK(hits(panel, PanelAction::NumberSlider, key::kLidSync).empty());
+                    CHECK(hits(panel, PanelAction::LidPreset).empty());
+                    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                        if (area.hit.action == PanelAction::Tab && area.y < 100) continue;
+                        if (area.hit.action == PanelAction::PreviewOpen) continue;
+                        CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676);
+                    }
+                    // Locked by frameeyeosc's command line: nothing to press
+                    m.status.locked.push_back(key::kBrowFromWiden);
+                    m.status.locked.push_back(key::kBrowStrength);
+                    panel.render(m);
+                    CHECK(hits(panel, PanelAction::SetBool, key::kBrowFromWiden).empty());
+                    CHECK(hits(panel, PanelAction::NumberSlider, key::kBrowStrength).empty());
+                }
+            }
+        }
+    }
+    // The strength's slider gives its value on the 0.05 grid, 0..1
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Lids);
+    panel.setLidsPage(LidsPage::Brows);
+    PanelModel m = modelWith(Lids::Valve, false);
+    m.config.root.set(key::kBrowFromWiden, JsonValue::makeBool(true));
+    panel.render(m);
+    const std::vector<EyePanel::HitArea> sliders = hits(panel, PanelAction::NumberSlider, key::kBrowStrength);
+    CHECK(sliders.size() == 1);
+    if (sliders.size() != 1) return;
+    const EyePanel::HitArea& area = sliders[0];
+    std::string name;
+    double value = 0.0;
+    panel.pointerDown(area.x + 18 + 2, area.y + area.h / 2, 0.0);
+    panel.pointerUp();
+    CHECK(panel.takeNumberSlider(name, value));
+    CHECK(name == key::kBrowStrength && std::fabs(value) < 1e-9);
+    panel.pointerDown(area.x + area.w * 0.62, area.y + area.h / 2, 0.0);
+    panel.pointerUp();
+    CHECK(panel.takeNumberSlider(name, value));
+    CHECK(name == key::kBrowStrength && std::fabs(value / 0.05 - std::round(value / 0.05)) < 1e-6);
+    CHECK(value > 0.4 && value < 0.8);
+}
+
 void testLidsPages(const FontSet& fonts) {
     // The Eyelids tab's three sub-tabs, for each source of the eyelids: each with its own controls and none of the
     // others', and nothing drawn or to press below the card
@@ -859,18 +936,22 @@ void testLidsPages(const FontSet& fonts) {
                 const std::vector<uint8_t> plain = belowCard(basic);
                 EyePanel panel(fonts);
                 panel.setTab(PanelTab::Lids);
-                for (const LidsPage page : {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine}) {
+                for (const LidsPage page : {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine, LidsPage::Brows}) {
                     panel.setLidsPage(page);
                     panel.render(m);
-                    // The other two sub-tabs can be pressed
+                    // The other three sub-tabs can be pressed
                     std::vector<int> others;
-                    for (int i = 0; i < 3; ++i) {
+                    for (int i = 0; i < 4; ++i) {
                         if (i != static_cast<int>(page)) others.push_back(i);
                     }
                     CHECK(lidsTabs(panel) == others);
                     const bool look = page == LidsPage::Look;
                     const bool blinks = page == LidsPage::Blinks;
                     const bool fine = page == LidsPage::Fine;
+                    const bool brows = page == LidsPage::Brows;
+                    // Brows: raising them with widening (off by default: no strength), with the eye cameras or without
+                    CHECK(hits(panel, PanelAction::SetBool, key::kBrowFromWiden).size() == (brows ? 2u : 0u));
+                    CHECK(hits(panel, PanelAction::NumberSlider, key::kBrowStrength).empty());
                     // Look: the widening (whatever drives it), the smoothing presets, the sync slider
                     CHECK(hits(panel, PanelAction::LidPreset).size() == (look ? 3u : 0u));
                     // ...and widening at all (widen), with the eye cameras or without
@@ -1079,7 +1160,7 @@ void testLidsRemembered(const FontSet& fonts) {
     panel.render(m);
     // The first time: "Look"
     CHECK(panel.lidsPage() == LidsPage::Look);
-    CHECK((lidsTabs(panel) == std::vector<int> {1, 2}));
+    CHECK((lidsTabs(panel) == std::vector<int> {1, 2, 3}));
     CHECK(pressArg(panel, PanelAction::LidsPage, static_cast<int>(LidsPage::Fine)).action == PanelAction::None);
     CHECK(panel.lidsPage() == LidsPage::Fine && panel.tab() == PanelTab::Lids);
     panel.render(m);
@@ -1101,7 +1182,7 @@ void testLidsRemembered(const FontSet& fonts) {
     next.setLidsPage(LidsPage::Blinks);
     next.setTab(PanelTab::Lids);
     next.render(m);
-    CHECK((lidsTabs(next) == std::vector<int> {0, 2}));
+    CHECK((lidsTabs(next) == std::vector<int> {0, 2, 3}));
     CHECK(!hits(next, PanelAction::Step, key::kBlinkHoldMs).empty());
 }
 
@@ -2809,6 +2890,7 @@ int main() {
     testSliderMoved(fonts);
     testRelearnButton(fonts);
     testNumberSlider(fonts);
+    testBrowsPage(fonts);
     testPupilBitsRow(fonts);
     testOutputCards(fonts);
     testModuleLinkError(fonts);

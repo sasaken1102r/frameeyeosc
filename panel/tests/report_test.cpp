@@ -945,10 +945,13 @@ void testUiState() {
     // The Eyelids tab's: the first time Look, kept beside the Advanced tab's (each write keeps the other)
     ::unlink(path.c_str());
     CHECK(ui_state::readLidsPage(path) == LidsPage::Look);
-    for (const LidsPage lids : {LidsPage::Fine, LidsPage::Blinks, LidsPage::Look, LidsPage::Fine}) {
+    for (const LidsPage lids : {LidsPage::Brows, LidsPage::Fine, LidsPage::Blinks, LidsPage::Look, LidsPage::Fine}) {
         CHECK(ui_state::writeLidsPage(path, lids, error));
         CHECK(ui_state::readLidsPage(path) == lids);
     }
+    CHECK(ui_state::writeLidsPage(path, LidsPage::Brows, error));
+    CHECK(has(readText(path), "\"lids_page\": \"brows\""));
+    CHECK(ui_state::writeLidsPage(path, LidsPage::Fine, error));
     CHECK(has(readText(path), "\"lids_page\": \"fine\""));
     CHECK(ui_state::writePage(path, AdvPage::Tools, error));
     CHECK(ui_state::readLidsPage(path) == LidsPage::Fine && ui_state::readPage(path) == AdvPage::Tools);

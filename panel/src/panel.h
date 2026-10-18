@@ -1041,6 +1041,15 @@ private:
      * @param top where it starts
      */
     void drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double top);
+    /**
+     * The Eyelids tab's "Brows": raising the brows with widening (brow_from_widen) and, while it is on, how far
+     * (brow_strength).
+     * @param pen drawing tools
+     * @param t the words
+     * @param v the settings as shown
+     * @param top where the page starts
+     */
+    void drawLidsBrows(const Pen& pen, const UiText& t, const SettingsView& v, double top);
 
     /**
      * The Advanced tab.

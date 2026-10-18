@@ -180,12 +180,13 @@ const char* lidsPageName(LidsPage page) {
         case LidsPage::Look: return "look";
         case LidsPage::Blinks: return "blinks";
         case LidsPage::Fine: return "fine";
+        case LidsPage::Brows: return "brows";
     }
     return "look";
 }
 
 bool parseLidsPage(const std::string& name, LidsPage& page) {
-    for (const LidsPage p : {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine}) {
+    for (const LidsPage p : {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine, LidsPage::Brows}) {
         if (name == lidsPageName(p)) {
             page = p;
             return true;

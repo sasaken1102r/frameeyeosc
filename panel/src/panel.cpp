@@ -925,7 +925,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::LidsPage:
             // (from the eye cameras tab's pointer to the widening slider too: the tab opens on it)
-            if (hit.arg < 0 || hit.arg > static_cast<int>(LidsPage::Fine)) return {};
+            if (hit.arg < 0 || hit.arg > static_cast<int>(LidsPage::Brows)) return {};
             setTab(PanelTab::Lids);
             setLidsPage(static_cast<LidsPage>(hit.arg));
             closeAppsList();
@@ -3068,11 +3068,11 @@ void EyePanel::drawEyeFitLids(const Pen& pen, const UiText& t, const SettingsVie
 }
 
 void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
-    // Three sub-tabs where the Advanced tab has its own (the first time "Look", then the one open last)
-    const LidsPage pages[3] = {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine};
-    const char* labels[3] = {t.lidsLook, t.lidsBlinks, t.lidsFine};
+    // Four sub-tabs where the Advanced tab has its own (the first time "Look", then the one open last)
+    const LidsPage pages[4] = {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine, LidsPage::Brows};
+    const char* labels[4] = {t.lidsLook, t.lidsBlinks, t.lidsFine, t.lidsBrows};
     std::vector<Option> options;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         options.push_back({labels[i], {PanelAction::LidsPage, nullptr, static_cast<int>(pages[i])}});
     }
     drawPageSwitch(pen, kSubTabY, kSubTabH, options, static_cast<int>(lidsPage_), -1);
@@ -3080,6 +3080,48 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
         case LidsPage::Look: drawLidsLook(pen, t, m, v, kAdvPageTop); break;
         case LidsPage::Blinks: drawLidsBlinks(pen, t, m, v, kAdvPageTop); break;
         case LidsPage::Fine: drawLidsDetails(pen, t, m, v, kAdvPageTop); break;
+        case LidsPage::Brows: drawLidsBrows(pen, t, v, kAdvPageTop); break;
+    }
+}
+
+void EyePanel::drawLidsBrows(const Pen& pen, const UiText& t, const SettingsView& v, double top) {
+    const double cy = (kRowH - kControlH) / 2;
+    double y = top;
+    // Brows raised with widening (brow_from_widen): with the cameras or without (Valve's openness widens too), and
+    // whatever "Widening" says (the brows go by the widening before it is held back). What it does under its choices
+    const bool brows = v.flag(key::kBrowFromWiden);
+    {
+        const bool locked = v.locked(key::kBrowFromWiden);
+        drawRowLabel(pen, t, y, kRowH, t.rowBrowFromWiden, t.browFromWidenHint, locked);
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                      {{t.widenSwitchOn, {PanelAction::SetBool, key::kBrowFromWiden, 1}},
+                       {t.widenSwitchOff, {PanelAction::SetBool, key::kBrowFromWiden, 0}}},
+                      brows ? 0 : 1, 20, locked);
+        // Up to three lines; a line break in the words starts a new line there (between sentences in Japanese)
+        double baseline = y + kRowH + 12;
+        size_t lines = 0;
+        const std::string note = t.browFromWidenNote;
+        for (size_t from = 0; from <= note.size() && lines < 3;) {
+            const size_t end = std::min(note.find('\n', from), note.size());
+            for (const std::string& line :
+                 wrapText(pen, note.substr(from, end - from), 14, false, kInnerRight - kControlX, 3 - lines)) {
+                pen.text(kControlX, baseline, line, 14, kTextMuted);
+                baseline += 19;
+                ++lines;
+            }
+            from = end + 1;
+        }
+        y = baseline - 7;
+        drawRowDivider(pen, y);
+    }
+    // How far they go up (brow_strength): only while it is on
+    if (brows) {
+        const bool locked = v.locked(key::kBrowStrength);
+        drawRowLabel(pen, t, y, kRowH, t.rowBrowStrength, t.browStrengthHint, locked);
+        drawNumberSlider(pen, key::kBrowStrength, numberShown(key::kBrowStrength, v.number(key::kBrowStrength)),
+                         t.browStrengthWeak, t.browStrengthStrong, kControlX, kInnerRight, y + 12, kRowH - 24, !locked);
+        y += kRowH;
+        drawRowDivider(pen, y);
     }
 }
 

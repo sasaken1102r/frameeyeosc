@@ -92,7 +92,8 @@ struct Options {
     int targetBench = 0;          ///< --target-bench N: time drawing the target N times
     bool fitDetails = false;      ///< --fit-details: "Fine-tune" open on the Eye fit tab
     int fitDetailsPage = 0;       ///< --fit-details lids: its eyelid page
-    std::string lidsPage;         ///< --lids-page (--lid-marks: fine): the Eyelids tab's sub-tab (look, blinks, fine)
+    std::string lidsPage;         ///< --lids-page (--lid-marks: fine): the Eyelids tab's sub-tab (look, blinks, fine,
+                                  ///< brows)
     std::string gazePage;         ///< --gaze-page: the Gaze tab's sub-tab (motion, reach, glitch)
     bool history = false;         ///< --history: the version history open (on the Advanced tab)
     std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
@@ -155,6 +156,7 @@ struct Options {
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
     bool fakeNoWiden = false;     ///< --fake-no-widen: widen off (no widening at all)
+    bool fakeBrows = false;       ///< --fake-brows: brow_from_widen on (brows raised with widening)
     std::vector<double> fakeGazeScale;  ///< --fake-gaze-scale: gaze_scale_left, _right, _up, _down (empty = defaults)
     bool fakeGazeDots = false;    ///< --fake-gaze-dots: gaze_debug_dots on
     bool fakeRingsOff = false;    ///< --fake-rings-off: gaze_debug_rings off
@@ -256,7 +258,7 @@ void printUsage() {
         "      --tab basic|output|gaze|eyefit|lids|advanced|eyecam  Draw this tab (eyecam: only while eyecam-rec runs,\n"
         "                        or with --fake-eyecam)\n"
         "      --fit-details [gaze|lids]  Open \"Fine-tune\" on the Eye fit tab (default: its gaze page)\n"
-        "      --lids-page look|blinks|fine  The Eyelids tab's sub-tab (default look)\n"
+        "      --lids-page look|blinks|fine|brows  The Eyelids tab's sub-tab (default look)\n"
         "      --gaze-page motion|reach|glitch  The Gaze tab's sub-tab (default motion)\n"
         "      --lid-marks       The same as --lids-page fine (the lid marks)\n"
         "      --history         Open the version history (Advanced tab)\n"
@@ -334,6 +336,8 @@ void printUsage() {
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
         "      --fake-no-widen   widen off in the made-up settings (no eye widens; the Eyelids tab's \"Widening\")\n"
+        "      --fake-brows      brow_from_widen on in the made-up settings (\"Raise brows when widening\" and its\n"
+        "                        strength on the Eyelids tab's \"Brows\")\n"
         "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
         "                        A made-up eyecam-rec for the eye cameras tab (confirm: idle with the recording's\n"
         "                        light warning open, on the Advanced tab; LABEL: lead_in, normal, widen, close,\n"
@@ -746,7 +750,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.lidsPage = argv[++i];
             LidsPage page;
             if (!ui_state::parseLidsPage(options.lidsPage, page)) {
-                std::fprintf(stderr, "--lids-page must be look, blinks or fine: %s\n", options.lidsPage.c_str());
+                std::fprintf(stderr, "--lids-page must be look, blinks, fine or brows: %s\n", options.lidsPage.c_str());
                 return false;
             }
         } else if (arg == "--history") {
@@ -950,6 +954,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeV1 = true;
         } else if (arg == "--fake-no-widen") {
             options.fake = options.fakeNoWiden = true;
+        } else if (arg == "--fake-brows") {
+            options.fake = options.fakeBrows = true;
         } else if (arg == "--fake-gaze-dots") {
             options.fake = options.fakeGazeDots = true;
         } else if (arg == "--fake-rings-off") {
@@ -1643,6 +1649,7 @@ PanelModel fakeModel(const Options& options) {
     if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
     if (!options.fakeWiden.empty()) root.set(key::kLidWiden, JsonValue::makeString(options.fakeWiden));
     if (options.fakeNoWiden) root.set(key::kWiden, JsonValue::makeBool(false));
+    if (options.fakeBrows) root.set(key::kBrowFromWiden, JsonValue::makeBool(true));
     if (options.fakePaused) root.set(key::kSending, JsonValue::makeBool(false));
     if (options.fakeCustom) {
         root.set(key::kGazeMinCutoff, JsonValue::makeNumber(0.3));

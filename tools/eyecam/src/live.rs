@@ -64,6 +64,10 @@ const EDGE_LOST_PX: f64 = 16.0;
 /// measure 0.3-0.8 (99% below 1.03 on 2026-10-03/08, below 1.2 on 10-09), the eyes falsely closed looking outward
 /// 1.06-1.59 (95% above 1.27).
 const EDGE_OPEN_AP: f64 = 1.2;
+/// A glare band ends the picture only when its edge is at or past this column: beyond where the iris's nasal edge
+/// usually is (open pupils at x 200..258 in the developer's recordings, iris radius about 57 px). A band further in
+/// lies over the iris, and the pupil search needs the room up to the lens edge.
+const GLARE_MIN_X: f64 = 280.0;
 /// The extended pupil search (`feat::Search::find_x_min`, `search_x_min` in the drift log): how far (px) its left edge
 /// may go past `x_min` toward the ear. `x_min` is where the temporal shading ends minus 10 px, fixed in the first 20 s of
 /// a wear; lying down darkens the frame, so it moves in while the pupil moves out (2026-10-12 guided recordings, the
@@ -500,9 +504,15 @@ pub struct EyeEngine {
     cm_n: u32,
     cm_last: u64,
     xmax: f64,
+    /// The lens edge found past a glare band (= xmax without one), and the band's own edge (`feat::glare_edge`).
+    xmax_lens: f64,
+    glare_x: Option<f64>,
     x_min: f64,
-    /// The grey levels' scale for this wear, from the same mean image (`feat::Levels`).
+    /// The grey levels' scale in use, and the wear's two from the same mean image (`feat::Levels`): from all of it, and
+    /// with a glare band's columns left out of the bright end (used while the band ends the picture).
     levels: feat::Levels,
+    levels_all: feat::Levels,
+    levels_glare: feat::Levels,
     /// Where x_min came from, and the time (s) of the frame it was last worked out on (the drift log).
     x_min_from: feat::XMinFrom,
     x_min_at: f64,
@@ -727,8 +737,12 @@ impl Default for EyeEngine {
             cm_n: 0,
             cm_last: 0,
             xmax: 346.0,
+            xmax_lens: 346.0,
+            glare_x: None,
             x_min: feat::X_MIN,
             levels: feat::Levels::AS_BUILT,
+            levels_all: feat::Levels::AS_BUILT,
+            levels_glare: feat::Levels::AS_BUILT,
             x_min_from: feat::XMinFrom::Fixed,
             x_min_at: f64::NAN,
             find_x_min: feat::X_MIN,
@@ -920,11 +934,20 @@ impl EyeEngine {
             }
             self.cm_n += 1;
             let m: Vec<f64> = self.cm_sum.iter().map(|v| v / self.cm_n as f64).collect();
-            self.xmax = feat::occluder_x(&m);
+            self.xmax_lens = feat::occluder_x(&m);
+            self.glare_x = feat::glare_edge(&m);
             (self.x_min, self.x_min_from) = feat::search_x_min_from(&m);
-            self.levels = feat::Levels::from_profile(&m);
+            self.levels_all = feat::Levels::from_profile(&m);
+            self.levels_glare = feat::Levels::from_profile_without(&m, &feat::glare_columns(&m));
             self.x_min_at = t;
         }
+        // A glare band on the nasal side (IR off a lens insert's rim) hides the lens's black band: the lens edge is
+        // then found past it, the iris box reaches into the glare, stays as bright as lid skin and misses closes, and
+        // the glare reads as full brightness. Past the iris (GLARE_MIN_X) the picture ends at the glare and the levels
+        // are measured without it.
+        let glare_end = self.glare_x.filter(|&g| g >= GLARE_MIN_X);
+        self.xmax = glare_end.map_or(self.xmax_lens, |g| self.xmax_lens.min(g));
+        self.levels = if glare_end.is_some() { self.levels_glare } else { self.levels_all };
         // The extended search's edge: within EXT_MAX_PX past x_min (and not past X_MIN_LO), x_min itself when off.
         let ext_lo = if params.tune.ext_search { (self.x_min - EXT_MAX_PX).max(feat::X_MIN_LO) } else { self.x_min };
         self.find_x_min = self.find_x_min.clamp(ext_lo.min(self.x_min), self.x_min);

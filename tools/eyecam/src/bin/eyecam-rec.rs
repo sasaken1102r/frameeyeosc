@@ -483,11 +483,17 @@ impl StatusFile {
         let json = {
             let mut s = status.lock().unwrap();
             s.grab_outdated = eyecam::autograb::bundled_grab().is_some_and(|b| eyecam::autograb::grab_outdated(&b));
-            let settings = self.settings.lock().unwrap().get();
-            s.dev = settings.dev;
+            // The settings lock is held from the read until lid_veto is handed over, as `set lid_veto` holds it from
+            // its new Watch to its own store: a value read just before a `set lid_veto` can't land after it.
+            let mut watch = self.settings.lock().unwrap();
+            let settings = watch.get();
             if let Some(l) = &self.live {
                 // lid_veto may be edited by hand: the worker picks it up from here, on its next frame.
                 l.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
+            }
+            drop(watch);
+            s.dev = settings.dev;
+            if let Some(l) = &self.live {
                 s.lid_veto = status::LidVeto {
                     on: settings.lid_veto,
                     runs_per_s: f32::from_bits(l.veto_runs_per_s.load(Ordering::Relaxed)) as f64,
@@ -672,9 +678,11 @@ fn set_lid_veto(on: bool, status: &Mutex<Status>, file: &StatusFile) -> String {
             return format!("err 保存できなかった: {e}");
         }
         // status.json follows the file (a hand edit too): read it again on the next write, even if its time stamp
-        // didn't move
-        *file.settings.lock().unwrap() = settings::Watch::new(path);
+        // didn't move. The new Watch and the store under one settings lock (see StatusFile::write).
+        let mut watch = file.settings.lock().unwrap();
+        *watch = settings::Watch::new(path);
         l.lid_veto.store(on, Ordering::Relaxed);
+        drop(watch);
     }
     status.lock().unwrap().lid_veto.on = on;
     "ok".into()

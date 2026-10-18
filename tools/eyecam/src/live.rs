@@ -1381,6 +1381,7 @@ pub const MSG_LIDS: &str = "のまぶたの線が見つからなかった（HMD 
 pub const MSG_CLOSE: &str = "を閉じたのが検出できなかった（もう一度、しっかり閉じてね）";
 pub const MSG_SQUINT_MISSING: &str = "の細めが測れなかった（もう一度）";
 pub const MSG_SQUINT_SHALLOW: &str = "の細めが浅かった（もう一度、しっかり細めてね）";
+pub const MSG_SQUINT_DEEP: &str = "の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）";
 pub const MSG_LOOK_DOWN: &str = ": 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）";
 pub const MSG_LOWER_UP: &str = ": 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）";
 /// Valve's gaze was missing (not one eye's problem).
@@ -1638,15 +1639,28 @@ struct UserEye {
     look_down_only: bool,
 }
 
-/// The squint step's problem for one eye: too few frames, or too shallow (or not measured).
-fn squint_issue(nsq: usize, need: usize, f_sq: f64) -> Option<EyeIssue> {
-    if nsq < need {
-        Some(EyeIssue::new(MSG_SQUINT_MISSING, String::new(), ""))
-    } else if f_sq >= 0.85 || f_sq.is_nan() {
+/// A squint depth (`UserParams::f_sq`) at or above this is too shallow to tell from the open eye.
+pub const F_SQ_MAX: f64 = 0.85;
+/// A squint depth below this is deeper than the closed level by more than half the open gap: live, the squint
+/// would only reach 1 / (1 - f_sq) < 0.67 by the time the eye reads closed. The user calibrations that passed
+/// (2026-10-04..14) went down to -0.25 (the closed level of the wear calibration a little high); the ones below this
+/// were -0.78 and, replayed from recordings, -0.88 and -1.47.
+pub const F_SQ_MIN: f64 = -0.5;
+
+/// What is wrong with a measured squint depth: too shallow (or not measured), or deeper than the closed eye.
+fn squint_depth_issue(f_sq: f64) -> Option<EyeIssue> {
+    if f_sq >= F_SQ_MAX || f_sq.is_nan() {
         Some(EyeIssue::new(MSG_SQUINT_SHALLOW, format!("f_sq {f_sq:.2}"), ""))
+    } else if f_sq < F_SQ_MIN {
+        Some(EyeIssue::new(MSG_SQUINT_DEEP, format!("f_sq {f_sq:.2}"), ""))
     } else {
         None
     }
+}
+
+/// The squint step's problem for one eye: too few frames, or its depth (`squint_depth_issue`).
+fn squint_issue(nsq: usize, need: usize, f_sq: f64) -> Option<EyeIssue> {
+    if nsq < need { Some(EyeIssue::new(MSG_SQUINT_MISSING, String::new(), "")) } else { squint_depth_issue(f_sq) }
 }
 
 /// One eye's user calibration (eye `e`, for the warnings' names). Err for what is not one eye's problem (Valve's gaze
@@ -1699,8 +1713,9 @@ fn fit_user_eye(
     let (ap_down, nd) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.ap));
     let (lower_down, _) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.lower_px));
     // (the squint first: a problem after it is the look-down part's alone)
+    let depth = squint_depth_issue(f_sq);
     let checks = [
-        (f_sq >= 0.85 || f_sq.is_nan(), EyeIssue::new(MSG_SQUINT_SHALLOW, format!("f_sq {f_sq:.2}"), "")),
+        (depth.is_some(), depth.unwrap_or_else(|| EyeIssue::new(MSG_SQUINT_SHALLOW, String::new(), ""))),
         (nd < need.look_down || ap_down > 0.95 * w.ap_n, EyeIssue::new(MSG_LOOK_DOWN, format!("{ap_down:.2} / 普段 {:.2}", w.ap_n), "")),
         (lower_down < w.lower_px, EyeIssue::new(MSG_LOWER_UP, format!("{lower_down:.1} px / 普段 {:.1} px", w.lower_px), "")),
     ];
@@ -3298,6 +3313,20 @@ mod tests {
             let before = fit_user(&pair, &[w, w], None, true).unwrap_err();
             assert_eq!(fit_user_settled(&pair, &[w, w], None).unwrap_err(), before);
         }
+        // A squint deeper than the closed eye by more than half the gap fails its step (f_sq -0.6: an aperture of
+        // 0.033), and fails a look-down partial with it; one the calibrations that passed had (-0.25) does not.
+        let deep = user(1.1, 256.0, 0.033);
+        assert_eq!(
+            fit_user(&[good.clone(), deep.clone()], &[w, w], None, true).unwrap_err(),
+            format!("右目{MSG_SQUINT_DEEP}[f_sq -0.60]")
+        );
+        assert_eq!(
+            fit_user_settled(&[lashes.clone(), deep.clone()], &[w, w], None).unwrap_err(),
+            fit_user(&[lashes.clone(), deep], &[w, w], None, true).unwrap_err()
+        );
+        assert!(fit_user_settled(&[lashes.clone(), user(1.43, 256.0, 0.341)], &[w, w], None).is_ok());
+        let (u, _) = fit_user(&[good.clone(), user(1.1, 256.0, 0.341)], &[w, w], None, true).unwrap();
+        assert!((u[1].f_sq + 0.25).abs() < 0.01, "{:?}", u[1]);
         // (Valve's gaze missing too)
         let mut no_gaze = lashes.clone();
         no_gaze.iter_mut().for_each(|x| x.pitch = f64::NAN);

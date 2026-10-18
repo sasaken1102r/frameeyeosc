@@ -133,7 +133,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
  "session_dir":"/home/steamos/eyecam/rec_2026-10-04_10-00-00","protocol":"widen","prox":31.000,"search":"",
  "last_session_aborted":false,"calib_state":6,"recalib_suggested":false,"baseline":"ready","warmup_remaining_s":0.000,
  "calib_saved":true,"widen_sensitivity":0.500,"dev":false,"setup_done":true,"last_calib_widen":"measured",
- "calib_failed_eye":"","live":true,"live_ms":1.05,"pupil_l":0.967,"pupil_r":0.978,"cam_fps":[90.012,89.987],"prox_min":20.000,
+ "calib_failed_eye":"","user_look_down_default":[false,false],"live":true,"live_ms":1.05,"pupil_l":0.967,"pupil_r":0.978,"cam_fps":[90.012,89.987],"prox_min":20.000,
  "search_detail":{"candidates":8,"refresh_hz":90.000,"slots":8,"both_eyes":true,"stopped_at":"","changed_blocks":128,"unix":1791099990.000},
  "last_calib":{"time":"2026-10-04 09:51:03","ok":true,"failed_eye":"","message":"校正できた（かぶり）","message_en":"Calibrated",
   "pupil_frames":[470.000,482.000],"normal_frames":[486.000,486.000],"pupil_x":[238.000,252.000],"pupil_y":[201.000,194.000],
@@ -176,6 +176,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `setup_done` | bool | 成功した `calib wear` が一度でもある（見開きが取れなかった部分成功も含む）= パネルの最初の準備が済んだ。calib.json の `setup_done` に保存され、ずっと残る（このフィールドがない古い calib.json は、見開きの履歴があれば true） |
 | `last_calib_widen` | string | 直近の `calib wear` の見開き: `measured`（測れた）/ `default`（取れなかったので履歴の中央値の幅を使った）/ `""`（まだしていない、この起動で失敗した、または見開きを記録する前の calib.json）。calib.json の `wear.widen` に残るので、再起動しても変わらない。片目だけ失敗したとき（下の `calib_failed_eye`）は、通った目の見開きで決める |
 | `calib_failed_eye` | string | 直近の `calib wear` で失敗した目: `L` / `R`（**片目だけ失敗。校正は通っていて**、その目は前の校正の値〔その目で測れた値のときだけ。なければ、または前の校正でも同じ目が失敗していたら、もう片目の値と履歴から作った仮の値〕を使っている。`message` は「校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]」のように言う）/ `LR`（両目とも失敗。`state` は `error`）/ `""`（両目とも通った、またはまだしていない）。`L` / `R` は calib.json の `wear.failed_eye` に残るので、再起動しても変わらない。パネルは `L` / `R` のとき、その目について「かぶり直してもう一度」を案内できる。frameeyeosc はこのときも両目ともカメラの値で動かす（失敗した目だけ Valve のまぶたに戻す仕組みはまだない。瞳も閉じた目も見えないフレームは使われないので、外れるのは前の値・仮の値の分だけ） |
+| `user_look_down_default` | [bool, bool] | この起動の直近の `calib user` で、下を見たときの補正を標準の値にして通した目 `[左, 右]`（細めは測れた。`message` は「校正できた（右目は下を見たときの補正を標準の値にしたよ）」。下の「校正」）。この起動でまだしていない、失敗した、両目とも測れたときは `[false, false]`。再起動すると `[false, false]` に戻る（calib.json では、その目の `pitch_c` が `[0, 0, 0]`・`pitch_lo` / `pitch_hi` が -90 / 90 になっている）。パネルは校正の直後のカードにこれを使う |
 | `widen_sensitivity` | number | 見開きの感度 0〜1（`set widen_sensitivity`。既定 0.5）。どの state でも入っている |
 | `dev` | bool | 開発者モード（settings.json の `"dev": true`、既定 false）。true のときだけ校正のたびの目の映像（`eye_L.raw` など）も残す（下の「settings.json」）。録画（`start`）はこれに関係なく誰でも使える。settings.json を手で書き換えると、再起動しなくても次の書き直しで反映される |
 | `live` | bool | ライブ処理がオン（バッファを持っていて `live on`）|
@@ -593,11 +594,15 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   もう片目はふだんどおり。`message` は「校正できた（右目は下を見たときの補正を標準の値にしたよ）」（両目なら「両目とも…」。英語
   「Calibrated (Right eye: using the standard correction for looking down)」）、`state` は `idle`、`calib_state` の 2 は立つ。
   左右の差の警告は、このときは細めだけ比べる（「…にしたよ）。注意: 左右の差が大きい [細め 0.27]」）。calib_result.json の
-  `look_down_default` が `[左, 右]` で、標準の値にした目を言う。**細めが取れなかった目（細めのフレームが足りない、浅い）や瞳が見えない目が
+  `look_down_default` が `[左, 右]` で、標準の値にした目を言う。**細めが取れなかった目（細めのフレームが足りない、浅い、閉じたときより狭すぎる）や瞳が見えない目が
   あれば、今までどおり失敗**（もう片目の下を見る段が通っていても。`message` も今までと同じ）。片目だけの細めは保存しない
   （アバターの片目だけが細まるのを避けるため。細めはやり直せば取れることが多い）
 - やり直しになる場合（`state` が `error` になり、`message` に理由）: `calib wear` は両目とも失敗したとき、`calib user` は
-  どちらかの目で次のどれかが起きたとき: 瞳が見えない、細めが測れない・浅い（閉じ〜普段の 85% 以上）、Valve の視線がない
+  どちらかの目で次のどれかが起きたとき: 瞳が見えない、細めが測れない・浅い（閉じ〜普段の 85% 以上）、細めが閉じたときより
+  狭すぎる（`f_sq` が -0.5 未満。「右目の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）[f_sq -0.78]」、英語
+  「Right eye: the squint was narrower than the closed eye (try again without closing it) [f_sq -0.78]」。このとき細めは、目が閉じたと
+  読まれるまでに 1 / (1 − f_sq) = 0.67 までしか上がらない。通ったユーザー校正 19 回の `f_sq` は -0.25〜0.71 で、0 未満は 2 回〔-0.25・-0.22。
+  かぶりの校正の閉じた開きが少し高い〕。-0.5 未満は失敗した回と録画の流し直しの -0.78・-0.88・-1.47 だけ）、Valve の視線がない
   （下を見たときの補正だけが取れなかった目は、上のとおり失敗にしない。ほかの目の理由で失敗するときは、`message` にその目の理由も今までどおり並ぶ）。
   **両目を調べてから言う**: 両目とも同じ理由なら「両目の…」、違えば目ごとの文を「。」でつなぐ。例:
   - 「両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]」（普段の段のフレームのうち瞳が見えた数）

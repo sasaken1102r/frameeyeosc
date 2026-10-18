@@ -132,6 +132,9 @@ pub struct Shared {
     /// The eyes whose part of the last `calib wear` failed: bit 1 left, bit 2 right (both: the calibration failed;
     /// one: it went through, that eye kept its earlier levels).
     pub calib_failed_eye: AtomicU32,
+    /// The eyes the last `calib user` of this run went through with the standard look-down correction on: bit 1
+    /// left, bit 2 right (0: none this run, it failed, or both eyes' look down was measured).
+    pub user_look_down_default: AtomicU32,
     /// Average processing time per frame over the last second, in microseconds.
     pub us_per_frame: AtomicU32,
     pub frames: AtomicU64,
@@ -173,6 +176,7 @@ impl Default for Shared {
             setup_done: AtomicBool::new(false),
             last_calib_widen: AtomicU32::new(0),
             calib_failed_eye: AtomicU32::new(0),
+            user_look_down_default: AtomicU32::new(0),
             us_per_frame: AtomicU32::new(0),
             frames: AtomicU64::new(0),
             live_on: AtomicBool::new(false),
@@ -830,11 +834,14 @@ impl Worker {
                     (Some(l), Some(r)) => [l, r],
                     _ => return Err("先に calib wear をしてね".into()),
                 };
+                self.shared.user_look_down_default.store(0, Ordering::Relaxed);
                 // An eye whose look-down part failed (long lashes read as the lid) still gets its squint, with the
                 // standard look-down correction.
                 let out = live::fit_user_settled(&samples, &wear, self.calib.user)?;
                 *params_out = Some(live::user_params_json(&out.user));
                 *look_down_default = out.look_down_default;
+                let bits = out.look_down_default[0] as u32 | (out.look_down_default[1] as u32) << 1;
+                self.shared.user_look_down_default.store(bits, Ordering::Relaxed);
                 self.calib.user = Some(out.user);
                 self.calib.user_time = stamp();
                 self.calib.user_warnings = out.warnings.clone();

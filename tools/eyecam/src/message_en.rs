@@ -55,6 +55,7 @@ const EYE: &[(&str, &str)] = &[
     ("を閉じたのが検出できなかった（もう一度、しっかり閉じてね）", "couldn't detect the eye closing (try again and close it firmly)"),
     ("の細めが測れなかった（もう一度）", "couldn't measure the squint (try again)"),
     ("の細めが浅かった（もう一度、しっかり細めてね）", "the squint was too shallow (try again and squint harder)"),
+    ("の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）", "the squint was narrower than the closed eye (try again without closing it)"),
     (": 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）", "looking down didn't change the eye opening (try again and look down clearly)"),
     (": 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）", "the lower lid moved up when looking down (maybe a detection error; try again)"),
 ];
@@ -296,6 +297,8 @@ mod tests {
             "右目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）",
             "左目の細めが測れなかった（もう一度）",
             "右目の細めが浅かった（もう一度、しっかり細めてね）[f_sq 0.91]",
+            "右目の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）[f_sq -0.78]",
+            "両目の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）[左 f_sq -0.60・右 f_sq -0.78]",
             "左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）[1.54 / 普段 1.47]",
             "右目: 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）[240.0 px / 普段 250.0 px]",
             "視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度",
@@ -320,6 +323,10 @@ mod tests {
             assert!(!has_japanese(&en), "{ja} -> {en}");
         }
         assert_eq!(message_en("校正できた（かぶり）"), "Calibrated");
+        assert_eq!(
+            message_en("右目の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）[f_sq -0.78]"),
+            "Right eye: the squint was narrower than the closed eye (try again without closing it) [f_sq -0.78]"
+        );
         assert_eq!(message_en("保存した: rec_a"), "Saved: rec_a");
         assert_eq!(
             message_en("左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）[1.54 / 普段 1.47]"),

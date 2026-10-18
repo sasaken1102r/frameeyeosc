@@ -20,7 +20,8 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 - サービスとして常駐し、SteamVR と一緒に起動します。止まっても自動で再起動します
 - 設定はファイルに置き、動いたまま反映します。SteamVR のダッシュボードに出すパネル（入れなくてもよい）で、被ったまま変えられます
 - VRCFaceTracking 用の ETVR Tracking Module が読む形式でも送れます（削除予定。[VRCFaceTracking（ETVR）モード](#vrcfacetrackingetvrモード)）。VRCFaceTracking の LiveLink モジュール向けに Live Link Face の形式でも送れて、こちらは見開きも伝わります（[VRCFaceTracking（LiveLink）モード](#vrcfacetrackinglivelinkモード)）。frameeyeosc 専用の VRCFaceTracking モジュール FrameEyeOSC にも送れて、こちらは細めと瞳孔も伝わります（[VRCFaceTracking（FrameEyeOSC）モード](#vrcfacetrackingframeeyeoscモード)）
-- 使いたい人は、Frame の目のカメラも使えます（一緒に入る道具 eyecam を使います）。SteamOS 0.4.3 でも見開きが届くようになり、目を細めた動きと瞳孔の大きさも送れます。パネルで最初に一度だけ準備がいります（[目のカメラ](#目のカメラ)）
+- 使いたい人は、Frame の目のカメラも使えます（一緒に入る道具 eyecam を使います）。SteamOS 0.4.3 でも見開きが届くようになり、目を細めた動きと瞳孔の大きさも送れます。パネルで最初に一度だけ準備がいります（[目のカメラ](#目のカメラ)）。試しの機能「半目の読み直し（AI）」を使うと、横を見たときなどに開いた目が半目に読まれにくくなります
+- 使いたい人は、目を見開いたときにアバターの眉も上げられます（「見開きで眉も上げる」、初めはしない。カメラは眉を見ていないので、眉は見開きについていきます）。眉のパラメーターがあるアバターで動きます
 
 ## Steam Link 標準の OSC との違い
 
@@ -37,6 +38,7 @@ SteamVR の Steam Link は、自分でもアイトラッキングを OSC で送�
 | 見開き | 出る（目のカメラ。SteamOS 0.4.3 でも） | 出ない |
 | 瞳孔の大きさ | 出る（目のカメラ。明るいところで小さく、暗いところで大きく） | 出ない |
 | 目を細めた動き | 出る（目のカメラ。ユーザー校正のあと） | 出ない |
+| 眉 | 0.8.0 から選べる: 目を見開くと上がる | 出ない |
 | 準備 | Frame にインストールが必要（目のカメラは最初に一度だけ sudo の手順あり） | インストール不要。SteamVR の設定と VRCFaceTracking のモジュールだけ |
 
 動画は、目のカメラを使っているときの VRChat のアバターの目です。準備のしかたは [目のカメラ](#目のカメラ) を見てください。
@@ -322,7 +324,7 @@ frameeyeosc は、VRCFaceTracking の LiveLink モジュールに Live Link Face
 
 注意:
 
-- 送るのは左右それぞれのまぶた・見開き・視線です（ARKit の EyeBlink と EyeWide、目の yaw と pitch）。VRCFaceTracking のまぶたは VRChat モードと同じ値（0 閉じ、0.75 普通に開いた目、1 見開き）になり、視線も同じです。目を細める・口・眉・頭は 0 で送ります。目のカメラを使っているときは、まぶたと見開きにその値が入ります
+- 送るのは左右それぞれのまぶた・見開き・視線です（ARKit の EyeBlink と EyeWide、目の yaw と pitch）。VRCFaceTracking のまぶたは VRChat モードと同じ値（0 閉じ、0.75 普通に開いた目、1 見開き）になり、視線も同じです。目を細める・口・頭は 0 で送ります。眉も 0 ですが、「見開きで眉も上げる」（`brow_from_widen`）がするのときは BrowInnerUp と BrowOuterUpLeft / Right に入れます。目のカメラを使っているときは、まぶたと見開きにその値が入ります
 - LiveLink モジュールは瞳孔を運びません。目のカメラを使っているときは、瞳孔の大きさだけ同じ PC の VRChat に直接送ります（ポート 9000。VRChat モードと同じ `v2/Pupil…` のパラメータで、`prefix` も付きます。1 秒に最大 50 回）。送り方タブの「瞳孔は VRChat に直接送る」（`pupils_to_vrchat`）で止められます
 - モジュールは何もなめらかにしないので、frameeyeosc のなめらかさの設定がそのまま効きます
 - 送るのは 1 秒に 50 回まで（いつもいちばん新しい値）です。モジュールは 10〜16 ms に 1 つしか読まないので、目のデータを全部（毎秒 90 回以上）送ると、どんどん遅れていきました

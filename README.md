@@ -20,7 +20,8 @@ The way the eye-camera tool finds the eye camera frames is ported from Curtis En
 - It runs as a service that starts with SteamVR and restarts if it stops.
 - Settings live in a file that is picked up while running, and an optional panel on the SteamVR dashboard changes them from inside the headset.
 - It can send in the format the ETVR Tracking Module for VRCFaceTracking reads (deprecated, see [VRCFaceTracking (ETVR) mode](#vrcfacetracking-etvr-mode)), or as Live Link Face packets for VRCFaceTracking's LiveLink module, which also carries widened eyes (see [VRCFaceTracking (LiveLink) mode](#vrcfacetracking-livelink-mode)), or to FrameEyeOSC, a VRCFaceTracking module made for it, which also carries squints and pupils (see [VRCFaceTracking (FrameEyeOSC) mode](#vrcfacetracking-frameeyeosc-mode)).
-- Optionally it also uses the Frame's eye cameras, through eyecam, a tool that comes with it: widened eyes come through again on SteamOS 0.4.3, and squints and pupil size are sent too. It takes a one-time setup on the panel (see [Eye cameras](#eye-cameras)).
+- Optionally it also uses the Frame's eye cameras, through eyecam, a tool that comes with it: widened eyes come through again on SteamOS 0.4.3, and squints and pupil size are sent too. It takes a one-time setup on the panel (see [Eye cameras](#eye-cameras)). An optional, experimental "Half-shut check (AI)" keeps an open eye from reading as half shut, for example while looking to the side.
+- Optionally the avatar's brows go up when you widen your eyes ("Widen raises brows", off by default; the cameras don't see brows, so the brows follow the widening). It works on avatars with brow parameters.
 
 ## Compared with Steam Link's own OSC
 
@@ -37,6 +38,7 @@ SteamVR's Steam Link can send eye tracking over OSC by itself (`LeftEyeX`, `Left
 | Widened eyes | Yes, with the eye cameras (SteamOS 0.4.3 too) | No |
 | Pupil size | Yes, with the eye cameras: smaller in bright places, bigger in the dark | No |
 | Squints | Yes, with the eye cameras after the optional user calibration | No |
+| Brows | Optional since 0.8.0: raised when you widen your eyes | No |
 | Setup | Install on the Frame (the eye cameras also take a one-time sudo step) | Nothing to install: a SteamVR setting and a VRCFaceTracking module |
 
 The video shows the avatar's eyes in VRChat with the eye cameras in use. See [Eye cameras](#eye-cameras) for the setup.
@@ -322,7 +324,7 @@ frameeyeosc can also send Live Link Face packets (the format of Epic's Live Link
 
 Notes:
 
-- Each eye's eyelid, widening and gaze are sent (the ARKit shapes EyeBlink and EyeWide, and the eye's yaw and pitch). VRCFaceTracking's eyelid then comes out the same as in VRChat mode (0 closed, 0.75 relaxed, 1 widened), and so does the gaze. Squint, mouth, brows and head are sent as 0. With the eye cameras, the eyelid and widening include theirs.
+- Each eye's eyelid, widening and gaze are sent (the ARKit shapes EyeBlink and EyeWide, and the eye's yaw and pitch). VRCFaceTracking's eyelid then comes out the same as in VRChat mode (0 closed, 0.75 relaxed, 1 widened), and so does the gaze. Squint, mouth and head are sent as 0, and so are the brows unless "Widen raises brows" is on (`brow_from_widen`; then BrowInnerUp and BrowOuterUpLeft / Right). With the eye cameras, the eyelid and widening include theirs.
 - The LiveLink module carries no pupils. With the eye cameras, frameeyeosc sends their pupil size straight to VRChat on the same PC (port 9000, the same `v2/Pupil…` parameters as in VRChat mode, with `prefix`, up to 50 times a second); turn it off with "Send pupils straight to VRChat" on the Output tab (`pupils_to_vrchat`).
 - The module doesn't smooth anything, so frameeyeosc's own smoothing settings apply as they are.
 - It is sent at up to 50 packets a second (always the newest sample): the module reads one packet every 10-16 ms, and sending every eye sample (90 or more a second) made the eyes lag more and more.

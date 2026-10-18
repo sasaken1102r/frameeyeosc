@@ -206,6 +206,8 @@ Frame のほかのアプリ（コントローラーのボタンなど）から�
 | `lid_closed` / `lid_open` / `lid_widen_start` / `lid_wide` | `--lid-closed` など | `0.30` / `0.80` / `0.92` / `1.00` | Frame の開き具合を「閉じ／普通／見開き」にどう対応させるか |
 | `lid_widen` | `--lid-widen` | `"normal"` | 目を合わせた目の見開きやすさ: `"off"`・`"low"`・`"normal"`・`"high"`（[目を合わせる](#目を合わせる) を参照）。目を合わせていない目は `lid_widen_start` / `lid_wide` を使う |
 | `widen` | `--no-widen` | `true` | そもそも見開くか。`false` で見開かない: 目のカメラ・`lid_widen`・まぶたの目盛りが何と言っても、まぶたはふつうに開いた所より上に行かない（VRChat の `EyeLid` は 0.75 まで、VRCFT の LiveLink・FrameEyeOSC モジュールでは `EyeWide` が 0）。閉じる・まばたき・目のカメラの細めはそのまま。まぶたタブの「見開き」（する / しない） |
+| `brow_from_widen` | `--brow-from-widen` | `false` | 目を見開くと、アバターの眉も上げる。目のカメラは眉を見ていないので、見開きが 15 % を超えた目の眉を上げ、いちばん見開いて `brow_strength` まで。`widen` が `false` でも上げる。閉じかけ・閉じている目の眉はそのまま、ウインクでは閉じた目の眉が開いた目の眉に合わせる。眉を下げることはしない。VRChat に直接なら `v2/BrowExpressionLeft` / `Right` / `BrowExpression`・`v2/BrowUpLeft` / `Right` / `BrowUp`・`v2/BrowInnerUp`・`v2/BrowOuterUp`（止まるときに 1 回 0）、LiveLink は `BrowInnerUp` と `BrowOuterUpLeft` / `Right`、FrameEyeOSC はパケットの眉の部分（108 バイト）。眉のパラメーターがあるアバターで動く。まぶたタブの「見開きで眉も上げる」 |
+| `brow_strength` | `--brow-strength` | `0.8` | `brow_from_widen` でいちばん見開いたときの眉の上がり方、`0`〜`1`。まぶたタブの「眉の上がり方」 |
 | `lid_scale_left` / `lid_scale_right` | `--lid-scale-left` / `--lid-scale-right` | `null`（学習値） | 学習値の代わりに固定の倍率を使う。目を合わせた目では、合わせたあとの微調整になる: 0.9 でその目が 1 割閉じ気味に読まれる（閉じやすく、見開きにくくなる）。`null` は 1.0。目を合わせ直すと（全部のとき）と［元に戻す］で `null` に戻る |
 | `lid_calibration` | `--no-lid-calibration` | `true` | まぶたを学習する |
 | `lid_sync` | `--lid-sync` | `0.4` | 左右のまぶたの小さな差を揃える。大きな差（ウインク）はそのまま。`0` で無効 |

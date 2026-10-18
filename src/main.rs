@@ -168,6 +168,15 @@ const WIDEN_SUSTAIN: f64 = 0.25;
 // blink), so a blink's lead-in and its reopening count separately.
 const WIDEN_RELEASE: f64 = 0.1;
 const WIDEN_RESET_BELOW: f32 = 0.5;
+// brow_from_widen: the brows start to rise at this much widening (0 relaxed open, 1 fully widened; LiveLink's EyeWide),
+// so the small widening of an open eye wandering above relaxed leaves them still, and are fully up (times
+// brow_strength) at full widening.
+const BROW_FROM_WIDE: f32 = 0.15;
+// ...and follow it with this time constant (s), a one-pole filter, so they don't jitter with the eyelid.
+const BROW_SMOOTH_S: f32 = 0.1;
+// A brow comes down only once its eyelid has been at or below relaxed open (and not closing) for this long (s), so the
+// eyelid passing through on its way to a blink and back does not lower it (see BrowRaise).
+const BROW_FALL_DELAY: f64 = 0.1;
 // SteamOS 0.4.3's eye tracker reads a relaxed open eye as 1.000, where the openness stops, so a widened eye can't read
 // any higher and widening can't come through (one user's left eye, both eyes open: a median 0.754 and 2.0% of samples
 // at 1.000 before, 1.000 and 75-93% after). An eye without a fit whose relaxed reading lands past mark 3 would even be
@@ -581,6 +590,13 @@ struct Args {
     /// lid marks say. Closing and the eye camera's squint are unchanged
     #[arg(long)]
     no_widen: bool,
+    /// Raise the avatar's brows as the eyes widen (the eye cameras don't see brows): BrowInnerUp and BrowOuterUp
+    /// through VRCFT, VRCFT's v2 brow parameters to VRChat. Also with --no-widen. Brows are never lowered
+    #[arg(long)]
+    brow_from_widen: bool,
+    /// How far --brow-from-widen raises the brows at full widening, 0..1
+    #[arg(long, default_value_t = 0.8)]
+    brow_strength: f32,
     /// OSC destination as HOST:PORT, or "auto" for the PC that Steam Link is streaming from
     #[arg(long, default_value = "auto")]
     target: String,
@@ -825,6 +841,135 @@ impl Deadzone {
     }
 }
 
+/// Per eye: since when its eyelid has been above relaxed open, and when it last was (see Smoother::sustain_widen).
+#[derive(Clone, Copy)]
+struct WidenSustain {
+    since: [Option<f64>; 2],
+    last: [f64; 2],
+}
+
+impl Default for WidenSustain {
+    fn default() -> Self {
+        Self { since: [None; 2], last: [f64::NEG_INFINITY; 2] }
+    }
+}
+
+impl WidenSustain {
+    /// The eyelids at `time` with widening held back until it lasts (see Smoother::sustain_widen).
+    fn step(&mut self, time: f64, lids: [f32; 2]) -> [f32; 2] {
+        std::array::from_fn(|eye| {
+            let lid = lids[eye];
+            if lid > LID_RELAXED {
+                self.since[eye].get_or_insert(time);
+                self.last[eye] = time;
+            } else if lid < WIDEN_RESET_BELOW || time - self.last[eye] > WIDEN_RELEASE {
+                self.since[eye] = None;
+            }
+            match self.since[eye] {
+                Some(since) if time - since >= WIDEN_SUSTAIN => lid,
+                _ => lid.min(LID_RELAXED),
+            }
+        })
+    }
+}
+
+/// How far a brow goes up (0..strength) for a VRCFT eyelid: not at all up to BROW_FROM_WIDE of widening
+/// (livelink::wide: 0 at relaxed open, 1 fully widened), then evenly up to `strength` at full widening. NaN for a NaN
+/// eyelid (BrowRaise keeps the last value then).
+fn brow_raise(lid: f32, strength: f32) -> f32 {
+    ((livelink::wide(lid) - BROW_FROM_WIDE) / (1.0 - BROW_FROM_WIDE)).clamp(0.0, 1.0) * strength
+}
+
+/// The brows raised with widening (brow_from_widen): the eye cameras can't see brows, so when an eye widens its brow
+/// goes up (brow_raise), and never below where it rests. Fed the eyelids before `widen` caps them, so with widening off the brows still
+/// rise. The eyelids go through lid_sync like the sent ones, and a widen sustain of their own: a brow rises only for a
+/// widening that has lasted WIDEN_SUSTAIN, and meanwhile stays where it is (so a brief jump in openness around a blink
+/// moves no brow, and a widened eye reopening after a blink keeps its brow up). It comes down only once its eyelid has
+/// been at or below relaxed open, and not closing, for BROW_FALL_DELAY (so neither closing nor reopening for a blink
+/// lowers it). The brows follow with a one-pole filter (BROW_SMOOTH_S). An eye that is closing or closed keeps its
+/// brow where it was; while only one eye is (a wink), its brow follows the open eye's.
+struct BrowRaise {
+    sustain: WidenSustain,
+    // Per eye: since when its eyelid has been at or below relaxed open without closing.
+    below_since: [Option<f64>; 2],
+    // Each brow as last sent (0 at first, so the brows rise from where they rest).
+    value: [f32; 2],
+}
+
+impl Default for BrowRaise {
+    fn default() -> Self {
+        Self { sustain: WidenSustain::default(), below_since: [None; 2], value: [0.0; 2] }
+    }
+}
+
+impl BrowRaise {
+    /// The brows for one sample at `time`, from the eyelids before the `widen` cap (`lids`), with the eyes that are
+    /// closing or closed (`closed`). `dt` is the time since the last sample; None with --raw, which neither sustains
+    /// the widening, delays the fall nor smooths (each brow is its eyelid's at once). Always finite and within 0..1.
+    fn step(&mut self, time: f64, dt: Option<f32>, lids: [f32; 2], closed: [bool; 2], settings: &Settings) -> [f32; 2] {
+        let lids = sync_lids(lids, settings.lid_sync);
+        let sustained = if dt.is_some() { self.sustain.step(time, lids) } else { lids };
+        let mut value = self.value;
+        for eye in 0..2 {
+            let lid = lids[eye];
+            // Closing or closed, or an eyelid that is not a number: the brow stays
+            if closed[eye] || !lid.is_finite() {
+                self.below_since[eye] = None;
+                continue;
+            }
+            if lid > LID_RELAXED {
+                self.below_since[eye] = None;
+                // A widening that hasn't lasted yet
+                if sustained[eye] <= LID_RELAXED {
+                    continue;
+                }
+            } else if dt.is_some() {
+                let since = *self.below_since[eye].get_or_insert(time);
+                if time - since < BROW_FALL_DELAY {
+                    continue;
+                }
+            }
+            let last = value[eye];
+            let target = brow_raise(sustained[eye], settings.brow_strength);
+            let target = if target.is_finite() { target } else { last };
+            value[eye] = match dt {
+                Some(dt) => last + (target - last) * (1.0 - (-dt.max(0.0) / BROW_SMOOTH_S).exp()),
+                None => target,
+            };
+        }
+        // A wink: the closed eye's brow is the open eye's
+        for eye in 0..2 {
+            if closed[eye] && !closed[1 - eye] {
+                value[eye] = value[1 - eye];
+            }
+        }
+        let value = value.map(|brow| if brow.is_finite() { brow.clamp(0.0, 1.0) } else { 0.0 });
+        self.value = value;
+        value
+    }
+}
+
+/// The brows for a sample (see BrowRaise), or None with brow_from_widen off, which also starts them over at rest.
+/// `before_cap`: the eyelids before the `widen` cap; `sent`: the eyelids as sent; `mapped`: the eye server's corrected
+/// ones, by which an eye is closing (below doubt_line, as for Smoother::check_lids).
+fn brows_for(
+    settings: &Settings,
+    smoother: &mut Smoother,
+    time: f64,
+    dt: Option<f32>,
+    before_cap: [f32; 2],
+    sent: [f32; 2],
+    mapped: [f32; 2],
+) -> Option<[f32; 2]> {
+    if !settings.brow_from_widen {
+        smoother.brows = BrowRaise::default();
+        return None;
+    }
+    let line = doubt_line(settings);
+    let closed = [0, 1].map(|eye| sent[eye] <= 0.0 || mapped[eye] < line);
+    Some(smoother.brows.step(time, dt, before_cap, closed, settings))
+}
+
 /// Filters for the six gaze values and two eyelids, clocked by the eye server's sample time.
 struct Smoother {
     gaze: [OneEuro; 6],
@@ -843,8 +988,7 @@ struct Smoother {
     // Left, right and combined raw x from the last sample above --gaze-down-hold-x-deg.
     down_hold_x: Option<[f32; 3]>,
     // Per eye: since when its eyelid has been above relaxed open (see sustain_widen), and when it last was.
-    wide_since: [Option<f64>; 2],
-    wide_last: [f64; 2],
+    widen_sustain: WidenSustain,
     // Whether the openness is saturated, so nothing above relaxed open is widening. Not reset with the filters: it
     // belongs to the eye tracker, not to one stretch of tracking.
     saturation: Saturation,
@@ -865,6 +1009,8 @@ struct Smoother {
     raise_peak: RaisePeak,
     // The camera's "closed" in one eye held back until it is a blink or a wink (see CLOSE_PAIR_S).
     close_gate: CloseGate,
+    // The brows raised with widening (brow_from_widen).
+    brows: BrowRaise,
 }
 
 impl Smoother {
@@ -880,8 +1026,7 @@ impl Smoother {
             last_gaze: [None; 3],
             lid_vertical: None,
             down_hold_x: None,
-            wide_since: [None; 2],
-            wide_last: [f64::NEG_INFINITY; 2],
+            widen_sustain: WidenSustain::default(),
             saturation: Saturation::default(),
             camera: CameraSmoother::default(),
             cross_eye: CrossEye::default(),
@@ -891,6 +1036,7 @@ impl Smoother {
             side: SideCheck::default(),
             raise_peak: RaisePeak::default(),
             close_gate: CloseGate::default(),
+            brows: BrowRaise::default(),
         }
     }
 
@@ -986,8 +1132,7 @@ impl Smoother {
         self.last_gaze = [None; 3];
         self.lid_vertical = None;
         self.down_hold_x = None;
-        self.wide_since = [None; 2];
-        self.wide_last = [f64::NEG_INFINITY; 2];
+        self.widen_sustain = WidenSustain::default();
         self.camera = CameraSmoother::default();
         self.cross_eye.restart();
         self.lid_doubt = [LidDoubt::default(); 2];
@@ -996,6 +1141,7 @@ impl Smoother {
         self.side = SideCheck::default();
         self.raise_peak = RaisePeak::default();
         self.close_gate = CloseGate::default();
+        self.brows = BrowRaise::default();
     }
 
     /// Start over what only --eye-behavior 2 keeps (the camera's eyelid's doubt and gaps, the ceiling rule, the
@@ -1142,19 +1288,7 @@ impl Smoother {
     /// once it closes a third (WIDEN_RESET_BELOW). The Frame's brief jumps in openness around blinks then never show
     /// as wide eyes, and a widen that is held shows WIDEN_SUSTAIN late. Below relaxed open nothing changes.
     fn sustain_widen(&mut self, time: f64, lids: [f32; 2]) -> [f32; 2] {
-        std::array::from_fn(|eye| {
-            let lid = lids[eye];
-            if lid > LID_RELAXED {
-                self.wide_since[eye].get_or_insert(time);
-                self.wide_last[eye] = time;
-            } else if lid < WIDEN_RESET_BELOW || time - self.wide_last[eye] > WIDEN_RELEASE {
-                self.wide_since[eye] = None;
-            }
-            match self.wide_since[eye] {
-                Some(since) if time - since >= WIDEN_SUSTAIN => lid,
-                _ => lid.min(LID_RELAXED),
-            }
-        })
+        self.widen_sustain.step(time, lids)
     }
 
     /// Below --gaze-down-hold-x-deg the Frame's sideways gaze jumps (by ~19° to the right when looking
@@ -3224,6 +3358,9 @@ struct Sample {
     // Per eye: the camera's "closed" was held back, not a blink or a wink yet (see CloseGate). The replay reads it.
     #[cfg_attr(not(test), allow(dead_code))]
     close_held: [bool; 2],
+    // Each brow raised with widening, 0..1 (brow_from_widen; None while it is off, and then nothing about brows goes
+    // out).
+    brows: Option<[f32; 2]>,
 }
 
 impl Sample {
@@ -3335,7 +3472,7 @@ fn process(
     // easing or far-down slope, the camera only for widening, no floor, no ceiling rule, no shared widening)
     let v2 = settings.v2();
     let mut cross_eye = false;
-    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held) = if settings.raw {
+    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
         let camera_lids = side_checked(smoother, data, camera_lids, v2, settings.camera_closed_doubt);
         let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
@@ -3379,6 +3516,8 @@ fn process(
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
         let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from, v2);
         let shut = sync_blinks(mapped.map(|lid| lid <= 0.0), mapped, settings.blink_sync_below);
+        // The brows go by the eyelids before the cap below (brow_from_widen)
+        let before_cap = mixed;
         // With widening off nothing goes above relaxed open (`widen`); below it nothing changes
         let mixed = if settings.widen { mixed } else { mixed.map(|lid| lid.min(LID_RELAXED)) };
         let mut lids = sync_lids(mixed, settings.lid_sync);
@@ -3387,7 +3526,8 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let shut_eyes = data.openness.iter().any(|openness| *openness < settings.gaze_hold_below);
-        (gaze, unscaled_gaze, lids, shut_eyes, openness_scaled, camera, lid_from, close_held)
+        let brows = brows_for(settings, smoother, data.sample_time, None, before_cap, lids, mapped);
+        (gaze, unscaled_gaze, lids, shut_eyes, openness_scaled, camera, lid_from, close_held, brows)
     } else {
         let dt = smoother.advance(data.sample_time);
         // After advance(), which starts the smoothing over after a gap
@@ -3472,7 +3612,10 @@ fn process(
         // widening, so it is capped again after that. Closing, half-closed and blinks are below relaxed open and
         // untouched. The widen sustain applies to the camera's widening too. With widening off (`widen`) every eye is
         // capped the same way, the camera's included, so its closing and squint stay as they are.
-        let capped = camera_lids.map(|camera| !settings.widen || (saturated && camera.is_none()));
+        let saturation_capped = camera_lids.map(|camera| saturated && camera.is_none());
+        let capped = saturation_capped.map(|capped| !settings.widen || capped);
+        // The brows go by the eyelids before the `widen` cap, but after the saturation's (brow_from_widen)
+        let before_cap = [0, 1].map(|eye| if saturation_capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
         let mut lids = [0, 1].map(|eye| if capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
         lids = smoother.sustain_widen(data.sample_time, lids);
         smoother.filter(dt, &mut gaze, &mut lids, hold);
@@ -3518,7 +3661,8 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let openness_scaled = lid_inputs_with(data.openness, vertical, scales, settings, fits);
-        (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from, close_held)
+        let brows = brows_for(settings, smoother, data.sample_time, Some(dt), before_cap, lids, mapped);
+        (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from, close_held, brows)
     };
     Sample {
         openness: data.openness,
@@ -3534,6 +3678,7 @@ fn process(
         closed_overruled: if v2 { smoother.side.overruled } else { [false; 2] },
         cross_eye,
         close_held,
+        brows,
     }
 }
 
@@ -3620,18 +3765,24 @@ fn output_lids(output: OutputKind, lids: [f32; 2]) -> [f32; 2] {
 }
 
 /// The Live Link packet for one sample, stamped `time` seconds into the day. Each eye's gaze is its own with
-/// "move eyes separately", else the combined one (as for the other outputs). Nothing else goes to LiveLink: no
-/// EyeTrackingActive and no parameter prefix, which only VRChat reads.
+/// "move eyes separately", else the combined one (as for the other outputs), and the brows raised with brow_from_widen.
+/// Nothing else goes to LiveLink: no EyeTrackingActive and no parameter prefix, which only VRChat reads.
 fn livelink_packet(sample: &Sample, time: f64) -> [u8; livelink::PACKET_LEN] {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
     let lids = output_lids(OutputKind::LiveLink, sample.lids);
-    livelink::packet(time, &livelink::shapes(lids, [left_x, left_y, right_x, right_y]))
+    let shapes = livelink::shapes(lids, [left_x, left_y, right_x, right_y]);
+    let shapes = match sample.brows {
+        Some(brows) => livelink::with_brows(shapes, brows),
+        None => shapes,
+    };
+    livelink::packet(time, &shapes)
 }
 
 /// The FrameEyeOSC packet for one sample: the same gaze and eyelids as the Live Link packet (each eye's gaze its own
 /// with "move eyes separately", else the combined one), with the eye camera's squint and pupils for the eyes they are
 /// used for. VRCFT then sends the pupils to each avatar in the form it takes them, so none go straight to VRChat.
-fn feo_packet(sample: &Sample, session: u32, sequence: u32, time_us: u64) -> [u8; feo::PACKET_LEN] {
+/// With brow_from_widen the 108-byte packet with the brows raised (never lowered or pinched), else the 76-byte one.
+fn feo_packet(sample: &Sample, session: u32, sequence: u32, time_us: u64) -> Vec<u8> {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
     let lids = output_lids(OutputKind::FrameEyeOsc, sample.lids);
     let camera = &sample.camera;
@@ -3641,7 +3792,11 @@ fn feo_packet(sample: &Sample, session: u32, sequence: u32, time_us: u64) -> [u8
         squint: camera.squint[side],
         pupil: camera.pupil_diameter[side].zip(camera.pupil_dilation[side]),
     };
-    feo::packet(session, sequence, true, time_us, [eye(0, [left_x, left_y]), eye(1, [right_x, right_y])])
+    let eyes = [eye(0, [left_x, left_y]), eye(1, [right_x, right_y])];
+    match sample.brows {
+        Some(brows) => feo::packet_with_brows(session, sequence, true, time_us, eyes, brows.map(feo::raised_brow)).to_vec(),
+        None => feo::packet(session, sequence, true, time_us, eyes).to_vec(),
+    }
 }
 
 /// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set with the eye camera's squint and pupils (see
@@ -3664,6 +3819,7 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
         messages.extend(active_message(settings, true));
         values.extend([("EyeX", x), ("EyeY", y)]);
         values.extend(camera_params(&sample.camera));
+        values.extend(sample.brows.map(brow_params).unwrap_or_default());
     }
     messages.extend(
         values
@@ -3684,6 +3840,42 @@ fn camera_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
     let mut params = per_eye_params(["EyeSquintLeft", "EyeSquintRight", "EyeSquint"], camera.squint);
     params.extend(pupil_params(camera));
     params
+}
+
+/// The VRCFT v2 brow parameters for brows raised with brow_from_widen (left, right; 0..1), as VRCFT works them out
+/// for these shapes (VRCFaceTracking.Core/Params/Expressions/UnifiedExpressionsParameters.cs and
+/// UnifiedSimpleExpressions.cs): with BrowInnerUp and BrowOuterUp both a brow's raise and nothing lowered, each eye's
+/// BrowExpression (-1 lowered, +1 raised) and BrowUp are that raise, and the combined BrowExpression, BrowUp,
+/// BrowInnerUp and BrowOuterUp the mean of both. Nothing lowered goes out (BrowDown...): brows are only ever raised.
+const BROW_PARAMS: [&str; 8] = [
+    "BrowExpressionLeft",
+    "BrowExpressionRight",
+    "BrowExpression",
+    "BrowUpLeft",
+    "BrowUpRight",
+    "BrowUp",
+    "BrowInnerUp",
+    "BrowOuterUp",
+];
+
+/// BROW_PARAMS with their values for these brows.
+fn brow_params(brows: [f32; 2]) -> Vec<(&'static str, f32)> {
+    let [left, right] = brows.map(|brow| if brow.is_finite() { brow.clamp(0.0, 1.0) } else { 0.0 });
+    let both = (left + right) / 2.0;
+    BROW_PARAMS.into_iter().zip([left, right, both, left, right, both, both, both]).collect()
+}
+
+/// Every brow parameter 0 once the brows that went out (`out`) stop (`brows` None: brow_from_widen turned off, the eye
+/// data lost, sending paused or VRChat moved): VRChat keeps a parameter's last value, so the avatar would otherwise
+/// keep its brows up.
+fn brow_release(settings: &Settings, out: bool, brows: Option<[f32; 2]>) -> Vec<(String, OscType)> {
+    if !out || brows.is_some() {
+        return Vec::new();
+    }
+    BROW_PARAMS
+        .into_iter()
+        .map(|name| (format!("/avatar/parameters{}/v2/{name}", settings.prefix), OscType::Float(0.0)))
+        .collect()
 }
 
 /// The pupil part of camera_params: the dilation and each eye's pupil diameter (in cm, 0..1) for the eyes whose pupil
@@ -4070,6 +4262,8 @@ struct Bridge {
     camera_live: Option<Live>,
     // Which eyes' squint went out to VRChat with the last sample, so it can be set back to 0 when it stops.
     squint_out: [bool; 2],
+    // Whether brows (brow_from_widen) went out to VRChat with the last sample, likewise.
+    brow_out: bool,
     // In LiveLink mode, the eye camera's pupils straight to VRChat (see pupil_stream): a sender of its own, so the
     // Live Link rate and drops stay the LiveLink module's.
     pupil_output: Output,
@@ -4097,6 +4291,9 @@ impl Bridge {
         }
         if self.squint_out.contains(&true) && stream != vrchat_stream(&settings) {
             self.release_squint()?;
+        }
+        if self.brow_out && vrchat_stream(&self.settings) != vrchat_stream(&settings) {
+            self.release_brows()?;
         }
         let stream = steamlink_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != steamlink_stream(&settings) {
@@ -4184,6 +4381,10 @@ impl Bridge {
                         self.output.send(&addr, &[arg])?;
                     }
                     self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
+                    for (addr, arg) in brow_release(&self.settings, self.brow_out, sample.brows) {
+                        self.output.send(&addr, &[arg])?;
+                    }
+                    self.brow_out = sample.brows.is_some();
                 }
                 if native_stream(&self.settings).is_some() {
                     for (addr, args) in native_messages(&self.settings, sample.gaze, sample.lids) {
@@ -4240,6 +4441,9 @@ impl Bridge {
         if self.squint_out.contains(&true) {
             self.release_squint()?;
         }
+        if self.brow_out {
+            self.release_brows()?;
+        }
         if steamlink_stream(&self.settings).is_some() {
             send_steamlink_neutral(&mut self.output)?;
         }
@@ -4266,6 +4470,15 @@ impl Bridge {
             self.output.send(&addr, &[arg])?;
         }
         self.squint_out = [false; 2];
+        Ok(())
+    }
+
+    /// Set the brows that went out back to 0 (see brow_release), where they went with the current settings.
+    fn release_brows(&mut self) -> Result<(), Box<dyn Error>> {
+        for (addr, arg) in brow_release(&self.settings, self.brow_out, None) {
+            self.output.send(&addr, &[arg])?;
+        }
+        self.brow_out = false;
         Ok(())
     }
 
@@ -4553,6 +4766,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         camera: LiveReader::new(camera_path, Instant::now()),
         camera_live: None,
         squint_out: [false; 2],
+        brow_out: false,
         pupil_output,
         pupil_bits: PupilBits::default(),
     };
@@ -6377,6 +6591,7 @@ mod tests {
             closed_overruled: [false; 2],
             cross_eye: false,
             close_held: [false; 2],
+            brows: None,
         }
     }
 
@@ -6536,6 +6751,7 @@ mod tests {
             camera: LiveReader::new(PathBuf::from("/nonexistent"), Instant::now()),
             camera_live: None,
             squint_out: [false; 2],
+            brow_out: false,
             // Never VRChat's port on this machine in a test: a test that wants the pupils points it at its own listener
             pupil_output: Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9 }),
             pupil_bits: PupilBits::default(),
@@ -10040,6 +10256,290 @@ mod tests {
                 assert_eq!(with.lids.map(f32::to_bits), without.lids.map(f32::to_bits), "{label}: sample {i}");
                 assert_eq!(osc_messages(&on, with), osc_messages(&off, without), "{label}: sample {i}");
             }
+        }
+    }
+
+    #[test]
+    fn brows_rise_from_15_percent_widening_to_the_strength() {
+        // Nothing up to relaxed open and the first 15 % of widening
+        for lid in [0.0, 0.4, LID_RELAXED, LID_RELAXED + 0.25 * 0.149] {
+            assert_eq!(brow_raise(lid, 0.8), 0.0, "{lid}");
+        }
+        assert!(brow_raise(LID_RELAXED + 0.25 * BROW_FROM_WIDE, 0.8) < 1e-6);
+        assert!(brow_raise(LID_RELAXED + 0.25 * 0.16, 0.8) > 0.0);
+        // Halfway between there and full widening: half the strength
+        assert!((brow_raise(LID_RELAXED + 0.25 * 0.575, 1.0) - 0.5).abs() < 1e-5);
+        assert!((brow_raise(LID_RELAXED + 0.25 * 0.575, 0.8) - 0.4).abs() < 1e-5);
+        // Fully widened: the strength, and no further
+        assert_eq!(brow_raise(1.0, 0.8), 0.8);
+        assert_eq!(brow_raise(1.3, 0.8), 0.8);
+        assert_eq!(brow_raise(1.0, 0.0), 0.0);
+        assert_eq!(brow_raise(1.0, 1.0), 1.0);
+        // It is LiveLink's EyeWide that counts
+        for lid in [0.8, 0.9, 0.95] {
+            let wide = livelink::wide(lid);
+            assert!((brow_raise(lid, 1.0) - (wide - 0.15) / 0.85).abs() < 1e-6, "{lid}");
+        }
+    }
+
+    fn brow_settings() -> Settings {
+        Settings { brow_from_widen: true, lid_sync: 0.0, ..settings() }
+    }
+
+    /// `n` samples (90 Hz) of `lids` with `closed` through `brows`, on from `time`; every sample's brows.
+    fn brow_steps(
+        brows: &mut BrowRaise,
+        settings: &Settings,
+        time: &mut f64,
+        n: usize,
+        lids: [f32; 2],
+        closed: [bool; 2],
+    ) -> Vec<[f32; 2]> {
+        (0..n)
+            .map(|_| {
+                *time += f64::from(NOMINAL_DT);
+                brows.step(*time, Some(NOMINAL_DT), lids, closed, settings)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn brows_wait_for_a_widening_to_last_then_follow_it_smoothly() {
+        let settings = brow_settings();
+        let mut brows = BrowRaise::default();
+        let mut time = 100.0;
+        let open = [false; 2];
+        // At rest
+        assert_eq!(brow_steps(&mut brows, &settings, &mut time, 20, [LID_RELAXED; 2], open).last(), Some(&[0.0; 2]));
+        // Widened: nothing for WIDEN_SUSTAIN (22.5 samples), then up toward the strength with BROW_SMOOTH_S
+        let up = brow_steps(&mut brows, &settings, &mut time, 90, [1.0, 0.875], open);
+        assert!(up[..22].iter().all(|brow| *brow == [0.0; 2]), "{:?}", &up[..23]);
+        assert!(up[23..].windows(2).all(|pair| pair[1][0] >= pair[0][0]));
+        // One time constant (9 samples) after it starts: about 63 %
+        let share = up[23 + 9][0] / 0.8;
+        assert!((0.55..0.72).contains(&share), "{share}");
+        let [left, right] = *up.last().unwrap();
+        assert!((left - 0.8).abs() < 0.01 && (right - brow_raise(0.875, 0.8)).abs() < 0.01, "{left} {right}");
+        // Back at relaxed open: down to rest after BROW_FALL_DELAY, smoothly
+        let down = brow_steps(&mut brows, &settings, &mut time, 90, [LID_RELAXED; 2], open);
+        assert!(down[..8].iter().all(|brow| *brow == [left, right]), "{:?}", &down[..10]);
+        assert!(down[12][0] < left && down[12][0] > 0.4);
+        assert!(down.last().unwrap().iter().all(|brow| *brow < 0.001));
+        // --raw (no dt): the eyelid's brows at once
+        let mut raw = BrowRaise::default();
+        assert_eq!(raw.step(1.0, None, [1.0, LID_RELAXED], open, &settings), [0.8, 0.0]);
+    }
+
+    #[test]
+    fn brows_hold_through_a_blink_and_follow_the_open_eye_in_a_wink() {
+        let settings = brow_settings();
+        let mut brows = BrowRaise::default();
+        let mut time = 100.0;
+        let up = *brow_steps(&mut brows, &settings, &mut time, 120, [1.0, 0.9], [false; 2]).last().unwrap();
+        assert!(up[0] > 0.79 && up[1] > 0.4 && up[1] < up[0], "{up:?}");
+        // On the way to a blink (below relaxed open, not closing yet), shut, and back up through it: held
+        let mut seen = brow_steps(&mut brows, &settings, &mut time, 2, [0.5; 2], [false; 2]);
+        seen.extend(brow_steps(&mut brows, &settings, &mut time, 20, [0.0; 2], [true; 2]));
+        seen.extend(brow_steps(&mut brows, &settings, &mut time, 3, [0.6; 2], [false; 2]));
+        // ...and widened again at once: the widen sustain starts over, but the brows stay up meanwhile
+        seen.extend(brow_steps(&mut brows, &settings, &mut time, 30, [1.0, 0.9], [false; 2]));
+        for (i, brow) in seen.iter().enumerate() {
+            assert!((brow[0] - up[0]).abs() < 1e-3 && (brow[1] - up[1]).abs() < 1e-3, "{i}: {brow:?} {up:?}");
+        }
+        // A wink: the closed eye's brow is the open eye's, wherever that goes
+        let wink = brow_steps(&mut brows, &settings, &mut time, 60, [LID_RELAXED, 0.0], [false, true]);
+        assert!(wink.iter().all(|[left, right]| left == right), "{wink:?}");
+        assert!(wink.last().unwrap()[0] < 0.05);
+        let wink = brow_steps(&mut brows, &settings, &mut time, 90, [0.0, 1.0], [true, false]);
+        assert!(wink.iter().all(|[left, right]| left == right));
+        assert!(wink.last().unwrap()[1] > 0.79);
+        // Both shut: both held
+        let shut = brow_steps(&mut brows, &settings, &mut time, 30, [0.0; 2], [true; 2]);
+        assert!(shut.iter().all(|brow| *brow == wink[wink.len() - 1]));
+    }
+
+    #[test]
+    fn a_nan_eyelid_keeps_the_brows_finite() {
+        let settings = brow_settings();
+        let mut brows = BrowRaise::default();
+        let mut time = 100.0;
+        let up = *brow_steps(&mut brows, &settings, &mut time, 90, [1.0; 2], [false; 2]).last().unwrap();
+        for lids in [[f32::NAN, 1.0], [f32::NAN; 2], [f32::INFINITY, f32::NEG_INFINITY]] {
+            for brow in brow_steps(&mut brows, &settings, &mut time, 10, lids, [false; 2]) {
+                assert!(brow.iter().all(|value| value.is_finite() && (0.0..=1.0).contains(value)), "{lids:?}: {brow:?}");
+            }
+        }
+        // A NaN eyelid keeps that brow where it was
+        let after = brow_steps(&mut brows, &settings, &mut time, 5, [f32::NAN, 1.0], [false; 2]);
+        assert!((after[4][0] - up[0]).abs() < 0.01, "{after:?}");
+        // --raw too, from the start
+        let mut raw = BrowRaise::default();
+        assert_eq!(raw.step(1.0, None, [f32::NAN, 1.0], [false; 2], &settings), [0.0, 0.8]);
+        // ...and so are the packets made from them
+        let sample = Sample { brows: Some(raw.step(2.0, None, [f32::NAN; 2], [false; 2], &settings)), ..sample() };
+        let packet = feo_packet(&sample, 1, 0, 0);
+        assert!(feo::tests::module_eyes(&packet).is_some());
+        assert!(feo::tests::module_brows(&packet).iter().all(Option::is_some));
+    }
+
+    /// A widened run's samples with brow_from_widen, with the eye camera (and Valve's eyelids at 0.8) or Valve's eyelids
+    /// alone (at 1.0); with a blink at samples 120..130 either way.
+    fn brow_runs(settings: &Settings) -> [(&'static str, Vec<Sample>); 2] {
+        let camera_widened = |i: usize| Some(if (120..130).contains(&i) { camera_eyes([(0.0, 0.0, true); 2]) } else { camera(1.0, 0.0) });
+        let blink = |open: f32| move |i: usize| if (120..130).contains(&i) { [0.1; 2] } else { [open; 2] };
+        [
+            ("camera", widen_run(settings, blink(0.8), camera_widened)),
+            ("valve", widen_run(settings, blink(1.0), |_| None)),
+        ]
+    }
+
+    #[test]
+    fn brows_go_by_the_eyelids_before_the_widen_cap_and_hold_through_blinks() {
+        for (behavior, raw) in [(2, false), (1, false), (2, true)] {
+            let on = Settings { brow_from_widen: true, eye_behavior: behavior, raw, ..camera_settings() };
+            let no_widen = Settings { widen: false, ..on.clone() };
+            let label = format!("eye_behavior {behavior}, raw {raw}");
+            for ((name, with), (_, without)) in brow_runs(&on).into_iter().zip(brow_runs(&no_widen)) {
+                // Widening off: no eyelid goes out widened...
+                assert!(all_relaxed_or_below(&without), "{label}, {name}");
+                // ...but the brows go up all the same, exactly as with widening on
+                for (i, (a, b)) in with.iter().zip(&without).enumerate() {
+                    assert_eq!(a.brows.map(|brows| brows.map(f32::to_bits)), b.brows.map(|brows| brows.map(f32::to_bits)), "{label}, {name}: {i}");
+                }
+                let brows: Vec<[f32; 2]> = without.iter().map(|sample| sample.brows.unwrap()).collect();
+                let peak = brows[115];
+                assert!(peak.iter().all(|brow| *brow > 0.3), "{label}, {name}: {peak:?}");
+                // Through the blink (and its reopening, the widen sustain starting over) they stay up
+                for (i, brow) in brows.iter().enumerate().take(170).skip(115) {
+                    assert!((0..2).all(|eye| brow[eye] >= peak[eye] * 0.97), "{label}, {name}: {i}: {brow:?} {peak:?}");
+                }
+                // Never NaN, never out of range
+                assert!(brows.iter().flatten().all(|value| (0.0..=1.0).contains(value)));
+            }
+        }
+    }
+
+    #[test]
+    fn brows_off_change_nothing_and_on_change_only_the_brows() {
+        for (behavior, raw) in [(2, false), (1, false), (2, true), (1, true)] {
+            let off = Settings { eye_behavior: behavior, raw, ..camera_settings() };
+            let on = Settings { brow_from_widen: true, ..off.clone() };
+            for ((name, without), (_, with)) in brow_runs(&off).into_iter().zip(brow_runs(&on)) {
+                for (i, (a, b)) in without.iter().zip(&with).enumerate() {
+                    let label = format!("eye_behavior {behavior}, raw {raw}, {name}: sample {i}");
+                    // Off: no brows anywhere
+                    assert_eq!(a.brows, None, "{label}");
+                    assert!(osc_messages(&off, a).iter().all(|(addr, _)| !addr.contains("Brow")), "{label}");
+                    assert_eq!(feo_packet(a, 1, 2, 3).len(), feo::PACKET_LEN, "{label}");
+                    let shapes = livelink_packet(a, 5.0);
+                    assert!(shapes[shapes.len() - 20 * 4..shapes.len() - 15 * 4].iter().all(|byte| *byte == 0), "{label}");
+                    // On: the eyelids, gaze and camera values are the very same
+                    assert_eq!(a.lids.map(f32::to_bits), b.lids.map(f32::to_bits), "{label}");
+                    assert_eq!(a.gaze.map(f32::to_bits), b.gaze.map(f32::to_bits), "{label}");
+                    assert_eq!(a.camera, b.camera, "{label}");
+                    // ...and so is every output but for the brows
+                    let messages = osc_messages(&on, b);
+                    let others: Vec<_> = messages.iter().filter(|(addr, _)| !addr.contains("Brow")).cloned().collect();
+                    assert_eq!(others, osc_messages(&off, a), "{label}");
+                    let (plain, raised) = (feo_packet(a, 1, 2, 3), feo_packet(b, 1, 2, 3));
+                    assert_eq!(raised.len(), feo::BROW_PACKET_LEN, "{label}");
+                    assert_eq!(raised[..6], plain[..6]);
+                    assert_eq!(raised[16..76], plain[16..76], "{label}");
+                    let flags = |packet: &[u8]| u32::from_le_bytes(packet[12..16].try_into().unwrap());
+                    assert_eq!(flags(&raised), flags(&plain) | 32 | 64, "{label}");
+                    let brows = b.brows.unwrap();
+                    assert_eq!(feo::tests::module_brows(&raised), brows.map(|brow| Some([brow, brow, 0.0, 0.0])), "{label}");
+                    let (plain, raised) = (livelink_packet(a, 5.0), livelink_packet(b, 5.0));
+                    assert_eq!(livelink::tests::module_eyes(&plain), livelink::tests::module_eyes(&raised), "{label}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vrchat_gets_vrcft_s_brow_parameters_while_brows_are_on() {
+        let settings = Settings { brow_from_widen: true, ..settings() };
+        let off = sample();
+        let on = Sample { brows: Some([0.6, 0.2]), ..sample() };
+        let brows = |messages: Vec<(String, OscType)>| -> Vec<(String, OscType)> {
+            messages.into_iter().filter(|(addr, _)| addr.contains("Brow")).collect()
+        };
+        assert!(brows(osc_messages(&settings, &off)).is_empty());
+        let expected: Vec<(String, OscType)> = [
+            ("BrowExpressionLeft", 0.6),
+            ("BrowExpressionRight", 0.2),
+            ("BrowExpression", 0.4),
+            ("BrowUpLeft", 0.6),
+            ("BrowUpRight", 0.2),
+            ("BrowUp", 0.4),
+            ("BrowInnerUp", 0.4),
+            ("BrowOuterUp", 0.4),
+        ]
+        .into_iter()
+        .map(|(name, value)| (format!("/avatar/parameters/FT/v2/{name}"), OscType::Float(value)))
+        .collect();
+        assert_eq!(brows(osc_messages(&settings, &on)), expected);
+        // After the camera's values, before Steam Link's names
+        let all = osc_messages(&Settings { steamlink_params: true, ..settings.clone() }, &on);
+        let first = all.iter().position(|(addr, _)| addr.contains("Brow")).unwrap();
+        assert!(all[first - 1].0.ends_with("v2/EyeY") && all[first + 8].0 == "/avatar/parameters/LeftEyeX");
+        // Not to the ETVR module (it has no brows)
+        assert!(brows(osc_messages(&Settings { output: OutputKind::Etvr, ..settings.clone() }, &on)).is_empty());
+        // Released: every one 0 once, with the prefix
+        let zero = |prefix: &str| -> Vec<(String, OscType)> {
+            BROW_PARAMS.iter().map(|name| (format!("/avatar/parameters{prefix}/v2/{name}"), OscType::Float(0.0))).collect()
+        };
+        assert_eq!(brow_release(&settings, true, None), zero("/FT"));
+        assert_eq!(brow_release(&Settings { prefix: String::new(), ..settings.clone() }, true, None), zero(""));
+        assert!(brow_release(&settings, true, Some([0.1; 2])).is_empty());
+        assert!(brow_release(&settings, false, None).is_empty());
+    }
+
+    #[test]
+    fn brows_go_back_to_0_once_when_they_stop() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let vrchat = Settings {
+            host: "127.0.0.1".into(),
+            port: Some(listener.local_addr().unwrap().port()),
+            lid_calibration: false,
+            brow_from_widen: true,
+            ..settings()
+        };
+        let brow = |name: &str| format!("/avatar/parameters/FT/v2/Brow{name}");
+        let mut bridge = test_bridge(vrchat.clone());
+        bridge.on_sample(reading(0, [0.0, 0.0], [0.8; 2])).unwrap();
+        let received = osc_received(&listener);
+        assert_eq!(param(&received, &brow("ExpressionLeft")), Some(0.0));
+        assert!(bridge.brow_out);
+        // Turned off: 0 once, then nothing
+        let off = Settings { brow_from_widen: false, ..vrchat.clone() };
+        bridge.apply(reload(&off)).unwrap();
+        bridge.on_sample(reading(1, [0.0, 0.0], [0.8; 2])).unwrap();
+        let received = osc_received(&listener);
+        let zeros: Vec<_> = received.iter().filter(|(addr, _)| addr.contains("Brow")).cloned().collect();
+        assert_eq!(zeros.len(), BROW_PARAMS.len(), "{received:?}");
+        assert!(zeros.iter().all(|(_, value)| *value == OscType::Float(0.0)));
+        bridge.on_sample(reading(2, [0.0, 0.0], [0.8; 2])).unwrap();
+        assert!(osc_received(&listener).iter().all(|(addr, _)| !addr.contains("Brow")));
+        // Losing the eye data: 0 once
+        bridge.apply(reload(&vrchat)).unwrap();
+        bridge.on_sample(reading(3, [0.0, 0.0], [0.8; 2])).unwrap();
+        osc_received(&listener);
+        bridge.on_lost("test").unwrap();
+        let received = osc_received(&listener);
+        assert_eq!(param(&received, &brow("Up")), Some(0.0), "{received:?}");
+        assert_eq!(received.iter().filter(|(addr, _)| addr.contains("Brow")).count(), BROW_PARAMS.len());
+        bridge.on_lost("test").unwrap();
+        assert!(osc_received(&listener).iter().all(|(addr, _)| !addr.contains("Brow")));
+        // Pausing, or moving VRChat elsewhere: 0 where they went
+        for changed in [Settings { sending: false, ..vrchat.clone() }, Settings { prefix: "/Other".into(), ..vrchat.clone() }] {
+            bridge.apply(reload(&vrchat)).unwrap();
+            bridge.on_sample(reading(5, [0.0, 0.0], [0.8; 2])).unwrap();
+            osc_received(&listener);
+            bridge.apply(reload(&changed)).unwrap();
+            let received = osc_received(&listener);
+            assert_eq!(param(&received, &brow("InnerUp")), Some(0.0), "{received:?}");
+            assert!(!bridge.brow_out);
         }
     }
 }

@@ -20,6 +20,9 @@
 //! - `Openness = 1 - clamp(EyeBlink + EyeBlink * EyeSquint, 0, 1)` per eye; `EyeWide` becomes EyeWideLeft/Right.
 //! - `Gaze.x = EyeYaw`, `Gaze.y = -EyePitch` per eye, as they come (its radian conversion is commented out).
 //!   The EyeLook* shapes are read but not used.
+//! - Brows (UpdateEyeExpressions, so an eye-only module sets them too): `BrowInnerUp` becomes BrowInnerUpLeft and
+//!   Right, `BrowOuterUpLeft/Right` BrowOuterUpLeft/Right, and `BrowDownLeft/Right` BrowLowerer and BrowPinch of that
+//!   side.
 //! - When nothing arrives for a second it logs "LiveLink connection lost" and VRCFT keeps the last values. It only
 //!   starts if a first packet arrives within 180 s of VRCFT loading it.
 
@@ -66,6 +69,11 @@ const EYE_WIDE_LEFT: usize = 6;
 const EYE_BLINK_RIGHT: usize = 7;
 const EYE_SQUINT_RIGHT: usize = 12;
 const EYE_WIDE_RIGHT: usize = 13;
+const BROW_DOWN_LEFT: usize = 41;
+const BROW_DOWN_RIGHT: usize = 42;
+const BROW_INNER_UP: usize = 43;
+const BROW_OUTER_UP_LEFT: usize = 44;
+const BROW_OUTER_UP_RIGHT: usize = 45;
 const EYE_YAW_LEFT: usize = 55;
 const EYE_PITCH_LEFT: usize = 56;
 const EYE_YAW_RIGHT: usize = 58;
@@ -86,7 +94,8 @@ pub fn wide(lid: f32) -> f32 {
 }
 
 /// The 61 blendshapes for VRCFT eyelids and gaze (left x/y, right x/y in -1..1, 1.0 = 45°, +x right, +y up).
-/// Everything else (squint, the EyeLook* shapes, mouth, brows, head) stays 0.
+/// Everything else (squint, the EyeLook* shapes, mouth, head) stays 0, and so do the brows unless `with_brows` raises
+/// them.
 ///
 /// The gaze goes in as is, with pitch flipped: the module sets `Gaze = (EyeYaw, -EyePitch)` without converting
 /// units, and VRCFT sends `Gaze.x/y` straight on as v2/EyeLeftX/Y (EParam) and turns them into VRChat's own eye
@@ -107,6 +116,19 @@ pub fn shapes([lid_left, lid_right]: [f32; 2], [left_x, left_y, right_x, right_y
     shapes[EYE_PITCH_LEFT] = -left_y;
     shapes[EYE_YAW_RIGHT] = right_x;
     shapes[EYE_PITCH_RIGHT] = -right_y;
+    shapes
+}
+
+/// `shapes` with the brows raised (brow_from_widen; each 0..1, left and right): BrowOuterUpLeft/Right are each eye's,
+/// BrowInnerUp (one shape, which the module gives both inner brows) their mean. BrowDownLeft/Right stay 0: brows are
+/// only ever raised. A value that is not finite goes out as 0 (it can't be NaN from BrowRaise).
+pub fn with_brows(mut shapes: [f32; BLENDSHAPES], brows: [f32; 2]) -> [f32; BLENDSHAPES] {
+    let [left, right] = brows.map(|brow| if brow.is_finite() { brow.clamp(0.0, 1.0) } else { 0.0 });
+    shapes[BROW_INNER_UP] = (left + right) / 2.0;
+    shapes[BROW_OUTER_UP_LEFT] = left;
+    shapes[BROW_OUTER_UP_RIGHT] = right;
+    shapes[BROW_DOWN_LEFT] = 0.0;
+    shapes[BROW_DOWN_RIGHT] = 0.0;
     shapes
 }
 
@@ -293,6 +315,37 @@ pub mod tests {
             assert_eq!(eye, (1.0, 0.0, 0.0, 0.0));
             assert_eq!(vrcft_lid(eye), 0.75);
         }
+    }
+
+    #[test]
+    fn brows_go_to_the_module_s_brow_shapes() {
+        // The module's Constants.LiveLinkNames, from BrowDownLeft on
+        let names = ["BrowDownLeft", "BrowDownRight", "BrowInnerUp", "BrowOuterUpLeft", "BrowOuterUpRight", "CheekPuff"];
+        for (offset, index) in [BROW_DOWN_LEFT, BROW_DOWN_RIGHT, BROW_INNER_UP, BROW_OUTER_UP_LEFT, BROW_OUTER_UP_RIGHT]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(index, 41 + offset, "{}", names[offset]);
+        }
+        // Between the mouth (MouthUpperUpRight, 40) and CheekPuff (46); the eyes' own stay where they were
+        assert_eq!((EYE_WIDE_RIGHT, EYE_YAW_LEFT), (13, 55));
+        let plain = shapes([1.0, 0.9], [0.1, 0.2, 0.3, 0.4]);
+        assert!(plain[41..46].iter().all(|shape| *shape == 0.0));
+        let raised = with_brows(plain, [0.6, 0.2]);
+        assert_eq!(raised[BROW_INNER_UP], 0.4);
+        assert_eq!((raised[BROW_OUTER_UP_LEFT], raised[BROW_OUTER_UP_RIGHT]), (0.6, 0.2));
+        assert_eq!((raised[BROW_DOWN_LEFT], raised[BROW_DOWN_RIGHT]), (0.0, 0.0));
+        // Nothing else changes
+        for (i, (a, b)) in plain.iter().zip(&raised).enumerate() {
+            if !(43..46).contains(&i) {
+                assert_eq!(a.to_bits(), b.to_bits(), "shape {i}");
+            }
+        }
+        // Out of range or not a number: within 0..1
+        let odd = with_brows(plain, [f32::NAN, 1.5]);
+        assert_eq!((odd[BROW_OUTER_UP_LEFT], odd[BROW_OUTER_UP_RIGHT], odd[BROW_INNER_UP]), (0.0, 1.0, 0.5));
+        // The neutral packet (eye data stopped) has the brows down
+        assert!(neutral()[41..46].iter().all(|shape| *shape == 0.0));
     }
 
     #[test]

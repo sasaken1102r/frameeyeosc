@@ -1785,7 +1785,7 @@ UiText makeEnglish() {
     t.widenSwitchOn = "On";
     t.widenSwitchOff = "Off";
     t.widenNoteOff = "Not used while Widening is Off";
-    t.rowBrowFromWiden = "Raise brows when widening";
+    t.rowBrowFromWiden = "Widen raises brows";
     t.browFromWidenHint = "The cameras don't see brows";
     t.browFromWidenNote = "When you widen your eyes, the avatar's brows go up too. Brows aren't measured. "
                           "Works on avatars with brow parameters.";

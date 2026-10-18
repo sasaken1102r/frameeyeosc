@@ -775,7 +775,7 @@ void testWiden() {
     CHECK(SettingsView(m).locked(key::kWiden) && !SettingsView(m).flag(key::kWiden));
 }
 
-/** brow_from_widen and brow_strength (the Eyelids tab's "Raise brows when widening" and "Brow raise strength"): off
+/** brow_from_widen and brow_strength (the Eyelids tab's "Widen raises brows" and "Brow raise strength"): off
  *  and 0.8 by default, read from config.json and written back as frameeyeosc reads them, on the slider's 0.05 grid, and
  *  frameeyeosc's own values while its command line (--brow-from-widen, --brow-strength) locks them. */
 void testBrowSettings() {

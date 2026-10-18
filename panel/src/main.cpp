@@ -336,7 +336,7 @@ void printUsage() {
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
         "      --fake-no-widen   widen off in the made-up settings (no eye widens; the Eyelids tab's \"Widening\")\n"
-        "      --fake-brows      brow_from_widen on in the made-up settings (\"Raise brows when widening\" and its\n"
+        "      --fake-brows      brow_from_widen on in the made-up settings (\"Widen raises brows\" and its\n"
         "                        strength on the Eyelids tab's \"Brows\")\n"
         "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
         "                        A made-up eyecam-rec for the eye cameras tab (confirm: idle with the recording's\n"

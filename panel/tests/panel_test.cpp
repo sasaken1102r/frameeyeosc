@@ -846,7 +846,7 @@ void testEyeBehavior(const FontSet& fonts) {
 }
 
 void testBrowsPage(const FontSet& fonts) {
-    // The Eyelids tab's "Brows": "Raise brows when widening" On / Off (brow_from_widen), whatever drives the eyelids and
+    // The Eyelids tab's "Brows": "Widen raises brows" On / Off (brow_from_widen), whatever drives the eyelids and
     // whatever "Widening" says; "Brow raise strength" (brow_strength) only while it is on
     for (const Lids lids : {Lids::Valve, Lids::Saturated, Lids::Both, Lids::Left}) {
         for (const bool eyecam : {true, false}) {

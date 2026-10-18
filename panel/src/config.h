@@ -129,7 +129,7 @@ constexpr const char* kLidWiden = "lid_widen";
 constexpr const char* kWiden = "widen";
 /**
  * Whether the avatar's brows go up as the eyes widen (default off; the cameras don't see brows, so they follow the
- * widening, also while widen is off). The Eyelids tab's "Raise brows when widening".
+ * widening, also while widen is off). The Eyelids tab's "Widen raises brows".
  */
 constexpr const char* kBrowFromWiden = "brow_from_widen";
 /** How far brow_from_widen raises the brows at full widening, 0..1 (the Eyelids tab's "Brow raise strength"). */

@@ -4,20 +4,25 @@
 //! nothing is sent otherwise, and nothing here changes what goes to VRChat or VRCFT: these are copies for display.
 //!
 //! A datagram is PACKET_SIZE bytes, little-endian: b"FEOD", version 3, flags (bit 0: per-eye gaze is sent; bit 1: the
-//! user's gaze scale is in use, not 1 on all sides), 2 reserved zero bytes, the sample time (f64), the six gaze values
-//! as sent and the six before smoothing (f32 each: left x/y, right x/y, combined x/y; 1.0 = 45°), each eye's values
-//! (EYE_SIZE bytes; the left eye first, anatomical; below), then at UNSCALED_AT the six gaze values as sent but before
-//! the user's gaze scale (the same as the gaze as sent while bit 1 is clear). Each eye's values:
+//! user's gaze scale is in use, not 1 on all sides; bit 2: brows are sent, each eye's at 34), 2 reserved zero bytes,
+//! the sample time (f64), the six gaze values as sent and the six before smoothing (f32 each: left x/y, right x/y,
+//! combined x/y; 1.0 = 45°), each eye's values (EYE_SIZE bytes; the left eye first, anatomical; below), then at
+//! UNSCALED_AT the six gaze values as sent but before the user's gaze scale (the same as the gaze as sent while bit 1
+//! is clear). Each eye's values:
 //!   0  f32  eyelid as sent (VRCFT scale: 0 closed, 0.75 relaxed open, 1 widened)
 //!   4  f32  Valve's openness as read       8  f32  ...after the eye's scale (what the panel's raw bar shows)
 //!   12 f32  the eye camera's eyelid (eyecam-rec's, VRCFT scale; NaN without fresh camera values for the eye)
 //!   16 f32  squint as sent (NaN when none goes out)     20 f32  pupil diameter as sent (mm; NaN when none)
 //!   24 f32  the eye camera's squint (NaN as at 12)       28 f32  the eye camera's pupil (mm; NaN as at 12)
 //!   32 u8   where the sent eyelid came from (LidFrom: 0 the eye server's usual mix, 1.. the camera overrode it)
-//!   33 u8   flags (bit 0: the eye camera reads the eye closed)    34 two reserved zero bytes
-//! Version 3 is version 2 (136 bytes) with flag bit 1 and the gaze before the scale added at the end. The panel also
-//! reads version 2 (taking the gaze as sent for the gaze before the scale); other versions it ignores (and frameeyeosc
-//! never reads any).
+//!   33 u8   flags (bit 0: the eye camera reads the eye closed)
+//!   34 u16  the brow as sent (brow_from_widen: 0 = 0.0 at rest .. 65535 = 1.0 raised all the way); 0 while flag bit 2
+//!           is clear (no brows go out: brow_from_widen is off, or the output takes none)
+//! Version 3 is version 2 (136 bytes) with flag bit 1 and the gaze before the scale added at the end. Flag bit 2 and
+//! the brows came later (0.7.11) in what were reserved zero bytes, with the same version and size: a panel from before
+//! reads such a datagram as it did, and this panel reads an older frameeyeosc's (bit 2 clear) as without brows. The
+//! panel also reads version 2 (taking the gaze as sent for the gaze before the scale); other versions it ignores (and
+//! frameeyeosc never reads any).
 
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
@@ -30,6 +35,9 @@ const MAGIC: &[u8; 4] = b"FEOD";
 const VERSION: u8 = 3;
 const EYES: usize = 64;
 const EYE_SIZE: usize = 36;
+// Where each eye's brow is in its values (u16), and flag bit 2 that says brows are there.
+const BROW_AT: usize = 34;
+const BROWS_FLAG: u8 = 4;
 const UNSCALED_AT: usize = EYES + 2 * EYE_SIZE;
 pub const PACKET_SIZE: usize = UNSCALED_AT + 24;
 // While gaze_debug_dots is off, whether the panel listens is looked at this often (one stat).
@@ -62,6 +70,13 @@ pub struct DotSample {
     // The user's gaze scale is in use (Settings::gaze_scaled).
     pub scaled: bool,
     pub eyes: [DotEye; 2],
+    // Each brow as sent (left, right; 0..1), or None while no brows go out.
+    pub brows: Option<[f32; 2]>,
+}
+
+/// A brow (0..1) as its u16: 0..=65535, rounded; NaN as 0.
+fn brow_bits(brow: f32) -> u16 {
+    if brow.is_finite() { (brow.clamp(0.0, 1.0) * 65535.0).round() as u16 } else { 0 }
 }
 
 pub fn encode(sample: &DotSample) -> [u8; PACKET_SIZE] {
@@ -69,6 +84,9 @@ pub fn encode(sample: &DotSample) -> [u8; PACKET_SIZE] {
     packet[..4].copy_from_slice(MAGIC);
     packet[4] = VERSION;
     packet[5] = u8::from(sample.independent) | (u8::from(sample.scaled) << 1);
+    if sample.brows.is_some() {
+        packet[5] |= BROWS_FLAG;
+    }
     packet[8..16].copy_from_slice(&sample.time.to_le_bytes());
     for (i, value) in sample.gaze.iter().chain(&sample.raw_gaze).enumerate() {
         packet[16 + i * 4..20 + i * 4].copy_from_slice(&value.to_le_bytes());
@@ -90,6 +108,9 @@ pub fn encode(sample: &DotSample) -> [u8; PACKET_SIZE] {
         }
         packet[at + 32] = eye.lid_from;
         packet[at + 33] = u8::from(eye.camera_closed);
+        if let Some(brows) = sample.brows {
+            packet[at + BROW_AT..at + BROW_AT + 2].copy_from_slice(&brow_bits(brows[e]).to_le_bytes());
+        }
     }
     for (i, value) in sample.unscaled_gaze.iter().enumerate() {
         packet[UNSCALED_AT + i * 4..UNSCALED_AT + 4 + i * 4].copy_from_slice(&value.to_le_bytes());
@@ -111,6 +132,12 @@ pub fn decode(packet: &[u8]) -> Option<DotSample> {
         unscaled_gaze: std::array::from_fn(|i| f32_at(UNSCALED_AT + i * 4)),
         independent: packet[5] & 1 != 0,
         scaled: packet[5] & 2 != 0,
+        brows: (packet[5] & BROWS_FLAG != 0).then(|| {
+            std::array::from_fn(|e| {
+                let at = EYES + e * EYE_SIZE + BROW_AT;
+                f32::from(u16::from_le_bytes([packet[at], packet[at + 1]])) / 65535.0
+            })
+        }),
         eyes: std::array::from_fn(|e| {
             let at = EYES + e * EYE_SIZE;
             DotEye {
@@ -208,6 +235,7 @@ mod tests {
             independent: true,
             scaled: true,
             eyes: [eye(0.72), DotEye { camera_closed: false, lid_from: 0, ..eye(0.0) }],
+            brows: None,
         }
     }
 
@@ -225,7 +253,8 @@ mod tests {
                 })
                 .collect();
             let gazes = [s.gaze, s.raw_gaze, s.unscaled_gaze].map(|gaze| gaze.map(f32::to_bits));
-            (s.time.to_bits(), gazes, s.independent, s.scaled, eyes)
+            let brows = s.brows.map(|brows| brows.map(f32::to_bits));
+            (s.time.to_bits(), gazes, s.independent, s.scaled, eyes, brows)
         };
         bits(a) == bits(b)
     }
@@ -258,6 +287,39 @@ mod tests {
         assert_eq!(decode(&packet[..40]), None);
         assert_eq!(decode(&packet[..136]), None);
         assert_eq!(decode(&packet[..159]), None);
+    }
+
+    #[test]
+    fn brows_go_in_the_reserved_bytes_and_change_nothing_else() {
+        let plain = sample();
+        let with = DotSample { brows: Some([0.5, 1.0]), ..plain };
+        let packet = encode(&with);
+        // The same version and size, flag bit 2, and each eye's brow as a u16 at 34 (0.5 rounds to 32768)
+        assert_eq!(packet.len(), 160);
+        assert_eq!(&packet[..8], b"FEOD\x03\x07\x00\x00");
+        assert_eq!(packet[64 + 34..64 + 36], 32768u16.to_le_bytes());
+        assert_eq!(packet[100 + 34..100 + 36], [0xff, 0xff]);
+        let read = decode(&packet).unwrap();
+        let [left, right] = read.brows.unwrap();
+        assert!((left - 0.5).abs() < 1e-4 && right == 1.0, "{left} {right}");
+        // A reader from before (0.7.10's panel, which ignores flag bit 2 and the reserved bytes) reads the rest as it
+        // did: only byte 5's bit 2 and the brow bytes differ from the packet without brows (0.5 is 0x8000: its low
+        // byte stays 0)
+        let without = encode(&plain);
+        let differ: Vec<usize> = (0..PACKET_SIZE).filter(|&i| packet[i] != without[i]).collect();
+        assert_eq!(differ, [5, 99, 134, 135]);
+        assert_eq!(packet[5] & !BROWS_FLAG, without[5]);
+        // Without brows, nothing of them: the bytes stay zero, as they were before (an older frameeyeosc's datagram
+        // reads as without brows)
+        assert_eq!(without[5] & BROWS_FLAG, 0);
+        assert_eq!([without[98], without[99], without[134], without[135]], [0; 4]);
+        assert_eq!(decode(&without).unwrap().brows, None);
+        // At rest, out of range or not a number: 0, kept within 0..1
+        let odd = decode(&encode(&DotSample { brows: Some([f32::NAN, 1.7]), ..plain })).unwrap();
+        assert_eq!(odd.brows, Some([0.0, 1.0]));
+        let rest = decode(&encode(&DotSample { brows: Some([0.0, -0.3]), ..plain })).unwrap();
+        assert_eq!(rest.brows, Some([0.0, 0.0]));
+        assert_eq!(packet[5] & BROWS_FLAG, BROWS_FLAG);
     }
 
     #[test]

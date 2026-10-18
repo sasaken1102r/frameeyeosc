@@ -3380,7 +3380,8 @@ impl Sample {
 /// A sample's copy for the panel (its gaze dots and eye preview; dots.rs): the gaze as sent, before smoothing and before
 /// the user's gaze scale (with whether that scale is in use: not 1 on all sides), and
 /// each eye's eyelid as sent, Valve's openness, squint and pupil as sent, and the eye camera's own values as read for it
-/// (`camera`; NaN for an eye without fresh ones). Only for display: nothing here goes to VRChat or VRCFT.
+/// (`camera`; NaN for an eye without fresh ones), and the brows as sent (brow_from_widen; none while the output takes
+/// none: ETVR). Only for display: nothing here goes to VRChat or VRCFT.
 fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Option<&Live>) -> dots::DotSample {
     let nan = f32::NAN;
     dots::DotSample {
@@ -3406,6 +3407,7 @@ fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Opti
                 camera_closed: seen.is_some_and(|seen| seen.closed),
             }
         }),
+        brows: sample.brows.filter(|_| settings.output != OutputKind::Etvr),
     }
 }
 
@@ -10493,6 +10495,23 @@ mod tests {
         assert_eq!(brow_release(&Settings { prefix: String::new(), ..settings.clone() }, true, None), zero(""));
         assert!(brow_release(&settings, true, Some([0.1; 2])).is_empty());
         assert!(brow_release(&settings, false, None).is_empty());
+    }
+
+    #[test]
+    fn the_panel_gets_the_brows_as_sent() {
+        let settings = Settings { brow_from_widen: true, ..settings() };
+        let data = reading(0, [0.0, 0.0], [1.0, 1.0]);
+        let on = Sample { brows: Some([0.6, 0.2]), ..sample() };
+        // To every output that takes brows, the panel's copy has them; ETVR takes none, so none are shown
+        for output in [OutputKind::Vrchat, OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
+            let settings = Settings { output, ..settings.clone() };
+            assert_eq!(dot_sample(&settings, &data, &on, None).brows, Some([0.6, 0.2]), "{output:?}");
+        }
+        assert_eq!(dot_sample(&Settings { output: OutputKind::Etvr, ..settings.clone() }, &data, &on, None).brows, None);
+        // brow_from_widen off (no brows in the sample): none, and the datagram is as before
+        let off = dot_sample(&settings, &data, &sample(), None);
+        assert_eq!(off.brows, None);
+        assert_eq!(dots::encode(&off)[5] & 4, 0);
     }
 
     #[test]

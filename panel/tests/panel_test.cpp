@@ -559,6 +559,64 @@ void testWidenSwitch(const FontSet& fonts) {
     }
 }
 
+void testLidVetoSwitch(const FontSet& fonts) {
+    // "Half-shut check (AI)" on the Eyelids tab's "Look": On / Off, only with the eye cameras in use and an eyecam-rec
+    // that says lid_veto; it shows what status.json says
+    for (const Lids lids : {Lids::Valve, Lids::Saturated, Lids::Both, Lids::Left}) {
+        for (const Language language : {Language::Ja, Language::En}) {
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Lids);
+            panel.setLidsPage(LidsPage::Look);
+            PanelModel m = modelWith(lids);
+            m.language = language;
+            // An older eyecam-rec without lid_veto: no row
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::EyecamLidVeto).empty());
+            m.eyecam.status.hasLidVeto = true;
+            for (const bool on : {false, true}) {
+                m.eyecam.status.lidVeto = on;
+                panel.render(m);
+                const std::vector<EyePanel::HitArea> both = hits(panel, PanelAction::EyecamLidVeto);
+                CHECK(both.size() == 2);
+                if (both.size() == 2) CHECK(both[0].hit.arg == 1 && both[1].hit.arg == 0);
+                // Pressing the other choice asks eyecam-rec for it
+                const PanelHit hit = pressArg(panel, PanelAction::EyecamLidVeto, on ? 0 : 1);
+                CHECK(hit.action == PanelAction::EyecamLidVeto && hit.arg == (on ? 0 : 1));
+                // Everything still on the page
+                for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                    if (area.hit.action == PanelAction::Tab && area.y < 100) continue;
+                    if (area.hit.action == PanelAction::PreviewOpen) continue;
+                    CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676);
+                }
+            }
+            // The cameras switched off (camera_lids), or eyecam-rec gone: no row
+            m.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::EyecamLidVeto).empty());
+            m.config.root.set(key::kCameraLids, JsonValue::makeBool(true));
+            m.eyecam.visible = false;
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::EyecamLidVeto).empty());
+        }
+    }
+    // Not set up: no row
+    PanelModel m = modelWith(Lids::Both, false);
+    m.eyecam.status.hasLidVeto = true;
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Lids);
+    panel.setLidsPage(LidsPage::Look);
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::EyecamLidVeto).empty());
+    // Not on the other pages
+    m = modelWith(Lids::Both);
+    m.eyecam.status.hasLidVeto = true;
+    for (const LidsPage page : {LidsPage::Blinks, LidsPage::Fine}) {
+        panel.setLidsPage(page);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::EyecamLidVeto).empty());
+    }
+}
+
 void testDiagPage(const FontSet& fonts) {
     // The Advanced tab offers it, with eyecam-rec and without
     for (const bool eyecam : {true, false}) {
@@ -2741,6 +2799,7 @@ int main() {
     fonts.load(kFontPath, kBoldFontPath);
     testWidenRouting(fonts);
     testWidenSwitch(fonts);
+    testLidVetoSwitch(fonts);
     testLidsPages(fonts);
     testSnapMark(fonts);
     testEyeBehavior(fonts);

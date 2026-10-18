@@ -159,6 +159,11 @@ Status parseStatus(const std::string& text, double mtime) {
     // The widening sensitivity (missing on an older eyecam-rec: no slider)
     status.widenSensitivity = readNumber(root, "widen_sensitivity", kNaN);
     status.hasWidenSensitivity = std::isfinite(status.widenSensitivity);
+    // The eyelid veto (missing on an older eyecam-rec: no switch)
+    const JsonValue* veto = root.get("lid_veto");
+    const JsonValue* vetoOn = veto != nullptr && veto->isObject() ? veto->get("on") : nullptr;
+    status.hasLidVeto = vetoOn != nullptr && vetoOn->isBool();
+    status.lidVeto = status.hasLidVeto && vetoOn->boolean;
     // The setup (missing on an older eyecam-rec: see setupComplete and toolInstalled)
     const JsonValue* buffers = root.get("has_buffers");
     status.hasBuffers = buffers != nullptr && buffers->isBool() && buffers->boolean;
@@ -736,6 +741,10 @@ bool isSensitivityCommand(const std::string& command) {
     return command.rfind("set widen_sensitivity", 0) == 0;
 }
 
+std::string lidVetoCommand(bool on) {
+    return on ? "set lid_veto on" : "set lid_veto off";
+}
+
 bool StartConfirm::open(State state) {
     if (state != State::Idle && state != State::Error) return false;
     open_ = true;
@@ -826,7 +835,8 @@ std::string signature(const View& view) {
                 ? std::to_string(static_cast<long>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)))
                 : std::string("-")) +
            "|" + std::to_string(s.hasCalibSaved) + std::to_string(s.calibSaved) + "|" +
-           rounded(s.widenSensitivity, 0.01) + "|" + std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
+           rounded(s.widenSensitivity, 0.01) + std::to_string(s.hasLidVeto) + std::to_string(s.lidVeto) + "|" +
+           std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
            std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.calibFailedEye + "|" +
            std::to_string(s.hasPupil) + std::to_string(static_cast<int>(eyeSight(s, 0))) +
            std::to_string(static_cast<int>(eyeSight(s, 1))) + "|" +

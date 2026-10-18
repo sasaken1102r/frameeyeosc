@@ -231,6 +231,8 @@ struct Status {
     bool calibSaved = false;       ///< a calibration for the wear was saved once (calib.json), so it never asks again
     bool hasWidenSensitivity = false;  ///< "widen_sensitivity" is there (the slider shows only then)
     double widenSensitivity = 0.0;     ///< 0 dull (rarely widens by itself) .. 1 sensitive (NaN when missing)
+    bool hasLidVeto = false;           ///< "lid_veto" with its "on" is there (the Eyelids tab's switch shows only then)
+    bool lidVeto = false;              ///< ...the eyelid veto is on ("set lid_veto on")
     bool hasBuffers = false;       ///< "has_buffers": eyecam-rec holds the camera buffers (false when missing)
     bool hasSetupDone = false;     ///< "setup_done" is there (a newer eyecam-rec)
     bool setupDone = false;        ///< the setup's calibration was done once
@@ -788,6 +790,14 @@ private:
  * @return true for "set widen_sensitivity ..."
  */
 bool isSensitivityCommand(const std::string& command);
+
+/**
+ * The command that switches the eyelid veto (eyecam-rec takes it in every state, applies it at once and keeps it;
+ * status.json's lid_veto.on then says it).
+ * @param on true to switch it on
+ * @return "set lid_veto on" or "set lid_veto off"
+ */
+std::string lidVetoCommand(bool on);
 
 /**
  * The light warning before a start: the start button (idle) and the retry button (error) open it instead of

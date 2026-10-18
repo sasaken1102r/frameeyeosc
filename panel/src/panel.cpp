@@ -3164,6 +3164,23 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
         y += h;
     }
+    // The eyelid veto (eyecam-rec's lid_veto): with the eye cameras, from an eyecam-rec that says it. It shows what
+    // status.json says; a press sends "set lid_veto on|off"
+    const eyecam::Status& es = m.eyecam.status;
+    if (camera && es.hasLidVeto) {
+        drawRowDivider(pen, y);
+        drawRowLabel(pen, t, y, kRowH, t.rowLidVeto, "", false, 0, true);
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                      {{t.widenSwitchOn, {PanelAction::EyecamLidVeto, nullptr, 1}},
+                       {t.widenSwitchOff, {PanelAction::EyecamLidVeto, nullptr, 0}}},
+                      es.lidVeto ? 0 : 1, 20);
+        double baseline = y + kRowH + 12;
+        for (const std::string& line : wrapText(pen, t.lidVetoNote, 14, false, kInnerRight - kControlX, 3)) {
+            pen.text(kControlX, baseline, line, 14, kTextMuted);
+            baseline += 19;
+        }
+        y = baseline - 7;
+    }
     if (camera) drawRowDivider(pen, y);
     // Eyelid smoothing: three presets (the two values themselves on "Fine-tune")
     {

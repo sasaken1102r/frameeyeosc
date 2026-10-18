@@ -836,6 +836,8 @@ struct UiText {
     const char* widenSwitchOn;  ///< ...its two choices
     const char* widenSwitchOff;
     const char* widenNoteOff;  ///< the line under the slider while widening is off (the slider greyed)
+    const char* rowLidVeto;  ///< the eyelid veto (eyecam-rec's lid_veto; its choices are widenSwitchOn / Off)...
+    const char* lidVetoNote;  ///< ...what it does, under its choices (up to three lines)
     const char* blinkHint;  ///< the blink row: its hint
     const char* blinkHoldCaption;  ///< ...beside the hold
     const char* rowBlinkBoth;  ///< blink_sync_below

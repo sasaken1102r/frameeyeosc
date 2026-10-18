@@ -92,6 +92,7 @@ enum class PanelAction {
     EyecamRelearn,     ///< "Relearn my eyes": the caller sends eyecam::kRelearnCommand
     EyecamSensitivity, ///< the widening sensitivity slider: pressed and dragged inside the panel; the caller takes
                        ///< the value with takeSensitivity / sensitivityDragging
+    EyecamLidVeto,     ///< the eyelid veto's switch: arg 1 on / 0 off (the caller sends eyecam::lidVetoCommand)
     SetupKonsole,      ///< the eye cameras' setup: open a Konsole with the command typed in (arg 0 = the tool's install,
                        ///< 1 = passwd; the caller starts it, never from --dump-png)
     SetupVideo,        ///< ...open the setup video (only shown with a video URL)

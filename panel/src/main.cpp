@@ -347,7 +347,8 @@ void printUsage() {
         "                        (learned them; both mark an eyecam-rec that learns by itself), saved (calib_saved),\n"
         "                        recalib (recalib_suggested), nolive (not reading the cameras live), auto=VALUE\n"
         "                        (auto_grab), outdated (grab_outdated: an update brought a new tool), sens=V\n"
-        "                        (widen_sensitivity 0..1), buffers (has_buffers), setup /\n"
+        "                        (widen_sensitivity 0..1), veto=on|off (lid_veto.on; without it, an eyecam-rec\n"
+        "                        before it), buffers (has_buffers), setup /\n"
         "                        nosetup (setup_done true / false; without either, an eyecam-rec before it),\n"
         "                        widen=measured|default (last_calib_widen), done / fail (the setup's calibration\n"
         "                        just ended: the checklist's done screen, or widening on the standard values),\n"
@@ -455,6 +456,7 @@ struct FakeEyecam {
     double warmupS = -1.0;  ///< warmup_remaining_s while warming (-1 = none)
     bool saved = false;     ///< calib_saved
     double sens = -1.0;     ///< widen_sensitivity (-1 = an eyecam-rec without it)
+    int veto = -1;          ///< lid_veto.on: 1 / 0 (-1 = an eyecam-rec without it)
     bool buffers = false;   ///< has_buffers
     int setup = -1;         ///< setup_done: 1 / 0 (-1 = an eyecam-rec before it)
     std::string widen;      ///< last_calib_widen ("" = none)
@@ -586,6 +588,8 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
         } else if (flag.rfind("sens=", 0) == 0 && flag.size() > 5 &&
                    flag.find_first_not_of("0123456789.", 5) == std::string::npos) {
             fake.sens = std::atof(flag.c_str() + 5);
+        } else if (flag == "veto=on" || flag == "veto=off") {
+            fake.veto = flag == "veto=on" ? 1 : 0;
         } else if (flag.rfind("calib=", 0) == 0 && flag.size() == 7 && flag[6] >= '0' && flag[6] <= '7') {
             fake.calibState = flag[6] - '0';
         } else {
@@ -1375,6 +1379,10 @@ eyecam::View fakeEyecam(const std::string& text) {
     if (fake.sens >= 0) {
         s.hasWidenSensitivity = true;
         s.widenSensitivity = fake.sens;
+    }
+    if (fake.veto >= 0) {
+        s.hasLidVeto = true;
+        s.lidVeto = fake.veto == 1;
     }
     if (!fake.autoGrab.empty()) s.autoGrab = fake.autoGrab;
     s.grabOutdated = fake.outdated;
@@ -2237,7 +2245,8 @@ int runDumpPng(const Options& options) {
             }
             // Wait for eyecam-rec's reply, and show the folder as it is after it
             if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop ||
-                hit.action == PanelAction::EyecamCalib || hit.action == PanelAction::EyecamRelearn) {
+                hit.action == PanelAction::EyecamCalib || hit.action == PanelAction::EyecamRelearn ||
+                hit.action == PanelAction::EyecamLidVeto) {
                 while (eyecamControl.busy()) {
                     eyecamControl.poll(nowSeconds());
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -3067,13 +3076,16 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::EyecamChoose:
         case PanelAction::EyecamStop:
         case PanelAction::EyecamCalib:
-        case PanelAction::EyecamRelearn: {
+        case PanelAction::EyecamRelearn:
+        case PanelAction::EyecamLidVeto: {
             // One line to its socket ("start" or "start widen_nolight" from the light warning, "stop", a calibration,
-            // or "relearn"); the reply is read by the loop (eyecam::Control never waits)
+            // "relearn", or the eyelid veto's switch, which then shows as status.json says); the reply is read by the
+            // loop (eyecam::Control never waits)
             if (eyecamControl == nullptr) return;
             const std::string command =
                 hit.action == PanelAction::EyecamStop      ? std::string("stop")
                 : hit.action == PanelAction::EyecamRelearn ? std::string(eyecam::kRelearnCommand)
+                : hit.action == PanelAction::EyecamLidVeto ? eyecam::lidVetoCommand(hit.arg != 0)
                 : hit.action == PanelAction::EyecamCalib   ? eyecam::calibCommand(static_cast<eyecam::Calib>(hit.arg))
                                                            : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
             if (command.empty()) return;

@@ -818,6 +818,36 @@ void testSensitivity() {
         SAME(eyecam::signature(a), eyecam::signature(b));
     }
 
+    // The eyelid veto: lid_veto.on from status.json; missing (an older eyecam-rec: no switch) or not a bool is none
+    {
+        const char* full = "{\"state\": \"idle\", \"lid_veto\": {\"on\": true, \"runs_per_s\": 4.2, \"fired\": 12, "
+                           "\"ms_mean\": 0.52, \"ms_max\": 1.31}}";
+        const Status on = eyecam::parseStatus(full, kNow);
+        CHECK(on.hasLidVeto && on.lidVeto);
+        const Status off = eyecam::parseStatus("{\"state\": \"waiting_fds\", \"lid_veto\": {\"on\": false}}", kNow);
+        CHECK(off.hasLidVeto && !off.lidVeto);
+        for (const char* bad : {"{\"state\": \"idle\"}", "{\"state\": \"idle\", \"lid_veto\": true}",
+                                "{\"state\": \"idle\", \"lid_veto\": {}}", "{\"state\": \"idle\", \"lid_veto\": null}",
+                                "{\"state\": \"idle\", \"lid_veto\": {\"on\": 1}}",
+                                "{\"state\": \"idle\", \"lid_veto\": {\"on\": \"true\"}}"}) {
+            const Status none = eyecam::parseStatus(bad, kNow);
+            CHECK(!none.hasLidVeto && !none.lidVeto);
+        }
+        // The command, which starts no run and isn't the sensitivity's
+        SAME(eyecam::lidVetoCommand(true), "set lid_veto on");
+        SAME(eyecam::lidVetoCommand(false), "set lid_veto off");
+        CHECK(eyecam::runOfCommand(eyecam::lidVetoCommand(true)) == eyecam::Run::None);
+        CHECK(!eyecam::isSensitivityCommand(eyecam::lidVetoCommand(false)));
+        // The redraw follows it
+        eyecam::View a;
+        a.status = off;
+        eyecam::View b = a;
+        b.status.lidVeto = true;
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+        b.status = eyecam::parseStatus("{\"state\": \"waiting_fds\"}", kNow);
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+    }
+
     // Sending: on release always; while dragged at most every kSensitivitySendSec and only when it moved; never
     // while another command is out (the newest value waits)
     {

@@ -829,6 +829,9 @@ UiText makeJapanese() {
     t.widenSwitchOn = "する";
     t.widenSwitchOff = "しない";
     t.widenNoteOff = "「見開き」が「しない」なので、いまは使わないよ";
+    t.rowLidVeto = "半目の読み直し（AI）";
+    t.lidVetoNote = "横を見たときなどに開いた目が半目に読まれたら、小さな AI が見直して開いた目に戻します。"
+                    "まだ試しの機能です（作った人の目だけで学習しています）。";
     t.blinkHint = "短いまばたきも逃さない";
     t.blinkHoldCaption = "閉じたまま保つ時間";
     t.rowBlinkBoth = "まばたきを両目でそろえる";
@@ -1772,6 +1775,9 @@ UiText makeEnglish() {
     t.widenSwitchOn = "On";
     t.widenSwitchOff = "Off";
     t.widenNoteOff = "Not used while Widening is Off";
+    t.rowLidVeto = "Half-shut check (AI)";
+    t.lidVetoNote = "When an open eye reads as half shut (for example looking to the side), a small AI double-checks "
+                    "and keeps it open. Experimental: trained on the developer's eyes only.";
     t.blinkHint = "Don't miss short blinks";
     t.blinkHoldCaption = "How long a closed eye stays closed";
     t.rowBlinkBoth = "Blink both eyes together";

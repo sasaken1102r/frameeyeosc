@@ -22,7 +22,7 @@ constexpr const char* kSocketName = "gaze-dots.sock";
  * One datagram (version 3), little-endian: b"FEOD", 3, flags (bit 0 per-eye gaze, bit 1 the gaze scale in use, bit 2
  * brows are sent), 2 zero bytes, time (f64), six gaze values as sent and six before smoothing (f32), each eye's values
  * (kEyeSize bytes; see src/dots.rs; its brow a u16 at 34, 65535 = 1.0, in what were two reserved zero bytes), then six
- * gaze values as sent but before the user's gaze scale (f32). The brows came in 0.7.11 with the same version and size:
+ * gaze values as sent but before the user's gaze scale (f32). The brows came in 0.8.0 with the same version and size:
  * a panel from before ignores them, and an older frameeyeosc's datagram (bit 2 clear) reads as without brows.
  */
 constexpr size_t kPacketSize = 160;

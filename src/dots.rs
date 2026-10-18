@@ -19,7 +19,7 @@
 //!   34 u16  the brow as sent (brow_from_widen: 0 = 0.0 at rest .. 65535 = 1.0 raised all the way); 0 while flag bit 2
 //!           is clear (no brows go out: brow_from_widen is off, or the output takes none)
 //! Version 3 is version 2 (136 bytes) with flag bit 1 and the gaze before the scale added at the end. Flag bit 2 and
-//! the brows came later (0.7.11) in what were reserved zero bytes, with the same version and size: a panel from before
+//! the brows came later (0.8.0) in what were reserved zero bytes, with the same version and size: a panel from before
 //! reads such a datagram as it did, and this panel reads an older frameeyeosc's (bit 2 clear) as without brows. The
 //! panel also reads version 2 (taking the gaze as sent for the gaze before the scale); other versions it ignores (and
 //! frameeyeosc never reads any).

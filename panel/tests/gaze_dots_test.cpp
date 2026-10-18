@@ -138,7 +138,7 @@ void testBrows() {
     packet.eyes[1].lid = 0.8f;
     const std::vector<uint8_t> without = encode(packet);
     Packet read;
-    // Without brows: flag bit 2 clear and the bytes zero, as before 0.7.11, read as no brows
+    // Without brows: flag bit 2 clear and the bytes zero, as before 0.8.0, read as no brows
     CHECK(without[5] == 0 && without[64 + 34] == 0 && without[64 + 35] == 0 && without[100 + 34] == 0);
     CHECK(decode(without.data(), without.size(), read) && !read.brows && read.eyes[0].brow == 0.0f);
     // With brows: the same version and size, bit 2, each eye's brow a u16 at 34 (65535 = 1.0)

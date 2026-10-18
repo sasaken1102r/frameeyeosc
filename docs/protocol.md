@@ -24,7 +24,7 @@ The same file is kept in both repositories (frameeyeosc `docs/protocol.md` and V
 
 108 bytes with brows, else 76 (the packet stops after `session`); little-endian, no padding. `f32` is IEEE 754
 single precision. frameeyeosc sends 76-byte packets, and 108-byte packets with the brows block while
-`brow_from_widen` is on (from 0.7.11, off by default). Those brows are raised from the widening (inner_up = outer_up,
+`brow_from_widen` is on (from 0.8.0, off by default). Those brows are raised from the widening (inner_up = outer_up,
 lowerer = pinch = 0), since the eye cameras don't see brows.
 
 | Offset | Size | Type | Field | Meaning |

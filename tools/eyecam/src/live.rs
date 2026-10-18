@@ -239,6 +239,13 @@ impl UserParams {
         self.pitch_c[0] + self.pitch_c[1] * p + self.pitch_c[2] * p * p
     }
 
+    /// It has a measured look-down curve (`pitch_c`, `pitch_lo`, `pitch_hi`), not UserParams' default one (the
+    /// standard look-down correction).
+    pub fn curve_measured(&self) -> bool {
+        let d = UserParams::default();
+        (self.pitch_c, self.pitch_lo, self.pitch_hi) != (d.pitch_c, d.pitch_lo, d.pitch_hi)
+    }
+
     /// How much narrower (iris radii) an open eye's aperture is at `pitch` than at the wearer's typical pitch `p0`,
     /// from the curve. Below `p0` it is held between LID_PITCH_PER_DEG a degree beyond LID_PITCH_FROM_DEG and
     /// LID_PITCH_CAP times that (so nothing nearer `p0`); above it, looking up, the curve may say narrower (up to
@@ -1391,6 +1398,8 @@ pub const NOTE_WIDEN: &str = "見開きは取れなかったので、いつも�
 /// A user calibration that went through with the standard look-down correction on an eye (after "左目は" / "右目は" /
 /// "両目とも").
 pub const NOTE_LOOK_DOWN_DEFAULT: &str = "下を見たときの補正を標準の値にしたよ";
+/// ...with the previous user calibration's look-down correction kept on an eye (it had a measured one).
+pub const NOTE_LOOK_DOWN_PREVIOUS: &str = "下を見たときの補正を前の値のままにしたよ";
 
 /// One eye's calibration problem: its text (MSG_*) and details, the eye's own value and what is needed (either may
 /// be empty).
@@ -1774,18 +1783,28 @@ fn fit_user_checked(
 pub struct UserOutcome {
     pub user: [UserParams; 2],
     pub warnings: Vec<String>,
-    /// The eyes whose look-down part failed: they have UserParams' default pitch curve (the standard look-down
-    /// correction, as with no user calibration) and their own squint depth.
+    /// The eyes whose look-down part failed and that had no measured curve before: they have UserParams' default
+    /// pitch curve (the standard look-down correction, as with no user calibration) and their own squint depth.
     pub look_down_default: [bool; 2],
+    /// The eyes whose look-down part failed and that kept the previous user calibration's measured curve, with their
+    /// own squint depth (never true together with `look_down_default` for an eye).
+    pub look_down_previous: [bool; 2],
 }
 
 impl UserOutcome {
-    /// "校正できた（ユーザー）", or which eyes got the standard look-down correction; then the warnings.
+    /// "校正できた（ユーザー）", or which eyes got the standard look-down correction or kept the previous one (one note
+    /// per eye when they differ); then the warnings.
     pub fn message(&self) -> String {
-        let head = match self.look_down_default {
+        let note = |e: usize| if self.look_down_previous[e] { NOTE_LOOK_DOWN_PREVIOUS } else { NOTE_LOOK_DOWN_DEFAULT };
+        let failed = [0, 1].map(|e| self.look_down_default[e] || self.look_down_previous[e]);
+        let head = match failed {
             [false, false] => "校正できた（ユーザー）".to_string(),
-            [true, true] => format!("校正できた（両目とも{NOTE_LOOK_DOWN_DEFAULT}）"),
-            [left, _] => format!("校正できた（{}は{NOTE_LOOK_DOWN_DEFAULT}）", if left { "左目" } else { "右目" }),
+            [true, true] if note(0) == note(1) => format!("校正できた（両目とも{}）", note(0)),
+            [true, true] => format!("校正できた（左目は{}。右目は{}）", note(0), note(1)),
+            [left, _] => {
+                let e = if left { 0 } else { 1 };
+                format!("校正できた（{}は{}）", ["左目", "右目"][e], note(e))
+            }
         };
         if self.warnings.is_empty() { head } else { format!("{head}。注意: {}", self.warnings.join("、")) }
     }
@@ -1794,8 +1813,10 @@ impl UserOutcome {
 /// A user calibration with the look-down part allowed to fail (like a wear calibration's widen that was not caught):
 /// an eye whose squint step went through but whose look-down part did not (too few neutral frames with the lids, a
 /// look down that did not narrow the eye, a lower lid that moved up: long lashes read as the lid) keeps this squint
-/// depth with the standard look-down correction. Anything else fails it as `fit_user` does, with the same message.
-/// A calibration that passes `fit_user` gives the same values and warnings here.
+/// depth with the previous user calibration's look-down curve when that one was measured on the eye (`old`, as a
+/// wear calibration keeps an eye's previous levels), else with the standard look-down correction. Anything else
+/// fails it as `fit_user` does, with the same message. A calibration that passes `fit_user` gives the same values and
+/// warnings here.
 pub fn fit_user_settled(
     samples: &[Vec<Sample>; 2],
     wear: &[WearParams; 2],
@@ -1806,9 +1827,13 @@ pub fn fit_user_settled(
     if eyes.iter().any(|x| x.issue.is_some() && !x.look_down_only) {
         return Err(with_rate_note(eyes_message(&eyes.map(|x| x.issue)), samples));
     }
-    let look_down_default = [0, 1].map(|e| eyes[e].issue.is_some());
+    let failed = [0, 1].map(|e| eyes[e].issue.is_some());
+    // The curve each failed eye goes on: the previous one if it was measured, else the default (standard) one.
+    let previous = [0, 1].map(|e| old.map(|o| o[e]).filter(|o| failed[e] && o.curve_measured()));
+    let look_down_previous = previous.map(|p| p.is_some());
+    let look_down_default = [0, 1].map(|e| failed[e] && previous[e].is_none());
     let ds = (eyes[0].delta.1 - eyes[1].delta.1).abs();
-    if look_down_default == [false, false] {
+    if failed == [false, false] {
         let dd = (eyes[0].delta.0 - eyes[1].delta.0).abs();
         if dd >= 0.2 || ds >= 0.2 {
             warnings.push(format!("左右の差が大きい [下を見たとき {dd:.2}、細め {ds:.2}]"));
@@ -1819,9 +1844,13 @@ pub fn fit_user_settled(
     }
     let user = [0, 1].map(|e| {
         let p = eyes[e].params;
-        if look_down_default[e] { UserParams { f_sq: p.f_sq, pd_min: p.pd_min, pd_max: p.pd_max, ..UserParams::default() } } else { p }
+        if !failed[e] {
+            return p;
+        }
+        let curve = previous[e].unwrap_or_default();
+        UserParams { pitch_c: curve.pitch_c, pitch_lo: curve.pitch_lo, pitch_hi: curve.pitch_hi, ..p }
     });
-    Ok(UserOutcome { user, warnings, look_down_default })
+    Ok(UserOutcome { user, warnings, look_down_default, look_down_previous })
 }
 
 /// Pupil range (P5 of bright, P95 of dark, in iris units) from a recording with bright and dark steps, in units
@@ -2673,10 +2702,17 @@ pub fn wear_params_json(w: &[WearParams; 2]) -> String {
     format!("{{\"L\": {}, \"R\": {}}}", wear_json(&w[0]), wear_json(&w[1]))
 }
 
-/// calib_result.json's `look_down_default` line (a user calibration's only, else ""): the eyes that went through with
-/// the standard look-down correction (`UserOutcome::look_down_default`; both false when it failed).
-pub fn look_down_default_json(user: bool, eyes: [bool; 2]) -> String {
-    if user { format!("\n  \"look_down_default\": [{}, {}],", eyes[0], eyes[1]) } else { String::new() }
+/// calib_result.json's `look_down_default` and `look_down_previous` lines (a user calibration's only, else ""): the
+/// eyes that went through with the standard look-down correction (`UserOutcome::look_down_default`), and those that
+/// kept the previous user calibration's (`UserOutcome::look_down_previous`); all false when it failed.
+pub fn look_down_json(user: bool, default: [bool; 2], previous: [bool; 2]) -> String {
+    if !user {
+        return String::new();
+    }
+    format!(
+        "\n  \"look_down_default\": [{}, {}],\n  \"look_down_previous\": [{}, {}],",
+        default[0], default[1], previous[0], previous[1]
+    )
 }
 
 /// A user calibration as JSON (for calib_result.json).
@@ -3331,9 +3367,71 @@ mod tests {
         let mut no_gaze = lashes.clone();
         no_gaze.iter_mut().for_each(|x| x.pitch = f64::NAN);
         assert_eq!(fit_user_settled(&[good.clone(), no_gaze], &[w, w], None).unwrap_err(), MSG_NO_GAZE);
-        // calib_result.json's line
-        assert_eq!(look_down_default_json(true, [false, true]), "\n  \"look_down_default\": [false, true],");
-        assert_eq!(look_down_default_json(false, [false, true]), "");
+        // calib_result.json's lines
+        assert_eq!(
+            look_down_json(true, [false, true], [true, false]),
+            "\n  \"look_down_default\": [false, true],\n  \"look_down_previous\": [true, false],"
+        );
+        assert_eq!(look_down_json(false, [false, true], [true, false]), "");
+    }
+
+    #[test]
+    fn a_look_down_that_fails_keeps_the_previous_curve_if_it_was_measured() {
+        let w = WearParams { r_px: 55.0, b_n: 0.73, b_w: 0.93, ap_n: 1.441, ap_cl: 0.561, pitch_n: -14.0, lower_px: 250.0 };
+        let user = |down_ap: f64, down_lower: f64, squint_ap: f64| {
+            let mut u = Vec::new();
+            u.extend(samples(Label::LeadIn, 200, 0.73, 1.44, -14.0, 250.0, true));
+            u.extend(samples(Label::LookUp, 200, 0.73, 1.6, 5.0, 248.0, true));
+            u.extend(samples(Label::LookDown, 200, 0.6, down_ap, -35.0, down_lower, true));
+            u.extend(samples(Label::Squint, 200, 0.6, squint_ap, -14.0, 249.0, true));
+            u
+        };
+        let good = user(1.1, 256.0, 0.83);
+        let lashes = user(1.43, 256.0, 0.83);
+        // The previous user calibration: a measured curve on both eyes (another one on the right), its own squint.
+        let measured = |slope: f64| UserParams { pitch_c: [1.5, slope, 0.0], pitch_lo: -40.0, pitch_hi: 20.0, f_sq: 0.5, pd_min: 0.5, pd_max: 1.2 };
+        let old = Some([measured(0.01), measured(0.02)]);
+        assert!(old.unwrap().iter().all(UserParams::curve_measured));
+        assert!(!UserParams { f_sq: 0.5, pd_min: 0.5, ..UserParams::default() }.curve_measured());
+        let curve = |u: &UserParams| (u.pitch_c, u.pitch_lo, u.pitch_hi);
+        let (both, _) = fit_user(&[good.clone(), good.clone()], &[w, w], old, true).unwrap();
+
+        // Both pass: the previous calibration changes nothing (the new curves, as fit_user).
+        let out = fit_user_settled(&[good.clone(), good.clone()], &[w, w], old).unwrap();
+        assert_eq!((out.user, out.look_down_default, out.look_down_previous), (both, [false, false], [false, false]));
+        assert_eq!(out.message(), "校正できた（ユーザー）");
+
+        // The right eye's look down fails: it keeps its previous curve, with this calibration's squint.
+        let out = fit_user_settled(&[good.clone(), lashes.clone()], &[w, w], old).unwrap();
+        assert_eq!((out.look_down_default, out.look_down_previous), ([false, false], [false, true]));
+        assert_eq!(out.user[0], both[0]);
+        assert_eq!(curve(&out.user[1]), curve(&measured(0.02)));
+        assert_eq!((out.user[1].f_sq, out.user[1].pd_min, out.user[1].pd_max), (both[1].f_sq, 0.5, 1.2));
+        assert_eq!(out.message(), "校正できた（右目は下を見たときの補正を前の値のままにしたよ）");
+
+        // Both eyes': both keep theirs.
+        let out = fit_user_settled(&[lashes.clone(), lashes.clone()], &[w, w], old).unwrap();
+        assert_eq!((out.look_down_default, out.look_down_previous), ([false, false], [true, true]));
+        assert_eq!([curve(&out.user[0]), curve(&out.user[1])], [curve(&measured(0.01)), curve(&measured(0.02))]);
+        assert_eq!(out.message(), "校正できた（両目とも下を見たときの補正を前の値のままにしたよ）");
+
+        // No previous calibration, or one without a measured curve on that eye: the standard correction.
+        let standard = Some([measured(0.01), UserParams { pd_min: 0.5, pd_max: 1.2, ..UserParams::default() }]);
+        for old in [None, standard] {
+            let out = fit_user_settled(&[good.clone(), lashes.clone()], &[w, w], old).unwrap();
+            assert_eq!((out.look_down_default, out.look_down_previous), ([false, true], [false, false]));
+            assert_eq!(curve(&out.user[1]), curve(&UserParams::default()));
+            assert_eq!(out.message(), "校正できた（右目は下を見たときの補正を標準の値にしたよ）");
+        }
+
+        // One eye on its previous curve, the other on the standard one: a note for each.
+        let out = fit_user_settled(&[lashes.clone(), lashes.clone()], &[w, w], standard).unwrap();
+        assert_eq!((out.look_down_default, out.look_down_previous), ([false, true], [true, false]));
+        assert_eq!([curve(&out.user[0]), curve(&out.user[1])], [curve(&measured(0.01)), curve(&UserParams::default())]);
+        assert_eq!(
+            out.message(),
+            "校正できた（左目は下を見たときの補正を前の値のままにしたよ。右目は下を見たときの補正を標準の値にしたよ）"
+        );
     }
 
     /// A grey frame with the lens-edge band, and a dark disc (the pupil) if `pupil`.

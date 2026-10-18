@@ -744,6 +744,10 @@ UiText makeJapanese() {
     t.userPartialPill = "一部は標準の値";
     t.userPartialEyeBoth = "両目";
     t.userPartialBodyFormat = "細めは覚えたよ。%sは、下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は標準の値を使うよ";
+    t.userPreviousPill = "一部は前の値";
+    t.userPreviousBodyFormat = "細めは覚えたよ。%sは、下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は前の値のままにしたよ";
+    t.userMixedPill = "一部は前の値と標準の値";
+    t.userMixedBodyFormat = "細めは覚えたよ。下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は、%sは前の値のまま、%sは標準の値にしたよ";
     t.nextTitle = "次にやること・目のカメラ";
     t.nextPass = "SteamOS の設定で決めてね";
     t.nextWait = "ボタンを押すと始まるよ";
@@ -1702,6 +1706,10 @@ UiText makeEnglish() {
     t.userPartialPill = "Partly standard";
     t.userPartialEyeBoth = "Both eyes";
     t.userPartialBodyFormat = "Squinting is learned. %s: looking down couldn't be measured well (lashes, perhaps), so the standard correction is used";
+    t.userPreviousPill = "Partly previous";
+    t.userPreviousBodyFormat = "Squinting is learned. %s: looking down couldn't be measured well (lashes, perhaps), so the previous correction is kept";
+    t.userMixedPill = "Partly previous, standard";
+    t.userMixedBodyFormat = "Squinting is learned. Looking down couldn't be measured well (lashes, perhaps): %s keeps the previous correction, %s uses the standard one";
     t.nextTitle = "Next · Eye cameras";
     t.nextPass = "Set it in the SteamOS settings";
     t.nextWait = "It starts with the button";

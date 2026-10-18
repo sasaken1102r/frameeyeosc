@@ -5673,9 +5673,10 @@ void EyePanel::drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& 
     const double cardTop = 158;
     const double cardH = setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, false, true);
     // (green when it ended well, unless one eye went on its earlier values, or the user's on the standard look-down
-    // correction)
-    const bool partial =
-        user ? eyecam::lookDownDefaultEyes(m.eyecam.status) != 0 : eyecam::partialEye(m.eyecam.status) >= 0;
+    // correction or the previous one)
+    const bool partial = user ? (eyecam::lookDownDefaultEyes(m.eyecam.status) |
+                                 eyecam::lookDownPreviousEyes(m.eyecam.status)) != 0
+                              : eyecam::partialEye(m.eyecam.status) >= 0;
     strokeRounded(pen, cardX, cardTop, cardRight - cardX, cardH, 14,
                   screen == eyecam::SetupScreen::Calibrated && !partial ? kSuccess : kAccent, 2);
     setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, true, true);
@@ -6307,12 +6308,17 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
         case SetupScreen::Calibrated: {
             // A calibration from the page ended well: a line on what it learned, and back to the page
             const bool user = calib == eyecam::Calib::User;
-            // (the user's with the standard look-down correction on an eye: its squint learned all the same)
-            const int lookDown = user ? eyecam::lookDownDefaultEyes(s) : 0;
+            // (the user's with the standard look-down correction on an eye, or the previous one kept: its squint
+            // learned all the same)
+            const int standard = user ? eyecam::lookDownDefaultEyes(s) : 0;
+            const int previous = user ? eyecam::lookDownPreviousEyes(s) & ~standard : 0;
+            const int lookDown = standard | previous;
             title(learnName,
-                  partial >= 0    ? t.partialPill
-                  : lookDown != 0 ? t.userPartialPill
-                                  : t.calibDonePill,
+                  partial >= 0                     ? t.partialPill
+                  : standard != 0 && previous != 0 ? t.userMixedPill
+                  : previous != 0                  ? t.userPreviousPill
+                  : standard != 0                  ? t.userPartialPill
+                                                   : t.calibDonePill,
                   partial >= 0 || lookDown != 0 ? kAccent : kSuccess);
             y += 50;
             if (partial >= 0) {
@@ -6326,11 +6332,20 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             }
             const char* big = user ? t.calibUserDoneTitle : t.calibDoneTitle;
             text(x0, y, big, fitSize(pen, big, 26, 16, w, true), kText, true);
-            if (lookDown != 0) {
+            if (standard != 0 && previous != 0) {
+                // (one eye each: the one on the previous correction named first)
+                const bool leftPrevious = previous == eyecam::kLeftEyeBit;
+                char body[512];
+                std::snprintf(body, sizeof(body), t.userMixedBodyFormat,
+                              leftPrevious ? t.partialEyeLeft : t.partialEyeRight,
+                              leftPrevious ? t.partialEyeRight : t.partialEyeLeft);
+                para(body, 17, kText, false, 38, 26, 3);
+            } else if (lookDown != 0) {
                 const char* eyes = lookDown == (eyecam::kLeftEyeBit | eyecam::kRightEyeBit) ? t.userPartialEyeBoth
                                    : lookDown == eyecam::kLeftEyeBit                          ? t.partialEyeLeft
                                                                                               : t.partialEyeRight;
-                para(formatText(t.userPartialBodyFormat, eyes), 17, kText, false, 38, 26, 3);
+                para(formatText(previous != 0 ? t.userPreviousBodyFormat : t.userPartialBodyFormat, eyes), 17, kText,
+                     false, 38, 26, 3);
             } else {
                 para(user ? t.calibUserDoneBody : t.calibDoneBody, 17, kText, false, 38, 26, 2);
             }

@@ -523,8 +523,9 @@ impl StatusFile {
                     3 => "LR",
                     _ => "",
                 };
-                let look_down = l.user_look_down_default.load(Ordering::Relaxed);
-                s.user_look_down_default = [look_down & 1 != 0, look_down & 2 != 0];
+                let eyes = |bits: u32| [bits & 1 != 0, bits & 2 != 0];
+                s.user_look_down_default = eyes(l.user_look_down_default.load(Ordering::Relaxed));
+                s.user_look_down_previous = eyes(l.user_look_down_previous.load(Ordering::Relaxed));
                 s.pupil = [0, 1].map(|e| if s.live { l.pupil_share(e) } else { f64::NAN });
                 let now = now_raw();
                 s.cam_fps = [0, 1].map(|e| if s.locked { l.cam_fps(e, now) } else { f64::NAN });

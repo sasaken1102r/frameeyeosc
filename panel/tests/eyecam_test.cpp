@@ -2414,6 +2414,31 @@ void testPupils() {
                                 kNow);
         CHECK(!s.hasUserLookDownDefault && eyecam::lookDownDefaultEyes(s) == eyecam::kRightEyeBit);
     }
+    // ...and the eyes on the previous user calibration's look-down correction (status.json only: an eyecam-rec
+    // before it never kept it)
+    {
+        Status s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": "
+                                       "\"校正できた（左目は下を見たときの補正を前の値のままにしたよ。"
+                                       "右目は下を見たときの補正を標準の値にしたよ）\", "
+                                       "\"user_look_down_default\": [false, true], "
+                                       "\"user_look_down_previous\": [true, false]}",
+                                       kNow);
+        CHECK(s.hasUserLookDownPrevious && eyecam::lookDownPreviousEyes(s) == eyecam::kLeftEyeBit);
+        CHECK(eyecam::lookDownDefaultEyes(s) == eyecam::kRightEyeBit);
+        s.state = State::Calibrating;
+        CHECK(eyecam::lookDownPreviousEyes(s) == 0);
+        s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": "
+                                "\"校正できた（両目とも下を見たときの補正を前の値のままにしたよ）\", "
+                                "\"user_look_down_default\": [false, false], "
+                                "\"user_look_down_previous\": [true, true]}",
+                                kNow);
+        CHECK(eyecam::lookDownPreviousEyes(s) == (eyecam::kLeftEyeBit | eyecam::kRightEyeBit));
+        CHECK(eyecam::lookDownDefaultEyes(s) == 0);
+        s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": \"校正できた（ユーザー）\", "
+                                "\"user_look_down_default\": [false, false]}",
+                                kNow);
+        CHECK(!s.hasUserLookDownPrevious && eyecam::lookDownPreviousEyes(s) == 0);
+    }
 }
 
 void testSearch() {

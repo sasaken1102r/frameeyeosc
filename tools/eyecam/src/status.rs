@@ -201,6 +201,9 @@ pub struct Status {
     /// The eyes (left, right) the last `calib user` of this run went through with the standard look-down correction
     /// on (its look down could not be measured; its squint was). Both false: none this run, it failed, or measured.
     pub user_look_down_default: [bool; 2],
+    /// ...and those it went through with the previous user calibration's look-down correction kept on (its look down
+    /// could not be measured, and that one had a measured one). An eye is in one of the two at most.
+    pub user_look_down_previous: [bool; 2],
     /// Live processing is on (`live on`, the default).
     pub live: bool,
     /// Live processing time per frame (one eye), ms, averaged over the last second.
@@ -285,6 +288,7 @@ impl Default for Status {
             last_calib_widen: "",
             calib_failed_eye: "",
             user_look_down_default: [false; 2],
+            user_look_down_previous: [false; 2],
             live: false,
             live_ms: 0.0,
             preview: false,
@@ -329,7 +333,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"user_look_down_default\":[{},{}],\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"driftlog\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"user_look_down_default\":[{},{}],\"user_look_down_previous\":[{},{}],\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"driftlog\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -362,6 +366,8 @@ impl Status {
             json_str(self.calib_failed_eye),
             self.user_look_down_default[0],
             self.user_look_down_default[1],
+            self.user_look_down_previous[0],
+            self.user_look_down_previous[1],
             self.live,
             num(self.live_ms),
             self.preview,
@@ -579,9 +585,11 @@ mod tests {
         let seen = Status { pupil: [0.95, f64::NAN], ..Status::default() }.to_json(1.5, 7);
         assert!(seen.contains(",\"pupil_l\":0.950,\"pupil_r\":null,") && crate::json::parse(&seen).is_ok(), "{seen}");
         assert!(Status { calib_failed_eye: "R", ..Status::default() }.to_json(1.5, 7).contains(",\"calib_failed_eye\":\"R\","));
-        assert!(json.contains(",\"user_look_down_default\":[false,false],\"live\":"), "{json}");
+        assert!(json.contains(",\"user_look_down_default\":[false,false],\"user_look_down_previous\":[false,false],\"live\":"), "{json}");
         let partial = Status { user_look_down_default: [false, true], ..Status::default() }.to_json(1.5, 7);
         assert!(partial.contains(",\"user_look_down_default\":[false,true],"), "{partial}");
+        let previous = Status { user_look_down_previous: [true, false], ..Status::default() }.to_json(1.5, 7);
+        assert!(previous.contains(",\"user_look_down_previous\":[true,false],") && crate::json::parse(&previous).is_ok(), "{previous}");
         assert!(
             json.contains(",\"prox_min\":20.000,\"search_detail\":null,\"last_calib\":null,\"last_error\":\"\",\"last_error_en\":\"\",\"last_error_unix\":0.000,"),
             "{json}"

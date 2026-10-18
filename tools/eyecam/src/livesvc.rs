@@ -87,6 +87,14 @@ pub enum CollectKind {
     Pupil,
 }
 
+/// The eyes a user calibration went through with the standard look-down correction on (`default`) or with the
+/// previous one kept (`previous`): UserOutcome's, for calib_result.json.
+#[derive(Clone, Copy, Debug, Default)]
+struct LookDown {
+    default: [bool; 2],
+    previous: [bool; 2],
+}
+
 pub enum Msg {
     /// A raw frame of an anatomical eye (0 = L, 1 = R), 400x400 as stored; `upside_down`: its camera stores it upside
     /// down (the left eye's, see vision::UPSIDE_DOWN_EYE; decided by the camera, so --swap renaming the eyes does not
@@ -135,6 +143,9 @@ pub struct Shared {
     /// The eyes the last `calib user` of this run went through with the standard look-down correction on: bit 1
     /// left, bit 2 right (0: none this run, it failed, or both eyes' look down was measured).
     pub user_look_down_default: AtomicU32,
+    /// ...and the eyes it went through with the previous user calibration's look-down correction kept on (the same
+    /// bits; an eye is in one of the two at most).
+    pub user_look_down_previous: AtomicU32,
     /// Average processing time per frame over the last second, in microseconds.
     pub us_per_frame: AtomicU32,
     pub frames: AtomicU64,
@@ -177,6 +188,7 @@ impl Default for Shared {
             last_calib_widen: AtomicU32::new(0),
             calib_failed_eye: AtomicU32::new(0),
             user_look_down_default: AtomicU32::new(0),
+            user_look_down_previous: AtomicU32::new(0),
             us_per_frame: AtomicU32::new(0),
             frames: AtomicU64::new(0),
             live_on: AtomicBool::new(false),
@@ -680,7 +692,7 @@ impl Worker {
         result: &Result<String, String>,
         params: Option<String>,
         failed_eye: &str,
-        look_down_default: [bool; 2],
+        look_down: LookDown,
     ) {
         let (values, lines) = match kind {
             CollectKind::Wear => live::wear_report(samples),
@@ -707,7 +719,7 @@ impl Worker {
             live::JSON_EYES_ANATOMICAL,
             crate::json::string(&stamp()),
             crate::json::string(failed_eye),
-            live::look_down_default_json(kind == CollectKind::User, look_down_default),
+            live::look_down_json(kind == CollectKind::User, look_down.default, look_down.previous),
             crate::json::string(message),
             params.unwrap_or_else(|| "null".into())
         );
@@ -770,8 +782,8 @@ impl Worker {
         let samples = std::mem::take(&mut self.samples);
         self.steps.clear();
         let mut params = None;
-        let mut look_down_default = [false; 2];
-        let result = self.fit(kind, &samples, &mut params, &mut look_down_default);
+        let mut look_down = LookDown::default();
+        let result = self.fit(kind, &samples, &mut params, &mut look_down);
         if kind == CollectKind::Wear && result.is_err() {
             self.shared.last_calib_widen.store(0, Ordering::Relaxed);
         }
@@ -779,19 +791,19 @@ impl Worker {
             CollectKind::Wear => ["", "L", "R", "LR"][(self.shared.calib_failed_eye.load(Ordering::Relaxed) & 3) as usize],
             _ => "",
         };
-        self.report(dir.as_deref(), kind, &samples, &result, params, failed_eye, look_down_default);
+        self.report(dir.as_deref(), kind, &samples, &result, params, failed_eye, look_down);
         self.publish_state();
         result
     }
 
-    /// Fit and save a calibration. `look_down_default`: the eyes of a user calibration that went through with the
-    /// standard look-down correction.
+    /// Fit and save a calibration. `look_down`: the eyes of a user calibration that went through with the standard
+    /// look-down correction or the previous one.
     fn fit(
         &mut self,
         kind: CollectKind,
         samples: &[Vec<Sample>; 2],
         params_out: &mut Option<String>,
-        look_down_default: &mut [bool; 2],
+        look_down: &mut LookDown,
     ) -> Result<String, String> {
         let samples = samples.clone();
         match kind {
@@ -835,13 +847,15 @@ impl Worker {
                     _ => return Err("先に calib wear をしてね".into()),
                 };
                 self.shared.user_look_down_default.store(0, Ordering::Relaxed);
+                self.shared.user_look_down_previous.store(0, Ordering::Relaxed);
                 // An eye whose look-down part failed (long lashes read as the lid) still gets its squint, with the
-                // standard look-down correction.
+                // previous user calibration's look-down correction if it was measured, else the standard one.
                 let out = live::fit_user_settled(&samples, &wear, self.calib.user)?;
                 *params_out = Some(live::user_params_json(&out.user));
-                *look_down_default = out.look_down_default;
-                let bits = out.look_down_default[0] as u32 | (out.look_down_default[1] as u32) << 1;
-                self.shared.user_look_down_default.store(bits, Ordering::Relaxed);
+                *look_down = LookDown { default: out.look_down_default, previous: out.look_down_previous };
+                let bits = |eyes: [bool; 2]| eyes[0] as u32 | (eyes[1] as u32) << 1;
+                self.shared.user_look_down_default.store(bits(out.look_down_default), Ordering::Relaxed);
+                self.shared.user_look_down_previous.store(bits(out.look_down_previous), Ordering::Relaxed);
                 self.calib.user = Some(out.user);
                 self.calib.user_time = stamp();
                 self.calib.user_warnings = out.warnings.clone();
@@ -1028,7 +1042,7 @@ pub fn spawn(
                     Ok(Msg::Abort(dir)) => {
                         if let Some(kind) = w.collect.take() {
                             let samples = std::mem::take(&mut w.samples);
-                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None, "", [false; 2]);
+                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None, "", LookDown::default());
                         }
                         w.steps.clear();
                         w.samples = [Vec::new(), Vec::new()];

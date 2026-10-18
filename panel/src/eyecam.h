@@ -243,7 +243,10 @@ struct Status {
     bool hasUserLookDownDefault = false;  ///< "user_look_down_default" is there (a newer eyecam-rec)
     int userLookDownDefault = 0;   ///< ...the eyes (kLeftEyeBit | kRightEyeBit) the last "calib user" of eyecam-rec's
                                    ///< run went through with the standard look-down correction on (0: none)
-    bool hasPupil = false;         ///< "pupil_l" / "pupil_r" are there (a newer eyecam-rec that says whether it finds
+    bool hasUserLookDownPrevious = false;  ///< "user_look_down_previous" is there (a newer eyecam-rec)
+    int userLookDownPrevious = 0;  ///< ...the eyes that "calib user" went through with the previous user calibration's
+                                   ///< look-down correction kept on (0: none; never an eye of userLookDownDefault)
+    bool hasPupil = false;        ///< "pupil_l" / "pupil_r" are there (a newer eyecam-rec that says whether it finds
                                    ///< the pupils; without them "locked" is all there is)
     double pupil[2] = {0.0, 0.0};  ///< per eye (left, right), the share of the last 2 s of frames with the pupil found,
                                    ///< 0..1 (NaN when null: live processing off, or that eye's video stopped)
@@ -1034,6 +1037,15 @@ int partialEye(const Status& status);
  * @return kLeftEyeBit | kRightEyeBit, or 0
  */
 int lookDownDefaultEyes(const Status& status);
+
+/**
+ * The eyes a "calib user" went through with the previous user calibration's look-down correction kept on (their look
+ * down couldn't be measured, and the previous one had been): status.json's "user_look_down_previous" (an eyecam-rec
+ * before it never kept it).
+ * @param status the status (only an idle one, right after it)
+ * @return kLeftEyeBit | kRightEyeBit, or 0
+ */
+int lookDownPreviousEyes(const Status& status);
 
 /**
  * Whether partialEye's eye got provisional values (there were no earlier ones): eyecam-rec's message says "仮の値".

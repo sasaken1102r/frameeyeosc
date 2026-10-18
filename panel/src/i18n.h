@@ -753,6 +753,10 @@ struct UiText {
     const char* userPartialPill;  ///< "calib user" went through with the standard look-down correction on an eye: the pill
     const char* userPartialEyeBoth;  ///< ...both eyes, in its body (partialEyeLeft / partialEyeRight for one)
     const char* userPartialBodyFormat;  ///< ...its body: "%s" (the eyes) look down with the standard correction
+    const char* userPreviousPill;  ///< ...with the previous user calibration's look-down correction kept on an eye
+    const char* userPreviousBodyFormat;  ///< ...its body: "%s" (the eyes) keep the previous correction
+    const char* userMixedPill;  ///< ...one eye on the previous correction, the other on the standard one
+    const char* userMixedBodyFormat;  ///< ...its body: the eye on the previous one ("%s"), then the other ("%s")
     const char* nextTitle;  ///< the left column while not set up: its card
     const char* nextPass;  ///< ...what (1) is about
     const char* nextWait;  ///< ...(3) before its button

@@ -277,12 +277,15 @@ pub struct Tune {
     pub edge_hold: bool,
     /// Look for a pupil the window's left edge cuts past it (see EXT_MAX_PX).
     pub ext_search: bool,
+    /// The eyelid veto (`veto`): the CNN may cancel a low EyeLid it is sure is an open eye (settings.json `lid_veto`,
+    /// off by default: trained on one wearer's recordings only).
+    pub lid_veto: bool,
 }
 
 impl Default for Tune {
     fn default() -> Self {
         let (wide_start, wide_width) = wide_curve(DEFAULT_WIDEN_SENSITIVITY);
-        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true }
+        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true, lid_veto: false }
     }
 }
 
@@ -331,6 +334,8 @@ pub struct Out {
     /// The levels in use for this frame (calibrated, or the automatic baseline + stored step).
     pub b_n: f64,
     pub b_w: f64,
+    /// What the eyelid veto did (`closed`, `eye_lid` and `eye_squint` above are after it).
+    pub veto: crate::veto::Step,
 }
 
 /// The widen step and open gap (iris radii) the engine uses, and the confidence factor that goes with them: the
@@ -526,6 +531,7 @@ pub struct EyeEngine {
     gaze_hold_until: f64,
     /// Kept for the shared memory / status.json; the baselines follow the wearer now, so it stays false.
     pub recalib_suggested: bool,
+    veto: crate::veto::Veto,
 }
 
 /// The per-wear open-eye levels (pixels): learnt from the first `WARMUP_S` of usable frames, then followed slowly.
@@ -741,6 +747,7 @@ impl Default for EyeEngine {
             pitch_recent: VecDeque::new(),
             gaze_hold_until: f64::NEG_INFINITY,
             recalib_suggested: false,
+            veto: crate::veto::Veto::default(),
         }
     }
 }
@@ -1125,6 +1132,15 @@ impl EyeEngine {
         let seen = if f.ok_pupil { 0.5 * f.pupil_vis } else if closed { 0.5 } else { 0.0 };
         let confidence = clamp01((seen + lids) * cal_q * if r_ready { 1.0 } else { 0.5 });
         let valid = r.is_finite() && (f.ok_pupil || closed || f.upper_skin_y.is_finite());
+        // The eyelid veto: it only changes what goes out, never the engine's state above (nor validity and confidence).
+        let veto = if params.tune.lid_veto {
+            self.veto.step(img, eye_lid, closed)
+        } else {
+            self.veto.reset();
+            crate::veto::Step::default()
+        };
+        let (closed, eye_lid, squint) =
+            if veto.on { (false, eye_lid.max(crate::veto::FLOOR), 0.0) } else { (closed, eye_lid, squint) };
         Out {
             f,
             valid,
@@ -1149,6 +1165,7 @@ impl EyeEngine {
             edge_held,
             b_n,
             b_w,
+            veto,
         }
     }
 }
@@ -3334,8 +3351,9 @@ mod tests {
 
     #[test]
     fn the_aperture_baseline_follows_lids_that_settle_lower_but_not_a_squint() {
-        // A user calibration (squint and the eyelid from the aperture), 15 frames a second
-        let p = Params { user: Some(UserParams::default()), ..Params::default() };
+        // A user calibration (squint and the eyelid from the aperture), 15 frames a second. The classical values alone:
+        // the eyelid veto's CNN, never trained on drawn frames, calls the drawn squint below open.
+        let p = Params { user: Some(UserParams::default()), tune: Tune { lid_veto: false, ..Tune::default() }, ..Params::default() };
         let mut e = EyeEngine::default();
         let mut t = 0.0;
         let mut run = |e: &mut EyeEngine, opening: std::ops::Range<usize>, seconds: f64| {

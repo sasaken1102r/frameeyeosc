@@ -151,6 +151,14 @@ pub struct Shared {
     pub preview_on: AtomicBool,
     /// The drift log (`driftlog on` / `off` from ctl.sock), written by the worker as frames come.
     pub driftlog: Mutex<driftlog::Control>,
+    /// The eyelid veto is on (settings.json `lid_veto`, followed while running), and what it did: CNN runs a second
+    /// (both eyes) over the last second (f32 bits), vetoes fired, and the CNN's time per run (mean and max,
+    /// microseconds), since the worker started.
+    pub lid_veto: AtomicBool,
+    pub veto_runs_per_s: AtomicU32,
+    pub veto_fired: AtomicU64,
+    pub veto_us_mean: AtomicU32,
+    pub veto_us_max: AtomicU32,
 }
 
 impl Default for Shared {
@@ -175,6 +183,11 @@ impl Default for Shared {
             preview_until: AtomicU64::new(0),
             preview_on: AtomicBool::new(false),
             driftlog: Mutex::new(driftlog::Control::default()),
+            lid_veto: AtomicBool::new(false),
+            veto_runs_per_s: AtomicU32::new(0f32.to_bits()),
+            veto_fired: AtomicU64::new(0),
+            veto_us_mean: AtomicU32::new(0),
+            veto_us_max: AtomicU32::new(0),
         }
     }
 }
@@ -398,6 +411,12 @@ struct Worker {
     log_since: Instant,
     /// The panel's eye preview: each eye's picture while it is asked for.
     preview: Preview,
+    /// The eyelid veto's CNN runs since busy_since, and since the start: runs, vetoes fired, total and longest time (us).
+    veto_runs: u32,
+    veto_n: u64,
+    veto_fired: u64,
+    veto_us: f64,
+    veto_us_max: f64,
 }
 
 impl Worker {
@@ -434,6 +453,11 @@ impl Worker {
             log_us: 0,
             log_since: Instant::now(),
             preview: Preview::new(preview_path),
+            veto_runs: 0,
+            veto_n: 0,
+            veto_fired: 0,
+            veto_us: 0.0,
+            veto_us_max: 0.0,
         }
     }
 
@@ -559,9 +583,20 @@ impl Worker {
                 (p.tune.wide_start, p.tune.wide_width) = (start, width);
             }
         }
+        let veto_on = self.shared.lid_veto.load(Ordering::Relaxed);
+        for p in &mut self.params {
+            p.tune.lid_veto = veto_on;
+        }
         let started = Instant::now();
         let mut o = self.engines[eye].process_open(img, pitch as f64, open as f64, t, &self.params[eye]);
         let processed = started.elapsed();
+        if o.veto.ran {
+            self.veto_runs += 1;
+            self.veto_n += 1;
+            self.veto_us += o.veto.us;
+            self.veto_us_max = self.veto_us_max.max(o.veto.us);
+        }
+        self.veto_fired += o.veto.fired as u64;
         let started = Instant::now();
         self.check_pupils(eye, t, &mut o);
         let share = self.pupil_seen[eye].push(t, o.f.ok_pupil);
@@ -834,6 +869,13 @@ impl Worker {
         if self.busy_since.elapsed() >= Duration::from_secs(1) {
             let us = (self.busy.as_micros() as u32).checked_div(self.busy_n).unwrap_or(0);
             self.shared.us_per_frame.store(us, Ordering::Relaxed);
+            let runs_per_s = self.veto_runs as f64 / self.busy_since.elapsed().as_secs_f64();
+            self.shared.veto_runs_per_s.store((runs_per_s as f32).to_bits(), Ordering::Relaxed);
+            self.shared.veto_fired.store(self.veto_fired, Ordering::Relaxed);
+            let mean = if self.veto_n > 0 { self.veto_us / self.veto_n as f64 } else { 0.0 };
+            self.shared.veto_us_mean.store(mean.round() as u32, Ordering::Relaxed);
+            self.shared.veto_us_max.store(self.veto_us_max.round() as u32, Ordering::Relaxed);
+            self.veto_runs = 0;
             self.log_n += self.busy_n as u64;
             self.log_us += self.busy.as_micros() as u64;
             if self.log_since.elapsed() >= Duration::from_secs(30) {
@@ -846,6 +888,14 @@ impl Worker {
                         self.pupil_conflicts,
                         self.pupil_pairs,
                         self.pupil_offset.value(self.engines[0].fps())
+                    );
+                    eprintln!(
+                        "live: eyelid veto {}, {} CNN runs so far ({:.2} ms each, at most {:.2}), {} vetoes",
+                        if self.params[0].tune.lid_veto { "on" } else { "off" },
+                        self.veto_n,
+                        if self.veto_n > 0 { self.veto_us / self.veto_n as f64 / 1000.0 } else { 0.0 },
+                        self.veto_us_max / 1000.0,
+                        self.veto_fired
                     );
                     if self.preview.is_on() {
                         eprintln!(

@@ -1,5 +1,5 @@
 //! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity` is changed from the panel
-//! (`set ...` on ctl.sock), `dev` only by hand.
+//! (`set ...` on ctl.sock), `dev` and `lid_veto` only by hand.
 
 use crate::json::{self, Json};
 use std::path::{Path, PathBuf};
@@ -12,11 +12,13 @@ pub struct Settings {
     /// Developer mode: calibrations also keep their eye images (eye_*.raw, headers.bin, lock_dump.bin), as
     /// recordings do. Off for ordinary users, whose calibrations keep only the small text files.
     pub dev: bool,
+    /// The eyelid veto (`veto`): off unless switched on here (followed while running).
+    pub lid_veto: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false }
+        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false, lid_veto: false }
     }
 }
 
@@ -39,6 +41,9 @@ impl Settings {
                 if let Some(Json::Bool(v)) = j.get("dev") {
                     s.dev = *v;
                 }
+                if let Some(Json::Bool(v)) = j.get("lid_veto") {
+                    s.lid_veto = *v;
+                }
             }
             Err(e) => eprintln!("eyecam-rec: ignoring {}: {e}", path.display()),
         }
@@ -52,9 +57,10 @@ impl Settings {
         }
         let tmp = path.with_extension("json.tmp");
         let text = format!(
-            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {}\n}}\n",
+            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}\n}}\n",
             json::num(self.widen_sensitivity),
-            self.dev
+            self.dev,
+            self.lid_veto
         );
         std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
@@ -94,10 +100,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("eyecam-settings-test-{}", std::process::id()));
         let p = dir.join("settings.json");
         assert_eq!(Settings::load(&p), Settings::default());
-        Settings { widen_sensitivity: 0.25, dev: false }.save(&p).unwrap();
+        Settings { widen_sensitivity: 0.25, dev: false, lid_veto: true }.save(&p).unwrap();
         assert_eq!(Settings::load(&p).widen_sensitivity, 0.25);
-        Settings { widen_sensitivity: 0.75, dev: true }.save(&p).unwrap();
-        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.75, dev: true });
+        Settings { widen_sensitivity: 0.75, dev: true, lid_veto: false }.save(&p).unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.75, dev: true, lid_veto: false });
         std::fs::write(&p, "{\"widen_sensitivity\": 3}").unwrap();
         assert_eq!(Settings::load(&p), Settings::default());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -117,7 +123,12 @@ mod tests {
         ];
         for (text, widen, dev) in cases {
             std::fs::write(&p, text).unwrap();
-            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: widen, dev }, "{text}");
+            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: widen, dev, lid_veto: false }, "{text}");
+        }
+        // lid_veto: off unless true (not a bool: off).
+        for (text, on) in [("{\"lid_veto\": false}", false), ("{\"lid_veto\": true}", true), ("{\"lid_veto\": 1}", false), ("{}", false)] {
+            std::fs::write(&p, text).unwrap();
+            assert_eq!(Settings::load(&p).lid_veto, on, "{text}");
         }
 
         // Watch: missing file -> defaults; created -> read; rewritten -> read again.

@@ -139,6 +139,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
   "pupil_frames":[470.000,482.000],"normal_frames":[486.000,486.000],"pupil_x":[238.000,252.000],"pupil_y":[201.000,194.000],
   "window":[[186.000,346.000],[180.000,340.000]],"fps":[90.000,90.000]},
  "last_error":"","last_error_en":"","last_error_unix":0.000,
+ "lid_veto":{"on":true,"runs_per_s":4.200,"fired":12,"ms_mean":0.520,"ms_max":1.310},
  "driftlog":{"on":false,"path":"","rows":0,"bytes":0,"full":false,"error":""},
  "pid":1234,"updated_unix":1791100000.123}
 ```
@@ -186,6 +187,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `search_detail` | object / null | 直近に目の映像を探したときに見えたもの（パネルの診断用）。探すたびに書き換え、ロックしたあとも残る。まだ一度も見ていなければ `null`。`candidates`（変化したメモリの中で絵に見えたフレームの数）、`refresh_hz`（そのうち選んだバッファの候補が 1 秒に何回書き換わったかの中央値。選んだバッファの候補が 2 つ未満なら 0）、`slots`（見つかったリングのスロット数。ふつう 8）、`both_eyes`（両目のスロットがそろった）、`stopped_at`（どこで止まったか: `""` 見つかった〔両目〕/ `no_candidates` 絵に見える候補が 2 つ未満 / `split_buffers` 候補は 2 つ以上あるが、いちばん多いバッファでも 2 つ未満（ほかのバッファに散らばっている）/ `not_refreshing` 1 秒に 3 回以上書き換わる候補が 2 つ未満 / `few_slots` リングのスロットが 2 つ未満 / `one_eye` 片目のスロットだけ）、`changed_blocks`（その前に変化した 64 KiB のブロックの数。0 ならバッファに何も書かれていない）、`unix`（見た時刻） |
 | `last_calib` | object / null | 直近の `calib wear`（この起動でしたもの、なければ `~/eyecam/calib_*/calib_result.json` のいちばん新しい wear のもの。どちらも無ければ `null`）。`time`（ローカル時刻 `YYYY-MM-DD HH:MM:SS`）、`ok`、`failed_eye`（`calib_failed_eye` と同じ。`failed_eye` の無い古い calib_result.json は、失敗なら `LR`）、`message` / `message_en`、目ごとの `[左, 右]` で `pupil_frames`（普段の段で瞳が見えたフレーム）・`normal_frames`（普段の段のフレーム）・`pupil_x` / `pupil_y`（普段の段の瞳の位置の中央値、px）・`window`（瞳を探した枠の左右 `[[左目の左, 左目の右], [右目の左, 右目の右]]`）・`fps`（その校正のときのカメラの毎秒の枚数）。無い値は `null`。途中で止めた校正もここに入る（`ok` false、`message` は `途中で止めた`） |
 | `last_error`, `last_error_en`, `last_error_unix` | string / string / number | 直近に `state` が `error` になったときの `message`（とその英語）と時刻（UNIX 秒）。`state` が戻っても残る。まだ無ければ `""` と 0 |
+| `lid_veto` | object | まぶたの拒否権（下の「まぶたの拒否権」）。`on`（settings.json の `lid_veto`。既定 false）、`runs_per_s`（CNN を回した回数、両目で直近 1 秒の毎秒）、`fired`（拒否権を出した回数）、`ms_mean` / `ms_max`（CNN 1 回の時間の平均と最大、ms）。`fired` と時間はライブ処理が始まってから数える。このフィールドがない古い eyecam-rec もある |
 | `driftlog` | object | ドリフトの記録（下の「ドリフトの記録」）。`on`（記録中。`driftlog on` から `off` まで）、`path`（書いているファイル。`off` のあとは最後のファイル。まだ一度も無ければ `""`）、`rows`（書いた行数）、`bytes`（ファイルの大きさ）、`full`（50 MB に達したのでそれ以上書いていない。`on` のまま）、`error`（書けなくなった理由。ふつうは `""`）。このフィールドがない古い eyecam-rec もある |
 | `pid` | int | デーモンのプロセス ID |
 | `updated_unix` | number | 書いた時刻（UNIX 秒） |
@@ -533,14 +535,17 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
 {
   "version": 1,
   "widen_sensitivity": 0.5,
-  "dev": false
+  "dev": false,
+  "lid_veto": false
 }
 ```
 
-- `widen_sensitivity`: 見開きの感度 0〜1（パネルの `set widen_sensitivity` が書く。下の「見開きの感度」）。書くときは `dev` はそのまま残す
+- `widen_sensitivity`: 見開きの感度 0〜1（パネルの `set widen_sensitivity` が書く。下の「見開きの感度」）。書くときは `dev` と `lid_veto` はそのまま残す
 - `dev`: 開発者モード（既定 false）。**手で書き換える**（ctl のコマンドはない）。true のときだけ、校正（`calib wear` / `calib user`）でも
   録画と同じく目の映像（`eye_L.raw`, `eye_R.raw`, `headers.bin`, `lock_dump.bin`）を残す。status.json の `dev` に出る。
   起動中に書き換えても、status.json には次の書き直しで、校正には次の校正から効く
+- `lid_veto`: まぶたの拒否権（既定 false。下の「まぶたの拒否権」）。**手で書き換える**（パネルの UI も ctl のコマンドもない）。
+  true で拒否権が入り、false（と true 以外の値）では古典の値だけになる。起動中に書き換えても、0.1 秒ほどで次のフレームから効く。status.json の `lid_veto.on` に出る
 
 ### 校正
 
@@ -656,7 +661,7 @@ GaussianBlur とオープニングは OpenCV とビット単位で同じ（`visi
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_A.json --calib-block 4 --out test_A_B.csv
 # 校正なし: 1 回目で基準線を覚えてから最初から流し直す（セッションの前に 30 秒かぶっていたことにする）
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_with_history.json --prewarm --out test_auto.csv
-# 評価用のつまみ: --no-track（追従しない）、--no-gaze-drop（下を見たときの保持なし）、--no-edge-hold（枠の端で見失った瞳も閉じたにする。CSV の edge_held 列で保持したフレーム）、--no-ext-search（枠の外を探さない。CSV の search_x_min 列が広げた左端、ext 列が 1 なら広げた探索の瞳、2 なら取らなかった瞳）、--wide-curve 0.25,0.5（見開きの曲線）、--widen-sensitivity 0.8（感度で曲線を決める）
+# 評価用のつまみ: --no-track（追従しない）、--no-gaze-drop（下を見たときの保持なし）、--no-edge-hold（枠の端で見失った瞳も閉じたにする。CSV の edge_held 列で保持したフレーム）、--no-ext-search（枠の外を探さない。CSV の search_x_min 列が広げた左端、ext 列が 1 なら広げた探索の瞳、2 なら取らなかった瞳）、--wide-curve 0.25,0.5（見開きの曲線）、--widen-sensitivity 0.8（感度で曲線を決める）、--lid-veto（まぶたの拒否権あり。既定はライブと同じでなし。--no-lid-veto は古い評価スクリプト用に残してある。CSV の veto_p 列が CNN の P(open)〔回さなかったフレームは空〕、vetoed 列が 1 なら拒否権を出したフレーム）
 python eval_live.py DIR   # DIR の test_r*_t*.csv を xwear.py と同じ指標で集計（フレームレートは t_cam から測る）
 # 遅いカメラのふり: 15 fps の刻みにいちばん近いフレームだけを使う（90 fps の録画なら 6 枚に 1 枚。目の画像はコピーしない）
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --resample 15 --user-calib calib_A.json --calib-block 4 --out test_A_B_15.csv
@@ -799,6 +804,29 @@ lead_in・close・normal・widen）で wear 校正して、残りの段（step >
 - 曲線を書いていない行は 40%〜100%（70% で 0.5）で測った
 - 閉眼の正解率 0.994、bright/dark 中に閉眼と出た割合 0.003、瞳孔 AUROC 0.992 はどの条件でも同じ
 - この長さ（1〜3 分）では追従のあり/なしの差はほとんどない（追従は、かぶっている間に HMD がずれていくのに備えるもの）
+
+### まぶたの拒否権（`lid_veto`、2026-10-17）
+
+耳側を大きく見ると、まぶたやまつげが瞳にかかって開きが狭く読め、古典の EyeLid が 0.5 を切る（開いているのに半目）。
+そこで古典を主にしたまま、`src/veto.rs` の小さな CNN に「開いている」と言えるときだけ低い EyeLid を取り消させる。
+
+**既定は切ってある**（settings.json の `lid_veto` を true にしたときだけ動く）。学習に使ったのは 1 人分の録画だけで、
+切り抜く位置もフレームの決まった場所なので、ほかの人の目でどう動くかはまだ確かめていない。
+
+- 回すのは、古典の EyeLid < 0.5 か閉じのフレームだけ。入力は正立したフレームの x 150〜360・y 40〜360 を 32×32 に平均したもの。
+  3×3 畳み込み 8 層（4〜32 チャネル）を 5 本、logit の平均
+- P(open) ≥ 0.98 が 3 フレーム（閉じのときは 10 フレーム）続いたら、EyeLid を 0.75 以上に上げ、EyeSquint を 0、閉じを外す。
+  EyeWide はそのまま。エンジンの中の状態（基準線・保持・前の値）には入れないので、出す値しか変わらない
+- 重みは `models/veto_S32c4x5.bin`（f32 92,385 個、`include_bytes!` で埋め込む）。SIMD なしの素朴なループ、crate は増やしていない
+- 1 回の時間（1 スレッド）: A720 で平均 0.6〜0.75 ms（中央値 0.59、p95 0.8〜1.6）、X4 で 0.36 ms。
+  自由使用では片目 1 秒に約 10 回なので、両目で 1 コアの 1〜2%。閉じたままや耳側を見続けると毎フレーム回る（両目で 1 コアの約 13%）
+- 録画 26 本（自由使用 11 本、合図・校正 15 本）を拒否権あり・なしで流した結果（日ごとの校正、基準線は種まき）:
+  - 自由使用で誤った半目: 5.5% → 2.9%、耳側 20° 超 18.2% → 1.4%
+  - 閉じ 0.973、細め 0.879、見開き 0.878 は変わらない。下を見た段の半目 1.2% → 0.2%
+  - まばたき: 自由使用 475 回のうち、古典が拾ったきれいなまばたきは 1 つも失わず、遅れも 0 フレーム（失ったのは、まばたきの前から
+    古典が低かった 1 回だけ）。合図の 40 回も同じ
+  - 取り消さなかったフレームの出力と、EyeWide・瞳はすべて、拒否権なしとバイト単位で同じ。校正の流し直しの結果も同じ
+  - 重みはこの録画も含めて学習したもの。日ごとに抜いて学習した 5 本で同じ規則を当てると 3.0% / 1.4%、細め −0.1 pt で、ほぼ同じ
 
 ### 見開きの感度（`widen_sensitivity`）
 

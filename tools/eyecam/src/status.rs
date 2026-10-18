@@ -418,6 +418,8 @@ pub enum Command {
     Live(bool),
     /// `set widen_sensitivity <0..1>`: answered by the control thread itself, in every state.
     SetWidenSensitivity(f64),
+    /// `set lid_veto on|off`: the eyelid veto, answered by the control thread itself, in every state.
+    SetLidVeto(bool),
     /// `preview on` / `preview off`: the panel's eye preview, answered by the control thread itself, in every state.
     Preview(bool),
     /// `driftlog on [<stem>]`: start the drift log (`driftlog`), answered by the control thread itself, in every state;
@@ -433,6 +435,9 @@ pub enum Command {
 
 /// The reply to `driftlog on <stem>` with a stem that isn't an eye log's name.
 pub const DRIFTLOG_BAD_NAME: &str = "ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で";
+
+/// The reply to `set lid_veto` with anything but on or off.
+pub const LID_VETO_BAD_VALUE: &str = "lid_veto は on か off で";
 
 /// Parse one control line. Protocol names are 1-32 of [A-Za-z0-9_-], so they can never name a path.
 pub fn parse_command(line: &str) -> Result<Command, String> {
@@ -466,6 +471,11 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             let v = words.next().and_then(|w| w.parse::<f64>().ok()).filter(|v| (0.0..=1.0).contains(v));
             Command::SetWidenSensitivity(v.ok_or("widen_sensitivity は 0 から 1 の数で")?)
         }
+        (Some("set"), Some("lid_veto")) => match words.next() {
+            Some("on") => Command::SetLidVeto(true),
+            Some("off") => Command::SetLidVeto(false),
+            _ => return Err(LID_VETO_BAD_VALUE.into()),
+        },
         _ => return Err("知らないコマンド".into()),
     };
     if words.next().is_some() {
@@ -520,6 +530,12 @@ mod tests {
         for bad in ["set widen_sensitivity", "set widen_sensitivity 1.5", "set widen_sensitivity x", "set widen_sensitivity 0.5 1", "set foo 1"] {
             assert!(parse_command(bad).is_err(), "{bad}");
         }
+        assert_eq!(parse_command("set lid_veto on\n"), Ok(Command::SetLidVeto(true)));
+        assert_eq!(parse_command(" set lid_veto off"), Ok(Command::SetLidVeto(false)));
+        for bad in ["set lid_veto", "set lid_veto true", "set lid_veto 1", "set lid_veto ON"] {
+            assert_eq!(parse_command(bad), Err(LID_VETO_BAD_VALUE.into()), "{bad}");
+        }
+        assert_eq!(parse_command("set lid_veto on now"), Err("知らないコマンド".into()));
         for bad in ["start ../x", "start a/b", "start .", "start a b", "stop now", "", "rm"] {
             assert!(parse_command(bad).is_err(), "{bad}");
         }

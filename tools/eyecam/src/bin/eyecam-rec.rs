@@ -486,7 +486,7 @@ impl StatusFile {
             let settings = self.settings.lock().unwrap().get();
             s.dev = settings.dev;
             if let Some(l) = &self.live {
-                // lid_veto is edited by hand: the worker picks it up from here, on its next frame.
+                // lid_veto may be edited by hand: the worker picks it up from here, on its next frame.
                 l.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
                 s.lid_veto = status::LidVeto {
                     on: settings.lid_veto,
@@ -650,14 +650,31 @@ fn ctl_loop(
 /// without waiting for the main thread. The fake daemon (no live engine) shows it but saves nothing.
 fn set_widen_sensitivity(v: f64, status: &Mutex<Status>, file: &StatusFile) -> String {
     if let Some(l) = &file.live {
-        // Keep the rest of the file (`dev`) as it is.
-        let path = settings::path();
-        if let Err(e) = (Settings { widen_sensitivity: v, ..Settings::load(&path) }).save(&path) {
+        // Keep the rest of the file (`dev`, `lid_veto`) as it is.
+        if let Err(e) = Settings::update(&settings::path(), |s| s.widen_sensitivity = v) {
             return format!("err 保存できなかった: {e}");
         }
         l.set_widen_sensitivity(v);
     }
     status.lock().unwrap().widen_sensitivity = v;
+    "ok".into()
+}
+
+/// `set lid_veto on|off`: the eyelid veto, done here in every state like `set widen_sensitivity`: saved in
+/// settings.json (the rest of the file kept) and handed to the worker at once. The fake daemon (no live engine) shows
+/// it but saves nothing.
+fn set_lid_veto(on: bool, status: &Mutex<Status>, file: &StatusFile) -> String {
+    if let Some(l) = &file.live {
+        let path = settings::path();
+        if let Err(e) = Settings::update(&path, |s| s.lid_veto = on) {
+            return format!("err 保存できなかった: {e}");
+        }
+        // status.json follows the file (a hand edit too): read it again on the next write, even if its time stamp
+        // didn't move
+        *file.settings.lock().unwrap() = settings::Watch::new(path);
+        l.lid_veto.store(on, Ordering::Relaxed);
+    }
+    status.lock().unwrap().lid_veto.on = on;
     "ok".into()
 }
 
@@ -719,6 +736,7 @@ fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx:
             status.lock().unwrap().to_json(unix_now(), std::process::id())
         }
         Ok(Command::SetWidenSensitivity(v)) => set_widen_sensitivity(v, status, file),
+        Ok(Command::SetLidVeto(on)) => set_lid_veto(on, status, file),
         Ok(Command::Preview(on)) => set_preview(on, file),
         Ok(Command::DriftLogOn(stem)) => set_driftlog(true, stem.as_deref(), file),
         Ok(Command::DriftLogOff) => set_driftlog(false, None, file),
@@ -1022,7 +1040,11 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                     continue;
                 }
                 // Answered by the control thread; never sent here.
-                Command::SetWidenSensitivity(_) | Command::Preview(_) | Command::DriftLogOn(_) | Command::DriftLogOff => {
+                Command::SetWidenSensitivity(_)
+                | Command::SetLidVeto(_)
+                | Command::Preview(_)
+                | Command::DriftLogOn(_)
+                | Command::DriftLogOff => {
                     answer(req, "ok");
                     continue;
                 }

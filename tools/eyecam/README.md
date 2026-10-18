@@ -213,6 +213,7 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `relearn` | `ok`（普段の目を覚え直す: 自動の基準線の覚え始め〔`WARMUP_S` = 30 秒〕を両目でもう一度する。status.json は `baseline` が `warming`・`warmup_remaining_s` が 30 から数え直しになる。もう覚えていた目は、新しい値を覚え終わるまで前の値をそのまま使い〔`calib_state` の 4 もそのまま〕、覚え終わったら 2 秒〔`RELEARN_RAMP_S`〕かけて新しい値に移る。覚えている途中にもう一度送ると、新しい覚え始めだけやり直す〔前の値は使い続ける〕。まだ覚えていない目〔かぶってすぐなど〕は、かぶり直したときと同じく最初から覚え、`calib_state` の 4 が落ちる）または `err <理由>`。かぶり直しと違って、このかぶりの `calib wear` の値（`calib_state` の 1）、`calib.json` と履歴（書き換えない）、目ごとに覚えた形（レンズの縁・探す範囲・虹彩の半径・閉じた目の見分け）、ふだんの視線の上下、瞳孔の左右の見比べはそのまま。覚え直している 30 秒も、前の値のある目は `eye_lid`・`eye_wide`・`eye_squint` がふだんどおり出る（前の値のない目は、ほかの覚え始めと同じく `eye_wide`・`eye_squint` が 0。まばたきはどちらも出る）。`idle` で目の映像が来ているときだけ: ライブ処理がオフなら `err 目の値を出していないので、普段の目を覚え直せない`、映像が来ていなければ `err 目の映像が来ていないので、普段の目を覚え直せない` |
 | `preview on` / `preview off` | `ok`。パネルの目のプレビューの映像（下の「目のプレビュー」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は 3 秒だけ効くので、映像を見ているあいだは 1 秒ごとに送り直す（送り直しが止まれば、フレームが来ていなくても 3 秒で止まる）。`off` ですぐ止まる。run フォルダが tmpfs でなければ `on` は `err 目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ` |
 | `set widen_sensitivity <0〜1>` | `ok` または `err widen_sensitivity は 0 から 1 の数で`。見開きの感度（下の「見開きの感度」）。**どの state でもすぐ受け付けてすぐ返る**（スライダーを動かしながら送ってよい）。すぐにライブの値に効き、`~/.config/eyecam/settings.json` に保存される（新しいファイルに書いて rename）。次に起動したときもその値。保存できなければ `err 保存できなかった: …` |
+| `set lid_veto on` / `set lid_veto off` | `ok` または `err lid_veto は on か off で`。まぶたの拒否権（下の「まぶたの拒否権」）。**どの state でもすぐ受け付けてすぐ返る**。すぐにライブの処理に効き（次のフレームから）、`~/.config/eyecam/settings.json` の `lid_veto` に保存される（ほかのキーはそのまま。新しいファイルに書いて rename）。返事が届いた時点で status.json の `lid_veto.on` はもう新しい値。保存できなければ `err 保存できなかった: …` |
 | `driftlog on` / `driftlog on <stem>` / `driftlog off` | `on` は `ok <ファイルのパス>`（例 `ok /home/steamos/eyecam/drift/drift_2026-10-12_13-00-00.csv`）。`<stem>` はパネルの目のログの名前 `eyes_YYYY-MM-DD_HH-MM-SS` だけで、ファイルは `<stem>.eyecam.csv`（例 `ok /home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv`）。その形でない名前は `err ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で`。ファイルが作れなければ `err ドリフトの記録を始められなかった: …`。`off` は `ok`（記録していなくても）。調査用のドリフトの記録（下の「ドリフトの記録」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は毎回新しいファイルを作る（書いている途中のファイルは閉じる） |
 
 `<名前>` は `~/eyecam-src/protocol_<名前>.txt` のこと。英数字・`_`・`-` だけで 1〜32 文字（それ以外は `err プロトコル名に使えない文字がある`）。
@@ -224,7 +225,7 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `searching` / `recording` | `err 録画中` | `ok` | `err 録画中`（`relearn` も） |
 | `calibrating` | `err 校正中` | `ok` | `err 校正中`（`relearn` も） |
 
-`set widen_sensitivity` と `preview on` / `preview off` と `driftlog on` / `driftlog off` は上の表に関係なく、どの state（`waiting_fds` も）でも答える。
+`set widen_sensitivity` と `set lid_veto` と `preview on` / `preview off` と `driftlog on` / `driftlog off` は上の表に関係なく、どの state（`waiting_fds` も）でも答える。
 
 そのほかの返事: `err 知らないコマンド`、`err 応答がない`（10 秒以内に処理されなかった。ふつうは起きない）。
 
@@ -248,7 +249,7 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 `--fake-camfps N` でカメラの速さ（`cam_fps`。見えているときだけ）を変える。fake の校正の枚数（N fps での普段の段 5.4 秒と、要る数）も
 それに合わせ、60 未満で失敗すると本物と同じく「。カメラの映像が毎秒 N 枚しか届いていない」が付く。
 `last_calib` は fake の `calib wear` が終わると、作った数字で入る（`--fake-calib` の目は瞳が 12 フレームで位置が `null`）。
-`set widen_sensitivity` は status.json の `widen_sensitivity` に出るだけで、settings.json には書かない（`dev` だけは本物と同じく settings.json から読んで出す）。
+`set widen_sensitivity` は status.json の `widen_sensitivity` に、`set lid_veto` は `lid_veto.on` に出るだけで、settings.json には書かない（`dev` だけは本物と同じく settings.json から読んで出す）。
 共有メモリ `live` は作らない。`preview on` / `off` には `ok` と答えるが、映像は作らない（`preview` は false のまま）。
 終了すると `state: "stopped"` を書く。`--run-dir` を省くと本物と同じ `/run/user/1000/eyecam/` を使う（本物の `--serve` と同時には動かせない）。
 
@@ -544,8 +545,8 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
 - `dev`: 開発者モード（既定 false）。**手で書き換える**（ctl のコマンドはない）。true のときだけ、校正（`calib wear` / `calib user`）でも
   録画と同じく目の映像（`eye_L.raw`, `eye_R.raw`, `headers.bin`, `lock_dump.bin`）を残す。status.json の `dev` に出る。
   起動中に書き換えても、status.json には次の書き直しで、校正には次の校正から効く
-- `lid_veto`: まぶたの拒否権（既定 false。下の「まぶたの拒否権」）。**手で書き換える**（パネルの UI も ctl のコマンドもない）。
-  true で拒否権が入り、false（と true 以外の値）では古典の値だけになる。起動中に書き換えても、0.1 秒ほどで次のフレームから効く。status.json の `lid_veto.on` に出る
+- `lid_veto`: まぶたの拒否権（既定 false。下の「まぶたの拒否権」）。パネルの `set lid_veto on|off` が書く（手で書き換えてもよい）。
+  書くときは `widen_sensitivity` と `dev` はそのまま残す。true で拒否権が入り、false（と true 以外の値）では古典の値だけになる。起動中に書き換えても、0.1 秒ほどで次のフレームから効く。status.json の `lid_veto.on` に出る
 
 ### 校正
 
@@ -810,7 +811,8 @@ lead_in・close・normal・widen）で wear 校正して、残りの段（step >
 耳側を大きく見ると、まぶたやまつげが瞳にかかって開きが狭く読め、古典の EyeLid が 0.5 を切る（開いているのに半目）。
 そこで古典を主にしたまま、`src/veto.rs` の小さな CNN に「開いている」と言えるときだけ低い EyeLid を取り消させる。
 
-**既定は切ってある**（settings.json の `lid_veto` を true にしたときだけ動く）。学習に使ったのは 1 人分の録画だけで、
+**既定は切ってある**（settings.json の `lid_veto` を true にしたときだけ動く。パネルのまぶたタブの「半目の読み直し（AI）」、
+つまり `set lid_veto on|off` で入れたり切ったりできる）。学習に使ったのは 1 人分の録画だけで、
 切り抜く位置もフレームの決まった場所なので、ほかの人の目でどう動くかはまだ確かめていない。
 
 - 回すのは、古典の EyeLid < 0.5 か閉じのフレームだけ。入力は正立したフレームの x 150〜360・y 40〜360 を 32×32 に平均したもの。

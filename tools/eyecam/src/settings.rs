@@ -1,5 +1,5 @@
-//! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity` is changed from the panel
-//! (`set ...` on ctl.sock), `dev` and `lid_veto` only by hand.
+//! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity` and `lid_veto` are changed from the
+//! panel (`set ...` on ctl.sock; `lid_veto` by hand too), `dev` only by hand.
 
 use crate::json::{self, Json};
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ pub struct Settings {
     /// Developer mode: calibrations also keep their eye images (eye_*.raw, headers.bin, lock_dump.bin), as
     /// recordings do. Off for ordinary users, whose calibrations keep only the small text files.
     pub dev: bool,
-    /// The eyelid veto (`veto`): off unless switched on here (followed while running).
+    /// The eyelid veto (`veto`): off unless switched on here (`set lid_veto`, or by hand; followed while running).
     pub lid_veto: bool,
 }
 
@@ -65,6 +65,13 @@ impl Settings {
         std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
     }
+
+    /// Change one setting in `path` (a `set ...` from ctl.sock), keeping the others as the file has them.
+    pub fn update(path: &Path, change: impl FnOnce(&mut Settings)) -> Result<(), String> {
+        let mut s = Settings::load(path);
+        change(&mut s);
+        s.save(path)
+    }
 }
 
 /// The settings file, read again whenever its modification time changes (so a hand edit of `dev` shows without a
@@ -106,6 +113,25 @@ mod tests {
         assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.75, dev: true, lid_veto: false });
         std::fs::write(&p, "{\"widen_sensitivity\": 3}").unwrap();
         assert_eq!(Settings::load(&p), Settings::default());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_set_keeps_the_other_settings() {
+        let dir = std::env::temp_dir().join(format!("eyecam-settings-set-{}", std::process::id()));
+        let p = dir.join("settings.json");
+        // No file yet: the defaults with the one change
+        Settings::update(&p, |s| s.lid_veto = true).unwrap();
+        assert_eq!(Settings::load(&p), Settings { lid_veto: true, ..Settings::default() });
+        Settings { widen_sensitivity: 0.3, dev: true, lid_veto: true }.save(&p).unwrap();
+        // `set widen_sensitivity` keeps `dev` and `lid_veto`...
+        Settings::update(&p, |s| s.widen_sensitivity = 0.8).unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.8, dev: true, lid_veto: true });
+        // ...and `set lid_veto` keeps `widen_sensitivity` and `dev`, both ways
+        Settings::update(&p, |s| s.lid_veto = false).unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.8, dev: true, lid_veto: false });
+        Settings::update(&p, |s| s.lid_veto = true).unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.8, dev: true, lid_veto: true });
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

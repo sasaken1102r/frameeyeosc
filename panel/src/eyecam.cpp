@@ -1008,6 +1008,18 @@ int partialEye(const Status& status) {
     return -1;
 }
 
+int lookDownDefaultEyes(const Status& status) {
+    if (status.state != State::Idle) return 0;
+    const std::string& message = status.message;
+    const std::string::size_type note = message.find("下を見たときの補正を標準の値にしたよ");
+    if (message.rfind("校正できた（", 0) != 0 || note == std::string::npos) return 0;
+    const std::string eyes = message.substr(0, note);
+    if (eyes.find("両目") != std::string::npos) return kLeftEyeBit | kRightEyeBit;
+    if (eyes.find("左目") != std::string::npos) return kLeftEyeBit;
+    if (eyes.find("右目") != std::string::npos) return kRightEyeBit;
+    return 0;
+}
+
 bool partialProvisional(const Status& status) {
     return status.message.find("仮の値") != std::string::npos;
 }

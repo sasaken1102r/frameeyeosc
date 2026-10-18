@@ -741,6 +741,9 @@ UiText makeJapanese() {
     t.partialNew = "新しく覚えたよ";
     t.partialPrev = "前の値を使うよ";
     t.partialProv = "仮の値を使うよ";
+    t.userPartialPill = "一部は標準の値";
+    t.userPartialEyeBoth = "両目";
+    t.userPartialBodyFormat = "細めは覚えたよ。%sは、下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は標準の値を使うよ";
     t.nextTitle = "次にやること・目のカメラ";
     t.nextPass = "SteamOS の設定で決めてね";
     t.nextWait = "ボタンを押すと始まるよ";
@@ -1696,6 +1699,9 @@ UiText makeEnglish() {
     t.partialNew = "learned now";
     t.partialPrev = "previous values";
     t.partialProv = "provisional values";
+    t.userPartialPill = "Partly standard";
+    t.userPartialEyeBoth = "Both eyes";
+    t.userPartialBodyFormat = "Squinting is learned. %s: looking down couldn't be measured well (lashes, perhaps), so the standard correction is used";
     t.nextTitle = "Next · Eye cameras";
     t.nextPass = "Set it in the SteamOS settings";
     t.nextWait = "It starts with the button";

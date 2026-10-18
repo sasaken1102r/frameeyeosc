@@ -5672,8 +5672,10 @@ void EyePanel::drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& 
     pen.text(kInnerRight, 139, note, 14, kTextMuted, false, true);
     const double cardTop = 158;
     const double cardH = setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, false, true);
-    // (green when it ended well, unless one eye went on its earlier values)
-    const bool partial = !user && eyecam::partialEye(m.eyecam.status) >= 0;
+    // (green when it ended well, unless one eye went on its earlier values, or the user's on the standard look-down
+    // correction)
+    const bool partial =
+        user ? eyecam::lookDownDefaultEyes(m.eyecam.status) != 0 : eyecam::partialEye(m.eyecam.status) >= 0;
     strokeRounded(pen, cardX, cardTop, cardRight - cardX, cardH, 14,
                   screen == eyecam::SetupScreen::Calibrated && !partial ? kSuccess : kAccent, 2);
     setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, true, true);
@@ -6305,7 +6307,13 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
         case SetupScreen::Calibrated: {
             // A calibration from the page ended well: a line on what it learned, and back to the page
             const bool user = calib == eyecam::Calib::User;
-            title(learnName, partial >= 0 ? t.partialPill : t.calibDonePill, partial >= 0 ? kAccent : kSuccess);
+            // (the user's with the standard look-down correction on an eye: its squint learned all the same)
+            const int lookDown = user ? eyecam::lookDownDefaultEyes(s) : 0;
+            title(learnName,
+                  partial >= 0    ? t.partialPill
+                  : lookDown != 0 ? t.userPartialPill
+                                  : t.calibDonePill,
+                  partial >= 0 || lookDown != 0 ? kAccent : kSuccess);
             y += 50;
             if (partial >= 0) {
                 // This wear's without one eye: which, and the calibration again
@@ -6318,7 +6326,14 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             }
             const char* big = user ? t.calibUserDoneTitle : t.calibDoneTitle;
             text(x0, y, big, fitSize(pen, big, 26, 16, w, true), kText, true);
-            para(user ? t.calibUserDoneBody : t.calibDoneBody, 17, kText, false, 38, 26, 2);
+            if (lookDown != 0) {
+                const char* eyes = lookDown == (eyecam::kLeftEyeBit | eyecam::kRightEyeBit) ? t.userPartialEyeBoth
+                                   : lookDown == eyecam::kLeftEyeBit                          ? t.partialEyeLeft
+                                                                                              : t.partialEyeRight;
+                para(formatText(t.userPartialBodyFormat, eyes), 17, kText, false, 38, 26, 3);
+            } else {
+                para(user ? t.calibUserDoneBody : t.calibDoneBody, 17, kText, false, 38, 26, 2);
+            }
             const double by = y + 22;
             const double bh = 46;
             const double bw = std::max(120.0, pen.measure(t.calibDoneButton, 18, true) + 64);

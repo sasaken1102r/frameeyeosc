@@ -364,7 +364,9 @@ void printUsage() {
         "                        \"calib wear\" that went through without that eye, with done or page=...; LR both\n"
         "                        eyes' pupils not seen, mixed a different reason per eye, with calib-error; with\n"
         "                        user too, a failed user calibration's message for each eye), prov\n"
-        "                        (failed=L|R: provisional values, not the previous ones),\n"
+        "                        (failed=L|R: provisional values, not the previous ones), lookdown=L|R|LR (with\n"
+        "                        page=user: the user's calibration went through with the standard look-down\n"
+        "                        correction on that eye, or both),\n"
         "                        search=not_worn|no_video|one_eye (unlocked, and why: the proximity sensor says\n"
         "                        the headset is off, no eye video, or only one eye's; not_worn reads 12),\n"
         "                        prox=V (the proximity reading), blocks=N (changed blocks before the last look;\n"
@@ -471,6 +473,7 @@ struct FakeEyecam {
     double pupil[2] = {0.0, 0.0};  ///< ...their values (NaN = null)
     std::string failed;     ///< "L" / "R" / "LR" / "mixed": calib_failed_eye and its message ("" = none)
     bool provisional = false;  ///< failed=L|R: provisional values (no earlier ones)
+    std::string lookDown;   ///< "L" / "R" / "LR": a user calibration on the standard look-down correction there
     std::string search;     ///< search: why the video isn't found (not_worn / no_video / one_eye; "" = an older
                             ///< eyecam-rec without it, or locked)
     double prox = -1.0;     ///< prox=V: the proximity reading (-1 = as the search says)
@@ -566,6 +569,8 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             if (!parseFakePupil(flag.substr(6), fake)) return false;
         } else if (flag == "failed=L" || flag == "failed=R" || flag == "failed=LR" || flag == "failed=mixed") {
             fake.failed = flag.substr(7);
+        } else if (flag == "lookdown=L" || flag == "lookdown=R" || flag == "lookdown=LR") {
+            fake.lookDown = flag.substr(9);
         } else if (flag == "prov") {
             fake.provisional = true;
         } else if (flag == "search=not_worn" || flag == "search=no_video" || flag == "search=one_eye") {
@@ -1462,6 +1467,15 @@ eyecam::View fakeEyecam(const std::string& text) {
                       (fake.provisional ? "provisional values" : "its previous values") +
                       (widenDefault ? ". Couldn't measure widening, using the usual width" : "") + ") [" + counts(12) +
                       needEn;
+    }
+    if (!fake.lookDown.empty()) {
+        // A user calibration that went through with the standard look-down correction (eyecam-rec's message)
+        const bool both = fake.lookDown == "LR";
+        const bool left = fake.lookDown == "L";
+        s.message = std::string("校正できた（") + (both ? "両目とも" : left ? "左目は" : "右目は") +
+                    "下を見たときの補正を標準の値にしたよ）";
+        s.messageEn = std::string("Calibrated (") + (both ? "Both eyes" : left ? "Left eye" : "Right eye") +
+                      ": using the standard correction for looking down)";
     }
     if (fake.message == 2) s.messageEn.clear();
     // The diagnostics: the proximity threshold, the last look (as eyecam-rec's own --fake makes it), the last wear

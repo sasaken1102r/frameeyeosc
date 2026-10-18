@@ -2379,6 +2379,25 @@ void testPupils() {
         s.calibFailedEye = "";
         CHECK(eyecam::partialEye(s) == -1);
     }
+    // A user calibration that went through with the standard look-down correction on an eye (its squint learned)
+    {
+        Status s;
+        s.state = State::Idle;
+        s.message = "校正できた（右目は下を見たときの補正を標準の値にしたよ）";
+        CHECK(eyecam::lookDownDefaultEyes(s) == eyecam::kRightEyeBit);
+        s.message = "校正できた（左目は下を見たときの補正を標準の値にしたよ）。注意: 左右の差が大きい [細め 0.27]";
+        CHECK(eyecam::lookDownDefaultEyes(s) == eyecam::kLeftEyeBit);
+        s.message = "校正できた（両目とも下を見たときの補正を標準の値にしたよ）";
+        CHECK(eyecam::lookDownDefaultEyes(s) == (eyecam::kLeftEyeBit | eyecam::kRightEyeBit));
+        // (all of it measured, a failure, or the next run)
+        s.message = "校正できた（ユーザー）。注意: 左右の差が大きい [下を見たとき 0.39、細め 0.08]";
+        CHECK(eyecam::lookDownDefaultEyes(s) == 0);
+        s.message = "右目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）[1.43 / 普段 1.44]";
+        CHECK(eyecam::lookDownDefaultEyes(s) == 0);
+        s.message = "校正できた（右目は下を見たときの補正を標準の値にしたよ）";
+        s.state = State::Calibrating;
+        CHECK(eyecam::lookDownDefaultEyes(s) == 0);
+    }
 }
 
 void testSearch() {

@@ -1023,6 +1023,15 @@ int failedEyes(const Status& status);
 int partialEye(const Status& status);
 
 /**
+ * The eyes a "calib user" went through with the standard look-down correction (their look down couldn't be
+ * measured, e.g. long lashes read as the lid; their squint was): eyecam-rec's (Japanese) message says
+ * "校正できた（右目は下を見たときの補正を標準の値にしたよ）", "両目とも..." for both.
+ * @param status the status (only an idle one, right after it)
+ * @return kLeftEyeBit | kRightEyeBit, or 0
+ */
+int lookDownDefaultEyes(const Status& status);
+
+/**
  * Whether partialEye's eye got provisional values (there were no earlier ones): eyecam-rec's message says "仮の値".
  * @param status the status
  * @return true for provisional, false for its previous values

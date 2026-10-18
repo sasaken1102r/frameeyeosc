@@ -750,6 +750,9 @@ struct UiText {
     const char* partialNew;  ///< ...rows: the eye that went through
     const char* partialPrev;  ///< ...the other one: its earlier values
     const char* partialProv;  ///< ...or provisional ones
+    const char* userPartialPill;  ///< "calib user" went through with the standard look-down correction on an eye: the pill
+    const char* userPartialEyeBoth;  ///< ...both eyes, in its body (partialEyeLeft / partialEyeRight for one)
+    const char* userPartialBodyFormat;  ///< ...its body: "%s" (the eyes) look down with the standard correction
     const char* nextTitle;  ///< the left column while not set up: its card
     const char* nextPass;  ///< ...what (1) is about
     const char* nextWait;  ///< ...(3) before its button

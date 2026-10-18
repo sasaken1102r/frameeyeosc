@@ -172,6 +172,16 @@ Status parseStatus(const std::string& text, double mtime) {
     status.setupDone = status.hasSetupDone && setup->boolean;
     status.lastCalibWiden = readText(root, "last_calib_widen");
     status.calibFailedEye = readText(root, "calib_failed_eye");
+    // The eyes of the last user calibration on the standard look-down correction, [left, right] (missing on an older
+    // eyecam-rec: its message says it)
+    if (const JsonValue* eyes = root.get("user_look_down_default");
+        eyes != nullptr && eyes->isArray() && eyes->items.size() == 2) {
+        status.hasUserLookDownDefault = true;
+        for (int eye = 0; eye < 2; ++eye) {
+            const JsonValue& value = eyes->items[eye];
+            if (value.isBool() && value.boolean) status.userLookDownDefault |= eye == 0 ? kLeftEyeBit : kRightEyeBit;
+        }
+    }
     // The pupils (missing on an older eyecam-rec: "locked" alone says whether the eyes are seen)
     status.hasPupil = root.get("pupil_l") != nullptr || root.get("pupil_r") != nullptr;
     const char* const pupilKeys[2] = {"pupil_l", "pupil_r"};
@@ -838,6 +848,7 @@ std::string signature(const View& view) {
            rounded(s.widenSensitivity, 0.01) + std::to_string(s.hasLidVeto) + std::to_string(s.lidVeto) + "|" +
            std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
            std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.calibFailedEye + "|" +
+           std::to_string(s.hasUserLookDownDefault) + std::to_string(s.userLookDownDefault) + "|" +
            std::to_string(s.hasPupil) + std::to_string(static_cast<int>(eyeSight(s, 0))) +
            std::to_string(static_cast<int>(eyeSight(s, 1))) + "|" +
            // (the setup shows the cameras' rate only while it is low, as a whole number)
@@ -1010,6 +1021,7 @@ int partialEye(const Status& status) {
 
 int lookDownDefaultEyes(const Status& status) {
     if (status.state != State::Idle) return 0;
+    if (status.hasUserLookDownDefault) return status.userLookDownDefault;
     const std::string& message = status.message;
     const std::string::size_type note = message.find("下を見たときの補正を標準の値にしたよ");
     if (message.rfind("校正できた（", 0) != 0 || note == std::string::npos) return 0;

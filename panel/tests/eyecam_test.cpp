@@ -2398,6 +2398,22 @@ void testPupils() {
         s.state = State::Calibrating;
         CHECK(eyecam::lookDownDefaultEyes(s) == 0);
     }
+    // ...as a newer eyecam-rec says it in status.json (then the message isn't read)
+    {
+        Status s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": \"校正できた（ユーザー）\", "
+                                       "\"user_look_down_default\": [true, false]}",
+                                       kNow);
+        CHECK(s.hasUserLookDownDefault && eyecam::lookDownDefaultEyes(s) == eyecam::kLeftEyeBit);
+        s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": "
+                                "\"校正できた（右目は下を見たときの補正を標準の値にしたよ）\", "
+                                "\"user_look_down_default\": [false, false]}",
+                                kNow);
+        CHECK(s.hasUserLookDownDefault && eyecam::lookDownDefaultEyes(s) == 0);
+        s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": "
+                                "\"校正できた（右目は下を見たときの補正を標準の値にしたよ）\"}",
+                                kNow);
+        CHECK(!s.hasUserLookDownDefault && eyecam::lookDownDefaultEyes(s) == eyecam::kRightEyeBit);
+    }
 }
 
 void testSearch() {

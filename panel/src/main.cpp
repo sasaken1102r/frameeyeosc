@@ -1476,6 +1476,10 @@ eyecam::View fakeEyecam(const std::string& text) {
                     "下を見たときの補正を標準の値にしたよ）";
         s.messageEn = std::string("Calibrated (") + (both ? "Both eyes" : left ? "Left eye" : "Right eye") +
                       ": using the standard correction for looking down)";
+        s.hasUserLookDownDefault = true;
+        s.userLookDownDefault = both ? (eyecam::kLeftEyeBit | eyecam::kRightEyeBit)
+                                : left ? eyecam::kLeftEyeBit
+                                       : eyecam::kRightEyeBit;
     }
     if (fake.message == 2) s.messageEn.clear();
     // The diagnostics: the proximity threshold, the last look (as eyecam-rec's own --fake makes it), the last wear

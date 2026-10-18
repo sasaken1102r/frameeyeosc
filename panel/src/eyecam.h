@@ -240,6 +240,9 @@ struct Status {
     std::string calibFailedEye;    ///< "calib_failed_eye": "L" / "R" (that eye's part of the last "calib wear" failed:
                                    ///< it went through, that eye on its earlier or provisional values), "LR" (both:
                                    ///< it failed), "" (none, or an eyecam-rec before it)
+    bool hasUserLookDownDefault = false;  ///< "user_look_down_default" is there (a newer eyecam-rec)
+    int userLookDownDefault = 0;   ///< ...the eyes (kLeftEyeBit | kRightEyeBit) the last "calib user" of eyecam-rec's
+                                   ///< run went through with the standard look-down correction on (0: none)
     bool hasPupil = false;         ///< "pupil_l" / "pupil_r" are there (a newer eyecam-rec that says whether it finds
                                    ///< the pupils; without them "locked" is all there is)
     double pupil[2] = {0.0, 0.0};  ///< per eye (left, right), the share of the last 2 s of frames with the pupil found,
@@ -1024,8 +1027,9 @@ int partialEye(const Status& status);
 
 /**
  * The eyes a "calib user" went through with the standard look-down correction (their look down couldn't be
- * measured, e.g. long lashes read as the lid; their squint was): eyecam-rec's (Japanese) message says
- * "校正できた（右目は下を見たときの補正を標準の値にしたよ）", "両目とも..." for both.
+ * measured, e.g. long lashes read as the lid; their squint was): status.json's "user_look_down_default", or from an
+ * eyecam-rec before it, its (Japanese) message "校正できた（右目は下を見たときの補正を標準の値にしたよ）" ("両目とも..."
+ * for both).
  * @param status the status (only an idle one, right after it)
  * @return kLeftEyeBit | kRightEyeBit, or 0
  */

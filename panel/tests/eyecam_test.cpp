@@ -818,6 +818,36 @@ void testSensitivity() {
         SAME(eyecam::signature(a), eyecam::signature(b));
     }
 
+    // The eyelid veto: lid_veto.on from status.json; missing (an older eyecam-rec: no switch) or not a bool is none
+    {
+        const char* full = "{\"state\": \"idle\", \"lid_veto\": {\"on\": true, \"runs_per_s\": 4.2, \"fired\": 12, "
+                           "\"ms_mean\": 0.52, \"ms_max\": 1.31}}";
+        const Status on = eyecam::parseStatus(full, kNow);
+        CHECK(on.hasLidVeto && on.lidVeto);
+        const Status off = eyecam::parseStatus("{\"state\": \"waiting_fds\", \"lid_veto\": {\"on\": false}}", kNow);
+        CHECK(off.hasLidVeto && !off.lidVeto);
+        for (const char* bad : {"{\"state\": \"idle\"}", "{\"state\": \"idle\", \"lid_veto\": true}",
+                                "{\"state\": \"idle\", \"lid_veto\": {}}", "{\"state\": \"idle\", \"lid_veto\": null}",
+                                "{\"state\": \"idle\", \"lid_veto\": {\"on\": 1}}",
+                                "{\"state\": \"idle\", \"lid_veto\": {\"on\": \"true\"}}"}) {
+            const Status none = eyecam::parseStatus(bad, kNow);
+            CHECK(!none.hasLidVeto && !none.lidVeto);
+        }
+        // The command, which starts no run and isn't the sensitivity's
+        SAME(eyecam::lidVetoCommand(true), "set lid_veto on");
+        SAME(eyecam::lidVetoCommand(false), "set lid_veto off");
+        CHECK(eyecam::runOfCommand(eyecam::lidVetoCommand(true)) == eyecam::Run::None);
+        CHECK(!eyecam::isSensitivityCommand(eyecam::lidVetoCommand(false)));
+        // The redraw follows it
+        eyecam::View a;
+        a.status = off;
+        eyecam::View b = a;
+        b.status.lidVeto = true;
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+        b.status = eyecam::parseStatus("{\"state\": \"waiting_fds\"}", kNow);
+        CHECK(eyecam::signature(a) != eyecam::signature(b));
+    }
+
     // Sending: on release always; while dragged at most every kSensitivitySendSec and only when it moved; never
     // while another command is out (the newest value waits)
     {
@@ -2348,6 +2378,66 @@ void testPupils() {
         CHECK(eyecam::partialEye(s) == -1);
         s.calibFailedEye = "";
         CHECK(eyecam::partialEye(s) == -1);
+    }
+    // A user calibration that went through with the standard look-down correction on an eye (its squint learned)
+    {
+        Status s;
+        s.state = State::Idle;
+        s.message = "校正できた（右目は下を見たときの補正を標準の値にしたよ）";
+        CHECK(eyecam::lookDownDefaultEyes(s) == eyecam::kRightEyeBit);
+        s.message = "校正できた（左目は下を見たときの補正を標準の値にしたよ）。注意: 左右の差が大きい [細め 0.27]";
+        CHECK(eyecam::lookDownDefaultEyes(s) == eyecam::kLeftEyeBit);
+        s.message = "校正できた（両目とも下を見たときの補正を標準の値にしたよ）";
+        CHECK(eyecam::lookDownDefaultEyes(s) == (eyecam::kLeftEyeBit | eyecam::kRightEyeBit));
+        // (all of it measured, a failure, or the next run)
+        s.message = "校正できた（ユーザー）。注意: 左右の差が大きい [下を見たとき 0.39、細め 0.08]";
+        CHECK(eyecam::lookDownDefaultEyes(s) == 0);
+        s.message = "右目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）[1.43 / 普段 1.44]";
+        CHECK(eyecam::lookDownDefaultEyes(s) == 0);
+        s.message = "校正できた（右目は下を見たときの補正を標準の値にしたよ）";
+        s.state = State::Calibrating;
+        CHECK(eyecam::lookDownDefaultEyes(s) == 0);
+    }
+    // ...as a newer eyecam-rec says it in status.json (then the message isn't read)
+    {
+        Status s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": \"校正できた（ユーザー）\", "
+                                       "\"user_look_down_default\": [true, false]}",
+                                       kNow);
+        CHECK(s.hasUserLookDownDefault && eyecam::lookDownDefaultEyes(s) == eyecam::kLeftEyeBit);
+        s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": "
+                                "\"校正できた（右目は下を見たときの補正を標準の値にしたよ）\", "
+                                "\"user_look_down_default\": [false, false]}",
+                                kNow);
+        CHECK(s.hasUserLookDownDefault && eyecam::lookDownDefaultEyes(s) == 0);
+        s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": "
+                                "\"校正できた（右目は下を見たときの補正を標準の値にしたよ）\"}",
+                                kNow);
+        CHECK(!s.hasUserLookDownDefault && eyecam::lookDownDefaultEyes(s) == eyecam::kRightEyeBit);
+    }
+    // ...and the eyes on the previous user calibration's look-down correction (status.json only: an eyecam-rec
+    // before it never kept it)
+    {
+        Status s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": "
+                                       "\"校正できた（左目は下を見たときの補正を前の値のままにしたよ。"
+                                       "右目は下を見たときの補正を標準の値にしたよ）\", "
+                                       "\"user_look_down_default\": [false, true], "
+                                       "\"user_look_down_previous\": [true, false]}",
+                                       kNow);
+        CHECK(s.hasUserLookDownPrevious && eyecam::lookDownPreviousEyes(s) == eyecam::kLeftEyeBit);
+        CHECK(eyecam::lookDownDefaultEyes(s) == eyecam::kRightEyeBit);
+        s.state = State::Calibrating;
+        CHECK(eyecam::lookDownPreviousEyes(s) == 0);
+        s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": "
+                                "\"校正できた（両目とも下を見たときの補正を前の値のままにしたよ）\", "
+                                "\"user_look_down_default\": [false, false], "
+                                "\"user_look_down_previous\": [true, true]}",
+                                kNow);
+        CHECK(eyecam::lookDownPreviousEyes(s) == (eyecam::kLeftEyeBit | eyecam::kRightEyeBit));
+        CHECK(eyecam::lookDownDefaultEyes(s) == 0);
+        s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": \"校正できた（ユーザー）\", "
+                                "\"user_look_down_default\": [false, false]}",
+                                kNow);
+        CHECK(!s.hasUserLookDownPrevious && eyecam::lookDownPreviousEyes(s) == 0);
     }
 }
 

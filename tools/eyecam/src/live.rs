@@ -239,6 +239,13 @@ impl UserParams {
         self.pitch_c[0] + self.pitch_c[1] * p + self.pitch_c[2] * p * p
     }
 
+    /// It has a measured look-down curve (`pitch_c`, `pitch_lo`, `pitch_hi`), not UserParams' default one (the
+    /// standard look-down correction).
+    pub fn curve_measured(&self) -> bool {
+        let d = UserParams::default();
+        (self.pitch_c, self.pitch_lo, self.pitch_hi) != (d.pitch_c, d.pitch_lo, d.pitch_hi)
+    }
+
     /// How much narrower (iris radii) an open eye's aperture is at `pitch` than at the wearer's typical pitch `p0`,
     /// from the curve. Below `p0` it is held between LID_PITCH_PER_DEG a degree beyond LID_PITCH_FROM_DEG and
     /// LID_PITCH_CAP times that (so nothing nearer `p0`); above it, looking up, the curve may say narrower (up to
@@ -277,12 +284,15 @@ pub struct Tune {
     pub edge_hold: bool,
     /// Look for a pupil the window's left edge cuts past it (see EXT_MAX_PX).
     pub ext_search: bool,
+    /// The eyelid veto (`veto`): the CNN may cancel a low EyeLid it is sure is an open eye (settings.json `lid_veto`,
+    /// off by default: trained on one wearer's recordings only).
+    pub lid_veto: bool,
 }
 
 impl Default for Tune {
     fn default() -> Self {
         let (wide_start, wide_width) = wide_curve(DEFAULT_WIDEN_SENSITIVITY);
-        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true }
+        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true, lid_veto: false }
     }
 }
 
@@ -331,6 +341,8 @@ pub struct Out {
     /// The levels in use for this frame (calibrated, or the automatic baseline + stored step).
     pub b_n: f64,
     pub b_w: f64,
+    /// What the eyelid veto did (`closed`, `eye_lid` and `eye_squint` above are after it).
+    pub veto: crate::veto::Step,
 }
 
 /// The widen step and open gap (iris radii) the engine uses, and the confidence factor that goes with them: the
@@ -526,6 +538,7 @@ pub struct EyeEngine {
     gaze_hold_until: f64,
     /// Kept for the shared memory / status.json; the baselines follow the wearer now, so it stays false.
     pub recalib_suggested: bool,
+    veto: crate::veto::Veto,
 }
 
 /// The per-wear open-eye levels (pixels): learnt from the first `WARMUP_S` of usable frames, then followed slowly.
@@ -741,6 +754,7 @@ impl Default for EyeEngine {
             pitch_recent: VecDeque::new(),
             gaze_hold_until: f64::NEG_INFINITY,
             recalib_suggested: false,
+            veto: crate::veto::Veto::default(),
         }
     }
 }
@@ -1125,6 +1139,15 @@ impl EyeEngine {
         let seen = if f.ok_pupil { 0.5 * f.pupil_vis } else if closed { 0.5 } else { 0.0 };
         let confidence = clamp01((seen + lids) * cal_q * if r_ready { 1.0 } else { 0.5 });
         let valid = r.is_finite() && (f.ok_pupil || closed || f.upper_skin_y.is_finite());
+        // The eyelid veto: it only changes what goes out, never the engine's state above (nor validity and confidence).
+        let veto = if params.tune.lid_veto {
+            self.veto.step(img, eye_lid, closed)
+        } else {
+            self.veto.reset();
+            crate::veto::Step::default()
+        };
+        let (closed, eye_lid, squint) =
+            if veto.on { (false, eye_lid.max(crate::veto::FLOOR), 0.0) } else { (closed, eye_lid, squint) };
         Out {
             f,
             valid,
@@ -1149,6 +1172,7 @@ impl EyeEngine {
             edge_held,
             b_n,
             b_w,
+            veto,
         }
     }
 }
@@ -1364,12 +1388,18 @@ pub const MSG_LIDS: &str = "のまぶたの線が見つからなかった（HMD 
 pub const MSG_CLOSE: &str = "を閉じたのが検出できなかった（もう一度、しっかり閉じてね）";
 pub const MSG_SQUINT_MISSING: &str = "の細めが測れなかった（もう一度）";
 pub const MSG_SQUINT_SHALLOW: &str = "の細めが浅かった（もう一度、しっかり細めてね）";
+pub const MSG_SQUINT_DEEP: &str = "の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）";
 pub const MSG_LOOK_DOWN: &str = ": 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）";
 pub const MSG_LOWER_UP: &str = ": 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）";
 /// Valve's gaze was missing (not one eye's problem).
 pub const MSG_NO_GAZE: &str = "視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度";
 /// A wear calibration that went through without the widen on an eye.
 pub const NOTE_WIDEN: &str = "見開きは取れなかったので、いつもの幅を使うよ";
+/// A user calibration that went through with the standard look-down correction on an eye (after "左目は" / "右目は" /
+/// "両目とも").
+pub const NOTE_LOOK_DOWN_DEFAULT: &str = "下を見たときの補正を標準の値にしたよ";
+/// ...with the previous user calibration's look-down correction kept on an eye (it had a measured one).
+pub const NOTE_LOOK_DOWN_PREVIOUS: &str = "下を見たときの補正を前の値のままにしたよ";
 
 /// One eye's calibration problem: its text (MSG_*) and details, the eye's own value and what is needed (either may
 /// be empty).
@@ -1603,80 +1633,224 @@ pub fn fit_user(
     fit_user_checked(samples, wear, old, strict).map_err(|m| with_rate_note(m, samples))
 }
 
+/// One eye's part of a user calibration.
+#[derive(Clone, Debug)]
+struct UserEye {
+    /// Its values: the pitch curve measured, or UserParams' defaults when the curve could not be fitted (`f_sq` is
+    /// this calibration's whenever the squint step was measured).
+    params: UserParams,
+    /// How much the aperture changed looking down and squinting (iris radii), for the left/right check.
+    delta: (f64, f64),
+    /// Its first problem (the one fit_user names), if any.
+    issue: Option<EyeIssue>,
+    /// That problem is in the look-down part only (the pitch curve: too few neutral frames with the lids, a look
+    /// down that did not narrow the eye, a lower lid that moved up), and the squint step went through.
+    look_down_only: bool,
+}
+
+/// A squint depth (`UserParams::f_sq`) at or above this is too shallow to tell from the open eye.
+pub const F_SQ_MAX: f64 = 0.85;
+/// A squint depth below this is deeper than the closed level by more than half the open gap: live, the squint
+/// would only reach 1 / (1 - f_sq) < 0.67 by the time the eye reads closed. The user calibrations that passed
+/// (2026-10-04..14) went down to -0.25 (the closed level of the wear calibration a little high); the ones below this
+/// were -0.78 and, replayed from recordings, -0.88 and -1.47.
+pub const F_SQ_MIN: f64 = -0.5;
+
+/// What is wrong with a measured squint depth: too shallow (or not measured), or deeper than the closed eye.
+fn squint_depth_issue(f_sq: f64) -> Option<EyeIssue> {
+    if f_sq >= F_SQ_MAX || f_sq.is_nan() {
+        Some(EyeIssue::new(MSG_SQUINT_SHALLOW, format!("f_sq {f_sq:.2}"), ""))
+    } else if f_sq < F_SQ_MIN {
+        Some(EyeIssue::new(MSG_SQUINT_DEEP, format!("f_sq {f_sq:.2}"), ""))
+    } else {
+        None
+    }
+}
+
+/// The squint step's problem for one eye: too few frames, or its depth (`squint_depth_issue`).
+fn squint_issue(nsq: usize, need: usize, f_sq: f64) -> Option<EyeIssue> {
+    if nsq < need { Some(EyeIssue::new(MSG_SQUINT_MISSING, String::new(), "")) } else { squint_depth_issue(f_sq) }
+}
+
+/// One eye's user calibration (eye `e`, for the warnings' names). Err for what is not one eye's problem (Valve's gaze
+/// missing, a curve that cannot be fitted). With `strict` false the checks after the curve and the squint frames are
+/// only warnings (added to `warnings`).
+fn fit_user_eye(
+    e: usize,
+    s: &[Sample],
+    w: &WearParams,
+    keep: UserParams,
+    strict: bool,
+    warnings: &mut Vec<String>,
+) -> Result<UserEye, String> {
+    let need = UserNeeds::of(s);
+    let s: Vec<Sample> = s.iter().map(|x| x.rescaled(w.r_px)).collect();
+    let s = &s[..];
+    let (ap_sq, nsq) = med_of(s, |x| (x.label == Label::Squint).then_some(x.ap));
+    let f_sq = (ap_sq - w.ap_cl) / (w.ap_n - w.ap_cl);
+    // Without the curve: the standard look-down correction (as with no user calibration), this squint.
+    let standard = UserParams { f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max, ..UserParams::default() };
+    let pts: Vec<(f64, f64)> =
+        s.iter().filter(|x| neutral(x.label) && x.ok && x.pitch.is_finite() && x.ap.is_finite()).map(|x| (x.pitch, x.ap)).collect();
+    if pts.len() < need.points {
+        let count = |f: &dyn Fn(&Sample) -> bool| s.iter().filter(|x| neutral(x.label) && f(x)).count();
+        let (frames, gaze, pupil) = (count(&|_| true), count(&|x| x.pitch.is_finite()), count(&|x| x.ok));
+        if gaze < need.points {
+            return Err(MSG_NO_GAZE.into());
+        }
+        let need_text = format!("{} 必要", need.points);
+        // The pupil not seen is not the look-down part's problem: the eye itself was not seen well.
+        let (issue, lids) = if pupil < need.points {
+            (EyeIssue::new(MSG_PUPIL, format!("{pupil}/{frames}"), &need_text), false)
+        } else {
+            (EyeIssue::new(MSG_LIDS, format!("{}/{frames}", pts.len()), &need_text), true)
+        };
+        let look_down_only = lids && squint_issue(nsq, need.squint, f_sq).is_none();
+        return Ok(UserEye { params: standard, delta: (f64::NAN, ap_sq - w.ap_n), issue: Some(issue), look_down_only });
+    }
+    let xs: Vec<f64> = pts.iter().map(|p| p.0).collect();
+    let ys: Vec<f64> = pts.iter().map(|p| p.1).collect();
+    let q = Quad::fit(&xs, &ys, &vec![true; xs.len()]).ok_or("視線と目の開きの関係が求められなかった（もう一度）")?;
+    let (c2, c1, c0, m) = (q.c[0], q.c[1], q.c[2], q.xm);
+    let pitch_c = [c0 - c1 * m + c2 * m * m, c1 - 2.0 * c2 * m, c2];
+    let mut sorted = xs.clone();
+    let (lo, hi) = (vision::percentile(&mut sorted, 1.0), vision::percentile(&mut sorted, 99.0));
+    if nsq < need.squint {
+        let issue = squint_issue(nsq, need.squint, f_sq);
+        return Ok(UserEye { params: standard, delta: (0.0, 0.0), issue, look_down_only: false });
+    }
+    let (ap_down, nd) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.ap));
+    let (lower_down, _) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.lower_px));
+    // (the squint first: a problem after it is the look-down part's alone)
+    let depth = squint_depth_issue(f_sq);
+    let checks = [
+        (depth.is_some(), depth.unwrap_or_else(|| EyeIssue::new(MSG_SQUINT_SHALLOW, String::new(), ""))),
+        (nd < need.look_down || ap_down > 0.95 * w.ap_n, EyeIssue::new(MSG_LOOK_DOWN, format!("{ap_down:.2} / 普段 {:.2}", w.ap_n), "")),
+        (lower_down < w.lower_px, EyeIssue::new(MSG_LOWER_UP, format!("{lower_down:.1} px / 普段 {:.1} px", w.lower_px), "")),
+    ];
+    let mut issue = None;
+    let mut look_down_only = false;
+    for (k, (bad, found)) in checks.into_iter().enumerate() {
+        if !bad {
+            continue;
+        }
+        if !strict {
+            warnings.push(found.message(e));
+        } else if issue.is_none() {
+            issue = Some(found);
+            look_down_only = k > 0;
+        }
+    }
+    let params = UserParams { pitch_c, pitch_lo: lo, pitch_hi: hi, f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max };
+    Ok(UserEye { params, delta: (ap_down - w.ap_n, ap_sq - w.ap_n), issue, look_down_only })
+}
+
+/// Both eyes' parts (left first; the left eye's Err returns before the right one is looked at).
+fn fit_user_eyes(
+    samples: &[Vec<Sample>; 2],
+    wear: &[WearParams; 2],
+    old: Option<[UserParams; 2]>,
+    strict: bool,
+    warnings: &mut Vec<String>,
+) -> Result<[UserEye; 2], String> {
+    let keep = |e: usize| old.map(|o| o[e]).unwrap_or_default();
+    let l = fit_user_eye(0, &samples[0], &wear[0], keep(0), strict, warnings)?;
+    let r = fit_user_eye(1, &samples[1], &wear[1], keep(1), strict, warnings)?;
+    Ok([l, r])
+}
+
 fn fit_user_checked(
     samples: &[Vec<Sample>; 2],
     wear: &[WearParams; 2],
     old: Option<[UserParams; 2]>,
     strict: bool,
 ) -> Result<([UserParams; 2], Vec<String>), String> {
-    let mut out = [UserParams::default(); 2];
-    let mut deltas = [(0.0, 0.0); 2];
     let mut warnings = Vec::new();
-    let mut fails: [Option<EyeIssue>; 2] = [None, None];
-    for (e, s) in samples.iter().enumerate() {
-        let w = &wear[e];
-        let need = UserNeeds::of(s);
-        let s: Vec<Sample> = s.iter().map(|x| x.rescaled(w.r_px)).collect();
-        let s = &s[..];
-        let pts: Vec<(f64, f64)> =
-            s.iter().filter(|x| neutral(x.label) && x.ok && x.pitch.is_finite() && x.ap.is_finite()).map(|x| (x.pitch, x.ap)).collect();
-        if pts.len() < need.points {
-            let count = |f: &dyn Fn(&Sample) -> bool| s.iter().filter(|x| neutral(x.label) && f(x)).count();
-            let (frames, gaze, pupil) = (count(&|_| true), count(&|x| x.pitch.is_finite()), count(&|x| x.ok));
-            if gaze < need.points {
-                return Err(MSG_NO_GAZE.into());
-            }
-            let need_text = format!("{} 必要", need.points);
-            fails[e] = Some(if pupil < need.points {
-                EyeIssue::new(MSG_PUPIL, format!("{pupil}/{frames}"), &need_text)
-            } else {
-                EyeIssue::new(MSG_LIDS, format!("{}/{frames}", pts.len()), &need_text)
-            });
-            continue;
-        }
-        let xs: Vec<f64> = pts.iter().map(|p| p.0).collect();
-        let ys: Vec<f64> = pts.iter().map(|p| p.1).collect();
-        let q = Quad::fit(&xs, &ys, &vec![true; xs.len()]).ok_or("視線と目の開きの関係が求められなかった（もう一度）")?;
-        let (c2, c1, c0, m) = (q.c[0], q.c[1], q.c[2], q.xm);
-        let pitch_c = [c0 - c1 * m + c2 * m * m, c1 - 2.0 * c2 * m, c2];
-        let mut sorted = xs.clone();
-        let (lo, hi) = (vision::percentile(&mut sorted, 1.0), vision::percentile(&mut sorted, 99.0));
-        let (ap_sq, nsq) = med_of(s, |x| (x.label == Label::Squint).then_some(x.ap));
-        if nsq < need.squint {
-            fails[e] = Some(EyeIssue::new(MSG_SQUINT_MISSING, String::new(), ""));
-            continue;
-        }
-        let f_sq = (ap_sq - w.ap_cl) / (w.ap_n - w.ap_cl);
-        let (ap_down, nd) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.ap));
-        let (lower_down, _) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.lower_px));
-        let checks = [
-            (f_sq >= 0.85 || f_sq.is_nan(), EyeIssue::new(MSG_SQUINT_SHALLOW, format!("f_sq {f_sq:.2}"), "")),
-            (nd < need.look_down || ap_down > 0.95 * w.ap_n, EyeIssue::new(MSG_LOOK_DOWN, format!("{ap_down:.2} / 普段 {:.2}", w.ap_n), "")),
-            (lower_down < w.lower_px, EyeIssue::new(MSG_LOWER_UP, format!("{lower_down:.1} px / 普段 {:.1} px", w.lower_px), "")),
-        ];
-        for (bad, issue) in checks {
-            if !bad {
-                continue;
-            }
-            if strict {
-                fails[e].get_or_insert(issue);
-            } else {
-                warnings.push(issue.message(e));
-            }
-        }
-        deltas[e] = (ap_down - w.ap_n, ap_sq - w.ap_n);
-        let keep = old.map(|o| o[e]).unwrap_or_default();
-        out[e] = UserParams { pitch_c, pitch_lo: lo, pitch_hi: hi, f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max };
-    }
-    if fails.iter().any(Option::is_some) {
-        return Err(eyes_message(&fails));
+    let eyes = fit_user_eyes(samples, wear, old, strict, &mut warnings)?;
+    if eyes.iter().any(|x| x.issue.is_some()) {
+        return Err(eyes_message(&eyes.map(|x| x.issue)));
     }
     // The left/right difference is only a warning: clean recordings trip it too (0.39 and 0.33 in two of them).
-    let (dd, ds) = ((deltas[0].0 - deltas[1].0).abs(), (deltas[0].1 - deltas[1].1).abs());
+    let (dd, ds) = ((eyes[0].delta.0 - eyes[1].delta.0).abs(), (eyes[0].delta.1 - eyes[1].delta.1).abs());
     if dd >= 0.2 || ds >= 0.2 {
         warnings.push(format!("左右の差が大きい [下を見たとき {dd:.2}、細め {ds:.2}]"));
     }
-    Ok((out, warnings))
+    Ok((eyes.map(|x| x.params), warnings))
+}
+
+/// A user calibration that went through, maybe with the standard look-down correction on an eye.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserOutcome {
+    pub user: [UserParams; 2],
+    pub warnings: Vec<String>,
+    /// The eyes whose look-down part failed and that had no measured curve before: they have UserParams' default
+    /// pitch curve (the standard look-down correction, as with no user calibration) and their own squint depth.
+    pub look_down_default: [bool; 2],
+    /// The eyes whose look-down part failed and that kept the previous user calibration's measured curve, with their
+    /// own squint depth (never true together with `look_down_default` for an eye).
+    pub look_down_previous: [bool; 2],
+}
+
+impl UserOutcome {
+    /// "校正できた（ユーザー）", or which eyes got the standard look-down correction or kept the previous one (one note
+    /// per eye when they differ); then the warnings.
+    pub fn message(&self) -> String {
+        let note = |e: usize| if self.look_down_previous[e] { NOTE_LOOK_DOWN_PREVIOUS } else { NOTE_LOOK_DOWN_DEFAULT };
+        let failed = [0, 1].map(|e| self.look_down_default[e] || self.look_down_previous[e]);
+        let head = match failed {
+            [false, false] => "校正できた（ユーザー）".to_string(),
+            [true, true] if note(0) == note(1) => format!("校正できた（両目とも{}）", note(0)),
+            [true, true] => format!("校正できた（左目は{}。右目は{}）", note(0), note(1)),
+            [left, _] => {
+                let e = if left { 0 } else { 1 };
+                format!("校正できた（{}は{}）", ["左目", "右目"][e], note(e))
+            }
+        };
+        if self.warnings.is_empty() { head } else { format!("{head}。注意: {}", self.warnings.join("、")) }
+    }
+}
+
+/// A user calibration with the look-down part allowed to fail (like a wear calibration's widen that was not caught):
+/// an eye whose squint step went through but whose look-down part did not (too few neutral frames with the lids, a
+/// look down that did not narrow the eye, a lower lid that moved up: long lashes read as the lid) keeps this squint
+/// depth with the previous user calibration's look-down curve when that one was measured on the eye (`old`, as a
+/// wear calibration keeps an eye's previous levels), else with the standard look-down correction. Anything else
+/// fails it as `fit_user` does, with the same message. A calibration that passes `fit_user` gives the same values and
+/// warnings here.
+pub fn fit_user_settled(
+    samples: &[Vec<Sample>; 2],
+    wear: &[WearParams; 2],
+    old: Option<[UserParams; 2]>,
+) -> Result<UserOutcome, String> {
+    let mut warnings = Vec::new();
+    let eyes = fit_user_eyes(samples, wear, old, true, &mut warnings).map_err(|m| with_rate_note(m, samples))?;
+    if eyes.iter().any(|x| x.issue.is_some() && !x.look_down_only) {
+        return Err(with_rate_note(eyes_message(&eyes.map(|x| x.issue)), samples));
+    }
+    let failed = [0, 1].map(|e| eyes[e].issue.is_some());
+    // The curve each failed eye goes on: the previous one if it was measured, else the default (standard) one.
+    let previous = [0, 1].map(|e| old.map(|o| o[e]).filter(|o| failed[e] && o.curve_measured()));
+    let look_down_previous = previous.map(|p| p.is_some());
+    let look_down_default = [0, 1].map(|e| failed[e] && previous[e].is_none());
+    let ds = (eyes[0].delta.1 - eyes[1].delta.1).abs();
+    if failed == [false, false] {
+        let dd = (eyes[0].delta.0 - eyes[1].delta.0).abs();
+        if dd >= 0.2 || ds >= 0.2 {
+            warnings.push(format!("左右の差が大きい [下を見たとき {dd:.2}、細め {ds:.2}]"));
+        }
+    } else if ds >= 0.2 {
+        // (looking down was not measured on both eyes: only the squint is compared)
+        warnings.push(format!("左右の差が大きい [細め {ds:.2}]"));
+    }
+    let user = [0, 1].map(|e| {
+        let p = eyes[e].params;
+        if !failed[e] {
+            return p;
+        }
+        let curve = previous[e].unwrap_or_default();
+        UserParams { pitch_c: curve.pitch_c, pitch_lo: curve.pitch_lo, pitch_hi: curve.pitch_hi, ..p }
+    });
+    Ok(UserOutcome { user, warnings, look_down_default, look_down_previous })
 }
 
 /// Pupil range (P5 of bright, P95 of dark, in iris units) from a recording with bright and dark steps, in units
@@ -2528,6 +2702,19 @@ pub fn wear_params_json(w: &[WearParams; 2]) -> String {
     format!("{{\"L\": {}, \"R\": {}}}", wear_json(&w[0]), wear_json(&w[1]))
 }
 
+/// calib_result.json's `look_down_default` and `look_down_previous` lines (a user calibration's only, else ""): the
+/// eyes that went through with the standard look-down correction (`UserOutcome::look_down_default`), and those that
+/// kept the previous user calibration's (`UserOutcome::look_down_previous`); all false when it failed.
+pub fn look_down_json(user: bool, default: [bool; 2], previous: [bool; 2]) -> String {
+    if !user {
+        return String::new();
+    }
+    format!(
+        "\n  \"look_down_default\": [{}, {}],\n  \"look_down_previous\": [{}, {}],",
+        default[0], default[1], previous[0], previous[1]
+    )
+}
+
 /// A user calibration as JSON (for calib_result.json).
 pub fn user_params_json(u: &[UserParams; 2]) -> String {
     format!("{{\"L\": {}, \"R\": {}}}", user_json(&u[0]), user_json(&u[1]))
@@ -3069,6 +3256,184 @@ mod tests {
         assert!(fit_user(&[user(0.83, true), user(0.83, true)], &[w, w], None, true).is_ok());
     }
 
+    #[test]
+    fn a_look_down_that_fails_keeps_the_squint_with_the_standard_correction() {
+        let w = WearParams { r_px: 55.0, b_n: 0.73, b_w: 0.93, ap_n: 1.441, ap_cl: 0.561, pitch_n: -14.0, lower_px: 250.0 };
+        // (look-down aperture and lower lid, squint aperture)
+        let user = |down_ap: f64, down_lower: f64, squint_ap: f64| {
+            let mut u = Vec::new();
+            u.extend(samples(Label::LeadIn, 200, 0.73, 1.44, -14.0, 250.0, true));
+            u.extend(samples(Label::LookUp, 200, 0.73, 1.6, 5.0, 248.0, true));
+            u.extend(samples(Label::LookDown, 200, 0.6, down_ap, -35.0, down_lower, true));
+            u.extend(samples(Label::Squint, 200, 0.6, squint_ap, -14.0, 249.0, true));
+            u
+        };
+        let good = user(1.1, 256.0, 0.83);
+        // Long lashes read as the lid: looking down does not narrow the eye.
+        let lashes = user(1.43, 256.0, 0.83);
+        let old = Some([UserParams { pd_min: 0.5, pd_max: 1.2, ..UserParams::default() }; 2]);
+        let standard_pitch = |u: &UserParams| {
+            let d = UserParams::default();
+            (u.pitch_c, u.pitch_lo, u.pitch_hi) == (d.pitch_c, d.pitch_lo, d.pitch_hi)
+        };
+
+        // Both pass: the same values and warnings as before, and the same message.
+        let (full, warn) = fit_user(&[good.clone(), good.clone()], &[w, w], old, true).unwrap();
+        let out = fit_user_settled(&[good.clone(), good.clone()], &[w, w], old).unwrap();
+        assert_eq!((out.user, out.warnings.clone(), out.look_down_default), (full, warn, [false, false]));
+        assert_eq!(out.message(), "校正できた（ユーザー）");
+        assert!(!standard_pitch(&out.user[0]));
+        // ...with the left/right warning too.
+        let lr = user(0.8, 256.0, 0.83);
+        let (full, warn) = fit_user(&[good.clone(), lr.clone()], &[w, w], None, true).unwrap();
+        let out = fit_user_settled(&[good.clone(), lr], &[w, w], None).unwrap();
+        assert_eq!((out.user, out.warnings.clone()), (full, warn.clone()));
+        assert_eq!(out.message(), format!("校正できた（ユーザー）。注意: {}", warn.join("、")));
+
+        // The right eye's look down fails: it went through, the right eye with its own squint depth and the standard
+        // look-down correction, the left eye as if both had passed.
+        let err = fit_user(&[good.clone(), lashes.clone()], &[w, w], old, true).unwrap_err();
+        assert!(err.starts_with("右目: 下を見ても"), "{err}");
+        let out = fit_user_settled(&[good.clone(), lashes.clone()], &[w, w], old).unwrap();
+        let (both, _) = fit_user(&[good.clone(), good.clone()], &[w, w], old, true).unwrap();
+        assert_eq!(out.look_down_default, [false, true]);
+        assert_eq!(out.user[0], both[0]);
+        assert!(standard_pitch(&out.user[1]), "{:?}", out.user[1]);
+        assert_eq!((out.user[1].f_sq, out.user[1].pd_min, out.user[1].pd_max), (both[1].f_sq, 0.5, 1.2));
+        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+        assert_eq!(out.message(), "校正できた（右目は下を見たときの補正を標準の値にしたよ）");
+        // The standard correction is what an eye without a user calibration gets.
+        assert_eq!(out.user[1].pitch_drop(-40.0, -14.0), UserParams::default().pitch_drop(-40.0, -14.0));
+
+        // Both eyes' lower lids moved up: both on the standard correction.
+        let up = user(1.1, 240.0, 0.83);
+        let out = fit_user_settled(&[up.clone(), up], &[w, w], None).unwrap();
+        assert_eq!(out.look_down_default, [true, true]);
+        assert!(out.user.iter().all(standard_pitch));
+        assert_eq!(out.message(), "校正できた（両目とも下を見たときの補正を標準の値にしたよ）");
+
+        // The left eye's lids not found in the neutral steps (but in the squint): too few points for the curve.
+        let mut no_lids = good.clone();
+        no_lids.iter_mut().filter(|x| neutral(x.label)).enumerate().for_each(|(i, x)| {
+            if i % 10 != 0 {
+                x.ap = f64::NAN;
+            }
+        });
+        assert!(fit_user(&[no_lids.clone(), good.clone()], &[w, w], None, true).unwrap_err().starts_with(&format!("左目{MSG_LIDS}")));
+        let out = fit_user_settled(&[no_lids.clone(), good.clone()], &[w, w], None).unwrap();
+        assert_eq!(out.look_down_default, [true, false]);
+        assert_eq!(out.user[0].f_sq, both[0].f_sq);
+        assert_eq!(out.message(), "校正できた（左目は下を見たときの補正を標準の値にしたよ）");
+
+        // Only the squint is compared left/right when an eye has the standard correction.
+        let out = fit_user_settled(&[good.clone(), user(1.43, 256.0, 1.1)], &[w, w], None).unwrap();
+        assert_eq!(out.look_down_default, [false, true]);
+        assert_eq!(out.warnings, vec!["左右の差が大きい [細め 0.27]".to_string()]);
+
+        // A squint that failed fails it as before, whatever the other eye's look down did: the same message.
+        let shallow = user(1.1, 256.0, 1.4);
+        let lashes_shallow = user(1.43, 256.0, 1.4);
+        let no_squint: Vec<Sample> = good.iter().copied().filter(|x| x.label != Label::Squint).collect();
+        let mut no_lids_shallow = no_lids.clone();
+        no_lids_shallow.iter_mut().filter(|x| x.label == Label::Squint).for_each(|x| x.ap = 1.4);
+        let mut no_pupil = good.clone();
+        no_pupil.iter_mut().filter(|x| neutral(x.label)).for_each(|x| x.ok = false);
+        for pair in [
+            [good.clone(), shallow.clone()],
+            [lashes.clone(), shallow.clone()],
+            [lashes_shallow.clone(), good.clone()],
+            [no_squint.clone(), lashes.clone()],
+            [no_lids_shallow, good.clone()],
+            [no_pupil, lashes.clone()],
+        ] {
+            let before = fit_user(&pair, &[w, w], None, true).unwrap_err();
+            assert_eq!(fit_user_settled(&pair, &[w, w], None).unwrap_err(), before);
+        }
+        // A squint deeper than the closed eye by more than half the gap fails its step (f_sq -0.6: an aperture of
+        // 0.033), and fails a look-down partial with it; one the calibrations that passed had (-0.25) does not.
+        let deep = user(1.1, 256.0, 0.033);
+        assert_eq!(
+            fit_user(&[good.clone(), deep.clone()], &[w, w], None, true).unwrap_err(),
+            format!("右目{MSG_SQUINT_DEEP}[f_sq -0.60]")
+        );
+        assert_eq!(
+            fit_user_settled(&[lashes.clone(), deep.clone()], &[w, w], None).unwrap_err(),
+            fit_user(&[lashes.clone(), deep], &[w, w], None, true).unwrap_err()
+        );
+        assert!(fit_user_settled(&[lashes.clone(), user(1.43, 256.0, 0.341)], &[w, w], None).is_ok());
+        let (u, _) = fit_user(&[good.clone(), user(1.1, 256.0, 0.341)], &[w, w], None, true).unwrap();
+        assert!((u[1].f_sq + 0.25).abs() < 0.01, "{:?}", u[1]);
+        // (Valve's gaze missing too)
+        let mut no_gaze = lashes.clone();
+        no_gaze.iter_mut().for_each(|x| x.pitch = f64::NAN);
+        assert_eq!(fit_user_settled(&[good.clone(), no_gaze], &[w, w], None).unwrap_err(), MSG_NO_GAZE);
+        // calib_result.json's lines
+        assert_eq!(
+            look_down_json(true, [false, true], [true, false]),
+            "\n  \"look_down_default\": [false, true],\n  \"look_down_previous\": [true, false],"
+        );
+        assert_eq!(look_down_json(false, [false, true], [true, false]), "");
+    }
+
+    #[test]
+    fn a_look_down_that_fails_keeps_the_previous_curve_if_it_was_measured() {
+        let w = WearParams { r_px: 55.0, b_n: 0.73, b_w: 0.93, ap_n: 1.441, ap_cl: 0.561, pitch_n: -14.0, lower_px: 250.0 };
+        let user = |down_ap: f64, down_lower: f64, squint_ap: f64| {
+            let mut u = Vec::new();
+            u.extend(samples(Label::LeadIn, 200, 0.73, 1.44, -14.0, 250.0, true));
+            u.extend(samples(Label::LookUp, 200, 0.73, 1.6, 5.0, 248.0, true));
+            u.extend(samples(Label::LookDown, 200, 0.6, down_ap, -35.0, down_lower, true));
+            u.extend(samples(Label::Squint, 200, 0.6, squint_ap, -14.0, 249.0, true));
+            u
+        };
+        let good = user(1.1, 256.0, 0.83);
+        let lashes = user(1.43, 256.0, 0.83);
+        // The previous user calibration: a measured curve on both eyes (another one on the right), its own squint.
+        let measured = |slope: f64| UserParams { pitch_c: [1.5, slope, 0.0], pitch_lo: -40.0, pitch_hi: 20.0, f_sq: 0.5, pd_min: 0.5, pd_max: 1.2 };
+        let old = Some([measured(0.01), measured(0.02)]);
+        assert!(old.unwrap().iter().all(UserParams::curve_measured));
+        assert!(!UserParams { f_sq: 0.5, pd_min: 0.5, ..UserParams::default() }.curve_measured());
+        let curve = |u: &UserParams| (u.pitch_c, u.pitch_lo, u.pitch_hi);
+        let (both, _) = fit_user(&[good.clone(), good.clone()], &[w, w], old, true).unwrap();
+
+        // Both pass: the previous calibration changes nothing (the new curves, as fit_user).
+        let out = fit_user_settled(&[good.clone(), good.clone()], &[w, w], old).unwrap();
+        assert_eq!((out.user, out.look_down_default, out.look_down_previous), (both, [false, false], [false, false]));
+        assert_eq!(out.message(), "校正できた（ユーザー）");
+
+        // The right eye's look down fails: it keeps its previous curve, with this calibration's squint.
+        let out = fit_user_settled(&[good.clone(), lashes.clone()], &[w, w], old).unwrap();
+        assert_eq!((out.look_down_default, out.look_down_previous), ([false, false], [false, true]));
+        assert_eq!(out.user[0], both[0]);
+        assert_eq!(curve(&out.user[1]), curve(&measured(0.02)));
+        assert_eq!((out.user[1].f_sq, out.user[1].pd_min, out.user[1].pd_max), (both[1].f_sq, 0.5, 1.2));
+        assert_eq!(out.message(), "校正できた（右目は下を見たときの補正を前の値のままにしたよ）");
+
+        // Both eyes': both keep theirs.
+        let out = fit_user_settled(&[lashes.clone(), lashes.clone()], &[w, w], old).unwrap();
+        assert_eq!((out.look_down_default, out.look_down_previous), ([false, false], [true, true]));
+        assert_eq!([curve(&out.user[0]), curve(&out.user[1])], [curve(&measured(0.01)), curve(&measured(0.02))]);
+        assert_eq!(out.message(), "校正できた（両目とも下を見たときの補正を前の値のままにしたよ）");
+
+        // No previous calibration, or one without a measured curve on that eye: the standard correction.
+        let standard = Some([measured(0.01), UserParams { pd_min: 0.5, pd_max: 1.2, ..UserParams::default() }]);
+        for old in [None, standard] {
+            let out = fit_user_settled(&[good.clone(), lashes.clone()], &[w, w], old).unwrap();
+            assert_eq!((out.look_down_default, out.look_down_previous), ([false, true], [false, false]));
+            assert_eq!(curve(&out.user[1]), curve(&UserParams::default()));
+            assert_eq!(out.message(), "校正できた（右目は下を見たときの補正を標準の値にしたよ）");
+        }
+
+        // One eye on its previous curve, the other on the standard one: a note for each.
+        let out = fit_user_settled(&[lashes.clone(), lashes.clone()], &[w, w], standard).unwrap();
+        assert_eq!((out.look_down_default, out.look_down_previous), ([false, true], [true, false]));
+        assert_eq!([curve(&out.user[0]), curve(&out.user[1])], [curve(&measured(0.01)), curve(&UserParams::default())]);
+        assert_eq!(
+            out.message(),
+            "校正できた（左目は下を見たときの補正を前の値のままにしたよ。右目は下を見たときの補正を標準の値にしたよ）"
+        );
+    }
+
     /// A grey frame with the lens-edge band, and a dark disc (the pupil) if `pupil`.
     fn disc_frame(pupil: Option<(f64, f64, f64)>) -> Vec<u8> {
         let mut img = vec![120u8; vision::W * vision::H];
@@ -3334,8 +3699,9 @@ mod tests {
 
     #[test]
     fn the_aperture_baseline_follows_lids_that_settle_lower_but_not_a_squint() {
-        // A user calibration (squint and the eyelid from the aperture), 15 frames a second
-        let p = Params { user: Some(UserParams::default()), ..Params::default() };
+        // A user calibration (squint and the eyelid from the aperture), 15 frames a second. The classical values alone:
+        // the eyelid veto's CNN, never trained on drawn frames, calls the drawn squint below open.
+        let p = Params { user: Some(UserParams::default()), tune: Tune { lid_veto: false, ..Tune::default() }, ..Params::default() };
         let mut e = EyeEngine::default();
         let mut t = 0.0;
         let mut run = |e: &mut EyeEngine, opening: std::ops::Range<usize>, seconds: f64| {

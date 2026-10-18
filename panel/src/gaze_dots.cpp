@@ -18,6 +18,9 @@ constexpr uint8_t kMagic[4] = {'F', 'E', 'O', 'D'};
 constexpr uint8_t kVersion = 3;
 /** Where the eyes' values start. */
 constexpr size_t kEyesAt = 64;
+/** Where an eye's brow is in its values (u16), and the flag that says the brows are there (version 3). */
+constexpr size_t kBrowAt = 34;
+constexpr uint8_t kBrowsFlag = 4;
 /** Where the gaze before the scale starts (version 3: right after the eyes). */
 constexpr size_t kUnscaledAt = kEyesAt + 2 * kEyeSize;
 static_assert(kUnscaledAt == kPacketSizeV2 && kUnscaledAt + 24 == kPacketSize, "version 3 is version 2 and 24 bytes");
@@ -35,6 +38,7 @@ bool decode(const uint8_t* data, size_t size, Packet& out) {
     Packet packet;
     packet.independent = (data[5] & 1) != 0;
     packet.scaled = v3 && (data[5] & 2) != 0;
+    packet.brows = v3 && (data[5] & kBrowsFlag) != 0;
     std::memcpy(&packet.time, data + 8, 8);
     std::memcpy(packet.gaze, data + 16, 24);
     std::memcpy(packet.rawGaze, data + 40, 24);
@@ -59,6 +63,7 @@ bool decode(const uint8_t* data, size_t size, Packet& out) {
         e.cameraPupilMm = values[7];
         e.lidFrom = at[32];
         e.cameraClosed = (at[33] & 1) != 0;
+        if (packet.brows) e.brow = static_cast<float>(at[kBrowAt] | (at[kBrowAt + 1] << 8)) / 65535.0f;
     }
     out = packet;
     return true;
@@ -68,7 +73,8 @@ std::vector<uint8_t> encode(const Packet& packet) {
     std::vector<uint8_t> data(kPacketSize, 0);
     std::memcpy(data.data(), kMagic, 4);
     data[4] = kVersion;
-    data[5] = static_cast<uint8_t>((packet.independent ? 1 : 0) | (packet.scaled ? 2 : 0));
+    data[5] = static_cast<uint8_t>((packet.independent ? 1 : 0) | (packet.scaled ? 2 : 0) |
+                                   (packet.brows ? kBrowsFlag : 0));
     std::memcpy(data.data() + 8, &packet.time, 8);
     std::memcpy(data.data() + 16, packet.gaze, 24);
     std::memcpy(data.data() + 40, packet.rawGaze, 24);
@@ -80,6 +86,13 @@ std::vector<uint8_t> encode(const Packet& packet) {
         std::memcpy(at, values, sizeof(values));
         at[32] = static_cast<uint8_t>(e.lidFrom);
         at[33] = e.cameraClosed ? 1 : 0;
+        if (packet.brows) {
+            // (kept within 0..1, NaN as 0, as frameeyeosc writes it)
+            const float brow = std::isfinite(e.brow) ? std::clamp(e.brow, 0.0f, 1.0f) : 0.0f;
+            const auto bits = static_cast<uint16_t>(std::lround(brow * 65535.0f));
+            at[kBrowAt] = static_cast<uint8_t>(bits & 0xff);
+            at[kBrowAt + 1] = static_cast<uint8_t>(bits >> 8);
+        }
     }
     std::memcpy(data.data() + kUnscaledAt, packet.unscaledGaze, 24);
     return data;

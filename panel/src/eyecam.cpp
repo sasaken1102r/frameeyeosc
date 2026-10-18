@@ -159,6 +159,11 @@ Status parseStatus(const std::string& text, double mtime) {
     // The widening sensitivity (missing on an older eyecam-rec: no slider)
     status.widenSensitivity = readNumber(root, "widen_sensitivity", kNaN);
     status.hasWidenSensitivity = std::isfinite(status.widenSensitivity);
+    // The eyelid veto (missing on an older eyecam-rec: no switch)
+    const JsonValue* veto = root.get("lid_veto");
+    const JsonValue* vetoOn = veto != nullptr && veto->isObject() ? veto->get("on") : nullptr;
+    status.hasLidVeto = vetoOn != nullptr && vetoOn->isBool();
+    status.lidVeto = status.hasLidVeto && vetoOn->boolean;
     // The setup (missing on an older eyecam-rec: see setupComplete and toolInstalled)
     const JsonValue* buffers = root.get("has_buffers");
     status.hasBuffers = buffers != nullptr && buffers->isBool() && buffers->boolean;
@@ -167,6 +172,21 @@ Status parseStatus(const std::string& text, double mtime) {
     status.setupDone = status.hasSetupDone && setup->boolean;
     status.lastCalibWiden = readText(root, "last_calib_widen");
     status.calibFailedEye = readText(root, "calib_failed_eye");
+    // The eyes of the last user calibration on the standard look-down correction, [left, right] (missing on an older
+    // eyecam-rec: its message says it)
+    // ...and those on the previous user calibration's look-down correction ("user_look_down_previous", missing on an
+    // eyecam-rec before it, which never kept it)
+    const auto readEyes = [&](const char* key, bool& has, int& bits) {
+        const JsonValue* eyes = root.get(key);
+        if (eyes == nullptr || !eyes->isArray() || eyes->items.size() != 2) return;
+        has = true;
+        for (int eye = 0; eye < 2; ++eye) {
+            const JsonValue& value = eyes->items[eye];
+            if (value.isBool() && value.boolean) bits |= eye == 0 ? kLeftEyeBit : kRightEyeBit;
+        }
+    };
+    readEyes("user_look_down_default", status.hasUserLookDownDefault, status.userLookDownDefault);
+    readEyes("user_look_down_previous", status.hasUserLookDownPrevious, status.userLookDownPrevious);
     // The pupils (missing on an older eyecam-rec: "locked" alone says whether the eyes are seen)
     status.hasPupil = root.get("pupil_l") != nullptr || root.get("pupil_r") != nullptr;
     const char* const pupilKeys[2] = {"pupil_l", "pupil_r"};
@@ -736,6 +756,10 @@ bool isSensitivityCommand(const std::string& command) {
     return command.rfind("set widen_sensitivity", 0) == 0;
 }
 
+std::string lidVetoCommand(bool on) {
+    return on ? "set lid_veto on" : "set lid_veto off";
+}
+
 bool StartConfirm::open(State state) {
     if (state != State::Idle && state != State::Error) return false;
     open_ = true;
@@ -826,8 +850,11 @@ std::string signature(const View& view) {
                 ? std::to_string(static_cast<long>(std::ceil(std::max(0.0, s.warmupRemainingS) - 1e-9)))
                 : std::string("-")) +
            "|" + std::to_string(s.hasCalibSaved) + std::to_string(s.calibSaved) + "|" +
-           rounded(s.widenSensitivity, 0.01) + "|" + std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
+           rounded(s.widenSensitivity, 0.01) + std::to_string(s.hasLidVeto) + std::to_string(s.lidVeto) + "|" +
+           std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
            std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.calibFailedEye + "|" +
+           std::to_string(s.hasUserLookDownDefault) + std::to_string(s.userLookDownDefault) +
+           std::to_string(s.userLookDownPrevious) + "|" +
            std::to_string(s.hasPupil) + std::to_string(static_cast<int>(eyeSight(s, 0))) +
            std::to_string(static_cast<int>(eyeSight(s, 1))) + "|" +
            // (the setup shows the cameras' rate only while it is low, as a whole number)
@@ -996,6 +1023,23 @@ int partialEye(const Status& status) {
     if (status.calibFailedEye == "L") return 0;
     if (status.calibFailedEye == "R") return 1;
     return -1;
+}
+
+int lookDownDefaultEyes(const Status& status) {
+    if (status.state != State::Idle) return 0;
+    if (status.hasUserLookDownDefault) return status.userLookDownDefault;
+    const std::string& message = status.message;
+    const std::string::size_type note = message.find("下を見たときの補正を標準の値にしたよ");
+    if (message.rfind("校正できた（", 0) != 0 || note == std::string::npos) return 0;
+    const std::string eyes = message.substr(0, note);
+    if (eyes.find("両目") != std::string::npos) return kLeftEyeBit | kRightEyeBit;
+    if (eyes.find("左目") != std::string::npos) return kLeftEyeBit;
+    if (eyes.find("右目") != std::string::npos) return kRightEyeBit;
+    return 0;
+}
+
+int lookDownPreviousEyes(const Status& status) {
+    return status.state == State::Idle ? status.userLookDownPrevious : 0;
 }
 
 bool partialProvisional(const Status& status) {

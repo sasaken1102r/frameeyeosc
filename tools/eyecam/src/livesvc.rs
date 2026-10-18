@@ -87,6 +87,14 @@ pub enum CollectKind {
     Pupil,
 }
 
+/// The eyes a user calibration went through with the standard look-down correction on (`default`) or with the
+/// previous one kept (`previous`): UserOutcome's, for calib_result.json.
+#[derive(Clone, Copy, Debug, Default)]
+struct LookDown {
+    default: [bool; 2],
+    previous: [bool; 2],
+}
+
 pub enum Msg {
     /// A raw frame of an anatomical eye (0 = L, 1 = R), 400x400 as stored; `upside_down`: its camera stores it upside
     /// down (the left eye's, see vision::UPSIDE_DOWN_EYE; decided by the camera, so --swap renaming the eyes does not
@@ -132,6 +140,12 @@ pub struct Shared {
     /// The eyes whose part of the last `calib wear` failed: bit 1 left, bit 2 right (both: the calibration failed;
     /// one: it went through, that eye kept its earlier levels).
     pub calib_failed_eye: AtomicU32,
+    /// The eyes the last `calib user` of this run went through with the standard look-down correction on: bit 1
+    /// left, bit 2 right (0: none this run, it failed, or both eyes' look down was measured).
+    pub user_look_down_default: AtomicU32,
+    /// ...and the eyes it went through with the previous user calibration's look-down correction kept on (the same
+    /// bits; an eye is in one of the two at most).
+    pub user_look_down_previous: AtomicU32,
     /// Average processing time per frame over the last second, in microseconds.
     pub us_per_frame: AtomicU32,
     pub frames: AtomicU64,
@@ -151,6 +165,14 @@ pub struct Shared {
     pub preview_on: AtomicBool,
     /// The drift log (`driftlog on` / `off` from ctl.sock), written by the worker as frames come.
     pub driftlog: Mutex<driftlog::Control>,
+    /// The eyelid veto is on (settings.json `lid_veto`, followed while running), and what it did: CNN runs a second
+    /// (both eyes) over the last second (f32 bits), vetoes fired, and the CNN's time per run (mean and max,
+    /// microseconds), since the worker started.
+    pub lid_veto: AtomicBool,
+    pub veto_runs_per_s: AtomicU32,
+    pub veto_fired: AtomicU64,
+    pub veto_us_mean: AtomicU32,
+    pub veto_us_max: AtomicU32,
 }
 
 impl Default for Shared {
@@ -165,6 +187,8 @@ impl Default for Shared {
             setup_done: AtomicBool::new(false),
             last_calib_widen: AtomicU32::new(0),
             calib_failed_eye: AtomicU32::new(0),
+            user_look_down_default: AtomicU32::new(0),
+            user_look_down_previous: AtomicU32::new(0),
             us_per_frame: AtomicU32::new(0),
             frames: AtomicU64::new(0),
             live_on: AtomicBool::new(false),
@@ -175,6 +199,11 @@ impl Default for Shared {
             preview_until: AtomicU64::new(0),
             preview_on: AtomicBool::new(false),
             driftlog: Mutex::new(driftlog::Control::default()),
+            lid_veto: AtomicBool::new(false),
+            veto_runs_per_s: AtomicU32::new(0f32.to_bits()),
+            veto_fired: AtomicU64::new(0),
+            veto_us_mean: AtomicU32::new(0),
+            veto_us_max: AtomicU32::new(0),
         }
     }
 }
@@ -398,6 +427,12 @@ struct Worker {
     log_since: Instant,
     /// The panel's eye preview: each eye's picture while it is asked for.
     preview: Preview,
+    /// The eyelid veto's CNN runs since busy_since, and since the start: runs, vetoes fired, total and longest time (us).
+    veto_runs: u32,
+    veto_n: u64,
+    veto_fired: u64,
+    veto_us: f64,
+    veto_us_max: f64,
 }
 
 impl Worker {
@@ -434,6 +469,11 @@ impl Worker {
             log_us: 0,
             log_since: Instant::now(),
             preview: Preview::new(preview_path),
+            veto_runs: 0,
+            veto_n: 0,
+            veto_fired: 0,
+            veto_us: 0.0,
+            veto_us_max: 0.0,
         }
     }
 
@@ -559,9 +599,20 @@ impl Worker {
                 (p.tune.wide_start, p.tune.wide_width) = (start, width);
             }
         }
+        let veto_on = self.shared.lid_veto.load(Ordering::Relaxed);
+        for p in &mut self.params {
+            p.tune.lid_veto = veto_on;
+        }
         let started = Instant::now();
         let mut o = self.engines[eye].process_open(img, pitch as f64, open as f64, t, &self.params[eye]);
         let processed = started.elapsed();
+        if o.veto.ran {
+            self.veto_runs += 1;
+            self.veto_n += 1;
+            self.veto_us += o.veto.us;
+            self.veto_us_max = self.veto_us_max.max(o.veto.us);
+        }
+        self.veto_fired += o.veto.fired as u64;
         let started = Instant::now();
         self.check_pupils(eye, t, &mut o);
         let share = self.pupil_seen[eye].push(t, o.f.ok_pupil);
@@ -641,6 +692,7 @@ impl Worker {
         result: &Result<String, String>,
         params: Option<String>,
         failed_eye: &str,
+        look_down: LookDown,
     ) {
         let (values, lines) = match kind {
             CollectKind::Wear => live::wear_report(samples),
@@ -663,10 +715,11 @@ impl Worker {
             CollectKind::Pupil => "pupil",
         };
         let json = format!(
-            "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"time\": {},\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+            "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"time\": {},\n  \"ok\": {ok},\n  \"failed_eye\": {},{}\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
             live::JSON_EYES_ANATOMICAL,
             crate::json::string(&stamp()),
             crate::json::string(failed_eye),
+            live::look_down_json(kind == CollectKind::User, look_down.default, look_down.previous),
             crate::json::string(message),
             params.unwrap_or_else(|| "null".into())
         );
@@ -729,7 +782,8 @@ impl Worker {
         let samples = std::mem::take(&mut self.samples);
         self.steps.clear();
         let mut params = None;
-        let result = self.fit(kind, &samples, &mut params);
+        let mut look_down = LookDown::default();
+        let result = self.fit(kind, &samples, &mut params, &mut look_down);
         if kind == CollectKind::Wear && result.is_err() {
             self.shared.last_calib_widen.store(0, Ordering::Relaxed);
         }
@@ -737,12 +791,20 @@ impl Worker {
             CollectKind::Wear => ["", "L", "R", "LR"][(self.shared.calib_failed_eye.load(Ordering::Relaxed) & 3) as usize],
             _ => "",
         };
-        self.report(dir.as_deref(), kind, &samples, &result, params, failed_eye);
+        self.report(dir.as_deref(), kind, &samples, &result, params, failed_eye, look_down);
         self.publish_state();
         result
     }
 
-    fn fit(&mut self, kind: CollectKind, samples: &[Vec<Sample>; 2], params_out: &mut Option<String>) -> Result<String, String> {
+    /// Fit and save a calibration. `look_down`: the eyes of a user calibration that went through with the standard
+    /// look-down correction or the previous one.
+    fn fit(
+        &mut self,
+        kind: CollectKind,
+        samples: &[Vec<Sample>; 2],
+        params_out: &mut Option<String>,
+        look_down: &mut LookDown,
+    ) -> Result<String, String> {
         let samples = samples.clone();
         match kind {
             CollectKind::Wear => {
@@ -784,18 +846,22 @@ impl Worker {
                     (Some(l), Some(r)) => [l, r],
                     _ => return Err("先に calib wear をしてね".into()),
                 };
-                let (u, warnings) = live::fit_user(&samples, &wear, self.calib.user, true)?;
-                *params_out = Some(live::user_params_json(&u));
-                self.calib.user = Some(u);
+                self.shared.user_look_down_default.store(0, Ordering::Relaxed);
+                self.shared.user_look_down_previous.store(0, Ordering::Relaxed);
+                // An eye whose look-down part failed (long lashes read as the lid) still gets its squint, with the
+                // previous user calibration's look-down correction if it was measured, else the standard one.
+                let out = live::fit_user_settled(&samples, &wear, self.calib.user)?;
+                *params_out = Some(live::user_params_json(&out.user));
+                *look_down = LookDown { default: out.look_down_default, previous: out.look_down_previous };
+                let bits = |eyes: [bool; 2]| eyes[0] as u32 | (eyes[1] as u32) << 1;
+                self.shared.user_look_down_default.store(bits(out.look_down_default), Ordering::Relaxed);
+                self.shared.user_look_down_previous.store(bits(out.look_down_previous), Ordering::Relaxed);
+                self.calib.user = Some(out.user);
                 self.calib.user_time = stamp();
-                self.calib.user_warnings = warnings.clone();
+                self.calib.user_warnings = out.warnings.clone();
                 save_calib(&self.calib_path, &self.calib)?;
                 self.apply_calib();
-                Ok(if warnings.is_empty() {
-                    "校正できた（ユーザー）".to_string()
-                } else {
-                    format!("校正できた（ユーザー）。注意: {}", warnings.join("、"))
-                })
+                Ok(out.message())
             }
             CollectKind::Pupil => {
                 let r = match (self.params[0].wear, self.params[1].wear) {
@@ -834,6 +900,13 @@ impl Worker {
         if self.busy_since.elapsed() >= Duration::from_secs(1) {
             let us = (self.busy.as_micros() as u32).checked_div(self.busy_n).unwrap_or(0);
             self.shared.us_per_frame.store(us, Ordering::Relaxed);
+            let runs_per_s = self.veto_runs as f64 / self.busy_since.elapsed().as_secs_f64();
+            self.shared.veto_runs_per_s.store((runs_per_s as f32).to_bits(), Ordering::Relaxed);
+            self.shared.veto_fired.store(self.veto_fired, Ordering::Relaxed);
+            let mean = if self.veto_n > 0 { self.veto_us / self.veto_n as f64 } else { 0.0 };
+            self.shared.veto_us_mean.store(mean.round() as u32, Ordering::Relaxed);
+            self.shared.veto_us_max.store(self.veto_us_max.round() as u32, Ordering::Relaxed);
+            self.veto_runs = 0;
             self.log_n += self.busy_n as u64;
             self.log_us += self.busy.as_micros() as u64;
             if self.log_since.elapsed() >= Duration::from_secs(30) {
@@ -846,6 +919,14 @@ impl Worker {
                         self.pupil_conflicts,
                         self.pupil_pairs,
                         self.pupil_offset.value(self.engines[0].fps())
+                    );
+                    eprintln!(
+                        "live: eyelid veto {}, {} CNN runs so far ({:.2} ms each, at most {:.2}), {} vetoes",
+                        if self.params[0].tune.lid_veto { "on" } else { "off" },
+                        self.veto_n,
+                        if self.veto_n > 0 { self.veto_us / self.veto_n as f64 / 1000.0 } else { 0.0 },
+                        self.veto_us_max / 1000.0,
+                        self.veto_fired
                     );
                     if self.preview.is_on() {
                         eprintln!(
@@ -961,7 +1042,7 @@ pub fn spawn(
                     Ok(Msg::Abort(dir)) => {
                         if let Some(kind) = w.collect.take() {
                             let samples = std::mem::take(&mut w.samples);
-                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None, "");
+                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None, "", LookDown::default());
                         }
                         w.steps.clear();
                         w.samples = [Vec::new(), Vec::new()];

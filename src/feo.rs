@@ -1,23 +1,26 @@
 //! FrameEyeOSC packets (FEO1, version 1), for the FrameEyeOSC module for VRCFaceTracking (`--output frameeyeosc`).
 //!
 //! The layout, and how the module (VRCFT-FrameEyeOSC, FrameEyeOSC/EyeMapper.cs) turns a packet into VRCFT's eye data,
-//! are in docs/protocol.md. In short: 76 bytes, little-endian; a header (magic, version, length, sequence, flags, time),
+//! are in docs/protocol.md. In short: 76 bytes (108 with the brows block), little-endian; a header (magic, version, length, sequence, flags, time),
 //! per eye the gaze, the VRCFT eyelid, the eye camera's squint and the pupil in mm and as a dilation, with flags saying
 //! which of the camera's values are there, and a session number new each time frameeyeosc starts (so the module takes a
 //! restarted frameeyeosc, whose sequence starts over, at once). Unlike the LiveLink module, this one has pupils, so VRCFT sends them
-//! to each avatar in the form it takes them.
+//! to each avatar in the form it takes them. With brow_from_widen the packet carries the brows block (packet_with_brows).
 
 use std::hash::{BuildHasher, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_PORT: u16 = 11112;
 pub const PACKET_LEN: usize = 76;
+/// A packet with the brows block (two brows of 4 f32 after the session).
+pub const BROW_PACKET_LEN: usize = 108;
 const MAGIC: &[u8; 4] = b"FEO1";
 const VERSION: u16 = 1;
 // Flags
 const TRACKING: u32 = 1;
 const CAMERA_LID: [u32; 2] = [1 << 1, 1 << 2];
 const PUPIL: [u32; 2] = [1 << 3, 1 << 4];
+const BROW: [u32; 2] = [1 << 5, 1 << 6];
 // frameeyeosc's VRCFT eyelid of a relaxed open eye.
 const RELAXED: f32 = 0.75;
 
@@ -86,6 +89,39 @@ pub fn packet(session: u32, sequence: u32, tracking: bool, time_us: u64, eyes: [
         }
     }
     packet[72..76].copy_from_slice(&session.to_le_bytes());
+    packet
+}
+
+/// One brow as it goes out: inner_up, outer_up, lowerer and pinch, each 0..1.
+pub type Brow = [f32; 4];
+
+/// A brow only raised by `raise` (0..1): inner and outer up, never lowered or pinched.
+pub fn raised_brow(raise: f32) -> Brow {
+    [raise, raise, 0.0, 0.0]
+}
+
+/// `packet` with the brows block (108 bytes): both eyes' `BROW` flags set and their brows. The module drops a whole
+/// packet with any non-finite float, so each brow value goes out finite and within 0..1 (0 for one that is not finite).
+pub fn packet_with_brows(
+    session: u32,
+    sequence: u32,
+    tracking: bool,
+    time_us: u64,
+    eyes: [Eye; 2],
+    brows: [Brow; 2],
+) -> [u8; BROW_PACKET_LEN] {
+    let mut packet = [0; BROW_PACKET_LEN];
+    packet[..PACKET_LEN].copy_from_slice(&self::packet(session, sequence, tracking, time_us, eyes));
+    packet[6..8].copy_from_slice(&(BROW_PACKET_LEN as u16).to_le_bytes());
+    let flags = u32::from_le_bytes(packet[12..16].try_into().unwrap()) | BROW[0] | BROW[1];
+    packet[12..16].copy_from_slice(&flags.to_le_bytes());
+    for (side, brow) in brows.iter().enumerate() {
+        for (k, value) in brow.iter().enumerate() {
+            let value = if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
+            let at = PACKET_LEN + side * 16 + k * 4;
+            packet[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
     packet
 }
 
@@ -236,6 +272,58 @@ pub mod tests {
         let [diameter_left, diameter_right, dilation] = pupils.unwrap();
         assert_eq!((diameter_left, diameter_right), (0.3, 0.3));
         assert!((dilation - 0.75).abs() < 1e-6);
+    }
+
+    /// The brows block as the module reads it (docs/protocol.md, "Receiving rules"): per eye inner_up, outer_up,
+    /// lowerer and pinch, clamped to 0..1, while the packet has the block and the eye's BROW flag is set; else None.
+    pub fn module_brows(packet: &[u8]) -> [Option<Brow>; 2] {
+        let length = usize::from(u16::from_le_bytes(packet[6..8].try_into().unwrap()));
+        let flags = u32::from_le_bytes(packet[12..16].try_into().unwrap());
+        std::array::from_fn(|side| {
+            (length >= BROW_PACKET_LEN && packet.len() >= length && flags & (1 << (5 + side)) != 0).then(|| {
+                std::array::from_fn(|k| {
+                    let at = PACKET_LEN + side * 16 + k * 4;
+                    f32::from_le_bytes(packet[at..at + 4].try_into().unwrap()).clamp(0.0, 1.0)
+                })
+            })
+        })
+    }
+
+    #[test]
+    fn brows_make_it_108_bytes_with_both_brow_flags() {
+        let eyes = [Eye { lid: 1.0, squint: Some(0.2), ..Eye::NEUTRAL }, Eye::NEUTRAL];
+        let plain = packet(5, 9, true, 77, eyes);
+        let with = packet_with_brows(5, 9, true, 77, eyes, [raised_brow(0.6), raised_brow(0.25)]);
+        assert_eq!((plain.len(), with.len()), (76, 108));
+        assert_eq!(u16::from_le_bytes(with[6..8].try_into().unwrap()), 108);
+        let flags = |packet: &[u8]| u32::from_le_bytes(packet[12..16].try_into().unwrap());
+        assert_eq!(flags(&plain), 1 | 2);
+        assert_eq!(flags(&with), 1 | 2 | 32 | 64);
+        // Everything else is the 76-byte packet's
+        assert_eq!(with[..6], plain[..6]);
+        assert_eq!(with[8..12], plain[8..12]);
+        assert_eq!(with[16..76], plain[16..76]);
+        // Little-endian f32: 0.6, 0.6, 0, 0 and 0.25, 0.25, 0, 0
+        assert_eq!(with[76..80], 0.6f32.to_le_bytes());
+        assert_eq!(with[88..92], [0; 4]);
+        assert_eq!(with[92..96], [0x00, 0x00, 0x80, 0x3e]);
+        assert_eq!(module_brows(&with), [Some([0.6, 0.6, 0.0, 0.0]), Some([0.25, 0.25, 0.0, 0.0])]);
+        assert_eq!(module_brows(&plain), [None, None]);
+        // The module reads the eyes the same either way
+        assert_eq!(module_eyes(&with), module_eyes(&plain));
+    }
+
+    #[test]
+    fn brows_never_carry_a_nan_or_an_out_of_range_value() {
+        let brows = [[f32::NAN, f32::INFINITY, -0.5, 1.5], [f32::NEG_INFINITY, 0.5, f32::NAN, 0.0]];
+        let packet = packet_with_brows(1, 0, true, 0, [Eye::NEUTRAL; 2], brows);
+        for at in (76..108).step_by(4) {
+            let value = f32::from_le_bytes(packet[at..at + 4].try_into().unwrap());
+            assert!(value.is_finite() && (0.0..=1.0).contains(&value), "{at}: {value}");
+        }
+        assert_eq!(module_brows(&packet), [Some([0.0, 0.0, 0.0, 1.0]), Some([0.0, 0.5, 0.0, 0.0])]);
+        // So the module takes the packet
+        assert!(module_eyes(&packet).is_some());
     }
 
     #[test]

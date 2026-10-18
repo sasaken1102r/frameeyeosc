@@ -127,6 +127,13 @@ constexpr const char* kLidWiden = "lid_widen";
  * lid_widen or the lid marks say; closing and the cameras' squint are unchanged (the Eyelids tab's "Widening").
  */
 constexpr const char* kWiden = "widen";
+/**
+ * Whether the avatar's brows go up as the eyes widen (default off; the cameras don't see brows, so they follow the
+ * widening, also while widen is off). The Eyelids tab's "Widen raises brows".
+ */
+constexpr const char* kBrowFromWiden = "brow_from_widen";
+/** How far brow_from_widen raises the brows at full widening, 0..1 (the Eyelids tab's "Brow raise strength"). */
+constexpr const char* kBrowStrength = "brow_strength";
 constexpr const char* kLidFitClosedLeft = "lid_fit_closed_left";
 constexpr const char* kLidFitClosedRight = "lid_fit_closed_right";
 constexpr const char* kLidFitUpLeft = "lid_fit_up_left";

@@ -95,6 +95,42 @@ void testShown() {
     wide.eyes[0].squint = -0.2f;
     s = shown(wide, Source::Sent);
     CHECK(near(s.eyes[0].lid, 1.0) && near(s.eyes[0].squint, 0.0) && near(s.eyes[0].lidValue, 1.4, 1e-5));
+    // No brows sent: no room for them, none drawn
+    for (const Source source : {Source::Sent, Source::Raw, Source::Camera}) {
+        s = shown(p, source);
+        CHECK(!s.brows && std::isnan(s.eyes[0].brow) && std::isnan(s.eyes[1].brow));
+    }
+}
+
+void testBrows() {
+    gaze_dots::Packet p = packet();
+    p.brows = true;
+    p.eyes[0].brow = 0.6f;
+    p.eyes[1].brow = 0.0f;
+    // Sent: each eye's brow as sent (0 at rest is drawn, at rest)
+    Shown s = shown(p, Source::Sent);
+    CHECK(s.brows && near(s.eyes[0].brow, 0.6) && near(s.eyes[1].brow, 0.0));
+    // Raw and Camera: nothing measures brows, so none are drawn, but the room above the eyes stays (no jump)
+    for (const Source source : {Source::Raw, Source::Camera}) {
+        s = shown(p, source);
+        CHECK(s.brows && std::isnan(s.eyes[0].brow) && std::isnan(s.eyes[1].brow));
+    }
+    // Kept within 0..1, NaN at rest
+    p.eyes[0].brow = 1.5f;
+    p.eyes[1].brow = NAN;
+    s = shown(p, Source::Sent);
+    CHECK(near(s.eyes[0].brow, 1.0) && near(s.eyes[1].brow, 0.0));
+    // The lift: none at rest, kBrowRise all the way, smoothly between; the room above the eye covers it
+    CHECK(near(browLift(0.0), 0.0) && near(browLift(1.0), kBrowRise) && near(browLift(0.5), kBrowRise / 2));
+    CHECK(near(browLift(NAN), 0.0) && near(browLift(-1.0), 0.0) && near(browLift(3.0), kBrowRise));
+    CHECK(kBrowRise >= 0.25 && kBrowRise <= 0.35);
+    CHECK(near(kBrowHeadroom, kBrowRest + kBrowRise + kBrowThickness / 2));
+    // The made-up brows: sent, both at the level
+    View view;
+    fake(view, 1);
+    CHECK(!view.packet.brows);
+    fakeBrows(view, 0.5);
+    CHECK(view.packet.brows && near(view.packet.eyes[0].brow, 0.5) && near(view.packet.eyes[1].brow, 0.5));
 }
 
 void testGeometry() {
@@ -406,6 +442,7 @@ void testFake() {
  */
 int main() {
     testShown();
+    testBrows();
     testGeometry();
     testViews();
     testFile();

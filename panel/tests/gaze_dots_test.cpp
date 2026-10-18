@@ -132,6 +132,51 @@ void testPacket() {
     CHECK(!decode(wrong.data(), wrong.size(), read));
 }
 
+void testBrows() {
+    Packet packet;
+    packet.eyes[0].lid = 0.9f;
+    packet.eyes[1].lid = 0.8f;
+    const std::vector<uint8_t> without = encode(packet);
+    Packet read;
+    // Without brows: flag bit 2 clear and the bytes zero, as before 0.8.0, read as no brows
+    CHECK(without[5] == 0 && without[64 + 34] == 0 && without[64 + 35] == 0 && without[100 + 34] == 0);
+    CHECK(decode(without.data(), without.size(), read) && !read.brows && read.eyes[0].brow == 0.0f);
+    // With brows: the same version and size, bit 2, each eye's brow a u16 at 34 (65535 = 1.0)
+    packet.brows = true;
+    packet.eyes[0].brow = 0.5f;
+    packet.eyes[1].brow = 1.0f;
+    const std::vector<uint8_t> with = encode(packet);
+    CHECK(with.size() == kPacketSize && with[4] == 3 && with[5] == 4);
+    CHECK(with[64 + 34] == 0x00 && with[64 + 35] == 0x80 && with[100 + 34] == 0xff && with[100 + 35] == 0xff);
+    CHECK(decode(with.data(), with.size(), read) && read.brows);
+    CHECK(near(read.eyes[0].brow, 0.5, 1e-4) && read.eyes[1].brow == 1.0f && read.eyes[0].lid == 0.9f);
+    // Only byte 5's bit 2 and the four brow bytes differ: a panel from before (which reads neither) reads it as without
+    int differ = 0;
+    for (size_t i = 0; i < kPacketSize; ++i) differ += with[i] != without[i] ? 1 : 0;
+    CHECK(differ == 4);  // (0.5 is 0x8000: its low byte stays 0)
+    // The bytes frameeyeosc writes (src/dots.rs): bit 2, the left brow 0.5 (0x8000), the right 1.0
+    std::vector<uint8_t> fromRust(kPacketSize, 0);
+    const uint8_t head[8] = {'F', 'E', 'O', 'D', 3, 4, 0, 0};
+    std::memcpy(fromRust.data(), head, sizeof(head));
+    fromRust[64 + 35] = 0x80;
+    fromRust[100 + 34] = 0xff;
+    fromRust[100 + 35] = 0xff;
+    CHECK(decode(fromRust.data(), kPacketSize, read) && read.brows);
+    CHECK(near(read.eyes[0].brow, 32768.0 / 65535.0, 1e-6) && read.eyes[1].brow == 1.0f);
+    // Bit 2 clear: the bytes aren't read (no brows), whatever is in them
+    fromRust[5] = 0;
+    CHECK(decode(fromRust.data(), kPacketSize, read) && !read.brows && read.eyes[1].brow == 0.0f);
+    // Version 2 never has brows (bit 2 meant nothing there)
+    std::vector<uint8_t> v2(with.begin(), with.begin() + kPacketSizeV2);
+    v2[4] = 2;
+    CHECK(decode(v2.data(), v2.size(), read) && !read.brows && read.eyes[0].brow == 0.0f);
+    // Written within 0..1, NaN as 0
+    packet.eyes[0].brow = NAN;
+    packet.eyes[1].brow = 1.7f;
+    const std::vector<uint8_t> odd = encode(packet);
+    CHECK(decode(odd.data(), odd.size(), read) && read.eyes[0].brow == 0.0f && read.eyes[1].brow == 1.0f);
+}
+
 void testGeometry() {
     // Straight ahead from between the eyes: 2 m ahead
     const double kDistanceM = 2.0;
@@ -222,6 +267,7 @@ void testSocket() {
  */
 int main() {
     testPacket();
+    testBrows();
     testGeometry();
     testSocket();
     if (gFailures == 0) std::printf("gaze-dots-test: all passed\n");

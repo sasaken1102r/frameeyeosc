@@ -33,11 +33,13 @@ struct EyeShown {
     double gazeY = 0.0;     ///< (+ up)
     bool camera = false;    ///< its eyelid came from the eye camera (the source badge)
     bool closedByCamera = false;  ///< the eye camera reads it closed
+    double brow = NAN;      ///< the brow as sent, 0 at rest .. 1 raised (NaN: none drawn; Sent only, see shown)
 };
 
 /** Both eyes as drawn, and the gaze for the footer. */
 struct Shown {
     bool valid = false;  ///< there was a sample
+    bool brows = false;  ///< brows are sent (brow_from_widen): the eyes leave room above them for the brows
     EyeShown eyes[2];    ///< left, right (anatomical)
     double gazeX = 0.0;  ///< the combined gaze (1.0 = 45°)
     double gazeY = 0.0;
@@ -50,10 +52,12 @@ constexpr double kIrisMm = 11.8;
 
 /**
  * The drawn eyes from one of frameeyeosc's samples. Sent: the eyelid, squint, pupil and gaze as sent, the badge from
- * where the eyelid came from (LidFrom: the eye server's usual mix is Valve's, anything else the camera's). Raw: Valve's
- * openness after the eye's scale (1.0 drawn as relaxed open) and the gaze before smoothing, no squint or pupil (Valve
- * has none). Camera: the eye camera's own eyelid, squint and pupil, and the gaze before smoothing (the camera gives
- * frameeyeosc none); an eye without fresh camera values is not known.
+ * where the eyelid came from (LidFrom: the eye server's usual mix is Valve's, anything else the camera's), and the
+ * brows while they are sent. Raw: Valve's openness after the eye's scale (1.0 drawn as relaxed open) and the gaze
+ * before smoothing, no squint or pupil (Valve has none). Camera: the eye camera's own eyelid, squint and pupil, and the
+ * gaze before smoothing (the camera gives frameeyeosc none); an eye without fresh camera values is not known. Raw and
+ * Camera draw no brows: nothing measures them (frameeyeosc makes them from the widening), so there is nothing "as read"
+ * to show; the room above the eyes stays, so switching the values doesn't move the eyes.
  * @param packet the sample
  * @param source which values
  * @return the eyes
@@ -78,6 +82,22 @@ constexpr double kRelaxedOpen = 0.72;
 double lowerLidRise(double squint);
 /** The most a full squint raises the lower lid (a share of the way to the eye's middle line). */
 constexpr double kMaxSquintRise = 0.45;
+
+/**
+ * How far a brow is raised above where it rests, as a share of the drawn eye's height: up to kBrowRise.
+ * @param brow 0 at rest .. 1 raised all the way (NaN as 0; kept within 0..1)
+ * @return 0..kBrowRise
+ */
+double browLift(double brow);
+/** The most a brow rises (a share of the drawn eye's height). */
+constexpr double kBrowRise = 0.3;
+/** Where a brow's highest point rests, above the top of the drawn eye's box (a share of its height)... */
+constexpr double kBrowRest = 0.04;
+/** ...how far its ends are below that point, and how thick it is (shares of the height). */
+constexpr double kBrowArch = 0.08;
+constexpr double kBrowThickness = 0.04;
+/** The room a brow raised all the way needs above the drawn eye's box (a share of its height). */
+constexpr double kBrowHeadroom = kBrowRest + kBrowRise + kBrowThickness / 2;
 
 /**
  * The pupil's radius in the drawing.
@@ -357,10 +377,17 @@ private:
 /**
  * Made-up values and pictures for --fake-preview and the tests: both eyes open, the left one a little widened and from
  * the camera, the right one squinting, looking a little right and down; grey pictures with a dark disc where the pupil
- * would be (not an eye: no real eye picture is ever used).
+ * would be (not an eye: no real eye picture is ever used). No brows (see fakeBrows).
  * @param view where to write them
  * @param nowNs the pictures' time
  */
 void fake(View& view, uint64_t nowNs);
+
+/**
+ * Made-up brows on the made-up values (--fake-preview-brows): brows are sent, both at `level`.
+ * @param view the values (from fake)
+ * @param level 0 at rest .. 1 raised all the way
+ */
+void fakeBrows(View& view, double level);
 
 }  // namespace eye_preview

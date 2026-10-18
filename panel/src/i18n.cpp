@@ -741,6 +741,13 @@ UiText makeJapanese() {
     t.partialNew = "新しく覚えたよ";
     t.partialPrev = "前の値を使うよ";
     t.partialProv = "仮の値を使うよ";
+    t.userPartialPill = "一部は標準の値";
+    t.userPartialEyeBoth = "両目";
+    t.userPartialBodyFormat = "細めは覚えたよ。%sは、下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は標準の値を使うよ";
+    t.userPreviousPill = "一部は前の値";
+    t.userPreviousBodyFormat = "細めは覚えたよ。%sは、下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は前の値のままにしたよ";
+    t.userMixedPill = "一部は前の値と標準の値";
+    t.userMixedBodyFormat = "細めは覚えたよ。下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は、%sは前の値のまま、%sは標準の値にしたよ";
     t.nextTitle = "次にやること・目のカメラ";
     t.nextPass = "SteamOS の設定で決めてね";
     t.nextWait = "ボタンを押すと始まるよ";
@@ -791,6 +798,7 @@ UiText makeJapanese() {
     t.lidsLook = "見た目";
     t.lidsBlinks = "まばたき・細め";
     t.lidsFine = "細かく直す";
+    t.lidsBrows = "眉";
     t.gazeMotion = "動き";
     t.gazeReach = "動く範囲";
     t.gazeGlitch = "乱れ対策";
@@ -829,6 +837,17 @@ UiText makeJapanese() {
     t.widenSwitchOn = "する";
     t.widenSwitchOff = "しない";
     t.widenNoteOff = "「見開き」が「しない」なので、いまは使わないよ";
+    t.rowBrowFromWiden = "見開きで眉も上げる";
+    t.browFromWidenHint = "カメラは眉を見ていないよ";
+    t.browFromWidenNote = "目を見開くと、アバターの眉も上がります。眉そのものは測っていません。\n"
+                          "眉のパラメーターがあるアバターで動きます。";
+    t.rowBrowStrength = "眉の上がり方";
+    t.browStrengthHint = "アバターに合わせて";
+    t.browStrengthWeak = "弱い";
+    t.browStrengthStrong = "強い";
+    t.rowLidVeto = "半目の読み直し（AI）";
+    t.lidVetoNote = "横を見たときなどに開いた目が半目に読まれたら、小さな AI が見直して開いた目に戻します。"
+                    "軽い細めも開いた目に戻ることがあります。まだ試しの機能です（作った人の目だけで学習しています）。";
     t.blinkHint = "短いまばたきも逃さない";
     t.blinkHoldCaption = "閉じたまま保つ時間";
     t.rowBlinkBoth = "まばたきを両目でそろえる";
@@ -1684,6 +1703,13 @@ UiText makeEnglish() {
     t.partialNew = "learned now";
     t.partialPrev = "previous values";
     t.partialProv = "provisional values";
+    t.userPartialPill = "Partly standard";
+    t.userPartialEyeBoth = "Both eyes";
+    t.userPartialBodyFormat = "Squinting is learned. %s: looking down couldn't be measured well (lashes, perhaps), so the standard correction is used";
+    t.userPreviousPill = "Partly previous";
+    t.userPreviousBodyFormat = "Squinting is learned. %s: looking down couldn't be measured well (lashes, perhaps), so the previous correction is kept";
+    t.userMixedPill = "Partly previous, standard";
+    t.userMixedBodyFormat = "Squinting is learned. Looking down couldn't be measured well (lashes, perhaps): %s keeps the previous correction, %s uses the standard one";
     t.nextTitle = "Next · Eye cameras";
     t.nextPass = "Set it in the SteamOS settings";
     t.nextWait = "It starts with the button";
@@ -1734,6 +1760,7 @@ UiText makeEnglish() {
     t.lidsLook = "Look";
     t.lidsBlinks = "Blinks & squint";
     t.lidsFine = "Fine-tune";
+    t.lidsBrows = "Brows";
     t.gazeMotion = "Motion";
     t.gazeReach = "Reach";
     t.gazeGlitch = "Glitch guard";
@@ -1772,6 +1799,18 @@ UiText makeEnglish() {
     t.widenSwitchOn = "On";
     t.widenSwitchOff = "Off";
     t.widenNoteOff = "Not used while Widening is Off";
+    t.rowBrowFromWiden = "Widen raises brows";
+    t.browFromWidenHint = "The cameras don't see brows";
+    t.browFromWidenNote = "When you widen your eyes, the avatar's brows go up too. Brows aren't measured. "
+                          "Works on avatars with brow parameters.";
+    t.rowBrowStrength = "Brow raise strength";
+    t.browStrengthHint = "Fit it to your avatar";
+    t.browStrengthWeak = "Weak";
+    t.browStrengthStrong = "Strong";
+    t.rowLidVeto = "Half-shut check (AI)";
+    t.lidVetoNote = "When an open eye reads as half shut (for example looking to the side), a small AI double-checks "
+                    "and keeps it open. It may also open up a light squint. Experimental: trained on the developer's "
+                    "eyes only.";
     t.blinkHint = "Don't miss short blinks";
     t.blinkHoldCaption = "How long a closed eye stays closed";
     t.rowBlinkBoth = "Blink both eyes together";

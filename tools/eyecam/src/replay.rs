@@ -374,7 +374,7 @@ pub struct LiveOpts {
 }
 
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
-closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held,pupil_cx,pupil_cy,pupil_a,pupil_b,x_min,search_x_min,ext";
+closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held,pupil_cx,pupil_cy,pupil_a,pupil_b,x_min,search_x_min,ext,veto_p,vetoed";
 
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
 pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, String> {
@@ -534,6 +534,9 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                     0
                 })
                 .to_string(),
+                // The eyelid veto: the CNN's P(open) (empty when it did not run), and whether the frame was vetoed
+                f(o.veto.p_open),
+                (o.veto.on as u8).to_string(),
             ];
             writeln!(w, "{}", row.join(",")).map_err(|e| e.to_string())?;
         }
@@ -642,6 +645,7 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
             }
         }
     }
+    let (mut look_down_default, mut look_down_previous) = ([false; 2], [false; 2]);
     let (kind_name, result, values, lines, params_json, failed_eye) = match kind {
         CalibRun::Wear => {
             let fallback = [0, 1].map(|e| hist.map_or(live::DEFAULT_WIDEN_STEP, |h| h[e].step));
@@ -656,13 +660,13 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
         }
         CalibRun::User => {
             let wear = calib.wear.ok_or("the calibration file has no wear levels (needed for a user calibration)")?;
-            let out = live::fit_user(&samples, &wear, calib.user, true);
+            let out = live::fit_user_settled(&samples, &wear, calib.user);
             let (values, lines) = live::user_report(&samples, &wear);
-            let params = out.as_ref().ok().map(|(u, _)| live::user_params_json(u));
-            let result = out.map(|(_, w)| {
-                if w.is_empty() { "校正できた（ユーザー）".to_string() } else { format!("校正できた（ユーザー）。注意: {}", w.join("、")) }
-            });
-            ("user", result, values, lines, params, String::new())
+            let params = out.as_ref().ok().map(|o| live::user_params_json(&o.user));
+            if let Ok(o) = &out {
+                (look_down_default, look_down_previous) = (o.look_down_default, o.look_down_previous);
+            }
+            ("user", out.map(|o| o.message()), values, lines, params, String::new())
         }
     };
     for l in &lines {
@@ -674,9 +678,10 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
     };
     eprintln!("calibration ({kind_name}): {}", if ok { format!("ok: {message}") } else { format!("failed: {message}") });
     Ok(format!(
-        "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+        "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"ok\": {ok},\n  \"failed_eye\": {},{}\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
         crate::live::JSON_EYES_ANATOMICAL,
         crate::json::string(&failed_eye),
+        live::look_down_json(kind == CalibRun::User, look_down_default, look_down_previous),
         crate::json::string(message),
         params_json.unwrap_or_else(|| "null".into())
     ))

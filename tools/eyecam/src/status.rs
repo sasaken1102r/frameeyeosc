@@ -198,6 +198,12 @@ pub struct Status {
     /// The eye whose part of the last `calib wear` failed: "L" / "R" (it went through with the other eye; the failed
     /// one kept its earlier levels), "LR" (both: the calibration failed), or "".
     pub calib_failed_eye: &'static str,
+    /// The eyes (left, right) the last `calib user` of this run went through with the standard look-down correction
+    /// on (its look down could not be measured; its squint was). Both false: none this run, it failed, or measured.
+    pub user_look_down_default: [bool; 2],
+    /// ...and those it went through with the previous user calibration's look-down correction kept on (its look down
+    /// could not be measured, and that one had a measured one). An eye is in one of the two at most.
+    pub user_look_down_previous: [bool; 2],
     /// Live processing is on (`live on`, the default).
     pub live: bool,
     /// Live processing time per frame (one eye), ms, averaged over the last second.
@@ -222,6 +228,32 @@ pub struct Status {
     pub last_error_unix: f64,
     /// The drift log (`driftlog on` / `off`): whether it is on, its file, how much is in it.
     pub driftlog: crate::driftlog::DriftStatus,
+    /// The eyelid veto (settings.json `lid_veto`) and what it has done.
+    pub lid_veto: LidVeto,
+}
+
+/// status.json `lid_veto`: whether the eyelid veto is on, its CNN runs a second (both eyes, over the last second),
+/// the vetoes fired, and the CNN's time per run (mean and max, ms), since live processing started.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LidVeto {
+    pub on: bool,
+    pub runs_per_s: f64,
+    pub fired: u64,
+    pub ms_mean: f64,
+    pub ms_max: f64,
+}
+
+impl LidVeto {
+    fn to_json(&self) -> String {
+        format!(
+            "{{\"on\":{},\"runs_per_s\":{},\"fired\":{},\"ms_mean\":{},\"ms_max\":{}}}",
+            self.on,
+            num(self.runs_per_s),
+            self.fired,
+            num(self.ms_mean),
+            num(self.ms_max)
+        )
+    }
 }
 
 impl Default for Status {
@@ -255,6 +287,8 @@ impl Default for Status {
             setup_done: false,
             last_calib_widen: "",
             calib_failed_eye: "",
+            user_look_down_default: [false; 2],
+            user_look_down_previous: [false; 2],
             live: false,
             live_ms: 0.0,
             preview: false,
@@ -266,6 +300,7 @@ impl Default for Status {
             last_error: String::new(),
             last_error_unix: 0.0,
             driftlog: Default::default(),
+            lid_veto: LidVeto::default(),
         }
     }
 }
@@ -298,7 +333,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"driftlog\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"user_look_down_default\":[{},{}],\"user_look_down_previous\":[{},{}],\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"driftlog\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -329,6 +364,10 @@ impl Status {
             self.setup_done,
             json_str(self.last_calib_widen),
             json_str(self.calib_failed_eye),
+            self.user_look_down_default[0],
+            self.user_look_down_default[1],
+            self.user_look_down_previous[0],
+            self.user_look_down_previous[1],
             self.live,
             num(self.live_ms),
             self.preview,
@@ -342,6 +381,7 @@ impl Status {
             json_str(&self.last_error),
             json_str(&crate::message_en::message_en(&self.last_error)),
             num(self.last_error_unix),
+            self.lid_veto.to_json(),
             self.driftlog.to_json(),
             num(updated_unix),
         )
@@ -390,6 +430,8 @@ pub enum Command {
     Live(bool),
     /// `set widen_sensitivity <0..1>`: answered by the control thread itself, in every state.
     SetWidenSensitivity(f64),
+    /// `set lid_veto on|off`: the eyelid veto, answered by the control thread itself, in every state.
+    SetLidVeto(bool),
     /// `preview on` / `preview off`: the panel's eye preview, answered by the control thread itself, in every state.
     Preview(bool),
     /// `driftlog on [<stem>]`: start the drift log (`driftlog`), answered by the control thread itself, in every state;
@@ -405,6 +447,9 @@ pub enum Command {
 
 /// The reply to `driftlog on <stem>` with a stem that isn't an eye log's name.
 pub const DRIFTLOG_BAD_NAME: &str = "ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で";
+
+/// The reply to `set lid_veto` with anything but on or off.
+pub const LID_VETO_BAD_VALUE: &str = "lid_veto は on か off で";
 
 /// Parse one control line. Protocol names are 1-32 of [A-Za-z0-9_-], so they can never name a path.
 pub fn parse_command(line: &str) -> Result<Command, String> {
@@ -438,6 +483,11 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             let v = words.next().and_then(|w| w.parse::<f64>().ok()).filter(|v| (0.0..=1.0).contains(v));
             Command::SetWidenSensitivity(v.ok_or("widen_sensitivity は 0 から 1 の数で")?)
         }
+        (Some("set"), Some("lid_veto")) => match words.next() {
+            Some("on") => Command::SetLidVeto(true),
+            Some("off") => Command::SetLidVeto(false),
+            _ => return Err(LID_VETO_BAD_VALUE.into()),
+        },
         _ => return Err("知らないコマンド".into()),
     };
     if words.next().is_some() {
@@ -492,6 +542,12 @@ mod tests {
         for bad in ["set widen_sensitivity", "set widen_sensitivity 1.5", "set widen_sensitivity x", "set widen_sensitivity 0.5 1", "set foo 1"] {
             assert!(parse_command(bad).is_err(), "{bad}");
         }
+        assert_eq!(parse_command("set lid_veto on\n"), Ok(Command::SetLidVeto(true)));
+        assert_eq!(parse_command(" set lid_veto off"), Ok(Command::SetLidVeto(false)));
+        for bad in ["set lid_veto", "set lid_veto true", "set lid_veto 1", "set lid_veto ON"] {
+            assert_eq!(parse_command(bad), Err(LID_VETO_BAD_VALUE.into()), "{bad}");
+        }
+        assert_eq!(parse_command("set lid_veto on now"), Err("知らないコマンド".into()));
         for bad in ["start ../x", "start a/b", "start .", "start a b", "stop now", "", "rm"] {
             assert!(parse_command(bad).is_err(), "{bad}");
         }
@@ -529,6 +585,11 @@ mod tests {
         let seen = Status { pupil: [0.95, f64::NAN], ..Status::default() }.to_json(1.5, 7);
         assert!(seen.contains(",\"pupil_l\":0.950,\"pupil_r\":null,") && crate::json::parse(&seen).is_ok(), "{seen}");
         assert!(Status { calib_failed_eye: "R", ..Status::default() }.to_json(1.5, 7).contains(",\"calib_failed_eye\":\"R\","));
+        assert!(json.contains(",\"user_look_down_default\":[false,false],\"user_look_down_previous\":[false,false],\"live\":"), "{json}");
+        let partial = Status { user_look_down_default: [false, true], ..Status::default() }.to_json(1.5, 7);
+        assert!(partial.contains(",\"user_look_down_default\":[false,true],"), "{partial}");
+        let previous = Status { user_look_down_previous: [true, false], ..Status::default() }.to_json(1.5, 7);
+        assert!(previous.contains(",\"user_look_down_previous\":[true,false],") && crate::json::parse(&previous).is_ok(), "{previous}");
         assert!(
             json.contains(",\"prox_min\":20.000,\"search_detail\":null,\"last_calib\":null,\"last_error\":\"\",\"last_error_en\":\"\",\"last_error_unix\":0.000,"),
             "{json}"
@@ -537,6 +598,10 @@ mod tests {
             json.contains(",\"driftlog\":{\"on\":false,\"path\":\"\",\"rows\":0,\"bytes\":0,\"full\":false,\"error\":\"\"},\"pid\":7,"),
             "{json}"
         );
+        assert!(json.contains(",\"lid_veto\":{\"on\":false,\"runs_per_s\":0.000,\"fired\":0,\"ms_mean\":0.000,\"ms_max\":0.000},\"driftlog\":"), "{json}");
+        let veto = LidVeto { on: true, runs_per_s: 12.5, fired: 3, ms_mean: 0.31, ms_max: 1.2 };
+        let on = Status { lid_veto: veto, ..Status::default() }.to_json(1.5, 7);
+        assert!(on.contains("\"lid_veto\":{\"on\":true,\"runs_per_s\":12.500,\"fired\":3,\"ms_mean\":0.310,\"ms_max\":1.200}") && crate::json::parse(&on).is_ok(), "{on}");
         let drift = crate::driftlog::DriftStatus { on: true, path: "/home/steamos/eyecam/drift/drift_x.csv".into(), rows: 12, bytes: 3400, full: false, error: String::new() };
         let on = Status { driftlog: drift, ..Status::default() }.to_json(1.5, 7);
         assert!(on.contains("\"driftlog\":{\"on\":true,\"path\":\"/home/steamos/eyecam/drift/drift_x.csv\",\"rows\":12,") && crate::json::parse(&on).is_ok(), "{on}");

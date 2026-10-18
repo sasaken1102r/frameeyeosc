@@ -750,6 +750,13 @@ struct UiText {
     const char* partialNew;  ///< ...rows: the eye that went through
     const char* partialPrev;  ///< ...the other one: its earlier values
     const char* partialProv;  ///< ...or provisional ones
+    const char* userPartialPill;  ///< "calib user" went through with the standard look-down correction on an eye: the pill
+    const char* userPartialEyeBoth;  ///< ...both eyes, in its body (partialEyeLeft / partialEyeRight for one)
+    const char* userPartialBodyFormat;  ///< ...its body: "%s" (the eyes) look down with the standard correction
+    const char* userPreviousPill;  ///< ...with the previous user calibration's look-down correction kept on an eye
+    const char* userPreviousBodyFormat;  ///< ...its body: "%s" (the eyes) keep the previous correction
+    const char* userMixedPill;  ///< ...one eye on the previous correction, the other on the standard one
+    const char* userMixedBodyFormat;  ///< ...its body: the eye on the previous one ("%s"), then the other ("%s")
     const char* nextTitle;  ///< the left column while not set up: its card
     const char* nextPass;  ///< ...what (1) is about
     const char* nextWait;  ///< ...(3) before its button
@@ -800,6 +807,7 @@ struct UiText {
     const char* lidsLook;  ///< the Eyelids tab's sub-tabs: the look (widening, smoothing, sync)
     const char* lidsBlinks;  ///< ...blinks and squints
     const char* lidsFine;  ///< ...the values by hand
+    const char* lidsBrows;  ///< ...the brows (raised with widening)
     const char* gazeMotion;  ///< the Gaze tab's sub-tabs: how the gaze moves (smoothing, deadzone)
     const char* gazeReach;  ///< ...how far it goes (the gaze scale, each eye on its own)
     const char* gazeGlitch;  ///< ...guarding against glitches (blinks, unreliable gaze, dropouts)
@@ -836,6 +844,15 @@ struct UiText {
     const char* widenSwitchOn;  ///< ...its two choices
     const char* widenSwitchOff;
     const char* widenNoteOff;  ///< the line under the slider while widening is off (the slider greyed)
+    const char* rowBrowFromWiden;  ///< brows raised with widening (brow_from_widen; choices widenSwitchOn / Off)...
+    const char* browFromWidenHint;  ///< ...its hint
+    const char* browFromWidenNote;  ///< ...what it does, under its choices (up to three lines; a "\n" breaks one)
+    const char* rowBrowStrength;  ///< how far they go up (brow_strength), while it is on...
+    const char* browStrengthHint;  ///< ...its hint
+    const char* browStrengthWeak;  ///< ...the slider's two ends
+    const char* browStrengthStrong;
+    const char* rowLidVeto;  ///< the eyelid veto (eyecam-rec's lid_veto; its choices are widenSwitchOn / Off)...
+    const char* lidVetoNote;  ///< ...what it does, under its choices (up to three lines)
     const char* blinkHint;  ///< the blink row: its hint
     const char* blinkHoldCaption;  ///< ...beside the hold
     const char* rowBlinkBoth;  ///< blink_sync_below

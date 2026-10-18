@@ -17,6 +17,7 @@ pub mod ring;
 pub mod settings;
 pub mod shm;
 pub mod status;
+pub mod veto;
 pub mod vision;
 
 /// CLOCK_MONOTONIC_RAW in seconds, the clock the eye server stamps its samples with.

@@ -231,6 +231,8 @@ struct Status {
     bool calibSaved = false;       ///< a calibration for the wear was saved once (calib.json), so it never asks again
     bool hasWidenSensitivity = false;  ///< "widen_sensitivity" is there (the slider shows only then)
     double widenSensitivity = 0.0;     ///< 0 dull (rarely widens by itself) .. 1 sensitive (NaN when missing)
+    bool hasLidVeto = false;           ///< "lid_veto" with its "on" is there (the Eyelids tab's switch shows only then)
+    bool lidVeto = false;              ///< ...the eyelid veto is on ("set lid_veto on")
     bool hasBuffers = false;       ///< "has_buffers": eyecam-rec holds the camera buffers (false when missing)
     bool hasSetupDone = false;     ///< "setup_done" is there (a newer eyecam-rec)
     bool setupDone = false;        ///< the setup's calibration was done once
@@ -238,7 +240,13 @@ struct Status {
     std::string calibFailedEye;    ///< "calib_failed_eye": "L" / "R" (that eye's part of the last "calib wear" failed:
                                    ///< it went through, that eye on its earlier or provisional values), "LR" (both:
                                    ///< it failed), "" (none, or an eyecam-rec before it)
-    bool hasPupil = false;         ///< "pupil_l" / "pupil_r" are there (a newer eyecam-rec that says whether it finds
+    bool hasUserLookDownDefault = false;  ///< "user_look_down_default" is there (a newer eyecam-rec)
+    int userLookDownDefault = 0;   ///< ...the eyes (kLeftEyeBit | kRightEyeBit) the last "calib user" of eyecam-rec's
+                                   ///< run went through with the standard look-down correction on (0: none)
+    bool hasUserLookDownPrevious = false;  ///< "user_look_down_previous" is there (a newer eyecam-rec)
+    int userLookDownPrevious = 0;  ///< ...the eyes that "calib user" went through with the previous user calibration's
+                                   ///< look-down correction kept on (0: none; never an eye of userLookDownDefault)
+    bool hasPupil = false;        ///< "pupil_l" / "pupil_r" are there (a newer eyecam-rec that says whether it finds
                                    ///< the pupils; without them "locked" is all there is)
     double pupil[2] = {0.0, 0.0};  ///< per eye (left, right), the share of the last 2 s of frames with the pupil found,
                                    ///< 0..1 (NaN when null: live processing off, or that eye's video stopped)
@@ -790,6 +798,14 @@ private:
 bool isSensitivityCommand(const std::string& command);
 
 /**
+ * The command that switches the eyelid veto (eyecam-rec takes it in every state, applies it at once and keeps it;
+ * status.json's lid_veto.on then says it).
+ * @param on true to switch it on
+ * @return "set lid_veto on" or "set lid_veto off"
+ */
+std::string lidVetoCommand(bool on);
+
+/**
  * The light warning before a start: the start button (idle) and the retry button (error) open it instead of
  * starting; its buttons start with or without the light, or close it. It closes by itself once the recorder's state
  * is no longer the one it was opened in, or the tab is hidden.
@@ -1011,6 +1027,25 @@ int failedEyes(const Status& status);
  * @return 0 left, 1 right, -1 none (also "LR": that one failed)
  */
 int partialEye(const Status& status);
+
+/**
+ * The eyes a "calib user" went through with the standard look-down correction (their look down couldn't be
+ * measured, e.g. long lashes read as the lid; their squint was): status.json's "user_look_down_default", or from an
+ * eyecam-rec before it, its (Japanese) message "校正できた（右目は下を見たときの補正を標準の値にしたよ）" ("両目とも..."
+ * for both).
+ * @param status the status (only an idle one, right after it)
+ * @return kLeftEyeBit | kRightEyeBit, or 0
+ */
+int lookDownDefaultEyes(const Status& status);
+
+/**
+ * The eyes a "calib user" went through with the previous user calibration's look-down correction kept on (their look
+ * down couldn't be measured, and the previous one had been): status.json's "user_look_down_previous" (an eyecam-rec
+ * before it never kept it).
+ * @param status the status (only an idle one, right after it)
+ * @return kLeftEyeBit | kRightEyeBit, or 0
+ */
+int lookDownPreviousEyes(const Status& status);
 
 /**
  * Whether partialEye's eye got provisional values (there were no earlier ones): eyecam-rec's message says "仮の値".

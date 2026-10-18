@@ -92,6 +92,7 @@ enum class PanelAction {
     EyecamRelearn,     ///< "Relearn my eyes": the caller sends eyecam::kRelearnCommand
     EyecamSensitivity, ///< the widening sensitivity slider: pressed and dragged inside the panel; the caller takes
                        ///< the value with takeSensitivity / sensitivityDragging
+    EyecamLidVeto,     ///< the eyelid veto's switch: arg 1 on / 0 off (the caller sends eyecam::lidVetoCommand)
     SetupKonsole,      ///< the eye cameras' setup: open a Konsole with the command typed in (arg 0 = the tool's install,
                        ///< 1 = passwd; the caller starts it, never from --dump-png)
     SetupVideo,        ///< ...open the setup video (only shown with a video URL)
@@ -1040,6 +1041,15 @@ private:
      * @param top where it starts
      */
     void drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double top);
+    /**
+     * The Eyelids tab's "Brows": raising the brows with widening (brow_from_widen) and, while it is on, how far
+     * (brow_strength).
+     * @param pen drawing tools
+     * @param t the words
+     * @param v the settings as shown
+     * @param top where the page starts
+     */
+    void drawLidsBrows(const Pen& pen, const UiText& t, const SettingsView& v, double top);
 
     /**
      * The Advanced tab.

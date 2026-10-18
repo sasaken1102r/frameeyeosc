@@ -12,7 +12,7 @@
 enum class AdvPage { Version, Trouble, Tools, Files };
 
 /** The Eyelids tab's sub-tabs, in the order its segmented control shows them. */
-enum class LidsPage { Look, Blinks, Fine };
+enum class LidsPage { Look, Blinks, Fine, Brows };
 
 /** The Gaze tab's sub-tabs, in the order its segmented control shows them. */
 enum class GazePage { Motion, Reach, Glitch };

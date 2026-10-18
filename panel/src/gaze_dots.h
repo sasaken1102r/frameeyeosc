@@ -19,9 +19,11 @@ namespace gaze_dots {
 /** The socket's name in the status folder (the same as frameeyeosc's). */
 constexpr const char* kSocketName = "gaze-dots.sock";
 /**
- * One datagram (version 3), little-endian: b"FEOD", 3, flags (bit 0 per-eye gaze, bit 1 the gaze scale in use), 2 zero
- * bytes, time (f64), six gaze values as sent and six before smoothing (f32), each eye's values (kEyeSize bytes; see
- * src/dots.rs), then six gaze values as sent but before the user's gaze scale (f32).
+ * One datagram (version 3), little-endian: b"FEOD", 3, flags (bit 0 per-eye gaze, bit 1 the gaze scale in use, bit 2
+ * brows are sent), 2 zero bytes, time (f64), six gaze values as sent and six before smoothing (f32), each eye's values
+ * (kEyeSize bytes; see src/dots.rs; its brow a u16 at 34, 65535 = 1.0, in what were two reserved zero bytes), then six
+ * gaze values as sent but before the user's gaze scale (f32). The brows came in 0.8.0 with the same version and size:
+ * a panel from before ignores them, and an older frameeyeosc's datagram (bit 2 clear) reads as without brows.
  */
 constexpr size_t kPacketSize = 160;
 /** Version 2 (0.7.7 and before): the same without the gaze before the scale (and its flag), still read (as unscaled).
@@ -56,6 +58,7 @@ struct PacketEye {
     float cameraPupilMm = NAN;   ///< the eye camera's pupil diameter (mm)
     int lidFrom = 0;             ///< where the sent eyelid came from: 0 the eye server's usual mix, 1.. the eye camera
     bool cameraClosed = false;   ///< the eye camera reads the eye closed
+    float brow = 0.0f;           ///< the brow as sent, 0 at rest .. 1 raised all the way (0 while no brows are sent)
 };
 
 /** One sample as frameeyeosc sent it. */
@@ -66,6 +69,7 @@ struct Packet {
     float unscaledGaze[6] = {0, 0, 0, 0, 0, 0};  ///< the same as sent, but before the user's gaze scale
     bool independent = false;              ///< each eye's own gaze is sent (two dots)
     bool scaled = false;                   ///< the user's gaze scale is in use (not 1 on all sides): rings too
+    bool brows = false;                    ///< brows are sent (brow_from_widen, to an output that takes them)
     PacketEye eyes[2];                     ///< the left eye, the right eye (anatomical)
 };
 

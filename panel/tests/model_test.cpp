@@ -775,6 +775,52 @@ void testWiden() {
     CHECK(SettingsView(m).locked(key::kWiden) && !SettingsView(m).flag(key::kWiden));
 }
 
+/** brow_from_widen and brow_strength (the Eyelids tab's "Widen raises brows" and "Brow raise strength"): off
+ *  and 0.8 by default, read from config.json and written back as frameeyeosc reads them, on the slider's 0.05 grid, and
+ *  frameeyeosc's own values while its command line (--brow-from-widen, --brow-strength) locks them. */
+void testBrowSettings() {
+    const SettingSpec* on = findSetting(key::kBrowFromWiden);
+    CHECK(on != nullptr && on->type == SettingType::Bool && on->defaultNumber == 0);
+    CHECK(on != nullptr && defaultValue(*on).isBool() && !defaultValue(*on).boolean);
+    const SettingSpec* strength = findSetting(key::kBrowStrength);
+    CHECK(strength != nullptr && strength->type == SettingType::Number && strength->defaultNumber == 0.8);
+    CHECK(strength != nullptr && strength->min == 0.0 && strength->max == 1.0 && strength->step == 0.05);
+    if (strength != nullptr) {
+        CHECK(snapValue(*strength, 0.63) == 0.65 && snapValue(*strength, 1.4) == 1.0 && snapValue(*strength, -1) == 0.0);
+    }
+    CHECK(formatSetting(key::kBrowStrength, 0.8) == "0.80");
+    PanelModel m;
+    m.config.root = JsonValue();
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(!SettingsView(m).flag(key::kBrowFromWiden));
+    CHECK(std::fabs(SettingsView(m).number(key::kBrowStrength) - 0.8) < 1e-12);
+    m.config.root.set(key::kBrowFromWiden, JsonValue::makeBool(true));
+    m.config.root.set(key::kBrowStrength, JsonValue::makeNumber(0.55));
+    CHECK(SettingsView(m).flag(key::kBrowFromWiden) && !SettingsView(m).locked(key::kBrowFromWiden));
+    // Through the file and back: "brow_from_widen": true, "brow_strength": 0.55, as frameeyeosc reads them
+    const std::string text = writeJson(m.config.root);
+    CHECK(text.find("\"brow_from_widen\": true") != std::string::npos);
+    CHECK(text.find("\"brow_strength\": 0.55") != std::string::npos);
+    JsonValue back;
+    std::string error;
+    CHECK(parseJson(text, back, error));
+    const JsonValue* flag = back.get(key::kBrowFromWiden);
+    const JsonValue* value = back.get(key::kBrowStrength);
+    CHECK(flag != nullptr && flag->isBool() && flag->boolean);
+    CHECK(value != nullptr && value->isNumber() && std::fabs(value->number - 0.55) < 1e-12);
+    // widen is a setting of its own
+    CHECK(SettingsView(m).flag(key::kWiden));
+    // Not a boolean: the default
+    m.config.root.set(key::kBrowFromWiden, JsonValue::makeString("yes"));
+    CHECK(!SettingsView(m).flag(key::kBrowFromWiden));
+    m.status = parseStatus(
+        "{\"pid\": 1, \"locked\": [\"brow_from_widen\", \"brow_strength\"], "
+        "\"effective\": {\"brow_from_widen\": true, \"brow_strength\": 0.3}}",
+        0, false);
+    CHECK(SettingsView(m).locked(key::kBrowFromWiden) && SettingsView(m).flag(key::kBrowFromWiden));
+    CHECK(SettingsView(m).locked(key::kBrowStrength) && std::fabs(SettingsView(m).number(key::kBrowStrength) - 0.3) < 1e-12);
+}
+
 /** gaze_debug_rings (the rings by the debug gaze dots, Advanced > Debug tools): the panel's own, like the dots'
  *  distance; on by default and read from config.json, off only when the file says false. */
 void testGazeDebugRings() {
@@ -1310,6 +1356,7 @@ int main() {
     testNativeEyes();
     testCameraLids();
     testWiden();
+    testBrowSettings();
     testGazeDebugRings();
     testCameraStatus();
     testLidsFromCameras();

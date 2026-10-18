@@ -145,6 +145,12 @@ pub struct Settings {
     /// Whether any eye widens at all. false: no eyelid goes out above relaxed open (VRCFT 0.75), whatever the eye
     /// camera, lid_widen or the lid marks say; closing and the camera's squint stay as they are (see main.rs, process).
     pub widen: bool,
+    /// Raise the avatar's brows as the eyes widen (the eye cameras don't see brows; see main.rs, BrowRaise). Taken from
+    /// the eyelids before `widen` caps them, so the brows still go up with widening off. Off: nothing about brows goes
+    /// out, exactly as before.
+    pub brow_from_widen: bool,
+    /// How far the brows go up at full widening with brow_from_widen, 0..1.
+    pub brow_strength: f32,
     /// How the eyes move: 2 (the default) as now; 1 as up to 0.7.5, the gaze and eyelid processing of that release
     /// (see main.rs, process). Fixes since (the eye cameras' left and right, the eye fit) apply either way.
     pub eye_behavior: u8,
@@ -249,6 +255,8 @@ impl Default for Settings {
             eye_behavior: 2,
             lid_widen: Widen::Normal,
             widen: true,
+            brow_from_widen: false,
+            brow_strength: 0.8,
             scales_predate_fit: false,
             raw: false,
             gaze_min_cutoff: 0.3,
@@ -385,6 +393,7 @@ impl Settings {
             self.gaze_scale_right,
             self.gaze_scale_up,
             self.gaze_scale_down,
+            self.brow_strength,
         ];
         let scales = [self.lid_scale_left, self.lid_scale_right];
         let eye_offsets = [self.gaze_offset_x_left, self.gaze_offset_x_right];
@@ -435,6 +444,9 @@ impl Settings {
         }
         if self.pupil_bits > MAX_PUPIL_BITS {
             return Err(format!("pupil_bits must be 0 (a float only) to {MAX_PUPIL_BITS}"));
+        }
+        if !(0.0..=1.0).contains(&self.brow_strength) {
+            return Err("brow_strength must be between 0 and 1".into());
         }
         if self.lid_sync < 0.0 {
             return Err("lid_sync must be non-negative".into());
@@ -658,6 +670,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
         settings.widen = !args.no_widen;
         locked.push("widen");
     }
+    pin!(brow_from_widen, brow_strength);
     if given.contains("no_camera_lids") {
         settings.camera_lids = !args.no_camera_lids;
         locked.push("camera_lids");
@@ -911,6 +924,24 @@ mod tests {
         // lid_widen is a setting of its own
         let (settings, _) = merged(r#"{"widen": false}"#, &[]).unwrap();
         assert_eq!(settings.lid_widen, Widen::Normal);
+    }
+
+    #[test]
+    fn brows_from_widening_are_off_until_turned_on() {
+        let (settings, locked) = merged("{}", &[]).unwrap();
+        assert_eq!((settings.brow_from_widen, settings.brow_strength, locked.len()), (false, 0.8, 0));
+        let (settings, _) = merged(r#"{"brow_from_widen": true, "brow_strength": 0.5}"#, &[]).unwrap();
+        assert_eq!((settings.brow_from_widen, settings.brow_strength), (true, 0.5));
+        for bad in [r#"{"brow_from_widen": 1}"#, r#"{"brow_strength": 1.5}"#, r#"{"brow_strength": -0.1}"#] {
+            assert!(merged(bad, &[]).is_err(), "{bad}");
+        }
+        let (settings, locked) =
+            merged(r#"{"brow_strength": 0.2}"#, &["--brow-from-widen", "--brow-strength", "0.6"]).unwrap();
+        assert_eq!((settings.brow_from_widen, settings.brow_strength), (true, 0.6));
+        assert_eq!(locked, ["brow_from_widen", "brow_strength"]);
+        // Widening off leaves it alone
+        let (settings, _) = merged(r#"{"widen": false, "brow_from_widen": true}"#, &[]).unwrap();
+        assert!(!settings.widen && settings.brow_from_widen);
     }
 
     #[test]

@@ -92,7 +92,8 @@ struct Options {
     int targetBench = 0;          ///< --target-bench N: time drawing the target N times
     bool fitDetails = false;      ///< --fit-details: "Fine-tune" open on the Eye fit tab
     int fitDetailsPage = 0;       ///< --fit-details lids: its eyelid page
-    std::string lidsPage;         ///< --lids-page (--lid-marks: fine): the Eyelids tab's sub-tab (look, blinks, fine)
+    std::string lidsPage;         ///< --lids-page (--lid-marks: fine): the Eyelids tab's sub-tab (look, blinks, fine,
+                                  ///< brows)
     std::string gazePage;         ///< --gaze-page: the Gaze tab's sub-tab (motion, reach, glitch)
     bool history = false;         ///< --history: the version history open (on the Advanced tab)
     std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
@@ -109,6 +110,7 @@ struct Options {
     bool previewSheet = false;    ///< --preview-sheet: the eye preview open...
     std::string previewSpec;      ///< ...as SOURCE[:nomirror][:nocamera][:frozen] ("" = as it opens)
     std::string fakePreview;      ///< --fake-preview: made-up preview values and pictures ("ok" or a state)
+    double fakePreviewBrows = NAN;  ///< --fake-preview-brows: brows sent at this level in them (NaN: none)
     int previewBench = 0;         ///< --preview-bench N: time N draws of the panel with the eye preview open
     std::string fakeAppsState;    ///< --fake-apps-state: made-up states of the other apps (KEY=STATE,...)
     std::string fakeAppsLaunch;   ///< --fake-apps-launch: why Konsole didn't open (on the confirmation)
@@ -155,6 +157,7 @@ struct Options {
     std::string fakeRecord;       ///< a made-up eye log state: "recording", "failed" or "autostopped"
     std::string fakeWiden;        ///< lid_widen in the made-up config ("" = the default)
     bool fakeNoWiden = false;     ///< --fake-no-widen: widen off (no widening at all)
+    bool fakeBrows = false;       ///< --fake-brows: brow_from_widen on (brows raised with widening)
     std::vector<double> fakeGazeScale;  ///< --fake-gaze-scale: gaze_scale_left, _right, _up, _down (empty = defaults)
     bool fakeGazeDots = false;    ///< --fake-gaze-dots: gaze_debug_dots on
     bool fakeRingsOff = false;    ///< --fake-rings-off: gaze_debug_rings off
@@ -256,7 +259,7 @@ void printUsage() {
         "      --tab basic|output|gaze|eyefit|lids|advanced|eyecam  Draw this tab (eyecam: only while eyecam-rec runs,\n"
         "                        or with --fake-eyecam)\n"
         "      --fit-details [gaze|lids]  Open \"Fine-tune\" on the Eye fit tab (default: its gaze page)\n"
-        "      --lids-page look|blinks|fine  The Eyelids tab's sub-tab (default look)\n"
+        "      --lids-page look|blinks|fine|brows  The Eyelids tab's sub-tab (default look)\n"
         "      --gaze-page motion|reach|glitch  The Gaze tab's sub-tab (default motion)\n"
         "      --lid-marks       The same as --lids-page fine (the lid marks)\n"
         "      --history         Open the version history (Advanced tab)\n"
@@ -285,6 +288,8 @@ void printUsage() {
         "      --fake-preview [ok|noeyecam|nopicture|closed|nodata]  Made-up preview values and grey pictures (not an\n"
         "                        eye), with the eye cameras set up: all there (ok), eyecam-rec not running, no picture\n"
         "                        yet, the left eye read closed, or no samples from frameeyeosc. Implies --fake\n"
+        "      --fake-preview-brows LEVEL  Brows sent in the made-up preview values, both at LEVEL (0 at rest ..\n"
+        "                        1 raised all the way). Implies --fake-preview (ok unless given) and --fake-brows\n"
         "      --preview-bench N  Time N draws of the panel with the eye preview open (with --preview-sheet)\n"
         "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
         "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
@@ -334,6 +339,8 @@ void printUsage() {
         "      --fake-record recording|failed|autostopped  A made-up eye log (Advanced tab, and the left column)\n"
         "      --fake-widen off|low|normal|high  lid_widen in the made-up settings\n"
         "      --fake-no-widen   widen off in the made-up settings (no eye widens; the Eyelids tab's \"Widening\")\n"
+        "      --fake-brows      brow_from_widen on in the made-up settings (\"Widen raises brows\" and its\n"
+        "                        strength on the Eyelids tab's \"Brows\")\n"
         "      --fake-eyecam waiting|idle|confirm|searching|recording:LABEL|calibrating[:LABEL]|error|calib-error\n"
         "                        A made-up eyecam-rec for the eye cameras tab (confirm: idle with the recording's\n"
         "                        light warning open, on the Advanced tab; LABEL: lead_in, normal, widen, close,\n"
@@ -347,7 +354,8 @@ void printUsage() {
         "                        (learned them; both mark an eyecam-rec that learns by itself), saved (calib_saved),\n"
         "                        recalib (recalib_suggested), nolive (not reading the cameras live), auto=VALUE\n"
         "                        (auto_grab), outdated (grab_outdated: an update brought a new tool), sens=V\n"
-        "                        (widen_sensitivity 0..1), buffers (has_buffers), setup /\n"
+        "                        (widen_sensitivity 0..1), veto=on|off (lid_veto.on; without it, an eyecam-rec\n"
+        "                        before it), buffers (has_buffers), setup /\n"
         "                        nosetup (setup_done true / false; without either, an eyecam-rec before it),\n"
         "                        widen=measured|default (last_calib_widen), done / fail (the setup's calibration\n"
         "                        just ended: the checklist's done screen, or widening on the standard values),\n"
@@ -359,7 +367,10 @@ void printUsage() {
         "                        \"calib wear\" that went through without that eye, with done or page=...; LR both\n"
         "                        eyes' pupils not seen, mixed a different reason per eye, with calib-error; with\n"
         "                        user too, a failed user calibration's message for each eye), prov\n"
-        "                        (failed=L|R: provisional values, not the previous ones),\n"
+        "                        (failed=L|R: provisional values, not the previous ones), lookdown=L|R|LR (with\n"
+        "                        page=user: the user's calibration went through with the standard look-down\n"
+        "                        correction on that eye, or both), lookprev=L|R|LR (likewise, with the previous\n"
+        "                        one kept; with lookdown=R and lookprev=L, one eye each),\n"
         "                        search=not_worn|no_video|one_eye (unlocked, and why: the proximity sensor says\n"
         "                        the headset is off, no eye video, or only one eye's; not_worn reads 12),\n"
         "                        prox=V (the proximity reading), blocks=N (changed blocks before the last look;\n"
@@ -455,6 +466,7 @@ struct FakeEyecam {
     double warmupS = -1.0;  ///< warmup_remaining_s while warming (-1 = none)
     bool saved = false;     ///< calib_saved
     double sens = -1.0;     ///< widen_sensitivity (-1 = an eyecam-rec without it)
+    int veto = -1;          ///< lid_veto.on: 1 / 0 (-1 = an eyecam-rec without it)
     bool buffers = false;   ///< has_buffers
     int setup = -1;         ///< setup_done: 1 / 0 (-1 = an eyecam-rec before it)
     std::string widen;      ///< last_calib_widen ("" = none)
@@ -465,6 +477,8 @@ struct FakeEyecam {
     double pupil[2] = {0.0, 0.0};  ///< ...their values (NaN = null)
     std::string failed;     ///< "L" / "R" / "LR" / "mixed": calib_failed_eye and its message ("" = none)
     bool provisional = false;  ///< failed=L|R: provisional values (no earlier ones)
+    std::string lookDown;   ///< "L" / "R" / "LR": a user calibration on the standard look-down correction there
+    std::string lookPrevious;  ///< ...on the previous one kept there (an eye in lookDown too is on the standard one)
     std::string search;     ///< search: why the video isn't found (not_worn / no_video / one_eye; "" = an older
                             ///< eyecam-rec without it, or locked)
     double prox = -1.0;     ///< prox=V: the proximity reading (-1 = as the search says)
@@ -560,6 +574,10 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             if (!parseFakePupil(flag.substr(6), fake)) return false;
         } else if (flag == "failed=L" || flag == "failed=R" || flag == "failed=LR" || flag == "failed=mixed") {
             fake.failed = flag.substr(7);
+        } else if (flag == "lookdown=L" || flag == "lookdown=R" || flag == "lookdown=LR") {
+            fake.lookDown = flag.substr(9);
+        } else if (flag == "lookprev=L" || flag == "lookprev=R" || flag == "lookprev=LR") {
+            fake.lookPrevious = flag.substr(9);
         } else if (flag == "prov") {
             fake.provisional = true;
         } else if (flag == "search=not_worn" || flag == "search=no_video" || flag == "search=one_eye") {
@@ -586,6 +604,8 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
         } else if (flag.rfind("sens=", 0) == 0 && flag.size() > 5 &&
                    flag.find_first_not_of("0123456789.", 5) == std::string::npos) {
             fake.sens = std::atof(flag.c_str() + 5);
+        } else if (flag == "veto=on" || flag == "veto=off") {
+            fake.veto = flag == "veto=on" ? 1 : 0;
         } else if (flag.rfind("calib=", 0) == 0 && flag.size() == 7 && flag[6] >= '0' && flag[6] <= '7') {
             fake.calibState = flag[6] - '0';
         } else {
@@ -742,7 +762,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.lidsPage = argv[++i];
             LidsPage page;
             if (!ui_state::parseLidsPage(options.lidsPage, page)) {
-                std::fprintf(stderr, "--lids-page must be look, blinks or fine: %s\n", options.lidsPage.c_str());
+                std::fprintf(stderr, "--lids-page must be look, blinks, fine or brows: %s\n", options.lidsPage.c_str());
                 return false;
             }
         } else if (arg == "--history") {
@@ -808,6 +828,16 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 }
             }
             options.fake = true;
+        } else if (arg == "--fake-preview-brows" && hasNext) {
+            const double level = std::atof(argv[++i]);
+            if (!(level >= 0.0 && level <= 1.0)) {
+                std::fprintf(stderr, "--fake-preview-brows takes a level from 0 to 1: %s\n", argv[i]);
+                return false;
+            }
+            options.fakePreviewBrows = level;
+            // (a --fake-preview STATE given too, before or after, is kept)
+            if (options.fakePreview.empty()) options.fakePreview = "ok";
+            options.fake = options.fakeBrows = true;
         } else if (arg == "--preview-bench" && hasNext) {
             options.previewBench = std::max(0, std::min(10000, std::atoi(argv[++i])));
         } else if (arg == "--apps-sheet" && hasNext) {
@@ -946,6 +976,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeV1 = true;
         } else if (arg == "--fake-no-widen") {
             options.fake = options.fakeNoWiden = true;
+        } else if (arg == "--fake-brows") {
+            options.fake = options.fakeBrows = true;
         } else if (arg == "--fake-gaze-dots") {
             options.fake = options.fakeGazeDots = true;
         } else if (arg == "--fake-rings-off") {
@@ -1376,6 +1408,10 @@ eyecam::View fakeEyecam(const std::string& text) {
         s.hasWidenSensitivity = true;
         s.widenSensitivity = fake.sens;
     }
+    if (fake.veto >= 0) {
+        s.hasLidVeto = true;
+        s.lidVeto = fake.veto == 1;
+    }
     if (!fake.autoGrab.empty()) s.autoGrab = fake.autoGrab;
     s.grabOutdated = fake.outdated;
     // Why the video isn't found (and the proximity reading that goes with it)
@@ -1448,6 +1484,44 @@ eyecam::View fakeEyecam(const std::string& text) {
                       (fake.provisional ? "provisional values" : "its previous values") +
                       (widenDefault ? ". Couldn't measure widening, using the usual width" : "") + ") [" + counts(12) +
                       needEn;
+    }
+    if (!fake.lookDown.empty() || !fake.lookPrevious.empty()) {
+        // A user calibration that went through with the standard look-down correction or the previous one kept
+        // (eyecam-rec's message: one note for the eyes, or one for each when they differ)
+        const auto bits = [](const std::string& eyes) {
+            return eyes == "LR"  ? (eyecam::kLeftEyeBit | eyecam::kRightEyeBit)
+                   : eyes == "L" ? eyecam::kLeftEyeBit
+                   : eyes == "R" ? eyecam::kRightEyeBit
+                                 : 0;
+        };
+        const int standard = bits(fake.lookDown);
+        const int previous = bits(fake.lookPrevious) & ~standard;
+        const auto noteJa = [&](int bit) {
+            return std::string(previous & bit ? "下を見たときの補正を前の値のままにしたよ"
+                                              : "下を見たときの補正を標準の値にしたよ");
+        };
+        const auto noteEn = [&](int bit) {
+            return std::string(previous & bit ? "keeping the previous correction for looking down"
+                                              : "using the standard correction for looking down");
+        };
+        const int eyes = standard | previous;
+        const int left = eyecam::kLeftEyeBit;
+        const int right = eyecam::kRightEyeBit;
+        if (eyes == (left | right) && noteJa(left) != noteJa(right)) {
+            s.message = "校正できた（左目は" + noteJa(left) + "。右目は" + noteJa(right) + "）";
+            s.messageEn = "Calibrated (Left eye: " + noteEn(left) + ". Right eye: " + noteEn(right) + ")";
+        } else {
+            const bool both = eyes == (left | right);
+            const int bit = eyes == right ? right : left;
+            s.message = std::string("校正できた（") + (both ? "両目とも" : bit == left ? "左目は" : "右目は") +
+                        noteJa(bit) + "）";
+            s.messageEn = std::string("Calibrated (") + (both ? "Both eyes" : bit == left ? "Left eye" : "Right eye") +
+                          ": " + noteEn(bit) + ")";
+        }
+        s.hasUserLookDownDefault = true;
+        s.userLookDownDefault = standard;
+        s.hasUserLookDownPrevious = true;
+        s.userLookDownPrevious = previous;
     }
     if (fake.message == 2) s.messageEn.clear();
     // The diagnostics: the proximity threshold, the last look (as eyecam-rec's own --fake makes it), the last wear
@@ -1635,6 +1709,7 @@ PanelModel fakeModel(const Options& options) {
     if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
     if (!options.fakeWiden.empty()) root.set(key::kLidWiden, JsonValue::makeString(options.fakeWiden));
     if (options.fakeNoWiden) root.set(key::kWiden, JsonValue::makeBool(false));
+    if (options.fakeBrows) root.set(key::kBrowFromWiden, JsonValue::makeBool(true));
     if (options.fakePaused) root.set(key::kSending, JsonValue::makeBool(false));
     if (options.fakeCustom) {
         root.set(key::kGazeMinCutoff, JsonValue::makeNumber(0.3));
@@ -1860,6 +1935,7 @@ PanelModel fakeModel(const Options& options) {
     }
     if (!options.fakePreview.empty()) {
         eye_preview::fake(m.preview, eye_preview::monotonicNs());
+        if (std::isfinite(options.fakePreviewBrows)) eye_preview::fakeBrows(m.preview, options.fakePreviewBrows);
         const std::string& state = options.fakePreview;
         if (state == "nopicture") {
             m.preview.hasPictures = false;
@@ -2237,7 +2313,8 @@ int runDumpPng(const Options& options) {
             }
             // Wait for eyecam-rec's reply, and show the folder as it is after it
             if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop ||
-                hit.action == PanelAction::EyecamCalib || hit.action == PanelAction::EyecamRelearn) {
+                hit.action == PanelAction::EyecamCalib || hit.action == PanelAction::EyecamRelearn ||
+                hit.action == PanelAction::EyecamLidVeto) {
                 while (eyecamControl.busy()) {
                     eyecamControl.poll(nowSeconds());
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -3067,13 +3144,16 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::EyecamChoose:
         case PanelAction::EyecamStop:
         case PanelAction::EyecamCalib:
-        case PanelAction::EyecamRelearn: {
+        case PanelAction::EyecamRelearn:
+        case PanelAction::EyecamLidVeto: {
             // One line to its socket ("start" or "start widen_nolight" from the light warning, "stop", a calibration,
-            // or "relearn"); the reply is read by the loop (eyecam::Control never waits)
+            // "relearn", or the eyelid veto's switch, which then shows as status.json says); the reply is read by the
+            // loop (eyecam::Control never waits)
             if (eyecamControl == nullptr) return;
             const std::string command =
                 hit.action == PanelAction::EyecamStop      ? std::string("stop")
                 : hit.action == PanelAction::EyecamRelearn ? std::string(eyecam::kRelearnCommand)
+                : hit.action == PanelAction::EyecamLidVeto ? eyecam::lidVetoCommand(hit.arg != 0)
                 : hit.action == PanelAction::EyecamCalib   ? eyecam::calibCommand(static_cast<eyecam::Calib>(hit.arg))
                                                            : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
             if (command.empty()) return;

@@ -925,7 +925,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::LidsPage:
             // (from the eye cameras tab's pointer to the widening slider too: the tab opens on it)
-            if (hit.arg < 0 || hit.arg > static_cast<int>(LidsPage::Fine)) return {};
+            if (hit.arg < 0 || hit.arg > static_cast<int>(LidsPage::Brows)) return {};
             setTab(PanelTab::Lids);
             setLidsPage(static_cast<LidsPage>(hit.arg));
             closeAppsList();
@@ -3068,11 +3068,11 @@ void EyePanel::drawEyeFitLids(const Pen& pen, const UiText& t, const SettingsVie
 }
 
 void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
-    // Three sub-tabs where the Advanced tab has its own (the first time "Look", then the one open last)
-    const LidsPage pages[3] = {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine};
-    const char* labels[3] = {t.lidsLook, t.lidsBlinks, t.lidsFine};
+    // Four sub-tabs where the Advanced tab has its own (the first time "Look", then the one open last)
+    const LidsPage pages[4] = {LidsPage::Look, LidsPage::Blinks, LidsPage::Fine, LidsPage::Brows};
+    const char* labels[4] = {t.lidsLook, t.lidsBlinks, t.lidsFine, t.lidsBrows};
     std::vector<Option> options;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 4; ++i) {
         options.push_back({labels[i], {PanelAction::LidsPage, nullptr, static_cast<int>(pages[i])}});
     }
     drawPageSwitch(pen, kSubTabY, kSubTabH, options, static_cast<int>(lidsPage_), -1);
@@ -3080,6 +3080,48 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
         case LidsPage::Look: drawLidsLook(pen, t, m, v, kAdvPageTop); break;
         case LidsPage::Blinks: drawLidsBlinks(pen, t, m, v, kAdvPageTop); break;
         case LidsPage::Fine: drawLidsDetails(pen, t, m, v, kAdvPageTop); break;
+        case LidsPage::Brows: drawLidsBrows(pen, t, v, kAdvPageTop); break;
+    }
+}
+
+void EyePanel::drawLidsBrows(const Pen& pen, const UiText& t, const SettingsView& v, double top) {
+    const double cy = (kRowH - kControlH) / 2;
+    double y = top;
+    // Brows raised with widening (brow_from_widen): with the cameras or without (Valve's openness widens too), and
+    // whatever "Widening" says (the brows go by the widening before it is held back). What it does under its choices
+    const bool brows = v.flag(key::kBrowFromWiden);
+    {
+        const bool locked = v.locked(key::kBrowFromWiden);
+        drawRowLabel(pen, t, y, kRowH, t.rowBrowFromWiden, t.browFromWidenHint, locked);
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                      {{t.widenSwitchOn, {PanelAction::SetBool, key::kBrowFromWiden, 1}},
+                       {t.widenSwitchOff, {PanelAction::SetBool, key::kBrowFromWiden, 0}}},
+                      brows ? 0 : 1, 20, locked);
+        // Up to three lines; a line break in the words starts a new line there (between sentences in Japanese)
+        double baseline = y + kRowH + 12;
+        size_t lines = 0;
+        const std::string note = t.browFromWidenNote;
+        for (size_t from = 0; from <= note.size() && lines < 3;) {
+            const size_t end = std::min(note.find('\n', from), note.size());
+            for (const std::string& line :
+                 wrapText(pen, note.substr(from, end - from), 14, false, kInnerRight - kControlX, 3 - lines)) {
+                pen.text(kControlX, baseline, line, 14, kTextMuted);
+                baseline += 19;
+                ++lines;
+            }
+            from = end + 1;
+        }
+        y = baseline - 7;
+        drawRowDivider(pen, y);
+    }
+    // How far they go up (brow_strength): only while it is on
+    if (brows) {
+        const bool locked = v.locked(key::kBrowStrength);
+        drawRowLabel(pen, t, y, kRowH, t.rowBrowStrength, t.browStrengthHint, locked);
+        drawNumberSlider(pen, key::kBrowStrength, numberShown(key::kBrowStrength, v.number(key::kBrowStrength)),
+                         t.browStrengthWeak, t.browStrengthStrong, kControlX, kInnerRight, y + 12, kRowH - 24, !locked);
+        y += kRowH;
+        drawRowDivider(pen, y);
     }
 }
 
@@ -3163,6 +3205,23 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
                                                                   : t.widenNoteCamera;
         pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
         y += h;
+    }
+    // The eyelid veto (eyecam-rec's lid_veto): with the eye cameras, from an eyecam-rec that says it. It shows what
+    // status.json says; a press sends "set lid_veto on|off"
+    const eyecam::Status& es = m.eyecam.status;
+    if (camera && es.hasLidVeto) {
+        drawRowDivider(pen, y);
+        drawRowLabel(pen, t, y, kRowH, t.rowLidVeto, "", false, 0, true);
+        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+                      {{t.widenSwitchOn, {PanelAction::EyecamLidVeto, nullptr, 1}},
+                       {t.widenSwitchOff, {PanelAction::EyecamLidVeto, nullptr, 0}}},
+                      es.lidVeto ? 0 : 1, 20);
+        double baseline = y + kRowH + 12;
+        for (const std::string& line : wrapText(pen, t.lidVetoNote, 14, false, kInnerRight - kControlX, 3)) {
+            pen.text(kControlX, baseline, line, 14, kTextMuted);
+            baseline += 19;
+        }
+        y = baseline - 7;
     }
     if (camera) drawRowDivider(pen, y);
     // Eyelid smoothing: three presets (the two values themselves on "Fine-tune")
@@ -5613,8 +5672,11 @@ void EyePanel::drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& 
     pen.text(kInnerRight, 139, note, 14, kTextMuted, false, true);
     const double cardTop = 158;
     const double cardH = setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, false, true);
-    // (green when it ended well, unless one eye went on its earlier values)
-    const bool partial = !user && eyecam::partialEye(m.eyecam.status) >= 0;
+    // (green when it ended well, unless one eye went on its earlier values, or the user's on the standard look-down
+    // correction or the previous one)
+    const bool partial = user ? (eyecam::lookDownDefaultEyes(m.eyecam.status) |
+                                 eyecam::lookDownPreviousEyes(m.eyecam.status)) != 0
+                              : eyecam::partialEye(m.eyecam.status) >= 0;
     strokeRounded(pen, cardX, cardTop, cardRight - cardX, cardH, 14,
                   screen == eyecam::SetupScreen::Calibrated && !partial ? kSuccess : kAccent, 2);
     setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, true, true);
@@ -6246,7 +6308,18 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
         case SetupScreen::Calibrated: {
             // A calibration from the page ended well: a line on what it learned, and back to the page
             const bool user = calib == eyecam::Calib::User;
-            title(learnName, partial >= 0 ? t.partialPill : t.calibDonePill, partial >= 0 ? kAccent : kSuccess);
+            // (the user's with the standard look-down correction on an eye, or the previous one kept: its squint
+            // learned all the same)
+            const int standard = user ? eyecam::lookDownDefaultEyes(s) : 0;
+            const int previous = user ? eyecam::lookDownPreviousEyes(s) & ~standard : 0;
+            const int lookDown = standard | previous;
+            title(learnName,
+                  partial >= 0                     ? t.partialPill
+                  : standard != 0 && previous != 0 ? t.userMixedPill
+                  : previous != 0                  ? t.userPreviousPill
+                  : standard != 0                  ? t.userPartialPill
+                                                   : t.calibDonePill,
+                  partial >= 0 || lookDown != 0 ? kAccent : kSuccess);
             y += 50;
             if (partial >= 0) {
                 // This wear's without one eye: which, and the calibration again
@@ -6259,7 +6332,23 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             }
             const char* big = user ? t.calibUserDoneTitle : t.calibDoneTitle;
             text(x0, y, big, fitSize(pen, big, 26, 16, w, true), kText, true);
-            para(user ? t.calibUserDoneBody : t.calibDoneBody, 17, kText, false, 38, 26, 2);
+            if (standard != 0 && previous != 0) {
+                // (one eye each: the one on the previous correction named first)
+                const bool leftPrevious = previous == eyecam::kLeftEyeBit;
+                char body[512];
+                std::snprintf(body, sizeof(body), t.userMixedBodyFormat,
+                              leftPrevious ? t.partialEyeLeft : t.partialEyeRight,
+                              leftPrevious ? t.partialEyeRight : t.partialEyeLeft);
+                para(body, 17, kText, false, 38, 26, 3);
+            } else if (lookDown != 0) {
+                const char* eyes = lookDown == (eyecam::kLeftEyeBit | eyecam::kRightEyeBit) ? t.userPartialEyeBoth
+                                   : lookDown == eyecam::kLeftEyeBit                          ? t.partialEyeLeft
+                                                                                              : t.partialEyeRight;
+                para(formatText(previous != 0 ? t.userPreviousBodyFormat : t.userPartialBodyFormat, eyes), 17, kText,
+                     false, 38, 26, 3);
+            } else {
+                para(user ? t.calibUserDoneBody : t.calibDoneBody, 17, kText, false, 38, 26, 2);
+            }
             const double by = y + 22;
             const double bh = 46;
             const double bw = std::max(120.0, pen.measure(t.calibDoneButton, 18, true) + 64);
@@ -6900,6 +6989,20 @@ void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, 
     pen.color(kBorder);
     cairo_set_line_width(cr, 1.5);
     cairo_stroke(cr);
+    // The brow, while one is sent: an arch over the middle of the eye, resting just above it and raised with the brow
+    // (the room above the box is the caller's: eye_preview::kBrowHeadroom)
+    if (std::isfinite(eye.brow)) {
+        const double peak = y - (eye_preview::kBrowRest + eye_preview::browLift(eye.brow)) * h;
+        const double ends = peak + eye_preview::kBrowArch * h;
+        const double control = peak - eye_preview::kBrowArch * h / 3;
+        pen.color(kEyeBrow);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_set_line_width(cr, eye_preview::kBrowThickness * h);
+        cairo_new_path(cr);
+        cairo_move_to(cr, x + w * 0.22, ends);
+        cairo_curve_to(cr, x + w * 0.4, control, x + w * 0.6, control, x + w * 0.78, ends);
+        cairo_stroke(cr);
+    }
     if (!eye.known) fadeGroup(pen);
 }
 
@@ -7043,15 +7146,27 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
 
     // Both eyes, each with its chips, and under them its camera picture; without the pictures, in the middle of the
     // space. In a mirror the right eye is on the right, seen from the front on the left (eye_preview::drawnColumn)
-    const double eyeW = 255;
-    const double eyeH = 170;
+    const eye_preview::Shown shown = pv.hasPacket ? eye_preview::shown(pv.packet, source) : eye_preview::Shown {};
+    double eyeW = 255;
+    double eyeH = 170;
     const double chipsH = 28;
     const double pictureSide = 176;
     const double footer = kContentY + kContentH - 36;
     const double areaTop = rowY + rowH + (why != nullptr ? 34 : 12);
-    const double blockH = eyeH + 6 + chipsH + (pictures ? 10 + pictureSide : 0);
-    const double top = pictures ? areaTop : areaTop + std::max(0.0, (footer - 22 - areaTop - blockH) / 2);
-    const eye_preview::Shown shown = pv.hasPacket ? eye_preview::shown(pv.packet, source) : eye_preview::Shown {};
+    const double belowEye = 6 + chipsH + (pictures ? 10 + pictureSide : 0);
+    // While brows are sent, room above the eyes for them raised all the way; where the space is short (the pictures
+    // on), the eyes are drawn smaller to make it (as wide for their height)
+    double browRoom = 0;
+    if (shown.brows) {
+        const double space = footer - 22 - areaTop - belowEye - 2;
+        const double fitH = std::floor(space / (1 + eye_preview::kBrowHeadroom));
+        eyeW = eyeW * std::min(eyeH, fitH) / eyeH;
+        eyeH = std::min(eyeH, fitH);
+        browRoom = std::ceil(eye_preview::kBrowHeadroom * eyeH) + 2;
+    }
+    const double blockH = browRoom + eyeH + belowEye;
+    const double blockTop = pictures ? areaTop : areaTop + std::max(0.0, (footer - 22 - areaTop - blockH) / 2);
+    const double top = blockTop + browRoom;
     const double half = (kInnerRight - kInnerX) / 2;
     for (int at = 0; at < 2; ++at) {
         const int eye = eye_preview::drawnColumn(0, previewMirror_) == at ? 0 : 1;

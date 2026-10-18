@@ -132,6 +132,8 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --no-gaze-drop     with --replay: no EyeWide hold after a downward glance (evaluation)
   --no-edge-hold     with --replay: a pupil lost at the window's (temporal) edge may count as closed (the old rule; evaluation)
   --no-ext-search    with --replay: no pupil search past the window's (temporal) edge (the old rule; evaluation)
+  --lid-veto         with --replay: the eyelid veto on (as settings.json's lid_veto true; off by default, as live)
+  --no-lid-veto      with --replay: no eyelid veto (the default; kept for older evaluation scripts)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
   --preview DIR      with --replay: also write the panel's eye preview (DIR/preview, as `preview on` does live), the
@@ -225,6 +227,8 @@ fn parse_args() -> Result<Args> {
             "--no-gaze-drop" => args.tune.gaze_drop = false,
             "--no-edge-hold" => args.tune.edge_hold = false,
             "--no-ext-search" => args.tune.ext_search = false,
+            "--lid-veto" => args.tune.lid_veto = true,
+            "--no-lid-veto" => args.tune.lid_veto = false,
             "--widen-sensitivity" => {
                 let v = number(value("--widen-sensitivity")?, "--widen-sensitivity")?;
                 (args.tune.wide_start, args.tune.wide_width) = eyecam::live::wide_curve(v);
@@ -479,8 +483,24 @@ impl StatusFile {
         let json = {
             let mut s = status.lock().unwrap();
             s.grab_outdated = eyecam::autograb::bundled_grab().is_some_and(|b| eyecam::autograb::grab_outdated(&b));
-            s.dev = self.settings.lock().unwrap().get().dev;
+            // The settings lock is held from the read until lid_veto is handed over, as `set lid_veto` holds it from
+            // its new Watch to its own store: a value read just before a `set lid_veto` can't land after it.
+            let mut watch = self.settings.lock().unwrap();
+            let settings = watch.get();
             if let Some(l) = &self.live {
+                // lid_veto may be edited by hand: the worker picks it up from here, on its next frame.
+                l.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
+            }
+            drop(watch);
+            s.dev = settings.dev;
+            if let Some(l) = &self.live {
+                s.lid_veto = status::LidVeto {
+                    on: settings.lid_veto,
+                    runs_per_s: f32::from_bits(l.veto_runs_per_s.load(Ordering::Relaxed)) as f64,
+                    fired: l.veto_fired.load(Ordering::Relaxed),
+                    ms_mean: l.veto_us_mean.load(Ordering::Relaxed) as f64 / 1000.0,
+                    ms_max: l.veto_us_max.load(Ordering::Relaxed) as f64 / 1000.0,
+                };
                 s.calib_state = l.calib_state.load(Ordering::Relaxed);
                 s.recalib_suggested = l.recalib_suggested.load(Ordering::Relaxed);
                 s.live = l.live_on.load(Ordering::Relaxed);
@@ -503,6 +523,9 @@ impl StatusFile {
                     3 => "LR",
                     _ => "",
                 };
+                let eyes = |bits: u32| [bits & 1 != 0, bits & 2 != 0];
+                s.user_look_down_default = eyes(l.user_look_down_default.load(Ordering::Relaxed));
+                s.user_look_down_previous = eyes(l.user_look_down_previous.load(Ordering::Relaxed));
                 s.pupil = [0, 1].map(|e| if s.live { l.pupil_share(e) } else { f64::NAN });
                 let now = now_raw();
                 s.cam_fps = [0, 1].map(|e| if s.locked { l.cam_fps(e, now) } else { f64::NAN });
@@ -636,14 +659,33 @@ fn ctl_loop(
 /// without waiting for the main thread. The fake daemon (no live engine) shows it but saves nothing.
 fn set_widen_sensitivity(v: f64, status: &Mutex<Status>, file: &StatusFile) -> String {
     if let Some(l) = &file.live {
-        // Keep the rest of the file (`dev`) as it is.
-        let path = settings::path();
-        if let Err(e) = (Settings { widen_sensitivity: v, ..Settings::load(&path) }).save(&path) {
+        // Keep the rest of the file (`dev`, `lid_veto`) as it is.
+        if let Err(e) = Settings::update(&settings::path(), |s| s.widen_sensitivity = v) {
             return format!("err 保存できなかった: {e}");
         }
         l.set_widen_sensitivity(v);
     }
     status.lock().unwrap().widen_sensitivity = v;
+    "ok".into()
+}
+
+/// `set lid_veto on|off`: the eyelid veto, done here in every state like `set widen_sensitivity`: saved in
+/// settings.json (the rest of the file kept) and handed to the worker at once. The fake daemon (no live engine) shows
+/// it but saves nothing.
+fn set_lid_veto(on: bool, status: &Mutex<Status>, file: &StatusFile) -> String {
+    if let Some(l) = &file.live {
+        let path = settings::path();
+        if let Err(e) = Settings::update(&path, |s| s.lid_veto = on) {
+            return format!("err 保存できなかった: {e}");
+        }
+        // status.json follows the file (a hand edit too): read it again on the next write, even if its time stamp
+        // didn't move. The new Watch and the store under one settings lock (see StatusFile::write).
+        let mut watch = file.settings.lock().unwrap();
+        *watch = settings::Watch::new(path);
+        l.lid_veto.store(on, Ordering::Relaxed);
+        drop(watch);
+    }
+    status.lock().unwrap().lid_veto.on = on;
     "ok".into()
 }
 
@@ -705,6 +747,7 @@ fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx:
             status.lock().unwrap().to_json(unix_now(), std::process::id())
         }
         Ok(Command::SetWidenSensitivity(v)) => set_widen_sensitivity(v, status, file),
+        Ok(Command::SetLidVeto(on)) => set_lid_veto(on, status, file),
         Ok(Command::Preview(on)) => set_preview(on, file),
         Ok(Command::DriftLogOn(stem)) => set_driftlog(true, stem.as_deref(), file),
         Ok(Command::DriftLogOff) => set_driftlog(false, None, file),
@@ -722,7 +765,9 @@ fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx:
 fn serve(args: &Args) -> Result<()> {
     let shared = Arc::new(livesvc::Shared::default());
     if !args.fake {
-        shared.set_widen_sensitivity(Settings::load(&settings::path()).widen_sensitivity);
+        let settings = Settings::load(&settings::path());
+        shared.set_widen_sensitivity(settings.widen_sensitivity);
+        shared.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
         shared.driftlog.lock().unwrap().dir = args.out.join(driftlog::DIR_NAME);
     }
     let daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()))?;
@@ -1006,7 +1051,11 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                     continue;
                 }
                 // Answered by the control thread; never sent here.
-                Command::SetWidenSensitivity(_) | Command::Preview(_) | Command::DriftLogOn(_) | Command::DriftLogOff => {
+                Command::SetWidenSensitivity(_)
+                | Command::SetLidVeto(_)
+                | Command::Preview(_)
+                | Command::DriftLogOn(_)
+                | Command::DriftLogOff => {
                     answer(req, "ok");
                     continue;
                 }

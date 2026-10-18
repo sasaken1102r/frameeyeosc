@@ -645,6 +645,7 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
             }
         }
     }
+    let mut look_down_default = [false; 2];
     let (kind_name, result, values, lines, params_json, failed_eye) = match kind {
         CalibRun::Wear => {
             let fallback = [0, 1].map(|e| hist.map_or(live::DEFAULT_WIDEN_STEP, |h| h[e].step));
@@ -659,13 +660,13 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
         }
         CalibRun::User => {
             let wear = calib.wear.ok_or("the calibration file has no wear levels (needed for a user calibration)")?;
-            let out = live::fit_user(&samples, &wear, calib.user, true);
+            let out = live::fit_user_settled(&samples, &wear, calib.user);
             let (values, lines) = live::user_report(&samples, &wear);
-            let params = out.as_ref().ok().map(|(u, _)| live::user_params_json(u));
-            let result = out.map(|(_, w)| {
-                if w.is_empty() { "校正できた（ユーザー）".to_string() } else { format!("校正できた（ユーザー）。注意: {}", w.join("、")) }
-            });
-            ("user", result, values, lines, params, String::new())
+            let params = out.as_ref().ok().map(|o| live::user_params_json(&o.user));
+            if let Ok(o) = &out {
+                look_down_default = o.look_down_default;
+            }
+            ("user", out.map(|o| o.message()), values, lines, params, String::new())
         }
     };
     for l in &lines {
@@ -677,9 +678,10 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
     };
     eprintln!("calibration ({kind_name}): {}", if ok { format!("ok: {message}") } else { format!("failed: {message}") });
     Ok(format!(
-        "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+        "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"ok\": {ok},\n  \"failed_eye\": {},{}\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
         crate::live::JSON_EYES_ANATOMICAL,
         crate::json::string(&failed_eye),
+        live::look_down_default_json(kind == CalibRun::User, look_down_default),
         crate::json::string(message),
         params_json.unwrap_or_else(|| "null".into())
     ))

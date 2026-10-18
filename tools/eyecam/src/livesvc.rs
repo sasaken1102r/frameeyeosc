@@ -676,6 +676,7 @@ impl Worker {
         result: &Result<String, String>,
         params: Option<String>,
         failed_eye: &str,
+        look_down_default: [bool; 2],
     ) {
         let (values, lines) = match kind {
             CollectKind::Wear => live::wear_report(samples),
@@ -698,10 +699,11 @@ impl Worker {
             CollectKind::Pupil => "pupil",
         };
         let json = format!(
-            "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"time\": {},\n  \"ok\": {ok},\n  \"failed_eye\": {},\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+            "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"time\": {},\n  \"ok\": {ok},\n  \"failed_eye\": {},{}\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
             live::JSON_EYES_ANATOMICAL,
             crate::json::string(&stamp()),
             crate::json::string(failed_eye),
+            live::look_down_default_json(kind == CollectKind::User, look_down_default),
             crate::json::string(message),
             params.unwrap_or_else(|| "null".into())
         );
@@ -764,7 +766,8 @@ impl Worker {
         let samples = std::mem::take(&mut self.samples);
         self.steps.clear();
         let mut params = None;
-        let result = self.fit(kind, &samples, &mut params);
+        let mut look_down_default = [false; 2];
+        let result = self.fit(kind, &samples, &mut params, &mut look_down_default);
         if kind == CollectKind::Wear && result.is_err() {
             self.shared.last_calib_widen.store(0, Ordering::Relaxed);
         }
@@ -772,12 +775,20 @@ impl Worker {
             CollectKind::Wear => ["", "L", "R", "LR"][(self.shared.calib_failed_eye.load(Ordering::Relaxed) & 3) as usize],
             _ => "",
         };
-        self.report(dir.as_deref(), kind, &samples, &result, params, failed_eye);
+        self.report(dir.as_deref(), kind, &samples, &result, params, failed_eye, look_down_default);
         self.publish_state();
         result
     }
 
-    fn fit(&mut self, kind: CollectKind, samples: &[Vec<Sample>; 2], params_out: &mut Option<String>) -> Result<String, String> {
+    /// Fit and save a calibration. `look_down_default`: the eyes of a user calibration that went through with the
+    /// standard look-down correction.
+    fn fit(
+        &mut self,
+        kind: CollectKind,
+        samples: &[Vec<Sample>; 2],
+        params_out: &mut Option<String>,
+        look_down_default: &mut [bool; 2],
+    ) -> Result<String, String> {
         let samples = samples.clone();
         match kind {
             CollectKind::Wear => {
@@ -819,18 +830,17 @@ impl Worker {
                     (Some(l), Some(r)) => [l, r],
                     _ => return Err("先に calib wear をしてね".into()),
                 };
-                let (u, warnings) = live::fit_user(&samples, &wear, self.calib.user, true)?;
-                *params_out = Some(live::user_params_json(&u));
-                self.calib.user = Some(u);
+                // An eye whose look-down part failed (long lashes read as the lid) still gets its squint, with the
+                // standard look-down correction.
+                let out = live::fit_user_settled(&samples, &wear, self.calib.user)?;
+                *params_out = Some(live::user_params_json(&out.user));
+                *look_down_default = out.look_down_default;
+                self.calib.user = Some(out.user);
                 self.calib.user_time = stamp();
-                self.calib.user_warnings = warnings.clone();
+                self.calib.user_warnings = out.warnings.clone();
                 save_calib(&self.calib_path, &self.calib)?;
                 self.apply_calib();
-                Ok(if warnings.is_empty() {
-                    "校正できた（ユーザー）".to_string()
-                } else {
-                    format!("校正できた（ユーザー）。注意: {}", warnings.join("、"))
-                })
+                Ok(out.message())
             }
             CollectKind::Pupil => {
                 let r = match (self.params[0].wear, self.params[1].wear) {
@@ -1011,7 +1021,7 @@ pub fn spawn(
                     Ok(Msg::Abort(dir)) => {
                         if let Some(kind) = w.collect.take() {
                             let samples = std::mem::take(&mut w.samples);
-                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None, "");
+                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None, "", [false; 2]);
                         }
                         w.steps.clear();
                         w.samples = [Vec::new(), Vec::new()];

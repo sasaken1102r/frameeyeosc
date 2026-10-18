@@ -313,7 +313,11 @@ impl Levels {
     /// From column means over rows 60..340 (`column_means`, one frame's or a mean).
     pub fn from_profile(col_mean: &[f64]) -> Levels {
         let dark = col_mean.iter().copied().fold(f64::INFINITY, f64::min);
-        let bright = col_mean[200..330].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        // A glare band is no measure of how bright the eye is.
+        let glare = glare_columns(col_mean);
+        let eye = (200..330).filter(|&x| !glare[x]).map(|x| col_mean[x]).fold(f64::NEG_INFINITY, f64::max);
+        let all = || col_mean[200..330].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let bright = if eye.is_finite() { eye } else { all() };
         let span = bright - dark;
         let k = if span >= LEVELS_SPAN_FULL {
             1.0
@@ -348,12 +352,34 @@ impl Default for Levels {
     }
 }
 
+/// A column mean at or above GLARE_LEVEL is a saturated glare band (IR reflected off a prescription lens insert's rim
+/// covers one side of the picture; the developer's recordings have no column mean above 180), and the GLARE_WIDEN
+/// columns next to it are its soft edge.
+const GLARE_LEVEL: f64 = 240.0;
+const GLARE_WIDEN: usize = 8;
+
+/// The columns a glare band covers (`GLARE_LEVEL`), widened by GLARE_WIDEN; all false without one.
+pub fn glare_columns(col_mean: &[f64]) -> Vec<bool> {
+    let n = col_mean.len();
+    let mut g = vec![false; n];
+    for x in (0..n).filter(|&x| col_mean[x] >= GLARE_LEVEL) {
+        g[x.saturating_sub(GLARE_WIDEN)..(x + GLARE_WIDEN + 1).min(n)].fill(true);
+    }
+    g
+}
+
 /// The lens-edge column: where the black band on the nasal (large-x) side starts (feat2.occluder_x), from column
 /// means over rows 60..340 of a frame or of a mean image. The band is darker than 25 at full brightness (`Levels`).
+/// A glare band on the nasal side hides the lens's black band: the picture ends where the glare starts (else the edge
+/// is found past the glare, the iris box reaches into it and stays as bright as lid skin, and closes are missed).
 pub fn occluder_x(col_mean: &[f64]) -> f64 {
     let lv = Levels::from_profile(col_mean).level(25.0);
     let first = col_mean[280..].iter().position(|&m| m < lv).unwrap_or(120);
-    (280 + first) as f64 - 3.0
+    let lens = (280 + first) as f64 - 3.0;
+    match glare_columns(col_mean)[200..].iter().position(|&g| g) {
+        Some(g) => lens.min((200 + g) as f64 - 3.0),
+        None => lens,
+    }
 }
 
 /// Column mean that counts as out of the dark temporal shading (`search_x_min`), at full brightness (`Levels`).
@@ -397,7 +423,9 @@ impl XMinFrom {
 /// `search_x_min` and where its value came from.
 pub fn search_x_min_from(col_mean: &[f64]) -> (f64, XMinFrom) {
     let lv = Levels::from_profile(col_mean).level(SHADE_END_LEVEL);
-    let bright = |x: usize| col_mean[x] >= lv;
+    // A glare band on the temporal side is not the bright region the iris is in.
+    let glare = glare_columns(col_mean);
+    let bright = |x: usize| col_mean[x] >= lv && !glare[x];
     let top = (X_MIN + SHADE_MARGIN) as usize;
     if !(top..top + 4).all(bright) {
         return (X_MIN, XMinFrom::Fixed);
@@ -1433,6 +1461,35 @@ mod tests {
         let hazy: Vec<f64> = cm.iter().map(|v| 0.5 * v + 40.0).collect();
         let lv = Levels::from_profile(&hazy);
         assert!(lv.moved && (lv.k - 0.484).abs() < 0.001 && (lv.dark - 42.15).abs() < 1e-9, "{lv:?}");
+    }
+
+    #[test]
+    fn a_glare_band_ends_the_picture_and_is_no_measure_of_brightness() {
+        // A saturated band over the nasal quarter (x 300..388; the lens's dark rim beyond stays), with a soft edge.
+        let band = |img: &mut Vec<u8>| {
+            for y in 0..H {
+                for x in 296..388 {
+                    let w = ((x as f64 - 296.0) / 8.0).min(1.0);
+                    let v = &mut img[y * W + x];
+                    *v = (*v as f64 * (1.0 - w) + 255.0 * w).round() as u8;
+                }
+            }
+        };
+        let img = synthetic_eye(250.0, 200.0, 25.0);
+        assert!(glare_columns(&column_means(&img)).iter().all(|&g| !g), "no band: nothing changes");
+        let mut glared = img.clone();
+        band(&mut glared);
+        let xmax = occluder_x(&column_means(&glared));
+        assert!((280.0..296.0).contains(&xmax), "the picture ends before the glare, not past it at the rim: {xmax}");
+        // Dim and glared: the factor is the dim picture's, not the glare's.
+        let mut dim = dimmed(&img, 0.5);
+        let k = Levels::from_profile(&column_means(&dim)).k;
+        band(&mut dim);
+        let lv = Levels::from_profile(&column_means(&dim));
+        assert!(lv.moved && (lv.k - k).abs() < 0.05, "{lv:?} vs {k}");
+        // A temporal band next to the bright region is not part of it: the search window stops at its soft edge.
+        let profile = (0..W).map(|x| if x < 12 { 5.0 } else if x < 150 { 255.0 } else { 80.0 });
+        assert_eq!(search_x_min_from(&profile.collect::<Vec<f64>>()), (148.0, XMinFrom::Shade));
     }
 
     #[test]

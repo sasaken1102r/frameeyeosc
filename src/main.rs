@@ -220,6 +220,13 @@ const CAMERA_DOUBT_FRAMES: f64 = 8.0;
 // below the camera), neither adds to the doubt nor clears it.
 const CAMERA_AGREE_GAP: f32 = 0.15;
 const CAMERA_AGREE_HOLD: f64 = 0.2;
+// Once the eye server has read the eye open (at or above the doubt line) for this long, the doubt starts over and the
+// eyelid goes back to the eye server's, agreeing or not. Without it an eye server that reads an open eye well below the
+// camera (0.6-0.95 of its open reading on 0.4.x, VRCFT 0.59 through a fit, while the camera reads relaxed open: below
+// CAMERA_AGREE_GAP of it) never agrees, so each blink's camera lag (median 44-67 ms over the 2026-10-08 and 10-16
+// recordings) adds up over minutes until the eyelid is the camera's, and blinks the camera misses go out open. A
+// squint's jumps up last 100-150 ms, and its eyelid is raised to the camera's meanwhile anyway (raised_to_camera).
+const CAMERA_DOUBT_CLEAR_OPEN: f64 = 1.0;
 // SteamOS 0.4.x's eye tracker often reads an open eye well below its open reading (1.000 on 0.4.3): 0.6-0.95, mostly
 // while looking down, at times for seconds straight ahead (mostly the right eye; 2026-10-07 23:23 and 10-08 20:47,
 // the camera seeing the eye open throughout). Through a fit that open at 1.000 and LID_FIT_CLOSED_MARGIN, a reading
@@ -1191,7 +1198,8 @@ impl Smoother {
     /// and where each came from. An eye the camera sees closed is closed (the eye server misses one eye of many
     /// blinks). An eye the eye server has read closing (below CAMERA_DOUBT_BELOW or --blink-sync-below) while the camera
     /// saw it open for longer than a blink (CAMERA_DOUBT_GRACE, at least CAMERA_DOUBT_FRAMES of the camera's frames,
-    /// added up) takes the camera's eyelid, until the two have agreed for CAMERA_AGREE_HOLD. Before that the eye
+    /// added up) takes the camera's eyelid, until the two have agreed for CAMERA_AGREE_HOLD or the eye server has read
+    /// it open for CAMERA_DOUBT_CLEAR_OPEN. Before that the eye
     /// server's stands, so a blink the camera catches late (or not at all) still closes the eye, and the blink sync
     /// still closes an eye the eye server caught in one eye only. An eye without the camera's values is the eye
     /// server's, as before, and starts over. Whichever it is, an eye the camera sees open goes no lower than
@@ -1238,6 +1246,12 @@ impl Smoother {
                 !closing && valve >= camera.lid.min(LID_RELAXED) - CAMERA_AGREE_GAP
             };
             state.diag = (valve, closing, agree);
+            if closing {
+                state.open_since = None;
+            } else if time - *state.open_since.get_or_insert(time) >= CAMERA_DOUBT_CLEAR_OPEN {
+                state.doubted = 0.0;
+                state.camera = false;
+            }
             if closing && !camera.closed {
                 state.doubted += f64::from(dt);
                 state.agree_since = None;
@@ -1817,6 +1831,8 @@ struct LidDoubt {
     agree_since: Option<f64>,
     // Whether the eyelid is the camera's.
     camera: bool,
+    // Since when the eye server has read the eye open (CAMERA_DOUBT_CLEAR_OPEN).
+    open_since: Option<f64>,
     // For the replay's diagnostics (FEO_DOUBT_DIAG): the last sample's eye-server eyelid, whether it was closing (below
     // the doubt line), and whether the two agreed.
     diag: (f32, bool, bool),
@@ -8900,6 +8916,36 @@ mod tests {
         check.step(5.0, [0.9; 2], [1.0; 2], [20.0; 2], [lid(0.9, false), lid(0.7, false)]);
         let held = check.step(5.01, [0.9; 2], [1.0; 2], [20.0; 2], [lid(0.0, true); 2]);
         assert_eq!(held, [lid(LID_RELAXED, false), lid(0.7, false)]);
+    }
+
+    #[test]
+    fn blinks_far_apart_do_not_add_up_to_the_camera_s_eyelid() {
+        let settings = Settings::default();
+        let mut smoother = Smoother::new(&settings);
+        let dt = 1.0 / 90.0;
+        let open = Some(CameraLid { lid: LID_RELAXED, closed: false, frame: 0.011 });
+        let shut = Some(CameraLid { lid: 0.0, closed: true, frame: 0.011 });
+        // A blink every 3 s: the eye server reads the eye shut for 14 samples, the camera from 4 samples later; between
+        // them the eye server reads the open eye at 0.59, below the camera's relaxed open by more than CAMERA_AGREE_GAP,
+        // so the two never agree. Each blink adds 4 samples of doubt, over CAMERA_DOUBT_GRACE in 7 blinks.
+        let mut time = 100.0;
+        for blink in 0..30 {
+            for i in 0..270 {
+                let valve = if i < 14 { 0.0 } else { 0.59 };
+                let camera = if (4..18).contains(&i) { shut } else { open };
+                let (_, from, _) =
+                    smoother.check_lids(time, dt as f32, [valve, 0.59], [0.0; 2], [camera, open], [None; 2], &settings);
+                assert_ne!(from[0], LidFrom::CameraOpen, "blink {blink}, sample {i}");
+                time += dt;
+            }
+        }
+        // One long closing the camera sees open still takes its eyelid
+        let mut from = [LidFrom::EyeServer; 2];
+        for _ in 0..40 {
+            (_, from, _) = smoother.check_lids(time, dt as f32, [0.0, 0.59], [0.0; 2], [open; 2], [None; 2], &settings);
+            time += dt;
+        }
+        assert_eq!(from[0], LidFrom::CameraOpen);
     }
 
     /// 5 s of samples looking straight ahead, the eye server reading the eyes at `openness(sample index)`, the larger of

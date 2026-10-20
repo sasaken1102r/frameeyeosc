@@ -709,6 +709,7 @@ private:
     bool previewFrozen_ = false;        ///< ...stopped where it was
     bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
     eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at
+    eye_preview::CameraLids previewKeptLids_;  ///< ...and where the eyelids came from then
 
     /**
      * The slider's value at a pointer position (on its track, two decimals).

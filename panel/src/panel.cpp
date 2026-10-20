@@ -7074,8 +7074,13 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
     using eye_preview::CameraState;
     using eye_preview::Source;
     // Stopped: what the first draw after "Freeze" showed, kept until "Resume"
+    // Where the eyelids come from now (frameeyeosc's camera.used, as the eyelids card has it), for the badges
+    eye_preview::CameraLids lids;
+    lids.known = m.status.running;
+    for (int eye = 0; eye < 2; ++eye) lids.used[eye] = m.status.running && m.status.camera.used[eye];
     if (previewFreezePending_) {
         previewKept_ = m.preview;
+        previewKeptLids_ = lids;
         previewFreezePending_ = false;
     }
     const eye_preview::View& pv = previewFrozen_ ? previewKept_ : m.preview;
@@ -7146,7 +7151,9 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
 
     // Both eyes, each with its chips, and under them its camera picture; without the pictures, in the middle of the
     // space. In a mirror the right eye is on the right, seen from the front on the left (eye_preview::drawnColumn)
-    const eye_preview::Shown shown = pv.hasPacket ? eye_preview::shown(pv.packet, source) : eye_preview::Shown {};
+    const eye_preview::CameraLids& shownLids = previewFrozen_ ? previewKeptLids_ : lids;
+    const eye_preview::Shown shown =
+        pv.hasPacket ? eye_preview::shown(pv.packet, source, shownLids) : eye_preview::Shown {};
     double eyeW = 255;
     double eyeH = 170;
     const double chipsH = 28;

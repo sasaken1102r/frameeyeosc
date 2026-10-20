@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.1 (unreleased)
+
+The eye preview's Valve / Camera tag now shows what really drives each eyelid, and the eye cameras no longer miss closes on dim pictures or with prescription inserts.
+
+日本語: 目のプレビューの「Valve」/「カメラ」の表示が、実際にまぶたを動かしている側を示すようになりました。目のカメラは、暗い映像や度付きインサートでも閉じたのを取りこぼさなくなりました。
+
+- Eye preview: the Valve / Camera tag now follows what actually drives the eyelids (the same as "Eyelids now" on Eyelids › Look), instead of showing Valve whenever the camera agreed with it.
+- eyecam: dim or low-contrast eye images and a white glare band from prescription inserts no longer make closes go missing.
+
 ## 0.8.0 (2026-10-18)
 
 Your avatar's brows can now go up when you widen your eyes (Eyelids › Brows: "Widen raises brows", off by default). The eye cameras don't see brows, so the brows follow the widening, also with Widening off. They go to VRChat directly, through LiveLink and through the FrameEyeOSC module, whose version 1.0.1 already reads them, so the module needs no update. With the eye cameras, the new "Half-shut check (AI)" on Eyelids › Look (off by default, experimental) lets a small AI undo an open eye read as half shut, for example while looking to the side. The user calibration no longer fails when only the look-down step can't be measured on an eye (long lashes, for example): the squint is saved, and that eye keeps its previous look-down correction (or uses the standard one if it had none).

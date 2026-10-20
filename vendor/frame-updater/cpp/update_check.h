@@ -190,6 +190,9 @@ private:
     long long installRequestedAt_ = 0;                ///< when (Unix time)
     long long startedAt_ = 0;                         ///< when this checker was made (Unix time): older "done" is stale
     std::string installedVersion_;                    ///< Installed seen for this version (until dismiss())
+    /// The regular version going back to was tried (install() while backToStable, or its failure seen): its failure
+    /// stays InstallFailed even when a later check fails and no longer says backToStable (until dismiss())
+    std::string backVersion_;
     UpdateStatus status_;
     std::uint64_t revision_ = 0;
 };

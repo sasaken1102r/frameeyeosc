@@ -25,7 +25,7 @@
 | `updateConfirmYes` | 確認の実行ボタン | 更新する | Update |
 | `updateConfirmNo` | 確認のやめるボタン | やめる | Cancel |
 | `updateInstallingFormat` | `Installing`（`%s` は下の手順） | 更新中: %s | Updating: %s |
-| `updateInstalledFormat` | `Installed`（古い版がまだ動いている） | %s を入れました。開き直すと新しい版になります | %s is installed. Reopen to use it |
+| `updateInstalledFormat` | `Installed`（前の版がまだ動いている。戻したときも） | %s を入れました。開き直すとその版になります | %s is installed. Reopen to use it |
 | `updateInstallFailed` | `InstallFailed`（下の理由を続ける） | 更新できませんでした（今の版のままです）: | The update failed (nothing was changed): |
 | `updateCheckFailed` | `CheckFailed`（下の理由を続ける） | 新しい版を確かめられませんでした: | Couldn't check for updates: |
 | `updateCheckNow` | もう一度確かめるボタン | 今すぐ確かめる | Check now |
@@ -49,6 +49,7 @@
 | `updateUsingTestFormat` | `UpToDate` で、動いている版がテスト版（`isPrerelease(current)`）。「最新版です」の代わり | テスト版 %s を使っています | Using test version %s |
 | `updateBackFormat` | `Available` で `backToStable`（0.5.0 から）。`updateAvailableFormat` の代わり | 本番の版 %s に戻せます | You can go back to the regular version %s |
 | `updateBackButton` | その行のボタン。`updateButton` の代わり | 戻す | Go back |
+| `updateBackManual` | 戻せるが `installable` が false。`updateManual` の代わり | ここからは戻せない版です。GitHub から手で入れてね | This version can't be installed from here. Install it by hand from GitHub |
 | `updateBackConfirmFormat` | 「戻す」を押したあとの確認。`updateConfirmFormat` の代わり | 本番の版 %s に戻しますか？ | Go back to the regular version %s? |
 | `updateBackConfirmHint` | その補足。`updateConfirmHint` の代わり | 本番の版に入れ替えます。途中でこの画面が閉じて開き直すことがあります | It installs the regular version. This panel may close and reopen meanwhile |
 | `updateBackConfirmYes` | その実行ボタン。`updateConfirmYes` の代わり | 戻す | Go back |

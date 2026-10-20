@@ -563,6 +563,7 @@ bool UpdateChecker::install() {
     args.push_back("install");
     installReply_.clear();
     installedVersion_.clear();
+    if (status_.backToStable && !status_.latest.empty()) backVersion_ = status_.latest;
     if (!spawn(args, installer_)) {
         installReply_ = {{"state", "failed"}, {"error", "spawn-failed"}, {"message", "cannot run " + config_.script}};
         recompute();
@@ -580,6 +581,7 @@ void UpdateChecker::dismiss() {
     stateFile_.clear();
     installReply_.clear();
     installedVersion_.clear();
+    backVersion_.clear();
     recompute();
 }
 
@@ -703,8 +705,10 @@ void UpdateChecker::recompute() {
         next.error.clear();
         next.message.clear();
     } else if (state == "failed" && (version.empty() || compareVersions(version, config_.currentVersion) > 0 ||
-                                     (next.backToStable && version == next.latest))) {
-        // A failed install of a newer version, or of the one offered going back to (older failures are old news)
+                                     (next.backToStable && version == next.latest) || version == backVersion_)) {
+        // A failed install of a newer version, or of the one offered going back to (older failures are old news). The
+        // latter is remembered: a later check may fail and stop saying backToStable
+        if (compareVersions(version, config_.currentVersion) < 0) backVersion_ = version;
         next.state = UpdateState::InstallFailed;
         next.version = version;
         next.error = get(stateFile_, "error");

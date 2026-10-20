@@ -2,5 +2,5 @@
 # Copied from the frame-updater repository by its sync.sh. Don't edit these files here:
 # change them in frame-updater and run sync.sh again. verify.sh checks that nothing was edited.
 version 0.5.0
-commit 3acde0c
+commit ba91a8a
 synced 2026-10-20

@@ -925,7 +925,7 @@ UiText makeJapanese() {
     t.updateConfirmYes = "更新する";
     t.updateConfirmNo = "やめる";
     t.updateInstallingFormat = "更新中: %s";
-    t.updateInstalledFormat = "%s を入れました。開き直すと新しい版になります";
+    t.updateInstalledFormat = "%s を入れました。開き直すとその版になります";
     t.updateInstallFailed = "更新できませんでした（今の版のままです）:";
     t.updateCheckFailed = "新しい版を確かめられませんでした:";
     t.updateCheckNow = "今すぐ確かめる";
@@ -940,6 +940,7 @@ UiText makeJapanese() {
     t.updateUsingTestFormat = "テスト版 %s を使っています";
     t.updateBackFormat = "本番の版 %s に戻せます";
     t.updateBackButton = "戻す";
+    t.updateBackManual = "ここからは戻せない版です。GitHub から手で入れてね";
     t.updateBackConfirmFormat = "本番の版 %s に戻しますか？";
     t.updateBackConfirmHint = "本番の版に入れ替えます。途中でこの画面が閉じて開き直すことがあります";
     t.updateBackConfirmYes = "戻す";
@@ -1908,6 +1909,7 @@ UiText makeEnglish() {
     t.updateUsingTestFormat = "Using test version %s";
     t.updateBackFormat = "You can go back to the regular version %s";
     t.updateBackButton = "Go back";
+    t.updateBackManual = "This version can't be installed from here. Install it by hand from GitHub";
     t.updateBackConfirmFormat = "Go back to the regular version %s?";
     t.updateBackConfirmHint = "It installs the regular version. This panel may close and reopen meanwhile";
     t.updateBackConfirmYes = "Go back";

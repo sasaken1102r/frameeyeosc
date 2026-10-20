@@ -3820,12 +3820,12 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
             } else {
                 primary = formatText(test.offered ? t.updateAvailableTestFormat : t.updateAvailableFormat, latest);
             }
-            if (u.installable && test.back) {
+            if (!u.installable) {
+                secondary = test.back ? t.updateBackManual : t.updateManual;
+            } else if (test.back) {
                 buttons.push_back({install, t.updateBackButton, false});
-            } else if (u.installable) {
-                buttons.push_back({install, formatText(t.updateToFormat, latest), true});
             } else {
-                secondary = t.updateManual;
+                buttons.push_back({install, formatText(t.updateToFormat, latest), true});
             }
             break;
         case UpdateState::Installing: primary = formatText(t.updateInstallingFormat, updateStepText(t, u.step)); break;

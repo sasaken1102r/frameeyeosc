@@ -323,11 +323,12 @@ void printUsage() {
         "      --fake-prompt vrchat|etvr|livelink|frameeyeosc  The recommended-settings question\n"
         "      --fake-autostart on|off|missing|unknown\n"
         "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed|\n"
-        "                    test|testbadge|onbeta|back\n"
+        "                    test|testbadge|onbeta|back|backmanual\n"
         "                        A made-up update state (the version row on the Advanced tab). test: the new version\n"
         "                        is a test version; testbadge: up to date and a newer test version exists (the badge\n"
         "                        while \"Get test versions\" is off); onbeta: running test version 0.7.11-beta.2;\n"
-        "                        back: on 0.7.11-beta.2 with it off, going back to 0.7.10 is offered\n"
+        "                        back: on 0.7.11-beta.2 with it off, going back to 0.7.10 is offered (backmanual:\n"
+        "                        the same without SHA256SUMS, so not from the panel)\n"
         "      --update-beta     \"Get test versions\" on (with --dump-png; else as panel.json says)\n"
         "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
         "                        English and Japanese, English only, or both cut at 300 characters\n"
@@ -1040,7 +1041,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fakeUpdate = argv[++i];
             static const char* const kStates[] = {"checking",  "uptodate",  "available",   "manual",
                                                   "installing", "installed", "checkfailed", "installfailed",
-                                                  "test",       "testbadge", "onbeta",    "back"};
+                                                  "test",       "testbadge", "onbeta",    "back",
+                                                  "backmanual"};
             if (std::find(std::begin(kStates), std::end(kStates), options.fakeUpdate) == std::end(kStates)) {
                 std::fprintf(stderr, "--fake-update: unknown state %s\n", options.fakeUpdate.c_str());
                 return false;
@@ -1257,12 +1259,13 @@ frame_updater::UpdateStatus fakeUpdate(const std::string& state, const std::stri
     } else if (state == "testbadge") {
         u.state = UpdateState::UpToDate;
         u.testVersion = "9.9.9-beta.1";
-    } else if (state == "back") {
+    } else if (state == "back" || state == "backmanual") {
         // "Get test versions" turned off on a test version: the older regular version is offered going back to
         u.state = UpdateState::Available;
         u.current = "0.7.11-beta.2";
         u.latest = "0.7.10";
-        u.installable = true;
+        u.installable = state == "back";
+        if (!u.installable) u.reason = "no-checksums";
         u.backToStable = true;
         u.notes = "The summary of the older version, not shown.";
     } else if (state == "onbeta") {

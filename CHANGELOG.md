@@ -2,12 +2,12 @@
 
 ## 0.8.1 (unreleased)
 
-The eye preview's Valve / Camera tag now shows what really drives each eyelid, and the eye cameras no longer miss closes on dim pictures or with prescription inserts.
+The eye preview's Valve / Camera tag now shows what really drives each eyelid, and the eye cameras miss far fewer closes on dim pictures or with prescription inserts.
 
-日本語: 目のプレビューの「Valve」/「カメラ」の表示が、実際にまぶたを動かしている側を示すようになりました。目のカメラは、暗い映像や度付きインサートでも閉じたのを取りこぼさなくなりました。
+日本語: 目のプレビューの「Valve」/「カメラ」の表示が、実際にまぶたを動かしている側を示すようになりました。目のカメラは、暗い映像や度付きインサートでも、閉じたのを取りこぼすことが減りました。
 
 - Eye preview: the Valve / Camera tag now follows what actually drives the eyelids (the same as "Eyelids now" on Eyelids › Look), instead of showing Valve whenever the camera agreed with it.
-- eyecam: dim or low-contrast eye images and a white glare band from prescription inserts no longer make closes go missing.
+- eyecam: with dim or low-contrast eye images, or a white glare band from a prescription insert, the eye cameras now miss far fewer closes and find the pupil much more often. With a glare band, the eyelids may read a little half shut more often while you look toward your ear (to be tuned in a later version).
 
 ## 0.8.0 (2026-10-18)
 

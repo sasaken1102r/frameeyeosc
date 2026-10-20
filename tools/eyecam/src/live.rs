@@ -1158,9 +1158,10 @@ impl EyeEngine {
         let ap_cl_px = ap_n_px - gap_px;
         // The calibrated depth within the limits the calibration puts on f_sq (F_SQ_MAX, F_SQ_MIN), here against the
         // gap in use: a wear's gap 0.6..1.5 x the history's would otherwise put the squint's full depth anywhere from
-        // 0.09 to 2.25 gaps below open.
+        // 0.09 to 2.25 gaps below open. max/min, not clamp: before the iris radius is known (no history, no pupil yet)
+        // r and the gap are NaN, and clamp would panic; this stays NaN, and the squint keeps its last value as before.
         let ap_sq = match user.sq_depth {
-            Some(d) => ap_n_px - (d * r).clamp((1.0 - F_SQ_MAX) * gap_px, (1.0 - F_SQ_MIN) * gap_px),
+            Some(d) => ap_n_px - (d * r).max((1.0 - F_SQ_MAX) * gap_px).min((1.0 - F_SQ_MIN) * gap_px),
             None => ap_cl_px + user.f_sq * (ap_n_px - ap_cl_px),
         };
         // Without a user calibration (squint depth, pitch curve) the aperture alone is not trusted: no squint, and the
@@ -3568,6 +3569,23 @@ mod tests {
         e.reset_tracking();
         assert!(e.prev.is_none() && e.prev_p.is_none() && e.nopupil == 0);
         assert!(e.r_est.len() > 0 || e.cm_n > 0, "what belongs to the wear stays");
+    }
+
+    #[test]
+    fn a_calibrated_squint_depth_without_a_history_or_a_pupil_does_not_panic() {
+        // A user calibration after a wear calibration that missed the widening (so nothing went into the history):
+        // on the next start, the frames before the first pupil have no iris radius at all.
+        let mut e = EyeEngine::default();
+        let p = Params { user: Some(UserParams { sq_depth: Some(0.6), ..UserParams::default() }), ..Params::default() };
+        let (blank, small) = (disc_frame(None), disc_frame(Some((250.0, 200.0, 20.0))));
+        let mut t = 0.0;
+        for img in [&blank, &small] {
+            for _ in 0..60 {
+                t += 1.0 / FPS;
+                let out = e.process(img, f64::NAN, t, &p);
+                assert!((0.0..=1.0).contains(&out.eye_squint), "{}", out.eye_squint);
+            }
+        }
     }
 
     #[test]

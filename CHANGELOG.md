@@ -1,13 +1,14 @@
 # Changelog
 
-## 0.8.1-beta.1 (2026-10-20)
+## 0.8.1-beta.2 (2026-10-20)
 
-The eye preview's Valve / Camera tag now shows what really drives each eyelid, and the eye cameras miss far fewer closes on dim pictures or with prescription inserts.
+The eye preview's Valve / Camera tag now shows what really drives each eyelid, and the eye cameras miss far fewer closes on dim pictures or with prescription inserts. With "Get test versions" turned off on a test version, Advanced › Version now offers going back to the regular version.
 
-日本語: 目のプレビューの「Valve」/「カメラ」の表示が、実際にまぶたを動かしている側を示すようになりました。目のカメラは、暗い映像や度付きインサートでも、閉じたのを取りこぼすことが減りました。
+日本語: 目のプレビューの「Valve」/「カメラ」の表示が、実際にまぶたを動かしている側を示すようになりました。目のカメラは、暗い映像や度付きインサートでも、閉じたのを取りこぼすことが減りました。テスト版を使っていて「テスト版も受け取る」をオフにすると、詳細 › バージョンから本番の版に戻せるようになりました。
 
 - Eye preview: the Valve / Camera tag now follows what actually drives the eyelids (the same as "Eyelids now" on Eyelids › Look), instead of showing Valve whenever the camera agreed with it.
 - eyecam: with dim or low-contrast eye images, or a white glare band from a prescription insert, the eye cameras now miss far fewer closes and find the pupil much more often. With a glare band, the eyelids may read a little half shut more often while you look toward your ear (to be tuned in a later version).
+- Test versions: with "Get test versions" turned off on a test version, Advanced › Version offers the regular version when it is older than yours ("You can go back to the regular version 0.8.0" and "Go back"). It asks first, then installs it like an update; there's no notice in the left column, and nothing changes unless you press it. Until now the test version stayed until the next regular version came out. The shared updater is frame-update 0.5.0.
 
 ## 0.8.0 (2026-10-18)
 

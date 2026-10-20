@@ -45,10 +45,12 @@ const PUPIL_SETTLE_S: f64 = 0.3;
 /// for seconds.
 pub const PRIOR_RESET_S: f64 = 10.0 / FPS;
 /// A pupil the open-eye check drops only for its size (larger than PUPIL_MAX_GROW x the open pupil learnt, but no
-/// more than PUPIL_GROW_MAX x, as dark and as whole as the open one, the iris box not as bright as lid skin) for this
-/// long is a dilated pupil (the world got darker): it is taken, and the open pupil's size starts over from it. The
-/// open pupil's size is a 20 s median of the pupils taken, so without this a pupil dilated past PUPIL_MAX_GROW x
-/// before the median caught up was never taken again once a blink had dropped the search prior.
+/// more than PUPIL_GROW_MAX x, as dark and as whole as the open one, no flatter, the iris box not as bright as lid
+/// skin) for this long is a pupil that really looks larger (dilated as the world got darker, or turned toward the
+/// camera): it is taken, and the open pupil's size starts over from it. The open pupil's size is a 20 s median of the
+/// pupils taken, so without this a pupil grown past PUPIL_MAX_GROW x before the median caught up was never taken again
+/// once a blink had dropped the search prior (one recording: 7.4 s without a pupil, the eye turned 40° toward the ear,
+/// the pupil 1.4 x as large and rounder, b/a 0.93 against the usual 0.80).
 const PUPIL_GROW_S: f64 = 0.3;
 const PUPIL_MAX_GROW: f64 = 1.3;
 const PUPIL_GROW_MAX: f64 = 2.5;
@@ -976,7 +978,8 @@ impl EyeEngine {
         let open_box = self.levels.unlevel(self.box_open.value);
         let box_bright = self.box_open.len() >= 30 && self.levels.unlevel(f.box_mean) > 1.3 * open_box;
         let unanchored = no_prior || f.diag.retried;
-        // A dilated pupil keeps its roundness; a dark lash line on a closing eye is long and flat.
+        // No flatter than the open pupil: a dark lash line on a closing eye is long and flat, while a pupil turned toward
+        // the camera grows rounder as it grows larger (so not the two-sided check of `roundness_ok`).
         let grown = p.filter(|pp| {
             unanchored
                 && !box_bright
@@ -985,7 +988,7 @@ impl EyeEngine {
                 && pp.a / self.a_open.value <= PUPIL_GROW_MAX
                 && pp.inner <= self.inner_open.value + self.levels.step(15.0)
                 && pp.vis >= 0.5
-                && (self.ba_open.len() < 30 || (pp.b / pp.a - self.ba_open.value).abs() <= PUPIL_MAX_BA_DEV)
+                && (self.ba_open.len() < 30 || pp.b / pp.a >= self.ba_open.value - PUPIL_MAX_BA_DEV)
         });
         self.grown = if grown.is_some() { self.grown + 1 } else { 0 };
         if let Some(pp) = grown
@@ -1159,7 +1162,8 @@ impl EyeEngine {
         // The calibrated depth within the limits the calibration puts on f_sq (F_SQ_MAX, F_SQ_MIN), here against the
         // gap in use: a wear's gap 0.6..1.5 x the history's would otherwise put the squint's full depth anywhere from
         // 0.09 to 2.25 gaps below open. max/min, not clamp: before the iris radius is known (no history, no pupil yet)
-        // r and the gap are NaN, and clamp would panic; this stays NaN, and the squint keeps its last value as before.
+        // r, and with it the gap, is NaN, and clamp would panic; max/min keep it NaN (they only drop a NaN limit when the
+        // other side is a number), and the squint keeps its last value as before.
         let ap_sq = match user.sq_depth {
             Some(d) => ap_n_px - (d * r).max((1.0 - F_SQ_MAX) * gap_px).min((1.0 - F_SQ_MIN) * gap_px),
             None => ap_cl_px + user.f_sq * (ap_n_px - ap_cl_px),

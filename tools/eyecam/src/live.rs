@@ -44,6 +44,14 @@ const PUPIL_SETTLE_S: f64 = 0.3;
 /// was (its prior): a wrong blob caught once (during a blink, say) would otherwise keep the real pupil out of reach
 /// for seconds.
 pub const PRIOR_RESET_S: f64 = 10.0 / FPS;
+/// A pupil the open-eye check drops only for its size (larger than PUPIL_MAX_GROW x the open pupil learnt, but no
+/// more than PUPIL_GROW_MAX x, as dark and as whole as the open one, the iris box not as bright as lid skin) for this
+/// long is a dilated pupil (the world got darker): it is taken, and the open pupil's size starts over from it. The
+/// open pupil's size is a 20 s median of the pupils taken, so without this a pupil dilated past PUPIL_MAX_GROW x
+/// before the median caught up was never taken again once a blink had dropped the search prior.
+const PUPIL_GROW_S: f64 = 0.3;
+const PUPIL_MAX_GROW: f64 = 1.3;
+const PUPIL_GROW_MAX: f64 = 2.5;
 /// Closed needs no pupil for this long (3 frames at 90 fps; at least 2 frames).
 const CLOSED_NO_PUPIL_S: f64 = 3.0 / FPS;
 /// A pupil lost while the last one seen had its small-x edge within this many px of the search window's left edge ran
@@ -516,6 +524,8 @@ pub struct EyeEngine {
     bx: Win,
     pd: Win,
     nopupil: u32,
+    /// Frames in a row the open-eye check dropped the pupil only for being large (PUPIL_GROW_S).
+    grown: u32,
     box_open: LongMedian,
     /// The open eye's pupil semi-axis (px) and dark level, for telling a real pupil from a crease on a closed lid.
     a_open: LongMedian,
@@ -741,6 +751,7 @@ impl Default for EyeEngine {
             bx: Win::new(),
             pd: Win::new(),
             nopupil: 0,
+            grown: 0,
             box_open: LongMedian::new(60.0),
             a_open: LongMedian::new(20.0),
             inner_open: LongMedian::new(20.0),
@@ -951,10 +962,24 @@ impl EyeEngine {
         let open_box = self.levels.unlevel(self.box_open.value);
         let box_bright = self.box_open.len() >= 30 && self.levels.unlevel(f.box_mean) > 1.3 * open_box;
         let unanchored = no_prior || f.diag.retried;
+        let grown = p.is_some_and(|pp| {
+            unanchored
+                && !box_bright
+                && self.a_open.len() >= 30
+                && pp.a / self.a_open.value > PUPIL_MAX_GROW
+                && pp.a / self.a_open.value <= PUPIL_GROW_MAX
+                && pp.inner <= self.inner_open.value + self.levels.step(15.0)
+                && pp.vis >= 0.5
+        });
+        self.grown = if grown { self.grown + 1 } else { 0 };
+        if self.grown >= frames_in(PUPIL_GROW_S, fps, 2) {
+            self.a_open = LongMedian::new(20.0);
+            self.grown = 0;
+        }
         if let Some(pp) = p
             && (box_bright || unanchored)
             && self.a_open.len() >= 30
-            && (!(0.45..=1.3).contains(&(pp.a / self.a_open.value))
+            && (!(0.45..=PUPIL_MAX_GROW).contains(&(pp.a / self.a_open.value))
                 || pp.inner > self.inner_open.value + self.levels.step(15.0)
                 || pp.vis < 0.5)
         {
@@ -3496,6 +3521,35 @@ mod tests {
         e.reset_tracking();
         assert!(e.prev.is_none() && e.prev_p.is_none() && e.nopupil == 0);
         assert!(e.r_est.len() > 0 || e.cm_n > 0, "what belongs to the wear stays");
+    }
+
+    #[test]
+    fn a_pupil_that_dilated_past_the_size_check_is_taken_again() {
+        // The open pupil learnt at radius 20; after a blink (the search prior dropped) it comes back 1.5 x larger (the
+        // world got darker): the open-eye check drops it for its size only, so it is taken after PUPIL_GROW_S and
+        // stays (before, the 20 s median of the pupils taken never caught up: no pupil until it shrank again).
+        let mut e = EyeEngine::default();
+        let p = Params::default();
+        let (small, large, blank) =
+            (disc_frame(Some((250.0, 200.0, 20.0))), disc_frame(Some((250.0, 200.0, 30.0))), disc_frame(None));
+        let mut t = 0.0;
+        let mut run = |e: &mut EyeEngine, img: &[u8], n: usize| -> Vec<bool> {
+            (0..n)
+                .map(|_| {
+                    t += 1.0 / FPS;
+                    e.process(img, f64::NAN, t, &p).f.ok_pupil
+                })
+                .collect()
+        };
+        assert!(run(&mut e, &small, 450).iter().all(|&ok| ok));
+        assert!(e.a_open.len() >= 30);
+        run(&mut e, &blank, 20);
+        assert!(e.prev.is_none(), "the blink dropped the prior");
+        let back = run(&mut e, &large, 180);
+        let first = back.iter().position(|&ok| ok).expect("taken again");
+        assert!(first <= frames_in(PUPIL_GROW_S, FPS, 2) as usize, "{first}");
+        assert!(back[first..].iter().all(|&ok| ok), "and kept");
+        assert!(e.a_open.value > 25.0, "the open pupil's size starts over: {}", e.a_open.value);
     }
 
     #[test]

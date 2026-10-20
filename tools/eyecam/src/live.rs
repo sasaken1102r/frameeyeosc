@@ -233,11 +233,24 @@ pub struct UserParams {
     pub f_sq: f64,
     pub pd_min: f64,
     pub pd_max: f64,
+    /// The squint aperture's depth below the open one (iris radii), as calibrated: live puts the squint this far below
+    /// the open level in use. A wear's own open-to-closed gap (that f_sq is a fraction of) is 0.6..1.5 of the
+    /// history's median gap live uses, so f_sq alone put the calibrated squint at 0.65..1.5 of full squint
+    /// (the developer's 5 user calibrations, 2026-10-08..14). None (calibrations before it): f_sq of the history's gap.
+    pub sq_depth: Option<f64>,
 }
 
 impl Default for UserParams {
     fn default() -> Self {
-        Self { pitch_c: [0.0; 3], pitch_lo: -90.0, pitch_hi: 90.0, f_sq: 0.31, pd_min: 0.6, pd_max: 1.05 }
+        Self {
+            pitch_c: [0.0; 3],
+            pitch_lo: -90.0,
+            pitch_hi: 90.0,
+            f_sq: 0.31,
+            pd_min: 0.6,
+            pd_max: 1.05,
+            sq_depth: None,
+        }
     }
 }
 
@@ -1133,7 +1146,10 @@ impl EyeEngine {
         let p0 = if p_typ.is_finite() { p_typ } else { DEFAULT_PITCH_N };
         let apc = if pitch.is_finite() { ap_px + user.pitch_drop(pitch, p0) * r } else { ap_px };
         let ap_cl_px = ap_n_px - gap_px;
-        let ap_sq = ap_cl_px + user.f_sq * (ap_n_px - ap_cl_px);
+        let ap_sq = match user.sq_depth {
+            Some(d) => ap_n_px - d * r,
+            None => ap_cl_px + user.f_sq * (ap_n_px - ap_cl_px),
+        };
         // Without a user calibration (squint depth, pitch curve) the aperture alone is not trusted: no squint, and the
         // lid only closes when the eye is closed. Nothing either before the open level is known.
         let user_cal = params.user.is_some() && ready;
@@ -1730,8 +1746,9 @@ fn fit_user_eye(
     let s = &s[..];
     let (ap_sq, nsq) = med_of(s, |x| (x.label == Label::Squint).then_some(x.ap));
     let f_sq = (ap_sq - w.ap_cl) / (w.ap_n - w.ap_cl);
+    let sq_depth = Some(w.ap_n - ap_sq).filter(|d| d.is_finite());
     // Without the curve: the standard look-down correction (as with no user calibration), this squint.
-    let standard = UserParams { f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max, ..UserParams::default() };
+    let standard = UserParams { f_sq, sq_depth, pd_min: keep.pd_min, pd_max: keep.pd_max, ..UserParams::default() };
     let pts: Vec<(f64, f64)> =
         s.iter().filter(|x| neutral(x.label) && x.ok && x.pitch.is_finite() && x.ap.is_finite()).map(|x| (x.pitch, x.ap)).collect();
     if pts.len() < need.points {
@@ -1783,7 +1800,8 @@ fn fit_user_eye(
             look_down_only = k > 0;
         }
     }
-    let params = UserParams { pitch_c, pitch_lo: lo, pitch_hi: hi, f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max };
+    let params =
+        UserParams { pitch_c, pitch_lo: lo, pitch_hi: hi, f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max, sq_depth };
     Ok(UserEye { params, delta: (ap_down - w.ap_n, ap_sq - w.ap_n), issue, look_down_only })
 }
 
@@ -2021,7 +2039,7 @@ fn wear_json(w: &WearParams) -> String {
 
 fn user_json(u: &UserParams) -> String {
     format!(
-        "{{\"pitch_c\": [{}, {}, {}], \"pitch_lo\": {}, \"pitch_hi\": {}, \"f_sq\": {}, \"pd_min\": {}, \"pd_max\": {}}}",
+        "{{\"pitch_c\": [{}, {}, {}], \"pitch_lo\": {}, \"pitch_hi\": {}, \"f_sq\": {}, \"pd_min\": {}, \"pd_max\": {}{}}}",
         json::num(u.pitch_c[0]),
         json::num(u.pitch_c[1]),
         json::num(u.pitch_c[2]),
@@ -2029,7 +2047,8 @@ fn user_json(u: &UserParams) -> String {
         json::num(u.pitch_hi),
         json::num(u.f_sq),
         json::num(u.pd_min),
-        json::num(u.pd_max)
+        json::num(u.pd_max),
+        u.sq_depth.map_or(String::new(), |d| format!(", \"sq_depth\": {}", json::num(d)))
     )
 }
 
@@ -2062,6 +2081,7 @@ fn parse_user(j: &Json) -> Result<UserParams, String> {
         f_sq: get_num(j, "f_sq")?,
         pd_min: get_num(j, "pd_min")?,
         pd_max: get_num(j, "pd_max")?,
+        sq_depth: j.get("sq_depth").and_then(Json::num).filter(|d| d.is_finite()),
     })
 }
 
@@ -3023,6 +3043,11 @@ mod tests {
         assert_eq!(ulines.len(), 3);
         assert_eq!(samples_csv(&both).lines().count(), 1 + 2 * 580);
         assert!((user[0].f_sq - (0.831 - 0.561) / (1.441 - 0.561)).abs() < 0.01, "{:?}", user[0]);
+        // The squint's depth below the open aperture, in this wear's iris radii, kept with it (and through the file).
+        assert!((user[0].sq_depth.unwrap() - (1.441 - 0.831)).abs() < 0.01, "{:?}", user[0]);
+        assert_eq!(parse_user(&crate::json::parse(&user_json(&user[0])).unwrap()).unwrap(), user[0]);
+        let old = UserParams { sq_depth: None, ..user[0] };
+        assert!(!user_json(&old).contains("sq_depth"), "files without it stay as they were");
         // A look_down that did not lower the lid is refused.
         let mut bad = u.clone();
         bad.retain(|s| s.label != Label::LookDown);
@@ -3431,7 +3456,15 @@ mod tests {
         let good = user(1.1, 256.0, 0.83);
         let lashes = user(1.43, 256.0, 0.83);
         // The previous user calibration: a measured curve on both eyes (another one on the right), its own squint.
-        let measured = |slope: f64| UserParams { pitch_c: [1.5, slope, 0.0], pitch_lo: -40.0, pitch_hi: 20.0, f_sq: 0.5, pd_min: 0.5, pd_max: 1.2 };
+        let measured = |slope: f64| UserParams {
+            pitch_c: [1.5, slope, 0.0],
+            pitch_lo: -40.0,
+            pitch_hi: 20.0,
+            f_sq: 0.5,
+            pd_min: 0.5,
+            pd_max: 1.2,
+            sq_depth: None,
+        };
         let old = Some([measured(0.01), measured(0.02)]);
         assert!(old.unwrap().iter().all(UserParams::curve_measured));
         assert!(!UserParams { f_sq: 0.5, pd_min: 0.5, ..UserParams::default() }.curve_measured());

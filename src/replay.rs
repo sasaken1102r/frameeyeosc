@@ -213,7 +213,7 @@ struct Resampler {
 impl Resampler {
     fn from_env() -> Option<Self> {
         let read = |name: &str| std::env::var(name).ok().and_then(|value| value.parse::<f64>().ok());
-        let fps = read("FEO_CAM_FPS");
+        let fps = read("FEO_CAM_FPS").filter(|fps| *fps > 0.0);
         let delay = read("FEO_CAM_DELAY_MS").unwrap_or(0.0) / 1000.0;
         (fps.is_some() || delay > 0.0).then(|| Self {
             interval: fps.map_or(0.0, |fps| 1.0 / fps),

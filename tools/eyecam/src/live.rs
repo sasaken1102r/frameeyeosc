@@ -841,6 +841,7 @@ impl EyeEngine {
         self.prev = None;
         self.prev_p = None;
         self.nopupil = 0;
+        self.grown = 0;
         self.find_x_min = self.x_min;
     }
 
@@ -975,7 +976,8 @@ impl EyeEngine {
         let open_box = self.levels.unlevel(self.box_open.value);
         let box_bright = self.box_open.len() >= 30 && self.levels.unlevel(f.box_mean) > 1.3 * open_box;
         let unanchored = no_prior || f.diag.retried;
-        let grown = p.is_some_and(|pp| {
+        // A dilated pupil keeps its roundness; a dark lash line on a closing eye is long and flat.
+        let grown = p.filter(|pp| {
             unanchored
                 && !box_bright
                 && self.a_open.len() >= 30
@@ -983,10 +985,18 @@ impl EyeEngine {
                 && pp.a / self.a_open.value <= PUPIL_GROW_MAX
                 && pp.inner <= self.inner_open.value + self.levels.step(15.0)
                 && pp.vis >= 0.5
+                && (self.ba_open.len() < 30 || (pp.b / pp.a - self.ba_open.value).abs() <= PUPIL_MAX_BA_DEV)
         });
-        self.grown = if grown { self.grown + 1 } else { 0 };
-        if self.grown >= frames_in(PUPIL_GROW_S, fps, 2) {
+        self.grown = if grown.is_some() { self.grown + 1 } else { 0 };
+        if let Some(pp) = grown
+            && self.grown >= frames_in(PUPIL_GROW_S, fps, 2)
+        {
+            // Started over at this pupil's size, already full: the size check goes on at once from the new size (an
+            // empty median would leave every pupil unchecked, a crease on a closed lid too, until 30 were taken).
             self.a_open = LongMedian::new(20.0);
+            for _ in 0..30 {
+                self.a_open.push(pp.a, long_hz);
+            }
             self.grown = 0;
         }
         if let Some(pp) = p
@@ -1146,8 +1156,11 @@ impl EyeEngine {
         let p0 = if p_typ.is_finite() { p_typ } else { DEFAULT_PITCH_N };
         let apc = if pitch.is_finite() { ap_px + user.pitch_drop(pitch, p0) * r } else { ap_px };
         let ap_cl_px = ap_n_px - gap_px;
+        // The calibrated depth within the limits the calibration puts on f_sq (F_SQ_MAX, F_SQ_MIN), here against the
+        // gap in use: a wear's gap 0.6..1.5 x the history's would otherwise put the squint's full depth anywhere from
+        // 0.09 to 2.25 gaps below open.
         let ap_sq = match user.sq_depth {
-            Some(d) => ap_n_px - d * r,
+            Some(d) => ap_n_px - (d * r).clamp((1.0 - F_SQ_MAX) * gap_px, (1.0 - F_SQ_MIN) * gap_px),
             None => ap_cl_px + user.f_sq * (ap_n_px - ap_cl_px),
         };
         // Without a user calibration (squint depth, pitch curve) the aperture alone is not trusted: no squint, and the
@@ -1709,7 +1722,8 @@ struct UserEye {
 /// A squint depth (`UserParams::f_sq`) at or above this is too shallow to tell from the open eye.
 pub const F_SQ_MAX: f64 = 0.85;
 /// A squint depth below this is deeper than the closed level by more than half the open gap: live, the squint
-/// would only reach 1 / (1 - f_sq) < 0.67 by the time the eye reads closed. The user calibrations that passed
+/// would only reach 1 / (1 - f_sq) < 0.67 by the time the eye reads closed (with `UserParams::sq_depth`, gap /
+/// sq_depth against the gap in use, which live keeps within these same limits). The user calibrations that passed
 /// (2026-10-04..14) went down to -0.25 (the closed level of the wear calibration a little high); the ones below this
 /// were -0.78 and, replayed from recordings, -0.88 and -1.47.
 pub const F_SQ_MIN: f64 = -0.5;

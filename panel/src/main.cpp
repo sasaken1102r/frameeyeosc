@@ -323,10 +323,11 @@ void printUsage() {
         "      --fake-prompt vrchat|etvr|livelink|frameeyeosc  The recommended-settings question\n"
         "      --fake-autostart on|off|missing|unknown\n"
         "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed|\n"
-        "                    test|testbadge|onbeta\n"
+        "                    test|testbadge|onbeta|back\n"
         "                        A made-up update state (the version row on the Advanced tab). test: the new version\n"
         "                        is a test version; testbadge: up to date and a newer test version exists (the badge\n"
-        "                        while \"Get test versions\" is off); onbeta: running test version 0.7.11-beta.2\n"
+        "                        while \"Get test versions\" is off); onbeta: running test version 0.7.11-beta.2;\n"
+        "                        back: on 0.7.11-beta.2 with it off, going back to 0.7.10 is offered\n"
         "      --update-beta     \"Get test versions\" on (with --dump-png; else as panel.json says)\n"
         "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
         "                        English and Japanese, English only, or both cut at 300 characters\n"
@@ -1039,7 +1040,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fakeUpdate = argv[++i];
             static const char* const kStates[] = {"checking",  "uptodate",  "available",   "manual",
                                                   "installing", "installed", "checkfailed", "installfailed",
-                                                  "test",       "testbadge", "onbeta"};
+                                                  "test",       "testbadge", "onbeta",    "back"};
             if (std::find(std::begin(kStates), std::end(kStates), options.fakeUpdate) == std::end(kStates)) {
                 std::fprintf(stderr, "--fake-update: unknown state %s\n", options.fakeUpdate.c_str());
                 return false;
@@ -1256,6 +1257,14 @@ frame_updater::UpdateStatus fakeUpdate(const std::string& state, const std::stri
     } else if (state == "testbadge") {
         u.state = UpdateState::UpToDate;
         u.testVersion = "9.9.9-beta.1";
+    } else if (state == "back") {
+        // "Get test versions" turned off on a test version: the older regular version is offered going back to
+        u.state = UpdateState::Available;
+        u.current = "0.7.11-beta.2";
+        u.latest = "0.7.10";
+        u.installable = true;
+        u.backToStable = true;
+        u.notes = "The summary of the older version, not shown.";
     } else if (state == "onbeta") {
         u.state = UpdateState::UpToDate;
         u.current = "0.7.11-beta.2";
@@ -2286,7 +2295,7 @@ int runDumpPng(const Options& options) {
         if (options.previewQuit) panel.armQuitForPreview();
         if (options.previewReset) panel.armResetForPreview();
         if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
-        if (options.previewUpdatePrompt) panel.showUpdatePrompt(model.update.latest);
+        if (options.previewUpdatePrompt) panel.showUpdatePrompt(model.update.latest, model.update.backToStable);
         panel.setUpdateBeta(options.updateBeta);
         std::unique_ptr<frame_updater::UpdateChecker> updater;
         const bool updateCheck = model.config.flag(key::kUpdateCheck);
@@ -3005,9 +3014,11 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             // "Update", or "Try again" after a failed install
             const frame_updater::UpdateStatus& u = model.update;
             if (u.state == frame_updater::UpdateState::Available && u.installable) {
-                panel.showUpdatePrompt(u.latest);
+                panel.showUpdatePrompt(u.latest, u.backToStable);
             } else if (u.state == frame_updater::UpdateState::InstallFailed) {
-                panel.showUpdatePrompt(u.version.empty() ? u.latest : u.version);
+                // Trying again to go back: the version tried is below the running one
+                const std::string target = u.version.empty() ? u.latest : u.version;
+                panel.showUpdatePrompt(target, frame_updater::compareVersions(target, u.current) < 0);
             }
             return;
         }
@@ -3322,8 +3333,8 @@ void logUpdate(const frame_updater::UpdateStatus& u) {
             line = "up to date (" + u.current + ")" + (u.testVersion.empty() ? "" : "; test version " + u.testVersion);
             break;
         case frame_updater::UpdateState::Available:
-            line = "new release " + u.latest + (u.prerelease ? " (a test version)" : "") +
-                   (u.installable ? "" : " (not installable: " + u.reason + ")");
+            line = (u.backToStable ? "can go back to the regular version " : "new release ") + u.latest +
+                   (u.prerelease ? " (a test version)" : "") + (u.installable ? "" : " (not installable: " + u.reason + ")");
             break;
         case frame_updater::UpdateState::Installing: line = "installing " + u.version + ": " + u.step; break;
         case frame_updater::UpdateState::Installed: line = "installed " + u.version + "; reopen to use it"; break;

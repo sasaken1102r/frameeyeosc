@@ -648,7 +648,8 @@ double widenStop(int level);
  * has one, otherwise the English one.
  * @param update the update status
  * @param language the panel's language
- * @return the text, or "" when no newer release is available or it has no summary
+ * @return the text, or "" when no newer release is available (going back to an older one has none) or it has no
+ *         summary
  */
 std::string updateNotes(const frame_updater::UpdateStatus& update, Language language);
 
@@ -658,7 +659,18 @@ struct TestVersionView {
     bool using_ = false;     ///< the running version is a test version ("Using test version X" when up to date)
     bool keepHint = false;   ///< the hint says the test version stays (it is off while a test version runs)
     bool offered = false;    ///< the offered new version is a test version ("Test version X is available")
+    /// The regular version below the running test version is offered going back to (it is off): "You can go back to
+    /// the regular version X" and "Go back", only on this page (no notice, no dot: it isn't news, and it stays offered
+    /// for as long as the test version runs)
+    bool back = false;
 };
+
+/**
+ * @param update the update status
+ * @return true if it calls for the notice under the main tab and the dot on "Version": a newer release, an install
+ *         running or just done. Going back from a test version doesn't (the Version page offers it)
+ */
+bool updateNotice(const frame_updater::UpdateStatus& update);
 
 /**
  * @param update the update status (testVersion is filled while "Get test versions" is off)

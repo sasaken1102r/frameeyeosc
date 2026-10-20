@@ -217,10 +217,11 @@ public:
     void showPrompt(const std::string& output);
 
     /**
-     * Ask once whether to install a new release.
+     * Ask once whether to install a new release, or to go back to the regular one.
      * @param version the release ("0.4.1")
+     * @param back true to go back from a test version to it (an older regular version)
      */
-    void showUpdatePrompt(const std::string& version);
+    void showUpdatePrompt(const std::string& version, bool back = false);
 
     /** @return true while the recommendation or update prompt is open */
     bool promptOpen() const { return !promptOutput_.empty() || !updatePromptVersion_.empty(); }
@@ -643,6 +644,7 @@ private:
     double resetArmedUntil_ = 0.0;
     std::string promptOutput_;  ///< the output type the prompt asks about; empty = no prompt
     std::string updatePromptVersion_;  ///< the release the update prompt asks about; empty = no prompt
+    bool updatePromptBack_ = false;    ///< ...going back to it from a test version
     bool hostEntryOpen_ = false;  ///< the keypad for the target PC is open
     std::string hostEntryText_;   ///< what is typed in it
     std::string hostEntryError_;  ///< why it can't be used, shown under it

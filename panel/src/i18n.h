@@ -948,6 +948,12 @@ struct UiText {
     const char* updateTestAvailable;        ///< a small badge beside it: off, and a newer test version exists
     const char* updateAvailableTestFormat;  ///< Available, the new version a test version: "Test version %s is available"
     const char* updateUsingTestFormat;      ///< UpToDate on a test version, instead of "Up to date": "Using test version %s"
+    // Going back from a test version to the older regular one (Available with backToStable, frame-update 0.5.0)
+    const char* updateBackFormat;           ///< instead of "Version %s is available": "You can go back to the regular version %s"
+    const char* updateBackButton;           ///< its button: "Go back"
+    const char* updateBackConfirmFormat;    ///< the prompt's question: "Go back to the regular version %s?"
+    const char* updateBackConfirmHint;      ///< under it
+    const char* updateBackConfirmYes;       ///< its yes button
     // Install steps (UpdateStatus::step)
     const char* stepStart;
     const char* stepDownload;

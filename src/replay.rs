@@ -198,6 +198,62 @@ impl RecordedGaps {
     }
 }
 
+/// Diagnostics only (FEO_CAM_FPS, FEO_CAM_DELAY_MS): the recorded camera stream as a slower camera would have given it,
+/// each eye's newest frame on a 1/fps grid taken at least `delay` before the sample, with its age and freshness to
+/// match.
+struct Resampler {
+    interval: f64,
+    delay: f64,
+    // Per eye: recorded frames not yet due (taken, values, fresh), and the one being served.
+    pending: [std::collections::VecDeque<(f64, Eye, bool)>; 2],
+    current: [Option<(f64, Eye, bool)>; 2],
+    last_taken: [Option<f64>; 2],
+}
+
+impl Resampler {
+    fn from_env() -> Option<Self> {
+        let read = |name: &str| std::env::var(name).ok().and_then(|value| value.parse::<f64>().ok());
+        let fps = read("FEO_CAM_FPS");
+        let delay = read("FEO_CAM_DELAY_MS").unwrap_or(0.0) / 1000.0;
+        (fps.is_some() || delay > 0.0).then(|| Self {
+            interval: fps.map_or(0.0, |fps| 1.0 / fps),
+            delay,
+            pending: Default::default(),
+            current: [None; 2],
+            last_taken: [None; 2],
+        })
+    }
+
+    fn apply(&mut self, live: &mut Live, ages: &mut [f64; 2], sample_time: f64) {
+        for eye in 0..2 {
+            let taken = sample_time - ages[eye] / 1000.0;
+            if taken.is_finite() && self.last_taken[eye].is_none_or(|last| (taken - last).abs() * 1e9 >= SAME_FRAME_NS as f64) {
+                self.last_taken[eye] = Some(taken);
+                self.pending[eye].push_back((taken, live.eyes[eye], live.fresh[eye]));
+            }
+            while let Some(&(due, values, fresh)) = self.pending[eye].front() {
+                if due > sample_time - self.delay {
+                    break;
+                }
+                self.pending[eye].pop_front();
+                if self.current[eye].is_none_or(|(served, ..)| due - served >= self.interval - 0.002) {
+                    self.current[eye] = Some((due, values, fresh));
+                }
+            }
+            match self.current[eye] {
+                Some((served, values, fresh)) => {
+                    // The delay stands for processing lag (the values are late), not an older capture time
+                    let age = sample_time - served - self.delay;
+                    live.eyes[eye] = values;
+                    live.fresh[eye] = fresh && live.live && age <= (2.0 * self.interval).max(0.1);
+                    ages[eye] = age * 1000.0;
+                }
+                None => live.fresh[eye] = false,
+            }
+        }
+    }
+}
+
 /// The sample `values` came from.
 fn from_values(values: &[f64]) -> EyeData {
     let mut floats = values[1..].iter().map(|value| *value as f32);
@@ -292,6 +348,7 @@ fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let camera_positions = camera_columns().iter().map(position).collect::<Option<Vec<_>>>();
     let mut gaps = RecordedGaps::default();
+    let mut resampler = Resampler::from_env();
     let rows = lines
         .map(|(index, line)| {
             let not_numbers = || format!("line {}: not a row of numbers", index + 1);
@@ -311,6 +368,9 @@ fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
                             live.eyes.swap(0, 1);
                             live.fresh.swap(0, 1);
                             ages.swap(0, 1);
+                        }
+                        if let Some(resampler) = &mut resampler {
+                            resampler.apply(&mut live, &mut ages, data.sample_time);
                         }
                         gaps.note(&mut live, data.sample_time, ages);
                         live
@@ -343,6 +403,228 @@ fn replay(samples: &[EyeData], cameras: &[Option<Live>], settings: &Settings, mu
             step(settings, &mut smoother, &mut calibration, data, settled, camera.as_ref())
         })
         .collect()
+}
+
+/// Diagnostics only (FEO_DOUBT_DIAG): how each eye's LidDoubt went over a recording, as report lines. Per eye: when
+/// its eyelid switched to the camera's (state.camera), after how many eye-server closings since the doubt last
+/// cleared and how long it stayed; the CameraOpen stretches, and how many began while the eye server read the eye
+/// closing; how often the two did not agree while both read it open; and after each eye-server closing, how long the
+/// camera's "closed" kept the eyelid at 0 (CameraClosed) and the sent eyelid stayed shut, with the camera and without.
+fn doubt_diag(samples: &[EyeData], cameras: &[Option<Live>], settings: &Settings, calibration: &LidCalibration) -> String {
+    let mut smoother = Smoother::new(settings);
+    let mut cal = calibration.clone();
+    let mut since = None;
+    let mut last: Option<f64> = None;
+    let mut sent = Vec::with_capacity(samples.len());
+    let mut states = Vec::with_capacity(samples.len());
+    for (data, camera) in samples.iter().zip(cameras) {
+        let time = data.sample_time;
+        if last.is_some_and(|last| time - last >= TIMEOUT.as_secs_f64()) {
+            since = None;
+        }
+        last = Some(time);
+        let settled = time - *since.get_or_insert(time) >= CAL_SETTLE.as_secs_f64();
+        sent.push(step(settings, &mut smoother, &mut cal, data, settled, camera.as_ref()));
+        states.push(smoother.lid_doubt);
+    }
+    let off = replay(samples, cameras, &Settings { camera_lids: false, ..settings.clone() }, calibration.clone());
+    let times: Vec<f64> = samples.iter().map(|data| data.sample_time).collect();
+    let start = times.first().copied().unwrap_or(0.0);
+    let hours = (times.last().copied().unwrap_or(0.0) - start) / 3600.0;
+    let mut text = format!("\nLidDoubt diagnostics ({hours:.3} h)\n");
+    let stats = |values: &mut Vec<f64>| {
+        let count = values.len();
+        let positive = values.iter().filter(|value| **value > 0.0).count();
+        if count == 0 {
+            return "none".to_owned();
+        }
+        let total: f64 = values.iter().sum();
+        format!(
+            "n {count}, >0 {positive}, median {:.0} ms, p90 {:.0} ms, max {:.0} ms, total {:.1} s",
+            percentile(values, 50.0) * 1000.0,
+            percentile(values, 90.0) * 1000.0,
+            percentile(values, 100.0) * 1000.0,
+            total
+        )
+    };
+    let n = samples.len();
+    for eye in 0..2 {
+        let mut flips: Vec<String> = Vec::new();
+        let mut camera_seconds = 0.0;
+        let mut closings_since_clear = 0;
+        // Doubt brought into the current eye-server closing from earlier ones, and the closings that added to it
+        let mut carried = 0.0;
+        let mut adding = 0;
+        let mut run_added = false;
+        // Eye-server closings as (first sample, first sample after it)
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        let mut increments = Vec::new();
+        let mut run_from = 0;
+        let mut carried_flips = 0;
+        let mut adding_at_flip = Vec::new();
+        let mut clear_time = start;
+        let mut flip_start: Option<f64> = None;
+        let mut on_durations = Vec::new();
+        let mut open_runs = 0;
+        let mut open_runs_closing = 0;
+        let mut closings = 0;
+        let mut both_open = 0;
+        let mut not_agree = 0;
+        let mut max_doubt = 0.0_f64;
+        let mut tails_closed = Vec::new();
+        let mut tails_shut = Vec::new();
+        let mut tails_shut_off = Vec::new();
+        for i in 0..n {
+            let state = states[i][eye];
+            let previous = (i > 0).then(|| states[i - 1][eye]);
+            let (_, closing, agree) = state.diag;
+            let has_camera = sent[i].camera.squint[eye].is_some();
+            let dt = if i > 0 { (times[i] - times[i - 1]).clamp(0.0, MAX_GAP) } else { 0.0 };
+            max_doubt = max_doubt.max(state.doubted);
+            if previous.is_some_and(|previous| previous.doubted > 0.0) && state.doubted == 0.0 {
+                closings_since_clear = 0;
+                adding = 0;
+                clear_time = times[i];
+            }
+            let was_closing = previous.is_some_and(|previous| previous.diag.1);
+            if closing && !was_closing {
+                closings += 1;
+                closings_since_clear += 1;
+                carried = previous.map_or(0.0, |previous| previous.doubted);
+                run_added = false;
+                run_from = i;
+            }
+            if previous.is_some_and(|previous| state.doubted > previous.doubted) && !run_added {
+                adding += 1;
+                run_added = true;
+            }
+            if state.camera {
+                camera_seconds += dt;
+            }
+            if state.camera && !previous.is_some_and(|previous| previous.camera) {
+                flip_start = Some(times[i]);
+                // Mostly brought in from earlier closings: the doubt added up over blinks, not one long closing
+                if closing && carried >= 0.5 * state.doubted {
+                    carried_flips += 1;
+                    adding_at_flip.push(adding as f64);
+                }
+                flips.push(format!(
+                    "{:.1} s (doubt {:.0} ms, {:.0} ms of it from earlier closings; {} closings added to it, {} closings since it last cleared {:.1} s ago)",
+                    times[i] - start,
+                    state.doubted * 1000.0,
+                    carried * 1000.0,
+                    adding,
+                    closings_since_clear,
+                    times[i] - clear_time
+                ));
+            }
+            if !state.camera {
+                if let Some(from) = flip_start.take() {
+                    on_durations.push(times[i] - from);
+                }
+            }
+            let camera_open = sent[i].lid_from[eye] == LidFrom::CameraOpen;
+            if camera_open && (i == 0 || sent[i - 1].lid_from[eye] != LidFrom::CameraOpen) {
+                open_runs += 1;
+                if closing {
+                    open_runs_closing += 1;
+                }
+            }
+            if has_camera && !closing && sent[i].lid_from[eye] != LidFrom::CameraClosed {
+                both_open += 1;
+                if !agree {
+                    not_agree += 1;
+                }
+            }
+            // The eye server reopened: how long the camera's "closed" kept it at 0, and the sent eyelid stayed shut
+            if was_closing && !closing {
+                runs.push((run_from, i));
+                let added = previous.map_or(0.0, |previous| previous.doubted) - carried;
+                if added > 0.0 {
+                    increments.push(added);
+                }
+                let run = |shut: &dyn Fn(usize) -> bool| {
+                    let mut j = i;
+                    while j < n && shut(j) && (j == i || times[j] - times[j - 1] < MAX_GAP) {
+                        j += 1;
+                    }
+                    if j > i { times[j.min(n - 1)] - times[i] } else { 0.0 }
+                };
+                tails_closed.push(run(&|j| sent[j].lid_from[eye] == LidFrom::CameraClosed));
+                tails_shut.push(run(&|j| sent[j].lids[eye] <= LID_SHUT));
+                tails_shut_off.push(run(&|j| off[j].lids[eye] <= LID_SHUT));
+            }
+        }
+        if let Some(from) = flip_start {
+            on_durations.push(times[n - 1] - from);
+        }
+        // Blinks (closings up to half a second): whether the sent eyelid got shut (by BLINK_TAIL after), with the camera
+        // and without; how late it got shut; and whether the eye was on the camera's eyelid then
+        let mut blinks = 0;
+        let mut missed = [0; 2];
+        let mut lost = 0;
+        let mut lost_on_camera = 0;
+        let mut on_camera_blinks = 0;
+        let mut late = [Vec::new(), Vec::new()];
+        for &(from, to) in &runs {
+            if times[to] - times[from] > 0.5 {
+                continue;
+            }
+            blinks += 1;
+            let shut_at = |lids: &dyn Fn(usize) -> f32| {
+                (from..n).take_while(|j| times[*j] <= times[to] + BLINK_TAIL).find(|j| lids(*j) <= LID_SHUT)
+            };
+            let shut = [shut_at(&|j| sent[j].lids[eye]), shut_at(&|j| off[j].lids[eye])];
+            let on_camera = (from..to).any(|j| states[j][eye].camera);
+            on_camera_blinks += usize::from(on_camera);
+            for k in 0..2 {
+                match shut[k] {
+                    Some(j) => late[k].push(times[j] - times[from]),
+                    None => missed[k] += 1,
+                }
+            }
+            if shut[0].is_none() && shut[1].is_some() {
+                lost += 1;
+                lost_on_camera += usize::from(on_camera);
+            }
+        }
+        let [late_on, late_off] = &mut late;
+        let side = ["L", "R"][eye];
+        text.push_str(&format!(
+            "  {side}: switches to the camera's eyelid {} ({:.1}/h); on it {:.1} s ({:.1}%); max doubt {:.0} ms\n     stretches on it: {}\n",
+            flips.len(),
+            flips.len() as f64 / hours.max(1e-9),
+            camera_seconds,
+            camera_seconds * 100.0 / (hours * 3600.0).max(1e-9),
+            max_doubt * 1000.0,
+            stats(&mut on_durations),
+        ));
+        text.push_str(&format!(
+            "     of them mostly carried over from earlier closings: {carried_flips} (closings adding to it: median {:.0})\n",
+            median(&mut adding_at_flip)
+        ));
+        for flip in &flips {
+            text.push_str(&format!("     at {flip}\n"));
+        }
+        text.push_str(&format!(
+            "     CameraOpen stretches {open_runs}, {open_runs_closing} begun while the eye server read it closing; eye-server closings {closings}\n"
+        ));
+        text.push_str(&format!(
+            "     both reading it open, not agreeing: {:.1}% of {both_open} samples\n",
+            not_agree as f64 * 100.0 / both_open.max(1) as f64
+        ));
+        text.push_str(&format!(
+            "     blinks {blinks} ({on_camera_blinks} on the camera's eyelid): not sent shut {} with camera, {} without; lost by the camera {lost} ({lost_on_camera} of them on its eyelid)\n",
+            missed[0], missed[1]
+        ));
+        text.push_str(&format!("     doubt added per closing that added any: {}\n", stats(&mut increments)));
+        text.push_str(&format!("     blink shut after its start (with camera): {}\n", stats(late_on)));
+        text.push_str(&format!("     blink shut after its start (camera off):  {}\n", stats(late_off)));
+        text.push_str(&format!("     after reopening, camera closed held at 0: {}\n", stats(&mut tails_closed)));
+        text.push_str(&format!("     after reopening, sent shut (with camera):  {}\n", stats(&mut tails_shut)));
+        text.push_str(&format!("     after reopening, sent shut (camera off):   {}\n", stats(&mut tails_shut_off)));
+    }
+    text
 }
 
 /// The settings with this version's new stages turned off, to compare against.
@@ -913,6 +1195,9 @@ pub fn run(input: &Path, output: Option<&Path>, settings: &Settings, calibration
     let (before, after) = (metrics(&samples, &before), metrics(&samples, &after));
     print!("{}", report(input, &samples, all.len() - samples.len(), settings, &before, &after));
     print!("{}", camera_text.unwrap_or_default());
+    if camera && std::env::var_os("FEO_DOUBT_DIAG").is_some() {
+        print!("{}", doubt_diag(&samples, &cameras, settings, calibration));
+    }
     let header: Vec<&str> = text.lines().next().unwrap_or("").split(',').map(str::trim).collect();
     if camera_eyes_swapped(&header) {
         println!(

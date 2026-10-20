@@ -1237,6 +1237,7 @@ impl Smoother {
             } else {
                 !closing && valve >= camera.lid.min(LID_RELAXED) - CAMERA_AGREE_GAP
             };
+            state.diag = (valve, closing, agree);
             if closing && !camera.closed {
                 state.doubted += f64::from(dt);
                 state.agree_since = None;
@@ -1816,6 +1817,9 @@ struct LidDoubt {
     agree_since: Option<f64>,
     // Whether the eyelid is the camera's.
     camera: bool,
+    // For the replay's diagnostics (FEO_DOUBT_DIAG): the last sample's eye-server eyelid, whether it was closing (below
+    // the doubt line), and whether the two agreed.
+    diag: (f32, bool, bool),
 }
 
 /// Where a sent eyelid came from, beyond the usual mix (the eye server's below relaxed open, the camera's from there

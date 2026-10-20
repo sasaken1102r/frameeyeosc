@@ -14,7 +14,8 @@
 # "frameeyeosc-{version}-steamframe-aarch64.tar.gz". --channel is "stable" (the default: GitHub's
 # latest release, never a prerelease) or "beta" (the highest version among the newest releases,
 # prereleases such as v0.7.11-beta.1 included). Versions order by x.y.z, and a pre-release part after
-# "-" comes before its final version: 0.7.10 < 0.7.11-beta.1 < 0.7.11-beta.2 < 0.7.11. Every command
+# "-" comes before its final version: 0.7.10 < 0.7.11-beta.1 < 0.7.11-beta.2 < 0.7.11. On stable, a
+# test version above the latest release is offered going back to it ("back_to_stable"). Every command
 # prints one line of JSON on stdout (see README.md). Files, with C = ${XDG_CACHE_HOME:-~/.cache}/A:
 #   C/update-check.json  last answer from GitHub, reused for 55 minutes (errors for 1 hour)
 #   C/update-check-beta.json  the same for --channel beta
@@ -31,7 +32,7 @@
 # FRAME_UPDATE_ALLOW_INSECURE=1 (allow http:// and any host), FRAME_UPDATE_CHECK_TTL (3300),
 # FRAME_UPDATE_ERROR_TTL (3600).
 
-FRAME_UPDATE_VERSION=0.4.0
+FRAME_UPDATE_VERSION=0.5.0
 
 api_base=${FRAME_UPDATE_API_URL:-https://api.github.com}
 insecure=${FRAME_UPDATE_ALLOW_INSECURE:-0}
@@ -213,6 +214,25 @@ vercmp() {
         if [ "$_x" -lt "$_y" ]; then echo -1; return; fi
     done
     echo 0
+}
+
+# True if V is a test version: it has a pre-release part ("0.7.11-beta.2"), other than a build of one's own
+# ("0.7.11-dev", "0.7.11-dev.3"), which isn't something published to go back from.
+is_test_version() {
+    # (its own name: report_check's _pre is in use around the call)
+    _test_pre=$(version_pre "$1")
+    case $_test_pre in '' | dev | dev.* | dev-*) return 1 ;; esac
+    return 0
+}
+
+# True if the stable channel may offer going back from the running version CURRENT to the release LATEST:
+# CURRENT is a test version (is_test_version) and LATEST a regular version below it. The user turned test
+# versions off while on one; anything else below the running version is never offered.
+back_to_stable() { # latest current
+    [ "$channel" != beta ] || return 1
+    [ -z "$(version_pre "$1")" ] || return 1
+    is_test_version "$2" || return 1
+    [ "$(vercmp_full "$1" "$2")" = -1 ]
 }
 
 # True if the URL may be fetched: https to GitHub only (unless FRAME_UPDATE_ALLOW_INSECURE=1).
@@ -516,9 +536,10 @@ report_check() { # cached(true/false)
                 "release tag $(json_safe "$_latest") is not a version" "$(json_safe "$current")" "$channel" "$1" "${_checked:-0}"
             exit 1
         fi
-        # Only a newer one: on a test version above the newest release (back on stable) it is up to date, never
-        # a downgrade
-        if [ "$(vercmp_full "$_latest" "$current")" = 1 ]; then
+        # A newer one, or on stable the regular version below a running test version (going back, shown as an
+        # update to hosts from before 0.5.0). Anything else below the running version is up to date
+        _cmp=$(vercmp_full "$_latest" "$current")
+        if [ "$_cmp" = 1 ] || back_to_stable "$_latest" "$current"; then
             _status=update-available
             if [ -n "$asset_pattern" ]; then
                 if [ "$(json_raw "$check_file" has_asset)" != true ]; then
@@ -529,6 +550,7 @@ report_check() { # cached(true/false)
                     _extra=',"installable":true'
                 fi
             fi
+            [ "$_cmp" = 1 ] || _extra="$_extra,\"back_to_stable\":true"
             # The new release's summary, and the Japanese one if its text has one ("" if not)
             _extra="$_extra,\"notes\":\"$(json_str "$check_file" notes)\",\"notes_ja\":\"$(json_str "$check_file" notes_ja)\""
         fi
@@ -796,7 +818,9 @@ cmd_install() {
     latest_core=$(version_core "$rel_tag")
     target_version=${rel_tag#[vV]}
     if [ "$(vercmp_full "$target_version" "$current")" != 1 ]; then
-        fail not-newer "the latest release $target_version is not newer than $current"
+        back_to_stable "$target_version" "$current" ||
+            fail not-newer "the latest release $target_version is not newer than $current"
+        log "going back to the regular version $target_version from test version $current"
     fi
     asset_name=$rel_asset_name
     [ -n "$rel_asset_url" ] || fail no-asset "release $rel_tag has no $asset_name"

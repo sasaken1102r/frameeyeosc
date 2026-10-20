@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT — part of frame-updater by sasaken1102r, shipped under the host app's MIT license
 # Copied from the frame-updater repository by its sync.sh. Don't edit these files here:
 # change them in frame-updater and run sync.sh again. verify.sh checks that nothing was edited.
-version 0.4.0
-commit 55a1f72
-synced 2026-10-17
+version 0.5.0
+commit 3acde0c
+synced 2026-10-20

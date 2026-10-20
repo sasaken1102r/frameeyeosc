@@ -37,6 +37,8 @@
 
 設定の「テスト版も受け取る」（既定オフ。オンで `--channel beta` / `setChannel("beta")`）と、その周りの文言。オフのあいだは `watchTestVersions` で beta チャンネルも見て、今より新しいテスト版があるときだけ「テスト版あり」の印を出す（ずっと出しておく「NEW」の印は付けない）。オンのときは印を出さず、更新の行が「新しいテスト版 … があります」になる。
 
+テスト版を使っていて設定がオフ（stable）で、本番の版の最新が今のテスト版より古いとき（0.5.0 から。`backToStable`）は、更新の行が「本番の版 … に戻せます」と［戻す］になる。押すと確認を出してからふつうの更新と同じ `install()` で入れる。戻すかどうかはこの画面で選ぶものなので、更新のときの印（画面の下のお知らせ・ページの点など）は出さない。要約（`notes`）も古い版のものなので出さない。
+
 | キー | いつ | 日本語 | English |
 |---|---|---|---|
 | `rowUpdateBeta` | 設定の名前 | テスト版も受け取る | Get test versions |
@@ -45,6 +47,11 @@
 | `updateTestAvailable` | 設定がオフで、今より新しいテスト版がある（`testVersion`）。設定の名前の横の小さな印 | テスト版あり | Test version available |
 | `updateAvailableTestFormat` | `Available` で `prerelease`（新しい版がテスト版）。`updateAvailableFormat` の代わり | 新しいテスト版 %s があります | Test version %s is available |
 | `updateUsingTestFormat` | `UpToDate` で、動いている版がテスト版（`isPrerelease(current)`）。「最新版です」の代わり | テスト版 %s を使っています | Using test version %s |
+| `updateBackFormat` | `Available` で `backToStable`（0.5.0 から）。`updateAvailableFormat` の代わり | 本番の版 %s に戻せます | You can go back to the regular version %s |
+| `updateBackButton` | その行のボタン。`updateButton` の代わり | 戻す | Go back |
+| `updateBackConfirmFormat` | 「戻す」を押したあとの確認。`updateConfirmFormat` の代わり | 本番の版 %s に戻しますか？ | Go back to the regular version %s? |
+| `updateBackConfirmHint` | その補足。`updateConfirmHint` の代わり | 本番の版に入れ替えます。途中でこの画面が閉じて開き直すことがあります | It installs the regular version. This panel may close and reopen meanwhile |
+| `updateBackConfirmYes` | その実行ボタン。`updateConfirmYes` の代わり | 戻す | Go back |
 
 ## 新しい版の要約（`UpdateStatus::notes` / `notesJa`、0.2.0 から）
 

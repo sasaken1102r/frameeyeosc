@@ -315,6 +315,16 @@ impl Levels {
         Self::from_profile_without(col_mean, &[])
     }
 
+    /// The levels for a wear's column means as the live engine, the lens edge and the search window use them: with a
+    /// glare band that ends the picture (`glare_end`), its columns are left out of the bright end.
+    pub fn for_profile(col_mean: &[f64]) -> Levels {
+        if glare_end(col_mean).is_some() {
+            Self::from_profile_without(col_mean, &glare_columns(col_mean))
+        } else {
+            Self::from_profile(col_mean)
+        }
+    }
+
     /// `from_profile` with the bright end taken outside the columns `skip` marks (a glare band beyond the iris is no
     /// measure of how bright the eye is; `glare_columns`).
     pub fn from_profile_without(col_mean: &[f64], skip: &[bool]) -> Levels {
@@ -378,7 +388,7 @@ pub fn glare_columns(col_mean: &[f64]) -> Vec<bool> {
 /// A glare band on the nasal side hides the lens's black band, and the edge is then found past the glare
 /// (`glare_edge` is where the picture really ends).
 pub fn occluder_x(col_mean: &[f64]) -> f64 {
-    let lv = Levels::from_profile(col_mean).level(25.0);
+    let lv = Levels::for_profile(col_mean).level(25.0);
     let first = col_mean[280..].iter().position(|&m| m < lv).unwrap_or(120);
     (280 + first) as f64 - 3.0
 }
@@ -387,6 +397,16 @@ pub fn occluder_x(col_mean: &[f64]) -> f64 {
 /// None without one.
 pub fn glare_edge(col_mean: &[f64]) -> Option<f64> {
     glare_columns(col_mean)[200..].iter().position(|&g| g).map(|g| (200 + g) as f64 - 3.0)
+}
+
+/// A glare band ends the picture only when its edge is at or past this column: beyond where the iris's nasal edge
+/// usually is (open pupils at x 200..258 in the developer's recordings, iris radius about 57 px). A band further in
+/// lies over the iris, and the pupil search needs the room up to the lens edge.
+pub const GLARE_MIN_X: f64 = 280.0;
+
+/// The glare band's edge where it ends the picture (`glare_edge` at GLARE_MIN_X or further out), else None.
+pub fn glare_end(col_mean: &[f64]) -> Option<f64> {
+    glare_edge(col_mean).filter(|&g| g >= GLARE_MIN_X)
 }
 
 /// Column mean that counts as out of the dark temporal shading (`search_x_min`), at full brightness (`Levels`).
@@ -429,7 +449,7 @@ impl XMinFrom {
 
 /// `search_x_min` and where its value came from.
 pub fn search_x_min_from(col_mean: &[f64]) -> (f64, XMinFrom) {
-    let lv = Levels::from_profile(col_mean).level(SHADE_END_LEVEL);
+    let lv = Levels::for_profile(col_mean).level(SHADE_END_LEVEL);
     // A glare band on the temporal side is not the bright region the iris is in.
     let glare = glare_columns(col_mean);
     let bright = |x: usize| col_mean[x] >= lv && !glare[x];
@@ -484,8 +504,6 @@ pub struct Extractor {
     lid_r: f64,
     /// The grey steps' scale for this wear (live sets it from the column means; as built by default).
     pub levels: Levels,
-    /// The iris box also ends here (a glare band's edge, see live; infinite without one).
-    pub box_xmax: f64,
 }
 
 impl Default for Extractor {
@@ -496,7 +514,6 @@ impl Default for Extractor {
             opf_x0: OPF_X0,
             lid_r: f64::NAN,
             levels: Levels::AS_BUILT,
-            box_xmax: f64::INFINITY,
             op: Vec::new(),
             opf: Vec::new(),
             smf: Vec::new(),
@@ -580,7 +597,7 @@ impl Extractor {
         let Some(p) = p else {
             let Some(q) = prev_p else { return (f, None) };
             let rn = r_ref.unwrap_or(2.0 * q.a);
-            f.box_mean = self.box_mean(q.cx, q.cy, rn, xmax.min(self.box_xmax));
+            f.box_mean = self.box_mean(q.cx, q.cy, rn, xmax);
             let (upper, lower, margin) = self.lids(q, rn, xmax);
             if let Some(u) = upper {
                 f.upper_skin_y = u.y_at;
@@ -613,7 +630,7 @@ impl Extractor {
             f.lower_y = l.y_at;
             f.lower_frac = l.frac;
         }
-        f.box_mean = self.box_mean(p.cx, p.cy, rn, xmax.min(self.box_xmax));
+        f.box_mean = self.box_mean(p.cx, p.cy, rn, xmax);
         (f, Some(p))
     }
 
@@ -1501,6 +1518,14 @@ mod tests {
         assert!(!Levels::from_profile(&cm).moved, "the glare reads as full brightness");
         let lv = Levels::from_profile_without(&cm, &glare_columns(&cm));
         assert!(lv.moved && (lv.k - k).abs() < 0.05, "{lv:?} vs {k}");
+        // A dim profile with a glare band past the iris: the window follows the shading as without the band (the
+        // glare is no measure of the brightness here either).
+        let dim_profile = |band: bool| {
+            (0..W).map(|x| if band && x >= 300 { 255.0 } else if x < 150 { 3.2 } else { 32.0 }).collect::<Vec<f64>>()
+        };
+        assert_eq!(search_x_min_from(&dim_profile(false)), (140.0, XMinFrom::Shade));
+        assert_eq!(glare_end(&dim_profile(true)), Some(289.0));
+        assert_eq!(search_x_min_from(&dim_profile(true)), (140.0, XMinFrom::Shade));
         // A temporal band next to the bright region is not part of it: the search window stops at its soft edge.
         let profile = (0..W).map(|x| if x < 12 { 5.0 } else if x < 150 { 255.0 } else { 80.0 });
         assert_eq!(search_x_min_from(&profile.collect::<Vec<f64>>()), (148.0, XMinFrom::Shade));

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.1-beta.2 (2026-10-20)
+## 0.8.1 (2026-10-21)
 
 The eye preview's Valve / Camera tag now shows what really drives each eyelid, and the eye cameras miss far fewer closes on dim pictures or with prescription inserts. With "Get test versions" turned off on a test version, Advanced › Version now offers going back to the regular version.
 

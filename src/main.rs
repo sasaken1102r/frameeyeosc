@@ -1369,10 +1369,12 @@ impl Smoother {
 /// How long each eye has been read alone below --gaze-hold-below (see ONE_EYE_HOLD_MAX_S). Both eyes below it (a
 /// blink) neither adds to that nor starts it over: an eye SteamOS keeps reading shut is not held for another
 /// ONE_EYE_HOLD_MAX_S after every blink, and an eye that crosses the line a little before the other at both ends of a
-/// long closure counts only those moments.
+/// long closure counts only those moments. It starts over once the eye reads at or above the line for two samples in a
+/// row: one sample up is a spike the despike stage drops (the hold still sees the eye shut), so it keeps the count.
 #[derive(Default)]
 struct OneEyeLow {
     alone: [f64; 2],
+    up: [u8; 2],
     last_time: Option<f64>,
 }
 
@@ -1382,13 +1384,18 @@ impl OneEyeLow {
         let dt = self.last_time.map_or(0.0, |last| (time - last).clamp(0.0, MAX_GAP));
         self.last_time = Some(time);
         [0, 1].map(|eye| {
-            let alone = low[eye] && !low[1 - eye];
-            if !low[eye] {
-                self.alone[eye] = 0.0;
-            } else if alone {
-                self.alone[eye] += dt;
+            if low[eye] {
+                self.up[eye] = 0;
+                if !low[1 - eye] {
+                    self.alone[eye] += dt;
+                }
+            } else {
+                self.up[eye] = self.up[eye].saturating_add(1);
+                if self.up[eye] >= 2 {
+                    self.alone[eye] = 0.0;
+                }
             }
-            alone && self.alone[eye] > ONE_EYE_HOLD_MAX_S
+            !low[1 - eye] && self.alone[eye] > ONE_EYE_HOLD_MAX_S
         })
     }
 }
@@ -6235,6 +6242,11 @@ mod tests {
         assert!(sent[150..200].iter().all(|sample| !sample.gaze_held));
         assert!(sent[201..215].iter().all(|sample| sample.gaze_held));
         assert!(sent[217..].iter().all(|sample| !sample.gaze_held));
+        // One sample read open (dropped by the despike stage) does not start it over either.
+        let openness = |i: usize| if i == 200 { [1.1; 2] } else { [0.06, 1.1] };
+        let readings: Vec<EyeData> = (0..300).map(|i| left_eye_off(i, sweep(i, 100), openness(i))).collect();
+        let sent = run(&settings(), &readings);
+        assert!(sent[150..].iter().all(|sample| !sample.gaze_held));
     }
 
     #[test]

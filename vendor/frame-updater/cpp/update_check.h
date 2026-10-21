@@ -45,7 +45,7 @@ struct UpdaterConfig {
 enum class UpdateState {
     Unknown,        ///< not checked yet, or checking is off and nothing is known
     UpToDate,       ///< the running version is the newest release
-    Available,      ///< a newer release exists (see UpdateStatus::installable)
+    Available,      ///< a newer release exists (see UpdateStatus::installable), or going back to one (backToStable)
     Installing,     ///< an install is running (see UpdateStatus::step)
     Installed,      ///< an install finished while this process ran, and it still runs the old version
     CheckFailed,    ///< the last check failed (see UpdateStatus::error)
@@ -70,6 +70,9 @@ struct UpdateStatus {
     std::string notesJa;       ///< Available: the same in Japanese, if the release text has a "日本語:" paragraph ("" if not)
     bool prerelease = false;   ///< UpToDate / Available: `latest` is a prerelease (a test version; only on the beta channel)
     std::string testVersion;   ///< watchTestVersions on the stable channel: a test version newer than the running one ("" if none)
+    /// Available on the stable channel while a test version runs: `latest` is the regular version below it, offered
+    /// going back to (install() installs it). 0.5.0 on; the panel says "go back" instead of "update"
+    bool backToStable = false;
 
     bool operator==(const UpdateStatus& other) const;
     bool operator!=(const UpdateStatus& other) const { return !(*this == other); }
@@ -187,6 +190,9 @@ private:
     long long installRequestedAt_ = 0;                ///< when (Unix time)
     long long startedAt_ = 0;                         ///< when this checker was made (Unix time): older "done" is stale
     std::string installedVersion_;                    ///< Installed seen for this version (until dismiss())
+    /// The regular version going back to was tried (install() while backToStable, or its failure seen): its failure
+    /// stays InstallFailed even when a later check fails and no longer says backToStable (until dismiss())
+    std::string backVersion_;
     UpdateStatus status_;
     std::uint64_t revision_ = 0;
 };

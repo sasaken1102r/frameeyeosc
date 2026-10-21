@@ -501,6 +501,8 @@ pub struct EyeEngine {
     cm_last: u64,
     xmax: f64,
     x_min: f64,
+    /// The grey levels' scale for this wear, from the same mean image (`feat::Levels::for_profile`).
+    levels: feat::Levels,
     /// Where x_min came from, and the time (s) of the frame it was last worked out on (the drift log).
     x_min_from: feat::XMinFrom,
     x_min_at: f64,
@@ -726,6 +728,7 @@ impl Default for EyeEngine {
             cm_last: 0,
             xmax: 346.0,
             x_min: feat::X_MIN,
+            levels: feat::Levels::AS_BUILT,
             x_min_from: feat::XMinFrom::Fixed,
             x_min_at: f64::NAN,
             find_x_min: feat::X_MIN,
@@ -827,7 +830,7 @@ impl EyeEngine {
             min_vis: EXT_MIN_VIS,
             min_ba: EXT_MIN_BA,
             a: if known { (EXT_SIZE.0 * self.a_open.value, EXT_SIZE.1 * self.a_open.value) } else { EXT_A_PX },
-            inner_max: if known { self.inner_open.value + EXT_DARKER } else { f64::INFINITY },
+            inner_max: if known { self.inner_open.value + self.levels.step(EXT_DARKER) } else { f64::INFINITY },
             near: self
                 .prev_p
                 .filter(|_| !valve_open.is_finite() && t - self.prev_p_t < EXT_TRACK_S)
@@ -917,8 +920,14 @@ impl EyeEngine {
             }
             self.cm_n += 1;
             let m: Vec<f64> = self.cm_sum.iter().map(|v| v / self.cm_n as f64).collect();
-            self.xmax = feat::occluder_x(&m);
+            // A glare band on the nasal side (IR off a lens insert's rim) hides the lens's black band: the lens edge
+            // is then found past it, the iris box reaches into the glare, stays as bright as lid skin and misses
+            // closes, and the glare reads as full brightness. Past the iris (feat::GLARE_MIN_X) the picture ends at the
+            // glare, and the levels (also the window's and the lens edge's) are measured without it.
+            let lens = feat::occluder_x(&m);
+            self.xmax = feat::glare_end(&m).map_or(lens, |g| lens.min(g));
             (self.x_min, self.x_min_from) = feat::search_x_min_from(&m);
+            self.levels = feat::Levels::for_profile(&m);
             self.x_min_at = t;
         }
         // The extended search's edge: within EXT_MAX_PX past x_min (and not past X_MIN_LO), x_min itself when off.
@@ -926,6 +935,7 @@ impl EyeEngine {
         self.find_x_min = self.find_x_min.clamp(ext_lo.min(self.x_min), self.x_min);
         let search_x_min = self.find_x_min;
         self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, self.ext_check(t, valve_open));
+        self.ex.levels = self.levels;
         let r_ready = self.r_est.len() >= 10;
         let r_ref = r_ready.then_some(self.r_est.value);
         let no_prior = self.prev.is_none();
@@ -937,12 +947,16 @@ impl EyeEngine {
         // A pupil found without the prior (after it was dropped, or in the retry away from it) is checked the same way
         // whatever the box: the box is then measured around the blob itself, and a lash or lid line caught while the
         // eye is closing has dark lashes in its box (replays: the eye counted as open through a whole close step).
-        let box_bright = self.box_open.len() >= 30 && f.box_mean > 1.3 * self.box_open.value;
+        // On the box levels as at full brightness (`feat::Levels`): a lifted black would squeeze the ratio.
+        let open_box = self.levels.unlevel(self.box_open.value);
+        let box_bright = self.box_open.len() >= 30 && self.levels.unlevel(f.box_mean) > 1.3 * open_box;
         let unanchored = no_prior || f.diag.retried;
         if let Some(pp) = p
             && (box_bright || unanchored)
             && self.a_open.len() >= 30
-            && (!(0.45..=1.3).contains(&(pp.a / self.a_open.value)) || pp.inner > self.inner_open.value + 15.0 || pp.vis < 0.5)
+            && (!(0.45..=1.3).contains(&(pp.a / self.a_open.value))
+                || pp.inner > self.inner_open.value + self.levels.step(15.0)
+                || pp.vis < 0.5)
         {
             p = None;
             f.ok_pupil = false;
@@ -1024,7 +1038,10 @@ impl EyeEngine {
         let no_pupil_long = self.nopupil >= frames_in(CLOSED_NO_PUPIL_S, fps, 2);
         let edge_gap = self.prev_p.map_or(f64::NAN, |q| q.cx - q.a - self.x_min);
         let edge_held = params.tune.edge_hold && !f.ok_pupil && edge_gap < EDGE_LOST_PX && ap >= EDGE_OPEN_AP;
-        let closed = self.box_open.len() >= 30 && box_f > 1.3 * self.box_open.value && no_pupil_long && !edge_held;
+        let closed = self.box_open.len() >= 30
+            && self.levels.unlevel(box_f) > 1.3 * self.levels.unlevel(self.box_open.value)
+            && no_pupil_long
+            && !edge_held;
         self.since_closed = if closed { 0 } else { self.since_closed.saturating_add(1) };
         // Wide and squint are 0 on a closed frame and for HOLD_S after it.
         let hold = self.since_closed <= frames_in(HOLD_S, fps, 1);

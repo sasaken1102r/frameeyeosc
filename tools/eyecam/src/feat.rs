@@ -273,14 +273,143 @@ impl Default for Features {
     }
 }
 
+/// The darkest column mean (the lens's black vignette and band) of the pictures the fixed grey levels and steps of this
+/// file were set on, and their span up to the brightest column mean over x 200..330 (sclera and skin around the iris):
+/// the developer's recordings, 3.9..4.4 and 148..179 over a wear's first 20 s, median 166.
+const LEVELS_DARK: f64 = 4.0;
+const LEVELS_SPAN_TYPICAL: f64 = 166.0;
+/// A span of LEVELS_SPAN_FULL or more is full contrast: the levels stay as built (the live profile from its first frame
+/// on gave 139.7..176 in 25 of the 26 recordings; the 26th starts with 5 s of darker frames). At LEVELS_SPAN_DIM or
+/// less the picture has that much less contrast than the typical one; in between the factor goes over to 1.
+const LEVELS_SPAN_FULL: f64 = 136.0;
+const LEVELS_SPAN_DIM: f64 = 116.0;
+/// A darkest column mean above this is a lifted black (haze, a lens insert's own glare): the levels move up with it.
+const LEVELS_DARK_LIFT: f64 = 12.0;
+/// The smallest contrast factor (a picture with almost nothing in it does not drive the steps to zero).
+const LEVELS_K_MIN: f64 = 0.2;
+
+/// How the camera sees this wear against the pictures the fixed levels were set on, from the same column means as
+/// `occluder_x`: the darkest column and the brightest around the iris. A dimmer picture (a prescription lens insert
+/// that blocks some of the IR, a camera that sees less light) scales every grey step with it, and one with a lifted
+/// black (haze) moves every grey level up as well; at full brightness and contrast nothing moves. In replays of the
+/// 26 recordings made darker, the steps that did not move with the picture were what failed: first the pupil's
+/// threshold steps above the window's dark level (14 / 22 / 32), then the step the pupil's rays need (14). At 0.7 x
+/// the brightness the pupil was found on 79% of the open frames instead of 89% and the squint read 0.70 instead of
+/// 0.88; at 0.5 x 55% and 0.43. With every level moved by the factor the picture was made darker by, the replays
+/// came back to full brightness's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Levels {
+    /// Contrast factor (1 = as built).
+    pub k: f64,
+    /// The darkest column mean, where the grey levels start from when they move.
+    pub dark: f64,
+    /// The levels move (the factor is below 1, or the black is lifted).
+    pub moved: bool,
+}
+
+impl Levels {
+    pub const AS_BUILT: Levels = Levels { k: 1.0, dark: LEVELS_DARK, moved: false };
+
+    /// From column means over rows 60..340 (`column_means`, one frame's or a mean).
+    pub fn from_profile(col_mean: &[f64]) -> Levels {
+        Self::from_profile_without(col_mean, &[])
+    }
+
+    /// The levels for a wear's column means as the live engine, the lens edge and the search window use them: with a
+    /// glare band that ends the picture (`glare_end`), its columns are left out of the bright end.
+    pub fn for_profile(col_mean: &[f64]) -> Levels {
+        if glare_end(col_mean).is_some() {
+            Self::from_profile_without(col_mean, &glare_columns(col_mean))
+        } else {
+            Self::from_profile(col_mean)
+        }
+    }
+
+    /// `from_profile` with the bright end taken outside the columns `skip` marks (a glare band beyond the iris is no
+    /// measure of how bright the eye is; `glare_columns`).
+    pub fn from_profile_without(col_mean: &[f64], skip: &[bool]) -> Levels {
+        let dark = col_mean.iter().copied().fold(f64::INFINITY, f64::min);
+        let eye = (200..330).filter(|&x| !skip.get(x).copied().unwrap_or(false)).map(|x| col_mean[x]);
+        let eye = eye.fold(f64::NEG_INFINITY, f64::max);
+        let all = || col_mean[200..330].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let bright = if eye.is_finite() { eye } else { all() };
+        let span = bright - dark;
+        let k = if span >= LEVELS_SPAN_FULL {
+            1.0
+        } else {
+            let dim = span / LEVELS_SPAN_TYPICAL;
+            let t = ((span - LEVELS_SPAN_DIM) / (LEVELS_SPAN_FULL - LEVELS_SPAN_DIM)).max(0.0);
+            (dim + t * (1.0 - dim)).clamp(LEVELS_K_MIN, 1.0)
+        };
+        if k < 1.0 || dark > LEVELS_DARK_LIFT { Levels { k, dark, moved: true } } else { Levels::AS_BUILT }
+    }
+
+    /// A grey level set on the developer's pictures, in this picture.
+    pub fn level(&self, v: f64) -> f64 {
+        if self.moved { self.dark + self.k * (v - LEVELS_DARK) } else { v }
+    }
+
+    /// A grey step (a difference of levels) set on the developer's pictures, in this picture.
+    pub fn step(&self, d: f64) -> f64 {
+        if self.moved { self.k * d } else { d }
+    }
+
+    /// A grey level of this picture as it would be at full brightness and contrast (the inverse of `level`; ratios of
+    /// levels, such as the iris box against the open eye's, are taken on these).
+    pub fn unlevel(&self, v: f64) -> f64 {
+        if self.moved { (v - self.dark) / self.k + LEVELS_DARK } else { v }
+    }
+}
+
+impl Default for Levels {
+    fn default() -> Self {
+        Levels::AS_BUILT
+    }
+}
+
+/// A column mean at or above GLARE_LEVEL is a saturated glare band (IR reflected off a prescription lens insert's rim
+/// covers one side of the picture; the developer's recordings have no column mean above 180), and the GLARE_WIDEN
+/// columns next to it are its soft edge.
+const GLARE_LEVEL: f64 = 240.0;
+const GLARE_WIDEN: usize = 8;
+
+/// The columns a glare band covers (`GLARE_LEVEL`), widened by GLARE_WIDEN; all false without one.
+pub fn glare_columns(col_mean: &[f64]) -> Vec<bool> {
+    let n = col_mean.len();
+    let mut g = vec![false; n];
+    for x in (0..n).filter(|&x| col_mean[x] >= GLARE_LEVEL) {
+        g[x.saturating_sub(GLARE_WIDEN)..(x + GLARE_WIDEN + 1).min(n)].fill(true);
+    }
+    g
+}
+
 /// The lens-edge column: where the black band on the nasal (large-x) side starts (feat2.occluder_x), from column
-/// means over rows 60..340 of a frame or of a mean image.
+/// means over rows 60..340 of a frame or of a mean image. The band is darker than 25 at full brightness (`Levels`).
+/// A glare band on the nasal side hides the lens's black band, and the edge is then found past the glare
+/// (`glare_edge` is where the picture really ends).
 pub fn occluder_x(col_mean: &[f64]) -> f64 {
-    let first = col_mean[280..].iter().position(|&m| m < 25.0).unwrap_or(120);
+    let lv = Levels::for_profile(col_mean).level(25.0);
+    let first = col_mean[280..].iter().position(|&m| m < lv).unwrap_or(120);
     (280 + first) as f64 - 3.0
 }
 
-/// Column mean that counts as out of the dark temporal shading (`search_x_min`).
+/// Where a glare band on the nasal side starts, as a lens edge (its first column from x 200 on, widened, less 3), or
+/// None without one.
+pub fn glare_edge(col_mean: &[f64]) -> Option<f64> {
+    glare_columns(col_mean)[200..].iter().position(|&g| g).map(|g| (200 + g) as f64 - 3.0)
+}
+
+/// A glare band ends the picture only when its edge is at or past this column: beyond where the iris's nasal edge
+/// usually is (open pupils at x 200..258 in the developer's recordings, iris radius about 57 px). A band further in
+/// lies over the iris, and the pupil search needs the room up to the lens edge.
+pub const GLARE_MIN_X: f64 = 280.0;
+
+/// The glare band's edge where it ends the picture (`glare_edge` at GLARE_MIN_X or further out), else None.
+pub fn glare_end(col_mean: &[f64]) -> Option<f64> {
+    glare_edge(col_mean).filter(|&g| g >= GLARE_MIN_X)
+}
+
+/// Column mean that counts as out of the dark temporal shading (`search_x_min`), at full brightness (`Levels`).
 const SHADE_END_LEVEL: f64 = 40.0;
 /// How far into the shading the live search may start, px.
 const SHADE_MARGIN: f64 = 10.0;
@@ -320,7 +449,10 @@ impl XMinFrom {
 
 /// `search_x_min` and where its value came from.
 pub fn search_x_min_from(col_mean: &[f64]) -> (f64, XMinFrom) {
-    let bright = |x: usize| col_mean[x] >= SHADE_END_LEVEL;
+    let lv = Levels::for_profile(col_mean).level(SHADE_END_LEVEL);
+    // A glare band on the temporal side is not the bright region the iris is in.
+    let glare = glare_columns(col_mean);
+    let bright = |x: usize| col_mean[x] >= lv && !glare[x];
     let top = (X_MIN + SHADE_MARGIN) as usize;
     if !(top..top + 4).all(bright) {
         return (X_MIN, XMinFrom::Fixed);
@@ -370,6 +502,8 @@ pub struct Extractor {
     opf_x0: usize,
     /// The iris radius the current frame's lids were searched with (`upper_high` uses the same).
     lid_r: f64,
+    /// The grey steps' scale for this wear (live sets it from the column means; as built by default).
+    pub levels: Levels,
 }
 
 impl Default for Extractor {
@@ -379,6 +513,7 @@ impl Default for Extractor {
             search: Search::LEGACY,
             opf_x0: OPF_X0,
             lid_r: f64::NAN,
+            levels: Levels::AS_BUILT,
             op: Vec::new(),
             opf: Vec::new(),
             smf: Vec::new(),
@@ -535,8 +670,9 @@ impl Extractor {
         self.cands.clear();
         let mut best: Option<Cand> = None;
         for dth in [14.0, 22.0, 32.0] {
+            let th = lo + self.levels.step(dth);
             self.mask.clear();
-            self.mask.extend((0..sh).flat_map(|y| (0..sw).map(move |x| (y, x))).map(|(y, x)| (at(x, y) as f64) < lo + dth));
+            self.mask.extend((0..sh).flat_map(|y| (0..sw).map(move |x| (y, x))).map(|(y, x)| (at(x, y) as f64) < th));
             vision::components(&self.mask, sw, sh, &mut self.cc, &mut self.comps);
             for c in &self.comps {
                 let (w, h, a) = (c.w as f64, c.h as f64, c.area as f64);
@@ -681,7 +817,7 @@ impl Extractor {
             ov.clear();
             ov.extend(rs.iter().zip(row).filter(|(r, _)| **r > 1.25 * r0 && **r < 1.7 * r0).map(|(_, &v)| v as f64));
             let outer = vision::median(&mut ov);
-            if outer - inner < 14.0 || outer.is_nan() || last_x[k] >= xmax {
+            if outer - inner < self.levels.step(14.0) || outer.is_nan() || last_x[k] >= xmax {
                 continue;
             }
             let th = inner + 0.5 * (outer - inner);
@@ -765,7 +901,7 @@ impl Extractor {
                     k = i;
                 }
             }
-            if gg[k] < if large_x { 12.0 } else { 9.0 } {
+            if gg[k] < self.levels.step(if large_x { 12.0 } else { 9.0 }) {
                 continue;
             }
             let r = rok[k + 1] + 0.375;
@@ -924,7 +1060,7 @@ impl Extractor {
                     k = y;
                 }
             }
-            if self.gy[k * W + x] as f64 > (0.15 * u.grad).max(5.0) {
+            if self.gy[k * W + x] as f64 > (0.15 * u.grad).max(self.levels.step(5.0)) {
                 offs.push(k as f64 - ysk);
             }
         }
@@ -1317,6 +1453,124 @@ mod tests {
         let (f, p) = ex.extract(&img, 347.0, None, None, None);
         assert!(p.is_some_and(|p| (p.cx - 170.0).abs() < 1.5), "{p:?}");
         assert!(f.upper_skin_y.is_finite() && f.box_mean.is_finite(), "{f:?}");
+    }
+
+    /// `img` with every grey level times `g` (a dimmer camera picture), rounded.
+    fn dimmed(img: &[u8], g: f64) -> Vec<u8> {
+        img.iter().map(|&v| (v as f64 * g).round() as u8).collect()
+    }
+
+    #[test]
+    fn the_levels_stay_as_built_at_full_brightness() {
+        // The developer's recordings: black vignette and lens band ~4.3, sclera and skin 150..180 around the iris.
+        let mut cm = vec![4.3; W];
+        cm[150..200].iter_mut().enumerate().for_each(|(i, v)| *v = 4.3 + 3.0 * i as f64);
+        cm[200..330].fill(165.0);
+        cm[330..347].fill(100.0);
+        assert_eq!(Levels::from_profile(&cm), Levels::AS_BUILT);
+        assert_eq!((Levels::AS_BUILT.level(40.0), Levels::AS_BUILT.step(14.0)), (40.0, 14.0));
+        // Half as bright: every step about halves (this profile spans a little less than the typical one), every level
+        // moves toward the black with it.
+        let half: Vec<f64> = cm.iter().map(|v| v * 0.5).collect();
+        let lv = Levels::from_profile(&half);
+        assert!(lv.moved && (lv.k - 0.484).abs() < 0.001, "{lv:?}");
+        assert!((lv.level(40.0) - (2.15 + lv.k * 36.0)).abs() < 1e-9 && (lv.step(14.0) - 14.0 * lv.k).abs() < 1e-9);
+        // Between dim and full brightness the factor goes over to 1 without a jump.
+        let at = |b: f64| Levels::from_profile(&cm.iter().map(|&v| if v > 100.0 { b } else { v }).collect::<Vec<_>>());
+        assert_eq!(at(141.0), Levels::AS_BUILT);
+        assert!(at(140.2).k > 0.995 && (at(120.3).k - 116.0 / 166.0).abs() < 1e-9 && at(130.0).k > at(120.3).k);
+        // Ratios of levels (the iris box against the open eye's) are taken back at full brightness.
+        assert!((lv.unlevel(lv.level(57.0)) - 57.0).abs() < 1e-9 && Levels::AS_BUILT.unlevel(57.0) == 57.0);
+        // A lifted black (haze) moves the levels up even at full contrast, and a squeezed span scales the steps.
+        let hazy: Vec<f64> = cm.iter().map(|v| v + 30.0).collect();
+        let lv = Levels::from_profile(&hazy);
+        assert!(lv.moved && lv.k == 1.0 && (lv.level(25.0) - 55.3).abs() < 1e-9, "{lv:?}");
+        let hazy: Vec<f64> = cm.iter().map(|v| 0.5 * v + 40.0).collect();
+        let lv = Levels::from_profile(&hazy);
+        assert!(lv.moved && (lv.k - 0.484).abs() < 0.001 && (lv.dark - 42.15).abs() < 1e-9, "{lv:?}");
+    }
+
+    #[test]
+    fn a_glare_band_ends_the_picture_and_is_no_measure_of_brightness() {
+        // A saturated band over the nasal quarter (x 300..388; the lens's dark rim beyond stays), with a soft edge.
+        let band = |img: &mut Vec<u8>| {
+            for y in 0..H {
+                for x in 296..388 {
+                    let w = ((x as f64 - 296.0) / 8.0).min(1.0);
+                    let v = &mut img[y * W + x];
+                    *v = (*v as f64 * (1.0 - w) + 255.0 * w).round() as u8;
+                }
+            }
+        };
+        let img = synthetic_eye(250.0, 200.0, 25.0);
+        assert!(glare_columns(&column_means(&img)).iter().all(|&g| !g), "no band: nothing changes");
+        let mut glared = img.clone();
+        band(&mut glared);
+        assert_eq!(glare_edge(&column_means(&img)), None);
+        let xmax = glare_edge(&column_means(&glared)).expect("glare");
+        assert!((280.0..296.0).contains(&xmax), "the picture ends before the glare, not past it at the rim: {xmax}");
+        assert!(occluder_x(&column_means(&glared)) > 380.0, "the lens rim past the glare");
+        // Dim and glared: the factor is the dim picture's, not the glare's.
+        let mut dim = dimmed(&img, 0.5);
+        let k = Levels::from_profile(&column_means(&dim)).k;
+        band(&mut dim);
+        let cm = column_means(&dim);
+        assert!(!Levels::from_profile(&cm).moved, "the glare reads as full brightness");
+        let lv = Levels::from_profile_without(&cm, &glare_columns(&cm));
+        assert!(lv.moved && (lv.k - k).abs() < 0.05, "{lv:?} vs {k}");
+        // A dim profile with a glare band past the iris: the window follows the shading as without the band (the
+        // glare is no measure of the brightness here either).
+        let dim_profile = |band: bool| {
+            (0..W).map(|x| if band && x >= 300 { 255.0 } else if x < 150 { 3.2 } else { 32.0 }).collect::<Vec<f64>>()
+        };
+        assert_eq!(search_x_min_from(&dim_profile(false)), (140.0, XMinFrom::Shade));
+        assert_eq!(glare_end(&dim_profile(true)), Some(289.0));
+        assert_eq!(search_x_min_from(&dim_profile(true)), (140.0, XMinFrom::Shade));
+        // A temporal band next to the bright region is not part of it: the search window stops at its soft edge.
+        let profile = (0..W).map(|x| if x < 12 { 5.0 } else if x < 150 { 255.0 } else { 80.0 });
+        assert_eq!(search_x_min_from(&profile.collect::<Vec<f64>>()), (148.0, XMinFrom::Shade));
+    }
+
+    #[test]
+    fn a_dimmer_picture_keeps_the_lens_edge_and_the_search_window() {
+        let img = synthetic_eye(250.0, 200.0, 25.0);
+        assert_eq!(occluder_x(&column_means(&dimmed(&img, 0.4))), occluder_x(&column_means(&img)));
+        // The shading's end at x = 150 (x_min 140) still counts at 0.4 x the brightness (columns 3 and 32: the fixed
+        // level 40 would put the whole picture in the shading).
+        let profile = |end: usize, g: f64| (0..W).map(|x| g * if x < end { 8.0 } else { 80.0 }).collect::<Vec<f64>>();
+        assert_eq!(search_x_min(&profile(150, 1.0)), 140.0);
+        assert_eq!(search_x_min(&profile(150, 0.4)), 140.0);
+        assert_eq!(search_x_min_from(&profile(198, 0.4)), (X_MIN, XMinFrom::Fixed));
+        // A lens band lifted by haze is still the lens band.
+        let hazy: Vec<u8> = img.iter().map(|&v| (v as f64 * 0.6 + 40.0) as u8).collect();
+        assert_eq!(occluder_x(&column_means(&hazy)), occluder_x(&column_means(&img)));
+    }
+
+    #[test]
+    fn a_dimmer_picture_keeps_the_pupil_apart_from_the_dark_ring_around_it() {
+        // A pupil (radius 20, level 12) in a darker ring (to radius 34, level 32: lashes' shade, a dark iris rim)
+        // inside the iris (70). The threshold steps above the window's dark level keep the ring out at full
+        // brightness; at half the brightness the ring is 16, under the darkest level + 14, and the "pupil" grows to
+        // the ring.
+        let mut img = synthetic_eye(250.0, 200.0, 20.0);
+        for y in 0..H {
+            for x in 0..W {
+                let d = (x as f64 - 250.0).hypot(y as f64 - 200.0);
+                if (20.0..34.0).contains(&d) {
+                    img[y * W + x] = 32;
+                }
+            }
+        }
+        let find = |img: &[u8], levels: Levels| {
+            let mut ex = Extractor { levels, ..Extractor::default() };
+            ex.extract(img, 347.0, None, None, None).1.expect("pupil")
+        };
+        let p = find(&img, Levels::AS_BUILT);
+        assert!((p.a - 20.0).abs() < 1.5, "{p:?}");
+        let dim = dimmed(&img, 0.5);
+        assert!(find(&dim, Levels::AS_BUILT).a > 28.0, "the fixed steps take the ring in");
+        let p = find(&dim, Levels::from_profile(&column_means(&dim)));
+        assert!((p.a - 20.0).abs() < 1.5 && (p.cx - 250.0).abs() < 1.0 && (p.cy - 200.0).abs() < 1.0, "{p:?}");
     }
 }
 

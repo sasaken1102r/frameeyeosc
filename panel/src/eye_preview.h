@@ -45,6 +45,16 @@ struct Shown {
     double gazeY = 0.0;
 };
 
+/**
+ * Which eyes' eyelids the eye cameras drive now: frameeyeosc's camera.used while it runs. It changes seldom, so it
+ * comes from the status rather than each sample's LidFrom (which is the camera's only on samples where its value
+ * replaced the eye server's, not while it merely agrees).
+ */
+struct CameraLids {
+    bool known = false;             ///< frameeyeosc's status is there (else the badge goes by LidFrom)
+    bool used[2] = {false, false};  ///< the cameras drive this eye's eyelid (left, right)
+};
+
 /** The pupil drawn when none is known (mm). */
 constexpr double kDefaultPupilMm = 4.0;
 /** The iris's diameter the pupil is drawn against (mm; eyecam-rec assumes the same). */
@@ -52,17 +62,19 @@ constexpr double kIrisMm = 11.8;
 
 /**
  * The drawn eyes from one of frameeyeosc's samples. Sent: the eyelid, squint, pupil and gaze as sent, the badge from
- * where the eyelid came from (LidFrom: the eye server's usual mix is Valve's, anything else the camera's), and the
- * brows while they are sent. Raw: Valve's openness after the eye's scale (1.0 drawn as relaxed open) and the gaze
- * before smoothing, no squint or pupil (Valve has none). Camera: the eye camera's own eyelid, squint and pupil, and the
- * gaze before smoothing (the camera gives frameeyeosc none); an eye without fresh camera values is not known. Raw and
- * Camera draw no brows: nothing measures them (frameeyeosc makes them from the widening), so there is nothing "as read"
- * to show; the room above the eyes stays, so switching the values doesn't move the eyes.
+ * whether the eye cameras drive that eye's eyelid (lids, as the eyelids card has it; unknown, from the sample's
+ * LidFrom: the eye server's usual mix is Valve's, anything else the camera's), and the brows while they are sent. Raw:
+ * Valve's openness after the eye's scale (1.0 drawn as relaxed open) and the gaze before smoothing, no squint or pupil
+ * (Valve has none). Camera: the eye camera's own eyelid, squint and pupil, and the gaze before smoothing (the camera
+ * gives frameeyeosc none); an eye without fresh camera values is not known. Raw and Camera draw no brows: nothing
+ * measures them (frameeyeosc makes them from the widening), so there is nothing "as read" to show; the room above the
+ * eyes stays, so switching the values doesn't move the eyes.
  * @param packet the sample
  * @param source which values
+ * @param lids where the eyelids come from now (Sent's badge)
  * @return the eyes
  */
-Shown shown(const gaze_dots::Packet& packet, Source source);
+Shown shown(const gaze_dots::Packet& packet, Source source, const CameraLids& lids = {});
 
 /**
  * How far the upper lid is up between closed (0) and the widest the drawing goes (1): relaxed open (0.75) at

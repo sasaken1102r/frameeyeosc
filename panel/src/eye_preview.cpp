@@ -86,7 +86,7 @@ double orElse(double value, double fallback) {
 
 }  // namespace
 
-Shown shown(const gaze_dots::Packet& packet, Source source) {
+Shown shown(const gaze_dots::Packet& packet, Source source, const CameraLids& lids) {
     Shown s;
     s.valid = true;
     s.brows = packet.brows;
@@ -107,8 +107,9 @@ Shown shown(const gaze_dots::Packet& packet, Source source) {
                 out.lidValue = in.lid;
                 out.squint = orElse(in.squint, 0.0);
                 out.pupilMm = in.pupilMm;
-                // (LidFrom: 0 the eye server's usual mix, anything else the camera overrode it)
-                out.camera = in.lidFrom != 0;
+                // Where the eyelid comes from, as frameeyeosc's status has it; without one, LidFrom (0 the eye
+                // server's usual mix, anything else the camera overrode it)
+                out.camera = lids.known ? lids.used[eye] : in.lidFrom != 0;
                 if (packet.brows) out.brow = std::clamp(orElse(in.brow, 0.0), 0.0, 1.0);
                 break;
             case Source::Raw:

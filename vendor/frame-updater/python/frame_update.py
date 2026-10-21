@@ -83,7 +83,9 @@ class Updater:
         """Check for a newer release: {"status": "up-to-date" | "update-available" | "error", ...}.
         "update-available" also has "notes" and "notes_ja": the release's summary in English and Japanese
         (plain text on one line, "" if the release text has none). Since frame-update 0.4.0 every answer has
-        "channel", and one with "latest" has "prerelease" (true: the newest release is a test version)."""
+        "channel", and one with "latest" has "prerelease" (true: the newest release is a test version). Since 0.5.0,
+        "update-available" with "back_to_stable": true (stable channel, a test version running) offers going back to
+        "latest", the regular version below it; install() installs it."""
         args = self._base() + (["--force"] if force else []) + ["check"]
         return await self._run(args, CHECK_TIMEOUT_SECONDS, {"status": "error"})
 

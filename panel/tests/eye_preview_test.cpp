@@ -78,6 +78,20 @@ void testShown() {
     CHECK(near(s.eyes[0].pupilMm, 6.1) && near(s.eyes[0].gazeX, 0.1) && near(s.eyes[1].gazeX, 0.2));
     CHECK(near(s.eyes[1].lid, 0.5) && near(s.eyes[1].squint, 0.4) && !s.eyes[1].camera && s.eyes[1].closedByCamera);
     CHECK(std::isnan(s.eyes[1].pupilMm));
+    // With frameeyeosc's status, the badge is where the eyelids come from now, whatever this sample's LidFrom says:
+    // the cameras driving the right eye, whose value they didn't replace (LidFrom 0), and not the left one
+    CameraLids lids;
+    lids.known = true;
+    lids.used[1] = true;
+    s = shown(p, Source::Sent, lids);
+    CHECK(!s.eyes[0].camera && s.eyes[1].camera && near(s.eyes[1].lid, 0.5));
+    lids.used[0] = true;
+    lids.used[1] = false;
+    s = shown(p, Source::Sent, lids);
+    CHECK(s.eyes[0].camera && !s.eyes[1].camera);
+    // (Raw and Camera don't go by it)
+    lids.used[1] = true;
+    CHECK(!shown(p, Source::Raw, lids).eyes[1].camera && shown(p, Source::Camera, CameraLids {}).eyes[0].camera);
     // As read: Valve's openness after the scale, 1.0 drawn as relaxed open (1.2 a little widened); the raw gaze; no
     // squint or pupil, and Valve's
     s = shown(p, Source::Raw);

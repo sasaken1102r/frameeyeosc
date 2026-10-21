@@ -1318,8 +1318,9 @@ bool EyePanel::scroll(double dy) {
     return true;
 }
 
-void EyePanel::showUpdatePrompt(const std::string& version) {
+void EyePanel::showUpdatePrompt(const std::string& version, bool back) {
     updatePromptVersion_ = bareVersion(version);
+    updatePromptBack_ = back;
     hover_ = {};
     pressed_ = {};
 }
@@ -1805,10 +1806,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     }
     // The eye preview's button at the very bottom: wide with its label on its own, or a square with the eye alone at
     // the right of the message or notice there (they make room for it)
-    const frame_updater::UpdateState update = m.update.state;
-    const bool notice = update == frame_updater::UpdateState::Available ||
-                        update == frame_updater::UpdateState::Installing ||
-                        update == frame_updater::UpdateState::Installed;
+    const bool notice = updateNotice(m.update);
     const bool shared = !message.empty() || setupCard || notice;
     const double square = 44;
     const double right = shared ? x1 - square - 8 : x1;
@@ -1905,6 +1903,7 @@ void EyePanel::drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel
 
 void EyePanel::drawUpdateNotice(const Pen& pen, const UiText& t, const frame_updater::UpdateStatus& u, double x0,
                                 double x1) {
+    if (!updateNotice(u)) return;
     std::string text;
     switch (u.state) {
         case frame_updater::UpdateState::Available:
@@ -3665,8 +3664,8 @@ void EyePanel::drawSubTabs(const Pen& pen, const UiText& t, const PanelModel& m,
         options.push_back({labels[i], {PanelAction::AdvancedPage, nullptr, static_cast<int>(pages[i])}});
         if (advPage_ == pages[i]) selected = i;
     }
-    // A new release: a dot after "Version"
-    const bool update = m.update.state == frame_updater::UpdateState::Available;
+    // A new release: a dot after "Version" (not for going back to an older one)
+    const bool update = m.update.state == frame_updater::UpdateState::Available && !m.update.backToStable;
     drawPageSwitch(pen, y, h, options, selected, update ? 0 : -1);
 }
 
@@ -3815,11 +3814,18 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
             primary = formatText(test.using_ ? t.updateUsingTestFormat : t.updateUpToDateFormat, current);
             break;
         case UpdateState::Available:
-            primary = formatText(test.offered ? t.updateAvailableTestFormat : t.updateAvailableFormat, latest);
-            if (u.installable) {
-                buttons.push_back({install, formatText(t.updateToFormat, latest), true});
+            if (test.back) {
+                // Going back to the older regular version: offered, not urged (a plain button)
+                primary = formatText(t.updateBackFormat, latest);
             } else {
-                secondary = t.updateManual;
+                primary = formatText(test.offered ? t.updateAvailableTestFormat : t.updateAvailableFormat, latest);
+            }
+            if (!u.installable) {
+                secondary = test.back ? t.updateBackManual : t.updateManual;
+            } else if (test.back) {
+                buttons.push_back({install, t.updateBackButton, false});
+            } else {
+                buttons.push_back({install, formatText(t.updateToFormat, latest), true});
             }
             break;
         case UpdateState::Installing: primary = formatText(t.updateInstallingFormat, updateStepText(t, u.step)); break;
@@ -5186,7 +5192,8 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     const double x = (kWidth - w) / 2;
     const double y = (kHeight - h) / 2;
     drawCard(pen, x, y, w, h, 24, kCard, kAccent, 2);
-    const std::string title = update ? formatText(t.updateConfirmFormat, updatePromptVersion_)
+    const std::string title = update ? formatText(updatePromptBack_ ? t.updateBackConfirmFormat : t.updateConfirmFormat,
+                                                  updatePromptVersion_)
                                      : etvr       ? t.promptEtvr
                                      : livelink   ? t.promptLivelink
                                      : module     ? t.promptModule
@@ -5202,7 +5209,8 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
                           : module   ? t.promptModuleDetail2
                                      : t.promptVrchatDetail2;
     if (update) {
-        const std::vector<std::string> lines = wrapText(pen, t.updateConfirmHint, 17, false, w - 60, 2);
+        const char* hint = updatePromptBack_ ? t.updateBackConfirmHint : t.updateConfirmHint;
+        const std::vector<std::string> lines = wrapText(pen, hint, 17, false, w - 60, 2);
         detail1 = lines.empty() ? "" : lines[0];
         detail2 = lines.size() > 1 ? lines[1] : "";
     }
@@ -5220,7 +5228,8 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
         if (update) hit = {yes ? PanelAction::UpdateConfirm : PanelAction::UpdateCancel, nullptr, 0};
         const double bx = yes ? x + w / 2 - bw - 12 : x + w / 2 + 12;
         const int pointer = pointerState(hit);
-        const std::string label = update ? (yes ? t.updateConfirmYes : t.updateConfirmNo) : (yes ? t.promptYes : t.promptNo);
+        const char* updateYes = updatePromptBack_ ? t.updateBackConfirmYes : t.updateConfirmYes;
+        const std::string label = update ? (yes ? updateYes : t.updateConfirmNo) : (yes ? t.promptYes : t.promptNo);
         if (yes) {
             fillRounded(pen, bx, by, bw, kControlH + 4, (kControlH + 4) / 2, pointer == 2 ? kAccentPressed : kAccent);
         } else {
@@ -7074,8 +7083,13 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
     using eye_preview::CameraState;
     using eye_preview::Source;
     // Stopped: what the first draw after "Freeze" showed, kept until "Resume"
+    // Where the eyelids come from now (frameeyeosc's camera.used, as the eyelids card has it), for the badges
+    eye_preview::CameraLids lids;
+    lids.known = m.status.running;
+    for (int eye = 0; eye < 2; ++eye) lids.used[eye] = m.status.running && m.status.camera.used[eye];
     if (previewFreezePending_) {
         previewKept_ = m.preview;
+        previewKeptLids_ = lids;
         previewFreezePending_ = false;
     }
     const eye_preview::View& pv = previewFrozen_ ? previewKept_ : m.preview;
@@ -7146,7 +7160,9 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
 
     // Both eyes, each with its chips, and under them its camera picture; without the pictures, in the middle of the
     // space. In a mirror the right eye is on the right, seen from the front on the left (eye_preview::drawnColumn)
-    const eye_preview::Shown shown = pv.hasPacket ? eye_preview::shown(pv.packet, source) : eye_preview::Shown {};
+    const eye_preview::CameraLids& shownLids = previewFrozen_ ? previewKeptLids_ : lids;
+    const eye_preview::Shown shown =
+        pv.hasPacket ? eye_preview::shown(pv.packet, source, shownLids) : eye_preview::Shown {};
     double eyeW = 255;
     double eyeH = 170;
     const double chipsH = 28;

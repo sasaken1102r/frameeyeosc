@@ -557,9 +557,18 @@ std::string hostOfTarget(const std::string& target) {
 }
 
 std::string updateNotes(const frame_updater::UpdateStatus& update, Language language) {
-    if (update.state != frame_updater::UpdateState::Available) return "";
+    if (update.state != frame_updater::UpdateState::Available || update.backToStable) return "";
     if (language == Language::Ja && !update.notesJa.empty()) return update.notesJa;
     return update.notes;
+}
+
+bool updateNotice(const frame_updater::UpdateStatus& update) {
+    switch (update.state) {
+        case frame_updater::UpdateState::Available: return !update.backToStable;
+        case frame_updater::UpdateState::Installing:
+        case frame_updater::UpdateState::Installed: return true;
+        default: return false;
+    }
 }
 
 TestVersionView testVersionView(const frame_updater::UpdateStatus& update, bool betaOn) {
@@ -567,6 +576,7 @@ TestVersionView testVersionView(const frame_updater::UpdateStatus& update, bool 
     view.using_ = frame_updater::isPrerelease(update.current);
     view.keepHint = !betaOn && view.using_;
     view.offered = update.state == frame_updater::UpdateState::Available && update.prerelease;
+    view.back = update.state == frame_updater::UpdateState::Available && update.backToStable;
     // Only off (on, the update row itself says so), and only for a version newer than the running one
     view.badge = !betaOn && !update.testVersion.empty() &&
                  frame_updater::compareVersions(update.testVersion, update.current) > 0;

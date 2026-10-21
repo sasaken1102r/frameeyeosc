@@ -1151,6 +1151,10 @@ void testUpdateNotes() {
         u.state = state;
         CHECK(updateNotes(u, Language::Ja).empty() && updateNotes(u, Language::En).empty());
     }
+    // Going back to an older regular version: its summary isn't news
+    u.state = frame_updater::UpdateState::Available;
+    u.backToStable = true;
+    CHECK(updateNotes(u, Language::Ja).empty() && updateNotes(u, Language::En).empty());
 }
 
 /** Test versions on the Version page: the "Test version available" badge only while "Get test versions" is off and a
@@ -1209,6 +1213,33 @@ void testTestVersionView() {
     u.prerelease = true;
     u.state = frame_updater::UpdateState::Installing;
     CHECK(!testVersionView(u, true).offered);
+
+    // Turned off on a test version, the older regular version is offered going back to: on the Version page only, no
+    // notice or dot like an update's
+    u.state = frame_updater::UpdateState::Available;
+    u.current = "0.7.11-beta.2";
+    u.latest = "0.7.10";
+    u.prerelease = false;
+    u.installable = true;
+    u.backToStable = true;
+    v = testVersionView(u, false);
+    CHECK(v.back && v.using_ && v.keepHint && !v.offered && !v.badge);
+    CHECK(!updateNotice(u));
+    // A newer regular version is a plain update, with the notice
+    u.latest = "0.7.11";
+    u.backToStable = false;
+    CHECK(!testVersionView(u, false).back && updateNotice(u));
+    // Installing or installed (going back too) still shows the notice; nothing else does
+    u.backToStable = true;
+    for (const auto state : {frame_updater::UpdateState::Installing, frame_updater::UpdateState::Installed}) {
+        u.state = state;
+        CHECK(!testVersionView(u, false).back && updateNotice(u));
+    }
+    for (const auto state : {frame_updater::UpdateState::Unknown, frame_updater::UpdateState::UpToDate,
+                             frame_updater::UpdateState::CheckFailed, frame_updater::UpdateState::InstallFailed}) {
+        u.state = state;
+        CHECK(!testVersionView(u, false).back && !updateNotice(u));
+    }
 }
 
 }  // namespace

@@ -165,6 +165,10 @@ pub struct Settings {
     pub gaze_deadzone: f32,
     pub gaze_hold_below: f32,
     pub independent_eyes: bool,
+    /// With independent_eyes (eye_behavior 2), how much of each eye's own sideways gaze is used, 0..1: 0 the combined
+    /// gaze turned in by VERGENCE_DEG (and the cross-eye gate), 1 each eye's own as Valve reads it (see main.rs,
+    /// own_eye_gaze).
+    pub own_eye_gaze: f32,
     pub lid_min_cutoff: f32,
     pub lid_beta: f32,
     pub lid_closed: f32,
@@ -265,6 +269,7 @@ impl Default for Settings {
             gaze_deadzone: 0.005,
             gaze_hold_below: 0.5,
             independent_eyes: false,
+            own_eye_gaze: 0.0,
             lid_min_cutoff: 6.0,
             lid_beta: 5.0,
             lid_closed: 0.30,
@@ -370,6 +375,7 @@ impl Settings {
             self.gaze_d_cutoff,
             self.gaze_deadzone,
             self.gaze_hold_below,
+            self.own_eye_gaze,
             self.lid_min_cutoff,
             self.lid_beta,
             self.lid_closed,
@@ -447,6 +453,9 @@ impl Settings {
         }
         if !(0.0..=1.0).contains(&self.brow_strength) {
             return Err("brow_strength must be between 0 and 1".into());
+        }
+        if !(0.0..=1.0).contains(&self.own_eye_gaze) {
+            return Err("own_eye_gaze must be between 0 and 1".into());
         }
         if self.lid_sync < 0.0 {
             return Err("lid_sync must be non-negative".into());
@@ -648,6 +657,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
         gaze_deadzone,
         gaze_hold_below,
         independent_eyes,
+        own_eye_gaze,
         lid_min_cutoff,
         lid_beta,
         lid_closed,
@@ -942,6 +952,22 @@ mod tests {
         // Widening off leaves it alone
         let (settings, _) = merged(r#"{"widen": false, "brow_from_widen": true}"#, &[]).unwrap();
         assert!(!settings.widen && settings.brow_from_widen);
+    }
+
+    #[test]
+    fn own_eye_gaze_is_0_until_set() {
+        let (settings, locked) = merged("{}", &[]).unwrap();
+        assert_eq!((settings.own_eye_gaze, locked.len()), (0.0, 0));
+        assert_eq!(merged(r#"{"own_eye_gaze": 0.7}"#, &[]).unwrap().0.own_eye_gaze, 0.7);
+        for bad in [r#"{"own_eye_gaze": 1.1}"#, r#"{"own_eye_gaze": -0.1}"#, r#"{"own_eye_gaze": true}"#] {
+            assert!(merged(bad, &[]).is_err(), "{bad}");
+        }
+        let (settings, locked) = merged(r#"{"own_eye_gaze": 0.2}"#, &["--own-eye-gaze", "1"]).unwrap();
+        assert_eq!((settings.own_eye_gaze, locked), (1.0, vec!["own_eye_gaze"]));
+        // As the status file has it, and back
+        let text = serde_json::to_string(&Settings { own_eye_gaze: 0.5, ..Settings::default() }).unwrap();
+        assert!(text.contains(r#""own_eye_gaze":0.5"#));
+        assert_eq!(merged(&text, &[]).unwrap().0.own_eye_gaze, 0.5);
     }
 
     #[test]

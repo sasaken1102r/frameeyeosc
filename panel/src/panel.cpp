@@ -2661,6 +2661,31 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
                        {t.off, {PanelAction::SetBool, key::kIndependentEyes, 0}}},
                       v.flag(key::kIndependentEyes) ? 0 : 1, 20, locked);
     }
+    y += kRowH + kRowGap;
+    // How much of each eye's own sideways gaze (own_eye_gaze): only while the eyes move separately in v2, faded
+    // otherwise; in v1 with why and the way to the switch beside it, else what the ends do
+    {
+        const bool locked = v.locked(key::kOwnEyeGaze);
+        const bool v1 = eyesV1(v);
+        const bool usable = !v1 && v.flag(key::kIndependentEyes);
+        const double stepperW = 196;
+        const double value = v.number(key::kOwnEyeGaze);
+        const double nx = kControlX + stepperW + 16;
+        if (!usable) cairo_push_group(pen.cr);
+        drawRowLabel(pen, t, y, kRowH, t.rowOwnEyeGaze, "", locked);
+        drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kOwnEyeGaze, value, formatPercent(value), usable,
+                    locked);
+        if (!v1) {
+            const std::vector<std::string> lines = wrapText(pen, t.hintOwnEyeGaze, 13, false, kInnerRight - nx, 3);
+            double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
+            for (const std::string& line : lines) {
+                pen.text(nx, baseline, line, 13, kTextMuted);
+                baseline += 17;
+            }
+        }
+        if (!usable) fadeGroup(pen);
+        if (v1) drawV2OnlyNote(pen, t, t.floorV2Only, nx, y, kRowH);
+    }
 }
 
 void EyePanel::drawGazeGlitch(const Pen& pen, const UiText& t, const SettingsView& v, double top) {

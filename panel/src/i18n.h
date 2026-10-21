@@ -226,6 +226,8 @@ struct UiText {
     const char* rowIndependent;
     const char* hintIndependent;
     const char* hintIndependentOneEye;  ///< instead, while the Frame tracks one eye alone (both eyes get its gaze)
+    const char* rowOwnEyeGaze;        ///< under it: how much of each eye's own sideways gaze (own_eye_gaze)...
+    const char* hintOwnEyeGaze;       ///< ...and what 0 % and 100 % do, beside the stepper
     const char* rowQuality;
     const char* hintQuality;
     const char* rowDespike;

@@ -1064,6 +1064,8 @@ void testGazePages(const FontSet& fonts) {
                     for (const EyePanel::HitArea& area : locks) CHECK(area.w >= 44 && area.h >= 44);
                     if (reach && locked && locks.size() == 1) CHECK(locks[0].hit.arg == 1);
                     CHECK(hits(panel, PanelAction::SetBool, key::kIndependentEyes).size() == (reach && !locked ? 2u : 0u));
+                    // ...and under it each eye's own gaze, nothing to press while they don't (testOwnEyeGazeRow)
+                    CHECK(hits(panel, PanelAction::Step, key::kOwnEyeGaze).empty());
                     // Glitch guard: the hold, skipping unreliable gaze, the despike
                     CHECK(hits(panel, PanelAction::NumberOff, key::kGazeHoldBelow).size() ==
                           (glitch && !locked ? 1u : 0u));
@@ -1077,6 +1079,48 @@ void testGazePages(const FontSet& fonts) {
                         if (area.hit.action == PanelAction::Step) CHECK(area.w >= 44 && area.h >= 44);
                     }
                     CHECK(belowCard(panel) == plain);
+                }
+            }
+        }
+    }
+}
+
+/** own_eye_gaze (Gaze > Reach, "Own gaze per eye", under "Move eyes separately"): − / ＋ in steps of 10 % only while
+ *  the eyes move separately in v2 and it isn't locked; faded otherwise, in v1 with the button to that switch. Inside
+ *  the card in both languages. */
+void testOwnEyeGazeRow(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool independent : {false, true}) {
+            for (const bool v1 : {false, true}) {
+                for (const bool locked : {false, true}) {
+                    for (const double value : {0.0, 0.5, 1.0}) {
+                        PanelModel m = modelWith(Lids::Valve, false);
+                        m.language = language;
+                        m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
+                        m.config.root.set(key::kOwnEyeGaze, JsonValue::makeNumber(value));
+                        if (v1) m.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
+                        if (locked) m.status.locked.push_back(key::kOwnEyeGaze);
+                        EyePanel panel(fonts);
+                        panel.setTab(PanelTab::Gaze);
+                        panel.setGazePage(GazePage::Reach);
+                        panel.render(m);
+                        const std::vector<EyePanel::HitArea> steps = hits(panel, PanelAction::Step, key::kOwnEyeGaze);
+                        const bool usable = independent && !v1 && !locked;
+                        // At 0 % only ＋, at 100 % only −
+                        CHECK(steps.size() == (!usable ? 0u : (value > 0 && value < 1 ? 2u : 1u)));
+                        const std::vector<EyePanel::HitArea> separate =
+                            hits(panel, PanelAction::SetBool, key::kIndependentEyes);
+                        CHECK(separate.size() == 2);
+                        for (const EyePanel::HitArea& area : steps) {
+                            CHECK(area.w >= 44 && area.h >= 44 && area.x >= 400 && area.x + area.w <= 1176);
+                            CHECK(area.y > separate[0].y + separate[0].h && area.y + area.h <= 664);
+                        }
+                        int toVersion = 0;
+                        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AdvancedPage)) {
+                            if (area.x >= 400 && area.hit.arg == static_cast<int>(AdvPage::Version)) ++toVersion;
+                        }
+                        CHECK(toVersion == (v1 ? 1 : 0));
+                    }
                 }
             }
         }
@@ -2935,6 +2979,7 @@ int main() {
     testEyeBehavior(fonts);
     testLidsRemembered(fonts);
     testGazePages(fonts);
+    testOwnEyeGazeRow(fonts);
     testGazeScaleLocks(fonts);
     testSliderMoved(fonts);
     testRelearnButton(fonts);

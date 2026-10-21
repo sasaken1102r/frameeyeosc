@@ -222,7 +222,7 @@ UiText makeJapanese() {
     t.hintIndependent = "少し寄り目にして、上下は目ごと";
     t.hintIndependentOneEye = "片目だけ追跡中は両目が同じ向き";
     t.rowOwnEyeGaze = "目ごとの視線";
-    t.hintOwnEyeGaze = "0 % で安定、100 % で目ごとそのまま（ぶれる）";
+    t.hintOwnEyeGaze = "0 % で安定、100 % で目ごと（ぶれる）";
     t.rowQuality = "不確かな視線を使わない";
     t.hintQuality = "この値より不確かな目は無視";
     t.rowDespike = "一瞬の途切れを消す";
@@ -1188,7 +1188,7 @@ UiText makeEnglish() {
     t.hintIndependent = "Turned in a little, up/down per eye";
     t.hintIndependentOneEye = "Both follow the one tracked eye";
     t.rowOwnEyeGaze = "Own gaze per eye";
-    t.hintOwnEyeGaze = "0 % steady, 100 % each eye as tracked (wobbly)";
+    t.hintOwnEyeGaze = "0% steady, 100% each eye as tracked (wobbly)";
     t.rowQuality = "Skip unreliable gaze";
     t.hintQuality = "Ignores an eye less sure than this";
     t.rowDespike = "Remove glitches";

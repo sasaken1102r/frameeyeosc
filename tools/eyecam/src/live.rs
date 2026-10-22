@@ -984,7 +984,9 @@ impl EyeEngine {
         self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, self.ext_check(t, valve_open));
         self.ex.levels = self.levels;
         // An iris radius over IRIS_PUPIL_MAX x the open pupil's semi-axis is no limbus: for the rest of the wear the iris
-        // fit takes the first rise out of the iris, and the radius is learnt again from its fits.
+        // fit takes the first rise out of the iris, and the radius is learnt again from its fits. So is the open eye's iris
+        // box level: the box is sized by the radius, and one learnt at the old radius (60 s) would hold the closed eye's
+        // 1.3 x out of reach of the smaller, darker box.
         if !self.iris_first
             && self.r_est.len() >= 10
             && self.a_open.len() >= 30
@@ -992,6 +994,7 @@ impl EyeEngine {
         {
             self.iris_first = true;
             self.r_est = LongMedian::new(30.0);
+            self.box_open = LongMedian::new(60.0);
         }
         self.ex.iris_first = self.iris_first;
         let r_ready = self.r_est.len() >= 10;
@@ -3807,6 +3810,7 @@ mod tests {
             } else if switched_at.is_none() {
                 switched_at = Some(k);
                 assert!((before - 80.0).abs() < 4.0, "the fits before: {before}");
+                assert!(e.box_open.len() <= 1, "the open box level is learnt again: {}", e.box_open.len());
             }
         }
         assert!(switched_at.is_some_and(|k| k < 100), "{switched_at:?}");

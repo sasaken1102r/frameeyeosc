@@ -39,6 +39,14 @@ const MAX_CANDIDATES: usize = 3;
 const EDGE_LEFT_SHARE: f64 = 0.4;
 /// The second search without the prior only looks at blobs at least this far (px) from it.
 const RETRY_MIN_JUMP: f64 = 40.0;
+/// The iris radius's rays toward large x take the strongest dark -> bright rise. Where something brighter than the
+/// sclera lies beyond it (a prescription insert's glare band that is not saturated, so `glare_columns` does not see
+/// it), that edge can be the stronger one and the radius comes out far too large: issue 38's right eye was calibrated
+/// at R 88 px (left 40.8, its pupil 1.2 x the left one's), which doubles the iris box and the lid bands. With
+/// `Extractor::iris_first` an earlier rise at least IRIS_FIRST_SHARE as strong, the gradient falling below IRIS_VALLEY
+/// of it in between, is taken as the limbus instead.
+const IRIS_FIRST_SHARE: f64 = 0.5;
+const IRIS_VALLEY: f64 = 0.5;
 /// A pupil from the extended search (`Search::find_x_min`) must have its small-x (temporal) edge left of `x_min` +
 /// this many px: one further in is for the search inside `x_min` to find, and is not taken from the extended one (the
 /// same distance as `live::EDGE_LOST_PX`).
@@ -523,6 +531,9 @@ pub struct Extractor {
     lid_r: f64,
     /// The grey steps' scale for this wear (live sets it from the column means; as built by default).
     pub levels: Levels,
+    /// The iris radius takes the first rise out of the iris toward large x, not the strongest (IRIS_FIRST_SHARE; live
+    /// sets it for a wear whose radius is implausible for its pupil).
+    pub iris_first: bool,
 }
 
 impl Default for Extractor {
@@ -532,6 +543,7 @@ impl Default for Extractor {
             search: Search::LEGACY,
             opf_x0: OPF_X0,
             lid_r: f64::NAN,
+            iris_first: false,
             levels: Levels::AS_BUILT,
             op: Vec::new(),
             opf: Vec::new(),
@@ -923,8 +935,24 @@ impl Extractor {
                     k = i;
                 }
             }
-            if gg[k] < self.levels.step(if large_x { 12.0 } else { 9.0 }) {
+            let th = self.levels.step(if large_x { 12.0 } else { 9.0 });
+            if gg[k] < th {
                 continue;
+            }
+            // Toward large x the limbus is the first rise out of the iris: an earlier rise of its own (the gradient
+            // falls back below IRIS_VALLEY of it before the strongest) at least IRIS_FIRST_SHARE as strong is the
+            // limbus, and the strongest one an edge beyond the sclera (IRIS_FIRST_SHARE).
+            if self.iris_first
+                && large_x
+                && let Some(i) = (3..k).find(|&i| {
+                    gg[i] >= th
+                        && gg[i] >= IRIS_FIRST_SHARE * gg[k]
+                        && gg[i] >= gg[i - 1]
+                        && gg[i] >= gg[i + 1]
+                        && gg[i + 1..k].iter().any(|&g| g < IRIS_VALLEY * gg[i])
+                })
+            {
+                k = i;
             }
             let r = rok[k + 1] + 0.375;
             let v = (d.0 * r, d.1 * r);
@@ -1363,6 +1391,50 @@ mod tests {
         // Above the centre it is the line.
         let (f, _) = ex.extract(&eye_with_step_r(180, 12.0), 347.0, None, Some(55.0), None);
         assert!(!f.upper_edge && (f.upper_skin_y - 180.0).abs() < 3.0, "{f:?}");
+    }
+
+    /// Pupil (12, radius 18) at (230, 200) in an iris (70, radius 45) on sclera (120), a ring of brighter iris (85) at
+    /// radius 28..34, the lens edge band from x 350, and from x `band` on a band of `level` (not saturated).
+    fn eye_with_band(band: usize, level: u8) -> Vec<u8> {
+        let mut img = vec![120u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let d = (x as f64 - 230.0).hypot(y as f64 - 200.0);
+                img[y * W + x] = if x >= 350 {
+                    4
+                } else if x >= band {
+                    level
+                } else if d < 18.0 {
+                    12
+                } else if (28.0..34.0).contains(&d) {
+                    85
+                } else if d < 45.0 {
+                    70
+                } else {
+                    120
+                };
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn the_iris_radius_is_the_first_rise_out_of_the_iris_not_a_brighter_band_beyond() {
+        // As built the strongest rise is taken: the band's edge.
+        let mut ex = Extractor::default();
+        let (f, _) = ex.extract(&eye_with_band(305, 200), 347.0, None, None, None);
+        assert!(f.ok_pupil && (f.iris_r - 75.0).abs() < 3.0, "{f:?}");
+        let mut ex = Extractor { iris_first: true, ..Extractor::default() };
+        // No band: the limbus, not the fainter ring inside the iris.
+        let (f, _) = ex.extract(&eye_with_band(400, 0), 347.0, None, None, None);
+        assert!(f.ok_pupil && (f.iris_r - 45.0).abs() < 2.5, "{f:?}");
+        // A band 75 px out, brighter than the sclera: its edge is the strongest rise on the rays toward it, but the
+        // limbus comes first.
+        let (f, _) = ex.extract(&eye_with_band(305, 200), 347.0, None, None, None);
+        assert!(f.ok_pupil && (f.iris_r - 45.0).abs() < 2.5, "{f:?}");
+        // With the band right at the limbus there is one rise, the limbus's.
+        let (f, _) = ex.extract(&eye_with_band(275, 200), 347.0, None, None, None);
+        assert!(f.ok_pupil && (f.iris_r - 45.0).abs() < 2.5, "{f:?}");
     }
     #[test]
     fn the_higher_band_finds_a_widened_lid_above_the_usual_one() {

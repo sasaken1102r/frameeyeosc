@@ -119,6 +119,10 @@ const EXT_TRACK_S: f64 = 1.0;
 const EXT_TRACK_PX: f64 = 40.0;
 const EXT_A_PX: (f64, f64) = (8.0, 45.0);
 const EXT_VALVE_OPEN: f64 = 0.6;
+/// The largest iris radius, in semi-axes of the open pupil, the iris fit is trusted with (`EyeEngine::iris_first`).
+/// The developer's 10 recorded calibrations: at most 3.3 (median 2.2); issue 38's wear calibration, the left eye 3.0 and
+/// the right eye 5.4 (R 88 px with a pupil 1.2 x the left one's).
+const IRIS_PUPIL_MAX: f64 = 4.0;
 /// The lower lid hardly moves in a blink: a lower line found without the pupil more than this many iris radii below
 /// the last one seen with it is something else (`EyeEngine::last_lower`). Issue 38's wear calibration (a prescription
 /// insert): the left eye's lower line went 0.98 r (median) further down on the closed eye, so the closed eye read 0.95 r
@@ -545,6 +549,9 @@ pub struct EyeEngine {
     bx: Win,
     pd: Win,
     nopupil: u32,
+    /// This wear's iris radius was found implausibly large for its pupil (IRIS_PUPIL_MAX): the iris fit takes the first
+    /// rise out of the iris from then on (`feat::Extractor::iris_first`).
+    iris_first: bool,
     /// The lower lid line (px) of the last frame with the pupil and a lower line, used on frames whose lower line was
     /// pushed against its band's far edge or, without the pupil, lies too far below it (LOWER_DROP_MAX): the lower lid
     /// hardly moves in a blink.
@@ -776,6 +783,7 @@ impl Default for EyeEngine {
             bx: Win::new(),
             pd: Win::new(),
             nopupil: 0,
+            iris_first: false,
             last_lower: f64::NAN,
             grown: 0,
             box_open: LongMedian::new(60.0),
@@ -975,6 +983,17 @@ impl EyeEngine {
         let search_x_min = self.find_x_min;
         self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, self.ext_check(t, valve_open));
         self.ex.levels = self.levels;
+        // An iris radius over IRIS_PUPIL_MAX x the open pupil's semi-axis is no limbus: for the rest of the wear the iris
+        // fit takes the first rise out of the iris, and the radius is learnt again from its fits.
+        if !self.iris_first
+            && self.r_est.len() >= 10
+            && self.a_open.len() >= 30
+            && self.r_est.value > IRIS_PUPIL_MAX * self.a_open.value
+        {
+            self.iris_first = true;
+            self.r_est = LongMedian::new(30.0);
+        }
+        self.ex.iris_first = self.iris_first;
         let r_ready = self.r_est.len() >= 10;
         let r_ref = r_ready.then_some(self.r_est.value);
         let no_prior = self.prev.is_none();
@@ -3756,6 +3775,46 @@ mod tests {
         (any, last.unwrap())
     }
 
+    #[test]
+    fn an_iris_radius_far_too_large_for_the_pupil_switches_the_wear_to_the_first_rise() {
+        // A pupil of radius 12 in an iris of radius 40 (60 on sclera 120), and a band of 200 from x 330: the band's edge
+        // is the strongest rise toward large x, 80 px out.
+        let mut img = vec![120u8; vision::W * vision::H];
+        for y in 0..vision::H {
+            for x in 0..vision::W {
+                let d = (x as f64 - 250.0).hypot(y as f64 - 200.0);
+                img[y * vision::W + x] = if x >= 350 {
+                    4
+                } else if x >= 330 {
+                    200
+                } else if d < 12.0 {
+                    12
+                } else if d < 40.0 {
+                    60
+                } else {
+                    120
+                };
+            }
+        }
+        let p = Params::default();
+        let mut e = EyeEngine::default();
+        let (mut switched_at, mut before) = (None, f64::NAN);
+        for k in 0..200 {
+            let o = e.process(&img, f64::NAN, k as f64 / FPS, &p);
+            assert!(o.f.ok_pupil);
+            if !e.iris_first {
+                before = o.f.iris_r;
+            } else if switched_at.is_none() {
+                switched_at = Some(k);
+                assert!((before - 80.0).abs() < 4.0, "the fits before: {before}");
+            }
+        }
+        assert!(switched_at.is_some_and(|k| k < 100), "{switched_at:?}");
+        assert!((e.r_est.value - 40.0).abs() < 3.0, "learnt again from the first rise: {}", e.r_est.value);
+        // A plausible radius leaves the wear as built.
+        let (e, _, _) = seen_at((250.0, 200.0), Tune::default());
+        assert!(!e.iris_first && !e.ex.iris_first);
+    }
 
     #[test]
     fn a_lower_line_at_the_far_edge_of_its_band_keeps_the_last_lower_lid() {

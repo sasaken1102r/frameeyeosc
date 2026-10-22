@@ -45,7 +45,12 @@ const RETRY_MIN_JUMP: f64 = 40.0;
 /// at R 88 px (left 40.8, its pupil 1.2 x the left one's), which doubles the iris box and the lid bands. With
 /// `Extractor::iris_first` an earlier rise at least IRIS_FIRST_SHARE as strong, the gradient falling below IRIS_VALLEY
 /// of it in between, is taken as the limbus instead.
-const IRIS_FIRST_SHARE: f64 = 0.5;
+/// Replays with the first-rise fit on from the start (26 recordings, a picture shifted up 25 px with a nasal band of
+/// 235 from x 300 that pulls the fit out to a median of 79 / 75 px, against 61 / 54 without): at 0.35 the radius came
+/// back to 62 / 58 px, closes missed in free use 1.27 -> 0.84 a minute, squint 0.81 -> 0.87, widen 0.72 -> 0.80, but
+/// false half-shut 5.3% -> 7.9%; at 0.5, 73 / 68 px and 1.06 a minute. On the original recordings it changed little
+/// (closes missed 0.39 -> 0.40 a minute), and the switch itself never happens there.
+const IRIS_FIRST_SHARE: f64 = 0.35;
 const IRIS_VALLEY: f64 = 0.5;
 /// A pupil from the extended search (`Search::find_x_min`) must have its small-x (temporal) edge left of `x_min` +
 /// this many px: one further in is for the search inside `x_min` to find, and is not taken from the extended one (the

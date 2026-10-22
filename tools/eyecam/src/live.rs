@@ -119,6 +119,12 @@ const EXT_TRACK_S: f64 = 1.0;
 const EXT_TRACK_PX: f64 = 40.0;
 const EXT_A_PX: (f64, f64) = (8.0, 45.0);
 const EXT_VALVE_OPEN: f64 = 0.6;
+/// The lower lid hardly moves in a blink: a lower line found without the pupil more than this many iris radii below
+/// the last one seen with it is something else (`EyeEngine::last_lower`). Issue 38's wear calibration (a prescription
+/// insert): the left eye's lower line went 0.98 r (median) further down on the closed eye, so the closed eye read 0.95 r
+/// open and the open gap came out at 0.30 (its right eye, whose lines meet when closed, 1.3 at a comparable radius).
+/// The developer's 26 recordings: 0.5% of the lower lines found without the pupil, 90% of them on a closed eye.
+const LOWER_DROP_MAX: f64 = 0.9;
 /// The lid features are causal medians over this long (5 frames at 90 fps; an odd number, at least 3).
 const MEDIAN_S: f64 = 5.0 / FPS;
 /// The long-run medians (iris radius, the open eye's box level, pupil size and darkness, typical pitch) take a
@@ -539,6 +545,10 @@ pub struct EyeEngine {
     bx: Win,
     pd: Win,
     nopupil: u32,
+    /// The lower lid line (px) of the last frame with the pupil and a lower line, used on frames whose lower line was
+    /// pushed against its band's far edge or, without the pupil, lies too far below it (LOWER_DROP_MAX): the lower lid
+    /// hardly moves in a blink.
+    last_lower: f64,
     /// Frames in a row the open-eye check dropped the pupil only for being large (PUPIL_GROW_S).
     grown: u32,
     box_open: LongMedian,
@@ -766,6 +776,7 @@ impl Default for EyeEngine {
             bx: Win::new(),
             pd: Win::new(),
             nopupil: 0,
+            last_lower: f64::NAN,
             grown: 0,
             box_open: LongMedian::new(60.0),
             a_open: LongMedian::new(20.0),
@@ -843,6 +854,7 @@ impl EyeEngine {
         self.prev = None;
         self.prev_p = None;
         self.nopupil = 0;
+        self.last_lower = f64::NAN;
         self.grown = 0;
         self.find_x_min = self.x_min;
     }
@@ -1058,6 +1070,16 @@ impl EyeEngine {
             _ if f.iris_r.is_finite() => f.iris_r,
             _ => 2.0 * f.pupil_a,
         };
+        // A lower line pushed against its band's far edge, or found without the pupil more than LOWER_DROP_MAX below the
+        // last one seen with the pupil, is no lower lid: that last one instead (none yet: no lower line on this frame).
+        if !f.ok_pupil && f.lower_y > self.last_lower + LOWER_DROP_MAX * r {
+            f.lower_edge = true;
+        }
+        if f.lower_edge {
+            f.lower_y = self.last_lower;
+        } else if f.ok_pupil && f.lower_y.is_finite() {
+            self.last_lower = f.lower_y;
+        }
         // Lid geometry in pixels (causal medians over MEDIAN_S, 5 frames at 90 fps); the outputs below are in iris
         // radii.
         let med_n = (frames_in(MEDIAN_S, fps, 3) | 1) as usize;
@@ -3732,6 +3754,72 @@ mod tests {
             last = Some(o);
         }
         (any, last.unwrap())
+    }
+
+
+    #[test]
+    fn a_lower_line_at_the_far_edge_of_its_band_keeps_the_last_lower_lid() {
+        // Open: the lower lid is the sclera -> skin step at row 270.
+        let (mut e, p, t) = seen_at((250.0, 200.0), Tune::default());
+        let o = e.process(&lid_frame(Some((250.0, 200.0)), true), f64::NAN, t + 1.0 / FPS, &p);
+        assert!(o.f.ok_pupil && !o.f.lower_edge && (o.f.lower_y - 270.0).abs() < 3.0, "{:?}", o.f);
+        let held = o.f.lower_y;
+        // Closed (lid skin all over), with a darker stretch whose lower end is the lower band's last row: that line is
+        // no lower lid, the last one is used.
+        let bottom = (200.0 + 1.9 * e.r_est.value) as usize;
+        let mut shut = lid_frame(None, false);
+        for y in bottom - 40..bottom {
+            for x in 0..350 {
+                shut[y * vision::W + x] = 110;
+            }
+        }
+        let (_, o) = closes(&mut e, &p, t + 2.0 / FPS, &shut);
+        assert!(o.f.lower_edge && o.f.lower_y == held, "{:?}", o.f);
+        // A lower line inside the band without the pupil is used as it is, and not kept.
+        let mut shut = lid_frame(None, false);
+        for y in 200..250 {
+            for x in 0..350 {
+                shut[y * vision::W + x] = 110;
+            }
+        }
+        let (_, o) = closes(&mut e, &p, t + 20.0 / FPS, &shut);
+        assert!(!o.f.lower_edge && (o.f.lower_y - 250.0).abs() < 3.0, "{:?}", o.f);
+        assert_eq!(e.last_lower, held);
+        // A new calibration's clean search forgets it.
+        e.reset_tracking();
+        assert!(e.last_lower.is_nan());
+    }
+
+    #[test]
+    fn a_lower_line_found_without_the_pupil_far_below_the_last_one_keeps_the_last_one() {
+        // Open with the lower lid at row 233 (0.6 r below the pupil's centre).
+        let p = Params::default();
+        let mut e = EyeEngine::default();
+        let open = lid_frame_between(Some((250.0, 200.0)), 130..233);
+        let mut t = 0.0;
+        for k in 0..100 {
+            t = k as f64 / FPS;
+            let o = e.process(&open, f64::NAN, t, &p);
+            assert!(o.f.ok_pupil && !o.f.lower_edge, "frame {k}: {:?}", o.f);
+        }
+        let held = e.last_lower;
+        let r = e.r_est.value;
+        assert!((held - 233.0).abs() < 3.0 && r.is_finite(), "{held} {r}");
+        // Closed, with the only dark -> bright step 1.0 r below it (inside the band, off its far edge): the last line.
+        let step = |row: usize| {
+            let mut shut = lid_frame(None, false);
+            for y in row - 35..row {
+                for x in 0..350 {
+                    shut[y * vision::W + x] = 110;
+                }
+            }
+            shut
+        };
+        let (_, o) = closes(&mut e, &p, t, &step((held + r) as usize));
+        assert!(o.f.lower_edge && o.f.lower_y == held, "{:?}", o.f);
+        // 0.7 r below it: a lower line.
+        let (_, o) = closes(&mut e, &p, t + 0.2, &step((held + 0.7 * r) as usize));
+        assert!(!o.f.lower_edge && (o.f.lower_y - (held + 0.7 * r)).abs() < 3.0, "{:?}", o.f);
     }
 
     #[test]

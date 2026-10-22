@@ -55,6 +55,15 @@ const EXT_MAX_A: f64 = 60.0;
 /// Not without the pupil: a closing lid really does come down to the band's bottom.
 pub const LID_EDGE_SHARE: f64 = 0.5;
 const LID_EDGE_ROWS: usize = 1;
+/// The lower lid line has the same rule at the far (bottom) edge of its band only, with or without the pupil: a line
+/// pushed against cy + 1.9 r is no lower lid, while a closing eye's lines do meet at the band's top. The developer's
+/// recordings: lower lines with the pupil within 0.40 .. 1.44 r of its centre, without it 0.19% of frames past 1.8 r.
+/// The engine uses the last lower line seen with the pupil instead (and for one found without the pupil far below it,
+/// live::LOWER_DROP_MAX).
+/// And the upper line cannot be below the pupil's centre while the pupil is seen whole (UPPER_WHOLE_VIS of its rays
+/// reach its edge: a lid that low hides its upper half): the same wearer's left eye had its upper line at -0.25 r, under
+/// the centre, on more than half of its widen frames; the developer's recordings, 0.001% of such frames.
+const UPPER_WHOLE_VIS: f64 = 0.75;
 /// The calibration's second, higher search band for a widened upper lid (`Extractor::upper_high`): rows from
 /// cy - HIGH_BAND.0 r to cy - HIGH_BAND.1 r (the usual band is cy - 2.1 r .. cy + 0.45 r). See live::widen_fit.
 pub const HIGH_BAND: (f64, f64) = (3.2, 1.6);
@@ -208,7 +217,7 @@ pub struct Pupil {
 }
 
 /// One lid line: quadratic over the iris columns, its height at the pupil column, inlier share, edge strength, and
-/// the share of its inliers on the search band's first or last rows (LID_EDGE_SHARE).
+/// the share of its inliers on the search band's first or last rows (LID_EDGE_SHARE), and on its last rows only.
 #[derive(Clone, Copy, Debug)]
 struct Lid {
     coef: Quad,
@@ -216,12 +225,18 @@ struct Lid {
     frac: f64,
     grad: f64,
     edge: f64,
+    edge_far: f64,
 }
 
 impl Lid {
     /// Pushed against its band's edge: no line (LID_EDGE_SHARE).
     fn on_edge(&self) -> bool {
         self.edge >= LID_EDGE_SHARE
+    }
+
+    /// Pushed against its band's far (last) rows: no lower line.
+    fn on_far_edge(&self) -> bool {
+        self.edge_far >= LID_EDGE_SHARE
     }
 }
 
@@ -242,9 +257,12 @@ pub struct Features {
     pub upper_frac: f64,
     pub lower_frac: f64,
     pub box_mean: f64,
-    /// The pupil was seen, and the upper lid line found was pushed against its band's edge (LID_EDGE_SHARE): left out,
-    /// the upper lid has no line on this frame.
+    /// The pupil was seen, and the upper lid line found was pushed against its band's edge (LID_EDGE_SHARE) or lay below
+    /// the centre of a pupil seen whole (UPPER_WHOLE_VIS): left out, the upper lid has no line on this frame.
     pub upper_edge: bool,
+    /// The lower lid line found was pushed against its band's far edge: left out, no lower line on this frame (live also
+    /// sets it when it replaces a line found far below the last one, live::LOWER_DROP_MAX).
+    pub lower_edge: bool,
     /// How the search went (not part of the prototype's features).
     pub diag: Diag,
 }
@@ -269,6 +287,7 @@ impl Default for Features {
             lower_frac: n,
             box_mean: n,
             upper_edge: false,
+            lower_edge: false,
         }
     }
 }
@@ -604,7 +623,8 @@ impl Extractor {
                 f.upper_y = u.y_at + margin.unwrap_or(MARGIN_OFF);
                 f.upper_frac = u.frac;
             }
-            if let Some(l) = lower {
+            f.lower_edge = lower.is_some_and(|l| l.on_far_edge());
+            if let Some(l) = lower.filter(|l| !l.on_far_edge()) {
                 f.lower_y = l.y_at;
                 f.lower_frac = l.frac;
             }
@@ -620,13 +640,15 @@ impl Extractor {
         f.iris_n = n;
         let rn = r_ref.unwrap_or(if r.is_finite() { r } else { 2.0 * p.a });
         let (upper, lower, margin) = self.lids(&p, rn, xmax);
-        f.upper_edge = upper.is_some_and(|u| u.on_edge());
-        if let Some(u) = upper.filter(|u| !u.on_edge()) {
+        let no_line = |u: &Lid| u.on_edge() || (p.vis >= UPPER_WHOLE_VIS && u.y_at > p.cy);
+        f.upper_edge = upper.is_some_and(|u| no_line(&u));
+        if let Some(u) = upper.filter(|u| !no_line(u)) {
             f.upper_skin_y = u.y_at;
             f.upper_y = u.y_at + margin.unwrap_or(MARGIN_OFF);
             f.upper_frac = u.frac;
         }
-        if let Some(l) = lower {
+        f.lower_edge = lower.is_some_and(|l| l.on_far_edge());
+        if let Some(l) = lower.filter(|l| !l.on_far_edge()) {
             f.lower_y = l.y_at;
             f.lower_frac = l.frac;
         }
@@ -1010,7 +1032,9 @@ impl Extractor {
         let grad = if sw.is_empty() { 0.0 } else { vision::median(&mut sw) };
         let at_edge = path.iter().zip(&w).filter(|(y, k)| **k && (**y <= LID_EDGE_ROWS || **y + 1 + LID_EDGE_ROWS >= ny)).count();
         let edge = at_edge as f64 / n_in.max(1) as f64;
-        Some(Lid { coef, y_at: coef.at(p.cx), frac, grad, edge })
+        let at_far = path.iter().zip(&w).filter(|(y, k)| **k && **y + 1 + LID_EDGE_ROWS >= ny).count();
+        let edge_far = at_far as f64 / n_in.max(1) as f64;
+        Some(Lid { coef, y_at: coef.at(p.cx), frac, grad, edge, edge_far })
     }
 
     /// The calibration's second search for a widened upper lid, on the frame `extract` just ran on (its pupil `p`):
@@ -1228,13 +1252,18 @@ mod tests {
 
     /// A pupil at (250, 200), radius 25, on skin that is 150 above row `step` and 120 from it down (no iris).
     fn eye_with_step(step: usize) -> Vec<u8> {
+        eye_with_step_r(step, 25.0)
+    }
+
+    /// `eye_with_step` with a pupil of radius `pr`.
+    fn eye_with_step_r(step: usize, pr: f64) -> Vec<u8> {
         let mut img = vec![0u8; W * H];
         for y in 0..H {
             for x in 0..W {
                 let d = (x as f64 - 250.0).hypot(y as f64 - 200.0);
                 img[y * W + x] = if x >= 350 {
                     4
-                } else if d < 25.0 {
+                } else if d < pr {
                     12
                 } else if y < step {
                     150
@@ -1278,6 +1307,63 @@ mod tests {
         assert!(ex.lid_line(&pupil, (150, 300), (100, 160), (100, 160), true).is_none());
     }
 
+    /// A pupil at (250, 200), radius 25, on grey 120 that turns 160 from row `step` down (a dark -> bright step: the
+    /// lower lid's kind) and 150 above row 150 (the upper lid's skin line).
+    fn eye_with_lower_step(step: usize) -> Vec<u8> {
+        let mut img = eye_with_step(150);
+        for y in step..H {
+            for x in 0..350 {
+                if (x as f64 - 250.0).hypot(y as f64 - 200.0) >= 25.0 {
+                    img[y * W + x] = 160;
+                }
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn a_lower_lid_line_pushed_against_the_far_edge_of_its_band_is_no_line() {
+        let mut ex = Extractor::default();
+        // Lids at R = 55: the lower band is rows 213..304. A step through the middle of it is the line.
+        let (f, p) = ex.extract(&eye_with_lower_step(260), 347.0, None, Some(55.0), None);
+        assert!(p.is_some() && !f.lower_edge && (f.lower_y - 260.0).abs() < 3.0, "{f:?}");
+        // The only step on the band's last rows: no lower line, with the pupil ...
+        let (f, p) = ex.extract(&eye_with_lower_step(304), 347.0, None, Some(55.0), None);
+        let pupil = p.expect("pupil");
+        assert!(f.ok_pupil && f.lower_edge && f.lower_y.is_nan() && f.lower_frac.is_nan(), "{f:?}");
+        assert!(!f.upper_edge && (f.upper_skin_y - 150.0).abs() < 3.0, "the upper line stays: {f:?}");
+        // ... and without it (measured where the last pupil was).
+        let blank = eye_with_lower_step(304).iter().map(|&v| if v == 12 { 120 } else { v }).collect::<Vec<u8>>();
+        let (f, p) = ex.extract(&blank, 347.0, Some((250.0, 200.0)), Some(55.0), Some(&pupil));
+        assert!(p.is_none() && f.lower_edge && f.lower_y.is_nan(), "{f:?}");
+        // Only the far edge counts for the lower line: on the band's first rows it is a line (a closing eye's lines
+        // meet there).
+        let mut at = |row: usize| {
+            ex.gy.iter_mut().for_each(|g| *g = 0);
+            for x in 150..300 {
+                ex.gy[row * W + x] = 100;
+            }
+            ex.lid_line(&pupil, (150, 300), (100, 160), (100, 160), false).map(|l| (l.y_at.round(), l.on_far_edge()))
+        };
+        assert_eq!(at(100), Some((100.0, false)));
+        assert_eq!(at(101), Some((101.0, false)));
+        assert_eq!(at(157), Some((157.0, false)));
+        assert_eq!(at(158), Some((158.0, true)));
+        assert_eq!(at(159), Some((159.0, true)));
+    }
+
+    #[test]
+    fn an_upper_lid_line_below_the_centre_of_a_whole_pupil_is_no_line() {
+        let mut ex = Extractor::default();
+        // A bright -> dark step 20 px below the centre of a pupil (radius 12) drawn whole: no upper lid line.
+        let (f, p) = ex.extract(&eye_with_step_r(220, 12.0), 347.0, None, Some(55.0), None);
+        let p = p.expect("pupil");
+        assert!(p.vis >= UPPER_WHOLE_VIS, "{p:?}");
+        assert!(f.upper_edge && f.upper_skin_y.is_nan() && f.upper_y.is_nan(), "{f:?}");
+        // Above the centre it is the line.
+        let (f, _) = ex.extract(&eye_with_step_r(180, 12.0), 347.0, None, Some(55.0), None);
+        assert!(!f.upper_edge && (f.upper_skin_y - 180.0).abs() < 3.0, "{f:?}");
+    }
     #[test]
     fn the_higher_band_finds_a_widened_lid_above_the_usual_one() {
         let mut ex = Extractor::default();

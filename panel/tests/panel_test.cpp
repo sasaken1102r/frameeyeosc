@@ -1085,7 +1085,7 @@ void testGazePages(const FontSet& fonts) {
     }
 }
 
-/** own_eye_gaze (Gaze > Reach, "Own gaze per eye", under "Move eyes separately"): − / ＋ in steps of 10 % only while
+/** own_eye_gaze (Gaze > Reach, "Own gaze per eye", under "Move eyes separately"): − / ＋ in steps of 5 % only while
  *  the eyes move separately in v2 and it isn't locked; faded otherwise, in v1 with the button to that switch. Inside
  *  the card in both languages. */
 void testOwnEyeGazeRow(const FontSet& fonts) {

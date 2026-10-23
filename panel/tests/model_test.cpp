@@ -827,9 +827,9 @@ void testBrowSettings() {
 void testOwnEyeGazeSetting() {
     const SettingSpec* spec = findSetting(key::kOwnEyeGaze);
     CHECK(spec != nullptr && spec->type == SettingType::Number && spec->defaultNumber == 0.0);
-    CHECK(spec != nullptr && spec->min == 0.0 && spec->max == 1.0 && spec->step == 0.1);
+    CHECK(spec != nullptr && spec->min == 0.0 && spec->max == 1.0 && spec->step == 0.05);
     if (spec != nullptr) {
-        CHECK(stepValue(*spec, 0.0, 1, -1e9, 1e9) == 0.1 && stepValue(*spec, 0.2, 1, -1e9, 1e9) == 0.3);
+        CHECK(stepValue(*spec, 0.0, 1, -1e9, 1e9) == 0.05 && stepValue(*spec, 0.05, 1, -1e9, 1e9) == 0.1);
         CHECK(stepValue(*spec, 1.0, 1, -1e9, 1e9) == 1.0 && stepValue(*spec, 0.0, -1, -1e9, 1e9) == 0.0);
         CHECK(stepValue(*spec, 0.37, -1, -1e9, 1e9) == 0.3 && snapValue(*spec, 1.4) == 1.0);
     }

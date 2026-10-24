@@ -119,8 +119,9 @@ pub struct Settings {
     /// In VRChat mode, also send VRChat's own eye tracking input (/tracking/eye/*), which moves the eyes of
     /// avatars without VRCFT parameters.
     pub native_eyes: bool,
-    /// In VRChat mode, also send VRChat's Face Tracking input (/tracking/face/v1), for avatars set up for it.
-    /// Nothing reads it yet: the sending side is still to be written. A switch on the panel's Output tab.
+    /// In VRChat mode, also send VRChat's Face Tracking input (/tracking/face/v1), for avatars set up for it: each
+    /// eye's eyelid, widening and gaze, the eye camera's squint and pupils, the brows raised with brow_from_widen (see
+    /// vrc_face). A switch on the panel's Output tab.
     pub vrc_face_tracking: bool,
     /// Use eyecam-rec's eye-camera values (see eyecam_live) while they are fresh: each eye's eyelid from relaxed open
     /// up (widening), where it sees the eye closed or open through a squint (see main.rs, Smoother::check_lids), and

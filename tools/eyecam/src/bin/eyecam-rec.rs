@@ -376,7 +376,7 @@ fn run() -> Result<()> {
     let mut buffers = Buffers::receive(args.wait_grab, None)?;
     let mut prox = Proximity::find();
     let protocol = args.cues.as_ref().map_or(String::new(), |p| p.display().to_string());
-    let ended = record(&mut buffers, &mut None, &args, steps, &protocol, &mut prox, None, None, Mode::Record)?;
+    let ended = record(&mut buffers, &mut None, &args, steps, &protocol, &mut prox, None, None, Mode::Record, false)?;
     match (ended.dir, ended.abort) {
         (None, Some(abort)) => Err(abort.message().into()),
         _ => Ok(()),
@@ -1082,7 +1082,8 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                 cached = Some(p.ring);
             }
             let feed = if live.on { Some(&mut *live) } else { None };
-            let ended = record(b, &mut cached, args, Some(steps), &name, prox, Some(d), feed, mode).unwrap_or_else(|e| {
+            let back = std::mem::take(&mut came_back);
+            let ended = record(b, &mut cached, args, Some(steps), &name, prox, Some(d), feed, mode, back).unwrap_or_else(|e| {
                 eprintln!("eyecam-rec: {e}");
                 Ended { dir: None, abort: None, failure: Some(format!("失敗した: {e}")), aborted: true, calib: None }
             });
@@ -2179,6 +2180,7 @@ fn record(
     ctl: Option<&Daemon>,
     mut live: Option<&mut Live>,
     mode: Mode,
+    came_back: bool,
 ) -> Result<Ended> {
     let recording = mode == Mode::Record;
     let busy_state = if recording { "recording" } else { "calibrating" };
@@ -2213,6 +2215,11 @@ fn record(
             Err(abort) => return Ok(Ended::early(abort)),
         },
     };
+    // Idle's eye frames had stopped and come back only now: before the calibration starts collecting (it keeps its
+    // wear), as idle would have said (livesvc::NEW_WEAR_OFF_S).
+    if came_back && let Some(l) = live.as_deref() {
+        l.send(Msg::NewWear("the eye frames came back"));
+    }
 
     // Session files. Calibrations are saved the same way (calib_*) but, unless `dev` is on in settings.json, without
     // any eye images (no eye_*.raw, headers.bin, lock_dump.bin): only the small text files, among them the

@@ -4331,10 +4331,10 @@ impl Pace {
         self.prune(now);
     }
 
-    /// Samples missed in the last RATE_WINDOW.
+    /// Samples missed in the last RATE_WINDOW. Summed as integers: an empty f32 sum is -0.0, which logs as "-0".
     fn missed_rate(&self, now: Instant) -> f32 {
         let recent = self.missed.iter().filter(|(time, _)| now.duration_since(*time) < RATE_WINDOW);
-        recent.map(|(_, missed)| *missed as f32).sum()
+        recent.map(|(_, missed)| *missed).sum::<u32>() as f32
     }
 
     /// The longest one sample took in the last RATE_WINDOW, in ms (0 without samples), to 0.1 ms.
@@ -8293,7 +8293,9 @@ mod tests {
         assert_eq!(bridge.check_low_rate(start + Duration::from_secs(21)), None);
         bridge.received.truncate(46);
         assert_eq!(bridge.check_low_rate(start + Duration::from_secs(22)), None);
-        assert!(bridge.check_low_rate(start + Duration::from_secs(32)).is_some());
+        let line = bridge.check_low_rate(start + Duration::from_secs(32)).unwrap();
+        // Nothing missed in the last second: "0", not "-0"
+        assert!(line.contains("in the last second 0 published samples were missed"), "{line}");
         // Not tracking: no rate, nothing to say
         bridge.active_since = None;
         assert_eq!(bridge.check_low_rate(start + Duration::from_secs(50)), None);

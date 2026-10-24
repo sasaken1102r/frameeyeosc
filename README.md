@@ -191,7 +191,7 @@ Settings are in `~/.config/frameeyeosc/config.json`. The panel writes it, and yo
 | `eye_tracking_active` | `--eye-tracking-active` | `"bool"` | How `EyeTrackingActive` is sent in VRChat mode: `"bool"` (true / false), `"float"` (1.0 / 0.0; some avatars need it) or `"off"` (never, not even the one-time "not active" on pausing or losing tracking). ETVR and LiveLink modes never send it |
 | `steamlink_params` | `--steamlink-params` | `false` | In VRChat mode, also send the avatar parameters SteamVR's Steam Link sends from its own OSC (`LeftEyeX`, `RightEyeLid`, ...), for avatars made for those; see [Avatars made for Steam Link's OSC](#avatars-made-for-steam-links-osc). Never prefixed. ETVR and LiveLink modes ignore it |
 | `native_eyes` | `--native-eyes` | `false` | In VRChat mode, also send VRChat's own eye tracking input (`/tracking/eye/*`), which moves the eyes of avatars without VRCFT parameters (see [Native VRChat eye tracking](#native-vrchat-eye-tracking)); a switch on the Output tab |
-| `vrc_face_tracking` | `--vrc-face-tracking` | `false` | In VRChat mode, also send VRChat's Face Tracking input (`/tracking/face/v1`), for avatars set up for VRChat Face Tracking; a switch on the Output tab ("Send to Face Tracking too"). Nothing is sent yet: the sending side is still being written |
+| `vrc_face_tracking` | `--vrc-face-tracking` | `false` | In VRChat mode, also send VRChat's Face Tracking input (`/tracking/face/v1`): each eye's eyelid, widening and gaze, with the eye cameras the squint and pupils, and the brows raised with `brow_from_widen`, for avatars set up for VRChat Face Tracking (see [VRChat Face Tracking](#vrchat-face-tracking)); a switch on the Output tab ("Send to Face Tracking too") |
 | `camera_lids` | `--no-camera-lids` | `true` | Use the eye cameras' values (see [Eye cameras](#eye-cameras)) once they are set up: the eyelid from relaxed open up (widening) and where the camera sees an eye closed or, through a squint, open, squints and pupil size. `false` = Valve's values only, and frameeyeosc also has eyecam-rec stop working out eye values from the video (`live off`; eyecam itself keeps running, see [Turning it off and removing it](#turning-it-off-and-removing-it)). "Use / Don't use" in the Basic tab's "Eye cameras" row |
 | `pupils_to_vrchat` | `--no-pupils-to-vrchat` | `true` | In LiveLink mode, send the eye cameras' pupil size straight to VRChat (port 9000 on the same PC), since the LiveLink module carries no pupils. Other modes ignore it |
 | `pupil_bits` | `--pupil-bits` | `0` | Wherever the eye cameras' pupils go to VRChat, also send the dilation as this many bool parameters (`v2/PupilDilation1`, `2`, `4`, `8`), for avatars that take it bit-packed; `0` = the float only. 1 to 4. See [Pupils on avatars with bit parameters](#pupils-on-avatars-with-bit-parameters). "How the avatar takes pupils" on the Output tab |
@@ -266,6 +266,33 @@ The avatar needs Eye Look set up in Unity (VRC Avatar Descriptor > Eye Look, wit
 - Eyelids: "Eyelid Type" set to Blendshapes (or Bones, if the eyelids are moved by bones), the face mesh as "Eyelids Mesh", and the eyes-shut blendshape chosen for "Blink" (often named `vrc.blink`, `blink` or `Eye_Close`).
 
 After changing these the avatar has to be uploaded again.
+
+## VRChat Face Tracking
+
+With `"vrc_face_tracking": true` (or `--vrc-face-tracking`), frameeyeosc in VRChat mode also sends VRChat's Face Tracking input, `/tracking/face/v1`: one blob of 102 bytes, one for each Unified Expressions tracking key. It drives the blendshapes and eye bones an avatar maps in its descriptor's Face Tracking section, with no VRCFT parameters and no VRCFaceTracking on the PC, and unlike `native_eyes` it carries each eye on its own: winks, widening, squints and pupils. It is off by default; switch it on the Output tab ("Send to Face Tracking too", with "VRChat" as the output). VRChat's Face Tracking is new (VRChat's beta docs, October 2026), so it needs a VRChat and an SDK that have it.
+
+What goes out, per eye:
+
+- `EyeClosed` from the eyelid as sent (1 shut, 0 from relaxed open up), and `EyeWide` from the part above relaxed open.
+- `EyeLookOut` / `In` / `Up` / `Down` from the gaze as sent (each eye's own with "Move eyes separately", else the shared one), 1.0 = 45°: the same values as `v2/EyeLeftX` / `Y`.
+- With the eye cameras: `EyeSquint`, and the pupil as `EyeDilation` (wider than usual) or `EyeConstrict` (narrower).
+- With `brow_from_widen`: `BrowInnerUp` and `BrowOuterUp`.
+
+Every other key goes out as 0. When tracking stops, sending is paused or the output changes, a blob with every key 0 (eyes relaxed open, looking ahead) is sent once.
+
+Setting the avatar up in Unity (VRC Avatar Descriptor > Face Tracking, with "Enable" pressed):
+
+- Add the face mesh under the Face Tracking meshes.
+- Map only the keys frameeyeosc sends. "Auto-Fill" with `eye` as the "Auto-Fill Filter" fills the eye keys; check what it picked (it can also take names like `EyePupil_...`). Keys left at None touch nothing, so the zeros for the mouth and the rest change nothing: a mouth moved by gestures or other animator layers keeps moving.
+- Eyelids: "Eyelid Type" Face Tracking.
+- Gaze: "Eye Gaze Mode" Bone Rotation turns the eye bones by the EyeLook keys, 1.0 reaching the Rotation States under Eye Look. Both adds the eyeLook blendshapes on top of the bones, which can turn the eyes too far.
+- Pupils need "Use All Tracking Keys". (In SDK 3.10.6-beta.2 that checkbox sometimes doesn't toggle; the Inspector's Debug mode can change it.)
+- Brows on a Perfect Sync (ARKit) face: both `BrowInnerUpLeft` and `BrowInnerUpRight` to `browInnerUp` (VRChat takes the larger of the two), and `BrowOuterUpLeft` / `Right` to `browOuterUpLeft` / `Right`.
+- Avatar Optimizer: Trace and Optimize with "Optimize BlendShape" removes the blendshapes only the Face Tracking section uses. VRChat's log then says `Avatar Face Tracking Blendshape '...' not found on any mesh`, and they don't move; turning that option off brings them back.
+
+After changing these the avatar has to be uploaded again.
+
+On such an avatar the blob wins over `/tracking/eye/*`, so `native_eyes` can stay on for avatars without the section. Each blob replaces the whole Face Tracking state, though: another program sending `/tracking/face/v1` (another face tracker) and frameeyeosc take turns on every key the avatar maps, so send it from only one of them.
 
 ## Status file
 

@@ -3909,6 +3909,7 @@ int runOverlay(const Options& options) {
                 in.valveShut[eye] = model.status.hasRaw && model.status.openness.v[eye] < auto_recenter::kOpenFloor;
             }
             in.camerasWarming = eyecam::recenterAwaitsWarmup(model.eyecam, view.flag(key::kCameraLids));
+            in.camerasCalibrating = eyecam::calibrationUnderWay(model.eyecam);
             // On a clock that runs through suspend: taking the headset off usually lets the Frame sleep
             const auto_recenter::Step step = recenter.update(bootSeconds(), in);
             if (!step.log.empty()) std::fprintf(stderr, "[fit] %s\n", step.log.c_str());
@@ -3939,6 +3940,9 @@ int runOverlay(const Options& options) {
                     eyecam::relearnAllowed(eyecam::tabVisible(model.eyecam.status, unixNow()), model.eyecam.status, lids,
                                            relearnUse(cameraUse(model.status, lids, warming)));
             }
+            // (eyecam-rec's status is read every kEyecamReadSec while it runs, and a calibration the panel sent counts
+            // from the moment it went out)
+            state.camerasCalibrating = eyecam::calibrationUnderWay(model.eyecam);
             action_socket::Decision decision = action_socket::decide(request.action, state);
             std::fprintf(stderr, "[action] %s (from PID %d): %s\n", action_socket::actionName(request.action),
                          request.peerPid, decision.text.c_str());

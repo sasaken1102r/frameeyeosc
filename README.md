@@ -169,7 +169,7 @@ Each works like pressing the button (and only when the button could be pressed),
 | 8 | The fit's values are locked by frameeyeosc's command line (the buttons are grey too) |
 | 9 | frameeyeosc runs but no eye data comes in (most often the headset isn't on) |
 | 10 | Busy: a re-center is running (also the automatic one after putting the headset on; `stop` it first) |
-| 11 | `relearn`: the eye cameras aren't in use or ready (off, not set up, eyecam not running or busy, no eye video), or eyecam said no |
+| 11 | `relearn`: the eye cameras aren't in use or ready (off, not set up, eyecam not running or busy, no eye video), or eyecam said no. Also `recenter`, `fit` and `relearn` while the eye cameras are calibrating (the line then says `calibrating`; the fit buttons are grey meanwhile) |
 
 The panel answers within about a quarter of a second (one pass of its loop with the dashboard closed); `relearn` waits for eyecam's answer too, at most a second more. It talks to the running panel over a socket only you can use (`$XDG_RUNTIME_DIR/frameeyeosc-panel.sock`, details in [panel/README.md](panel/README.md#ほかのアプリから動かす--action)). The panel only looks at that socket while it waits; a request makes it read the status file and `config.json` once. `--version` tells which panel is installed.
 

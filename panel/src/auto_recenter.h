@@ -63,6 +63,7 @@ struct Inputs {
     bool valveShut[2] = {false, false};  ///< Valve's eye server reads the eye below kOpenFloor (left, right)
     bool camerasWarming = false;         ///< the eye cameras' eyelids wait for eyecam-rec's warm-up
                                          ///< (eyecam::recenterAwaitsWarmup)
+    bool camerasCalibrating = false;     ///< the eye cameras are calibrating (eyecam::calibrationUnderWay)
 };
 
 /** What to do after an update. */
@@ -80,9 +81,11 @@ struct Step {
  * the dashboard stopped is tried again, kDashboardRetries times at most in a wearing (fitEnded); any other end is
  * final for the wearing. While Valve's eye server reads an eye shut
  * (it can get stuck at 0 for a whole wear) and the eye cameras are still warming up, no sample would count, so it
- * waits for the warm-up (up to kCameraWaitSec): the eye camera's eyelid counts for that eye after it. Time while
- * frameeyeosc is not running counts for nothing (a restart while worn does not look like putting the headset on); the time since the last
- * update counts for the state seen then, so a suspend right after taking the headset off counts as off.
+ * waits for the warm-up (up to kCameraWaitSec): the eye camera's eyelid counts for that eye after it. While the eye
+ * cameras calibrate (the user looking up and down as told), it waits for the calibration to end, however long.
+ * Time while frameeyeosc is not running counts for nothing (a restart while worn does not look like putting the
+ * headset on); the time since the last update counts for the state seen then, so a suspend right after taking the
+ * headset off counts as off.
  */
 class Watcher {
 public:
@@ -146,6 +149,7 @@ private:
     double startupFrom_ = 0.0;   ///< ...since the connect or the wake...
     const char* startupAfter_ = "";  ///< ...which ("connecting" / "waking up")...
     bool startupLogged_ = false;     ///< ...and a re-center has waited for it (said once)
+    bool calibLogged_ = false;   ///< a re-center has waited for the eye cameras' calibration running now (said once)
     double shutSince_ = NAN;     ///< since when an eye has read shut on Valve's eye server (NaN: neither does)
     double holdSince_ = NAN;     ///< since when this wearing's start is held back for the eye cameras (NaN: it isn't)
     double clearSince_ = NAN;    ///< ...and since when that no longer holds (NaN: it still does)

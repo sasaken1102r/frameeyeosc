@@ -205,6 +205,41 @@ void testDecide() {
     CHECK(relearnAnswer(false, "no reply in time").text == "eye cameras not ready (no answer from eyecam-rec)");
     CHECK(relearnAnswer(false, "connect /run/user/1000/eyecam/ctl.sock: No such file or directory").code ==
           Code::NoCameras);
+    // The eye cameras calibrating (the user looks up and down for it): none of the three starts, told with the eye
+    // cameras' code and "calibrating" (what frame-aux-shortcuts names as their calibration)
+    State calibrating = ready;
+    calibrating.camerasCalibrating = true;
+    calibrating.camerasReady = true;
+    for (const Action a : {Action::Recenter, Action::Fit, Action::Relearn}) {
+        d = decide(a, calibrating);
+        CHECK(d.code == Code::NoCameras && d.effect == Effect::None &&
+              d.text == "busy (the eye cameras are calibrating)");
+    }
+    CHECK(formatReply(decide(Action::Recenter, calibrating).code, decide(Action::Recenter, calibrating).text) ==
+          "11 busy (the eye cameras are calibrating)\n");
+    // ...ahead of frameeyeosc, eye data, the lock and the missing gaze fit (it is a wait, not a setting)
+    State calibratingStopped = calibrating;
+    calibratingStopped.running = false;
+    State calibratingBlind = calibrating;
+    calibratingBlind.tracking = false;
+    State calibratingLocked = calibrating;
+    calibratingLocked.locked = true;
+    State calibratingUnfitted = calibrating;
+    calibratingUnfitted.gazeFitted = false;
+    for (const State& s : {calibratingStopped, calibratingBlind, calibratingLocked, calibratingUnfitted}) {
+        CHECK(decide(Action::Recenter, s).code == Code::NoCameras && decide(Action::Fit, s).code == Code::NoCameras);
+    }
+    // ...but after a fit already running (its "Stop" first); stop and open as before
+    State calibratingFitting = calibrating;
+    calibratingFitting.fitActive = true;
+    CHECK(decide(Action::Recenter, calibratingFitting).code == Code::BusyFit);
+    CHECK(decide(Action::Stop, calibratingFitting).effect == Effect::StopFit);
+    CHECK(decide(Action::Stop, calibrating).code == Code::NothingToStop);
+    CHECK(decide(Action::Open, calibrating).effect == Effect::ShowPanel);
+    // Over: as before
+    calibrating.camerasCalibrating = false;
+    CHECK(decide(Action::Recenter, calibrating).effect == Effect::StartRecenter);
+    CHECK(decide(Action::Relearn, calibrating).effect == Effect::Relearn);
     // Open always opens; in any state
     d = decide(Action::Open, State());
     CHECK(d.code == Code::Accepted && d.effect == Effect::ShowPanel);
@@ -218,7 +253,7 @@ void testDecide() {
           static_cast<int>(Code::BusyRecenter) == 10 && static_cast<int>(Code::NoCameras) == 11);
     // Every result has its text (relearn's two, the rest from decide)
     for (const Action a : {Action::Recenter, Action::Fit, Action::Stop, Action::Relearn, Action::Open}) {
-        for (int bits = 0; bits < 128; ++bits) {
+        for (int bits = 0; bits < 256; ++bits) {
             State any;
             any.running = bits & 1;
             any.tracking = bits & 2;
@@ -227,6 +262,7 @@ void testDecide() {
             any.fitActive = bits & 16;
             any.fitIsRecenter = bits & 32;
             any.camerasReady = bits & 64;
+            any.camerasCalibrating = bits & 128;
             const Decision each = decide(a, any);
             CHECK(!each.text.empty() && static_cast<int>(each.code) != 2 && static_cast<int>(each.code) != 3);
             CHECK((each.code == Code::Accepted) == (each.effect != Effect::None));
@@ -421,6 +457,13 @@ void testServer() {
     State cameras = ready;
     cameras.camerasReady = true;
     CHECK(roundTrip(server, path, "relearn", cameras, line, effect) == 0 && effect == Effect::Relearn);
+    // The eye cameras calibrating: 11, with "calibrating" in the line the command prints
+    State calibrating = cameras;
+    calibrating.camerasCalibrating = true;
+    CHECK(roundTrip(server, path, "recenter", calibrating, line, effect) == 11 && effect == Effect::None);
+    CHECK(line == "recenter: busy (the eye cameras are calibrating)");
+    CHECK(roundTrip(server, path, "fit", calibrating, line, effect) == 11 && effect == Effect::None);
+    CHECK(roundTrip(server, path, "relearn", calibrating, line, effect) == 11 && effect == Effect::None);
     State locked = ready;
     locked.locked = true;
     CHECK(roundTrip(server, path, "recenter", locked, line, effect) == 8);

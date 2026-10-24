@@ -541,6 +541,16 @@ Run followRun(Run last, const Status& status);
 bool isCalib(Run run);
 
 /**
+ * Whether an eye-camera calibration is under way: eyecam-rec says "calibrating" (also while it waits for the eye video,
+ * step -1) in a fresh status, or the panel has sent one ("calib wear" / "calib user") that it hasn't answered yet. The
+ * user then looks where its steps say (up and down too), so the eye fit and the re-center wait for it: their buttons
+ * are grey, `--action` refuses them, and the automatic re-center holds back.
+ * @param view the recorder (its status, `visible` and `busy` as the loop keeps them)
+ * @return true while one is under way
+ */
+bool calibrationUnderWay(const View& view);
+
+/**
  * Whether eyecam-rec is learning the relaxed eyes for this wear (a newer eyecam-rec, "baseline": "warming").
  * @param status the status
  * @return true while warming

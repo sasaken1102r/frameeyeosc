@@ -51,7 +51,8 @@ enum class Code {
     NoEyeData = 9,     ///< frameeyeosc runs, but no eye data comes in (the headset off, or eye tracking stopped)
     BusyRecenter = 10, ///< a re-center is running (also the automatic one after putting the headset on)
     NoCameras = 11,    ///< relearn: the eye cameras aren't in use or not ready (off, not set up, eyecam-rec not running
-                       ///< or busy, no eye video), or eyecam-rec said no
+                       ///< or busy, no eye video), or eyecam-rec said no. Also recenter, fit and relearn while the eye
+                       ///< cameras calibrate, with "calibrating" in the text (what frame-aux-shortcuts looks for)
 };
 
 /** The actions (more can follow: pause / resume sending, the eye cameras' calibration, the gaze dots). */
@@ -92,6 +93,8 @@ struct State {
     /** The eye cameras drive the eyelids (or learn to) and eyecam-rec reads them live, idle with the eye video
      *  (eyecam::relearnAllowed: what the "Relearn my eyes" button needs) */
     bool camerasReady = false;
+    /** The eye cameras are calibrating (eyecam::calibrationUnderWay): the fit buttons are grey meanwhile */
+    bool camerasCalibrating = false;
 };
 
 /** What the panel then does. */
@@ -115,8 +118,9 @@ struct Decision {
  * Decide what an action does now, with the conditions of the button it stands for: the fit buttons need frameeyeosc
  * running and their values not locked, and not while a fit runs (they are hidden then; only "Stop" shows). The
  * re-center also needs a gaze fit, like the automatic one after putting the headset on, and both need eye data.
- * Relearning needs the eye cameras ready, and waits for a fit too (the fit measures the eyelids). Checked in that
- * order: busy, frameeyeosc, eye data, then the action's own.
+ * Relearning needs the eye cameras ready, and waits for a fit too (the fit measures the eyelids). None of the three
+ * starts while the eye cameras calibrate (the user looks where its steps say). Checked in that order: busy (a fit,
+ * then the calibration), frameeyeosc, eye data, then the action's own.
  * @param action the action
  * @param state the panel's state now
  * @return the code, the reply's text and what to do

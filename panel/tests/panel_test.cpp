@@ -2023,6 +2023,24 @@ void testFitTabPolicy(const FontSet& fonts) {
     }
     // Everything on the page stays inside the card
     for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+    // While the eye cameras calibrate (the user looks up and down for it), neither fit can be pressed; the rest of the
+    // page can. Also from the moment the panel sent the calibration, before eyecam-rec says so
+    panel.setFitDetails(false);
+    m.eyecam.visible = true;
+    m.eyecam.status.state = eyecam::State::Calibrating;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::FitStart).empty() && hits(panel, PanelAction::FitCenter).empty());
+    CHECK(hits(panel, PanelAction::SetAutoRecenter).size() == 2 && hits(panel, PanelAction::FitDetails).size() == 1);
+    m.eyecam.status.state = eyecam::State::Idle;
+    m.eyecam.busy = true;
+    m.eyecam.busyCommand = eyecam::kCalibUserCommand;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::FitStart).empty() && hits(panel, PanelAction::FitCenter).empty());
+    // Over: back
+    m.eyecam.busy = false;
+    m.eyecam.busyCommand.clear();
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::FitStart).size() == 1 && hits(panel, PanelAction::FitCenter).size() == 1);
 }
 
 /**

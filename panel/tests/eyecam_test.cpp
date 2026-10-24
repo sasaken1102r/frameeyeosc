@@ -582,6 +582,43 @@ void testCalib() {
     CHECK(eyecam::isCalib(Run::CalibWear) && eyecam::isCalib(Run::CalibUser));
     CHECK(!eyecam::isCalib(Run::Recording) && !eyecam::isCalib(Run::None));
 
+    // A calibration under way (the fit and the re-center wait for it): eyecam-rec says "calibrating" in a fresh status,
+    // also while it waits for the eye video (step -1), or the panel sent one it hasn't answered yet
+    {
+        eyecam::View view;
+        view.visible = true;
+        view.status = calibStatus("calibrating", 1, ", \"step_index\": -1, \"protocol\": \"calib user\"");
+        CHECK(eyecam::calibrationUnderWay(view));
+        view.status = calibStatus("calibrating", 1, ", \"step_index\": 2, \"step_label\": \"look_up\"");
+        CHECK(eyecam::calibrationUnderWay(view));
+        view.status = calibStatus("calibrating", 0, ", \"protocol\": \"calib wear\"");
+        CHECK(eyecam::calibrationUnderWay(view));
+        // A stale status (eyecam-rec gone) says nothing
+        view.visible = false;
+        CHECK(!eyecam::calibrationUnderWay(view));
+        view.visible = true;
+        // Anything else: no (relearning's warm-up too: idle, the eyes as usual)
+        for (const char* other : {"idle", "recording", "searching", "error", "waiting_fds", "stopped"}) {
+            view.status = calibStatus(other, 3, ", \"baseline\": \"warming\"");
+            CHECK(!eyecam::calibrationUnderWay(view));
+        }
+        // Sent and not answered yet: a calibration counts, other commands don't
+        view.busy = true;
+        for (const char* calib : {"calib wear", "calib user"}) {
+            view.busyCommand = calib;
+            CHECK(eyecam::calibrationUnderWay(view));
+        }
+        for (const char* other : {"relearn", "start", "stop", "set lid_veto on", ""}) {
+            view.busyCommand = other;
+            CHECK(!eyecam::calibrationUnderWay(view));
+        }
+        view.busyCommand = "calib user";
+        view.visible = false;
+        CHECK(eyecam::calibrationUnderWay(view));
+        view.busy = false;
+        CHECK(!eyecam::calibrationUnderWay(view));
+    }
+
     // What ran last, following the status
     const auto step = [](const std::string& state, const std::string& label) {
         return eyecam::parseStatus("{\"state\": \"" + state + "\", \"step_label\": \"" + label + "\"}", kNow);

@@ -237,6 +237,7 @@ UiText makeJapanese() {
     t.fitIntro = "［目を合わせる］を押すと、すぐに点が出ます（ダッシュボードは開いたままで大丈夫）";
     t.fitNeedsRunning = "frameeyeosc が動いているときに使えます";
     t.fitLocked = "視線かまぶたの値がコマンドで固定されているので使えません";
+    t.fitCamerasCalibrating = "目のカメラの校正が終わってから使えます";
     t.fitRunningTitle = "点を見てください";
     t.fitHowTo = "頭は動かさず、点を目で追ってください。最後は 3・2・1 のあと 3 秒間目を閉じ、チャイムで開けます";
     t.fitHowToCenter = "点は真ん中に出ます。頭は動かさず見てください";
@@ -1203,6 +1204,7 @@ UiText makeEnglish() {
     t.fitIntro = "Press \"Fit my eyes\" and a dot shows right away (the dashboard can stay open).";
     t.fitNeedsRunning = "Works while frameeyeosc is running";
     t.fitLocked = "Not available: gaze or eyelid values are locked by the command line";
+    t.fitCamerasCalibrating = "Works once the eye cameras' calibration is over";
     t.fitRunningTitle = "Look at the dot";
     t.fitHowTo = "Keep your head still and follow the dot with your eyes. At the end, after 3, 2, 1, close your eyes "
                  "for 3 seconds and open them at the chime.";

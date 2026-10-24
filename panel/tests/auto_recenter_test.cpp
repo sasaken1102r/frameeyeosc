@@ -789,6 +789,58 @@ void testCameraWarmupOtherwiseAsBefore() {
     CHECK(blink.starts == 1 && blink.startedAt <= 103.25 && blink.logged("waiting") == 0);
 }
 
+void testCameraCalibHolds() {
+    // The eye cameras calibrating when it would start (the dashboard closed during the calibration): it waits for the
+    // end however long, saying so once, and starts right after it
+    Run run;
+    run.in.camerasCalibrating = true;
+    run.wait(3.5);
+    CHECK(run.starts == 0 && run.watcher.armed());
+    CHECK(run.logged("auto re-center: waiting for the eye cameras' calibration to end") == 1);
+    run.wait(120);
+    CHECK(run.starts == 0 && run.watcher.armed() && run.logs.size() == 1);
+    run.in.camerasCalibrating = false;
+    const double over = run.now;
+    run.wait(0.5);
+    CHECK(run.starts == 1 && run.startedAt <= over + 0.25);
+    CHECK(run.logs.size() == 2 && run.logs[1] == "auto re-center: starting");
+    // Calibrated with the dashboard open (from the panel's Eye cameras tab), as usual: the end changes nothing until
+    // the dashboard has been closed kClosedSec
+    Run dash;
+    dash.in.dashboardOpen = true;
+    dash.in.camerasCalibrating = true;
+    dash.wait(20);
+    dash.in.camerasCalibrating = false;
+    dash.wait(5);
+    CHECK(dash.starts == 0 && dash.logged("calibration") == 0);
+    dash.in.dashboardOpen = false;
+    const double closed = dash.now;
+    dash.wait(2);
+    CHECK(dash.starts == 1 && dash.startedAt >= closed + auto_recenter::kClosedSec);
+    // ...and closed again mid-calibration: it waits for that calibration
+    Run mid;
+    mid.in.dashboardOpen = true;
+    mid.in.camerasCalibrating = true;
+    mid.wait(5);
+    mid.in.dashboardOpen = false;
+    mid.wait(10);
+    CHECK(mid.starts == 0 && mid.logged("calibration to end") == 1);
+    mid.in.camerasCalibrating = false;
+    mid.wait(0.5);
+    CHECK(mid.starts == 1);
+    // A second calibration in a later wearing is said again
+    mid.finishFit();
+    mid.in.tracking = false;
+    mid.wait(20);
+    mid.in.tracking = true;
+    mid.in.camerasCalibrating = true;
+    mid.wait(10);
+    CHECK(mid.starts == 1 && mid.logged("calibration to end") == 2);
+    mid.in.camerasCalibrating = false;
+    mid.wait(0.5);
+    CHECK(mid.starts == 2);
+}
+
 void testWornFor() {
     // For the records: how long the eyes have been tracked, and how long they weren't before that
     Run run;
@@ -832,6 +884,7 @@ int main() {
     testCameraWarmupHolds();
     testCameraWarmupCap();
     testCameraWarmupOtherwiseAsBefore();
+    testCameraCalibHolds();
     testWornFor();
     if (gFailures == 0) std::printf("auto-recenter-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

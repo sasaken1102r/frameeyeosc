@@ -243,6 +243,7 @@ struct UiText {
     const char* fitIntro;            ///< before any fit (fitHowTo follows it)
     const char* fitNeedsRunning;
     const char* fitLocked;
+    const char* fitCamerasCalibrating;  ///< the fit buttons grey while the eye cameras calibrate
     const char* fitRunningTitle;     ///< while a fit runs: the one calm line ("Look at the dot")...
     const char* fitHowTo;            ///< ...and under it, what to do (full fit)
     const char* fitHowToCenter;      ///< (re-centering)

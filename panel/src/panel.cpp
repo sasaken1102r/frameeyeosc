@@ -2761,7 +2761,9 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         drawEyeFitRunning(pen, t, fit);
         return;
     }
-    const bool canRun = m.status.running && !anyLocked;
+    // (not while the eye cameras calibrate: the user looks where its steps say, up and down too)
+    const bool camerasCalibrating = eyecam::calibrationUnderWay(m.eyecam);
+    const bool canRun = m.status.running && !anyLocked && !camerasCalibrating;
     const AutoRecenter rewear = autoRecenter(m.config);
 
     // The one button to press: fit (again); and the re-wear fit (the middle dot), the one auto_recenter runs by itself
@@ -2871,6 +2873,13 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                     for (const std::string& sentence : sentences(t.fitHowTo)) paragraphs.push_back(sentence);
                 }
                 break;
+        }
+        // The eye cameras calibrating: why the buttons are grey comes first (the rest follows it)
+        if (camerasCalibrating) {
+            if (!title.empty()) paragraphs.insert(paragraphs.begin(), title);
+            title = t.fitCamerasCalibrating;
+            error = false;
+            check = false;
         }
         // Folded down to one line while "Fine-tune" is open
         if (compact) {

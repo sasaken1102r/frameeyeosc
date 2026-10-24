@@ -413,6 +413,11 @@ bool isCalib(Run run) {
     return run == Run::CalibWear || run == Run::CalibUser;
 }
 
+bool calibrationUnderWay(const View& view) {
+    return (view.visible && view.status.state == State::Calibrating) ||
+           (view.busy && isCalib(runOfCommand(view.busyCommand)));
+}
+
 bool baselineWarming(const Status& status) {
     return status.hasBaseline && status.baseline == "warming";
 }

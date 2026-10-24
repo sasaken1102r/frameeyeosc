@@ -2156,14 +2156,14 @@ impl CalibFile {
         [0, 1].map(|e| self.wear.map(|w| w[e]).filter(|_| self.wear_failed_eye != ["L", "R"][e]))
     }
 
-    /// The medians of the history (None when it is empty). Widen steps above MAX_WIDEN_STEP (saved before that check)
-    /// are left out of the step's median; with none other left it is DEFAULT_WIDEN_STEP.
+    /// The medians of the history (None when it is empty). Widen steps above HISTORY_MAX_WIDEN_STEP are left out of
+    /// the step's median; with none other left it is DEFAULT_WIDEN_STEP.
     pub fn history_params(&self) -> Option<[History; 2]> {
         if self.history.is_empty() {
             return None;
         }
         let step = |e: usize| {
-            let m = median_of(self.history.iter().map(|x| x.1[e].step).filter(|s| *s <= MAX_WIDEN_STEP));
+            let m = median_of(self.history.iter().map(|x| x.1[e].step).filter(|s| *s <= HISTORY_MAX_WIDEN_STEP));
             if m.is_finite() { m } else { DEFAULT_WIDEN_STEP }
         };
         let h = |e: usize| History {
@@ -2322,12 +2322,18 @@ impl CalibFile {
 
 /// Thresholds of the calibration checks (fit_wear / fit_user use the same numbers).
 pub const MIN_WIDEN_STEP: f64 = 0.05;
-/// A widen step above this (iris radii) is not a widen: a lid's edge does not rise that far above where it sits
-/// looking ahead, so two different lines were taken for the normal and the widen level. The eye gets the usual step
-/// (as with a widen not caught), and such a step is not taken into the history's median either. The developer's
-/// 47 wear calibrations: 0.15 to 0.43. A tester with lens inserts (0.8.2-beta.1): 1.165 / 1.054, the usual band's
-/// normal level against the tips of the upper lashes in the higher band (see WIDEN_HIGH_REF_FRAC).
-pub const MAX_WIDEN_STEP: f64 = 0.9;
+/// A widen step above this (iris radii) is taken as two different lines for the normal and the widen level, not a
+/// widen: the eye gets the usual step (as with a widen not caught), and the step stays out of the history. The
+/// developer's 47 wear calibrations: 0.15 to 0.43. A tester with lens inserts: 1.165 / 1.054 in a 0.8.2-beta.1 wear
+/// calibration, and 1.30 / 1.15 replaying a recording of 2026-10-23, where the pictures show the usual band's
+/// normal level on the lid's edge and the higher band's widen level on the tips of the upper lashes (see
+/// WIDEN_HIGH_REF_FRAC). Left above the steps of 0.83 to 0.87 that the same tester's wear calibration of 2026-10-17
+/// measured in the usual band (no pictures of it to tell which line that was).
+pub const MAX_WIDEN_STEP: f64 = 1.1;
+/// Widen steps above this are left out of the history's median (the usual step of a widen not caught): the
+/// developer's go up to 0.43, and a step this large in a history saved before MAX_WIDEN_STEP is more likely the two
+/// lines above than a widen.
+pub const HISTORY_MAX_WIDEN_STEP: f64 = 0.9;
 pub const MIN_OPEN_GAP: f64 = 0.2;
 /// A widen frame whose upper lid line lies more than this (iris radii) below the normal level is left out of the
 /// widen level: a widened lid is never lower than the normal one, so such a line is not the lid. Some wearers' lid
@@ -2366,13 +2372,15 @@ pub const WIDEN_HIGH_NEIGHBOUR: f64 = 0.1;
 pub const WIDEN_HIGH_FIXED: f64 = 0.15;
 pub const WIDEN_HIGH_FIXED_SHARE: f64 = 0.25;
 /// When the higher band finds a line in at least WIDEN_HIGH_FIXED_SHARE of the normal frames with the pupil (inlier
-/// share at least this), and the widen lines lie above that line's median, they are the same line moved up with the
-/// widening lid, not the lid's edge: the widen step is how far that line rose, added to the normal level (the usual
-/// band's). A tester with lens inserts (0.8.2-beta.1, a recording of 2026-10-23): the usual band's normal level is the
-/// lid's edge (0.73 / 0.68 R), while the higher band sees the tips of the long upper lashes in both steps (normal
-/// 1.69 / 1.67, widen 2.01 / 1.88). Measured from the normal level the step came out 1.30 / 1.15, so the widen could
-/// never be reached; the lashes' rise gives 0.3 / 0.2. Their normal lines are weaker than the widen ones (median
-/// share 0.64 on the right eye), hence a lower bar than WIDEN_HIGH_MIN_FRAC.
+/// share at least this), and the widen lines lie above that line's median, the widen lines are taken as the same line
+/// moved up with the widening lid: the widen step is how far it rose, added to the normal level (the usual band's).
+/// A tester with lens inserts (a recording of 2026-10-23, both eyes): the pictures show the usual band's normal level
+/// (0.73 / 0.68 R) on the lid's edge and the higher band's line on the tips of the long upper lashes in both steps
+/// (normal 1.69 / 1.67, widen 2.01 / 1.88), the widened lid's edge below them at about 1.4 to 1.5 R. From the normal
+/// level the step came out 1.30 / 1.15 and the widen was never reached; the lashes' rise gives 0.33 / 0.23. The
+/// normal lines were weaker than the widen ones (median share 0.64 on the right eye), hence a lower bar than
+/// WIDEN_HIGH_MIN_FRAC. If a line in the normal frames were a crease below a widened lid's edge, the step would come
+/// out too small; no recording here shows that.
 pub const WIDEN_HIGH_REF_FRAC: f64 = 0.5;
 
 /// Where a wear calibration's widen level came from (calib_result.json's `widen_source`).
@@ -3022,17 +3030,16 @@ mod tests {
     #[test]
     fn a_widened_lid_above_the_band_is_measured_in_the_higher_band() {
         // A user's 0.7.9 wear calibration (2026-10-17): during the widen the lid line never entered the band; the
-        // search found its bottom edge (now no line) or the floor (-0.3). The higher band has the lid at 1.8
-        // (that wearer's 1.9 is a line other than the lid's edge, and a step above MAX_WIDEN_STEP is not a widen).
-        let mut widen = widen_high(250, 1.8, 0.85);
+        // search found its bottom edge (now no line) or the floor (-0.3). The higher band has the lid at 1.9.
+        let mut widen = widen_high(250, 1.9, 0.85);
         widen.extend(samples(Label::Widen, 100, -0.3, 2.4, -14.0, 252.0, true));
         let eye = wear_widen(widen);
         let wf = widen_fit(&eye, 1.0, 60);
         assert_eq!((wf.source, wf.with_pupil, wf.low, wf.high_good, wf.high_used), (WidenSource::Upper, 350, 350, 250, 250));
-        assert!((wf.b_w - 1.81).abs() < 1e-9, "{wf:?}");
+        assert!((wf.b_w - 1.91).abs() < 1e-9, "{wf:?}");
         let both = [eye.clone(), eye];
         let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
-        assert!(measured && (w[0].b_w - 1.81).abs() < 1e-9, "{:?}", w[0]);
+        assert!(measured && (w[0].b_w - 1.91).abs() < 1e-9, "{:?}", w[0]);
         let (report, lines) = wear_report(&both);
         assert!(report.contains("\"widen_source\": \"upper\"") && report.contains("\"widen_frames_upper_used\": 250"), "{report}");
         assert!(report.contains("\"widen_frames_below_normal\": 100"), "the existing key counts as before: {report}");
@@ -3040,7 +3047,7 @@ mod tests {
         // The CSV has the new columns: this frame's line share, the edge flag, the higher band's line.
         let csv = samples_csv(&both);
         assert!(csv.lines().next().unwrap().ends_with(",prior_reset,upper_frac,lid_edge,skin_up2,upper_frac2"));
-        assert!(csv.lines().any(|l| l.starts_with("L,") && l.contains(",widen,") && l.ends_with(",1.00000,1,1.80000,0.85000")), "{csv}");
+        assert!(csv.lines().any(|l| l.starts_with("L,") && l.contains(",widen,") && l.ends_with(",1.00000,1,1.90000,0.85000")), "{csv}");
     }
 
     #[test]
@@ -3124,7 +3131,7 @@ mod tests {
         let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
         assert!(measured && (w[0].b_w - w[0].b_n - 0.32).abs() < 1e-9, "{:?}", w[0]);
         let (report, lines) = wear_report(&both);
-        assert!(report.contains("\"widen_upper_rose_from\": 1.69") && report.contains("\"widen_step_max\": 0.9"), "{report}");
+        assert!(report.contains("\"widen_upper_rose_from\": 1.69") && report.contains("\"widen_step_max\": 1.1"), "{report}");
         assert!(lines[0].contains("upper good 250 / used 250, rose from 1.690)"), "{}", lines[0]);
         // In too few normal frames (under WIDEN_HIGH_FIXED_SHARE), or as weak as another line the search settled on,
         // it is not a level to rise from: the widen level is the higher band's own, as before.
@@ -3149,9 +3156,10 @@ mod tests {
 
     #[test]
     fn a_widen_step_above_the_largest_is_not_a_widen() {
-        // The same tester's 0.8.2-beta.1 calibration measured 1.165 / 1.054: two different lines. The eye goes
-        // through with the usual step, as for a widen not caught, and the step stays out of the history.
-        let eye = wear_eye_with_widen(&[(250, 2.0)]);
+        // Two different lines for the normal and the widen level (the same tester's recording of 2026-10-23
+        // replayed before WIDEN_HIGH_REF_FRAC: 1.30 / 1.15). The eye goes through with the usual step, as for a
+        // widen not caught, and the step stays out of the history.
+        let eye = wear_eye_with_widen(&[(250, 2.2)]);
         let (w, measured) = fit_wear(&[eye.clone(), eye.clone()], [0.25; 2]).unwrap();
         assert!(!measured && (w[0].b_w - w[0].b_n - 0.25).abs() < 1e-9, "{:?}", w[0]);
         let out = fit_wear_settled(&[eye.clone(), eye], [0.25; 2], [None; 2], None).unwrap();
@@ -3160,8 +3168,8 @@ mod tests {
         // Up to MAX_WIDEN_STEP it is measured.
         let eye = wear_eye_with_widen(&[(250, 1.0 + MAX_WIDEN_STEP)]);
         assert!(fit_wear(&[eye.clone(), eye], [0.25; 2]).unwrap().1);
-        // Steps above it already in a history (saved by 0.8.2-beta.1) are left out of its median; with none
-        // other, the default.
+        // Steps above HISTORY_MAX_WIDEN_STEP in a history (0.8.2-beta.1 saved 1.165 / 1.054) are left out of its
+        // median; with none other, the default.
         let rec = |step| WearRecord { step, gap: 1.0, r_px: 55.0 };
         let mut file = CalibFile::default();
         for (i, s) in [0.3, 1.165, 1.2, 0.25, 1.1].into_iter().enumerate() {

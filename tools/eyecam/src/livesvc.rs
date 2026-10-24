@@ -13,6 +13,19 @@ use std::time::{Duration, Instant};
 
 /// A new wear (HMD taken off and put back on) when an eye's frames stop for this long.
 const NEW_WEAR_GAP: f64 = 10.0;
+/// eyecam-rec also says when a new wear may have begun (`Msg::NewWear`): the eye frames came back after they stopped,
+/// however short the gap, or the proximity sensor says worn after NEW_WEAR_OFF_S of not worn. It is taken as one
+/// (as after NEW_WEAR_GAP) unless either eye had the pupil in at least NEW_WEAR_KEEP_SHARE of its frames over the last
+/// NEW_WEAR_LOOK_S before it: the eyes were there, so the HMD was worn all along (the sensor reads 0 to 15 for a
+/// second or two while worn, looking up, down or widening: the developer's calibrations of 2026-10-24), or the frames
+/// only paused. A calibration running keeps its wear. 2026-10-24: after a restart the frames locked with the HMD off
+/// (proximity 15.2) and the engines learnt the lens edge, levels and iris radius from 5 minutes of an empty HMD
+/// (search window from x 117 instead of 180, contrast 33 instead of 85, the closed-lid check refusing the pupil);
+/// the frames stopped for 5 s when it was put on, under NEW_WEAR_GAP, and three wear calibrations found the pupil
+/// in 88 / 5, 130 / 13 and 162 / 85 of 486 normal frames (486 / 486 from a fresh engine).
+pub const NEW_WEAR_OFF_S: f64 = 10.0;
+const NEW_WEAR_LOOK_S: f64 = 10.0;
+const NEW_WEAR_KEEP_SHARE: f64 = 0.5;
 /// An eye's published values are marked invalid when its frames stop for this long.
 const STALE_AFTER: f64 = 0.25;
 /// status.json's pupil_l / pupil_r: the share of frames with the pupil over this many seconds; cam_fps: the frames
@@ -112,6 +125,8 @@ pub enum Msg {
     Abort(Option<PathBuf>),
     /// Frames stopped (lost lock or no buffers): mark the outputs invalid now.
     Stale,
+    /// A new wear may have begun (NEW_WEAR_OFF_S); why, for the log.
+    NewWear(&'static str),
     SetLive(bool),
     /// Whether eyecam-rec holds the camera buffers (the shared memory's `live` needs both this and live on).
     Buffers(bool),
@@ -287,14 +302,20 @@ struct PupilSeen {
 }
 
 impl PupilSeen {
-    fn push(&mut self, t: f64, ok: bool) -> f64 {
+    /// Add a frame and return the share with the pupil over the last `span` s.
+    fn push(&mut self, t: f64, ok: bool, span: f64) -> f64 {
         self.recent.push_back((t, ok));
         self.seen += ok as usize;
-        while self.recent.front().is_some_and(|x| t - x.0 > PUPIL_SHARE_S) {
+        while self.recent.front().is_some_and(|x| t - x.0 > span) {
             let (_, old) = self.recent.pop_front().unwrap();
             self.seen -= old as usize;
         }
-        self.seen as f64 / self.recent.len() as f64
+        self.share()
+    }
+
+    /// The share with the pupil over the frames kept (0 without any).
+    fn share(&self) -> f64 {
+        if self.recent.is_empty() { 0.0 } else { self.seen as f64 / self.recent.len() as f64 }
     }
 }
 
@@ -414,6 +435,8 @@ struct Worker {
     flipped: Vec<u8>,
     pupils: [PupilTrack; 2],
     pupil_seen: [PupilSeen; 2],
+    /// The same over NEW_WEAR_LOOK_S, for `new_wear_hint`.
+    wear_seen: [PupilSeen; 2],
     pupil_offset: PupilOffset,
     pub pupil_conflicts: u64,
     pub pupil_pairs: u64,
@@ -457,6 +480,7 @@ impl Worker {
             flipped: vec![0; W * H],
             pupils: [PupilTrack::default(), PupilTrack::default()],
             pupil_seen: [PupilSeen::default(), PupilSeen::default()],
+            wear_seen: [PupilSeen::default(), PupilSeen::default()],
             pupil_offset: PupilOffset::default(),
             pupil_conflicts: 0,
             pupil_pairs: 0,
@@ -563,23 +587,53 @@ impl Worker {
         });
     }
 
+    /// The HMD was off: a new wear. Its geometry and levels have to be learnt again.
+    fn new_wear(&mut self) {
+        for e in &mut self.engines {
+            e.reset();
+        }
+        for p in &mut self.params {
+            p.wear = None;
+        }
+        self.pupils = [PupilTrack::default(), PupilTrack::default()];
+        self.pupil_seen = [PupilSeen::default(), PupilSeen::default()];
+        self.wear_seen = [PupilSeen::default(), PupilSeen::default()];
+        self.pupil_offset = PupilOffset::default();
+        self.last_t = [f64::NEG_INFINITY; 2];
+    }
+
+    /// eyecam-rec's hint that a new wear may have begun (NEW_WEAR_OFF_S): a new wear unless a calibration is running
+    /// or either eye had the pupil in NEW_WEAR_KEEP_SHARE of its last NEW_WEAR_LOOK_S of frames. Returns whether it
+    /// was taken as one.
+    fn new_wear_hint(&mut self, why: &str) -> bool {
+        let share = self.wear_seen.iter().map(|s| s.share()).fold(0.0, f64::max);
+        let kept = if self.collect.is_some() {
+            Some("a calibration is running".to_string())
+        } else if share >= NEW_WEAR_KEEP_SHARE {
+            Some(format!("pupil in {:.0}% of the last {NEW_WEAR_LOOK_S} s of frames", 100.0 * share))
+        } else {
+            None
+        };
+        match kept {
+            Some(reason) => {
+                eprintln!("live: {why}; same wear ({reason})");
+                false
+            }
+            None => {
+                eprintln!("live: {why}; a new wear (pupil in {:.0}% of the last {NEW_WEAR_LOOK_S} s of frames): learning it again", 100.0 * share);
+                self.new_wear();
+                true
+            }
+        }
+    }
+
     fn frame(&mut self, eye: usize, upside_down: bool, t_cam_ns: u64, pitch: f32, open: f32, data: &[u8]) {
         if !self.live || data.len() != W * H {
             return;
         }
         let t = t_cam_ns as f64 * 1e-9;
         if t - self.last_t[eye] > NEW_WEAR_GAP && self.last_t[eye].is_finite() {
-            // The HMD was off: a new wear. Its geometry and levels have to be learnt again.
-            for e in &mut self.engines {
-                e.reset();
-            }
-            for p in &mut self.params {
-                p.wear = None;
-            }
-            self.pupils = [PupilTrack::default(), PupilTrack::default()];
-            self.pupil_seen = [PupilSeen::default(), PupilSeen::default()];
-            self.pupil_offset = PupilOffset::default();
-            self.last_t = [f64::NEG_INFINITY; 2];
+            self.new_wear();
         }
         self.last_t[eye] = t;
         self.last_seen[eye] = Some(Instant::now());
@@ -615,7 +669,8 @@ impl Worker {
         self.veto_fired += o.veto.fired as u64;
         let started = Instant::now();
         self.check_pupils(eye, t, &mut o);
-        let share = self.pupil_seen[eye].push(t, o.f.ok_pupil);
+        let share = self.pupil_seen[eye].push(t, o.f.ok_pupil, PUPIL_SHARE_S);
+        self.wear_seen[eye].push(t, o.f.ok_pupil, NEW_WEAR_LOOK_S);
         self.shared.pupil_share[eye].store((share as f32).to_bits(), Ordering::Relaxed);
         {
             // The drift log, while on: what the engine just worked out, read only. Only handed to its thread here (no
@@ -1051,6 +1106,9 @@ pub fn spawn(
                         w.last_seen = [None; 2];
                         w.invalidate(None);
                     }
+                    Ok(Msg::NewWear(why)) => {
+                        w.new_wear_hint(why);
+                    }
                     Ok(Msg::SetLive(on)) => {
                         w.live = on;
                         if !on {
@@ -1092,16 +1150,16 @@ mod tests {
     #[test]
     fn pupil_share_covers_the_last_two_seconds() {
         let mut p = PupilSeen::default();
-        assert_eq!(p.push(0.0, true), 1.0);
+        assert_eq!(p.push(0.0, true, PUPIL_SHARE_S), 1.0);
         for k in 1..=90 {
-            p.push(k as f64 / 90.0, k % 2 == 0);
+            p.push(k as f64 / 90.0, k % 2 == 0, PUPIL_SHARE_S);
         }
         // 91 frames over 1 s: 46 with the pupil.
-        assert!((p.push(1.0 + 1.0 / 90.0, false) - 46.0 / 92.0).abs() < 1e-9);
+        assert!((p.push(1.0 + 1.0 / 90.0, false, PUPIL_SHARE_S) - 46.0 / 92.0).abs() < 1e-9);
         // 3 s later only the last 2 s count.
         let mut last = 0.0;
         for k in 0..=180 {
-            last = p.push(2.0 + k as f64 / 90.0, k >= 90);
+            last = p.push(2.0 + k as f64 / 90.0, k >= 90, PUPIL_SHARE_S);
         }
         assert!((last - 91.0 / 181.0).abs() < 0.01, "{last}");
     }
@@ -1317,6 +1375,55 @@ mod tests {
         assert_eq!(w.relearn(), Ok(()));
         assert!(!w.engines[1].baseline_ready() && !w.engines[1].relearning());
         assert_eq!(shared.calib_state.load(Ordering::Relaxed), 1);
+        drop(w);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_wear_hint_starts_a_new_wear_unless_the_eyes_were_there() {
+        let dir = std::env::temp_dir().join(format!("eyecam-new-wear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("calib.json");
+        let shared = Arc::new(Shared::default());
+        let writer = LiveWriter::create(&dir.join("live")).unwrap();
+        let mut w = Worker::new(writer, shared, path.clone(), load_calib(&path), dir.join("preview"));
+        let wear = live::WearParams { r_px: 50.0, b_n: 0.8, b_w: 1.0, ap_n: 1.6, ap_cl: 0.5, pitch_n: -12.0, lower_px: 240.0 };
+        let calibrated = |w: &mut Worker| {
+            for (p, e) in w.params.iter_mut().zip(&mut w.engines) {
+                p.wear = Some(wear);
+                e.seed(&wear);
+            }
+        };
+        // `n` s of frames at 90 a second on both eyes, the pupil on eye 1 in `share` of them (eye 0 never).
+        let frames = |w: &mut Worker, t0: f64, n: f64, share: f64| {
+            for k in 0..(n * 90.0) as usize {
+                let t = t0 + k as f64 / 90.0;
+                w.wear_seen[0].push(t, false, NEW_WEAR_LOOK_S);
+                w.wear_seen[1].push(t, (k % 100) < (share * 100.0) as usize, NEW_WEAR_LOOK_S);
+            }
+        };
+        // 5 minutes of an empty HMD (no pupil), then the hint: a new wear, the engines and the levels of the wear gone.
+        calibrated(&mut w);
+        frames(&mut w, 100.0, 300.0, 0.0);
+        assert!(w.new_wear_hint("test"));
+        assert!(w.params.iter().all(|p| p.wear.is_none()) && w.engines.iter().all(|e| !e.baseline_ready()));
+        assert!(w.wear_seen.iter().all(|s| s.recent.is_empty()));
+        // Worn all along (one eye has the pupil in 60% of the last 10 s, after minutes without): the same wear.
+        calibrated(&mut w);
+        frames(&mut w, 400.0, 300.0, 0.0);
+        frames(&mut w, 700.0, 10.0, 0.6);
+        assert!(!w.new_wear_hint("test"));
+        assert!(w.params.iter().all(|p| p.wear == Some(wear)) && w.engines.iter().all(|e| e.baseline_ready()));
+        // The pupil in only a little of the last 10 s (being put on): a new wear.
+        frames(&mut w, 710.0, 10.0, 0.2);
+        assert!(w.new_wear_hint("test"));
+        // A calibration running keeps its wear, pupil or not.
+        calibrated(&mut w);
+        frames(&mut w, 800.0, 30.0, 0.0);
+        w.collect = Some(CollectKind::Wear);
+        assert!(!w.new_wear_hint("test"));
+        assert!(w.params.iter().all(|p| p.wear == Some(wear)));
         drop(w);
         std::fs::remove_dir_all(&dir).unwrap();
     }

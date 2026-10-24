@@ -988,6 +988,10 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
     let mut deferred: Vec<Request> = Vec::new();
     let mut next_check = 0.0;
     let mut next_search = 0.0;
+    // The eye frames stopped and have not come back yet, and since when the proximity sensor says not worn: either
+    // ending may be a new wear (livesvc::NEW_WEAR_OFF_S).
+    let mut came_back = false;
+    let mut prox_off_since: Option<f64> = None;
     let waiting = || if live.on { status::search_message("") } else { "待機中" };
     let mut state: (&'static str, String) = ("idle", waiting().into());
     // The buffers are held from here on: say so right away (the first search can take a while).
@@ -1106,6 +1110,8 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                 pump = Some(Pump::new(&b.arenas[r.arena], r));
             }
             next_check = 0.0;
+            // The sensor was not watched meanwhile.
+            prox_off_since = None;
         }
 
         let now = now_raw();
@@ -1115,6 +1121,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                 if !p.poll(&b.arenas[p.ring.arena], now, args.swap, live) {
                     eprintln!("eye frames stopped (idle); searching again");
                     pump = None;
+                    came_back = true;
                     live.send(Msg::Stale);
                     next_search = now + 1.0;
                     if state.0 == "idle" {
@@ -1125,10 +1132,16 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
             } else if now >= next_search {
                 if let Some(r) = cached.take().filter(|r| ring_is_live(&b.arenas[r.arena], r)) {
                     pump = Some(Pump::new(&b.arenas[r.arena], r));
+                    if std::mem::take(&mut came_back) {
+                        live.send(Msg::NewWear("the eye frames came back"));
+                    }
                 } else {
                     match lock_ring(b, args, prox, Some(d), Ctx::Idle, &mut || true, &mut deferred) {
                         Ok(r) => {
                             pump = Some(Pump::new(&b.arenas[r.arena], r));
+                            if std::mem::take(&mut came_back) {
+                                live.send(Msg::NewWear("the eye frames came back"));
+                            }
                             if state.0 == "idle" && state.1 == status::search_message("") {
                                 state.1 = "待機中".into();
                             }
@@ -1149,6 +1162,17 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
             let reading = prox.read();
             if let Err(a) = b.watch(reading.map(|v| v > args.prox_min)) {
                 return Some(a);
+            }
+            match reading {
+                Some(v) if v > args.prox_min => {
+                    if prox_off_since.take().is_some_and(|off| now - off >= livesvc::NEW_WEAR_OFF_S) && live.on {
+                        live.send(Msg::NewWear("the proximity sensor says worn again"));
+                    }
+                }
+                Some(_) => {
+                    prox_off_since.get_or_insert(now);
+                }
+                None => prox_off_since = None,
             }
             let locked = pump.as_ref().is_some_and(|p| now - p.last_change < 1.0);
             let searching = live.on && pump.is_none();
@@ -2411,6 +2435,10 @@ fn record(
                     }
                     slots = SlotStates::new(&b.arenas[ring.arena], &ring);
                     last_change = now_raw();
+                    // A calibration keeps its wear (livesvc::NEW_WEAR_OFF_S).
+                    if let Some(l) = live.as_deref() {
+                        l.send(Msg::NewWear("the eye frames came back"));
+                    }
                 }
                 Err(Abort::Stopped) => break "stopped".into(),
                 Err(Abort::TimeUp) => break "done".into(),

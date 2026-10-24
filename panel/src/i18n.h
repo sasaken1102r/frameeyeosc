@@ -158,6 +158,8 @@ struct UiText {
     const char* hintPupilBitsOff;  ///< ...under it while greyed (the pupils don't go straight to VRChat)
     const char* rowNativeEyes;      ///< also send VRChat's own eye tracking input (/tracking/eye/*)
     const char* hintNativeEyes;
+    const char* rowVrcFaceTracking;  ///< also send VRChat's own face tracking input (/tracking/face/v1)
+    const char* hintVrcFaceTracking;
     const char* rowTarget;
     const char* hintTarget;
     const char* targetAuto;

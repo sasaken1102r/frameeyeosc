@@ -591,6 +591,10 @@ struct Args {
     /// avatars without VRCFT parameters
     #[arg(long)]
     native_eyes: bool,
+    /// In VRChat mode, also send VRChat's Face Tracking input (/tracking/face/v1), for avatars set up for it
+    /// (nothing is sent yet)
+    #[arg(long)]
+    vrc_face_tracking: bool,
     /// Also send the pupil dilation to VRChat as this many bool parameters (PupilDilation1, 2, 4, 8), for avatars
     /// that take it bit-packed; 0 sends only the float
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=4))]

@@ -1631,7 +1631,7 @@ pub fn fit_wear_eyes(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> [Ey
         if nn < need.normal {
             return Err(WearFail::LidLine { seen: nn, frames: normal.len(), need: need.normal });
         }
-        let widen_ok = nw >= need.widen && b_w - b_n >= MIN_WIDEN_STEP;
+        let widen_ok = nw >= need.widen && b_w - b_n >= MIN_WIDEN_STEP && b_w - b_n <= MAX_WIDEN_STEP;
         let b_w = if widen_ok { b_w } else { b_n + fallback_step[e] };
         if nc < need.close || ap_n - ap_cl < MIN_OPEN_GAP || (ap_n - ap_cl).is_nan() {
             return Err(WearFail::Close);
@@ -2156,13 +2156,18 @@ impl CalibFile {
         [0, 1].map(|e| self.wear.map(|w| w[e]).filter(|_| self.wear_failed_eye != ["L", "R"][e]))
     }
 
-    /// The medians of the history (None when it is empty).
+    /// The medians of the history (None when it is empty). Widen steps above MAX_WIDEN_STEP (saved before that check)
+    /// are left out of the step's median; with none other left it is DEFAULT_WIDEN_STEP.
     pub fn history_params(&self) -> Option<[History; 2]> {
         if self.history.is_empty() {
             return None;
         }
+        let step = |e: usize| {
+            let m = median_of(self.history.iter().map(|x| x.1[e].step).filter(|s| *s <= MAX_WIDEN_STEP));
+            if m.is_finite() { m } else { DEFAULT_WIDEN_STEP }
+        };
         let h = |e: usize| History {
-            step: median_of(self.history.iter().map(|x| x.1[e].step)),
+            step: step(e),
             gap: median_of(self.history.iter().map(|x| x.1[e].gap)),
             r_px: median_of(self.history.iter().map(|x| x.1[e].r_px)),
         };
@@ -2317,6 +2322,12 @@ impl CalibFile {
 
 /// Thresholds of the calibration checks (fit_wear / fit_user use the same numbers).
 pub const MIN_WIDEN_STEP: f64 = 0.05;
+/// A widen step above this (iris radii) is not a widen: a lid's edge does not rise that far above where it sits
+/// looking ahead, so two different lines were taken for the normal and the widen level. The eye gets the usual step
+/// (as with a widen not caught), and such a step is not taken into the history's median either. The developer's
+/// 47 wear calibrations: 0.15 to 0.43. A tester with lens inserts (0.8.2-beta.1): 1.165 / 1.054, the usual band's
+/// normal level against the tips of the upper lashes in the higher band (see WIDEN_HIGH_REF_FRAC).
+pub const MAX_WIDEN_STEP: f64 = 0.9;
 pub const MIN_OPEN_GAP: f64 = 0.2;
 /// A widen frame whose upper lid line lies more than this (iris radii) below the normal level is left out of the
 /// widen level: a widened lid is never lower than the normal one, so such a line is not the lid. Some wearers' lid
@@ -2354,6 +2365,15 @@ pub const WIDEN_HIGH_NEIGHBOUR: f64 = 0.1;
 /// of the normal frames with the pupil (a crease or the brow, there whether the eye widens or not).
 pub const WIDEN_HIGH_FIXED: f64 = 0.15;
 pub const WIDEN_HIGH_FIXED_SHARE: f64 = 0.25;
+/// When the higher band finds a line in at least WIDEN_HIGH_FIXED_SHARE of the normal frames with the pupil (inlier
+/// share at least this), and the widen lines lie above that line's median, they are the same line moved up with the
+/// widening lid, not the lid's edge: the widen step is how far that line rose, added to the normal level (the usual
+/// band's). A tester with lens inserts (0.8.2-beta.1, a recording of 2026-10-23): the usual band's normal level is the
+/// lid's edge (0.73 / 0.68 R), while the higher band sees the tips of the long upper lashes in both steps (normal
+/// 1.69 / 1.67, widen 2.01 / 1.88). Measured from the normal level the step came out 1.30 / 1.15, so the widen could
+/// never be reached; the lashes' rise gives 0.3 / 0.2. Their normal lines are weaker than the widen ones (median
+/// share 0.64 on the right eye), hence a lower bar than WIDEN_HIGH_MIN_FRAC.
+pub const WIDEN_HIGH_REF_FRAC: f64 = 0.5;
 
 /// Where a wear calibration's widen level came from (calib_result.json's `widen_source`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2379,7 +2399,9 @@ impl WidenSource {
 
 /// One eye's widen level (`widen_fit`): the level and how many frames it is from (NEED_WIDEN counts them), where it
 /// came from, the widen frames with the pupil and those of them without a lid line near the normal level (the
-/// trigger), the higher band's good lines and those taken, and the line it also finds in the normal frames (NaN: none).
+/// trigger), the higher band's good lines and those taken, the line it also finds in the normal frames (NaN: none),
+/// and the level its lines have in the normal frames that the widen ones rose from (WIDEN_HIGH_REF_FRAC; NaN: not
+/// used).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WidenFit {
     pub b_w: f64,
@@ -2390,20 +2412,22 @@ pub struct WidenFit {
     pub high_good: usize,
     pub high_used: usize,
     pub fixed: f64,
+    pub rose_from: f64,
 }
 
 /// The widen level from one eye's samples `s` (all steps, in one radius) for normal level `b_n`, `need` frames
 /// needed. Usually `widen_level`. When most widen frames with the pupil have no lid line near the normal level
 /// (WIDEN_LOW_SHARE), the median of the higher band's lines (`Sample::skin2`) that pass the WIDEN_HIGH_* checks; with
-/// fewer than `need` of those, `widen_level` as before. For a wearer whose lid stays in the usual band this is
-/// `widen_level` exactly.
+/// fewer than `need` of those, `widen_level` as before. When those lines lie above the line the higher band finds in
+/// the normal frames, the level is the normal level plus how far that line rose (WIDEN_HIGH_REF_FRAC). For a wearer
+/// whose lid stays in the usual band this is `widen_level` exactly.
 pub fn widen_fit(s: &[Sample], b_n: f64, need: usize) -> WidenFit {
     let widen: Vec<&Sample> = s.iter().filter(|x| x.label == Label::Widen).collect();
     let with_pupil = widen.iter().filter(|x| x.ok).count();
     let low = widen.iter().filter(|x| x.ok && (x.skin.is_nan() || x.skin < b_n - WIDEN_MIN_BELOW_N)).count();
     let main = |source| {
         let (b_w, n) = widen_level(s, b_n);
-        WidenFit { b_w, n, source, with_pupil, low, high_good: 0, high_used: 0, fixed: f64::NAN }
+        WidenFit { b_w, n, source, with_pupil, low, high_good: 0, high_used: 0, fixed: f64::NAN, rose_from: f64::NAN }
     };
     if with_pupil == 0 || (low as f64) < WIDEN_LOW_SHARE * with_pupil as f64 {
         return main(WidenSource::Main);
@@ -2428,8 +2452,17 @@ pub fn widen_fit(s: &[Sample], b_n: f64, need: usize) -> WidenFit {
     if high_used < need.max(1) {
         return WidenFit { high_good, high_used, fixed, ..main(WidenSource::Fallback) };
     }
-    let b_w = vision::median(&mut used);
-    WidenFit { b_w, n: high_used, source: WidenSource::Upper, with_pupil, low, high_good, high_used, fixed }
+    let high = vision::median(&mut used);
+    // The higher band's level in the normal frames: the widen lines above it are that line moved up.
+    let (ref_n, n_ref) =
+        med_of(s, |x| (x.label == Label::Normal && x.ok && x.frac2 >= WIDEN_HIGH_REF_FRAC).then_some(x.skin2));
+    let rose_from = if n_ref > 0 && n_ref as f64 >= WIDEN_HIGH_FIXED_SHARE * normal_ok as f64 && high > ref_n {
+        ref_n
+    } else {
+        f64::NAN
+    };
+    let b_w = if rose_from.is_nan() { high } else { b_n + (high - rose_from) };
+    WidenFit { b_w, n: high_used, source: WidenSource::Upper, with_pupil, low, high_good, high_used, fixed, rose_from }
 }
 
 /// How many frames a calibration check needs, relative to what the cameras delivered: at least `share` of the
@@ -2587,7 +2620,7 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
 \"normal_frames_with_pupil\": {n_pupil}, \"normal_frames_with_lid_line\": {nn}, \"widen_frames_with_pupil\": {nw}, \"widen_frames_below_normal\": {below}, \"close_frames_with_lids\": {nc}, \
 \"pupil_seen_share\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}, \"diag\": {}, \
 \"widen_source\": \"{}\", \"widen_frames_no_line_near_normal\": {}, \"widen_frames_upper_good\": {}, \"widen_frames_upper_used\": {}, \
-\"widen_upper_fixed_line\": {}}}",
+\"widen_upper_fixed_line\": {}, \"widen_upper_rose_from\": {}}}",
             ["L", "R"][e],
             json::num(r_px),
             json::num(b_n),
@@ -2605,10 +2638,11 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
             wf.high_good,
             wf.high_used,
             json::num(wf.fixed),
+            json::num(wf.rose_from),
         ));
         lines.push(format!(
-            "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
-frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, widen from {} (no line near normal {} of {}, upper good {} / used {}), R {:.1} px; {}",
+            "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}, <= {MAX_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
+frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, widen from {} (no line near normal {} of {}, upper good {} / used {}{}), R {:.1} px; {}",
             ["L", "R"][e],
             b_w - b_n,
             b_n,
@@ -2624,6 +2658,7 @@ frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {
             wf.with_pupil,
             wf.high_good,
             wf.high_used,
+            if wf.rose_from.is_nan() { String::new() } else { format!(", rose from {:.3}", wf.rose_from) },
             r_px,
             d.line
         ));
@@ -2631,7 +2666,7 @@ frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {
     // The frame counts needed per eye ([L, R]), for the frame rate each eye's camera delivered, and the rule.
     let pair = |f: &dyn Fn(&WearNeeds) -> String| format!("[{}, {}]", f(&needs[0]), f(&needs[1]));
     let json = format!(
-        "{{{}, \"thresholds\": {{\"widen_step_min\": {MIN_WIDEN_STEP}, \"open_gap_min\": {MIN_OPEN_GAP}, \"fps\": {}, \"normal_frames_min\": {}, \
+        "{{{}, \"thresholds\": {{\"widen_step_min\": {MIN_WIDEN_STEP}, \"widen_step_max\": {MAX_WIDEN_STEP}, \"open_gap_min\": {MIN_OPEN_GAP}, \"fps\": {}, \"normal_frames_min\": {}, \
 \"widen_frames_min\": {}, \"close_frames_min\": {}, \"rule\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}}}}}",
         eyes.join(", "),
         pair(&|n| json::num(n.fps)),
@@ -2987,16 +3022,17 @@ mod tests {
     #[test]
     fn a_widened_lid_above_the_band_is_measured_in_the_higher_band() {
         // A user's 0.7.9 wear calibration (2026-10-17): during the widen the lid line never entered the band; the
-        // search found its bottom edge (now no line) or the floor (-0.3). The higher band has the lid at 1.9.
-        let mut widen = widen_high(250, 1.9, 0.85);
+        // search found its bottom edge (now no line) or the floor (-0.3). The higher band has the lid at 1.8
+        // (that wearer's 1.9 is a line other than the lid's edge, and a step above MAX_WIDEN_STEP is not a widen).
+        let mut widen = widen_high(250, 1.8, 0.85);
         widen.extend(samples(Label::Widen, 100, -0.3, 2.4, -14.0, 252.0, true));
         let eye = wear_widen(widen);
         let wf = widen_fit(&eye, 1.0, 60);
         assert_eq!((wf.source, wf.with_pupil, wf.low, wf.high_good, wf.high_used), (WidenSource::Upper, 350, 350, 250, 250));
-        assert!((wf.b_w - 1.91).abs() < 1e-9, "{wf:?}");
+        assert!((wf.b_w - 1.81).abs() < 1e-9, "{wf:?}");
         let both = [eye.clone(), eye];
         let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
-        assert!(measured && (w[0].b_w - 1.91).abs() < 1e-9, "{:?}", w[0]);
+        assert!(measured && (w[0].b_w - 1.81).abs() < 1e-9, "{:?}", w[0]);
         let (report, lines) = wear_report(&both);
         assert!(report.contains("\"widen_source\": \"upper\"") && report.contains("\"widen_frames_upper_used\": 250"), "{report}");
         assert!(report.contains("\"widen_frames_below_normal\": 100"), "the existing key counts as before: {report}");
@@ -3004,7 +3040,7 @@ mod tests {
         // The CSV has the new columns: this frame's line share, the edge flag, the higher band's line.
         let csv = samples_csv(&both);
         assert!(csv.lines().next().unwrap().ends_with(",prior_reset,upper_frac,lid_edge,skin_up2,upper_frac2"));
-        assert!(csv.lines().any(|l| l.starts_with("L,") && l.contains(",widen,") && l.ends_with(",1.00000,1,1.90000,0.85000")), "{csv}");
+        assert!(csv.lines().any(|l| l.starts_with("L,") && l.contains(",widen,") && l.ends_with(",1.00000,1,1.80000,0.85000")), "{csv}");
     }
 
     #[test]
@@ -3067,6 +3103,73 @@ mod tests {
             (x.skin2, x.frac2) = (1.95, 0.9);
         }
         assert_eq!(widen_fit(&eye, 1.0, 60).source, WidenSource::Upper);
+    }
+
+    #[test]
+    fn widen_lines_above_the_higher_bands_normal_line_give_its_rise() {
+        // A tester with lens inserts (a recording of 2026-10-23): normal level 0.73 (the lid's edge), and the higher
+        // band finds the tips of the upper lashes in both steps, 1.69 in the normal frames (weaker lines, share 0.64)
+        // and 2.0 in the widen ones. The step is their rise (0.31), not 2.0 - 0.73.
+        let mut eye = samples(Label::Normal, 300, 0.73, 1.7, -14.0, 250.0, true);
+        for x in eye.iter_mut() {
+            (x.skin2, x.frac2) = (1.69, 0.64);
+        }
+        eye.extend(widen_high(250, 2.0, 0.85));
+        eye.extend(samples(Label::Close, 80, f64::NAN, 0.56, -14.0, 240.0, false));
+        let wf = widen_fit(&eye, 0.73, 60);
+        assert_eq!(wf.source, WidenSource::Upper);
+        assert!(wf.fixed.is_nan() && (wf.rose_from - 1.69).abs() < 1e-9, "{wf:?}");
+        assert!((wf.b_w - (0.73 + 2.01 - 1.69)).abs() < 1e-9, "{wf:?}");
+        let both = [eye.clone(), eye.clone()];
+        let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
+        assert!(measured && (w[0].b_w - w[0].b_n - 0.32).abs() < 1e-9, "{:?}", w[0]);
+        let (report, lines) = wear_report(&both);
+        assert!(report.contains("\"widen_upper_rose_from\": 1.69") && report.contains("\"widen_step_max\": 0.9"), "{report}");
+        assert!(lines[0].contains("upper good 250 / used 250, rose from 1.690)"), "{}", lines[0]);
+        // In too few normal frames (under WIDEN_HIGH_FIXED_SHARE), or as weak as another line the search settled on,
+        // it is not a level to rise from: the widen level is the higher band's own, as before.
+        let mut few = eye.clone();
+        for x in few.iter_mut().filter(|x| x.label == Label::Normal).skip(50) {
+            (x.skin2, x.frac2) = (f64::NAN, f64::NAN);
+        }
+        assert!((widen_fit(&few, 0.73, 60).b_w - 2.01).abs() < 1e-9);
+        let mut weak = eye.clone();
+        for x in weak.iter_mut().filter(|x| x.label == Label::Normal) {
+            x.frac2 = 0.45;
+        }
+        assert!(widen_fit(&weak, 0.73, 60).rose_from.is_nan());
+        // A widen line below the normal frames' line (a crease or brow up there) is the lid itself: as before.
+        let mut crease = eye.clone();
+        for x in crease.iter_mut().filter(|x| x.label == Label::Normal) {
+            x.skin2 = 2.3;
+        }
+        let wf = widen_fit(&crease, 0.73, 60);
+        assert!(wf.rose_from.is_nan() && (wf.b_w - 2.01).abs() < 1e-9, "{wf:?}");
+    }
+
+    #[test]
+    fn a_widen_step_above_the_largest_is_not_a_widen() {
+        // The same tester's 0.8.2-beta.1 calibration measured 1.165 / 1.054: two different lines. The eye goes
+        // through with the usual step, as for a widen not caught, and the step stays out of the history.
+        let eye = wear_eye_with_widen(&[(250, 2.0)]);
+        let (w, measured) = fit_wear(&[eye.clone(), eye.clone()], [0.25; 2]).unwrap();
+        assert!(!measured && (w[0].b_w - w[0].b_n - 0.25).abs() < 1e-9, "{:?}", w[0]);
+        let out = fit_wear_settled(&[eye.clone(), eye], [0.25; 2], [None; 2], None).unwrap();
+        assert_eq!(out.message, "校正できた（見開きは取れなかったので、いつもの幅を使うよ）");
+        assert!(!out.for_history());
+        // Up to MAX_WIDEN_STEP it is measured.
+        let eye = wear_eye_with_widen(&[(250, 1.0 + MAX_WIDEN_STEP)]);
+        assert!(fit_wear(&[eye.clone(), eye], [0.25; 2]).unwrap().1);
+        // Steps above it already in a history (saved by 0.8.2-beta.1) are left out of its median; with none
+        // other, the default.
+        let rec = |step| WearRecord { step, gap: 1.0, r_px: 55.0 };
+        let mut file = CalibFile::default();
+        for (i, s) in [0.3, 1.165, 1.2, 0.25, 1.1].into_iter().enumerate() {
+            file.history.push((format!("t{i}"), [rec(s), rec(s)]));
+        }
+        assert!((file.history_params().unwrap()[0].step - 0.275).abs() < 1e-9);
+        file.history.retain(|h| h.1[0].step > 1.0);
+        assert_eq!(file.history_params().unwrap()[0].step, DEFAULT_WIDEN_STEP);
     }
 
     #[test]

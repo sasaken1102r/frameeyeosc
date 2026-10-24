@@ -576,8 +576,9 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   「。カメラの映像が毎秒 15 枚しか届いていない」が付く（英語 ". The eye cameras deliver only 15 frames a second"）。
   calib_result.json の `thresholds` に目ごと `[左, 右]` の `fps` と要った数（`normal_frames_min` など）、決め方（`rule`）が入る
 - `calib user` は、同じかぶりで `calib wear` が済んでいないと断る。視線は Valve の値を使うので、frameeyeosc が動いている必要がある
-- **`calib wear` で閉じる・普段は取れたのに見開きが取れなかったとき（見開きのフレームが足りない、幅が 0.05 未満）は、失敗にしない**。
-  普段の開き・閉じた開きはこの校正の値を使い、見開きの幅は履歴の中央値（なければ既定の 0.19）。この回の幅は履歴に入れない。
+- **`calib wear` で閉じる・普段は取れたのに見開きが取れなかったとき（見開きのフレームが足りない、幅が 0.05 未満か 0.9 より大きい）は、失敗にしない**。
+  0.9 より大きい幅は見開きではなく、普段と見開きで別の線を取ったもの（開発者の 47 回で 0.15〜0.43、度付きインサートの人の 0.8.2-beta.1 で 1.165 / 1.054）。
+  普段の開き・閉じた開きはこの校正の値を使い、見開きの幅は履歴の中央値（0.9 より大きい幅は除く。なければ既定の 0.19）。この回の幅は履歴に入れない。
   `message` は「校正できた（見開きは取れなかったので、いつもの幅を使うよ）」、`last_calib_widen` は `default`、`calib_state` の 1 は立つ
 - **`calib wear` で片目だけ失敗したとき（瞳が見えない・上まぶたの線が取れない・閉じが検出できない）も、失敗にしない**。
   通った目はこの校正の値、失敗した目は前の `calib wear` の値（calib.json の `wear`。なければもう片目の値〔虹彩の半径の単位〕に、
@@ -637,9 +638,11 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   瞳があるフレームだけ。ほかは空〕）。
   見開きの段で、瞳が見えたフレームの半分以上に普段の線の近く（普段より虹彩の半径の 0.2 倍下まで）の線がないときは、まぶたが探す範囲の
   上に出たとみて、高い範囲（瞳の中心から虹彩の半径の 1.6〜3.2 倍上）の線から見開きを測る（inlier 0.75 以上、普段から 1.5 倍以内、
-  前後のフレームと 0.1 以内、普段の段にも同じ高さで出る線〔しわ・眉〕は除く）。足りなければ今までどおり。目ごとの `widen_source`
+  前後のフレームと 0.1 以内、普段の段にも同じ高さで出る線〔しわ・眉〕は除く）。足りなければ今までどおり。
+  高い範囲が普段の段のフレームの 1/4 以上でも線を見つけていて（inlier 0.5 以上）、見開きの線がその中央値より上なら、同じ線が見開きで
+  上がったとみて（度付きインサートの人の長いまつ毛の先: 普段 1.69 → 見開き 2.01）、見開きの幅はその上がった分にする（`widen_upper_rose_from` にその中央値）。目ごとの `widen_source`
   （`main` / `upper` / `fallback`）と数（`widen_frames_no_line_near_normal`・`widen_frames_upper_good`・`widen_frames_upper_used`・
-  `widen_upper_fixed_line`）が calib_result.json に入る。
+  `widen_upper_fixed_line`・`widen_upper_rose_from`）が calib_result.json に入る。
   wear の `calib_result.json` には目ごとに瞳の探し方の診断 `diag` も入る（目の画像がなくても、瞳が見えなかった原因をこれで見分ける）:
   `fps`（フレームレート）、`search_x_min` / `search_xmax`（使った枠の左右）、`normal_pupil_x` / `normal_pupil_y`（普段の段の瞳の位置の中央値）、
   `normal_contrast`（普段の段の、枠の明るさの中央値 − 暗いところ。開発者で 60〜100）、`steps`（段ごとに `frames`・`pupil`・`lid_line`、

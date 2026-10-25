@@ -881,7 +881,8 @@ UiText makeJapanese() {
     t.devRecord = "目の撮影";
     t.devRecordHint = "目のカメラの映像を録る";
     t.contribRow = "細めの学習用に撮る";
-    t.contribRowHint = "半目の読み直し（AI）の学習用・任意";
+    t.contribRowHint = "半目の読み直し（AI）用・任意";
+    t.contribAbout = "半目の読み直し（AI）を、いろんな目で賢くするための撮影だよ";
     t.contribRecord = "撮る";
     t.contribRecordings = "録ったもの";
     t.contribRowIntroFormat = "目の映像を約 1 分半録って、開発者に送る手伝い（1 本 約 %s）";
@@ -940,6 +941,7 @@ UiText makeJapanese() {
     t.contribNext = "1 つのファイルにまとめて、開発者に送ってね。";
     t.contribPack = "1 つのファイルにまとめる";
     t.contribPackHintFormat = "元の録画はそのまま残るよ（空きが約 %s 要る）";
+    t.contribPackFormatNote = "まとめたファイルは .tar.zst（7-Zip などで開けるよ）";
     t.contribPackingFormat = "まとめています… %d%%";
     t.contribPackedFormat = "できたよ（%s 本・%s）";
     t.contribPackFailedFormat = "まとめられなかった: %s";
@@ -1930,6 +1932,7 @@ UiText makeEnglish() {
     t.devRecordHint = "Records the eye cameras";
     t.contribRow = "Record for squint training";
     t.contribRowHint = "For the half-shut check (optional)";
+    t.contribAbout = "Recordings that make the half-shut check (AI) smarter on all kinds of eyes";
     t.contribRecord = "Record";
     t.contribRecordings = "Recordings";
     t.contribRowIntroFormat = "Record your eyes for about 1.5 minutes and send it to the developer (about %s each)";
@@ -1990,6 +1993,7 @@ UiText makeEnglish() {
     t.contribNext = "Make it one file and send it to the developer.";
     t.contribPack = "Make one file";
     t.contribPackHintFormat = "The recordings stay as they are (needs about %s free)";
+    t.contribPackFormatNote = "The file is a .tar.zst (7-Zip and the like can open it)";
     t.contribPackingFormat = "Packing… %d%%";
     t.contribPackedFormat = "Done (%s recordings, %s)";
     t.contribPackFailedFormat = "Couldn't pack it: %s";

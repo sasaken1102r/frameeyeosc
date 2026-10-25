@@ -889,6 +889,7 @@ struct UiText {
     // "Record for squint training" (contrib.h): its row on Debug tools, and its sheet
     const char* contribRow;          ///< the row's title, and the sheet's
     const char* contribRowHint;      ///< ...under the title
+    const char* contribAbout;        ///< the sheet's line under its title: what it is for
     const char* contribRecord;       ///< ...its "Record" button
     const char* contribRecordings;   ///< ...its "Recordings" button (the folder: pack, delete)
     const char* contribRowIntroFormat;  ///< ...beside them before the first (%s: one recording's size)
@@ -936,6 +937,7 @@ struct UiText {
     const char* contribNext;         ///< ...what to do with it
     const char* contribPack;         ///< "Make one file"
     const char* contribPackHintFormat;   ///< ...beside it (%s: the size it needs free)
+    const char* contribPackFormatNote;   ///< ...under it: what the file is, and what opens it
     const char* contribPackingFormat;    ///< ...while packing (%d %)
     const char* contribPackedFormat;     ///< ...done (%s recordings, %s its size; its name under it)
     const char* contribPackFailedFormat; ///< ...failed (%s why)

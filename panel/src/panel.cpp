@@ -7053,7 +7053,7 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
     const double titleRight = closeX - 16;
     pen.text(kInnerX, headY + 26, t.contribRow, fitSize(pen, t.contribRow, 22, 16, titleRight - kInnerX, true), kText,
              true);
-    pen.text(kInnerX, headY + 50, ellipsize(pen, t.contribRowHint, 14, false, titleRight - kInnerX, false), 14,
+    pen.text(kInnerX, headY + 50, ellipsize(pen, t.contribAbout, 14, false, titleRight - kInnerX, false), 14,
              kTextMuted);
     if (contribConfirm_) {
         drawContribDelete(pen, t, m);
@@ -7292,6 +7292,8 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
                 baseline += 20;
             }
             y += packH + 8;
+            // (what the file is: zstd's, which Windows doesn't open by itself)
+            if (c.compress) paragraph(t.contribPackFormatNote, 14, kTextMuted, false, 1);
             // Recordings the pack left out (a file missing): to record again
             if (!c.incomplete.empty()) {
                 std::string names;

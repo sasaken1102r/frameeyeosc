@@ -7044,6 +7044,8 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
     const double bottom = kContentY + kContentH - 20;
     const bool jobRunning = c.progress.running;
     const int count = static_cast<int>(c.info.recordings.size());
+    // (Valve's samples, which the labels need, only come while frameeyeosc runs and gets eye data)
+    const bool eyeData = m.status.running && m.status.tracking;
 
     // The title and the cross
     const double closeS = 52;
@@ -7104,7 +7106,10 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
             const long long need = contrib::estimateBytes(c.fps) + contrib::kMarginBytes;
             pen.text(kInnerX, mainY - 16, formatLong(t.contribNoSpaceFormat, contrib::sizeText(need)), 16, kDanger,
                      true);
-        } else if (!contrib::startAllowed(c, m.eyecam)) {
+        } else if (!eyeData) {
+            pen.text(kInnerX, mainY - 16, ellipsize(pen, t.contribNoEyeData, 16, false, width, false), 16, kDanger,
+                     true);
+        } else if (!contrib::startAllowed(c, m.eyecam, eyeData)) {
             pen.text(kInnerX, mainY - 16, ellipsize(pen, t.contribWaitEyecam, 16, false, width, false), 16,
                      kTextMuted);
         } else if (c.freeBytes >= 0) {
@@ -7190,8 +7195,8 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
                 paragraph(countLine(), 16, kTextMuted, false, 1);
             }
             startState();
-            mainButton(t.contribStart, {PanelAction::ContribStart, nullptr, 0}, contrib::startAllowed(c, m.eyecam),
-                       true);
+            mainButton(t.contribStart, {PanelAction::ContribStart, nullptr, 0},
+                       contrib::startAllowed(c, m.eyecam, eyeData), true);
             break;
         }
         case Screen::Failed: {
@@ -7210,6 +7215,11 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
                 case contrib::Why::Missing: why = t.contribWhyMissing; break;
                 case contrib::Why::Move: why = formatLong(t.contribWhyMoveFormat, message); break;
                 case contrib::Why::Incomplete: why = formatLong(t.contribWhyIncompleteFormat, message); break;
+                case contrib::Why::NoVideo:
+                    why = formatLong(t.contribWhyNoVideoFormat, message == "L"   ? t.leftEye
+                                                                : message == "R" ? t.rightEye
+                                                                                 : t.contribBothEyes);
+                    break;
                 case contrib::Why::Truncated: why = formatLong(t.contribWhyTruncatedFormat, message); break;
                 case contrib::Why::Valve: why = formatLong(t.contribWhyValveFormat, message); break;
             }
@@ -7219,8 +7229,8 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
                 paragraph(t.contribKept, 16, kTextMuted, false, 2);
             }
             startState();
-            mainButton(t.contribRetry, {PanelAction::ContribStart, nullptr, 0}, contrib::startAllowed(c, m.eyecam),
-                       true);
+            mainButton(t.contribRetry, {PanelAction::ContribStart, nullptr, 0},
+                       contrib::startAllowed(c, m.eyecam, eyeData), true);
             break;
         }
         case Screen::Done: {

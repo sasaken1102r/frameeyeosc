@@ -524,44 +524,46 @@ void testScreen() {
     CHECK(screen(v, Page::Record, false) == Screen::Consent);
     CHECK(screen(v, Page::Record, true) == Screen::Eyewear);
     CHECK(screen(v, Page::Manage, false) == Screen::Done);
-    CHECK(!startAllowed(v, ready));
+    CHECK(!startAllowed(v, ready, true));
     v.exists = true;
     v.info.consentVersion = kConsentVersion;
     v.info.eyewear = Eyewear::None;
     v.freeBytes = 20'000'000'000LL;
     CHECK(screen(v, Page::Record, false) == Screen::Ready);
     CHECK(screen(v, Page::Record, true) == Screen::Ready);
-    CHECK(startAllowed(v, ready));
+    CHECK(startAllowed(v, ready, true));
     // eyecam-rec busy, not set up, a command waiting, no room, packing: no start
     {
         eyecam::View busy = ready;
         busy.status.state = State::Calibrating;
-        CHECK(!startAllowed(v, busy));
+        CHECK(!startAllowed(v, busy, true));
         eyecam::View waiting = ready;
         waiting.busy = true;
-        CHECK(!startAllowed(v, waiting));
+        CHECK(!startAllowed(v, waiting, true));
         eyecam::View notSetUp = ready;
         notSetUp.status.setupDone = false;
         notSetUp.status.calibState = 0;
-        CHECK(!startAllowed(v, notSetUp));
+        CHECK(!startAllowed(v, notSetUp, true));
         eyecam::View error = ready;
         error.status.state = State::Error;
-        CHECK(startAllowed(v, error));
+        CHECK(startAllowed(v, error, true));
         View full = v;
         full.freeBytes = 3'000'000'000LL;
-        CHECK(!startAllowed(full, ready));
+        CHECK(!startAllowed(full, ready, true));
         View packing = v;
         packing.progress.running = true;
-        CHECK(!startAllowed(packing, ready));
+        CHECK(!startAllowed(packing, ready, true));
+        // frameeyeosc stopped, or no eye data: Valve's samples wouldn't come (the recording would end in aborted/)
+        CHECK(!startAllowed(v, ready, false));
         View older = v;
         older.info.consentVersion = kConsentVersion - 1;
-        CHECK(!startAllowed(older, ready));
+        CHECK(!startAllowed(older, ready, true));
         CHECK(screen(older, Page::Record, false) == Screen::Consent);
     }
     // Running, then how it ended
     v.running = true;
     CHECK(screen(v, Page::Record, false) == Screen::Running);
-    CHECK(!startAllowed(v, ready));
+    CHECK(!startAllowed(v, ready, true));
     v.running = false;
     v.failure.shown = true;
     CHECK(screen(v, Page::Record, false) == Screen::Failed);
@@ -708,9 +710,21 @@ void testCheck() {
     r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-04", 50, kNow, Defect::LongerRaw));
     CHECK(r.check == Check::Truncated);
     SAME(r.detail, "eye_L.raw");
+    // No frame of an eye at all: its video didn't come (not the disk), which eye
     r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-05", 50, kNow, Defect::NoFrames));
-    CHECK(r.check == Check::Truncated);
-    SAME(r.detail, "eye_L.raw, eye_R.raw");
+    CHECK(r.check == Check::NoVideo);
+    SAME(r.detail, "LR");
+    const std::string oneEye = makeRecording(home, "rec_2026-10-25_14-00-10");
+    std::string rows;
+    std::istringstream frames(readFile(oneEye + "/frames.csv"));
+    for (std::string line; std::getline(frames, line);) {
+        if (line.find(",R,") == std::string::npos) rows += line + "\n";
+    }
+    writeFile(oneEye + "/frames.csv", rows);
+    writeFile(oneEye + "/eye_R.raw", "");
+    r = checkRecording(oneEye);
+    CHECK(r.check == Check::NoVideo);
+    SAME(r.detail, "R");
     // meta.txt's frame_bytes counts; without it, eyecam-rec's 160000
     const std::string sized = makeRecording(home, "rec_2026-10-25_14-00-06");
     writeFile(sized + "/meta.txt", "protocol=contrib\n");
@@ -939,7 +953,7 @@ void record(contrib::Session& session, contrib::View& view, const std::string& h
     snapshot.appVersion = "0.8.2-test";
     snapshot.eyecamRec = "294d06c6";
     eyecam.status.mtime = now;
-    const std::string command = session.startCommand(view, eyecam);
+    const std::string command = session.startCommand(view, eyecam, true);
     SAME(command, "start contrib");
     session.started(view, eyecam, snapshot, command, now);
     eyecam::Reply ok;
@@ -982,7 +996,7 @@ void testSession() {
     double now = static_cast<double>(std::time(nullptr));
     const double started = now - 3600;
     // No start before the consent, nor without an answer
-    CHECK(session.startCommand(view, eyecamReady(now)).empty());
+    CHECK(session.startCommand(view, eyecamReady(now), true).empty());
     CHECK(!session.consent(view, Eyewear::Unasked, static_cast<std::time_t>(now)));
     CHECK(session.consent(view, Eyewear::Glasses, static_cast<std::time_t>(now)));
     CHECK(view.exists && view.info.eyewear == Eyewear::Glasses && !consentNeeded(view.info));
@@ -1066,6 +1080,12 @@ void testSession() {
         CHECK(!view.running && view.failure.why == Why::Refused);
         SAME(view.failure.message, refused.error);
     }
+    // No start without frameeyeosc's eye data
+    CHECK(session.startCommand(view, eyecamReady(now), false).empty());
+    // A failed write's message goes once the folder is read again
+    view.error = "can't write ~/eyecam/contrib/info.txt: No space left on device";
+    session.refresh(view);
+    CHECK(view.error.empty());
     // Read again from the disk: the same
     {
         View again;

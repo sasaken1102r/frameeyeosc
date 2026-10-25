@@ -515,10 +515,16 @@ CheckResult checkRecording(const std::string& dir) {
     while (std::getline(meta, line)) {
         if (line.rfind("frame_bytes=", 0) == 0) frameBytes = readInteger(line.substr(12), kRawFrameBytes);
     }
+    // An eye without a single frame: its camera's video didn't come (both eyes are needed)
+    if (count[0] == 0 || count[1] == 0) {
+        result.check = Check::NoVideo;
+        result.detail = std::string(count[0] == 0 ? "L" : "") + (count[1] == 0 ? "R" : "");
+        return result;
+    }
     for (int eye = 0; eye < 2; ++eye) {
         const std::string raw = eye == 0 ? "eye_L.raw" : "eye_R.raw";
         struct stat st {};
-        if (::stat((dir + "/" + raw).c_str(), &st) != 0 || count[eye] == 0 ||
+        if (::stat((dir + "/" + raw).c_str(), &st) != 0 ||
             static_cast<long long>(st.st_size) != count[eye] * frameBytes) {
             result.check = Check::Truncated;
             result.detail += (result.detail.empty() ? "" : ", ") + raw;
@@ -684,11 +690,11 @@ Screen screen(const View& view, Page page, bool agreed) {
     return view.justDone ? Screen::Done : Screen::Ready;
 }
 
-bool startAllowed(const View& view, const eyecam::View& eyecam) {
+bool startAllowed(const View& view, const eyecam::View& eyecam, bool eyeData) {
     const eyecam::State state = eyecam.status.state;
     return view.exists && !consentNeeded(view.info) && eyecam::setUp(eyecam) && !eyecam.busy &&
            (state == eyecam::State::Idle || state == eyecam::State::Error) && !view.running &&
-           !view.progress.running && fits(view.freeBytes, view.fps);
+           !view.progress.running && fits(view.freeBytes, view.fps) && eyeData;
 }
 
 bool packEntries(const std::string& dir, const Info& info, std::vector<Entry>& entries,
@@ -1036,6 +1042,8 @@ void Session::load(View& view, const std::string& home, const std::string& confi
 
 void Session::refresh(View& view) {
     if (view.home.empty()) return;
+    // (an earlier write's failure isn't shown again: the next one says so if it fails too)
+    view.error.clear();
     view.exists = isRealDir(view.dir);
     view.freeBytes = freeBytes(view.home);
     view.info = Info();
@@ -1062,8 +1070,8 @@ bool Session::consent(View& view, Eyewear eyewear, std::time_t now) {
     return true;
 }
 
-std::string Session::startCommand(const View& view, const eyecam::View& eyecam) const {
-    if (!startAllowed(view, eyecam) || !command_.empty()) return "";
+std::string Session::startCommand(const View& view, const eyecam::View& eyecam, bool eyeData) const {
+    if (!startAllowed(view, eyecam, eyeData) || !command_.empty()) return "";
     return std::string(eyecam::kStartCommand) + " " + kProtocol;
 }
 
@@ -1252,10 +1260,12 @@ void Session::ended(View& view, const RunEnd& end, const eyecam::View& eyecam, d
     std::string why = end.outcome == Outcome::Stopped ? "stopped" : "failed";
     if (end.outcome == Outcome::Done) {
         const Why reason = check.check == Check::Missing     ? Why::Incomplete
+                           : check.check == Check::NoVideo   ? Why::NoVideo
                            : check.check == Check::Truncated ? Why::Truncated
                                                              : Why::Valve;
         view.failure = {true, reason, check.detail, check.detail, ""};
         why = check.check == Check::Missing     ? "missing " + check.detail
+              : check.check == Check::NoVideo   ? "no frames of eye " + check.detail
               : check.check == Check::Truncated ? "cut short: " + check.detail
                                                 : "Valve's samples for only " + check.detail + " of the frames";
     }

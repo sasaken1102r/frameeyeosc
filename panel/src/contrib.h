@@ -267,6 +267,7 @@ std::vector<std::string> missingFiles(const std::string& dir);
 enum class Check {
     Ok,
     Missing,    ///< a file of kRequiredFiles isn't there
+    NoVideo,    ///< an eye has no frame at all (its camera's video didn't come)
     Truncated,  ///< an eye's raw file doesn't hold as many frames as frames.csv lists for it (the disk ran full)
     Valve,      ///< under kValveShare of the frames have a usable Valve sample near them (Valve's tracking off?)
 };
@@ -274,15 +275,16 @@ enum class Check {
 /** checkRecording's answer. */
 struct CheckResult {
     Check check = Check::Ok;
-    std::string detail;  ///< the files missing, the raw files cut short ("eye_L.raw"), or the share paired ("42%")
+    std::string detail;  ///< the files missing, the eyes without frames ("L", "R", "LR"), the raw files cut short
+                         ///< ("eye_L.raw"), or the share paired ("42%")
 };
 
 /**
  * Whether a recording can be used for training, from its CSV files and its raw files' sizes alone (never the
- * frames): all of kRequiredFiles there; each eye's raw file exactly as many frames (meta.txt's frame_bytes each, else
- * kRawFrameBytes) as frames.csv has rows for that eye, and at least one; and at least kValveShare of frames.csv's
- * frames with a usable Valve sample in valve.csv (producer_state 1, both openness values numbers) within
- * kValvePairSec of their t_cam (sample_time is on the same clock).
+ * frames): all of kRequiredFiles there; frames of both eyes in frames.csv; each eye's raw file exactly as many
+ * frames (meta.txt's frame_bytes each, else kRawFrameBytes) as frames.csv has rows for that eye; and at least
+ * kValveShare of frames.csv's frames with a usable Valve sample in valve.csv (producer_state 1, both openness values
+ * numbers) within kValvePairSec of their t_cam (sample_time is on the same clock).
  * @param dir its folder
  * @return the answer
  */
@@ -328,7 +330,7 @@ enum class Outcome {
 };
 
 /** Why a try didn't finish (the screen says it). */
-enum class Why { None, Stopped, Error, Refused, Gone, NoStart, Missing, Move, Incomplete, Truncated, Valve };
+enum class Why { None, Stopped, Error, Refused, Gone, NoStart, Missing, Move, Incomplete, NoVideo, Truncated, Valve };
 
 /** A recording's end. */
 struct RunEnd {
@@ -455,12 +457,15 @@ Screen screen(const View& view, Page page, bool agreed);
 
 /**
  * Whether "Start" can be pressed: the consent given, eyecam-rec there and idle (or in error), set up, no command
- * waiting, nothing running or being packed, and the recording fits.
+ * waiting, nothing running or being packed, the recording fits, and frameeyeosc running with eye data coming in
+ * (Valve's samples, which a recording needs for its labels, only come while frameeyeosc asks for them: without them
+ * it would end in aborted/ after its 93 s).
  * @param view the contribution
  * @param eyecam eyecam-rec
+ * @param eyeData frameeyeosc runs and eye data comes in (EyeStatus running and tracking)
  * @return true if it can
  */
-bool startAllowed(const View& view, const eyecam::View& eyecam);
+bool startAllowed(const View& view, const eyecam::View& eyecam, bool eyeData);
 
 /** One file or folder in the pack. */
 struct Entry {
@@ -617,9 +622,10 @@ public:
      * The command that starts a recording, if it can start now (startAllowed).
      * @param view the contribution
      * @param eyecam eyecam-rec
+     * @param eyeData frameeyeosc runs and eye data comes in
      * @return "start contrib", or "" when it can't
      */
-    std::string startCommand(const View& view, const eyecam::View& eyecam) const;
+    std::string startCommand(const View& view, const eyecam::View& eyecam, bool eyeData) const;
 
     /**
      * The start went out: follow its recording, with what its section will say about the time of the start.

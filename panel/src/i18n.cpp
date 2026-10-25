@@ -924,6 +924,7 @@ UiText makeJapanese() {
     t.contribStart = "撮影をはじめる（約 1 分半）";
     t.contribNoSpaceFormat = "空きが足りないよ（約 %s 要る）";
     t.contribWaitEyecam = "目のカメラがほかのことをしているあいだは待ってね";
+    t.contribNoEyeData = "目の送信が動いていて、目のデータが来ているときに撮れるよ（Valve の値も一緒に録るため）";
     t.contribFailedTitle = "最後まで録れなかったよ";
     t.contribWhyStopped = "途中で止まったよ（中止したか、目が見えなくなったみたい）";
     t.contribWhyErrorFormat = "目の撮影でエラー: %s";
@@ -933,6 +934,8 @@ UiText makeJapanese() {
     t.contribWhyMissing = "録画のフォルダが見つからなかったよ";
     t.contribWhyMoveFormat = "録画を移せなかった: %s";
     t.contribWhyIncompleteFormat = "録画のファイルが足りなかったよ（%s）。もう一度撮ってね";
+    t.contribWhyNoVideoFormat = "%sの映像がなかったよ。目のカメラの準備を確かめて、もう一度撮ってね";
+    t.contribBothEyes = "両目";
     t.contribWhyTruncatedFormat = "録画のファイルが途中で切れていたよ（%s）。空き容量を確かめて、もう一度撮ってね";
     t.contribWhyValveFormat = "Valve の目のトラッキングの値が、フレームの %s にしかなかったよ。"
                               "SteamVR の目のトラッキングが動いてるか確かめて、もう一度撮ってね";
@@ -1979,6 +1982,7 @@ UiText makeEnglish() {
     t.contribStart = "Start recording (about 1.5 minutes)";
     t.contribNoSpaceFormat = "Not enough space (about %s needed)";
     t.contribWaitEyecam = "Wait while the eye cameras are busy with something else";
+    t.contribNoEyeData = "Records while frameeyeosc runs and eye data comes in (Valve's values are recorded too)";
     t.contribFailedTitle = "It didn't record to the end";
     t.contribWhyStopped = "It stopped early (stopped, or the eyes were lost)";
     t.contribWhyErrorFormat = "Eye recording error: %s";
@@ -1988,6 +1992,8 @@ UiText makeEnglish() {
     t.contribWhyMissing = "The recording's folder wasn't found";
     t.contribWhyMoveFormat = "Couldn't move the recording: %s";
     t.contribWhyIncompleteFormat = "The recording lacks files (%s). Please record again";
+    t.contribWhyNoVideoFormat = "No video from an eye camera (%s). Check the eye cameras' setup and record again";
+    t.contribBothEyes = "both";
     t.contribWhyTruncatedFormat = "The recording's files were cut short (%s). Check the free space and record again";
     t.contribWhyValveFormat = "Valve's eye tracking values were there for only %s of the frames. Check that "
                               "SteamVR's eye tracking is on and record again";

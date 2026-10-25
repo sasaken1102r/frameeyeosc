@@ -919,6 +919,7 @@ struct UiText {
     const char* contribStart;        ///< ...its button
     const char* contribNoSpaceFormat;  ///< ...the recording doesn't fit (%s needed)
     const char* contribWaitEyecam;   ///< ...eyecam-rec busy with something else
+    const char* contribNoEyeData;    ///< ...frameeyeosc not running or no eye data (Valve's values are recorded too)
     const char* contribFailedTitle;  ///< a try that didn't finish
     const char* contribWhyStopped;
     const char* contribWhyErrorFormat;    ///< (%s: eyecam-rec's message)
@@ -928,6 +929,8 @@ struct UiText {
     const char* contribWhyMissing;
     const char* contribWhyMoveFormat;     ///< (%s: why)
     const char* contribWhyIncompleteFormat;  ///< (%s: the files missing)
+    const char* contribWhyNoVideoFormat;     ///< (%s: the eye without frames: leftEye, rightEye or contribBothEyes)
+    const char* contribBothEyes;             ///< ...both
     const char* contribWhyTruncatedFormat;   ///< (%s: the raw files cut short)
     const char* contribWhyValveFormat;       ///< (%s: the share of frames with Valve's values, "42%")
     const char* contribKept;         ///< ...its part went to aborted/

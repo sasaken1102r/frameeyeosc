@@ -3027,6 +3027,7 @@ void testContrib(const FontSet& fonts) {
         m.contrib.loaded = true;
         m.contrib.dir = "/home/steamos/eyecam/contrib";
         m.contrib.freeBytes = 30'000'000'000LL;
+        m.status.tracking = true;
         panel.render(m);
         CHECK(hitsArg(panel, PanelAction::ContribOpen, record) == 1);
         CHECK(hitsArg(panel, PanelAction::ContribOpen, manage) == 0);
@@ -3061,6 +3062,11 @@ void testContrib(const FontSet& fonts) {
         panel.render(m);
         CHECK(hits(panel, PanelAction::ContribStart).empty());
         m.contrib.freeBytes = 30'000'000'000LL;
+        // ...nor without frameeyeosc's eye data (Valve's values are recorded with it)
+        m.status.tracking = false;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribStart).empty());
+        m.status.tracking = true;
         // Its recording runs in the sheet: the eye capture's run with its "Stop"
         m.contrib.running = true;
         eyecam::Status& s = m.eyecam.status;

@@ -8,8 +8,9 @@
 // bar, the Eye fit tab while a fit runs (only "Stop" and the tabs), the icons in texts (measured and drawn in their
 // own boxes, never starting a line, cut whole), and the other Frame apps (the row at the bottom of "Version" and its
 // count, the list's rows by state, the confirmation's command and buttons, scrolling), and the eye preview (its button
-// in the left column, alone or beside a notice; its sheet's buttons, what closes it, freeze, without the cameras). Built with
-// the panel as panel-test (it renders offscreen with the panel's fonts) and
+// in the left column, alone or beside a notice; its sheet's buttons, what closes it, freeze, without the cameras), and
+// "Help train the AI" (its row on Debug tools, each screen's buttons, its recording, the delete's confirmation). Built
+// with the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
 #include "draw.h"
@@ -2986,9 +2987,153 @@ void testPreview(const FontSet& fonts) {
     }
 }
 
+/**
+ * The usable buttons with this action and argument as last drawn.
+ * @param panel the panel
+ * @param action the action
+ * @param arg its argument
+ * @return how many
+ */
+size_t hitsArg(const EyePanel& panel, PanelAction action, int arg) {
+    size_t count = 0;
+    for (const EyePanel::HitArea& area : hits(panel, action)) count += area.hit.arg == arg ? 1 : 0;
+    return count;
+}
+
+void testContrib(const FontSet& fonts) {
+    // "Help train the AI": its row on Debug tools (only while eyecam-rec runs, usable once the cameras are set up),
+    // each screen's buttons in both languages, its recording shown in it, the delete's confirmation, and what closes it
+    {
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Tools);
+        panel.render(modelWith(Lids::Both, false));
+        CHECK(hits(panel, PanelAction::ContribOpen).empty());
+        PanelModel notSetUp = modelWith(Lids::Both, true);
+        notSetUp.eyecam.status.setupDone = false;
+        notSetUp.eyecam.status.calibState = 0;
+        panel.render(notSetUp);
+        CHECK(hits(panel, PanelAction::ContribOpen).empty());
+    }
+    for (const Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Tools);
+        PanelModel m = modelWith(Lids::Both, true);
+        m.language = language;
+        m.contrib.loaded = true;
+        m.contrib.freeBytes = 30'000'000'000LL;
+        panel.render(m);
+        CHECK(press(panel, PanelAction::ContribOpen).action == PanelAction::ContribOpen);
+        CHECK(panel.contribOpen() && !panel.advPageShown());
+        // The consent: "I'll help", the cross and "Cancel"; not without the room for it
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribConsent).size() == 1);
+        CHECK(hits(panel, PanelAction::ContribClose).size() == 2);
+        CHECK(hits(panel, PanelAction::AdvancedPage).empty());
+        m.contrib.freeBytes = 5'000'000'000LL;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribConsent).empty());
+        m.contrib.freeBytes = 30'000'000'000LL;
+        // Begun: the first step's start (no re-wear before it); none while a command waits
+        m.contrib.dir = "/home/steamos/eyecam/contrib_2026-10-25_14-02-10";
+        panel.render(m);
+        CHECK(hitsArg(panel, PanelAction::ContribStart, 0) == 1);
+        CHECK(hits(panel, PanelAction::ContribDelete).size() == 1);
+        m.eyecam.busy = true;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribStart).empty());
+        m.eyecam.busy = false;
+        // After it: the re-wear, "I put it back on" only once it can be pressed; then the second step's start
+        m.contrib.info.steps[0].rec = "rec_2026-10-25_14-02-41";
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribStart).empty() && hits(panel, PanelAction::ContribRewore).empty());
+        m.contrib.fallbackReady = true;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribRewore).size() == 1);
+        m.contrib.info.nextWear = contrib::kWearDetected;
+        panel.render(m);
+        CHECK(hitsArg(panel, PanelAction::ContribStart, 1) == 1);
+        // Its recording runs in the sheet: the eye capture's run with its "Stop"
+        m.contrib.running = 1;
+        eyecam::Status& s = m.eyecam.status;
+        s.state = eyecam::State::Recording;
+        s.stateText = "recording";
+        s.locked = true;
+        s.protocol = contrib::kGuidedProtocol;
+        s.stepLabel = "widen";
+        s.stepCount = 14;
+        s.stepIndex = 3;
+        s.elapsedS = 10;
+        s.totalS = 60.5;
+        s.stepRemainingS = 3;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::EyecamStop).size() == 1);
+        CHECK(hits(panel, PanelAction::ContribStart).empty() && hits(panel, PanelAction::ContribDelete).empty());
+        s.state = eyecam::State::Idle;
+        s.stateText = "idle";
+        m.contrib.running = -1;
+        // It didn't finish: "Record again" for that step
+        m.contrib.failure.step = 1;
+        m.contrib.failure.why = contrib::Why::Stopped;
+        panel.render(m);
+        CHECK(hitsArg(panel, PanelAction::ContribStart, 1) == 1);
+        m.contrib.failure = contrib::Failure();
+        // All four: pack, delete, the optional one
+        for (int step = 1; step < contrib::kRequiredSteps; ++step) {
+            m.contrib.info.steps[step].rec = "rec_2026-10-25_14-05-12";
+        }
+        m.contrib.info.nextWear.clear();
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).size() == 1);
+        CHECK(hits(panel, PanelAction::ContribDelete).size() == 1);
+        CHECK(hitsArg(panel, PanelAction::ContribExtra, 1) == 1);
+        CHECK(hits(panel, PanelAction::ContribStart).empty());
+        // ...the optional one: its re-wear first, then its start and "Back"
+        CHECK(pressArg(panel, PanelAction::ContribExtra, 1).action == PanelAction::None);
+        CHECK(panel.contribExtra());
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribRewore).size() == 1);
+        m.contrib.info.nextWear = contrib::kWearButton;
+        panel.render(m);
+        CHECK(hitsArg(panel, PanelAction::ContribStart, 4) == 1);
+        CHECK(pressArg(panel, PanelAction::ContribExtra, 0).action == PanelAction::None);
+        CHECK(!panel.contribExtra());
+        // Packing or packed: no second one, and no delete while packing
+        m.contrib.progress.job = contrib::Job::Pack;
+        m.contrib.progress.running = true;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).empty() && hits(panel, PanelAction::ContribDelete).empty());
+        m.contrib.progress = contrib::Progress();
+        m.contrib.info.packed = "contrib_2026-10-25_14-02-10.tar.zst";
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).empty());
+        // Deleting: its confirmation first (only its buttons), "Cancel" back, then the delete
+        CHECK(press(panel, PanelAction::ContribDelete).action == PanelAction::None);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribDeleteConfirm).size() == 1);
+        CHECK(hits(panel, PanelAction::ContribDelete).empty() && hits(panel, PanelAction::ContribExtra).empty());
+        CHECK(press(panel, PanelAction::ContribDeleteCancel).action == PanelAction::None);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribDeleteConfirm).empty());
+        CHECK(hits(panel, PanelAction::ContribDelete).size() == 1);
+        press(panel, PanelAction::ContribDelete);
+        panel.render(m);
+        CHECK(press(panel, PanelAction::ContribDeleteConfirm).action == PanelAction::ContribDeleteConfirm);
+        // A tab closes it; the sub-tabs show again
+        pressTab(panel, PanelTab::Basic);
+        CHECK(!panel.contribOpen());
+        panel.render(m);
+        pressTab(panel, PanelTab::Advanced);
+        panel.render(m);
+        CHECK(panel.advPageShown() && hits(panel, PanelAction::ContribOpen).size() == 1);
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
+    testContrib(fonts);
     testWidenRouting(fonts);
     testWidenSwitch(fonts);
     testLidVetoSwitch(fonts);

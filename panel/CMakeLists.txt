@@ -43,6 +43,7 @@ add_executable(frameeyeosc-panel
   src/changelog.cpp
   src/command.cpp
   src/config.cpp
+  src/contrib.cpp
   src/diag.cpp
   src/draw.cpp
   src/eyecam.cpp
@@ -155,6 +156,7 @@ add_executable(panel-test tests/panel_test.cpp
   src/changelog.cpp
   src/command.cpp
   src/config.cpp
+  src/contrib.cpp
   src/diag.cpp
   src/draw.cpp
   src/eyecam.cpp
@@ -210,6 +212,18 @@ target_compile_definitions(eyecam-test PRIVATE EYECAM_SOURCE_DIR="${CMAKE_CURREN
 target_compile_options(eyecam-test PRIVATE -Wall -Wextra)
 target_link_libraries(eyecam-test PRIVATE Threads::Threads)
 add_test(NAME eyecam COMMAND eyecam-test)
+
+# "Help train the AI" (contrib.{h,cpp}: the steps and their sizes against eyecam's protocol files, info.txt, following a
+# step's recording and the re-wear in eyecam-rec's status, the screens, the tar headers, and on folders in $TMPDIR
+# making, moving into, packing (unpacked again with tar and zstd) and deleting a contribution, and a whole session):
+# panel/build/contrib-test
+add_executable(contrib-test tests/contrib_test.cpp src/contrib.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp
+  src/setup_tools.cpp src/recorder.cpp)
+target_include_directories(contrib-test PRIVATE src)
+target_compile_definitions(contrib-test PRIVATE EYECAM_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../tools/eyecam")
+target_compile_options(contrib-test PRIVATE -Wall -Wextra)
+target_link_libraries(contrib-test PRIVATE Threads::Threads)
+add_test(NAME contrib COMMAND contrib-test)
 
 # The diagnostics page's texts and code (diag.{h,cpp}: the cards, the diagnostic code, SteamOS's version, SHA-256),
 # without cairo: panel/build/diag-test

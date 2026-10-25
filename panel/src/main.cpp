@@ -164,6 +164,7 @@ struct Options {
     std::string fakeEyecam;       ///< a made-up eyecam-rec state (see printUsage and parseFakeEyecam)
     std::string fakeCamera;       ///< --fake-camera: the eye cameras as frameeyeosc reports them (see printUsage)
     std::string fakePassword = "set";  ///< --fake-password: the setup's password check
+    std::string fakeContrib;      ///< --fake-contrib: "Help train the AI" open on a made-up screen (see fakeContrib)
     double sensitivityDrag = -1;  ///< --sensitivity-drag: the slider as if dragged there (-1 = not)
     std::string eyecamDir;        ///< --eyecam-dir: eyecam-rec's folder (status.json, ctl.sock) instead of the default
     std::string fillPngPath;      ///< --eyecam-fill-png: the eye capture's full-view light image
@@ -383,6 +384,11 @@ void printUsage() {
         "                        60). The last calibration follows setup, failed=... and calib-error\n"
         "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
+        "      --fake-contrib STATE  \"Help train the AI\" open on a made-up screen (the eye cameras set up and idle\n"
+        "                        unless --fake-eyecam says otherwise): consent, nospace, deleted, rewear,\n"
+        "                        rewear-off (seen off; \"I put it back on\" usable), ready, ready-free, running,\n"
+        "                        running-free, failed, failed-error, done, packing, packed, extra, delete, deleting\n"
+        "                        (with --adv-page tools: its row on Debug tools in that state, the sheet closed)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
         "                        them (off: camera_lids off)\n"
         "  --eyecam-fill-png PATH  Draw the eye capture's full-view light (with --language) to a PNG\n"
@@ -451,6 +457,11 @@ bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool
         from = colon + 1;
     }
 }
+
+/** --fake-contrib's screens (fakeContrib). */
+const std::string kFakeContribStates[] = {"consent", "nospace", "deleted", "rewear", "rewear-off", "ready",
+                                          "ready-free", "running", "running-free", "failed", "failed-error", "done",
+                                          "packing", "packed", "extra", "delete", "deleting"};
 
 /** --fake-eyecam, taken apart. */
 struct FakeEyecam {
@@ -1092,6 +1103,15 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 return false;
             }
             options.fake = true;
+        } else if (arg == "--fake-contrib" && hasNext) {
+            options.fakeContrib = argv[++i];
+            if (std::find(std::begin(kFakeContribStates), std::end(kFakeContribStates), options.fakeContrib) ==
+                std::end(kFakeContribStates)) {
+                std::fprintf(stderr, "--fake-contrib must be one of the states in --help: %s\n",
+                             options.fakeContrib.c_str());
+                return false;
+            }
+            options.fake = true;
         } else if (arg == "--sensitivity-drag" && hasNext) {
             options.sensitivityDrag = std::atof(argv[++i]);
         } else if (arg == "--fake-camera" && hasNext) {
@@ -1627,6 +1647,94 @@ eyecam::View fakeEyecam(const std::string& text) {
 }
 
 /**
+ * --fake-contrib: "Help train the AI" on one of its screens (kFakeContribStates), made up: nothing is read or written.
+ * The eye cameras set up and idle, unless --fake-eyecam gave eyecam-rec already; recording for the running ones.
+ * @param m the model
+ * @param state the screen
+ * @param eyecamGiven --fake-eyecam was given
+ */
+void fakeContrib(PanelModel& m, const std::string& state, bool eyecamGiven) {
+    contrib::View& c = m.contrib;
+    c.loaded = true;
+    c.home = "/home/steamos/eyecam";
+    c.freeBytes = state == "nospace" ? 7'400'000'000LL : 23'200'000'000LL;
+    c.fps = 90.0;
+    if (!eyecamGiven) m.eyecam = fakeEyecam("idle:setup:auto=ok:buffers:ready:saved");
+    if (state == "consent" || state == "nospace" || state == "deleted") {
+        c.deleted = state == "deleted";
+        return;
+    }
+    c.dir = "/home/steamos/eyecam/contrib_2026-10-25_14-02-10";
+    c.info.appVersion = "0.8.2-beta.2";
+    c.info.consent = "2026-10-25 14:02:10 +0900";
+    // The steps done: one before the second guided recording, three before the free use, all for the end
+    const bool end = state == "done" || state == "packing" || state == "packed" || state == "extra" ||
+                     state == "delete" || state == "deleting";
+    const int done = end ? contrib::kRequiredSteps : (state == "ready-free" || state == "running-free") ? 3 : 1;
+    const char* const recs[] = {"rec_2026-10-25_14-02-41", "rec_2026-10-25_14-05-12", "rec_2026-10-25_14-08-03",
+                                "rec_2026-10-25_14-11-40"};
+    for (int step = 0; step < contrib::kStepCount; ++step) {
+        contrib::Step& s = c.info.steps[step];
+        s.protocol = contrib::protocolOf(step);
+        if (step >= done) continue;
+        s.rec = recs[step];
+        s.bytes = contrib::estimateBytes(step, 90.0) - 3'000'000;
+        s.wear = step == 0 ? contrib::kWearFirst : contrib::kWearDetected;
+        s.done = "2026-10-25 14:0" + std::to_string(3 + step * 3) + ":44";
+    }
+    c.totalBytes = contrib::recordedBytes(c.info);
+    if (state != "rewear" && state != "rewear-off") c.info.nextWear = contrib::kWearDetected;
+    c.offSeen = state == "rewear-off";
+    c.fallbackReady = state == "rewear-off";
+    if (state == "running" || state == "running-free") {
+        c.running = done;
+        if (state == "running") {
+            m.eyecam = fakeEyecam("recording:widen:nolight");
+        } else {
+            // The free use: protocol_free.txt's one step of 180 s, a minute in
+            m.eyecam = fakeEyecam("recording:normal");
+            eyecam::Status& s = m.eyecam.status;
+            s.protocol = contrib::kFreeProtocol;
+            s.stepCount = 1;
+            s.stepIndex = 0;
+            s.totalS = contrib::kFreeSec + contrib::kTailSec;
+            s.elapsedS = 63.0;
+            s.stepRemainingS = contrib::kFreeSec - 63.0;
+            m.eyecam.protocol.name = s.protocol;
+            m.eyecam.protocol.steps = {"normal"};
+        }
+    }
+    if (state == "failed" || state == "failed-error") {
+        c.failure.step = done;
+        if (state == "failed") {
+            c.failure.why = contrib::Why::Stopped;
+            c.failure.kept = "aborted/rec_2026-10-25_14-05-12";
+        } else {
+            c.failure.why = contrib::Why::Error;
+            // (eyecam-rec's own, with its English)
+            c.failure.message = "ディスクの空きが 1 GB 未満（途中まで保存: rec_2026-10-25_14-05-12）";
+            c.failure.messageEn = "Less than 1 GB of disk space left (saved so far: rec_2026-10-25_14-05-12)";
+            c.failure.kept = "aborted/rec_2026-10-25_14-05-12";
+        }
+    }
+    if (state == "packing") {
+        c.progress.job = contrib::Job::Pack;
+        c.progress.running = true;
+        c.progress.total = c.totalBytes;
+        c.progress.done = c.totalBytes * 45 / 100;
+    }
+    if (state == "packed") {
+        c.info.packed = "contrib_2026-10-25_14-02-10.tar.zst";
+        c.info.packedBytes = c.totalBytes * 62 / 100;
+        c.totalBytes += c.info.packedBytes;
+    }
+    if (state == "deleting") {
+        c.progress.job = contrib::Job::Delete;
+        c.progress.running = true;
+    }
+}
+
+/**
  * Copy where a command to eyecam-rec is (waiting, or its reply) into the view the panel draws.
  * @param view the view
  * @param control the control socket
@@ -1965,6 +2073,7 @@ PanelModel fakeModel(const Options& options) {
             m.preview.hasPacket = false;
         }
     }
+    if (!options.fakeContrib.empty()) fakeContrib(m, options.fakeContrib, !options.fakeEyecam.empty());
     m.eyecam.password = options.fakePassword == "unset"   ? eyecam::PasswordState::NotSet
                         : options.fakePassword == "unknown" ? eyecam::PasswordState::Unknown
                                                             : eyecam::PasswordState::Set;
@@ -1982,7 +2091,7 @@ PanelModel fakeModel(const Options& options) {
 
 void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, AutostartWorker& autostart,
               frame_updater::UpdateChecker* updater, gaze_fit::Session* fit, const VrOverlay* vr,
-              recorder::Recorder* eyeLog, eyecam::Control* eyecamControl);
+              recorder::Recorder* eyeLog, eyecam::Control* eyecamControl, contrib::Session* contribSession = nullptr);
 std::string targetLabel(const UiText& t, gaze_fit::TargetStyle style);
 
 /**
@@ -2247,6 +2356,12 @@ int runDumpPng(const Options& options) {
             if (options.historyScroll >= 0) panel.setHistoryScroll(options.historyScroll);
         }
         if (options.fakeEyecam.rfind("confirm", 0) == 0) panel.openEyecamConfirm(model.eyecam.status.state);
+        // (with --adv-page tools: its row on Debug tools, the sheet closed)
+        if (!options.fakeContrib.empty() && options.advPage != "tools") {
+            panel.openContrib();
+            panel.setContribExtra(options.fakeContrib == "extra");
+            if (options.fakeContrib == "delete") panel.openContribDelete();
+        }
         if (!options.appsSheet.empty()) {
             const std::string& sheet = options.appsSheet;
             panel.openAppsList();
@@ -2803,10 +2918,11 @@ void startFit(gaze_fit::Session& fit, gaze_fit::Mode mode, const SettingsView& v
  * @param vr the connection to SteamVR, for the IPD (null in --dump-png)
  * @param eyeLog the eye log (null in --dump-png)
  * @param eyecamControl eyecam-rec's control socket (null: its buttons do nothing)
+ * @param contribSession "Help train the AI" (null in --dump-png: its buttons only say what they would do)
  */
 void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, AutostartWorker& autostart,
               frame_updater::UpdateChecker* updater, gaze_fit::Session* fit, const VrOverlay* vr,
-              recorder::Recorder* eyeLog, eyecam::Control* eyecamControl) {
+              recorder::Recorder* eyeLog, eyecam::Control* eyecamControl, contrib::Session* contribSession) {
     const SettingsView view(model);
     std::function<void(JsonValue&)> change;
     std::string openPrompt;
@@ -3182,6 +3298,80 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             syncEyecamControl(model.eyecam, *eyecamControl);
             return;
         }
+        case PanelAction::ContribClose:
+        case PanelAction::ContribExtra:
+        case PanelAction::ContribDelete:
+        case PanelAction::ContribDeleteCancel: return;  // handled inside the panel
+        case PanelAction::ContribOpen:
+            // Read from the disk the first time (the loop reads it at its start; it follows it from then on)
+            if (contribSession != nullptr && !model.contrib.loaded) {
+                contribSession->load(model.contrib, contrib::defaultHome());
+            }
+            std::fprintf(stderr, "[contrib] opened: %s\n",
+                         model.contrib.dir.empty() ? "none yet" : recorder::shortPath(model.contrib.dir).c_str());
+            return;
+        case PanelAction::ContribConsent:
+            if (contribSession == nullptr) {
+                std::printf("contrib: would make a contribution's folder in %s\n", contrib::defaultHome().c_str());
+                return;
+            }
+            if (contribSession->consent(model.contrib, FRAMEEYEOSC_VERSION, std::time(nullptr))) {
+                std::fprintf(stderr, "[contrib] consent given: %s\n", recorder::shortPath(model.contrib.dir).c_str());
+            } else {
+                std::fprintf(stderr, "[contrib] couldn't begin: %s\n", model.contrib.error.c_str());
+            }
+            return;
+        case PanelAction::ContribRewore:
+            if (contribSession != nullptr && contribSession->rewore(model.contrib)) {
+                std::fprintf(stderr, "[contrib] re-wear: the user said so\n");
+            }
+            return;
+        case PanelAction::ContribStart: {
+            // The step's protocol to eyecam-rec's socket (its reply and its run are followed by the loop)
+            if (contribSession == nullptr || eyecamControl == nullptr) {
+                std::printf("contrib: would start step %d (%s)\n", hit.arg + 1, contrib::protocolOf(hit.arg));
+                return;
+            }
+            const std::string command = contribSession->startCommand(model.contrib, model.eyecam, hit.arg);
+            if (command.empty()) {
+                std::fprintf(stderr, "[contrib] step %d can't start now\n", hit.arg + 1);
+                return;
+            }
+            const std::string socket = model.eyecamDir + "/ctl.sock";
+            std::fprintf(stderr, "[contrib] step %d: sending \"%s\" to %s\n", hit.arg + 1, command.c_str(),
+                         socket.c_str());
+            const bool sent = eyecamControl->send(socket, command, nowSeconds());
+            contribSession->started(model.contrib, hit.arg, command, unixNow());
+            if (!sent && !eyecamControl->busy()) {
+                std::fprintf(stderr, "[contrib] %s failed: %s\n", command.c_str(),
+                             eyecamControl->reply().error.c_str());
+                contribSession->replied(model.contrib, eyecamControl->reply());
+            }
+            syncEyecamControl(model.eyecam, *eyecamControl);
+            return;
+        }
+        case PanelAction::ContribPack:
+            if (contribSession == nullptr) {
+                std::printf("contrib: would pack %s\n", model.contrib.dir.c_str());
+                return;
+            }
+            if (contribSession->pack(model.contrib)) {
+                std::fprintf(stderr, "[contrib] packing %s\n", recorder::shortPath(model.contrib.dir).c_str());
+            } else {
+                std::fprintf(stderr, "[contrib] can't pack: %s\n", model.contrib.progress.error.c_str());
+            }
+            return;
+        case PanelAction::ContribDeleteConfirm:
+            if (contribSession == nullptr) {
+                std::printf("contrib: would delete %s\n", model.contrib.dir.c_str());
+                return;
+            }
+            if (contribSession->remove(model.contrib)) {
+                std::fprintf(stderr, "[contrib] deleting %s\n", recorder::shortPath(model.contrib.dir).c_str());
+            } else {
+                std::fprintf(stderr, "[contrib] can't delete %s\n", model.contrib.dir.c_str());
+            }
+            return;
         case PanelAction::FitStop:
             std::fprintf(stderr, "[fit] stopped\n");
             if (fit != nullptr) fit->cancel();
@@ -3651,6 +3841,14 @@ int runOverlay(const Options& options) {
     eyecam::Light light;            // the light as shown: which one, and its alpha as it fades in and out
     eyecam::Fill lightWanted = eyecam::Fill::None;  // the one fillFor wanted last time (to log a fade-out once)
     bool lightMoving = false;       // fading in or out: the loop runs every display frame
+    // "Help train the AI": the contribution in ~/eyecam (a recording it had started goes on being followed)
+    contrib::Session contribSession;
+    contribSession.load(model.contrib, contrib::defaultHome());
+    if (!model.contrib.dir.empty()) {
+        std::fprintf(stderr, "[contrib] %s: %d of %d recorded%s\n", recorder::shortPath(model.contrib.dir).c_str(),
+                     contrib::requiredDone(model.contrib.info), contrib::kRequiredSteps,
+                     model.contrib.running >= 0 ? ", one recording on its way" : "");
+    }
     // The debug gaze dots: their socket, the three dot images and the three ring images after them (drawn once), which
     // image each overlay has (0 and 1 the dots, 2 and 3 the rings: the gaze before the user's gaze scale)
     gaze_dots::Receiver dots;
@@ -3799,7 +3997,8 @@ int runOverlay(const Options& options) {
                         std::fprintf(stderr, "[VR] quitting from the panel's \"Quit\"\n");
                         userQuit = true;
                     } else {
-                        applyHit(hit, model, panel, autostart, &updater, &fit, &vr, &eyeLog, &eyecamControl);
+                        applyHit(hit, model, panel, autostart, &updater, &fit, &vr, &eyeLog, &eyecamControl,
+                                 &contribSession);
                         lastStamp = configStamp(model.configPath);
                         // The other apps' list opened: looked at now, and fetched if it is due
                         if (hit.action == PanelAction::AppsOpen) {
@@ -4318,12 +4517,14 @@ int runOverlay(const Options& options) {
         // with the other overlays at shutdown)
         {
             const bool running = model.eyecam.visible || vr.fillShown() || eyecamControl.busy();
+            bool statusRead = false;
             if (nowSeconds() >= lastEyecamRead + (running ? kEyecamReadSec : kEyecamIdleReadSec)) {
                 lastEyecamRead = nowSeconds();
                 model.eyecam.status = eyecam::readStatus(model.eyecamDir);
                 // (the recording's steps for its chips, read from eyecam's protocol file once a run)
                 eyecam::followProtocol(model.eyecam, eyecam::libDir());
                 model.eyecam.lastRun = eyecam::followRun(model.eyecam.lastRun, model.eyecam.status);
+                statusRead = true;
             }
             const double now = unixNow();
             const eyecam::Status& s = model.eyecam.status;
@@ -4343,6 +4544,12 @@ int runOverlay(const Options& options) {
                 // A calibration it refused: its record ends here
                 if (calibRun.active() && r.command == calibCommand && calibWatch.replied(r.ok)) {
                     finishCalib(r.error.empty() ? std::string("err") : r.error);
+                }
+                // A step of "Help train the AI" it refused: that try ends
+                if (contribSession.replied(model.contrib, r)) {
+                    std::fprintf(stderr, "[contrib] step %d refused: %s\n", model.contrib.failure.step + 1,
+                                 r.error.c_str());
+                    dirty = true;
                 }
                 // A sensitivity it refused: the slider shows the file's value again (the reply shows like others)
                 if (!r.ok && eyecam::isSensitivityCommand(r.command)) {
@@ -4383,6 +4590,17 @@ int runOverlay(const Options& options) {
                 }
             }
             syncEyecamControl(model.eyecam, eyecamControl);
+            // "Help train the AI": its recording's end (the folder moved into the contribution), the re-wear before the
+            // next step (watched with the dashboard closed too), and the pack or the delete
+            if (statusRead) {
+                std::string log;
+                if (contribSession.follow(model.contrib, model.eyecam, now, bootSeconds(), log)) dirty = true;
+                for (size_t start = 0; start < log.size();) {
+                    const size_t end = std::min(log.find('\n', start), log.size());
+                    std::fprintf(stderr, "[contrib] %s\n", log.substr(start, end - start).c_str());
+                    start = end + 1;
+                }
+            }
             // The calibration's record: where eyecam keeps it, the cameras' rate during it, and its end once eyecam-rec
             // leaves "calibrating" (or never got there)
             if (calibRun.active()) {

@@ -2347,11 +2347,59 @@ pub const MIN_OPEN_GAP: f64 = 0.2;
 /// look down), so leaving them out is right either way.
 pub const WIDEN_MIN_BELOW_N: f64 = 0.2;
 
-/// The widen level of the widen frames among `s`: the median upper lid line of those with the pupil and a line no
-/// more than WIDEN_MIN_BELOW_N below the normal level `b_n`, and how many those are (they are what NEED_WIDEN counts,
-/// so too few of them falls back to the usual widen step as before).
+/// A widen step (one cue) counts toward the widen level on its own only with at least this many widen frames that have
+/// the lid line (`widen_level`); fewer, and it only counts in the median over all of them. A calibration's widen steps
+/// have 198 frames at 90 fps after STEP_DELAY (33 at 15 fps).
+pub const WIDEN_STEP_MIN_FRAMES: usize = 30;
+/// Widen frames further apart than this (s) belong to different widen steps, even with no other frame between them.
+const WIDEN_STEP_GAP_S: f64 = 0.5;
+
+/// The widen frames' lid lines that count toward the widen level: those with the pupil and a line no more than
+/// WIDEN_MIN_BELOW_N below the normal level `b_n`.
+fn widen_line(x: &Sample, b_n: f64) -> Option<f64> {
+    (x.label == Label::Widen && x.ok && x.skin >= b_n - WIDEN_MIN_BELOW_N).then_some(x.skin)
+}
+
+/// The median lid line (`widen_line`) of each widen step among `s` with at least WIDEN_STEP_MIN_FRAMES of them, in
+/// order. A step ends at any frame that is not a widen frame, or at a gap of more than WIDEN_STEP_GAP_S.
+pub fn widen_step_levels(s: &[Sample], b_n: f64) -> Vec<f64> {
+    let mut steps: Vec<Vec<f64>> = Vec::new();
+    let mut last_t = f64::NAN;
+    let mut in_step = false;
+    for x in s {
+        if x.label != Label::Widen {
+            in_step = false;
+            continue;
+        }
+        if !in_step || x.t - last_t > WIDEN_STEP_GAP_S {
+            steps.push(Vec::new());
+            in_step = true;
+        }
+        last_t = x.t;
+        if let Some(v) = widen_line(x, b_n).filter(|v| v.is_finite()) {
+            steps.last_mut().expect("a step was started").push(v);
+        }
+    }
+    steps.iter_mut().filter(|v| v.len() >= WIDEN_STEP_MIN_FRAMES).map(|v| vision::median(v)).collect()
+}
+
+/// The widen level of the widen frames among `s` (`widen_line`), and how many frames have one (they are what NEED_WIDEN
+/// counts, so too few of them falls back to the usual widen step as before). The level is the lowest of the widen
+/// steps' own medians (`widen_step_levels`), or the median over all of them when no step has WIDEN_STEP_MIN_FRAMES.
+/// Live, the step of one wear's calibration has to be reached every time, while one widen step can read higher than
+/// the others: a tester with prescription inserts (a recording of 2026-10-23, three 5 s widen steps) had the left eye's
+/// line at 1.81 R in the first step and at 1.11 / 1.08 R in the other two, against 0.83 R normal; the median over all
+/// of them gave a step of 0.52 that the other two steps rose only 0.4 / 0.3 of. Replayed live and through frameeyeosc
+/// with that wearer's settings, widening went out at 0.5 or more in 36 % / 39 % of the widen frames (both eyes, widen
+/// sensitivity 0.5 / 1). With the lowest step's median the step is 0.25 (the right eye's 0.51 -> 0.43) and 91 % at
+/// either; nothing widened (0.3 or more) in the normal and squint steps, looking up 7 / 12 % at sensitivity 0.5 (0 /
+/// 1 % before) and 8 / 15 % at 1 (5 / 9 %), looking down none at 0.5 but 20 % at 1 (none before). On the developer's
+/// 27 wear calibrations the step stays the same or gets smaller, by 0.011 in the median and 0.055 at most, and nothing
+/// else in them changes.
 fn widen_level(s: &[Sample], b_n: f64) -> (f64, usize) {
-    med_of(s, |x| (x.label == Label::Widen && x.ok && x.skin >= b_n - WIDEN_MIN_BELOW_N).then_some(x.skin))
+    let (all, n) = med_of(s, |x| widen_line(x, b_n));
+    let lowest = widen_step_levels(s, b_n).into_iter().fold(f64::INFINITY, f64::min);
+    (if lowest.is_finite() { lowest } else { all }, n)
 }
 
 /// When at least this share of an eye's widen frames with the pupil have no upper lid line within WIDEN_MIN_BELOW_N of
@@ -2615,6 +2663,14 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         let wf = widen_fit(&s, b_n, need.widen);
         let (b_w, nw) = (wf.b_w, wf.n);
         let below = s.iter().filter(|x| x.label == Label::Widen && x.ok && x.skin < b_n - WIDEN_MIN_BELOW_N).count();
+        // Each widen step's own level in the usual band (the lowest is the widen level when the source is "main")
+        let step_levels = widen_step_levels(&s, b_n);
+        let levels_json = step_levels.iter().map(|v| json::num(*v)).collect::<Vec<_>>().join(", ");
+        let levels_text = if step_levels.is_empty() {
+            "none".to_string()
+        } else {
+            step_levels.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>().join(" / ")
+        };
         let (ap_n, _) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.ap));
         let (ap_cl, nc) = med_of(&s, |x| (x.label == Label::Close).then_some(x.ap));
         let all = |l: Label| s.iter().filter(|x| x.label == l).count();
@@ -2628,7 +2684,7 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
 \"normal_frames_with_pupil\": {n_pupil}, \"normal_frames_with_lid_line\": {nn}, \"widen_frames_with_pupil\": {nw}, \"widen_frames_below_normal\": {below}, \"close_frames_with_lids\": {nc}, \
 \"pupil_seen_share\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}, \"diag\": {}, \
 \"widen_source\": \"{}\", \"widen_frames_no_line_near_normal\": {}, \"widen_frames_upper_good\": {}, \"widen_frames_upper_used\": {}, \
-\"widen_upper_fixed_line\": {}, \"widen_upper_rose_from\": {}}}",
+\"widen_upper_fixed_line\": {}, \"widen_upper_rose_from\": {}, \"widen_step_levels\": [{levels_json}]}}",
             ["L", "R"][e],
             json::num(r_px),
             json::num(b_n),
@@ -2650,7 +2706,7 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         ));
         lines.push(format!(
             "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}, <= {MAX_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
-frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, widen from {} (no line near normal {} of {}, upper good {} / used {}{}), R {:.1} px; {}",
+frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, widen by step {levels_text}, widen from {} (no line near normal {} of {}, upper good {} / used {}{}), R {:.1} px; {}",
             ["L", "R"][e],
             b_w - b_n,
             b_n,
@@ -3007,6 +3063,61 @@ mod tests {
         let (plain, n) = med_of(&usual, |x| (x.label == Label::Widen && x.ok).then_some(x.skin));
         assert!(measured && n == 200 && w[0].b_w == plain && (plain - 1.25).abs() < 1e-9, "{:?}", w[0]);
         assert!(wear_report(&[usual.clone(), usual]).0.contains("\"widen_frames_below_normal\": 0"));
+    }
+
+    /// One eye's wear steps: normal 1.0 R, then widen steps at the given (frames, line) with 100 normal frames before
+    /// each, then closed 0.56; times run on at 90 fps.
+    fn wear_eye_with_widen_steps(steps: &[(usize, f64)]) -> Vec<Sample> {
+        let mut eye = samples(Label::Normal, 300, 1.0, 1.7, -14.0, 250.0, true);
+        for &(n, skin) in steps {
+            eye.extend(samples(Label::Normal, 100, 1.0, 1.7, -14.0, 250.0, true));
+            eye.extend(samples(Label::Widen, n, skin, 2.4, -14.0, 252.0, true));
+        }
+        eye.extend(samples(Label::Close, 80, f64::NAN, 0.56, -14.0, 240.0, false));
+        for (i, x) in eye.iter_mut().enumerate() {
+            x.t = i as f64 / 90.0;
+        }
+        eye
+    }
+
+    #[test]
+    fn the_widen_level_is_the_lowest_widen_steps_own() {
+        // A tester with prescription inserts (2026-10-23): the left eye's line at 1.81 R in the first widen step and at
+        // 1.11 / 1.08 R in the other two. Here the median over all of them would be 1.11, a step of 0.11 that the third
+        // step rises only 0.08 of; the lowest step's median is 1.08.
+        let eye = wear_eye_with_widen_steps(&[(198, 1.81), (198, 1.11), (198, 1.08)]);
+        assert_eq!(widen_step_levels(&eye, 1.0), vec![1.81, 1.11, 1.08]);
+        assert_eq!(widen_level(&eye, 1.0), (1.08, 594), "every frame with a line still counts toward NEED_WIDEN");
+        let both = [eye.clone(), eye];
+        let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
+        assert!(measured && (w[0].b_w - 1.08).abs() < 1e-9, "{:?}", w[0]);
+        let (report, lines) = wear_report(&both);
+        assert!(report.contains("\"widen_step\": 0.08") && report.contains("\"widen_step_levels\": [1.81, 1.11, 1.08]"), "{report}");
+        assert!(lines[0].contains("widen below normal left out 0, widen by step 1.810 / 1.110 / 1.080, widen from main"), "{}", lines[0]);
+        // A step with fewer than WIDEN_STEP_MIN_FRAMES lines (a widen held for a moment, or mostly lines below normal)
+        // does not decide it; its frames still count in the median over all.
+        let short = wear_eye_with_widen_steps(&[(29, 1.05), (198, 1.3), (198, 1.4)]);
+        assert_eq!((widen_step_levels(&short, 1.0), widen_level(&short, 1.0)), (vec![1.3, 1.4], (1.3, 425)));
+        let mut low = wear_eye_with_widen_steps(&[(198, 1.3), (198, 1.4)]);
+        for x in low.iter_mut().filter(|x| x.label == Label::Widen && x.skin == 1.3).skip(WIDEN_STEP_MIN_FRAMES - 1) {
+            x.skin = 0.5;
+        }
+        assert_eq!(widen_step_levels(&low, 1.0), vec![1.4]);
+        // No step with enough lines: the median over all of them, as before.
+        let few = wear_eye_with_widen_steps(&[(25, 1.2), (25, 1.3), (25, 1.4)]);
+        assert!(widen_step_levels(&few, 1.0).is_empty());
+        assert_eq!(widen_level(&few, 1.0), (1.3, 75));
+        assert!(wear_report(&[few.clone(), few]).1[0].contains("widen by step none,"));
+        // Widen frames more than WIDEN_STEP_GAP_S apart are two steps even with nothing between them.
+        let mut gap = samples(Label::Widen, 60, 1.2, 2.4, -14.0, 252.0, true);
+        gap.extend(samples(Label::Widen, 60, 1.5, 2.4, -14.0, 252.0, true));
+        for (i, x) in gap.iter_mut().enumerate() {
+            x.t = i as f64 / 90.0 + if i >= 60 { 0.6 } else { 0.0 };
+        }
+        assert_eq!(widen_step_levels(&gap, 1.0), vec![1.2, 1.5]);
+        // One widen step: its median, as before.
+        let one = wear_eye_with_widen_steps(&[(198, 1.25)]);
+        assert_eq!(widen_level(&one, 1.0), (1.25, 198));
     }
 
     /// `n` widen frames whose usual band has no line near normal (skin NaN, as when the line was pushed against the

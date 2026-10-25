@@ -592,8 +592,8 @@ UiText makeJapanese() {
     t.eyecamStepSquint = "目を細めて";
     t.eyecamStepLookUp = "上を見て";
     t.eyecamStepLookDown = "下を見て";
-    t.eyecamStepLookLeft = "左の耳の方を見て";
-    t.eyecamStepLookRight = "右の耳の方を見て";
+    t.eyecamStepLookLeft = "左を見て";
+    t.eyecamStepLookRight = "右を見て";
     t.eyecamStepBright = "明るい画面を見て";
     t.eyecamStepDark = "暗い画面を見て";
     t.eyecamStepEnd = "おわり";
@@ -899,8 +899,8 @@ UiText makeJapanese() {
     t.contribRemoveTitle = "消してほしいとき";
     t.contribRemove = "言ってくれれば消します。ただ、もう配った AI に入った学習の分は取り出せません。";
     t.contribSendTitle = "送り方";
-    t.contribSendNote = "目の映像は GitHub の issue や公開の場所に上げないでね。開発者に非公開で送ってね"
-                        "（送り方は開発者が伝えます）。";
+    t.contribSendNote = "目の映像は GitHub の issue や公開の場所に上げないでね。Google ドライブなどに置いて、"
+                        "共有リンクを開発者に非公開で送ってね。";
     t.contribNote = "画面が白や黒に光ることはないよ（光なしで撮るよ）。";
     t.contribAgree = "同意して次へ";
     t.contribCancel = "やめる";
@@ -1644,8 +1644,8 @@ UiText makeEnglish() {
     t.eyecamStepSquint = "Squint";
     t.eyecamStepLookUp = "Look up";
     t.eyecamStepLookDown = "Look down";
-    t.eyecamStepLookLeft = "Look toward your left ear";
-    t.eyecamStepLookRight = "Look toward your right ear";
+    t.eyecamStepLookLeft = "Look left";
+    t.eyecamStepLookRight = "Look right";
     t.eyecamStepBright = "Look at the bright screen";
     t.eyecamStepDark = "Look at the dark screen";
     t.eyecamStepEnd = "Done";
@@ -1957,8 +1957,8 @@ UiText makeEnglish() {
     t.contribRemove = "Ask and it is deleted. What an AI already released has learned from it can't be taken back "
                       "out.";
     t.contribSendTitle = "Sending it";
-    t.contribSendNote = "Don't upload the eye video to a GitHub issue or anywhere public. Send it to the developer "
-                        "privately (the developer will tell you how).";
+    t.contribSendNote = "Don't upload the eye video to a GitHub issue or anywhere public. Put it on Google Drive or "
+                        "similar and send the share link to the developer privately.";
     t.contribNote = "No white or black screens (recorded without light).";
     t.contribAgree = "Agree and continue";
     t.contribCancel = "Cancel";

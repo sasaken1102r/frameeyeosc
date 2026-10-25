@@ -386,7 +386,8 @@ void printUsage() {
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
         "      --fake-contrib STATE  \"Record for squint training\" open on a made-up screen (the eye cameras set up\n"
         "                        and idle unless --fake-eyecam says otherwise): consent, deleted, eyewear,\n"
-        "                        ready, nospace, noeyedata (frameeyeosc gets no eye data), running, failed,\n"
+        "                        ready, nospace, noeyedata (frameeyeosc gets no eye data), running (a squint),\n"
+        "                        running-left (looking left), failed,\n"
         "                        incomplete, novideo, truncated, valve (not usable: a file missing, an eye's video\n"
         "                        missing, a raw file cut short, Valve's values missing), done (just\n"
         "                        recorded), list (\"Recordings\"), packing, packed, delete, deleting (with --adv-page tools: its\n"
@@ -463,7 +464,7 @@ bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool
 /** --fake-contrib's screens (fakeContrib). */
 const std::string kFakeContribStates[] = {"none",    "consent", "deleted",    "eyewear", "ready",   "nospace",
                                           "running", "failed",  "incomplete", "novideo", "truncated", "valve",
-                                          "noeyedata", "done",
+                                          "noeyedata", "running-left", "done",
                                           "list",    "packing", "packed",     "delete",  "deleting"};
 
 /** --fake-eyecam, taken apart. */
@@ -1685,9 +1686,9 @@ void fakeContrib(PanelModel& m, const std::string& state, bool eyecamGiven) {
     }
     c.totalBytes = contrib::recordedBytes(c.info);
     c.justDone = justDone;
-    if (state == "running") {
+    if (state == "running" || state == "running-left") {
         m.eyecam = fakeEyecam("recording:squint");
-        // (protocol_contrib.txt's steps: the second squint, 35 s in)
+        // (protocol_contrib.txt's steps: the second squint, 35 s in; or looking left, 80 s in)
         eyecam::Status& s = m.eyecam.status;
         s.protocol = contrib::kProtocol;
         m.eyecam.protocol.name = s.protocol;
@@ -1696,11 +1697,12 @@ void fakeContrib(PanelModel& m, const std::string& state, bool eyecamGiven) {
                                    "squint",  "normal", "widen",  "look_up", "look_down", "look_left", "normal",
                                    "look_right", "normal"};
         s.stepCount = static_cast<int>(m.eyecam.protocol.steps.size());
-        s.stepIndex = 9;
-        s.stepLabel = "squint";
+        const bool left = state == "running-left";
+        s.stepIndex = left ? 19 : 9;
+        s.stepLabel = left ? "look_left" : "squint";
         s.totalS = contrib::kProtocolSec + contrib::kTailSec;
-        s.elapsedS = 36.6;
-        s.stepRemainingS = 2.4;
+        s.elapsedS = left ? 79.2 : 36.6;
+        s.stepRemainingS = left ? 2.8 : 2.4;
         c.running = true;
     }
     if (state == "failed") {

@@ -253,8 +253,8 @@ void testProtocolFile() {
             if (label != "lead_in") CHECK(eyecam::chipLabel(t, label) != label);
         }
     }
-    SAME(eyecam::instruction(uiText(Language::Ja), "look_left"), "左の耳の方を見て");
-    SAME(eyecam::instruction(uiText(Language::En), "look_right"), "Look toward your right ear");
+    SAME(eyecam::instruction(uiText(Language::Ja), "look_left"), "左を見て");
+    SAME(eyecam::instruction(uiText(Language::En), "look_right"), "Look right");
 }
 
 void testInfo() {

@@ -7075,7 +7075,7 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
             y += size * 1.4;
         }
     };
-    // How to send it, in a box with the warning's edge: privately, never anywhere public
+    // How to send it, in a box with the warning's edge: a private share link, never anywhere public
     const auto sendNote = [&](double size) {
         const double pad = 14;
         const std::vector<std::string> lines = wrapText(pen, t.contribSendNote, size, false, width - pad * 2 - 30, 3);

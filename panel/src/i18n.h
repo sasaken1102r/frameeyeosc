@@ -903,7 +903,8 @@ struct UiText {
     const char* contribRemoveTitle;  ///< ...deleting it later
     const char* contribRemove;
     const char* contribSendTitle;    ///< ...how to send it
-    const char* contribSendNote;     ///< ...privately, never anywhere public (also on the end's screen)
+    const char* contribSendNote;     ///< ...a private share link (Google Drive or similar), never anywhere public
+                                     ///< (also on the end's screen)
     const char* contribNote;         ///< ...no light, how long
     const char* contribAgree;        ///< ...its button
     const char* contribCancel;       ///< ...and closing without it

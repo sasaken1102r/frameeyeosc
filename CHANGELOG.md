@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+New in the panel: "Help train the AI" (Advanced › Debug tools, once the eye cameras are set up) guides you through recording your eyes for the developer, to train the "Half-shut check (AI)" on more people's eyes. It is entirely optional: it says first what is recorded and how it is used, and starts only when you agree.
+
+日本語: パネルに「AI の学習に協力する」を足しました（詳細 › 動作確認。目のカメラの準備が済むと使えます）。「半目の読み直し（AI）」をいろんな人の目で学習させるために、目の録画を開発者へ送る手伝いを、手順どおりに進められます。協力するかは自由で、何を録ってどう使うかを先に見せて、同意したときだけ始めます。
+
+- "Help train the AI": a first screen says what is recorded (eye-camera video, about 10.5 GB, staying on the Frame until you send it), how it is used (only to tune the half-shut check and train its AI; only the trained AI ships in the app, never the video; kept on the developer's own PCs; deleted on request, though not out of an AI already released) and the free space against what it needs; "I'll help" makes `~/eyecam/contrib_<date>/` with an `info.txt` (the app version, the consent's time, each step's protocol, folder, size and how its re-wear was known; no personal data).
+- Then four recordings, shown as chips: eyecam's protocol without light (`widen_nolight`, about 1 minute) three times, and 3 minutes of normal use (`free`, with what to do during it on screen); a second normal use is optional. Before each one after the first, it asks you to take the headset off and put it back on, and notices that by itself from eyecam-rec's status (the eye video stopping and coming back, the proximity sensor, or the Frame sleeping); "I put it back on" can be pressed 20 s after it asks, for a headset where that isn't seen.
+- Each recording runs as the eye capture does (beeps, steps, "Stop") and is moved into the contribution's folder once it has ended; one that stopped early or failed goes to its `aborted/` (never packed) and that step can be recorded again. The progress is kept in `info.txt`, so it carries on after the panel or the Frame restarts, also with a recording that was running.
+- At the end: the total size and the folder, "Make one file" (a `.tar.zst` through zstd, or a `.tar` without it, packed in the background at a low priority after checking the free space; the recordings stay), and "Delete these recordings" (after a confirmation) for once it has been sent.
+- `frameeyeosc-panel --dump-png … --fake-contrib STATE` draws each of its screens.
+
 ## 0.8.2-beta.2 (2026-10-24)
 
 The gaze no longer stays frozen when SteamOS keeps reading one open eye as closed: after a second, the other eye moves the gaze (#32). With "Move eyes separately" on, the new "Own gaze per eye" (Gaze › Reach) lets each eye's own sideways gaze through, so looking inward with both eyes can show. The eye cameras no longer lose a pupil that suddenly looks larger, the camera eyelids no longer take over for good after many blinks on SteamOS 0.4.x, and a new user calibration now sets the squint at the same depth whatever the wear. With prescription inserts, the eye cameras should find the upper eyelid more reliably, so widening can show and an open eye is less often read as a squint.

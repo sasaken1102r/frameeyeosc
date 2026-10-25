@@ -601,6 +601,8 @@ struct UiText {
     const char* eyecamStepSquint;
     const char* eyecamStepLookUp;
     const char* eyecamStepLookDown;
+    const char* eyecamStepLookLeft;   ///< (as the wearer sees it)
+    const char* eyecamStepLookRight;
     const char* eyecamStepBright;
     const char* eyecamStepDark;
     const char* eyecamStepEnd;
@@ -709,6 +711,8 @@ struct UiText {
     const char* setupChipSquint;  ///< ...the user calibration's
     const char* setupChipLookUp;
     const char* setupChipLookDown;
+    const char* setupChipLookLeft;
+    const char* setupChipLookRight;
     const char* setupChipBright;  ///< ...a recording's (the developer recording on the Advanced tab) besides these
     const char* setupChipDark;
     const char* eyecamChipsMoreFormat;  ///< after a recording's chips, the steps left out at the end ("+%d")
@@ -882,49 +886,38 @@ struct UiText {
     const char* devTitle;  ///< Advanced tab: the developer section (eye recording)
     const char* devRecord;  ///< ...its row
     const char* devRecordHint;
-    // "Help train the AI" (contrib.h): its row on Debug tools, and its sheet
+    // "Record for squint training" (contrib.h): its row on Debug tools, and its sheet
     const char* contribRow;          ///< the row's title, and the sheet's
     const char* contribRowHint;      ///< ...under the title
-    const char* contribOpen;         ///< ...its button
-    const char* contribRowIntroFormat;     ///< ...beside it before one is begun (%s: the size)
-    const char* contribRowProgressFormat;  ///< ...while one goes on (%d done of %d)
-    const char* contribRowDone;      ///< ...once all are recorded
-    const char* contribRowNotSetUp;  ///< ...before the eye cameras are set up (the button greyed out)
-    const char* contribChips[5];     ///< the steps' chips under the title
-    const char* contribLead;         ///< the consent: what it is, and that it is optional
+    const char* contribRecord;       ///< ...its "Record" button
+    const char* contribRecordings;   ///< ...its "Recordings" button (the folder: pack, delete)
+    const char* contribRowIntroFormat;  ///< ...beside them before the first (%s: one recording's size)
+    const char* contribRowCountFormat;  ///< ...after it (%d recordings, %s their size)
+    const char* contribRowNotSetUp;  ///< ...before the eye cameras are set up (the buttons greyed out)
+    const char* contribLead;         ///< the consent: what it is for, and that it is optional
     const char* contribWhatTitle;    ///< ...what is recorded
-    const char* contribWhatFormat;   ///< ...(%s: the size of all)
+    const char* contribWhatFormat;   ///< ...(%s: one recording's size)
     const char* contribUseTitle;     ///< ...how it is used
     const char* contribUse;
     const char* contribRemoveTitle;  ///< ...deleting it later
     const char* contribRemove;
-    const char* contribNote;         ///< ...no light, how long, can be continued
-    const char* contribSpaceFormat;  ///< ...the free space (%s free, %s needed)
-    const char* contribSpaceShortFormat;  ///< ...not enough (%s more to free)
-    const char* contribAgree;        ///< ...the consent's button
+    const char* contribSendTitle;    ///< ...how to send it
+    const char* contribSendNote;     ///< ...privately, never anywhere public (also on the end's screen)
+    const char* contribNote;         ///< ...no light, how long
+    const char* contribAgree;        ///< ...its button
     const char* contribCancel;       ///< ...and closing without it
-    const char* contribDeleted;      ///< the first screen again, right after a delete
-    const char* contribGuidedFormat; ///< a guided step's title (%d of %d)
-    const char* contribFreeTitle;    ///< the free use's title
-    const char* contribFreeExtraTitle;  ///< ...the optional second one's
-    const char* contribRewearTitle;  ///< take the headset off and put it back on
-    const char* contribRewearWhy;
-    const char* contribRewearWaiting;  ///< ...not seen off yet
-    const char* contribRewearOff;    ///< ...seen off
-    const char* contribRewore;       ///< "I put it back on"
-    const char* contribReworeHint;   ///< ...beside it
-    const char* contribReworeWait;   ///< ...beside it while it can't be pressed yet
-    const char* contribWearDone;     ///< the step's start: the re-wear is done
-    const char* contribGuidedNote;   ///< ...what a guided recording asks
-    const char* contribGuidedStart;
-    const char* contribFreeTips[4];  ///< ...what the free use asks
-    const char* contribFreeEnd;      ///< ...how it ends
-    const char* contribFreeStart;
+    const char* contribDeleted;      ///< the consent again, right after the recordings were deleted
+    const char* contribEyewearTitle; ///< glasses or inserts?
+    const char* contribEyewearWhy;   ///< ...what the answer is for
+    const char* contribEyewear[4];   ///< ...the answers: neither, glasses, inserts, prefer not to say
+    const char* contribBack;         ///< ...back to the consent
+    const char* contribReadyTitle;   ///< the recording's start: its title
+    const char* contribTips[5];      ///< ...what to do (the squint: as in bright light, not closing)
+    const char* contribCountFormat;  ///< ...and on the end: how many so far (%d) and their size (%s)
+    const char* contribSpaceFormat;  ///< ...the free space (%s free, %s one recording)
+    const char* contribStart;        ///< ...its button
     const char* contribNoSpaceFormat;  ///< ...the recording doesn't fit (%s needed)
     const char* contribWaitEyecam;   ///< ...eyecam-rec busy with something else
-    const char* contribBack;         ///< the optional step: back to the end
-    const char* contribRunFormat;    ///< the recording's section title (%s: the step)
-    const char* contribFreeRunning;  ///< the free use's instruction while it records
     const char* contribFailedTitle;  ///< a try that didn't finish
     const char* contribWhyStopped;
     const char* contribWhyErrorFormat;    ///< (%s: eyecam-rec's message)
@@ -933,21 +926,24 @@ struct UiText {
     const char* contribWhyNoStart;
     const char* contribWhyMissing;
     const char* contribWhyMoveFormat;     ///< (%s: why)
+    const char* contribWhyIncompleteFormat;  ///< (%s: the files missing)
     const char* contribKept;         ///< ...its part went to aborted/
     const char* contribRetry;
-    const char* contribDoneTitle;    ///< all recorded
-    const char* contribTotalFormat;  ///< (%s: the size)
+    const char* contribDoneTitle;    ///< recorded
+    const char* contribManageTitle;  ///< the same screen from "Recordings"
     const char* contribWhereFormat;  ///< (%s: the folder)
-    const char* contribNext;         ///< what to do with it
+    const char* contribAgain;        ///< ...another day or after re-wearing helps more
+    const char* contribNext;         ///< ...what to do with it
     const char* contribPack;         ///< "Make one file"
     const char* contribPackHintFormat;   ///< ...beside it (%s: the size it needs free)
     const char* contribPackingFormat;    ///< ...while packing (%d %)
-    const char* contribPackedFormat;     ///< ...done (%s: its size; its name under it)
+    const char* contribPackedFormat;     ///< ...done (%s recordings, %s its size; its name under it)
     const char* contribPackFailedFormat; ///< ...failed (%s why)
     const char* contribPackNoSpaceFormat;  ///< ...not enough space (%s needed)
-    const char* contribExtra;        ///< the optional free use
-    const char* contribDelete;       ///< "Delete these recordings"
-    const char* contribDeleteTitle;  ///< ...its confirmation
+    const char* contribIncompleteFormat;   ///< ...recordings it left out, a file missing (%s: their names)
+    const char* contribDelete;       ///< "Delete the recordings"
+    const char* contribClose;        ///< the end's "Close"
+    const char* contribDeleteTitle;  ///< ...the delete's confirmation
     const char* contribDeleteFormat; ///< ...(%s folder, %s size)
     const char* contribDeleteYes;
     const char* contribDeleting;

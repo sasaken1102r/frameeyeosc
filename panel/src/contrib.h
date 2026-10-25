@@ -1,16 +1,19 @@
-// "Help train the AI" (Advanced tab, Debug tools): eye-camera recordings a user makes for the developer, to tune and
-// train eyecam's half-shut check (the eyelid veto's CNN). Three recordings of eyecam's protocol without light, each in
-// a wear of its own (the headset taken off and put back on before the next one), then one of free use; a second free
-// use after them is optional. eyecam-rec records each into ~/eyecam/rec_<date>/ as always (with its cues.csv,
-// valve.csv, frames.csv and meta.txt); once it has ended the panel moves the folder into the contribution's folder
-// ~/eyecam/contrib_<date>/, whose info.txt keeps the progress (so it goes on after the panel or the Frame restarts) and
-// says what is in it for the developer (no personal data). The folder can be packed into one file and deleted from the
-// panel. Everything here works without OpenVR and cairo (contrib-test).
+// "Record for squint training" (Advanced tab, Debug tools): one press records eyecam's protocol for the training data
+// of its half-shut check (the eyelid veto's CNN) and keeps it for the user to send to the developer. The first time
+// (and whenever the consent's text changes) it asks for the consent and whether glasses or prescription inserts are
+// worn; then one recording of protocol_contrib.txt (about 93 s, no full-view light: closes, squints, widening, looking
+// up, down, left and right). eyecam-rec records it into ~/eyecam/rec_<date>/ as always (with its cues.csv, valve.csv,
+// frames.csv and meta.txt); once it has ended, and has those four, the panel moves it into ~/eyecam/contrib/, which
+// gathers every recording made this way, and adds a section about it to that folder's info.txt (the settings then,
+// the minutes since the one before and whether the headset was taken off in between, from eyecam-rec's count; no
+// personal data). The folder can be packed into one file and deleted from the panel. Everything here works without
+// OpenVR and cairo (contrib-test).
 #pragma once
 
 #include "eyecam.h"
 
 #include <atomic>
+#include <cmath>
 #include <ctime>
 #include <mutex>
 #include <string>
@@ -19,168 +22,174 @@
 
 namespace contrib {
 
-/** The guided recordings' protocol (eyecam's protocol_widen_nolight.txt: no full-view light). */
-constexpr const char* kGuidedProtocol = "widen_nolight";
-/** The free use's (protocol_free.txt: 180 s of "normal", no prompts). */
-constexpr const char* kFreeProtocol = "free";
-/** How long the guided protocol's steps take (s; the lead-in included). */
-constexpr double kGuidedSec = 59.0;
-/** ...and the free use's. */
-constexpr double kFreeSec = 180.0;
+/** The protocol recorded (eyecam's protocol_contrib.txt). */
+constexpr const char* kProtocol = "contrib";
+/** How long its steps take (s; the lead-in included). */
+constexpr double kProtocolSec = 93.0;
 /** eyecam-rec records this much past a protocol's last step (s), for the end beep. */
 constexpr double kTailSec = 1.5;
-/** The steps everyone is asked for: three guided, one free use. */
-constexpr int kRequiredSteps = 4;
-/** ...and the optional second free use after them. */
-constexpr int kStepCount = 5;
+/** The consent's text version: a newer one asks for the consent again. */
+constexpr int kConsentVersion = 1;
+/** The folder in ~/eyecam that gathers the recordings. */
+constexpr const char* kFolderName = "contrib";
+/** Its file about them (a section added for each event). */
+constexpr const char* kInfoFile = "info.txt";
+/** Where a recording that didn't finish (or lacks a file) goes in it: never packed, deleted with it. */
+constexpr const char* kAbortedDir = "aborted";
+/** The files every recording needs for training (the labels come from cues.csv and Valve's openness). */
+constexpr const char* kRequiredFiles[] = {"frames.csv", "valve.csv", "cues.csv", "meta.txt"};
 /** What eyecam-rec writes per frame and eye (a 400x400 grey frame, its header, its rows), as eyecam-rec estimates. */
 constexpr double kFrameBytes = 160300.0;
-/** The eye cameras' usual rate, for the estimates while eyecam-rec doesn't say. */
+/** The eye cameras' usual rate, for the estimate while eyecam-rec doesn't say. */
 constexpr double kDefaultFps = 90.0;
-/** Space left free after everything (eyecam-rec stops a recording with less than 1 GiB left). */
+/** Space left free after a recording (eyecam-rec stops one with less than 1 GiB left), and after a pack. */
 constexpr long long kMarginBytes = 1LL << 30;
-/** The packed file is at most this share of the recordings (zstd -3 makes the eye video about 0.62 of its size). */
-constexpr double kPackShare = 0.75;
-/** The headset counts as taken off once the eye video stopped (or the sensor read off) this long (s)... */
-constexpr double kOffSec = 3.0;
-/** ...and as put back on once the video (or the sensor) was back this long after that (s). */
-constexpr double kOnSec = 2.0;
-/** "I put it back on" can be pressed this long after a step began waiting for the re-wear (s). */
-constexpr double kFallbackSec = 20.0;
+/** zstd's level for the pack: on the Frame's eye video -3 gave 0.62 of the size in 7.7 s for 2 GB, -6 0.58 in 20 s,
+ * -9 0.56 in 43 s, -12 0.55 in 90 s (zip -6: 0.60 in 166 s, gzip -1: 0.62 in 19 s). */
+constexpr int kZstdLevel = 6;
+/** The pack is at most this share of the recordings (0.58 measured at kZstdLevel). */
+constexpr double kPackShare = 0.7;
 /** A start that eyecam-rec doesn't show running within this long (s) didn't start. */
 constexpr double kStartGraceSec = 8.0;
 /** eyecam-rec silent (its status not fresh) this long (s) ends a recording as failed. */
 constexpr double kGoneSec = 10.0;
-/** The contribution's file in its folder. */
-constexpr const char* kInfoFile = "info.txt";
-/** Where tries that didn't finish go in it (not packed; deleted with it). */
-constexpr const char* kAbortedDir = "aborted";
 
-/** How the re-wear before a step was known (info.txt). */
-constexpr const char* kWearFirst = "first";        ///< the first step: the wear the user consented in
-constexpr const char* kWearDetected = "detected";  ///< seen: off (the eye video or the sensor), then on again
-constexpr const char* kWearButton = "button";      ///< "I put it back on" pressed
+/** Glasses or prescription inserts in the headset (asked with the consent; the training looks at them apart). */
+enum class Eyewear { Unasked, None, Glasses, Inserts, NoAnswer };
 
-/** One step as info.txt keeps it. */
-struct Step {
-    std::string protocol;  ///< the protocol recorded ("" = not done)
-    std::string rec;       ///< its recording's folder in the contribution's folder ("" = not done)
-    long long bytes = 0;   ///< its size
-    std::string wear;      ///< how the re-wear before it was known (kWear...)
-    std::string done;      ///< when it ended (local "YYYY-MM-DD HH:MM:SS")
+/**
+ * The name info.txt writes.
+ * @param eyewear the answer
+ * @return "none", "glasses", "inserts", "no_answer" ("" for Unasked)
+ */
+const char* eyewearName(Eyewear eyewear);
+
+/**
+ * Read a name info.txt wrote.
+ * @param name the name
+ * @return the answer (Unasked for anything else)
+ */
+Eyewear parseEyewear(const std::string& name);
+
+/** One recording's section in info.txt. */
+struct Recording {
+    std::string rec;                 ///< its folder in the contribution's ("rec_YYYY-MM-DD_HH-MM-SS")
+    std::string protocol;            ///< the protocol recorded
+    std::string start;               ///< when its start was sent (local "YYYY-MM-DD HH:MM:SS +zzzz")
+    double startUnix = 0.0;          ///< ...in Unix seconds
+    double endUnix = 0.0;            ///< when the panel saw it ended
+    long long bytes = 0;             ///< its folder's size
+    std::string appVersion;          ///< frameeyeosc's version
+    std::string eyecamRec;           ///< the first 8 hex of eyecam-rec's SHA-256 ("" = unknown; it has no git hash)
+    std::string lidVeto;             ///< eyecam's eyelid veto: "on", "off", "unknown" (an eyecam-rec before it)
+    std::string widen;               ///< frameeyeosc's widening (`widen`): "on" / "off"
+    std::string widenSensitivity;    ///< eyecam's ("0.50"; "unknown")
+    std::string cameraLids;          ///< the eye cameras switched on for the eyelids (`camera_lids`): "on" / "off"
+    std::string eyewear;             ///< eyewearName at the time
+    double fps = NAN;                ///< the eye cameras' frames a second at the start (NaN = unknown)
+    std::string sincePrevious;       ///< minutes since the previous recording ended ("12.5"; "none" for the first)
+    std::string headsetOff;          ///< the headset taken off since then: "yes", "no", "unknown", "none" (the first)
+    long long offCountStart = -1;    ///< eyecam-rec's headset_off_count at the start (-1 = unknown)
+    long long offCountEnd = -1;      ///< ...and at the end
+    double eyecamStarted = 0.0;      ///< eyecam-rec's started_unix (the count is per run; 0 = unknown)
+    std::string calib;               ///< the calibration's result copied beside it ("<rec>.calib_result.json"; "none")
 };
 
-/** info.txt: the contribution's progress, and what is in it for the developer. */
+/** info.txt as read: the consent and every recording. */
 struct Info {
-    std::string appVersion;   ///< the panel's version at the consent
-    std::string consent;      ///< when the user agreed (local "YYYY-MM-DD HH:MM:SS +zzzz")
-    Step steps[kStepCount];
-    std::string nextWear;     ///< how the re-wear before the next step was known ("" = not yet; kWear...)
-    int running = -1;         ///< the step whose recording was started (-1 = none)
-    double runningSince = 0;  ///< ...when its start was sent (Unix seconds)
-    std::vector<std::string> aborted;  ///< tries that didn't finish ("rec_... stopped"), kept in aborted/
-    std::string packed;       ///< the one file packed from it, in its folder ("" = none)
+    int consentVersion = 0;          ///< the consent's text version agreed to (0 = none)
+    std::string consent;             ///< when (local time)
+    Eyewear eyewear = Eyewear::Unasked;
+    std::vector<Recording> recordings;
+    std::vector<std::string> aborted;  ///< tries that didn't finish or lacked a file ("aborted/rec_... why")
+    std::string packed;              ///< the last pack's file in the folder ("" = none)
+    int packedCount = 0;             ///< ...how many recordings it holds
     long long packedBytes = 0;
 };
 
 /**
- * The protocol of a step.
- * @param step 0 .. kStepCount - 1
- * @return kGuidedProtocol for the first three, kFreeProtocol after them
+ * Whether the consent is to be asked (again): none, an older text's, or no answer about glasses yet.
+ * @param info the file as read
+ * @return true to ask
  */
-const char* protocolOf(int step);
+bool consentNeeded(const Info& info);
 
 /**
- * Whether a step is free use.
- * @param step the step
- * @return true for 3 and 4
- */
-bool isFree(int step);
-
-/**
- * Whether a step waits for the headset to be put on again first: all but the first.
- * @param step the step
- * @return true for 1 and on
- */
-bool needsRewear(int step);
-
-/**
- * What a step's recording takes on the disk (eyecam-rec's own estimate: both eyes, every frame).
- * @param step the step
+ * What a recording takes on the disk (eyecam-rec's own estimate: both eyes, every frame).
  * @param fps the eye cameras' frame rate (kDefaultFps when not a number above 0)
  * @return bytes
  */
-long long estimateBytes(int step, double fps);
+long long estimateBytes(double fps);
 
 /**
- * The step to do next: the first of the required ones not done; once they are, the optional one when it is asked for
- * (extra) and not done.
- * @param info the progress
- * @param extra the optional free use was asked for
- * @return the step, or kStepCount when there is none
+ * Whether a recording fits: its estimate and kMarginBytes are free (or the free space isn't known).
+ * @param freeBytes the free space (-1 = unknown)
+ * @param fps the eye cameras' frame rate
+ * @return true if it fits
  */
-int nextStep(const Info& info, bool extra);
+bool fits(long long freeBytes, double fps);
 
 /**
- * How many of the required steps are done.
- * @param info the progress
- * @return 0 .. kRequiredSteps
- */
-int requiredDone(const Info& info);
-
-/**
- * The recordings' size so far.
- * @param info the progress
+ * The recordings' size.
+ * @param info the file as read
  * @return bytes
  */
 long long recordedBytes(const Info& info);
 
 /**
- * The space still needed for the required steps not done, with kMarginBytes.
- * @param info the progress
- * @param fps the eye cameras' frame rate
- * @return bytes
- */
-long long neededBytes(const Info& info, double fps);
-
-/**
- * Whether a step's recording fits: its estimate and kMarginBytes are free (or the free space isn't known).
- * @param step the step
- * @param freeBytes the free space (-1 = unknown)
- * @param fps the eye cameras' frame rate
- * @return true if it fits
- */
-bool fits(int step, long long freeBytes, double fps);
-
-/**
  * What packing needs free: kPackShare of the recordings (all of them without zstd) and kMarginBytes.
- * @param info the progress
+ * @param info the file as read
  * @param compressed packed with zstd
  * @return bytes
  */
 long long packNeedBytes(const Info& info, bool compressed);
 
 /**
- * info.txt's text.
- * @param info the progress
- * @return the text (a comment, then "key=value" lines)
+ * The top of a new info.txt: what it is, and its format.
+ * @return the text
  */
-std::string formatInfo(const Info& info);
+std::string headerText();
 
 /**
- * Read info.txt's text: "key=value" lines, "#" comments; unknown keys and odd lines are skipped.
+ * A consent's section.
+ * @param time when (local)
+ * @param version the text's version
+ * @param eyewear the answer about glasses
+ * @return the text
+ */
+std::string consentSection(const std::string& time, int version, Eyewear eyewear);
+
+/**
+ * A recording's section.
+ * @param r the recording
+ * @return the text
+ */
+std::string recordingSection(const Recording& r);
+
+/**
+ * A try that didn't finish (or lacked a file).
+ * @param name where it went ("aborted/rec_...")
+ * @param why why (English)
+ * @return the text
+ */
+std::string abortedSection(const std::string& name, const std::string& why);
+
+/**
+ * A pack.
+ * @param file its name
+ * @param count the recordings in it
+ * @param bytes its size
+ * @return the text
+ */
+std::string packedSection(const std::string& file, int count, long long bytes);
+
+/**
+ * Read info.txt: "[section]" lines, "key=value" lines after them, "#" comments; unknown keys and odd lines skipped.
+ * The last consent counts.
  * @param text the text
  * @param info filled in
- * @return false if it has no consent (not a contribution's)
  */
-bool parseInfo(const std::string& text, Info& info);
-
-/**
- * Whether a name is a contribution's folder: "contrib_YYYY-MM-DD_HH-MM-SS".
- * @param name the name
- * @return true if it is
- */
-bool isFolderName(const std::string& name);
+void parseInfo(const std::string& text, Info& info);
 
 /**
  * Whether a name is eyecam-rec's recording folder: "rec_YYYY-MM-DD_HH-MM-SS".
@@ -190,11 +199,11 @@ bool isFolderName(const std::string& name);
 bool isRecordingName(const std::string& name);
 
 /**
- * A contribution's folder name for a time.
- * @param when the time
- * @return "contrib_YYYY-MM-DD_HH-MM-SS" (local)
+ * Whether a name is a pack's: "contrib_YYYY-MM-DD_HH-MM-SS.tar.zst" (or ".tar").
+ * @param name the name
+ * @return true if it is
  */
-std::string folderName(std::time_t when);
+bool isPackName(const std::string& name);
 
 /**
  * A local time as info.txt writes it.
@@ -205,51 +214,22 @@ std::string folderName(std::time_t when);
 std::string localTime(std::time_t when, bool zone);
 
 /**
- * Where eyecam-rec records ($HOME/eyecam), and where the contributions go.
+ * Where eyecam-rec records ($HOME/eyecam); the contribution's folder is kFolderName in it.
  * @return the folder
  */
 std::string defaultHome();
 
 /**
- * The contribution to show: the newest folder in home with a contribution's name and an info.txt that reads.
- * @param home the folder
- * @return its path, or "" for none
- */
-std::string findCurrent(const std::string& home);
-
-/**
- * Read a contribution's info.txt.
- * @param dir its folder
- * @param info filled in
- * @param error why not
- * @return true if read
- */
-bool readInfo(const std::string& dir, Info& info, std::string& error);
-
-/**
- * Write a contribution's info.txt (a temporary file, then renamed over it).
- * @param dir its folder
- * @param info the progress
+ * Add text to the end of the folder's info.txt (made with headerText first), on the disk before it returns.
+ * @param dir the folder
+ * @param text the text
  * @param error why not
  * @return true if written
  */
-bool writeInfo(const std::string& dir, const Info& info, std::string& error);
+bool appendInfo(const std::string& dir, const std::string& text, std::string& error);
 
 /**
- * Start a contribution: its folder in home, and info.txt with the consent.
- * @param home where it goes
- * @param version the panel's version
- * @param now the time of the consent
- * @param dir its folder
- * @param info its progress
- * @param error why not
- * @return true if made
- */
-bool create(const std::string& home, const std::string& version, std::time_t now, std::string& dir, Info& info,
-            std::string& error);
-
-/**
- * The free space where a folder is (for the user: what an unprivileged user can fill).
+ * The free space where a folder is (what an unprivileged user can fill).
  * @param path the folder
  * @return bytes, or -1 if it can't be read
  */
@@ -263,8 +243,15 @@ long long freeBytes(const std::string& path);
 long long folderBytes(const std::string& path);
 
 /**
- * Move a recording eyecam-rec has finished into the contribution's folder (aborted/ for one that didn't finish). Only
- * one of eyecam-rec's own folders, right in home ("rec_<date>"), is moved.
+ * The files a recording lacks (kRequiredFiles).
+ * @param dir its folder
+ * @return their names (empty: all there)
+ */
+std::vector<std::string> missingFiles(const std::string& dir);
+
+/**
+ * Move a recording eyecam-rec has finished into the contribution's folder (aborted/ for one that didn't finish or
+ * lacks a file). Only one of eyecam-rec's own folders, right in home ("rec_<date>"), is moved.
  * @param home eyecam-rec's folder
  * @param dir the contribution's folder
  * @param sessionDir the recording's folder (status.json's session_dir)
@@ -276,7 +263,24 @@ long long folderBytes(const std::string& path);
 bool takeRecording(const std::string& home, const std::string& dir, const std::string& sessionDir, bool aborted,
                    std::string& name, std::string& error);
 
-/** How a recording of a step ended. */
+/**
+ * The newest calibration result eyecam keeps in home (calib_<date>/calib_result.json, by name: they are dated).
+ * @param home eyecam-rec's folder
+ * @return its text ("" = none)
+ */
+std::string newestCalibResult(const std::string& home);
+
+/**
+ * Whether the headset was taken off between two recordings, from eyecam-rec's count: only within one run of it
+ * (the same started_unix), with both counts known.
+ * @param before the earlier recording
+ * @param offCountStart the count at the later one's start (-1 = unknown)
+ * @param eyecamStarted eyecam-rec's started_unix then (0 = unknown)
+ * @return "yes", "no" or "unknown"
+ */
+std::string headsetOffBetween(const Recording& before, long long offCountStart, double eyecamStarted);
+
+/** How a recording ended. */
 enum class Outcome {
     Running,  ///< not yet
     Done,     ///< it ran its full time
@@ -285,7 +289,7 @@ enum class Outcome {
 };
 
 /** Why a try didn't finish (the screen says it). */
-enum class Why { None, Stopped, Error, Refused, Gone, NoStart, Missing, Move };
+enum class Why { None, Stopped, Error, Refused, Gone, NoStart, Missing, Move, Incomplete };
 
 /** A recording's end. */
 struct RunEnd {
@@ -297,34 +301,29 @@ struct RunEnd {
 };
 
 /**
- * Follows a step's recording from the moment its start went out until eyecam-rec has ended it, from status.json alone
- * (also after the panel restarted in the middle of it: began again with the time the start was sent).
+ * Follows a recording from the moment its start went out until eyecam-rec has ended it, from status.json alone.
  */
 class RunWatch {
 public:
     /**
      * A start was sent.
-     * @param step the step
      * @param protocol its protocol
      * @param sentUnix when (Unix seconds)
      */
-    void begin(int step, const std::string& protocol, double sentUnix);
+    void begin(const std::string& protocol, double sentUnix);
 
     /** It ended (or was given up). */
-    void end() { step_ = -1; }
+    void end() { active_ = false; }
 
     /** @return true while following one */
-    bool active() const { return step_ >= 0; }
-
-    /** @return the step followed (-1 = none) */
-    int step() const { return step_; }
+    bool active() const { return active_; }
 
     /**
      * Follow it. It runs while eyecam-rec searches or records this protocol; it ended once eyecam-rec is idle or in
-     * error again, after showing it running, or with a recording folder made after the start (a panel that restarted
-     * meanwhile). Idle with the folder: Done, or Stopped when eyecam-rec says it ended early (last_session_aborted);
-     * idle without one: Stopped (stopped while it searched). In error: Failed. Not running kStartGraceSec after the
-     * start, or eyecam-rec silent kGoneSec: Failed.
+     * error again after showing it running, or with a recording folder made after the start. Idle with the folder:
+     * Done, or Stopped when eyecam-rec says it ended early (last_session_aborted); idle without one: Stopped
+     * (stopped while it searched). In error: Failed. Not running kStartGraceSec after the start, or eyecam-rec silent
+     * kGoneSec: Failed.
      * @param s eyecam-rec's status
      * @param fresh it is fresh (eyecam::tabVisible)
      * @param nowUnix Unix seconds
@@ -334,72 +333,18 @@ public:
     RunEnd follow(const eyecam::Status& s, bool fresh, double nowUnix, double sessionMtime);
 
 private:
-    int step_ = -1;
+    bool active_ = false;
     std::string protocol_;
     double sent_ = 0.0;
     bool seen_ = false;         ///< eyecam-rec was seen running it
     double staleSince_ = -1.0;  ///< since when its status isn't fresh (-1 = it is)
 };
 
-/**
- * Watches for the headset being taken off and put back on before a step, from eyecam-rec's status: off once the eye
- * video stopped for kOffSec (idle, with its live processing on, which keeps looking at it), the proximity sensor read
- * off for kOffSec after it read worn (some faces never reach its threshold: then only the video counts), or the
- * Frame slept for kOffSec (the panel's loop stood still: taking the headset off lets it sleep); then on again once
- * the video (without live processing, the sensor) is back for kOnSec.
- */
-class WearWatch {
-public:
-    /**
-     * Start watching (a step began waiting for the re-wear).
-     * @param now seconds on a clock that runs through suspend
-     */
-    void start(double now);
-
-    /** Stop watching. */
-    void stop() { watching_ = false; }
-
-    /**
-     * Follow eyecam-rec (each time its status is read).
-     * @param s its status
-     * @param fresh it is fresh
-     * @param now seconds on a clock that runs through suspend
-     */
-    void follow(const eyecam::Status& s, bool fresh, double now);
-
-    /** @return true while watching */
-    bool watching() const { return watching_; }
-
-    /** @return true once the headset was seen off */
-    bool offSeen() const { return off_; }
-
-    /** @return true once it was seen off and then on again */
-    bool detected() const { return detected_; }
-
-    /**
-     * Whether "I put it back on" can be pressed: kFallbackSec after the watch started.
-     * @param now seconds on the same clock
-     * @return true once it can
-     */
-    bool fallbackReady(double now) const { return watching_ && now - start_ >= kFallbackSec; }
-
-private:
-    bool watching_ = false;
-    double start_ = 0.0;
-    double last_ = -1.0;          ///< the last follow (-1 = none yet)
-    bool proxWorn_ = false;       ///< the sensor read worn since the watch started
-    double proxOffSince_ = -1.0;
-    double videoOffSince_ = -1.0;
-    double onSince_ = -1.0;
-    bool off_ = false;
-    bool detected_ = false;
-};
-
 /** What a try that didn't finish left for the screen. */
 struct Failure {
-    int step = -1;          ///< the step (-1 = none)
+    bool shown = false;
     Why why = Why::None;
-    std::string message;    ///< eyecam-rec's (Japanese) or the reason
+    std::string message;    ///< eyecam-rec's (Japanese), the reason, or the missing files
     std::string messageEn;
     std::string kept;       ///< where its part went ("aborted/rec_..."; "" = none)
 };
@@ -418,75 +363,85 @@ struct Progress {
     std::string error;        ///< why it failed (English)
     std::string output;       ///< the packed file's name in the folder
     long long outputBytes = 0;
+    int count = 0;            ///< the recordings packed
 };
 
 /** The contribution as the panel shows it (PanelModel::contrib; the loop fills it in). */
 struct View {
     bool loaded = false;         ///< looked for since the panel started
     std::string home;            ///< eyecam-rec's folder (defaultHome)
-    std::string dir;             ///< the contribution's folder ("" = none: the first screen)
-    Info info;
-    long long totalBytes = 0;    ///< everything in its folder (the recordings, aborted/, a pack), as last counted
+    std::string dir;             ///< the contribution's folder (home/kFolderName)
+    bool exists = false;         ///< ...is there
+    Info info;                   ///< its info.txt as read
+    long long totalBytes = 0;    ///< everything in it (recordings, aborted/, a pack), as last counted
     std::string error;           ///< info.txt couldn't be written, a folder couldn't be made (English; "" = none)
     long long freeBytes = -1;    ///< free space there (-1 = unknown)
-    double fps = kDefaultFps;    ///< the eye cameras' rate for the estimates
-    int running = -1;            ///< the step recording now (-1 = none)
-    bool offSeen = false;        ///< the step waiting for its re-wear saw the headset off
-    bool fallbackReady = false;  ///< ..."I put it back on" can be pressed
-    Failure failure;             ///< the last try that didn't finish
+    double fps = kDefaultFps;    ///< the eye cameras' rate for the estimate
+    bool running = false;        ///< a recording of it runs
+    bool justDone = false;       ///< one has just been recorded (the end's screen, until the sheet is opened again)
+    Failure failure;             ///< the last try, when it didn't finish
+    std::vector<std::string> incomplete;  ///< recordings the last pack left out (a file missing)
     Progress progress;           ///< packing or deleting
     bool compress = true;        ///< zstd is there (the pack is .tar.zst; else .tar)
-    bool deleted = false;        ///< a contribution was just deleted (the first screen says so)
+    bool deleted = false;        ///< it was just deleted (the first screen says so)
 };
 
-/** What the contribution's sheet shows. */
+/** Which way the sheet was opened. */
+enum class Page {
+    Record,  ///< "Record": the consent if needed, then the recording and its end
+    Manage,  ///< "Recordings": the end's screen (how many, the folder, pack, delete)
+};
+
+/** What the sheet shows. */
 enum class Screen {
-    Consent,   ///< what is recorded and how it is used, and "I'll help"
-    Rewear,    ///< take the headset off and put it back on
-    Ready,     ///< the next step's start
-    Running,   ///< its recording (the eye capture's run)
-    Failed,    ///< the last try didn't finish: why, and again
-    Done,      ///< all recorded: pack, send, delete
+    Consent,   ///< what is recorded and how it is used, and "Agree"
+    Eyewear,   ///< glasses or inserts?
+    Ready,     ///< what to do, and "Start"
+    Running,   ///< the recording (the eye capture's run)
+    Failed,    ///< it didn't finish: why, and again
+    Done,      ///< recorded: how many, the folder, how to send, pack, delete
     Deleting,  ///< being deleted
 };
 
 /**
  * The sheet's screen.
  * @param view the contribution
- * @param extra the optional free use was asked for
+ * @param page how it was opened
+ * @param agreed "Agree" was pressed (the question about glasses follows)
  * @return the screen
  */
-Screen screen(const View& view, bool extra);
+Screen screen(const View& view, Page page, bool agreed);
 
 /**
- * Whether a step's start can be pressed: eyecam-rec there and idle (or in error), set up, no command waiting, nothing
- * running or being packed, and the step's recording fits.
+ * Whether "Start" can be pressed: the consent given, eyecam-rec there and idle (or in error), set up, no command
+ * waiting, nothing running or being packed, and the recording fits.
  * @param view the contribution
  * @param eyecam eyecam-rec
- * @param step the step
  * @return true if it can
  */
-bool startAllowed(const View& view, const eyecam::View& eyecam, int step);
+bool startAllowed(const View& view, const eyecam::View& eyecam);
 
 /** One file or folder in the pack. */
 struct Entry {
     std::string path;    ///< on the disk
-    std::string name;    ///< in the archive ("contrib_.../rec_.../eye_L.raw"; folders end in "/")
+    std::string name;    ///< in the archive ("contrib/rec_.../eye_L.raw"; folders end in "/")
     long long size = 0;  ///< bytes (0 for a folder)
     std::time_t mtime = 0;
     bool folder = false;
 };
 
 /**
- * What a contribution's pack holds: its folder, info.txt, and each finished step's recording (its files sorted by
- * name). Not aborted/ or an earlier pack.
+ * What the pack holds: the folder, info.txt, and each recording with all of kRequiredFiles (its files sorted by name)
+ * with its calibration result. Not aborted/ or a pack; a recording lacking a file is left out and named.
  * @param dir the contribution's folder
- * @param info its progress
+ * @param info its info.txt as read
  * @param entries filled in
- * @param error why not (a recording missing, a name too long)
- * @return true if all are there
+ * @param incomplete the recordings left out
+ * @param error why not (a name too long, the folder unreadable)
+ * @return true if it can be packed
  */
-bool packEntries(const std::string& dir, const Info& info, std::vector<Entry>& entries, std::string& error);
+bool packEntries(const std::string& dir, const Info& info, std::vector<Entry>& entries,
+                 std::vector<std::string>& incomplete, std::string& error);
 
 /**
  * A tar (ustar) header for an entry: sizes of 8 GiB and more in GNU's base-256.
@@ -496,12 +451,12 @@ bool packEntries(const std::string& dir, const Info& info, std::vector<Entry>& e
 std::string tarHeader(const Entry& entry);
 
 /**
- * The pack's file name.
- * @param dir the contribution's folder
+ * A pack's file name.
+ * @param when when it is made
  * @param compressed with zstd
- * @return "contrib_<date>.tar.zst" (or ".tar")
+ * @return "contrib_YYYY-MM-DD_HH-MM-SS.tar.zst" (or ".tar")
  */
-std::string packName(const std::string& dir, bool compressed);
+std::string packName(std::time_t when, bool compressed);
 
 /**
  * Whether zstd can be run (in PATH).
@@ -510,9 +465,9 @@ std::string packName(const std::string& dir, bool compressed);
 bool zstdAvailable();
 
 /**
- * Packs or deletes a contribution on a thread of its own, at a low priority, so the panel's loop never waits for it.
- * The pack is written beside the recordings as "<name>.part" and renamed once complete; a failed one is removed. The
- * recordings themselves are never touched by a pack.
+ * Packs or deletes the contribution's folder on a thread of its own, at a low priority, so the panel's loop never
+ * waits for it. The pack is written in the folder as "<name>.part" and renamed once complete; a failed one is
+ * removed. The recordings themselves are never touched by a pack.
  */
 class Worker {
 public:
@@ -522,19 +477,22 @@ public:
     Worker& operator=(const Worker&) = delete;
 
     /**
-     * Pack a contribution into one file in its folder (tar, through zstd -3 when compressed).
-     * @param dir its folder
-     * @param info its progress
+     * Pack into one file in the folder (tar, through zstd at kZstdLevel when compressed).
+     * @param dir the folder
+     * @param entries what goes in (packEntries)
+     * @param name the file's name (packName)
+     * @param count the recordings in it
      * @param compressed through zstd
-     * @return false if a job runs, or what it holds can't be listed (progress says why)
+     * @return false if a job runs
      */
-    bool pack(const std::string& dir, const Info& info, bool compressed);
+    bool pack(const std::string& dir, const std::vector<Entry>& entries, const std::string& name, int count,
+              bool compressed);
 
     /**
-     * Delete a contribution's folder (only one named like one, right in home).
+     * Delete the contribution's folder (only home/kFolderName itself, a real folder).
      * @param home eyecam-rec's folder
-     * @param dir its folder
-     * @return false if a job runs, or the folder isn't a contribution's
+     * @param dir the folder
+     * @return false if a job runs, or the folder isn't that one
      */
     bool remove(const std::string& home, const std::string& dir);
 
@@ -562,9 +520,11 @@ private:
      * The pack's thread.
      * @param dir the folder
      * @param entries what goes in it
+     * @param name the file's name
      * @param compressed through zstd
      */
-    void runPack(const std::string& dir, const std::vector<Entry>& entries, bool compressed);
+    void runPack(const std::string& dir, const std::vector<Entry>& entries, const std::string& name,
+                 bool compressed);
 
     /**
      * The end of a job.
@@ -574,54 +534,55 @@ private:
     void finish(bool ok, const std::string& error);
 };
 
+/** What the panel knows at a start that eyecam-rec's status doesn't say (for the recording's section). */
+struct Snapshot {
+    std::string appVersion;  ///< frameeyeosc's version
+    std::string eyecamRec;   ///< the first 8 hex of the installed eyecam-rec's SHA-256 ("" = unknown)
+    bool widen = true;       ///< frameeyeosc's `widen`
+    bool cameraLids = true;  ///< `camera_lids`
+};
+
 /**
- * The contribution as the panel's loop runs it: loads it, takes the consent and the buttons, follows its recordings
- * and the re-wear between them in eyecam-rec's status, moves each recording into its folder, keeps info.txt, and runs
- * the pack and the delete. Everything it shows goes into a View.
+ * The contribution as the panel's loop runs it: loads it, takes the consent and the start, follows the recording in
+ * eyecam-rec's status, checks its files and moves it into the folder, adds its section to info.txt, and runs the
+ * pack and the delete. Everything it shows goes into a View.
  */
 class Session {
 public:
     /**
-     * Find the contribution to show (the newest in home), and go on with a recording it had started (the panel
-     * restarted meanwhile).
+     * Read the folder (home/kFolderName) and its info.txt.
      * @param view filled in
      * @param home eyecam-rec's folder
      */
     void load(View& view, const std::string& home);
 
     /**
-     * "I'll help": a new contribution's folder, with the consent's time.
-     * @param view the contribution (none yet)
-     * @param version the panel's version
-     * @param now the time
-     * @return false if it couldn't be made (view.error says why)
-     */
-    bool consent(View& view, const std::string& version, std::time_t now);
-
-    /**
-     * "I put it back on": the next step's re-wear counts as done.
+     * The consent and the answer about glasses: the folder (made if needed), and their section in info.txt.
      * @param view the contribution
-     * @return false if no step waits for one
+     * @param eyewear the answer
+     * @param now the time
+     * @return false if it couldn't be written (view.error says why)
      */
-    bool rewore(View& view);
+    bool consent(View& view, Eyewear eyewear, std::time_t now);
 
     /**
-     * The command that starts a step's recording, if it can start now (startAllowed, its turn, its re-wear done).
+     * The command that starts a recording, if it can start now (startAllowed).
      * @param view the contribution
      * @param eyecam eyecam-rec
-     * @param step the step pressed
-     * @return "start <protocol>", or "" when it can't
+     * @return "start contrib", or "" when it can't
      */
-    std::string startCommand(const View& view, const eyecam::View& eyecam, int step) const;
+    std::string startCommand(const View& view, const eyecam::View& eyecam) const;
 
     /**
-     * The start went out: follow its recording (info.txt says so, for a restart).
+     * The start went out: follow its recording, with what its section will say about the time of the start.
      * @param view the contribution
-     * @param step the step
+     * @param eyecam eyecam-rec (its status now: the eyelid veto, the widening sensitivity, its count)
+     * @param snapshot what the panel knows
      * @param command the command sent
      * @param sentUnix when (Unix seconds)
      */
-    void started(View& view, int step, const std::string& command, double sentUnix);
+    void started(View& view, const eyecam::View& eyecam, const Snapshot& snapshot, const std::string& command,
+                 double sentUnix);
 
     /**
      * A reply from eyecam-rec (any: only the start's counts). A refused start ends that try.
@@ -636,21 +597,22 @@ public:
      * @param view the contribution
      * @param eyecam eyecam-rec
      * @param nowUnix Unix seconds
-     * @param bootNow seconds on a clock that runs through suspend
+     * @param bootNow seconds on a clock that runs through suspend (how often the free space is read again)
      * @param log what happened, a line each (for the panel's log; "" when nothing)
      * @return true if the view changed
      */
     bool follow(View& view, const eyecam::View& eyecam, double nowUnix, double bootNow, std::string& log);
 
     /**
-     * Pack it into one file (on the worker).
+     * Pack the folder into one file (on the worker).
      * @param view the contribution
+     * @param now the time (the file's name)
      * @return false if it can't start (view.progress says why)
      */
-    bool pack(View& view);
+    bool pack(View& view, std::time_t now);
 
     /**
-     * Delete its folder (on the worker; not while a recording of it runs).
+     * Delete the folder (on the worker; not while a recording runs).
      * @param view the contribution
      * @return false if it can't
      */
@@ -658,25 +620,29 @@ public:
 
 private:
     RunWatch run_;
-    WearWatch wear_;
     Worker worker_;
     std::string command_;     ///< the start waiting for its reply ("" = none)
+    Recording pending_;       ///< the recording running, as its section will say
+    std::string calibText_;   ///< the calibration result at its start
     double freeAt_ = -1e9;    ///< when the free space was last read (boot seconds)
 
     /**
-     * Write info.txt (a failure goes to view.error).
+     * Add a section to info.txt and read it again (a failure goes to view.error).
      * @param view the contribution
+     * @param text the section
      * @return true if written
      */
-    bool save(View& view);
+    bool append(View& view, const std::string& text);
 
     /**
-     * A recording of a step ended.
+     * The recording ended.
      * @param view the contribution
      * @param end how
+     * @param eyecam eyecam-rec (its count at the end)
+     * @param nowUnix when (Unix seconds)
      * @param log what happened
      */
-    void ended(View& view, const RunEnd& end, std::string& log);
+    void ended(View& view, const RunEnd& end, const eyecam::View& eyecam, double nowUnix, std::string& log);
 };
 
 /**

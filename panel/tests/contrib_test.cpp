@@ -1,11 +1,12 @@
-// Tests for "Help train the AI" (contrib.cpp): the steps and their sizes (against eyecam's own protocol files),
-// info.txt (written, read back, odd lines), the folder names, following a step's recording in eyecam-rec's status
-// (done, stopped while searching or recording, failed, refused, never started, eyecam-rec gone, a panel restarted in
-// the middle), the re-wear between steps (the eye video, the proximity sensor, a sensor that never reads worn, the
-// Frame asleep, the fallback's delay), which screen shows and when a start can be pressed, the tar headers, and on real
-// folders in a temporary one (never ~/eyecam): making a contribution, moving recordings into it, packing it (tar, and
-// through zstd when it is there: unpacked again with the system's tar and compared) and deleting it, and a whole
-// session from the consent to the end. Built with the panel as contrib-test; exits non-zero on failure.
+// Tests for "Record for squint training" (contrib.cpp): a recording's size and when it fits, eyecam's
+// protocol_contrib.txt (its length, and a text for each of its steps in both languages), info.txt (its sections
+// written and read back, the last consent counting, odd lines), whether the headset was taken off between two
+// recordings, following a recording in eyecam-rec's status (done, stopped while searching or recording, failed,
+// refused, never started, eyecam-rec gone), which screen shows and when "Start" can be pressed, the tar headers, and on
+// real folders in a temporary one (never ~/eyecam): the files a recording needs, moving it, the calibration result,
+// packing (tar, and through zstd when it is there: unpacked again with the system's tar and compared; a recording
+// lacking a file left out) and deleting, and a whole session from the consent on. Built with the panel as
+// contrib-test; exits non-zero on failure.
 #include "contrib.h"
 
 #include <fcntl.h>
@@ -59,6 +60,7 @@ void same(const std::string& got, const std::string& expected, int line) {
 #define SAME(got, expected) same((got), (expected), __LINE__)
 
 using contrib::Outcome;
+using contrib::Page;
 using contrib::Screen;
 using eyecam::State;
 
@@ -107,6 +109,15 @@ std::string readFile(const std::string& path) {
 }
 
 /**
+ * Whether a path is there.
+ * @param path the path
+ * @return true if it is
+ */
+bool there(const std::string& path) {
+    return ::access(path.c_str(), F_OK) == 0;
+}
+
+/**
  * A status of eyecam-rec, fresh at a time.
  * @param state its state
  * @param protocol its protocol
@@ -133,17 +144,29 @@ eyecam::Status status(State state, const std::string& protocol, double now) {
 }
 
 /**
- * eyecam-rec set up and idle, as the panel would have it.
+ * eyecam-rec set up and idle, as the panel would have it, with its count of taking-offs.
  * @param now when its status was written
+ * @param offCount headset_off_count
+ * @param started started_unix
  * @return the view
  */
-eyecam::View eyecamReady(double now) {
+eyecam::View eyecamReady(double now, long long offCount = 0, double started = kNow - 3600) {
     eyecam::View v;
     v.status = status(State::Idle, "", now);
     v.status.hasSetupDone = v.status.setupDone = true;
     v.status.hasBuffers = true;
     v.status.autoGrab = "ok";
     v.status.calibState = eyecam::kCalibWearBit;
+    v.status.hasLidVeto = true;
+    v.status.lidVeto = true;
+    v.status.hasWidenSensitivity = true;
+    v.status.widenSensitivity = 0.6;
+    v.status.hasHeadsetOff = true;
+    v.status.headsetOffCount = offCount;
+    v.status.startedUnix = started;
+    v.status.hasCamFps = true;
+    v.status.camFps[0] = 90.0;
+    v.status.camFps[1] = 89.9;
     v.visible = true;
     v.password = eyecam::PasswordState::Set;
     return v;
@@ -174,172 +197,212 @@ double protocolSeconds(const std::string& text) {
     return total;
 }
 
-void testSteps() {
+void testSizes() {
     using namespace contrib;
-    SAME(protocolOf(0), kGuidedProtocol);
-    SAME(protocolOf(2), kGuidedProtocol);
-    SAME(protocolOf(3), kFreeProtocol);
-    SAME(protocolOf(4), kFreeProtocol);
-    CHECK(!isFree(2) && isFree(3) && isFree(4));
-    CHECK(!needsRewear(0) && needsRewear(1) && needsRewear(3) && needsRewear(4));
-    // eyecam-rec's estimate: 60.5 s and 181.5 s of two 90 fps cameras at 160300 bytes a frame
-    CHECK(estimateBytes(0, 90) == static_cast<long long>(60.5 * 2 * 90 * 160300.0));
-    CHECK(estimateBytes(3, 90) == static_cast<long long>(181.5 * 2 * 90 * 160300.0));
-    CHECK(estimateBytes(0, NAN) == estimateBytes(0, 90));
-    CHECK(estimateBytes(0, 0) == estimateBytes(0, 90));
-    CHECK(estimateBytes(0, 120) > estimateBytes(0, 90));
-    // About 1.75 GB a guided one, 5.2 GB the free use: 10.5 GB for the four
-    Info info;
-    const long long all = neededBytes(info, 90) - kMarginBytes;
-    CHECK(all > 10'400'000'000LL && all < 10'600'000'000LL);
-    SAME(sizeText(all), "10.5 GB");
+    // eyecam-rec's estimate: 94.5 s of two 90 fps cameras at 160300 bytes a frame, about 2.7 GB
+    CHECK(estimateBytes(90) == static_cast<long long>(94.5 * 2 * 90 * 160300.0));
+    SAME(sizeText(estimateBytes(90)), "2.7 GB");
     SAME(sizeText(523'000'000), "523 MB");
-    // The order: the first not done; the optional one only when asked for, after the others
-    CHECK(nextStep(info, false) == 0);
-    CHECK(nextStep(info, true) == 0);
-    info.steps[0].rec = "rec_2026-10-25_14-02-41";
-    info.steps[1].rec = "rec_2026-10-25_14-05-12";
-    CHECK(nextStep(info, false) == 2);
-    CHECK(requiredDone(info) == 2);
-    CHECK(neededBytes(info, 90) == kMarginBytes + estimateBytes(2, 90) + estimateBytes(3, 90));
-    info.steps[2].rec = "rec_2026-10-25_14-08-03";
-    info.steps[3].rec = "rec_2026-10-25_14-11-40";
-    CHECK(nextStep(info, false) == kStepCount);
-    CHECK(nextStep(info, true) == 4);
-    CHECK(requiredDone(info) == kRequiredSteps);
-    CHECK(neededBytes(info, 90) == kMarginBytes);
-    info.steps[4].rec = "rec_2026-10-25_14-20-00";
-    CHECK(nextStep(info, true) == kStepCount);
-    // Sizes: what was recorded, what packing needs
-    for (Step& step : info.steps) step.bytes = 1'000'000'000;
-    CHECK(recordedBytes(info) == 5'000'000'000LL);
-    CHECK(packNeedBytes(info, true) == 3'750'000'000LL + kMarginBytes);
-    CHECK(packNeedBytes(info, false) == 5'000'000'000LL + kMarginBytes);
-    // A step fits with its estimate and the margin free (or the free space unknown)
-    CHECK(fits(0, estimateBytes(0, 90) + kMarginBytes, 90));
-    CHECK(!fits(0, estimateBytes(0, 90) + kMarginBytes - 1, 90));
-    CHECK(!fits(3, estimateBytes(0, 90) + kMarginBytes, 90));
-    CHECK(fits(3, -1, 90));
+    CHECK(estimateBytes(NAN) == estimateBytes(90));
+    CHECK(estimateBytes(0) == estimateBytes(90));
+    CHECK(estimateBytes(120) > estimateBytes(90));
+    // It fits with its estimate and the margin free (or the free space unknown)
+    CHECK(fits(estimateBytes(90) + kMarginBytes, 90));
+    CHECK(!fits(estimateBytes(90) + kMarginBytes - 1, 90));
+    CHECK(!fits(estimateBytes(90) + kMarginBytes, 120));
+    CHECK(fits(-1, 90));
+    // What packing needs: 0.7 of the recordings through zstd, all of them without, and the margin
+    Info info;
+    info.recordings.resize(2);
+    info.recordings[0].bytes = info.recordings[1].bytes = 1'000'000'000;
+    CHECK(recordedBytes(info) == 2'000'000'000LL);
+    CHECK(packNeedBytes(info, true) == 1'400'000'000LL + kMarginBytes);
+    CHECK(packNeedBytes(info, false) == 2'000'000'000LL + kMarginBytes);
+    // The consent: none, an older text's, or no answer about glasses yet asks again
+    Info consent;
+    CHECK(consentNeeded(consent));
+    consent.consentVersion = kConsentVersion;
+    CHECK(consentNeeded(consent));
+    consent.eyewear = Eyewear::NoAnswer;
+    CHECK(!consentNeeded(consent));
+    consent.consentVersion = kConsentVersion - 1;
+    CHECK(consentNeeded(consent));
+    for (const Eyewear e : {Eyewear::None, Eyewear::Glasses, Eyewear::Inserts, Eyewear::NoAnswer}) {
+        CHECK(parseEyewear(eyewearName(e)) == e);
+    }
+    CHECK(parseEyewear("contacts") == Eyewear::Unasked);
 }
 
-void testProtocolFiles() {
+void testProtocolFile() {
     using namespace contrib;
-    // The protocols as eyecam ships them (install.sh puts every protocol_*.txt beside eyecam-rec)
-    const std::string guided = readFile(std::string(EYECAM_SOURCE_DIR) + "/protocol_" + kGuidedProtocol + ".txt");
-    const std::string free = readFile(std::string(EYECAM_SOURCE_DIR) + "/protocol_" + kFreeProtocol + ".txt");
-    CHECK(!guided.empty() && !free.empty());
-    CHECK(protocolSeconds(guided) == kGuidedSec);
-    CHECK(protocolSeconds(free) == kFreeSec);
-    // Its steps are what the panel says: close / normal / widen, then squint, up, down; no light
-    const std::vector<std::string> steps = eyecam::parseProtocol(guided);
-    CHECK(steps.size() == 14);
-    for (const char* label : {"close", "normal", "widen", "squint", "look_up", "look_down"}) {
-        CHECK(std::find(steps.begin(), steps.end(), std::string(label)) != steps.end());
-    }
+    // The protocol as eyecam ships it (install.sh puts every protocol_*.txt beside eyecam-rec)
+    const std::string text = readFile(std::string(EYECAM_SOURCE_DIR) + "/protocol_" + kProtocol + ".txt");
+    CHECK(!text.empty());
+    CHECK(protocolSeconds(text) == kProtocolSec);
+    const std::vector<std::string> steps = eyecam::parseProtocol(text);
+    CHECK(steps.size() == 23);
+    CHECK(std::count(steps.begin(), steps.end(), "close") == 3);
+    CHECK(std::count(steps.begin(), steps.end(), "squint") == 3);
     CHECK(std::find(steps.begin(), steps.end(), "bright") == steps.end());
-    CHECK(std::find(steps.begin(), steps.end(), "dark") == steps.end());
-    CHECK(eyecam::parseProtocol(free) == std::vector<std::string> {"normal"});
+    // Every step is one the panel knows, with its own text in both languages (left and right as the wearer sees)
+    for (const Language language : {Language::Ja, Language::En}) {
+        const UiText& t = uiText(language);
+        for (const std::string& label : steps) {
+            CHECK(eyecam::parseStep(label) != eyecam::Step::Unknown);
+            CHECK(eyecam::instruction(t, label) != label);
+            if (label != "lead_in") CHECK(eyecam::chipLabel(t, label) != label);
+        }
+    }
+    SAME(eyecam::instruction(uiText(Language::Ja), "look_left"), "左の耳の方を見て");
+    SAME(eyecam::instruction(uiText(Language::En), "look_right"), "Look toward your right ear");
 }
 
 void testInfo() {
     using namespace contrib;
-    Info info;
-    info.appVersion = "0.8.2-beta.2";
-    info.consent = "2026-10-25 14:02:10 +0900";
-    for (int step = 0; step < kStepCount; ++step) info.steps[step].protocol = protocolOf(step);
-    info.steps[0] = {kGuidedProtocol, "rec_2026-10-25_14-02-41", 1'745'000'000, kWearFirst, "2026-10-25 14:03:44"};
-    info.steps[1] = {kGuidedProtocol, "rec_2026-10-25_14-05-12", 1'744'000'000, kWearButton, "2026-10-25 14:06:30"};
-    info.nextWear = kWearDetected;
-    info.running = 2;
-    info.runningSince = 1'790'000'123.25;
-    info.aborted = {"aborted/rec_2026-10-25_14-04-00 stopped"};
-    const std::string text = formatInfo(info);
-    // No personal data: the comment, the version, times, protocols, folders and sizes only
+    contrib::Recording r;
+    r.rec = "rec_2026-10-25_14-05-12";
+    r.protocol = kProtocol;
+    r.start = "2026-10-25 14:03:40 +0900";
+    r.startUnix = kNow;
+    r.endUnix = kNow + 97.25;
+    r.bytes = 2'712'000'000;
+    r.appVersion = "0.8.2-beta.2";
+    r.eyecamRec = "294d06c6";
+    r.lidVeto = "on";
+    r.widen = "on";
+    r.widenSensitivity = "0.60";
+    r.cameraLids = "on";
+    r.eyewear = "inserts";
+    r.fps = 89.9;
+    r.sincePrevious = "12.5";
+    r.headsetOff = "yes";
+    r.offCountStart = 3;
+    r.offCountEnd = 3;
+    r.eyecamStarted = kNow - 3600;
+    r.calib = "rec_2026-10-25_14-05-12.calib_result.json";
+    const std::string text = headerText() + consentSection("2026-10-25 14:02:10 +0900", 1, Eyewear::Inserts) +
+                             recordingSection(r) + abortedSection("aborted/rec_2026-10-25_14-09-00", "stopped") +
+                             packedSection("contrib_2026-10-25_14-25-02.tar.zst", 1, 1'600'000'000);
+    // No personal data: what it is, the format, times, settings, folder names and sizes only
     CHECK(text.rfind("# frameeyeosc", 0) == 0);
-    CHECK(text.find("app_version=0.8.2-beta.2\n") != std::string::npos);
-    CHECK(text.find("step1_rec=rec_2026-10-25_14-02-41\n") != std::string::npos);
-    CHECK(text.find("step2_wear=button\n") != std::string::npos);
-    CHECK(text.find("step4_protocol=free\n") != std::string::npos);
-    CHECK(text.find("step3_rec=") == std::string::npos);
-    CHECK(text.find("running=3\n") != std::string::npos);
-    Info back;
-    CHECK(parseInfo(text, back));
-    SAME(back.appVersion, info.appVersion);
-    SAME(back.consent, info.consent);
-    for (int step = 0; step < kStepCount; ++step) {
-        SAME(back.steps[step].protocol, protocolOf(step));
-        SAME(back.steps[step].rec, info.steps[step].rec);
-        CHECK(back.steps[step].bytes == info.steps[step].bytes);
-        SAME(back.steps[step].wear, info.steps[step].wear);
-        SAME(back.steps[step].done, info.steps[step].done);
+    CHECK(text.find("format=2\n") != std::string::npos);
+    CHECK(text.find("\n[consent]\ntime=2026-10-25 14:02:10 +0900\nversion=1\neyewear=inserts\n") != std::string::npos);
+    CHECK(text.find("\nheadset_off=yes\n") != std::string::npos);
+    CHECK(text.find("\nminutes_since_previous=12.5\n") != std::string::npos);
+    CHECK(text.find("\ncamera_fps=89.9\n") != std::string::npos);
+    CHECK(text.find("\neyecam_rec_sha256=294d06c6\n") != std::string::npos);
+    Info info;
+    parseInfo(text, info);
+    CHECK(info.consentVersion == 1 && info.eyewear == Eyewear::Inserts);
+    SAME(info.consent, "2026-10-25 14:02:10 +0900");
+    CHECK(info.recordings.size() == 1);
+    if (!info.recordings.empty()) {
+        const contrib::Recording& back = info.recordings[0];
+        SAME(back.rec, r.rec);
+        SAME(back.protocol, r.protocol);
+        SAME(back.start, r.start);
+        CHECK(std::fabs(back.startUnix - r.startUnix) < 1e-3 && std::fabs(back.endUnix - r.endUnix) < 1e-3);
+        CHECK(back.bytes == r.bytes);
+        SAME(back.appVersion, r.appVersion);
+        SAME(back.eyecamRec, r.eyecamRec);
+        SAME(back.lidVeto, "on");
+        SAME(back.widen, "on");
+        SAME(back.widenSensitivity, "0.60");
+        SAME(back.cameraLids, "on");
+        SAME(back.eyewear, "inserts");
+        CHECK(std::fabs(back.fps - 89.9) < 1e-9);
+        SAME(back.sincePrevious, "12.5");
+        SAME(back.headsetOff, "yes");
+        CHECK(back.offCountStart == 3 && back.offCountEnd == 3);
+        CHECK(std::fabs(back.eyecamStarted - r.eyecamStarted) < 1e-3);
+        SAME(back.calib, r.calib);
     }
-    SAME(back.nextWear, kWearDetected);
-    CHECK(back.running == 2);
-    CHECK(std::fabs(back.runningSince - info.runningSince) < 1e-3);
-    CHECK(back.aborted == info.aborted);
-    CHECK(back.packed.empty());
-    // Packed, nothing running
-    info.running = -1;
-    info.packed = "contrib_2026-10-25_14-02-10.tar.zst";
-    info.packedBytes = 2'100'000'000;
-    CHECK(parseInfo(formatInfo(info), back));
-    CHECK(back.running == -1);
-    SAME(back.packed, info.packed);
-    CHECK(back.packedBytes == info.packedBytes);
-    // Odd lines are skipped, CRLF read, a recording's name that isn't one dropped (that step is done again), steps
-    // past the fifth ignored
-    CHECK(parseInfo("consent=x\r\nnonsense\nstep1_rec=../../etc\nstep2_rec=rec_2026-10-25_14-05-12\r\n"
-                    "step9_rec=rec_2026-10-25_14-05-12\nrunning=9\nstep2_bytes=12x\n",
-                    back));
-    CHECK(back.steps[0].rec.empty());
-    SAME(back.steps[1].rec, "rec_2026-10-25_14-05-12");
-    CHECK(back.steps[1].bytes == 0);
-    CHECK(back.running == -1);
-    // Without the consent it isn't a contribution's
-    CHECK(!parseInfo("app_version=1\n", back));
-    CHECK(!parseInfo("", back));
+    CHECK(info.aborted == std::vector<std::string> {"aborted/rec_2026-10-25_14-09-00 stopped"});
+    SAME(info.packed, "contrib_2026-10-25_14-25-02.tar.zst");
+    CHECK(info.packedCount == 1 && info.packedBytes == 1'600'000'000);
+    // Unknowns as they are written
+    contrib::Recording unknown;
+    unknown.rec = "rec_2026-10-25_14-20-55";
+    const std::string second = recordingSection(unknown);
+    CHECK(second.find("\neyecam_rec_sha256=unknown\n") != std::string::npos);
+    CHECK(second.find("\ncamera_fps=unknown\n") != std::string::npos);
+    CHECK(second.find("\neyecam_started_unix=unknown\n") != std::string::npos);
+    CHECK(second.find("\nheadset_off_count_start=-1\n") != std::string::npos);
+    // Sections added later: the last consent counts (an older text's asks again), recordings add up
+    parseInfo(text + recordingSection(unknown) + consentSection("2026-11-01 10:00:00 +0900", 0, Eyewear::None), info);
+    CHECK(info.recordings.size() == 2 && info.consentVersion == 0 && info.eyewear == Eyewear::None);
+    CHECK(consentNeeded(info));
+    if (info.recordings.size() == 2) CHECK(info.recordings[1].offCountStart == -1 && info.recordings[1].eyecamRec.empty());
+    // Odd lines are skipped, CRLF read, a recording's name that isn't one dropped, a pack's that isn't one forgotten
+    parseInfo("format=2\r\n[consent]\r\nversion=1\r\neyewear=glasses\r\nnonsense\r\n[recording]\r\nrec=../../etc\r\n"
+              "[recording]\nrec=rec_2026-10-25_14-05-12\nbytes=12x\n[packed]\nfile=/etc/passwd\n[mystery]\nrec=x\n",
+              info);
+    CHECK(info.consentVersion == 1 && info.eyewear == Eyewear::Glasses);
+    CHECK(info.recordings.size() == 1);
+    if (!info.recordings.empty()) CHECK(info.recordings[0].bytes == 0);
+    CHECK(info.packed.empty());
+    parseInfo("", info);
+    CHECK(consentNeeded(info) && info.recordings.empty());
 }
 
 void testNames() {
     using namespace contrib;
-    CHECK(isFolderName("contrib_2026-10-25_14-02-10"));
-    CHECK(!isFolderName("contrib_2026-10-25_14-02-10.tar.zst"));
-    CHECK(!isFolderName("contrib_2026-10-25"));
-    CHECK(!isFolderName("rec_2026-10-25_14-02-10"));
-    CHECK(!isFolderName("contrib_../../x"));
     CHECK(isRecordingName("rec_2026-10-25_14-02-10"));
     CHECK(!isRecordingName("calib_2026-10-25_14-02-10"));
     CHECK(!isRecordingName("rec_fake"));
+    CHECK(!isRecordingName("rec_2026-10-25_14-02-10x"));
     CHECK(!isRecordingName("aborted/rec_2026-10-25_14-02-10"));
-    const std::string name = folderName(static_cast<std::time_t>(kNow));
-    CHECK(isFolderName(name));
+    CHECK(isPackName("contrib_2026-10-25_14-25-02.tar.zst"));
+    CHECK(isPackName("contrib_2026-10-25_14-25-02.tar"));
+    CHECK(!isPackName("contrib_2026-10-25_14-25-02.zip"));
+    CHECK(!isPackName("contrib_2026-10-25.tar"));
+    CHECK(!isPackName("../contrib_2026-10-25_14-25-02.tar"));
+    CHECK(isPackName(packName(static_cast<std::time_t>(kNow), true)));
+    CHECK(packName(static_cast<std::time_t>(kNow), false).size() == 31);
     const std::string local = localTime(static_cast<std::time_t>(kNow), true);
     CHECK(local.size() == 25 && local[10] == ' ' && (local[20] == '+' || local[20] == '-'));
     CHECK(localTime(static_cast<std::time_t>(kNow), false).size() == 19);
 }
 
+void testHeadsetOff() {
+    contrib::Recording before;
+    before.offCountEnd = 2;
+    before.eyecamStarted = kNow - 3600;
+    // Within one run of eyecam-rec: the count went up, or it didn't
+    SAME(contrib::headsetOffBetween(before, 3, kNow - 3600), "yes");
+    SAME(contrib::headsetOffBetween(before, 2, kNow - 3600.4), "no");
+    // eyecam-rec restarted between (its count starts again), or a count not known: unknown
+    SAME(contrib::headsetOffBetween(before, 5, kNow - 60), "unknown");
+    SAME(contrib::headsetOffBetween(before, -1, kNow - 3600), "unknown");
+    before.offCountEnd = -1;
+    SAME(contrib::headsetOffBetween(before, 2, kNow - 3600), "unknown");
+    before.offCountEnd = 2;
+    before.eyecamStarted = 0;
+    SAME(contrib::headsetOffBetween(before, 2, kNow - 3600), "unknown");
+}
+
 void testRunWatch() {
     using contrib::RunWatch;
-    const std::string p = contrib::kGuidedProtocol;
+    const std::string p = contrib::kProtocol;
     const std::string dir = "/home/steamos/eyecam/rec_2026-10-25_14-05-12";
     // Searching, recording, then idle with its folder: done
     {
         RunWatch w;
-        w.begin(1, p, kNow);
-        CHECK(w.active() && w.step() == 1);
+        w.begin(p, kNow);
+        CHECK(w.active());
         CHECK(w.follow(status(State::Searching, p, kNow + 0.1), true, kNow + 0.1, NAN).outcome == Outcome::Running);
         CHECK(w.follow(status(State::Recording, p, kNow + 30), true, kNow + 30, NAN).outcome == Outcome::Running);
-        eyecam::Status s = status(State::Idle, p, kNow + 63);
+        eyecam::Status s = status(State::Idle, p, kNow + 97);
         s.sessionDir = dir;
         s.message = "保存した: rec_2026-10-25_14-05-12";
-        const contrib::RunEnd end = w.follow(s, true, kNow + 63, kNow + 2);
+        const contrib::RunEnd end = w.follow(s, true, kNow + 97, kNow + 2);
         CHECK(end.outcome == Outcome::Done);
         SAME(end.dir, dir);
     }
     // ...ended early (Stop, or the eyes lost): stopped, with the part's folder
     {
         RunWatch w;
-        w.begin(1, p, kNow);
+        w.begin(p, kNow);
         w.follow(status(State::Recording, p, kNow + 10), true, kNow + 10, NAN);
         eyecam::Status s = status(State::Idle, p, kNow + 20);
         s.sessionDir = dir;
@@ -352,7 +415,7 @@ void testRunWatch() {
     // ...stopped while it searched: no folder (eyecam-rec cleared session_dir when it started)
     {
         RunWatch w;
-        w.begin(1, p, kNow);
+        w.begin(p, kNow);
         w.follow(status(State::Searching, p, kNow + 1), true, kNow + 1, NAN);
         const contrib::RunEnd end = w.follow(status(State::Idle, p, kNow + 5), true, kNow + 5, NAN);
         CHECK(end.outcome == Outcome::Stopped);
@@ -361,7 +424,7 @@ void testRunWatch() {
     // ...failed: eyecam-rec's error, with what it saved
     {
         RunWatch w;
-        w.begin(1, p, kNow);
+        w.begin(p, kNow);
         w.follow(status(State::Recording, p, kNow + 10), true, kNow + 10, NAN);
         eyecam::Status s = status(State::Error, p, kNow + 20);
         s.sessionDir = dir;
@@ -377,7 +440,7 @@ void testRunWatch() {
     // An older status (idle, the previous recording's folder) right after the start: not this one's end
     {
         RunWatch w;
-        w.begin(2, p, kNow);
+        w.begin(p, kNow);
         eyecam::Status s = status(State::Idle, p, kNow + 0.05);
         s.sessionDir = "/home/steamos/eyecam/rec_2026-10-25_14-02-41";
         CHECK(w.follow(s, true, kNow + 0.05, kNow - 120).outcome == Outcome::Running);
@@ -390,7 +453,7 @@ void testRunWatch() {
     // A start that failed at once (error before the panel saw it searching): its message, after the grace
     {
         RunWatch w;
-        w.begin(0, p, kNow);
+        w.begin(p, kNow);
         eyecam::Status s = status(State::Error, p, kNow + 0.2);
         s.message = "ディスクの空きが 1 GB 未満";
         CHECK(w.follow(s, true, kNow + 0.2, NAN).outcome == Outcome::Running);
@@ -402,40 +465,39 @@ void testRunWatch() {
     // A calibration or another recording running: not this one (it never started)
     {
         RunWatch w;
-        w.begin(0, p, kNow);
+        w.begin(p, kNow);
         CHECK(w.follow(status(State::Recording, "widen", kNow + 1), true, kNow + 1, NAN).outcome == Outcome::Running);
         CHECK(w.follow(status(State::Calibrating, "calib wear", kNow + 9), true, kNow + 9, NAN).outcome ==
               Outcome::Failed);
     }
-    // The panel restarted in the middle: it ended meanwhile, its folder made after the start: done
+    // Missed while it ran (the loop slow): its folder made after the start says it ended; another protocol's doesn't
     {
         RunWatch w;
-        w.begin(3, contrib::kFreeProtocol, kNow);
-        eyecam::Status s = status(State::Idle, contrib::kFreeProtocol, kNow + 400);
+        w.begin(p, kNow);
+        eyecam::Status s = status(State::Idle, p, kNow + 400);
         s.sessionDir = dir;
         CHECK(w.follow(s, true, kNow + 400, kNow + 3).outcome == Outcome::Done);
-        // ...but another protocol's folder isn't it
         RunWatch other;
-        other.begin(3, contrib::kFreeProtocol, kNow);
-        eyecam::Status s2 = status(State::Idle, p, kNow + 400);
+        other.begin(p, kNow);
+        eyecam::Status s2 = status(State::Idle, "widen", kNow + 400);
         s2.sessionDir = dir;
         CHECK(other.follow(s2, true, kNow + 400, kNow + 3).outcome == Outcome::Failed);
     }
     // ...its folder gone (moved by hand): missing
     {
         RunWatch w;
-        w.begin(1, p, kNow);
+        w.begin(p, kNow);
         w.follow(status(State::Recording, p, kNow + 10), true, kNow + 10, NAN);
-        eyecam::Status s = status(State::Idle, p, kNow + 63);
+        eyecam::Status s = status(State::Idle, p, kNow + 97);
         s.sessionDir = dir;
-        const contrib::RunEnd end = w.follow(s, true, kNow + 63, NAN);
+        const contrib::RunEnd end = w.follow(s, true, kNow + 97, NAN);
         CHECK(end.outcome == Outcome::Failed);
         CHECK(end.why == contrib::Why::Missing);
     }
     // eyecam-rec gone (its status stale) for kGoneSec: failed, not before
     {
         RunWatch w;
-        w.begin(1, p, kNow);
+        w.begin(p, kNow);
         w.follow(status(State::Recording, p, kNow + 10), true, kNow + 10, NAN);
         const eyecam::Status stale = status(State::Recording, p, kNow + 10);
         CHECK(w.follow(stale, false, kNow + 16, NAN).outcome == Outcome::Running);
@@ -452,158 +514,62 @@ void testRunWatch() {
     }
 }
 
-void testWearWatch() {
-    using contrib::WearWatch;
-    const auto idle = [](bool locked, double prox = -1.0) {
-        eyecam::Status s = status(State::Idle, "", kNow);
-        s.locked = locked;
-        s.prox = prox;
-        return s;
-    };
-    // The eye video stops for kOffSec, then comes back for kOnSec
-    {
-        WearWatch w;
-        w.start(100);
-        double t = 100;
-        for (; t < 101; t += 0.1) w.follow(idle(true), true, t);
-        for (double end = t + 2.9; t < end; t += 0.1) w.follow(idle(false), true, t);
-        CHECK(!w.offSeen());
-        for (double end = t + 0.3; t < end; t += 0.1) w.follow(idle(false), true, t);
-        CHECK(w.offSeen() && !w.detected());
-        for (double end = t + 1.8; t < end; t += 0.1) w.follow(idle(true), true, t);
-        CHECK(!w.detected());
-        for (double end = t + 0.5; t < end; t += 0.1) w.follow(idle(true), true, t);
-        CHECK(w.detected());
-    }
-    // A short gap in the video (a blink of the tracker) is no re-wear
-    {
-        WearWatch w;
-        w.start(0);
-        double t = 0;
-        for (; t < 20; t += 0.1) w.follow(idle(t < 5 || t > 6.5), true, t);
-        CHECK(!w.offSeen() && !w.detected());
-    }
-    // The sensor: off after it read worn, then worn again (live processing off: the video doesn't say)
-    {
-        WearWatch w;
-        w.start(0);
-        double t = 0;
-        const auto noLive = [&](double prox) {
-            eyecam::Status s = idle(false, prox);
-            s.live = false;
-            return s;
-        };
-        for (; t < 2; t += 0.1) w.follow(noLive(31), true, t);
-        for (; t < 6; t += 0.1) w.follow(noLive(9), true, t);
-        CHECK(w.offSeen());
-        for (; t < 9; t += 0.1) w.follow(noLive(31), true, t);
-        CHECK(w.detected());
-    }
-    // A face the sensor never reads worn on: its low reading alone is no "off"
-    {
-        WearWatch w;
-        w.start(0);
-        for (double t = 0; t < 30; t += 0.1) w.follow(idle(true, 12), true, t);
-        CHECK(!w.offSeen());
-    }
-    // The Frame slept (the loop stood still kOffSec or more): off; on again with the video
-    {
-        WearWatch w;
-        w.start(0);
-        w.follow(idle(true), true, 1);
-        w.follow(idle(true), true, 1 + contrib::kOffSec + 30);
-        CHECK(w.offSeen());
-        w.follow(idle(true), true, 40);
-        w.follow(idle(true), true, 42.5);
-        CHECK(w.detected());
-    }
-    // Back on without being off first: nothing
-    {
-        WearWatch w;
-        w.start(0);
-        for (double t = 0; t < 30; t += 0.1) w.follow(idle(true, 30), true, t);
-        CHECK(!w.offSeen() && !w.detected());
-    }
-    // eyecam-rec not fresh: its numbers don't count
-    {
-        WearWatch w;
-        w.start(0);
-        for (double t = 0; t < 10; t += 0.1) w.follow(idle(false), false, t);
-        CHECK(!w.offSeen());
-    }
-    // "I put it back on": kFallbackSec after the start, and only while watching
-    {
-        WearWatch w;
-        CHECK(!w.fallbackReady(1000));
-        w.start(100);
-        CHECK(!w.fallbackReady(100 + contrib::kFallbackSec - 0.5));
-        CHECK(w.fallbackReady(100 + contrib::kFallbackSec));
-        w.stop();
-        CHECK(!w.fallbackReady(1000));
-        // Started again: the time again, and what it saw forgotten
-        w.start(500);
-        CHECK(!w.fallbackReady(505) && !w.offSeen());
-    }
-}
-
 void testScreen() {
     using namespace contrib;
     View v;
     const eyecam::View ready = eyecamReady(kNow);
-    CHECK(screen(v, false) == Screen::Consent);
-    CHECK(!startAllowed(v, ready, 0));
-    v.dir = "/home/steamos/eyecam/contrib_2026-10-25_14-02-10";
+    // The consent first (then the question about glasses), from "Record"; "Recordings" goes to the end's screen
+    CHECK(screen(v, Page::Record, false) == Screen::Consent);
+    CHECK(screen(v, Page::Record, true) == Screen::Eyewear);
+    CHECK(screen(v, Page::Manage, false) == Screen::Done);
+    CHECK(!startAllowed(v, ready));
+    v.exists = true;
+    v.info.consentVersion = kConsentVersion;
+    v.info.eyewear = Eyewear::None;
     v.freeBytes = 20'000'000'000LL;
-    CHECK(screen(v, false) == Screen::Ready);
-    CHECK(startAllowed(v, ready, 0));
-    // eyecam-rec busy, not set up, a command waiting, no room: no start
+    CHECK(screen(v, Page::Record, false) == Screen::Ready);
+    CHECK(screen(v, Page::Record, true) == Screen::Ready);
+    CHECK(startAllowed(v, ready));
+    // eyecam-rec busy, not set up, a command waiting, no room, packing: no start
     {
         eyecam::View busy = ready;
         busy.status.state = State::Calibrating;
-        CHECK(!startAllowed(v, busy, 0));
+        CHECK(!startAllowed(v, busy));
         eyecam::View waiting = ready;
         waiting.busy = true;
-        CHECK(!startAllowed(v, waiting, 0));
+        CHECK(!startAllowed(v, waiting));
         eyecam::View notSetUp = ready;
         notSetUp.status.setupDone = false;
         notSetUp.status.calibState = 0;
-        CHECK(!startAllowed(v, notSetUp, 0));
+        CHECK(!startAllowed(v, notSetUp));
         eyecam::View error = ready;
         error.status.state = State::Error;
-        CHECK(startAllowed(v, error, 0));
+        CHECK(startAllowed(v, error));
         View full = v;
-        full.freeBytes = 2'000'000'000LL;
-        CHECK(!startAllowed(full, ready, 0));
+        full.freeBytes = 3'000'000'000LL;
+        CHECK(!startAllowed(full, ready));
         View packing = v;
         packing.progress.running = true;
-        CHECK(!startAllowed(packing, ready, 0));
+        CHECK(!startAllowed(packing, ready));
+        View older = v;
+        older.info.consentVersion = kConsentVersion - 1;
+        CHECK(!startAllowed(older, ready));
+        CHECK(screen(older, Page::Record, false) == Screen::Consent);
     }
-    // After the first: the re-wear, then the start
-    v.info.steps[0].rec = "rec_2026-10-25_14-02-41";
-    CHECK(screen(v, false) == Screen::Rewear);
-    v.info.nextWear = kWearDetected;
-    CHECK(screen(v, false) == Screen::Ready);
-    // Running
-    v.running = 1;
-    CHECK(screen(v, false) == Screen::Running);
-    CHECK(!startAllowed(v, ready, 1));
-    v.running = -1;
-    // A try that didn't finish: its screen, for its step only
-    v.failure.step = 1;
-    CHECK(screen(v, false) == Screen::Failed);
-    v.failure.step = 0;
-    CHECK(screen(v, false) == Screen::Ready);
-    // All four: the end; the optional one when asked for (its re-wear first)
-    for (int step = 0; step < kRequiredSteps; ++step) v.info.steps[step].rec = "rec_2026-10-25_14-02-41";
-    v.info.nextWear.clear();
-    CHECK(screen(v, false) == Screen::Done);
-    CHECK(screen(v, true) == Screen::Rewear);
-    v.info.nextWear = kWearButton;
-    CHECK(screen(v, true) == Screen::Ready);
+    // Running, then how it ended
+    v.running = true;
+    CHECK(screen(v, Page::Record, false) == Screen::Running);
+    CHECK(!startAllowed(v, ready));
+    v.running = false;
+    v.failure.shown = true;
+    CHECK(screen(v, Page::Record, false) == Screen::Failed);
+    v.failure = Failure();
+    v.justDone = true;
+    CHECK(screen(v, Page::Record, false) == Screen::Done);
     // Being deleted: that, whatever else
     v.progress.job = Job::Delete;
     v.progress.running = true;
-    CHECK(screen(v, false) == Screen::Deleting);
+    CHECK(screen(v, Page::Manage, false) == Screen::Deleting);
 }
 
 /**
@@ -619,8 +585,7 @@ bool checksumOk(const std::string& header) {
 
 void testTarHeader() {
     using contrib::Entry;
-    Entry file {"/x/eye_L.raw", "contrib_2026-10-25_14-02-10/rec_2026-10-25_14-02-41/eye_L.raw", 1'000'320'000,
-                1'790'000'000, false};
+    Entry file {"/x/eye_L.raw", "contrib/rec_2026-10-25_14-02-41/eye_L.raw", 1'000'320'000, 1'790'000'000, false};
     const std::string header = contrib::tarHeader(file);
     CHECK(header.size() == 512);
     SAME(header.substr(0, file.name.size()), file.name);
@@ -632,7 +597,7 @@ void testTarHeader() {
     SAME(header.substr(100, 7), "0000644");
     CHECK(checksumOk(header));
     // A folder
-    const Entry folder {"/x", "contrib_2026-10-25_14-02-10/", 0, 1'790'000'000, true};
+    const Entry folder {"/x", "contrib/", 0, 1'790'000'000, true};
     const std::string dir = contrib::tarHeader(folder);
     CHECK(dir[156] == '5');
     SAME(dir.substr(100, 7), "0000755");
@@ -661,19 +626,22 @@ void testTarHeader() {
  * @param name its name
  * @param bytes the size of its eye_L.raw (eye_R.raw is a little smaller)
  * @param made when it was made (its modification time; the tests' clock runs ahead of the real one)
+ * @param without a file it lacks ("" = none)
  * @return its path
  */
-std::string makeRecording(const std::string& home, const std::string& name, size_t bytes, double made = kNow) {
+std::string makeRecording(const std::string& home, const std::string& name, size_t bytes, double made = kNow,
+                          const std::string& without = "") {
     const std::string dir = home + "/" + name;
     ::mkdir(dir.c_str(), 0755);
     std::string video(bytes, '\0');
     for (size_t i = 0; i < bytes; ++i) video[i] = static_cast<char>((i * 7 + i / 400) & 0xff);
     writeFile(dir + "/eye_L.raw", video);
     writeFile(dir + "/eye_R.raw", video.substr(0, bytes - 13));
-    writeFile(dir + "/cues.csv", "t,label\n0.0,lead_in\n");
-    writeFile(dir + "/valve.csv", "t,openness_l\n");
-    writeFile(dir + "/frames.csv", "eye,t_cam\n");
-    writeFile(dir + "/meta.txt", "protocol=widen_nolight\n");
+    for (const auto& [file, text] : {std::pair<const char*, const char*> {"cues.csv", "t,label\n0.0,lead_in\n"},
+                                     {"valve.csv", "t,openness_l\n"}, {"frames.csv", "eye,t_cam\n"},
+                                     {"meta.txt", "protocol=contrib\n"}}) {
+        if (without != file) writeFile(dir + "/" + file, text);
+    }
     const timespec times[2] = {{static_cast<time_t>(made), 0}, {static_cast<time_t>(made), 0}};
     ::utimensat(AT_FDCWD, dir.c_str(), times, 0);
     return dir;
@@ -683,41 +651,31 @@ void testFiles() {
     using namespace contrib;
     const RemoveDir temp {tempDir()};
     const std::string home = temp.path + "/eyecam";
-    // None yet; a folder that isn't one is never taken
+    const std::string dir = home + "/" + kFolderName;
     ::mkdir(home.c_str(), 0755);
-    CHECK(findCurrent(home).empty());
-    ::mkdir((home + "/contrib_2026-01-01_00-00-00").c_str(), 0755);
-    CHECK(findCurrent(home).empty());  // (no info.txt)
-    // Made with the consent
-    std::string dir;
-    Info info;
+    ::mkdir(dir.c_str(), 0755);
+    // info.txt: its header once, then the sections in order, on the disk
     std::string error;
-    CHECK(create(home, "0.8.2-test", static_cast<std::time_t>(kNow), dir, info, error));
-    SAME(dir, home + "/" + folderName(static_cast<std::time_t>(kNow)));
-    SAME(info.appVersion, "0.8.2-test");
-    CHECK(!info.consent.empty());
-    SAME(findCurrent(home), dir);
-    Info read;
-    CHECK(readInfo(dir, read, error));
-    SAME(read.consent, info.consent);
-    SAME(read.steps[3].protocol, kFreeProtocol);
-    // A second in the same second: the next second's name; the newest is the current one
-    std::string second;
-    Info secondInfo;
-    CHECK(create(home, "0.8.2-test", static_cast<std::time_t>(kNow), second, secondInfo, error));
-    CHECK(second != dir && isFolderName(second.substr(home.size() + 1)));
-    SAME(findCurrent(home), second);
-    std::filesystem::remove_all(second);
-    // A recording moved in, and one that didn't finish into aborted/
-    const std::string rec = makeRecording(home, "rec_2026-10-25_14-02-41", 4096);
+    CHECK(appendInfo(dir, consentSection("2026-10-25 14:02:10 +0900", 1, Eyewear::None), error));
+    CHECK(appendInfo(dir, abortedSection("aborted/rec_2026-10-25_14-04-00", "stopped"), error));
+    const std::string info = readFile(dir + "/" + kInfoFile);
+    CHECK(info.rfind(headerText(), 0) == 0);
+    CHECK(info.find("# frameeyeosc", 1) == std::string::npos);
+    CHECK(info.find("[consent]") < info.find("[aborted]"));
+    CHECK(!appendInfo(temp.path + "/missing", "x", error) && !error.empty());
+    // The files a recording needs
+    const std::string full = makeRecording(home, "rec_2026-10-25_14-02-41", 4096);
+    CHECK(missingFiles(full).empty());
+    const std::string lacking = makeRecording(home, "rec_2026-10-25_14-03-00", 100, kNow, "cues.csv");
+    CHECK(missingFiles(lacking) == std::vector<std::string> {"cues.csv"});
+    CHECK(missingFiles(temp.path + "/none").size() == 4);
+    // Moved into the folder, and one that didn't finish into aborted/
     std::string name;
-    CHECK(takeRecording(home, dir, rec, false, name, error));
+    CHECK(takeRecording(home, dir, full, false, name, error));
     SAME(name, "rec_2026-10-25_14-02-41");
-    CHECK(::access((dir + "/" + name + "/eye_L.raw").c_str(), F_OK) == 0);
-    CHECK(::access(rec.c_str(), F_OK) != 0);
-    const std::string part = makeRecording(home, "rec_2026-10-25_14-04-00", 1000);
-    CHECK(takeRecording(home, dir, part, true, name, error));
-    SAME(name, "aborted/rec_2026-10-25_14-04-00");
+    CHECK(there(dir + "/" + name + "/eye_L.raw") && !there(full));
+    CHECK(takeRecording(home, dir, lacking, true, name, error));
+    SAME(name, "aborted/rec_2026-10-25_14-03-00");
     // Only eyecam-rec's own folders right in home
     const std::string elsewhere = temp.path + "/rec_2026-10-25_14-09-00";
     ::mkdir(elsewhere.c_str(), 0755);
@@ -726,17 +684,17 @@ void testFiles() {
     CHECK(!takeRecording(home, dir, home + "/calib_2026-10-25_14-09-00", false, name, error));
     CHECK(!takeRecording(home, dir, home + "/rec_2026-10-25_14-59-59", false, name, error));  // (not there)
     // Sizes: the files in it and its folders
-    CHECK(folderBytes(dir + "/rec_2026-10-25_14-02-41") ==
-          4096 + 4096 - 13 + 20 + 13 + 10 + 23);
+    CHECK(folderBytes(dir + "/rec_2026-10-25_14-02-41") == 4096 + 4096 - 13 + 20 + 13 + 10 + 17);
     CHECK(folderBytes(dir) > folderBytes(dir + "/rec_2026-10-25_14-02-41"));
     CHECK(freeBytes(home) > 0);
     CHECK(freeBytes(temp.path + "/missing") == -1);
-    // info.txt written over (no temporary left)
-    info.steps[0].rec = "rec_2026-10-25_14-02-41";
-    CHECK(writeInfo(dir, info, error));
-    CHECK(readInfo(dir, read, error));
-    SAME(read.steps[0].rec, "rec_2026-10-25_14-02-41");
-    CHECK(::access((dir + "/info.txt.tmp").c_str(), F_OK) != 0);
+    // The newest calibration result (by name), skipping a folder without one
+    CHECK(newestCalibResult(home).empty());
+    ::mkdir((home + "/calib_2026-10-24_10-00-00").c_str(), 0755);
+    writeFile(home + "/calib_2026-10-24_10-00-00/calib_result.json", "{\"old\":1}");
+    ::mkdir((home + "/calib_2026-10-25_09-00-00").c_str(), 0755);
+    writeFile(home + "/calib_2026-10-25_09-00-00/calib_result.json", "{\"new\":1}");
+    SAME(newestCalibResult(home), "{\"new\":1}");
 }
 
 /**
@@ -765,82 +723,126 @@ void testPack() {
     using namespace contrib;
     const RemoveDir temp {tempDir()};
     const std::string home = temp.path + "/eyecam";
+    const std::string dir = home + "/" + kFolderName;
     ::mkdir(home.c_str(), 0755);
-    std::string dir;
-    Info info;
+    ::mkdir(dir.c_str(), 0755);
     std::string error;
-    CHECK(create(home, "0.8.2-test", static_cast<std::time_t>(kNow), dir, info, error));
-    const std::string names[2] = {"rec_2026-10-25_14-02-41", "rec_2026-10-25_14-05-12"};
     std::string name;
-    takeRecording(home, dir, makeRecording(home, names[0], 300'000), false, name, error);
-    takeRecording(home, dir, makeRecording(home, names[1], 1'500'000), false, name, error);
+    const std::string names[3] = {"rec_2026-10-25_14-02-41", "rec_2026-10-25_14-05-12", "rec_2026-10-25_14-07-30"};
+    Info info;
+    for (int i = 0; i < 3; ++i) {
+        takeRecording(home, dir, makeRecording(home, names[i], i == 1 ? 1'500'000 : 300'000, kNow), false, name, error);
+        contrib::Recording r;
+        r.rec = names[i];
+        r.calib = i == 0 ? names[i] + ".calib_result.json" : "none";
+        info.recordings.push_back(r);
+        appendInfo(dir, recordingSection(r), error);
+    }
+    writeFile(dir + "/" + names[0] + ".calib_result.json", "{\"calib\":1}");
+    // (the third lost a file since: left out and named)
+    ::unlink((dir + "/" + names[2] + "/valve.csv").c_str());
     takeRecording(home, dir, makeRecording(home, "rec_2026-10-25_14-04-00", 1000), true, name, error);
-    info.steps[0].rec = names[0];
-    info.steps[1].rec = names[1];
-    CHECK(writeInfo(dir, info, error));
-    // What goes in: the folder, info.txt, the finished recordings (sorted), not aborted/
+    writeFile(dir + "/contrib_2026-10-24_09-00-00.tar.zst", "an older pack");
+    // What goes in: the folder, info.txt, the complete recordings (sorted) and the calibration result; not aborted/,
+    // not a pack
     std::vector<Entry> entries;
-    CHECK(packEntries(dir, info, entries, error));
-    CHECK(entries.size() == 2 + 2 * 7);
-    const std::string top = dir.substr(home.size() + 1);
-    SAME(entries[0].name, top + "/");
-    SAME(entries[1].name, top + "/info.txt");
-    SAME(entries[2].name, top + "/" + names[0] + "/");
-    SAME(entries[3].name, top + "/" + names[0] + "/cues.csv");
-    for (const Entry& entry : entries) CHECK(entry.name.find("aborted") == std::string::npos);
-    // A finished one gone missing: nothing is packed
-    Info missing = info;
-    missing.steps[2].rec = "rec_2026-10-25_15-00-00";
-    CHECK(!packEntries(dir, missing, entries, error));
+    std::vector<std::string> incomplete;
+    CHECK(packEntries(dir, info, entries, incomplete, error));
+    CHECK(incomplete == std::vector<std::string> {names[2]});
+    CHECK(entries.size() == 2 + 7 + 1 + 7);
+    SAME(entries[0].name, "contrib/");
+    SAME(entries[1].name, "contrib/info.txt");
+    SAME(entries[2].name, "contrib/" + names[0] + "/");
+    SAME(entries[3].name, "contrib/" + names[0] + "/cues.csv");
+    SAME(entries[9].name, "contrib/" + names[0] + ".calib_result.json");
+    for (const Entry& entry : entries) {
+        CHECK(entry.name.find("aborted") == std::string::npos && entry.name.find(".tar") == std::string::npos);
+        CHECK(entry.name.find(names[2]) == std::string::npos);
+    }
     // Packed as tar: unpacks to the same files
     Worker worker;
-    CHECK(worker.pack(dir, info, false));
+    const std::string tarName = packName(static_cast<std::time_t>(kNow), false);
+    CHECK(worker.pack(dir, entries, tarName, 2, false));
     Progress ended = waitFor(worker);
-    CHECK(ended.finished && ended.ok);
-    SAME(ended.output, top + ".tar");
+    CHECK(ended.finished && ended.ok && ended.count == 2);
+    SAME(ended.output, tarName);
     CHECK(ended.done == ended.total && ended.total > 0);
-    const std::string tar = dir + "/" + top + ".tar";
-    CHECK(::access(tar.c_str(), F_OK) == 0);
-    CHECK(::access((tar + ".part").c_str(), F_OK) != 0);
+    const std::string tar = dir + "/" + tarName;
+    CHECK(there(tar) && !there(tar + ".part"));
     CHECK(ended.outputBytes == static_cast<long long>(std::filesystem::file_size(tar)));
     const std::string out = temp.path + "/out";
     ::mkdir(out.c_str(), 0755);
     CHECK(run("tar -xf '" + tar + "' -C '" + out + "'"));
-    for (const std::string& rec : names) {
+    for (int i = 0; i < 2; ++i) {
         for (const char* file : {"eye_L.raw", "eye_R.raw", "cues.csv", "valve.csv", "frames.csv", "meta.txt"}) {
-            const std::string a = readFile(dir + "/" + rec + "/" + file);
-            const std::string b = readFile(out + "/" + top + "/" + rec + "/" + file);
-            CHECK(!a.empty() && a == b);
+            const std::string a = readFile(dir + "/" + names[i] + "/" + file);
+            CHECK(!a.empty() && a == readFile(out + "/contrib/" + names[i] + "/" + file));
         }
     }
-    SAME(readFile(out + "/" + top + "/info.txt"), readFile(dir + "/info.txt"));
-    CHECK(::access((out + "/" + top + "/aborted").c_str(), F_OK) != 0);
+    SAME(readFile(out + "/contrib/info.txt"), readFile(dir + "/info.txt"));
+    SAME(readFile(out + "/contrib/" + names[0] + ".calib_result.json"), "{\"calib\":1}");
+    CHECK(!there(out + "/contrib/aborted") && !there(out + "/contrib/" + names[2]));
     // ...and through zstd, when it is there
     if (zstdAvailable()) {
-        CHECK(worker.pack(dir, info, true));
+        const std::string zstName = packName(static_cast<std::time_t>(kNow) + 1, true);
+        CHECK(worker.pack(dir, entries, zstName, 2, true));
         ended = waitFor(worker);
         CHECK(ended.finished && ended.ok);
-        SAME(ended.output, top + ".tar.zst");
-        const std::string zst = dir + "/" + top + ".tar.zst";
         const std::string out2 = temp.path + "/out2";
         ::mkdir(out2.c_str(), 0755);
-        CHECK(run("zstd -dc '" + zst + "' | tar -xf - -C '" + out2 + "'"));
-        SAME(readFile(out2 + "/" + top + "/" + names[1] + "/eye_L.raw"),
-             readFile(dir + "/" + names[1] + "/eye_L.raw"));
-        // (the earlier pack and aborted/ aren't in it)
-        CHECK(::access((out2 + "/" + top + "/" + top + ".tar").c_str(), F_OK) != 0);
+        CHECK(run("zstd -dc '" + dir + "/" + zstName + "' | tar -xf - -C '" + out2 + "'"));
+        SAME(readFile(out2 + "/contrib/" + names[1] + "/eye_L.raw"), readFile(dir + "/" + names[1] + "/eye_L.raw"));
     } else {
         std::printf("contrib-test: no zstd here, its pack not tried\n");
     }
-    // Deleting: only a contribution's folder right in home
+    // Deleting: only home/contrib itself
     CHECK(!worker.remove(home, dir + "/" + names[0]));
     CHECK(!worker.remove(temp.path, dir));
-    CHECK(!worker.remove(home, home + "/contrib_2026-10-25_99-99-99"));
     CHECK(worker.remove(home, dir));
     ended = waitFor(worker);
     CHECK(ended.finished && ended.ok && ended.job == Job::Delete);
-    CHECK(::access(dir.c_str(), F_OK) != 0);
-    CHECK(::access(home.c_str(), F_OK) == 0);
+    CHECK(!there(dir) && there(home));
+}
+
+/**
+ * Run one recording through a session: started, answered, recording, then idle with its folder.
+ * @param session the session
+ * @param view its view
+ * @param home eyecam-rec's folder
+ * @param now the tests' clock (moved on)
+ * @param eyecam eyecam-rec as it is before (its count and run)
+ * @param name the recording's folder
+ * @param without a file it lacks
+ * @param aborted it ended early
+ */
+void record(contrib::Session& session, contrib::View& view, const std::string& home, double& now, eyecam::View eyecam,
+            const std::string& name, const std::string& without = "", bool aborted = false) {
+    std::string log;
+    contrib::Snapshot snapshot;
+    snapshot.appVersion = "0.8.2-test";
+    snapshot.eyecamRec = "294d06c6";
+    eyecam.status.mtime = now;
+    const std::string command = session.startCommand(view, eyecam);
+    SAME(command, "start contrib");
+    session.started(view, eyecam, snapshot, command, now);
+    eyecam::Reply ok;
+    ok.ok = true;
+    ok.command = command;
+    CHECK(!session.replied(view, ok));
+    now += 1;
+    eyecam::View running = eyecam;
+    running.status = status(State::Recording, contrib::kProtocol, now);
+    session.follow(view, running, now, now, log);
+    CHECK(view.running);
+    const std::string rec = makeRecording(home, name, 600, now, without);
+    now += aborted ? 20 : 96;
+    eyecam::View after = eyecam;
+    after.status.mtime = now;
+    after.status.sessionDir = rec;
+    after.status.protocol = contrib::kProtocol;
+    after.status.lastSessionAborted = aborted;
+    CHECK(session.follow(view, after, now, now, log));
+    CHECK(!view.running);
 }
 
 void testSession() {
@@ -848,177 +850,129 @@ void testSession() {
     const RemoveDir temp {tempDir()};
     const std::string home = temp.path + "/eyecam";
     ::mkdir(home.c_str(), 0755);
+    ::mkdir((home + "/calib_2026-10-25_09-00-00").c_str(), 0755);
+    writeFile(home + "/calib_2026-10-25_09-00-00/calib_result.json", "{\"ok\":true}");
     View view;
     Session session;
     std::string log;
     session.load(view, home);
-    CHECK(view.loaded && view.dir.empty() && view.freeBytes > 0);
-    CHECK(screen(view, false) == Screen::Consent);
-    const double t0 = static_cast<double>(std::time(nullptr));
-    double now = t0;
-    double boot = 1000;
-    eyecam::View eyecam = eyecamReady(now);
-    // No start before the consent
-    CHECK(session.startCommand(view, eyecam, 0).empty());
-    CHECK(session.consent(view, "0.8.2-test", static_cast<std::time_t>(now)));
-    CHECK(!view.dir.empty());
-    CHECK(!session.consent(view, "0.8.2-test", static_cast<std::time_t>(now)));
-    // Step 1: no re-wear before it
-    SAME(session.startCommand(view, eyecam, 0), "start widen_nolight");
-    CHECK(session.startCommand(view, eyecam, 1).empty());
-    session.started(view, 0, "start widen_nolight", now);
-    CHECK(view.running == 0 && screen(view, false) == Screen::Running);
-    // (the start went out: nothing more until its reply)
-    CHECK(session.startCommand(view, eyecam, 0).empty());
-    eyecam::Reply ok;
-    ok.ok = true;
-    ok.command = "start widen_nolight";
-    CHECK(!session.replied(view, ok));
-    // Recording, then idle with its folder: moved into the contribution
-    now += 1;
-    eyecam.status = status(State::Recording, kGuidedProtocol, now);
-    session.follow(view, eyecam, now, boot, log);
-    CHECK(view.running == 0);
-    const std::string rec1 = makeRecording(home, "rec_2026-10-25_14-02-41", 2000, now);
-    now += 61;
-    eyecam.status = status(State::Idle, kGuidedProtocol, now);
-    eyecam.status.sessionDir = rec1;
-    CHECK(session.follow(view, eyecam, now, boot, log));
-    CHECK(view.running == -1);
-    SAME(view.info.steps[0].rec, "rec_2026-10-25_14-02-41");
-    SAME(view.info.steps[0].wear, kWearFirst);
-    CHECK(view.info.steps[0].bytes > 4000);
-    CHECK(::access((view.dir + "/rec_2026-10-25_14-02-41/cues.csv").c_str(), F_OK) == 0);
-    CHECK(log.find("step 1 recorded") != std::string::npos);
-    // Step 2 waits for the re-wear: the video stops, then comes back
-    CHECK(screen(view, false) == Screen::Rewear);
-    CHECK(session.startCommand(view, eyecam, 1).empty());
-    for (int i = 0; i < 40; ++i) {
-        now += 0.1;
-        boot += 0.1;
-        eyecam.status = status(State::Idle, kGuidedProtocol, now);
-        eyecam.status.locked = false;
-        session.follow(view, eyecam, now, boot, log);
+    CHECK(view.loaded && !view.exists && view.freeBytes > 0);
+    CHECK(screen(view, Page::Record, false) == Screen::Consent);
+    double now = static_cast<double>(std::time(nullptr));
+    const double started = now - 3600;
+    // No start before the consent, nor without an answer
+    CHECK(session.startCommand(view, eyecamReady(now)).empty());
+    CHECK(!session.consent(view, Eyewear::Unasked, static_cast<std::time_t>(now)));
+    CHECK(session.consent(view, Eyewear::Glasses, static_cast<std::time_t>(now)));
+    CHECK(view.exists && view.info.eyewear == Eyewear::Glasses && !consentNeeded(view.info));
+    CHECK(screen(view, Page::Record, false) == Screen::Ready);
+    // The first: moved in, its section with the settings and the calibration result beside it
+    record(session, view, home, now, eyecamReady(now, 2, started), "rec_2026-10-25_14-02-41");
+    CHECK(view.justDone && screen(view, Page::Record, false) == Screen::Done);
+    CHECK(view.info.recordings.size() == 1);
+    if (view.info.recordings.size() == 1) {
+        const Recording& r = view.info.recordings[0];
+        SAME(r.rec, "rec_2026-10-25_14-02-41");
+        SAME(r.protocol, kProtocol);
+        SAME(r.appVersion, "0.8.2-test");
+        SAME(r.eyecamRec, "294d06c6");
+        SAME(r.lidVeto, "on");
+        SAME(r.widenSensitivity, "0.60");
+        SAME(r.eyewear, "glasses");
+        SAME(r.sincePrevious, "none");
+        SAME(r.headsetOff, "none");
+        CHECK(r.offCountStart == 2 && r.offCountEnd == 2);
+        CHECK(std::fabs(r.fps - 89.9) < 1e-6);
+        SAME(r.calib, "rec_2026-10-25_14-02-41.calib_result.json");
+        CHECK(r.bytes > 1000);
     }
-    CHECK(view.offSeen && view.info.nextWear.empty());
-    for (int i = 0; i < 25; ++i) {
-        now += 0.1;
-        boot += 0.1;
-        eyecam.status = status(State::Idle, kGuidedProtocol, now);
-        session.follow(view, eyecam, now, boot, log);
+    SAME(readFile(view.dir + "/rec_2026-10-25_14-02-41.calib_result.json"), "{\"ok\":true}");
+    CHECK(there(view.dir + "/rec_2026-10-25_14-02-41/cues.csv") && !there(home + "/rec_2026-10-25_14-02-41"));
+    // The second, 10 minutes later with the headset taken off between (the count went up)
+    now += 600;
+    record(session, view, home, now, eyecamReady(now, 3, started), "rec_2026-10-25_14-12-41");
+    CHECK(view.info.recordings.size() == 2);
+    if (view.info.recordings.size() == 2) {
+        SAME(view.info.recordings[1].headsetOff, "yes");
+        SAME(view.info.recordings[1].sincePrevious, "10.0");
     }
-    SAME(view.info.nextWear, kWearDetected);
-    CHECK(screen(view, false) == Screen::Ready);
-    // Step 2 stopped part way: its part in aborted/, the step again (its re-wear kept)
-    eyecam = eyecamReady(now);
-    SAME(session.startCommand(view, eyecam, 1), "start widen_nolight");
-    session.started(view, 1, "start widen_nolight", now);
-    session.replied(view, ok);
-    now += 1;
-    eyecam.status = status(State::Recording, kGuidedProtocol, now);
-    session.follow(view, eyecam, now, boot, log);
-    const std::string part = makeRecording(home, "rec_2026-10-25_14-05-12", 500, now);
-    now += 20;
-    eyecam.status = status(State::Idle, kGuidedProtocol, now);
-    eyecam.status.sessionDir = part;
-    eyecam.status.lastSessionAborted = true;
-    CHECK(session.follow(view, eyecam, now, boot, log));
-    CHECK(view.failure.step == 1 && view.failure.why == Why::Stopped);
-    SAME(view.failure.kept, "aborted/rec_2026-10-25_14-05-12");
-    CHECK(view.info.steps[1].rec.empty());
-    CHECK(view.info.aborted.size() == 1);
-    CHECK(screen(view, false) == Screen::Failed);
-    SAME(view.info.nextWear, kWearDetected);
+    // The third right after it (no taking-off), the fourth after eyecam-rec restarted (unknown)
+    record(session, view, home, now, eyecamReady(now, 3, started), "rec_2026-10-25_14-14-30");
+    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-16-20");
+    CHECK(view.info.recordings.size() == 4);
+    if (view.info.recordings.size() == 4) {
+        SAME(view.info.recordings[2].headsetOff, "no");
+        SAME(view.info.recordings[2].sincePrevious, "0.0");
+        SAME(view.info.recordings[3].headsetOff, "unknown");
+    }
+    // One lacking a file: into aborted/, the screen says which, to record again
+    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-18-00", "frames.csv");
+    CHECK(view.info.recordings.size() == 4 && view.failure.shown && view.failure.why == Why::Incomplete);
+    SAME(view.failure.message, "frames.csv");
+    SAME(view.failure.kept, "aborted/rec_2026-10-25_14-18-00");
+    CHECK(screen(view, Page::Record, false) == Screen::Failed);
+    CHECK(there(view.dir + "/aborted/rec_2026-10-25_14-18-00"));
+    // One stopped part way: into aborted/ too
+    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-19-00", "", true);
+    CHECK(view.failure.why == Why::Stopped && view.info.aborted.size() == 2);
     // Refused at once (a reply with an error): failed with its reason
-    eyecam = eyecamReady(now);
-    session.started(view, 1, "start widen_nolight", now);
-    eyecam::Reply refused;
-    refused.command = "start widen_nolight";
-    refused.error = "プロトコルが見つからない: protocol_widen_nolight.txt";
-    CHECK(session.replied(view, refused));
-    CHECK(view.running == -1 && view.failure.why == Why::Refused);
-    SAME(view.failure.message, refused.error);
-    // The panel restarts while step 2 records: followed on after the load, done
-    session.started(view, 1, "start widen_nolight", now);
-    session.replied(view, ok);
+    {
+        const eyecam::View eyecam = eyecamReady(now);
+        session.started(view, eyecam, Snapshot(), "start contrib", now);
+        eyecam::Reply refused;
+        refused.command = "start contrib";
+        refused.error = "プロトコルが見つからない: protocol_contrib.txt";
+        CHECK(session.replied(view, refused));
+        CHECK(!view.running && view.failure.why == Why::Refused);
+        SAME(view.failure.message, refused.error);
+    }
+    // Read again from the disk: the same
     {
         View again;
         Session restarted;
         restarted.load(again, home);
-        SAME(again.dir, view.dir);
-        CHECK(again.running == 1);
-        const std::string rec2 = makeRecording(home, "rec_2026-10-25_14-08-03", 800, now);
-        now += 70;
-        eyecam.status = status(State::Idle, kGuidedProtocol, now);
-        eyecam.status.sessionDir = rec2;
-        CHECK(restarted.follow(again, eyecam, now, boot, log));
-        SAME(again.info.steps[1].rec, "rec_2026-10-25_14-08-03");
-        SAME(again.info.steps[1].wear, kWearDetected);
-        CHECK(again.info.nextWear.empty());
-        // "I put it back on" for step 3 (only once a step waits for one)
-        CHECK(restarted.rewore(again));
-        CHECK(!restarted.rewore(again));
-        Info onDisk;
-        std::string error;
-        CHECK(readInfo(again.dir, onDisk, error));
-        SAME(onDisk.nextWear, kWearButton);
-        CHECK(onDisk.running == -1);
-        view = again;
-        session.load(view, home);
+        CHECK(again.exists && again.info.recordings.size() == 4 && again.info.aborted.size() == 2);
+        CHECK(again.info.eyewear == Eyewear::Glasses && !consentNeeded(again.info));
     }
-    // Steps 3 and 4 (the free use) done: the end, and its pack
-    for (int step = 2; step < kRequiredSteps; ++step) {
-        if (view.info.nextWear.empty()) CHECK(session.rewore(view));
-        eyecam = eyecamReady(now);
-        SAME(session.startCommand(view, eyecam, step), std::string("start ") + protocolOf(step));
-        session.started(view, step, std::string("start ") + protocolOf(step), now);
-        // (followed only once its start is answered)
-        eyecam::Reply started = ok;
-        started.command = std::string("start ") + protocolOf(step);
-        CHECK(!session.replied(view, started));
-        now += 1;
-        eyecam.status = status(State::Recording, protocolOf(step), now);
-        session.follow(view, eyecam, now, boot, log);
-        const std::string rec =
-            makeRecording(home, step == 2 ? "rec_2026-10-25_14-11-40" : "rec_2026-10-25_14-15-00", 600, now);
-        now += 60;
-        eyecam.status = status(State::Idle, protocolOf(step), now);
-        eyecam.status.sessionDir = rec;
-        CHECK(session.follow(view, eyecam, now, boot, log));
-        CHECK(!view.info.steps[step].rec.empty());
-    }
-    CHECK(requiredDone(view.info) == kRequiredSteps);
-    CHECK(screen(view, false) == Screen::Done);
-    SAME(view.info.steps[3].protocol, kFreeProtocol);
+    // Packed (tar); another recording, packed again: the first pack goes, the recordings stay
     view.compress = false;
-    CHECK(session.pack(view));
+    CHECK(session.pack(view, static_cast<std::time_t>(now)));
     for (int i = 0; i < 3000 && view.info.packed.empty(); ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        session.follow(view, eyecam, now, boot, log);
+        session.follow(view, eyecamReady(now), now, now, log);
     }
-    SAME(view.info.packed, view.dir.substr(home.size() + 1) + ".tar");
-    CHECK(view.info.packedBytes > 0);
-    CHECK(view.totalBytes > view.info.packedBytes);
-    // Deleted: the first screen again, saying so
-    CHECK(session.remove(view));
-    for (int i = 0; i < 3000 && !view.dir.empty(); ++i) {
+    const std::string first = view.info.packed;
+    CHECK(isPackName(first) && view.info.packedCount == 4 && view.info.packedBytes > 0);
+    CHECK(there(view.dir + "/" + first));
+    record(session, view, home, now, eyecamReady(now), "rec_2026-10-25_14-30-00");
+    CHECK(session.pack(view, static_cast<std::time_t>(now) + 60));
+    for (int i = 0; i < 3000 && view.info.packed == first; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        session.follow(view, eyecam, now, boot, log);
+        session.follow(view, eyecamReady(now), now, now, log);
     }
-    CHECK(view.dir.empty() && view.deleted);
-    CHECK(screen(view, false) == Screen::Consent);
-    CHECK(findCurrent(home).empty());
+    CHECK(view.info.packed != first && view.info.packedCount == 5);
+    CHECK(!there(view.dir + "/" + first) && there(view.dir + "/" + view.info.packed));
+    CHECK(there(view.dir + "/rec_2026-10-25_14-02-41/eye_L.raw"));
+    // Deleted: the consent again, saying so
+    CHECK(session.remove(view));
+    for (int i = 0; i < 3000 && view.exists; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        session.follow(view, eyecamReady(now), now, now, log);
+    }
+    CHECK(!view.exists && view.deleted && !there(home + "/" + kFolderName));
+    CHECK(screen(view, Page::Record, false) == Screen::Consent);
+    CHECK(there(home + "/calib_2026-10-25_09-00-00/calib_result.json"));
 }
 
 }  // namespace
 
 int main() {
-    testSteps();
-    testProtocolFiles();
+    testSizes();
+    testProtocolFile();
     testInfo();
     testNames();
+    testHeadsetOff();
     testRunWatch();
-    testWearWatch();
     testScreen();
     testTarHeader();
     testFiles();

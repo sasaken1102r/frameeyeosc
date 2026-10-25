@@ -3001,8 +3001,9 @@ size_t hitsArg(const EyePanel& panel, PanelAction action, int arg) {
 }
 
 void testContrib(const FontSet& fonts) {
-    // "Help train the AI": its row on Debug tools (only while eyecam-rec runs, usable once the cameras are set up),
-    // each screen's buttons in both languages, its recording shown in it, the delete's confirmation, and what closes it
+    // "Record for squint training": its row on Debug tools (only while eyecam-rec runs, usable once the cameras are set
+    // up; "Recordings" once there is a folder), each screen's buttons in both languages, its recording shown in it, the
+    // delete's confirmation, and what closes it
     {
         EyePanel panel(fonts);
         panel.setTab(PanelTab::Advanced);
@@ -3015,6 +3016,8 @@ void testContrib(const FontSet& fonts) {
         panel.render(notSetUp);
         CHECK(hits(panel, PanelAction::ContribOpen).empty());
     }
+    const int record = static_cast<int>(contrib::Page::Record);
+    const int manage = static_cast<int>(contrib::Page::Manage);
     for (const Language language : {Language::Ja, Language::En}) {
         EyePanel panel(fonts);
         panel.setTab(PanelTab::Advanced);
@@ -3022,97 +3025,93 @@ void testContrib(const FontSet& fonts) {
         PanelModel m = modelWith(Lids::Both, true);
         m.language = language;
         m.contrib.loaded = true;
+        m.contrib.dir = "/home/steamos/eyecam/contrib";
         m.contrib.freeBytes = 30'000'000'000LL;
         panel.render(m);
-        CHECK(press(panel, PanelAction::ContribOpen).action == PanelAction::ContribOpen);
-        CHECK(panel.contribOpen() && !panel.advPageShown());
-        // The consent: "I'll help", the cross and "Cancel"; not without the room for it
+        CHECK(hitsArg(panel, PanelAction::ContribOpen, record) == 1);
+        CHECK(hitsArg(panel, PanelAction::ContribOpen, manage) == 0);
+        CHECK(pressArg(panel, PanelAction::ContribOpen, record).action == PanelAction::ContribOpen);
+        CHECK(panel.contribOpen() && panel.contribPage() == contrib::Page::Record && !panel.advPageShown());
+        // The consent: "Agree and continue", the cross and "Cancel", no sub-tabs
         panel.render(m);
-        CHECK(hits(panel, PanelAction::ContribConsent).size() == 1);
+        CHECK(hitsArg(panel, PanelAction::ContribAgree, 1) == 1);
         CHECK(hits(panel, PanelAction::ContribClose).size() == 2);
-        CHECK(hits(panel, PanelAction::AdvancedPage).empty());
-        m.contrib.freeBytes = 5'000'000'000LL;
+        CHECK(hits(panel, PanelAction::AdvancedPage).empty() && hits(panel, PanelAction::ContribStart).empty());
+        CHECK(pressArg(panel, PanelAction::ContribAgree, 1).action == PanelAction::None);
+        CHECK(panel.contribAgreed());
+        // ...then glasses or inserts: four answers (the caller writes the consent with it), and "Back"
         panel.render(m);
-        CHECK(hits(panel, PanelAction::ContribConsent).empty());
-        m.contrib.freeBytes = 30'000'000'000LL;
-        // Begun: the first step's start (no re-wear before it); none while a command waits
-        m.contrib.dir = "/home/steamos/eyecam/contrib_2026-10-25_14-02-10";
+        CHECK(hits(panel, PanelAction::ContribEyewear).size() == 4);
+        CHECK(hitsArg(panel, PanelAction::ContribAgree, 0) == 1);
+        const int inserts = static_cast<int>(contrib::Eyewear::Inserts);
+        const PanelHit answer = pressArg(panel, PanelAction::ContribEyewear, inserts);
+        CHECK(answer.action == PanelAction::ContribEyewear && answer.arg == inserts);
+        CHECK(!panel.contribAgreed());
+        m.contrib.exists = true;
+        m.contrib.info.consentVersion = contrib::kConsentVersion;
+        m.contrib.info.eyewear = contrib::Eyewear::Inserts;
+        // The start; none while a command waits or without the room
         panel.render(m);
-        CHECK(hitsArg(panel, PanelAction::ContribStart, 0) == 1);
-        CHECK(hits(panel, PanelAction::ContribDelete).size() == 1);
+        CHECK(hits(panel, PanelAction::ContribStart).size() == 1);
         m.eyecam.busy = true;
         panel.render(m);
         CHECK(hits(panel, PanelAction::ContribStart).empty());
         m.eyecam.busy = false;
-        // After it: the re-wear, "I put it back on" only once it can be pressed; then the second step's start
-        m.contrib.info.steps[0].rec = "rec_2026-10-25_14-02-41";
+        m.contrib.freeBytes = 2'000'000'000LL;
         panel.render(m);
-        CHECK(hits(panel, PanelAction::ContribStart).empty() && hits(panel, PanelAction::ContribRewore).empty());
-        m.contrib.fallbackReady = true;
-        panel.render(m);
-        CHECK(hits(panel, PanelAction::ContribRewore).size() == 1);
-        m.contrib.info.nextWear = contrib::kWearDetected;
-        panel.render(m);
-        CHECK(hitsArg(panel, PanelAction::ContribStart, 1) == 1);
+        CHECK(hits(panel, PanelAction::ContribStart).empty());
+        m.contrib.freeBytes = 30'000'000'000LL;
         // Its recording runs in the sheet: the eye capture's run with its "Stop"
-        m.contrib.running = 1;
+        m.contrib.running = true;
         eyecam::Status& s = m.eyecam.status;
         s.state = eyecam::State::Recording;
         s.stateText = "recording";
         s.locked = true;
-        s.protocol = contrib::kGuidedProtocol;
-        s.stepLabel = "widen";
-        s.stepCount = 14;
-        s.stepIndex = 3;
-        s.elapsedS = 10;
-        s.totalS = 60.5;
+        s.protocol = contrib::kProtocol;
+        s.stepLabel = "look_left";
+        s.stepCount = 23;
+        s.stepIndex = 19;
+        s.elapsedS = 80;
+        s.totalS = 94.5;
         s.stepRemainingS = 3;
         panel.render(m);
         CHECK(hits(panel, PanelAction::EyecamStop).size() == 1);
         CHECK(hits(panel, PanelAction::ContribStart).empty() && hits(panel, PanelAction::ContribDelete).empty());
         s.state = eyecam::State::Idle;
         s.stateText = "idle";
-        m.contrib.running = -1;
-        // It didn't finish: "Record again" for that step
-        m.contrib.failure.step = 1;
-        m.contrib.failure.why = contrib::Why::Stopped;
+        m.contrib.running = false;
+        // It didn't finish: "Record again"
+        m.contrib.failure.shown = true;
+        m.contrib.failure.why = contrib::Why::Incomplete;
+        m.contrib.failure.message = "cues.csv";
         panel.render(m);
-        CHECK(hitsArg(panel, PanelAction::ContribStart, 1) == 1);
+        CHECK(hits(panel, PanelAction::ContribStart).size() == 1);
         m.contrib.failure = contrib::Failure();
-        // All four: pack, delete, the optional one
-        for (int step = 1; step < contrib::kRequiredSteps; ++step) {
-            m.contrib.info.steps[step].rec = "rec_2026-10-25_14-05-12";
-        }
-        m.contrib.info.nextWear.clear();
+        // Recorded: pack, delete, close (and the cross)
+        m.contrib.justDone = true;
+        m.contrib.info.recordings.resize(2);
+        m.contrib.info.recordings[0].bytes = m.contrib.info.recordings[1].bytes = 2'700'000'000LL;
         panel.render(m);
-        CHECK(hits(panel, PanelAction::ContribPack).size() == 1);
-        CHECK(hits(panel, PanelAction::ContribDelete).size() == 1);
-        CHECK(hitsArg(panel, PanelAction::ContribExtra, 1) == 1);
-        CHECK(hits(panel, PanelAction::ContribStart).empty());
-        // ...the optional one: its re-wear first, then its start and "Back"
-        CHECK(pressArg(panel, PanelAction::ContribExtra, 1).action == PanelAction::None);
-        CHECK(panel.contribExtra());
-        panel.render(m);
-        CHECK(hits(panel, PanelAction::ContribRewore).size() == 1);
-        m.contrib.info.nextWear = contrib::kWearButton;
-        panel.render(m);
-        CHECK(hitsArg(panel, PanelAction::ContribStart, 4) == 1);
-        CHECK(pressArg(panel, PanelAction::ContribExtra, 0).action == PanelAction::None);
-        CHECK(!panel.contribExtra());
-        // Packing or packed: no second one, and no delete while packing
+        CHECK(hits(panel, PanelAction::ContribPack).size() == 1 && hits(panel, PanelAction::ContribDelete).size() == 1);
+        CHECK(hits(panel, PanelAction::ContribClose).size() == 2 && hits(panel, PanelAction::ContribStart).empty());
+        // Packing: no second one, no delete; packed with all of them: none until there are more
         m.contrib.progress.job = contrib::Job::Pack;
         m.contrib.progress.running = true;
         panel.render(m);
         CHECK(hits(panel, PanelAction::ContribPack).empty() && hits(panel, PanelAction::ContribDelete).empty());
         m.contrib.progress = contrib::Progress();
-        m.contrib.info.packed = "contrib_2026-10-25_14-02-10.tar.zst";
+        m.contrib.info.packed = "contrib_2026-10-25_14-25-02.tar.zst";
+        m.contrib.info.packedCount = 2;
         panel.render(m);
         CHECK(hits(panel, PanelAction::ContribPack).empty());
-        // Deleting: its confirmation first (only its buttons), "Cancel" back, then the delete
+        m.contrib.info.recordings.resize(3);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).size() == 1);
+        // Deleting: its confirmation first (only its buttons), "Cancel" back, then the delete (back to "Record")
         CHECK(press(panel, PanelAction::ContribDelete).action == PanelAction::None);
         panel.render(m);
         CHECK(hits(panel, PanelAction::ContribDeleteConfirm).size() == 1);
-        CHECK(hits(panel, PanelAction::ContribDelete).empty() && hits(panel, PanelAction::ContribExtra).empty());
+        CHECK(hits(panel, PanelAction::ContribDelete).empty() && hits(panel, PanelAction::ContribPack).empty());
         CHECK(press(panel, PanelAction::ContribDeleteCancel).action == PanelAction::None);
         panel.render(m);
         CHECK(hits(panel, PanelAction::ContribDeleteConfirm).empty());
@@ -3120,13 +3119,18 @@ void testContrib(const FontSet& fonts) {
         press(panel, PanelAction::ContribDelete);
         panel.render(m);
         CHECK(press(panel, PanelAction::ContribDeleteConfirm).action == PanelAction::ContribDeleteConfirm);
-        // A tab closes it; the sub-tabs show again
+        // A tab closes it; the row offers "Recordings" now there is a folder, which opens the end's screen
         pressTab(panel, PanelTab::Basic);
         CHECK(!panel.contribOpen());
         panel.render(m);
         pressTab(panel, PanelTab::Advanced);
+        m.contrib.justDone = false;
         panel.render(m);
-        CHECK(panel.advPageShown() && hits(panel, PanelAction::ContribOpen).size() == 1);
+        CHECK(panel.advPageShown() && hitsArg(panel, PanelAction::ContribOpen, manage) == 1);
+        pressArg(panel, PanelAction::ContribOpen, manage);
+        CHECK(panel.contribPage() == contrib::Page::Manage);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).size() == 1 && hits(panel, PanelAction::ContribStart).empty());
     }
 }
 

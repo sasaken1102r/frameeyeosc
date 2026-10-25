@@ -93,6 +93,7 @@ Step parseStep(const std::string& label) {
     } kSteps[] = {
         {"lead_in", Step::LeadIn}, {"normal", Step::Normal}, {"widen", Step::Widen},       {"close", Step::Close},
         {"squint", Step::Squint}, {"look_up", Step::LookUp},   {"look_down", Step::LookDown},
+        {"look_left", Step::LookLeft}, {"look_right", Step::LookRight},
         {"bright", Step::Bright}, {"dark", Step::Dark},         {"end", Step::End},
     };
     for (const auto& item : kSteps) {
@@ -139,6 +140,12 @@ Status parseStatus(const std::string& text, double mtime) {
     status.protocol = readText(root, "protocol");
     const JsonValue* aborted = root.get("last_session_aborted");
     status.lastSessionAborted = aborted != nullptr && aborted->isBool() && aborted->boolean;
+    const JsonValue* offCount = root.get("headset_off_count");
+    const JsonValue* started = root.get("started_unix");
+    status.hasHeadsetOff = offCount != nullptr && offCount->isNumber() && started != nullptr && started->isNumber() &&
+                           offCount->number >= 0;
+    status.headsetOffCount = status.hasHeadsetOff ? static_cast<long long>(offCount->number) : 0;
+    status.startedUnix = status.hasHeadsetOff ? started->number : 0.0;
     // Bits beyond the two known ones are kept, but only the two are used
     status.calibState = std::max(0, readInt(root, "calib_state", 0));
     const JsonValue* recalib = root.get("recalib_suggested");
@@ -603,6 +610,8 @@ std::string chipLabel(const UiText& t, const std::string& label) {
         case Step::Squint: return t.setupChipSquint;
         case Step::LookUp: return t.setupChipLookUp;
         case Step::LookDown: return t.setupChipLookDown;
+        case Step::LookLeft: return t.setupChipLookLeft;
+        case Step::LookRight: return t.setupChipLookRight;
         case Step::Bright: return t.setupChipBright;
         case Step::Dark: return t.setupChipDark;
         case Step::LeadIn:
@@ -794,6 +803,8 @@ std::string instruction(const UiText& t, const std::string& label) {
         case Step::Squint: return t.eyecamStepSquint;
         case Step::LookUp: return t.eyecamStepLookUp;
         case Step::LookDown: return t.eyecamStepLookDown;
+        case Step::LookLeft: return t.eyecamStepLookLeft;
+        case Step::LookRight: return t.eyecamStepLookRight;
         case Step::Bright: return t.eyecamStepBright;
         case Step::Dark: return t.eyecamStepDark;
         case Step::End: return t.eyecamStepEnd;

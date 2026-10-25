@@ -59,7 +59,8 @@ enum class State {
 };
 
 /** One step's instruction ("step_label"). */
-enum class Step { LeadIn, Normal, Widen, Close, Squint, LookUp, LookDown, Bright, Dark, End, Unknown };
+enum class Step { LeadIn, Normal, Widen, Close, Squint, LookUp, LookDown, LookLeft, LookRight, Bright, Dark, End,
+                  Unknown };
 
 /** The full-view overlay during the bright and dark steps. */
 enum class Fill { None, Bright, Dark };
@@ -217,6 +218,9 @@ struct Status {
     std::string protocol;
     bool lastSessionAborted = false;  ///< "last_session_aborted": the last recording ended early (its meta.txt says
                                       ///< aborted=1; false when missing)
+    bool hasHeadsetOff = false;    ///< "headset_off_count" and "started_unix" are there (a newer eyecam-rec)
+    long long headsetOffCount = 0; ///< ...the times the headset looked taken off and was worn again since it started
+    double startedUnix = 0.0;      ///< ...when this eyecam-rec started (Unix seconds; the count is per run)
     int calibState = 0;            ///< kCalibWearBit | kCalibUserBit | kCalibAutoBit (0 when missing)
     bool recalibSuggested = false; ///< drifted since the calibration: "calib wear" again
     bool live = false;             ///< the eyelids are read from the cameras live

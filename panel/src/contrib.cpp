@@ -1,6 +1,6 @@
-// "Help train the AI": the contribution's progress (info.txt), which step comes next and whether it fits, following its
-// recordings and the re-wear between them in eyecam-rec's status, moving the recordings into its folder, and packing
-// or deleting it on a thread of its own.
+// "Record for squint training": its info.txt (sections added for the consent, each recording, each try that didn't
+// finish and each pack), whether a recording fits, following it in eyecam-rec's status, checking its files and moving
+// it into the folder, and packing or deleting the folder on a thread of its own.
 #include "contrib.h"
 
 #include "file_io.h"
@@ -20,7 +20,6 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
-#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,16 +34,20 @@ namespace {
 constexpr size_t kChunk = 1 << 20;
 /** The packing thread's and zstd's niceness (the panel and VR come first). */
 constexpr int kNice = 10;
+/** The most of info.txt that is read (a section is under 1 KB). */
+constexpr size_t kMaxInfoBytes = 4 << 20;
+/** The most of a calibration result that is copied. */
+constexpr size_t kMaxCalibBytes = 1 << 20;
 
 /**
- * Whether text from a position is "YYYY-MM-DD_HH-MM-SS", and nothing after it.
+ * Whether text from a position is "YYYY-MM-DD_HH-MM-SS".
  * @param text the text
  * @param at where it starts
  * @return true if it is
  */
 bool stampAt(const std::string& text, size_t at) {
     static const char* const shape = "dddd-dd-dd_dd-dd-dd";
-    if (text.size() != at + 19) return false;
+    if (text.size() < at + 19) return false;
     for (size_t i = 0; i < 19; ++i) {
         const char c = text[at + i];
         if (shape[i] == 'd' ? !std::isdigit(static_cast<unsigned char>(c)) : c != shape[i]) return false;
@@ -78,6 +81,16 @@ std::vector<std::string> names(const std::string& dir) {
 bool isRealDir(const std::string& path) {
     struct stat st {};
     return ::lstat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/**
+ * Whether a path is a regular file itself (not a link to one).
+ * @param path the path
+ * @return true if it is
+ */
+bool isRealFile(const std::string& path) {
+    struct stat st {};
+    return ::lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
 }
 
 /**
@@ -115,6 +128,32 @@ long long readInteger(const std::string& text, long long fallback) {
 }
 
 /**
+ * A number from info.txt.
+ * @param text the value
+ * @param fallback for anything else
+ * @return the number
+ */
+double readNumber(const std::string& text, double fallback) {
+    if (text.empty()) return fallback;
+    char* end = nullptr;
+    const double value = std::strtod(text.c_str(), &end);
+    return end != nullptr && *end == '\0' ? value : fallback;
+}
+
+/**
+ * A number as info.txt writes it.
+ * @param value the number (NaN: "unknown")
+ * @param decimals how many decimals
+ * @return the text
+ */
+std::string number(double value, int decimals) {
+    if (!std::isfinite(value)) return "unknown";
+    char text[64];
+    std::snprintf(text, sizeof(text), "%.*f", decimals, value);
+    return text;
+}
+
+/**
  * Write all of a buffer, to a file or (without SIGPIPE) to a socket.
  * @param fd where
  * @param data the bytes
@@ -135,6 +174,25 @@ bool writeAll(int fd, const char* data, size_t size, bool socket) {
 }
 
 /**
+ * Write a whole small file (a temporary one, then renamed over it).
+ * @param path where
+ * @param text what
+ * @return true if written
+ */
+bool writeFile(const std::string& path, const std::string& text) {
+    const std::string temp = path + ".tmp";
+    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return false;
+    const bool ok = writeAll(fd, text.data(), text.size(), false) && ::fsync(fd) == 0;
+    ::close(fd);
+    if (!ok || std::rename(temp.c_str(), path.c_str()) != 0) {
+        ::unlink(temp.c_str());
+        return false;
+    }
+    return true;
+}
+
+/**
  * Put an octal number into a tar header field: digits, then a NUL.
  * @param field the field
  * @param width its width
@@ -150,53 +208,41 @@ void putOctal(char* field, size_t width, unsigned long long value) {
 
 }  // namespace
 
-const char* protocolOf(int step) {
-    return isFree(step) ? kFreeProtocol : kGuidedProtocol;
-}
-
-bool isFree(int step) {
-    return step >= 3;
-}
-
-bool needsRewear(int step) {
-    return step > 0;
-}
-
-long long estimateBytes(int step, double fps) {
-    const double rate = std::isfinite(fps) && fps > 0 ? fps : kDefaultFps;
-    const double seconds = (isFree(step) ? kFreeSec : kGuidedSec) + kTailSec;
-    return static_cast<long long>(seconds * 2 * rate * kFrameBytes);
-}
-
-int nextStep(const Info& info, bool extra) {
-    for (int step = 0; step < kRequiredSteps; ++step) {
-        if (info.steps[step].rec.empty()) return step;
+const char* eyewearName(Eyewear eyewear) {
+    switch (eyewear) {
+        case Eyewear::None: return "none";
+        case Eyewear::Glasses: return "glasses";
+        case Eyewear::Inserts: return "inserts";
+        case Eyewear::NoAnswer: return "no_answer";
+        case Eyewear::Unasked: break;
     }
-    return extra && info.steps[kRequiredSteps].rec.empty() ? kRequiredSteps : kStepCount;
+    return "";
 }
 
-int requiredDone(const Info& info) {
-    int done = 0;
-    for (int step = 0; step < kRequiredSteps; ++step) done += info.steps[step].rec.empty() ? 0 : 1;
-    return done;
+Eyewear parseEyewear(const std::string& name) {
+    for (const Eyewear e : {Eyewear::None, Eyewear::Glasses, Eyewear::Inserts, Eyewear::NoAnswer}) {
+        if (name == eyewearName(e)) return e;
+    }
+    return Eyewear::Unasked;
+}
+
+bool consentNeeded(const Info& info) {
+    return info.consentVersion < kConsentVersion || info.eyewear == Eyewear::Unasked;
+}
+
+long long estimateBytes(double fps) {
+    const double rate = std::isfinite(fps) && fps > 0 ? fps : kDefaultFps;
+    return static_cast<long long>((kProtocolSec + kTailSec) * 2 * rate * kFrameBytes);
+}
+
+bool fits(long long freeBytes, double fps) {
+    return freeBytes < 0 || freeBytes >= estimateBytes(fps) + kMarginBytes;
 }
 
 long long recordedBytes(const Info& info) {
     long long total = 0;
-    for (const Step& step : info.steps) total += step.rec.empty() ? 0 : step.bytes;
+    for (const Recording& r : info.recordings) total += r.bytes;
     return total;
-}
-
-long long neededBytes(const Info& info, double fps) {
-    long long total = kMarginBytes;
-    for (int step = 0; step < kRequiredSteps; ++step) {
-        if (info.steps[step].rec.empty()) total += estimateBytes(step, fps);
-    }
-    return total;
-}
-
-bool fits(int step, long long freeBytes, double fps) {
-    return freeBytes < 0 || freeBytes >= estimateBytes(step, fps) + kMarginBytes;
 }
 
 long long packNeedBytes(const Info& info, bool compressed) {
@@ -204,102 +250,136 @@ long long packNeedBytes(const Info& info, bool compressed) {
     return static_cast<long long>(recordedBytes(info) * share) + kMarginBytes;
 }
 
-std::string formatInfo(const Info& info) {
+std::string headerText() {
+    return "# frameeyeosc: eye-camera recordings for training eyecam's squint and half-shut check, made with the "
+           "panel's\n"
+           "# \"Record for squint training\" (protocol_contrib.txt). Each recording is its folder here, as eyecam-rec "
+           "writes it\n"
+           "# (cues.csv, valve.csv, frames.csv, meta.txt, eye_L.raw, eye_R.raw), with the calibration result at its "
+           "start beside\n"
+           "# it. A section is added for the consent, each recording, each try that didn't finish (in aborted/, never "
+           "packed)\n"
+           "# and each pack. headset_off: whether the headset was taken off since the recording before, from "
+           "eyecam-rec's\n"
+           "# headset_off_count (the eye video stopped or the proximity sensor read off for 10 s or more, then worn "
+           "again; only\n"
+           "# within one run of eyecam-rec, else unknown). No names or other personal data are kept.\n"
+           "format=2\n";
+}
+
+std::string consentSection(const std::string& time, int version, Eyewear eyewear) {
+    return "\n[consent]\ntime=" + time + "\nversion=" + std::to_string(version) + "\neyewear=" + eyewearName(eyewear) +
+           "\n";
+}
+
+std::string recordingSection(const Recording& r) {
     std::ostringstream out;
-    out << "# frameeyeosc: eye-camera recordings for the half-shut check (AI), made with the panel's \"Help train the "
-           "AI\".\n"
-           "# Each step's recording is its folder here, as eyecam-rec writes it (cues.csv, valve.csv, frames.csv, "
-           "meta.txt,\n"
-           "# eye_L.raw, eye_R.raw). Steps 1-3 follow the protocol without light, 4 (and the optional 5) are free "
-           "use, each in\n"
-           "# a wear of its own (wear: first / detected = seen off and on again / button = the user said so). "
-           "aborted/ holds\n"
-           "# tries that didn't finish (never packed). No names or other personal data are kept.\n";
-    out << "format=1\n";
-    out << "app_version=" << info.appVersion << "\n";
-    out << "consent=" << info.consent << "\n";
-    for (int i = 0; i < kStepCount; ++i) {
-        const Step& step = info.steps[i];
-        const std::string key = "step" + std::to_string(i + 1) + "_";
-        out << key << "protocol=" << (step.protocol.empty() ? protocolOf(i) : step.protocol.c_str()) << "\n";
-        if (step.rec.empty()) continue;
-        out << key << "rec=" << step.rec << "\n";
-        out << key << "bytes=" << step.bytes << "\n";
-        out << key << "wear=" << step.wear << "\n";
-        out << key << "done=" << step.done << "\n";
-    }
-    if (!info.nextWear.empty()) out << "next_wear=" << info.nextWear << "\n";
-    if (info.running >= 0) {
-        char since[64];
-        std::snprintf(since, sizeof(since), "%.3f", info.runningSince);
-        out << "running=" << info.running + 1 << "\n";
-        out << "running_since=" << since << "\n";
-    }
-    for (const std::string& aborted : info.aborted) out << "aborted=" << aborted << "\n";
-    if (!info.packed.empty()) {
-        out << "packed=" << info.packed << "\n";
-        out << "packed_bytes=" << info.packedBytes << "\n";
-    }
+    out << "\n[recording]\n";
+    out << "rec=" << r.rec << "\n";
+    out << "protocol=" << r.protocol << "\n";
+    out << "start=" << r.start << "\n";
+    out << "start_unix=" << number(r.startUnix, 3) << "\n";
+    out << "end_unix=" << number(r.endUnix, 3) << "\n";
+    out << "bytes=" << r.bytes << "\n";
+    out << "app_version=" << r.appVersion << "\n";
+    out << "eyecam_rec_sha256=" << (r.eyecamRec.empty() ? std::string("unknown") : r.eyecamRec) << "\n";
+    out << "lid_veto=" << r.lidVeto << "\n";
+    out << "widen=" << r.widen << "\n";
+    out << "widen_sensitivity=" << r.widenSensitivity << "\n";
+    out << "camera_lids=" << r.cameraLids << "\n";
+    out << "eyewear=" << r.eyewear << "\n";
+    out << "camera_fps=" << number(r.fps, 1) << "\n";
+    out << "minutes_since_previous=" << r.sincePrevious << "\n";
+    out << "headset_off=" << r.headsetOff << "\n";
+    out << "headset_off_count_start=" << r.offCountStart << "\n";
+    out << "headset_off_count_end=" << r.offCountEnd << "\n";
+    out << "eyecam_started_unix=" << number(r.eyecamStarted > 0 ? r.eyecamStarted : NAN, 3) << "\n";
+    out << "calib_result=" << r.calib << "\n";
     return out.str();
 }
 
-bool parseInfo(const std::string& text, Info& info) {
+std::string abortedSection(const std::string& name, const std::string& why) {
+    return "\n[aborted]\nrec=" + name + "\nwhy=" + why + "\n";
+}
+
+std::string packedSection(const std::string& file, int count, long long bytes) {
+    return "\n[packed]\nfile=" + file + "\nrecordings=" + std::to_string(count) + "\nbytes=" + std::to_string(bytes) +
+           "\n";
+}
+
+void parseInfo(const std::string& text, Info& info) {
     info = Info();
     std::istringstream lines(text);
     std::string line;
+    std::string section;
+    std::string abortedRec;
     while (std::getline(lines, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty() || line[0] == '#') continue;
+        if (line.front() == '[' && line.back() == ']') {
+            section = line.substr(1, line.size() - 2);
+            if (section == "recording") info.recordings.push_back(Recording());
+            if (section == "consent") {
+                info.consentVersion = 0;
+                info.consent.clear();
+                info.eyewear = Eyewear::Unasked;
+            }
+            continue;
+        }
         const size_t equals = line.find('=');
         if (equals == std::string::npos) continue;
         const std::string key = line.substr(0, equals);
         const std::string value = line.substr(equals + 1);
-        if (key == "app_version") {
-            info.appVersion = value;
-        } else if (key == "consent") {
-            info.consent = value;
-        } else if (key == "next_wear") {
-            info.nextWear = value;
-        } else if (key == "running") {
-            const long long step = readInteger(value, 0);
-            info.running = step >= 1 && step <= kStepCount ? static_cast<int>(step - 1) : -1;
-        } else if (key == "running_since") {
-            info.runningSince = std::strtod(value.c_str(), nullptr);
-        } else if (key == "aborted") {
-            info.aborted.push_back(value);
-        } else if (key == "packed") {
-            info.packed = value;
-        } else if (key == "packed_bytes") {
-            info.packedBytes = readInteger(value, 0);
-        } else if (key.size() > 6 && key.compare(0, 4, "step") == 0 && key[5] == '_' && key[4] >= '1' &&
-                   key[4] < '1' + kStepCount) {
-            Step& step = info.steps[key[4] - '1'];
-            const std::string field = key.substr(6);
-            if (field == "protocol") step.protocol = value;
-            if (field == "rec") step.rec = value;
-            if (field == "bytes") step.bytes = readInteger(value, 0);
-            if (field == "wear") step.wear = value;
-            if (field == "done") step.done = value;
+        if (section == "consent") {
+            if (key == "time") info.consent = value;
+            if (key == "version") info.consentVersion = static_cast<int>(readInteger(value, 0));
+            if (key == "eyewear") info.eyewear = parseEyewear(value);
+        } else if (section == "recording" && !info.recordings.empty()) {
+            Recording& r = info.recordings.back();
+            if (key == "rec") r.rec = value;
+            if (key == "protocol") r.protocol = value;
+            if (key == "start") r.start = value;
+            if (key == "start_unix") r.startUnix = readNumber(value, 0.0);
+            if (key == "end_unix") r.endUnix = readNumber(value, 0.0);
+            if (key == "bytes") r.bytes = readInteger(value, 0);
+            if (key == "app_version") r.appVersion = value;
+            if (key == "eyecam_rec_sha256") r.eyecamRec = value == "unknown" ? std::string() : value;
+            if (key == "lid_veto") r.lidVeto = value;
+            if (key == "widen") r.widen = value;
+            if (key == "widen_sensitivity") r.widenSensitivity = value;
+            if (key == "camera_lids") r.cameraLids = value;
+            if (key == "eyewear") r.eyewear = value;
+            if (key == "camera_fps") r.fps = readNumber(value, NAN);
+            if (key == "minutes_since_previous") r.sincePrevious = value;
+            if (key == "headset_off") r.headsetOff = value;
+            if (key == "headset_off_count_start") r.offCountStart = readInteger(value, -1);
+            if (key == "headset_off_count_end") r.offCountEnd = readInteger(value, -1);
+            if (key == "eyecam_started_unix") r.eyecamStarted = readNumber(value, 0.0);
+            if (key == "calib_result") r.calib = value;
+        } else if (section == "aborted") {
+            if (key == "rec") abortedRec = value;
+            if (key == "why") info.aborted.push_back(abortedRec + " " + value);
+        } else if (section == "packed") {
+            if (key == "file") info.packed = value;
+            if (key == "recordings") info.packedCount = static_cast<int>(readInteger(value, 0));
+            if (key == "bytes") info.packedBytes = readInteger(value, 0);
         }
     }
-    // A recording's name that isn't one (written by hand) doesn't count: that step is done again
-    for (Step& step : info.steps) {
-        const std::string name = step.rec;
-        if (!name.empty() && !isRecordingName(name)) step.rec.clear();
-    }
-    return !info.consent.empty();
-}
-
-bool isFolderName(const std::string& name) {
-    return name.compare(0, 8, "contrib_") == 0 && stampAt(name, 8);
+    // A recording's name that isn't one (written by hand) doesn't count
+    info.recordings.erase(std::remove_if(info.recordings.begin(), info.recordings.end(),
+                                         [](const Recording& r) { return !isRecordingName(r.rec); }),
+                          info.recordings.end());
+    if (!isPackName(info.packed)) info.packed.clear();
 }
 
 bool isRecordingName(const std::string& name) {
-    return name.compare(0, 4, "rec_") == 0 && stampAt(name, 4);
+    return name.size() == 23 && name.compare(0, 4, "rec_") == 0 && stampAt(name, 4);
 }
 
-std::string folderName(std::time_t when) {
-    return "contrib_" + recorder::fileStamp(when);
+bool isPackName(const std::string& name) {
+    if (name.compare(0, 8, "contrib_") != 0 || !stampAt(name, 8)) return false;
+    const std::string rest = name.substr(27);
+    return rest == ".tar.zst" || rest == ".tar";
 }
 
 std::string localTime(std::time_t when, bool zone) {
@@ -315,82 +395,21 @@ std::string defaultHome() {
     return std::string(home != nullptr ? home : "") + "/eyecam";
 }
 
-std::string findCurrent(const std::string& home) {
-    std::vector<std::string> found = names(home);
-    for (auto name = found.rbegin(); name != found.rend(); ++name) {
-        if (!isFolderName(*name) || !isRealDir(home + "/" + *name)) continue;
-        Info info;
-        std::string error;
-        if (readInfo(home + "/" + *name, info, error)) return home + "/" + *name;
-    }
-    return "";
-}
-
-bool readInfo(const std::string& dir, Info& info, std::string& error) {
-    std::string text;
+bool appendInfo(const std::string& dir, const std::string& text, std::string& error) {
     const std::string path = dir + "/" + kInfoFile;
-    if (!file_io::read(path, text, 64 * 1024)) {
-        error = "can't read " + recorder::shortPath(path) + ": " + std::strerror(errno);
-        return false;
-    }
-    if (!parseInfo(text, info)) {
-        error = recorder::shortPath(path) + " has no consent";
-        return false;
-    }
-    return true;
-}
-
-bool writeInfo(const std::string& dir, const Info& info, std::string& error) {
-    const std::string path = dir + "/" + kInfoFile;
-    const std::string temp = path + ".tmp";
-    const std::string text = formatInfo(info);
-    const int fd = ::open(temp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    const bool fresh = ::access(path.c_str(), F_OK) != 0;
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
     if (fd < 0) {
-        error = "can't write " + recorder::shortPath(temp) + ": " + std::strerror(errno);
+        error = "can't write " + recorder::shortPath(path) + ": " + std::strerror(errno);
         return false;
     }
-    // (on the disk before the rename, so a crash never leaves an empty one)
-    if (!writeAll(fd, text.data(), text.size(), false) || ::fsync(fd) != 0) {
-        error = "can't write " + recorder::shortPath(temp) + ": " + std::strerror(errno);
+    const std::string all = fresh ? headerText() + text : text;
+    if (!writeAll(fd, all.data(), all.size(), false) || ::fsync(fd) != 0) {
+        error = "can't write " + recorder::shortPath(path) + ": " + std::strerror(errno);
         ::close(fd);
-        ::unlink(temp.c_str());
         return false;
     }
     ::close(fd);
-    if (std::rename(temp.c_str(), path.c_str()) != 0) {
-        error = "can't replace " + recorder::shortPath(path) + ": " + std::strerror(errno);
-        ::unlink(temp.c_str());
-        return false;
-    }
-    return true;
-}
-
-bool create(const std::string& home, const std::string& version, std::time_t now, std::string& dir, Info& info,
-            std::string& error) {
-    if (::mkdir(home.c_str(), 0755) != 0 && errno != EEXIST) {
-        error = "can't create " + recorder::shortPath(home) + ": " + std::strerror(errno);
-        return false;
-    }
-    // (a second one in the same second gets the next second's name)
-    std::string path;
-    for (int later = 0;; ++later) {
-        path = home + "/" + folderName(now + later);
-        if (::mkdir(path.c_str(), 0755) == 0) break;
-        if (errno != EEXIST || later >= 60) {
-            error = "can't create " + recorder::shortPath(path) + ": " + std::strerror(errno);
-            return false;
-        }
-    }
-    Info made;
-    made.appVersion = version;
-    made.consent = localTime(now, true);
-    for (int step = 0; step < kStepCount; ++step) made.steps[step].protocol = protocolOf(step);
-    if (!writeInfo(path, made, error)) {
-        ::rmdir(path.c_str());
-        return false;
-    }
-    dir = path;
-    info = made;
     return true;
 }
 
@@ -413,6 +432,14 @@ long long folderBytes(const std::string& path) {
         }
     }
     return total;
+}
+
+std::vector<std::string> missingFiles(const std::string& dir) {
+    std::vector<std::string> missing;
+    for (const char* file : kRequiredFiles) {
+        if (!isRealFile(dir + "/" + file)) missing.push_back(file);
+    }
+    return missing;
 }
 
 bool takeRecording(const std::string& home, const std::string& dir, const std::string& sessionDir, bool aborted,
@@ -443,8 +470,28 @@ bool takeRecording(const std::string& home, const std::string& dir, const std::s
     return true;
 }
 
-void RunWatch::begin(int step, const std::string& protocol, double sentUnix) {
-    step_ = step;
+std::string newestCalibResult(const std::string& home) {
+    std::vector<std::string> found = names(home);
+    for (auto name = found.rbegin(); name != found.rend(); ++name) {
+        if (name->compare(0, 6, "calib_") != 0 || !stampAt(*name, 6)) continue;
+        std::string text;
+        if (file_io::read(home + "/" + *name + "/calib_result.json", text, kMaxCalibBytes) && !text.empty()) {
+            return text;
+        }
+    }
+    return "";
+}
+
+std::string headsetOffBetween(const Recording& before, long long offCountStart, double eyecamStarted) {
+    if (before.offCountEnd < 0 || offCountStart < 0 || before.eyecamStarted <= 0 || eyecamStarted <= 0 ||
+        std::fabs(before.eyecamStarted - eyecamStarted) > 1.0) {
+        return "unknown";
+    }
+    return offCountStart > before.offCountEnd ? "yes" : "no";
+}
+
+void RunWatch::begin(const std::string& protocol, double sentUnix) {
+    active_ = true;
     protocol_ = protocol;
     sent_ = sentUnix;
     seen_ = false;
@@ -454,7 +501,7 @@ void RunWatch::begin(int step, const std::string& protocol, double sentUnix) {
 RunEnd RunWatch::follow(const eyecam::Status& s, bool fresh, double nowUnix, double sessionMtime) {
     using eyecam::State;
     RunEnd end;
-    if (step_ < 0) return end;
+    if (!active_) return end;
     // eyecam-rec gone (or stalled) for long: nothing will come of it
     if (!fresh) {
         if (staleSince_ < 0) staleSince_ = nowUnix;
@@ -471,7 +518,7 @@ RunEnd RunWatch::follow(const eyecam::Status& s, bool fresh, double nowUnix, dou
         return end;
     }
     if (s.state != State::Idle && s.state != State::Error) {
-        // (something else runs: a calibration, or another recording before ours started)
+        // (something else runs: a calibration, or another recording before this one started)
         if (!seen_ && nowUnix - sent_ >= kStartGraceSec) {
             end.outcome = Outcome::Failed;
             end.why = Why::NoStart;
@@ -509,95 +556,53 @@ RunEnd RunWatch::follow(const eyecam::Status& s, bool fresh, double nowUnix, dou
     return end;
 }
 
-void WearWatch::start(double now) {
-    *this = WearWatch();
-    watching_ = true;
-    start_ = now;
-}
-
-void WearWatch::follow(const eyecam::Status& s, bool fresh, double now) {
-    if (!watching_ || detected_) return;
-    // The loop stood still that long: the Frame slept (the headset off)
-    if (last_ >= 0 && now - last_ >= kOffSec) off_ = true;
-    last_ = now;
-    if (!fresh) {
-        proxOffSince_ = videoOffSince_ = onSince_ = -1.0;
-        return;
-    }
-    // The sensor: off only after it read worn (a face it never reaches the threshold on reads "off" all the time)
-    const bool proxKnown = std::isfinite(s.prox) && s.prox >= 0 && std::isfinite(s.proxMin);
-    const bool proxWorn = proxKnown && s.prox > s.proxMin;
-    proxWorn_ |= proxWorn;
-    if (proxKnown && !proxWorn && proxWorn_) {
-        if (proxOffSince_ < 0) proxOffSince_ = now;
-        if (now - proxOffSince_ >= kOffSec) off_ = true;
-    } else {
-        proxOffSince_ = -1.0;
-    }
-    // The eye video, while eyecam-rec looks at it (idle with live processing)
-    const bool videoKnown = s.live && s.state == eyecam::State::Idle;
-    if (videoKnown && !s.locked) {
-        if (videoOffSince_ < 0) videoOffSince_ = now;
-        if (now - videoOffSince_ >= kOffSec) off_ = true;
-    } else {
-        videoOffSince_ = -1.0;
-    }
-    // On again: the video back (or the sensor, without the video to go by)
-    const bool on = videoKnown ? s.locked : proxWorn;
-    if (off_ && on) {
-        if (onSince_ < 0) onSince_ = now;
-        if (now - onSince_ >= kOnSec) detected_ = true;
-    } else {
-        onSince_ = -1.0;
-    }
-}
-
-Screen screen(const View& view, bool extra) {
+Screen screen(const View& view, Page page, bool agreed) {
     if (view.progress.job == Job::Delete && view.progress.running) return Screen::Deleting;
-    if (view.dir.empty()) return Screen::Consent;
-    if (view.running >= 0) return Screen::Running;
-    const int step = nextStep(view.info, extra);
-    if (step >= kStepCount) return Screen::Done;
-    if (view.failure.step == step) return Screen::Failed;
-    return needsRewear(step) && view.info.nextWear.empty() ? Screen::Rewear : Screen::Ready;
+    if (page == Page::Manage) return Screen::Done;
+    if (view.running) return Screen::Running;
+    if (consentNeeded(view.info)) return agreed ? Screen::Eyewear : Screen::Consent;
+    if (view.failure.shown) return Screen::Failed;
+    return view.justDone ? Screen::Done : Screen::Ready;
 }
 
-bool startAllowed(const View& view, const eyecam::View& eyecam, int step) {
+bool startAllowed(const View& view, const eyecam::View& eyecam) {
     const eyecam::State state = eyecam.status.state;
-    return !view.dir.empty() && step >= 0 && step < kStepCount && eyecam::setUp(eyecam) && !eyecam.busy &&
-           (state == eyecam::State::Idle || state == eyecam::State::Error) && view.running < 0 &&
-           !view.progress.running && fits(step, view.freeBytes, view.fps);
+    return view.exists && !consentNeeded(view.info) && eyecam::setUp(eyecam) && !eyecam.busy &&
+           (state == eyecam::State::Idle || state == eyecam::State::Error) && !view.running &&
+           !view.progress.running && fits(view.freeBytes, view.fps);
 }
 
-bool packEntries(const std::string& dir, const Info& info, std::vector<Entry>& entries, std::string& error) {
+bool packEntries(const std::string& dir, const Info& info, std::vector<Entry>& entries,
+                 std::vector<std::string>& incomplete, std::string& error) {
     entries.clear();
-    const std::string top = baseName(dir);
+    incomplete.clear();
+    const std::string top = kFolderName;
     struct stat st {};
     if (::stat(dir.c_str(), &st) != 0) {
         error = "can't read " + recorder::shortPath(dir) + ": " + std::strerror(errno);
         return false;
     }
     entries.push_back({dir, top + "/", 0, st.st_mtime, true});
-    const std::string infoPath = dir + "/" + kInfoFile;
-    if (::stat(infoPath.c_str(), &st) != 0) {
-        error = "can't read " + recorder::shortPath(infoPath) + ": " + std::strerror(errno);
+    const auto file = [&](const std::string& name) {
+        const std::string path = dir + "/" + name;
+        if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) return false;
+        entries.push_back({path, top + "/" + name, static_cast<long long>(st.st_size), st.st_mtime, false});
+        return true;
+    };
+    if (!file(kInfoFile)) {
+        error = "can't read " + recorder::shortPath(dir + "/" + kInfoFile);
         return false;
     }
-    entries.push_back({infoPath, top + "/" + kInfoFile, static_cast<long long>(st.st_size), st.st_mtime, false});
-    for (const Step& step : info.steps) {
-        if (step.rec.empty()) continue;
-        const std::string rec = dir + "/" + step.rec;
-        if (!isRealDir(rec) || ::stat(rec.c_str(), &st) != 0) {
-            error = "the recording " + step.rec + " isn't there";
-            return false;
+    for (const Recording& r : info.recordings) {
+        const std::string rec = dir + "/" + r.rec;
+        // (one lacking a file, or gone, is left out and named: it is to be recorded again)
+        if (!isRealDir(rec) || !missingFiles(rec).empty() || ::stat(rec.c_str(), &st) != 0) {
+            incomplete.push_back(r.rec);
+            continue;
         }
-        entries.push_back({rec, top + "/" + step.rec + "/", 0, st.st_mtime, true});
-        for (const std::string& name : names(rec)) {
-            const std::string path = rec + "/" + name;
-            if (::lstat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) continue;
-            entries.push_back({path, top + "/" + step.rec + "/" + name, static_cast<long long>(st.st_size),
-                               st.st_mtime, false});
-        }
+        entries.push_back({rec, top + "/" + r.rec + "/", 0, st.st_mtime, true});
+        for (const std::string& name : names(rec)) file(r.rec + "/" + name);
+        if (r.calib != "none" && !r.calib.empty()) file(r.calib);
     }
     for (const Entry& entry : entries) {
         if (entry.name.size() >= 100) {
@@ -631,13 +636,13 @@ std::string tarHeader(const Entry& entry) {
     std::memset(header + 148, ' ', 8);
     unsigned int sum = 0;
     for (unsigned char c : header) sum += c;
-    std::snprintf(header + 148, 8, "%06o", sum);
+    putOctal(header + 148, 7, sum);
     header[155] = ' ';
     return std::string(header, sizeof(header));
 }
 
-std::string packName(const std::string& dir, bool compressed) {
-    return baseName(dir) + (compressed ? ".tar.zst" : ".tar");
+std::string packName(std::time_t when, bool compressed) {
+    return "contrib_" + recorder::fileStamp(when) + (compressed ? ".tar.zst" : ".tar");
 }
 
 bool zstdAvailable() {
@@ -663,37 +668,29 @@ void Worker::reap() {
     cancel_ = false;
 }
 
-bool Worker::pack(const std::string& dir, const Info& info, bool compressed) {
+bool Worker::pack(const std::string& dir, const std::vector<Entry>& entries, const std::string& name, int count,
+                  bool compressed) {
     if (progress().running) return false;
     reap();
-    std::vector<Entry> entries;
-    std::string error;
     Progress start;
     start.job = Job::Pack;
-    start.output = packName(dir, compressed);
-    if (!packEntries(dir, info, entries, error)) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        progress_ = start;
-        progress_.finished = true;
-        progress_.error = error;
-        reported_ = false;
-        return false;
-    }
-    for (const Entry& entry : entries) start.total += entry.size;
     start.running = true;
+    start.output = name;
+    start.count = count;
+    for (const Entry& entry : entries) start.total += entry.size;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         progress_ = start;
         reported_ = true;
     }
-    thread_ = std::thread([this, dir, entries, compressed]() { runPack(dir, entries, compressed); });
+    thread_ = std::thread([this, dir, entries, name, compressed]() { runPack(dir, entries, name, compressed); });
     return true;
 }
 
 bool Worker::remove(const std::string& home, const std::string& dir) {
     if (progress().running) return false;
     reap();
-    if (parentOf(dir) != home || !isFolderName(baseName(dir)) || !isRealDir(dir)) return false;
+    if (dir != home + "/" + kFolderName || !isRealDir(dir)) return false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         progress_ = Progress();
@@ -732,10 +729,10 @@ void Worker::finish(bool ok, const std::string& error) {
     reported_ = false;
 }
 
-void Worker::runPack(const std::string& dir, const std::vector<Entry>& entries, bool compressed) {
+void Worker::runPack(const std::string& dir, const std::vector<Entry>& entries, const std::string& name,
+                     bool compressed) {
     // Below the panel's own loop and VR (Linux sets a thread's niceness on its own)
     ::setpriority(PRIO_PROCESS, static_cast<id_t>(::syscall(SYS_gettid)), kNice);
-    const std::string name = packName(dir, compressed);
     const std::string final = dir + "/" + name;
     const std::string part = final + ".part";
     const int out = ::open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
@@ -757,7 +754,7 @@ void Worker::runPack(const std::string& dir, const std::vector<Entry>& entries, 
             finish(false, "can't start zstd: " + why);
             return;
         }
-        std::vector<std::string> args = {"zstd", "-3", "-T2", "-q", "-c"};
+        std::vector<std::string> args = {"zstd", "-" + std::to_string(kZstdLevel), "-T2", "-q", "-c"};
         std::vector<char*> argv;
         for (std::string& arg : args) argv.push_back(arg.data());
         argv.push_back(nullptr);
@@ -888,71 +885,74 @@ void Session::load(View& view, const std::string& home) {
     view = View();
     view.loaded = true;
     view.home = home;
+    view.dir = home + "/" + kFolderName;
     view.progress = progress;
     view.deleted = deleted;
     view.compress = zstdAvailable();
     view.freeBytes = freeBytes(home);
+    view.exists = isRealDir(view.dir);
     run_.end();
-    wear_.stop();
     command_.clear();
-    view.dir = findCurrent(home);
-    if (view.dir.empty()) return;
-    view.deleted = false;
-    if (!readInfo(view.dir, view.info, view.error)) {
-        view.dir.clear();
-        return;
-    }
+    if (!view.exists) return;
+    std::string text;
+    file_io::read(view.dir + "/" + kInfoFile, text, kMaxInfoBytes);
+    parseInfo(text, view.info);
     view.totalBytes = folderBytes(view.dir);
-    // A recording it had started (the panel restarted meanwhile): followed on from when it was sent
-    if (view.info.running >= 0) {
-        run_.begin(view.info.running, protocolOf(view.info.running), view.info.runningSince);
-        view.running = view.info.running;
-    }
 }
 
-bool Session::consent(View& view, const std::string& version, std::time_t now) {
-    if (!view.dir.empty()) return false;
-    std::string dir;
-    Info info;
-    if (!create(view.home, version, now, dir, info, view.error)) return false;
-    view.dir = dir;
-    view.info = info;
-    view.error.clear();
-    view.failure = Failure();
+bool Session::consent(View& view, Eyewear eyewear, std::time_t now) {
+    if (eyewear == Eyewear::Unasked || view.home.empty()) return false;
+    for (const std::string& dir : {view.home, view.dir}) {
+        if (::mkdir(dir.c_str(), 0755) != 0 && errno != EEXIST) {
+            view.error = "can't create " + recorder::shortPath(dir) + ": " + std::strerror(errno);
+            return false;
+        }
+    }
+    view.exists = isRealDir(view.dir);
+    if (!append(view, consentSection(localTime(now, true), kConsentVersion, eyewear))) return false;
     view.deleted = false;
-    view.progress = Progress();
-    return true;
-}
-
-bool Session::rewore(View& view) {
-    const int step = nextStep(view.info, true);
-    if (view.dir.empty() || view.running >= 0 || step >= kStepCount || !needsRewear(step) ||
-        !view.info.nextWear.empty()) {
-        return false;
-    }
-    view.info.nextWear = kWearButton;
-    wear_.stop();
-    save(view);
-    return true;
-}
-
-std::string Session::startCommand(const View& view, const eyecam::View& eyecam, int step) const {
-    // Only the step whose turn it is (the optional one only after the others), with its re-wear done
-    if (step != nextStep(view.info, step >= kRequiredSteps) || !startAllowed(view, eyecam, step) ||
-        !command_.empty() || (needsRewear(step) && view.info.nextWear.empty())) {
-        return "";
-    }
-    return std::string(eyecam::kStartCommand) + " " + protocolOf(step);
-}
-
-void Session::started(View& view, int step, const std::string& command, double sentUnix) {
-    command_ = command;
-    run_.begin(step, protocolOf(step), sentUnix);
-    view.running = step;
     view.failure = Failure();
-    view.info.running = step;
-    view.info.runningSince = sentUnix;
-    save(view);
+    return true;
+}
+
+std::string Session::startCommand(const View& view, const eyecam::View& eyecam) const {
+    if (!startAllowed(view, eyecam) || !command_.empty()) return "";
+    return std::string(eyecam::kStartCommand) + " " + kProtocol;
+}
+
+void Session::started(View& view, const eyecam::View& eyecam, const Snapshot& snapshot, const std::string& command,
+                      double sentUnix) {
+    const eyecam::Status& s = eyecam.status;
+    command_ = command;
+    run_.begin(kProtocol, sentUnix);
+    view.running = true;
+    view.justDone = false;
+    view.failure = Failure();
+    // What its section says about the start: the settings, the time since the one before, the count of taking-offs
+    Recording r;
+    r.protocol = kProtocol;
+    r.startUnix = sentUnix;
+    r.start = localTime(static_cast<std::time_t>(sentUnix), true);
+    r.appVersion = snapshot.appVersion;
+    r.eyecamRec = snapshot.eyecamRec;
+    r.lidVeto = s.hasLidVeto ? (s.lidVeto ? "on" : "off") : "unknown";
+    r.widen = snapshot.widen ? "on" : "off";
+    r.widenSensitivity = s.hasWidenSensitivity ? number(s.widenSensitivity, 2) : "unknown";
+    r.cameraLids = snapshot.cameraLids ? "on" : "off";
+    r.eyewear = eyewearName(view.info.eyewear);
+    r.fps = eyecam::cameraFps(s);
+    r.offCountStart = s.hasHeadsetOff ? s.headsetOffCount : -1;
+    r.eyecamStarted = s.hasHeadsetOff ? s.startedUnix : 0.0;
+    if (view.info.recordings.empty()) {
+        r.sincePrevious = "none";
+        r.headsetOff = "none";
+    } else {
+        const Recording& before = view.info.recordings.back();
+        r.sincePrevious = before.endUnix > 0 ? number((sentUnix - before.endUnix) / 60.0, 1) : "unknown";
+        r.headsetOff = headsetOffBetween(before, r.offCountStart, r.eyecamStarted);
+    }
+    pending_ = r;
+    calibText_ = newestCalibResult(view.home);
 }
 
 bool Session::replied(View& view, const eyecam::Reply& reply) {
@@ -964,7 +964,7 @@ bool Session::replied(View& view, const eyecam::Reply& reply) {
     end.why = Why::Refused;
     end.message = reply.error;
     std::string log;
-    ended(view, end, log);
+    ended(view, end, eyecam::View(), static_cast<double>(std::time(nullptr)), log);
     return true;
 }
 
@@ -978,40 +978,19 @@ bool Session::follow(View& view, const eyecam::View& eyecam, double nowUnix, dou
     }
     const double fps = eyecam::cameraFps(eyecam.status);
     if (std::isfinite(fps) && fps > 0) view.fps = fps;
-    const bool fresh = eyecam::tabVisible(eyecam.status, nowUnix);
-    // The recording running
+    // The recording running (only once its start is answered)
     if (run_.active() && command_.empty()) {
         double mtime = NAN;
         struct stat st {};
         if (!eyecam.status.sessionDir.empty() && ::stat(eyecam.status.sessionDir.c_str(), &st) == 0) {
             mtime = static_cast<double>(st.st_mtime);
         }
-        const RunEnd end = run_.follow(eyecam.status, fresh, nowUnix, mtime);
+        const RunEnd end = run_.follow(eyecam.status, eyecam::tabVisible(eyecam.status, nowUnix), nowUnix, mtime);
         if (end.outcome != Outcome::Running) {
-            ended(view, end, log);
+            ended(view, end, eyecam, nowUnix, log);
             changed = true;
         }
     }
-    // The re-wear the next step waits for (the optional one's too, once the others are done)
-    const int next = nextStep(view.info, true);
-    if (!view.dir.empty() && view.running < 0 && next < kStepCount && needsRewear(next) && view.info.nextWear.empty()) {
-        if (!wear_.watching()) wear_.start(bootNow);
-        wear_.follow(eyecam.status, fresh, bootNow);
-        if (wear_.detected()) {
-            view.info.nextWear = kWearDetected;
-            wear_.stop();
-            save(view);
-            log += "re-wear before step " + std::to_string(next + 1) + " seen\n";
-            changed = true;
-        }
-    } else {
-        wear_.stop();
-    }
-    const bool off = wear_.watching() && wear_.offSeen();
-    const bool ready = wear_.fallbackReady(bootNow);
-    changed |= off != view.offSeen || ready != view.fallbackReady;
-    view.offSeen = off;
-    view.fallbackReady = ready;
     // The pack or the delete
     const Progress progress = worker_.progress();
     changed |= progress.running != view.progress.running || progress.done != view.progress.done ||
@@ -1021,17 +1000,20 @@ bool Session::follow(View& view, const eyecam::View& eyecam, double nowUnix, dou
     if (worker_.takeFinished(finished)) {
         changed = true;
         if (finished.job == Job::Pack && finished.ok) {
-            view.info.packed = finished.output;
-            view.info.packedBytes = finished.outputBytes;
+            // (the pack before it holds fewer: it goes; the recordings stay)
+            const std::string before = view.info.packed;
+            if (append(view, packedSection(finished.output, finished.count, finished.outputBytes)) &&
+                isPackName(before) && before != finished.output) {
+                ::unlink((view.dir + "/" + before).c_str());
+            }
             view.totalBytes = folderBytes(view.dir);
-            save(view);
-            log += "packed into " + finished.output + " (" + sizeText(finished.outputBytes) + ")\n";
+            log += "packed " + std::to_string(finished.count) + " recording(s) into " + finished.output + " (" +
+                   sizeText(finished.outputBytes) + ")\n";
         } else if (finished.job == Job::Delete && finished.ok) {
             log += "deleted " + recorder::shortPath(view.dir) + "\n";
             const std::string home = view.home;
             view.deleted = true;
             load(view, home);
-            view.deleted = view.dir.empty();
         } else {
             log += std::string(finished.job == Job::Pack ? "pack" : "delete") + " failed: " + finished.error + "\n";
         }
@@ -1039,80 +1021,98 @@ bool Session::follow(View& view, const eyecam::View& eyecam, double nowUnix, dou
     return changed;
 }
 
-bool Session::pack(View& view) {
-    if (view.dir.empty() || view.running >= 0 || requiredDone(view.info) < kRequiredSteps) return false;
-    const bool ok = worker_.pack(view.dir, view.info, view.compress);
+bool Session::pack(View& view, std::time_t now) {
+    if (!view.exists || view.running || view.info.recordings.empty()) return false;
+    std::vector<Entry> entries;
+    std::string error;
+    if (!packEntries(view.dir, view.info, entries, view.incomplete, error)) {
+        view.progress = Progress();
+        view.progress.job = Job::Pack;
+        view.progress.finished = true;
+        view.progress.error = error;
+        return false;
+    }
+    const int count = static_cast<int>(view.info.recordings.size() - view.incomplete.size());
+    if (count == 0) return false;
+    const bool ok = worker_.pack(view.dir, entries, packName(now, view.compress), count, view.compress);
     view.progress = worker_.progress();
     return ok;
 }
 
 bool Session::remove(View& view) {
-    if (view.dir.empty() || view.running >= 0) return false;
+    if (!view.exists || view.running) return false;
     if (!worker_.remove(view.home, view.dir)) return false;
-    run_.end();
-    wear_.stop();
     view.progress = worker_.progress();
     return true;
 }
 
-bool Session::save(View& view) {
+bool Session::append(View& view, const std::string& text) {
     std::string error;
-    if (writeInfo(view.dir, view.info, error)) return true;
-    view.error = error;
-    return false;
+    if (!appendInfo(view.dir, text, error)) {
+        view.error = error;
+        return false;
+    }
+    std::string all;
+    file_io::read(view.dir + "/" + kInfoFile, all, kMaxInfoBytes);
+    parseInfo(all, view.info);
+    view.error.clear();
+    return true;
 }
 
-void Session::ended(View& view, const RunEnd& end, std::string& log) {
-    const int step = run_.step() >= 0 ? run_.step() : view.running;
+void Session::ended(View& view, const RunEnd& end, const eyecam::View& eyecam, double nowUnix, std::string& log) {
     run_.end();
     command_.clear();
-    view.running = -1;
-    view.info.running = -1;
-    view.info.runningSince = 0;
-    if (step < 0 || step >= kStepCount) return;
-    const std::string label = "step " + std::to_string(step + 1);
-    if (end.outcome == Outcome::Done) {
+    view.running = false;
+    // Done, and with every file it needs: into the folder, with its section and its calibration result
+    std::vector<std::string> missing;
+    if (end.outcome == Outcome::Done) missing = missingFiles(end.dir);
+    if (end.outcome == Outcome::Done && missing.empty()) {
         std::string name;
         std::string error;
         if (takeRecording(view.home, view.dir, end.dir, false, name, error)) {
-            Step& done = view.info.steps[step];
-            done.protocol = protocolOf(step);
-            done.rec = name;
-            done.bytes = folderBytes(view.dir + "/" + name);
-            done.wear = needsRewear(step) ? view.info.nextWear : std::string(kWearFirst);
-            done.done = localTime(std::time(nullptr), false);
-            view.info.nextWear.clear();
-            view.failure = Failure();
-            log += label + " recorded: " + name + " (" + sizeText(done.bytes) + ")\n";
+            Recording r = pending_;
+            r.rec = name;
+            r.endUnix = nowUnix;
+            r.bytes = folderBytes(view.dir + "/" + name);
+            const eyecam::Status& s = eyecam.status;
+            r.offCountEnd = s.hasHeadsetOff && std::fabs(s.startedUnix - r.eyecamStarted) <= 1.0 ? s.headsetOffCount
+                                                                                                   : -1;
+            r.calib = "none";
+            if (!calibText_.empty() && writeFile(view.dir + "/" + name + ".calib_result.json", calibText_)) {
+                r.calib = name + ".calib_result.json";
+            }
+            append(view, recordingSection(r));
             view.totalBytes = folderBytes(view.dir);
-            save(view);
+            view.justDone = true;
+            log += "recorded " + name + " (" + sizeText(r.bytes) + "; headset off since the one before: " +
+                   r.headsetOff + ")\n";
             return;
         }
-        view.failure = {step, Why::Move, error, error, ""};
-        view.info.aborted.push_back(recorder::shortPath(end.dir) + " not moved: " + error);
-        log += label + " recorded, but " + error + "\n";
-        save(view);
+        view.failure = {true, Why::Move, error, error, ""};
+        log += "recorded, but " + error + "\n";
         return;
     }
-    // Didn't finish: its part (if any) goes to aborted/, and the step can be tried again
-    view.failure = {step, end.why, end.message, end.messageEn, ""};
-    std::string kept;
+    // Didn't finish, or lacks a file: its part (if any) goes to aborted/, and it can be recorded again
+    view.failure = {true, end.why, end.message, end.messageEn, ""};
+    std::string why = end.outcome == Outcome::Stopped ? "stopped" : "failed";
+    if (!missing.empty()) {
+        std::string list;
+        for (const std::string& file : missing) list += (list.empty() ? "" : ", ") + file;
+        view.failure = {true, Why::Incomplete, list, list, ""};
+        why = "missing " + list;
+    }
     if (!end.dir.empty()) {
         std::string name;
         std::string error;
         if (takeRecording(view.home, view.dir, end.dir, true, name, error)) {
-            kept = name;
             view.failure.kept = name;
+            append(view, abortedSection(name, why));
         } else {
-            kept = recorder::shortPath(end.dir) + " (" + error + ")";
+            why += " (" + error + ")";
         }
     }
-    const char* how = end.outcome == Outcome::Stopped ? "stopped" : "failed";
-    if (!kept.empty()) view.info.aborted.push_back(kept + " " + how);
-    log += label + " " + how + (end.message.empty() ? "" : ": " + end.message) +
-           (kept.empty() ? "" : "; kept " + kept) + "\n";
     view.totalBytes = folderBytes(view.dir);
-    save(view);
+    log += "the recording " + why + (end.message.empty() ? "" : ": " + end.message) + "\n";
 }
 
 std::string sizeText(long long bytes) {

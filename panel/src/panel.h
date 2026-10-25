@@ -129,17 +129,16 @@ enum class PanelAction {
     PreviewMirror,     ///< show the eyes as in a mirror, or as seen from the front (handled inside)
     PreviewCamera,     ///< the eye cameras' pictures on / off (handled inside; the caller follows previewPictures)
     PreviewFreeze,     ///< stop the drawing where it is, or let it move again (handled inside)
-    ContribOpen,       ///< Debug tools' "Help train the AI": open its sheet (the panel opens it; the caller reads the
-                       ///< contribution again)
-    ContribClose,      ///< its cross, or "Cancel" on its first screen (handled inside)
-    ContribConsent,    ///< "I'll help": the caller makes the contribution's folder
-    ContribRewore,     ///< "I put it back on": the caller counts the next step's re-wear as done
-    ContribStart,      ///< start step arg's recording (the caller sends its start to eyecam-rec)
-    ContribExtra,      ///< arg 1: show the optional free use's step, 0: back to the end (handled inside)
+    ContribOpen,       ///< Debug tools' "Record for squint training": open its sheet, arg = contrib::Page (the panel
+                       ///< opens it; the caller forgets the last recording's end and failure)
+    ContribClose,      ///< its cross, "Cancel" or "Close" (handled inside)
+    ContribAgree,      ///< arg 1: "Agree and continue" (on to the question about glasses), 0: back (handled inside)
+    ContribEyewear,    ///< an answer about glasses: arg = contrib::Eyewear (the caller writes the consent)
+    ContribStart,      ///< "Start recording" (the caller sends its start to eyecam-rec)
     ContribPack,       ///< "Make one file": the caller packs it on its worker
-    ContribDelete,     ///< "Delete these recordings": its confirmation (handled inside)
+    ContribDelete,     ///< "Delete the recordings": its confirmation (handled inside)
     ContribDeleteCancel,   ///< ...closed without deleting (handled inside)
-    ContribDeleteConfirm,  ///< ...confirmed: the caller deletes the contribution's folder
+    ContribDeleteConfirm,  ///< ...confirmed: the caller deletes the folder
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -387,31 +386,35 @@ public:
     bool previewOpen() const { return previewOpen_; }
 
     /**
-     * Open "Help train the AI" on the Advanced tab, in place of its page (the tabs and the sub-tabs' presses close it),
-     * as its row's button does.
+     * Open "Record for squint training" on the Advanced tab, in place of its page (the tabs and the sub-tabs' presses
+     * close it), as its row's buttons do.
+     * @param page "Record" or "Recordings"
      */
-    void openContrib();
+    void openContrib(contrib::Page page);
 
     /** Close it (and its confirmation). */
     void closeContrib() {
         contribOpen_ = false;
         contribConfirm_ = false;
-        contribExtra_ = false;
+        contribAgreed_ = false;
     }
 
     /** @return true while it shows */
     bool contribOpen() const { return tab_ == PanelTab::Advanced && contribOpen_; }
 
-    /** @return true while it shows the optional free use's step ("Record normal use once more") */
-    bool contribExtra() const { return contribExtra_; }
+    /** @return how it was opened */
+    contrib::Page contribPage() const { return contribPage_; }
+
+    /** @return true once "Agree and continue" was pressed (the question about glasses shows) */
+    bool contribAgreed() const { return contribAgreed_; }
 
     /**
-     * Show the optional free use's step, or the end again (for --fake-contrib).
-     * @param extra the optional step
+     * As if "Agree and continue" was pressed (for --fake-contrib).
+     * @param agreed pressed
      */
-    void setContribExtra(bool extra) { contribExtra_ = extra; }
+    void setContribAgreed(bool agreed) { contribAgreed_ = agreed; }
 
-    /** Open the confirmation before deleting it (for --fake-contrib). */
+    /** Open the confirmation before deleting (for --fake-contrib). */
     void openContribDelete() { contribConfirm_ = true; }
 
     /** @return true while it wants the eye cameras' pictures (open, with its "Camera picture" on) */
@@ -748,9 +751,10 @@ private:
     bool previewCamera_ = false;        ///< ...with the eye cameras' pictures (off whenever the cameras can't give them)
     bool previewCameraKept_ = false;    ///< ...the pictures' switch as last pressed, for the next time it opens (this
                                         ///< run of the panel only; the cameras going away turns it off too)
-    bool contribOpen_ = false;          ///< "Help train the AI" is shown on the Advanced tab
-    bool contribExtra_ = false;         ///< ...on the optional free use's step
-    bool contribConfirm_ = false;       ///< ...with the confirmation before deleting it
+    bool contribOpen_ = false;          ///< "Record for squint training" is shown on the Advanced tab
+    contrib::Page contribPage_ = contrib::Page::Record;  ///< ...opened as "Record" or "Recordings"
+    bool contribAgreed_ = false;        ///< ..."Agree and continue" pressed (the question about glasses)
+    bool contribConfirm_ = false;       ///< ...with the confirmation before deleting
     bool previewFrozen_ = false;        ///< ...stopped where it was
     bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
     eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at
@@ -1398,17 +1402,14 @@ private:
      * @param pen drawing tools
      * @param t texts
      * @param model the model (its eyecam view)
-     * @param title the section's title instead of the recording's ("" = its own; a step of "Help train the AI")
-     * @param instruction a recording's instruction instead of its step's, without the step chips (nullptr = its own;
-     * the free use)
+     * @param title the section's title instead of the recording's ("" = its own; "Record for squint training")
      */
-    void drawRun(const Pen& pen, const UiText& t, const PanelModel& model, const std::string& title = "",
-                 const char* instruction = nullptr);
+    void drawRun(const Pen& pen, const UiText& t, const PanelModel& model, const std::string& title = "");
 
     /**
-     * "Help train the AI" (contrib::screen): the consent, the re-wear, a step's start, its recording (drawRun, titled
-     * with the step), a try that didn't finish, the end (pack, the optional free use, delete), and the confirmation
-     * before deleting. The title and the cross at the top, the steps as chips under it.
+     * "Record for squint training" (contrib::screen): the consent, the question about glasses, the start with what to
+     * do, the recording (drawRun, titled with it), a try that didn't finish, the end (how many, the folder, how to
+     * send it, pack, delete), and the confirmation before deleting. The title and the cross at the top.
      * @param pen drawing tools
      * @param t texts
      * @param model the model (its contribution and eyecam view)
@@ -1424,7 +1425,8 @@ private:
     void drawContribDelete(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
-     * Debug tools' "Help train the AI" row: its button (only once the eye cameras are set up), and how far it is.
+     * Debug tools' "Record for squint training" row: "Record" and "Recordings" (only once the eye cameras are set up),
+     * and how many so far.
      * @param pen drawing tools
      * @param t texts
      * @param model the model

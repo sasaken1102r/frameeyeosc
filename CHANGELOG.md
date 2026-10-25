@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- eyecam, widening: the wear calibration's widen level is now the lowest of the widen steps' own medians (only steps with 30 or more frames with the lid line), not the median over all of them. When one widen step read the upper lid much higher than the others, the widen step came out too large for the widening the others reached, and widening was hard to reach: on one such recording (with prescription inserts) the left eye's step went from 0.52 to 0.25, and widening went out at 0.5 or more in 91 % of the widen frames instead of 36-39 %, while the normal and squint steps stayed unwidened; on the developer's 27 wear calibrations the step stayed the same or got slightly smaller (by 0.011 in the median). `calib_result.json` now also has each eye's `widen_step_levels` (each widen step's median). Run "Calibrate the cameras (18 s)" again for it to take effect.
+
 ## 0.8.2-beta.2 (2026-10-24)
 
 The gaze no longer stays frozen when SteamOS keeps reading one open eye as closed: after a second, the other eye moves the gaze (#32). With "Move eyes separately" on, the new "Own gaze per eye" (Gaze › Reach) lets each eye's own sideways gaze through, so looking inward with both eyes can show. The eye cameras no longer lose a pupil that suddenly looks larger, the camera eyelids no longer take over for good after many blinks on SteamOS 0.4.x, and a new user calibration now sets the squint at the same depth whatever the wear. With prescription inserts, the eye cameras should find the upper eyelid more reliably, so widening can show and an open eye is less often read as a squint.

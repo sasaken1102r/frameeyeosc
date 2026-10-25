@@ -644,6 +644,9 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   上がったとみて（度付きインサートの人の長いまつ毛の先: 普段 1.69 → 見開き 2.01）、見開きの幅はその上がった分にする（`widen_upper_rose_from` にその中央値）。目ごとの `widen_source`
   （`main` / `upper` / `fallback`）と数（`widen_frames_no_line_near_normal`・`widen_frames_upper_good`・`widen_frames_upper_used`・
   `widen_upper_fixed_line`・`widen_upper_rose_from`）が calib_result.json に入る。
+  普段の範囲の線で測るとき（`main` / `fallback`）、見開きの高さは見開きの段ごとの中央値のうち一番低いもの（線の取れたフレームが 30 以上の段だけ。
+  どの段も足りなければ全部の中央値）。どこかの段で線が高く読まれても、ライブでは毎回届く幅にするため（度付きインサートの人の左目: 1 回目 1.81、
+  2・3 回目 1.11 / 1.08）。段ごとの中央値は目ごとの `widen_step_levels` とログの `widen by step` に出る。
   wear の `calib_result.json` には目ごとに瞳の探し方の診断 `diag` も入る（目の画像がなくても、瞳が見えなかった原因をこれで見分ける）:
   `fps`（フレームレート）、`search_x_min` / `search_xmax`（使った枠の左右）、`normal_pupil_x` / `normal_pupil_y`（普段の段の瞳の位置の中央値）、
   `normal_contrast`（普段の段の、枠の明るさの中央値 − 暗いところ。開発者で 60〜100）、`steps`（段ごとに `frames`・`pupil`・`lid_line`、

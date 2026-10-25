@@ -1,0 +1,30 @@
+# eyecam cue protocol for the panel's "Record for squint training" (training data for the half-shut check): no
+# full-view light. `seconds label` per line. Beeps: lead_in = 1 short (high), normal = 1 short, close = 3 short,
+# squint = 1 long (mid), widen = 2 short, look_up = 1 long (high), look_down = 1 long (low), look_left = 2 long
+# (high, then low), look_right = 2 long (low, then high); end = 2 long (low). Left and right as the wearer sees them.
+3 lead_in
+# Relaxed open while the brightness levels and the classic engine settle (the headset was just put on, often)
+10 normal
+# Three times: closed (3 s: training uses a closed eye from 1.0 s after it shuts), normal, squint (as in bright
+# light, not closing), normal, widen
+3 close
+4 normal
+4 squint
+4 normal
+4 widen
+3 close
+4 normal
+4 squint
+4 normal
+4 widen
+3 close
+4 normal
+4 squint
+4 normal
+4 widen
+4 look_up
+4 look_down
+4 look_left
+3 normal
+4 look_right
+4 normal

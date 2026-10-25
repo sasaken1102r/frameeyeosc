@@ -2,8 +2,9 @@
 //!
 //! Protocol file: one step per line, `seconds label` (e.g. `5 widen`); `#` starts a comment.
 //! Beeps: lead_in = 1 short (high), normal = 1 short, widen = 2 short, close = 3 short, squint = 1 long (mid),
-//! look_up = 1 long (high), look_down = 1 long (low), bright = 2 short (high), dark = 2 short (low),
-//! anything else = 1 long (mid); the end of the protocol = 2 long (low).
+//! look_up = 1 long (high), look_down = 1 long (low), look_left = 2 long (high, then low), look_right = 2 long (low,
+//! then high), bright = 2 short (high), dark = 2 short (low), anything else = 1 long (mid); the end of the protocol =
+//! 2 long (low).
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -52,6 +53,9 @@ pub fn pattern(label: &str) -> (&'static str, &'static [(f32, u32)]) {
         "close" => ("3short", &[(1000.0, SHORT), (1000.0, SHORT), (1000.0, SHORT)]),
         "look_up" => ("long_high", &[(1400.0, LONG)]),
         "look_down" => ("long_low", &[(550.0, LONG)]),
+        // (left and right as the wearer sees them: the pitch falls toward the left, rises toward the right)
+        "look_left" => ("2long_falling", &[(1400.0, LONG), (550.0, LONG)]),
+        "look_right" => ("2long_rising", &[(550.0, LONG), (1400.0, LONG)]),
         "bright" => ("2short_high", &[(1800.0, SHORT), (1800.0, SHORT)]),
         "dark" => ("2short_low", &[(450.0, SHORT), (450.0, SHORT)]),
         "end" => ("2long_low", &[(550.0, LONG), (550.0, LONG)]),
@@ -173,6 +177,28 @@ mod tests {
         assert!(parse("abc normal").is_err());
         assert!(parse("5").is_err());
         assert_eq!(parse("2 look up # x").unwrap()[0].label, "look_up");
+    }
+
+    #[test]
+    fn the_contribution_protocol_has_a_sound_for_each_step() {
+        let steps = parse(include_str!("../protocol_contrib.txt")).unwrap();
+        assert_eq!(steps.iter().map(|s| s.seconds).sum::<f64>(), 93.0);
+        assert_eq!(steps.iter().filter(|s| s.label == "close").count(), 3);
+        assert!(steps.iter().all(|s| s.label != "bright" && s.label != "dark"));
+        // Every step its own sound (none falls back to "anything else", which squint has), each distinct
+        let names: Vec<&str> = steps.iter().map(|s| pattern(&s.label).0).collect();
+        for (step, name) in steps.iter().zip(&names) {
+            assert!(step.label == "squint" || *name != "long_mid", "{}", step.label);
+        }
+        let mut labels: Vec<&str> = steps.iter().map(|s| s.label.as_str()).collect();
+        labels.sort();
+        labels.dedup();
+        let mut sounds: Vec<&str> = labels.iter().map(|l| pattern(l).0).collect();
+        sounds.sort();
+        sounds.dedup();
+        assert_eq!(sounds.len(), labels.len());
+        assert!(!labels.iter().any(|l| pattern(l).0 == pattern("end").0));
+        assert_ne!(pattern("look_left").1, pattern("look_right").1);
     }
 
     #[test]

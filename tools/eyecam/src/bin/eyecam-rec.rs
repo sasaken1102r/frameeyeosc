@@ -573,7 +573,7 @@ impl Daemon {
         });
         let listener = bind_private(&dir.join(status::CTL_FILE), "another eyecam-rec --serve is already running")?;
         listener.0.set_nonblocking(true)?;
-        let status = Arc::new(Mutex::new(Status::default()));
+        let status = Arc::new(Mutex::new(Status { started_unix: unix_now(), ..Status::default() }));
         let shutdown = Arc::new(AtomicBool::new(false));
         let (tx, requests) = mpsc::channel();
         file.write(&status);
@@ -792,6 +792,8 @@ fn serve(args: &Args) -> Result<()> {
     };
     eprintln!("live output: {}", args.run_dir.join("live").display());
     let mut prox = Proximity::find();
+    // (kept across the buffers being fetched again: it counts for the whole run)
+    let mut off = livesvc::OffCount::default();
     let mut why: Option<&str> = None;
     while !STOP.load(Ordering::SeqCst) {
         let message = why.map_or(INSTALL_TOOL.to_string(), |w| format!("{w}。{INSTALL_TOOL}"));
@@ -829,7 +831,7 @@ fn serve(args: &Args) -> Result<()> {
             }
         };
         live.send(Msg::Buffers(true));
-        let outcome = idle(&mut buffers, args, &mut prox, &daemon, &mut live);
+        let outcome = idle(&mut buffers, args, &mut prox, &daemon, &mut live, &mut off);
         live.send(Msg::Buffers(false));
         match outcome {
             Some(abort) => {
@@ -981,8 +983,16 @@ impl Pump {
 }
 
 /// Wait for `start` / `calib` while holding the buffers, keeping the ring locked and feeding the live engine while
-/// live processing is on. None on shutdown, or why the buffers had to be given up.
-fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &mut Live) -> Option<Abort> {
+/// live processing is on, and counting the times the headset is taken off (`off`, status.json headset_off_count).
+/// None on shutdown, or why the buffers had to be given up.
+fn idle(
+    b: &mut Buffers,
+    args: &Args,
+    prox: &mut Proximity,
+    d: &Daemon,
+    live: &mut Live,
+    off: &mut livesvc::OffCount,
+) -> Option<Abort> {
     let mut cached: Option<Ring> = None;
     let mut pump: Option<Pump> = None;
     let mut deferred: Vec<Request> = Vec::new();
@@ -1123,6 +1133,8 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                     eprintln!("eye frames stopped (idle); searching again");
                     pump = None;
                     came_back = true;
+                    // (they stopped LOST_AFTER ago)
+                    off.frames_lost(eyecam::now_boot() - LOST_AFTER);
                     live.send(Msg::Stale);
                     next_search = now + 1.0;
                     if state.0 == "idle" {
@@ -1133,6 +1145,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
             } else if now >= next_search {
                 if let Some(r) = cached.take().filter(|r| ring_is_live(&b.arenas[r.arena], r)) {
                     pump = Some(Pump::new(&b.arenas[r.arena], r));
+                    off.frames_back(eyecam::now_boot());
                     if std::mem::take(&mut came_back) {
                         live.send(Msg::NewWear("the eye frames came back"));
                     }
@@ -1140,6 +1153,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                     match lock_ring(b, args, prox, Some(d), Ctx::Idle, &mut || true, &mut deferred) {
                         Ok(r) => {
                             pump = Some(Pump::new(&b.arenas[r.arena], r));
+                            off.frames_back(eyecam::now_boot());
                             if std::mem::take(&mut came_back) {
                                 live.send(Msg::NewWear("the eye frames came back"));
                             }
@@ -1164,6 +1178,8 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
             if let Err(a) = b.watch(reading.map(|v| v > args.prox_min)) {
                 return Some(a);
             }
+            off.prox(reading.map(|v| v > args.prox_min), eyecam::now_boot());
+            let off_count = off.count();
             match reading {
                 Some(v) if v > args.prox_min => {
                     if prox_off_since.take().is_some_and(|off| now - off >= livesvc::NEW_WEAR_OFF_S) && live.on {
@@ -1184,6 +1200,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                 s.message = if waiting && searching { status::search_message(s.search).into() } else { state.1.clone() };
                 s.locked = locked;
                 s.prox = reading.unwrap_or(-1.0);
+                s.headset_off_count = off_count;
                 if !searching {
                     s.search = "";
                 }
@@ -3092,7 +3109,7 @@ mod tests {
             let mut b = still_buffers(sizes);
             let mut prox = Proximity::find();
             live.send(Msg::Buffers(true));
-            let r = idle(&mut b, &args, &mut prox, &daemon, &mut live);
+            let r = idle(&mut b, &args, &mut prox, &daemon, &mut live, &mut livesvc::OffCount::default());
             live.stop();
             daemon.finish();
             r

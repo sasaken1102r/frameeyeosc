@@ -107,6 +107,63 @@ pub enum CollectKind {
     Pupil,
 }
 
+/// How many times the headset looked taken off and was then worn again since eyecam-rec started (status.json
+/// `headset_off_count`; the panel's "Help train the AI" tells recordings made in one wear from ones with the headset
+/// taken off between). Off for NEW_WEAR_OFF_S or more, as the new-wear hints see it: the eye frames stopped (idle with
+/// live processing on, which keeps looking at them), or the proximity sensor read not worn after it had read worn (a
+/// face it never reaches the threshold on never counts by it). Measured on a clock that runs through suspend
+/// (taking the headset off lets the Frame sleep). One taking-off counts once, when the headset is worn again: the
+/// frames back, or the sensor reading worn, whichever comes first.
+#[derive(Debug, Default)]
+pub struct OffCount {
+    count: u64,
+    frames_lost: Option<f64>,
+    prox_off: Option<f64>,
+    prox_worn_seen: bool,
+}
+
+impl OffCount {
+    /// The eye frames stopped at `now` (seconds on the boot clock; a later call before frames_back keeps the first).
+    pub fn frames_lost(&mut self, now: f64) {
+        self.frames_lost.get_or_insert(now);
+    }
+
+    /// The eye frames came back.
+    pub fn frames_back(&mut self, now: f64) {
+        if self.frames_lost.take().is_some_and(|t| now - t >= NEW_WEAR_OFF_S) {
+            self.worn_again();
+        }
+    }
+
+    /// A proximity reading: worn (above --prox-min), not worn, or None when it can't be read.
+    pub fn prox(&mut self, worn: Option<bool>, now: f64) {
+        match worn {
+            Some(true) => {
+                self.prox_worn_seen = true;
+                if self.prox_off.take().is_some_and(|t| now - t >= NEW_WEAR_OFF_S) {
+                    self.worn_again();
+                }
+            }
+            Some(false) if self.prox_worn_seen => {
+                self.prox_off.get_or_insert(now);
+            }
+            _ => {}
+        }
+    }
+
+    /// The times it was taken off and worn again.
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// One taking-off ended: counted, and the other sign of it forgotten so it doesn't count again.
+    fn worn_again(&mut self) {
+        self.count += 1;
+        self.frames_lost = None;
+        self.prox_off = None;
+    }
+}
+
 /// The eyes a user calibration went through with the standard look-down correction on (`default`) or with the
 /// previous one kept (`previous`): UserOutcome's, for calib_result.json.
 #[derive(Clone, Copy, Debug, Default)]
@@ -1158,6 +1215,42 @@ pub fn spawn(
 mod tests {
     use super::*;
     use crate::replay::Session;
+
+    #[test]
+    fn off_count_counts_each_taking_off_once() {
+        let mut o = OffCount::default();
+        // The frames stop for 30 s (the sensor reading off meanwhile too): one, when either says worn again
+        o.prox(Some(true), 0.0);
+        o.frames_lost(1.0);
+        o.prox(Some(false), 2.0);
+        o.prox(Some(false), 20.0);
+        o.frames_back(31.0);
+        assert_eq!(o.count(), 1);
+        o.prox(Some(true), 32.0);
+        assert_eq!(o.count(), 1);
+        // A short gap (the tracker pausing, a glance under the headset) is no taking-off
+        o.frames_lost(40.0);
+        o.frames_back(45.0);
+        o.prox(Some(false), 50.0);
+        o.prox(Some(true), 55.0);
+        assert_eq!(o.count(), 1);
+        // The sensor alone (live processing off: no frames to go by)
+        o.prox(Some(false), 60.0);
+        o.prox(Some(false), 75.0);
+        o.prox(Some(true), 76.0);
+        assert_eq!(o.count(), 2);
+        // Asleep in between: the boot clock jumped, the frames come back after it
+        o.frames_lost(100.0);
+        o.frames_back(400.0);
+        assert_eq!(o.count(), 3);
+        // A sensor that can't be read, or one that never read worn, doesn't count
+        let mut low = OffCount::default();
+        low.prox(Some(false), 0.0);
+        low.prox(Some(false), 60.0);
+        low.prox(None, 61.0);
+        low.prox(Some(true), 62.0);
+        assert_eq!(low.count(), 0);
+    }
 
     #[test]
     fn pupil_share_covers_the_last_two_seconds() {

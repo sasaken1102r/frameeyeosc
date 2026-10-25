@@ -160,7 +160,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `fps_l`, `fps_r` | number | 録画中の左右のフレームレート（直近 1 秒）。録画中以外と、探し直し中は 0 |
 | `step_index` | int | いまのプロトコルの段の番号。**0 から**数えて、段が変わるたびに必ず変わる（パネルは「段 `step_index+1` / `step_count`」と出せる）。全段が終わると `step_count`（このとき `step_label` は `end`）。録画中以外は -1 |
 | `step_count` | int | プロトコルの段の数（`searching` / `recording` / `calibrating` のとき）。それ以外は 0 |
-| `step_label` | string | `lead_in` / `normal` / `widen` / `close` / `squint` / `look_up` / `look_down` / `bright` / `dark` / `end`（自作プロトコルならそのラベル）。録画中以外は `""` |
+| `step_label` | string | `lead_in` / `normal` / `widen` / `close` / `squint` / `look_up` / `look_down` / `look_left` / `look_right` / `bright` / `dark` / `end`（自作プロトコルならそのラベル）。録画中以外は `""` |
 | `step_remaining_s` | number | いまの段の残り秒数。`lead_in`（最初の 3 秒）の間はこれでカウントダウンを出せる |
 | `elapsed_s`, `total_s` | number | 録画開始からの秒数 / 録画の長さ（プロトコルの長さ + 1.5 秒）。`total_s` は `searching` のときから入る |
 | `session_dir` | string | 録画中（と、そのあとの `idle`）のセッションディレクトリ。無ければ `""` |
@@ -191,6 +191,8 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `last_error`, `last_error_en`, `last_error_unix` | string / string / number | 直近に `state` が `error` になったときの `message`（とその英語）と時刻（UNIX 秒）。`state` が戻っても残る。まだ無ければ `""` と 0 |
 | `lid_veto` | object | まぶたの拒否権（下の「まぶたの拒否権」）。`on`（settings.json の `lid_veto`。既定 false）、`runs_per_s`（CNN を回した回数、両目で直近 1 秒の毎秒）、`fired`（拒否権を出した回数）、`ms_mean` / `ms_max`（CNN 1 回の時間の平均と最大、ms）。`fired` と時間はライブ処理が始まってから数える。このフィールドがない古い eyecam-rec もある |
 | `driftlog` | object | ドリフトの記録（下の「ドリフトの記録」）。`on`（記録中。`driftlog on` から `off` まで）、`path`（書いているファイル。`off` のあとは最後のファイル。まだ一度も無ければ `""`）、`rows`（書いた行数）、`bytes`（ファイルの大きさ）、`full`（50 MB に達したのでそれ以上書いていない。`on` のまま）、`error`（書けなくなった理由。ふつうは `""`）。このフィールドがない古い eyecam-rec もある |
+| `started_unix` | number | この eyecam-rec が起動した時刻（UNIX 秒）。`headset_off_count` は起動ごとに 0 から数えるので、比べるのは同じ `started_unix` どうしだけ |
+| `headset_off_count` | int | 起動してから、HMD を外して（10 秒以上。`livesvc::NEW_WEAR_OFF_S`）またかぶった回数。外したとみなすのは、待機中にライブ処理がオンで目の映像が止まった（`locked` が false。映像が戻ったときに数える）か、近接センサーが一度「かぶっている」を読んだあとに「かぶっていない」を読み続けた（また「かぶっている」を読んだときに数える）とき。どちらもサスペンドの時間も数える時計（CLOCK_BOOTTIME）で測るので、外して Frame がスリープしても数える。1 回の取り外しは、先に戻った方で 1 回だけ数える。録画・校正のあいだは数えない（`livesvc::OffCount`）。パネルの「細めの学習用に撮る」が、2 本の録画のあいだに外したかを見るのに使う。このフィールドがない古い eyecam-rec もある |
 | `pid` | int | デーモンのプロセス ID |
 | `updated_unix` | number | 書いた時刻（UNIX 秒） |
 
@@ -1004,12 +1006,19 @@ journalctl --user -u eyecam -f    # ログ
 | 長 1 回（中くらいの高さ） | squint（細める） |
 | 長 1 回（高い音） | look_up（上を見る） |
 | 長 1 回（低い音） | look_down（下を見る） |
+| 長 2 回（高い音→低い音） | look_left（自分から見て左を見る） |
+| 長 2 回（低い音→高い音） | look_right（自分から見て右を見る） |
 | 短 2 回（とても高い音） | bright（明るいものを見る） |
 | 短 2 回（低い音） | dark（暗いものを見る） |
 | 長 2 回（低い音） | 終わり |
 
 `protocol_widen.txt`（83 秒）: lead_in 3 秒 → (close 2 秒, normal 5 秒, widen 5 秒) × 3 → squint 5 秒 → look_up 5 秒 → look_down 5 秒
 → normal 5 秒 → 瞳孔チェック: bright 8 秒 → dark 8 秒 → bright 8 秒。
+
+`protocol_contrib.txt`（93 秒。全体の光なし。パネルの「細めの学習用に撮る」が `start contrib` で撮る、半目の見分けの学習用）: lead_in 3 秒 →
+normal 10 秒（かぶったばかりでも明るさの合わせと古典の処理が落ち着くまで）→ (close 3 秒〔学習に使うのは閉じて 1.0 秒たってから〕,
+normal 4 秒, squint 4 秒〔まぶしいときのように細める。閉じない〕, normal 4 秒, widen 4 秒) × 3 → look_up 4 秒 → look_down 4 秒 →
+look_left 4 秒 → normal 3 秒 → look_right 4 秒 → normal 4 秒。左右は本人から見た向き。
 
 瞳孔チェックのあいだは目を開けたまま、bright の合図で明るい画面（白っぽい SteamVR ホームやダッシュボードなど）を、
 dark の合図で暗い画面（暗いシーン、ダッシュボードを閉じた真っ暗な状態など）を見る。目は閉じないでね（瞳孔の大きさの変化を見るため）。

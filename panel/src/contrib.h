@@ -34,10 +34,16 @@ constexpr int kConsentVersion = 1;
 constexpr const char* kFolderName = "contrib";
 /** Its file about them (a section added for each event). */
 constexpr const char* kInfoFile = "info.txt";
-/** Where a recording that didn't finish (or lacks a file) goes in it: never packed, deleted with it. */
+/** Where a recording that didn't finish (or can't be used) goes in it: never packed, deleted with it. */
 constexpr const char* kAbortedDir = "aborted";
 /** The files every recording needs for training (the labels come from cues.csv and Valve's openness). */
-constexpr const char* kRequiredFiles[] = {"frames.csv", "valve.csv", "cues.csv", "meta.txt"};
+constexpr const char* kRequiredFiles[] = {"eye_L.raw", "eye_R.raw", "frames.csv", "valve.csv", "cues.csv", "meta.txt"};
+/** A raw frame's size when meta.txt doesn't say (frame_bytes: 400x400 grey, or 512x400 with --full-width). */
+constexpr long long kRawFrameBytes = 160000;
+/** At least this share of the frames needs a usable Valve sample near it (the labels use Valve's openness)... */
+constexpr double kValveShare = 0.9;
+/** ...within this long of its camera time (s; Valve's samples come about 90 times a second, on the same clock). */
+constexpr double kValvePairSec = 0.05;
 /** What eyecam-rec writes per frame and eye (a 400x400 grey frame, its header, its rows), as eyecam-rec estimates. */
 constexpr double kFrameBytes = 160300.0;
 /** The eye cameras' usual rate, for the estimate while eyecam-rec doesn't say. */
@@ -93,6 +99,8 @@ struct Recording {
     long long offCountEnd = -1;      ///< ...and at the end
     double eyecamStarted = 0.0;      ///< eyecam-rec's started_unix (the count is per run; 0 = unknown)
     std::string calib;               ///< the calibration's result copied beside it ("<rec>.calib_result.json"; "none")
+    std::string userCalib;           ///< eyecam's calib.json copied beside it ("<rec>.user_calib.json"; "none")
+    std::string settings;            ///< eyecam's settings.json copied beside it ("<rec>.settings.json"; "none")
 };
 
 /** info.txt as read: the consent and every recording. */
@@ -220,6 +228,12 @@ std::string localTime(std::time_t when, bool zone);
 std::string defaultHome();
 
 /**
+ * Where eyecam keeps its user calibration and settings ($HOME/.config/eyecam: calib.json, settings.json).
+ * @return the folder
+ */
+std::string defaultConfigDir();
+
+/**
  * Add text to the end of the folder's info.txt (made with headerText first), on the disk before it returns.
  * @param dir the folder
  * @param text the text
@@ -248,6 +262,31 @@ long long folderBytes(const std::string& path);
  * @return their names (empty: all there)
  */
 std::vector<std::string> missingFiles(const std::string& dir);
+
+/** Whether a recording can be used for training. */
+enum class Check {
+    Ok,
+    Missing,    ///< a file of kRequiredFiles isn't there
+    Truncated,  ///< an eye's raw file doesn't hold as many frames as frames.csv lists for it (the disk ran full)
+    Valve,      ///< under kValveShare of the frames have a usable Valve sample near them (Valve's tracking off?)
+};
+
+/** checkRecording's answer. */
+struct CheckResult {
+    Check check = Check::Ok;
+    std::string detail;  ///< the files missing, the raw files cut short ("eye_L.raw"), or the share paired ("42%")
+};
+
+/**
+ * Whether a recording can be used for training, from its CSV files and its raw files' sizes alone (never the
+ * frames): all of kRequiredFiles there; each eye's raw file exactly as many frames (meta.txt's frame_bytes each, else
+ * kRawFrameBytes) as frames.csv has rows for that eye, and at least one; and at least kValveShare of frames.csv's
+ * frames with a usable Valve sample in valve.csv (producer_state 1, both openness values numbers) within
+ * kValvePairSec of their t_cam (sample_time is on the same clock).
+ * @param dir its folder
+ * @return the answer
+ */
+CheckResult checkRecording(const std::string& dir);
 
 /**
  * Move a recording eyecam-rec has finished into the contribution's folder (aborted/ for one that didn't finish or
@@ -289,7 +328,7 @@ enum class Outcome {
 };
 
 /** Why a try didn't finish (the screen says it). */
-enum class Why { None, Stopped, Error, Refused, Gone, NoStart, Missing, Move, Incomplete };
+enum class Why { None, Stopped, Error, Refused, Gone, NoStart, Missing, Move, Incomplete, Truncated, Valve };
 
 /** A recording's end. */
 struct RunEnd {
@@ -344,7 +383,7 @@ private:
 struct Failure {
     bool shown = false;
     Why why = Why::None;
-    std::string message;    ///< eyecam-rec's (Japanese), the reason, or the missing files
+    std::string message;    ///< eyecam-rec's (Japanese), the reason, or checkRecording's detail
     std::string messageEn;
     std::string kept;       ///< where its part went ("aborted/rec_..."; "" = none)
 };
@@ -364,6 +403,7 @@ struct Progress {
     std::string output;       ///< the packed file's name in the folder
     long long outputBytes = 0;
     int count = 0;            ///< the recordings packed
+    std::vector<std::string> incomplete;  ///< recordings it left out (checkRecording said no)
 };
 
 /** The contribution as the panel shows it (PanelModel::contrib; the loop fills it in). */
@@ -371,6 +411,7 @@ struct View {
     bool loaded = false;         ///< looked for since the panel started
     std::string home;            ///< eyecam-rec's folder (defaultHome)
     std::string dir;             ///< the contribution's folder (home/kFolderName)
+    std::string configDir;       ///< eyecam's (defaultConfigDir): its calib.json and settings.json are copied
     bool exists = false;         ///< ...is there
     Info info;                   ///< its info.txt as read
     long long totalBytes = 0;    ///< everything in it (recordings, aborted/, a pack), as last counted
@@ -380,7 +421,7 @@ struct View {
     bool running = false;        ///< a recording of it runs
     bool justDone = false;       ///< one has just been recorded (the end's screen, until the sheet is opened again)
     Failure failure;             ///< the last try, when it didn't finish
-    std::vector<std::string> incomplete;  ///< recordings the last pack left out (a file missing)
+    std::vector<std::string> incomplete;  ///< recordings the last pack left out (checkRecording said no)
     Progress progress;           ///< packing or deleting
     bool compress = true;        ///< zstd is there (the pack is .tar.zst; else .tar)
     bool deleted = false;        ///< it was just deleted (the first screen says so)
@@ -431,8 +472,9 @@ struct Entry {
 };
 
 /**
- * What the pack holds: the folder, info.txt, and each recording with all of kRequiredFiles (its files sorted by name)
- * with its calibration result. Not aborted/ or a pack; a recording lacking a file is left out and named.
+ * What the pack holds: the folder, info.txt, and each recording checkRecording passes (its files sorted by name) with
+ * the copies beside it (calibration result, user calibration, settings). Not aborted/ or a pack; a recording that
+ * doesn't pass is left out and named.
  * @param dir the contribution's folder
  * @param info its info.txt as read
  * @param entries filled in
@@ -477,16 +519,15 @@ public:
     Worker& operator=(const Worker&) = delete;
 
     /**
-     * Pack into one file in the folder (tar, through zstd at kZstdLevel when compressed).
+     * Pack into one file in the folder (tar, through zstd at kZstdLevel when compressed), checking each recording
+     * again first (packEntries, on the thread: it reads their CSV files).
      * @param dir the folder
-     * @param entries what goes in (packEntries)
+     * @param info its info.txt as read
      * @param name the file's name (packName)
-     * @param count the recordings in it
      * @param compressed through zstd
      * @return false if a job runs
      */
-    bool pack(const std::string& dir, const std::vector<Entry>& entries, const std::string& name, int count,
-              bool compressed);
+    bool pack(const std::string& dir, const Info& info, const std::string& name, bool compressed);
 
     /**
      * Delete the contribution's folder (only home/kFolderName itself, a real folder).
@@ -519,12 +560,11 @@ private:
     /**
      * The pack's thread.
      * @param dir the folder
-     * @param entries what goes in it
+     * @param info its info.txt as read
      * @param name the file's name
      * @param compressed through zstd
      */
-    void runPack(const std::string& dir, const std::vector<Entry>& entries, const std::string& name,
-                 bool compressed);
+    void runPack(const std::string& dir, const Info& info, const std::string& name, bool compressed);
 
     /**
      * The end of a job.
@@ -553,8 +593,9 @@ public:
      * Read the folder (home/kFolderName) and its info.txt.
      * @param view filled in
      * @param home eyecam-rec's folder
+     * @param configDir eyecam's settings' folder
      */
-    void load(View& view, const std::string& home);
+    void load(View& view, const std::string& home, const std::string& configDir = defaultConfigDir());
 
     /**
      * The consent and the answer about glasses: the folder (made if needed), and their section in info.txt.
@@ -624,6 +665,8 @@ private:
     std::string command_;     ///< the start waiting for its reply ("" = none)
     Recording pending_;       ///< the recording running, as its section will say
     std::string calibText_;   ///< the calibration result at its start
+    std::string userCalibText_;  ///< ...eyecam's calib.json then
+    std::string settingsText_;   ///< ...and its settings.json
     double freeAt_ = -1e9;    ///< when the free space was last read (boot seconds)
 
     /**

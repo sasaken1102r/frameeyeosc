@@ -891,7 +891,8 @@ UiText makeJapanese() {
     t.contribLead = "「半目の読み直し（AI）」が細めや半目をもっと正しく見分けられるように、学習用の目の映像を録るよ。"
                     "協力するかどうかは自由です。";
     t.contribWhatTitle = "録るもの";
-    t.contribWhatFormat = "目のカメラの映像を 1 回約 1 分半（1 本 約 %s）。送るまでは、この Frame の中だけにあるよ。";
+    t.contribWhatFormat = "目のカメラの映像を 1 回約 1 分半（1 本 約 %s）と、そのときの校正の数字と設定。"
+                          "送るまでは、この Frame の中だけにあるよ。";
     t.contribUseTitle = "使いみち";
     t.contribUse = "細めと半目の見分けの調整と、AI の学習だけに使います。アプリに入るのは学習した AI だけで、"
                    "映像は入りません。映像は開発者の PC にだけ置きます。";
@@ -931,8 +932,11 @@ UiText makeJapanese() {
     t.contribWhyNoStart = "撮影が始まらなかったよ";
     t.contribWhyMissing = "録画のフォルダが見つからなかったよ";
     t.contribWhyMoveFormat = "録画を移せなかった: %s";
-    t.contribWhyIncompleteFormat = "録画のファイルが足りなかったよ（%s）";
-    t.contribKept = "途中までの分は aborted/ に入れたよ（送らなくて大丈夫）";
+    t.contribWhyIncompleteFormat = "録画のファイルが足りなかったよ（%s）。もう一度撮ってね";
+    t.contribWhyTruncatedFormat = "録画のファイルが途中で切れていたよ（%s）。空き容量を確かめて、もう一度撮ってね";
+    t.contribWhyValveFormat = "Valve の目のトラッキングの値が、フレームの %s にしかなかったよ。"
+                              "SteamVR の目のトラッキングが動いてるか確かめて、もう一度撮ってね";
+    t.contribKept = "この録画は aborted/ に入れたよ（送らなくて大丈夫）";
     t.contribRetry = "もう一度撮る";
     t.contribDoneTitle = "撮れたよ。ありがとう！";
     t.contribManageTitle = "録ったもの";
@@ -946,7 +950,7 @@ UiText makeJapanese() {
     t.contribPackedFormat = "できたよ（%s 本・%s）";
     t.contribPackFailedFormat = "まとめられなかった: %s";
     t.contribPackNoSpaceFormat = "まとめるには空きが足りないよ（約 %s 要る）";
-    t.contribIncompleteFormat = "%s はファイルが足りないので入れなかったよ。もう一度撮ってね";
+    t.contribIncompleteFormat = "%s は学習に使えない形だったので入れなかったよ。もう一度撮ってね";
     t.contribDelete = "録画を消す";
     t.contribClose = "閉じる";
     t.contribDeleteTitle = "撮った録画を全部消す？";
@@ -1941,8 +1945,8 @@ UiText makeEnglish() {
     t.contribLead = "Eye video to train the \"Half-shut check (AI)\" to tell squints and half-shut eyes apart better. "
                     "Taking part is entirely up to you.";
     t.contribWhatTitle = "What";
-    t.contribWhatFormat = "Eye camera video, about 1.5 minutes each time (about %s each). It stays on this Frame until "
-                          "you send it.";
+    t.contribWhatFormat = "Eye camera video, about 1.5 minutes each time (about %s each), with the calibration's "
+                          "numbers and the settings then. It stays on this Frame until you send it.";
     t.contribUseTitle = "How it's used";
     t.contribUse = "Only to tune the squint and half-shut check and train its AI. Only the trained AI goes into the "
                    "app, never the video. The video is kept on the developer's own PCs.";
@@ -1983,8 +1987,11 @@ UiText makeEnglish() {
     t.contribWhyNoStart = "The recording didn't start";
     t.contribWhyMissing = "The recording's folder wasn't found";
     t.contribWhyMoveFormat = "Couldn't move the recording: %s";
-    t.contribWhyIncompleteFormat = "The recording lacks files (%s)";
-    t.contribKept = "What was recorded is in aborted/ (no need to send it)";
+    t.contribWhyIncompleteFormat = "The recording lacks files (%s). Please record again";
+    t.contribWhyTruncatedFormat = "The recording's files were cut short (%s). Check the free space and record again";
+    t.contribWhyValveFormat = "Valve's eye tracking values were there for only %s of the frames. Check that "
+                              "SteamVR's eye tracking is on and record again";
+    t.contribKept = "This recording went to aborted/ (no need to send it)";
     t.contribRetry = "Record again";
     t.contribDoneTitle = "Recorded. Thank you!";
     t.contribManageTitle = "Recordings";
@@ -1998,7 +2005,7 @@ UiText makeEnglish() {
     t.contribPackedFormat = "Done (%s recordings, %s)";
     t.contribPackFailedFormat = "Couldn't pack it: %s";
     t.contribPackNoSpaceFormat = "Not enough space to pack it (about %s needed)";
-    t.contribIncompleteFormat = "%s lacks files and was left out. Please record again";
+    t.contribIncompleteFormat = "%s couldn't be used for training and was left out. Please record again";
     t.contribDelete = "Delete the recordings";
     t.contribClose = "Close";
     t.contribDeleteTitle = "Delete all these recordings?";

@@ -332,7 +332,9 @@ void testInfo() {
     parseInfo(text + recordingSection(unknown) + consentSection("2026-11-01 10:00:00 +0900", 0, Eyewear::None), info);
     CHECK(info.recordings.size() == 2 && info.consentVersion == 0 && info.eyewear == Eyewear::None);
     CHECK(consentNeeded(info));
-    if (info.recordings.size() == 2) CHECK(info.recordings[1].offCountStart == -1 && info.recordings[1].eyecamRec.empty());
+    if (info.recordings.size() == 2) {
+        CHECK(info.recordings[1].offCountStart == -1 && info.recordings[1].eyecamRec.empty());
+    }
     // Odd lines are skipped, CRLF read, a recording's name that isn't one dropped, a pack's that isn't one forgotten
     parseInfo("format=2\r\n[consent]\r\nversion=1\r\neyewear=glasses\r\nnonsense\r\n[recording]\r\nrec=../../etc\r\n"
               "[recording]\nrec=rec_2026-10-25_14-05-12\nbytes=12x\n[packed]\nfile=/etc/passwd\n[mystery]\nrec=x\n",
@@ -620,31 +622,126 @@ void testTarHeader() {
     CHECK(contrib::tarHeader(long_).size() == 512);
 }
 
+/** What a made-up recording lacks. */
+enum class Defect {
+    None,
+    NoCues,      ///< no cues.csv
+    NoRaw,       ///< no eye_L.raw
+    Truncated,   ///< eye_R.raw half a frame short (the disk ran full)
+    LongerRaw,   ///< eye_L.raw a frame longer than frames.csv says
+    FewValve,    ///< Valve's tracking stopped after a third of it
+    ValveOff,    ///< Valve's samples there but not tracking (producer_state 0)
+    NoFrames,    ///< frames.csv with no frame
+};
+
+/** A made-up frame's size (its meta.txt says so, as eyecam-rec's does). */
+constexpr long long kTestFrameBytes = 1000;
+
 /**
- * Make a recording's folder as eyecam-rec leaves one.
+ * Make a recording's folder as eyecam-rec leaves one: eye_L.raw and eye_R.raw with a frame for each of frames.csv's
+ * rows per eye (90 a second), valve.csv with a tracking sample every 1/90 s near them, cues.csv, meta.txt.
  * @param home where
  * @param name its name
- * @param bytes the size of its eye_L.raw (eye_R.raw is a little smaller)
+ * @param frames frames per eye
  * @param made when it was made (its modification time; the tests' clock runs ahead of the real one)
- * @param without a file it lacks ("" = none)
+ * @param defect what it lacks
  * @return its path
  */
-std::string makeRecording(const std::string& home, const std::string& name, size_t bytes, double made = kNow,
-                          const std::string& without = "") {
+std::string makeRecording(const std::string& home, const std::string& name, int frames = 50, double made = kNow,
+                          Defect defect = Defect::None) {
     const std::string dir = home + "/" + name;
     ::mkdir(dir.c_str(), 0755);
-    std::string video(bytes, '\0');
-    for (size_t i = 0; i < bytes; ++i) video[i] = static_cast<char>((i * 7 + i / 400) & 0xff);
-    writeFile(dir + "/eye_L.raw", video);
-    writeFile(dir + "/eye_R.raw", video.substr(0, bytes - 13));
-    for (const auto& [file, text] : {std::pair<const char*, const char*> {"cues.csv", "t,label\n0.0,lead_in\n"},
-                                     {"valve.csv", "t,openness_l\n"}, {"frames.csv", "eye,t_cam\n"},
-                                     {"meta.txt", "protocol=contrib\n"}}) {
-        if (without != file) writeFile(dir + "/" + file, text);
+    const int rows = defect == Defect::NoFrames ? 0 : frames;
+    std::string video(static_cast<size_t>(rows * kTestFrameBytes), '\0');
+    for (size_t i = 0; i < video.size(); ++i) video[i] = static_cast<char>((i * 7 + i / 400) & 0xff);
+    if (defect != Defect::NoRaw) {
+        writeFile(dir + "/eye_L.raw", defect == Defect::LongerRaw ? video + video.substr(0, 1000) : video);
     }
+    writeFile(dir + "/eye_R.raw", defect == Defect::Truncated ? video.substr(0, video.size() - 500) : video);
+    std::string csv = "index,eye,eye_index,slot,t_cam,t_raw,t_copy,valve_seq\n";
+    char row[160];
+    for (int k = 0; k < rows; ++k) {
+        for (int eye = 0; eye < 2; ++eye) {
+            const double t = 100.0 + k / 90.0 + eye * 0.0001;
+            std::snprintf(row, sizeof(row), "%d,%s,%d,%d,%.9f,%.9f,%.9f,%d\n", 2 * k + eye, eye == 0 ? "L" : "R", k,
+                          eye * 4, t, t + 0.006, t + 0.01, 5000 + k);
+            csv += row;
+        }
+    }
+    writeFile(dir + "/frames.csv", csv);
+    std::string valve = "valve_seq,t_seen,sample_time,producer_state,sample_flag,open_l,open_r,gaze_l_x\n";
+    for (int j = 0; j < frames; ++j) {
+        const bool tracking = defect == Defect::ValveOff ? false : defect != Defect::FewValve || j < frames / 3;
+        std::snprintf(row, sizeof(row), "%d,%.9f,%.9f,%d,1,%s,0.9,0.1\n", 5000 + j, 100.02 + j / 90.0,
+                      100.004 + j / 90.0, tracking ? 1 : 0, tracking ? "0.85" : "nan");
+        valve += row;
+    }
+    writeFile(dir + "/valve.csv", valve);
+    if (defect != Defect::NoCues) {
+        writeFile(dir + "/cues.csv", "index,t_raw,t_rel,label,seconds,beep\n0,100,0,lead_in,3,1\n");
+    }
+    writeFile(dir + "/meta.txt", "protocol=contrib\nframe_bytes=" + std::to_string(kTestFrameBytes) + "\n");
     const timespec times[2] = {{static_cast<time_t>(made), 0}, {static_cast<time_t>(made), 0}};
     ::utimensat(AT_FDCWD, dir.c_str(), times, 0);
     return dir;
+}
+
+void testCheck() {
+    using namespace contrib;
+    const RemoveDir temp {tempDir()};
+    const std::string home = temp.path;
+    // A whole one
+    CHECK(checkRecording(makeRecording(home, "rec_2026-10-25_14-00-00")).check == Check::Ok);
+    // A file missing: which
+    CheckResult r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-01", 50, kNow, Defect::NoCues));
+    CHECK(r.check == Check::Missing);
+    SAME(r.detail, "cues.csv");
+    r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-02", 50, kNow, Defect::NoRaw));
+    CHECK(r.check == Check::Missing);
+    SAME(r.detail, "eye_L.raw");
+    CHECK(checkRecording(temp.path + "/none").detail ==
+          "eye_L.raw, eye_R.raw, frames.csv, valve.csv, cues.csv, meta.txt");
+    // A raw file cut short, or longer than frames.csv says, or no frame at all
+    r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-03", 50, kNow, Defect::Truncated));
+    CHECK(r.check == Check::Truncated);
+    SAME(r.detail, "eye_R.raw");
+    r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-04", 50, kNow, Defect::LongerRaw));
+    CHECK(r.check == Check::Truncated);
+    SAME(r.detail, "eye_L.raw");
+    r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-05", 50, kNow, Defect::NoFrames));
+    CHECK(r.check == Check::Truncated);
+    SAME(r.detail, "eye_L.raw, eye_R.raw");
+    // meta.txt's frame_bytes counts; without it, eyecam-rec's 160000
+    const std::string sized = makeRecording(home, "rec_2026-10-25_14-00-06");
+    writeFile(sized + "/meta.txt", "protocol=contrib\n");
+    CHECK(checkRecording(sized).check == Check::Truncated);
+    writeFile(sized + "/meta.txt", "protocol=contrib\nframe_bytes=1000\n");
+    CHECK(checkRecording(sized).check == Check::Ok);
+    // Valve's tracking: stopped after a third, or never tracking (producer_state 0, openness nan)
+    r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-07", 90, kNow, Defect::FewValve));
+    CHECK(r.check == Check::Valve);
+    SAME(r.detail, "37%");  // (34 of 90 frames within 0.05 s of a sample of the first 30)
+    r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-08", 50, kNow, Defect::ValveOff));
+    CHECK(r.check == Check::Valve);
+    SAME(r.detail, "0%");
+    // ...the line at 90 % of the frames: 91 of 100 paired passes, 88 doesn't (a frame pairs with a sample within
+    // 0.05 s: up to 4 frames past the last one)
+    const std::string edge = makeRecording(home, "rec_2026-10-25_14-00-09", 100);
+    const auto keepValve = [&](int keep) {
+        std::string valve = "valve_seq,t_seen,sample_time,producer_state,sample_flag,open_l,open_r\n";
+        char row[128];
+        for (int j = 0; j < keep; ++j) {
+            std::snprintf(row, sizeof(row), "%d,0,%.9f,1,1,0.8,0.8\n", j, 100.0 + j / 90.0);
+            valve += row;
+        }
+        writeFile(edge + "/valve.csv", valve);
+        return checkRecording(edge).check;
+    };
+    CHECK(keepValve(87) == Check::Ok);
+    CHECK(keepValve(84) == Check::Valve);
+    // A valve.csv without its columns pairs nothing
+    writeFile(edge + "/valve.csv", "a,b\n1,2\n");
+    CHECK(checkRecording(edge).check == Check::Valve);
 }
 
 void testFiles() {
@@ -664,11 +761,11 @@ void testFiles() {
     CHECK(info.find("[consent]") < info.find("[aborted]"));
     CHECK(!appendInfo(temp.path + "/missing", "x", error) && !error.empty());
     // The files a recording needs
-    const std::string full = makeRecording(home, "rec_2026-10-25_14-02-41", 4096);
+    const std::string full = makeRecording(home, "rec_2026-10-25_14-02-41");
     CHECK(missingFiles(full).empty());
-    const std::string lacking = makeRecording(home, "rec_2026-10-25_14-03-00", 100, kNow, "cues.csv");
+    const std::string lacking = makeRecording(home, "rec_2026-10-25_14-03-00", 50, kNow, Defect::NoCues);
     CHECK(missingFiles(lacking) == std::vector<std::string> {"cues.csv"});
-    CHECK(missingFiles(temp.path + "/none").size() == 4);
+    CHECK(missingFiles(temp.path + "/none").size() == 6);
     // Moved into the folder, and one that didn't finish into aborted/
     std::string name;
     CHECK(takeRecording(home, dir, full, false, name, error));
@@ -684,7 +781,11 @@ void testFiles() {
     CHECK(!takeRecording(home, dir, home + "/calib_2026-10-25_14-09-00", false, name, error));
     CHECK(!takeRecording(home, dir, home + "/rec_2026-10-25_14-59-59", false, name, error));  // (not there)
     // Sizes: the files in it and its folders
-    CHECK(folderBytes(dir + "/rec_2026-10-25_14-02-41") == 4096 + 4096 - 13 + 20 + 13 + 10 + 17);
+    long long sum = 0;
+    for (const auto& file : std::filesystem::directory_iterator(dir + "/rec_2026-10-25_14-02-41")) {
+        sum += static_cast<long long>(file.file_size());
+    }
+    CHECK(sum > 100'000 && folderBytes(dir + "/rec_2026-10-25_14-02-41") == sum);
     CHECK(folderBytes(dir) > folderBytes(dir + "/rec_2026-10-25_14-02-41"));
     CHECK(freeBytes(home) > 0);
     CHECK(freeBytes(temp.path + "/missing") == -1);
@@ -731,17 +832,21 @@ void testPack() {
     const std::string names[3] = {"rec_2026-10-25_14-02-41", "rec_2026-10-25_14-05-12", "rec_2026-10-25_14-07-30"};
     Info info;
     for (int i = 0; i < 3; ++i) {
-        takeRecording(home, dir, makeRecording(home, names[i], i == 1 ? 1'500'000 : 300'000, kNow), false, name, error);
+        takeRecording(home, dir, makeRecording(home, names[i], i == 1 ? 900 : 300, kNow), false, name, error);
         contrib::Recording r;
         r.rec = names[i];
         r.calib = i == 0 ? names[i] + ".calib_result.json" : "none";
+        r.userCalib = i == 0 ? names[i] + ".user_calib.json" : "none";
+        r.settings = i == 0 ? names[i] + ".settings.json" : "none";
         info.recordings.push_back(r);
         appendInfo(dir, recordingSection(r), error);
     }
     writeFile(dir + "/" + names[0] + ".calib_result.json", "{\"calib\":1}");
-    // (the third lost a file since: left out and named)
-    ::unlink((dir + "/" + names[2] + "/valve.csv").c_str());
-    takeRecording(home, dir, makeRecording(home, "rec_2026-10-25_14-04-00", 1000), true, name, error);
+    writeFile(dir + "/" + names[0] + ".user_calib.json", "{\"user\":1}");
+    writeFile(dir + "/" + names[0] + ".settings.json", "{\"lid_veto\":true}");
+    // (the third's raw file was cut since: checked again, left out and named)
+    std::filesystem::resize_file(dir + "/" + names[2] + "/eye_L.raw", 1500);
+    takeRecording(home, dir, makeRecording(home, "rec_2026-10-25_14-04-00", 10), true, name, error);
     writeFile(dir + "/contrib_2026-10-24_09-00-00.tar.zst", "an older pack");
     // What goes in: the folder, info.txt, the complete recordings (sorted) and the calibration result; not aborted/,
     // not a pack
@@ -749,12 +854,14 @@ void testPack() {
     std::vector<std::string> incomplete;
     CHECK(packEntries(dir, info, entries, incomplete, error));
     CHECK(incomplete == std::vector<std::string> {names[2]});
-    CHECK(entries.size() == 2 + 7 + 1 + 7);
+    CHECK(entries.size() == 2 + 7 + 3 + 7);
     SAME(entries[0].name, "contrib/");
     SAME(entries[1].name, "contrib/info.txt");
     SAME(entries[2].name, "contrib/" + names[0] + "/");
     SAME(entries[3].name, "contrib/" + names[0] + "/cues.csv");
     SAME(entries[9].name, "contrib/" + names[0] + ".calib_result.json");
+    SAME(entries[10].name, "contrib/" + names[0] + ".user_calib.json");
+    SAME(entries[11].name, "contrib/" + names[0] + ".settings.json");
     for (const Entry& entry : entries) {
         CHECK(entry.name.find("aborted") == std::string::npos && entry.name.find(".tar") == std::string::npos);
         CHECK(entry.name.find(names[2]) == std::string::npos);
@@ -762,9 +869,10 @@ void testPack() {
     // Packed as tar: unpacks to the same files
     Worker worker;
     const std::string tarName = packName(static_cast<std::time_t>(kNow), false);
-    CHECK(worker.pack(dir, entries, tarName, 2, false));
+    CHECK(worker.pack(dir, info, tarName, false));
     Progress ended = waitFor(worker);
     CHECK(ended.finished && ended.ok && ended.count == 2);
+    CHECK(ended.incomplete == std::vector<std::string> {names[2]});
     SAME(ended.output, tarName);
     CHECK(ended.done == ended.total && ended.total > 0);
     const std::string tar = dir + "/" + tarName;
@@ -781,11 +889,13 @@ void testPack() {
     }
     SAME(readFile(out + "/contrib/info.txt"), readFile(dir + "/info.txt"));
     SAME(readFile(out + "/contrib/" + names[0] + ".calib_result.json"), "{\"calib\":1}");
+    SAME(readFile(out + "/contrib/" + names[0] + ".user_calib.json"), "{\"user\":1}");
+    SAME(readFile(out + "/contrib/" + names[0] + ".settings.json"), "{\"lid_veto\":true}");
     CHECK(!there(out + "/contrib/aborted") && !there(out + "/contrib/" + names[2]));
     // ...and through zstd, when it is there
     if (zstdAvailable()) {
         const std::string zstName = packName(static_cast<std::time_t>(kNow) + 1, true);
-        CHECK(worker.pack(dir, entries, zstName, 2, true));
+        CHECK(worker.pack(dir, info, zstName, true));
         ended = waitFor(worker);
         CHECK(ended.finished && ended.ok);
         const std::string out2 = temp.path + "/out2";
@@ -795,6 +905,13 @@ void testPack() {
     } else {
         std::printf("contrib-test: no zstd here, its pack not tried\n");
     }
+    // Nothing usable: no pack, and why
+    Info none;
+    none.recordings.push_back(info.recordings[2]);
+    CHECK(worker.pack(dir, none, packName(static_cast<std::time_t>(kNow) + 2, false), false));
+    ended = waitFor(worker);
+    CHECK(ended.finished && !ended.ok && ended.count == 0 && !ended.error.empty());
+    CHECK(!there(dir + "/" + packName(static_cast<std::time_t>(kNow) + 2, false)));
     // Deleting: only home/contrib itself
     CHECK(!worker.remove(home, dir + "/" + names[0]));
     CHECK(!worker.remove(temp.path, dir));
@@ -812,11 +929,11 @@ void testPack() {
  * @param now the tests' clock (moved on)
  * @param eyecam eyecam-rec as it is before (its count and run)
  * @param name the recording's folder
- * @param without a file it lacks
+ * @param defect what it lacks
  * @param aborted it ended early
  */
 void record(contrib::Session& session, contrib::View& view, const std::string& home, double& now, eyecam::View eyecam,
-            const std::string& name, const std::string& without = "", bool aborted = false) {
+            const std::string& name, Defect defect = Defect::None, bool aborted = false) {
     std::string log;
     contrib::Snapshot snapshot;
     snapshot.appVersion = "0.8.2-test";
@@ -834,7 +951,7 @@ void record(contrib::Session& session, contrib::View& view, const std::string& h
     running.status = status(State::Recording, contrib::kProtocol, now);
     session.follow(view, running, now, now, log);
     CHECK(view.running);
-    const std::string rec = makeRecording(home, name, 600, now, without);
+    const std::string rec = makeRecording(home, name, 60, now, defect);
     now += aborted ? 20 : 96;
     eyecam::View after = eyecam;
     after.status.mtime = now;
@@ -852,10 +969,14 @@ void testSession() {
     ::mkdir(home.c_str(), 0755);
     ::mkdir((home + "/calib_2026-10-25_09-00-00").c_str(), 0755);
     writeFile(home + "/calib_2026-10-25_09-00-00/calib_result.json", "{\"ok\":true}");
+    const std::string config = temp.path + "/config";
+    ::mkdir(config.c_str(), 0755);
+    writeFile(config + "/calib.json", "{\"user\":{\"squint\":0.4}}");
+    writeFile(config + "/settings.json", "{\"lid_veto\":true}");
     View view;
     Session session;
     std::string log;
-    session.load(view, home);
+    session.load(view, home, config);
     CHECK(view.loaded && !view.exists && view.freeBytes > 0);
     CHECK(screen(view, Page::Record, false) == Screen::Consent);
     double now = static_cast<double>(std::time(nullptr));
@@ -884,9 +1005,13 @@ void testSession() {
         CHECK(r.offCountStart == 2 && r.offCountEnd == 2);
         CHECK(std::fabs(r.fps - 89.9) < 1e-6);
         SAME(r.calib, "rec_2026-10-25_14-02-41.calib_result.json");
+        SAME(r.userCalib, "rec_2026-10-25_14-02-41.user_calib.json");
+        SAME(r.settings, "rec_2026-10-25_14-02-41.settings.json");
         CHECK(r.bytes > 1000);
     }
     SAME(readFile(view.dir + "/rec_2026-10-25_14-02-41.calib_result.json"), "{\"ok\":true}");
+    SAME(readFile(view.dir + "/rec_2026-10-25_14-02-41.user_calib.json"), "{\"user\":{\"squint\":0.4}}");
+    SAME(readFile(view.dir + "/rec_2026-10-25_14-02-41.settings.json"), "{\"lid_veto\":true}");
     CHECK(there(view.dir + "/rec_2026-10-25_14-02-41/cues.csv") && !there(home + "/rec_2026-10-25_14-02-41"));
     // The second, 10 minutes later with the headset taken off between (the count went up)
     now += 600;
@@ -905,16 +1030,31 @@ void testSession() {
         SAME(view.info.recordings[2].sincePrevious, "0.0");
         SAME(view.info.recordings[3].headsetOff, "unknown");
     }
-    // One lacking a file: into aborted/, the screen says which, to record again
-    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-18-00", "frames.csv");
+    // One lacking a file, one with a raw file cut short, one without Valve's values: each into aborted/, the screen
+    // says why, to record again
+    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-18-00", Defect::NoCues);
     CHECK(view.info.recordings.size() == 4 && view.failure.shown && view.failure.why == Why::Incomplete);
-    SAME(view.failure.message, "frames.csv");
+    SAME(view.failure.message, "cues.csv");
     SAME(view.failure.kept, "aborted/rec_2026-10-25_14-18-00");
     CHECK(screen(view, Page::Record, false) == Screen::Failed);
     CHECK(there(view.dir + "/aborted/rec_2026-10-25_14-18-00"));
+    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-18-30", Defect::Truncated);
+    CHECK(view.info.recordings.size() == 4 && view.failure.why == Why::Truncated);
+    SAME(view.failure.message, "eye_R.raw");
+    CHECK(there(view.dir + "/aborted/rec_2026-10-25_14-18-30"));
+    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-18-45", Defect::FewValve);
+    CHECK(view.info.recordings.size() == 4 && view.failure.why == Why::Valve);
+    SAME(view.failure.message, "40%");
+    CHECK(there(view.dir + "/aborted/rec_2026-10-25_14-18-45"));
+    CHECK(view.info.aborted.size() == 3);
+    if (view.info.aborted.size() == 3) {
+        SAME(view.info.aborted[0], "aborted/rec_2026-10-25_14-18-00 missing cues.csv");
+        SAME(view.info.aborted[1], "aborted/rec_2026-10-25_14-18-30 cut short: eye_R.raw");
+        SAME(view.info.aborted[2], "aborted/rec_2026-10-25_14-18-45 Valve's samples for only 40% of the frames");
+    }
     // One stopped part way: into aborted/ too
-    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-19-00", "", true);
-    CHECK(view.failure.why == Why::Stopped && view.info.aborted.size() == 2);
+    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-19-00", Defect::None, true);
+    CHECK(view.failure.why == Why::Stopped && view.info.aborted.size() == 4);
     // Refused at once (a reply with an error): failed with its reason
     {
         const eyecam::View eyecam = eyecamReady(now);
@@ -931,7 +1071,7 @@ void testSession() {
         View again;
         Session restarted;
         restarted.load(again, home);
-        CHECK(again.exists && again.info.recordings.size() == 4 && again.info.aborted.size() == 2);
+        CHECK(again.exists && again.info.recordings.size() == 4 && again.info.aborted.size() == 4);
         CHECK(again.info.eyewear == Eyewear::Glasses && !consentNeeded(again.info));
     }
     // Packed (tar); another recording, packed again: the first pack goes, the recordings stay
@@ -975,6 +1115,7 @@ int main() {
     testRunWatch();
     testScreen();
     testTarHeader();
+    testCheck();
     testFiles();
     testPack();
     testSession();

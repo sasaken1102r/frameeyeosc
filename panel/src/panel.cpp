@@ -7210,6 +7210,8 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
                 case contrib::Why::Missing: why = t.contribWhyMissing; break;
                 case contrib::Why::Move: why = formatLong(t.contribWhyMoveFormat, message); break;
                 case contrib::Why::Incomplete: why = formatLong(t.contribWhyIncompleteFormat, message); break;
+                case contrib::Why::Truncated: why = formatLong(t.contribWhyTruncatedFormat, message); break;
+                case contrib::Why::Valve: why = formatLong(t.contribWhyValveFormat, message); break;
             }
             paragraph(why, 19, kText, false, 3);
             if (!f.kept.empty()) {

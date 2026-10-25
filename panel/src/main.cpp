@@ -386,8 +386,9 @@ void printUsage() {
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
         "      --fake-contrib STATE  \"Record for squint training\" open on a made-up screen (the eye cameras set up\n"
         "                        and idle unless --fake-eyecam says otherwise): consent, deleted, eyewear,\n"
-        "                        ready, nospace, running, failed, incomplete, done (just recorded), list\n"
-        "                        (\"Recordings\"), packing, packed, delete, deleting (with --adv-page tools: its\n"
+        "                        ready, nospace, running, failed, incomplete, truncated, valve (not usable:\n"
+        "                        a file missing, a raw file cut short, Valve's values missing), done (just\n"
+        "                        recorded), list (\"Recordings\"), packing, packed, delete, deleting (with --adv-page tools: its\n"
         "                        row on Debug tools, the sheet closed; none for the row before the first)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
         "                        them (off: camera_lids off)\n"
@@ -459,9 +460,9 @@ bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool
 }
 
 /** --fake-contrib's screens (fakeContrib). */
-const std::string kFakeContribStates[] = {"none",       "consent", "deleted", "eyewear", "ready",
-                                          "nospace",    "running", "failed",  "incomplete", "done",
-                                          "list",       "packing", "packed",  "delete",  "deleting"};
+const std::string kFakeContribStates[] = {"none",    "consent", "deleted",    "eyewear", "ready",   "nospace",
+                                          "running", "failed",  "incomplete", "truncated", "valve", "done",
+                                          "list",    "packing", "packed",     "delete",  "deleting"};
 
 /** --fake-eyecam, taken apart. */
 struct FakeEyecam {
@@ -1705,6 +1706,12 @@ void fakeContrib(PanelModel& m, const std::string& state, bool eyecamGiven) {
     }
     if (state == "incomplete") {
         c.failure = {true, contrib::Why::Incomplete, "cues.csv", "cues.csv", "aborted/rec_2026-10-25_14-20-55"};
+    }
+    if (state == "truncated") {
+        c.failure = {true, contrib::Why::Truncated, "eye_R.raw", "eye_R.raw", "aborted/rec_2026-10-25_14-20-55"};
+    }
+    if (state == "valve") {
+        c.failure = {true, contrib::Why::Valve, "42%", "42%", "aborted/rec_2026-10-25_14-20-55"};
     }
     if (state == "packing") {
         c.progress.job = contrib::Job::Pack;

@@ -36,8 +36,10 @@ constexpr size_t kChunk = 1 << 20;
 constexpr int kNice = 10;
 /** The most of info.txt that is read (a section is under 1 KB). */
 constexpr size_t kMaxInfoBytes = 4 << 20;
-/** The most of a calibration result that is copied. */
+/** The most of a calibration result (or eyecam's calib.json, settings.json) that is copied. */
 constexpr size_t kMaxCalibBytes = 1 << 20;
+/** The most of a recording's CSV file that is read to check it (frames.csv of 3 minutes is about 2 MB). */
+constexpr size_t kMaxCsvBytes = 64 << 20;
 
 /**
  * Whether text from a position is "YYYY-MM-DD_HH-MM-SS".
@@ -193,6 +195,35 @@ bool writeFile(const std::string& path, const std::string& text) {
 }
 
 /**
+ * Split a CSV line (eyecam-rec's: plain fields, no quotes).
+ * @param line the line
+ * @return its fields
+ */
+std::vector<std::string> fields(const std::string& line) {
+    std::vector<std::string> out;
+    size_t from = 0;
+    for (;;) {
+        const size_t comma = line.find(',', from);
+        out.push_back(line.substr(from, comma == std::string::npos ? std::string::npos : comma - from));
+        if (comma == std::string::npos) break;
+        from = comma + 1;
+    }
+    if (!out.empty() && !out.back().empty() && out.back().back() == '\r') out.back().pop_back();
+    return out;
+}
+
+/**
+ * A column's place in a CSV header.
+ * @param header the header's fields
+ * @param name the column
+ * @return its index, or -1
+ */
+int column(const std::vector<std::string>& header, const char* name) {
+    const auto at = std::find(header.begin(), header.end(), name);
+    return at == header.end() ? -1 : static_cast<int>(at - header.begin());
+}
+
+/**
  * Put an octal number into a tar header field: digits, then a NUL.
  * @param field the field
  * @param width its width
@@ -295,6 +326,8 @@ std::string recordingSection(const Recording& r) {
     out << "headset_off_count_end=" << r.offCountEnd << "\n";
     out << "eyecam_started_unix=" << number(r.eyecamStarted > 0 ? r.eyecamStarted : NAN, 3) << "\n";
     out << "calib_result=" << r.calib << "\n";
+    out << "user_calib=" << r.userCalib << "\n";
+    out << "settings=" << r.settings << "\n";
     return out.str();
 }
 
@@ -356,6 +389,8 @@ void parseInfo(const std::string& text, Info& info) {
             if (key == "headset_off_count_end") r.offCountEnd = readInteger(value, -1);
             if (key == "eyecam_started_unix") r.eyecamStarted = readNumber(value, 0.0);
             if (key == "calib_result") r.calib = value;
+            if (key == "user_calib") r.userCalib = value;
+            if (key == "settings") r.settings = value;
         } else if (section == "aborted") {
             if (key == "rec") abortedRec = value;
             if (key == "why") info.aborted.push_back(abortedRec + " " + value);
@@ -393,6 +428,11 @@ std::string localTime(std::time_t when, bool zone) {
 std::string defaultHome() {
     const char* home = std::getenv("HOME");
     return std::string(home != nullptr ? home : "") + "/eyecam";
+}
+
+std::string defaultConfigDir() {
+    const char* home = std::getenv("HOME");
+    return std::string(home != nullptr ? home : "") + "/.config/eyecam";
 }
 
 bool appendInfo(const std::string& dir, const std::string& text, std::string& error) {
@@ -440,6 +480,85 @@ std::vector<std::string> missingFiles(const std::string& dir) {
         if (!isRealFile(dir + "/" + file)) missing.push_back(file);
     }
     return missing;
+}
+
+CheckResult checkRecording(const std::string& dir) {
+    CheckResult result;
+    const std::vector<std::string> missing = missingFiles(dir);
+    if (!missing.empty()) {
+        result.check = Check::Missing;
+        for (const std::string& file : missing) result.detail += (result.detail.empty() ? "" : ", ") + file;
+        return result;
+    }
+    // frames.csv: each eye's frames, and their camera times
+    std::string text;
+    file_io::read(dir + "/frames.csv", text, kMaxCsvBytes);
+    std::istringstream frames(text);
+    std::string line;
+    std::getline(frames, line);
+    const std::vector<std::string> head = fields(line);
+    const int eyeAt = column(head, "eye");
+    const int camAt = column(head, "t_cam");
+    long long count[2] = {0, 0};
+    std::vector<double> times;
+    while (eyeAt >= 0 && camAt >= 0 && std::getline(frames, line)) {
+        const std::vector<std::string> f = fields(line);
+        if (static_cast<int>(f.size()) <= std::max(eyeAt, camAt)) continue;
+        if (f[eyeAt] != "L" && f[eyeAt] != "R") continue;
+        ++count[f[eyeAt] == "R" ? 1 : 0];
+        times.push_back(readNumber(f[camAt], NAN));
+    }
+    // Each raw file exactly that many frames (frame_bytes from meta.txt): one cut short when the disk ran full
+    long long frameBytes = kRawFrameBytes;
+    file_io::read(dir + "/meta.txt", text, kMaxCsvBytes);
+    std::istringstream meta(text);
+    while (std::getline(meta, line)) {
+        if (line.rfind("frame_bytes=", 0) == 0) frameBytes = readInteger(line.substr(12), kRawFrameBytes);
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        const std::string raw = eye == 0 ? "eye_L.raw" : "eye_R.raw";
+        struct stat st {};
+        if (::stat((dir + "/" + raw).c_str(), &st) != 0 || count[eye] == 0 ||
+            static_cast<long long>(st.st_size) != count[eye] * frameBytes) {
+            result.check = Check::Truncated;
+            result.detail += (result.detail.empty() ? "" : ", ") + raw;
+        }
+    }
+    if (result.check != Check::Ok) return result;
+    // valve.csv: the usable samples' times, and how many frames have one near
+    file_io::read(dir + "/valve.csv", text, kMaxCsvBytes);
+    std::istringstream valve(text);
+    std::getline(valve, line);
+    const std::vector<std::string> vhead = fields(line);
+    const int timeAt = column(vhead, "sample_time");
+    const int stateAt = column(vhead, "producer_state");
+    const int openL = column(vhead, "open_l");
+    const int openR = column(vhead, "open_r");
+    const int last = std::max({timeAt, stateAt, openL, openR});
+    std::vector<double> samples;
+    while (std::min({timeAt, stateAt, openL, openR}) >= 0 && std::getline(valve, line)) {
+        const std::vector<std::string> f = fields(line);
+        if (static_cast<int>(f.size()) <= last || f[stateAt] != "1") continue;
+        const double t = readNumber(f[timeAt], NAN);
+        if (std::isfinite(t) && std::isfinite(readNumber(f[openL], NAN)) && std::isfinite(readNumber(f[openR], NAN))) {
+            samples.push_back(t);
+        }
+    }
+    std::sort(samples.begin(), samples.end());
+    long long paired = 0;
+    for (const double t : times) {
+        if (!std::isfinite(t)) continue;
+        const auto next = std::lower_bound(samples.begin(), samples.end(), t);
+        const bool after = next != samples.end() && *next - t <= kValvePairSec;
+        const bool before = next != samples.begin() && t - *(next - 1) <= kValvePairSec;
+        paired += after || before ? 1 : 0;
+    }
+    const double share = times.empty() ? 0.0 : static_cast<double>(paired) / static_cast<double>(times.size());
+    if (share < kValveShare) {
+        result.check = Check::Valve;
+        result.detail = std::to_string(static_cast<int>(std::floor(share * 100))) + "%";
+    }
+    return result;
 }
 
 bool takeRecording(const std::string& home, const std::string& dir, const std::string& sessionDir, bool aborted,
@@ -595,14 +714,16 @@ bool packEntries(const std::string& dir, const Info& info, std::vector<Entry>& e
     }
     for (const Recording& r : info.recordings) {
         const std::string rec = dir + "/" + r.rec;
-        // (one lacking a file, or gone, is left out and named: it is to be recorded again)
-        if (!isRealDir(rec) || !missingFiles(rec).empty() || ::stat(rec.c_str(), &st) != 0) {
+        // (one that can't be used, or gone, is left out and named: it is to be recorded again)
+        if (!isRealDir(rec) || checkRecording(rec).check != Check::Ok || ::stat(rec.c_str(), &st) != 0) {
             incomplete.push_back(r.rec);
             continue;
         }
         entries.push_back({rec, top + "/" + r.rec + "/", 0, st.st_mtime, true});
         for (const std::string& name : names(rec)) file(r.rec + "/" + name);
-        if (r.calib != "none" && !r.calib.empty()) file(r.calib);
+        for (const std::string& copy : {r.calib, r.userCalib, r.settings}) {
+            if (!copy.empty() && copy != "none") file(copy);
+        }
     }
     for (const Entry& entry : entries) {
         if (entry.name.size() >= 100) {
@@ -668,22 +789,19 @@ void Worker::reap() {
     cancel_ = false;
 }
 
-bool Worker::pack(const std::string& dir, const std::vector<Entry>& entries, const std::string& name, int count,
-                  bool compressed) {
+bool Worker::pack(const std::string& dir, const Info& info, const std::string& name, bool compressed) {
     if (progress().running) return false;
     reap();
     Progress start;
     start.job = Job::Pack;
     start.running = true;
     start.output = name;
-    start.count = count;
-    for (const Entry& entry : entries) start.total += entry.size;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         progress_ = start;
         reported_ = true;
     }
-    thread_ = std::thread([this, dir, entries, name, compressed]() { runPack(dir, entries, name, compressed); });
+    thread_ = std::thread([this, dir, info, name, compressed]() { runPack(dir, info, name, compressed); });
     return true;
 }
 
@@ -729,10 +847,25 @@ void Worker::finish(bool ok, const std::string& error) {
     reported_ = false;
 }
 
-void Worker::runPack(const std::string& dir, const std::vector<Entry>& entries, const std::string& name,
-                     bool compressed) {
+void Worker::runPack(const std::string& dir, const Info& info, const std::string& name, bool compressed) {
     // Below the panel's own loop and VR (Linux sets a thread's niceness on its own)
     ::setpriority(PRIO_PROCESS, static_cast<id_t>(::syscall(SYS_gettid)), kNice);
+    // Each recording checked again (its CSV files read): what can't be used stays out
+    std::vector<Entry> entries;
+    std::vector<std::string> incomplete;
+    std::string listError;
+    const bool listed = packEntries(dir, info, entries, incomplete, listError);
+    const int count = static_cast<int>(info.recordings.size() - incomplete.size());
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        progress_.incomplete = incomplete;
+        progress_.count = count;
+        for (const Entry& entry : entries) progress_.total += entry.size;
+    }
+    if (!listed || count == 0) {
+        finish(false, listed ? std::string("no recording can be used") : listError);
+        return;
+    }
     const std::string final = dir + "/" + name;
     const std::string part = final + ".part";
     const int out = ::open(part.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
@@ -879,13 +1012,14 @@ void Worker::runPack(const std::string& dir, const std::vector<Entry>& entries, 
     finish(true, "");
 }
 
-void Session::load(View& view, const std::string& home) {
+void Session::load(View& view, const std::string& home, const std::string& configDir) {
     const Progress progress = view.progress;
     const bool deleted = view.deleted;
     view = View();
     view.loaded = true;
     view.home = home;
     view.dir = home + "/" + kFolderName;
+    view.configDir = configDir;
     view.progress = progress;
     view.deleted = deleted;
     view.compress = zstdAvailable();
@@ -952,7 +1086,12 @@ void Session::started(View& view, const eyecam::View& eyecam, const Snapshot& sn
         r.headsetOff = headsetOffBetween(before, r.offCountStart, r.eyecamStarted);
     }
     pending_ = r;
+    // The calibrations and settings then, copied beside it once it is recorded
     calibText_ = newestCalibResult(view.home);
+    userCalibText_.clear();
+    settingsText_.clear();
+    file_io::read(view.configDir + "/calib.json", userCalibText_, kMaxCalibBytes);
+    file_io::read(view.configDir + "/settings.json", settingsText_, kMaxCalibBytes);
 }
 
 bool Session::replied(View& view, const eyecam::Reply& reply) {
@@ -999,6 +1138,7 @@ bool Session::follow(View& view, const eyecam::View& eyecam, double nowUnix, dou
     Progress finished;
     if (worker_.takeFinished(finished)) {
         changed = true;
+        if (finished.job == Job::Pack) view.incomplete = finished.incomplete;
         if (finished.job == Job::Pack && finished.ok) {
             // (the pack before it holds fewer: it goes; the recordings stay)
             const std::string before = view.info.packed;
@@ -1023,18 +1163,7 @@ bool Session::follow(View& view, const eyecam::View& eyecam, double nowUnix, dou
 
 bool Session::pack(View& view, std::time_t now) {
     if (!view.exists || view.running || view.info.recordings.empty()) return false;
-    std::vector<Entry> entries;
-    std::string error;
-    if (!packEntries(view.dir, view.info, entries, view.incomplete, error)) {
-        view.progress = Progress();
-        view.progress.job = Job::Pack;
-        view.progress.finished = true;
-        view.progress.error = error;
-        return false;
-    }
-    const int count = static_cast<int>(view.info.recordings.size() - view.incomplete.size());
-    if (count == 0) return false;
-    const bool ok = worker_.pack(view.dir, entries, packName(now, view.compress), count, view.compress);
+    const bool ok = worker_.pack(view.dir, view.info, packName(now, view.compress), view.compress);
     view.progress = worker_.progress();
     return ok;
 }
@@ -1063,10 +1192,10 @@ void Session::ended(View& view, const RunEnd& end, const eyecam::View& eyecam, d
     run_.end();
     command_.clear();
     view.running = false;
-    // Done, and with every file it needs: into the folder, with its section and its calibration result
-    std::vector<std::string> missing;
-    if (end.outcome == Outcome::Done) missing = missingFiles(end.dir);
-    if (end.outcome == Outcome::Done && missing.empty()) {
+    // Done, and usable: into the folder, with its section and the copies beside it
+    CheckResult check;
+    if (end.outcome == Outcome::Done) check = checkRecording(end.dir);
+    if (end.outcome == Outcome::Done && check.check == Check::Ok) {
         std::string name;
         std::string error;
         if (takeRecording(view.home, view.dir, end.dir, false, name, error)) {
@@ -1077,10 +1206,13 @@ void Session::ended(View& view, const RunEnd& end, const eyecam::View& eyecam, d
             const eyecam::Status& s = eyecam.status;
             r.offCountEnd = s.hasHeadsetOff && std::fabs(s.startedUnix - r.eyecamStarted) <= 1.0 ? s.headsetOffCount
                                                                                                    : -1;
-            r.calib = "none";
-            if (!calibText_.empty() && writeFile(view.dir + "/" + name + ".calib_result.json", calibText_)) {
-                r.calib = name + ".calib_result.json";
-            }
+            const auto copy = [&](const std::string& text, const char* suffix) {
+                const std::string file = name + suffix;
+                return !text.empty() && writeFile(view.dir + "/" + file, text) ? file : std::string("none");
+            };
+            r.calib = copy(calibText_, ".calib_result.json");
+            r.userCalib = copy(userCalibText_, ".user_calib.json");
+            r.settings = copy(settingsText_, ".settings.json");
             append(view, recordingSection(r));
             view.totalBytes = folderBytes(view.dir);
             view.justDone = true;
@@ -1092,14 +1224,17 @@ void Session::ended(View& view, const RunEnd& end, const eyecam::View& eyecam, d
         log += "recorded, but " + error + "\n";
         return;
     }
-    // Didn't finish, or lacks a file: its part (if any) goes to aborted/, and it can be recorded again
+    // Didn't finish, or can't be used: its part (if any) goes to aborted/, and it can be recorded again
     view.failure = {true, end.why, end.message, end.messageEn, ""};
     std::string why = end.outcome == Outcome::Stopped ? "stopped" : "failed";
-    if (!missing.empty()) {
-        std::string list;
-        for (const std::string& file : missing) list += (list.empty() ? "" : ", ") + file;
-        view.failure = {true, Why::Incomplete, list, list, ""};
-        why = "missing " + list;
+    if (end.outcome == Outcome::Done) {
+        const Why reason = check.check == Check::Missing     ? Why::Incomplete
+                           : check.check == Check::Truncated ? Why::Truncated
+                                                             : Why::Valve;
+        view.failure = {true, reason, check.detail, check.detail, ""};
+        why = check.check == Check::Missing     ? "missing " + check.detail
+              : check.check == Check::Truncated ? "cut short: " + check.detail
+                                                : "Valve's samples for only " + check.detail + " of the frames";
     }
     if (!end.dir.empty()) {
         std::string name;

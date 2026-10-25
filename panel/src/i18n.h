@@ -928,6 +928,8 @@ struct UiText {
     const char* contribWhyMissing;
     const char* contribWhyMoveFormat;     ///< (%s: why)
     const char* contribWhyIncompleteFormat;  ///< (%s: the files missing)
+    const char* contribWhyTruncatedFormat;   ///< (%s: the raw files cut short)
+    const char* contribWhyValveFormat;       ///< (%s: the share of frames with Valve's values, "42%")
     const char* contribKept;         ///< ...its part went to aborted/
     const char* contribRetry;
     const char* contribDoneTitle;    ///< recorded
@@ -942,7 +944,7 @@ struct UiText {
     const char* contribPackedFormat;     ///< ...done (%s recordings, %s its size; its name under it)
     const char* contribPackFailedFormat; ///< ...failed (%s why)
     const char* contribPackNoSpaceFormat;  ///< ...not enough space (%s needed)
-    const char* contribIncompleteFormat;   ///< ...recordings it left out, a file missing (%s: their names)
+    const char* contribIncompleteFormat;   ///< ...recordings it left out, not usable (%s: their names)
     const char* contribDelete;       ///< "Delete the recordings"
     const char* contribClose;        ///< the end's "Close"
     const char* contribDeleteTitle;  ///< ...the delete's confirmation

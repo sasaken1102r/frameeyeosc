@@ -980,8 +980,9 @@ impl Pump {
     }
 
     /// One pass over the slots. False once frames have stopped for LOST_AFTER, or one camera's have come far slower
-    /// than the other's for ring::UNBALANCED_FOR_S (`unbalanced`).
-    fn poll(&mut self, arena: &Arena, now: f64, swap: bool, live: &mut Live) -> bool {
+    /// than the other's for ring::UNBALANCED_FOR_S (`unbalanced`) on slots not looked for again before (`relooks`;
+    /// slots that were are kept, said once).
+    fn poll(&mut self, arena: &Arena, now: f64, swap: bool, live: &mut Live, relooks: &mut ring::Relooks) -> bool {
         for k in 0..self.ring.off.len() {
             match self.slots.poll(arena, &self.ring, k, now, &mut self.buf) {
                 SlotEvent::None => {}
@@ -992,7 +993,15 @@ impl Pump {
                 }
             }
         }
-        self.unbalanced = self.ring.both_eyes && self.balance.check(now, self.count);
+        if self.ring.both_eyes && self.balance.check(now, self.count) {
+            if relooks.look_again(&self.ring.off) {
+                self.unbalanced = true;
+            } else {
+                let line = unbalanced_line(&self.ring, &self.balance);
+                eprintln!("{line} (idle), on the same slots as before: kept, not looked for again");
+                self.balance.give_up();
+            }
+        }
         now - self.last_change <= LOST_AFTER && !self.unbalanced
     }
 }
@@ -1021,6 +1030,8 @@ fn idle(
 ) -> Option<Abort> {
     let mut cached: Option<Ring> = None;
     let mut pump: Option<Pump> = None;
+    // The rings looked for again because of unbalanced frames (Pump::poll)
+    let mut relooks = ring::Relooks::default();
     let mut deferred: Vec<Request> = Vec::new();
     let mut next_check = 0.0;
     let mut next_search = 0.0;
@@ -1155,10 +1166,11 @@ fn idle(
         live.poll_valve(now);
         if live.on {
             if let Some(p) = pump.as_mut() {
-                if !p.poll(&b.arenas[p.ring.arena], now, args.swap, live) {
+                if !p.poll(&b.arenas[p.ring.arena], now, args.swap, live, &mut relooks) {
                     if p.unbalanced {
                         // The frames did not stop (no headset-off count), but what was learnt from the slow camera's
-                        // may be off: the next lock starts a new wear, as after frames that stopped.
+                        // may be off: the next lock starts a new wear unless the eyes look worn (new_wear_hint), as
+                        // after frames that stopped.
                         eprintln!("{} (idle); searching again", unbalanced_line(&p.ring, &p.balance));
                     } else {
                         eprintln!("eye frames stopped (idle); searching again");
@@ -2336,8 +2348,10 @@ fn record(
     let mut reading = prox.read();
     let mut valve_seen = 0u64;
     let mut relocks = 0;
-    // One camera's frames far slower than the other's (ring::FrameBalance, on `count`)
+    // One camera's frames far slower than the other's (ring::FrameBalance, on `count`), and the rings looked for again
+    // because of it (ring::Relooks)
     let mut balance = ring::FrameBalance::default();
+    let mut relooks = ring::Relooks::default();
     let mut abort = None;
     let mut pending_stop: Option<Request> = None;
     let reason: String = loop {
@@ -2449,7 +2463,14 @@ fn record(
             }
         }
 
-        let unbalanced = ring.both_eyes && balance.check(now, count);
+        // Unbalanced on slots looked for again before (ring::Relooks): kept, said once
+        let mut unbalanced = ring.both_eyes && balance.check(now, count);
+        if unbalanced && !relooks.look_again(&ring.off) {
+            let line = unbalanced_line(&ring, &balance);
+            eprintln!("{line}, on the same slots as before: kept, not looked for again");
+            balance.give_up();
+            unbalanced = false;
+        }
         if now - last_change > LOST_AFTER || unbalanced {
             if unbalanced {
                 eprintln!("{}; searching again ({busy_state} time keeps running)", unbalanced_line(&ring, &balance));

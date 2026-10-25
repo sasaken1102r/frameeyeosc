@@ -588,12 +588,18 @@ pub struct FrameBalance {
     since: Option<f64>,
     /// The last window's frames a second per camera.
     pub fps: [f64; 2],
+    /// No longer watching this ring (`give_up`).
+    off: bool,
 }
 
 impl FrameBalance {
     /// Each camera's frame count so far (`count`, by camera) at `now` (s). True once one camera has delivered under
-    /// UNBALANCED_SHARE of the other's frames, but some, for UNBALANCED_FOR_S (judged in windows of a second).
+    /// UNBALANCED_SHARE of the other's frames, but some, for UNBALANCED_FOR_S (judged in windows of a second). Always
+    /// false after `give_up`.
     pub fn check(&mut self, now: f64, count: [u64; 2]) -> bool {
+        if self.off {
+            return false;
+        }
         let Some((t0, c0)) = self.window else {
             self.window = Some((now, count));
             return false;
@@ -606,6 +612,38 @@ impl FrameBalance {
             self.window = Some((now, count));
         }
         self.since.is_some_and(|t| now - t >= UNBALANCED_FOR_S)
+    }
+
+    /// Stop watching this ring: `check` is false from now on.
+    pub fn give_up(&mut self) {
+        self.off = true;
+    }
+}
+
+/// The rings (their slots' starts, `Ring::off`) already looked for again because of unbalanced frames
+/// (`FrameBalance`). A search that finds the same slots again, still unbalanced, would go round forever (a lock, 5 s,
+/// a new search, 1-2 s of frames lost each time) on a headset whose camera really delivers that slowly: such a ring is
+/// kept, and not looked for again.
+#[derive(Clone, Debug, Default)]
+pub struct Relooks {
+    seen: Vec<Vec<usize>>,
+}
+
+/// At most this many rings are remembered (the oldest is forgotten).
+const RELOOKS_KEPT: usize = 8;
+
+impl Relooks {
+    /// The ring with slots `off` has come unbalanced: whether to look for the ring again (the first time for these
+    /// slots; false when they were looked for again before, and the ring should be kept).
+    pub fn look_again(&mut self, off: &[usize]) -> bool {
+        if self.seen.iter().any(|s| s == off) {
+            return false;
+        }
+        if self.seen.len() == RELOOKS_KEPT {
+            self.seen.remove(0);
+        }
+        self.seen.push(off.to_vec());
+        true
     }
 }
 
@@ -1017,6 +1055,28 @@ mod tests {
         // (the window from 6 s on is mostly slow already, and counts from its start)
         let at = run(&mut b, 6.1, 10.0, 90.0, 22.5, &mut c).expect("looks again");
         assert!(at > 10.99, "{at}");
+        // Given up on (the same slots unbalanced again): never again, however slow
+        b.give_up();
+        assert_eq!(run(&mut b, 20.0, 20.0, 90.0, 22.5, &mut c), None);
+    }
+
+    #[test]
+    fn the_same_slots_unbalanced_again_are_kept() {
+        // A headset whose camera really delivers that slowly: the search finds the same ring every time. It is looked
+        // for again once, then kept (the lock, 5 s, a new search would otherwise go round forever).
+        let p = EXPECTED_PITCH;
+        let ring: Vec<usize> = (0..8).map(|k| 0x23_4100 + k * p + if k >= 4 { 64 } else { 0 }).collect();
+        let moved: Vec<usize> = ring.iter().map(|o| o + 0x10_0000).collect();
+        let mut relooks = Relooks::default();
+        assert!(relooks.look_again(&ring));
+        assert!(!relooks.look_again(&ring) && !relooks.look_again(&ring));
+        // Another ring (the buffer moved) is looked for again once too, and the first is still kept
+        assert!(relooks.look_again(&moved) && !relooks.look_again(&moved) && !relooks.look_again(&ring));
+        // Only the last RELOOKS_KEPT rings are remembered: the oldest (the first ring) is forgotten
+        for k in 1..RELOOKS_KEPT {
+            assert!(relooks.look_again(&[k]));
+        }
+        assert!(relooks.look_again(&ring) && !relooks.look_again(&ring));
     }
 
     #[test]

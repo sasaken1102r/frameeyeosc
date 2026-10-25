@@ -40,6 +40,10 @@ constexpr const char* kAbortedDir = "aborted";
 constexpr const char* kRequiredFiles[] = {"eye_L.raw", "eye_R.raw", "frames.csv", "valve.csv", "cues.csv", "meta.txt"};
 /** A raw frame's size when meta.txt doesn't say (frame_bytes: 400x400 grey, or 512x400 with --full-width). */
 constexpr long long kRawFrameBytes = 160000;
+/** The eye with fewer frames needs at least this share of the other's: both cameras run at the same rate (0.999 to
+ * 1.000 in 119 recordings and calibrations, at 15 fps too); a ring locked on part of one camera's slots gives one
+ * eye a quarter, a half or three quarters of the frames. */
+constexpr double kEvenShare = 0.9;
 /** At least this share of the frames needs a usable Valve sample near it (the labels use Valve's openness)... */
 constexpr double kValveShare = 0.9;
 /** ...within this long of its camera time (s; Valve's samples come about 90 times a second, on the same clock). */
@@ -268,6 +272,7 @@ enum class Check {
     Ok,
     Missing,    ///< a file of kRequiredFiles isn't there
     NoVideo,    ///< an eye has no frame at all (its camera's video didn't come)
+    Uneven,     ///< one eye has under kEvenShare of the other's frames (its camera's video came only in part)
     Truncated,  ///< an eye's raw file doesn't hold as many frames as frames.csv lists for it (the disk ran full)
     Valve,      ///< under kValveShare of the frames have a usable Valve sample near them (Valve's tracking off?)
 };
@@ -275,13 +280,15 @@ enum class Check {
 /** checkRecording's answer. */
 struct CheckResult {
     Check check = Check::Ok;
-    std::string detail;  ///< the files missing, the eyes without frames ("L", "R", "LR"), the raw files cut short
-                         ///< ("eye_L.raw"), or the share paired ("42%")
+    std::string detail;  ///< the files missing, the eyes without frames ("L", "R", "LR"), each eye's frames
+                         ///< ("8490/2124", left/right), the raw files cut short ("eye_L.raw"), or the share paired
+                         ///< ("42%")
 };
 
 /**
  * Whether a recording can be used for training, from its CSV files and its raw files' sizes alone (never the
- * frames): all of kRequiredFiles there; frames of both eyes in frames.csv; each eye's raw file exactly as many
+ * frames): all of kRequiredFiles there; frames of both eyes in frames.csv, the fewer at least kEvenShare of the
+ * more; each eye's raw file exactly as many
  * frames (meta.txt's frame_bytes each, else kRawFrameBytes) as frames.csv has rows for that eye; and at least
  * kValveShare of frames.csv's frames with a usable Valve sample in valve.csv (producer_state 1, both openness values
  * numbers) within kValvePairSec of their t_cam (sample_time is on the same clock).
@@ -330,7 +337,9 @@ enum class Outcome {
 };
 
 /** Why a try didn't finish (the screen says it). */
-enum class Why { None, Stopped, Error, Refused, Gone, NoStart, Missing, Move, Incomplete, NoVideo, Truncated, Valve };
+enum class Why {
+    None, Stopped, Error, Refused, Gone, NoStart, Missing, Move, Incomplete, NoVideo, Uneven, Truncated, Valve
+};
 
 /** A recording's end. */
 struct RunEnd {

@@ -521,6 +521,13 @@ CheckResult checkRecording(const std::string& dir) {
         result.detail = std::string(count[0] == 0 ? "L" : "") + (count[1] == 0 ? "R" : "");
         return result;
     }
+    // One eye's camera far slower than the other's: its video came only in part (a ring locked on some of its slots)
+    const double fewer = static_cast<double>(std::min(count[0], count[1]));
+    if (fewer < kEvenShare * static_cast<double>(std::max(count[0], count[1]))) {
+        result.check = Check::Uneven;
+        result.detail = std::to_string(count[0]) + "/" + std::to_string(count[1]);
+        return result;
+    }
     for (int eye = 0; eye < 2; ++eye) {
         const std::string raw = eye == 0 ? "eye_L.raw" : "eye_R.raw";
         struct stat st {};
@@ -1261,11 +1268,13 @@ void Session::ended(View& view, const RunEnd& end, const eyecam::View& eyecam, d
     if (end.outcome == Outcome::Done) {
         const Why reason = check.check == Check::Missing     ? Why::Incomplete
                            : check.check == Check::NoVideo   ? Why::NoVideo
+                           : check.check == Check::Uneven    ? Why::Uneven
                            : check.check == Check::Truncated ? Why::Truncated
                                                              : Why::Valve;
         view.failure = {true, reason, check.detail, check.detail, ""};
         why = check.check == Check::Missing     ? "missing " + check.detail
               : check.check == Check::NoVideo   ? "no frames of eye " + check.detail
+              : check.check == Check::Uneven    ? "uneven frames (left/right): " + check.detail
               : check.check == Check::Truncated ? "cut short: " + check.detail
                                                 : "Valve's samples for only " + check.detail + " of the frames";
     }

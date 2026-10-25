@@ -7220,6 +7220,13 @@ void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m)
                                                                 : message == "R" ? t.rightEye
                                                                                  : t.contribBothEyes);
                     break;
+                case contrib::Why::Uneven: {
+                    // ("8490/2124": the left eye's frames, then the right eye's)
+                    const size_t slash = message.find('/');
+                    why = formatLong(t.contribWhyUnevenFormat, message.substr(0, slash),
+                                     slash == std::string::npos ? std::string() : message.substr(slash + 1));
+                    break;
+                }
                 case contrib::Why::Truncated: why = formatLong(t.contribWhyTruncatedFormat, message); break;
                 case contrib::Why::Valve: why = formatLong(t.contribWhyValveFormat, message); break;
             }

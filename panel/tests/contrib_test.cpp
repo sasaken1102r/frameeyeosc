@@ -634,6 +634,7 @@ enum class Defect {
     FewValve,    ///< Valve's tracking stopped after a third of it
     ValveOff,    ///< Valve's samples there but not tracking (producer_state 0)
     NoFrames,    ///< frames.csv with no frame
+    Uneven,      ///< the right eye's camera only every 4th frame (a ring locked on part of its slots)
 };
 
 /** A made-up frame's size (its meta.txt says so, as eyecam-rec's does). */
@@ -659,14 +660,19 @@ std::string makeRecording(const std::string& home, const std::string& name, int 
     if (defect != Defect::NoRaw) {
         writeFile(dir + "/eye_L.raw", defect == Defect::LongerRaw ? video + video.substr(0, 1000) : video);
     }
-    writeFile(dir + "/eye_R.raw", defect == Defect::Truncated ? video.substr(0, video.size() - 500) : video);
+    // (uneven: the right eye's raw holds its every 4th frame only, as frames.csv lists it)
+    const int rightRows = defect == Defect::Uneven ? (rows + 3) / 4 : rows;
+    const std::string right = video.substr(0, static_cast<size_t>(rightRows * kTestFrameBytes));
+    writeFile(dir + "/eye_R.raw", defect == Defect::Truncated ? right.substr(0, right.size() - 500) : right);
     std::string csv = "index,eye,eye_index,slot,t_cam,t_raw,t_copy,valve_seq\n";
     char row[160];
     for (int k = 0; k < rows; ++k) {
         for (int eye = 0; eye < 2; ++eye) {
+            if (eye == 1 && defect == Defect::Uneven && k % 4 != 0) continue;
             const double t = 100.0 + k / 90.0 + eye * 0.0001;
-            std::snprintf(row, sizeof(row), "%d,%s,%d,%d,%.9f,%.9f,%.9f,%d\n", 2 * k + eye, eye == 0 ? "L" : "R", k,
-                          eye * 4, t, t + 0.006, t + 0.01, 5000 + k);
+            const int index = eye == 1 && defect == Defect::Uneven ? k / 4 : k;
+            std::snprintf(row, sizeof(row), "%d,%s,%d,%d,%.9f,%.9f,%.9f,%d\n", 2 * k + eye, eye == 0 ? "L" : "R",
+                          index, eye * 4, t, t + 0.006, t + 0.01, 5000 + k);
             csv += row;
         }
     }
@@ -725,6 +731,28 @@ void testCheck() {
     r = checkRecording(oneEye);
     CHECK(r.check == Check::NoVideo);
     SAME(r.detail, "R");
+    // One eye's camera a quarter of the other's (a ring locked on part of its slots): uneven, each eye's frames
+    r = checkRecording(makeRecording(home, "rec_2026-10-25_14-00-11", 100, kNow, Defect::Uneven));
+    CHECK(r.check == Check::Uneven);
+    SAME(r.detail, "100/25");
+    // ...the line at 0.9: 90 of 100 passes, 89 doesn't (either eye the fewer)
+    const auto dropRows = [&](const std::string& eye, int keep) {
+        const std::string dir = makeRecording(home, "rec_2026-10-25_14-01-" + std::to_string(keep % 100), 100);
+        std::string kept;
+        std::istringstream all(readFile(dir + "/frames.csv"));
+        int seen = 0;
+        for (std::string line; std::getline(all, line);) {
+            if (line.find("," + eye + ",") != std::string::npos && seen++ >= keep) continue;
+            kept += line + "\n";
+        }
+        writeFile(dir + "/frames.csv", kept);
+        std::filesystem::resize_file(dir + (eye == "L" ? "/eye_L.raw" : "/eye_R.raw"), keep * kTestFrameBytes);
+        return checkRecording(dir);
+    };
+    CHECK(dropRows("R", 90).check == Check::Ok);
+    r = dropRows("L", 89);
+    CHECK(r.check == Check::Uneven);
+    SAME(r.detail, "89/100");
     // meta.txt's frame_bytes counts; without it, eyecam-rec's 160000
     const std::string sized = makeRecording(home, "rec_2026-10-25_14-00-06");
     writeFile(sized + "/meta.txt", "protocol=contrib\n");
@@ -1060,15 +1088,20 @@ void testSession() {
     CHECK(view.info.recordings.size() == 4 && view.failure.why == Why::Valve);
     SAME(view.failure.message, "40%");
     CHECK(there(view.dir + "/aborted/rec_2026-10-25_14-18-45"));
-    CHECK(view.info.aborted.size() == 3);
-    if (view.info.aborted.size() == 3) {
+    record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-18-50", Defect::Uneven);
+    CHECK(view.info.recordings.size() == 4 && view.failure.why == Why::Uneven);
+    SAME(view.failure.message, "60/15");
+    CHECK(there(view.dir + "/aborted/rec_2026-10-25_14-18-50"));
+    CHECK(view.info.aborted.size() == 4);
+    if (view.info.aborted.size() == 4) {
         SAME(view.info.aborted[0], "aborted/rec_2026-10-25_14-18-00 missing cues.csv");
         SAME(view.info.aborted[1], "aborted/rec_2026-10-25_14-18-30 cut short: eye_R.raw");
         SAME(view.info.aborted[2], "aborted/rec_2026-10-25_14-18-45 Valve's samples for only 40% of the frames");
+        SAME(view.info.aborted[3], "aborted/rec_2026-10-25_14-18-50 uneven frames (left/right): 60/15");
     }
     // One stopped part way: into aborted/ too
     record(session, view, home, now, eyecamReady(now, 0, now - 5), "rec_2026-10-25_14-19-00", Defect::None, true);
-    CHECK(view.failure.why == Why::Stopped && view.info.aborted.size() == 4);
+    CHECK(view.failure.why == Why::Stopped && view.info.aborted.size() == 5);
     // Refused at once (a reply with an error): failed with its reason
     {
         const eyecam::View eyecam = eyecamReady(now);
@@ -1091,7 +1124,7 @@ void testSession() {
         View again;
         Session restarted;
         restarted.load(again, home);
-        CHECK(again.exists && again.info.recordings.size() == 4 && again.info.aborted.size() == 4);
+        CHECK(again.exists && again.info.recordings.size() == 4 && again.info.aborted.size() == 5);
         CHECK(again.info.eyewear == Eyewear::Glasses && !consentNeeded(again.info));
     }
     // Packed (tar); another recording, packed again: the first pack goes, the recordings stay

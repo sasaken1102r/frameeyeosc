@@ -3302,10 +3302,15 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::ContribDelete:
         case PanelAction::ContribDeleteCancel: return;  // handled inside the panel
         case PanelAction::ContribOpen:
-            // Read from the disk the first time (the loop reads it at its start and follows it from then on); each
-            // opening starts afresh: the last recording's end and failure are not shown again
-            if (contribSession != nullptr && !model.contrib.loaded) {
-                contribSession->load(model.contrib, contrib::defaultHome());
+            // Read from the disk; each opening starts afresh: the last recording's end and failure are not shown
+            // again
+            // (again each time: the folder may have been changed or deleted by hand meanwhile)
+            if (contribSession != nullptr) {
+                if (model.contrib.loaded) {
+                    contribSession->refresh(model.contrib);
+                } else {
+                    contribSession->load(model.contrib, contrib::defaultHome());
+                }
             }
             model.contrib.justDone = false;
             model.contrib.failure = contrib::Failure();

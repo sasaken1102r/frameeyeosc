@@ -598,6 +598,13 @@ public:
     void load(View& view, const std::string& home, const std::string& configDir = defaultConfigDir());
 
     /**
+     * Read the folder and its info.txt again (the sheet opened: it may have been changed or deleted by hand), keeping
+     * the recording followed and the job: only what is on the disk (exists, info, its size, the free space).
+     * @param view the contribution
+     */
+    void refresh(View& view);
+
+    /**
      * The consent and the answer about glasses: the folder (made if needed), and their section in info.txt.
      * @param view the contribution
      * @param eyewear the answer
@@ -645,7 +652,8 @@ public:
     bool follow(View& view, const eyecam::View& eyecam, double nowUnix, double bootNow, std::string& log);
 
     /**
-     * Pack the folder into one file (on the worker).
+     * Pack the folder into one file (on the worker), when the space it needs is free (packNeedBytes; an earlier pack
+     * is already taken from the free space, and goes only once the new one is complete).
      * @param view the contribution
      * @param now the time (the file's name)
      * @return false if it can't start (view.progress says why)

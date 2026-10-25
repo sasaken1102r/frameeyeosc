@@ -1093,6 +1093,22 @@ void testSession() {
     CHECK(view.info.packed != first && view.info.packedCount == 5);
     CHECK(!there(view.dir + "/" + first) && there(view.dir + "/" + view.info.packed));
     CHECK(there(view.dir + "/rec_2026-10-25_14-02-41/eye_L.raw"));
+    // Not enough space to pack: refused, and why (the free space is read again for it)
+    {
+        View big = view;
+        big.info.recordings.back().bytes = 1LL << 50;
+        CHECK(!session.pack(big, static_cast<std::time_t>(now) + 120));
+        CHECK(big.progress.finished && !big.progress.ok && big.progress.error.find("not enough space") == 0);
+    }
+    // Changed by hand while the panel runs: read again when the sheet opens (the folder renamed away, then back)
+    const std::string aside = temp.path + "/aside";
+    CHECK(std::rename(view.dir.c_str(), aside.c_str()) == 0);
+    session.refresh(view);
+    CHECK(!view.exists && view.info.recordings.empty() && consentNeeded(view.info));
+    CHECK(screen(view, Page::Record, false) == Screen::Consent);
+    CHECK(std::rename(aside.c_str(), view.dir.c_str()) == 0);
+    session.refresh(view);
+    CHECK(view.exists && view.info.recordings.size() == 5 && !consentNeeded(view.info) && view.totalBytes > 0);
     // Deleted: the consent again, saying so
     CHECK(session.remove(view));
     for (int i = 0; i < 3000 && view.exists; ++i) {

@@ -1034,6 +1034,19 @@ void Session::load(View& view, const std::string& home, const std::string& confi
     view.totalBytes = folderBytes(view.dir);
 }
 
+void Session::refresh(View& view) {
+    if (view.home.empty()) return;
+    view.exists = isRealDir(view.dir);
+    view.freeBytes = freeBytes(view.home);
+    view.info = Info();
+    view.totalBytes = 0;
+    if (!view.exists) return;
+    std::string text;
+    file_io::read(view.dir + "/" + kInfoFile, text, kMaxInfoBytes);
+    parseInfo(text, view.info);
+    view.totalBytes = folderBytes(view.dir);
+}
+
 bool Session::consent(View& view, Eyewear eyewear, std::time_t now) {
     if (eyewear == Eyewear::Unasked || view.home.empty()) return false;
     for (const std::string& dir : {view.home, view.dir}) {
@@ -1163,6 +1176,16 @@ bool Session::follow(View& view, const eyecam::View& eyecam, double nowUnix, dou
 
 bool Session::pack(View& view, std::time_t now) {
     if (!view.exists || view.running || view.info.recordings.empty()) return false;
+    // (the free space read now: the panel's button follows the one read every 2 s)
+    view.freeBytes = freeBytes(view.home);
+    const long long need = packNeedBytes(view.info, view.compress);
+    if (view.freeBytes >= 0 && view.freeBytes < need) {
+        view.progress = Progress();
+        view.progress.job = Job::Pack;
+        view.progress.finished = true;
+        view.progress.error = "not enough space (" + sizeText(need) + " needed, " + sizeText(view.freeBytes) + " free)";
+        return false;
+    }
     const bool ok = worker_.pack(view.dir, view.info, packName(now, view.compress), view.compress);
     view.progress = worker_.progress();
     return ok;

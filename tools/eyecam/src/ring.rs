@@ -481,6 +481,11 @@ pub fn discover(arenas: &[Arena], clock: &mut dyn Clock, log: &mut dyn FnMut(Str
     let (eye, camera_reason, both_eyes) = cameras_for(&off, pitch, pictures_differ.then_some(&similar[..]));
     log(format!("cameras {eye:?}: {camera_reason}"));
     look.slots = off.len();
+    if both_eyes && !each_camera_full(&eye) {
+        // Both cameras, but not all of their slots: a camera with fewer is read at a fraction of its frame rate.
+        log(format!("not taken: each camera needs {SLOTS_PER_CAMERA} slots"));
+        return None;
+    }
     look.both_eyes = both_eyes;
     look.stopped_at = if both_eyes { "" } else { STOP_ONE_EYE };
     Some(Ring { arena: a, pitch, off, eye, both_eyes, framing, camera_reason })
@@ -499,8 +504,11 @@ pub const SLOTS_PER_CAMERA: usize = 4;
 /// full ring (2 x SLOTS_PER_CAMERA slots) is always split 4 + 4 by address, each camera having four slots: on
 /// 2026-10-17 a spacing measured 1 byte off (262209) left the layout without a boundary, and the pictures (both eyes,
 /// lying down) put a right-eye slot with the left eye's (slot_camera 1,0,1,1,0,0,0,0: one frame in five of the left
-/// eye was the right eye's). The pictures decide only for a partial ring without a layout boundary; a disagreement
-/// with them is noted as a WARNING either way.
+/// eye was the right eye's). The pictures never decide: a partial ring without a layout boundary is one camera's
+/// slots, one group (2026-10-17..25, headset not worn: four slots of the left eye's camera alone, at 0x334240, were
+/// split by their pictures into 1,0,0,0, 1,0,1,0, 1,0,1,1, 1,1,0,1 and 1,1,1,0, and the right eye was sent the left
+/// eye's frames). A disagreement with the pictures is noted as a WARNING. A partial ring with a boundary has both
+/// cameras but not all of their slots; `discover` does not take it (`each_camera_full`).
 pub fn cameras_for(off: &[usize], pitch: usize, similar: Option<&[u8]>) -> (Vec<u8>, String, bool) {
     let full = off.len() == 2 * SLOTS_PER_CAMERA;
     let (eye, mut reason, both_eyes) = match assign_cameras(off, pitch) {
@@ -513,18 +521,11 @@ pub fn cameras_for(off: &[usize], pitch: usize, similar: Option<&[u8]>) -> (Vec<
         None if full && similar.is_some() => {
             (by_address(off.len()), "4 + 4 slots by address, lower = R (no group boundary in the layout)".into(), true)
         }
-        None => match similar {
-            Some(similar) => (
-                cameras_by_picture(similar),
-                "picture: no group boundary in the layout; grouped by similarity, lower addresses = R".into(),
-                true,
-            ),
-            None => (
-                vec![0; off.len()],
-                "one group only (one camera streaming; which eye is not known, called L; its frames are not flipped)".into(),
-                false,
-            ),
-        },
+        None => (
+            vec![0; off.len()],
+            "one group only (one camera streaming; which eye is not known, called L; its frames are not flipped)".into(),
+            false,
+        ),
     };
     if let Some(similar) = similar
         && similar.iter().map(|&g| g ^ similar[0]).ne(eye.iter().map(|&e| e ^ eye[0]))
@@ -561,10 +562,51 @@ pub fn assign_cameras(off: &[usize], pitch: usize) -> Option<(Vec<u8>, String)> 
     Some(((0..off.len()).map(|k| LOWER_ADDRESS_EYE ^ (k >= boundary) as u8).collect(), reason))
 }
 
-/// The eyes when only the pictures group the slots (`similar`: 0 = like slot 0, 1 = not; slots in memory order):
-/// still numbered by address, the group of slot 0 (the lowest address) being LOWER_ADDRESS_EYE.
-fn cameras_by_picture(similar: &[u8]) -> Vec<u8> {
-    similar.iter().map(|&g| LOWER_ADDRESS_EYE ^ g ^ similar[0]).collect()
+/// Whether each camera holds SLOTS_PER_CAMERA of the slots (`eye`, as `cameras_for` gave them). A ring with fewer for
+/// either camera reads that camera at a fraction of its frame rate: 17 of the 138 locks over 2026-10-16..25 (all with the headset
+/// not worn, or put on in that same second) had cameras [1, 0, 0, 0, 0] (the right eye at 22.5 of 90 fps, through a
+/// calibration and a recording), [1, 1, 1, 0, 0, 0], or one camera's four slots split by their pictures; 120 were
+/// 4 + 4 (and one the 8-slot grouping by pictures that cameras_for no longer makes).
+pub fn each_camera_full(eye: &[u8]) -> bool {
+    [0, 1].iter().all(|&e| eye.iter().filter(|&&x| x == e).count() == SLOTS_PER_CAMERA)
+}
+
+/// After a lock: one camera's frames arriving at less than this share of the other's ...
+pub const UNBALANCED_SHARE: f64 = 0.5;
+/// ... while the faster one delivers at least this many a second, and the slower one some ...
+pub const UNBALANCED_MIN_FPS: f64 = 5.0;
+/// ... for this long (s) means the ring was locked without all of a camera's slots: look for it again.
+pub const UNBALANCED_FOR_S: f64 = 5.0;
+
+/// Watches the frames each camera delivers after a lock (a safety net behind `each_camera_full`). A camera that stops
+/// altogether is not this: the other one goes on as before.
+#[derive(Clone, Debug, Default)]
+pub struct FrameBalance {
+    /// The time and the frame counts of the last one-second window's start.
+    window: Option<(f64, [u64; 2])>,
+    /// When the frame rates were first unbalanced in a row of windows.
+    since: Option<f64>,
+    /// The last window's frames a second per camera.
+    pub fps: [f64; 2],
+}
+
+impl FrameBalance {
+    /// Each camera's frame count so far (`count`, by camera) at `now` (s). True once one camera has delivered under
+    /// UNBALANCED_SHARE of the other's frames, but some, for UNBALANCED_FOR_S (judged in windows of a second).
+    pub fn check(&mut self, now: f64, count: [u64; 2]) -> bool {
+        let Some((t0, c0)) = self.window else {
+            self.window = Some((now, count));
+            return false;
+        };
+        if now - t0 >= 1.0 {
+            self.fps = [0, 1].map(|e| count[e].saturating_sub(c0[e]) as f64 / (now - t0));
+            let (lo, hi) = (self.fps[0].min(self.fps[1]), self.fps[0].max(self.fps[1]));
+            let unbalanced = lo > 0.0 && hi >= UNBALANCED_MIN_FPS && lo < UNBALANCED_SHARE * hi;
+            self.since = if unbalanced { self.since.or(Some(t0)) } else { None };
+            self.window = Some((now, count));
+        }
+        self.since.is_some_and(|t| now - t >= UNBALANCED_FOR_S)
+    }
 }
 
 #[cfg(test)]
@@ -594,6 +636,8 @@ mod tests {
         pad: u8,
         /// Draw group 0's eye on the right and group 1's on the left (what fooled the old picture rule).
         mirrored: bool,
+        /// Slots 0..dark get dark frames (still refreshed, but no picture), as the headset off can show.
+        dark: usize,
     }
 
     impl Sim {
@@ -618,7 +662,7 @@ mod tests {
                 for x in 0..WIDTH {
                     let noise = self.rand() % 8;
                     let r2 = ((x as f64 - cx).powi(2) + (y as f64 - 200.0).powi(2)) / 1600.0;
-                    let v = if y < 4 {
+                    let v = if y < 4 || slot < self.dark {
                         2 + noise % 3
                     } else if r2 < 1.0 {
                         12 + noise
@@ -728,6 +772,38 @@ mod tests {
     }
 
     fn find_ring(pad: u8, mirrored: bool, fps: f64) {
+        let (ring, look, _) = look_at_sim(pad, mirrored, fps, 0);
+        let ring = ring.expect("ring");
+        assert_eq!(ring.arena, 0);
+        assert_eq!(ring.pitch, PITCH);
+        let expected: Vec<usize> = (0..8).map(|k| header_at(k) + HEADER_BYTES).collect();
+        assert_eq!(ring.off, expected);
+        // The lower-address group (slots 0-3) is the right eye's camera.
+        assert_eq!(ring.eye, vec![1, 1, 1, 1, 0, 0, 0, 0]);
+        assert!(ring.both_eyes);
+        // What the panel's diagnostics show of it: the candidates, how often they refreshed, the slots, both eyes
+        assert!(look.candidates >= 8, "{look:?}");
+        assert!(look.refresh_hz >= if fps < 20.0 { 3.0 } else { 5.0 }, "{look:?}");
+        assert_eq!((look.slots, look.both_eyes, look.stopped_at), (8, true, ""), "{look:?}");
+        assert!(ring.camera_reason.starts_with("layout: group boundary before slot 4 (spacing 262208+64)"));
+        assert!(!ring.camera_reason.contains("WARNING"), "{}", ring.camera_reason);
+        let clean = if pad == 0 { 0.001 } else { 0.51 };
+        assert!(ring.framing.pad_dirty.iter().all(|&d| d < clean), "{:?}", ring.framing.pad_dirty);
+    }
+
+    #[test]
+    fn a_ring_without_all_of_a_cameras_slots_is_not_taken() {
+        // The headset off (2026-10-25 17:26): the right eye's camera showed a picture in one of its slots only, and
+        // the ring walk stopped there: 5 slots, cameras [1, 0, 0, 0, 0], the right eye at 22.5 fps. Not taken now.
+        let (ring, look, lines) = look_at_sim(0, false, 90.0, 3);
+        assert!(ring.is_none(), "{ring:?}");
+        assert_eq!((look.slots, look.both_eyes, look.stopped_at), (5, false, STOP_FEW_SLOTS), "{look:?}");
+        assert!(lines.iter().any(|l| l.starts_with("cameras [1, 0, 0, 0, 0]: layout: group boundary before slot 1")), "{lines:?}");
+        assert!(lines.iter().any(|l| l == "not taken: each camera needs 4 slots"), "{lines:?}");
+    }
+
+    /// One look (`discover`) at a simulated camera: slots 0..dark (the right eye's camera's) without a picture.
+    fn look_at_sim(pad: u8, mirrored: bool, fps: f64, dark: usize) -> (Option<Ring>, Look, Vec<String>) {
         let mut ring_buf = vec![0u8; 16 << 20];
         let mut other_buf = vec![0u8; 32 << 20];
         let (ring_ptr, other_ptr) = (ring_buf.as_mut_ptr(), other_buf.as_mut_ptr());
@@ -741,6 +817,7 @@ mod tests {
             rng: 0x9e3779b97f4a7c15,
             pad,
             mirrored,
+            dark,
         };
         // A stale but eye-like picture elsewhere in the heap, which must not be picked.
         for y in 0..HEIGHT {
@@ -762,27 +839,13 @@ mod tests {
         }
         let mut lines = Vec::new();
         let mut look = Look::default();
-        let ring = discover(&arenas, &mut sim, &mut |line| lines.push(line), &mut look).expect("ring");
+        let ring = discover(&arenas, &mut sim, &mut |line| lines.push(line), &mut look);
         for line in &lines {
             eprintln!("{line}");
         }
-        assert_eq!(ring.arena, 0);
-        assert_eq!(ring.pitch, PITCH);
-        let expected: Vec<usize> = (0..8).map(|k| header_at(k) + HEADER_BYTES).collect();
-        assert_eq!(ring.off, expected);
-        // The lower-address group (slots 0-3) is the right eye's camera.
-        assert_eq!(ring.eye, vec![1, 1, 1, 1, 0, 0, 0, 0]);
-        assert!(ring.both_eyes);
-        // What the panel's diagnostics show of it: the candidates, how often they refreshed, the slots, both eyes
-        assert!(look.candidates >= 8, "{look:?}");
-        assert!(look.refresh_hz >= if fps < 20.0 { 3.0 } else { 5.0 }, "{look:?}");
-        assert_eq!((look.slots, look.both_eyes, look.stopped_at), (8, true, ""), "{look:?}");
-        assert!(ring.camera_reason.starts_with("layout: group boundary before slot 4 (spacing 262208+64)"));
-        assert!(!ring.camera_reason.contains("WARNING"), "{}", ring.camera_reason);
-        let clean = if pad == 0 { 0.001 } else { 0.51 };
-        assert!(ring.framing.pad_dirty.iter().all(|&d| d < clean), "{:?}", ring.framing.pad_dirty);
         drop(arenas);
         drop((ring_buf, other_buf));
+        (ring, look, lines)
     }
 
     impl Sim {
@@ -880,13 +943,80 @@ mod tests {
         let (eye, reason, _) = cameras_for(&off, p, Some(&[0, 0, 0, 0, 1, 1, 1, 1]));
         assert_eq!(eye, vec![1, 1, 1, 1, 0, 0, 0, 0]);
         assert!(reason.contains("before slot 4") && !reason.contains("WARNING"), "{reason}");
-        // A partial ring (a slot dropped) still follows its layout boundary, and without one the pictures
+        // A partial ring (a slot dropped) still follows its layout boundary (discover then does not take it:
+        // each_camera_full), and without one it is one camera, whatever the pictures say
         assert_eq!(cameras_for(&off[1..6], p, None).0, vec![1, 1, 1, 0, 0]);
-        let (eye, _, both) = cameras_for(&jumbled[..5], p, Some(&[0, 1, 0, 0, 1]));
-        assert_eq!((eye, both), (vec![1, 0, 1, 1, 0], true));
+        let (eye, reason, both) = cameras_for(&jumbled[..5], p, Some(&[0, 1, 0, 0, 1]));
+        assert_eq!((eye, both), (vec![0; 5], false));
+        assert!(reason.starts_with("one group only") && reason.contains("WARNING"), "{reason}");
         // One camera streaming: one group, not flipped
         let (eye, _, both) = cameras_for(&off[..4], p, None);
         assert_eq!((eye, both), (vec![0; 4], false));
+    }
+
+    #[test]
+    fn the_partial_rings_locked_on_the_device_are_not_taken() {
+        // The slots' starts on the device: the right eye's camera at 0x234100.., the left eye's 64 bytes late.
+        let p = EXPECTED_PITCH;
+        let slot = |k: usize| 0x23_4100 + k * p + if k >= 4 { 64 } else { 0 };
+        let take = |slots: &[usize], similar: Option<&[u8]>| {
+            let off: Vec<usize> = slots.iter().map(|&k| slot(k)).collect();
+            let (eye, _, both) = cameras_for(&off, p, similar);
+            (eye.clone(), both && each_camera_full(&eye))
+        };
+        // The usual lock (120 of 138 times over 2026-10-16..25): taken
+        assert_eq!(take(&[0, 1, 2, 3, 4, 5, 6, 7], Some(&[0, 0, 0, 0, 1, 1, 1, 1])), (vec![1, 1, 1, 1, 0, 0, 0, 0], true));
+        // "5 slots at 0x2f41c0, cameras [1, 0, 0, 0, 0]" (7 times; 2026-10-25 17:26: the right eye at 22.5 fps)
+        assert_eq!(take(&[3, 4, 5, 6, 7], None), (vec![1, 0, 0, 0, 0], false));
+        // "6 slots at 0x234100, cameras [1, 1, 1, 0, 0, 0]" (a slot of each camera dropped)
+        assert_eq!(take(&[0, 1, 2, 4, 5, 6], None), (vec![1, 1, 1, 0, 0, 0], false));
+        // "4 slots at 0x334240": the left eye's camera alone, which the pictures split into two eyes (1,0,0,0 four
+        // times, then 1,0,1,0, 1,0,1,1, 1,1,0,1 and 1,1,1,0 twice): one camera now, not both eyes
+        for similar in [[0, 1, 1, 1], [0, 1, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]] {
+            assert_eq!(take(&[4, 5, 6, 7], Some(&similar)), (vec![0; 4], false), "{similar:?}");
+        }
+        assert!(each_camera_full(&[1, 1, 1, 1, 0, 0, 0, 0]) && !each_camera_full(&[1, 1, 1, 1, 0, 0, 0]));
+        assert!(!each_camera_full(&[0; 8]) && !each_camera_full(&[]));
+    }
+
+    #[test]
+    fn frame_balance_looks_again_only_after_five_seconds_of_one_slow_camera() {
+        // Frame counts at 100 Hz polls: L at `l` fps, R at `r` fps, from t0 for `secs` seconds.
+        let run = |b: &mut FrameBalance, t0: f64, secs: f64, l: f64, r: f64, count: &mut [u64; 2]| -> Option<f64> {
+            let mut acc = [0.0f64; 2];
+            for i in 0..(secs * 100.0) as usize {
+                let t = t0 + i as f64 / 100.0;
+                acc[0] += l / 100.0;
+                acc[1] += r / 100.0;
+                for e in 0..2 {
+                    while acc[e] >= 1.0 {
+                        acc[e] -= 1.0;
+                        count[e] += 1;
+                    }
+                }
+                if b.check(t, *count) {
+                    return Some(t);
+                }
+            }
+            None
+        };
+        // 2026-10-25 17:26: L 89.5, R 22.5 fps: after 5 s (judged in whole seconds)
+        let (mut b, mut c) = (FrameBalance::default(), [0u64; 2]);
+        let at = run(&mut b, 0.0, 10.0, 89.5, 22.5, &mut c).expect("looks again");
+        assert!((5.0..6.1).contains(&at), "{at}");
+        assert!((b.fps[0] - 89.5).abs() < 1.5 && (b.fps[1] - 22.5).abs() < 1.5, "{:?}", b.fps);
+        // Balanced (both 90, or 72 against 90 after a rate change), or one camera stopped: never
+        for (l, r) in [(90.0, 90.0), (72.0, 90.0), (90.0, 0.0), (0.0, 0.0), (3.0, 1.0)] {
+            let (mut b, mut c) = (FrameBalance::default(), [0u64; 2]);
+            assert_eq!(run(&mut b, 0.0, 20.0, l, r, &mut c), None, "{l} / {r}");
+        }
+        // Unbalanced for 4 s, then balanced for a second: starts over
+        let (mut b, mut c) = (FrameBalance::default(), [0u64; 2]);
+        assert_eq!(run(&mut b, 0.0, 4.5, 90.0, 22.5, &mut c), None);
+        assert_eq!(run(&mut b, 4.5, 1.6, 90.0, 90.0, &mut c), None);
+        // (the window from 6 s on is mostly slow already, and counts from its start)
+        let at = run(&mut b, 6.1, 10.0, 90.0, 22.5, &mut c).expect("looks again");
+        assert!(at > 10.99, "{at}");
     }
 
     #[test]
@@ -908,13 +1038,6 @@ mod tests {
         // before 2026-10-07).
         let one = ring(vec![0; 4], false);
         assert!((0..4).all(|k| !one.upside_down(k)));
-    }
-
-    #[test]
-    fn pictures_alone_still_name_the_lower_addresses_right() {
-        // Grouped by similarity to slot 0 (the lowest address): slot 0's group is the right eye's camera.
-        assert_eq!(cameras_by_picture(&[0, 0, 0, 0, 1, 1, 1, 1]), vec![1, 1, 1, 1, 0, 0, 0, 0]);
-        assert_eq!(cameras_by_picture(&[0, 1, 0, 1, 1]), vec![1, 0, 1, 0, 0]);
     }
 
     #[test]

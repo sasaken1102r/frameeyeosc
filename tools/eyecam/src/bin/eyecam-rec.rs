@@ -959,27 +959,53 @@ struct Pump {
     slots: SlotStates,
     buf: Vec<u8>,
     last_change: f64,
+    /// Frames per camera (before --swap), and whether one camera has been far slower than the other (ring::FrameBalance)
+    count: [u64; 2],
+    balance: ring::FrameBalance,
+    unbalanced: bool,
 }
 
 impl Pump {
     fn new(arena: &Arena, ring: Ring) -> Self {
         let slots = SlotStates::new(arena, &ring);
-        Self { ring, slots, buf: vec![0u8; HEADER_BYTES + FRAME_BYTES], last_change: now_raw() }
+        Self {
+            ring,
+            slots,
+            buf: vec![0u8; HEADER_BYTES + FRAME_BYTES],
+            last_change: now_raw(),
+            count: [0; 2],
+            balance: ring::FrameBalance::default(),
+            unbalanced: false,
+        }
     }
 
-    /// One pass over the slots. False once frames have stopped for LOST_AFTER.
+    /// One pass over the slots. False once frames have stopped for LOST_AFTER, or one camera's have come far slower
+    /// than the other's for ring::UNBALANCED_FOR_S (`unbalanced`).
     fn poll(&mut self, arena: &Arena, now: f64, swap: bool, live: &mut Live) -> bool {
         for k in 0..self.ring.off.len() {
             match self.slots.poll(arena, &self.ring, k, now, &mut self.buf) {
                 SlotEvent::None => {}
                 SlotEvent::Changed => self.last_change = now,
                 SlotEvent::Frame(_) => {
+                    self.count[self.ring.eye[k] as usize] += 1;
                     live.frame(self.ring.eye[k] as usize ^ swap as usize, self.ring.upside_down(k), &self.buf, now)
                 }
             }
         }
-        now - self.last_change <= LOST_AFTER
+        self.unbalanced = self.ring.both_eyes && self.balance.check(now, self.count);
+        now - self.last_change <= LOST_AFTER && !self.unbalanced
     }
+}
+
+/// The log line for a ring left because one camera's frames came far slower than the other's (ring::FrameBalance).
+fn unbalanced_line(ring: &Ring, balance: &ring::FrameBalance) -> String {
+    format!(
+        "one eye camera's frames came far slower than the other's for {} s (cameras {:?}: {:.1} / {:.1} fps)",
+        ring::UNBALANCED_FOR_S,
+        ring.eye,
+        balance.fps[0],
+        balance.fps[1]
+    )
 }
 
 /// Wait for `start` / `calib` while holding the buffers, keeping the ring locked and feeding the live engine while
@@ -1130,11 +1156,17 @@ fn idle(
         if live.on {
             if let Some(p) = pump.as_mut() {
                 if !p.poll(&b.arenas[p.ring.arena], now, args.swap, live) {
-                    eprintln!("eye frames stopped (idle); searching again");
+                    if p.unbalanced {
+                        // The frames did not stop (no headset-off count), but what was learnt from the slow camera's
+                        // may be off: the next lock starts a new wear, as after frames that stopped.
+                        eprintln!("{} (idle); searching again", unbalanced_line(&p.ring, &p.balance));
+                    } else {
+                        eprintln!("eye frames stopped (idle); searching again");
+                        // (they stopped LOST_AFTER ago)
+                        off.frames_lost(eyecam::now_boot() - LOST_AFTER);
+                    }
                     pump = None;
                     came_back = true;
-                    // (they stopped LOST_AFTER ago)
-                    off.frames_lost(eyecam::now_boot() - LOST_AFTER);
                     live.send(Msg::Stale);
                     next_search = now + 1.0;
                     if state.0 == "idle" {
@@ -2304,6 +2336,8 @@ fn record(
     let mut reading = prox.read();
     let mut valve_seen = 0u64;
     let mut relocks = 0;
+    // One camera's frames far slower than the other's (ring::FrameBalance, on `count`)
+    let mut balance = ring::FrameBalance::default();
     let mut abort = None;
     let mut pending_stop: Option<Request> = None;
     let reason: String = loop {
@@ -2415,13 +2449,18 @@ fn record(
             }
         }
 
-        if now - last_change > LOST_AFTER {
-            eprintln!("eye frames stopped; searching again ({busy_state} time keeps running)");
+        let unbalanced = ring.both_eyes && balance.check(now, count);
+        if now - last_change > LOST_AFTER || unbalanced {
+            if unbalanced {
+                eprintln!("{}; searching again ({busy_state} time keeps running)", unbalanced_line(&ring, &balance));
+            } else {
+                eprintln!("eye frames stopped; searching again ({busy_state} time keeps running)");
+            }
             if let Some(s) = session.as_mut() {
                 s.flush()?;
             }
             if let Some(m) = meta.as_mut() {
-                writeln!(m, "lost_at_t_raw={now:.9}")?;
+                writeln!(m, "{}_at_t_raw={now:.9}", if unbalanced { "unbalanced" } else { "lost" })?;
             }
             if let Some(l) = live.as_deref() {
                 l.send(Msg::Stale);
@@ -2459,6 +2498,7 @@ fn record(
                     }
                     slots = SlotStates::new(&b.arenas[ring.arena], &ring);
                     last_change = now_raw();
+                    balance = ring::FrameBalance::default();
                     // A calibration keeps its wear (livesvc::NEW_WEAR_OFF_S).
                     if let Some(l) = live.as_deref() {
                         l.send(Msg::NewWear("the eye frames came back"));

@@ -2392,8 +2392,8 @@ pub fn widen_step_levels(s: &[Sample], b_n: f64) -> Vec<f64> {
 /// of them gave a step of 0.52 that the other two steps rose only 0.4 / 0.3 of. Replayed live and through frameeyeosc
 /// with that wearer's settings, widening went out at 0.5 or more in 36 % / 39 % of the widen frames (both eyes, widen
 /// sensitivity 0.5 / 1). With the lowest step's median the step is 0.25 (the right eye's 0.51 -> 0.43) and 91 % at
-/// either; nothing widened (0.3 or more) in the normal and squint steps, looking up 7 / 12 % (5 / 9 % before), looking
-/// down none at sensitivity 0.5 but 20 % at 1. On the developer's 27 wear calibrations the step stays the same or gets
+/// either; nothing widened (0.3 or more) in the normal and squint steps, looking up 7 / 12 % at sensitivity 0.5 (0 /
+/// 1 % before) and 8 / 15 % at 1 (5 / 9 %), looking down none at 0.5 but 20 % at 1 (none before). On the developer's 27 wear calibrations the step stays the same or gets
 /// smaller, by 0.011 in the median and 0.055 at most, and nothing else in them changes.
 fn widen_level(s: &[Sample], b_n: f64) -> (f64, usize) {
     let (all, n) = med_of(s, |x| widen_line(x, b_n));

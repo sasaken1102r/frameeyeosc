@@ -137,6 +137,8 @@ Status parseStatus(const std::string& text, double mtime) {
     status.totalS = readNumber(root, "total_s", kNaN);
     status.sessionDir = readText(root, "session_dir");
     status.protocol = readText(root, "protocol");
+    const JsonValue* aborted = root.get("last_session_aborted");
+    status.lastSessionAborted = aborted != nullptr && aborted->isBool() && aborted->boolean;
     // Bits beyond the two known ones are kept, but only the two are used
     status.calibState = std::max(0, readInt(root, "calib_state", 0));
     const JsonValue* recalib = root.get("recalib_suggested");

@@ -215,6 +215,8 @@ struct Status {
     double totalS = 0.0;
     std::string sessionDir;
     std::string protocol;
+    bool lastSessionAborted = false;  ///< "last_session_aborted": the last recording ended early (its meta.txt says
+                                      ///< aborted=1; false when missing)
     int calibState = 0;            ///< kCalibWearBit | kCalibUserBit | kCalibAutoBit (0 when missing)
     bool recalibSuggested = false; ///< drifted since the calibration: "calib wear" again
     bool live = false;             ///< the eyelids are read from the cameras live

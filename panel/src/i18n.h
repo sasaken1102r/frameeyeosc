@@ -932,6 +932,7 @@ struct UiText {
     const char* contribWhyIncompleteFormat;  ///< (%s: the files missing)
     const char* contribWhyNoVideoFormat;     ///< (%s: the eye without frames: leftEye, rightEye or contribBothEyes)
     const char* contribBothEyes;             ///< ...both
+    const char* contribWhyUnevenFormat;      ///< (%s, %s: the left eye's and the right eye's frames)
     const char* contribWhyTruncatedFormat;   ///< (%s: the raw files cut short)
     const char* contribWhyValveFormat;       ///< (%s: the share of frames with Valve's values, "42%")
     const char* contribKept;         ///< ...its part went to aborted/

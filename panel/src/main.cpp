@@ -388,8 +388,9 @@ void printUsage() {
         "                        and idle unless --fake-eyecam says otherwise): consent, deleted, eyewear,\n"
         "                        ready, nospace, noeyedata (frameeyeosc gets no eye data), running (a squint),\n"
         "                        running-left (looking left), failed,\n"
-        "                        incomplete, novideo, truncated, valve (not usable: a file missing, an eye's video\n"
-        "                        missing, a raw file cut short, Valve's values missing), done (just\n"
+        "                        incomplete, novideo, uneven, truncated, valve (not usable: a file missing, an\n"
+        "                        eye's video missing, one eye's camera slow, a raw file cut short, Valve's values\n"
+        "                        missing), done (just\n"
         "                        recorded), list (\"Recordings\"), packing, packed, delete, deleting (with --adv-page tools: its\n"
         "                        row on Debug tools, the sheet closed; none for the row before the first)\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
@@ -463,7 +464,7 @@ bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool
 
 /** --fake-contrib's screens (fakeContrib). */
 const std::string kFakeContribStates[] = {"none",    "consent", "deleted",    "eyewear", "ready",   "nospace",
-                                          "running", "failed",  "incomplete", "novideo", "truncated", "valve",
+                                          "running", "failed",  "incomplete", "novideo", "uneven", "truncated", "valve",
                                           "noeyedata", "running-left", "done",
                                           "list",    "packing", "packed",     "delete",  "deleting"};
 
@@ -1713,6 +1714,10 @@ void fakeContrib(PanelModel& m, const std::string& state, bool eyecamGiven) {
     }
     if (state == "novideo") {
         c.failure = {true, contrib::Why::NoVideo, "R", "R", "aborted/rec_2026-10-25_14-20-55"};
+    }
+    if (state == "uneven") {
+        // (the recording that passed before this check: the right eye a quarter of the left's)
+        c.failure = {true, contrib::Why::Uneven, "8490/2124", "8490/2124", "aborted/rec_2026-10-25_17-28-41"};
     }
     if (state == "noeyedata") m.status.tracking = false;
     if (state == "truncated") {

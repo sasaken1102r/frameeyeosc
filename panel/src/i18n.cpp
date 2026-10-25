@@ -936,6 +936,7 @@ UiText makeJapanese() {
     t.contribWhyIncompleteFormat = "録画のファイルが足りなかったよ（%s）。もう一度撮ってね";
     t.contribWhyNoVideoFormat = "%sの映像がなかったよ。目のカメラの準備を確かめて、もう一度撮ってね";
     t.contribBothEyes = "両目";
+    t.contribWhyUnevenFormat = "片目のカメラの映像が遅かったよ（左 %s / 右 %s 枚）。HMD をかぶり直してからもう一度撮ってね";
     t.contribWhyTruncatedFormat = "録画のファイルが途中で切れていたよ（%s）。空き容量を確かめて、もう一度撮ってね";
     t.contribWhyValveFormat = "Valve の目のトラッキングの値が、フレームの %s にしかなかったよ。"
                               "SteamVR の目のトラッキングが動いてるか確かめて、もう一度撮ってね";
@@ -1994,6 +1995,8 @@ UiText makeEnglish() {
     t.contribWhyIncompleteFormat = "The recording lacks files (%s). Please record again";
     t.contribWhyNoVideoFormat = "No video from an eye camera (%s). Check the eye cameras' setup and record again";
     t.contribBothEyes = "both";
+    t.contribWhyUnevenFormat = "One eye camera's video was slow (left %s / right %s frames). Put the headset on again "
+                               "and record again";
     t.contribWhyTruncatedFormat = "The recording's files were cut short (%s). Check the free space and record again";
     t.contribWhyValveFormat = "Valve's eye tracking values were there for only %s of the frames. Check that "
                               "SteamVR's eye tracking is on and record again";

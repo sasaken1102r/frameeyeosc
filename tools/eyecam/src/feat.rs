@@ -77,19 +77,26 @@ const LID_EDGE_ROWS: usize = 1;
 /// reach its edge: a lid that low hides its upper half): the same wearer's left eye had its upper line at -0.25 r, under
 /// the centre, on more than half of its widen frames; the developer's recordings, 0.001% of such frames.
 const UPPER_WHOLE_VIS: f64 = 0.75;
-/// With the pupil seen whole, a line found lower than ABOVE_PUPIL_B of its minor semi-axis above its centre is
-/// searched for again above the pupil (rows from the band's top to ABOVE_PUPIL_PX px above the pupil), and the line
-/// found there replaces it if it is not pushed against that band's edge and its inlier share is at least the first
-/// one's: a stronger bright -> dark step lower down took the search there. A lid that only grazes the pupil's top
-/// (vis still over UPPER_WHOLE_VIS) sits above ABOVE_PUPIL_B and keeps its line; its edge would be outside the second
-/// band, which could then take a crease or the lashes above. A tester with lens inserts (a recording of 2026-10-23, a
-/// brightly lit sclera and glints from the inserts, long upper lashes) had the line under the pupil's centre in 76% /
-/// 77% of the normal frames and 86% / 96% of the widen frames, and most of the rest just above the centre: live read
-/// the widened eye as nearly shut (skin line 0.05 R), and its wear calibration had a line in 368 / 350 of 1512 normal
-/// frames. Searched above the pupil, the line is on the lid's edge in the normal frames (0.83 / 0.76, in 1419 / 1501
-/// of them) and on the lid's edge or the iris's top when widened (1.35 / 1.26): a widen step of 0.52 / 0.51.
+/// With the pupil seen whole, a line found lower than ABOVE_PUPIL_B of its minor semi-axis above its centre is searched
+/// for again above the pupil (rows from the band's top to ABOVE_PUPIL_PX px above the pupil), and the line found there
+/// replaces it if it is not pushed against that band's edge and its inlier share is at least the first one's: a
+/// stronger bright -> dark step lower down took the search there. It was 0.5 b up to 0.8.2-beta.3: on a wide-open eye
+/// the first line can sit on the pupil's own blurred top edge, 1.05 to 1.21 b above its centre (two recordings from
+/// someone wearing prescription inserts, 2026-10-25: the failing widen frames' lines, the median at 1.13 b), which 0.5
+/// b never searched again, and the widened eye read half-shut (EyeLid under 0.5 in 37.1% / 15.8% of the widen frames,
+/// left / right; 5.0% / 3.6% at 1.2 b, widen recall 0.592 -> 0.917). On the developer's 26 recordings and 10
+/// calibrations 1.2 b changes none of the outputs' measures (half-shut, squint, blinks); higher, the search runs on
+/// more and more shallow squints, where a lid that grazes the pupil's top (vis still over UPPER_WHOLE_VIS) has its edge
+/// outside the second band, which then takes a crease or the lashes above: at 1.3 b on 61% of the developer's squint
+/// frames, and 1.4 b loses 0.47 pt of squint and a blink.
+/// A tester with lens inserts (a recording of 2026-10-23, a brightly lit sclera and glints from the inserts, long upper
+/// lashes) had the line under the pupil's centre in 76% / 77% of the normal frames and 86% / 96% of the widen frames,
+/// and most of the rest just above the centre: live read the widened eye as nearly shut (skin line 0.05 R), and its
+/// wear calibration had a line in 368 / 350 of 1512 normal frames. Searched above the pupil, the line is on the lid's
+/// edge in the normal frames (0.83 / 0.76, in 1419 / 1501 of them) and on the lid's edge or the iris's top when widened
+/// (1.35 / 1.26): a widen step of 0.52 / 0.51.
 const ABOVE_PUPIL_PX: f64 = 2.0;
-const ABOVE_PUPIL_B: f64 = 0.5;
+const ABOVE_PUPIL_B: f64 = 1.2;
 /// The calibration's second, higher search band for a widened upper lid (`Extractor::upper_high`): rows from
 /// cy - HIGH_BAND.0 r to cy - HIGH_BAND.1 r (the usual band is cy - 2.1 r .. cy + 0.45 r). See live::widen_fit.
 pub const HIGH_BAND: (f64, f64) = (3.2, 1.6);
@@ -1439,14 +1446,29 @@ mod tests {
         let blank = img.iter().map(|&v| if v == 12 { 150 } else { v }).collect::<Vec<u8>>();
         let (f, p) = ex.extract(&blank, 347.0, Some((250.0, 200.0)), Some(55.0), Some(&pupil));
         assert!(p.is_none() && (f.upper_skin_y - 220.0).abs() < 3.0, "{f:?}");
+        // A line 2 px under ABOVE_PUPIL_B of the pupil's radius above its centre is searched for again too.
+        let low = (200.0 - ABOVE_PUPIL_B * 12.0 + 2.0).round() as usize;
+        let mut img = eye_with_step_r(low, 12.0);
+        for y in 0..150 {
+            for x in 0..350 {
+                if img[y * W + x] == 150 {
+                    img[y * W + x] = 170;
+                }
+            }
+        }
+        let (f, p) = ex.extract(&img, 347.0, None, Some(55.0), None);
+        let p = p.expect("pupil");
+        assert!(p.vis >= UPPER_WHOLE_VIS && (low as f64) > p.cy - ABOVE_PUPIL_B * p.b, "{p:?}");
+        assert!(!f.upper_edge && (f.upper_skin_y - 150.0).abs() < 3.0, "{f:?}");
     }
 
     #[test]
-    fn a_lid_grazing_a_whole_pupils_top_stays_the_line() {
+    fn a_lid_above_the_search_again_line_stays_the_line() {
         let mut ex = Extractor::default();
-        // The lid's step 8 px above the centre of a pupil of radius 12 (between its top and half way up, as a lid that
-        // just touches the pupil in a shallow squint), and a weaker crease 50 px above: the lid stays the line.
-        let mut img = eye_with_step_r(192, 12.0);
+        // The lid's step 3 px above ABOVE_PUPIL_B of a whole pupil's radius (12) above its centre (at 0.5 a lid that
+        // touches the pupil in a shallow squint), and a weaker crease 50 px above: the lid stays the line.
+        let step = (200.0 - ABOVE_PUPIL_B * 12.0 - 3.0).round() as usize;
+        let mut img = eye_with_step_r(step, 12.0);
         for y in 0..150 {
             for x in 0..350 {
                 if img[y * W + x] == 150 {
@@ -1456,8 +1478,8 @@ mod tests {
         }
         let (f, p) = ex.extract(&img, 347.0, None, Some(55.0), None);
         let p = p.expect("pupil");
-        assert!(p.vis >= UPPER_WHOLE_VIS && 192.0 > p.cy - p.b && 192.0 < p.cy - ABOVE_PUPIL_B * p.b, "{p:?}");
-        assert!(!f.upper_edge && (f.upper_skin_y - 192.0).abs() < 3.0, "{f:?}");
+        assert!(p.vis >= UPPER_WHOLE_VIS && (step as f64) < p.cy - ABOVE_PUPIL_B * p.b, "{p:?}");
+        assert!(!f.upper_edge && (f.upper_skin_y - step as f64).abs() < 3.0, "{f:?}");
     }
 
     /// Pupil (12, radius 18) at (230, 200) in an iris (70, radius 45) on sclera (120), a ring of brighter iris (85) at

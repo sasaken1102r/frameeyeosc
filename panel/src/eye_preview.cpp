@@ -140,6 +140,27 @@ double OneEuro::step(double value, double t) {
     return x_;
 }
 
+double LidFilter::step(double value, double t) {
+    if (!std::isfinite(value) || !std::isfinite(t)) {
+        reset();
+        return value;
+    }
+    // (the same starts over as the one-euro's, which follows them by itself)
+    if (count_ > 0 && (t - t_ <= 0 || t - t_ > kLidResetSec)) count_ = 0;
+    double median = value;
+    if (count_ == 2) median = std::max(std::min(last_[0], last_[1]), std::min(std::max(last_[0], last_[1]), value));
+    if (count_ == 2) last_[0] = last_[1];
+    last_[std::min(count_, 1)] = value;
+    count_ = std::min(count_ + 1, 2);
+    t_ = t;
+    return euro_.step(median, t);
+}
+
+void LidFilter::reset() {
+    count_ = 0;
+    euro_.reset();
+}
+
 void LidSmoother::take(Pictures& pictures) {
     for (int e = 0; e < 2; ++e) {
         Picture& p = pictures.eyes[e];
@@ -149,7 +170,7 @@ void LidSmoother::take(Pictures& pictures) {
         eye.timeNs = p.timeNs;
         const double t = p.timeNs * 1e-9;
         // Each line as a whole: none on this picture starts all of its filters over
-        const auto line = [t](const LidLine& in, OneEuro* filters) {
+        const auto line = [t](const LidLine& in, LidFilter* filters) {
             LidLine out = in;
             if (!in.present) {
                 for (int i = 0; i < 5; ++i) filters[i].reset();

@@ -295,9 +295,10 @@ private:
 };
 
 /**
- * The lid lines' smoothing (picture px; in Hz): calm at rest (about 0.16 s), the cutoff up 0.05 Hz for each px a second
- * the line moves, so a blink is followed within a picture or two. Tuned on the developer's recordings (the lower line
- * jumps a few px for single pictures; about 60% of its picture-to-picture zigzag goes).
+ * The lid lines' smoothing (picture px; in Hz), after the median of three (LidFilter): calm at rest (about 0.16 s), the
+ * cutoff up 0.05 Hz for each px a second the line moves, so a blink is followed within a picture or two. Tuned on the
+ * developer's recordings (the lower line jumps 5 to 7 px for single pictures: the median drops those, and with the
+ * one-euro about 78% of its picture-to-picture zigzag goes; 60% with the one-euro alone, which halved the jumps).
  */
 constexpr double kLidMinCutoffHz = 1.0;
 constexpr double kLidBeta = 0.05;
@@ -344,6 +345,34 @@ private:
 };
 
 /**
+ * One lid value's filter: the median of its last three pictures (a single picture's jump is dropped, at the cost of one
+ * picture's lag, 1/15 s), then the one-euro. It starts over as OneEuro does (no value, a gap of more than kLidResetSec,
+ * a time not after the last), with the pictures it has: the newest of one or two, so a line shows at once.
+ */
+class LidFilter {
+public:
+    /** @param beta the one-euro's (kLidBeta for the lines, kEyeLidBeta for the EyeLid) */
+    explicit LidFilter(double beta = kLidBeta) : euro_(kLidMinCutoffHz, beta, kLidDCutoffHz) {}
+
+    /**
+     * The next value.
+     * @param value the value (NaN: none, and the filter starts over)
+     * @param t its time (s)
+     * @return the filtered value
+     */
+    double step(double value, double t);
+
+    /** Start over at the next value. */
+    void reset();
+
+private:
+    OneEuro euro_;
+    double last_[2] = {0.0, 0.0};  ///< the two values before, older first...
+    int count_ = 0;                ///< ...how many of them there are
+    double t_ = 0.0;               ///< ...and the newer one's time
+};
+
+/**
  * Smooths each eye's lid lines and EyeLid over the pictures read (every source but Raw draws them smoothed). Each line
  * starts over where it has none on a picture, so one that comes back starts where it is.
  */
@@ -363,10 +392,10 @@ private:
     struct Eye {
         uint64_t count = 0;
         uint64_t timeNs = 0;
-        OneEuro upper[5];
-        OneEuro lower[5];
-        OneEuro margin;
-        OneEuro eyeLid {kLidMinCutoffHz, kEyeLidBeta, kLidDCutoffHz};
+        LidFilter upper[5];
+        LidFilter lower[5];
+        LidFilter margin;
+        LidFilter eyeLid {kEyeLidBeta};
     };
     Eye eyes_[2];
 };

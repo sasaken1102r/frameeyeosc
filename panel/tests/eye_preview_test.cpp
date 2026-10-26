@@ -367,6 +367,31 @@ void testSmoothing() {
     const double closing = lid.step(0.0, 20 * dt);
     CHECK(closing < 0.25 && lid.step(0.0, 21 * dt) < 0.05);
 
+    // With the median of three in front (LidFilter, what the smoother uses): a lone picture's jump is gone entirely...
+    LidFilter lone;
+    for (int i = 0; i < 20; ++i) lone.step(130, i * dt);
+    CHECK(near(lone.step(123, 20 * dt), 130) && near(lone.step(130, 21 * dt), 130));
+    // ...and so is one each way in turn with a picture between
+    CHECK(near(lone.step(137, 22 * dt), 130) && near(lone.step(130, 23 * dt), 130));
+    // A real step (a blink: 30 px) arrives within two pictures: none of it on the first (it could be a lone jump), most
+    // on the second, all but 1 px by the fourth
+    LidFilter real;
+    for (int i = 0; i < 20; ++i) real.step(100, i * dt);
+    CHECK(near(real.step(130, 20 * dt), 100));
+    CHECK(real.step(130, 21 * dt) > 120);
+    real.step(130, 22 * dt);
+    CHECK(real.step(130, 23 * dt) > 129);
+    // The same starts over, with the pictures it has: the first value at once, the newest of two, the median from three
+    CHECK(std::isnan(real.step(NAN, 24 * dt)) && near(real.step(60, 25 * dt), 60) && real.step(64, 26 * dt) > 61);
+    CHECK(near(real.step(90, 26 * dt + kLidResetSec + 0.01), 90));
+    CHECK(near(real.step(70, 1.0), 70));
+    real.reset();
+    CHECK(near(real.step(40, 2.0), 40));
+    // The EyeLid's: a blink to closed shows from the second picture, nearly closed on the third
+    LidFilter blink(kEyeLidBeta);
+    for (int i = 0; i < 20; ++i) blink.step(0.75, i * dt);
+    CHECK(near(blink.step(0.0, 20 * dt), 0.75) && blink.step(0.0, 21 * dt) < 0.25 && blink.step(0.0, 22 * dt) < 0.05);
+
     // The smoother: by picture (count and time), each line on its own, the EyeLid too
     LidSmoother smoother;
     Pictures pictures = madeUp(200);

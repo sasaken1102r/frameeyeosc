@@ -1,6 +1,6 @@
 [package]
 name = "frameeyeosc"
-version = "0.8.2-beta.3"
+version = "0.8.2-beta.4"
 edition = "2024"
 license = "MIT"
 description = "Sends Steam Frame eye tracking (gaze and eyelids) to VRChat over OSC"

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.2-beta.4 (2026-10-26)
+
+With prescription inserts, a wide-open eye could still be read as half-shut by the eye cameras; widening should now show more reliably (calibrate the cameras again after updating). The "Half-shut check (AI)" was retrained so that a bright band or patch in the eye picture no longer makes it cancel closes and squints.
+
+日本語: 度付きインサートを使っていると、大きく見開いた目が目のカメラで半目に読まれることがまだありました。見開きがもっと安定して出るはずです（更新したらカメラの校正をやり直してね）。「半目の読み直し（AI）」を学習し直して、目の映像に明るい帯や明るいところがあっても、閉じや細めを取り消さないようにしました。
+
+- eyecam, widening: with the pupil seen whole, an upper lid line found less than 1.2 times the pupil's minor radius above its centre (0.5 times before) is now searched for again above the pupil. On a wide-open eye the first line can sit on the pupil's own blurred top edge, 1.05 to 1.21 times that radius above its centre, and the widened eye read half-shut. On two recordings from someone wearing prescription inserts, widen frames read half-shut went from 37.1 % / 15.8 % (left / right) to 5.0 % / 3.6 %, and widening was caught in 91.7 % of them instead of 59.2 %; closes and squints stayed the same. On the developer's 26 recordings and 10 calibrations, every measure (half-shut, squint, widening, blinks) stayed the same. Run "Calibrate the cameras (18 s)" again after updating.
+- eyecam, "Half-shut check (AI)" (off by default): the network's weights were retrained on the developer's recordings with white bands, dimming and shifts of up to 10 px drawn in. The earlier weights read a closed eye as open in pictures with a bright band or patch: on one wearer with prescription inserts they cancelled 14 % of closes and half of the squints. Now they cancel none on that recording, nor on the developer's recordings with a band over 35 % of the picture or dimmed with a band. Open eyes read half-shut on the developer's recordings go from 2.98 % to 3.11 % (each day left out of training in turn); blinks and squints stay the same. With the check off, nothing changes.
+
 ## 0.8.2-beta.3 (2026-10-25)
 
 New in the panel: "Record for squint training" (Advanced › Debug tools, once the eye cameras are set up) records your eyes for the developer with one press, to train the "Half-shut check (AI)" on more people's eyes. It is entirely optional: it says first what is recorded and how it is used, and records only after you agree. Widening is also easier to reach for people whose upper lid reads at a different height in each widen of the eye-camera calibration (calibrate the cameras again after updating). With the headset off, the eye cameras could also be locked onto only part of their slots, leaving one eye slow or sent the other eye's frames; that is fixed.

@@ -833,7 +833,7 @@ private:
 
     /**
      * One eye's camera picture, upright with its temporal side toward the sheet's outside, the search window
-     * and the found pupil on it, and "Read as closed"; "waiting" while there is none.
+     * and the found pupil on it, the lid lines and their EyeLid, and "Read as closed"; "waiting" while there is none.
      * @param pen drawing tools
      * @param t texts
      * @param picture the picture
@@ -842,9 +842,10 @@ private:
      * @param y top
      * @param side its size (px)
      * @param flip mirrored left to right
+     * @param smooth the lid lines and EyeLid smoothed over the pictures (else as read: Raw)
      */
     void drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
-                            double x, double y, double side, bool flip);
+                            double x, double y, double side, bool flip, bool smooth);
 
     /**
      * A switch as a pill: a check, bold and the accent while on.

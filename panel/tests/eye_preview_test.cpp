@@ -326,6 +326,96 @@ void testLidLines() {
         std::memcpy(bad.data() + 52, &at, 4);
         CHECK(parsePictures(bad.data(), bad.size(), read, why) && !read.eyes[0].lids && read.eyes[0].pupil);
     }
+    // As read, the smoothed lines are the lines themselves (until a LidSmoother takes them)
+    CHECK(parsePictures(bytes.data(), bytes.size(), read, why));
+    CHECK(read.eyes[0].smoothed.upper.present && near(read.eyes[0].smoothed.upper.y[1], 75.25) &&
+          !read.eyes[0].smoothed.lower.present && near(read.eyes[0].smoothed.eyeLid, 0.625));
+}
+
+void testSmoothing() {
+    const double dt = 1.0 / 15;  // the preview's pictures
+    // Jitter in place (±2 px from picture to picture) is damped to under a quarter...
+    OneEuro jitter;
+    double low = 1e9;
+    double high = -1e9;
+    for (int i = 0; i < 60; ++i) {
+        const double v = jitter.step(100 + (i % 2 == 0 ? -2 : 2), i * dt);
+        if (i >= 30) {
+            low = std::min(low, v);
+            high = std::max(high, v);
+        }
+    }
+    CHECK(high - low < 1.0 && near(low + high, 200, 0.5));
+    // ...a single picture's jump of 7 px to about half of it...
+    OneEuro spike;
+    for (int i = 0; i < 20; ++i) spike.step(130, i * dt);
+    CHECK(spike.step(123, 20 * dt) > 126);
+    // ...while a step (a blink: 30 px) is followed: most of the way on its first picture, all but 1 px by the third
+    OneEuro step;
+    for (int i = 0; i < 20; ++i) step.step(100, i * dt);
+    const double first = step.step(130, 20 * dt);
+    step.step(130, 21 * dt);
+    CHECK(first > 120 && step.step(130, 22 * dt) > 129);
+    // No value starts it over: the next value is taken as it is, not swept in from the old one
+    CHECK(std::isnan(step.step(NAN, 23 * dt)) && near(step.step(60, 24 * dt), 60));
+    // So does a gap of more than kLidResetSec, and a time going back
+    CHECK(near(step.step(90, 24 * dt + kLidResetSec + 0.01), 90));
+    CHECK(near(step.step(70, 1.0), 70));
+    // The EyeLid's (0..1): a blink to closed follows within two pictures
+    OneEuro lid(kLidMinCutoffHz, kEyeLidBeta, kLidDCutoffHz);
+    for (int i = 0; i < 20; ++i) lid.step(0.75, i * dt);
+    const double closing = lid.step(0.0, 20 * dt);
+    CHECK(closing < 0.25 && lid.step(0.0, 21 * dt) < 0.05);
+
+    // The smoother: by picture (count and time), each line on its own, the EyeLid too
+    LidSmoother smoother;
+    Pictures pictures = madeUp(200);
+    for (Picture& p : pictures.eyes) {
+        p.lids = true;
+        p.eyeLid = 0.75;
+        p.margin = 4;
+        for (LidLine* line : {&p.upper, &p.lower}) {
+            line->present = true;
+            line->x0 = 90;
+            line->x1 = 165;
+        }
+    }
+    const auto lowerAt = [&](uint64_t timeNs, double row) {
+        for (Picture& p : pictures.eyes) {
+            p.timeNs = timeNs;
+            ++p.count;
+            const double upper[3] = {80, 75, 82};
+            const double lower[3] = {row, row + 4, row - 2};
+            std::copy(upper, upper + 3, p.upper.y);
+            std::copy(lower, lower + 3, p.lower.y);
+            p.smoothed = {};
+        }
+        smoother.take(pictures);
+    };
+    const uint64_t ns = 66666667;  // 1/15 s
+    for (int i = 0; i < 20; ++i) lowerAt(1000000000ull + i * ns, i % 2 == 0 ? 114 : 118);
+    const SmoothedLids& s = pictures.eyes[0].smoothed;
+    CHECK(s.lower.present && s.lower.y[1] > 119 && s.lower.y[1] < 121.5 && near(s.lower.x0, 90) && near(s.margin, 4));
+    CHECK(near(s.upper.y[1], 75) && near(s.eyeLid, 0.75) && pictures.eyes[1].smoothed.lower.present);
+    // The same picture again (read twice): left as it is, not smoothed once more
+    pictures.eyes[0].smoothed.lower.y[1] = -1;
+    smoother.take(pictures);
+    CHECK(near(pictures.eyes[0].smoothed.lower.y[1], -1));
+    // The lower line gone on a picture: none drawn, and back 20 px lower it starts where it is
+    for (Picture& p : pictures.eyes) {
+        p.lower.present = false;
+        p.timeNs += ns;
+        ++p.count;
+    }
+    smoother.take(pictures);
+    CHECK(!pictures.eyes[0].smoothed.lower.present && pictures.eyes[0].smoothed.upper.present);
+    for (Picture& p : pictures.eyes) p.lower.present = true;
+    lowerAt(1000000000ull + 21 * ns, 136);
+    CHECK(near(pictures.eyes[0].smoothed.lower.y[0], 136) && near(pictures.eyes[0].smoothed.lower.y[1], 140));
+    // Started over (the pictures stopped): the next picture as it is
+    smoother.reset();
+    lowerAt(1000000000ull + 22 * ns, 100);
+    CHECK(near(pictures.eyes[1].smoothed.lower.y[0], 100));
 }
 
 /**
@@ -534,6 +624,7 @@ int main() {
     testViews();
     testFile();
     testLidLines();
+    testSmoothing();
     testReader();
     testFresh();
     testCameraState();

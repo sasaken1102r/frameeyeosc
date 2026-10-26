@@ -112,6 +112,7 @@ struct Options {
     std::string fakePreview;      ///< --fake-preview: made-up preview values and pictures ("ok" or a state)
     double fakePreviewBrows = NAN;  ///< --fake-preview-brows: brows sent at this level in them (NaN: none)
     int previewBench = 0;         ///< --preview-bench N: time N draws of the panel with the eye preview open
+    double previewFollow = 0.0;   ///< --preview-follow SEC: read the preview file this long first (smoothed lid lines)
     std::string fakeAppsState;    ///< --fake-apps-state: made-up states of the other apps (KEY=STATE,...)
     std::string fakeAppsLaunch;   ///< --fake-apps-launch: why Konsole didn't open (on the confirmation)
     int fakeAppsExtra = 0;        ///< --fake-apps-extra N: made-up apps without an icon added to the list
@@ -292,6 +293,8 @@ void printUsage() {
         "      --fake-preview-brows LEVEL  Brows sent in the made-up preview values, both at LEVEL (0 at rest ..\n"
         "                        1 raised all the way). Implies --fake-preview (ok unless given) and --fake-brows\n"
         "      --preview-bench N  Time N draws of the panel with the eye preview open (with --preview-sheet)\n"
+        "      --preview-follow SEC  With --preview-sheet: read eyecam-rec's preview file for SEC seconds before drawing,\n"
+        "                        so the lid lines are smoothed over those pictures as live (eyecam-rec --replay --preview)\n"
         "      --changelog-dir DIR  Read CHANGELOG.md / CHANGELOG.ja.md from DIR instead of next to the binary,\n"
         "                        the checkout (panel/build) or ~/.local/share/frameeyeosc\n"
         "      --preview-quit    Show \"press again to quit\"\n"
@@ -858,6 +861,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeBrows = true;
         } else if (arg == "--preview-bench" && hasNext) {
             options.previewBench = std::max(0, std::min(10000, std::atoi(argv[++i])));
+        } else if (arg == "--preview-follow" && hasNext) {
+            options.previewFollow = std::max(0.0, std::min(60.0, std::atof(argv[++i])));
         } else if (arg == "--apps-sheet" && hasNext) {
             options.appsSheet = argv[++i];
             const std::string& sheet = options.appsSheet;
@@ -2407,19 +2412,26 @@ int runDumpPng(const Options& options) {
             panel.setPreviewOptions(source, mirror, camera, frozen);
             // The pictures from eyecam-rec's preview file when it is there (eyecam-rec --replay --preview DIR, with
             // --eyecam-dir DIR); a file of another kind says why
+            // (--preview-follow: every picture of the next seconds, the lid lines smoothed over them as live)
             eye_preview::PictureReader reader;
+            eye_preview::LidSmoother smoother;
             std::string why;
             const std::string path = model.eyecamDir + "/" + eye_preview::kFileName;
-            switch (reader.read(path, model.preview.pictures, why)) {
-                case eye_preview::ReadResult::Read:
+            const double followUntil = nowSeconds() + options.previewFollow;
+            for (bool said = false;;) {
+                const eye_preview::ReadResult read = reader.read(path, model.preview.pictures, why);
+                if (read == eye_preview::ReadResult::Read) {
+                    smoother.take(model.preview.pictures);
                     model.preview.hasPictures = true;
                     model.preview.nowNs = eye_preview::monotonicNs();
-                    std::fprintf(stderr, "[preview] pictures from %s\n", path.c_str());
-                    break;
-                case eye_preview::ReadResult::Invalid:
+                    if (!said) std::fprintf(stderr, "[preview] pictures from %s\n", path.c_str());
+                    said = true;
+                } else if (read == eye_preview::ReadResult::Invalid) {
                     std::fprintf(stderr, "[preview] %s: %s\n", path.c_str(), why.c_str());
                     break;
-                default: break;
+                }
+                if (nowSeconds() >= followUntil) break;
+                ::usleep(5000);
             }
         }
         if (options.previewQuit) panel.armQuitForPreview();
@@ -3893,6 +3905,7 @@ int runOverlay(const Options& options) {
     // pictures from its preview file, asked for with "preview on" every second while they show (a control socket
     // connection of their own, so the eye cameras tab's replies stay its own)
     eye_preview::PictureReader previewReader;
+    eye_preview::LidSmoother previewSmoother;
     eye_preview::Asker previewAsker;
     eyecam::Control previewControl;
     bool previewShown = false;      // the sheet showed at the last loop
@@ -4474,6 +4487,7 @@ int runOverlay(const Options& options) {
                 if (!previewing) {
                     model.preview = eye_preview::View();
                     previewReader.close();
+                    previewSmoother.reset();
                     previewLogged.clear();
                 }
             }
@@ -4516,6 +4530,8 @@ int runOverlay(const Options& options) {
                 const std::string path = model.eyecamDir + "/" + eye_preview::kFileName;
                 const eye_preview::ReadResult read = previewReader.read(path, model.preview.pictures, why);
                 if (read == eye_preview::ReadResult::Read) {
+                    // (the lid lines smoothed over the pictures, for every source but Raw)
+                    previewSmoother.take(model.preview.pictures);
                     if (!model.preview.hasPictures) std::fprintf(stderr, "[preview] pictures from %s\n", path.c_str());
                     model.preview.hasPictures = true;
                     previewPacer.changed();
@@ -4530,6 +4546,7 @@ int runOverlay(const Options& options) {
                 model.preview.hasPictures = false;
                 model.preview.pictures = eye_preview::Pictures();
                 previewReader.close();
+                previewSmoother.reset();
                 dirty = true;
             }
             if (previewPacer.due(now)) dirty = true;

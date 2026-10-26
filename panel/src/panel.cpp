@@ -7506,7 +7506,7 @@ void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, 
 }
 
 void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
-                                  double x, double y, double side, bool flip) {
+                                  double x, double y, double side, bool flip, bool smooth) {
     cairo_t* cr = pen.cr;
     const double r = 12;
     fillRounded(pen, x, y, side, side, r, kBg);
@@ -7557,7 +7557,11 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
         cairo_set_dash(cr, nullptr, 0, 0);
     }
     // The lid lines eyecam-rec measured on this frame (none where it found none): the upper lid's edge (its margin,
-    // which the opening is measured from) and the lower lid's, each on a dark edge so it shows on bright skin too
+    // which the opening is measured from) and the lower lid's, each on a dark edge so it shows on bright skin too.
+    // Smoothed over the pictures but in Raw (the lower one jumps a few px from picture to picture)
+    const eye_preview::SmoothedLids lids = smooth ? picture.smoothed
+                                                  : eye_preview::SmoothedLids {picture.upper, picture.margin,
+                                                                               picture.lower, picture.eyeLid};
     const auto lidLine = [&](const eye_preview::LidLine& line, double below, Color color) {
         if (!line.present) return;
         const int steps = 16;
@@ -7577,8 +7581,8 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
         cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT);
     };
     if (picture.lids) {
-        lidLine(picture.upper, std::isfinite(picture.margin) ? picture.margin : 0.0, kPreviewLidUpper);
-        lidLine(picture.lower, 0.0, kPreviewLidLower);
+        lidLine(lids.upper, std::isfinite(lids.margin) ? lids.margin : 0.0, kPreviewLidUpper);
+        lidLine(lids.lower, 0.0, kPreviewLidLower);
     }
     if (picture.pupil) drawRing(cr, px(picture.pupilX), py(picture.pupilY), picture.pupilR * scale, 2.5, kPreviewPupil);
     const auto badge = [&](double by, const char* text) {
@@ -7591,9 +7595,9 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
     };
     if (picture.closed) badge(y + 8, t.previewClosed);
     // The EyeLid eyecam-rec sent for this very frame, under its lines
-    if (picture.lids && std::isfinite(picture.eyeLid)) {
+    if (picture.lids && std::isfinite(lids.eyeLid)) {
         char lid[64];
-        std::snprintf(lid, sizeof(lid), t.previewPictureLidFormat, picture.eyeLid);
+        std::snprintf(lid, sizeof(lid), t.previewPictureLidFormat, lids.eyeLid);
         badge(y + side - 32, lid);
     }
     cairo_restore(cr);
@@ -7761,7 +7765,7 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
             const eye_preview::Picture& picture = pv.pictures.eyes[eye];
             const bool fresh = pv.hasPictures && eye_preview::pictureFresh(picture, pv.nowNs);
             drawPreviewPicture(pen, t, picture, fresh, cx - pictureSide / 2, chipsY + chipsH + 10, pictureSide,
-                               eye_preview::pictureFlipped(eye, previewMirror_));
+                               eye_preview::pictureFlipped(eye, previewMirror_), source != Source::Raw);
         }
     }
 

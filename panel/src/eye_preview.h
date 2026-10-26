@@ -195,6 +195,14 @@ struct LidLine {
  */
 double lidLineY(const LidLine& line, double x);
 
+/** A picture's lid lines and EyeLid, smoothed over the pictures for the drawing (LidSmoother). */
+struct SmoothedLids {
+    LidLine upper;
+    double margin = NAN;
+    LidLine lower;
+    double eyeLid = NAN;
+};
+
 /** One eye's picture, as eyecam-rec wrote it: upright, the temporal (ear) side at small x. */
 struct Picture {
     bool present = false;       ///< a picture was written (its time isn't 0)
@@ -213,6 +221,7 @@ struct Picture {
     double margin = NAN;        ///< ...and its margin this far below it (picture px; the opening is measured from it)
     LidLine lower;              ///< the lower lid's line
     double eyeLid = NAN;        ///< the EyeLid eyecam-rec sent for this frame (NaN: its values weren't valid)
+    SmoothedLids smoothed;      ///< the same smoothed over the pictures (as read until a LidSmoother takes them)
 };
 
 /** Both pictures. */
@@ -283,6 +292,83 @@ private:
     uint32_t lastSeq_ = 1;  ///< odd: nothing read yet
     ino_t badInode_ = 0;    ///< a file found not to be a preview file (let go of; not read again until replaced)
     std::string badWhy_;    ///< ...why
+};
+
+/**
+ * The lid lines' smoothing (picture px; in Hz): calm at rest (about 0.16 s), the cutoff up 0.05 Hz for each px a second
+ * the line moves, so a blink is followed within a picture or two. Tuned on the developer's recordings (the lower line
+ * jumps a few px for single pictures; about 60% of its picture-to-picture zigzag goes).
+ */
+constexpr double kLidMinCutoffHz = 1.0;
+constexpr double kLidBeta = 0.05;
+constexpr double kLidDCutoffHz = 1.0;
+/** The same for the EyeLid on the picture (0..1: about 50 px of lid to the unit). */
+constexpr double kEyeLidBeta = 2.5;
+/** A gap between pictures longer than this (s) starts the smoothing over (no line swept in from an old place). */
+constexpr double kLidResetSec = 0.3;
+
+/**
+ * The one-euro filter (Casiez, Roussel and Vogel, 2012) on the pictures' capture times: a low-pass whose cutoff rises
+ * with the speed, so a value that jitters in place is damped and one that moves fast (a blink) is followed. No value
+ * (NaN), a gap of more than kLidResetSec or a time not after the last starts it over at the new value.
+ */
+class OneEuro {
+public:
+    /**
+     * @param minCutoff the cutoff at rest (Hz)
+     * @param beta how much the cutoff rises with the speed (Hz per unit a second)
+     * @param dCutoff the cutoff of the speed itself (Hz)
+     */
+    explicit OneEuro(double minCutoff = kLidMinCutoffHz, double beta = kLidBeta, double dCutoff = kLidDCutoffHz)
+        : minCutoff_(minCutoff), beta_(beta), dCutoff_(dCutoff) {}
+
+    /**
+     * The next value.
+     * @param value the value (NaN: none, and the filter starts over)
+     * @param t its time (s)
+     * @return the smoothed value (the value itself when the filter starts over)
+     */
+    double step(double value, double t);
+
+    /** Start over at the next value. */
+    void reset() { started_ = false; }
+
+private:
+    double minCutoff_;
+    double beta_;
+    double dCutoff_;
+    bool started_ = false;
+    double x_ = 0.0;   ///< the smoothed value...
+    double dx_ = 0.0;  ///< ...its smoothed speed (a second)
+    double t_ = 0.0;   ///< ...at this time
+};
+
+/**
+ * Smooths each eye's lid lines and EyeLid over the pictures read (every source but Raw draws them smoothed). Each line
+ * starts over where it has none on a picture, so one that comes back starts where it is.
+ */
+class LidSmoother {
+public:
+    /**
+     * Fill each new picture's `smoothed` (one already taken, by its count and time, is left as it is).
+     * @param pictures as just read
+     */
+    void take(Pictures& pictures);
+
+    /** Start over (the pictures stopped). */
+    void reset();
+
+private:
+    /** One eye's filters: each line's first and last column and its rows there and halfway, the margin, the EyeLid. */
+    struct Eye {
+        uint64_t count = 0;
+        uint64_t timeNs = 0;
+        OneEuro upper[5];
+        OneEuro lower[5];
+        OneEuro margin;
+        OneEuro eyeLid {kLidMinCutoffHz, kEyeLidBeta, kLidDCutoffHz};
+    };
+    Eye eyes_[2];
 };
 
 /**

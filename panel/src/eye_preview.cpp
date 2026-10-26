@@ -119,6 +119,59 @@ double lidLineY(const LidLine& line, double x) {
     return line.y[0] * (1 - s) * (1 - 2 * s) + line.y[1] * 4 * s * (1 - s) + line.y[2] * s * (2 * s - 1);
 }
 
+double OneEuro::step(double value, double t) {
+    if (!std::isfinite(value) || !std::isfinite(t)) {
+        started_ = false;
+        return value;
+    }
+    const double dt = t - t_;
+    if (!started_ || dt <= 0 || dt > kLidResetSec) {
+        started_ = true;
+        x_ = value;
+        dx_ = 0.0;
+        t_ = t;
+        return value;
+    }
+    t_ = t;
+    // (the share of the way a first-order low-pass at `cutoff` moves in dt)
+    const auto share = [dt](double cutoff) { return 1.0 / (1.0 + 1.0 / (2 * M_PI * cutoff * dt)); };
+    dx_ += share(dCutoff_) * ((value - x_) / dt - dx_);
+    x_ += share(minCutoff_ + beta_ * std::fabs(dx_)) * (value - x_);
+    return x_;
+}
+
+void LidSmoother::take(Pictures& pictures) {
+    for (int e = 0; e < 2; ++e) {
+        Picture& p = pictures.eyes[e];
+        Eye& eye = eyes_[e];
+        if (!p.present || (p.count == eye.count && p.timeNs == eye.timeNs)) continue;
+        eye.count = p.count;
+        eye.timeNs = p.timeNs;
+        const double t = p.timeNs * 1e-9;
+        // Each line as a whole: none on this picture starts all of its filters over
+        const auto line = [t](const LidLine& in, OneEuro* filters) {
+            LidLine out = in;
+            if (!in.present) {
+                for (int i = 0; i < 5; ++i) filters[i].reset();
+                return out;
+            }
+            out.x0 = filters[0].step(in.x0, t);
+            out.x1 = filters[1].step(in.x1, t);
+            for (int i = 0; i < 3; ++i) out.y[i] = filters[2 + i].step(in.y[i], t);
+            return out;
+        };
+        p.smoothed.upper = line(p.upper, eye.upper);
+        p.smoothed.lower = line(p.lower, eye.lower);
+        if (!p.upper.present) eye.margin.reset();
+        p.smoothed.margin = p.upper.present ? eye.margin.step(p.margin, t) : p.margin;
+        p.smoothed.eyeLid = eye.eyeLid.step(p.eyeLid, t);
+    }
+}
+
+void LidSmoother::reset() {
+    for (Eye& eye : eyes_) eye = Eye();
+}
+
 Shown shown(const gaze_dots::Packet& packet, Source source, const CameraLids& lids) {
     Shown s;
     s.valid = true;
@@ -260,6 +313,7 @@ bool parsePictures(const uint8_t* data, size_t size, Pictures& out, std::string&
             p.margin = f32At(data, l + 24);
             p.lower = lidLineAt(data, l + 28);
         }
+        p.smoothed = {p.upper, p.margin, p.lower, p.eyeLid};
     }
     out = std::move(pictures);
     return true;
@@ -521,6 +575,7 @@ void fake(View& view, uint64_t nowNs) {
         std::copy(upper, upper + 3, pic.upper.y);
         std::copy(lower, lower + 3, pic.lower.y);
         pic.margin = 4;
+        pic.smoothed = {pic.upper, pic.margin, pic.lower, pic.eyeLid};
     }
     view.hasPictures = true;
     view.nowNs = nowNs;

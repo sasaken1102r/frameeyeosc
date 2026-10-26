@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Panel, eye preview with the camera picture on: the picture now also shows where the eye cameras found your eyelids, a light blue line on the upper lid's edge and a pink one on the lower lid, and the camera's eyelid value at its bottom left ("Camera lid 0.62"). A line is left out on frames where none was found. Nothing about how the eyes are read changes.
+
 ## 0.8.2-beta.4 (2026-10-26)
 
 With prescription inserts, a wide-open eye could still be read as half-shut by the eye cameras; widening should now show more reliably (calibrate the cameras again after updating). The "Half-shut check (AI)" was retrained so that a bright band or patch in the eye picture no longer makes it cancel closes and squints.

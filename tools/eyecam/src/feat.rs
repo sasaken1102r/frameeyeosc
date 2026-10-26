@@ -254,6 +254,8 @@ pub struct Pupil {
 #[derive(Clone, Copy, Debug)]
 struct Lid {
     coef: Quad,
+    /// The first and last of the columns it was fitted over.
+    cols: (f64, f64),
     y_at: f64,
     frac: f64,
     grad: f64,
@@ -271,6 +273,20 @@ impl Lid {
     fn on_far_edge(&self) -> bool {
         self.edge_far >= LID_EDGE_SHARE
     }
+
+    /// Its shape, for the eye preview.
+    fn curve(&self) -> LidCurve {
+        LidCurve { coef: self.coef, x0: self.cols.0, x1: self.cols.1 }
+    }
+}
+
+/// A lid line's shape over the columns it was fitted on (px), only for the panel's eye preview (preview.rs): nothing
+/// measured is taken from it.
+#[derive(Clone, Copy, Debug)]
+pub struct LidCurve {
+    pub coef: Quad,
+    pub x0: f64,
+    pub x1: f64,
 }
 
 /// The per-frame features (NaN = not measured), named as in the prototype's CSV.
@@ -296,6 +312,10 @@ pub struct Features {
     /// The lower lid line found was pushed against its band's far edge: left out, no lower line on this frame (live also
     /// sets it when it replaces a line found far below the last one, live::LOWER_DROP_MAX).
     pub lower_edge: bool,
+    /// The shapes of the upper lid's skin line and the lower lid's line, set with `upper_skin_y` / `lower_y` (for the
+    /// eye preview only).
+    pub upper_curve: Option<LidCurve>,
+    pub lower_curve: Option<LidCurve>,
     /// How the search went (not part of the prototype's features).
     pub diag: Diag,
 }
@@ -321,6 +341,8 @@ impl Default for Features {
             box_mean: n,
             upper_edge: false,
             lower_edge: false,
+            upper_curve: None,
+            lower_curve: None,
         }
     }
 }
@@ -659,11 +681,13 @@ impl Extractor {
                 f.upper_skin_y = u.y_at;
                 f.upper_y = u.y_at + margin.unwrap_or(MARGIN_OFF);
                 f.upper_frac = u.frac;
+                f.upper_curve = Some(u.curve());
             }
             f.lower_edge = lower.is_some_and(|l| l.on_far_edge());
             if let Some(l) = lower.filter(|l| !l.on_far_edge()) {
                 f.lower_y = l.y_at;
                 f.lower_frac = l.frac;
+                f.lower_curve = Some(l.curve());
             }
             return (f, None);
         };
@@ -683,11 +707,13 @@ impl Extractor {
             f.upper_skin_y = u.y_at;
             f.upper_y = u.y_at + margin.unwrap_or(MARGIN_OFF);
             f.upper_frac = u.frac;
+            f.upper_curve = Some(u.curve());
         }
         f.lower_edge = lower.is_some_and(|l| l.on_far_edge());
         if let Some(l) = lower.filter(|l| !l.on_far_edge()) {
             f.lower_y = l.y_at;
             f.lower_frac = l.frac;
+            f.lower_curve = Some(l.curve());
         }
         f.box_mean = self.box_mean(p.cx, p.cy, rn, xmax);
         (f, Some(p))
@@ -1094,7 +1120,7 @@ impl Extractor {
         let edge = at_edge as f64 / n_in.max(1) as f64;
         let at_far = path.iter().zip(&w).filter(|(y, k)| **k && **y + 1 + LID_EDGE_ROWS >= ny).count();
         let edge_far = at_far as f64 / n_in.max(1) as f64;
-        Some(Lid { coef, y_at: coef.at(p.cx), frac, grad, edge, edge_far })
+        Some(Lid { coef, cols: (xa as f64, (xb - 1) as f64), y_at: coef.at(p.cx), frac, grad, edge, edge_far })
     }
 
     /// The calibration's second search for a widened upper lid, on the frame `extract` just ran on (its pupil `p`):
@@ -1345,6 +1371,7 @@ mod tests {
         let (f, p) = ex.extract(&eye_with_step(223), 347.0, None, Some(55.0), None);
         assert!(p.is_some() && f.ok_pupil && f.upper_edge, "{f:?}");
         assert!(f.upper_skin_y.is_nan() && f.upper_y.is_nan() && f.upper_frac.is_nan(), "{f:?}");
+        assert!(f.upper_curve.is_none(), "{f:?}");
         // The rows of a band as the path sees them: a line on its first two or last two rows is on the edge, one row
         // further in it is a line.
         let pupil = p.unwrap();
@@ -1387,10 +1414,15 @@ mod tests {
         // Lids at R = 55: the lower band is rows 213..304. A step through the middle of it is the line.
         let (f, p) = ex.extract(&eye_with_lower_step(260), 347.0, None, Some(55.0), None);
         assert!(p.is_some() && !f.lower_edge && (f.lower_y - 260.0).abs() < 3.0, "{f:?}");
+        // The lines' shapes for the eye preview: the same lines, over the iris columns
+        let (up, low) = (f.upper_curve.expect("upper"), f.lower_curve.expect("lower"));
+        assert_eq!((up.coef.at(f.pupil_cx), low.coef.at(f.pupil_cx)), (f.upper_skin_y, f.lower_y));
+        assert!(up.x0 < f.pupil_cx && f.pupil_cx < up.x1 && (low.x0, low.x1) == (up.x0, up.x1), "{up:?}");
         // The only step on the band's last rows: no lower line, with the pupil ...
         let (f, p) = ex.extract(&eye_with_lower_step(304), 347.0, None, Some(55.0), None);
         let pupil = p.expect("pupil");
         assert!(f.ok_pupil && f.lower_edge && f.lower_y.is_nan() && f.lower_frac.is_nan(), "{f:?}");
+        assert!(f.lower_curve.is_none() && f.upper_curve.is_some(), "{f:?}");
         assert!(!f.upper_edge && (f.upper_skin_y - 150.0).abs() < 3.0, "the upper line stays: {f:?}");
         // ... and without it (measured where the last pupil was).
         let blank = eye_with_lower_step(304).iter().map(|&v| if v == 12 { 120 } else { v }).collect::<Vec<u8>>();

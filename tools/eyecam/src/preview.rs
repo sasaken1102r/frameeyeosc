@@ -8,7 +8,8 @@
 //!   0   u32  magic (MAGIC, "EYPV")     4   u32  version (VERSION)    8   u32  header size (HEADER)
 //!   12  u32  one eye's size (EYE_SIZE)  16  u32  picture width (SIDE)  20  u32  picture height (SIDE)
 //!   24  u32  seq (odd while being written)   28  u32  writer pid   32  u64  writer start (CLOCK_MONOTONIC ns)
-//!   40  u64  last write (CLOCK_MONOTONIC ns) 48  u32  on (1 while on; 0 once turned off)   52..64 reserved
+//!   40  u64  last write (CLOCK_MONOTONIC ns) 48  u32  on (1 while on; 0 once turned off)
+//!   52  u32  where the lid lines start (LIDS_AT)   56  u32  one eye's lid lines' size (LID_SIZE)   60..64 reserved
 //! Then each eye (the left eye at HEADER, the right at HEADER + EYE_SIZE; anatomical):
 //!   0   u64  the frame's capture time (CLOCK_MONOTONIC ns; 0: no picture yet)   8  u64  pictures written of this eye
 //!   16  u32  flags: bit 0 the pupil was found, bit 1 the eye reads closed
@@ -18,7 +19,17 @@
 //!   64  SIDE x SIDE bytes: the picture, 8-bit grey, row by row from the top, upright (the left camera's frames, stored
 //!       upside down, are turned the right way first), the temporal (ear) side at small x for both eyes, as the engine
 //!       sees them. The coordinates above are in the same picture.
+//! Then, after both eyes (at LIDS_AT, in the last page's space version 1 left unused: a reader that doesn't know them
+//! reads the rest as before), each eye's lid lines as the engine found them on the same frame, LID_SIZE bytes each:
+//!   0   f32  the EyeLid sent (NaN while the eye's values aren't valid)
+//!   4   f32  the upper lid's skin line: its first column   8  ...last column   12  its row at the first column
+//!   16  ...halfway between   20  ...at the last column (the line is the parabola through these three; picture px;
+//!       all NaN without one on this frame)
+//!   24  f32  the lid margin's offset below the skin line (picture px; the line the aperture is measured from)
+//!   28  f32  the lower lid's line, as the upper one's (28 first column .. 44 row at the last column)
+//!   48..64 reserved
 
+use crate::feat::LidCurve;
 use crate::live::Out;
 use crate::liveshm::clock_ns;
 use crate::vision::{H, W};
@@ -38,8 +49,12 @@ pub const SIDE: usize = W / 2;
 pub const HEADER: usize = 64;
 const EYE_HEADER: usize = 64;
 pub const EYE_SIZE: usize = EYE_HEADER + SIDE * SIDE;
+/// The lid lines, after both eyes' pictures (in the last page's space that version 1 left unused).
+pub const LIDS_AT: usize = HEADER + 2 * EYE_SIZE;
+pub const LID_SIZE: usize = 64;
 /// The whole file, in whole pages.
-pub const FILE_SIZE: usize = (HEADER + 2 * EYE_SIZE).div_ceil(4096) * 4096;
+pub const FILE_SIZE: usize = (LIDS_AT + 2 * LID_SIZE).div_ceil(4096) * 4096;
+const _: () = assert!(FILE_SIZE == 81920, "version 1's size");
 /// Pictures a second per eye, at most (the frames between are skipped).
 pub const RATE: f64 = 15.0;
 /// How long one `preview on` keeps it on.
@@ -52,7 +67,7 @@ const CLOSED: u32 = 2;
 /// tmpfs's f_type (statfs), where the pictures may go.
 const TMPFS_MAGIC: i64 = 0x0102_1994;
 
-/// What one picture shows besides the frame: where the pupil was found and where it was looked for.
+/// What one picture shows besides the frame: where the pupil was found, where it was looked for, and the lids.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Marks {
     /// The pupil's centre and radius (picture px), if it was found.
@@ -60,6 +75,20 @@ pub struct Marks {
     /// The search window: left, top, right, bottom (picture px).
     pub window: [f32; 4],
     pub closed: bool,
+    /// The upper lid's skin line and the lower lid's line, if this frame has one: first and last column, and the row
+    /// at the first, halfway and at the last (picture px).
+    pub upper: Option<[f32; 5]>,
+    pub lower: Option<[f32; 5]>,
+    /// The lid margin's offset below the skin line (picture px; NaN without the upper line).
+    pub margin: f32,
+    /// The EyeLid sent (NaN while the values aren't valid).
+    pub eye_lid: f32,
+}
+
+/// A lid line's ends and middle, halved like the picture.
+fn lid_line(c: &LidCurve) -> [f32; 5] {
+    let xm = (c.x0 + c.x1) / 2.0;
+    [c.x0, c.x1, c.coef.at(c.x0), c.coef.at(xm), c.coef.at(c.x1)].map(|v| (v / 2.0) as f32)
 }
 
 impl Marks {
@@ -67,11 +96,18 @@ impl Marks {
     pub fn of(o: &Out) -> Self {
         let f = &o.f;
         let seen = f.ok_pupil && f.pupil_cx.is_finite() && f.pupil_cy.is_finite() && f.pupil_a.is_finite();
+        let upper = f.upper_skin_y.is_finite() && !f.upper_edge;
         Self {
             pupil: seen.then(|| ((f.pupil_cx / 2.0) as f32, (f.pupil_cy / 2.0) as f32, (f.pupil_a / 2.0) as f32)),
             // The left edge as far as the pupil was looked for: the extended search's when it reaches past x_min.
             window: [o.search_x_min, WINDOW_Y.0, o.xmax, WINDOW_Y.1].map(|v| (v / 2.0) as f32),
             closed: o.closed,
+            // The lines this frame's values were measured from: none where it has none (pushed against its band's
+            // edge, or a lower line the engine replaced with the last one, live::LOWER_DROP_MAX)
+            upper: f.upper_curve.filter(|_| upper).map(|c| lid_line(&c)),
+            lower: f.lower_curve.filter(|_| f.lower_y.is_finite() && !f.lower_edge).map(|c| lid_line(&c)),
+            margin: if upper { ((f.upper_y - f.upper_skin_y) / 2.0) as f32 } else { f32::NAN },
+            eye_lid: if o.valid { o.eye_lid as f32 } else { f32::NAN },
         }
     }
 }
@@ -132,7 +168,15 @@ impl PreviewWriter {
         let mut w = Self { ptr: p.cast(), _file: file, path: path.to_path_buf() };
         let start = clock_ns(libc::CLOCK_MONOTONIC);
         w.write(|b| {
-            for (at, v) in [(4, VERSION), (8, HEADER as u32), (12, EYE_SIZE as u32), (16, SIDE as u32), (20, SIDE as u32)] {
+            for (at, v) in [
+                (4, VERSION),
+                (8, HEADER as u32),
+                (12, EYE_SIZE as u32),
+                (16, SIDE as u32),
+                (20, SIDE as u32),
+                (52, LIDS_AT as u32),
+                (56, LID_SIZE as u32),
+            ] {
                 put_u32(b, at, v);
             }
             put_u32(b, 28, std::process::id());
@@ -173,6 +217,15 @@ impl PreviewWriter {
                 put_u32(b, at + 20 + i * 4, v.to_bits());
             }
             halve(frame, &mut b[at + EYE_HEADER..at + EYE_SIZE]);
+            let nan = [f32::NAN; 5];
+            let lids = [marks.eye_lid]
+                .into_iter()
+                .chain(marks.upper.unwrap_or(nan))
+                .chain([marks.margin])
+                .chain(marks.lower.unwrap_or(nan));
+            for (i, v) in lids.enumerate() {
+                put_u32(b, LIDS_AT + eye * LID_SIZE + i * 4, v.to_bits());
+            }
             put_u64(b, 40, t_mono_ns.max(u64::from_le_bytes(b[40..48].try_into().unwrap())));
         });
     }
@@ -192,6 +245,7 @@ impl Drop for PreviewWriter {
             for eye in 0..2 {
                 b[HEADER + eye * EYE_SIZE..HEADER + (eye + 1) * EYE_SIZE].fill(0);
             }
+            b[LIDS_AT..LIDS_AT + 2 * LID_SIZE].fill(0);
         });
         unsafe { libc::munmap(self.ptr.cast(), FILE_SIZE) };
         let _ = std::fs::remove_file(&self.path);
@@ -296,6 +350,8 @@ pub struct Seen {
     pub flags: [u32; 2],
     pub marks: [[f32; 7]; 2],
     pub pictures: [Vec<u8>; 2],
+    /// The lid lines: the EyeLid, the upper line (5), the margin, the lower line (5).
+    pub lids: [[f32; 12]; 2],
 }
 
 /// Read the file's bytes as a reader would: the header checked (magic, version, sizes), None if it isn't one.
@@ -308,6 +364,7 @@ pub fn parse(b: &[u8]) -> Option<Seen> {
         || u32_at(8) as usize != HEADER
         || u32_at(12) as usize != EYE_SIZE
         || (u32_at(16) as usize, u32_at(20) as usize) != (SIDE, SIDE)
+        || (u32_at(52) as usize, u32_at(56) as usize) != (LIDS_AT, LID_SIZE)
         || u32_at(SEQ) % 2 == 1
     {
         return None;
@@ -320,6 +377,7 @@ pub fn parse(b: &[u8]) -> Option<Seen> {
         flags: [0, 1].map(|e| u32_at(at(e) + 16)),
         marks: [0, 1].map(|e| std::array::from_fn(|i| f32::from_bits(u32_at(at(e) + 20 + i * 4)))),
         pictures: [0, 1].map(|e| b[at(e) + EYE_HEADER..at(e) + EYE_SIZE].to_vec()),
+        lids: [0, 1].map(|e| std::array::from_fn(|i| f32::from_bits(u32_at(LIDS_AT + e * LID_SIZE + i * 4)))),
     })
 }
 
@@ -327,6 +385,7 @@ pub fn parse(b: &[u8]) -> Option<Seen> {
 mod tests {
     use super::*;
     use crate::feat::Features;
+    use crate::vision::Quad;
 
     fn out(seen: bool, closed: bool) -> Out {
         let mut o = Out::default();
@@ -398,6 +457,7 @@ mod tests {
         unsafe { libc::munmap(p, FILE_SIZE) };
         let after = parse(&mapped).unwrap();
         assert!(!after.on && after.time_ns == [0, 0] && after.pictures.iter().all(|p| p.iter().all(|&v| v == 0)));
+        assert_eq!(after.lids, [[0.0; 12]; 2]);
         // Not the preview's: refused
         let mut bad = mapped.clone();
         bad[0] = b'X';
@@ -406,6 +466,49 @@ mod tests {
         bad[16] = 100;
         assert!(parse(&bad).is_none());
         assert!(parse(&mapped[..FILE_SIZE - 1]).is_none());
+    }
+
+    /// `out` with both lid lines (parabolas over columns 180..330 that halve to exact floats), its values valid.
+    fn out_with_lids() -> Out {
+        let mut o = out(true, false);
+        let curve = |c2: f64, y: f64| LidCurve { coef: Quad { c: [c2, 0.0, y], xm: 240.0 }, x0: 180.0, x1: 330.0 };
+        o.f.upper_skin_y = 150.0;
+        o.f.upper_y = 158.0;
+        o.f.upper_curve = Some(curve(1.0 / 512.0, 150.0));
+        o.f.lower_y = 240.0;
+        o.f.lower_curve = Some(curve(-1.0 / 512.0, 240.0));
+        o.valid = true;
+        o.eye_lid = 0.625;
+        o
+    }
+
+    #[test]
+    fn lid_lines_read_back_halved_and_nan_without_one() {
+        let path = std::env::temp_dir().join(format!("eyecam-preview-lids-{}", std::process::id()));
+        let mut w = PreviewWriter::create(&path).unwrap();
+        let f = frame();
+        // Both lines: the ends and the middle (column 255) of each parabola, halved, and the margin 8 px below
+        w.picture(0, &f, &Marks::of(&out_with_lids()), 5_000);
+        // None: the upper line pushed against its band's edge (feat leaves it NaN), the lower one replaced by the last
+        // one (live::LOWER_DROP_MAX: lower_y is that one's, not this frame's line), the values not valid
+        let mut none = out_with_lids();
+        (none.f.upper_edge, none.f.upper_skin_y, none.f.upper_y) = (true, f64::NAN, f64::NAN);
+        none.f.lower_edge = true;
+        none.valid = false;
+        w.picture(1, &f, &Marks::of(&none), 6_000);
+        let seen = parse(&std::fs::read(&path).unwrap()).unwrap();
+        let (up, mid, low) = (78.515625, 75.2197265625, 82.91015625);
+        let (up2, mid2, low2) = (116.484375, 119.7802734375, 112.08984375);
+        assert_eq!(seen.lids[0], [0.625, 90.0, 165.0, up, mid, low, 4.0, 90.0, 165.0, up2, mid2, low2]);
+        assert!(seen.lids[1].iter().all(|v| v.is_nan()), "{:?}", seen.lids[1]);
+        // The rest of the eye as before (a reader of version 1 reads the same)
+        assert_eq!(seen.marks[0], [120.0, 95.0, 10.5, 93.0, 35.0, 173.0, 160.0]);
+        assert_eq!(&w.read()[52..60], &[(LIDS_AT as u32).to_le_bytes(), (LID_SIZE as u32).to_le_bytes()].concat()[..]);
+        // A lower line without the pupil is still drawn (the lids are measured where the pupil last was)
+        let mut lost = out_with_lids();
+        lost.f.ok_pupil = false;
+        assert_eq!(Marks::of(&lost).lower, Some([90.0, 165.0, up2, mid2, low2]));
+        drop(w);
     }
 
     #[test]

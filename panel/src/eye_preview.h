@@ -173,6 +173,28 @@ constexpr double kStaleSec = 0.5;
 /** "preview on" goes out this often while the sheet shows the pictures (eyecam-rec keeps it on for 3 s). */
 constexpr double kRenewSec = 1.0;
 
+/** The lid lines' block, after both pictures: its offset and size are in the header (0 in an older eyecam-rec's). */
+constexpr size_t kLidsAtOffset = 52;
+constexpr size_t kLidSizeOffset = 56;
+/** The bytes of one eye's lid lines the panel reads (the block may be larger). */
+constexpr size_t kLidBytes = 48;
+
+/** A lid line eyecam-rec found on a picture: a parabola through its rows at x0, halfway and x1 (picture px). */
+struct LidLine {
+    bool present = false;           ///< found on this frame (else none is drawn)
+    double x0 = NAN;                ///< its first and last column
+    double x1 = NAN;
+    double y[3] = {NAN, NAN, NAN};  ///< its row at x0, halfway between and at x1
+};
+
+/**
+ * A lid line's row at a column (the parabola through its three rows).
+ * @param line the line (present)
+ * @param x the column (picture px)
+ * @return the row (picture px)
+ */
+double lidLineY(const LidLine& line, double x);
+
 /** One eye's picture, as eyecam-rec wrote it: upright, the temporal (ear) side at small x. */
 struct Picture {
     bool present = false;       ///< a picture was written (its time isn't 0)
@@ -186,6 +208,11 @@ struct Picture {
     double pupilR = NAN;
     double window[4] = {NAN, NAN, NAN, NAN};  ///< the pupil search window: left, top, right, bottom (picture px)
     bool closed = false;        ///< eyecam-rec reads the eye closed
+    bool lids = false;          ///< the file has the lid lines (an older eyecam-rec's has none)
+    LidLine upper;              ///< the upper lid's skin line...
+    double margin = NAN;        ///< ...and its margin this far below it (picture px; the opening is measured from it)
+    LidLine lower;              ///< the lower lid's line
+    double eyeLid = NAN;        ///< the EyeLid eyecam-rec sent for this frame (NaN: its values weren't valid)
 };
 
 /** Both pictures. */
@@ -198,7 +225,8 @@ struct Pictures {
 
 /**
  * Read a consistent copy of the file: the magic, the version, the header's and each eye's size, a square picture of at
- * most kMaxSide, and the whole of it within `size`; refused otherwise (another or a broken file).
+ * most kMaxSide, and the whole of it within `size`; refused otherwise (another or a broken file). The lid lines are
+ * read when the header says where they are and they fit (an older eyecam-rec's file has none: read without them).
  * @param data the bytes
  * @param size how many
  * @param out the pictures

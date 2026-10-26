@@ -259,6 +259,76 @@ void testFile() {
 }
 
 /**
+ * Put little-endian f32s into bytes (a file written by hand, as eyecam-rec lays it out).
+ * @param bytes the file
+ * @param at where the first goes
+ * @param values them
+ */
+void putFloats(std::vector<uint8_t>& bytes, size_t at, const std::vector<float>& values) {
+    std::memcpy(bytes.data() + at, values.data(), values.size() * sizeof(float));
+}
+
+void testLidLines() {
+    // The parabola through the three rows: exact at its ends and middle, and between them
+    LidLine line;
+    line.present = true;
+    line.x0 = 90;
+    line.x1 = 170;
+    // y = 80 + (x - 130)^2 / 100: 96 at both ends, 80 halfway, 89 at x 100
+    const double rows[3] = {96, 80, 96};
+    std::copy(rows, rows + 3, line.y);
+    CHECK(near(lidLineY(line, 90), 96) && near(lidLineY(line, 130), 80) && near(lidLineY(line, 170), 96));
+    CHECK(near(lidLineY(line, 100), 89) && near(lidLineY(line, 160), 89));
+    // eyecam-rec's lid block (tools/eyecam/src/preview.rs), written by hand: at 64 + 2 * 40064 = 80192, 64 bytes an
+    // eye, said in the header at 52 and 56
+    std::vector<uint8_t> bytes = encodePictures(madeUp(200), 200);
+    const uint8_t where[8] = {0x40, 0x39, 0x01, 0x00, 64, 0, 0, 0};
+    CHECK(std::memcmp(bytes.data() + 52, where, 8) == 0);
+    putFloats(bytes, 80192, {0.625f, 90, 165, 78.5f, 75.25f, 82.75f, 4, 90, 165, 116.5f, 119.75f, 112});
+    // The right eye: no upper line (NaN), a lower one, the values not valid
+    putFloats(bytes, 80192 + 64, {NAN, NAN, NAN, NAN, NAN, NAN, NAN, 92, 160, 110, 114, 109});
+    Pictures read;
+    std::string why;
+    CHECK(parsePictures(bytes.data(), bytes.size(), read, why));
+    const Picture& left = read.eyes[0];
+    CHECK(left.lids && near(left.eyeLid, 0.625) && near(left.margin, 4));
+    CHECK(left.upper.present && near(left.upper.x0, 90) && near(left.upper.x1, 165) && near(left.upper.y[1], 75.25));
+    CHECK(left.lower.present && near(left.lower.y[0], 116.5) && near(left.lower.y[2], 112));
+    const Picture& right = read.eyes[1];
+    CHECK(right.lids && !right.upper.present && right.lower.present && std::isnan(right.eyeLid));
+    CHECK(std::isnan(right.margin) && near(right.lower.x0, 92) && near(right.lower.y[1], 114));
+    // A line with one NaN, or running right to left, isn't one
+    putFloats(bytes, 80192 + 28 + 12, {NAN});
+    putFloats(bytes, 80192 + 64 + 28, {160, 92});
+    CHECK(parsePictures(bytes.data(), bytes.size(), read, why));
+    CHECK(!read.eyes[0].lower.present && read.eyes[0].upper.present && !read.eyes[1].lower.present);
+    // Round trip
+    Pictures pictures = madeUp(200);
+    pictures.eyes[0].lids = true;
+    pictures.eyes[0].upper = line;
+    pictures.eyes[0].margin = 3.5;
+    pictures.eyes[0].eyeLid = 0.75;
+    const std::vector<uint8_t> trip = encodePictures(pictures, 200);
+    CHECK(parsePictures(trip.data(), trip.size(), read, why));
+    CHECK(read.eyes[0].upper.present && near(read.eyes[0].upper.y[2], 96) && near(read.eyes[0].margin, 3.5));
+    CHECK(!read.eyes[0].lower.present && near(read.eyes[0].eyeLid, 0.75) && !read.eyes[1].upper.present);
+    // An older eyecam-rec's file (version 1 without the lid lines: 0 where the header would say where they are) is
+    // read as before, without lines
+    std::vector<uint8_t> old = encodePictures(madeUp(200), 200);
+    std::fill(old.begin() + 52, old.begin() + 64, 0);
+    std::fill(old.begin() + 80192, old.end(), 0);
+    CHECK(parsePictures(old.data(), old.size(), read, why));
+    CHECK(!read.eyes[0].lids && !read.eyes[0].upper.present && !read.eyes[1].lower.present);
+    CHECK(read.eyes[0].pupil && near(read.eyes[0].pupilX, 120) && read.eyes[1].closed);
+    // A block said to be where it can't be (inside the pictures, or past the end): no lines, the pictures still read
+    for (const uint32_t at : {64u, 81900u}) {
+        std::vector<uint8_t> bad = encodePictures(madeUp(200), 200);
+        std::memcpy(bad.data() + 52, &at, 4);
+        CHECK(parsePictures(bad.data(), bad.size(), read, why) && !read.eyes[0].lids && read.eyes[0].pupil);
+    }
+}
+
+/**
  * Write a file by putting a new one in its place (as eyecam-rec does).
  * @param path where
  * @param bytes what
@@ -438,6 +508,9 @@ void testFake() {
         const Picture& p = view.pictures.eyes[eye];
         CHECK(pictureFresh(p, view.nowNs) && p.side == 200 && p.pixels.size() == 200u * 200u && p.pupil);
         CHECK(p.pixels[static_cast<size_t>(std::lround(p.pupilY)) * 200 + static_cast<size_t>(std::lround(p.pupilX))] < 20);
+        // Lid lines above and below the pupil
+        CHECK(p.lids && p.upper.present && p.lower.present && std::isfinite(p.eyeLid));
+        CHECK(lidLineY(p.upper, p.pupilX) + p.margin < p.pupilY && lidLineY(p.lower, p.pupilX) > p.pupilY);
     }
     const Shown s = shown(view.packet, Source::Sent);
     CHECK(s.eyes[0].camera && !s.eyes[1].camera && s.eyes[0].lid > 0.75 && s.eyes[1].squint > 0.3);
@@ -460,6 +533,7 @@ int main() {
     testGeometry();
     testViews();
     testFile();
+    testLidLines();
     testReader();
     testFresh();
     testCameraState();

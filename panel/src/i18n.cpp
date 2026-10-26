@@ -66,8 +66,9 @@ UiText makeJapanese() {
     t.previewPupilFormat = "瞳 %.1f mm";
     t.previewPupilNone = "瞳 —";
     t.previewClosed = "閉じてる判定";
+    t.previewPictureLidFormat = "カメラ まぶた %.2f";
     t.previewGazeFormat = "視線 左右 %+.0f°・上下 %+.0f°";
-    t.previewNotePicture = "映像は表示するだけで保存しません。緑の丸が見つけた瞳、黄色の枠が瞳を探す範囲";
+    t.previewNotePicture = "映像は表示するだけで保存しません。緑の丸が見つけた瞳、黄色の枠が瞳を探す範囲、水色とピンクの線が上と下のまぶた";
     t.previewNoteShape = "アバターの目の形は人によって違います。動きの確認用です";
     t.previewWaitingPicture = "映像を待っています";
     t.previewCamNotRunning = "目のカメラが動いていません";
@@ -1119,8 +1120,9 @@ UiText makeEnglish() {
     t.previewPupilFormat = "Pupil %.1f mm";
     t.previewPupilNone = "Pupil —";
     t.previewClosed = "Read as closed";
+    t.previewPictureLidFormat = "Camera lid %.2f";
     t.previewGazeFormat = "Gaze: %+.0f° sideways, %+.0f° up/down";
-    t.previewNotePicture = "The picture is only shown, never saved. Green circle: the pupil found; yellow frame: where it is looked for";
+    t.previewNotePicture = "The picture is only shown, never saved. Green circle: the pupil found; yellow frame: where it is looked for; blue / pink: the upper / lower lid";
     t.previewNoteShape = "Avatars' eyes differ in shape. This is for checking the movement";
     t.previewWaitingPicture = "Waiting for the picture";
     t.previewCamNotRunning = "The eye cameras aren't running";

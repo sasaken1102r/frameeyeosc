@@ -74,6 +74,7 @@ struct UiText {
     const char* previewPupilFormat;     ///< an eye's chip: its pupil (%.1f mm)
     const char* previewPupilNone;       ///< ...without one
     const char* previewClosed;          ///< on a camera picture: eyecam-rec reads the eye closed
+    const char* previewPictureLidFormat;  ///< on a camera picture: the eyelid eyecam-rec sent for it (%.2f)
     const char* previewGazeFormat;      ///< the footer: the gaze (%+.0f sideways, %+.0f up / down, in degrees)
     const char* previewNotePicture;     ///< the footer while the pictures show: only shown, what the marks are
     const char* previewNoteShape;       ///< ...otherwise: avatars' eyes differ, it is for the movement

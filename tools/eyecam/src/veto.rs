@@ -16,7 +16,9 @@
 //! PC.
 //!
 //! The weights (models/veto_S32c4x5.bin, 92,385 little-endian f32, batch norm folded into the convolutions) were
-//! checked against the training framework's output to 5e-6 in the logit.
+//! checked against the training framework's output to 5e-6 in the logit. They were trained on the developer's
+//! recordings with white bands, dimming and +-10 px shifts drawn in (2026-10-26; the earlier weights read closed eyes
+//! as open in frames with a bright band or patch, and cancelled closes and squints).
 
 use crate::vision::{H, W};
 use std::sync::OnceLock;
@@ -302,6 +304,11 @@ mod tests {
                         }
                     }
                     5 => v = 200 - y * 120 / 400,
+                    6 => {
+                        if (170..182).contains(&y) {
+                            v = 40;
+                        }
+                    }
                     _ => {}
                 }
                 img[(y as usize) * W + x as usize] = (v + noise).clamp(0, 255) as u8;
@@ -310,14 +317,15 @@ mod tests {
         img
     }
 
-    /// The numpy reference's output (f64, the same weights) for synth_frame(0..5): the pooled crop's sum and the logit.
-    const EXPECTED: [(u32, f32); 6] = [
-        (150775, -1.963_032_2),  // P(open) 0.123
-        (141425, 5.974_573_4),   // 0.997
-        (140819, -0.387_576_46), // 0.404
-        (130502, 17.097_528),    // 1.000
-        (171267, 16.751_217),    // 1.000
-        (143985, 7.796_651_3),   // 0.9996
+    /// The numpy reference's output (f64, the same weights) for synth_frame(0..6): the pooled crop's sum and the logit.
+    const EXPECTED: [(u32, f32); 7] = [
+        (150775, 3.160_760_3),   // P(open) 0.959
+        (141425, 9.458_827),     // 0.9999
+        (140819, 5.254_760_3),   // 0.995
+        (130502, 12.346_606),    // 1.000
+        (171267, 17.556_217),    // 1.000
+        (143985, 3.152_407_6),   // 0.959
+        (146686, -14.092_843),   // 0.000
     ];
 
     #[test]
@@ -347,8 +355,8 @@ mod tests {
         assert!(!s.ran && !s.on && s.p_open.is_nan());
         let s = v.step(&img, f64::NAN, false);
         assert!(!s.ran);
-        // Gated (low or closed): it runs. Frame 0 reads closed to the CNN (P 0.12), frame 3 open (P 1.0).
-        let s = v.step(&img, 0.3, false);
+        // Gated (low or closed): it runs. Frame 6 (a dark lid line) reads closed to the CNN (P 0.000), frame 3 open (P 1.0).
+        let s = v.step(&synth_frame(6), 0.3, false);
         assert!(s.ran && !s.on && s.p_open < 0.2);
         let open = synth_frame(3);
         let on: Vec<bool> = (0..K_OPEN).map(|_| v.step(&open, 0.3, false).on).collect();

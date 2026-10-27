@@ -1128,7 +1128,7 @@ UiText makeEnglish() {
     t.previewClosed = "Read as closed";
     t.previewPictureLidFormat = "Camera lid %.2f";
     t.previewGazeFormat = "Gaze: %+.0f° sideways, %+.0f° up/down";
-    t.previewNotePicture = "The picture is only shown, never saved. Green circle: the pupil found; yellow frame: where it is looked for; blue / pink dots: the upper / lower lid";
+    t.previewNotePicture = "Shown only, never saved. Green: the pupil; yellow: where it's looked for; blue / pink dots: the upper / lower lid";
     t.previewNoteShape = "Avatars' eyes differ in shape. This is for checking the movement";
     t.previewWaitingPicture = "Waiting for the picture";
     t.previewCamNotRunning = "The eye cameras aren't running";

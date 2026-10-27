@@ -283,9 +283,10 @@ void printUsage() {
         "                        otherwise as installed now (the list fetched before; never fetched here)\n"
         "      --fake-apps-launch busy|nodisplay|nokonsole|failed  Why Konsole didn't open (with --apps-sheet confirm)\n"
         "      --fake-apps-extra N  Add N made-up apps without an icon to the list (it scrolls past four or five)\n"
-        "      --preview-sheet [SOURCE[:nomirror][:nocamera][:frozen]]  The eye preview open (SOURCE sent, raw or\n"
-        "                        camera; default sent, in a mirror, with the camera pictures). Its pictures are read from\n"
-        "                        eyecam-rec's preview file in --eyecam-dir when it is there (eyecam-rec --replay\n"
+        "      --preview-sheet [SOURCE[:nomirror][:nocamera][:frozen][:nolids][:nopupil][:nowindow]]  The eye preview\n"
+        "                        open (SOURCE sent, raw or camera; default sent, in a mirror, with the camera\n"
+        "                        pictures and all their marks; :no... leaves that mark out). Its pictures are read\n"
+        "                        from eyecam-rec's preview file in --eyecam-dir when it is there (eyecam-rec --replay\n"
         "                        --preview), else made up with --fake-preview\n"
         "      --fake-preview [ok|noeyecam|nopicture|closed|nodata]  Made-up preview values and grey pictures (not an\n"
         "                        eye), with the eye cameras set up: all there (ok), eyecam-rec not running, no picture\n"
@@ -429,19 +430,23 @@ void printUsage() {
 }
 
 /**
- * Take --preview-sheet's value apart: sent, raw or camera, then any of :nomirror, :nocamera, :frozen ("" = as it opens).
+ * Take --preview-sheet's value apart: sent, raw or camera, then any of :nomirror, :nocamera, :frozen, :nolids,
+ * :nopupil, :nowindow ("" = as it opens).
  * @param text the value
  * @param source which values drive the drawn eyes
  * @param mirror as in a mirror
  * @param camera with the eye cameras' pictures
  * @param frozen stopped
+ * @param marks which marks are drawn over the pictures
  * @return false if something in it is unknown
  */
-bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool& mirror, bool& camera, bool& frozen) {
+bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool& mirror, bool& camera, bool& frozen,
+                      eye_preview::Marks& marks) {
     source = eye_preview::Source::Sent;
     mirror = true;
     camera = true;
     frozen = false;
+    marks = eye_preview::Marks {};
     if (text.empty()) return true;
     size_t from = 0;
     for (bool first = true;; first = false) {
@@ -457,6 +462,12 @@ bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool
             camera = false;
         } else if (!first && part == "frozen") {
             frozen = true;
+        } else if (!first && part == "nolids") {
+            marks.lids = false;
+        } else if (!first && part == "nopupil") {
+            marks.pupil = false;
+        } else if (!first && part == "nowindow") {
+            marks.window = false;
         } else {
             return false;
         }
@@ -829,9 +840,11 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 bool mirror = true;
                 bool camera = true;
                 bool frozen = false;
-                if (!parsePreviewSpec(options.previewSpec, source, mirror, camera, frozen)) {
+                eye_preview::Marks marks;
+                if (!parsePreviewSpec(options.previewSpec, source, mirror, camera, frozen, marks)) {
                     std::fprintf(stderr,
-                                 "--preview-sheet takes sent, raw or camera, then :nomirror, :nocamera, :frozen: %s\n",
+                                 "--preview-sheet takes sent, raw or camera, then :nomirror, :nocamera, :frozen, "
+                                 ":nolids, :nopupil, :nowindow: %s\n",
                                  options.previewSpec.c_str());
                     return false;
                 }
@@ -2407,9 +2420,10 @@ int runDumpPng(const Options& options) {
             bool mirror = true;
             bool camera = true;
             bool frozen = false;
-            parsePreviewSpec(options.previewSpec, source, mirror, camera, frozen);
+            eye_preview::Marks marks;
+            parsePreviewSpec(options.previewSpec, source, mirror, camera, frozen, marks);
             panel.openPreview();
-            panel.setPreviewOptions(source, mirror, camera, frozen);
+            panel.setPreviewOptions(source, mirror, camera, frozen, marks);
             // The pictures from eyecam-rec's preview file when it is there (eyecam-rec --replay --preview DIR, with
             // --eyecam-dir DIR); a file of another kind says why
             // (--preview-follow: every picture of the next seconds, the lid lines smoothed over them as live)
@@ -3263,6 +3277,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::PreviewSource:
         case PanelAction::PreviewMirror:
         case PanelAction::PreviewCamera:
+        case PanelAction::PreviewMark:
         case PanelAction::PreviewFreeze: return;  // handled inside the panel; the loop follows previewOpen
         case PanelAction::RecordOpen: openRecordView(model, panel.recordShown()); return;
         case PanelAction::RecordsAll: loadRecords(model); return;

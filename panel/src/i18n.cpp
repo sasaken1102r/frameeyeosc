@@ -58,6 +58,9 @@ UiText makeJapanese() {
     t.previewSourceCamera = "カメラの値";
     t.previewMirror = "鏡で見る";
     t.previewPicture = "カメラ映像";
+    t.previewMarkLids = "まぶた";
+    t.previewMarkPupil = "瞳";
+    t.previewMarkWindow = "探す範囲";
     t.previewFreeze = "止める";
     t.previewResume = "動かす";
     t.previewLidFormat = "まぶた %.2f";
@@ -1112,6 +1115,9 @@ UiText makeEnglish() {
     t.previewSourceCamera = "Camera";
     t.previewMirror = "Mirror";
     t.previewPicture = "Camera picture";
+    t.previewMarkLids = "Eyelids";
+    t.previewMarkPupil = "Pupil";
+    t.previewMarkWindow = "Search area";
     t.previewFreeze = "Freeze";
     t.previewResume = "Resume";
     t.previewLidFormat = "Lid %.2f";

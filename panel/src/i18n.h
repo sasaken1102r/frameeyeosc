@@ -66,6 +66,9 @@ struct UiText {
     const char* previewSourceCamera;    ///< ...the eye camera's own
     const char* previewMirror;          ///< the switch that shows the eyes as in a mirror (off: seen from the front)
     const char* previewPicture;         ///< the switch for the eye cameras' pictures
+    const char* previewMarkLids;        ///< the switches for the marks over them: the eyelids' (and their value)...
+    const char* previewMarkPupil;       ///< ...the ring on the pupil...
+    const char* previewMarkWindow;      ///< ...the frame the pupil is looked for in
     const char* previewFreeze;          ///< stop the drawing where it is
     const char* previewResume;          ///< ...and let it move again
     const char* previewLidFormat;       ///< an eye's chip: its eyelid (%.2f)

@@ -128,6 +128,7 @@ enum class PanelAction {
     PreviewSource,     ///< which values drive the drawn eyes: arg = eye_preview::Source (handled inside)
     PreviewMirror,     ///< show the eyes as in a mirror, or as seen from the front (handled inside)
     PreviewCamera,     ///< the eye cameras' pictures on / off (handled inside; the caller follows previewPictures)
+    PreviewMark,       ///< one of the marks over the pictures on / off: arg = eye_preview::Mark (handled inside)
     PreviewFreeze,     ///< stop the drawing where it is, or let it move again (handled inside)
     ContribOpen,       ///< Debug tools' "Record for squint training": open its sheet, arg = contrib::Page (the panel
                        ///< opens it; the caller forgets the last recording's end and failure)
@@ -429,8 +430,13 @@ public:
      * @param mirror as in a mirror
      * @param camera the eye cameras' pictures
      * @param frozen stopped (at the model drawn next)
+     * @param marks which marks are drawn over the pictures
      */
-    void setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen);
+    void setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen,
+                           const eye_preview::Marks& marks);
+
+    /** @return which marks are drawn over the pictures */
+    const eye_preview::Marks& previewMarks() const { return previewMarks_; }
 
     /**
      * The widening sensitivity slider was let go of (once per release). It keeps showing that value until
@@ -751,7 +757,8 @@ private:
     bool previewCamera_ = false;        ///< ...with the eye cameras' pictures (off whenever the cameras can't give them)
     bool previewCameraKept_ = false;    ///< ...the pictures' switch as last pressed, for the next time it opens (this
                                         ///< run of the panel only; the cameras going away turns it off too)
-    bool contribOpen_ = false;          ///< "Record for squint training" is shown on the Advanced tab
+    eye_preview::Marks previewMarks_;   ///< ...which marks are drawn over them
+    bool contribOpen_ = false;         ///< "Record for squint training" is shown on the Advanced tab
     contrib::Page contribPage_ = contrib::Page::Record;  ///< ...opened as "Record" or "Recordings"
     bool contribAgreed_ = false;        ///< ..."Agree and continue" pressed (the question about glasses)
     bool contribConfirm_ = false;       ///< ...with the confirmation before deleting
@@ -833,7 +840,7 @@ private:
 
     /**
      * One eye's camera picture, upright with its temporal side toward the sheet's outside, the search window
-     * and the found pupil on it, the lid lines and their EyeLid, and "Read as closed"; "waiting" while there is none.
+     * and the found pupil on it, the lids' dots and their EyeLid, and "Read as closed"; "waiting" while there is none.
      * @param pen drawing tools
      * @param t texts
      * @param picture the picture
@@ -843,9 +850,10 @@ private:
      * @param side its size (px)
      * @param flip mirrored left to right
      * @param smooth the lid lines and EyeLid smoothed over the pictures (else as read: Raw)
+     * @param marks which marks to draw ("Read as closed" always is)
      */
     void drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
-                            double x, double y, double side, bool flip, bool smooth);
+                            double x, double y, double side, bool flip, bool smooth, const eye_preview::Marks& marks);
 
     /**
      * A switch as a pill: a check, bold and the accent while on.

@@ -1948,7 +1948,8 @@ void testFitRunning(const FontSet& fonts) {
         for (const EyePanel::HitArea& area : over.hitAreas()) {
             const PanelAction a = area.hit.action;
             CHECK(a == PanelAction::Tab || a == PanelAction::PreviewClose || a == PanelAction::PreviewSource ||
-                  a == PanelAction::PreviewMirror || a == PanelAction::PreviewFreeze || a == PanelAction::PreviewCamera);
+                  a == PanelAction::PreviewMirror || a == PanelAction::PreviewFreeze ||
+                  a == PanelAction::PreviewCamera || a == PanelAction::PreviewMark);
             CHECK(a == PanelAction::Tab || area.x >= 416);
         }
         // Its own buttons still work (the fit goes on behind it)
@@ -2741,7 +2742,7 @@ bool overlaps(const EyePanel::HitArea& a, const EyePanel::HitArea& b) {
 }
 
 /**
- * The eye preview's own buttons (the cross, the choices, the switches, freeze) as last drawn.
+ * The eye preview's own buttons (the cross, the choices, the switches, freeze, the marks' switches) as last drawn.
  * @param panel the panel
  * @return them
  */
@@ -2750,7 +2751,7 @@ std::vector<EyePanel::HitArea> previewButtons(const EyePanel& panel) {
     for (const EyePanel::HitArea& area : panel.hitAreas()) {
         const PanelAction a = area.hit.action;
         if (a == PanelAction::PreviewClose || a == PanelAction::PreviewSource || a == PanelAction::PreviewMirror ||
-            a == PanelAction::PreviewCamera || a == PanelAction::PreviewFreeze) {
+            a == PanelAction::PreviewCamera || a == PanelAction::PreviewMark || a == PanelAction::PreviewFreeze) {
             found.push_back(area);
         }
     }
@@ -2800,7 +2801,7 @@ void testPreview(const FontSet& fonts) {
             const PanelAction a = area.hit.action;
             const bool ownButton = a == PanelAction::PreviewClose || a == PanelAction::PreviewSource ||
                                    a == PanelAction::PreviewMirror || a == PanelAction::PreviewCamera ||
-                                   a == PanelAction::PreviewFreeze;
+                                   a == PanelAction::PreviewMark || a == PanelAction::PreviewFreeze;
             if (sheet) CHECK(ownButton);
         }
         // The button stays, now closing it
@@ -2832,6 +2833,72 @@ void testPreview(const FontSet& fonts) {
         press(panel, PanelAction::PreviewCamera);
         CHECK(panel.previewPictures());
         panel.render(m);
+
+        // With the pictures: a switch for each mark over them, all on at first, one under the other in the space
+        // between the two pictures (176 px wide, centred in each half of the sheet), apart from the other buttons
+        {
+            const std::vector<EyePanel::HitArea> marks = hits(panel, PanelAction::PreviewMark);
+            CHECK(marks.size() == 3);
+            CHECK(panel.previewMarks().lids && panel.previewMarks().pupil && panel.previewMarks().window);
+            const double half = (1154 - 438) / 2.0;
+            for (const EyePanel::HitArea& a : marks) {
+                CHECK(a.x >= 438 + half / 2 + 88 && a.x + a.w <= 438 + half * 1.5 - 88);
+                // (above the footer's gaze line)
+                CHECK(a.y >= 96 && a.y + a.h <= 676 - 36 - 22);
+            }
+            const std::vector<EyePanel::HitArea> all = previewButtons(panel);
+            CHECK(all.size() == 10);
+            for (size_t i = 0; i < all.size(); ++i) {
+                for (size_t j = i + 1; j < all.size(); ++j) CHECK(!overlaps(all[i], all[j]));
+            }
+            // Each takes its mark off the pictures and puts it back; the sheet stays open
+            // (the two pictures' boxes only, without the switches between them)
+            const auto pictureBoxes = [&](const std::vector<uint8_t>& rgba) {
+                std::vector<uint8_t> out;
+                for (int y = 440; y < 620; ++y) {
+                    for (const int left : {529, 887}) {
+                        const size_t from = (static_cast<size_t>(y) * panel.width() + left) * 4;
+                        out.insert(out.end(), rgba.begin() + from, rgba.begin() + from + 176 * 4);
+                    }
+                }
+                return out;
+            };
+            panel.pointerLeave();
+            panel.render(m);
+            const std::vector<uint8_t> every = panel.toRgba();
+            for (const eye_preview::Mark mark :
+                 {eye_preview::Mark::Lids, eye_preview::Mark::Pupil, eye_preview::Mark::Window}) {
+                CHECK(pressArg(panel, PanelAction::PreviewMark, static_cast<int>(mark)).action == PanelAction::None);
+                CHECK(panel.previewOpen() && panel.previewPictures());
+                const eye_preview::Marks& shown = panel.previewMarks();
+                CHECK(shown.lids == (mark != eye_preview::Mark::Lids));
+                CHECK(shown.pupil == (mark != eye_preview::Mark::Pupil));
+                CHECK(shown.window == (mark != eye_preview::Mark::Window));
+                panel.pointerLeave();
+                panel.render(m);
+                CHECK(pictureBoxes(panel.toRgba()) != pictureBoxes(every));
+                pressArg(panel, PanelAction::PreviewMark, static_cast<int>(mark));
+                panel.pointerLeave();
+                panel.render(m);
+                CHECK(panel.toRgba() == every);
+            }
+            // Kept when it closes and opens again (while the panel runs)
+            pressArg(panel, PanelAction::PreviewMark, static_cast<int>(eye_preview::Mark::Pupil));
+            press(panel, PanelAction::PreviewClose);
+            panel.render(m);
+            press(panel, PanelAction::PreviewOpen);
+            panel.render(m);
+            CHECK(panel.previewMarks().lids && !panel.previewMarks().pupil && panel.previewMarks().window);
+            // Without the pictures: no switches for them (and no room kept)
+            press(panel, PanelAction::PreviewCamera);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::PreviewMark).empty() && previewButtons(panel).size() == 7);
+            press(panel, PanelAction::PreviewCamera);
+            panel.render(m);
+            pressArg(panel, PanelAction::PreviewMark, static_cast<int>(eye_preview::Mark::Pupil));
+            CHECK(panel.previewMarks().pupil);
+            panel.render(m);
+        }
         pressArg(panel, PanelAction::PreviewSource, static_cast<int>(eye_preview::Source::Raw));
         panel.render(m);
         press(panel, PanelAction::PreviewMirror);

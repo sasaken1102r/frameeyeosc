@@ -22,6 +22,16 @@ namespace eye_preview {
 /** Which values drive the drawn eyes: as sent, as read (Valve's openness, the gaze before smoothing), the camera's. */
 enum class Source { Sent, Raw, Camera };
 
+/** The marks drawn over the camera pictures, each with its switch on the sheet (PanelAction::PreviewMark's arg). */
+enum class Mark { Lids, Pupil, Window };
+
+/** Which of them are drawn (all at first; kept while the panel runs, like the mirror). */
+struct Marks {
+    bool lids = true;    ///< the upper and lower lids' dots, and the camera's eyelid under them
+    bool pupil = true;   ///< the ring on the pupil found
+    bool window = true;  ///< the dashed frame the pupil is looked for in
+};
+
 /** One drawn eye. */
 struct EyeShown {
     bool known = false;     ///< there is an eyelid to draw (else drawn faded, relaxed open)

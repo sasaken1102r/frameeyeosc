@@ -763,7 +763,7 @@ std::vector<std::string> sentences(const std::string& text) {
 bool previewSheetAction(PanelAction action) {
     return action == PanelAction::PreviewClose || action == PanelAction::PreviewSource ||
            action == PanelAction::PreviewMirror || action == PanelAction::PreviewCamera ||
-           action == PanelAction::PreviewFreeze;
+           action == PanelAction::PreviewMark || action == PanelAction::PreviewFreeze;
 }
 
 /**
@@ -911,6 +911,13 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::PreviewCamera:
             previewCamera_ = !previewCamera_;
             previewCameraKept_ = previewCamera_;
+            return {};
+        case PanelAction::PreviewMark:
+            switch (static_cast<eye_preview::Mark>(hit.arg)) {
+                case eye_preview::Mark::Lids: previewMarks_.lids = !previewMarks_.lids; break;
+                case eye_preview::Mark::Pupil: previewMarks_.pupil = !previewMarks_.pupil; break;
+                case eye_preview::Mark::Window: previewMarks_.window = !previewMarks_.window; break;
+            }
             return {};
         case PanelAction::PreviewFreeze:
             // Stopped at what the next draw shows (the model isn't at hand here)
@@ -1318,12 +1325,14 @@ void EyePanel::openPreview() {
     eyecamConfirm_.close();
 }
 
-void EyePanel::setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen) {
+void EyePanel::setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen,
+                                 const eye_preview::Marks& marks) {
     previewSource_ = source;
     previewMirror_ = mirror;
     previewCamera_ = camera;
     previewFrozen_ = frozen;
     previewFreezePending_ = frozen;
+    previewMarks_ = marks;
 }
 
 void EyePanel::openAppsConfirm(const std::string& key) {
@@ -7506,7 +7515,8 @@ void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, 
 }
 
 void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
-                                  double x, double y, double side, bool flip, bool smooth) {
+                                  double x, double y, double side, bool flip, bool smooth,
+                                  const eye_preview::Marks& marks) {
     cairo_t* cr = pen.cr;
     const double r = 12;
     fillRounded(pen, x, y, side, side, r, kBg);
@@ -7545,7 +7555,8 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
     const auto px = [&](double v) { return flip ? x + side - v * scale : x + v * scale; };
     const auto py = [&](double v) { return y + v * scale; };
     const double* win = picture.window;
-    if (std::isfinite(win[0]) && std::isfinite(win[1]) && std::isfinite(win[2]) && std::isfinite(win[3])) {
+    if (marks.window && std::isfinite(win[0]) && std::isfinite(win[1]) && std::isfinite(win[2]) &&
+        std::isfinite(win[3])) {
         const double left = std::min(px(win[0]), px(win[2]));
         const double right = std::max(px(win[0]), px(win[2]));
         const double dash[2] = {6, 4};
@@ -7556,35 +7567,34 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
         cairo_stroke(cr);
         cairo_set_dash(cr, nullptr, 0, 0);
     }
-    // The lid lines eyecam-rec measured on this frame (none where it found none): the upper lid's edge (its margin,
-    // which the opening is measured from) and the lower lid's, each on a dark edge so it shows on bright skin too.
-    // Smoothed over the pictures but in Raw (the lower one jumps a few px from picture to picture)
+    // Where eyecam-rec found the lids on this frame (none where it found none), a dot each on its line: the upper lid's
+    // edge (its margin, which the opening is measured from) and the lower lid's, each on a dark edge so it shows on
+    // bright skin too. Dots, not the whole lines: the lines' ends jump from picture to picture while the opening
+    // doesn't. At the pupil's column, where eyecam-rec measures the opening (feat.rs: the lines' y_at at the pupil's
+    // centre); without a pupil, the line's middle. Smoothed over the pictures but in Raw (the lower one jumps a few
+    // px from picture to picture)
     const eye_preview::SmoothedLids lids = smooth ? picture.smoothed
                                                   : eye_preview::SmoothedLids {picture.upper, picture.margin,
                                                                                picture.lower, picture.eyeLid};
-    const auto lidLine = [&](const eye_preview::LidLine& line, double below, Color color) {
+    const auto lidDot = [&](const eye_preview::LidLine& line, double below, Color color) {
         if (!line.present) return;
-        const int steps = 16;
-        cairo_new_path(cr);
-        for (int i = 0; i <= steps; ++i) {
-            const double lx = line.x0 + (line.x1 - line.x0) * i / steps;
-            cairo_line_to(cr, px(lx), py(eye_preview::lidLineY(line, lx) + below));
-        }
-        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-        pen.color(kBg, 0.55);
-        cairo_set_line_width(cr, 5);
-        cairo_stroke_preserve(cr);
-        pen.color(color);
-        cairo_set_line_width(cr, 2.5);
-        cairo_stroke(cr);
-        cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT);
+        const double at = picture.pupil && std::isfinite(picture.pupilX) ? picture.pupilX : (line.x0 + line.x1) / 2;
+        const double lx = std::clamp(at, std::min(line.x0, line.x1), std::max(line.x0, line.x1));
+        const double dx = px(lx);
+        const double dy = py(eye_preview::lidLineY(line, lx) + below);
+        pen.color(kBg, 0.7);
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, dx, dy, 6.5, 0, 2 * M_PI);
+        cairo_fill(cr);
+        drawDot(cr, dx, dy, 4.5, color);
     };
-    if (picture.lids) {
-        lidLine(lids.upper, std::isfinite(lids.margin) ? lids.margin : 0.0, kPreviewLidUpper);
-        lidLine(lids.lower, 0.0, kPreviewLidLower);
+    if (marks.lids && picture.lids) {
+        lidDot(lids.upper, std::isfinite(lids.margin) ? lids.margin : 0.0, kPreviewLidUpper);
+        lidDot(lids.lower, 0.0, kPreviewLidLower);
     }
-    if (picture.pupil) drawRing(cr, px(picture.pupilX), py(picture.pupilY), picture.pupilR * scale, 2.5, kPreviewPupil);
+    if (marks.pupil && picture.pupil) {
+        drawRing(cr, px(picture.pupilX), py(picture.pupilY), picture.pupilR * scale, 2.5, kPreviewPupil);
+    }
     const auto badge = [&](double by, const char* text) {
         const double size = 13;
         const double w = pen.measure(text, size, true) + 18;
@@ -7594,8 +7604,8 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
         pen.text(x + 17, centerBaseline(by, 24, size), text, size, kText, true);
     };
     if (picture.closed) badge(y + 8, t.previewClosed);
-    // The EyeLid eyecam-rec sent for this very frame, under its lines
-    if (picture.lids && std::isfinite(lids.eyeLid)) {
+    // The EyeLid eyecam-rec sent for this very frame, under its dots (and off with them)
+    if (marks.lids && picture.lids && std::isfinite(lids.eyeLid)) {
         char lid[64];
         std::snprintf(lid, sizeof(lid), t.previewPictureLidFormat, lids.eyeLid);
         badge(y + side - 32, lid);
@@ -7765,7 +7775,31 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
             const eye_preview::Picture& picture = pv.pictures.eyes[eye];
             const bool fresh = pv.hasPictures && eye_preview::pictureFresh(picture, pv.nowNs);
             drawPreviewPicture(pen, t, picture, fresh, cx - pictureSide / 2, chipsY + chipsH + 10, pictureSide,
-                               eye_preview::pictureFlipped(eye, previewMirror_), source != Source::Raw);
+                               eye_preview::pictureFlipped(eye, previewMirror_), source != Source::Raw, previewMarks_);
+        }
+    }
+    // The marks' switches, one under the other in the space between the two pictures (they go for both; nothing
+    // else is there, so the eyes keep their size)
+    if (pictures) {
+        using eye_preview::Mark;
+        const struct {
+            const char* label;
+            Mark mark;
+            bool on;
+        } switches[] = {{t.previewMarkLids, Mark::Lids, previewMarks_.lids},
+                        {t.previewMarkPupil, Mark::Pupil, previewMarks_.pupil},
+                        {t.previewMarkWindow, Mark::Window, previewMarks_.window}};
+        const double spaceW = half - pictureSide - 2 * gap;
+        double switchW = 0;
+        for (const auto& s : switches) switchW = std::max(switchW, pen.measure(s.label, 16, true) + 58);
+        switchW = std::min(switchW, spaceW);
+        const double switchGap = 10;
+        const double pictureY = top + eyeH + 6 + chipsH + 10;
+        double switchY = pictureY + (pictureSide - (rowH * 3 + switchGap * 2)) / 2;
+        for (const auto& s : switches) {
+            drawToggle(pen, kInnerX + half - switchW / 2, switchY, switchW, rowH, s.label,
+                       {PanelAction::PreviewMark, nullptr, static_cast<int>(s.mark)}, s.on, true);
+            switchY += rowH + switchGap;
         }
     }
 

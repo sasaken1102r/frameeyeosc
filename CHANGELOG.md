@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.8.2-beta.5 (2026-10-27)
+
+The eye preview's camera pictures now show where the eye cameras found your eyelids, as two dots above and below the pupil, and switches let you hide each mark. How the eyes are read and sent doesn't change.
+
+日本語: 目のプレビューのカメラ映像に、目のカメラが見つけたまぶたの位置を瞳の上と下の点で出すようにしました。映像に重ねる印はスイッチでそれぞれ消せます。目の読み取り方や送る値は変わりません。
 
 - Panel, eye preview with the camera picture on: the picture now also shows where the eye cameras found your eyelids, a light blue dot on the upper lid's edge and a pink one on the lower lid, above and below the pupil, and the camera's eyelid value at its bottom left ("Camera lid 0.62"). A dot is left out on frames where that lid wasn't found. The dots and the value are smoothed so they don't flicker; with "Raw" they are drawn as read. Nothing about how the eyes are read changes.
 - Panel, eye preview with the camera picture on: switches between the two pictures turn each mark on them on or off: "Eyelids" (both lid dots and the camera's eyelid value), "Pupil" (the green circle) and "Search area" (the yellow frame). They start on each time the panel starts. "Read as closed" always shows.

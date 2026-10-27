@@ -27,7 +27,7 @@ enum class Mark { Lids, Pupil, Window };
 
 /** Which of them are drawn (all at first; kept while the panel runs, like the mirror). */
 struct Marks {
-    bool lids = true;    ///< the upper and lower lid lines, and the camera's eyelid under them
+    bool lids = true;    ///< the upper and lower lids' dots, and the camera's eyelid under them
     bool pupil = true;   ///< the ring on the pupil found
     bool window = true;  ///< the dashed frame the pupil is looked for in
 };

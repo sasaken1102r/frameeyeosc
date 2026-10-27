@@ -840,7 +840,7 @@ private:
 
     /**
      * One eye's camera picture, upright with its temporal side toward the sheet's outside, the search window
-     * and the found pupil on it, the lid lines and their EyeLid, and "Read as closed"; "waiting" while there is none.
+     * and the found pupil on it, the lids' dots and their EyeLid, and "Read as closed"; "waiting" while there is none.
      * @param pen drawing tools
      * @param t texts
      * @param picture the picture

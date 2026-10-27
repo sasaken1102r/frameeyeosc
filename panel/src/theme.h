@@ -75,7 +75,7 @@ constexpr Color kEyeBrow = hexColor(0x8b949e);      ///< the drawn brows (over t
 /** The pupil eyecam-rec found, as a circle on its picture (green), and where it looked for it (a yellow frame) */
 constexpr Color kPreviewPupil = hexColor(0x5fd38a);
 constexpr Color kPreviewWindow = hexColor(0xf2d25a);
-/** The lid lines it found: the upper lid's (light blue) and the lower lid's (pink), also told apart by their place */
+/** The lids it found, a dot each: the upper lid's (light blue) and the lower lid's (pink), also apart by their place */
 constexpr Color kPreviewLidUpper = hexColor(0x6cc4ff);
 constexpr Color kPreviewLidLower = hexColor(0xff8fc8);
 // ---- The eye capture's full-view overlay (a light stimulus, not UI) ----

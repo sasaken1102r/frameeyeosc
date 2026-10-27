@@ -7567,33 +7567,30 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
         cairo_stroke(cr);
         cairo_set_dash(cr, nullptr, 0, 0);
     }
-    // The lid lines eyecam-rec measured on this frame (none where it found none): the upper lid's edge (its margin,
-    // which the opening is measured from) and the lower lid's, each on a dark edge so it shows on bright skin too.
-    // Smoothed over the pictures but in Raw (the lower one jumps a few px from picture to picture)
+    // Where eyecam-rec found the lids on this frame (none where it found none), a dot each on its line: the upper lid's
+    // edge (its margin, which the opening is measured from) and the lower lid's, each on a dark edge so it shows on
+    // bright skin too. Dots, not the whole lines: the lines' ends jump from picture to picture while the opening
+    // doesn't. At the pupil's column, where eyecam-rec measures the opening (feat.rs: the lines' y_at at the pupil's
+    // centre); without a pupil, the line's middle. Smoothed over the pictures but in Raw (the lower one jumps a few
+    // px from picture to picture)
     const eye_preview::SmoothedLids lids = smooth ? picture.smoothed
                                                   : eye_preview::SmoothedLids {picture.upper, picture.margin,
                                                                                picture.lower, picture.eyeLid};
-    const auto lidLine = [&](const eye_preview::LidLine& line, double below, Color color) {
+    const auto lidDot = [&](const eye_preview::LidLine& line, double below, Color color) {
         if (!line.present) return;
-        const int steps = 16;
-        cairo_new_path(cr);
-        for (int i = 0; i <= steps; ++i) {
-            const double lx = line.x0 + (line.x1 - line.x0) * i / steps;
-            cairo_line_to(cr, px(lx), py(eye_preview::lidLineY(line, lx) + below));
-        }
-        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
-        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-        pen.color(kBg, 0.55);
-        cairo_set_line_width(cr, 5);
-        cairo_stroke_preserve(cr);
-        pen.color(color);
-        cairo_set_line_width(cr, 2.5);
-        cairo_stroke(cr);
-        cairo_set_line_cap(cr, CAIRO_LINE_CAP_BUTT);
+        const double at = picture.pupil && std::isfinite(picture.pupilX) ? picture.pupilX : (line.x0 + line.x1) / 2;
+        const double lx = std::clamp(at, std::min(line.x0, line.x1), std::max(line.x0, line.x1));
+        const double dx = px(lx);
+        const double dy = py(eye_preview::lidLineY(line, lx) + below);
+        pen.color(kBg, 0.7);
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, dx, dy, 6.5, 0, 2 * M_PI);
+        cairo_fill(cr);
+        drawDot(cr, dx, dy, 4.5, color);
     };
     if (marks.lids && picture.lids) {
-        lidLine(lids.upper, std::isfinite(lids.margin) ? lids.margin : 0.0, kPreviewLidUpper);
-        lidLine(lids.lower, 0.0, kPreviewLidLower);
+        lidDot(lids.upper, std::isfinite(lids.margin) ? lids.margin : 0.0, kPreviewLidUpper);
+        lidDot(lids.lower, 0.0, kPreviewLidLower);
     }
     if (marks.pupil && picture.pupil) {
         drawRing(cr, px(picture.pupilX), py(picture.pupilY), picture.pupilR * scale, 2.5, kPreviewPupil);
@@ -7607,7 +7604,7 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
         pen.text(x + 17, centerBaseline(by, 24, size), text, size, kText, true);
     };
     if (picture.closed) badge(y + 8, t.previewClosed);
-    // The EyeLid eyecam-rec sent for this very frame, under its lines (and off with them)
+    // The EyeLid eyecam-rec sent for this very frame, under its dots (and off with them)
     if (marks.lids && picture.lids && std::isfinite(lids.eyeLid)) {
         char lid[64];
         std::snprintf(lid, sizeof(lid), t.previewPictureLidFormat, lids.eyeLid);

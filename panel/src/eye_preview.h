@@ -22,6 +22,16 @@ namespace eye_preview {
 /** Which values drive the drawn eyes: as sent, as read (Valve's openness, the gaze before smoothing), the camera's. */
 enum class Source { Sent, Raw, Camera };
 
+/** The marks drawn over the camera pictures, each with its switch on the sheet (PanelAction::PreviewMark's arg). */
+enum class Mark { Lids, Pupil, Window };
+
+/** Which of them are drawn (all at first; kept while the panel runs, like the mirror). */
+struct Marks {
+    bool lids = true;    ///< the upper and lower lids' dots, and the camera's eyelid under them
+    bool pupil = true;   ///< the ring on the pupil found
+    bool window = true;  ///< the dashed frame the pupil is looked for in
+};
+
 /** One drawn eye. */
 struct EyeShown {
     bool known = false;     ///< there is an eyelid to draw (else drawn faded, relaxed open)
@@ -173,6 +183,36 @@ constexpr double kStaleSec = 0.5;
 /** "preview on" goes out this often while the sheet shows the pictures (eyecam-rec keeps it on for 3 s). */
 constexpr double kRenewSec = 1.0;
 
+/** The lid lines' block, after both pictures: its offset and size are in the header (0 in an older eyecam-rec's). */
+constexpr size_t kLidsAtOffset = 52;
+constexpr size_t kLidSizeOffset = 56;
+/** The bytes of one eye's lid lines the panel reads (the block may be larger). */
+constexpr size_t kLidBytes = 48;
+
+/** A lid line eyecam-rec found on a picture: a parabola through its rows at x0, halfway and x1 (picture px). */
+struct LidLine {
+    bool present = false;           ///< found on this frame (else none is drawn)
+    double x0 = NAN;                ///< its first and last column
+    double x1 = NAN;
+    double y[3] = {NAN, NAN, NAN};  ///< its row at x0, halfway between and at x1
+};
+
+/**
+ * A lid line's row at a column (the parabola through its three rows).
+ * @param line the line (present)
+ * @param x the column (picture px)
+ * @return the row (picture px)
+ */
+double lidLineY(const LidLine& line, double x);
+
+/** A picture's lid lines and EyeLid, smoothed over the pictures for the drawing (LidSmoother). */
+struct SmoothedLids {
+    LidLine upper;
+    double margin = NAN;
+    LidLine lower;
+    double eyeLid = NAN;
+};
+
 /** One eye's picture, as eyecam-rec wrote it: upright, the temporal (ear) side at small x. */
 struct Picture {
     bool present = false;       ///< a picture was written (its time isn't 0)
@@ -186,6 +226,12 @@ struct Picture {
     double pupilR = NAN;
     double window[4] = {NAN, NAN, NAN, NAN};  ///< the pupil search window: left, top, right, bottom (picture px)
     bool closed = false;        ///< eyecam-rec reads the eye closed
+    bool lids = false;          ///< the file has the lid lines (an older eyecam-rec's has none)
+    LidLine upper;              ///< the upper lid's skin line...
+    double margin = NAN;        ///< ...and its margin this far below it (picture px; the opening is measured from it)
+    LidLine lower;              ///< the lower lid's line
+    double eyeLid = NAN;        ///< the EyeLid eyecam-rec sent for this frame (NaN: its values weren't valid)
+    SmoothedLids smoothed;      ///< the same smoothed over the pictures (as read until a LidSmoother takes them)
 };
 
 /** Both pictures. */
@@ -198,7 +244,8 @@ struct Pictures {
 
 /**
  * Read a consistent copy of the file: the magic, the version, the header's and each eye's size, a square picture of at
- * most kMaxSide, and the whole of it within `size`; refused otherwise (another or a broken file).
+ * most kMaxSide, and the whole of it within `size`; refused otherwise (another or a broken file). The lid lines are
+ * read when the header says where they are and they fit (an older eyecam-rec's file has none: read without them).
  * @param data the bytes
  * @param size how many
  * @param out the pictures
@@ -255,6 +302,112 @@ private:
     uint32_t lastSeq_ = 1;  ///< odd: nothing read yet
     ino_t badInode_ = 0;    ///< a file found not to be a preview file (let go of; not read again until replaced)
     std::string badWhy_;    ///< ...why
+};
+
+/**
+ * The lid lines' smoothing (picture px; in Hz), after the median of three (LidFilter): calm at rest (about 0.16 s), the
+ * cutoff up 0.05 Hz for each px a second the line moves, so a blink is followed within a picture or two. Tuned on the
+ * developer's recordings (the lower line jumps 5 to 7 px for single pictures: the median drops those, and with the
+ * one-euro about 78% of its picture-to-picture zigzag goes; 60% with the one-euro alone, which halved the jumps).
+ */
+constexpr double kLidMinCutoffHz = 1.0;
+constexpr double kLidBeta = 0.05;
+constexpr double kLidDCutoffHz = 1.0;
+/** The same for the EyeLid on the picture (0..1: about 50 px of lid to the unit). */
+constexpr double kEyeLidBeta = 2.5;
+/** A gap between pictures longer than this (s) starts the smoothing over (no line swept in from an old place). */
+constexpr double kLidResetSec = 0.3;
+
+/**
+ * The one-euro filter (Casiez, Roussel and Vogel, 2012) on the pictures' capture times: a low-pass whose cutoff rises
+ * with the speed, so a value that jitters in place is damped and one that moves fast (a blink) is followed. No value
+ * (NaN), a gap of more than kLidResetSec or a time not after the last starts it over at the new value.
+ */
+class OneEuro {
+public:
+    /**
+     * @param minCutoff the cutoff at rest (Hz)
+     * @param beta how much the cutoff rises with the speed (Hz per unit a second)
+     * @param dCutoff the cutoff of the speed itself (Hz)
+     */
+    explicit OneEuro(double minCutoff = kLidMinCutoffHz, double beta = kLidBeta, double dCutoff = kLidDCutoffHz)
+        : minCutoff_(minCutoff), beta_(beta), dCutoff_(dCutoff) {}
+
+    /**
+     * The next value.
+     * @param value the value (NaN: none, and the filter starts over)
+     * @param t its time (s)
+     * @return the smoothed value (the value itself when the filter starts over)
+     */
+    double step(double value, double t);
+
+    /** Start over at the next value. */
+    void reset() { started_ = false; }
+
+private:
+    double minCutoff_;
+    double beta_;
+    double dCutoff_;
+    bool started_ = false;
+    double x_ = 0.0;   ///< the smoothed value...
+    double dx_ = 0.0;  ///< ...its smoothed speed (a second)
+    double t_ = 0.0;   ///< ...at this time
+};
+
+/**
+ * One lid value's filter: the median of its last three pictures (a single picture's jump is dropped, at the cost of one
+ * picture's lag, 1/15 s), then the one-euro. It starts over as OneEuro does (no value, a gap of more than kLidResetSec,
+ * a time not after the last), with the pictures it has: the newest of one or two, so a line shows at once.
+ */
+class LidFilter {
+public:
+    /** @param beta the one-euro's (kLidBeta for the lines, kEyeLidBeta for the EyeLid) */
+    explicit LidFilter(double beta = kLidBeta) : euro_(kLidMinCutoffHz, beta, kLidDCutoffHz) {}
+
+    /**
+     * The next value.
+     * @param value the value (NaN: none, and the filter starts over)
+     * @param t its time (s)
+     * @return the filtered value
+     */
+    double step(double value, double t);
+
+    /** Start over at the next value. */
+    void reset();
+
+private:
+    OneEuro euro_;
+    double last_[2] = {0.0, 0.0};  ///< the two values before, older first...
+    int count_ = 0;                ///< ...how many of them there are
+    double t_ = 0.0;               ///< ...and the newer one's time
+};
+
+/**
+ * Smooths each eye's lid lines and EyeLid over the pictures read (every source but Raw draws them smoothed). Each line
+ * starts over where it has none on a picture, so one that comes back starts where it is.
+ */
+class LidSmoother {
+public:
+    /**
+     * Fill each new picture's `smoothed` (one already taken, by its count and time, is left as it is).
+     * @param pictures as just read
+     */
+    void take(Pictures& pictures);
+
+    /** Start over (the pictures stopped). */
+    void reset();
+
+private:
+    /** One eye's filters: each line's first and last column and its rows there and halfway, the margin, the EyeLid. */
+    struct Eye {
+        uint64_t count = 0;
+        uint64_t timeNs = 0;
+        LidFilter upper[5];
+        LidFilter lower[5];
+        LidFilter margin;
+        LidFilter eyeLid {kEyeLidBeta};
+    };
+    Eye eyes_[2];
 };
 
 /**

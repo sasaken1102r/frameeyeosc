@@ -120,6 +120,12 @@ Decision decide(Action action, const State& state) {
                 return {Code::BusyRecenter, "busy (a re-center is running; use --action stop)", Effect::None};
             }
             if (state.fitActive) return {Code::BusyFit, "busy (a fit is running; use --action stop)", Effect::None};
+            // The eye cameras calibrating: the user looks where its steps say (up and down too), so a fit's dot would
+            // pull the eyes away from them and measure the wrong look (the fit buttons are grey meanwhile). Told with
+            // the eye cameras' code and "calibrating", which frame-aux-shortcuts shows as their calibration
+            if (state.camerasCalibrating) {
+                return {Code::NoCameras, "busy (the eye cameras are calibrating)", Effect::None};
+            }
             // The buttons are grey while frameeyeosc doesn't run; without eye data (the headset off, most often)
             // nothing could be measured
             if (!state.running) return {Code::NoFrameeyeosc, "frameeyeosc is not running", Effect::None};

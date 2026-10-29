@@ -821,6 +821,36 @@ void testBrowSettings() {
     CHECK(SettingsView(m).locked(key::kBrowStrength) && std::fabs(SettingsView(m).number(key::kBrowStrength) - 0.3) < 1e-12);
 }
 
+/** own_eye_gaze (Gaze > Reach, "Own gaze per eye"): 0 by default, 0..1 in steps of 0.1, shown as a percentage, read
+ *  from config.json and written back as frameeyeosc reads it, and frameeyeosc's own value while its command line
+ *  (--own-eye-gaze) locks it. */
+void testOwnEyeGazeSetting() {
+    const SettingSpec* spec = findSetting(key::kOwnEyeGaze);
+    CHECK(spec != nullptr && spec->type == SettingType::Number && spec->defaultNumber == 0.0);
+    CHECK(spec != nullptr && spec->min == 0.0 && spec->max == 1.0 && spec->step == 0.05);
+    if (spec != nullptr) {
+        CHECK(stepValue(*spec, 0.0, 1, -1e9, 1e9) == 0.05 && stepValue(*spec, 0.05, 1, -1e9, 1e9) == 0.1);
+        CHECK(stepValue(*spec, 1.0, 1, -1e9, 1e9) == 1.0 && stepValue(*spec, 0.0, -1, -1e9, 1e9) == 0.0);
+        CHECK(stepValue(*spec, 0.37, -1, -1e9, 1e9) == 0.3 && snapValue(*spec, 1.4) == 1.0);
+    }
+    CHECK(formatPercent(0.0) == "0%" && formatPercent(0.3) == "30%" && formatPercent(1.0) == "100%");
+    PanelModel m;
+    m.config.root = JsonValue();
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(SettingsView(m).number(key::kOwnEyeGaze) == 0.0);
+    m.config.root.set(key::kOwnEyeGaze, JsonValue::makeNumber(0.6));
+    const std::string text = writeJson(m.config.root);
+    CHECK(text.find("\"own_eye_gaze\": 0.6") != std::string::npos);
+    JsonValue back;
+    std::string error;
+    CHECK(parseJson(text, back, error));
+    const JsonValue* value = back.get(key::kOwnEyeGaze);
+    CHECK(value != nullptr && value->isNumber() && std::fabs(value->number - 0.6) < 1e-12);
+    m.status = parseStatus("{\"pid\": 1, \"locked\": [\"own_eye_gaze\"], \"effective\": {\"own_eye_gaze\": 1.0}}", 0,
+                           false);
+    CHECK(SettingsView(m).locked(key::kOwnEyeGaze) && SettingsView(m).number(key::kOwnEyeGaze) == 1.0);
+}
+
 /** gaze_debug_rings (the rings by the debug gaze dots, Advanced > Debug tools): the panel's own, like the dots'
  *  distance; on by default and read from config.json, off only when the file says false. */
 void testGazeDebugRings() {
@@ -1388,6 +1418,7 @@ int main() {
     testCameraLids();
     testWiden();
     testBrowSettings();
+    testOwnEyeGazeSetting();
     testGazeDebugRings();
     testCameraStatus();
     testLidsFromCameras();

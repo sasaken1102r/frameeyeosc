@@ -637,6 +637,19 @@ std::string formatText(const char* format, const std::string& value) {
     return text;
 }
 
+/**
+ * A printf into a std::string, for a longer text with one or two strings.
+ * @param format the format (one or two string arguments)
+ * @param first the first argument
+ * @param second the second (ignored by a format with one)
+ * @return the text
+ */
+std::string formatLong(const char* format, const std::string& first, const std::string& second = "") {
+    char text[1024];
+    std::snprintf(text, sizeof(text), format, first.c_str(), second.c_str());
+    return text;
+}
+
 std::string cameraUseText(const UiText& t, CameraUse use, const EyeStatus& s) {
     std::string text;
     switch (use) {
@@ -750,7 +763,7 @@ std::vector<std::string> sentences(const std::string& text) {
 bool previewSheetAction(PanelAction action) {
     return action == PanelAction::PreviewClose || action == PanelAction::PreviewSource ||
            action == PanelAction::PreviewMirror || action == PanelAction::PreviewCamera ||
-           action == PanelAction::PreviewFreeze;
+           action == PanelAction::PreviewMark || action == PanelAction::PreviewFreeze;
 }
 
 /**
@@ -899,6 +912,13 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             previewCamera_ = !previewCamera_;
             previewCameraKept_ = previewCamera_;
             return {};
+        case PanelAction::PreviewMark:
+            switch (static_cast<eye_preview::Mark>(hit.arg)) {
+                case eye_preview::Mark::Lids: previewMarks_.lids = !previewMarks_.lids; break;
+                case eye_preview::Mark::Pupil: previewMarks_.pupil = !previewMarks_.pupil; break;
+                case eye_preview::Mark::Window: previewMarks_.window = !previewMarks_.window; break;
+            }
+            return {};
         case PanelAction::PreviewFreeze:
             // Stopped at what the next draw shows (the model isn't at hand here)
             previewFrozen_ = !previewFrozen_;
@@ -907,6 +927,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::Tab:
             setTab(static_cast<PanelTab>(hit.arg));
             closeAppsList();
+            closeContrib();
             historyOpen_ = false;
             diagOpen_ = false;
             recordOpen_.clear();
@@ -918,6 +939,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             setTab(PanelTab::Advanced);
             setAdvPage(static_cast<AdvPage>(hit.arg));
             closeAppsList();
+            closeContrib();
             historyOpen_ = false;
             diagOpen_ = false;
             recordOpen_.clear();
@@ -929,6 +951,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             setTab(PanelTab::Lids);
             setLidsPage(static_cast<LidsPage>(hit.arg));
             closeAppsList();
+            closeContrib();
             historyOpen_ = false;
             diagOpen_ = false;
             recordOpen_.clear();
@@ -939,6 +962,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             setTab(PanelTab::Gaze);
             setGazePage(static_cast<GazePage>(hit.arg));
             closeAppsList();
+            closeContrib();
             return {};
         case PanelAction::GazeScaleLink:
             // Opened or closed here; the caller writes the second value once it is closed
@@ -1046,6 +1070,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             // Its steps show on the eye cameras tab
             if (eyecamTab_) tab_ = PanelTab::Eyecam;
             closeAppsList();
+            closeContrib();
             historyOpen_ = false;
             diagOpen_ = false;
             recordOpen_.clear();
@@ -1064,6 +1089,37 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             numKey_ = hit.key;
             numValue_ = numberAt(numKey_, x);
             return {};
+        case PanelAction::ContribOpen:
+            // The caller forgets the last recording's end and failure (each press of "Record" starts afresh)
+            openContrib(hit.arg == static_cast<int>(contrib::Page::Manage) ? contrib::Page::Manage
+                                                                           : contrib::Page::Record);
+            return hit;
+        case PanelAction::ContribClose:
+            closeContrib();
+            return {};
+        case PanelAction::ContribAgree:
+            contribAgreed_ = hit.arg != 0;
+            return {};
+        case PanelAction::ContribEyewear:
+            // The caller writes the consent with the answer
+            if (hit.arg <= static_cast<int>(contrib::Eyewear::Unasked) ||
+                hit.arg > static_cast<int>(contrib::Eyewear::NoAnswer)) {
+                return {};
+            }
+            contribAgreed_ = false;
+            return hit;
+        case PanelAction::ContribDelete:
+            contribConfirm_ = true;
+            return {};
+        case PanelAction::ContribDeleteCancel:
+            contribConfirm_ = false;
+            return {};
+        case PanelAction::ContribDeleteConfirm:
+            // The caller deletes it; the sheet shows the deleting, then the consent again
+            if (!contribConfirm_) return {};
+            contribConfirm_ = false;
+            contribPage_ = contrib::Page::Record;
+            return hit;
         case PanelAction::EyecamChoose:
             if (!eyecamConfirm_.isOpen()) return {};
             // "Cancel" only closes it
@@ -1179,6 +1235,7 @@ void EyePanel::openHistory() {
     recordOpen_.clear();
     recordsAllOpen_ = false;
     closeAppsList();
+    closeContrib();
     historyOpen_ = true;
     historyRowPending_ = true;
     historyScrollSet_ = false;
@@ -1193,6 +1250,7 @@ void EyePanel::openDiag() {
     diagOpen_ = true;
     historyOpen_ = false;
     closeAppsList();
+    closeContrib();
     recordOpen_.clear();
     recordsAllOpen_ = false;
     eyecamConfirm_.close();
@@ -1206,6 +1264,7 @@ void EyePanel::openRecord(const std::string& folder) {
     recordOpen_ = folder;
     historyOpen_ = false;
     closeAppsList();
+    closeContrib();
     diagOpen_ = false;
     eyecamConfirm_.close();
 }
@@ -1218,8 +1277,25 @@ void EyePanel::openRecordsAll() {
     listScroll_ = 0.0;
     historyOpen_ = false;
     closeAppsList();
+    closeContrib();
     diagOpen_ = false;
     eyecamConfirm_.close();
+}
+
+void EyePanel::openContrib(contrib::Page page) {
+    setTab(PanelTab::Advanced);
+    // (from "Debug tools": its cross comes back to it)
+    setAdvPage(AdvPage::Tools);
+    historyOpen_ = false;
+    diagOpen_ = false;
+    recordOpen_.clear();
+    recordsAllOpen_ = false;
+    eyecamConfirm_.close();
+    closeAppsList();
+    contribOpen_ = true;
+    contribPage_ = page;
+    contribConfirm_ = false;
+    contribAgreed_ = false;
 }
 
 void EyePanel::openAppsList() {
@@ -1231,6 +1307,7 @@ void EyePanel::openAppsList() {
     recordOpen_.clear();
     recordsAllOpen_ = false;
     eyecamConfirm_.close();
+    closeContrib();
     appsListOpen_ = true;
     appsConfirmOpen_ = false;
     appsLaunchResult_ = frame_apps::LaunchResult::Started;
@@ -1248,12 +1325,14 @@ void EyePanel::openPreview() {
     eyecamConfirm_.close();
 }
 
-void EyePanel::setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen) {
+void EyePanel::setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen,
+                                 const eye_preview::Marks& marks) {
     previewSource_ = source;
     previewMirror_ = mirror;
     previewCamera_ = camera;
     previewFrozen_ = frozen;
     previewFreezePending_ = frozen;
+    previewMarks_ = marks;
 }
 
 void EyePanel::openAppsConfirm(const std::string& key) {
@@ -2661,6 +2740,31 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
                        {t.off, {PanelAction::SetBool, key::kIndependentEyes, 0}}},
                       v.flag(key::kIndependentEyes) ? 0 : 1, 20, locked);
     }
+    y += kRowH + kRowGap;
+    // How much of each eye's own sideways gaze (own_eye_gaze): only while the eyes move separately in v2, faded
+    // otherwise; in v1 with why and the way to the switch beside it, else what the ends do
+    {
+        const bool locked = v.locked(key::kOwnEyeGaze);
+        const bool v1 = eyesV1(v);
+        const bool usable = !v1 && v.flag(key::kIndependentEyes);
+        const double stepperW = 196;
+        const double value = v.number(key::kOwnEyeGaze);
+        const double nx = kControlX + stepperW + 16;
+        if (!usable) cairo_push_group(pen.cr);
+        drawRowLabel(pen, t, y, kRowH, t.rowOwnEyeGaze, "", locked);
+        drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kOwnEyeGaze, value, formatPercent(value), usable,
+                    locked);
+        if (!v1) {
+            const std::vector<std::string> lines = wrapText(pen, t.hintOwnEyeGaze, 13, false, kInnerRight - nx, 3);
+            double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
+            for (const std::string& line : lines) {
+                pen.text(nx, baseline, line, 13, kTextMuted);
+                baseline += 17;
+            }
+        }
+        if (!usable) fadeGroup(pen);
+        if (v1) drawV2OnlyNote(pen, t, t.floorV2Only, nx, y, kRowH);
+    }
 }
 
 void EyePanel::drawGazeGlitch(const Pen& pen, const UiText& t, const SettingsView& v, double top) {
@@ -2736,7 +2840,9 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         drawEyeFitRunning(pen, t, fit);
         return;
     }
-    const bool canRun = m.status.running && !anyLocked;
+    // (not while the eye cameras calibrate: the user looks where its steps say, up and down too)
+    const bool camerasCalibrating = eyecam::calibrationUnderWay(m.eyecam);
+    const bool canRun = m.status.running && !anyLocked && !camerasCalibrating;
     const AutoRecenter rewear = autoRecenter(m.config);
 
     // The one button to press: fit (again); and the re-wear fit (the middle dot), the one auto_recenter runs by itself
@@ -2846,6 +2952,13 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                     for (const std::string& sentence : sentences(t.fitHowTo)) paragraphs.push_back(sentence);
                 }
                 break;
+        }
+        // The eye cameras calibrating: why the buttons are grey comes first (the rest follows it)
+        if (camerasCalibrating) {
+            if (!title.empty()) paragraphs.insert(paragraphs.begin(), title);
+            title = t.fitCamerasCalibrating;
+            error = false;
+            check = false;
         }
         // Folded down to one line while "Fine-tune" is open
         if (compact) {
@@ -3642,11 +3755,17 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         }
         return;
     }
-    // The developer recording: its light warning, and its steps while it runs, in the tab's place
+    // "Record for squint training": its sheet in the tab's place (its recording runs in it)
+    if (contribOpen_) {
+        drawContrib(pen, t, m);
+        return;
+    }
+    // The developer recording: its light warning, and its steps while it runs, in the tab's place (one for squint
+    // training with its sheet closed: titled with that)
     const eyecam::State recording = m.eyecam.status.state;
     if (eyecamConfirm_.isOpen() ||
         (m.eyecam.visible && (recording == eyecam::State::Searching || recording == eyecam::State::Recording))) {
-        drawRun(pen, t, m);
+        drawRun(pen, t, m, m.contrib.running ? t.contribRow : "");
         return;
     }
     // The sub-tabs, and under them the one chosen (scrolled only if it doesn't fit)
@@ -4531,8 +4650,48 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
             }
         }
         y += h;
+        // Under it, "Record for squint training": recordings for the developer (usable once the cameras are set up)
+        y += 10;
+        y += drawContribRow(pen, t, m, y, right);
     }
     return y + 8 - top;
+}
+
+double EyePanel::drawContribRow(const Pen& pen, const UiText& t, const PanelModel& m, double y, double right) {
+    const contrib::View& c = m.contrib;
+    const double h = 64;
+    const double bh = 46;
+    const bool setUp = eyecam::setUp(m.eyecam);
+    drawRowLabel(pen, t, y, h, t.contribRow, t.contribRowHint, false);
+    // "Record", and "Recordings" once there is a folder
+    const double recordW = std::max(110.0, pen.measure(t.contribRecord, 18, true) + 40);
+    const double listW = std::max(130.0, pen.measure(t.contribRecordings, 16, true) + 36);
+    drawButton(pen, kControlX, y + (h - bh) / 2, recordW, bh, t.contribRecord,
+               {PanelAction::ContribOpen, nullptr, static_cast<int>(contrib::Page::Record)}, setUp, false);
+    drawButton(pen, kControlX + recordW + 10, y + (h - bh) / 2, listW, bh, t.contribRecordings,
+               {PanelAction::ContribOpen, nullptr, static_cast<int>(contrib::Page::Manage)}, setUp && c.exists,
+               false, 16);
+    // Beside them: what it is (and its size), how many so far, or why it can't be used yet
+    std::string text;
+    const int count = static_cast<int>(c.info.recordings.size());
+    if (!setUp) {
+        text = t.contribRowNotSetUp;
+    } else if (count == 0) {
+        text = formatLong(t.contribRowIntroFormat, contrib::sizeText(contrib::estimateBytes(c.fps)));
+    } else {
+        char line[256];
+        std::snprintf(line, sizeof(line), t.contribRowCountFormat, count,
+                      contrib::sizeText(contrib::recordedBytes(c.info)).c_str());
+        text = line;
+    }
+    const double textX = kControlX + recordW + 10 + listW + 14;
+    const std::vector<std::string> lines = wrapText(pen, text, 13, false, right - textX, 3);
+    double baseline = y + h / 2 - (lines.size() - 1) * 8.5 + 5;
+    for (const std::string& line : lines) {
+        pen.text(textX, baseline, line, 13, kTextMuted);
+        baseline += 17;
+    }
+    return h;
 }
 
 double EyePanel::drawFilesPage(const Pen& pen, const UiText& t, const PanelModel& m, double top, double right) {
@@ -5343,7 +5502,7 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
     }
 }
 
-void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
+void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m, const std::string& title) {
     using eyecam::State;
     const eyecam::View& view = m.eyecam;
     const eyecam::Status& s = view.status;
@@ -5386,7 +5545,7 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m) {
     const eyecam::Calib calib = view.lastRun == eyecam::Run::CalibUser ? eyecam::Calib::User : eyecam::Calib::Wear;
 
     double y = kRowTop - 6;
-    y += drawSectionTitle(pen, y, calibRun ? t.tabEyecam : t.eyecamTitle);
+    y += drawSectionTitle(pen, y, !title.empty() ? title : calibRun ? t.tabEyecam : t.eyecamTitle);
 
     // The light warning takes the place of idle's and error's views while it is open (the recorder's message too:
     // it is about the run before)
@@ -6873,6 +7032,346 @@ void EyePanel::drawEyecamConfirm(const Pen& pen, const UiText& t, const eyecam::
                {PanelAction::EyecamChoose, nullptr, static_cast<int>(StartChoice::Cancel)}, true, false, 24);
 }
 
+void EyePanel::drawContrib(const Pen& pen, const UiText& t, const PanelModel& m) {
+    using contrib::Screen;
+    const contrib::View& c = m.contrib;
+    const Screen screen = contrib::screen(c, contribPage_, contribAgreed_);
+    // The recording: the eye capture's run, titled with it (its "Stop" as always); until eyecam-rec shows it running
+    // (or after it ended, until the loop has followed that), only that it is on its way
+    if (screen == Screen::Running) {
+        const eyecam::State state = m.eyecam.status.state;
+        if (state == eyecam::State::Searching || state == eyecam::State::Recording) {
+            drawRun(pen, t, m, t.contribRow);
+        } else {
+            drawSectionTitle(pen, kRowTop - 6, t.contribRow);
+            textCentered(pen, (kInnerX + kInnerRight) / 2, kContentY + kContentH / 2, t.eyecamSending, 28, kTextMuted,
+                         true);
+        }
+        return;
+    }
+    const double width = kInnerRight - kInnerX;
+    const double bottom = kContentY + kContentH - 20;
+    const bool jobRunning = c.progress.running;
+    const int count = static_cast<int>(c.info.recordings.size());
+    // (Valve's samples, which the labels need, only come while frameeyeosc runs and gets eye data)
+    const bool eyeData = m.status.running && m.status.tracking;
+
+    // The title and the cross
+    const double closeS = 52;
+    const double closeX = kInnerRight - closeS;
+    const double headY = kContentY + 20;
+    drawSheetClose(pen, {PanelAction::ContribClose, nullptr, 0}, closeX, headY + 2, closeS);
+    const double titleRight = closeX - 16;
+    pen.text(kInnerX, headY + 26, t.contribRow, fitSize(pen, t.contribRow, 22, 16, titleRight - kInnerX, true), kText,
+             true);
+    pen.text(kInnerX, headY + 50, ellipsize(pen, t.contribAbout, 14, false, titleRight - kInnerX, false), 14,
+             kTextMuted);
+    if (contribConfirm_) {
+        drawContribDelete(pen, t, m);
+        return;
+    }
+    if (screen == Screen::Deleting) {
+        textCentered(pen, (kInnerX + kInnerRight) / 2, kContentY + kContentH / 2, t.contribDeleting, 28, kText, true);
+        return;
+    }
+
+    // Lines from the top down: wrapped, as many as fit in maxLines
+    double y = headY + 70;
+    const auto paragraph = [&](const std::string& text, double size, Color color, bool bold, size_t maxLines,
+                               double x = kInnerX) {
+        for (const std::string& line : wrapText(pen, text, size, bold, kInnerRight - x, maxLines)) {
+            pen.text(x, y + size, line, size, color, bold);
+            y += size * 1.4;
+        }
+    };
+    // How to send it, in a box with the warning's edge: a private share link, never anywhere public
+    const auto sendNote = [&](double size) {
+        const double pad = 14;
+        const std::vector<std::string> lines = wrapText(pen, t.contribSendNote, size, false, width - pad * 2 - 30, 3);
+        const double boxH = pad * 2 + lines.size() * size * 1.4 - size * 0.4;
+        fillRounded(pen, kInnerX, y, width, boxH, 12, kWarningTint);
+        strokeRounded(pen, kInnerX, y, width, boxH, 12, kWarning, 1.5);
+        drawInfoIcon(pen, kInnerX + pad + 8, y + pad + size * 0.55, kWarning);
+        double baseline = y + pad + size * 0.85;
+        for (const std::string& line : lines) {
+            pen.text(kInnerX + pad + 30, baseline, line, size, kWarningText);
+            baseline += size * 1.4;
+        }
+        y += boxH;
+    };
+    // A failure on the disk (info.txt, a folder), above everything else
+    if (!c.error.empty()) paragraph(formatLong(t.contribErrorFormat, c.error), 15, kDanger, true, 2);
+    // At the bottom right: the screen's main button
+    const double mainH = 60;
+    const double mainY = bottom - mainH;
+    const auto mainButton = [&](const std::string& label, const PanelHit& hit, bool usable, bool accent) {
+        const double w = std::max(300.0, pen.measure(label, 22, true) + 64);
+        drawButton(pen, kInnerRight - w, mainY, w, mainH, label, hit, usable, accent, 22);
+        return kInnerRight - w;
+    };
+    // Above it: why "Start" can't be pressed (no room, eyecam-rec busy), else the free space
+    const auto startState = [&]() {
+        if (!contrib::fits(c.freeBytes, c.fps)) {
+            const long long need = contrib::estimateBytes(c.fps) + contrib::kMarginBytes;
+            pen.text(kInnerX, mainY - 16, formatLong(t.contribNoSpaceFormat, contrib::sizeText(need)), 16, kDanger,
+                     true);
+        } else if (!eyeData) {
+            pen.text(kInnerX, mainY - 16, ellipsize(pen, t.contribNoEyeData, 16, false, width, false), 16, kDanger,
+                     true);
+        } else if (!contrib::startAllowed(c, m.eyecam, eyeData)) {
+            pen.text(kInnerX, mainY - 16, ellipsize(pen, t.contribWaitEyecam, 16, false, width, false), 16,
+                     kTextMuted);
+        } else if (c.freeBytes >= 0) {
+            const std::string line = formatLong(t.contribSpaceFormat, contrib::sizeText(c.freeBytes),
+                                                contrib::sizeText(contrib::estimateBytes(c.fps)));
+            pen.text(kInnerX, mainY - 16, ellipsize(pen, line, 16, false, width, false), 16, kTextMuted);
+        }
+    };
+    const auto countLine = [&]() {
+        char text[256];
+        std::snprintf(text, sizeof(text), t.contribCountFormat, count,
+                      contrib::sizeText(contrib::recordedBytes(c.info)).c_str());
+        return std::string(text);
+    };
+
+    switch (screen) {
+        case Screen::Consent: {
+            if (c.deleted) {
+                drawCheck(pen.cr, kInnerX + 9, y + 10, 16, kSuccess);
+                pen.text(kInnerX + 26, y + 16, t.contribDeleted, 16, kSuccess, true);
+                y += 30;
+            }
+            paragraph(t.contribLead, 18, kText, false, 2);
+            y += 8;
+            // What, how it's used, removing it: a title at the left, its text beside it
+            const std::string blocks[3][2] = {
+                {t.contribWhatTitle, formatLong(t.contribWhatFormat, contrib::sizeText(contrib::estimateBytes(c.fps)))},
+                {t.contribUseTitle, t.contribUse},
+                {t.contribRemoveTitle, t.contribRemove},
+            };
+            double labelW = 0;
+            for (const auto& block : blocks) labelW = std::max(labelW, pen.measure(block[0], 16, true));
+            const double textX = kInnerX + labelW + 24;
+            for (const auto& block : blocks) {
+                fillRounded(pen, kInnerX - 2, y + 4, 4, 18, 2, kAccent);
+                pen.text(kInnerX + 10, y + 18, block[0], 16, kText, true);
+                const double top = y;
+                paragraph(block[1], 16, kText, false, 3, textX);
+                y = std::max(y, top + 26) + 6;
+            }
+            sendNote(16);
+            y += 8;
+            paragraph(t.contribNote, 15, kTextMuted, false, 1);
+            const double agreeX = mainButton(t.contribAgree, {PanelAction::ContribAgree, nullptr, 1},
+                                             eyecam::setUp(m.eyecam), true);
+            const double cancelW = std::max(140.0, pen.measure(t.contribCancel, 20, true) + 48);
+            drawButton(pen, agreeX - 14 - cancelW, mainY, cancelW, mainH, t.contribCancel,
+                       {PanelAction::ContribClose, nullptr, 0}, true, false, 20);
+            break;
+        }
+        case Screen::Eyewear: {
+            y += 10;
+            paragraph(t.contribEyewearTitle, 24, kText, true, 2);
+            y += 4;
+            paragraph(t.contribEyewearWhy, 16, kTextMuted, false, 2);
+            y += 20;
+            // The four answers, two to a row, the same weight (none is the default)
+            const double gap = 16;
+            const double bw = (width - gap) / 2;
+            const double bh = 64;
+            for (int i = 0; i < 4; ++i) {
+                const double bx = kInnerX + (i % 2) * (bw + gap);
+                const double by = y + (i / 2) * (bh + gap);
+                drawButton(pen, bx, by, bw, bh, t.contribEyewear[i],
+                           {PanelAction::ContribEyewear, nullptr, static_cast<int>(contrib::Eyewear::None) + i}, true,
+                           false, 20);
+            }
+            const double backW = std::max(140.0, pen.measure(t.contribBack, 20, true) + 48);
+            drawButton(pen, kInnerX, mainY, backW, mainH, t.contribBack, {PanelAction::ContribAgree, nullptr, 0}, true,
+                       false, 20);
+            break;
+        }
+        case Screen::Ready: {
+            paragraph(t.contribReadyTitle, 24, kText, true, 1);
+            y += 6;
+            for (const char* tip : t.contribTips) {
+                drawDot(pen.cr, kInnerX + 7, y + 13, 4, kAccent);
+                paragraph(tip, 18, kText, false, 2, kInnerX + 22);
+                y += 3;
+            }
+            if (count > 0) {
+                y += 6;
+                paragraph(countLine(), 16, kTextMuted, false, 1);
+            }
+            startState();
+            mainButton(t.contribStart, {PanelAction::ContribStart, nullptr, 0},
+                       contrib::startAllowed(c, m.eyecam, eyeData), true);
+            break;
+        }
+        case Screen::Failed: {
+            paragraph(t.contribFailedTitle, 26, kDanger, true, 1);
+            y += 6;
+            const contrib::Failure& f = c.failure;
+            const std::string& message = m.language == Language::En && !f.messageEn.empty() ? f.messageEn : f.message;
+            std::string why;
+            switch (f.why) {
+                case contrib::Why::None:
+                case contrib::Why::Stopped: why = t.contribWhyStopped; break;
+                case contrib::Why::Error: why = formatLong(t.contribWhyErrorFormat, message); break;
+                case contrib::Why::Refused: why = formatLong(t.contribWhyRefusedFormat, message); break;
+                case contrib::Why::Gone: why = t.contribWhyGone; break;
+                case contrib::Why::NoStart: why = t.contribWhyNoStart; break;
+                case contrib::Why::Missing: why = t.contribWhyMissing; break;
+                case contrib::Why::Move: why = formatLong(t.contribWhyMoveFormat, message); break;
+                case contrib::Why::Incomplete: why = formatLong(t.contribWhyIncompleteFormat, message); break;
+                case contrib::Why::NoVideo:
+                    why = formatLong(t.contribWhyNoVideoFormat, message == "L"   ? t.leftEye
+                                                                : message == "R" ? t.rightEye
+                                                                                 : t.contribBothEyes);
+                    break;
+                case contrib::Why::Uneven: {
+                    // ("8490/2124": the left eye's frames, then the right eye's)
+                    const size_t slash = message.find('/');
+                    why = formatLong(t.contribWhyUnevenFormat, message.substr(0, slash),
+                                     slash == std::string::npos ? std::string() : message.substr(slash + 1));
+                    break;
+                }
+                case contrib::Why::Truncated: why = formatLong(t.contribWhyTruncatedFormat, message); break;
+                case contrib::Why::Valve: why = formatLong(t.contribWhyValveFormat, message); break;
+            }
+            paragraph(why, 19, kText, false, 3);
+            if (!f.kept.empty()) {
+                y += 4;
+                paragraph(t.contribKept, 16, kTextMuted, false, 2);
+            }
+            startState();
+            mainButton(t.contribRetry, {PanelAction::ContribStart, nullptr, 0},
+                       contrib::startAllowed(c, m.eyecam, eyeData), true);
+            break;
+        }
+        case Screen::Done: {
+            const bool done = contribPage_ == contrib::Page::Record;
+            if (done) {
+                drawCheck(pen.cr, kInnerX + 14, y + 16, 24, kSuccess);
+                pen.text(kInnerX + 38, y + 26, t.contribDoneTitle,
+                         fitSize(pen, t.contribDoneTitle, 26, 18, width - 38, true), kText, true);
+            } else {
+                pen.text(kInnerX, y + 26, t.contribManageTitle, 26, kText, true);
+            }
+            y += 44;
+            paragraph(countLine(), 17, kText, true, 1);
+            pen.text(kInnerX, y + 15,
+                     ellipsize(pen, formatLong(t.contribWhereFormat, recorder::shortPath(c.dir) + "/"), 15, false,
+                               width, true),
+                     15, kTextMuted);
+            y += 30;
+            if (done) {
+                paragraph(t.contribAgain, 16, kText, false, 2);
+                y += 4;
+            }
+            sendNote(15);
+            y += 12;
+            // "Make one file", and beside it how that stands (again once there are more recordings than it holds)
+            const contrib::Progress& p = c.progress;
+            const bool packing = p.running && p.job == contrib::Job::Pack;
+            const long long packNeed = contrib::packNeedBytes(c.info, c.compress);
+            const bool room = c.freeBytes < 0 || c.freeBytes >= packNeed;
+            const bool packedAll = !c.info.packed.empty() && c.info.packedCount >= count;
+            const double packW = std::max(280.0, pen.measure(t.contribPack, 19, true) + 56);
+            const double packH = 54;
+            drawButton(pen, kInnerX, y, packW, packH, t.contribPack, {PanelAction::ContribPack, nullptr, 0},
+                       !jobRunning && room && count > 0 && !packedAll && !c.running, true, 19);
+            const double sx = kInnerX + packW + 18;
+            const double sw = kInnerRight - sx;
+            std::string state;
+            Color color = kTextMuted;
+            bool bold = false;
+            if (packing) {
+                const double share = p.total > 0 ? std::clamp(static_cast<double>(p.done) / p.total, 0.0, 1.0) : 0.0;
+                char text[128];
+                std::snprintf(text, sizeof(text), t.contribPackingFormat, static_cast<int>(share * 100));
+                state = text;
+                color = kText;
+                // (a bar under the line)
+                const double barY = y + packH - 16;
+                fillRounded(pen, sx, barY, sw, 12, 6, kControl);
+                if (share > 0) fillRounded(pen, sx, barY, std::max(12.0, sw * share), 12, 6, kAccent);
+            } else if (p.job == contrib::Job::Pack && p.finished && !p.ok) {
+                state = formatLong(t.contribPackFailedFormat, p.error);
+                color = kDanger;
+                bold = true;
+            } else if (packedAll) {
+                // (done, and under it the file's name, cut at its start if it must be)
+                const std::string packed = formatLong(t.contribPackedFormat, std::to_string(c.info.packedCount),
+                                                      contrib::sizeText(c.info.packedBytes));
+                pen.text(sx, y + packH / 2 - 4, packed, 16, kSuccess, true);
+                pen.text(sx, y + packH / 2 + 18, ellipsize(pen, c.info.packed, 15, false, sw, true), 15, kText);
+            } else if (!room) {
+                state = formatLong(t.contribPackNoSpaceFormat, contrib::sizeText(packNeed));
+                color = kDanger;
+                bold = true;
+            } else if (count > 0) {
+                state = formatLong(t.contribPackHintFormat, contrib::sizeText(packNeed));
+            }
+            const std::vector<std::string> lines = wrapText(pen, state, 15, bold, sw, packing ? 1 : 2);
+            double baseline = packing ? y + 22 : y + packH / 2 + 5 - (static_cast<double>(lines.size()) - 1) * 10;
+            for (const std::string& line : lines) {
+                pen.text(sx, baseline, line, 15, color, bold);
+                baseline += 20;
+            }
+            y += packH + 8;
+            // (what the file is: zstd's, which Windows doesn't open by itself)
+            if (c.compress) paragraph(t.contribPackFormatNote, 14, kTextMuted, false, 1);
+            // Recordings the pack left out (a file missing): to record again
+            if (!c.incomplete.empty()) {
+                std::string names;
+                for (const std::string& name : c.incomplete) names += (names.empty() ? "" : ", ") + name;
+                paragraph(formatLong(t.contribIncompleteFormat, names), 15, kDanger, true, 2);
+            }
+            // At the bottom: deleting them (after sending), and "Close"
+            const double deleteW = std::max(200.0, pen.measure(t.contribDelete, 18, true) + 48);
+            drawButton(pen, kInnerX, bottom - 52, deleteW, 52, t.contribDelete,
+                       {PanelAction::ContribDelete, nullptr, 0}, !jobRunning && !c.running && c.exists, false, 18);
+            const double closeW = std::max(160.0, pen.measure(t.contribClose, 18, true) + 48);
+            drawButton(pen, kInnerRight - closeW, bottom - 52, closeW, 52, t.contribClose,
+                       {PanelAction::ContribClose, nullptr, 0}, true, false, 18);
+            break;
+        }
+        case Screen::Running:
+        case Screen::Deleting: break;
+    }
+}
+
+void EyePanel::drawContribDelete(const Pen& pen, const UiText& t, const PanelModel& m) {
+    const contrib::View& c = m.contrib;
+    // A card in the middle, as the other confirmations
+    const double w = kRight - kRightX - 120;
+    const double x = kRightX + 60;
+    const double ix = x + 28;
+    const double innerW = w - 56;
+    const std::string body = formatLong(t.contribDeleteFormat, recorder::shortPath(c.dir) + "/",
+                                        contrib::sizeText(c.totalBytes));
+    const std::vector<std::string> lines = wrapText(pen, body, 17, false, innerW, 4);
+    const double h = 26 + 32 + 14 + lines.size() * 26.0 + 22 + kControlH + 26;
+    double y = kContentY + 80 + std::max(0.0, (kContentH - 80 - h) / 2);
+    drawCard(pen, x, y, w, h, 20, kCard, kDanger, 2);
+    y += 26;
+    pen.text(ix, y + 24, t.contribDeleteTitle, fitSize(pen, t.contribDeleteTitle, 24, 16, innerW, true), kText, true);
+    y += 32 + 14;
+    for (const std::string& line : lines) {
+        pen.text(ix, y + 17, line, 17, kText);
+        y += 26;
+    }
+    y += 22;
+    const double yesW = std::max(160.0, pen.measure(t.contribDeleteYes, 18, true) + 56);
+    const double yesX = ix + innerW - yesW;
+    drawButton(pen, yesX, y, yesW, kControlH, t.contribDeleteYes, {PanelAction::ContribDeleteConfirm, nullptr, 0},
+               !c.progress.running && !c.running, false, 18);
+    const double noW = std::max(140.0, pen.measure(t.contribCancel, 18, true) + 48);
+    drawButton(pen, yesX - 12 - noW, y, noW, kControlH, t.contribCancel, {PanelAction::ContribDeleteCancel, nullptr, 0},
+               true, true, 18);
+}
+
 void EyePanel::drawPreviewButton(const Pen& pen, const UiText& t, double x, double y, double w, double h, bool label) {
     const PanelHit hit {PanelAction::PreviewOpen, nullptr, 0};
     const int pointer = pointerState(hit);
@@ -7016,7 +7515,8 @@ void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, 
 }
 
 void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
-                                  double x, double y, double side, bool flip) {
+                                  double x, double y, double side, bool flip, bool smooth,
+                                  const eye_preview::Marks& marks) {
     cairo_t* cr = pen.cr;
     const double r = 12;
     fillRounded(pen, x, y, side, side, r, kBg);
@@ -7055,7 +7555,8 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
     const auto px = [&](double v) { return flip ? x + side - v * scale : x + v * scale; };
     const auto py = [&](double v) { return y + v * scale; };
     const double* win = picture.window;
-    if (std::isfinite(win[0]) && std::isfinite(win[1]) && std::isfinite(win[2]) && std::isfinite(win[3])) {
+    if (marks.window && std::isfinite(win[0]) && std::isfinite(win[1]) && std::isfinite(win[2]) &&
+        std::isfinite(win[3])) {
         const double left = std::min(px(win[0]), px(win[2]));
         const double right = std::max(px(win[0]), px(win[2]));
         const double dash[2] = {6, 4};
@@ -7066,14 +7567,48 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
         cairo_stroke(cr);
         cairo_set_dash(cr, nullptr, 0, 0);
     }
-    if (picture.pupil) drawRing(cr, px(picture.pupilX), py(picture.pupilY), picture.pupilR * scale, 2.5, kPreviewPupil);
-    if (picture.closed) {
-        const double size = 13;
-        const double w = pen.measure(t.previewClosed, size, true) + 18;
-        pen.color(kBg, 0.85);
-        pen.roundedRect(x + 8, y + 8, w, 24, 12);
+    // Where eyecam-rec found the lids on this frame (none where it found none), a dot each on its line: the upper lid's
+    // edge (its margin, which the opening is measured from) and the lower lid's, each on a dark edge so it shows on
+    // bright skin too. Dots, not the whole lines: the lines' ends jump from picture to picture while the opening
+    // doesn't. At the pupil's column, where eyecam-rec measures the opening (feat.rs: the lines' y_at at the pupil's
+    // centre); without a pupil, the line's middle. Smoothed over the pictures but in Raw (the lower one jumps a few
+    // px from picture to picture)
+    const eye_preview::SmoothedLids lids = smooth ? picture.smoothed
+                                                  : eye_preview::SmoothedLids {picture.upper, picture.margin,
+                                                                               picture.lower, picture.eyeLid};
+    const auto lidDot = [&](const eye_preview::LidLine& line, double below, Color color) {
+        if (!line.present) return;
+        const double at = picture.pupil && std::isfinite(picture.pupilX) ? picture.pupilX : (line.x0 + line.x1) / 2;
+        const double lx = std::clamp(at, std::min(line.x0, line.x1), std::max(line.x0, line.x1));
+        const double dx = px(lx);
+        const double dy = py(eye_preview::lidLineY(line, lx) + below);
+        pen.color(kBg, 0.7);
+        cairo_new_sub_path(cr);
+        cairo_arc(cr, dx, dy, 6.5, 0, 2 * M_PI);
         cairo_fill(cr);
-        pen.text(x + 17, centerBaseline(y + 8, 24, size), t.previewClosed, size, kText, true);
+        drawDot(cr, dx, dy, 4.5, color);
+    };
+    if (marks.lids && picture.lids) {
+        lidDot(lids.upper, std::isfinite(lids.margin) ? lids.margin : 0.0, kPreviewLidUpper);
+        lidDot(lids.lower, 0.0, kPreviewLidLower);
+    }
+    if (marks.pupil && picture.pupil) {
+        drawRing(cr, px(picture.pupilX), py(picture.pupilY), picture.pupilR * scale, 2.5, kPreviewPupil);
+    }
+    const auto badge = [&](double by, const char* text) {
+        const double size = 13;
+        const double w = pen.measure(text, size, true) + 18;
+        pen.color(kBg, 0.85);
+        pen.roundedRect(x + 8, by, w, 24, 12);
+        cairo_fill(cr);
+        pen.text(x + 17, centerBaseline(by, 24, size), text, size, kText, true);
+    };
+    if (picture.closed) badge(y + 8, t.previewClosed);
+    // The EyeLid eyecam-rec sent for this very frame, under its dots (and off with them)
+    if (marks.lids && picture.lids && std::isfinite(lids.eyeLid)) {
+        char lid[64];
+        std::snprintf(lid, sizeof(lid), t.previewPictureLidFormat, lids.eyeLid);
+        badge(y + side - 32, lid);
     }
     cairo_restore(cr);
     strokeRounded(pen, x, y, side, side, r, kBorder, 1.5);
@@ -7240,7 +7775,31 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
             const eye_preview::Picture& picture = pv.pictures.eyes[eye];
             const bool fresh = pv.hasPictures && eye_preview::pictureFresh(picture, pv.nowNs);
             drawPreviewPicture(pen, t, picture, fresh, cx - pictureSide / 2, chipsY + chipsH + 10, pictureSide,
-                               eye_preview::pictureFlipped(eye, previewMirror_));
+                               eye_preview::pictureFlipped(eye, previewMirror_), source != Source::Raw, previewMarks_);
+        }
+    }
+    // The marks' switches, one under the other in the space between the two pictures (they go for both; nothing
+    // else is there, so the eyes keep their size)
+    if (pictures) {
+        using eye_preview::Mark;
+        const struct {
+            const char* label;
+            Mark mark;
+            bool on;
+        } switches[] = {{t.previewMarkLids, Mark::Lids, previewMarks_.lids},
+                        {t.previewMarkPupil, Mark::Pupil, previewMarks_.pupil},
+                        {t.previewMarkWindow, Mark::Window, previewMarks_.window}};
+        const double spaceW = half - pictureSide - 2 * gap;
+        double switchW = 0;
+        for (const auto& s : switches) switchW = std::max(switchW, pen.measure(s.label, 16, true) + 58);
+        switchW = std::min(switchW, spaceW);
+        const double switchGap = 10;
+        const double pictureY = top + eyeH + 6 + chipsH + 10;
+        double switchY = pictureY + (pictureSide - (rowH * 3 + switchGap * 2)) / 2;
+        for (const auto& s : switches) {
+            drawToggle(pen, kInnerX + half - switchW / 2, switchY, switchW, rowH, s.label,
+                       {PanelAction::PreviewMark, nullptr, static_cast<int>(s.mark)}, s.on, true);
+            switchY += rowH + switchGap;
         }
     }
 

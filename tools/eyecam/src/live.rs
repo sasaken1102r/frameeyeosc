@@ -44,6 +44,16 @@ const PUPIL_SETTLE_S: f64 = 0.3;
 /// was (its prior): a wrong blob caught once (during a blink, say) would otherwise keep the real pupil out of reach
 /// for seconds.
 pub const PRIOR_RESET_S: f64 = 10.0 / FPS;
+/// A pupil the open-eye check drops only for its size (larger than PUPIL_MAX_GROW x the open pupil learnt, but no
+/// more than PUPIL_GROW_MAX x, as dark and as whole as the open one, no flatter, the iris box not as bright as lid
+/// skin) for this long is a pupil that really looks larger (dilated as the world got darker, or turned toward the
+/// camera): it is taken, and the open pupil's size starts over from it. The open pupil's size is a 20 s median of the
+/// pupils taken, so without this a pupil grown past PUPIL_MAX_GROW x before the median caught up was never taken again
+/// once a blink had dropped the search prior (one recording: 7.4 s without a pupil, the eye turned 40° toward the ear,
+/// the pupil 1.4 x as large and rounder, b/a 0.93 against the usual 0.80).
+const PUPIL_GROW_S: f64 = 0.3;
+const PUPIL_MAX_GROW: f64 = 1.3;
+const PUPIL_GROW_MAX: f64 = 2.5;
 /// Closed needs no pupil for this long (3 frames at 90 fps; at least 2 frames).
 const CLOSED_NO_PUPIL_S: f64 = 3.0 / FPS;
 /// A pupil lost while the last one seen had its small-x edge within this many px of the search window's left edge ran
@@ -109,6 +119,16 @@ const EXT_TRACK_S: f64 = 1.0;
 const EXT_TRACK_PX: f64 = 40.0;
 const EXT_A_PX: (f64, f64) = (8.0, 45.0);
 const EXT_VALVE_OPEN: f64 = 0.6;
+/// The largest iris radius, in semi-axes of the open pupil, the iris fit is trusted with (`EyeEngine::iris_first`).
+/// The developer's 10 recorded calibrations: at most 3.3 (median 2.2); issue 38's wear calibration, the left eye 3.0 and
+/// the right eye 5.4 (R 88 px with a pupil 1.2 x the left one's).
+const IRIS_PUPIL_MAX: f64 = 4.0;
+/// The lower lid hardly moves in a blink: a lower line found without the pupil more than this many iris radii below
+/// the last one seen with it is something else (`EyeEngine::last_lower`). Issue 38's wear calibration (a prescription
+/// insert): the left eye's lower line went 0.98 r (median) further down on the closed eye, so the closed eye read 0.95 r
+/// open and the open gap came out at 0.30 (its right eye, whose lines meet when closed, 1.3 at a comparable radius).
+/// The developer's 26 recordings: 0.5% of the lower lines found without the pupil, 90% of them on a closed eye.
+const LOWER_DROP_MAX: f64 = 0.9;
 /// The lid features are causal medians over this long (5 frames at 90 fps; an odd number, at least 3).
 const MEDIAN_S: f64 = 5.0 / FPS;
 /// The long-run medians (iris radius, the open eye's box level, pupil size and darkness, typical pitch) take a
@@ -225,11 +245,24 @@ pub struct UserParams {
     pub f_sq: f64,
     pub pd_min: f64,
     pub pd_max: f64,
+    /// The squint aperture's depth below the open one (iris radii), as calibrated: live puts the squint this far below
+    /// the open level in use. A wear's own open-to-closed gap (that f_sq is a fraction of) is 0.6..1.5 of the
+    /// history's median gap live uses, so f_sq alone put the calibrated squint at 0.65..1.5 of full squint
+    /// (the developer's 5 user calibrations, 2026-10-08..14). None (calibrations before it): f_sq of the history's gap.
+    pub sq_depth: Option<f64>,
 }
 
 impl Default for UserParams {
     fn default() -> Self {
-        Self { pitch_c: [0.0; 3], pitch_lo: -90.0, pitch_hi: 90.0, f_sq: 0.31, pd_min: 0.6, pd_max: 1.05 }
+        Self {
+            pitch_c: [0.0; 3],
+            pitch_lo: -90.0,
+            pitch_hi: 90.0,
+            f_sq: 0.31,
+            pd_min: 0.6,
+            pd_max: 1.05,
+            sq_depth: None,
+        }
     }
 }
 
@@ -516,6 +549,15 @@ pub struct EyeEngine {
     bx: Win,
     pd: Win,
     nopupil: u32,
+    /// This wear's iris radius was found implausibly large for its pupil (IRIS_PUPIL_MAX): the iris fit takes the first
+    /// rise out of the iris from then on (`feat::Extractor::iris_first`).
+    iris_first: bool,
+    /// The lower lid line (px) of the last frame with the pupil and a lower line, used on frames whose lower line was
+    /// pushed against its band's far edge or, without the pupil, lies too far below it (LOWER_DROP_MAX): the lower lid
+    /// hardly moves in a blink.
+    last_lower: f64,
+    /// Frames in a row the open-eye check dropped the pupil only for being large (PUPIL_GROW_S).
+    grown: u32,
     box_open: LongMedian,
     /// The open eye's pupil semi-axis (px) and dark level, for telling a real pupil from a crease on a closed lid.
     a_open: LongMedian,
@@ -741,6 +783,9 @@ impl Default for EyeEngine {
             bx: Win::new(),
             pd: Win::new(),
             nopupil: 0,
+            iris_first: false,
+            last_lower: f64::NAN,
+            grown: 0,
             box_open: LongMedian::new(60.0),
             a_open: LongMedian::new(20.0),
             inner_open: LongMedian::new(20.0),
@@ -817,6 +862,8 @@ impl EyeEngine {
         self.prev = None;
         self.prev_p = None;
         self.nopupil = 0;
+        self.last_lower = f64::NAN;
+        self.grown = 0;
         self.find_x_min = self.x_min;
     }
 
@@ -936,6 +983,20 @@ impl EyeEngine {
         let search_x_min = self.find_x_min;
         self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, self.ext_check(t, valve_open));
         self.ex.levels = self.levels;
+        // An iris radius over IRIS_PUPIL_MAX x the open pupil's semi-axis is no limbus: for the rest of the wear the iris
+        // fit takes the first rise out of the iris, and the radius is learnt again from its fits. So is the open eye's iris
+        // box level: the box is sized by the radius, and one learnt at the old radius (60 s) would hold the closed eye's
+        // 1.3 x out of reach of the smaller, darker box.
+        if !self.iris_first
+            && self.r_est.len() >= 10
+            && self.a_open.len() >= 30
+            && self.r_est.value > IRIS_PUPIL_MAX * self.a_open.value
+        {
+            self.iris_first = true;
+            self.r_est = LongMedian::new(30.0);
+            self.box_open = LongMedian::new(60.0);
+        }
+        self.ex.iris_first = self.iris_first;
         let r_ready = self.r_est.len() >= 10;
         let r_ref = r_ready.then_some(self.r_est.value);
         let no_prior = self.prev.is_none();
@@ -951,10 +1012,34 @@ impl EyeEngine {
         let open_box = self.levels.unlevel(self.box_open.value);
         let box_bright = self.box_open.len() >= 30 && self.levels.unlevel(f.box_mean) > 1.3 * open_box;
         let unanchored = no_prior || f.diag.retried;
+        // No flatter than the open pupil: a dark lash line on a closing eye is long and flat, while a pupil turned toward
+        // the camera grows rounder as it grows larger (so not the two-sided check of `roundness_ok`).
+        let grown = p.filter(|pp| {
+            unanchored
+                && !box_bright
+                && self.a_open.len() >= 30
+                && pp.a / self.a_open.value > PUPIL_MAX_GROW
+                && pp.a / self.a_open.value <= PUPIL_GROW_MAX
+                && pp.inner <= self.inner_open.value + self.levels.step(15.0)
+                && pp.vis >= 0.5
+                && (self.ba_open.len() < 30 || pp.b / pp.a >= self.ba_open.value - PUPIL_MAX_BA_DEV)
+        });
+        self.grown = if grown.is_some() { self.grown + 1 } else { 0 };
+        if let Some(pp) = grown
+            && self.grown >= frames_in(PUPIL_GROW_S, fps, 2)
+        {
+            // Started over at this pupil's size, already full: the size check goes on at once from the new size (an
+            // empty median would leave every pupil unchecked, a crease on a closed lid too, until 30 were taken).
+            self.a_open = LongMedian::new(20.0);
+            for _ in 0..30 {
+                self.a_open.push(pp.a, long_hz);
+            }
+            self.grown = 0;
+        }
         if let Some(pp) = p
             && (box_bright || unanchored)
             && self.a_open.len() >= 30
-            && (!(0.45..=1.3).contains(&(pp.a / self.a_open.value))
+            && (!(0.45..=PUPIL_MAX_GROW).contains(&(pp.a / self.a_open.value))
                 || pp.inner > self.inner_open.value + self.levels.step(15.0)
                 || pp.vis < 0.5)
         {
@@ -1007,6 +1092,16 @@ impl EyeEngine {
             _ if f.iris_r.is_finite() => f.iris_r,
             _ => 2.0 * f.pupil_a,
         };
+        // A lower line pushed against its band's far edge, or found without the pupil more than LOWER_DROP_MAX below the
+        // last one seen with the pupil, is no lower lid: that last one instead (none yet: no lower line on this frame).
+        if !f.ok_pupil && f.lower_y > self.last_lower + LOWER_DROP_MAX * r {
+            f.lower_edge = true;
+        }
+        if f.lower_edge {
+            f.lower_y = self.last_lower;
+        } else if f.ok_pupil && f.lower_y.is_finite() {
+            self.last_lower = f.lower_y;
+        }
         // Lid geometry in pixels (causal medians over MEDIAN_S, 5 frames at 90 fps); the outputs below are in iris
         // radii.
         let med_n = (frames_in(MEDIAN_S, fps, 3) | 1) as usize;
@@ -1108,7 +1203,15 @@ impl EyeEngine {
         let p0 = if p_typ.is_finite() { p_typ } else { DEFAULT_PITCH_N };
         let apc = if pitch.is_finite() { ap_px + user.pitch_drop(pitch, p0) * r } else { ap_px };
         let ap_cl_px = ap_n_px - gap_px;
-        let ap_sq = ap_cl_px + user.f_sq * (ap_n_px - ap_cl_px);
+        // The calibrated depth within the limits the calibration puts on f_sq (F_SQ_MAX, F_SQ_MIN), here against the
+        // gap in use: a wear's gap 0.6..1.5 x the history's would otherwise put the squint's full depth anywhere from
+        // 0.09 to 2.25 gaps below open. max/min, not clamp: before the iris radius is known (no history, no pupil yet)
+        // r, and with it the gap, is NaN, and clamp would panic; max/min keep it NaN (they only drop a NaN limit when the
+        // other side is a number), and the squint keeps its last value as before.
+        let ap_sq = match user.sq_depth {
+            Some(d) => ap_n_px - (d * r).max((1.0 - F_SQ_MAX) * gap_px).min((1.0 - F_SQ_MIN) * gap_px),
+            None => ap_cl_px + user.f_sq * (ap_n_px - ap_cl_px),
+        };
         // Without a user calibration (squint depth, pitch curve) the aperture alone is not trusted: no squint, and the
         // lid only closes when the eye is closed. Nothing either before the open level is known.
         let user_cal = params.user.is_some() && ready;
@@ -1528,7 +1631,7 @@ pub fn fit_wear_eyes(samples: &[Vec<Sample>; 2], fallback_step: [f64; 2]) -> [Ey
         if nn < need.normal {
             return Err(WearFail::LidLine { seen: nn, frames: normal.len(), need: need.normal });
         }
-        let widen_ok = nw >= need.widen && b_w - b_n >= MIN_WIDEN_STEP;
+        let widen_ok = nw >= need.widen && b_w - b_n >= MIN_WIDEN_STEP && b_w - b_n <= MAX_WIDEN_STEP;
         let b_w = if widen_ok { b_w } else { b_n + fallback_step[e] };
         if nc < need.close || ap_n - ap_cl < MIN_OPEN_GAP || (ap_n - ap_cl).is_nan() {
             return Err(WearFail::Close);
@@ -1668,7 +1771,8 @@ struct UserEye {
 /// A squint depth (`UserParams::f_sq`) at or above this is too shallow to tell from the open eye.
 pub const F_SQ_MAX: f64 = 0.85;
 /// A squint depth below this is deeper than the closed level by more than half the open gap: live, the squint
-/// would only reach 1 / (1 - f_sq) < 0.67 by the time the eye reads closed. The user calibrations that passed
+/// would only reach 1 / (1 - f_sq) < 0.67 by the time the eye reads closed (with `UserParams::sq_depth`, gap /
+/// sq_depth against the gap in use, which live keeps within these same limits). The user calibrations that passed
 /// (2026-10-04..14) went down to -0.25 (the closed level of the wear calibration a little high); the ones below this
 /// were -0.78 and, replayed from recordings, -0.88 and -1.47.
 pub const F_SQ_MIN: f64 = -0.5;
@@ -1705,8 +1809,9 @@ fn fit_user_eye(
     let s = &s[..];
     let (ap_sq, nsq) = med_of(s, |x| (x.label == Label::Squint).then_some(x.ap));
     let f_sq = (ap_sq - w.ap_cl) / (w.ap_n - w.ap_cl);
+    let sq_depth = Some(w.ap_n - ap_sq).filter(|d| d.is_finite());
     // Without the curve: the standard look-down correction (as with no user calibration), this squint.
-    let standard = UserParams { f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max, ..UserParams::default() };
+    let standard = UserParams { f_sq, sq_depth, pd_min: keep.pd_min, pd_max: keep.pd_max, ..UserParams::default() };
     let pts: Vec<(f64, f64)> =
         s.iter().filter(|x| neutral(x.label) && x.ok && x.pitch.is_finite() && x.ap.is_finite()).map(|x| (x.pitch, x.ap)).collect();
     if pts.len() < need.points {
@@ -1758,7 +1863,8 @@ fn fit_user_eye(
             look_down_only = k > 0;
         }
     }
-    let params = UserParams { pitch_c, pitch_lo: lo, pitch_hi: hi, f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max };
+    let params =
+        UserParams { pitch_c, pitch_lo: lo, pitch_hi: hi, f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max, sq_depth };
     Ok(UserEye { params, delta: (ap_down - w.ap_n, ap_sq - w.ap_n), issue, look_down_only })
 }
 
@@ -1996,7 +2102,7 @@ fn wear_json(w: &WearParams) -> String {
 
 fn user_json(u: &UserParams) -> String {
     format!(
-        "{{\"pitch_c\": [{}, {}, {}], \"pitch_lo\": {}, \"pitch_hi\": {}, \"f_sq\": {}, \"pd_min\": {}, \"pd_max\": {}}}",
+        "{{\"pitch_c\": [{}, {}, {}], \"pitch_lo\": {}, \"pitch_hi\": {}, \"f_sq\": {}, \"pd_min\": {}, \"pd_max\": {}{}}}",
         json::num(u.pitch_c[0]),
         json::num(u.pitch_c[1]),
         json::num(u.pitch_c[2]),
@@ -2004,7 +2110,8 @@ fn user_json(u: &UserParams) -> String {
         json::num(u.pitch_hi),
         json::num(u.f_sq),
         json::num(u.pd_min),
-        json::num(u.pd_max)
+        json::num(u.pd_max),
+        u.sq_depth.map_or(String::new(), |d| format!(", \"sq_depth\": {}", json::num(d)))
     )
 }
 
@@ -2037,6 +2144,7 @@ fn parse_user(j: &Json) -> Result<UserParams, String> {
         f_sq: get_num(j, "f_sq")?,
         pd_min: get_num(j, "pd_min")?,
         pd_max: get_num(j, "pd_max")?,
+        sq_depth: j.get("sq_depth").and_then(Json::num).filter(|d| d.is_finite()),
     })
 }
 
@@ -2048,13 +2156,18 @@ impl CalibFile {
         [0, 1].map(|e| self.wear.map(|w| w[e]).filter(|_| self.wear_failed_eye != ["L", "R"][e]))
     }
 
-    /// The medians of the history (None when it is empty).
+    /// The medians of the history (None when it is empty). Widen steps above HISTORY_MAX_WIDEN_STEP are left out of
+    /// the step's median; with none other left it is DEFAULT_WIDEN_STEP.
     pub fn history_params(&self) -> Option<[History; 2]> {
         if self.history.is_empty() {
             return None;
         }
+        let step = |e: usize| {
+            let m = median_of(self.history.iter().map(|x| x.1[e].step).filter(|s| *s <= HISTORY_MAX_WIDEN_STEP));
+            if m.is_finite() { m } else { DEFAULT_WIDEN_STEP }
+        };
         let h = |e: usize| History {
-            step: median_of(self.history.iter().map(|x| x.1[e].step)),
+            step: step(e),
             gap: median_of(self.history.iter().map(|x| x.1[e].gap)),
             r_px: median_of(self.history.iter().map(|x| x.1[e].r_px)),
         };
@@ -2209,6 +2322,18 @@ impl CalibFile {
 
 /// Thresholds of the calibration checks (fit_wear / fit_user use the same numbers).
 pub const MIN_WIDEN_STEP: f64 = 0.05;
+/// A widen step above this (iris radii) is taken as two different lines for the normal and the widen level, not a
+/// widen: the eye gets the usual step (as with a widen not caught), and the step stays out of the history. The
+/// developer's 47 wear calibrations: 0.15 to 0.43. A tester with lens inserts: 1.165 / 1.054 in a 0.8.2-beta.1 wear
+/// calibration, and 1.30 / 1.15 replaying a recording of 2026-10-23, where the pictures show the usual band's
+/// normal level on the lid's edge and the higher band's widen level on the tips of the upper lashes (see
+/// WIDEN_HIGH_REF_FRAC). Left above the steps of 0.83 to 0.87 that the same tester's wear calibration of 2026-10-17
+/// measured in the usual band (no pictures of it to tell which line that was).
+pub const MAX_WIDEN_STEP: f64 = 1.1;
+/// Widen steps above this are left out of the history's median (the usual step of a widen not caught): the
+/// developer's go up to 0.43, and a step this large in a history saved before MAX_WIDEN_STEP is more likely the two
+/// lines above than a widen.
+pub const HISTORY_MAX_WIDEN_STEP: f64 = 0.9;
 pub const MIN_OPEN_GAP: f64 = 0.2;
 /// A widen frame whose upper lid line lies more than this (iris radii) below the normal level is left out of the
 /// widen level: a widened lid is never lower than the normal one, so such a line is not the lid. Some wearers' lid
@@ -2222,11 +2347,59 @@ pub const MIN_OPEN_GAP: f64 = 0.2;
 /// look down), so leaving them out is right either way.
 pub const WIDEN_MIN_BELOW_N: f64 = 0.2;
 
-/// The widen level of the widen frames among `s`: the median upper lid line of those with the pupil and a line no
-/// more than WIDEN_MIN_BELOW_N below the normal level `b_n`, and how many those are (they are what NEED_WIDEN counts,
-/// so too few of them falls back to the usual widen step as before).
+/// A widen step (one cue) counts toward the widen level on its own only with at least this many widen frames that have
+/// the lid line (`widen_level`); fewer, and it only counts in the median over all of them. A calibration's widen steps
+/// have 198 frames at 90 fps after STEP_DELAY (33 at 15 fps).
+pub const WIDEN_STEP_MIN_FRAMES: usize = 30;
+/// Widen frames further apart than this (s) belong to different widen steps, even with no other frame between them.
+const WIDEN_STEP_GAP_S: f64 = 0.5;
+
+/// The widen frames' lid lines that count toward the widen level: those with the pupil and a line no more than
+/// WIDEN_MIN_BELOW_N below the normal level `b_n`.
+fn widen_line(x: &Sample, b_n: f64) -> Option<f64> {
+    (x.label == Label::Widen && x.ok && x.skin >= b_n - WIDEN_MIN_BELOW_N).then_some(x.skin)
+}
+
+/// The median lid line (`widen_line`) of each widen step among `s` with at least WIDEN_STEP_MIN_FRAMES of them, in
+/// order. A step ends at any frame that is not a widen frame, or at a gap of more than WIDEN_STEP_GAP_S.
+pub fn widen_step_levels(s: &[Sample], b_n: f64) -> Vec<f64> {
+    let mut steps: Vec<Vec<f64>> = Vec::new();
+    let mut last_t = f64::NAN;
+    let mut in_step = false;
+    for x in s {
+        if x.label != Label::Widen {
+            in_step = false;
+            continue;
+        }
+        if !in_step || x.t - last_t > WIDEN_STEP_GAP_S {
+            steps.push(Vec::new());
+            in_step = true;
+        }
+        last_t = x.t;
+        if let Some(v) = widen_line(x, b_n).filter(|v| v.is_finite()) {
+            steps.last_mut().expect("a step was started").push(v);
+        }
+    }
+    steps.iter_mut().filter(|v| v.len() >= WIDEN_STEP_MIN_FRAMES).map(|v| vision::median(v)).collect()
+}
+
+/// The widen level of the widen frames among `s` (`widen_line`), and how many frames have one (they are what NEED_WIDEN
+/// counts, so too few of them falls back to the usual widen step as before). The level is the lowest of the widen
+/// steps' own medians (`widen_step_levels`), or the median over all of them when no step has WIDEN_STEP_MIN_FRAMES.
+/// Live, the step of one wear's calibration has to be reached every time, while one widen step can read higher than
+/// the others: a tester with prescription inserts (a recording of 2026-10-23, three 5 s widen steps) had the left eye's
+/// line at 1.81 R in the first step and at 1.11 / 1.08 R in the other two, against 0.83 R normal; the median over all
+/// of them gave a step of 0.52 that the other two steps rose only 0.4 / 0.3 of. Replayed live and through frameeyeosc
+/// with that wearer's settings, widening went out at 0.5 or more in 36 % / 39 % of the widen frames (both eyes, widen
+/// sensitivity 0.5 / 1). With the lowest step's median the step is 0.25 (the right eye's 0.51 -> 0.43) and 91 % at
+/// either; nothing widened (0.3 or more) in the normal and squint steps, looking up 7 / 12 % at sensitivity 0.5 (0 /
+/// 1 % before) and 8 / 15 % at 1 (5 / 9 %), looking down none at 0.5 but 20 % at 1 (none before). On the developer's
+/// 27 wear calibrations the step stays the same or gets smaller, by 0.011 in the median and 0.055 at most, and nothing
+/// else in them changes.
 fn widen_level(s: &[Sample], b_n: f64) -> (f64, usize) {
-    med_of(s, |x| (x.label == Label::Widen && x.ok && x.skin >= b_n - WIDEN_MIN_BELOW_N).then_some(x.skin))
+    let (all, n) = med_of(s, |x| widen_line(x, b_n));
+    let lowest = widen_step_levels(s, b_n).into_iter().fold(f64::INFINITY, f64::min);
+    (if lowest.is_finite() { lowest } else { all }, n)
 }
 
 /// When at least this share of an eye's widen frames with the pupil have no upper lid line within WIDEN_MIN_BELOW_N of
@@ -2246,6 +2419,17 @@ pub const WIDEN_HIGH_NEIGHBOUR: f64 = 0.1;
 /// of the normal frames with the pupil (a crease or the brow, there whether the eye widens or not).
 pub const WIDEN_HIGH_FIXED: f64 = 0.15;
 pub const WIDEN_HIGH_FIXED_SHARE: f64 = 0.25;
+/// When the higher band finds a line in at least WIDEN_HIGH_FIXED_SHARE of the normal frames with the pupil (inlier
+/// share at least this), and the widen lines lie above that line's median, the widen lines are taken as the same line
+/// moved up with the widening lid: the widen step is how far it rose, added to the normal level (the usual band's).
+/// A tester with lens inserts (a recording of 2026-10-23, both eyes): the pictures show the usual band's normal level
+/// (0.73 / 0.68 R) on the lid's edge and the higher band's line on the tips of the long upper lashes in both steps
+/// (normal 1.69 / 1.67, widen 2.01 / 1.88), the widened lid's edge below them at about 1.4 to 1.5 R. From the normal
+/// level the step came out 1.30 / 1.15 and the widen was never reached; the lashes' rise gives 0.33 / 0.23. The
+/// normal lines were weaker than the widen ones (median share 0.64 on the right eye), hence a lower bar than
+/// WIDEN_HIGH_MIN_FRAC. If a line in the normal frames were a crease below a widened lid's edge, the step would come
+/// out too small; no recording here shows that.
+pub const WIDEN_HIGH_REF_FRAC: f64 = 0.5;
 
 /// Where a wear calibration's widen level came from (calib_result.json's `widen_source`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2271,7 +2455,9 @@ impl WidenSource {
 
 /// One eye's widen level (`widen_fit`): the level and how many frames it is from (NEED_WIDEN counts them), where it
 /// came from, the widen frames with the pupil and those of them without a lid line near the normal level (the
-/// trigger), the higher band's good lines and those taken, and the line it also finds in the normal frames (NaN: none).
+/// trigger), the higher band's good lines and those taken, the line it also finds in the normal frames (NaN: none),
+/// and the level its lines have in the normal frames that the widen ones rose from (WIDEN_HIGH_REF_FRAC; NaN: not
+/// used).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WidenFit {
     pub b_w: f64,
@@ -2282,20 +2468,22 @@ pub struct WidenFit {
     pub high_good: usize,
     pub high_used: usize,
     pub fixed: f64,
+    pub rose_from: f64,
 }
 
 /// The widen level from one eye's samples `s` (all steps, in one radius) for normal level `b_n`, `need` frames
 /// needed. Usually `widen_level`. When most widen frames with the pupil have no lid line near the normal level
 /// (WIDEN_LOW_SHARE), the median of the higher band's lines (`Sample::skin2`) that pass the WIDEN_HIGH_* checks; with
-/// fewer than `need` of those, `widen_level` as before. For a wearer whose lid stays in the usual band this is
-/// `widen_level` exactly.
+/// fewer than `need` of those, `widen_level` as before. When those lines lie above the line the higher band finds in
+/// the normal frames, the level is the normal level plus how far that line rose (WIDEN_HIGH_REF_FRAC). For a wearer
+/// whose lid stays in the usual band this is `widen_level` exactly.
 pub fn widen_fit(s: &[Sample], b_n: f64, need: usize) -> WidenFit {
     let widen: Vec<&Sample> = s.iter().filter(|x| x.label == Label::Widen).collect();
     let with_pupil = widen.iter().filter(|x| x.ok).count();
     let low = widen.iter().filter(|x| x.ok && (x.skin.is_nan() || x.skin < b_n - WIDEN_MIN_BELOW_N)).count();
     let main = |source| {
         let (b_w, n) = widen_level(s, b_n);
-        WidenFit { b_w, n, source, with_pupil, low, high_good: 0, high_used: 0, fixed: f64::NAN }
+        WidenFit { b_w, n, source, with_pupil, low, high_good: 0, high_used: 0, fixed: f64::NAN, rose_from: f64::NAN }
     };
     if with_pupil == 0 || (low as f64) < WIDEN_LOW_SHARE * with_pupil as f64 {
         return main(WidenSource::Main);
@@ -2320,8 +2508,17 @@ pub fn widen_fit(s: &[Sample], b_n: f64, need: usize) -> WidenFit {
     if high_used < need.max(1) {
         return WidenFit { high_good, high_used, fixed, ..main(WidenSource::Fallback) };
     }
-    let b_w = vision::median(&mut used);
-    WidenFit { b_w, n: high_used, source: WidenSource::Upper, with_pupil, low, high_good, high_used, fixed }
+    let high = vision::median(&mut used);
+    // The higher band's level in the normal frames: the widen lines above it are that line moved up.
+    let (ref_n, n_ref) =
+        med_of(s, |x| (x.label == Label::Normal && x.ok && x.frac2 >= WIDEN_HIGH_REF_FRAC).then_some(x.skin2));
+    let rose_from = if n_ref > 0 && n_ref as f64 >= WIDEN_HIGH_FIXED_SHARE * normal_ok as f64 && high > ref_n {
+        ref_n
+    } else {
+        f64::NAN
+    };
+    let b_w = if rose_from.is_nan() { high } else { b_n + (high - rose_from) };
+    WidenFit { b_w, n: high_used, source: WidenSource::Upper, with_pupil, low, high_good, high_used, fixed, rose_from }
 }
 
 /// How many frames a calibration check needs, relative to what the cameras delivered: at least `share` of the
@@ -2466,6 +2663,14 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
         let wf = widen_fit(&s, b_n, need.widen);
         let (b_w, nw) = (wf.b_w, wf.n);
         let below = s.iter().filter(|x| x.label == Label::Widen && x.ok && x.skin < b_n - WIDEN_MIN_BELOW_N).count();
+        // Each widen step's own level in the usual band (the lowest is the widen level when the source is "main")
+        let step_levels = widen_step_levels(&s, b_n);
+        let levels_json = step_levels.iter().map(|v| json::num(*v)).collect::<Vec<_>>().join(", ");
+        let levels_text = if step_levels.is_empty() {
+            "none".to_string()
+        } else {
+            step_levels.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>().join(" / ")
+        };
         let (ap_n, _) = med_of(&s, |x| (x.label == Label::Normal && x.ok).then_some(x.ap));
         let (ap_cl, nc) = med_of(&s, |x| (x.label == Label::Close).then_some(x.ap));
         let all = |l: Label| s.iter().filter(|x| x.label == l).count();
@@ -2479,7 +2684,7 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
 \"normal_frames_with_pupil\": {n_pupil}, \"normal_frames_with_lid_line\": {nn}, \"widen_frames_with_pupil\": {nw}, \"widen_frames_below_normal\": {below}, \"close_frames_with_lids\": {nc}, \
 \"pupil_seen_share\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}, \"diag\": {}, \
 \"widen_source\": \"{}\", \"widen_frames_no_line_near_normal\": {}, \"widen_frames_upper_good\": {}, \"widen_frames_upper_used\": {}, \
-\"widen_upper_fixed_line\": {}}}",
+\"widen_upper_fixed_line\": {}, \"widen_upper_rose_from\": {}, \"widen_step_levels\": [{levels_json}]}}",
             ["L", "R"][e],
             json::num(r_px),
             json::num(b_n),
@@ -2497,10 +2702,11 @@ pub fn wear_report(samples: &[Vec<Sample>; 2]) -> (String, Vec<String>) {
             wf.high_good,
             wf.high_used,
             json::num(wf.fixed),
+            json::num(wf.rose_from),
         ));
         lines.push(format!(
-            "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
-frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, widen from {} (no line near normal {} of {}, upper good {} / used {}), R {:.1} px; {}",
+            "calib wear {}: widen step {:.3} (needs >= {MIN_WIDEN_STEP}, <= {MAX_WIDEN_STEP}; normal {:.3}, widen {:.3}), open gap {:.3} (needs >= {MIN_OPEN_GAP}), \
+frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {nw} (need {} / {}), close {nc} (need {}; at {:.0} fps), widen below normal left out {below}, widen by step {levels_text}, widen from {} (no line near normal {} of {}, upper good {} / used {}{}), R {:.1} px; {}",
             ["L", "R"][e],
             b_w - b_n,
             b_n,
@@ -2516,6 +2722,7 @@ frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {
             wf.with_pupil,
             wf.high_good,
             wf.high_used,
+            if wf.rose_from.is_nan() { String::new() } else { format!(", rose from {:.3}", wf.rose_from) },
             r_px,
             d.line
         ));
@@ -2523,7 +2730,7 @@ frames with pupil normal {n_pupil} of {}, with the upper lid line {nn} / widen {
     // The frame counts needed per eye ([L, R]), for the frame rate each eye's camera delivered, and the rule.
     let pair = |f: &dyn Fn(&WearNeeds) -> String| format!("[{}, {}]", f(&needs[0]), f(&needs[1]));
     let json = format!(
-        "{{{}, \"thresholds\": {{\"widen_step_min\": {MIN_WIDEN_STEP}, \"open_gap_min\": {MIN_OPEN_GAP}, \"fps\": {}, \"normal_frames_min\": {}, \
+        "{{{}, \"thresholds\": {{\"widen_step_min\": {MIN_WIDEN_STEP}, \"widen_step_max\": {MAX_WIDEN_STEP}, \"open_gap_min\": {MIN_OPEN_GAP}, \"fps\": {}, \"normal_frames_min\": {}, \
 \"widen_frames_min\": {}, \"close_frames_min\": {}, \"rule\": {{\"normal\": {}, \"widen\": {}, \"close\": {}}}}}}}",
         eyes.join(", "),
         pair(&|n| json::num(n.fps)),
@@ -2858,6 +3065,61 @@ mod tests {
         assert!(wear_report(&[usual.clone(), usual]).0.contains("\"widen_frames_below_normal\": 0"));
     }
 
+    /// One eye's wear steps: normal 1.0 R, then widen steps at the given (frames, line) with 100 normal frames before
+    /// each, then closed 0.56; times run on at 90 fps.
+    fn wear_eye_with_widen_steps(steps: &[(usize, f64)]) -> Vec<Sample> {
+        let mut eye = samples(Label::Normal, 300, 1.0, 1.7, -14.0, 250.0, true);
+        for &(n, skin) in steps {
+            eye.extend(samples(Label::Normal, 100, 1.0, 1.7, -14.0, 250.0, true));
+            eye.extend(samples(Label::Widen, n, skin, 2.4, -14.0, 252.0, true));
+        }
+        eye.extend(samples(Label::Close, 80, f64::NAN, 0.56, -14.0, 240.0, false));
+        for (i, x) in eye.iter_mut().enumerate() {
+            x.t = i as f64 / 90.0;
+        }
+        eye
+    }
+
+    #[test]
+    fn the_widen_level_is_the_lowest_widen_steps_own() {
+        // A tester with prescription inserts (2026-10-23): the left eye's line at 1.81 R in the first widen step and at
+        // 1.11 / 1.08 R in the other two. Here the median over all of them would be 1.11, a step of 0.11 that the third
+        // step rises only 0.08 of; the lowest step's median is 1.08.
+        let eye = wear_eye_with_widen_steps(&[(198, 1.81), (198, 1.11), (198, 1.08)]);
+        assert_eq!(widen_step_levels(&eye, 1.0), vec![1.81, 1.11, 1.08]);
+        assert_eq!(widen_level(&eye, 1.0), (1.08, 594), "every frame with a line still counts toward NEED_WIDEN");
+        let both = [eye.clone(), eye];
+        let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
+        assert!(measured && (w[0].b_w - 1.08).abs() < 1e-9, "{:?}", w[0]);
+        let (report, lines) = wear_report(&both);
+        assert!(report.contains("\"widen_step\": 0.08") && report.contains("\"widen_step_levels\": [1.81, 1.11, 1.08]"), "{report}");
+        assert!(lines[0].contains("widen below normal left out 0, widen by step 1.810 / 1.110 / 1.080, widen from main"), "{}", lines[0]);
+        // A step with fewer than WIDEN_STEP_MIN_FRAMES lines (a widen held for a moment, or mostly lines below normal)
+        // does not decide it; its frames still count in the median over all.
+        let short = wear_eye_with_widen_steps(&[(29, 1.05), (198, 1.3), (198, 1.4)]);
+        assert_eq!((widen_step_levels(&short, 1.0), widen_level(&short, 1.0)), (vec![1.3, 1.4], (1.3, 425)));
+        let mut low = wear_eye_with_widen_steps(&[(198, 1.3), (198, 1.4)]);
+        for x in low.iter_mut().filter(|x| x.label == Label::Widen && x.skin == 1.3).skip(WIDEN_STEP_MIN_FRAMES - 1) {
+            x.skin = 0.5;
+        }
+        assert_eq!(widen_step_levels(&low, 1.0), vec![1.4]);
+        // No step with enough lines: the median over all of them, as before.
+        let few = wear_eye_with_widen_steps(&[(25, 1.2), (25, 1.3), (25, 1.4)]);
+        assert!(widen_step_levels(&few, 1.0).is_empty());
+        assert_eq!(widen_level(&few, 1.0), (1.3, 75));
+        assert!(wear_report(&[few.clone(), few]).1[0].contains("widen by step none,"));
+        // Widen frames more than WIDEN_STEP_GAP_S apart are two steps even with nothing between them.
+        let mut gap = samples(Label::Widen, 60, 1.2, 2.4, -14.0, 252.0, true);
+        gap.extend(samples(Label::Widen, 60, 1.5, 2.4, -14.0, 252.0, true));
+        for (i, x) in gap.iter_mut().enumerate() {
+            x.t = i as f64 / 90.0 + if i >= 60 { 0.6 } else { 0.0 };
+        }
+        assert_eq!(widen_step_levels(&gap, 1.0), vec![1.2, 1.5]);
+        // One widen step: its median, as before.
+        let one = wear_eye_with_widen_steps(&[(198, 1.25)]);
+        assert_eq!(widen_level(&one, 1.0), (1.25, 198));
+    }
+
     /// `n` widen frames whose usual band has no line near normal (skin NaN, as when the line was pushed against the
     /// band's edge) and whose higher band has the line at `skin2` (+ a little jitter), inlier share `frac2`.
     fn widen_high(n: usize, skin2: f64, frac2: f64) -> Vec<Sample> {
@@ -2962,6 +3224,74 @@ mod tests {
     }
 
     #[test]
+    fn widen_lines_above_the_higher_bands_normal_line_give_its_rise() {
+        // A tester with lens inserts (a recording of 2026-10-23): normal level 0.73 (the lid's edge), and the higher
+        // band finds the tips of the upper lashes in both steps, 1.69 in the normal frames (weaker lines, share 0.64)
+        // and 2.0 in the widen ones. The step is their rise (0.31), not 2.0 - 0.73.
+        let mut eye = samples(Label::Normal, 300, 0.73, 1.7, -14.0, 250.0, true);
+        for x in eye.iter_mut() {
+            (x.skin2, x.frac2) = (1.69, 0.64);
+        }
+        eye.extend(widen_high(250, 2.0, 0.85));
+        eye.extend(samples(Label::Close, 80, f64::NAN, 0.56, -14.0, 240.0, false));
+        let wf = widen_fit(&eye, 0.73, 60);
+        assert_eq!(wf.source, WidenSource::Upper);
+        assert!(wf.fixed.is_nan() && (wf.rose_from - 1.69).abs() < 1e-9, "{wf:?}");
+        assert!((wf.b_w - (0.73 + 2.01 - 1.69)).abs() < 1e-9, "{wf:?}");
+        let both = [eye.clone(), eye.clone()];
+        let (w, measured) = fit_wear(&both, [0.19; 2]).unwrap();
+        assert!(measured && (w[0].b_w - w[0].b_n - 0.32).abs() < 1e-9, "{:?}", w[0]);
+        let (report, lines) = wear_report(&both);
+        assert!(report.contains("\"widen_upper_rose_from\": 1.69") && report.contains("\"widen_step_max\": 1.1"), "{report}");
+        assert!(lines[0].contains("upper good 250 / used 250, rose from 1.690)"), "{}", lines[0]);
+        // In too few normal frames (under WIDEN_HIGH_FIXED_SHARE), or as weak as another line the search settled on,
+        // it is not a level to rise from: the widen level is the higher band's own, as before.
+        let mut few = eye.clone();
+        for x in few.iter_mut().filter(|x| x.label == Label::Normal).skip(50) {
+            (x.skin2, x.frac2) = (f64::NAN, f64::NAN);
+        }
+        assert!((widen_fit(&few, 0.73, 60).b_w - 2.01).abs() < 1e-9);
+        let mut weak = eye.clone();
+        for x in weak.iter_mut().filter(|x| x.label == Label::Normal) {
+            x.frac2 = 0.45;
+        }
+        assert!(widen_fit(&weak, 0.73, 60).rose_from.is_nan());
+        // A widen line below the normal frames' line (a crease or brow up there) is the lid itself: as before.
+        let mut crease = eye.clone();
+        for x in crease.iter_mut().filter(|x| x.label == Label::Normal) {
+            x.skin2 = 2.3;
+        }
+        let wf = widen_fit(&crease, 0.73, 60);
+        assert!(wf.rose_from.is_nan() && (wf.b_w - 2.01).abs() < 1e-9, "{wf:?}");
+    }
+
+    #[test]
+    fn a_widen_step_above_the_largest_is_not_a_widen() {
+        // Two different lines for the normal and the widen level (the same tester's recording of 2026-10-23
+        // replayed before WIDEN_HIGH_REF_FRAC: 1.30 / 1.15). The eye goes through with the usual step, as for a
+        // widen not caught, and the step stays out of the history.
+        let eye = wear_eye_with_widen(&[(250, 2.2)]);
+        let (w, measured) = fit_wear(&[eye.clone(), eye.clone()], [0.25; 2]).unwrap();
+        assert!(!measured && (w[0].b_w - w[0].b_n - 0.25).abs() < 1e-9, "{:?}", w[0]);
+        let out = fit_wear_settled(&[eye.clone(), eye], [0.25; 2], [None; 2], None).unwrap();
+        assert_eq!(out.message, "校正できた（見開きは取れなかったので、いつもの幅を使うよ）");
+        assert!(!out.for_history());
+        // Up to MAX_WIDEN_STEP it is measured.
+        let eye = wear_eye_with_widen(&[(250, 1.0 + MAX_WIDEN_STEP)]);
+        assert!(fit_wear(&[eye.clone(), eye], [0.25; 2]).unwrap().1);
+        // Steps above HISTORY_MAX_WIDEN_STEP in a history (0.8.2-beta.1 saved 1.165 / 1.054) are left out of its
+        // median; with none other, the default.
+        let rec = |step| WearRecord { step, gap: 1.0, r_px: 55.0 };
+        let mut file = CalibFile::default();
+        for (i, s) in [0.3, 1.165, 1.2, 0.25, 1.1].into_iter().enumerate() {
+            file.history.push((format!("t{i}"), [rec(s), rec(s)]));
+        }
+        assert!((file.history_params().unwrap()[0].step - 0.275).abs() < 1e-9);
+        file.history.retain(|h| h.1[0].step > 1.0);
+        assert_eq!(file.history_params().unwrap()[0].step, DEFAULT_WIDEN_STEP);
+    }
+
+    #[test]
     fn fits_wear_and_user_and_round_trips_json() {
         let mut eye = Vec::new();
         eye.extend(samples(Label::Normal, 300, 0.73, 1.44, -14.0, 250.0, true));
@@ -2998,6 +3328,11 @@ mod tests {
         assert_eq!(ulines.len(), 3);
         assert_eq!(samples_csv(&both).lines().count(), 1 + 2 * 580);
         assert!((user[0].f_sq - (0.831 - 0.561) / (1.441 - 0.561)).abs() < 0.01, "{:?}", user[0]);
+        // The squint's depth below the open aperture, in this wear's iris radii, kept with it (and through the file).
+        assert!((user[0].sq_depth.unwrap() - (1.441 - 0.831)).abs() < 0.01, "{:?}", user[0]);
+        assert_eq!(parse_user(&crate::json::parse(&user_json(&user[0])).unwrap()).unwrap(), user[0]);
+        let old = UserParams { sq_depth: None, ..user[0] };
+        assert!(!user_json(&old).contains("sq_depth"), "files without it stay as they were");
         // A look_down that did not lower the lid is refused.
         let mut bad = u.clone();
         bad.retain(|s| s.label != Label::LookDown);
@@ -3406,7 +3741,15 @@ mod tests {
         let good = user(1.1, 256.0, 0.83);
         let lashes = user(1.43, 256.0, 0.83);
         // The previous user calibration: a measured curve on both eyes (another one on the right), its own squint.
-        let measured = |slope: f64| UserParams { pitch_c: [1.5, slope, 0.0], pitch_lo: -40.0, pitch_hi: 20.0, f_sq: 0.5, pd_min: 0.5, pd_max: 1.2 };
+        let measured = |slope: f64| UserParams {
+            pitch_c: [1.5, slope, 0.0],
+            pitch_lo: -40.0,
+            pitch_hi: 20.0,
+            f_sq: 0.5,
+            pd_min: 0.5,
+            pd_max: 1.2,
+            sq_depth: None,
+        };
         let old = Some([measured(0.01), measured(0.02)]);
         assert!(old.unwrap().iter().all(UserParams::curve_measured));
         assert!(!UserParams { f_sq: 0.5, pd_min: 0.5, ..UserParams::default() }.curve_measured());
@@ -3496,6 +3839,52 @@ mod tests {
         e.reset_tracking();
         assert!(e.prev.is_none() && e.prev_p.is_none() && e.nopupil == 0);
         assert!(e.r_est.len() > 0 || e.cm_n > 0, "what belongs to the wear stays");
+    }
+
+    #[test]
+    fn a_calibrated_squint_depth_without_a_history_or_a_pupil_does_not_panic() {
+        // A user calibration after a wear calibration that missed the widening (so nothing went into the history):
+        // on the next start, the frames before the first pupil have no iris radius at all.
+        let mut e = EyeEngine::default();
+        let p = Params { user: Some(UserParams { sq_depth: Some(0.6), ..UserParams::default() }), ..Params::default() };
+        let (blank, small) = (disc_frame(None), disc_frame(Some((250.0, 200.0, 20.0))));
+        let mut t = 0.0;
+        for img in [&blank, &small] {
+            for _ in 0..60 {
+                t += 1.0 / FPS;
+                let out = e.process(img, f64::NAN, t, &p);
+                assert!((0.0..=1.0).contains(&out.eye_squint), "{}", out.eye_squint);
+            }
+        }
+    }
+
+    #[test]
+    fn a_pupil_that_dilated_past_the_size_check_is_taken_again() {
+        // The open pupil learnt at radius 20; after a blink (the search prior dropped) it comes back 1.5 x larger (the
+        // world got darker): the open-eye check drops it for its size only, so it is taken after PUPIL_GROW_S and
+        // stays (before, the 20 s median of the pupils taken never caught up: no pupil until it shrank again).
+        let mut e = EyeEngine::default();
+        let p = Params::default();
+        let (small, large, blank) =
+            (disc_frame(Some((250.0, 200.0, 20.0))), disc_frame(Some((250.0, 200.0, 30.0))), disc_frame(None));
+        let mut t = 0.0;
+        let mut run = |e: &mut EyeEngine, img: &[u8], n: usize| -> Vec<bool> {
+            (0..n)
+                .map(|_| {
+                    t += 1.0 / FPS;
+                    e.process(img, f64::NAN, t, &p).f.ok_pupil
+                })
+                .collect()
+        };
+        assert!(run(&mut e, &small, 450).iter().all(|&ok| ok));
+        assert!(e.a_open.len() >= 30);
+        run(&mut e, &blank, 20);
+        assert!(e.prev.is_none(), "the blink dropped the prior");
+        let back = run(&mut e, &large, 180);
+        let first = back.iter().position(|&ok| ok).expect("taken again");
+        assert!(first <= frames_in(PUPIL_GROW_S, FPS, 2) as usize, "{first}");
+        assert!(back[first..].iter().all(|&ok| ok), "and kept");
+        assert!(e.a_open.value > 25.0, "the open pupil's size starts over: {}", e.a_open.value);
     }
 
     #[test]
@@ -3609,6 +3998,113 @@ mod tests {
             last = Some(o);
         }
         (any, last.unwrap())
+    }
+
+    #[test]
+    fn an_iris_radius_far_too_large_for_the_pupil_switches_the_wear_to_the_first_rise() {
+        // A pupil of radius 12 in an iris of radius 40 (60 on sclera 120), and a band of 200 from x 330: the band's edge
+        // is the strongest rise toward large x, 80 px out.
+        let mut img = vec![120u8; vision::W * vision::H];
+        for y in 0..vision::H {
+            for x in 0..vision::W {
+                let d = (x as f64 - 250.0).hypot(y as f64 - 200.0);
+                img[y * vision::W + x] = if x >= 350 {
+                    4
+                } else if x >= 330 {
+                    200
+                } else if d < 12.0 {
+                    12
+                } else if d < 40.0 {
+                    60
+                } else {
+                    120
+                };
+            }
+        }
+        let p = Params::default();
+        let mut e = EyeEngine::default();
+        let (mut switched_at, mut before) = (None, f64::NAN);
+        for k in 0..200 {
+            let o = e.process(&img, f64::NAN, k as f64 / FPS, &p);
+            assert!(o.f.ok_pupil);
+            if !e.iris_first {
+                before = o.f.iris_r;
+            } else if switched_at.is_none() {
+                switched_at = Some(k);
+                assert!((before - 80.0).abs() < 4.0, "the fits before: {before}");
+                assert!(e.box_open.len() <= 1, "the open box level is learnt again: {}", e.box_open.len());
+            }
+        }
+        assert!(switched_at.is_some_and(|k| k < 100), "{switched_at:?}");
+        assert!((e.r_est.value - 40.0).abs() < 3.0, "learnt again from the first rise: {}", e.r_est.value);
+        // A plausible radius leaves the wear as built.
+        let (e, _, _) = seen_at((250.0, 200.0), Tune::default());
+        assert!(!e.iris_first && !e.ex.iris_first);
+    }
+
+    #[test]
+    fn a_lower_line_at_the_far_edge_of_its_band_keeps_the_last_lower_lid() {
+        // Open: the lower lid is the sclera -> skin step at row 270.
+        let (mut e, p, t) = seen_at((250.0, 200.0), Tune::default());
+        let o = e.process(&lid_frame(Some((250.0, 200.0)), true), f64::NAN, t + 1.0 / FPS, &p);
+        assert!(o.f.ok_pupil && !o.f.lower_edge && (o.f.lower_y - 270.0).abs() < 3.0, "{:?}", o.f);
+        let held = o.f.lower_y;
+        // Closed (lid skin all over), with a darker stretch whose lower end is the lower band's last row: that line is
+        // no lower lid, the last one is used.
+        let bottom = (200.0 + 1.9 * e.r_est.value) as usize;
+        let mut shut = lid_frame(None, false);
+        for y in bottom - 40..bottom {
+            for x in 0..350 {
+                shut[y * vision::W + x] = 110;
+            }
+        }
+        let (_, o) = closes(&mut e, &p, t + 2.0 / FPS, &shut);
+        assert!(o.f.lower_edge && o.f.lower_y == held, "{:?}", o.f);
+        // A lower line inside the band without the pupil is used as it is, and not kept.
+        let mut shut = lid_frame(None, false);
+        for y in 200..250 {
+            for x in 0..350 {
+                shut[y * vision::W + x] = 110;
+            }
+        }
+        let (_, o) = closes(&mut e, &p, t + 20.0 / FPS, &shut);
+        assert!(!o.f.lower_edge && (o.f.lower_y - 250.0).abs() < 3.0, "{:?}", o.f);
+        assert_eq!(e.last_lower, held);
+        // A new calibration's clean search forgets it.
+        e.reset_tracking();
+        assert!(e.last_lower.is_nan());
+    }
+
+    #[test]
+    fn a_lower_line_found_without_the_pupil_far_below_the_last_one_keeps_the_last_one() {
+        // Open with the lower lid at row 233 (0.6 r below the pupil's centre).
+        let p = Params::default();
+        let mut e = EyeEngine::default();
+        let open = lid_frame_between(Some((250.0, 200.0)), 130..233);
+        let mut t = 0.0;
+        for k in 0..100 {
+            t = k as f64 / FPS;
+            let o = e.process(&open, f64::NAN, t, &p);
+            assert!(o.f.ok_pupil && !o.f.lower_edge, "frame {k}: {:?}", o.f);
+        }
+        let held = e.last_lower;
+        let r = e.r_est.value;
+        assert!((held - 233.0).abs() < 3.0 && r.is_finite(), "{held} {r}");
+        // Closed, with the only dark -> bright step 1.0 r below it (inside the band, off its far edge): the last line.
+        let step = |row: usize| {
+            let mut shut = lid_frame(None, false);
+            for y in row - 35..row {
+                for x in 0..350 {
+                    shut[y * vision::W + x] = 110;
+                }
+            }
+            shut
+        };
+        let (_, o) = closes(&mut e, &p, t, &step((held + r) as usize));
+        assert!(o.f.lower_edge && o.f.lower_y == held, "{:?}", o.f);
+        // 0.7 r below it: a lower line.
+        let (_, o) = closes(&mut e, &p, t + 0.2, &step((held + 0.7 * r) as usize));
+        assert!(!o.f.lower_edge && (o.f.lower_y - (held + 0.7 * r)).abs() < 3.0, "{:?}", o.f);
     }
 
     #[test]

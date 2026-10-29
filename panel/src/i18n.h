@@ -66,6 +66,9 @@ struct UiText {
     const char* previewSourceCamera;    ///< ...the eye camera's own
     const char* previewMirror;          ///< the switch that shows the eyes as in a mirror (off: seen from the front)
     const char* previewPicture;         ///< the switch for the eye cameras' pictures
+    const char* previewMarkLids;        ///< the switches for the marks over them: the eyelids' (and their value)...
+    const char* previewMarkPupil;       ///< ...the ring on the pupil...
+    const char* previewMarkWindow;      ///< ...the frame the pupil is looked for in
     const char* previewFreeze;          ///< stop the drawing where it is
     const char* previewResume;          ///< ...and let it move again
     const char* previewLidFormat;       ///< an eye's chip: its eyelid (%.2f)
@@ -74,6 +77,7 @@ struct UiText {
     const char* previewPupilFormat;     ///< an eye's chip: its pupil (%.1f mm)
     const char* previewPupilNone;       ///< ...without one
     const char* previewClosed;          ///< on a camera picture: eyecam-rec reads the eye closed
+    const char* previewPictureLidFormat;  ///< on a camera picture: the eyelid eyecam-rec sent for it (%.2f)
     const char* previewGazeFormat;      ///< the footer: the gaze (%+.0f sideways, %+.0f up / down, in degrees)
     const char* previewNotePicture;     ///< the footer while the pictures show: only shown, what the marks are
     const char* previewNoteShape;       ///< ...otherwise: avatars' eyes differ, it is for the movement
@@ -226,6 +230,8 @@ struct UiText {
     const char* rowIndependent;
     const char* hintIndependent;
     const char* hintIndependentOneEye;  ///< instead, while the Frame tracks one eye alone (both eyes get its gaze)
+    const char* rowOwnEyeGaze;        ///< under it: how much of each eye's own sideways gaze (own_eye_gaze)...
+    const char* hintOwnEyeGaze;       ///< ...and what 0 % and 100 % do, beside the stepper
     const char* rowQuality;
     const char* hintQuality;
     const char* rowDespike;
@@ -241,6 +247,7 @@ struct UiText {
     const char* fitIntro;            ///< before any fit (fitHowTo follows it)
     const char* fitNeedsRunning;
     const char* fitLocked;
+    const char* fitCamerasCalibrating;  ///< the fit buttons grey while the eye cameras calibrate
     const char* fitRunningTitle;     ///< while a fit runs: the one calm line ("Look at the dot")...
     const char* fitHowTo;            ///< ...and under it, what to do (full fit)
     const char* fitHowToCenter;      ///< (re-centering)
@@ -598,6 +605,8 @@ struct UiText {
     const char* eyecamStepSquint;
     const char* eyecamStepLookUp;
     const char* eyecamStepLookDown;
+    const char* eyecamStepLookLeft;   ///< (as the wearer sees it)
+    const char* eyecamStepLookRight;
     const char* eyecamStepBright;
     const char* eyecamStepDark;
     const char* eyecamStepEnd;
@@ -706,6 +715,8 @@ struct UiText {
     const char* setupChipSquint;  ///< ...the user calibration's
     const char* setupChipLookUp;
     const char* setupChipLookDown;
+    const char* setupChipLookLeft;
+    const char* setupChipLookRight;
     const char* setupChipBright;  ///< ...a recording's (the developer recording on the Advanced tab) besides these
     const char* setupChipDark;
     const char* eyecamChipsMoreFormat;  ///< after a recording's chips, the steps left out at the end ("+%d")
@@ -879,6 +890,77 @@ struct UiText {
     const char* devTitle;  ///< Advanced tab: the developer section (eye recording)
     const char* devRecord;  ///< ...its row
     const char* devRecordHint;
+    // "Record for squint training" (contrib.h): its row on Debug tools, and its sheet
+    const char* contribRow;          ///< the row's title, and the sheet's
+    const char* contribRowHint;      ///< ...under the title
+    const char* contribAbout;        ///< the sheet's line under its title: what it is for
+    const char* contribRecord;       ///< ...its "Record" button
+    const char* contribRecordings;   ///< ...its "Recordings" button (the folder: pack, delete)
+    const char* contribRowIntroFormat;  ///< ...beside them before the first (%s: one recording's size)
+    const char* contribRowCountFormat;  ///< ...after it (%d recordings, %s their size)
+    const char* contribRowNotSetUp;  ///< ...before the eye cameras are set up (the buttons greyed out)
+    const char* contribLead;         ///< the consent: what it is for, and that it is optional
+    const char* contribWhatTitle;    ///< ...what is recorded
+    const char* contribWhatFormat;   ///< ...(%s: one recording's size)
+    const char* contribUseTitle;     ///< ...how it is used
+    const char* contribUse;
+    const char* contribRemoveTitle;  ///< ...deleting it later
+    const char* contribRemove;
+    const char* contribSendTitle;    ///< ...how to send it
+    const char* contribSendNote;     ///< ...a private share link (Google Drive or similar), never anywhere public
+                                     ///< (also on the end's screen)
+    const char* contribNote;         ///< ...no light, how long
+    const char* contribAgree;        ///< ...its button
+    const char* contribCancel;       ///< ...and closing without it
+    const char* contribDeleted;      ///< the consent again, right after the recordings were deleted
+    const char* contribEyewearTitle; ///< glasses or inserts?
+    const char* contribEyewearWhy;   ///< ...what the answer is for
+    const char* contribEyewear[4];   ///< ...the answers: neither, glasses, inserts, prefer not to say
+    const char* contribBack;         ///< ...back to the consent
+    const char* contribReadyTitle;   ///< the recording's start: its title
+    const char* contribTips[5];      ///< ...what to do (the squint: as in bright light, not closing)
+    const char* contribCountFormat;  ///< ...and on the end: how many so far (%d) and their size (%s)
+    const char* contribSpaceFormat;  ///< ...the free space (%s free, %s one recording)
+    const char* contribStart;        ///< ...its button
+    const char* contribNoSpaceFormat;  ///< ...the recording doesn't fit (%s needed)
+    const char* contribWaitEyecam;   ///< ...eyecam-rec busy with something else
+    const char* contribNoEyeData;    ///< ...frameeyeosc not running or no eye data (Valve's values are recorded too)
+    const char* contribFailedTitle;  ///< a try that didn't finish
+    const char* contribWhyStopped;
+    const char* contribWhyErrorFormat;    ///< (%s: eyecam-rec's message)
+    const char* contribWhyRefusedFormat;  ///< (%s: its reply)
+    const char* contribWhyGone;
+    const char* contribWhyNoStart;
+    const char* contribWhyMissing;
+    const char* contribWhyMoveFormat;     ///< (%s: why)
+    const char* contribWhyIncompleteFormat;  ///< (%s: the files missing)
+    const char* contribWhyNoVideoFormat;     ///< (%s: the eye without frames: leftEye, rightEye or contribBothEyes)
+    const char* contribBothEyes;             ///< ...both
+    const char* contribWhyUnevenFormat;      ///< (%s, %s: the left eye's and the right eye's frames)
+    const char* contribWhyTruncatedFormat;   ///< (%s: the raw files cut short)
+    const char* contribWhyValveFormat;       ///< (%s: the share of frames with Valve's values, "42%")
+    const char* contribKept;         ///< ...its part went to aborted/
+    const char* contribRetry;
+    const char* contribDoneTitle;    ///< recorded
+    const char* contribManageTitle;  ///< the same screen from "Recordings"
+    const char* contribWhereFormat;  ///< (%s: the folder)
+    const char* contribAgain;        ///< ...another day or after re-wearing helps more
+    const char* contribNext;         ///< ...what to do with it
+    const char* contribPack;         ///< "Make one file"
+    const char* contribPackHintFormat;   ///< ...beside it (%s: the size it needs free)
+    const char* contribPackFormatNote;   ///< ...under it: what the file is, and what opens it
+    const char* contribPackingFormat;    ///< ...while packing (%d %)
+    const char* contribPackedFormat;     ///< ...done (%s recordings, %s its size; its name under it)
+    const char* contribPackFailedFormat; ///< ...failed (%s why)
+    const char* contribPackNoSpaceFormat;  ///< ...not enough space (%s needed)
+    const char* contribIncompleteFormat;   ///< ...recordings it left out, not usable (%s: their names)
+    const char* contribDelete;       ///< "Delete the recordings"
+    const char* contribClose;        ///< the end's "Close"
+    const char* contribDeleteTitle;  ///< ...the delete's confirmation
+    const char* contribDeleteFormat; ///< ...(%s folder, %s size)
+    const char* contribDeleteYes;
+    const char* contribDeleting;
+    const char* contribErrorFormat;  ///< something on the disk failed (%s why)
     const char* rowPrefix;
     const char* prefixNone;
     const char* prefixExample;      ///< "e.g." before an OSC address

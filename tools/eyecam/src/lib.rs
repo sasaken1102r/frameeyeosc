@@ -26,3 +26,10 @@ pub fn now_raw() -> f64 {
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC_RAW, &mut ts) };
     ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
 }
+
+/// CLOCK_BOOTTIME in seconds: like the monotonic clocks, but counting the time the Frame was suspended.
+pub fn now_boot() -> f64 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) };
+    ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+}

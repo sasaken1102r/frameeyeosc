@@ -39,6 +39,19 @@ const MAX_CANDIDATES: usize = 3;
 const EDGE_LEFT_SHARE: f64 = 0.4;
 /// The second search without the prior only looks at blobs at least this far (px) from it.
 const RETRY_MIN_JUMP: f64 = 40.0;
+/// The iris radius's rays toward large x take the strongest dark -> bright rise. Where something brighter than the
+/// sclera lies beyond it (a prescription insert's glare band that is not saturated, so `glare_columns` does not see
+/// it), that edge can be the stronger one and the radius comes out far too large: issue 38's right eye was calibrated
+/// at R 88 px (left 40.8, its pupil 1.2 x the left one's), which doubles the iris box and the lid bands. With
+/// `Extractor::iris_first` an earlier rise at least IRIS_FIRST_SHARE as strong, the gradient falling below IRIS_VALLEY
+/// of it in between, is taken as the limbus instead.
+/// Replays with the first-rise fit on from the start (26 recordings, a picture shifted up 25 px with a nasal band of
+/// 235 from x 300 that pulls the fit out to a median of 79 / 75 px, against 61 / 54 without): at 0.35 the radius came
+/// back to 62 / 58 px, closes missed in free use 1.27 -> 0.84 a minute, squint 0.81 -> 0.87, widen 0.72 -> 0.80, but
+/// false half-shut 5.3% -> 7.9%; at 0.5, 73 / 68 px and 1.06 a minute. On the original recordings it changed little
+/// (closes missed 0.39 -> 0.40 a minute), and the switch itself never happens there.
+const IRIS_FIRST_SHARE: f64 = 0.35;
+const IRIS_VALLEY: f64 = 0.5;
 /// A pupil from the extended search (`Search::find_x_min`) must have its small-x (temporal) edge left of `x_min` +
 /// this many px: one further in is for the search inside `x_min` to find, and is not taken from the extended one (the
 /// same distance as `live::EDGE_LOST_PX`).
@@ -55,6 +68,35 @@ const EXT_MAX_A: f64 = 60.0;
 /// Not without the pupil: a closing lid really does come down to the band's bottom.
 pub const LID_EDGE_SHARE: f64 = 0.5;
 const LID_EDGE_ROWS: usize = 1;
+/// The lower lid line has the same rule at the far (bottom) edge of its band only, with or without the pupil: a line
+/// pushed against cy + 1.9 r is no lower lid, while a closing eye's lines do meet at the band's top. The developer's
+/// recordings: lower lines with the pupil within 0.40 .. 1.44 r of its centre, without it 0.19% of frames past 1.8 r.
+/// The engine uses the last lower line seen with the pupil instead (and for one found without the pupil far below it,
+/// live::LOWER_DROP_MAX).
+/// And the upper line cannot be below the pupil's centre while the pupil is seen whole (UPPER_WHOLE_VIS of its rays
+/// reach its edge: a lid that low hides its upper half): the same wearer's left eye had its upper line at -0.25 r, under
+/// the centre, on more than half of its widen frames; the developer's recordings, 0.001% of such frames.
+const UPPER_WHOLE_VIS: f64 = 0.75;
+/// With the pupil seen whole, a line found lower than ABOVE_PUPIL_B of its minor semi-axis above its centre is searched
+/// for again above the pupil (rows from the band's top to ABOVE_PUPIL_PX px above the pupil), and the line found there
+/// replaces it if it is not pushed against that band's edge and its inlier share is at least the first one's: a
+/// stronger bright -> dark step lower down took the search there. It was 0.5 b up to 0.8.2-beta.3: on a wide-open eye
+/// the first line can sit on the pupil's own blurred top edge, 1.05 to 1.21 b above its centre (two recordings from
+/// someone wearing prescription inserts, 2026-10-25: the failing widen frames' lines, the median at 1.13 b), which 0.5
+/// b never searched again, and the widened eye read half-shut (EyeLid under 0.5 in 37.1% / 15.8% of the widen frames,
+/// left / right; 5.0% / 3.6% at 1.2 b, widen recall 0.592 -> 0.917). On the developer's 26 recordings and 10
+/// calibrations 1.2 b changes none of the outputs' measures (half-shut, squint, blinks); higher, the search runs on
+/// more and more shallow squints, where a lid that grazes the pupil's top (vis still over UPPER_WHOLE_VIS) has its edge
+/// outside the second band, which then takes a crease or the lashes above: at 1.3 b on 61% of the developer's squint
+/// frames, and 1.4 b loses 0.47 pt of squint and a blink.
+/// A tester with lens inserts (a recording of 2026-10-23, a brightly lit sclera and glints from the inserts, long upper
+/// lashes) had the line under the pupil's centre in 76% / 77% of the normal frames and 86% / 96% of the widen frames,
+/// and most of the rest just above the centre: live read the widened eye as nearly shut (skin line 0.05 R), and its
+/// wear calibration had a line in 368 / 350 of 1512 normal frames. Searched above the pupil, the line is on the lid's
+/// edge in the normal frames (0.83 / 0.76, in 1419 / 1501 of them) and on the lid's edge or the iris's top when widened
+/// (1.35 / 1.26): a widen step of 0.52 / 0.51.
+const ABOVE_PUPIL_PX: f64 = 2.0;
+const ABOVE_PUPIL_B: f64 = 1.2;
 /// The calibration's second, higher search band for a widened upper lid (`Extractor::upper_high`): rows from
 /// cy - HIGH_BAND.0 r to cy - HIGH_BAND.1 r (the usual band is cy - 2.1 r .. cy + 0.45 r). See live::widen_fit.
 pub const HIGH_BAND: (f64, f64) = (3.2, 1.6);
@@ -208,14 +250,17 @@ pub struct Pupil {
 }
 
 /// One lid line: quadratic over the iris columns, its height at the pupil column, inlier share, edge strength, and
-/// the share of its inliers on the search band's first or last rows (LID_EDGE_SHARE).
+/// the share of its inliers on the search band's first or last rows (LID_EDGE_SHARE), and on its last rows only.
 #[derive(Clone, Copy, Debug)]
 struct Lid {
     coef: Quad,
+    /// The first and last of the columns it was fitted over.
+    cols: (f64, f64),
     y_at: f64,
     frac: f64,
     grad: f64,
     edge: f64,
+    edge_far: f64,
 }
 
 impl Lid {
@@ -223,6 +268,25 @@ impl Lid {
     fn on_edge(&self) -> bool {
         self.edge >= LID_EDGE_SHARE
     }
+
+    /// Pushed against its band's far (last) rows: no lower line.
+    fn on_far_edge(&self) -> bool {
+        self.edge_far >= LID_EDGE_SHARE
+    }
+
+    /// Its shape, for the eye preview.
+    fn curve(&self) -> LidCurve {
+        LidCurve { coef: self.coef, x0: self.cols.0, x1: self.cols.1 }
+    }
+}
+
+/// A lid line's shape over the columns it was fitted on (px), only for the panel's eye preview (preview.rs): nothing
+/// measured is taken from it.
+#[derive(Clone, Copy, Debug)]
+pub struct LidCurve {
+    pub coef: Quad,
+    pub x0: f64,
+    pub x1: f64,
 }
 
 /// The per-frame features (NaN = not measured), named as in the prototype's CSV.
@@ -242,9 +306,16 @@ pub struct Features {
     pub upper_frac: f64,
     pub lower_frac: f64,
     pub box_mean: f64,
-    /// The pupil was seen, and the upper lid line found was pushed against its band's edge (LID_EDGE_SHARE): left out,
-    /// the upper lid has no line on this frame.
+    /// The pupil was seen, and the upper lid line found was pushed against its band's edge (LID_EDGE_SHARE) or lay below
+    /// the centre of a pupil seen whole (UPPER_WHOLE_VIS): left out, the upper lid has no line on this frame.
     pub upper_edge: bool,
+    /// The lower lid line found was pushed against its band's far edge: left out, no lower line on this frame (live also
+    /// sets it when it replaces a line found far below the last one, live::LOWER_DROP_MAX).
+    pub lower_edge: bool,
+    /// The shapes of the upper lid's skin line and the lower lid's line, set with `upper_skin_y` / `lower_y` (for the
+    /// eye preview only).
+    pub upper_curve: Option<LidCurve>,
+    pub lower_curve: Option<LidCurve>,
     /// How the search went (not part of the prototype's features).
     pub diag: Diag,
 }
@@ -269,6 +340,9 @@ impl Default for Features {
             lower_frac: n,
             box_mean: n,
             upper_edge: false,
+            lower_edge: false,
+            upper_curve: None,
+            lower_curve: None,
         }
     }
 }
@@ -504,6 +578,9 @@ pub struct Extractor {
     lid_r: f64,
     /// The grey steps' scale for this wear (live sets it from the column means; as built by default).
     pub levels: Levels,
+    /// The iris radius takes the first rise out of the iris toward large x, not the strongest (IRIS_FIRST_SHARE; live
+    /// sets it for a wear whose radius is implausible for its pupil).
+    pub iris_first: bool,
 }
 
 impl Default for Extractor {
@@ -513,6 +590,7 @@ impl Default for Extractor {
             search: Search::LEGACY,
             opf_x0: OPF_X0,
             lid_r: f64::NAN,
+            iris_first: false,
             levels: Levels::AS_BUILT,
             op: Vec::new(),
             opf: Vec::new(),
@@ -598,15 +676,18 @@ impl Extractor {
             let Some(q) = prev_p else { return (f, None) };
             let rn = r_ref.unwrap_or(2.0 * q.a);
             f.box_mean = self.box_mean(q.cx, q.cy, rn, xmax);
-            let (upper, lower, margin) = self.lids(q, rn, xmax);
+            let (upper, lower, margin) = self.lids(q, rn, xmax, false);
             if let Some(u) = upper {
                 f.upper_skin_y = u.y_at;
                 f.upper_y = u.y_at + margin.unwrap_or(MARGIN_OFF);
                 f.upper_frac = u.frac;
+                f.upper_curve = Some(u.curve());
             }
-            if let Some(l) = lower {
+            f.lower_edge = lower.is_some_and(|l| l.on_far_edge());
+            if let Some(l) = lower.filter(|l| !l.on_far_edge()) {
                 f.lower_y = l.y_at;
                 f.lower_frac = l.frac;
+                f.lower_curve = Some(l.curve());
             }
             return (f, None);
         };
@@ -619,16 +700,20 @@ impl Extractor {
         f.iris_r = r;
         f.iris_n = n;
         let rn = r_ref.unwrap_or(if r.is_finite() { r } else { 2.0 * p.a });
-        let (upper, lower, margin) = self.lids(&p, rn, xmax);
-        f.upper_edge = upper.is_some_and(|u| u.on_edge());
-        if let Some(u) = upper.filter(|u| !u.on_edge()) {
+        let (upper, lower, margin) = self.lids(&p, rn, xmax, p.vis >= UPPER_WHOLE_VIS);
+        let no_line = |u: &Lid| u.on_edge() || (p.vis >= UPPER_WHOLE_VIS && u.y_at > p.cy);
+        f.upper_edge = upper.is_some_and(|u| no_line(&u));
+        if let Some(u) = upper.filter(|u| !no_line(u)) {
             f.upper_skin_y = u.y_at;
             f.upper_y = u.y_at + margin.unwrap_or(MARGIN_OFF);
             f.upper_frac = u.frac;
+            f.upper_curve = Some(u.curve());
         }
-        if let Some(l) = lower {
+        f.lower_edge = lower.is_some_and(|l| l.on_far_edge());
+        if let Some(l) = lower.filter(|l| !l.on_far_edge()) {
             f.lower_y = l.y_at;
             f.lower_frac = l.frac;
+            f.lower_curve = Some(l.curve());
         }
         f.box_mean = self.box_mean(p.cx, p.cy, rn, xmax);
         (f, Some(p))
@@ -901,8 +986,24 @@ impl Extractor {
                     k = i;
                 }
             }
-            if gg[k] < self.levels.step(if large_x { 12.0 } else { 9.0 }) {
+            let th = self.levels.step(if large_x { 12.0 } else { 9.0 });
+            if gg[k] < th {
                 continue;
+            }
+            // Toward large x the limbus is the first rise out of the iris: an earlier rise of its own (the gradient
+            // falls back below IRIS_VALLEY of it before the strongest) at least IRIS_FIRST_SHARE as strong is the
+            // limbus, and the strongest one an edge beyond the sclera (IRIS_FIRST_SHARE).
+            if self.iris_first
+                && large_x
+                && let Some(i) = (3..k).find(|&i| {
+                    gg[i] >= th
+                        && gg[i] >= IRIS_FIRST_SHARE * gg[k]
+                        && gg[i] >= gg[i - 1]
+                        && gg[i] >= gg[i + 1]
+                        && gg[i + 1..k].iter().any(|&g| g < IRIS_VALLEY * gg[i])
+                })
+            {
+                k = i;
             }
             let r = rok[k + 1] + 0.375;
             let v = (d.0 * r, d.1 * r);
@@ -935,8 +1036,9 @@ impl Extractor {
     }
 
     /// Upper lid skin line (bright skin -> dark going down), its margin offset, and the lower lid (dark -> bright),
-    /// over the iris columns with the pupil masked (feat2.lids, base variant).
-    fn lids(&mut self, p: &Pupil, r: f64, xmax: f64) -> (Option<Lid>, Option<Lid>, Option<f64>) {
+    /// over the iris columns with the pupil masked (feat2.lids, base variant). `whole`: the pupil `p` is this frame's
+    /// and seen whole (ABOVE_PUPIL_PX).
+    fn lids(&mut self, p: &Pupil, r: f64, xmax: f64, whole: bool) -> (Option<Lid>, Option<Lid>, Option<f64>) {
         self.lid_r = r;
         let cy = p.cy;
         let (xa, xb) = self.lid_cols(p, r, xmax);
@@ -961,7 +1063,13 @@ impl Extractor {
             };
             *slot = self.lid_line(p, (xa, xb), (ya, yb), gy_ok, which == 0);
         }
-        let [upper, lower] = out;
+        let [mut upper, lower] = out;
+        if whole && let Some(low) = upper.filter(|u| !u.on_edge() && u.y_at > cy - ABOVE_PUPIL_B * p.b) {
+            let band = (pint((cy - 2.1 * r).max(4.0)), pint(cy - p.b - ABOVE_PUPIL_PX));
+            if let Some(u) = self.lid_line(p, (xa, xb), band, gy_ok, true).filter(|u| !u.on_edge() && u.frac >= low.frac) {
+                upper = Some(u);
+            }
+        }
         let margin = upper.and_then(|u| self.margin(p, &u, xa, xb, gy_ok));
         (upper, lower, margin)
     }
@@ -1010,7 +1118,9 @@ impl Extractor {
         let grad = if sw.is_empty() { 0.0 } else { vision::median(&mut sw) };
         let at_edge = path.iter().zip(&w).filter(|(y, k)| **k && (**y <= LID_EDGE_ROWS || **y + 1 + LID_EDGE_ROWS >= ny)).count();
         let edge = at_edge as f64 / n_in.max(1) as f64;
-        Some(Lid { coef, y_at: coef.at(p.cx), frac, grad, edge })
+        let at_far = path.iter().zip(&w).filter(|(y, k)| **k && **y + 1 + LID_EDGE_ROWS >= ny).count();
+        let edge_far = at_far as f64 / n_in.max(1) as f64;
+        Some(Lid { coef, cols: (xa as f64, (xb - 1) as f64), y_at: coef.at(p.cx), frac, grad, edge, edge_far })
     }
 
     /// The calibration's second search for a widened upper lid, on the frame `extract` just ran on (its pupil `p`):
@@ -1228,13 +1338,18 @@ mod tests {
 
     /// A pupil at (250, 200), radius 25, on skin that is 150 above row `step` and 120 from it down (no iris).
     fn eye_with_step(step: usize) -> Vec<u8> {
+        eye_with_step_r(step, 25.0)
+    }
+
+    /// `eye_with_step` with a pupil of radius `pr`.
+    fn eye_with_step_r(step: usize, pr: f64) -> Vec<u8> {
         let mut img = vec![0u8; W * H];
         for y in 0..H {
             for x in 0..W {
                 let d = (x as f64 - 250.0).hypot(y as f64 - 200.0);
                 img[y * W + x] = if x >= 350 {
                     4
-                } else if d < 25.0 {
+                } else if d < pr {
                     12
                 } else if y < step {
                     150
@@ -1256,6 +1371,7 @@ mod tests {
         let (f, p) = ex.extract(&eye_with_step(223), 347.0, None, Some(55.0), None);
         assert!(p.is_some() && f.ok_pupil && f.upper_edge, "{f:?}");
         assert!(f.upper_skin_y.is_nan() && f.upper_y.is_nan() && f.upper_frac.is_nan(), "{f:?}");
+        assert!(f.upper_curve.is_none(), "{f:?}");
         // The rows of a band as the path sees them: a line on its first two or last two rows is on the edge, one row
         // further in it is a line.
         let pupil = p.unwrap();
@@ -1278,6 +1394,169 @@ mod tests {
         assert!(ex.lid_line(&pupil, (150, 300), (100, 160), (100, 160), true).is_none());
     }
 
+    /// A pupil at (250, 200), radius 25, on grey 120 that turns 160 from row `step` down (a dark -> bright step: the
+    /// lower lid's kind) and 150 above row 150 (the upper lid's skin line).
+    fn eye_with_lower_step(step: usize) -> Vec<u8> {
+        let mut img = eye_with_step(150);
+        for y in step..H {
+            for x in 0..350 {
+                if (x as f64 - 250.0).hypot(y as f64 - 200.0) >= 25.0 {
+                    img[y * W + x] = 160;
+                }
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn a_lower_lid_line_pushed_against_the_far_edge_of_its_band_is_no_line() {
+        let mut ex = Extractor::default();
+        // Lids at R = 55: the lower band is rows 213..304. A step through the middle of it is the line.
+        let (f, p) = ex.extract(&eye_with_lower_step(260), 347.0, None, Some(55.0), None);
+        assert!(p.is_some() && !f.lower_edge && (f.lower_y - 260.0).abs() < 3.0, "{f:?}");
+        // The lines' shapes for the eye preview: the same lines, over the iris columns
+        let (up, low) = (f.upper_curve.expect("upper"), f.lower_curve.expect("lower"));
+        assert_eq!((up.coef.at(f.pupil_cx), low.coef.at(f.pupil_cx)), (f.upper_skin_y, f.lower_y));
+        assert!(up.x0 < f.pupil_cx && f.pupil_cx < up.x1 && (low.x0, low.x1) == (up.x0, up.x1), "{up:?}");
+        // The only step on the band's last rows: no lower line, with the pupil ...
+        let (f, p) = ex.extract(&eye_with_lower_step(304), 347.0, None, Some(55.0), None);
+        let pupil = p.expect("pupil");
+        assert!(f.ok_pupil && f.lower_edge && f.lower_y.is_nan() && f.lower_frac.is_nan(), "{f:?}");
+        assert!(f.lower_curve.is_none() && f.upper_curve.is_some(), "{f:?}");
+        assert!(!f.upper_edge && (f.upper_skin_y - 150.0).abs() < 3.0, "the upper line stays: {f:?}");
+        // ... and without it (measured where the last pupil was).
+        let blank = eye_with_lower_step(304).iter().map(|&v| if v == 12 { 120 } else { v }).collect::<Vec<u8>>();
+        let (f, p) = ex.extract(&blank, 347.0, Some((250.0, 200.0)), Some(55.0), Some(&pupil));
+        assert!(p.is_none() && f.lower_edge && f.lower_y.is_nan(), "{f:?}");
+        // Only the far edge counts for the lower line: on the band's first rows it is a line (a closing eye's lines
+        // meet there).
+        let mut at = |row: usize| {
+            ex.gy.iter_mut().for_each(|g| *g = 0);
+            for x in 150..300 {
+                ex.gy[row * W + x] = 100;
+            }
+            ex.lid_line(&pupil, (150, 300), (100, 160), (100, 160), false).map(|l| (l.y_at.round(), l.on_far_edge()))
+        };
+        assert_eq!(at(100), Some((100.0, false)));
+        assert_eq!(at(101), Some((101.0, false)));
+        assert_eq!(at(157), Some((157.0, false)));
+        assert_eq!(at(158), Some((158.0, true)));
+        assert_eq!(at(159), Some((159.0, true)));
+    }
+
+    #[test]
+    fn an_upper_lid_line_below_the_centre_of_a_whole_pupil_is_no_line() {
+        let mut ex = Extractor::default();
+        // A bright -> dark step 20 px below the centre of a pupil (radius 12) drawn whole: no upper lid line.
+        let (f, p) = ex.extract(&eye_with_step_r(220, 12.0), 347.0, None, Some(55.0), None);
+        let p = p.expect("pupil");
+        assert!(p.vis >= UPPER_WHOLE_VIS, "{p:?}");
+        assert!(f.upper_edge && f.upper_skin_y.is_nan() && f.upper_y.is_nan(), "{f:?}");
+        // Above the centre it is the line.
+        let (f, _) = ex.extract(&eye_with_step_r(180, 12.0), 347.0, None, Some(55.0), None);
+        assert!(!f.upper_edge && (f.upper_skin_y - 180.0).abs() < 3.0, "{f:?}");
+    }
+
+    #[test]
+    fn a_line_below_a_whole_pupils_top_is_searched_for_again_above_it() {
+        let mut ex = Extractor::default();
+        // A strong bright -> dark step 20 px below the centre (a brightly lit white of the eye over the lower lid) and a
+        // weaker one 50 px above it (the lid): the line is the one above the pupil.
+        let mut img = eye_with_step_r(220, 12.0);
+        for y in 0..150 {
+            for x in 0..350 {
+                if img[y * W + x] == 150 {
+                    img[y * W + x] = 170;
+                }
+            }
+        }
+        let (f, p) = ex.extract(&img, 347.0, None, Some(55.0), None);
+        assert!(p.expect("pupil").vis >= UPPER_WHOLE_VIS);
+        assert!(!f.upper_edge && (f.upper_skin_y - 150.0).abs() < 3.0, "{f:?}");
+        // Without a pupil this frame (measured where the last one was) there is no second search.
+        let pupil = p.unwrap();
+        let blank = img.iter().map(|&v| if v == 12 { 150 } else { v }).collect::<Vec<u8>>();
+        let (f, p) = ex.extract(&blank, 347.0, Some((250.0, 200.0)), Some(55.0), Some(&pupil));
+        assert!(p.is_none() && (f.upper_skin_y - 220.0).abs() < 3.0, "{f:?}");
+        // A line 2 px under ABOVE_PUPIL_B of the pupil's radius above its centre is searched for again too.
+        let low = (200.0 - ABOVE_PUPIL_B * 12.0 + 2.0).round() as usize;
+        let mut img = eye_with_step_r(low, 12.0);
+        for y in 0..150 {
+            for x in 0..350 {
+                if img[y * W + x] == 150 {
+                    img[y * W + x] = 170;
+                }
+            }
+        }
+        let (f, p) = ex.extract(&img, 347.0, None, Some(55.0), None);
+        let p = p.expect("pupil");
+        assert!(p.vis >= UPPER_WHOLE_VIS && (low as f64) > p.cy - ABOVE_PUPIL_B * p.b, "{p:?}");
+        assert!(!f.upper_edge && (f.upper_skin_y - 150.0).abs() < 3.0, "{f:?}");
+    }
+
+    #[test]
+    fn a_lid_above_the_search_again_line_stays_the_line() {
+        let mut ex = Extractor::default();
+        // The lid's step 3 px above ABOVE_PUPIL_B of a whole pupil's radius (12) above its centre (at 0.5 a lid that
+        // touches the pupil in a shallow squint), and a weaker crease 50 px above: the lid stays the line.
+        let step = (200.0 - ABOVE_PUPIL_B * 12.0 - 3.0).round() as usize;
+        let mut img = eye_with_step_r(step, 12.0);
+        for y in 0..150 {
+            for x in 0..350 {
+                if img[y * W + x] == 150 {
+                    img[y * W + x] = 165;
+                }
+            }
+        }
+        let (f, p) = ex.extract(&img, 347.0, None, Some(55.0), None);
+        let p = p.expect("pupil");
+        assert!(p.vis >= UPPER_WHOLE_VIS && (step as f64) < p.cy - ABOVE_PUPIL_B * p.b, "{p:?}");
+        assert!(!f.upper_edge && (f.upper_skin_y - step as f64).abs() < 3.0, "{f:?}");
+    }
+
+    /// Pupil (12, radius 18) at (230, 200) in an iris (70, radius 45) on sclera (120), a ring of brighter iris (85) at
+    /// radius 28..34, the lens edge band from x 350, and from x `band` on a band of `level` (not saturated).
+    fn eye_with_band(band: usize, level: u8) -> Vec<u8> {
+        let mut img = vec![120u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let d = (x as f64 - 230.0).hypot(y as f64 - 200.0);
+                img[y * W + x] = if x >= 350 {
+                    4
+                } else if x >= band {
+                    level
+                } else if d < 18.0 {
+                    12
+                } else if (28.0..34.0).contains(&d) {
+                    85
+                } else if d < 45.0 {
+                    70
+                } else {
+                    120
+                };
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn the_iris_radius_is_the_first_rise_out_of_the_iris_not_a_brighter_band_beyond() {
+        // As built the strongest rise is taken: the band's edge.
+        let mut ex = Extractor::default();
+        let (f, _) = ex.extract(&eye_with_band(305, 200), 347.0, None, None, None);
+        assert!(f.ok_pupil && (f.iris_r - 75.0).abs() < 3.0, "{f:?}");
+        let mut ex = Extractor { iris_first: true, ..Extractor::default() };
+        // No band: the limbus, not the fainter ring inside the iris.
+        let (f, _) = ex.extract(&eye_with_band(400, 0), 347.0, None, None, None);
+        assert!(f.ok_pupil && (f.iris_r - 45.0).abs() < 2.5, "{f:?}");
+        // A band 75 px out, brighter than the sclera: its edge is the strongest rise on the rays toward it, but the
+        // limbus comes first.
+        let (f, _) = ex.extract(&eye_with_band(305, 200), 347.0, None, None, None);
+        assert!(f.ok_pupil && (f.iris_r - 45.0).abs() < 2.5, "{f:?}");
+        // With the band right at the limbus there is one rise, the limbus's.
+        let (f, _) = ex.extract(&eye_with_band(275, 200), 347.0, None, None, None);
+        assert!(f.ok_pupil && (f.iris_r - 45.0).abs() < 2.5, "{f:?}");
+    }
     #[test]
     fn the_higher_band_finds_a_widened_lid_above_the_usual_one() {
         let mut ex = Extractor::default();

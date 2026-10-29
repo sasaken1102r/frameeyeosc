@@ -128,7 +128,18 @@ enum class PanelAction {
     PreviewSource,     ///< which values drive the drawn eyes: arg = eye_preview::Source (handled inside)
     PreviewMirror,     ///< show the eyes as in a mirror, or as seen from the front (handled inside)
     PreviewCamera,     ///< the eye cameras' pictures on / off (handled inside; the caller follows previewPictures)
+    PreviewMark,       ///< one of the marks over the pictures on / off: arg = eye_preview::Mark (handled inside)
     PreviewFreeze,     ///< stop the drawing where it is, or let it move again (handled inside)
+    ContribOpen,       ///< Debug tools' "Record for squint training": open its sheet, arg = contrib::Page (the panel
+                       ///< opens it; the caller forgets the last recording's end and failure)
+    ContribClose,      ///< its cross, "Cancel" or "Close" (handled inside)
+    ContribAgree,      ///< arg 1: "Agree and continue" (on to the question about glasses), 0: back (handled inside)
+    ContribEyewear,    ///< an answer about glasses: arg = contrib::Eyewear (the caller writes the consent)
+    ContribStart,      ///< "Start recording" (the caller sends its start to eyecam-rec)
+    ContribPack,       ///< "Make one file": the caller packs it on its worker
+    ContribDelete,     ///< "Delete the recordings": its confirmation (handled inside)
+    ContribDeleteCancel,   ///< ...closed without deleting (handled inside)
+    ContribDeleteConfirm,  ///< ...confirmed: the caller deletes the folder
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -375,6 +386,38 @@ public:
     /** @return true while the eye preview is open */
     bool previewOpen() const { return previewOpen_; }
 
+    /**
+     * Open "Record for squint training" on the Advanced tab, in place of its page (the tabs and the sub-tabs' presses
+     * close it), as its row's buttons do.
+     * @param page "Record" or "Recordings"
+     */
+    void openContrib(contrib::Page page);
+
+    /** Close it (and its confirmation). */
+    void closeContrib() {
+        contribOpen_ = false;
+        contribConfirm_ = false;
+        contribAgreed_ = false;
+    }
+
+    /** @return true while it shows */
+    bool contribOpen() const { return tab_ == PanelTab::Advanced && contribOpen_; }
+
+    /** @return how it was opened */
+    contrib::Page contribPage() const { return contribPage_; }
+
+    /** @return true once "Agree and continue" was pressed (the question about glasses shows) */
+    bool contribAgreed() const { return contribAgreed_; }
+
+    /**
+     * As if "Agree and continue" was pressed (for --fake-contrib).
+     * @param agreed pressed
+     */
+    void setContribAgreed(bool agreed) { contribAgreed_ = agreed; }
+
+    /** Open the confirmation before deleting (for --fake-contrib). */
+    void openContribDelete() { contribConfirm_ = true; }
+
     /** @return true while it wants the eye cameras' pictures (open, with its "Camera picture" on) */
     bool previewPictures() const { return previewOpen_ && previewCamera_; }
 
@@ -387,8 +430,13 @@ public:
      * @param mirror as in a mirror
      * @param camera the eye cameras' pictures
      * @param frozen stopped (at the model drawn next)
+     * @param marks which marks are drawn over the pictures
      */
-    void setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen);
+    void setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen,
+                           const eye_preview::Marks& marks);
+
+    /** @return which marks are drawn over the pictures */
+    const eye_preview::Marks& previewMarks() const { return previewMarks_; }
 
     /**
      * The widening sensitivity slider was let go of (once per release). It keeps showing that value until
@@ -446,7 +494,7 @@ public:
     /** @return true while the Advanced tab shows its sub-tabs and a page of them (nothing open over them) */
     bool advPageShown() const {
         return tab_ == PanelTab::Advanced && !historyOpen_ && !diagOpen_ && recordOpen_.empty() && !recordsAllOpen_ &&
-               !appsListOpen_;
+               !appsListOpen_ && !contribOpen_;
     }
 
     /**
@@ -539,6 +587,7 @@ public:
      */
     bool wantsScroll() const {
         if (tab_ != PanelTab::Advanced) return false;
+        if (contribOpen_) return false;
         if (appsListOpen_) return !appsConfirmOpen_ && appsScrollable_;
         if (historyOpen_) return true;
         if (diagOpen_ || !recordOpen_.empty()) return false;
@@ -708,6 +757,11 @@ private:
     bool previewCamera_ = false;        ///< ...with the eye cameras' pictures (off whenever the cameras can't give them)
     bool previewCameraKept_ = false;    ///< ...the pictures' switch as last pressed, for the next time it opens (this
                                         ///< run of the panel only; the cameras going away turns it off too)
+    eye_preview::Marks previewMarks_;   ///< ...which marks are drawn over them
+    bool contribOpen_ = false;         ///< "Record for squint training" is shown on the Advanced tab
+    contrib::Page contribPage_ = contrib::Page::Record;  ///< ...opened as "Record" or "Recordings"
+    bool contribAgreed_ = false;        ///< ..."Agree and continue" pressed (the question about glasses)
+    bool contribConfirm_ = false;       ///< ...with the confirmation before deleting
     bool previewFrozen_ = false;        ///< ...stopped where it was
     bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
     eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at
@@ -786,7 +840,7 @@ private:
 
     /**
      * One eye's camera picture, upright with its temporal side toward the sheet's outside, the search window
-     * and the found pupil on it, and "Read as closed"; "waiting" while there is none.
+     * and the found pupil on it, the lids' dots and their EyeLid, and "Read as closed"; "waiting" while there is none.
      * @param pen drawing tools
      * @param t texts
      * @param picture the picture
@@ -795,9 +849,11 @@ private:
      * @param y top
      * @param side its size (px)
      * @param flip mirrored left to right
+     * @param smooth the lid lines and EyeLid smoothed over the pictures (else as read: Raw)
+     * @param marks which marks to draw ("Read as closed" always is)
      */
     void drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
-                            double x, double y, double side, bool flip);
+                            double x, double y, double side, bool flip, bool smooth, const eye_preview::Marks& marks);
 
     /**
      * A switch as a pill: a check, bold and the accent while on.
@@ -1355,8 +1411,39 @@ private:
      * @param pen drawing tools
      * @param t texts
      * @param model the model (its eyecam view)
+     * @param title the section's title instead of the recording's ("" = its own; "Record for squint training")
      */
-    void drawRun(const Pen& pen, const UiText& t, const PanelModel& model);
+    void drawRun(const Pen& pen, const UiText& t, const PanelModel& model, const std::string& title = "");
+
+    /**
+     * "Record for squint training" (contrib::screen): the consent, the question about glasses, the start with what to
+     * do, the recording (drawRun, titled with it), a try that didn't finish, the end (how many, the folder, how to
+     * send it, pack, delete), and the confirmation before deleting. The title and the cross at the top.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (its contribution and eyecam view)
+     */
+    void drawContrib(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * The confirmation before deleting the contribution, over its sheet.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     */
+    void drawContribDelete(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
+     * Debug tools' "Record for squint training" row: "Record" and "Recordings" (only once the eye cameras are set up),
+     * and how many so far.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param y the row's top
+     * @param right the page's right edge
+     * @return its height
+     */
+    double drawContribRow(const Pen& pen, const UiText& t, const PanelModel& model, double y, double right);
 
     /**
      * The setup checklist: (1) a password, (2) the tool, (3) the eye movements, (4) done. Steps done in a row each

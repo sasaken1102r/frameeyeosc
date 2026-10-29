@@ -165,6 +165,8 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"eye preview: the brows (card)", kEyeBrow, kCard, ContrastKind::Ui},
         {"eye preview: the found pupil's circle (dark picture)", kPreviewPupil, kBg, ContrastKind::Ui},
         {"eye preview: the search window's frame (dark picture)", kPreviewWindow, kBg, ContrastKind::Ui},
+        {"eye preview: the upper lid's line (dark picture)", kPreviewLidUpper, kBg, ContrastKind::Ui},
+        {"eye preview: the lower lid's line (dark picture)", kPreviewLidLower, kBg, ContrastKind::Ui},
         {"eye preview: \"Read as closed\" on a picture (dark badge)", kText, kBg, ContrastKind::Text},
     };
     return pairs;

@@ -99,6 +99,8 @@ Step Watcher::update(double now, const Inputs& in) {
         }
     }
     wasRunning_ = in.running;
+    // (a calibration over: the next one is said again)
+    if (!in.camerasCalibrating) calibLogged_ = false;
     // How long an eye has read shut on Valve's eye server while tracked (a blink is not long enough)
     if (!(in.running && tracking_ && (in.valveShut[0] || in.valveShut[1]))) {
         shutSince_ = NAN;
@@ -144,6 +146,15 @@ Step Watcher::update(double now, const Inputs& in) {
     } else if (in.fitActive) {
         step.log = disarm("an eye fit was started");
     } else if (in.running && tracking_ && onFor_ >= kSettleSec && !dashboardOpen && now - closedAt_ >= kClosedSec) {
+        // Would start now, but the eye cameras are calibrating: the user looks where its steps say (up and down too),
+        // so the dot would pull the eyes away from them and measure the wrong look. Waits for its end, said once
+        if (in.camerasCalibrating) {
+            if (!calibLogged_) {
+                calibLogged_ = true;
+                step.log = "auto re-center: waiting for the eye cameras' calibration to end";
+            }
+            return step;
+        }
         // Would start now, but SteamVR's startup dashboard is still to come: started now, it would be stopped as it
         // opens. Said once
         if (startupWait_) {

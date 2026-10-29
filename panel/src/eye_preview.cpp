@@ -84,7 +84,114 @@ double orElse(double value, double fallback) {
     return std::isfinite(value) ? value : fallback;
 }
 
+/**
+ * A lid line from the file: its first and last column, then its rows there and halfway.
+ * @param data the bytes
+ * @param at where it starts
+ * @return the line (not present unless all five are numbers and it runs left to right)
+ */
+LidLine lidLineAt(const uint8_t* data, size_t at) {
+    LidLine line;
+    line.x0 = f32At(data, at);
+    line.x1 = f32At(data, at + 4);
+    for (int i = 0; i < 3; ++i) line.y[i] = f32At(data, at + 8 + i * 4);
+    line.present = std::isfinite(line.x0) && std::isfinite(line.x1) && line.x1 > line.x0 && std::isfinite(line.y[0]) &&
+                   std::isfinite(line.y[1]) && std::isfinite(line.y[2]);
+    return line;
+}
+
+/**
+ * Write a lid line as the file has it (NaN for one not present).
+ * @param data the bytes
+ * @param at where it starts
+ * @param line the line
+ */
+void putLidLine(std::vector<uint8_t>& data, size_t at, const LidLine& line) {
+    const double values[5] = {line.x0, line.x1, line.y[0], line.y[1], line.y[2]};
+    for (int i = 0; i < 5; ++i) put<float>(data, at + i * 4, line.present ? static_cast<float>(values[i]) : NAN);
+}
+
 }  // namespace
+
+double lidLineY(const LidLine& line, double x) {
+    // (Lagrange through the three rows: s 0 at x0, 0.5 halfway, 1 at x1)
+    const double s = (x - line.x0) / (line.x1 - line.x0);
+    return line.y[0] * (1 - s) * (1 - 2 * s) + line.y[1] * 4 * s * (1 - s) + line.y[2] * s * (2 * s - 1);
+}
+
+double OneEuro::step(double value, double t) {
+    if (!std::isfinite(value) || !std::isfinite(t)) {
+        started_ = false;
+        return value;
+    }
+    const double dt = t - t_;
+    if (!started_ || dt <= 0 || dt > kLidResetSec) {
+        started_ = true;
+        x_ = value;
+        dx_ = 0.0;
+        t_ = t;
+        return value;
+    }
+    t_ = t;
+    // (the share of the way a first-order low-pass at `cutoff` moves in dt)
+    const auto share = [dt](double cutoff) { return 1.0 / (1.0 + 1.0 / (2 * M_PI * cutoff * dt)); };
+    dx_ += share(dCutoff_) * ((value - x_) / dt - dx_);
+    x_ += share(minCutoff_ + beta_ * std::fabs(dx_)) * (value - x_);
+    return x_;
+}
+
+double LidFilter::step(double value, double t) {
+    if (!std::isfinite(value) || !std::isfinite(t)) {
+        reset();
+        return value;
+    }
+    // (the same starts over as the one-euro's, which follows them by itself)
+    if (count_ > 0 && (t - t_ <= 0 || t - t_ > kLidResetSec)) count_ = 0;
+    double median = value;
+    if (count_ == 2) median = std::max(std::min(last_[0], last_[1]), std::min(std::max(last_[0], last_[1]), value));
+    if (count_ == 2) last_[0] = last_[1];
+    last_[std::min(count_, 1)] = value;
+    count_ = std::min(count_ + 1, 2);
+    t_ = t;
+    return euro_.step(median, t);
+}
+
+void LidFilter::reset() {
+    count_ = 0;
+    euro_.reset();
+}
+
+void LidSmoother::take(Pictures& pictures) {
+    for (int e = 0; e < 2; ++e) {
+        Picture& p = pictures.eyes[e];
+        Eye& eye = eyes_[e];
+        if (!p.present || (p.count == eye.count && p.timeNs == eye.timeNs)) continue;
+        eye.count = p.count;
+        eye.timeNs = p.timeNs;
+        const double t = p.timeNs * 1e-9;
+        // Each line as a whole: none on this picture starts all of its filters over
+        const auto line = [t](const LidLine& in, LidFilter* filters) {
+            LidLine out = in;
+            if (!in.present) {
+                for (int i = 0; i < 5; ++i) filters[i].reset();
+                return out;
+            }
+            out.x0 = filters[0].step(in.x0, t);
+            out.x1 = filters[1].step(in.x1, t);
+            for (int i = 0; i < 3; ++i) out.y[i] = filters[2 + i].step(in.y[i], t);
+            return out;
+        };
+        p.smoothed.upper = line(p.upper, eye.upper);
+        p.smoothed.lower = line(p.lower, eye.lower);
+        if (!p.upper.present) eye.margin.reset();
+        p.smoothed.margin = p.upper.present ? eye.margin.step(p.margin, t) : p.margin;
+        p.smoothed.eyeLid = eye.eyeLid.step(p.eyeLid, t);
+    }
+}
+
+void LidSmoother::reset() {
+    for (Eye& eye : eyes_) eye = Eye();
+}
 
 Shown shown(const gaze_dots::Packet& packet, Source source, const CameraLids& lids) {
     Shown s;
@@ -194,6 +301,11 @@ bool parsePictures(const uint8_t* data, size_t size, Pictures& out, std::string&
         why = "shorter than its two pictures (" + std::to_string(size) + " bytes)";
         return false;
     }
+    // The lid lines, after both pictures, when the header says where (0 in an older eyecam-rec's file) and they fit
+    const size_t lidsAt = u32At(data, kLidsAtOffset);
+    const size_t lidSize = u32At(data, kLidSizeOffset);
+    const bool lids = lidsAt >= kHeaderSize + 2 * static_cast<size_t>(eyeSize) && lidSize >= kLidBytes &&
+                      lidsAt + 2 * lidSize <= size;
     Pictures pictures;
     pictures.on = u32At(data, 48) == 1;
     pictures.writerPid = u32At(data, 28);
@@ -214,6 +326,15 @@ bool parsePictures(const uint8_t* data, size_t size, Pictures& out, std::string&
         for (int i = 0; i < 4; ++i) p.window[i] = f32At(data, at + 32 + i * 4);
         p.side = static_cast<int>(width);
         p.pixels.assign(data + at + kEyeHeaderSize, data + at + eyeSize);
+        p.lids = lids;
+        if (lids) {
+            const size_t l = lidsAt + eye * lidSize;
+            p.eyeLid = f32At(data, l);
+            p.upper = lidLineAt(data, l + 4);
+            p.margin = f32At(data, l + 24);
+            p.lower = lidLineAt(data, l + 28);
+        }
+        p.smoothed = {p.upper, p.margin, p.lower, p.eyeLid};
     }
     out = std::move(pictures);
     return true;
@@ -221,8 +342,12 @@ bool parsePictures(const uint8_t* data, size_t size, Pictures& out, std::string&
 
 std::vector<uint8_t> encodePictures(const Pictures& pictures, int side) {
     const size_t eyeSize = kEyeHeaderSize + static_cast<size_t>(side) * side;
-    const size_t used = kHeaderSize + 2 * eyeSize;
+    const size_t lidsAt = kHeaderSize + 2 * eyeSize;
+    const size_t lidSize = 64;
+    const size_t used = lidsAt + 2 * lidSize;
     std::vector<uint8_t> data((used + 4095) / 4096 * 4096, 0);
+    put<uint32_t>(data, kLidsAtOffset, static_cast<uint32_t>(lidsAt));
+    put<uint32_t>(data, kLidSizeOffset, static_cast<uint32_t>(lidSize));
     put<uint32_t>(data, 0, kMagic);
     put<uint32_t>(data, 4, kVersion);
     put<uint32_t>(data, 8, kHeaderSize);
@@ -246,6 +371,11 @@ std::vector<uint8_t> encodePictures(const Pictures& pictures, int side) {
         if (p.pixels.size() == static_cast<size_t>(side) * side) {
             std::memcpy(data.data() + at + kEyeHeaderSize, p.pixels.data(), p.pixels.size());
         }
+        const size_t l = lidsAt + eye * lidSize;
+        put<float>(data, l, static_cast<float>(p.eyeLid));
+        putLidLine(data, l + 4, p.upper);
+        put<float>(data, l + 24, static_cast<float>(p.margin));
+        putLidLine(data, l + 28, p.lower);
     }
     return data;
 }
@@ -452,6 +582,21 @@ void fake(View& view, uint64_t nowNs) {
         const double window[4] = {93.0, 35.0, 173.0, 160.0};
         std::copy(window, window + 4, pic.window);
         pic.closed = false;
+        // Lid lines over the disc, the right eye's narrowed (its squint)
+        const double narrow = eye == 0 ? 0.0 : 9.0;
+        pic.lids = true;
+        pic.eyeLid = p.eyes[eye].cameraLid;
+        for (LidLine* line : {&pic.upper, &pic.lower}) {
+            line->present = true;
+            line->x0 = cx - 50;
+            line->x1 = cx + 56;
+        }
+        const double upper[3] = {cy - 22 + narrow, cy - 33 + narrow, cy - 20 + narrow};
+        const double lower[3] = {cy + 30 - narrow, cy + 36 - narrow, cy + 28 - narrow};
+        std::copy(upper, upper + 3, pic.upper.y);
+        std::copy(lower, lower + 3, pic.lower.y);
+        pic.margin = 4;
+        pic.smoothed = {pic.upper, pic.margin, pic.lower, pic.eyeLid};
     }
     view.hasPictures = true;
     view.nowNs = nowNs;

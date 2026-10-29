@@ -8,8 +8,9 @@
 // bar, the Eye fit tab while a fit runs (only "Stop" and the tabs), the icons in texts (measured and drawn in their
 // own boxes, never starting a line, cut whole), and the other Frame apps (the row at the bottom of "Version" and its
 // count, the list's rows by state, the confirmation's command and buttons, scrolling), and the eye preview (its button
-// in the left column, alone or beside a notice; its sheet's buttons, what closes it, freeze, without the cameras). Built with
-// the panel as panel-test (it renders offscreen with the panel's fonts) and
+// in the left column, alone or beside a notice; its sheet's buttons, what closes it, freeze, without the cameras), and
+// "Help train the AI" (its row on Debug tools, each screen's buttons, its recording, the delete's confirmation). Built
+// with the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
 #include "draw.h"
@@ -1064,6 +1065,8 @@ void testGazePages(const FontSet& fonts) {
                     for (const EyePanel::HitArea& area : locks) CHECK(area.w >= 44 && area.h >= 44);
                     if (reach && locked && locks.size() == 1) CHECK(locks[0].hit.arg == 1);
                     CHECK(hits(panel, PanelAction::SetBool, key::kIndependentEyes).size() == (reach && !locked ? 2u : 0u));
+                    // ...and under it each eye's own gaze, nothing to press while they don't (testOwnEyeGazeRow)
+                    CHECK(hits(panel, PanelAction::Step, key::kOwnEyeGaze).empty());
                     // Glitch guard: the hold, skipping unreliable gaze, the despike
                     CHECK(hits(panel, PanelAction::NumberOff, key::kGazeHoldBelow).size() ==
                           (glitch && !locked ? 1u : 0u));
@@ -1077,6 +1080,48 @@ void testGazePages(const FontSet& fonts) {
                         if (area.hit.action == PanelAction::Step) CHECK(area.w >= 44 && area.h >= 44);
                     }
                     CHECK(belowCard(panel) == plain);
+                }
+            }
+        }
+    }
+}
+
+/** own_eye_gaze (Gaze > Reach, "Own gaze per eye", under "Move eyes separately"): − / ＋ in steps of 5 % only while
+ *  the eyes move separately in v2 and it isn't locked; faded otherwise, in v1 with the button to that switch. Inside
+ *  the card in both languages. */
+void testOwnEyeGazeRow(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool independent : {false, true}) {
+            for (const bool v1 : {false, true}) {
+                for (const bool locked : {false, true}) {
+                    for (const double value : {0.0, 0.5, 1.0}) {
+                        PanelModel m = modelWith(Lids::Valve, false);
+                        m.language = language;
+                        m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
+                        m.config.root.set(key::kOwnEyeGaze, JsonValue::makeNumber(value));
+                        if (v1) m.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
+                        if (locked) m.status.locked.push_back(key::kOwnEyeGaze);
+                        EyePanel panel(fonts);
+                        panel.setTab(PanelTab::Gaze);
+                        panel.setGazePage(GazePage::Reach);
+                        panel.render(m);
+                        const std::vector<EyePanel::HitArea> steps = hits(panel, PanelAction::Step, key::kOwnEyeGaze);
+                        const bool usable = independent && !v1 && !locked;
+                        // At 0 % only ＋, at 100 % only −
+                        CHECK(steps.size() == (!usable ? 0u : (value > 0 && value < 1 ? 2u : 1u)));
+                        const std::vector<EyePanel::HitArea> separate =
+                            hits(panel, PanelAction::SetBool, key::kIndependentEyes);
+                        CHECK(separate.size() == 2);
+                        for (const EyePanel::HitArea& area : steps) {
+                            CHECK(area.w >= 44 && area.h >= 44 && area.x >= 400 && area.x + area.w <= 1176);
+                            CHECK(area.y > separate[0].y + separate[0].h && area.y + area.h <= 664);
+                        }
+                        int toVersion = 0;
+                        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AdvancedPage)) {
+                            if (area.x >= 400 && area.hit.arg == static_cast<int>(AdvPage::Version)) ++toVersion;
+                        }
+                        CHECK(toVersion == (v1 ? 1 : 0));
+                    }
                 }
             }
         }
@@ -1903,7 +1948,8 @@ void testFitRunning(const FontSet& fonts) {
         for (const EyePanel::HitArea& area : over.hitAreas()) {
             const PanelAction a = area.hit.action;
             CHECK(a == PanelAction::Tab || a == PanelAction::PreviewClose || a == PanelAction::PreviewSource ||
-                  a == PanelAction::PreviewMirror || a == PanelAction::PreviewFreeze || a == PanelAction::PreviewCamera);
+                  a == PanelAction::PreviewMirror || a == PanelAction::PreviewFreeze ||
+                  a == PanelAction::PreviewCamera || a == PanelAction::PreviewMark);
             CHECK(a == PanelAction::Tab || area.x >= 416);
         }
         // Its own buttons still work (the fit goes on behind it)
@@ -1979,6 +2025,24 @@ void testFitTabPolicy(const FontSet& fonts) {
     }
     // Everything on the page stays inside the card
     for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+    // While the eye cameras calibrate (the user looks up and down for it), neither fit can be pressed; the rest of the
+    // page can. Also from the moment the panel sent the calibration, before eyecam-rec says so
+    panel.setFitDetails(false);
+    m.eyecam.visible = true;
+    m.eyecam.status.state = eyecam::State::Calibrating;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::FitStart).empty() && hits(panel, PanelAction::FitCenter).empty());
+    CHECK(hits(panel, PanelAction::SetAutoRecenter).size() == 2 && hits(panel, PanelAction::FitDetails).size() == 1);
+    m.eyecam.status.state = eyecam::State::Idle;
+    m.eyecam.busy = true;
+    m.eyecam.busyCommand = eyecam::kCalibUserCommand;
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::FitStart).empty() && hits(panel, PanelAction::FitCenter).empty());
+    // Over: back
+    m.eyecam.busy = false;
+    m.eyecam.busyCommand.clear();
+    panel.render(m);
+    CHECK(hits(panel, PanelAction::FitStart).size() == 1 && hits(panel, PanelAction::FitCenter).size() == 1);
 }
 
 /**
@@ -2678,7 +2742,7 @@ bool overlaps(const EyePanel::HitArea& a, const EyePanel::HitArea& b) {
 }
 
 /**
- * The eye preview's own buttons (the cross, the choices, the switches, freeze) as last drawn.
+ * The eye preview's own buttons (the cross, the choices, the switches, freeze, the marks' switches) as last drawn.
  * @param panel the panel
  * @return them
  */
@@ -2687,7 +2751,7 @@ std::vector<EyePanel::HitArea> previewButtons(const EyePanel& panel) {
     for (const EyePanel::HitArea& area : panel.hitAreas()) {
         const PanelAction a = area.hit.action;
         if (a == PanelAction::PreviewClose || a == PanelAction::PreviewSource || a == PanelAction::PreviewMirror ||
-            a == PanelAction::PreviewCamera || a == PanelAction::PreviewFreeze) {
+            a == PanelAction::PreviewCamera || a == PanelAction::PreviewMark || a == PanelAction::PreviewFreeze) {
             found.push_back(area);
         }
     }
@@ -2737,7 +2801,7 @@ void testPreview(const FontSet& fonts) {
             const PanelAction a = area.hit.action;
             const bool ownButton = a == PanelAction::PreviewClose || a == PanelAction::PreviewSource ||
                                    a == PanelAction::PreviewMirror || a == PanelAction::PreviewCamera ||
-                                   a == PanelAction::PreviewFreeze;
+                                   a == PanelAction::PreviewMark || a == PanelAction::PreviewFreeze;
             if (sheet) CHECK(ownButton);
         }
         // The button stays, now closing it
@@ -2769,6 +2833,72 @@ void testPreview(const FontSet& fonts) {
         press(panel, PanelAction::PreviewCamera);
         CHECK(panel.previewPictures());
         panel.render(m);
+
+        // With the pictures: a switch for each mark over them, all on at first, one under the other in the space
+        // between the two pictures (176 px wide, centred in each half of the sheet), apart from the other buttons
+        {
+            const std::vector<EyePanel::HitArea> marks = hits(panel, PanelAction::PreviewMark);
+            CHECK(marks.size() == 3);
+            CHECK(panel.previewMarks().lids && panel.previewMarks().pupil && panel.previewMarks().window);
+            const double half = (1154 - 438) / 2.0;
+            for (const EyePanel::HitArea& a : marks) {
+                CHECK(a.x >= 438 + half / 2 + 88 && a.x + a.w <= 438 + half * 1.5 - 88);
+                // (above the footer's gaze line)
+                CHECK(a.y >= 96 && a.y + a.h <= 676 - 36 - 22);
+            }
+            const std::vector<EyePanel::HitArea> all = previewButtons(panel);
+            CHECK(all.size() == 10);
+            for (size_t i = 0; i < all.size(); ++i) {
+                for (size_t j = i + 1; j < all.size(); ++j) CHECK(!overlaps(all[i], all[j]));
+            }
+            // Each takes its mark off the pictures and puts it back; the sheet stays open
+            // (the two pictures' boxes only, without the switches between them)
+            const auto pictureBoxes = [&](const std::vector<uint8_t>& rgba) {
+                std::vector<uint8_t> out;
+                for (int y = 440; y < 620; ++y) {
+                    for (const int left : {529, 887}) {
+                        const size_t from = (static_cast<size_t>(y) * panel.width() + left) * 4;
+                        out.insert(out.end(), rgba.begin() + from, rgba.begin() + from + 176 * 4);
+                    }
+                }
+                return out;
+            };
+            panel.pointerLeave();
+            panel.render(m);
+            const std::vector<uint8_t> every = panel.toRgba();
+            for (const eye_preview::Mark mark :
+                 {eye_preview::Mark::Lids, eye_preview::Mark::Pupil, eye_preview::Mark::Window}) {
+                CHECK(pressArg(panel, PanelAction::PreviewMark, static_cast<int>(mark)).action == PanelAction::None);
+                CHECK(panel.previewOpen() && panel.previewPictures());
+                const eye_preview::Marks& shown = panel.previewMarks();
+                CHECK(shown.lids == (mark != eye_preview::Mark::Lids));
+                CHECK(shown.pupil == (mark != eye_preview::Mark::Pupil));
+                CHECK(shown.window == (mark != eye_preview::Mark::Window));
+                panel.pointerLeave();
+                panel.render(m);
+                CHECK(pictureBoxes(panel.toRgba()) != pictureBoxes(every));
+                pressArg(panel, PanelAction::PreviewMark, static_cast<int>(mark));
+                panel.pointerLeave();
+                panel.render(m);
+                CHECK(panel.toRgba() == every);
+            }
+            // Kept when it closes and opens again (while the panel runs)
+            pressArg(panel, PanelAction::PreviewMark, static_cast<int>(eye_preview::Mark::Pupil));
+            press(panel, PanelAction::PreviewClose);
+            panel.render(m);
+            press(panel, PanelAction::PreviewOpen);
+            panel.render(m);
+            CHECK(panel.previewMarks().lids && !panel.previewMarks().pupil && panel.previewMarks().window);
+            // Without the pictures: no switches for them (and no room kept)
+            press(panel, PanelAction::PreviewCamera);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::PreviewMark).empty() && previewButtons(panel).size() == 7);
+            press(panel, PanelAction::PreviewCamera);
+            panel.render(m);
+            pressArg(panel, PanelAction::PreviewMark, static_cast<int>(eye_preview::Mark::Pupil));
+            CHECK(panel.previewMarks().pupil);
+            panel.render(m);
+        }
         pressArg(panel, PanelAction::PreviewSource, static_cast<int>(eye_preview::Source::Raw));
         panel.render(m);
         press(panel, PanelAction::PreviewMirror);
@@ -2924,9 +3054,163 @@ void testPreview(const FontSet& fonts) {
     }
 }
 
+/**
+ * The usable buttons with this action and argument as last drawn.
+ * @param panel the panel
+ * @param action the action
+ * @param arg its argument
+ * @return how many
+ */
+size_t hitsArg(const EyePanel& panel, PanelAction action, int arg) {
+    size_t count = 0;
+    for (const EyePanel::HitArea& area : hits(panel, action)) count += area.hit.arg == arg ? 1 : 0;
+    return count;
+}
+
+void testContrib(const FontSet& fonts) {
+    // "Record for squint training": its row on Debug tools (only while eyecam-rec runs, usable once the cameras are set
+    // up; "Recordings" once there is a folder), each screen's buttons in both languages, its recording shown in it, the
+    // delete's confirmation, and what closes it
+    {
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Tools);
+        panel.render(modelWith(Lids::Both, false));
+        CHECK(hits(panel, PanelAction::ContribOpen).empty());
+        PanelModel notSetUp = modelWith(Lids::Both, true);
+        notSetUp.eyecam.status.setupDone = false;
+        notSetUp.eyecam.status.calibState = 0;
+        panel.render(notSetUp);
+        CHECK(hits(panel, PanelAction::ContribOpen).empty());
+    }
+    const int record = static_cast<int>(contrib::Page::Record);
+    const int manage = static_cast<int>(contrib::Page::Manage);
+    for (const Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Tools);
+        PanelModel m = modelWith(Lids::Both, true);
+        m.language = language;
+        m.contrib.loaded = true;
+        m.contrib.dir = "/home/steamos/eyecam/contrib";
+        m.contrib.freeBytes = 30'000'000'000LL;
+        m.status.tracking = true;
+        panel.render(m);
+        CHECK(hitsArg(panel, PanelAction::ContribOpen, record) == 1);
+        CHECK(hitsArg(panel, PanelAction::ContribOpen, manage) == 0);
+        CHECK(pressArg(panel, PanelAction::ContribOpen, record).action == PanelAction::ContribOpen);
+        CHECK(panel.contribOpen() && panel.contribPage() == contrib::Page::Record && !panel.advPageShown());
+        // The consent: "Agree and continue", the cross and "Cancel", no sub-tabs
+        panel.render(m);
+        CHECK(hitsArg(panel, PanelAction::ContribAgree, 1) == 1);
+        CHECK(hits(panel, PanelAction::ContribClose).size() == 2);
+        CHECK(hits(panel, PanelAction::AdvancedPage).empty() && hits(panel, PanelAction::ContribStart).empty());
+        CHECK(pressArg(panel, PanelAction::ContribAgree, 1).action == PanelAction::None);
+        CHECK(panel.contribAgreed());
+        // ...then glasses or inserts: four answers (the caller writes the consent with it), and "Back"
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribEyewear).size() == 4);
+        CHECK(hitsArg(panel, PanelAction::ContribAgree, 0) == 1);
+        const int inserts = static_cast<int>(contrib::Eyewear::Inserts);
+        const PanelHit answer = pressArg(panel, PanelAction::ContribEyewear, inserts);
+        CHECK(answer.action == PanelAction::ContribEyewear && answer.arg == inserts);
+        CHECK(!panel.contribAgreed());
+        m.contrib.exists = true;
+        m.contrib.info.consentVersion = contrib::kConsentVersion;
+        m.contrib.info.eyewear = contrib::Eyewear::Inserts;
+        // The start; none while a command waits or without the room
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribStart).size() == 1);
+        m.eyecam.busy = true;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribStart).empty());
+        m.eyecam.busy = false;
+        m.contrib.freeBytes = 2'000'000'000LL;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribStart).empty());
+        m.contrib.freeBytes = 30'000'000'000LL;
+        // ...nor without frameeyeosc's eye data (Valve's values are recorded with it)
+        m.status.tracking = false;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribStart).empty());
+        m.status.tracking = true;
+        // Its recording runs in the sheet: the eye capture's run with its "Stop"
+        m.contrib.running = true;
+        eyecam::Status& s = m.eyecam.status;
+        s.state = eyecam::State::Recording;
+        s.stateText = "recording";
+        s.locked = true;
+        s.protocol = contrib::kProtocol;
+        s.stepLabel = "look_left";
+        s.stepCount = 23;
+        s.stepIndex = 19;
+        s.elapsedS = 80;
+        s.totalS = 94.5;
+        s.stepRemainingS = 3;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::EyecamStop).size() == 1);
+        CHECK(hits(panel, PanelAction::ContribStart).empty() && hits(panel, PanelAction::ContribDelete).empty());
+        s.state = eyecam::State::Idle;
+        s.stateText = "idle";
+        m.contrib.running = false;
+        // It didn't finish: "Record again"
+        m.contrib.failure.shown = true;
+        m.contrib.failure.why = contrib::Why::Incomplete;
+        m.contrib.failure.message = "cues.csv";
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribStart).size() == 1);
+        m.contrib.failure = contrib::Failure();
+        // Recorded: pack, delete, close (and the cross)
+        m.contrib.justDone = true;
+        m.contrib.info.recordings.resize(2);
+        m.contrib.info.recordings[0].bytes = m.contrib.info.recordings[1].bytes = 2'700'000'000LL;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).size() == 1 && hits(panel, PanelAction::ContribDelete).size() == 1);
+        CHECK(hits(panel, PanelAction::ContribClose).size() == 2 && hits(panel, PanelAction::ContribStart).empty());
+        // Packing: no second one, no delete; packed with all of them: none until there are more
+        m.contrib.progress.job = contrib::Job::Pack;
+        m.contrib.progress.running = true;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).empty() && hits(panel, PanelAction::ContribDelete).empty());
+        m.contrib.progress = contrib::Progress();
+        m.contrib.info.packed = "contrib_2026-10-25_14-25-02.tar.zst";
+        m.contrib.info.packedCount = 2;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).empty());
+        m.contrib.info.recordings.resize(3);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).size() == 1);
+        // Deleting: its confirmation first (only its buttons), "Cancel" back, then the delete (back to "Record")
+        CHECK(press(panel, PanelAction::ContribDelete).action == PanelAction::None);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribDeleteConfirm).size() == 1);
+        CHECK(hits(panel, PanelAction::ContribDelete).empty() && hits(panel, PanelAction::ContribPack).empty());
+        CHECK(press(panel, PanelAction::ContribDeleteCancel).action == PanelAction::None);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribDeleteConfirm).empty());
+        CHECK(hits(panel, PanelAction::ContribDelete).size() == 1);
+        press(panel, PanelAction::ContribDelete);
+        panel.render(m);
+        CHECK(press(panel, PanelAction::ContribDeleteConfirm).action == PanelAction::ContribDeleteConfirm);
+        // A tab closes it; the row offers "Recordings" now there is a folder, which opens the end's screen
+        pressTab(panel, PanelTab::Basic);
+        CHECK(!panel.contribOpen());
+        panel.render(m);
+        pressTab(panel, PanelTab::Advanced);
+        m.contrib.justDone = false;
+        panel.render(m);
+        CHECK(panel.advPageShown() && hitsArg(panel, PanelAction::ContribOpen, manage) == 1);
+        pressArg(panel, PanelAction::ContribOpen, manage);
+        CHECK(panel.contribPage() == contrib::Page::Manage);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ContribPack).size() == 1 && hits(panel, PanelAction::ContribStart).empty());
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
+    testContrib(fonts);
     testWidenRouting(fonts);
     testWidenSwitch(fonts);
     testLidVetoSwitch(fonts);
@@ -2935,6 +3219,7 @@ int main() {
     testEyeBehavior(fonts);
     testLidsRemembered(fonts);
     testGazePages(fonts);
+    testOwnEyeGazeRow(fonts);
     testGazeScaleLocks(fonts);
     testSliderMoved(fonts);
     testRelearnButton(fonts);

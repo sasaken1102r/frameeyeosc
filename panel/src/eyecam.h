@@ -59,7 +59,8 @@ enum class State {
 };
 
 /** One step's instruction ("step_label"). */
-enum class Step { LeadIn, Normal, Widen, Close, Squint, LookUp, LookDown, Bright, Dark, End, Unknown };
+enum class Step { LeadIn, Normal, Widen, Close, Squint, LookUp, LookDown, LookLeft, LookRight, Bright, Dark, End,
+                  Unknown };
 
 /** The full-view overlay during the bright and dark steps. */
 enum class Fill { None, Bright, Dark };
@@ -215,6 +216,11 @@ struct Status {
     double totalS = 0.0;
     std::string sessionDir;
     std::string protocol;
+    bool lastSessionAborted = false;  ///< "last_session_aborted": the last recording ended early (its meta.txt says
+                                      ///< aborted=1; false when missing)
+    bool hasHeadsetOff = false;    ///< "headset_off_count" and "started_unix" are there (a newer eyecam-rec)
+    long long headsetOffCount = 0; ///< ...the times the headset looked taken off and was worn again since it started
+    double startedUnix = 0.0;      ///< ...when this eyecam-rec started (Unix seconds; the count is per run)
     int calibState = 0;            ///< kCalibWearBit | kCalibUserBit | kCalibAutoBit (0 when missing)
     bool recalibSuggested = false; ///< drifted since the calibration: "calib wear" again
     bool live = false;             ///< the eyelids are read from the cameras live
@@ -539,6 +545,16 @@ Run followRun(Run last, const Status& status);
  * @return true for CalibWear and CalibUser
  */
 bool isCalib(Run run);
+
+/**
+ * Whether an eye-camera calibration is under way: eyecam-rec says "calibrating" (also while it waits for the eye video,
+ * step -1) in a fresh status, or the panel has sent one ("calib wear" / "calib user") that it hasn't answered yet. The
+ * user then looks where its steps say (up and down too), so the eye fit and the re-center wait for it: their buttons
+ * are grey, `--action` refuses them, and the automatic re-center holds back.
+ * @param view the recorder (its status, `visible` and `busy` as the loop keeps them)
+ * @return true while one is under way
+ */
+bool calibrationUnderWay(const View& view);
 
 /**
  * Whether eyecam-rec is learning the relaxed eyes for this wear (a newer eyecam-rec, "baseline": "warming").

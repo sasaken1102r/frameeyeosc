@@ -376,7 +376,7 @@ fn run() -> Result<()> {
     let mut buffers = Buffers::receive(args.wait_grab, None)?;
     let mut prox = Proximity::find();
     let protocol = args.cues.as_ref().map_or(String::new(), |p| p.display().to_string());
-    let ended = record(&mut buffers, &mut None, &args, steps, &protocol, &mut prox, None, None, Mode::Record)?;
+    let ended = record(&mut buffers, &mut None, &args, steps, &protocol, &mut prox, None, None, Mode::Record, false)?;
     match (ended.dir, ended.abort) {
         (None, Some(abort)) => Err(abort.message().into()),
         _ => Ok(()),
@@ -573,7 +573,7 @@ impl Daemon {
         });
         let listener = bind_private(&dir.join(status::CTL_FILE), "another eyecam-rec --serve is already running")?;
         listener.0.set_nonblocking(true)?;
-        let status = Arc::new(Mutex::new(Status::default()));
+        let status = Arc::new(Mutex::new(Status { started_unix: unix_now(), ..Status::default() }));
         let shutdown = Arc::new(AtomicBool::new(false));
         let (tx, requests) = mpsc::channel();
         file.write(&status);
@@ -792,6 +792,8 @@ fn serve(args: &Args) -> Result<()> {
     };
     eprintln!("live output: {}", args.run_dir.join("live").display());
     let mut prox = Proximity::find();
+    // (kept across the buffers being fetched again: it counts for the whole run)
+    let mut off = livesvc::OffCount::default();
     let mut why: Option<&str> = None;
     while !STOP.load(Ordering::SeqCst) {
         let message = why.map_or(INSTALL_TOOL.to_string(), |w| format!("{w}。{INSTALL_TOOL}"));
@@ -829,7 +831,7 @@ fn serve(args: &Args) -> Result<()> {
             }
         };
         live.send(Msg::Buffers(true));
-        let outcome = idle(&mut buffers, args, &mut prox, &daemon, &mut live);
+        let outcome = idle(&mut buffers, args, &mut prox, &daemon, &mut live, &mut off);
         live.send(Msg::Buffers(false));
         match outcome {
             Some(abort) => {
@@ -957,37 +959,86 @@ struct Pump {
     slots: SlotStates,
     buf: Vec<u8>,
     last_change: f64,
+    /// Frames per camera (before --swap), and whether one camera has been far slower than the other (ring::FrameBalance)
+    count: [u64; 2],
+    balance: ring::FrameBalance,
+    unbalanced: bool,
 }
 
 impl Pump {
     fn new(arena: &Arena, ring: Ring) -> Self {
         let slots = SlotStates::new(arena, &ring);
-        Self { ring, slots, buf: vec![0u8; HEADER_BYTES + FRAME_BYTES], last_change: now_raw() }
+        Self {
+            ring,
+            slots,
+            buf: vec![0u8; HEADER_BYTES + FRAME_BYTES],
+            last_change: now_raw(),
+            count: [0; 2],
+            balance: ring::FrameBalance::default(),
+            unbalanced: false,
+        }
     }
 
-    /// One pass over the slots. False once frames have stopped for LOST_AFTER.
-    fn poll(&mut self, arena: &Arena, now: f64, swap: bool, live: &mut Live) -> bool {
+    /// One pass over the slots. False once frames have stopped for LOST_AFTER, or one camera's have come far slower
+    /// than the other's for ring::UNBALANCED_FOR_S (`unbalanced`) on slots not looked for again before (`relooks`;
+    /// slots that were are kept, said once).
+    fn poll(&mut self, arena: &Arena, now: f64, swap: bool, live: &mut Live, relooks: &mut ring::Relooks) -> bool {
         for k in 0..self.ring.off.len() {
             match self.slots.poll(arena, &self.ring, k, now, &mut self.buf) {
                 SlotEvent::None => {}
                 SlotEvent::Changed => self.last_change = now,
                 SlotEvent::Frame(_) => {
+                    self.count[self.ring.eye[k] as usize] += 1;
                     live.frame(self.ring.eye[k] as usize ^ swap as usize, self.ring.upside_down(k), &self.buf, now)
                 }
             }
         }
-        now - self.last_change <= LOST_AFTER
+        if self.ring.both_eyes && self.balance.check(now, self.count) {
+            if relooks.look_again(&self.ring.off) {
+                self.unbalanced = true;
+            } else {
+                let line = unbalanced_line(&self.ring, &self.balance);
+                eprintln!("{line} (idle), on the same slots as before: kept, not looked for again");
+                self.balance.give_up();
+            }
+        }
+        now - self.last_change <= LOST_AFTER && !self.unbalanced
     }
 }
 
+/// The log line for a ring left because one camera's frames came far slower than the other's (ring::FrameBalance).
+fn unbalanced_line(ring: &Ring, balance: &ring::FrameBalance) -> String {
+    format!(
+        "one eye camera's frames came far slower than the other's for {} s (cameras {:?}: {:.1} / {:.1} fps)",
+        ring::UNBALANCED_FOR_S,
+        ring.eye,
+        balance.fps[0],
+        balance.fps[1]
+    )
+}
+
 /// Wait for `start` / `calib` while holding the buffers, keeping the ring locked and feeding the live engine while
-/// live processing is on. None on shutdown, or why the buffers had to be given up.
-fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &mut Live) -> Option<Abort> {
+/// live processing is on, and counting the times the headset is taken off (`off`, status.json headset_off_count).
+/// None on shutdown, or why the buffers had to be given up.
+fn idle(
+    b: &mut Buffers,
+    args: &Args,
+    prox: &mut Proximity,
+    d: &Daemon,
+    live: &mut Live,
+    off: &mut livesvc::OffCount,
+) -> Option<Abort> {
     let mut cached: Option<Ring> = None;
     let mut pump: Option<Pump> = None;
+    // The rings looked for again because of unbalanced frames (Pump::poll)
+    let mut relooks = ring::Relooks::default();
     let mut deferred: Vec<Request> = Vec::new();
     let mut next_check = 0.0;
     let mut next_search = 0.0;
+    // The eye frames stopped and have not come back yet, and since when the proximity sensor says not worn: either
+    // ending may be a new wear (livesvc::NEW_WEAR_OFF_S).
+    let mut came_back = false;
+    let mut prox_off_since: Option<f64> = None;
     let waiting = || if live.on { status::search_message("") } else { "待機中" };
     let mut state: (&'static str, String) = ("idle", waiting().into());
     // The buffers are held from here on: say so right away (the first search can take a while).
@@ -1078,7 +1129,8 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                 cached = Some(p.ring);
             }
             let feed = if live.on { Some(&mut *live) } else { None };
-            let ended = record(b, &mut cached, args, Some(steps), &name, prox, Some(d), feed, mode).unwrap_or_else(|e| {
+            let back = std::mem::take(&mut came_back);
+            let ended = record(b, &mut cached, args, Some(steps), &name, prox, Some(d), feed, mode, back).unwrap_or_else(|e| {
                 eprintln!("eyecam-rec: {e}");
                 Ended { dir: None, abort: None, failure: Some(format!("失敗した: {e}")), aborted: true, calib: None }
             });
@@ -1106,15 +1158,27 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                 pump = Some(Pump::new(&b.arenas[r.arena], r));
             }
             next_check = 0.0;
+            // The sensor was not watched meanwhile.
+            prox_off_since = None;
         }
 
         let now = now_raw();
         live.poll_valve(now);
         if live.on {
             if let Some(p) = pump.as_mut() {
-                if !p.poll(&b.arenas[p.ring.arena], now, args.swap, live) {
-                    eprintln!("eye frames stopped (idle); searching again");
+                if !p.poll(&b.arenas[p.ring.arena], now, args.swap, live, &mut relooks) {
+                    if p.unbalanced {
+                        // The frames did not stop (no headset-off count), but what was learnt from the slow camera's
+                        // may be off: the next lock starts a new wear unless the eyes look worn (new_wear_hint), as
+                        // after frames that stopped.
+                        eprintln!("{} (idle); searching again", unbalanced_line(&p.ring, &p.balance));
+                    } else {
+                        eprintln!("eye frames stopped (idle); searching again");
+                        // (they stopped LOST_AFTER ago)
+                        off.frames_lost(eyecam::now_boot() - LOST_AFTER);
+                    }
                     pump = None;
+                    came_back = true;
                     live.send(Msg::Stale);
                     next_search = now + 1.0;
                     if state.0 == "idle" {
@@ -1125,10 +1189,18 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
             } else if now >= next_search {
                 if let Some(r) = cached.take().filter(|r| ring_is_live(&b.arenas[r.arena], r)) {
                     pump = Some(Pump::new(&b.arenas[r.arena], r));
+                    off.frames_back(eyecam::now_boot());
+                    if std::mem::take(&mut came_back) {
+                        live.send(Msg::NewWear("the eye frames came back"));
+                    }
                 } else {
                     match lock_ring(b, args, prox, Some(d), Ctx::Idle, &mut || true, &mut deferred) {
                         Ok(r) => {
                             pump = Some(Pump::new(&b.arenas[r.arena], r));
+                            off.frames_back(eyecam::now_boot());
+                            if std::mem::take(&mut came_back) {
+                                live.send(Msg::NewWear("the eye frames came back"));
+                            }
                             if state.0 == "idle" && state.1 == status::search_message("") {
                                 state.1 = "待機中".into();
                             }
@@ -1150,6 +1222,19 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
             if let Err(a) = b.watch(reading.map(|v| v > args.prox_min)) {
                 return Some(a);
             }
+            off.prox(reading.map(|v| v > args.prox_min), eyecam::now_boot());
+            let off_count = off.count();
+            match reading {
+                Some(v) if v > args.prox_min => {
+                    if prox_off_since.take().is_some_and(|off| now - off >= livesvc::NEW_WEAR_OFF_S) && live.on {
+                        live.send(Msg::NewWear("the proximity sensor says worn again"));
+                    }
+                }
+                Some(_) => {
+                    prox_off_since.get_or_insert(now);
+                }
+                None => prox_off_since = None,
+            }
             let locked = pump.as_ref().is_some_and(|p| now - p.last_change < 1.0);
             let searching = live.on && pump.is_none();
             d.set(|s| {
@@ -1159,6 +1244,7 @@ fn idle(b: &mut Buffers, args: &Args, prox: &mut Proximity, d: &Daemon, live: &m
                 s.message = if waiting && searching { status::search_message(s.search).into() } else { state.1.clone() };
                 s.locked = locked;
                 s.prox = reading.unwrap_or(-1.0);
+                s.headset_off_count = off_count;
                 if !searching {
                     s.search = "";
                 }
@@ -2155,6 +2241,7 @@ fn record(
     ctl: Option<&Daemon>,
     mut live: Option<&mut Live>,
     mode: Mode,
+    came_back: bool,
 ) -> Result<Ended> {
     let recording = mode == Mode::Record;
     let busy_state = if recording { "recording" } else { "calibrating" };
@@ -2189,6 +2276,11 @@ fn record(
             Err(abort) => return Ok(Ended::early(abort)),
         },
     };
+    // Idle's eye frames had stopped and come back only now: before the calibration starts collecting (it keeps its
+    // wear), as idle would have said (livesvc::NEW_WEAR_OFF_S).
+    if came_back && let Some(l) = live.as_deref() {
+        l.send(Msg::NewWear("the eye frames came back"));
+    }
 
     // Session files. Calibrations are saved the same way (calib_*) but, unless `dev` is on in settings.json, without
     // any eye images (no eye_*.raw, headers.bin, lock_dump.bin): only the small text files, among them the
@@ -2256,6 +2348,10 @@ fn record(
     let mut reading = prox.read();
     let mut valve_seen = 0u64;
     let mut relocks = 0;
+    // One camera's frames far slower than the other's (ring::FrameBalance, on `count`), and the rings looked for again
+    // because of it (ring::Relooks)
+    let mut balance = ring::FrameBalance::default();
+    let mut relooks = ring::Relooks::default();
     let mut abort = None;
     let mut pending_stop: Option<Request> = None;
     let reason: String = loop {
@@ -2367,13 +2463,25 @@ fn record(
             }
         }
 
-        if now - last_change > LOST_AFTER {
-            eprintln!("eye frames stopped; searching again ({busy_state} time keeps running)");
+        // Unbalanced on slots looked for again before (ring::Relooks): kept, said once
+        let mut unbalanced = ring.both_eyes && balance.check(now, count);
+        if unbalanced && !relooks.look_again(&ring.off) {
+            let line = unbalanced_line(&ring, &balance);
+            eprintln!("{line}, on the same slots as before: kept, not looked for again");
+            balance.give_up();
+            unbalanced = false;
+        }
+        if now - last_change > LOST_AFTER || unbalanced {
+            if unbalanced {
+                eprintln!("{}; searching again ({busy_state} time keeps running)", unbalanced_line(&ring, &balance));
+            } else {
+                eprintln!("eye frames stopped; searching again ({busy_state} time keeps running)");
+            }
             if let Some(s) = session.as_mut() {
                 s.flush()?;
             }
             if let Some(m) = meta.as_mut() {
-                writeln!(m, "lost_at_t_raw={now:.9}")?;
+                writeln!(m, "{}_at_t_raw={now:.9}", if unbalanced { "unbalanced" } else { "lost" })?;
             }
             if let Some(l) = live.as_deref() {
                 l.send(Msg::Stale);
@@ -2411,6 +2519,11 @@ fn record(
                     }
                     slots = SlotStates::new(&b.arenas[ring.arena], &ring);
                     last_change = now_raw();
+                    balance = ring::FrameBalance::default();
+                    // A calibration keeps its wear (livesvc::NEW_WEAR_OFF_S).
+                    if let Some(l) = live.as_deref() {
+                        l.send(Msg::NewWear("the eye frames came back"));
+                    }
                 }
                 Err(Abort::Stopped) => break "stopped".into(),
                 Err(Abort::TimeUp) => break "done".into(),
@@ -3057,7 +3170,7 @@ mod tests {
             let mut b = still_buffers(sizes);
             let mut prox = Proximity::find();
             live.send(Msg::Buffers(true));
-            let r = idle(&mut b, &args, &mut prox, &daemon, &mut live);
+            let r = idle(&mut b, &args, &mut prox, &daemon, &mut live, &mut livesvc::OffCount::default());
             live.stop();
             daemon.finish();
             r

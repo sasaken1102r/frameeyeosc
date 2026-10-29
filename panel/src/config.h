@@ -77,6 +77,8 @@ constexpr const char* kGazeDCutoff = "gaze_d_cutoff";
 constexpr const char* kGazeDeadzone = "gaze_deadzone";
 constexpr const char* kGazeHoldBelow = "gaze_hold_below";
 constexpr const char* kIndependentEyes = "independent_eyes";
+/** With independent_eyes in v2: how much of each eye's own sideways gaze is sent, 0 (the default) to 1. */
+constexpr const char* kOwnEyeGaze = "own_eye_gaze";
 constexpr const char* kLidMinCutoff = "lid_min_cutoff";
 constexpr const char* kLidBeta = "lid_beta";
 constexpr const char* kLidClosed = "lid_closed";

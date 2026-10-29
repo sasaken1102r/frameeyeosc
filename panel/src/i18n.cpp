@@ -58,6 +58,9 @@ UiText makeJapanese() {
     t.previewSourceCamera = "カメラの値";
     t.previewMirror = "鏡で見る";
     t.previewPicture = "カメラ映像";
+    t.previewMarkLids = "まぶた";
+    t.previewMarkPupil = "瞳";
+    t.previewMarkWindow = "探す範囲";
     t.previewFreeze = "止める";
     t.previewResume = "動かす";
     t.previewLidFormat = "まぶた %.2f";
@@ -66,8 +69,9 @@ UiText makeJapanese() {
     t.previewPupilFormat = "瞳 %.1f mm";
     t.previewPupilNone = "瞳 —";
     t.previewClosed = "閉じてる判定";
+    t.previewPictureLidFormat = "カメラ まぶた %.2f";
     t.previewGazeFormat = "視線 左右 %+.0f°・上下 %+.0f°";
-    t.previewNotePicture = "映像は表示するだけで保存しません。緑の丸が見つけた瞳、黄色の枠が瞳を探す範囲";
+    t.previewNotePicture = "映像は表示するだけで保存しません。緑の丸が見つけた瞳、黄色の枠が瞳を探す範囲、水色とピンクの点が上と下のまぶた";
     t.previewNoteShape = "アバターの目の形は人によって違います。動きの確認用です";
     t.previewWaitingPicture = "映像を待っています";
     t.previewCamNotRunning = "目のカメラが動いていません";
@@ -221,6 +225,8 @@ UiText makeJapanese() {
     t.rowIndependent = "左右の目を別々に動かす";
     t.hintIndependent = "少し寄り目にして、上下は目ごと";
     t.hintIndependentOneEye = "片目だけ追跡中は両目が同じ向き";
+    t.rowOwnEyeGaze = "目ごとの視線";
+    t.hintOwnEyeGaze = "0 % で安定、100 % で目ごと（ぶれる）";
     t.rowQuality = "不確かな視線を使わない";
     t.hintQuality = "この値より不確かな目は無視";
     t.rowDespike = "一瞬の途切れを消す";
@@ -235,6 +241,7 @@ UiText makeJapanese() {
     t.fitIntro = "［目を合わせる］を押すと、すぐに点が出ます（ダッシュボードは開いたままで大丈夫）";
     t.fitNeedsRunning = "frameeyeosc が動いているときに使えます";
     t.fitLocked = "視線かまぶたの値がコマンドで固定されているので使えません";
+    t.fitCamerasCalibrating = "目のカメラの校正が終わってから使えます";
     t.fitRunningTitle = "点を見てください";
     t.fitHowTo = "頭は動かさず、点を目で追ってください。最後は 3・2・1 のあと 3 秒間目を閉じ、チャイムで開けます";
     t.fitHowToCenter = "点は真ん中に出ます。頭は動かさず見てください";
@@ -589,6 +596,8 @@ UiText makeJapanese() {
     t.eyecamStepSquint = "目を細めて";
     t.eyecamStepLookUp = "上を見て";
     t.eyecamStepLookDown = "下を見て";
+    t.eyecamStepLookLeft = "左を見て";
+    t.eyecamStepLookRight = "右を見て";
     t.eyecamStepBright = "明るい画面を見て";
     t.eyecamStepDark = "暗い画面を見て";
     t.eyecamStepEnd = "おわり";
@@ -697,6 +706,8 @@ UiText makeJapanese() {
     t.setupChipSquint = "細める";
     t.setupChipLookUp = "上を見る";
     t.setupChipLookDown = "下を見る";
+    t.setupChipLookLeft = "左を見る";
+    t.setupChipLookRight = "右を見る";
     t.setupChipBright = "明るい所";
     t.setupChipDark = "暗い所";
     t.eyecamChipsMoreFormat = "ほか %d";
@@ -873,6 +884,88 @@ UiText makeJapanese() {
     t.devTitle = "開発用";
     t.devRecord = "目の撮影";
     t.devRecordHint = "目のカメラの映像を録る";
+    t.contribRow = "細めの学習用に撮る";
+    t.contribRowHint = "半目の読み直し（AI）用・任意";
+    t.contribAbout = "半目の読み直し（AI）を、いろんな目で賢くするための撮影だよ";
+    t.contribRecord = "撮る";
+    t.contribRecordings = "録ったもの";
+    t.contribRowIntroFormat = "目の映像を約 1 分半録って、開発者に送る手伝い（1 本 約 %s）";
+    t.contribRowCountFormat = "これまで %d 本（%s）";
+    t.contribRowNotSetUp = "目のカメラの準備が済むと使えるよ";
+    t.contribLead = "「半目の読み直し（AI）」が細めや半目をもっと正しく見分けられるように、学習用の目の映像を録るよ。"
+                    "協力するかどうかは自由です。";
+    t.contribWhatTitle = "録るもの";
+    t.contribWhatFormat = "目のカメラの映像を 1 回約 1 分半（1 本 約 %s）と、そのときの校正の数字と設定。"
+                          "送るまでは、この Frame の中だけにあるよ。";
+    t.contribUseTitle = "使いみち";
+    t.contribUse = "細めと半目の見分けの調整と、AI の学習だけに使います。アプリに入るのは学習した AI だけで、"
+                   "映像は入りません。映像は開発者の PC にだけ置きます。";
+    t.contribRemoveTitle = "消してほしいとき";
+    t.contribRemove = "言ってくれれば消します。ただ、もう配った AI に入った学習の分は取り出せません。";
+    t.contribSendTitle = "送り方";
+    t.contribSendNote = "目の映像は GitHub の issue や公開の場所に上げないでね。Google ドライブなどに置いて、"
+                        "共有リンクを開発者に非公開で送ってね。";
+    t.contribNote = "画面が白や黒に光ることはないよ（光なしで撮るよ）。";
+    t.contribAgree = "同意して次へ";
+    t.contribCancel = "やめる";
+    t.contribDeleted = "録画を消したよ";
+    t.contribEyewearTitle = "HMD の中で、眼鏡や度付きインサートを使ってる？";
+    t.contribEyewearWhy = "学習のときに分けて見るためだけに使うよ。録画ごとに info.txt に書くよ";
+    t.contribEyewear[0] = "使ってない";
+    t.contribEyewear[1] = "眼鏡";
+    t.contribEyewear[2] = "度付きインサート";
+    t.contribEyewear[3] = "答えない";
+    t.contribBack = "戻る";
+    t.contribReadyTitle = "細めの学習用の撮影（約 1 分半）";
+    t.contribTips[0] = "最初の 10 秒は、普通に開けて正面を見て待ってね";
+    t.contribTips[1] = "ビープと画面の指示に合わせて、閉じる・普通・細める・普通・見開くを 3 回、"
+                       "そのあと上・下・左・右を見るよ";
+    t.contribTips[2] = "細めるは、まぶしいときみたいに目を細める（閉じない）";
+    t.contribTips[3] = "左・右は自分から見た向き。顔は正面のまま、目だけ動かしてね";
+    t.contribTips[4] = "画面が白や黒に光ることはないよ";
+    t.contribCountFormat = "これまで %d 本・合計 %s";
+    t.contribSpaceFormat = "空き容量 %s（1 本 約 %s）";
+    t.contribStart = "撮影をはじめる（約 1 分半）";
+    t.contribNoSpaceFormat = "空きが足りないよ（約 %s 要る）";
+    t.contribWaitEyecam = "目のカメラがほかのことをしているあいだは待ってね";
+    t.contribNoEyeData = "目の送信が動いていて、目のデータが来ているときに撮れるよ（Valve の値も一緒に録るため）";
+    t.contribFailedTitle = "最後まで録れなかったよ";
+    t.contribWhyStopped = "途中で止まったよ（中止したか、目が見えなくなったみたい）";
+    t.contribWhyErrorFormat = "目の撮影でエラー: %s";
+    t.contribWhyRefusedFormat = "始められなかった: %s";
+    t.contribWhyGone = "目の撮影（eyecam-rec）が止まったみたい";
+    t.contribWhyNoStart = "撮影が始まらなかったよ";
+    t.contribWhyMissing = "録画のフォルダが見つからなかったよ";
+    t.contribWhyMoveFormat = "録画を移せなかった: %s";
+    t.contribWhyIncompleteFormat = "録画のファイルが足りなかったよ（%s）。もう一度撮ってね";
+    t.contribWhyNoVideoFormat = "%sの映像がなかったよ。目のカメラの準備を確かめて、もう一度撮ってね";
+    t.contribBothEyes = "両目";
+    t.contribWhyUnevenFormat = "片目のカメラの映像が遅かったよ（左 %s / 右 %s 枚）。HMD をかぶり直してからもう一度撮ってね";
+    t.contribWhyTruncatedFormat = "録画のファイルが途中で切れていたよ（%s）。空き容量を確かめて、もう一度撮ってね";
+    t.contribWhyValveFormat = "Valve の目のトラッキングの値が、フレームの %s にしかなかったよ。"
+                              "SteamVR の目のトラッキングが動いてるか確かめて、もう一度撮ってね";
+    t.contribKept = "この録画は aborted/ に入れたよ（送らなくて大丈夫）";
+    t.contribRetry = "もう一度撮る";
+    t.contribDoneTitle = "撮れたよ。ありがとう！";
+    t.contribManageTitle = "録ったもの";
+    t.contribWhereFormat = "場所: %s";
+    t.contribAgain = "別の日や、かぶり直したあとにもう一度押してくれると、もっと助かるよ";
+    t.contribNext = "1 つのファイルにまとめて、開発者に送ってね。";
+    t.contribPack = "1 つのファイルにまとめる";
+    t.contribPackHintFormat = "元の録画はそのまま残るよ（空きが約 %s 要る）";
+    t.contribPackFormatNote = "まとめたファイルは .tar.zst（7-Zip などで開けるよ）";
+    t.contribPackingFormat = "まとめています… %d%%";
+    t.contribPackedFormat = "できたよ（%s 本・%s）";
+    t.contribPackFailedFormat = "まとめられなかった: %s";
+    t.contribPackNoSpaceFormat = "まとめるには空きが足りないよ（約 %s 要る）";
+    t.contribIncompleteFormat = "%s は学習に使えない形だったので入れなかったよ。もう一度撮ってね";
+    t.contribDelete = "録画を消す";
+    t.contribClose = "閉じる";
+    t.contribDeleteTitle = "撮った録画を全部消す？";
+    t.contribDeleteFormat = "%s を中身ごと（%s）消します。元に戻せないよ。開発者に送ったあとで消してね。";
+    t.contribDeleteYes = "消す";
+    t.contribDeleting = "消しています…";
+    t.contribErrorFormat = "うまくいかなかった: %s";
     t.rowPrefix = "パラメーター名の頭";
     t.prefixNone = "なし";
     t.prefixExample = "例: ";
@@ -1022,6 +1115,9 @@ UiText makeEnglish() {
     t.previewSourceCamera = "Camera";
     t.previewMirror = "Mirror";
     t.previewPicture = "Camera picture";
+    t.previewMarkLids = "Eyelids";
+    t.previewMarkPupil = "Pupil";
+    t.previewMarkWindow = "Search area";
     t.previewFreeze = "Freeze";
     t.previewResume = "Resume";
     t.previewLidFormat = "Lid %.2f";
@@ -1030,8 +1126,9 @@ UiText makeEnglish() {
     t.previewPupilFormat = "Pupil %.1f mm";
     t.previewPupilNone = "Pupil —";
     t.previewClosed = "Read as closed";
+    t.previewPictureLidFormat = "Camera lid %.2f";
     t.previewGazeFormat = "Gaze: %+.0f° sideways, %+.0f° up/down";
-    t.previewNotePicture = "The picture is only shown, never saved. Green circle: the pupil found; yellow frame: where it is looked for";
+    t.previewNotePicture = "Shown only, never saved. Green: the pupil; yellow: where it's looked for; blue / pink dots: the upper / lower lid";
     t.previewNoteShape = "Avatars' eyes differ in shape. This is for checking the movement";
     t.previewWaitingPicture = "Waiting for the picture";
     t.previewCamNotRunning = "The eye cameras aren't running";
@@ -1185,6 +1282,8 @@ UiText makeEnglish() {
     t.rowIndependent = "Move eyes separately";
     t.hintIndependent = "Turned in a little, up/down per eye";
     t.hintIndependentOneEye = "Both follow the one tracked eye";
+    t.rowOwnEyeGaze = "Own gaze per eye";
+    t.hintOwnEyeGaze = "0% steady, 100% each eye as tracked (wobbly)";
     t.rowQuality = "Skip unreliable gaze";
     t.hintQuality = "Ignores an eye less sure than this";
     t.rowDespike = "Remove glitches";
@@ -1199,6 +1298,7 @@ UiText makeEnglish() {
     t.fitIntro = "Press \"Fit my eyes\" and a dot shows right away (the dashboard can stay open).";
     t.fitNeedsRunning = "Works while frameeyeosc is running";
     t.fitLocked = "Not available: gaze or eyelid values are locked by the command line";
+    t.fitCamerasCalibrating = "Works once the eye cameras' calibration is over";
     t.fitRunningTitle = "Look at the dot";
     t.fitHowTo = "Keep your head still and follow the dot with your eyes. At the end, after 3, 2, 1, close your eyes "
                  "for 3 seconds and open them at the chime.";
@@ -1553,6 +1653,8 @@ UiText makeEnglish() {
     t.eyecamStepSquint = "Squint";
     t.eyecamStepLookUp = "Look up";
     t.eyecamStepLookDown = "Look down";
+    t.eyecamStepLookLeft = "Look left";
+    t.eyecamStepLookRight = "Look right";
     t.eyecamStepBright = "Look at the bright screen";
     t.eyecamStepDark = "Look at the dark screen";
     t.eyecamStepEnd = "Done";
@@ -1665,6 +1767,8 @@ UiText makeEnglish() {
     t.setupChipSquint = "Squint";
     t.setupChipLookUp = "Look up";
     t.setupChipLookDown = "Look down";
+    t.setupChipLookLeft = "Look left";
+    t.setupChipLookRight = "Look right";
     t.setupChipBright = "Bright";
     t.setupChipDark = "Dark";
     t.eyecamChipsMoreFormat = "+%d more";
@@ -1842,6 +1946,91 @@ UiText makeEnglish() {
     t.devTitle = "Developer";
     t.devRecord = "Eye recording";
     t.devRecordHint = "Records the eye cameras";
+    t.contribRow = "Record for squint training";
+    t.contribRowHint = "For the half-shut check (optional)";
+    t.contribAbout = "Recordings that make the half-shut check (AI) smarter on all kinds of eyes";
+    t.contribRecord = "Record";
+    t.contribRecordings = "Recordings";
+    t.contribRowIntroFormat = "Record your eyes for about 1.5 minutes and send it to the developer (about %s each)";
+    t.contribRowCountFormat = "%d so far (%s)";
+    t.contribRowNotSetUp = "Available once the eye cameras are set up";
+    t.contribLead = "Eye video to train the \"Half-shut check (AI)\" to tell squints and half-shut eyes apart better. "
+                    "Taking part is entirely up to you.";
+    t.contribWhatTitle = "What";
+    t.contribWhatFormat = "Eye camera video, about 1.5 minutes each time (about %s each), with the calibration's "
+                          "numbers and the settings then. It stays on this Frame until you send it.";
+    t.contribUseTitle = "How it's used";
+    t.contribUse = "Only to tune the squint and half-shut check and train its AI. Only the trained AI goes into the "
+                   "app, never the video. The video is kept on the developer's own PCs.";
+    t.contribRemoveTitle = "Removing it";
+    t.contribRemove = "Ask and it is deleted. What an AI already released has learned from it can't be taken back "
+                      "out.";
+    t.contribSendTitle = "Sending it";
+    t.contribSendNote = "Don't upload the eye video to a GitHub issue or anywhere public. Put it on Google Drive or "
+                        "similar and send the share link to the developer privately.";
+    t.contribNote = "No white or black screens (recorded without light).";
+    t.contribAgree = "Agree and continue";
+    t.contribCancel = "Cancel";
+    t.contribDeleted = "Recordings deleted";
+    t.contribEyewearTitle = "Do you wear glasses or prescription inserts in the headset?";
+    t.contribEyewearWhy = "Only used to look at those recordings apart when training; written in info.txt with each";
+    t.contribEyewear[0] = "Neither";
+    t.contribEyewear[1] = "Glasses";
+    t.contribEyewear[2] = "Prescription inserts";
+    t.contribEyewear[3] = "Prefer not to say";
+    t.contribBack = "Back";
+    t.contribReadyTitle = "Recording for squint training (about 1.5 minutes)";
+    t.contribTips[0] = "For the first 10 seconds, keep your eyes open as usual and look ahead";
+    t.contribTips[1] = "Follow the beeps and the prompts: close, normal, squint, normal, wide 3 times, then look up, "
+                       "down, left and right";
+    t.contribTips[2] = "Squint as in bright light (don't close your eyes)";
+    t.contribTips[3] = "Left and right as you see them. Keep your head still and move only your eyes";
+    t.contribTips[4] = "No white or black screens";
+    t.contribCountFormat = "%d so far, %s in all";
+    t.contribSpaceFormat = "%s free (about %s each)";
+    t.contribStart = "Start recording (about 1.5 minutes)";
+    t.contribNoSpaceFormat = "Not enough space (about %s needed)";
+    t.contribWaitEyecam = "Wait while the eye cameras are busy with something else";
+    t.contribNoEyeData = "Records while frameeyeosc runs and eye data comes in (Valve's values are recorded too)";
+    t.contribFailedTitle = "It didn't record to the end";
+    t.contribWhyStopped = "It stopped early (stopped, or the eyes were lost)";
+    t.contribWhyErrorFormat = "Eye recording error: %s";
+    t.contribWhyRefusedFormat = "Couldn't start: %s";
+    t.contribWhyGone = "The eye recorder (eyecam-rec) seems to have stopped";
+    t.contribWhyNoStart = "The recording didn't start";
+    t.contribWhyMissing = "The recording's folder wasn't found";
+    t.contribWhyMoveFormat = "Couldn't move the recording: %s";
+    t.contribWhyIncompleteFormat = "The recording lacks files (%s). Please record again";
+    t.contribWhyNoVideoFormat = "No video from an eye camera (%s). Check the eye cameras' setup and record again";
+    t.contribBothEyes = "both";
+    t.contribWhyUnevenFormat = "One eye camera's video was slow (left %s / right %s frames). Put the headset on again "
+                               "and record again";
+    t.contribWhyTruncatedFormat = "The recording's files were cut short (%s). Check the free space and record again";
+    t.contribWhyValveFormat = "Valve's eye tracking values were there for only %s of the frames. Check that "
+                              "SteamVR's eye tracking is on and record again";
+    t.contribKept = "This recording went to aborted/ (no need to send it)";
+    t.contribRetry = "Record again";
+    t.contribDoneTitle = "Recorded. Thank you!";
+    t.contribManageTitle = "Recordings";
+    t.contribWhereFormat = "Folder: %s";
+    t.contribAgain = "Pressing it again on another day, or after taking the headset off and on, helps even more";
+    t.contribNext = "Make it one file and send it to the developer.";
+    t.contribPack = "Make one file";
+    t.contribPackHintFormat = "The recordings stay as they are (needs about %s free)";
+    t.contribPackFormatNote = "The file is a .tar.zst (7-Zip and the like can open it)";
+    t.contribPackingFormat = "Packing… %d%%";
+    t.contribPackedFormat = "Done (%s recordings, %s)";
+    t.contribPackFailedFormat = "Couldn't pack it: %s";
+    t.contribPackNoSpaceFormat = "Not enough space to pack it (about %s needed)";
+    t.contribIncompleteFormat = "%s couldn't be used for training and was left out. Please record again";
+    t.contribDelete = "Delete the recordings";
+    t.contribClose = "Close";
+    t.contribDeleteTitle = "Delete all these recordings?";
+    t.contribDeleteFormat = "Deletes %s and everything in it (%s). This can't be undone: delete it after sending it to "
+                            "the developer.";
+    t.contribDeleteYes = "Delete";
+    t.contribDeleting = "Deleting…";
+    t.contribErrorFormat = "Something went wrong: %s";
     t.rowPrefix = "Parameter prefix";
     t.prefixNone = "None";
     t.prefixExample = "e.g. ";

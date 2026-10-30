@@ -1218,7 +1218,10 @@ impl Smoother {
     /// it open for CAMERA_DOUBT_CLEAR_OPEN. Before that the eye
     /// server's stands, so a blink the camera catches late (or not at all) still closes the eye, and the blink sync
     /// still closes an eye the eye server caught in one eye only. An eye without the camera's values is the eye
-    /// server's, as before, and starts over. Whichever it is, an eye the camera sees open goes no lower than
+    /// server's, as before, and starts over; but through a short gap in them (`held`, the camera's last eyelid, see
+    /// CameraGap::steady) the doubt goes on where it was, and an eye on the camera's eyelid keeps that last one: issue
+    /// 46's left eye, which the eye server read shut all along, went out closed while single stale samples started the
+    /// doubt over before it got to CAMERA_DOUBT_GRACE. Whichever it is, an eye the camera sees open goes no lower than
     /// --camera-lid-floor, except while the eye server reads it closing within the grace period (a blink); the third
     /// value says which eyes the floor holds. An eye the eye server has just read jumping to the ceiling (`ceiling`, its
     /// ceiling_share; for CEILING_JUMP) is lowered toward the camera's eyelid where that is clearly narrowed (see
@@ -1232,6 +1235,7 @@ impl Smoother {
         mapped: [f32; 2],
         ceiling: [f32; 2],
         camera: [Option<CameraLid>; 2],
+        held: [Option<f32>; 2],
         raise_to: [Option<f32>; 2],
         settings: &Settings,
     ) -> ([f32; 2], [LidFrom; 2], [bool; 2]) {
@@ -1252,7 +1256,15 @@ impl Smoother {
             let jump = 1.0 - ((time - since - fresh) / (stale - fresh)).clamp(0.0, 1.0) as f32;
             let state = &mut self.lid_doubt[eye];
             let Some(camera) = camera[eye] else {
-                *state = LidDoubt::default();
+                match held[eye] {
+                    Some(lid) if state.camera => {
+                        from[eye] = LidFrom::CameraOpen;
+                        floored[eye] = floor > 0.0;
+                        return if floored[eye] { lid.max(floor) } else { lid };
+                    }
+                    Some(_) => {}
+                    None => *state = LidDoubt::default(),
+                }
                 return valve;
             };
             let closing = valve < line;
@@ -3711,20 +3723,21 @@ fn process(
         let at_ceiling = ceiling_eyes(settings, saturated);
         let ceiling = [0, 1].map(|eye| if at_ceiling[eye] { ceiling_share(openness[eye]) } else { 0.0 });
         let (mapped, mut lid_from, floored) = if v2 {
-            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, raise_to, settings)
+            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, held, raise_to, settings)
         } else {
             (mapped, [LidFrom::EyeServer; 2], [false; 2])
         };
-        // Through a short gap in the camera's eyelid, the eye server's is still raised to the camera's last one
+        // Through a short gap in the camera's eyelid, the eye server's is still raised to the camera's last one (an eye
+        // on the camera's eyelid has that already)
         let mapped = [0, 1].map(|eye| match held[eye] {
-            Some(camera) => {
+            Some(camera) if lid_from[eye] != LidFrom::CameraOpen => {
                 let (lid, raised) = raised_to_camera(mapped[eye], raise_to[eye].unwrap_or(camera), doubt_line(settings));
                 if raised {
                     lid_from[eye] = LidFrom::CameraRaised;
                 }
                 lid
             }
-            None => mapped[eye],
+            _ => mapped[eye],
         });
         // From relaxed open up (or widened on the camera while not closing), an eye the camera sees takes the camera's
         // eyelid; a closing one stays the eye server's. Widening in one eye only is halved (see share_widening)
@@ -9055,6 +9068,34 @@ mod tests {
     }
 
     #[test]
+    fn single_stale_camera_samples_do_not_start_the_doubt_over() {
+        // Issue 46: the eye server read the left eye shut all along, the camera saw it open, but single stale samples
+        // (one every 20, about 0.22 s) started the doubt over before CAMERA_DOUBT_GRACE: it went out closed all along
+        let settings = camera_settings();
+        let mut smoother = Smoother::new(&settings);
+        let stale = |i: usize| i % 20 == 0;
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, |_| [0.03, 0.8], |i| {
+            let mut live = camera(0.75, 0.0);
+            live.fresh[0] = !stale(i);
+            Some(live)
+        });
+        // On the camera's eyelid as without the gaps (CAMERA_DOUBT_GRACE, counted on the fresh samples only), then
+        // through them too
+        assert!(sent[..20].iter().all(|sample| sample.lids[0] == 0.0));
+        assert!(sent[60..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen), "{:?}", sent[80].lid_from);
+        assert!(sent[90..].iter().all(|sample| (sample.lids[0] - LID_RELAXED).abs() < 0.01), "{:?}", sent[100].lids);
+        // A gap longer than CAMERA_GAP_HOLD still hands the eye back to the eye server's, closed
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, |_| [0.03, 0.8], |i| {
+            let mut live = camera(0.75, 0.0);
+            live.fresh[0] = !(180..270).contains(&i);
+            Some(live)
+        });
+        assert_eq!(sent[170].lid_from[0], LidFrom::CameraOpen);
+        assert!(sent[220..270].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer && sample.lids[0] < 0.05));
+    }
+
+    #[test]
     fn short_jumps_up_do_not_hand_a_squinting_eye_back() {
         let settings = camera_settings();
         let mut smoother = Smoother::new(&settings);
@@ -9254,7 +9295,7 @@ mod tests {
                 let valve = if i < 14 { 0.0 } else { 0.59 };
                 let camera = if (4..18).contains(&i) { shut } else { open };
                 let (_, from, _) =
-                    smoother.check_lids(time, dt as f32, [valve, 0.59], [0.0; 2], [camera, open], [None; 2], &settings);
+                    smoother.check_lids(time, dt as f32, [valve, 0.59], [0.0; 2], [camera, open], [None; 2], [None; 2], &settings);
                 assert_ne!(from[0], LidFrom::CameraOpen, "blink {blink}, sample {i}");
                 time += dt;
             }
@@ -9262,7 +9303,7 @@ mod tests {
         // One long closing the camera sees open still takes its eyelid
         let mut from = [LidFrom::EyeServer; 2];
         for _ in 0..40 {
-            (_, from, _) = smoother.check_lids(time, dt as f32, [0.0, 0.59], [0.0; 2], [open; 2], [None; 2], &settings);
+            (_, from, _) = smoother.check_lids(time, dt as f32, [0.0, 0.59], [0.0; 2], [open; 2], [None; 2], [None; 2], &settings);
             time += dt;
         }
         assert_eq!(from[0], LidFrom::CameraOpen);

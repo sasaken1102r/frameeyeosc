@@ -1204,8 +1204,12 @@ impl Smoother {
 
     /// Each eye's camera eyelid at `time` with its short gaps bridged, and the one held through a gap (see
     /// CAMERA_GAP_HOLD, CameraGap::steady).
-    fn steady_camera(&mut self, time: f64, read: [Option<CameraLid>; 2]) -> ([Option<CameraLid>; 2], [Option<f32>; 2]) {
-        let steady: [(Option<CameraLid>, Option<f32>); 2] =
+    fn steady_camera(
+        &mut self,
+        time: f64,
+        read: [Option<CameraLid>; 2],
+    ) -> ([Option<CameraLid>; 2], [Option<CameraLid>; 2]) {
+        let steady: [(Option<CameraLid>, Option<CameraLid>); 2] =
             std::array::from_fn(|eye| self.camera_gap[eye].steady(time, read[eye]));
         (steady.map(|(lid, _)| lid), steady.map(|(_, held)| held))
     }
@@ -1235,7 +1239,7 @@ impl Smoother {
         mapped: [f32; 2],
         ceiling: [f32; 2],
         camera: [Option<CameraLid>; 2],
-        held: [Option<f32>; 2],
+        held: [Option<CameraLid>; 2],
         raise_to: [Option<f32>; 2],
         settings: &Settings,
     ) -> ([f32; 2], [LidFrom; 2], [bool; 2]) {
@@ -1257,10 +1261,15 @@ impl Smoother {
             let state = &mut self.lid_doubt[eye];
             let Some(camera) = camera[eye] else {
                 match held[eye] {
+                    // Closed as the camera last saw it, the way it is closed while the camera's values come
+                    Some(lid) if state.camera && lid.closed => {
+                        from[eye] = if valve > 0.0 { LidFrom::CameraClosed } else { LidFrom::EyeServer };
+                        return 0.0;
+                    }
                     Some(lid) if state.camera => {
                         from[eye] = LidFrom::CameraOpen;
                         floored[eye] = floor > 0.0;
-                        return if floored[eye] { lid.max(floor) } else { lid };
+                        return if floored[eye] { lid.lid.max(floor) } else { lid.lid };
                     }
                     Some(_) => {}
                     None => *state = LidDoubt::default(),
@@ -1587,8 +1596,9 @@ struct CameraGap {
 
 impl CameraGap {
     /// At `time`, from the camera's eyelid as read (`read`): the one to use (None in a gap, and while one that came
-    /// back is not taken yet), and through a gap the last one, to raise the eye server's to only.
-    fn steady(&mut self, time: f64, read: Option<CameraLid>) -> (Option<CameraLid>, Option<f32>) {
+    /// back is not taken yet), and through a gap the last one, to raise the eye server's to and to go on with
+    /// (Smoother::check_lids).
+    fn steady(&mut self, time: f64, read: Option<CameraLid>) -> (Option<CameraLid>, Option<CameraLid>) {
         match (self.on, read) {
             (None, _) | (Some(true), Some(_)) => {
                 self.on = Some(read.is_some());
@@ -1597,7 +1607,7 @@ impl CameraGap {
                 (read, None)
             }
             (Some(true), None) => match self.last {
-                Some((lid, at)) if time - at <= CAMERA_GAP_HOLD => (None, Some(lid.lid)),
+                Some((lid, at)) if time - at <= CAMERA_GAP_HOLD => (None, Some(lid)),
                 _ => {
                     self.on = Some(false);
                     (None, None)
@@ -3731,7 +3741,7 @@ fn process(
         // on the camera's eyelid has that already)
         let mapped = [0, 1].map(|eye| match held[eye] {
             Some(camera) if lid_from[eye] != LidFrom::CameraOpen => {
-                let (lid, raised) = raised_to_camera(mapped[eye], raise_to[eye].unwrap_or(camera), doubt_line(settings));
+                let (lid, raised) = raised_to_camera(mapped[eye], raise_to[eye].unwrap_or(camera.lid), doubt_line(settings));
                 if raised {
                     lid_from[eye] = LidFrom::CameraRaised;
                 }
@@ -3751,7 +3761,9 @@ fn process(
         // widening, so it is capped again after that. Closing, half-closed and blinks are below relaxed open and
         // untouched. The widen sustain applies to the camera's widening too. With widening off (`widen`) every eye is
         // capped the same way, the camera's included, so its closing and squint stay as they are.
-        let saturation_capped = camera_lids.map(|camera| saturated && camera.is_none());
+        // (an eye on the camera's eyelid through a short gap in it, too: that is the camera's, see Smoother::check_lids)
+        let saturation_capped = [0, 1]
+            .map(|eye| saturated && camera_lids[eye].is_none() && lid_from[eye] != LidFrom::CameraOpen);
         let capped = saturation_capped.map(|capped| !settings.widen || capped);
         // The brows go by the eyelids before the `widen` cap, but after the saturation's (brow_from_widen)
         let before_cap = [0, 1].map(|eye| if saturation_capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
@@ -5326,8 +5338,8 @@ mod tests {
         // The first sample says which it is
         assert_eq!(gap.steady(0.0, lid(0.6)), (lid(0.6), None));
         // A gap of up to 0.2 s keeps the last eyelid to raise to; longer, and the eye is off the camera
-        assert_eq!(gap.steady(0.1, None), (None, Some(0.6)));
-        assert_eq!(gap.steady(0.2, None), (None, Some(0.6)));
+        assert_eq!(gap.steady(0.1, None), (None, lid(0.6)));
+        assert_eq!(gap.steady(0.2, None), (None, lid(0.6)));
         assert_eq!(gap.steady(0.21, None), (None, None));
         // Back: taken once it has kept coming for 0.2 s
         assert_eq!(gap.steady(0.3, lid(0.5)), (None, None));
@@ -9073,7 +9085,7 @@ mod tests {
         // (one every 20, about 0.22 s) started the doubt over before CAMERA_DOUBT_GRACE: it went out closed all along
         let settings = camera_settings();
         let mut smoother = Smoother::new(&settings);
-        let stale = |i: usize| i % 20 == 0;
+        let stale = |i: usize| i % 20 == 10;
         let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, |_| [0.03, 0.8], |i| {
             let mut live = camera(0.75, 0.0);
             live.fresh[0] = !stale(i);
@@ -9093,6 +9105,24 @@ mod tests {
         });
         assert_eq!(sent[170].lid_from[0], LidFrom::CameraOpen);
         assert!(sent[220..270].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer && sample.lids[0] < 0.05));
+        // A stale sample just after the camera saw the eye close stays closed, not on the camera's last open eyelid at
+        // the floor (and the blink hold goes on)
+        let settings = Settings { camera_lid_floor: 0.25, ..camera_settings() };
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 1.0, |_| [0.03, 0.8], |i| {
+            let mut live = camera(0.75, 0.0);
+            // (both eyes, a blink: one eye alone is held back by CloseGate first)
+            if i >= 40 {
+                for eye in &mut live.eyes {
+                    (eye.lid, eye.closed) = (0.0, true);
+                }
+            }
+            live.fresh[0] = i != 45;
+            Some(live)
+        });
+        assert_eq!(sent[39].lid_from[0], LidFrom::CameraOpen);
+        assert!(sent[40..60].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[45].lids);
+        assert_ne!(sent[45].lid_from[0], LidFrom::CameraOpen);
     }
 
     #[test]

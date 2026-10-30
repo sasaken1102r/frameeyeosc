@@ -287,7 +287,8 @@ const CAMERA_WIDEN_FADE: f32 = 0.05;
 // An eye's camera eyelid that stops coming (stale for a few frames, the pupil lost for a moment) keeps the eye on the
 // rules for eyes with it for up to CAMERA_GAP_HOLD, with the eye server's eyelid still raised to the camera's last one
 // (raised_to_camera; never lowered, closed or widened by it, since the camera often drops out just as the eye
-// narrows), before the eye goes over to the rules for eyes without it (the nearly open easing, the far-down slope);
+// narrows; but an eye already on the camera's eyelid keeps that last one, closed or widened too, see
+// Smoother::check_lids), before the eye goes over to the rules for eyes without it (the nearly open easing, the far-down slope);
 // and one that comes back after that is taken once it has kept coming for as long. Switching at once stepped an eye
 // the eye server reads low between the camera's raise and the eased eyelid at every such gap. The same length as
 // CAMERA_AGREE_HOLD, for the same reason: the camera's values come and go for 100-150 ms at a time.

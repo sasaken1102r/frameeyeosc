@@ -1,6 +1,7 @@
 //! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity` and `lid_veto` are changed from the
-//! panel (`set ...` on ctl.sock; `lid_veto` by hand too), `dev` only by hand.
+//! panel (`set ...` on ctl.sock; `lid_veto` by hand too), `dev` and `source` only by hand.
 
+use crate::dspsrc::Source;
 use crate::json::{self, Json};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -14,11 +15,14 @@ pub struct Settings {
     pub dev: bool,
     /// The eyelid veto (`veto`): off unless switched on here (`set lid_veto`, or by hand; followed while running).
     pub lid_veto: bool,
+    /// Where the camera buffers come from (dspsrc::Source): eyecam-grab unless set by hand. Read when eyecam-rec
+    /// starts (--source overrides it); written to the file only when it isn't the default.
+    pub source: Source,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false, lid_veto: false }
+        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false, lid_veto: false, source: Source::Grab }
     }
 }
 
@@ -44,6 +48,12 @@ impl Settings {
                 if let Some(Json::Bool(v)) = j.get("lid_veto") {
                     s.lid_veto = *v;
                 }
+                if let Some(v) = j.get("source") {
+                    match v.str().and_then(Source::parse) {
+                        Some(source) => s.source = source,
+                        None => eprintln!("eyecam-rec: ignoring settings.json source (grab, dsp or auto)"),
+                    }
+                }
             }
             Err(e) => eprintln!("eyecam-rec: ignoring {}: {e}", path.display()),
         }
@@ -56,8 +66,13 @@ impl Settings {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let tmp = path.with_extension("json.tmp");
+        // `source` only when set, so the file stays as it was for everyone who never set it.
+        let source = match self.source {
+            Source::Grab => String::new(),
+            s => format!(",\n  \"source\": \"{}\"", s.label()),
+        };
         let text = format!(
-            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}\n}}\n",
+            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}{source}\n}}\n",
             json::num(self.widen_sensitivity),
             self.dev,
             self.lid_veto
@@ -107,10 +122,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("eyecam-settings-test-{}", std::process::id()));
         let p = dir.join("settings.json");
         assert_eq!(Settings::load(&p), Settings::default());
-        Settings { widen_sensitivity: 0.25, dev: false, lid_veto: true }.save(&p).unwrap();
+        Settings { widen_sensitivity: 0.25, dev: false, lid_veto: true, ..Settings::default() }.save(&p).unwrap();
         assert_eq!(Settings::load(&p).widen_sensitivity, 0.25);
-        Settings { widen_sensitivity: 0.75, dev: true, lid_veto: false }.save(&p).unwrap();
-        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.75, dev: true, lid_veto: false });
+        Settings { widen_sensitivity: 0.75, dev: true, lid_veto: false, ..Settings::default() }.save(&p).unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.75, dev: true, lid_veto: false, ..Settings::default() });
         std::fs::write(&p, "{\"widen_sensitivity\": 3}").unwrap();
         assert_eq!(Settings::load(&p), Settings::default());
         std::fs::remove_dir_all(&dir).unwrap();
@@ -123,15 +138,15 @@ mod tests {
         // No file yet: the defaults with the one change
         Settings::update(&p, |s| s.lid_veto = true).unwrap();
         assert_eq!(Settings::load(&p), Settings { lid_veto: true, ..Settings::default() });
-        Settings { widen_sensitivity: 0.3, dev: true, lid_veto: true }.save(&p).unwrap();
+        Settings { widen_sensitivity: 0.3, dev: true, lid_veto: true, ..Settings::default() }.save(&p).unwrap();
         // `set widen_sensitivity` keeps `dev` and `lid_veto`...
         Settings::update(&p, |s| s.widen_sensitivity = 0.8).unwrap();
-        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.8, dev: true, lid_veto: true });
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.8, dev: true, lid_veto: true, ..Settings::default() });
         // ...and `set lid_veto` keeps `widen_sensitivity` and `dev`, both ways
         Settings::update(&p, |s| s.lid_veto = false).unwrap();
-        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.8, dev: true, lid_veto: false });
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.8, dev: true, lid_veto: false, ..Settings::default() });
         Settings::update(&p, |s| s.lid_veto = true).unwrap();
-        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.8, dev: true, lid_veto: true });
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.8, dev: true, lid_veto: true, ..Settings::default() });
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -149,7 +164,7 @@ mod tests {
         ];
         for (text, widen, dev) in cases {
             std::fs::write(&p, text).unwrap();
-            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: widen, dev, lid_veto: false }, "{text}");
+            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: widen, dev, lid_veto: false, ..Settings::default() }, "{text}");
         }
         // lid_veto: off unless true (not a bool: off).
         for (text, on) in [("{\"lid_veto\": false}", false), ("{\"lid_veto\": true}", true), ("{\"lid_veto\": 1}", false), ("{}", false)] {
@@ -168,6 +183,37 @@ mod tests {
         let later = SystemTime::now() + std::time::Duration::from_secs(5);
         std::fs::File::options().write(true).open(&p).unwrap().set_modified(later).unwrap();
         assert!(!w.get().dev);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reads_the_source_and_writes_it_only_when_set() {
+        let dir = std::env::temp_dir().join(format!("eyecam-settings-source-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+        for (text, source) in [
+            ("{}", Source::Grab),
+            ("{\"source\": \"grab\"}", Source::Grab),
+            ("{\"source\": \"dsp\"}", Source::Dsp),
+            ("{\"source\": \"auto\", \"dev\": true}", Source::Auto),
+            // Unknown or not a string: the default.
+            ("{\"source\": \"udmabuf\"}", Source::Grab),
+            ("{\"source\": 1}", Source::Grab),
+        ] {
+            std::fs::write(&p, text).unwrap();
+            assert_eq!(Settings::load(&p).source, source, "{text}");
+        }
+        // The default is not written: the file is the same as before `source` existed.
+        Settings::default().save(&p).unwrap();
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(!text.contains("source"), "{text}");
+        assert!(text.ends_with("\"lid_veto\": false\n}\n"), "{text}");
+        // A set one is kept by a `set ...` of another setting.
+        std::fs::write(&p, "{\"source\": \"dsp\", \"lid_veto\": true}").unwrap();
+        Settings::update(&p, |s| s.widen_sensitivity = 0.6).unwrap();
+        let s = Settings::load(&p);
+        assert_eq!((s.source, s.lid_veto, s.widen_sensitivity), (Source::Dsp, true, 0.6));
+        assert!(crate::json::parse(&std::fs::read_to_string(&p).unwrap()).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

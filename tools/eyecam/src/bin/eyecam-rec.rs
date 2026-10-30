@@ -9,6 +9,7 @@
 use eyecam::autograb;
 use eyecam::cues::{self, Player, Step};
 use eyecam::driftlog::{self, DriftLog};
+use eyecam::dspsrc::{self, Source};
 use eyecam::mem::Arena;
 use eyecam::ring::{self, Clock, FRAME_BYTES, HEADER_BYTES, HEIGHT, Ring, STRIDE, WIDTH};
 use eyecam::shm::{self, Sample, Shm};
@@ -55,6 +56,12 @@ const DRIFTLOG_FAILED: &str = "ドリフトの記録を始められなかった"
 /// What waiting_fds says while the buffers can't be fetched automatically: the camera tool (eyecam-grab with
 /// cap_sys_ptrace) is put in by the panel's first-time setup. Once it is in, the automatic grab's messages replace this.
 const INSTALL_TOOL: &str = "パネルの「目のカメラ」タブで、目のカメラの道具を入れてね";
+
+/// What waiting_fds says while the buffer is being fetched from dsp_service (`source` dsp), which needs no tool.
+const DSP_WAITING: &str = "dsp_service から目のカメラのバッファをもらうところ";
+
+/// What waiting_fds says while dsp_service can't be reached (followed by `: ` and why; tried again by itself).
+const DSP_UNREACHABLE: &str = "dsp_service につながらない";
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -103,6 +110,10 @@ struct Args {
     full_width: bool,
     beep: bool,
     volume: f32,
+    /// --source: where the buffers come from (else settings.json `source`, else eyecam-grab).
+    source: Option<Source>,
+    /// --dsp-selftest: look at dsp_service's buffer for this many seconds, print what was seen, and exit.
+    dsp_selftest: Option<f64>,
 }
 
 const USAGE: &str = "usage: eyecam-rec [options]
@@ -146,6 +157,11 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --cues FILE        play a beep cue protocol (lines `seconds label`, see protocol_widen.txt) and log cues.csv
   --swap             swap which camera is labelled L and R
   --wait-grab N      seconds to wait for `sudo eyecam-grab` (default 600; --serve waits forever)
+  --source S         where the camera buffers come from: grab (eyecam-grab, the default), dsp (Valve's dsp_service,
+                     no eyecam-grab needed; a test route) or auto (the installed eyecam-grab when it works, else dsp);
+                     overrides settings.json `source`
+  --dsp-selftest N   connect to dsp_service, map its buffer read-only, count the eye camera frames for N seconds, look
+                     for the ring once, print it all and exit (writes nothing; runs beside a running --serve)
   --wait-lock N      seconds to wait for eye frames each time they are searched for (default 300)
   --prox-min V       proximity reading above which the headset counts as worn (default 20)
   --allow-one-eye    record even if only one camera is streaming
@@ -187,6 +203,8 @@ fn parse_args() -> Result<Args> {
         full_width: false,
         beep: true,
         volume: 0.25,
+        source: None,
+        dsp_selftest: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -274,6 +292,8 @@ fn parse_args() -> Result<Args> {
             "--run-dir" => args.run_dir = PathBuf::from(value("--run-dir")?),
             "--swap" => args.swap = true,
             "--wait-grab" => args.wait_grab = number(value("--wait-grab")?, "--wait-grab")?,
+            "--source" => args.source = Some(Source::parse(&value("--source")?).ok_or("--source must be grab, dsp or auto")?),
+            "--dsp-selftest" => args.dsp_selftest = Some(number(value("--dsp-selftest")?, "--dsp-selftest")?),
             "--wait-lock" => args.wait_lock = number(value("--wait-lock")?, "--wait-lock")?,
             "--prox-min" => args.prox_min = number(value("--prox-min")?, "--prox-min")?,
             "--allow-one-eye" => args.allow_one_eye = true,
@@ -354,6 +374,9 @@ fn run() -> Result<()> {
         libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
         libc::setpriority(libc::PRIO_PROCESS, 0, 10);
     }
+    if let Some(seconds) = args.dsp_selftest {
+        return dsp_selftest(seconds);
+    }
     fs::create_dir_all(&args.out).map_err(|e| format!("{}: {e}", args.out.display()))?;
     if args.serve {
         return serve(&args);
@@ -373,7 +396,8 @@ fn run() -> Result<()> {
         eprintln!("WARNING: that may not fit; recording stops when less than 1 GB is left");
     }
 
-    let mut buffers = Buffers::receive(args.wait_grab, None)?;
+    let setting = source_setting(&args);
+    let mut buffers = Buffers::receive(args.wait_grab, None, route(setting), setting == Source::Auto)?;
     let mut prox = Proximity::find();
     let protocol = args.cues.as_ref().map_or(String::new(), |p| p.display().to_string());
     let ended = record(&mut buffers, &mut None, &args, steps, &protocol, &mut prox, None, None, Mode::Record, false)?;
@@ -395,6 +419,8 @@ enum Abort {
     Interrupted,
     Stopped,
     TrackerExited,
+    /// dsp_service closed the connection its buffer came with.
+    ServiceClosed,
     Stale,
     NotFound,
     DiskFull,
@@ -410,6 +436,7 @@ impl Abort {
             Abort::Interrupted => "中断した（Ctrl-C / SIGTERM）",
             Abort::Stopped => "stop で止めた",
             Abort::TrackerExited => "アイトラッカーが終了した",
+            Abort::ServiceClosed => "dsp_service との接続が切れた",
             Abort::Stale => "バッファが更新されなくなった",
             Abort::NotFound => "目の映像が見つからなかった（ヘッドセットをかぶってから start してね）",
             Abort::DiskFull => "ディスクの空きが 1 GB 未満",
@@ -420,7 +447,7 @@ impl Abort {
 
     /// The buffers are no longer the live ones: new descriptors are needed.
     fn needs_grab(self) -> bool {
-        matches!(self, Abort::TrackerExited | Abort::Stale)
+        matches!(self, Abort::TrackerExited | Abort::ServiceClosed | Abort::Stale)
     }
 }
 
@@ -482,7 +509,9 @@ impl StatusFile {
         let _guard = self.write_lock.lock().unwrap();
         let json = {
             let mut s = status.lock().unwrap();
-            s.grab_outdated = eyecam::autograb::bundled_grab().is_some_and(|b| eyecam::autograb::grab_outdated(&b));
+            // (no eyecam-grab is used with dsp_service, so an outdated one is nothing to ask about then)
+            s.grab_outdated = s.source != "dsp"
+                && eyecam::autograb::bundled_grab().is_some_and(|b| eyecam::autograb::grab_outdated(&b));
             // The settings lock is held from the read until lid_veto is handed over, as `set lid_veto` holds it from
             // its new Watch to its own store: a value read just before a `set lid_veto` can't land after it.
             let mut watch = self.settings.lock().unwrap();
@@ -771,7 +800,11 @@ fn serve(args: &Args) -> Result<()> {
         shared.driftlog.lock().unwrap().dir = args.out.join(driftlog::DIR_NAME);
     }
     let daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()))?;
-    daemon.set(|s| s.prox_min = args.prox_min);
+    let setting = source_setting(args);
+    daemon.set(|s| {
+        s.prox_min = args.prox_min;
+        s.source_setting = setting.label();
+    });
     eprintln!(
         "serving{}: status {}, control {}",
         if args.fake { " (fake)" } else { "" },
@@ -796,7 +829,10 @@ fn serve(args: &Args) -> Result<()> {
     let mut off = livesvc::OffCount::default();
     let mut why: Option<&str> = None;
     while !STOP.load(Ordering::SeqCst) {
-        let message = why.map_or(INSTALL_TOOL.to_string(), |w| format!("{w}。{INSTALL_TOOL}"));
+        // (chosen again each time: `auto` takes an eyecam-grab installed meanwhile)
+        let route = route(setting);
+        let how = if route == Source::Dsp { DSP_WAITING } else { INSTALL_TOOL };
+        let message = why.map_or(how.to_string(), |w| format!("{w}。{how}"));
         daemon.set(|s| {
             s.state = "waiting_fds";
             s.message = message;
@@ -804,8 +840,12 @@ fn serve(args: &Args) -> Result<()> {
             s.locked = false;
             s.search = "";
             s.clear_recording();
+            s.source = route.label();
+            if route == Source::Dsp {
+                s.auto_grab = "dsp".into();
+            }
         });
-        let mut buffers = match Buffers::receive(f64::INFINITY, Some(&daemon)) {
+        let mut buffers = match Buffers::receive(f64::INFINITY, Some(&daemon), route, setting == Source::Auto) {
             Ok(b) => b,
             Err(e) => {
                 if STOP.load(Ordering::SeqCst) {
@@ -1541,9 +1581,85 @@ fn bind_private(path: &Path, busy: &str) -> Result<SocketFile> {
     Ok(socket)
 }
 
+/// receive_buffers gave up on the automatic grab after `fall_back_after` failures in a row (`source` auto).
+#[derive(Debug)]
+struct GrabFallBack(u32);
+
+impl std::fmt::Display for GrabFallBack {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "the automatic grab failed {} times in a row", self.0)
+    }
+}
+
+impl Error for GrabFallBack {}
+
+/// The `source` setting: --source, else settings.json, else eyecam-grab.
+fn source_setting(args: &Args) -> Source {
+    args.source.unwrap_or_else(|| Settings::load(&settings::path()).source)
+}
+
+/// The route to take now for `setting` (Grab or Dsp; see dspsrc::pick).
+fn route(setting: Source) -> Source {
+    let ready = setting == Source::Auto && matches!(autograb::find(), autograb::State::Ready(_));
+    dspsrc::pick(setting, ready)
+}
+
+/// Connect to dsp_service and take its buffer, trying again with dspsrc::backoff while it can't be reached (for `wait`
+/// seconds; serve mode waits forever). Control requests are refused meanwhile, as while waiting for eyecam-grab.
+fn connect_dsp(wait: f64, ctl: Option<&Daemon>) -> Result<dspsrc::Connection> {
+    let set = |message: String| {
+        if let Some(d) = ctl {
+            d.set(|s| {
+                s.source = "dsp";
+                s.auto_grab = "dsp".into();
+                s.message = message;
+            });
+        }
+    };
+    set(DSP_WAITING.into());
+    let deadline = now_raw() + wait;
+    let mut failures = 0u32;
+    let mut last = String::new();
+    loop {
+        match dspsrc::connect() {
+            Ok(c) => {
+                let fds: Vec<String> = c.fds.iter().map(dspsrc::FdInfo::describe).collect();
+                eprintln!("{} pid {} handed over {}: kept the first, closed the rest", dspsrc::SERVICE, c.peer_pid, fds.join(", "));
+                return Ok(c);
+            }
+            Err(e) => {
+                failures += 1;
+                if e != last {
+                    eprintln!("{e} (trying again by itself)");
+                }
+                set(format!("{DSP_UNREACHABLE}: {e}"));
+                last = e;
+            }
+        }
+        let retry = now_raw() + dspsrc::backoff(failures);
+        while now_raw() < retry {
+            if STOP.load(Ordering::SeqCst) {
+                return Err(format!("interrupted while waiting for {}", dspsrc::SERVICE).into());
+            }
+            if now_raw() > deadline {
+                return Err(format!("{} could not be reached within {wait:.0} s: {last}", dspsrc::SERVICE).into());
+            }
+            while let Some(req) = ctl.and_then(Daemon::request) {
+                let reply = match req.command {
+                    Command::Start(_) | Command::Calib(_) | Command::Live(_) | Command::Relearn => "err まだバッファを受け取ってない",
+                    _ => "err 録画していない",
+                };
+                answer(req, reply);
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
 /// Create the socket, ask the user to run eyecam-grab, and take the descriptors it sends. In serve mode, control
-/// requests are refused meanwhile (there is nothing to record from yet).
-fn receive_buffers(wait: f64, ctl: Option<&Daemon>) -> Result<(proto::Header, Vec<OwnedFd>)> {
+/// requests are refused meanwhile (there is nothing to record from yet). With `fall_back_after` (`source` auto), give
+/// up with GrabFallBack once that many automatic grabs in a row failed.
+fn receive_buffers(wait: f64, ctl: Option<&Daemon>, fall_back_after: Option<u32>) -> Result<(proto::Header, Vec<OwnedFd>)> {
     let socket = bind_private(Path::new(proto::SOCKET_PATH), "another eyecam-rec is already waiting")?;
     socket.0.set_nonblocking(true)?;
 
@@ -1582,6 +1698,7 @@ fn receive_buffers(wait: f64, ctl: Option<&Daemon>) -> Result<(proto::Header, Ve
     let mut child: Option<(std::process::Child, f64)> = None;
     let mut next_try = 0.0;
     let mut by_child = false;
+    let mut failures = 0u32;
 
     let deadline = now_raw() + wait;
     let stream = loop {
@@ -1651,6 +1768,7 @@ fn receive_buffers(wait: f64, ctl: Option<&Daemon>) -> Result<(proto::Header, Ve
                         );
                         child = None;
                         next_try = now + 5.0;
+                        failures += 1;
                     }
                     Ok(None) if now - *started > 10.0 => {
                         let _ = c.kill();
@@ -1658,8 +1776,12 @@ fn receive_buffers(wait: f64, ctl: Option<&Daemon>) -> Result<(proto::Header, Ve
                         set_auto("failed: timeout".into(), None);
                         child = None;
                         next_try = now + 5.0;
+                        failures += 1;
                     }
                     _ => {}
+                }
+                if let Some(n) = fall_back_after.filter(|&n| failures >= n) {
+                    return Err(Box::new(GrabFallBack(n)));
                 }
             } else if now >= next_try {
                 next_try = now + 5.0;
@@ -1727,21 +1849,48 @@ struct Buffers {
 }
 
 impl Buffers {
-    fn receive(wait: f64, ctl: Option<&Daemon>) -> Result<Self> {
-        let (header, fds) = receive_buffers(wait, ctl)?;
+    /// Take the buffers the way `route` says (Grab or Dsp). `fall_back` (`source` auto): leave the grab for dsp_service
+    /// once the automatic grab keeps failing.
+    fn receive(wait: f64, ctl: Option<&Daemon>, route: Source, fall_back: bool) -> Result<Self> {
+        if route == Source::Grab {
+            match receive_buffers(wait, ctl, fall_back.then_some(dspsrc::AUTO_GRAB_TRIES)) {
+                Ok((header, fds)) => {
+                    let tracker = Tracker::open(header.pid);
+                    return Self::map(header, fds, tracker);
+                }
+                Err(e) if e.is::<GrabFallBack>() => eprintln!("{e}: taking the buffer from {} instead", dspsrc::SERVICE),
+                Err(e) => return Err(e),
+            }
+        }
+        let mut conn = connect_dsp(wait, ctl)?;
+        let fd = conn.take_buffer().ok_or("dsp_service: no buffer")?;
+        // (no eye tracker pid: the buffer is dsp_service's, and the connection tells when it ends)
+        let header = proto::Header { count: 1, pid: 0, sizes: vec![dspsrc::BUFFER_LEN] };
+        Self::map(header, vec![fd], Tracker::Dsp(conn))
+    }
+
+    fn map(header: proto::Header, fds: Vec<OwnedFd>, tracker: Tracker) -> Result<Self> {
         let mut maps = Vec::new();
         for (fd, &size) in fds.iter().zip(&header.sizes) {
             maps.push(Mapping::new(fd, size as usize)?);
         }
         drop(fds);
-        eprintln!(
-            "mapped {} buffer(s) read-only: {:?} bytes; eye tracker pid {}",
-            maps.len(),
-            header.sizes,
-            header.pid
-        );
+        match &tracker {
+            Tracker::Process(_) => eprintln!(
+                "mapped {} buffer(s) read-only: {:?} bytes; eye tracker pid {}",
+                maps.len(),
+                header.sizes,
+                header.pid
+            ),
+            Tracker::Dsp(c) => eprintln!(
+                "mapped {} buffer(s) read-only: {:?} bytes; from {} pid {}",
+                maps.len(),
+                header.sizes,
+                dspsrc::SERVICE,
+                c.peer_pid
+            ),
+        }
         let arenas = maps.iter().map(|m| unsafe { Arena::new(m.ptr, m.len) }).collect();
-        let tracker = Tracker::open(header.pid);
         let valve = ValveWatch::default();
         Ok(Self {
             header,
@@ -1761,8 +1910,8 @@ impl Buffers {
     /// cameras are running, so live buffers would be changing). Neither on a desk, so stale never starts a re-grab
     /// there; an unknown proximity without Valve samples never counts as stale. Called about once a second.
     fn watch(&mut self, prox_worn: Option<bool>) -> std::result::Result<(), Abort> {
-        if self.tracker.exited() {
-            return Err(Abort::TrackerExited);
+        if let Some(a) = self.tracker.ended() {
+            return Err(a);
         }
         let now = now_raw();
         let mut any = false;
@@ -1918,20 +2067,145 @@ impl<S: SampleSource> ValveWatch<S> {
 }
 
 /// Notices the eye tracker exiting (its buffers then stop being filled).
-struct Tracker(Option<OwnedFd>);
+enum Tracker {
+    /// eyecam-grab's buffers: a pidfd of Valve's eye tracker, whose exit ends them.
+    Process(Option<OwnedFd>),
+    /// dsp_service's buffer: the connection it came with, kept open while the buffer is mapped (Buffers drops its
+    /// mappings first); its closing ends it.
+    Dsp(dspsrc::Connection),
+}
 
 impl Tracker {
     fn open(pid: i32) -> Self {
         let ret = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
-        Self((ret >= 0).then(|| unsafe { OwnedFd::from_raw_fd(ret as RawFd) }))
+        Tracker::Process((ret >= 0).then(|| unsafe { OwnedFd::from_raw_fd(ret as RawFd) }))
     }
 
-    fn exited(&self) -> bool {
-        self.0.as_ref().is_some_and(|fd| {
-            let mut pfd = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
-            unsafe { libc::poll(&mut pfd, 1, 0) > 0 }
-        })
+    /// Why the buffers are no longer the live ones (the eye tracker exited, dsp_service closed the connection), if so.
+    fn ended(&self) -> Option<Abort> {
+        match self {
+            Tracker::Process(pidfd) => pidfd
+                .as_ref()
+                .is_some_and(|fd| {
+                    let mut pfd = libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+                    unsafe { libc::poll(&mut pfd, 1, 0) > 0 }
+                })
+                .then_some(Abort::TrackerExited),
+            Tracker::Dsp(conn) => conn.closed().then_some(Abort::ServiceClosed),
+        }
     }
+}
+
+/// `--dsp-selftest`'s stand-in for a search's clock: no control socket, only Ctrl-C ends a look early.
+struct SelftestClock;
+
+impl Clock for SelftestClock {
+    fn now(&mut self) -> f64 {
+        now_raw()
+    }
+
+    fn wait(&mut self) {
+        thread::sleep(Duration::from_millis(4));
+    }
+
+    fn stopped(&self) -> bool {
+        STOP.load(Ordering::SeqCst)
+    }
+}
+
+/// `--dsp-selftest N`: connect to dsp_service, map its buffer read-only, and print what is in it: the slot headers where
+/// they were on the developer's Frame (how many new frames each got in N seconds, and how old they were when seen),
+/// then one search for the ring as the serve loop does it (changes over one second, ring::discover), which does not
+/// assume that layout. Writes nothing, binds no socket and touches no status.json, so it can run beside --serve.
+fn dsp_selftest(seconds: f64) -> Result<()> {
+    // The slot headers on the developer's Frame (2026-10-30): the right eye's camera at 0x2340c0 + k * pitch, the
+    // left eye's 64 bytes further.
+    const HEADER0: usize = 0x2340c0;
+    const PITCH: usize = 262208;
+    let header_at = |k: usize| HEADER0 + k * PITCH + if k >= 4 { 64 } else { 0 };
+    let mut conn = dspsrc::connect()?;
+    println!("{} pid {}: {} descriptor(s)", dspsrc::SERVICE, conn.peer_pid, conn.fds.len());
+    for (i, f) in conn.fds.iter().enumerate() {
+        println!("  fd {i}: {}{}", f.describe(), if i == 0 { " (mapped read-only)" } else { " (closed)" });
+    }
+    let fd = conn.take_buffer().ok_or("no buffer")?;
+    let map = Mapping::new(&fd, dspsrc::BUFFER_LEN as usize)?;
+    drop(fd);
+    let mut arena = unsafe { Arena::new(map.ptr, map.len) };
+    let stamp = |arena: &Arena, k: usize| {
+        let mut b = [0u8; 8];
+        arena.copy(header_at(k), &mut b);
+        u64::from_le_bytes(b)
+    };
+    let t0 = now_raw();
+    let mut last = [0u64; 8];
+    for (k, l) in last.iter_mut().enumerate() {
+        *l = stamp(&arena, k);
+        println!("slot {k} header 0x{:x}: t_cam {:.6} s, {:.3} s old", header_at(k), *l as f64 * 1e-9, t0 - *l as f64 * 1e-9);
+    }
+    let mut news = [0u64; 8];
+    let (mut age_sum, mut age_max, mut seen, mut polls) = (0.0, 0.0f64, 0u64, 0u64);
+    while now_raw() - t0 < seconds && !STOP.load(Ordering::SeqCst) {
+        polls += 1;
+        let now = now_raw();
+        for k in 0..8 {
+            let t = stamp(&arena, k);
+            if t != last[k] {
+                last[k] = t;
+                news[k] += 1;
+                let age = now - t as f64 * 1e-9;
+                age_sum += age;
+                age_max = age_max.max(age);
+                seen += 1;
+            }
+        }
+        if conn.closed() {
+            return Err(format!("{} closed the connection during the test", dspsrc::SERVICE).into());
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    let took = now_raw() - t0;
+    println!("{polls} polls in {took:.1} s");
+    for (k, n) in news.iter().enumerate() {
+        println!("slot {k}: {n} new frames ({:.1}/s)", *n as f64 / took.max(1e-9));
+    }
+    if seen > 0 {
+        println!("frame age when seen: mean {:.2} ms, max {:.2} ms", age_sum / seen as f64 * 1e3, age_max * 1e3);
+    } else {
+        println!("no new frames (headset off, or eye tracking not running): the slots hold stale frames");
+    }
+
+    arena.reset_block_changes();
+    thread::sleep(Duration::from_secs(1));
+    arena.note_block_changes();
+    let changed = arena.block_changed.iter().filter(|&&c| c).count();
+    let mut look = ring::Look::default();
+    let found = ring::discover(std::slice::from_ref(&arena), &mut SelftestClock, &mut |line| println!("  {line}"), &mut look);
+    println!("search: {changed} changed block(s) in 1 s; {look:?}");
+    match found {
+        Some(r) => {
+            let expected: Vec<usize> = (0..8).map(|k| header_at(k) + HEADER_BYTES).collect();
+            println!(
+                "ring: {} slots, spacing {}, cameras {:?}, both eyes {}; at the measured layout: {}",
+                r.off.len(),
+                r.pitch,
+                r.eye,
+                r.both_eyes,
+                r.off == expected
+            );
+            println!("  slot offsets {:x?}", r.off);
+        }
+        None => println!("ring: not found (expected with the headset off)"),
+    }
+    if conn.extra_bytes() > 0 {
+        println!("{} sent {} unexpected byte(s) meanwhile (dropped)", dspsrc::SERVICE, conn.extra_bytes());
+    }
+    println!("connection open until the end: {}", !conn.closed());
+    drop(arena);
+    drop(map);
+    drop(conn);
+    println!("unmapped and closed");
+    Ok(())
 }
 
 // ----------------------------------------------------------------------------------------------- finding frames
@@ -2051,8 +2325,8 @@ fn lock_ring(
         if !tick() {
             return Err(Abort::TimeUp);
         }
-        if b.tracker.exited() {
-            return Err(Abort::TrackerExited);
+        if let Some(a) = b.tracker.ended() {
+            return Err(a);
         }
         while let Some(req) = ctl.and_then(Daemon::request) {
             match (ctx, &req.command) {
@@ -2363,9 +2637,12 @@ fn record(
         if now - t_start >= seconds {
             break "done".into();
         }
-        if b.tracker.exited() {
-            abort = Some(Abort::TrackerExited);
-            break "the eye tracker exited (run eyecam-grab again for the new one)".into();
+        if let Some(a) = b.tracker.ended() {
+            abort = Some(a);
+            break match a {
+                Abort::ServiceClosed => "dsp_service closed the connection (connect again for a new buffer)".into(),
+                _ => "the eye tracker exited (run eyecam-grab again for the new one)".into(),
+            };
         }
         if let Some(d) = ctl {
             while let Some(req) = d.request() {
@@ -3121,6 +3398,8 @@ mod tests {
             full_width: false,
             beep: false,
             volume: 0.0,
+            source: None,
+            dsp_selftest: None,
         }
     }
 

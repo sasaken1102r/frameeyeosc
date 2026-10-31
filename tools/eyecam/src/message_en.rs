@@ -51,6 +51,8 @@ const EXACT: &[(&str, &str)] = &[
     ("消しているところ（終わるまで待ってね）", "Already deleting (wait until it's done)"),
     ("保存してるデータを消しているところ（終わるまで待ってね）", "Deleting saved data (wait until it's done)"),
     ("delete は rec か calib_images で", "delete takes rec or calib_images"),
+    ("source は auto か dsp か grab で", "source must be auto, dsp or grab"),
+    ("映像のもらい方を変えた", "Changed how the eye video is taken"),
 ];
 
 /// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
@@ -343,6 +345,10 @@ mod tests {
             crate::stored::DELETE_UNDER_WAY,
             crate::stored::START_DELETING,
             crate::stored::DELETE_BAD_KIND,
+            crate::status::SOURCE_BAD_VALUE,
+            "映像のもらい方を変えた",
+            "映像のもらい方を変えた。dsp_service から目のカメラのバッファをもらうところ",
+            "映像のもらい方を変えた。パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
         ];
         for ja in all {
             let en = message_en(ja);

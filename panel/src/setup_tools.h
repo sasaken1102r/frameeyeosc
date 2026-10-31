@@ -18,6 +18,10 @@ namespace setup_tools {
 constexpr const char* kInstallCommand = "sudo $HOME/.local/lib/eyecam/install_grab.sh";
 /** ...as the checklist shows it, to type over SSH. */
 constexpr const char* kShownInstallCommand = "sudo ~/.local/lib/eyecam/install_grab.sh";
+/** The command the usual page's "Remove" types into its Konsole (the tool taken out again). */
+constexpr const char* kUninstallCommand = "sudo $HOME/.local/lib/eyecam/install_grab.sh --uninstall";
+/** ...as the READMEs show it. */
+constexpr const char* kShownUninstallCommand = "sudo ~/.local/lib/eyecam/install_grab.sh --uninstall";
 /** The command (1) types into its Konsole. */
 constexpr const char* kPasswdCommand = "passwd";
 /** The setup video. None yet: while it is empty, its button and the line under it don't show. */
@@ -47,9 +51,16 @@ constexpr double kPasswordTimeoutSec = 5.0;
  */
 std::vector<std::string> konsoleArgv(const std::string& command, Language language);
 
+/** PanelAction::SetupKonsole's arg: which command its Konsole types in. */
+enum KonsoleCommand {
+    kKonsoleInstall = 0,    ///< the tool's install (the checklist's (2), the usual page's "Install")
+    kKonsolePasswd = 1,     ///< passwd (the checklist's (1))
+    kKonsoleUninstall = 2,  ///< the tool's removal (the usual page's "Remove")
+};
+
 /**
  * The Konsole a setup button opens, in the panel's language.
- * @param button 0 = the tool's install (2), 1 = passwd (1) (PanelAction::SetupKonsole's arg)
+ * @param button kKonsoleInstall, kKonsolePasswd or kKonsoleUninstall (PanelAction::SetupKonsole's arg)
  * @param language the panel's language now
  * @return konsoleArgv for its command
  */

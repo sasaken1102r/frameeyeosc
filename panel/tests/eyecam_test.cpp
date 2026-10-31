@@ -30,6 +30,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -1685,6 +1686,139 @@ void testPageCalib() {
     }
 }
 
+void testSource() {
+    using eyecam::GrabTool;
+    using eyecam::SourceChoice;
+    // Read from the file; an eyecam-rec before them writes none, and the card isn't shown (before "source"), or shows
+    // only what is in use (before grab_state, which came with "set source")
+    const auto with = [](const std::string& fields) {
+        return eyecam::parseStatus(R"({"version":1,"state":"idle",)" + fields + R"("updated_unix":)" +
+                                       std::to_string(kNow) + "}",
+                                   kNow);
+    };
+    Status s = with(R"("source":"dsp","source_setting":"auto","grab_state":"ready",)");
+    SAME(s.source, "dsp");
+    SAME(s.sourceSetting, "auto");
+    SAME(s.grabState, "ready");
+    CHECK(eyecam::sourceCardShown(s) && eyecam::sourceChoiceShown(s));
+    const Status old = eyecam::parseStatus(fullStatus("idle", ""), kNow);
+    CHECK(old.source.empty() && old.sourceSetting.empty() && old.grabState.empty());
+    CHECK(!eyecam::sourceCardShown(old) && !eyecam::sourceChoiceShown(old));
+    const Status noGrabState = with(R"("source":"grab","source_setting":"grab",)");
+    CHECK(eyecam::sourceCardShown(noGrabState) && !eyecam::sourceChoiceShown(noGrabState));
+    CHECK(eyecam::grabTool(noGrabState) == GrabTool::Unknown);
+    // The setting (auto when missing or unknown) and its command
+    for (const auto& [text, choice] : {std::pair<const char*, SourceChoice>{"auto", SourceChoice::Auto},
+                                       {"dsp", SourceChoice::Dsp},
+                                       {"grab", SourceChoice::Grab},
+                                       {"", SourceChoice::Auto},
+                                       {"udmabuf", SourceChoice::Auto}}) {
+        Status setting;
+        setting.sourceSetting = text;
+        CHECK(eyecam::sourceChoice(setting) == choice);
+    }
+    SAME(eyecam::sourceCommand(SourceChoice::Auto), "set source auto");
+    SAME(eyecam::sourceCommand(SourceChoice::Dsp), "set source dsp");
+    SAME(eyecam::sourceCommand(SourceChoice::Grab), "set source grab");
+    CHECK(eyecam::runOfCommand(eyecam::sourceCommand(SourceChoice::Grab)) == eyecam::Run::None);
+    // The installed tool
+    for (const auto& [text, tool] : {std::pair<const char*, GrabTool>{"ready", GrabTool::Ready},
+                                     {"missing", GrabTool::Missing},
+                                     {"no_cap", GrabTool::Unusable},
+                                     {"too_old", GrabTool::Unusable},
+                                     {"unsafe: /home/.eyecam is writable by others", GrabTool::Unusable},
+                                     {"", GrabTool::Unknown}}) {
+        Status grab;
+        grab.grabState = text;
+        CHECK(eyecam::grabTool(grab) == tool);
+    }
+    // The choices: not the one set, never while recording or calibrating, nor with a command on its way or the tab
+    // gone; the tool only while it is ready
+    eyecam::View view;
+    view.visible = true;
+    view.status = s;
+    view.status.state = State::Idle;
+    CHECK(!eyecam::sourceChoiceAllowed(view, SourceChoice::Auto));
+    CHECK(eyecam::sourceChoiceAllowed(view, SourceChoice::Dsp) && eyecam::sourceChoiceAllowed(view, SourceChoice::Grab));
+    for (const State state : {State::WaitingFds, State::Error}) {
+        view.status.state = state;
+        CHECK(eyecam::sourceChoiceAllowed(view, SourceChoice::Dsp));
+    }
+    for (const State state : {State::Searching, State::Recording, State::Calibrating, State::Stopped, State::Unknown}) {
+        view.status.state = state;
+        CHECK(!eyecam::sourceChoiceAllowed(view, SourceChoice::Dsp));
+    }
+    view.status.state = State::Idle;
+    view.busy = true;
+    CHECK(!eyecam::sourceChoiceAllowed(view, SourceChoice::Dsp));
+    view.busy = false;
+    view.visible = false;
+    CHECK(!eyecam::sourceChoiceAllowed(view, SourceChoice::Dsp));
+    view.visible = true;
+    for (const char* grab : {"missing", "no_cap", "too_old", "unsafe: x"}) {
+        view.status.grabState = grab;
+        CHECK(!eyecam::sourceChoiceAllowed(view, SourceChoice::Grab) && eyecam::sourceChoiceAllowed(view, SourceChoice::Dsp));
+    }
+    view.status.grabState.clear();  // (an older eyecam-rec: no choice at all)
+    CHECK(!eyecam::sourceChoiceAllowed(view, SourceChoice::Dsp));
+    // Removing the tool: installed (usable or not), and only while the buffers come from dsp_service
+    for (const auto& [grab, source, allowed] : {std::tuple<const char*, const char*, bool>{"ready", "dsp", true},
+                                                {"no_cap", "dsp", true},
+                                                {"ready", "grab", false},
+                                                {"missing", "dsp", false},
+                                                {"", "dsp", false}}) {
+        Status remove;
+        remove.grabState = grab;
+        remove.source = source;
+        CHECK(eyecam::grabRemoveAllowed(remove) == allowed);
+    }
+    // Auto keeps dsp_service until it takes the buffers again, the tool ready meanwhile
+    CHECK(eyecam::grabAfterReacquire(s));
+    for (const char* change : {"setting", "source", "grab"}) {
+        Status other = s;
+        if (std::string(change) == "setting") other.sourceSetting = "dsp";
+        if (std::string(change) == "source") other.source = "grab";
+        if (std::string(change) == "grab") other.grabState = "missing";
+        CHECK(!eyecam::grabAfterReacquire(other));
+    }
+    // "Install" asks for a SteamOS password first only when the check says there is none (unknown: install)
+    eyecam::View install;
+    install.visible = true;
+    install.status = with(R"("source":"dsp","source_setting":"auto","grab_state":"missing","setup_done":true,)");
+    install.status.autoGrab = "dsp";
+    install.status.hasBuffers = true;
+    for (const auto& [password, needs] : {std::pair<eyecam::PasswordState, bool>{eyecam::PasswordState::NotSet, true},
+                                          {eyecam::PasswordState::Unknown, false},
+                                          {eyecam::PasswordState::Set, false}}) {
+        install.password = password;
+        CHECK(eyecam::installNeedsPassword(install) == needs);
+    }
+    install.password = eyecam::PasswordState::NotSet;
+    for (const char* grab : {"ready", "no_cap", ""}) {
+        eyecam::View installed = install;
+        installed.status.grabState = grab;
+        CHECK(!eyecam::installNeedsPassword(installed));
+    }
+    // The password is checked for the card only with its tab open and "Install" offered; for the setup at (2) always
+    CHECK(eyecam::setupStep(install.status, eyecam::PasswordState::Unknown) == eyecam::SetupStep::Done);
+    CHECK(eyecam::passwordWanted(install, true) && !eyecam::passwordWanted(install, false));
+    for (const char* grab : {"ready", "no_cap", ""}) {
+        eyecam::View installed = install;
+        installed.status.grabState = grab;
+        CHECK(!eyecam::passwordWanted(installed, true));
+    }
+    eyecam::View before = install;
+    before.status.source.clear();  // (an eyecam-rec before the card: never for it)
+    CHECK(!eyecam::passwordWanted(before, true));
+    eyecam::View atTool = install;
+    atTool.status.setupDone = false;
+    atTool.status.autoGrab = "missing";
+    atTool.status.state = State::WaitingFds;
+    atTool.status.hasBuffers = false;
+    CHECK(eyecam::setupStep(atTool.status, eyecam::PasswordState::Unknown) == eyecam::SetupStep::Tool);
+    CHECK(eyecam::passwordWanted(atTool, false) && eyecam::passwordWanted(atTool, true));
+}
+
 void testSetupTools() {
     // Konsole with the command typed in: the spec's line, exactly
     const std::vector<std::string> install = setup_tools::konsoleArgv(setup_tools::kInstallCommand, Language::Ja);
@@ -1710,6 +1844,18 @@ void testSetupTools() {
     CHECK(english[4].rfind("echo \"sha256 of the tool to install", 0) == 0);
     CHECK(english[4].find("/usr/bin/sha256sum \"$HOME/.local/lib/eyecam/eyecam-grab\"") != std::string::npos);
     CHECK(passwd[4].find("sha256sum") == std::string::npos);
+    // ...removing the tool the same way, without the sha256
+    const std::vector<std::string> remove = setup_tools::konsoleArgv(setup_tools::kUninstallCommand, Language::Ja);
+    SAME(remove[4], "echo \"Enter を押すと実行するよ（パスワードを聞かれるよ）\"; read -e -p \"$ \" -i \"sudo "
+                    "$HOME/.local/lib/eyecam/install_grab.sh --uninstall\" c && eval \"$c\"; echo; "
+                    "read -p \"Enter で閉じるよ\" _");
+    for (const Language language : {Language::Ja, Language::En}) {
+        CHECK(setup_tools::setupKonsoleArgv(setup_tools::kKonsoleUninstall, language) ==
+              setup_tools::konsoleArgv(setup_tools::kUninstallCommand, language));
+        CHECK(setup_tools::setupKonsoleArgv(setup_tools::kKonsoleInstall, language) ==
+              setup_tools::konsoleArgv(setup_tools::kInstallCommand, language));
+    }
+    SAME(std::string(setup_tools::kShownUninstallCommand), std::string(setup_tools::kShownInstallCommand) + " --uninstall");
     // The buttons: each one's command, with the panel's language in what Konsole says
     for (const Language language : {Language::Ja, Language::En}) {
         const bool ja = language == Language::Ja;
@@ -2595,6 +2741,7 @@ int main() {
     testErrorBack();
     testCalibChips();
     testPageCalib();
+    testSource();
     testSetupTools();
     testReply();
     testDriftlogParse();

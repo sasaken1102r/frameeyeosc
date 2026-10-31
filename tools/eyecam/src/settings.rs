@@ -1,5 +1,5 @@
-//! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity` and `lid_veto` are changed from the
-//! panel (`set ...` on ctl.sock; `lid_veto` by hand too), `dev` and `source` only by hand.
+//! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity`, `lid_veto` and `source` are changed
+//! from the panel (`set ...` on ctl.sock; `lid_veto` and `source` by hand too), `dev` only by hand.
 
 use crate::dspsrc::Source;
 use crate::json::{self, Json};
@@ -16,8 +16,8 @@ pub struct Settings {
     /// The eyelid veto (`veto`): off unless switched on here (`set lid_veto`, or by hand; followed while running).
     pub lid_veto: bool,
     /// Where the camera buffers come from (dspsrc::Source): auto (an installed eyecam-grab, else dsp_service) unless
-    /// set by hand. Read when eyecam-rec starts (--source overrides it); written to the file only when it isn't the
-    /// default.
+    /// set (`set source`, or by hand). Read when eyecam-rec starts (--source overrides it); written to the file only
+    /// when it isn't the default.
     pub source: Source,
 }
 
@@ -218,6 +218,24 @@ mod tests {
         let s = Settings::load(&p);
         assert_eq!((s.source, s.lid_veto, s.widen_sensitivity), (Source::Dsp, true, 0.6));
         assert!(crate::json::parse(&std::fs::read_to_string(&p).unwrap()).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn set_source_keeps_the_rest_and_auto_leaves_the_file_as_before() {
+        let dir = std::env::temp_dir().join(format!("eyecam-settings-set-source-{}", std::process::id()));
+        let p = dir.join("settings.json");
+        Settings { widen_sensitivity: 0.3, dev: true, lid_veto: true, ..Settings::default() }.save(&p).unwrap();
+        let before = std::fs::read_to_string(&p).unwrap();
+        // `set source dsp` / `grab`: written, the other settings kept
+        for source in [Source::Dsp, Source::Grab] {
+            Settings::update(&p, |s| s.source = source).unwrap();
+            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, dev: true, lid_veto: true, source });
+            assert!(std::fs::read_to_string(&p).unwrap().contains(&format!("\"source\": \"{}\"", source.label())));
+        }
+        // `set source auto`: the key goes, and the file is the same as before it was set
+        Settings::update(&p, |s| s.source = Source::Auto).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

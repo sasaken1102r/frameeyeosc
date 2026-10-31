@@ -954,7 +954,7 @@ void testLidsPages(const FontSet& fonts) {
                     CHECK(hits(panel, PanelAction::SetBool, key::kBrowFromWiden).size() == (brows ? 2u : 0u));
                     CHECK(hits(panel, PanelAction::NumberSlider, key::kBrowStrength).empty());
                     // Look: the widening (whatever drives it), the smoothing presets, the sync slider
-                    CHECK(hits(panel, PanelAction::LidPreset).size() == (look ? 3u : 0u));
+                    CHECK(hits(panel, PanelAction::LidPreset).size() == (look ? 4u : 0u));
                     // ...and widening at all (widen), with the eye cameras or without
                     CHECK(hits(panel, PanelAction::SetBool, key::kWiden).size() == (look ? 2u : 0u));
                     CHECK(hits(panel, PanelAction::NumberSlider, key::kLidSync).size() == (look ? 1u : 0u));

@@ -3081,7 +3081,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             break;
         }
         case PanelAction::LidPreset: {
-            if (hit.arg < 0 || hit.arg > 2) return;
+            if (hit.arg < 0 || hit.arg >= kLidPresetCount) return;
             const LidPreset preset = lidPresets()[hit.arg];
             change = [preset](JsonValue& root) {
                 root.set(key::kLidMinCutoff, JsonValue::makeNumber(preset.minCutoff));

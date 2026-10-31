@@ -300,8 +300,11 @@ struct LidPreset {
     double beta;
 };
 
+/** How many eyelid smoothing presets there are. */
+constexpr int kLidPresetCount = 4;
+
 /**
- * The three eyelid smoothing presets: light, medium (= the defaults), strong.
+ * The eyelid smoothing presets: light, medium (= the defaults), strong, max.
  * @return the presets
  */
 const LidPreset* lidPresets();
@@ -309,7 +312,7 @@ const LidPreset* lidPresets();
 /**
  * Which eyelid preset the current values match.
  * @param view the settings
- * @return 0..2, or -1 for custom values
+ * @return 0..kLidPresetCount - 1, or -1 for custom values
  */
 int matchingLidPreset(const SettingsView& view);
 

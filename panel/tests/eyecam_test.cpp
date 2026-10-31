@@ -763,7 +763,7 @@ void testCalibText() {
               t.widenHintMixed, t.widenHintValve, t.widenHintSaturated, t.widenNoteCamera, t.widenNoteValve,
               t.widenNoteUnfitted, t.widenSaturated, t.blinkHint, t.blinkHoldCaption,
               t.rowBlinkBoth, t.blinkBothHint, t.blinkBothNote, t.rowLidFloor, t.lidFloorHint, t.lidFloorNote, t.lidFloorNoteIdle,
-              t.lidSmoothHint, t.syncOff, t.syncStrong, t.syncHint,
+              t.lidSmoothHint, t.strengthMax, t.syncOff, t.syncStrong, t.syncHint,
               t.lidsLook, t.lidsBlinks, t.lidsFine, t.camPupilLine,
               t.camWidenNotice, t.camWidenButton, t.calibCardTitle, t.calibResultTitle, t.calibWearNote,
               t.searchNotWornFormat, t.searchNotWorn, t.searchNoVideo, t.searchOneEye,

@@ -209,6 +209,7 @@ struct UiText {
     const char* strengthLight;
     const char* strengthMedium;
     const char* strengthStrong;
+    const char* strengthMax;        ///< the eyelid smoothing's fourth preset, above strong
     const char* custom;             ///< values don't match a preset
     const char* rawOnNote;          ///< smoothing is off, so these don't apply
     const char* rowFine;

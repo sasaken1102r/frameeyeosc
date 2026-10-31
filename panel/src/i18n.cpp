@@ -204,6 +204,7 @@ UiText makeJapanese() {
     t.strengthLight = "弱";
     t.strengthMedium = "中";
     t.strengthStrong = "強";
+    t.strengthMax = "最強";
     t.custom = "カスタム（下の値）";
     t.rawOnNote = "スムージングがオフです";
     t.rowFine = "細かく変える";
@@ -1261,6 +1262,7 @@ UiText makeEnglish() {
     t.strengthLight = "Light";
     t.strengthMedium = "Medium";
     t.strengthStrong = "Strong";
+    t.strengthMax = "Max";
     t.custom = "Custom (values below)";
     t.rawOnNote = "Smoothing is off";
     t.rowFine = "Fine tune";

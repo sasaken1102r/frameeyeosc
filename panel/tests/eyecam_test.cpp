@@ -734,7 +734,7 @@ void testCalibText() {
               t.eyecamUserNeedsWear, t.camCalibNeedsLids,
               t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone, t.setupPasswordLabel, t.setupPasswordSet,
               t.setupAutoChecked, t.setupToolLabel, t.setupToolDone, t.setupNotNeeded, t.setupNoSudo,
-              t.camIntroBoxNoSudo, t.setupLearnLabel, t.setupLearnDone,
+              t.setupLearnLabel, t.setupLearnDone,
               t.setupPassPill, t.setupPassBody, t.setupPassWhere, t.setupPassPath1, t.setupPassPath2,
               t.setupPassPath3, t.setupPassKonsole, t.setupPassKonsoleHow, t.setupPassMemo, t.setupPassMemoText,
               t.setupPassButton, t.setupVideo, t.setupVideoNote, t.setupCheckPill, t.setupCheckFlow,
@@ -1137,6 +1137,11 @@ void testSetupStep() {
         const Status dsp = setupStatus("waiting_fds", ", \"auto_grab\": \"dsp\", \"setup_done\": false");
         CHECK(eyecam::toolState(dsp) == Tool::Current && !eyecam::needsManualGrab(dsp));
         CHECK(eyecam::setupStep(dsp, password) == SetupStep::Learn);
+        eyecam::View fresh;
+        fresh.visible = true;
+        fresh.status = dsp;
+        fresh.password = password;
+        CHECK(!eyecam::introShown(fresh, false));
         CHECK(eyecam::toolNotice(dsp, password) == ToolNotice::None);
         const Status dspSetUp = setupStatus("idle", ", \"auto_grab\": \"dsp\", \"setup_done\": true");
         CHECK(eyecam::setupStep(dspSetUp, password) == SetupStep::Done);

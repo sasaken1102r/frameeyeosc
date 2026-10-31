@@ -387,6 +387,7 @@ UiText makeJapanese() {
     t.advTrouble = "困ったとき";
     t.advTools = "動作確認";
     t.advFiles = "ファイル";
+    t.advData = "データ";
     t.updateToFormat = "%s に更新する";
     t.updateNotesFormat = "%s の内容";
     t.appsAllTitle = "ささけん＠の Frame アプリ";
@@ -984,6 +985,40 @@ UiText makeJapanese() {
     t.notRunning = "動いていません";
     t.hoursMinutesFormat = "%d 時間 %d 分";
     t.minutesFormat = "%d 分";
+    t.dataTitle = "保存してるデータ";
+    t.dataHint = "この Frame に残しているもの";
+    t.dataRows[0] = "目のログ";
+    t.dataRows[1] = "目の撮影の映像";
+    t.dataRows[2] = "校正の目の画像";
+    t.dataRowHints[0] = "目の値の記録（CSV）";
+    t.dataRowHints[1] = "開発用の目の撮影";
+    t.dataRowHints[2] = "dev がオンのときだけ残る";
+    t.dataCountFormats[0] = "%d 回分・%s";
+    t.dataCountFormats[1] = "%d 本・%s";
+    t.dataCountFormats[2] = "%d 回分・%s";
+    t.dataCountOneFormats[0] = t.dataCountFormats[0];
+    t.dataCountOneFormats[1] = t.dataCountFormats[1];
+    t.dataCountOneFormats[2] = t.dataCountFormats[2];
+    t.dataNone = "なし";
+    t.dataCounting = "数えています…";
+    t.dataNoEyecam = "目のカメラ（eyecam-rec）が動いているときに数えるよ";
+    t.dataBusy = "撮影や校正のあいだは消せないよ";
+    t.dataRecordingNote = "今記録している分は入れていないよ（消さないよ）";
+    t.dataDelete = "消す";
+    t.dataDeleting = "消しています…";
+    t.dataDeletedFormat = "消したよ（%s）";
+    t.dataFailedFormat = "消せなかった: %s";
+    t.dataDeleteTitles[0] = "目のログを全部消す？";
+    t.dataDeleteTitles[1] = "目の撮影の映像を全部消す？";
+    t.dataDeleteTitles[2] = "校正の目の画像を消す？";
+    t.dataDeleteFormats[0] = "%s の目のログ（%s）を消します。設定と校正はそのまま残るよ。元に戻せないよ。";
+    t.dataDeleteFormats[1] = "%s の目の撮影の映像（%s）を消します。校正の結果と、細めの学習用の録画は残るよ。"
+                             "元に戻せないよ。";
+    t.dataDeleteFormats[2] = "%s の校正のフォルダから、目の画像（%s）だけ消します。校正の結果（calib_result.json）は"
+                             "残るので、見開きの調整はそのまま。元に戻せないよ。";
+    t.dataDeleteRecording = "今記録している目のログは残すよ。";
+    t.dataDeleteYes = "消す";
+    t.dataCancel = "やめる";
 
     t.promptVrchat = "VRChat 向けのおすすめ設定にする？";
     t.promptEtvr = "VRCFaceTracking（ETVR）向けのおすすめ設定にする？";
@@ -1447,6 +1482,7 @@ UiText makeEnglish() {
     t.advTrouble = "Having trouble";
     t.advTools = "Debug tools";
     t.advFiles = "Files";
+    t.advData = "Data";
     t.updateToFormat = "Update to %s";
     t.updateNotesFormat = "What's new in %s";
     t.appsAllTitle = "Frame apps by sasaken@";
@@ -2051,6 +2087,40 @@ UiText makeEnglish() {
     t.notRunning = "Not running";
     t.hoursMinutesFormat = "%d h %d min";
     t.minutesFormat = "%d min";
+    t.dataTitle = "Saved data";
+    t.dataHint = "What this Frame keeps";
+    t.dataRows[0] = "Eye logs";
+    t.dataRows[1] = "Eye recordings";
+    t.dataRows[2] = "Calibration eye images";
+    t.dataRowHints[0] = "Eye values (CSV)";
+    t.dataRowHints[1] = "The developer eye recording";
+    t.dataRowHints[2] = "Kept only with dev on";
+    t.dataCountFormats[0] = "%d logs, %s";
+    t.dataCountFormats[1] = "%d recordings, %s";
+    t.dataCountFormats[2] = "%d calibrations, %s";
+    t.dataCountOneFormats[0] = "%d log, %s";
+    t.dataCountOneFormats[1] = "%d recording, %s";
+    t.dataCountOneFormats[2] = "%d calibration, %s";
+    t.dataNone = "None";
+    t.dataCounting = "Counting…";
+    t.dataNoEyecam = "Counted while the eye cameras (eyecam-rec) run";
+    t.dataBusy = "Can't delete while recording or calibrating";
+    t.dataRecordingNote = "The log being recorded isn't counted (it stays)";
+    t.dataDelete = "Delete";
+    t.dataDeleting = "Deleting…";
+    t.dataDeletedFormat = "Deleted (%s)";
+    t.dataFailedFormat = "Couldn't delete: %s";
+    t.dataDeleteTitles[0] = "Delete all eye logs?";
+    t.dataDeleteTitles[1] = "Delete all eye recordings?";
+    t.dataDeleteTitles[2] = "Delete the calibration eye images?";
+    t.dataDeleteFormats[0] = "Deletes the eye logs in %s (%s). Your settings and calibration stay. This can't be undone.";
+    t.dataDeleteFormats[1] = "Deletes the eye recordings in %s (%s). The calibration results and the squint-training "
+                             "recordings stay. This can't be undone.";
+    t.dataDeleteFormats[2] = "Deletes only the eye images in the calibration folders in %s (%s). The calibration results "
+                             "(calib_result.json) stay, so widening stays as tuned. This can't be undone.";
+    t.dataDeleteRecording = "The eye log being recorded stays.";
+    t.dataDeleteYes = "Delete";
+    t.dataCancel = "Cancel";
 
     t.promptVrchat = "Use the recommended settings for VRChat?";
     t.promptEtvr = "Use the recommended settings for VRCFaceTracking (ETVR)?";

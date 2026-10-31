@@ -275,6 +275,28 @@ Status parseStatus(const std::string& text, double mtime) {
         status.driftlogOn = on != nullptr && on->isBool() && on->boolean;
         status.driftlogPath = readText(*drift, "path");
     }
+    // What its data folder keeps (missing on an older eyecam-rec: "Saved data" shows no counts for it)
+    if (const JsonValue* stored = root.get("stored"); stored != nullptr && stored->isObject()) {
+        Stored& d = status.stored;
+        d.present = true;
+        d.scannedUnix = readNumber(*stored, "scanned_unix", 0.0);
+        const auto usage = [&](const char* name, long long& count, long long& bytes) {
+            const JsonValue* u = stored->get(name);
+            count = u != nullptr && u->isObject() ? static_cast<long long>(readNumber(*u, "count", 0.0)) : 0;
+            bytes = u != nullptr && u->isObject() ? static_cast<long long>(readNumber(*u, "bytes", 0.0)) : 0;
+        };
+        usage("rec", d.recCount, d.recBytes);
+        usage("calib_images", d.calibCount, d.calibBytes);
+        d.deleting = readText(*stored, "deleting");
+        if (const JsonValue* deleted = stored->get("deleted"); deleted != nullptr && deleted->isObject()) {
+            d.hasDeleted = true;
+            d.deletedKind = readText(*deleted, "kind");
+            d.deletedCount = static_cast<long long>(readNumber(*deleted, "count", 0.0));
+            d.deletedBytes = static_cast<long long>(readNumber(*deleted, "bytes", 0.0));
+            d.deletedError = readText(*deleted, "error");
+            d.deletedUnix = readNumber(*deleted, "unix", 0.0);
+        }
+    }
     return status;
 }
 

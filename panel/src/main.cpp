@@ -101,7 +101,7 @@ struct Options {
     double advScroll = 0.0;       ///< --adv-scroll: px the Advanced tab's page is scrolled
     std::string changelogDir;     ///< --changelog-dir: read CHANGELOG*.md from here only
     bool diag = false;            ///< --diag: the diagnostics page open (on the Advanced tab)
-    std::string advPage;          ///< --adv-page: the Advanced tab's sub-tab (version, trouble, tools, files)
+    std::string advPage;          ///< --adv-page: the Advanced tab's sub-tab (version, trouble, tools, files, data)
     std::string record;           ///< --record: a record shown on the Advanced tab (its folder name, or latest)
     bool recordsAll = false;      ///< --records-all: all records listed on the Advanced tab
     bool fakeRecords = false;     ///< --fake-records: made-up records instead of the folder's
@@ -166,6 +166,8 @@ struct Options {
     std::string fakeCamera;       ///< --fake-camera: the eye cameras as frameeyeosc reports them (see printUsage)
     std::string fakePassword = "set";  ///< --fake-password: the setup's password check
     std::string fakeContrib;      ///< --fake-contrib: "Record for squint training" on a made-up screen (fakeContrib)
+    std::string fakeData;         ///< --fake-data: "Saved data" on the Data page, made up (fakeData)
+    std::string dataConfirm;      ///< --data-confirm: its confirmation open for logs, rec or calib
     double sensitivityDrag = -1;  ///< --sensitivity-drag: the slider as if dragged there (-1 = not)
     std::string eyecamDir;        ///< --eyecam-dir: eyecam-rec's folder (status.json, ctl.sock) instead of the default
     std::string fillPngPath;      ///< --eyecam-fill-png: the eye capture's full-view light image
@@ -268,7 +270,7 @@ void printUsage() {
         "      --history-open VERSION  ...with this version's row open instead of the installed one\n"
         "      --history-scroll PX  ...scrolled this far (kept within the list)\n"
         "      --diag            Open the diagnostics page (Advanced tab)\n"
-        "      --adv-page version|trouble|tools|files  The Advanced tab's sub-tab (default version)\n"
+        "      --adv-page version|trouble|tools|files|data  The Advanced tab's sub-tab (default version)\n"
         "      --adv-scroll PX   Scroll the Advanced tab's page this far (kept within the page; with --tab advanced)\n"
         "      --record NAME|latest  Show a record (its folder name) on the Advanced tab\n"
         "      --records-all     List all records on the Advanced tab\n"
@@ -397,6 +399,11 @@ void printUsage() {
         "                        missing), done (just\n"
         "                        recorded), list (\"Recordings\"), packing, packed, delete, deleting (with --adv-page tools: its\n"
         "                        row on Debug tools, the sheet closed; none for the row before the first)\n"
+        "      --fake-data STATE  \"Saved data\" (with --adv-page data) made up: counted (12 eye logs, 13 eye\n"
+        "                        recordings, 52 calibrations' eye images), counting, none, recording (an eye log\n"
+        "                        being recorded), deleting (the eye recordings), deleted, failed, busy (eyecam-rec\n"
+        "                        calibrating), noeyecam (eyecam-rec stopped)\n"
+        "      --data-confirm logs|rec|calib  ...with that kind's confirmation open\n"
         "      --fake-camera both|left|right|uncalibrated|absent|error|off  The eye cameras as frameeyeosc reports\n"
         "                        them (off: camera_lids off)\n"
         "  --eyecam-fill-png PATH  Draw the eye capture's full-view light (with --language) to a PNG\n"
@@ -475,6 +482,13 @@ bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool
         from = colon + 1;
     }
 }
+
+/** --fake-data's states (fakeData). */
+const std::string kFakeDataStates[] = {"counted", "counting", "none",   "recording", "deleting",
+                                       "deleted", "failed",   "busy",   "noeyecam"};
+
+/** --data-confirm's kinds, in stored::Kind's order. */
+const std::string kDataConfirmKinds[] = {"logs", "rec", "calib"};
 
 /** --fake-contrib's screens (fakeContrib). */
 const std::string kFakeContribStates[] = {"none",    "consent", "deleted",    "eyewear", "ready",   "nospace",
@@ -820,7 +834,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.advPage = argv[++i];
             AdvPage page;
             if (!ui_state::parsePage(options.advPage, page)) {
-                std::fprintf(stderr, "--adv-page must be version, trouble, tools or files: %s\n", options.advPage.c_str());
+                std::fprintf(stderr, "--adv-page must be version, trouble, tools, files or data: %s\n", options.advPage.c_str());
                 return false;
             }
         } else if (arg == "--record" && hasNext) {
@@ -1135,6 +1149,21 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 return false;
             }
             options.fake = true;
+        } else if (arg == "--fake-data" && hasNext) {
+            options.fakeData = argv[++i];
+            if (std::find(std::begin(kFakeDataStates), std::end(kFakeDataStates), options.fakeData) ==
+                std::end(kFakeDataStates)) {
+                std::fprintf(stderr, "--fake-data must be one of the states in --help: %s\n", options.fakeData.c_str());
+                return false;
+            }
+            options.fake = true;
+        } else if (arg == "--data-confirm" && hasNext) {
+            options.dataConfirm = argv[++i];
+            if (std::find(std::begin(kDataConfirmKinds), std::end(kDataConfirmKinds), options.dataConfirm) ==
+                std::end(kDataConfirmKinds)) {
+                std::fprintf(stderr, "--data-confirm must be logs, rec or calib: %s\n", options.dataConfirm.c_str());
+                return false;
+            }
         } else if (arg == "--sensitivity-drag" && hasNext) {
             options.sensitivityDrag = std::atof(argv[++i]);
         } else if (arg == "--fake-camera" && hasNext) {
@@ -1670,6 +1699,66 @@ eyecam::View fakeEyecam(const std::string& text) {
 }
 
 /**
+ * --fake-data: "Saved data" in one of its states (kFakeDataStates), made up: nothing is read or deleted. eyecam-rec
+ * set up and idle, unless --fake-eyecam gave it already.
+ * @param m the model
+ * @param state the state
+ * @param eyecamGiven --fake-eyecam was given
+ */
+void fakeData(PanelModel& m, const std::string& state, bool eyecamGiven) {
+    if (!eyecamGiven) m.eyecam = fakeEyecam(state == "busy" ? "calibrating" : "idle:setup:auto=ok:buffers:ready:saved");
+    stored::View& d = m.savedData;
+    eyecam::Stored& s = m.eyecam.status.stored;
+    s.present = true;
+    const bool none = state == "none";
+    if (state != "counting") {
+        d.eyeLogsCounted = true;
+        d.eyeLogs = none ? stored::Usage() : stored::Usage {12, 2'412'000'000LL};
+        s.scannedUnix = unixNow() - 3;
+    }
+    if (!none) {
+        s.recCount = 13;
+        s.recBytes = 25'310'000'000LL;
+        s.calibCount = 52;
+        s.calibBytes = 21'940'000'000LL;
+    }
+    if (state == "recording") {
+        m.recording.recording = true;
+        m.recording.elapsedSec = 754;
+        m.recording.path = recorder::defaultDir() + "/eyes_2026-10-31_10-41-01.csv";
+    }
+    if (state == "deleting") {
+        s.deleting = "rec";
+        d.of(stored::Kind::EyecamRecordings).running = true;
+        d.of(stored::Kind::EyecamRecordings).sentUnix = unixNow() - 1;
+    }
+    if (state == "deleted") {
+        stored::Delete& logs = d.of(stored::Kind::EyeLogs);
+        logs.done = logs.ok = true;
+        logs.usage = d.eyeLogs;
+        d.eyeLogs = stored::Usage();
+        stored::Delete& calib = d.of(stored::Kind::CalibImages);
+        calib.done = calib.ok = true;
+        calib.usage = {static_cast<int>(s.calibCount), s.calibBytes};
+        s.calibCount = 0;
+        s.calibBytes = 0;
+    }
+    if (state == "failed") {
+        stored::Delete& rec = d.of(stored::Kind::EyecamRecordings);
+        rec.done = true;
+        rec.usage = {12, 23'400'000'000LL};
+        rec.error = "/home/steamos/eyecam/rec_2026-10-12_09-59-05: Permission denied (os error 13)";
+        s.recCount = 1;
+        s.recBytes = 1'910'000'000LL;
+    }
+    if (state == "noeyecam") {
+        m.eyecam.visible = false;
+        m.eyecam.status.state = eyecam::State::Stopped;
+        m.eyecam.status.stateText = "stopped";
+    }
+}
+
+/**
  * --fake-contrib: "Record for squint training" on one of its screens (kFakeContribStates), made up: nothing is read or
  * written. The eye cameras set up and idle, unless --fake-eyecam gave eyecam-rec already; recording for "running".
  * @param m the model
@@ -1820,6 +1909,51 @@ void sendDrift(eyecam::Control& control, const std::string& eyecamDir, const std
     const std::string socket = eyecamDir + "/ctl.sock";
     std::fprintf(stderr, "[record] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
     if (!control.send(socket, command, nowSeconds()) && !control.busy()) driftReplied(control.reply(), eyeLog);
+}
+
+/**
+ * The eye log "Saved data" never counts or deletes: the one being recorded now.
+ * @param eyeLog the eye log
+ * @return its path without ".csv", "" while none is recorded
+ */
+std::string eyeLogKeep(const recorder::Recorder& eyeLog) {
+    if (!eyeLog.busy()) return "";
+    const std::string csv = eyeLog.view(nowSeconds()).path;
+    return csv.size() > 4 ? csv.substr(0, csv.size() - 4) : csv;
+}
+
+/**
+ * "Delete" confirmed on "Saved data": the eye logs on their thread (the one being recorded kept), eyecam's by asking
+ * eyecam-rec (`delete rec` / `delete calib_images`; it refuses while it records or calibrates).
+ * @param kind the kind
+ * @param model the model (the row shows it under way)
+ * @param eyeLog the eye log
+ * @param eyeLogData the eye logs' worker
+ * @param control eyecam-rec's control connection for these
+ */
+void startDataDelete(stored::Kind kind, PanelModel& model, const recorder::Recorder& eyeLog,
+                     stored::EyeLogs& eyeLogData, eyecam::Control& control) {
+    stored::Delete& job = model.savedData.of(kind);
+    if (job.running) return;
+    job = stored::Delete();
+    job.sentUnix = unixNow();
+    if (kind == stored::Kind::EyeLogs) {
+        const std::string keep = eyeLogKeep(eyeLog);
+        std::fprintf(stderr, "[data] deleting the eye logs in %s%s\n", recorder::shortPath(recorder::defaultDir()).c_str(),
+                     keep.empty() ? "" : (" (keeping " + recorder::shortPath(keep) + ")").c_str());
+        job.running = eyeLogData.remove(recorder::defaultDir(), keep);
+        return;
+    }
+    const std::string socket = model.eyecamDir + "/ctl.sock";
+    const std::string command = std::string("delete ") + stored::eyecamName(kind);
+    std::fprintf(stderr, "[data] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
+    // (one at a time: the other kind's may still wait for its reply)
+    job.running = !control.busy() && control.send(socket, command, nowSeconds());
+    if (!job.running) {
+        job.done = true;
+        job.error = control.busy() ? std::string("another delete is still waiting for eyecam-rec") : control.reply().error;
+        std::fprintf(stderr, "[data] %s failed: %s\n", command.c_str(), job.error.c_str());
+    }
 }
 
 /**
@@ -2103,6 +2237,7 @@ PanelModel fakeModel(const Options& options) {
         }
     }
     if (!options.fakeContrib.empty()) fakeContrib(m, options.fakeContrib, !options.fakeEyecam.empty());
+    if (!options.fakeData.empty()) fakeData(m, options.fakeData, !options.fakeEyecam.empty());
     m.eyecam.password = options.fakePassword == "unset"   ? eyecam::PasswordState::NotSet
                         : options.fakePassword == "unknown" ? eyecam::PasswordState::Unknown
                                                             : eyecam::PasswordState::Set;
@@ -2385,6 +2520,9 @@ int runDumpPng(const Options& options) {
             if (options.historyScroll >= 0) panel.setHistoryScroll(options.historyScroll);
         }
         if (options.fakeEyecam.rfind("confirm", 0) == 0) panel.openEyecamConfirm(model.eyecam.status.state);
+        for (int kind = 0; kind < stored::kKindCount; ++kind) {
+            if (options.dataConfirm == kDataConfirmKinds[kind]) panel.openDataDelete(static_cast<stored::Kind>(kind));
+        }
         // (with --adv-page tools: its row on Debug tools, the sheet closed)
         if (!options.fakeContrib.empty() && options.advPage != "tools") {
             const std::string& state = options.fakeContrib;
@@ -3340,7 +3478,13 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::ContribClose:
         case PanelAction::ContribAgree:
         case PanelAction::ContribDelete:
-        case PanelAction::ContribDeleteCancel: return;  // handled inside the panel
+        case PanelAction::ContribDeleteCancel:
+        case PanelAction::DataDelete:
+        case PanelAction::DataDeleteCancel: return;  // handled inside the panel
+        case PanelAction::DataDeleteConfirm:
+            // (the panel's loop deletes; drawn without it, it only says what it would delete)
+            std::printf("data: would delete %s\n", kDataConfirmKinds[std::clamp(hit.arg, 0, stored::kKindCount - 1)].c_str());
+            return;
         case PanelAction::ContribOpen:
             // Read from the disk; each opening starts afresh: the last recording's end and failure are not shown
             // again
@@ -3867,6 +4011,11 @@ int runOverlay(const Options& options) {
     // ...and eyecam's drift log alongside it, on a control socket connection of its own
     recorder::DriftLink driftLink;
     eyecam::Control driftControl;
+    // "Saved data" (the Data page): the eye logs counted and deleted on a thread, eyecam's deletes asked for on a
+    // control socket connection of their own
+    stored::EyeLogs eyeLogData;
+    eyecam::Control dataControl;
+    double dataCountedAt = -1e9;
     // Re-centering by itself when the headset is put on (auto_recenter); armed now for the first wearing
     auto_recenter::Watcher recenter;
     long long lastCaptureId = 0;
@@ -4051,6 +4200,9 @@ int runOverlay(const Options& options) {
                     if (hit.action == PanelAction::Quit) {
                         std::fprintf(stderr, "[VR] quitting from the panel's \"Quit\"\n");
                         userQuit = true;
+                    } else if (hit.action == PanelAction::DataDeleteConfirm) {
+                        startDataDelete(static_cast<stored::Kind>(hit.arg), model, eyeLog, eyeLogData, dataControl);
+                        dirty = true;
                     } else {
                         applyHit(hit, model, panel, autostart, &updater, &fit, &vr, &eyeLog, &eyecamControl,
                                  &contribSession);
@@ -4140,6 +4292,32 @@ int runOverlay(const Options& options) {
                 drawnRecording = shown;
                 dirty = true;
             }
+        }
+
+        // "Saved data": the eye logs counted every kRescanSec while its page shows (never the one being recorded),
+        // and the deletes followed until they are done
+        {
+            const bool shown = visible && panel.advPageShown() && panel.advPage() == AdvPage::Data;
+            if (shown && !eyeLogData.busy() && nowSeconds() - dataCountedAt >= stored::kRescanSec) {
+                dataCountedAt = nowSeconds();
+                eyeLogData.count(recorder::defaultDir(), eyeLogKeep(eyeLog));
+            }
+            if (eyeLogData.take(model.savedData)) dirty = true;
+            if (dataControl.poll(nowSeconds())) {
+                const eyecam::Reply& r = dataControl.reply();
+                std::fprintf(stderr, "[data] %s -> %s%s\n", r.command.c_str(), r.ok ? "ok" : "err ", r.error.c_str());
+                for (const stored::Kind kind : {stored::Kind::EyecamRecordings, stored::Kind::CalibImages}) {
+                    stored::Delete& job = model.savedData.of(kind);
+                    if (r.ok || r.command != std::string("delete ") + stored::eyecamName(kind) || !job.running) continue;
+                    job.running = false;
+                    job.done = true;
+                    job.ok = false;
+                    job.usage = stored::Usage();
+                    job.error = r.error;
+                    dirty = true;
+                }
+            }
+            if (stored::followEyecam(model.savedData, model.eyecam.status, unixNow())) dirty = true;
         }
 
         const bool dashboardOpen = vr.dashboardVisible();

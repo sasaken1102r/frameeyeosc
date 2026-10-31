@@ -1289,14 +1289,14 @@ void testSubTabs(const FontSet& fonts) {
         panel.render(m);
         // The first time: "Version"; the other three can be pressed
         CHECK(panel.advPage() == AdvPage::Version && panel.advPageShown());
-        CHECK((subTabs(panel) == std::vector<int> {1, 2, 3}));
+        CHECK((subTabs(panel) == std::vector<int> {1, 2, 3, 4}));
         CHECK(hits(panel, PanelAction::UpdateCheck).size() == 1 && hits(panel, PanelAction::HistoryOpen).size() == 1);
         CHECK(hits(panel, PanelAction::SetBool, key::kUpdateCheck).size() == 1);
         // Each page with its own buttons, and nothing of the others'
         CHECK(pressArg(panel, PanelAction::AdvancedPage, static_cast<int>(AdvPage::Trouble)).action == PanelAction::None);
         CHECK(panel.advPage() == AdvPage::Trouble);
         panel.render(m);
-        CHECK((subTabs(panel) == std::vector<int> {0, 2, 3}));
+        CHECK((subTabs(panel) == std::vector<int> {0, 2, 3, 4}));
         CHECK(hits(panel, PanelAction::DiagOpen).size() == 1 && hits(panel, PanelAction::RecordsAll).size() == 1);
         CHECK(hits(panel, PanelAction::RecordOpen).size() == 3);
         CHECK(hits(panel, PanelAction::UpdateCheck).empty());
@@ -1326,7 +1326,7 @@ void testSubTabs(const FontSet& fonts) {
         next.setAdvPage(AdvPage::Tools);
         next.setTab(PanelTab::Advanced);
         next.render(m);
-        CHECK((subTabs(next) == std::vector<int> {0, 1, 3}));
+        CHECK((subTabs(next) == std::vector<int> {0, 1, 3, 4}));
         CHECK(hits(next, PanelAction::RecordToggle).size() == 1);
         // Without eyecam-rec, "Debug tools" has no eye capture
         PanelModel plain = modelWith(Lids::Valve, false);
@@ -1489,7 +1489,8 @@ void testPagesFit(const FontSet& fonts) {
     // records, an eye log that failed and keys locked by the command line
     for (const bool eyecam : {true, false}) {
         for (const Language language : {Language::Ja, Language::En}) {
-            for (const AdvPage page : {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files}) {
+            for (const AdvPage page : {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files,
+                                       AdvPage::Data}) {
                 EyePanel panel(fonts);
                 PanelModel m = modelWith(Lids::Both, eyecam);
                 m.language = language;
@@ -3207,6 +3208,153 @@ void testContrib(const FontSet& fonts) {
     }
 }
 
+/**
+ * A model for "Data": the eye logs counted, and eyecam-rec (running, idle) counting its recordings and calibration images.
+ * @param language the language
+ * @return the model
+ */
+PanelModel dataModel(Language language) {
+    PanelModel m = modelWith(Lids::Both, true);
+    m.language = language;
+    m.savedData.eyeLogsCounted = true;
+    m.savedData.eyeLogs = {12, 2'412'000'000LL};
+    eyecam::Stored& s = m.eyecam.status.stored;
+    s.present = true;
+    s.scannedUnix = 1.0;
+    s.recCount = 13;
+    s.recBytes = 25'310'000'000LL;
+    s.calibCount = 52;
+    s.calibBytes = 21'940'000'000LL;
+    return m;
+}
+
+/**
+ * The usable "Delete"s on "Data", by kind.
+ * @param panel the panel (rendered)
+ * @return their kinds, top to bottom
+ */
+std::vector<int> dataDeletes(const EyePanel& panel) {
+    std::vector<int> kinds;
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::DataDelete)) kinds.push_back(area.hit.arg);
+    return kinds;
+}
+
+void testSavedData(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        PanelModel m = dataModel(language);
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Data);
+        panel.render(m);
+        // A row a kind, each with its "Delete", inside the card, one under the other, with no scrolling
+        CHECK((subTabs(panel) == std::vector<int> {0, 1, 2, 3}));
+        CHECK((dataDeletes(panel) == std::vector<int> {0, 1, 2}));
+        CHECK(panel.advancedMaxScroll() == 0.0 && hits(panel, PanelAction::AdvancedScroll).empty());
+        const std::vector<EyePanel::HitArea> rows = hits(panel, PanelAction::DataDelete);
+        for (size_t i = 0; i < rows.size(); ++i) {
+            CHECK(rows[i].x > 400 && rows[i].x + rows[i].w <= panel.width() - 20);
+            CHECK(rows[i].y >= 110 && rows[i].y + rows[i].h <= 676);
+            if (i > 0) CHECK(rows[i].y >= rows[i - 1].y + rows[i - 1].h);
+        }
+        // eyecam-rec recording, calibrating, or deleting already: only the eye logs
+        for (const eyecam::State state : {eyecam::State::Searching, eyecam::State::Recording,
+                                          eyecam::State::Calibrating}) {
+            PanelModel busy = dataModel(language);
+            busy.eyecam.status.state = state;
+            panel.render(busy);
+            // (a recording shows its steps in the tab's place)
+            if (state == eyecam::State::Calibrating) CHECK((dataDeletes(panel) == std::vector<int> {0}));
+            CHECK(hits(panel, PanelAction::DataDelete).size() <= 1);
+        }
+        PanelModel deleting = dataModel(language);
+        deleting.eyecam.status.stored.deleting = "rec";
+        deleting.savedData.of(stored::Kind::EyecamRecordings).running = true;
+        panel.render(deleting);
+        CHECK((dataDeletes(panel) == std::vector<int> {0}));
+        // An eye log's delete under way: not again; done: the others stay
+        PanelModel logs = dataModel(language);
+        logs.savedData.of(stored::Kind::EyeLogs).running = true;
+        panel.render(logs);
+        CHECK((dataDeletes(panel) == std::vector<int> {1, 2}));
+        // eyecam-rec stopped (or one that doesn't count them): its rows, without a delete; not installed: none
+        PanelModel stopped = dataModel(language);
+        stopped.eyecam.visible = false;
+        panel.render(stopped);
+        CHECK((dataDeletes(panel) == std::vector<int> {0}));
+        PanelModel older = dataModel(language);
+        older.eyecam.status.stored = eyecam::Stored();
+        panel.render(older);
+        CHECK((dataDeletes(panel) == std::vector<int> {0}));
+        PanelModel plain = modelWith(Lids::Valve, false);
+        plain.language = language;
+        plain.savedData = m.savedData;
+        panel.render(plain);
+        CHECK((dataDeletes(panel) == std::vector<int> {0}));
+        // Nothing to delete, or not counted yet: nothing to press
+        PanelModel none = dataModel(language);
+        none.savedData.eyeLogs = stored::Usage();
+        none.eyecam.status.stored.recCount = 0;
+        none.eyecam.status.stored.calibCount = 0;
+        panel.render(none);
+        CHECK(dataDeletes(panel).empty());
+        PanelModel counting = dataModel(language);
+        counting.savedData.eyeLogsCounted = false;
+        counting.eyecam.status.stored.scannedUnix = 0.0;
+        panel.render(counting);
+        CHECK(dataDeletes(panel).empty());
+        // Each kind's confirmation in the page's place: only its two buttons, inside the card; "Cancel" goes back
+        for (int kind = 0; kind < stored::kKindCount; ++kind) {
+            panel.render(m);
+            CHECK(pressArg(panel, PanelAction::DataDelete, kind).action == PanelAction::None);
+            CHECK(panel.dataConfirm() == kind);
+            for (const bool recording : {false, true}) {
+                PanelModel shown = m;
+                shown.recording.recording = recording;
+                panel.render(shown);
+                const std::vector<EyePanel::HitArea> yes = hits(panel, PanelAction::DataDeleteConfirm);
+                const std::vector<EyePanel::HitArea> no = hits(panel, PanelAction::DataDeleteCancel);
+                CHECK(yes.size() == 1 && no.size() == 1 && subTabs(panel).empty() && dataDeletes(panel).empty());
+                for (const std::vector<EyePanel::HitArea>* buttons : {&yes, &no}) {
+                    for (const EyePanel::HitArea& area : *buttons) {
+                        CHECK(area.x > 400 && area.x + area.w <= panel.width() - 20);
+                        CHECK(area.y >= 110 && area.y + area.h <= 676);
+                    }
+                }
+                if (!yes.empty()) CHECK(yes[0].hit.arg == kind);
+            }
+            CHECK(press(panel, PanelAction::DataDeleteCancel).action == PanelAction::None);
+            CHECK(panel.dataConfirm() == -1);
+        }
+        // Confirmed: the kind goes to the caller, and the page shows again
+        panel.render(m);
+        pressArg(panel, PanelAction::DataDelete, static_cast<int>(stored::Kind::CalibImages));
+        panel.render(m);
+        const PanelHit confirmed = press(panel, PanelAction::DataDeleteConfirm);
+        CHECK(confirmed.action == PanelAction::DataDeleteConfirm);
+        CHECK(confirmed.arg == static_cast<int>(stored::Kind::CalibImages) && panel.dataConfirm() == -1);
+        // eyecam-rec started calibrating meanwhile: "Delete" can't be pressed on it
+        panel.render(m);
+        pressArg(panel, PanelAction::DataDelete, static_cast<int>(stored::Kind::EyecamRecordings));
+        CHECK(panel.dataConfirm() == static_cast<int>(stored::Kind::EyecamRecordings));
+        PanelModel calibrating = dataModel(language);
+        calibrating.eyecam.status.state = eyecam::State::Calibrating;
+        panel.render(calibrating);
+        CHECK(hits(panel, PanelAction::DataDeleteConfirm).empty() && hits(panel, PanelAction::DataDeleteCancel).size() == 1);
+        // Another tab closes it
+        pressTab(panel, PanelTab::Basic);
+        CHECK(panel.dataConfirm() == -1);
+        // Done, and not all of it: drawn without trouble
+        PanelModel done = dataModel(language);
+        done.savedData.of(stored::Kind::EyeLogs).done = true;
+        done.savedData.of(stored::Kind::EyeLogs).ok = true;
+        done.savedData.of(stored::Kind::EyecamRecordings).done = true;
+        done.savedData.of(stored::Kind::EyecamRecordings).error = std::string(300, 'x');
+        panel.setTab(PanelTab::Advanced);
+        panel.render(done);
+        CHECK((dataDeletes(panel) == std::vector<int> {0, 1, 2}));
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -3236,6 +3384,7 @@ int main() {
     testSearchSetup(fonts);
     testDiagPage(fonts);
     testSubTabs(fonts);
+    testSavedData(fonts);
     testGazeRingsRow(fonts);
     testUpdateNotice(fonts);
     testUpdateBeta(fonts);

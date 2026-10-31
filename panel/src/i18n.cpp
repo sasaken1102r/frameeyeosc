@@ -647,6 +647,10 @@ UiText makeJapanese() {
     t.toolNoticeTooOld = "安全のため、道具を入れ直してね。入れ直すまでカメラは止まってて、まぶたは Valve の値だけで送ってるよ";
     t.nextToolOutdated = "今の道具のままでも動くよ";
     t.nextToolTooOld = "入れ直すまでカメラは止まってるよ";
+    t.toolNoticeDsp = "dsp_service につながらないよ。道具を入れると、つながらなくてもカメラが使えるよ";
+    t.toolNoticeDspPassword =
+        "dsp_service につながらないよ。道具を入れると使えるけど、先に SteamOS のパスワードを決めてね";
+    t.nextToolDsp = "dsp_service につながらないよ";
     t.setupStepLearn = "目の動きを覚える";
     t.setupStepDone = "完了";
     t.setupLaterTool = "Konsole でパスワードを打つだけ";
@@ -1728,6 +1732,10 @@ UiText makeEnglish() {
         "values only";
     t.nextToolOutdated = "The current one still works";
     t.nextToolTooOld = "The cameras are stopped until then";
+    t.toolNoticeDsp = "Can't reach dsp_service. With the tool installed, the cameras work without it";
+    t.toolNoticeDspPassword =
+        "Can't reach dsp_service. Installing the tool fixes it, but set a SteamOS password first";
+    t.nextToolDsp = "Can't reach dsp_service";
     t.setupStepLearn = "Learn your eye movements";
     t.setupStepDone = "Done";
     t.setupLaterTool = "Just type your password in Konsole";

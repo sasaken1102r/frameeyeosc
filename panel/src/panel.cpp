@@ -1920,10 +1920,12 @@ void EyePanel::drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel
         return;
     }
     // What to do next, as a button to the eye cameras tab
-    // Set up, with an outdated or too old tool: install it again (from the usual page; the cameras may be stopped)
+    // Set up, with an outdated or too old tool: install it again (from the usual page; the cameras may be stopped); or
+    // dsp_service not answering: install it
     const eyecam::ToolNotice notice = eyecam::toolNotice(m.eyecam.status, m.eyecam.password);
     if (notice != eyecam::ToolNotice::None && (screen == SetupScreen::Done || screen == SetupScreen::Camera)) {
         const bool tooOld = notice == eyecam::ToolNotice::TooOld;
+        const bool dsp = notice == eyecam::ToolNotice::DspUnreachable;
         const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)};
         const bool usable = tab_ != PanelTab::Eyecam;
         const int pointer = usable ? pointerState(hit) : 0;
@@ -1932,9 +1934,9 @@ void EyePanel::drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel
         strokeRounded(pen, x0, y, w, h, 16, edge, 2);
         const double textW = w - 48;
         pen.text(x0 + 18, y + 23, t.nextTitle, fitSize(pen, t.nextTitle, 14, 10, textW, true), edge, true);
-        pen.text(x0 + 18, y + 48, t.setupStepToolAgain, fitSize(pen, t.setupStepToolAgain, 18, 12, textW, true), kText,
-                 true);
-        const char* sub = tooOld ? t.nextToolTooOld : t.nextToolOutdated;
+        const char* name = dsp ? t.setupStepTool : t.setupStepToolAgain;
+        pen.text(x0 + 18, y + 48, name, fitSize(pen, name, 18, 12, textW, true), kText, true);
+        const char* sub = dsp ? t.nextToolDsp : tooOld ? t.nextToolTooOld : t.nextToolOutdated;
         pen.text(x0 + 18, y + 70, sub, fitSize(pen, sub, 14, 10, textW, false), tooOld ? kText : kTextMuted);
         drawChevron(pen, x1 - 22, y + h / 2, 14, 2.5, edge);
         addButton(hit, x0, y, w, h, usable);
@@ -6676,18 +6678,25 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         cairo_stroke(cr);
     };
 
-    // The tool to install again (set up): outdated but working, or below the safety floor with the cameras stopped.
-    // The same Konsole as the checklist's (2); it goes by itself once eyecam-rec stops saying so
+    // The tool to install again (set up): outdated but working, or below the safety floor with the cameras stopped;
+    // or to install while dsp_service doesn't answer (passwd first while SteamOS has none). The same Konsole as the
+    // checklist's (2); it goes by itself once eyecam-rec stops saying so
     const eyecam::ToolNotice notice = eyecam::toolNotice(s, view.password);
     if (notice != eyecam::ToolNotice::None) {
         const bool tooOld = notice == eyecam::ToolNotice::TooOld;
+        const bool dsp = notice == eyecam::ToolNotice::DspUnreachable;
+        const bool passwd = dsp && view.password == eyecam::PasswordState::NotSet;
+        const char* label = passwd ? t.setupPassButton : t.setupCheckButton;
+        const char* text = passwd ? t.toolNoticeDspPassword
+                           : dsp  ? t.toolNoticeDsp
+                           : tooOld ? t.toolNoticeTooOld
+                                    : t.toolNoticeOutdated;
         const Color edge = tooOld ? kDanger : kAccent;
         const double bh = 44;
-        const double bw = pen.measure(t.setupCheckButton, 17, true) + 64;
+        const double bw = pen.measure(label, 17, true) + 64;
         const double bx = kInnerRight - 14 - bw;
         const double textX = kInnerX + 52;
-        const std::vector<std::string> lines =
-            wrapText(pen, tooOld ? t.toolNoticeTooOld : t.toolNoticeOutdated, 16, true, bx - 16 - textX, 3);
+        const std::vector<std::string> lines = wrapText(pen, text, 16, true, bx - 16 - textX, 3);
         const bool failed = !view.spawnError.empty();
         const double textH = lines.size() * 22 + (failed ? 20 : 0);
         const double boxH = std::max(bh + 20, textH + 22);
@@ -6703,7 +6712,8 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
             pen.text(textX, baseline - 2, ellipsize(pen, view.spawnError, 13, true, bx - 16 - textX, false), 13, kDanger,
                      true);
         }
-        drawIconButton(pen, bx, y + (boxH - bh) / 2, bw, bh, t.setupCheckButton, {PanelAction::SetupKonsole, nullptr, 0},
+        drawIconButton(pen, bx, y + (boxH - bh) / 2, bw, bh, label,
+                       {PanelAction::SetupKonsole, nullptr, passwd ? setup_tools::kKonsolePasswd : setup_tools::kKonsoleInstall},
                        true, true, 17, ButtonIcon::Terminal);
         y += boxH + 6;
     }

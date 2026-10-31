@@ -656,6 +656,9 @@ struct UiText {
     const char* toolNoticeTooOld;    ///< set up, the tool below the safety floor: the usual page's card (stronger)
     const char* nextToolOutdated;    ///< ...the left column's card, under "install again"
     const char* nextToolTooOld;
+    const char* toolNoticeDsp;        ///< set up, dsp_service not answering: the usual page's card (install the tool)
+    const char* toolNoticeDspPassword;  ///< ...the same, SteamOS without a password (its button opens passwd)
+    const char* nextToolDsp;          ///< ...the left column's card, under "install the tool"
     const char* setupStepLearn;  ///< step (3)
     const char* setupStepDone;  ///< step (4)
     const char* setupLaterTool;  ///< a step still to come, after its name

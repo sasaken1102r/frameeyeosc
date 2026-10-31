@@ -885,6 +885,22 @@ struct UiText {
     const char* camPupilLine;  ///< the eye cameras page: under "Now" while the pupils go straight to VRChat
     const char* camWidenNotice;  ///< ...the pointer to the Eyelids tab
     const char* camWidenButton;  ///< ...its button
+    const char* srcTitle;        ///< ...the "How the video is taken" card: its title
+    const char* srcAuto;         ///< ...its choices: auto (the tool when it works, else dsp)
+    const char* srcDsp;          ///< ...dsp_service
+    const char* srcGrab;         ///< ...the tool
+    const char* srcNowDsp;       ///< ...under the title: the buffers come from dsp_service
+    const char* srcNowGrab;      ///< ...from the tool
+    const char* srcWaitDsp;      ///< ...being taken from dsp_service (waiting for them)
+    const char* srcWaitGrab;     ///< ...being taken with the tool
+    const char* srcToolIn;       ///< ...the tool's row: installed and usable
+    const char* srcToolOut;      ///< ...not installed
+    const char* srcToolBroken;   ///< ...installed but not usable
+    const char* srcInstall;      ///< ...its button while not installed (Konsole, sudo)
+    const char* srcRemove;       ///< ...while installed
+    const char* srcRemoveNeedsDsp;  ///< ...why "Remove" can't be pressed (the buffers come from the tool)
+    const char* srcSwitchLater;  ///< ...auto keeps dsp until it next takes the buffers, the tool ready meanwhile
+    const char* srcTradeoff;     ///< ...the bottom line: the tool or dsp, and keeping the other as a spare
     const char* calibCardTitle;  ///< a calibration from the page: the card title
     const char* calibResultTitle;  ///< ...how it ended: the card title
     const char* calibWearNote;  ///< ...at the right of the heading (this wear)

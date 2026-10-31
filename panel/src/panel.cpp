@@ -6930,11 +6930,14 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         baseline -= 24;
     }
 
-    // "When...": what to do about widening, in a box down to the lines above with a gap of at least 10 px over their
-    // letters (rows that don't fit are left out, the box too if none does). `baseline` is now one line above the top
-    // line's baseline: that line's letters start about 14 px above its own baseline
-    const double boxTop = y + 8;
+    // How the video is taken, then "When...": what to do about widening, in a box down to the lines above with a gap
+    // of at least 10 px over their letters (rows that don't fit are left out, the box too if none does; the card goes
+    // first). `baseline` is now one line above the top line's baseline: that line's letters start about 14 px above
+    // its own baseline
     const double boxBottom = lines.empty() ? bottom + 2 : baseline + 24 - 14 - 10;
+    const double cardH = drawSourceCard(pen, t, view, y + 8, boxBottom - (y + 8));
+    if (cardH > 0) y += 8 + cardH;
+    const double boxTop = y + 8;
     const double rowStep = 30;
     const int rows = helpRows(boxTop, boxBottom);
     if (rows < 1) return;
@@ -6952,6 +6955,106 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         pen.text(kInnerX + 20, rowBaseline, situations[i], 16, kTextMuted);
         pen.text(colX, rowBaseline, remedies[i], fitSize(pen, remedies[i], 16, 11, kInnerRight - 16 - colX, false), kText);
     }
+}
+
+double EyePanel::drawSourceCard(const Pen& pen, const UiText& t, const eyecam::View& view, double top, double room) {
+    using eyecam::GrabTool;
+    using eyecam::SourceChoice;
+    const eyecam::Status& s = view.status;
+    if (!eyecam::sourceCardShown(s)) return 0;
+    cairo_t* cr = pen.cr;
+    const bool choice = eyecam::sourceChoiceShown(s);
+    const double x0 = kInnerX;
+    const double x1 = kInnerRight;
+    const double textX = x0 + 50;
+    const double headH = 58;
+    const double toolH = choice ? 52 : 0;
+    const double lineH = 19;
+    const GrabTool tool = eyecam::grabTool(s);
+    const bool removable = eyecam::grabRemoveAllowed(s);
+
+    // Under the rows: why "Remove" can't be pressed, or that auto takes the tool later (or Konsole's failure), then the
+    // trade-off. Left out from the bottom up while the card doesn't fit
+    std::string note;
+    Color noteColor = kText;
+    if (choice && !view.spawnError.empty()) {
+        note = view.spawnError;
+        noteColor = kDanger;
+    } else if (choice && tool != GrabTool::Missing && !removable) {
+        note = t.srcRemoveNeedsDsp;
+    } else if (choice && eyecam::grabAfterReacquire(s)) {
+        note = t.srcSwitchLater;
+    }
+    const double wrapW = x1 - x0 - 32;
+    std::vector<std::string> noteLines = note.empty() ? std::vector<std::string>{}
+                                                      : wrapText(pen, note, 15, false, wrapW, 2);
+    std::vector<std::string> tradeLines = wrapText(pen, t.srcTradeoff, 14, false, wrapW, 2);
+    const auto height = [&] {
+        const double lines = static_cast<double>(noteLines.size() + tradeLines.size());
+        return 8 + headH + toolH + lines * lineH + (lines > 0 ? 12 : 2);
+    };
+    if (height() > room) tradeLines.clear();
+    if (height() > room) noteLines.clear();
+    const double h = height();
+    fillRounded(pen, x0, top, x1 - x0, h, 12, kBg);
+
+    // Its title and what is in use (the buffers held, or being taken), the choice at the right
+    double y = top + 8;
+    const double segW = 300;
+    const double segH = 42;
+    const double segX = x1 - 10 - segW;
+    const double textRight = (choice ? segX : x1) - 14;
+    drawCameraIcon(pen, x0 + 28, y + 20, kAccent);
+    pen.text(textX, y + 24, t.srcTitle, fitSize(pen, t.srcTitle, 18, 13, textRight - textX, true), kText, true);
+    const bool dsp = s.source == "dsp";
+    const std::string now = s.hasBuffers ? (dsp ? t.srcNowDsp : t.srcNowGrab) : (dsp ? t.srcWaitDsp : t.srcWaitGrab);
+    drawDot(cr, textX + 5, y + 43, 4.5, s.hasBuffers ? kSuccess : kTextMuted);
+    pen.text(textX + 16, y + 48, ellipsize(pen, now, 15, false, textRight - textX - 16, false), 15,
+             s.hasBuffers ? kText : kTextMuted);
+    if (choice) {
+        // (eyecam-rec refuses it while recording or calibrating: shown as it is, not pressable)
+        const bool running = s.state == eyecam::State::Searching || s.state == eyecam::State::Recording ||
+                             s.state == eyecam::State::Calibrating;
+        std::vector<Option> options;
+        for (const auto& [label, value] : {std::pair<const char*, SourceChoice>{t.srcAuto, SourceChoice::Auto},
+                                           {t.srcDsp, SourceChoice::Dsp},
+                                           {t.srcGrab, SourceChoice::Grab}}) {
+            options.push_back({label, {PanelAction::EyecamSource, nullptr, static_cast<int>(value)},
+                               eyecam::sourceChoiceAllowed(view, value)});
+        }
+        drawSegmented(pen, segX, y + (headH - segH) / 2, segW, segH, options, static_cast<int>(eyecam::sourceChoice(s)),
+                      16, running);
+    }
+    y += headH;
+
+    // The tool: installed or not, and its Konsole ("Install" with its sha256 first, as the checklist's (2), or
+    // "Remove", only while the buffers come from dsp_service)
+    if (choice) {
+        const bool missing = tool == GrabTool::Missing;
+        const std::string label = missing ? t.srcInstall : t.srcRemove;
+        const double bh = 42;
+        const double bw = std::min(380.0, pen.measure(label, 16, true) + 64);
+        const double bx = x1 - 10 - bw;
+        drawIconButton(pen, bx, y + (toolH - bh) / 2, bw, bh, label,
+                       {PanelAction::SetupKonsole, nullptr,
+                        missing ? setup_tools::kKonsoleInstall : setup_tools::kKonsoleUninstall},
+                       missing || removable, false, 16, ButtonIcon::Terminal);
+        const std::string state = missing ? t.srcToolOut : tool == GrabTool::Ready ? t.srcToolIn : t.srcToolBroken;
+        const double room = bx - 14 - (x0 + 16);
+        const double size = fitSize(pen, state, 16, 12, room, false);
+        pen.text(x0 + 16, centerBaseline(y, toolH, size), ellipsize(pen, state, size, false, room, false), size, kText);
+        y += toolH;
+    }
+    y += 4;
+    for (const std::string& line : noteLines) {
+        pen.text(x0 + 16, y + 14, line, 15, noteColor);
+        y += lineH;
+    }
+    for (const std::string& line : tradeLines) {
+        pen.text(x0 + 16, y + 14, line, 14, kTextMuted);
+        y += lineH;
+    }
+    return h;
 }
 
 void EyePanel::drawEyecamConfirm(const Pen& pen, const UiText& t, const eyecam::View& view, double y) {

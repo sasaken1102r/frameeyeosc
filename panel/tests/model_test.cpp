@@ -313,14 +313,14 @@ void testLidPresets() {
     const LidPreset* presets = lidPresets();
     CHECK(findSetting(key::kLidMinCutoff)->defaultNumber == presets[1].minCutoff);
     CHECK(findSetting(key::kLidBeta)->defaultNumber == presets[1].beta);
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i + 1 < kLidPresetCount; ++i) {
         CHECK(presets[i].minCutoff > presets[i + 1].minCutoff && presets[i].beta > presets[i + 1].beta);
     }
     PanelModel model;
     model.config.exists = true;
     model.config.root.type = JsonValue::Type::Object;
     CHECK(matchingLidPreset(SettingsView(model)) == 1);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < kLidPresetCount; ++i) {
         model.config.root.set(key::kLidMinCutoff, JsonValue::makeNumber(presets[i].minCutoff));
         model.config.root.set(key::kLidBeta, JsonValue::makeNumber(presets[i].beta));
         CHECK(matchingLidPreset(SettingsView(model)) == i);

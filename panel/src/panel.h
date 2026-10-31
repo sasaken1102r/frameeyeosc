@@ -70,7 +70,7 @@ enum class PanelAction {
                        ///< it (gazeScaleLinked); the caller, once it is closed, sets the second value to the first
                        ///< (gazeScaleRelink) and remembers the locks
     SetLidWiden,       ///< lid_widen = kLidWidenModes[arg]
-    LidPreset,         ///< eyelid smoothing preset arg (0 light, 1 medium, 2 strong)
+    LidPreset,         ///< eyelid smoothing preset arg (0 light, 1 medium, 2 strong, 3 max)
     NumberSlider,      ///< a setting's slider (key): pressed and dragged inside the panel; the caller takes the value
                        ///< with takeNumberSlider and writes it (SetNumber)
     SetNumber,         ///< key = arg / 1000 (onto its step grid)

@@ -3358,14 +3358,14 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         y = baseline - 7;
     }
     if (camera) drawRowDivider(pen, y);
-    // Eyelid smoothing: three presets (the two values themselves on "Fine-tune")
+    // Eyelid smoothing: four presets (the two values themselves on "Fine-tune")
     {
         const bool locked = v.locked(key::kLidMinCutoff) || v.locked(key::kLidBeta);
         const int preset = matchingLidPreset(v);
         drawRowLabel(pen, t, y, kRowH, t.rowLidSmooth, preset < 0 ? t.custom : t.lidSmoothHint, locked);
         std::vector<Option> options;
-        const char* names[3] = {t.strengthLight, t.strengthMedium, t.strengthStrong};
-        for (int i = 0; i < 3; ++i) options.push_back({names[i], {PanelAction::LidPreset, nullptr, i}});
+        const char* names[kLidPresetCount] = {t.strengthLight, t.strengthMedium, t.strengthStrong, t.strengthMax};
+        for (int i = 0; i < kLidPresetCount; ++i) options.push_back({names[i], {PanelAction::LidPreset, nullptr, i}});
         drawSegmented(pen, kControlX, y + cy, 300, kControlH, options, preset, 20, locked);
         y += kRowH;
         drawRowDivider(pen, y);

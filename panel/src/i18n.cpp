@@ -895,6 +895,7 @@ UiText makeJapanese() {
     t.srcRemove = "消す（Konsole で 1 回パスワード）";
     t.srcRemoveNeedsDsp = "消すなら、先に dsp に切り替えてね";
     t.srcSwitchLater = "自動は、次にもらい直すときから道具を使うよ（すぐなら「道具」）";
+    t.srcNeedsPassword = "入れるには SteamOS のパスワードが要るよ。先に決めてね（Steam の設定 › 開発者 でも）";
     t.srcTradeoff = "道具は長く使ってきたやり方。dsp は sudo いらずだけど新しくて、Valve の dsp_service 頼み。"
                     "どっちも Valve の中身頼みだから、片方を控えに残しておくと安心";
     t.calibCardTitle = "指示どおりに目を動かしてね";
@@ -1976,6 +1977,7 @@ UiText makeEnglish() {
     t.srcRemove = "Remove (password once, in Konsole)";
     t.srcRemoveNeedsDsp = "To remove it, switch to dsp first";
     t.srcSwitchLater = "Auto uses the tool from the next time it takes the video (Tool switches now)";
+    t.srcNeedsPassword = "Installing needs a SteamOS password. Set one first (or in Steam settings › Developer)";
     t.srcTradeoff = "The tool is the long-proven way; dsp needs no sudo but is new and relies on Valve's dsp_service. "
                     "Both depend on Valve internals, so keeping one as a spare helps";
     t.calibCardTitle = "Move your eyes as shown";

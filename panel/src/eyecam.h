@@ -909,6 +909,25 @@ bool grabRemoveAllowed(const Status& status);
 bool grabAfterReacquire(const Status& status);
 
 /**
+ * Whether the card's tool row asks for a SteamOS password before "Install": the tool not installed and the password
+ * check says there is none (sudo would fail). Then it offers passwd in Konsole instead; while the check hasn't
+ * answered (Unknown), "Install" stays.
+ * @param view eyecam-rec (and the password check)
+ * @return true to ask for the password first
+ */
+bool installNeedsPassword(const View& view);
+
+/**
+ * Whether the SteamOS password is checked now (setup_tools::PasswordCheck, while the panel shows on the dashboard):
+ * the setup at (2) (the tool to install; setupStep with the password unknown, so the answer can't decide it), or the
+ * eye cameras tab open with the card offering "Install" (sourceChoiceShown, the tool missing).
+ * @param view eyecam-rec
+ * @param eyecamTab the eye cameras tab is the one open
+ * @return true while it is wanted
+ */
+bool passwordWanted(const View& view, bool eyecamTab);
+
+/**
  * The command that switches the eyelid veto (eyecam-rec takes it in every state, applies it at once and keeps it;
  * status.json's lid_veto.on then says it).
  * @param on true to switch it on

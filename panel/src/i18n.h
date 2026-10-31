@@ -900,6 +900,8 @@ struct UiText {
     const char* srcRemove;       ///< ...while installed
     const char* srcRemoveNeedsDsp;  ///< ...why "Remove" can't be pressed (the buffers come from the tool)
     const char* srcSwitchLater;  ///< ...auto keeps dsp until it next takes the buffers, the tool ready meanwhile
+    const char* srcNeedsPassword;  ///< ...the tool missing and SteamOS without a password: set one first (the button
+                                   ///< opens passwd, setupPassButton)
     const char* srcTradeoff;     ///< ...the bottom line: the tool or dsp, and keeping the other as a spare
     const char* calibCardTitle;  ///< a calibration from the page: the card title
     const char* calibResultTitle;  ///< ...how it ended: the card title

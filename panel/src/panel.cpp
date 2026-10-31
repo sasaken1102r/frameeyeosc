@@ -6972,14 +6972,18 @@ double EyePanel::drawSourceCard(const Pen& pen, const UiText& t, const eyecam::V
     const double lineH = 19;
     const GrabTool tool = eyecam::grabTool(s);
     const bool removable = eyecam::grabRemoveAllowed(s);
+    // (no SteamOS password: sudo would fail, so passwd first, as the checklist's (1))
+    const bool passwordFirst = choice && eyecam::installNeedsPassword(view);
 
-    // Under the rows: why "Remove" can't be pressed, or that auto takes the tool later (or Konsole's failure), then the
-    // trade-off. Left out from the bottom up while the card doesn't fit
+    // Under the rows: a password to set first, why "Remove" can't be pressed, or that auto takes the tool later (or
+    // Konsole's failure), then the trade-off. Left out from the bottom up while the card doesn't fit
     std::string note;
     Color noteColor = kText;
     if (choice && !view.spawnError.empty()) {
         note = view.spawnError;
         noteColor = kDanger;
+    } else if (passwordFirst) {
+        note = t.srcNeedsPassword;
     } else if (choice && tool != GrabTool::Missing && !removable) {
         note = t.srcRemoveNeedsDsp;
     } else if (choice && eyecam::grabAfterReacquire(s)) {
@@ -7027,17 +7031,19 @@ double EyePanel::drawSourceCard(const Pen& pen, const UiText& t, const eyecam::V
     }
     y += headH;
 
-    // The tool: installed or not, and its Konsole ("Install" with its sha256 first, as the checklist's (2), or
-    // "Remove", only while the buffers come from dsp_service)
+    // The tool: installed or not, and its Konsole ("Install" with its sha256 first, as the checklist's (2), or passwd
+    // while SteamOS has no password; "Remove" only while the buffers come from dsp_service)
     if (choice) {
         const bool missing = tool == GrabTool::Missing;
-        const std::string label = missing ? t.srcInstall : t.srcRemove;
+        const std::string label = passwordFirst ? t.setupPassButton : missing ? t.srcInstall : t.srcRemove;
         const double bh = 42;
         const double bw = std::min(380.0, pen.measure(label, 16, true) + 64);
         const double bx = x1 - 10 - bw;
         drawIconButton(pen, bx, y + (toolH - bh) / 2, bw, bh, label,
                        {PanelAction::SetupKonsole, nullptr,
-                        missing ? setup_tools::kKonsoleInstall : setup_tools::kKonsoleUninstall},
+                        passwordFirst ? setup_tools::kKonsolePasswd
+                        : missing     ? setup_tools::kKonsoleInstall
+                                      : setup_tools::kKonsoleUninstall},
                        missing || removable, false, 16, ButtonIcon::Terminal);
         const std::string state = missing ? t.srcToolOut : tool == GrabTool::Ready ? t.srcToolIn : t.srcToolBroken;
         const double room = bx - 14 - (x0 + 16);

@@ -833,6 +833,15 @@ bool grabAfterReacquire(const Status& status) {
     return status.sourceSetting == "auto" && status.source == "dsp" && grabTool(status) == GrabTool::Ready;
 }
 
+bool installNeedsPassword(const View& view) {
+    return grabTool(view.status) == GrabTool::Missing && view.password == PasswordState::NotSet;
+}
+
+bool passwordWanted(const View& view, bool eyecamTab) {
+    if (setupStep(view.status, PasswordState::Unknown) == SetupStep::Tool) return true;
+    return eyecamTab && sourceChoiceShown(view.status) && grabTool(view.status) == GrabTool::Missing;
+}
+
 bool StartConfirm::open(State state) {
     if (state != State::Idle && state != State::Error) return false;
     open_ = true;

@@ -1781,6 +1781,42 @@ void testSource() {
         if (std::string(change) == "grab") other.grabState = "missing";
         CHECK(!eyecam::grabAfterReacquire(other));
     }
+    // "Install" asks for a SteamOS password first only when the check says there is none (unknown: install)
+    eyecam::View install;
+    install.visible = true;
+    install.status = with(R"("source":"dsp","source_setting":"auto","grab_state":"missing","setup_done":true,)");
+    install.status.autoGrab = "dsp";
+    install.status.hasBuffers = true;
+    for (const auto& [password, needs] : {std::pair<eyecam::PasswordState, bool>{eyecam::PasswordState::NotSet, true},
+                                          {eyecam::PasswordState::Unknown, false},
+                                          {eyecam::PasswordState::Set, false}}) {
+        install.password = password;
+        CHECK(eyecam::installNeedsPassword(install) == needs);
+    }
+    install.password = eyecam::PasswordState::NotSet;
+    for (const char* grab : {"ready", "no_cap", ""}) {
+        eyecam::View installed = install;
+        installed.status.grabState = grab;
+        CHECK(!eyecam::installNeedsPassword(installed));
+    }
+    // The password is checked for the card only with its tab open and "Install" offered; for the setup at (2) always
+    CHECK(eyecam::setupStep(install.status, eyecam::PasswordState::Unknown) == eyecam::SetupStep::Done);
+    CHECK(eyecam::passwordWanted(install, true) && !eyecam::passwordWanted(install, false));
+    for (const char* grab : {"ready", "no_cap", ""}) {
+        eyecam::View installed = install;
+        installed.status.grabState = grab;
+        CHECK(!eyecam::passwordWanted(installed, true));
+    }
+    eyecam::View before = install;
+    before.status.source.clear();  // (an eyecam-rec before the card: never for it)
+    CHECK(!eyecam::passwordWanted(before, true));
+    eyecam::View atTool = install;
+    atTool.status.setupDone = false;
+    atTool.status.autoGrab = "missing";
+    atTool.status.state = State::WaitingFds;
+    atTool.status.hasBuffers = false;
+    CHECK(eyecam::setupStep(atTool.status, eyecam::PasswordState::Unknown) == eyecam::SetupStep::Tool);
+    CHECK(eyecam::passwordWanted(atTool, false) && eyecam::passwordWanted(atTool, true));
 }
 
 void testSetupTools() {

@@ -2155,8 +2155,21 @@ void testSourceCard(const FontSet& fonts) {
         std::vector<EyePanel::HitArea> konsole = hits(panel, PanelAction::SetupKonsole);
         CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleInstall);
         CHECK(inside(m));
-        // ...installed: the tool can be chosen, and removed (the buffers come from dsp_service)
+        // ...SteamOS without a password: passwd first (sudo would fail), with why under it; still unknown: "Install"
+        m.eyecam.password = eyecam::PasswordState::NotSet;
+        panel.render(m);
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsolePasswd);
+        CHECK(sourceChoices(panel) == std::vector<int>{kDsp} && inside(m));
+        CHECK(pen.measure(t.setupPassButton, 16, true) + 64 <= 380);
+        m.eyecam.password = eyecam::PasswordState::Unknown;
+        panel.render(m);
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleInstall);
+        // ...installed: the tool can be chosen, and removed (the buffers come from dsp_service), the password
+        // whatever it is
         m = card("dsp", "auto", "ready");
+        m.eyecam.password = eyecam::PasswordState::NotSet;
         panel.render(m);
         CHECK((sourceChoices(panel) == std::vector<int>{kDsp, kGrab}));
         konsole = hits(panel, PanelAction::SetupKonsole);

@@ -34,8 +34,6 @@ pub const DELETE_UNDER_WAY: &str = "消しているところ（終わるまで�
 pub const START_DELETING: &str = "保存してるデータを消しているところ（終わるまで待ってね）";
 /// The reply to `delete` with anything but rec or calib_images.
 pub const DELETE_BAD_KIND: &str = "delete は rec か calib_images で";
-/// What a delete that couldn't take everything says before the first reason.
-pub const DELETE_FAILED: &str = "消せなかったものがある";
 
 /// What `delete` takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -72,7 +70,8 @@ impl Usage {
     }
 }
 
-/// A delete that ended: what it took, and why not all of it (Japanese, "" when it went through).
+/// A delete that ended: what it took, and why not all of it (the first file that couldn't go and the system's reason,
+/// "" when it went through).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Deleted {
     pub kind: &'static str,
@@ -99,12 +98,11 @@ impl Stored {
     pub fn to_json(&self) -> String {
         let deleted = self.deleted.as_ref().map_or("null".into(), |d| {
             format!(
-                "{{\"kind\":{},\"count\":{},\"bytes\":{},\"error\":{},\"error_en\":{},\"unix\":{:.3}}}",
+                "{{\"kind\":{},\"count\":{},\"bytes\":{},\"error\":{},\"unix\":{:.3}}}",
                 crate::json::string(d.kind),
                 d.usage.count,
                 d.usage.bytes,
                 crate::json::string(&d.error),
-                crate::json::string(&crate::message_en::message_en(&d.error)),
                 d.unix
             )
         });
@@ -276,7 +274,7 @@ impl Keeper {
                     usage.bytes >> 20,
                     result.as_ref().err().map_or(String::new(), |e| format!("; not all: {e}"))
                 );
-                let error = result.err().map_or(String::new(), |e| format!("{DELETE_FAILED}: {e}"));
+                let error = result.err().unwrap_or_default();
                 {
                     let mut s = status.lock().unwrap();
                     s.stored.deleting = "";
@@ -499,7 +497,7 @@ mod tests {
         };
         assert_eq!(
             s.to_json(),
-            "{\"scanned_unix\":1.500,\"rec\":{\"count\":13,\"bytes\":25000000000},\"calib_images\":{\"count\":52,\"bytes\":7},\"deleting\":\"rec\",\"deleted\":{\"kind\":\"calib_images\",\"count\":2,\"bytes\":9,\"error\":\"\",\"error_en\":\"\",\"unix\":2.000}}"
+            "{\"scanned_unix\":1.500,\"rec\":{\"count\":13,\"bytes\":25000000000},\"calib_images\":{\"count\":52,\"bytes\":7},\"deleting\":\"rec\",\"deleted\":{\"kind\":\"calib_images\",\"count\":2,\"bytes\":9,\"error\":\"\",\"unix\":2.000}}"
         );
         assert!(Stored::default().to_json().ends_with(",\"deleting\":\"\",\"deleted\":null}"));
         assert_eq!(Kind::parse("rec"), Some(Kind::Rec));

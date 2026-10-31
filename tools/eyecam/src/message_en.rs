@@ -76,7 +76,6 @@ const PREFIX: &[(&str, &str)] = &[
     ("保存できなかった: ", "Couldn't save: "),
     ("プロトコルが見つからない: ", "Protocol not found: "),
     ("ドリフトの記録を始められなかった: ", "Couldn't start the drift log: "),
-    ("消せなかったものがある: ", "Couldn't delete everything: "),
 ];
 
 /// The eyes a message can start with.
@@ -344,7 +343,6 @@ mod tests {
             crate::stored::DELETE_UNDER_WAY,
             crate::stored::START_DELETING,
             crate::stored::DELETE_BAD_KIND,
-            "消せなかったものがある: /home/steamos/eyecam/rec_2026-10-12_09-59-05: Permission denied (os error 13)",
         ];
         for ja in all {
             let en = message_en(ja);

@@ -576,8 +576,7 @@ mod tests {
             assert_eq!(parse_command(bad), Err(LID_VETO_BAD_VALUE.into()), "{bad}");
         }
         assert_eq!(parse_command("set lid_veto on now"), Err("知らないコマンド".into()));
-        assert_eq!(parse_command("delete rec
-"), Ok(Command::Delete(crate::stored::Kind::Rec)));
+        assert_eq!(parse_command("delete rec\n"), Ok(Command::Delete(crate::stored::Kind::Rec)));
         assert_eq!(parse_command(" delete calib_images"), Ok(Command::Delete(crate::stored::Kind::CalibImages)));
         for bad in ["delete", "delete calib", "delete ../rec", "delete all", "delete rec_2026-10-12_09-59-05"] {
             assert_eq!(parse_command(bad), Err(crate::stored::DELETE_BAD_KIND.into()), "{bad}");

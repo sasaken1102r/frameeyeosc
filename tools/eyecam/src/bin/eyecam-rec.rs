@@ -3566,6 +3566,15 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// `path` and the folders above it under /dev/shm, each with its mode set outright: another test may be binding a
+    /// socket under umask 0177 meanwhile (see bind_private), which would leave a folder that can't be written into.
+    fn private_dirs(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        for folder in path.ancestors().take_while(|p| p.starts_with("/dev/shm") && *p != Path::new("/dev/shm")) {
+            fs::set_permissions(folder, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
     /// `delete rec` / `delete calib_images` on ctl.sock: refused while a recording or a calibration runs, else the data
     /// folder's recordings (or the calibrations' eye images, their calib_result.json kept) go on the keeper's thread,
     /// and status.json's `stored` says so; anything else is refused with why.
@@ -3580,7 +3589,7 @@ mod tests {
         let _gone = RemoveDir(dir.clone());
         let data = dir.join("data");
         for file in ["rec_2026-10-12_09-59-05/eye_L.raw", "calib_2026-10-31_17-03-35/eye_L.raw", "calib_2026-10-31_17-03-35/calib_result.json"] {
-            fs::create_dir_all(data.join(file).parent().unwrap()).unwrap();
+            private_dirs(data.join(file).parent().unwrap());
             fs::write(data.join(file), b"0123456789").unwrap();
         }
         let shared = Arc::new(livesvc::Shared::default());
@@ -3894,7 +3903,7 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let _gone = RemoveDir(dir.clone());
         let data = dir.join("data");
-        fs::create_dir_all(data.join("rec_2026-10-12_09-59-05")).unwrap();
+        private_dirs(&data.join("rec_2026-10-12_09-59-05"));
         fs::write(data.join("rec_2026-10-12_09-59-05/eye_L.raw"), b"0123456789").unwrap();
         let args = serve_args(&dir);
         let shared = Arc::new(livesvc::Shared::default());

@@ -154,11 +154,16 @@ pub struct Status {
     /// eyecam-rec holds the camera buffers (eyecam-grab succeeded), whether or not frames are flowing.
     pub has_buffers: bool,
     /// The automatic eyecam-grab: "" (not tried), missing, no_cap, unsafe: ..., waiting_tracker, trying, ok,
-    /// failed: ...
+    /// failed: ...; "dsp" while the buffer comes from dsp_service instead (`source` dsp), which needs no eyecam-grab,
+    /// so the panel doesn't ask for one.
     pub auto_grab: String,
     /// The installed eyecam-grab differs from the one shipped beside eyecam-rec (an update brought a new one):
     /// install_grab.sh has to be run again. False when either is missing.
     pub grab_outdated: bool,
+    /// Where the buffers come from now: "grab" (eyecam-grab) or "dsp" (dsp_service); see dspsrc::Source.
+    pub source: &'static str,
+    /// The `source` setting (settings.json or --source): grab, dsp or auto.
+    pub source_setting: &'static str,
     pub locked: bool,
     pub fps: [f64; 2],
     pub step_index: i64,
@@ -268,6 +273,8 @@ impl Default for Status {
             has_buffers: false,
             auto_grab: String::new(),
             grab_outdated: false,
+            source: "grab",
+            source_setting: "grab",
             locked: false,
             fps: [0.0; 2],
             step_index: -1,
@@ -336,7 +343,7 @@ impl Status {
     /// One line of JSON. `updated_unix` (wall clock seconds) lets a reader tell a live daemon from a stale file.
     pub fn to_json(&self, updated_unix: f64, pid: u32) -> String {
         format!(
-            "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
+            "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"source\":{},\"source_setting\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
 \"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"user_look_down_default\":[{},{}],\"user_look_down_previous\":[{},{}],\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"driftlog\":{},\"started_unix\":{},\"headset_off_count\":{},\"pid\":{pid},\"updated_unix\":{}}}",
@@ -346,6 +353,8 @@ impl Status {
             self.has_buffers,
             json_str(&self.auto_grab),
             self.grab_outdated,
+            json_str(self.source),
+            json_str(self.source_setting),
             self.locked,
             num(self.fps[0]),
             num(self.fps[1]),
@@ -577,6 +586,9 @@ mod tests {
         assert!(!json.contains('\n'));
         assert!(json.starts_with("{\"version\":1,\"state\":\"waiting_fds\",\"message\":\"録画中 \\\"x\\\"\\n\",\"message_en\":\"録画中 \\\"x\\\"\\n\",\"has_buffers\":false,\"auto_grab\":\"\","));
         assert!(json.contains("\"prox\":-1,\"search\":\"\",") && json.contains("\"step_index\":-1,"));
+        assert!(json.contains(",\"grab_outdated\":false,\"source\":\"grab\",\"source_setting\":\"grab\",\"locked\":"), "{json}");
+        let dsp = Status { source: "dsp", source_setting: "auto", auto_grab: "dsp".into(), ..Status::default() }.to_json(1.5, 7);
+        assert!(dsp.contains("\"auto_grab\":\"dsp\",\"grab_outdated\":false,\"source\":\"dsp\",\"source_setting\":\"auto\","), "{dsp}");
         let searching = Status { search: SEARCH_NO_VIDEO, prox: 12.5, ..Status::default() }.to_json(1.5, 7);
         assert!(searching.contains("\"prox\":12.500,\"search\":\"no_video\",") && crate::json::parse(&searching).is_ok());
         let status = Status { message: "録画中".into(), ..Status::default() };

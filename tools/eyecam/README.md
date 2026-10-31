@@ -148,7 +148,9 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 |---|---|---|
 | `version` | int | この形式の版。今は 1 |
 | `state` | string | `waiting_fds`（grab 待ち）/ `idle`（待機中。バッファを受け取ったらすぐこれになる。HMD をかぶっていない間は `message` が `HMD をかぶってね（目の映像を待ってるよ）`）/ `searching`（`start` を受けて、かぶるのと映像を待っている）/ `recording` / `calibrating`（`calib wear` / `calib user` を受けてから終わるまで。映像待ちの間も `calibrating`）/ `error`（直前の録画か校正が失敗。次の `start` / `calib` まで残る）/ `stopped`（eyecam-rec が終了した） |
-| `auto_grab` | string | 自動 grab の状態（「sudo なしで使う」の表）。`--serve` 以外は `""` |
+| `auto_grab` | string | 自動 grab の状態（「sudo なしで使う」の表）。`--serve` 以外は `""`。バッファを dsp_service からもらうとき（`source` が `dsp`）は `dsp`（eyecam-grab は要らないので、パネルは道具を入れてとは言わない） |
+| `source` | string | 今バッファをどこからもらっているか: `grab`（eyecam-grab）/ `dsp`（Valve の dsp_service。下の「settings.json」の `source`） |
+| `source_setting` | string | `source` の設定（`--source` か settings.json）: `grab`（既定）/ `dsp` / `auto` |
 | `grab_outdated` | bool | eyecam-rec の隣の eyecam-grab が、入っている eyecam-grab（`/home/.eyecam/eyecam-grab`）より新しい版（更新で新しい eyecam-grab が届いた）。true なら `install_grab.sh` をもう一度 sudo で実行してもらう。どちらかが無いときは false。版はバイナリに埋め込んだ印 `EYECAM_GRAB_VERSION=<n>;` で比べる（同じソースでもビルドごとにバイトは変わるため。印の無い古いビルドは 1）。`src/bin/eyecam-grab.rs` を変えたら、その番号を上げる（上げ忘れはテストが止める） |
 
 > 安全のための下限: `src/autograb.rs` の `MIN_SAFE_GRAB_VERSION` より古い eyecam-grab は、入っていても自動では起動しない（`auto_grab` が `too_old`、`grab_outdated` も true）。eyecam-grab に安全上の問題が見つかったときだけこの下限を上げる。ふつうの変更は `EYECAM_GRAB_VERSION` を上げるだけ（入れ直しのお知らせが出るが、古い道具のまま動き続ける）。
@@ -577,6 +579,22 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   起動中に書き換えても、status.json には次の書き直しで、校正には次の校正から効く
 - `lid_veto`: まぶたの拒否権（既定 false。下の「まぶたの拒否権」）。パネルの `set lid_veto on|off` が書く（手で書き換えてもよい）。
   書くときは `widen_sensitivity` と `dev` はそのまま残す。true で拒否権が入り、false（と true 以外の値）では古典の値だけになる。起動中に書き換えても、0.1 秒ほどで次のフレームから効く。status.json の `lid_veto.on` に出る
+- `source`: 目のカメラのバッファをどこからもらうか（**試験中**。既定 `grab`。**手で書き換える**。`--source` があればそちらが勝つ）。
+  起動したときに読む（書き換えたら eyecam.service を再起動）。既定のままならファイルに書かれない
+  - `grab`: eyecam-grab（今までどおり）
+  - `dsp`: Valve の dsp_service（root で動いている）から、eyecam-grab なしでもらう。抽象 unix ソケット `dsp_service` につなぐと、
+    サービスが先に "ADSP" と 2 つの udmabuf の記述子（16 MiB と 32 MiB）を送ってくる。16 MiB のほう（目のカメラのリングがある）
+    だけを読み取り専用で mmap し、32 MiB のほうはすぐ閉じる。返事は要求の種類 0（通知は要らない）だけで、バッファには何も書かない。
+    相手が root の `dsp_service` であること・中身が 16 MiB の udmabuf であることを確かめる。つないだままにしておき、切れたら
+    バッファを手放して、つなぎ直す（つながらない間は 1・2・4・8・16・30 秒おき）
+  - `auto`: `--serve` では、インストール済みの eyecam-grab が使えるならそれ、なければ（または自動の grab が 2 回続けて失敗したら）dsp。
+    dsp を使っている間に eyecam-grab を入れても、切り替わるのは次にバッファをもらい直すとき（dsp_service が切れたときなど）。
+    録画（`--serve` なし）では自動の grab が走らないので、いつも dsp
+  - まだ確かめていないこと: Frame の起動直後、Valve 自身のクライアント（vrserver・eyetracking・XRService）より先に eyecam が
+    dsp_service につないだときの動き（動いている間につないだときは、Valve 側の接続は切れなかった）
+- `eyecam-rec --dsp-selftest 5`: dsp_service につないでバッファを読み取り専用で mmap し、5 秒間スロットの見出しを見て
+  （新しいフレームの数・見えたときの古さ）、リングを一度探して、表示して終わる。ソケットも status.json も作らないので、
+  動いている eyecam.service の横で走らせてよい
 
 ### 校正
 

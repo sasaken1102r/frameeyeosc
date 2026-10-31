@@ -3,6 +3,7 @@
 pub mod autograb;
 pub mod cues;
 pub mod driftlog;
+pub mod dspsrc;
 pub mod feat;
 pub mod json;
 pub mod live;

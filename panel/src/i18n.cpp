@@ -1010,7 +1010,7 @@ UiText makeJapanese() {
     t.dataRows[2] = "校正の目の画像";
     t.dataRowHints[0] = "目の値の記録（CSV）";
     t.dataRowHints[1] = "開発用の目の撮影";
-    t.dataRowHints[2] = "dev がオンのときだけ残る";
+    t.dataRowHints[2] = "開発者モードのときだけ残る";
     t.dataCountFormats[0] = "%d 回分・%s";
     t.dataCountFormats[1] = "%d 本・%s";
     t.dataCountFormats[2] = "%d 回分・%s";
@@ -2130,7 +2130,7 @@ UiText makeEnglish() {
     t.dataRows[2] = "Calibration eye images";
     t.dataRowHints[0] = "Eye values (CSV)";
     t.dataRowHints[1] = "The developer eye recording";
-    t.dataRowHints[2] = "Kept only with dev on";
+    t.dataRowHints[2] = "Kept in developer mode only";
     t.dataCountFormats[0] = "%d logs, %s";
     t.dataCountFormats[1] = "%d recordings, %s";
     t.dataCountFormats[2] = "%d calibrations, %s";

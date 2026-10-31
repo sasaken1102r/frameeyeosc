@@ -2582,8 +2582,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
                      fitSize(pen, t.hintNativeEyes, 15, 11, kControlW, false), kTextMuted);
         }
         y += lineRowH;
-        // ...and VRChat's own face tracking input (/tracking/face/v1), for avatars with Face Tracking set up (only
-        // written to config.json so far: the core doesn't read it yet)
+        // ...and VRChat's own face tracking input (/tracking/face/v1), for avatars with Face Tracking set up
         {
             const bool locked = v.locked(key::kVrcFaceTracking);
             // (its hint under the control too)

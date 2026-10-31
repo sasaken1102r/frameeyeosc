@@ -62,7 +62,7 @@ constexpr const char* kSteamlinkParams = "steamlink_params";
 constexpr const char* kNativeEyes = "native_eyes";
 /**
  * VRChat output: also send to VRChat's own face tracking input (/tracking/face/v1), for avatars with Face Tracking set
- * up. The core reads it but doesn't send anything yet.
+ * up. The core sends the eyes there as one blob (src/vrc_face.rs).
  */
 constexpr const char* kVrcFaceTracking = "vrc_face_tracking";
 /** LiveLink output: send the eye cameras' pupils straight to VRChat (the LiveLink module has none; default on). */

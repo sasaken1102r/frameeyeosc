@@ -18,6 +18,7 @@ use eyecam::preview;
 use eyecam::settings::{self, Settings};
 use eyecam::status::{self, CalibKind, Command, Status};
 use eyecam::{now_raw, proto};
+use std::cell::Cell;
 use std::error::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Write};
@@ -62,6 +63,9 @@ const DSP_WAITING: &str = "dsp_service から目のカメラのバッファを�
 
 /// What waiting_fds says while dsp_service can't be reached (followed by `: ` and why; tried again by itself).
 const DSP_UNREACHABLE: &str = "dsp_service につながらない";
+
+/// Why the buffers were given up after `set source` (waiting_fds says it, followed by how they are taken now).
+const SOURCE_CHANGED: &str = "映像のもらい方を変えた";
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -428,6 +432,8 @@ enum Abort {
     TimeUp,
     /// An idle search gave way to a control request.
     Busy,
+    /// `set source` asked for another route: the buffers are taken again by it.
+    SourceChanged,
 }
 
 impl Abort {
@@ -442,12 +448,13 @@ impl Abort {
             Abort::DiskFull => "ディスクの空きが 1 GB 未満",
             Abort::TimeUp => "録画時間が終わった",
             Abort::Busy => "",
+            Abort::SourceChanged => SOURCE_CHANGED,
         }
     }
 
     /// The buffers are no longer the live ones: new descriptors are needed.
     fn needs_grab(self) -> bool {
-        matches!(self, Abort::TrackerExited | Abort::ServiceClosed | Abort::Stale)
+        matches!(self, Abort::TrackerExited | Abort::ServiceClosed | Abort::Stale | Abort::SourceChanged)
     }
 }
 
@@ -502,13 +509,26 @@ struct StatusFile {
     settings: Mutex<settings::Watch>,
     /// The run folder is on tmpfs, so the panel's eye preview may put its pictures there (preview::on_tmpfs).
     preview_ok: bool,
+    /// The installed eyecam-grab's state (autograb::State::label) and when it was looked at (now_raw): looked at again
+    /// once a second, as a ready copy is read whole for its version.
+    grab: Mutex<(f64, String)>,
 }
 
 impl StatusFile {
     fn write(&self, status: &Mutex<Status>) {
         let _guard = self.write_lock.lock().unwrap();
+        // (looked at before taking the status: the main thread never waits for the file)
+        let grab_state = {
+            let mut grab = self.grab.lock().unwrap();
+            let now = now_raw();
+            if grab.1.is_empty() || now - grab.0 >= 1.0 {
+                *grab = (now, autograb::find().label());
+            }
+            grab.1.clone()
+        };
         let json = {
             let mut s = status.lock().unwrap();
+            s.grab_state = grab_state;
             // (no eyecam-grab is used with dsp_service, so an outdated one is nothing to ask about then)
             s.grab_outdated = s.source != "dsp"
                 && eyecam::autograb::bundled_grab().is_some_and(|b| eyecam::autograb::grab_outdated(&b));
@@ -581,6 +601,10 @@ struct Daemon {
     shutdown: Arc<AtomicBool>,
     threads: Vec<thread::JoinHandle<()>>,
     file: Arc<StatusFile>,
+    /// The `source` setting in use (source_setting at start, then each `set source`).
+    source: Cell<Source>,
+    /// Where `set source` saves it (settings::path(); None: the fake daemon, which saves nothing).
+    settings_path: Option<PathBuf>,
 }
 
 impl Daemon {
@@ -599,6 +623,7 @@ impl Daemon {
             live,
             settings: Mutex::new(settings::Watch::new(settings::path())),
             preview_ok: preview::on_tmpfs(dir),
+            grab: Mutex::new((0.0, String::new())),
         });
         let listener = bind_private(&dir.join(status::CTL_FILE), "another eyecam-rec --serve is already running")?;
         listener.0.set_nonblocking(true)?;
@@ -614,7 +639,15 @@ impl Daemon {
             let (status, shutdown, file) = (status.clone(), shutdown.clone(), file.clone());
             thread::spawn(move || status_loop(status, file, shutdown))
         };
-        Ok(Self { status, requests, shutdown, threads: vec![ctl, writer], file })
+        Ok(Self {
+            status,
+            requests,
+            shutdown,
+            threads: vec![ctl, writer],
+            file,
+            source: Cell::new(Source::Auto),
+            settings_path: None,
+        })
     }
 
     fn set(&self, f: impl FnOnce(&mut Status)) {
@@ -626,6 +659,38 @@ impl Daemon {
 
     fn request(&self) -> Option<Request> {
         self.requests.try_recv().ok()
+    }
+
+    /// Answer `set source <source>` (only ever taken by the main thread outside recordings and calibrations, which
+    /// refuse it as every other request): save it in settings.json (the rest of the file kept) and use it from now on.
+    /// `using` is the route the buffers come by, or are waited for by; `holding`, whether they are held. They are taken
+    /// again when the route the setting picks now (`route`) isn't `using`: `auto` once eyecam-grab was installed while
+    /// dsp_service was in use, say. While waiting for them, also when only the setting changed (nothing is held, and the
+    /// wait for dsp_service then follows the new one's rules). Taking them again shows waiting_fds before the reply
+    /// goes out. Returns whether to take them again (the caller drops them, or ends its wait, at once).
+    fn answer_source(&self, request: Request, source: Source, using: Source, holding: bool) -> bool {
+        if let Some(path) = &self.settings_path
+            && let Err(e) = Settings::update(path, |s| s.source = source)
+        {
+            answer(request, &format!("err 保存できなかった: {e}"));
+            return false;
+        }
+        let again = route(source, true) != using || (!holding && source != self.source.get());
+        eprintln!("set source {}{}", source.label(), if again { ": taking the buffers again" } else { "" });
+        self.source.set(source);
+        self.set(|s| {
+            s.source_setting = source.label();
+            if again {
+                s.state = "waiting_fds";
+                s.message = SOURCE_CHANGED.into();
+                s.has_buffers = false;
+                s.locked = false;
+                s.search = "";
+                s.clear_recording();
+            }
+        });
+        answer(request, "ok");
+        again
     }
 
     /// Stop the threads, remove the control socket, and leave a final status.json with state `stopped`.
@@ -799,8 +864,10 @@ fn serve(args: &Args) -> Result<()> {
         shared.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
         shared.driftlog.lock().unwrap().dir = args.out.join(driftlog::DIR_NAME);
     }
-    let daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()))?;
+    let mut daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()))?;
     let setting = source_setting(args);
+    daemon.source.set(setting);
+    daemon.settings_path = (!args.fake).then(settings::path);
     daemon.set(|s| {
         s.prox_min = args.prox_min;
         s.source_setting = setting.label();
@@ -829,7 +896,8 @@ fn serve(args: &Args) -> Result<()> {
     let mut off = livesvc::OffCount::default();
     let mut why: Option<&str> = None;
     while !STOP.load(Ordering::SeqCst) {
-        // (chosen again each time: `auto` takes an eyecam-grab installed meanwhile)
+        // (chosen again each time: `auto` takes an eyecam-grab installed meanwhile, `set source` changes the setting)
+        let setting = daemon.source.get();
         let route = route(setting, true);
         let how = if route == Source::Dsp { DSP_WAITING } else { INSTALL_TOOL };
         let message = why.map_or(how.to_string(), |w| format!("{w}。{how}"));
@@ -847,6 +915,10 @@ fn serve(args: &Args) -> Result<()> {
         });
         let mut buffers = match Buffers::receive(f64::INFINITY, Some(&daemon), route, setting == Source::Auto) {
             Ok(b) => b,
+            Err(e) if e.is::<SourceChanged>() => {
+                why = Some(SOURCE_CHANGED);
+                continue;
+            }
             Err(e) => {
                 if STOP.load(Ordering::SeqCst) {
                     break;
@@ -856,10 +928,18 @@ fn serve(args: &Args) -> Result<()> {
                     s.state = "error";
                     s.message = format!("バッファを受け取れなかった: {e}");
                 });
-                // Wait a little before trying again, still answering control requests.
-                for _ in 0..20 {
+                // Wait a little before trying again, still answering control requests (a `set source` that changes
+                // the route tries again at once).
+                'wait: for _ in 0..20 {
                     while let Some(req) = daemon.request() {
                         let reply = match req.command {
+                            Command::SetSource(source) => {
+                                if daemon.answer_source(req, source, route, false) {
+                                    why = Some(SOURCE_CHANGED);
+                                    break 'wait;
+                                }
+                                continue;
+                            }
                             Command::Stop => "err 録画していない",
                             _ => "err まだバッファを受け取ってない",
                         };
@@ -1129,6 +1209,16 @@ fn idle(
                 }
                 Command::Stop | Command::Status => {
                     answer(req, "err 録画していない");
+                    continue;
+                }
+                // Another route: the buffers go at once (serve takes them again), as when the tracker or dsp_service
+                // ends them
+                Command::SetSource(source) => {
+                    let source = *source;
+                    let using = if matches!(b.tracker, Tracker::Dsp(_)) { Source::Dsp } else { Source::Grab };
+                    if d.answer_source(req, source, using, true) {
+                        return Some(Abort::SourceChanged);
+                    }
                     continue;
                 }
                 // Only with the eye video coming in (a ring locked); the worker checks the rest (live, its frames)
@@ -1404,10 +1494,30 @@ fn fake(args: &Args, d: &Daemon) {
             }
         })
     };
+    // (from the real eyecam-grab's state, as status.json's grab_state)
+    d.set(|s| s.source = route(d.source.get(), true).label());
+    // Until when it waits for buffers: 5 s at first, 2 s after a `set source` that takes them again
+    let mut waiting_until = t0 + 5.0;
     let mut phase = Phase::Waiting;
     while !STOP.load(Ordering::SeqCst) {
         let now = now_raw();
-        while let Some(Request { command, reply }) = d.request() {
+        while let Some(request) = d.request() {
+            // `set source`: as the real one, outside recordings and calibrations (saving nothing); a new route
+            // waits for buffers again
+            if let Command::SetSource(source) = request.command
+                && matches!(phase, Phase::Waiting | Phase::Idle(_))
+            {
+                let using = Source::parse(d.status.lock().unwrap().source).unwrap_or(Source::Grab);
+                let holding = !matches!(phase, Phase::Waiting);
+                if d.answer_source(request, source, using, holding) {
+                    d.set(|s| s.source = route(source, true).label());
+                    phase = Phase::Waiting;
+                    waiting_until = now + 2.0;
+                    render(&phase, now, calib_state, live_on, failed_calib, relearn_at);
+                }
+                continue;
+            }
+            let Request { command, reply } = request;
             if matches!(command, Command::Start(_) | Command::Calib(_)) {
                 failed_calib = false;
             }
@@ -1455,7 +1565,7 @@ fn fake(args: &Args, d: &Daemon) {
             let _ = reply.send(text);
         }
         phase = match phase {
-            Phase::Waiting if now - t0 >= 5.0 => Phase::Idle("（fake）待機中".into()),
+            Phase::Waiting if now >= waiting_until => Phase::Idle("（fake）待機中".into()),
             Phase::Searching(t, steps, name, calib) if now - t >= 2.0 && args.fake_search.is_none() => {
                 Phase::Running(now, steps, name, calib)
             }
@@ -1606,6 +1716,18 @@ impl std::fmt::Display for DspFallBack {
 
 impl Error for DspFallBack {}
 
+/// A wait for the buffers ended for `set source` (Daemon::answer_source): serve takes them by the new route.
+#[derive(Debug)]
+struct SourceChanged;
+
+impl std::fmt::Display for SourceChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "set source asked for another route")
+    }
+}
+
+impl Error for SourceChanged {}
+
 /// The `source` setting: --source, else settings.json, else auto.
 fn source_setting(args: &Args) -> Source {
     args.source.unwrap_or_else(|| Settings::load(&settings::path()).source)
@@ -1673,6 +1795,12 @@ fn connect_dsp(wait: f64, ctl: Option<&Daemon>, auto: bool) -> Result<dspsrc::Co
             }
             while let Some(req) = ctl.and_then(Daemon::request) {
                 let reply = match req.command {
+                    Command::SetSource(source) => {
+                        if ctl.is_some_and(|d| d.answer_source(req, source, Source::Dsp, false)) {
+                            return Err(Box::new(SourceChanged));
+                        }
+                        continue;
+                    }
                     Command::Start(_) | Command::Calib(_) | Command::Live(_) | Command::Relearn => "err まだバッファを受け取ってない",
                     _ => "err 録画していない",
                 };
@@ -1753,6 +1881,17 @@ fn receive_buffers(wait: f64, ctl: Option<&Daemon>, fall_back_after: Option<u32>
         }
         while let Some(req) = ctl.and_then(Daemon::request) {
             let reply = match req.command {
+                Command::SetSource(source) => {
+                    if ctl.is_some_and(|d| d.answer_source(req, source, Source::Grab, false)) {
+                        // (the automatic grab started for this wait goes with it)
+                        if let Some((mut c, _)) = child.take() {
+                            let _ = c.kill();
+                            let _ = c.wait();
+                        }
+                        return Err(Box::new(SourceChanged));
+                    }
+                    continue;
+                }
                 Command::Start(_) | Command::Calib(_) => "err まだバッファを受け取ってない",
                 Command::Live(_) | Command::Relearn => "err まだバッファを受け取ってない",
                 _ => "err 録画していない",
@@ -3542,6 +3681,121 @@ mod tests {
         let (json, used) = run_idle("idle-cpu", &[16 << 20, 32 << 20], seconds);
         eprintln!("idle with the cameras off: {:.3} s CPU in {seconds} s ({:.2} % of a core)
 {json}", used, used / seconds * 100.0);
+    }
+
+    /// `set source`: saved in settings.json (the rest of the file kept, `auto` not written), shown as source_setting,
+    /// and the buffers taken again only when the route changes (or, while waiting for them, the setting); a file that
+    /// can't be written refuses it and changes nothing.
+    #[test]
+    fn set_source_saves_it_and_says_when_to_take_the_buffers_again() {
+        let dir = Path::new("/dev/shm").join(format!("eyecam-set-source-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _gone = RemoveDir(dir.clone());
+        let mut daemon = Daemon::start(&dir, None).unwrap();
+        // (its folder's mode set outright: another test may be binding a socket under umask 0177 meanwhile)
+        fs::create_dir(dir.join("config")).unwrap();
+        fs::set_permissions(dir.join("config"), fs::Permissions::from_mode(0o700)).unwrap();
+        let path = dir.join("config").join("settings.json");
+        daemon.settings_path = Some(path.clone());
+        daemon.source.set(Source::Grab);
+        Settings { lid_veto: true, ..Settings::default() }.save(&path).unwrap();
+        let ask = |daemon: &Daemon, source: Source, using: Source, holding: bool| {
+            let (reply, rx) = mpsc::channel();
+            let again = daemon.answer_source(Request { command: Command::SetSource(source), reply }, source, using, holding);
+            (rx.recv().unwrap(), again)
+        };
+        let shown = |daemon: &Daemon| {
+            let s = daemon.status.lock().unwrap();
+            (s.state, s.source_setting, s.message.clone())
+        };
+        daemon.set(|s| s.state = "idle");
+        // The same setting and route as the buffers held: only saved
+        assert_eq!(ask(&daemon, Source::Grab, Source::Grab, true), ("ok".into(), false));
+        assert_eq!(Settings::load(&path), Settings { lid_veto: true, source: Source::Grab, ..Settings::default() });
+        assert_eq!(shown(&daemon).0, "idle");
+        // Another route: taken again, waiting_fds already by the reply
+        assert_eq!(ask(&daemon, Source::Dsp, Source::Grab, true), ("ok".into(), true));
+        assert_eq!(Settings::load(&path).source, Source::Dsp);
+        assert_eq!(shown(&daemon), ("waiting_fds", "dsp", SOURCE_CHANGED.to_string()));
+        assert_eq!(daemon.source.get(), Source::Dsp);
+        // Waiting for dsp_service: dsp again changes nothing; auto ends the wait (its rules differ), and leaves the
+        // file as it was before `source` was set
+        assert_eq!(ask(&daemon, Source::Dsp, Source::Dsp, false), ("ok".into(), false));
+        assert_eq!(ask(&daemon, Source::Auto, Source::Dsp, false), ("ok".into(), true));
+        assert!(!fs::read_to_string(&path).unwrap().contains("source"));
+        assert_eq!(Settings::load(&path), Settings { lid_veto: true, ..Settings::default() });
+        // Held with auto: taken again only if auto picks another route than the one in use (the installed tool here)
+        let auto_route = route(Source::Auto, true);
+        assert_eq!(ask(&daemon, Source::Auto, auto_route, true), ("ok".into(), false));
+        let other = if auto_route == Source::Dsp { Source::Grab } else { Source::Dsp };
+        assert_eq!(ask(&daemon, Source::Auto, other, true), ("ok".into(), true));
+        // Can't be saved: refused, nothing changes
+        fs::write(dir.join("blocked"), b"").unwrap();
+        daemon.settings_path = Some(dir.join("blocked").join("settings.json"));
+        daemon.set(|s| s.state = "idle");
+        let (reply, again) = ask(&daemon, Source::Grab, Source::Dsp, true);
+        assert!(reply.starts_with("err 保存できなかった: ") && !again, "{reply}");
+        assert_eq!((daemon.source.get(), shown(&daemon).0, shown(&daemon).1), (Source::Auto, "idle", "auto"));
+        // The fake daemon saves nothing
+        daemon.settings_path = None;
+        assert_eq!(ask(&daemon, Source::Grab, Source::Dsp, true), ("ok".into(), true));
+        assert!(!dir.join("blocked").join("settings.json").exists());
+        daemon.finish();
+    }
+
+    /// `set source` on ctl.sock while idle: the same route keeps the buffers; another one drops them at once (idle
+    /// ends with SourceChanged, as when the tracker or dsp_service ends them) with waiting_fds in status.json by the
+    /// reply; a bad value is refused. Uses memfd stand-ins for the buffers (from "this process": the grab's route).
+    #[test]
+    fn set_source_on_ctl_sock_drops_the_buffers_for_another_route() {
+        if unsafe { libc::getuid() } != proto::USER_UID {
+            eprintln!("skipped: ctl.sock answers only uid {}", proto::USER_UID);
+            return;
+        }
+        let dir = Path::new("/dev/shm").join(format!("eyecam-set-source-idle-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _gone = RemoveDir(dir.clone());
+        let args = serve_args(&dir);
+        let shared = Arc::new(livesvc::Shared::default());
+        let mut daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
+        let path = dir.join("settings.json");
+        daemon.settings_path = Some(path.clone());
+        daemon.source.set(Source::Grab);
+        let live_dir = dir.clone();
+        let (done_tx, done) = mpsc::channel();
+        // (status.json is looked at before the daemon finishes and says `stopped`)
+        let (go_tx, go) = mpsc::channel::<()>();
+        let handle = thread::spawn(move || {
+            let mut live = Live::start(&live_dir, None, shared).unwrap();
+            let mut b = still_buffers(&[1 << 20]);
+            let mut prox = Proximity::find();
+            let r = idle(&mut b, &args, &mut prox, &daemon, &mut live, &mut livesvc::OffCount::default());
+            let _ = done_tx.send(());
+            let _ = go.recv();
+            live.stop();
+            daemon.finish();
+            r
+        });
+        let status = || fs::read_to_string(dir.join(status::STATUS_FILE)).unwrap_or_default();
+        let t0 = now_raw();
+        while !status().contains("\"has_buffers\":true") {
+            assert!(now_raw() - t0 < 5.0, "{}", status());
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(ctl(&dir, "set source grab"), "ok");
+        assert_eq!(ctl(&dir, "set source udmabuf"), format!("err {}", status::SOURCE_BAD_VALUE));
+        thread::sleep(Duration::from_millis(300));
+        assert!(done.try_recv().is_err(), "the same route keeps the buffers");
+        let json = status();
+        assert!(json.contains("\"state\":\"idle\"") && json.contains(",\"source_setting\":\"grab\","), "{json}");
+        assert_eq!(ctl(&dir, "set source dsp"), "ok");
+        let json = status();
+        assert!(json.contains("\"state\":\"waiting_fds\"") && json.contains("\"has_buffers\":false"), "{json}");
+        assert!(json.contains(",\"source_setting\":\"dsp\",") && json.contains("\"message_en\":\"Changed how the eye video is taken\""), "{json}");
+        assert!(json.contains(",\"grab_state\":\"") && !json.contains(",\"grab_state\":\"\","), "{json}");
+        let _ = go_tx.send(());
+        assert_eq!(handle.join().unwrap(), Some(Abort::SourceChanged));
+        assert_eq!(Settings::load(&path).source, Source::Dsp);
     }
 
     /// A stand-in for Valve's shared memory: the samples `poll` hands out, one per call (None: nothing new).

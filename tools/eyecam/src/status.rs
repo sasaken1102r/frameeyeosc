@@ -161,6 +161,10 @@ pub struct Status {
     /// The installed eyecam-grab differs from the one shipped beside eyecam-rec (an update brought a new one):
     /// install_grab.sh has to be run again. False when either is missing.
     pub grab_outdated: bool,
+    /// The installed eyecam-grab as autograb::find() sees it now (autograb::State::label: ready, missing, no_cap,
+    /// too_old, unsafe: ...), whichever source is in use, so the panel can tell whether the tool is in while dsp_service
+    /// is used. "" before it was first looked at.
+    pub grab_state: String,
     /// Where the buffers come from now: "grab" (eyecam-grab) or "dsp" (dsp_service); see dspsrc::Source.
     pub source: &'static str,
     /// The `source` setting (settings.json or --source): grab, dsp or auto.
@@ -274,6 +278,7 @@ impl Default for Status {
             has_buffers: false,
             auto_grab: String::new(),
             grab_outdated: false,
+            grab_state: String::new(),
             source: "grab",
             source_setting: "grab",
             locked: false,
@@ -344,7 +349,7 @@ impl Status {
     /// One line of JSON. `updated_unix` (wall clock seconds) lets a reader tell a live daemon from a stale file.
     pub fn to_json(&self, updated_unix: f64, pid: u32) -> String {
         format!(
-            "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"source\":{},\"source_setting\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
+            "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"grab_state\":{},\"source\":{},\"source_setting\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
 \"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"user_look_down_default\":[{},{}],\"user_look_down_previous\":[{},{}],\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"driftlog\":{},\"started_unix\":{},\"headset_off_count\":{},\"pid\":{pid},\"updated_unix\":{}}}",
@@ -354,6 +359,7 @@ impl Status {
             self.has_buffers,
             json_str(&self.auto_grab),
             self.grab_outdated,
+            json_str(&self.grab_state),
             json_str(self.source),
             json_str(self.source_setting),
             self.locked,
@@ -450,6 +456,10 @@ pub enum Command {
     SetWidenSensitivity(f64),
     /// `set lid_veto on|off`: the eyelid veto, answered by the control thread itself, in every state.
     SetLidVeto(bool),
+    /// `set source auto|dsp|grab`: where the camera buffers come from (settings.json `source`). Taken by the main
+    /// thread, which saves it and takes the buffers again by the new route when that changes it; refused while
+    /// recording or calibrating.
+    SetSource(crate::dspsrc::Source),
     /// `preview on` / `preview off`: the panel's eye preview, answered by the control thread itself, in every state.
     Preview(bool),
     /// `driftlog on [<stem>]`: start the drift log (`driftlog`), answered by the control thread itself, in every state;
@@ -468,6 +478,9 @@ pub const DRIFTLOG_BAD_NAME: &str = "ドリフトの記録の名前は eyes_YYYY
 
 /// The reply to `set lid_veto` with anything but on or off.
 pub const LID_VETO_BAD_VALUE: &str = "lid_veto は on か off で";
+
+/// The reply to `set source` with anything but auto, dsp or grab.
+pub const SOURCE_BAD_VALUE: &str = "source は auto か dsp か grab で";
 
 /// Parse one control line. Protocol names are 1-32 of [A-Za-z0-9_-], so they can never name a path.
 pub fn parse_command(line: &str) -> Result<Command, String> {
@@ -506,6 +519,9 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             Some("off") => Command::SetLidVeto(false),
             _ => return Err(LID_VETO_BAD_VALUE.into()),
         },
+        (Some("set"), Some("source")) => {
+            Command::SetSource(words.next().and_then(crate::dspsrc::Source::parse).ok_or(SOURCE_BAD_VALUE)?)
+        }
         _ => return Err("知らないコマンド".into()),
     };
     if words.next().is_some() {
@@ -566,6 +582,15 @@ mod tests {
             assert_eq!(parse_command(bad), Err(LID_VETO_BAD_VALUE.into()), "{bad}");
         }
         assert_eq!(parse_command("set lid_veto on now"), Err("知らないコマンド".into()));
+        use crate::dspsrc::Source;
+        assert_eq!(parse_command("set source auto
+"), Ok(Command::SetSource(Source::Auto)));
+        assert_eq!(parse_command(" set source dsp"), Ok(Command::SetSource(Source::Dsp)));
+        assert_eq!(parse_command("set source grab"), Ok(Command::SetSource(Source::Grab)));
+        for bad in ["set source", "set source udmabuf", "set source GRAB", "set source on"] {
+            assert_eq!(parse_command(bad), Err(SOURCE_BAD_VALUE.into()), "{bad}");
+        }
+        assert_eq!(parse_command("set source dsp now"), Err("知らないコマンド".into()));
         for bad in ["start ../x", "start a/b", "start .", "start a b", "stop now", "", "rm"] {
             assert!(parse_command(bad).is_err(), "{bad}");
         }
@@ -587,9 +612,15 @@ mod tests {
         assert!(!json.contains('\n'));
         assert!(json.starts_with("{\"version\":1,\"state\":\"waiting_fds\",\"message\":\"録画中 \\\"x\\\"\\n\",\"message_en\":\"録画中 \\\"x\\\"\\n\",\"has_buffers\":false,\"auto_grab\":\"\","));
         assert!(json.contains("\"prox\":-1,\"search\":\"\",") && json.contains("\"step_index\":-1,"));
-        assert!(json.contains(",\"grab_outdated\":false,\"source\":\"grab\",\"source_setting\":\"grab\",\"locked\":"), "{json}");
-        let dsp = Status { source: "dsp", source_setting: "auto", auto_grab: "dsp".into(), ..Status::default() }.to_json(1.5, 7);
-        assert!(dsp.contains("\"auto_grab\":\"dsp\",\"grab_outdated\":false,\"source\":\"dsp\",\"source_setting\":\"auto\","), "{dsp}");
+        assert!(json.contains(",\"grab_outdated\":false,\"grab_state\":\"\",\"source\":\"grab\",\"source_setting\":\"grab\",\"locked\":"), "{json}");
+        let dsp = Status { source: "dsp", source_setting: "auto", auto_grab: "dsp".into(), grab_state: "ready".into(), ..Status::default() }
+            .to_json(1.5, 7);
+        assert!(
+            dsp.contains("\"auto_grab\":\"dsp\",\"grab_outdated\":false,\"grab_state\":\"ready\",\"source\":\"dsp\",\"source_setting\":\"auto\","),
+            "{dsp}"
+        );
+        let unsafe_grab = Status { grab_state: "unsafe: /home/.eyecam is \"odd\"".into(), ..Status::default() }.to_json(1.5, 7);
+        assert!(crate::json::parse(&unsafe_grab).is_ok(), "{unsafe_grab}");
         let searching = Status { search: SEARCH_NO_VIDEO, prox: 12.5, ..Status::default() }.to_json(1.5, 7);
         assert!(searching.contains("\"prox\":12.500,\"search\":\"no_video\",") && crate::json::parse(&searching).is_ok());
         let status = Status { message: "録画中".into(), ..Status::default() };

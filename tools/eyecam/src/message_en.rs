@@ -47,6 +47,8 @@ const EXACT: &[(&str, &str)] = &[
     ("目の映像が来ていないので、普段の目を覚え直せない", "No eye video, so can't relearn your eyes"),
     ("校正中なので、普段の目を覚え直せない", "Calibrating, so can't relearn your eyes now"),
     ("lid_veto は on か off で", "lid_veto must be on or off"),
+    ("source は auto か dsp か grab で", "source must be auto, dsp or grab"),
+    ("映像のもらい方を変えた", "Changed how the eye video is taken"),
 ];
 
 /// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
@@ -335,6 +337,10 @@ mod tests {
             crate::livesvc::RELEARN_NO_VIDEO,
             crate::livesvc::RELEARN_CALIBRATING,
             crate::status::LID_VETO_BAD_VALUE,
+            crate::status::SOURCE_BAD_VALUE,
+            "映像のもらい方を変えた",
+            "映像のもらい方を変えた。dsp_service から目のカメラのバッファをもらうところ",
+            "映像のもらい方を変えた。パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
         ];
         for ja in all {
             let en = message_en(ja);

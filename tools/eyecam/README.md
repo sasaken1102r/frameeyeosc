@@ -590,6 +590,8 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   - `auto`: `--serve` では、インストール済みの eyecam-grab が使えるならそれ、なければ（または自動の grab が 2 回続けて失敗したら）dsp。
     dsp を使っている間に eyecam-grab を入れても、切り替わるのは次にバッファをもらい直すとき（dsp_service が切れたときなど）。
     録画（`--serve` なし）では自動の grab が走らないので、いつも dsp
+  - まだ確かめていないこと: Frame の起動直後、Valve 自身のクライアント（vrserver・eyetracking・XRService）より先に eyecam が
+    dsp_service につないだときの動き（動いている間につないだときは、Valve 側の接続は切れなかった）
 - `eyecam-rec --dsp-selftest 5`: dsp_service につないでバッファを読み取り専用で mmap し、5 秒間スロットの見出しを見て
   （新しいフレームの数・見えたときの古さ）、リングを一度探して、表示して終わる。ソケットも status.json も作らないので、
   動いている eyecam.service の横で走らせてよい

@@ -47,6 +47,10 @@ const EXACT: &[(&str, &str)] = &[
     ("目の映像が来ていないので、普段の目を覚え直せない", "No eye video, so can't relearn your eyes"),
     ("校正中なので、普段の目を覚え直せない", "Calibrating, so can't relearn your eyes now"),
     ("lid_veto は on か off で", "lid_veto must be on or off"),
+    ("録画や校正のあいだは消せないよ", "Can't delete while recording or calibrating"),
+    ("消しているところ（終わるまで待ってね）", "Already deleting (wait until it's done)"),
+    ("保存してるデータを消しているところ（終わるまで待ってね）", "Deleting saved data (wait until it's done)"),
+    ("delete は rec か calib_images で", "delete takes rec or calib_images"),
 ];
 
 /// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
@@ -72,6 +76,7 @@ const PREFIX: &[(&str, &str)] = &[
     ("保存できなかった: ", "Couldn't save: "),
     ("プロトコルが見つからない: ", "Protocol not found: "),
     ("ドリフトの記録を始められなかった: ", "Couldn't start the drift log: "),
+    ("消せなかったものがある: ", "Couldn't delete everything: "),
 ];
 
 /// The eyes a message can start with.
@@ -335,6 +340,11 @@ mod tests {
             crate::livesvc::RELEARN_NO_VIDEO,
             crate::livesvc::RELEARN_CALIBRATING,
             crate::status::LID_VETO_BAD_VALUE,
+            crate::stored::DELETE_BUSY,
+            crate::stored::DELETE_UNDER_WAY,
+            crate::stored::START_DELETING,
+            crate::stored::DELETE_BAD_KIND,
+            "消せなかったものがある: /home/steamos/eyecam/rec_2026-10-12_09-59-05: Permission denied (os error 13)",
         ];
         for ja in all {
             let en = message_en(ja);

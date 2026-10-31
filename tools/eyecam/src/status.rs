@@ -240,6 +240,8 @@ pub struct Status {
     pub started_unix: f64,
     /// The times the headset looked taken off and was worn again since it started (livesvc::OffCount).
     pub headset_off_count: u64,
+    /// What the data folder keeps that the panel can delete, and the delete under way (stored::Keeper).
+    pub stored: crate::stored::Stored,
 }
 
 /// status.json `lid_veto`: whether the eyelid veto is on, its CNN runs a second (both eyes, over the last second),
@@ -315,6 +317,7 @@ impl Default for Status {
             lid_veto: LidVeto::default(),
             started_unix: 0.0,
             headset_off_count: 0,
+            stored: Default::default(),
         }
     }
 }
@@ -347,7 +350,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"source\":{},\"source_setting\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"user_look_down_default\":[{},{}],\"user_look_down_previous\":[{},{}],\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"driftlog\":{},\"started_unix\":{},\"headset_off_count\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"user_look_down_default\":[{},{}],\"user_look_down_previous\":[{},{}],\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"driftlog\":{},\"started_unix\":{},\"headset_off_count\":{},\"stored\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -401,6 +404,7 @@ impl Status {
             self.driftlog.to_json(),
             num(self.started_unix),
             self.headset_off_count,
+            self.stored.to_json(),
             num(updated_unix),
         )
     }
@@ -461,6 +465,9 @@ pub enum Command {
     /// `relearn`: learn the relaxed eyes again (a new warm-up of the auto baseline; levels already known stay in use
     /// until it is over), keeping this wear's calibration. Only while idle with the eye video coming in.
     Relearn,
+    /// `delete rec|calib_images`: delete what the data folder keeps of that kind (stored::Keeper), answered by the
+    /// control thread itself; refused while a recording or a calibration runs.
+    Delete(crate::stored::Kind),
 }
 
 /// The reply to `driftlog on <stem>` with a stem that isn't an eye log's name.
@@ -497,6 +504,9 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
             Some(_) => return Err(DRIFTLOG_BAD_NAME.into()),
         },
         (Some("driftlog"), Some("off")) => Command::DriftLogOff,
+        (Some("delete"), kind) => {
+            Command::Delete(kind.and_then(crate::stored::Kind::parse).ok_or(crate::stored::DELETE_BAD_KIND)?)
+        }
         (Some("set"), Some("widen_sensitivity")) => {
             let v = words.next().and_then(|w| w.parse::<f64>().ok()).filter(|v| (0.0..=1.0).contains(v));
             Command::SetWidenSensitivity(v.ok_or("widen_sensitivity は 0 から 1 の数で")?)
@@ -566,6 +576,13 @@ mod tests {
             assert_eq!(parse_command(bad), Err(LID_VETO_BAD_VALUE.into()), "{bad}");
         }
         assert_eq!(parse_command("set lid_veto on now"), Err("知らないコマンド".into()));
+        assert_eq!(parse_command("delete rec
+"), Ok(Command::Delete(crate::stored::Kind::Rec)));
+        assert_eq!(parse_command(" delete calib_images"), Ok(Command::Delete(crate::stored::Kind::CalibImages)));
+        for bad in ["delete", "delete calib", "delete ../rec", "delete all", "delete rec_2026-10-12_09-59-05"] {
+            assert_eq!(parse_command(bad), Err(crate::stored::DELETE_BAD_KIND.into()), "{bad}");
+        }
+        assert_eq!(parse_command("delete rec now"), Err("知らないコマンド".into()));
         for bad in ["start ../x", "start a/b", "start .", "start a b", "stop now", "", "rm"] {
             assert!(parse_command(bad).is_err(), "{bad}");
         }
@@ -596,8 +613,8 @@ mod tests {
         assert!(status.to_json(1.5, 7).contains("\"message\":\"録画中\",\"message_en\":\"Recording\","));
         assert!(json.ends_with("\"updated_unix\":1.500}"));
         let off = Status { started_unix: 1_790_000_000.25, headset_off_count: 3, ..Status::default() }.to_json(1.5, 7);
-        assert!(off.contains(",\"started_unix\":1790000000.250,\"headset_off_count\":3,\"pid\":7,"), "{off}");
-        assert!(json.contains(",\"started_unix\":0.000,\"headset_off_count\":0,"), "{json}");
+        assert!(off.contains(",\"started_unix\":1790000000.250,\"headset_off_count\":3,\"stored\":{"), "{off}");
+        assert!(json.contains(",\"started_unix\":0.000,\"headset_off_count\":0,\"stored\":{\"scanned_unix\":0.000,"), "{json}");
         assert!(json.contains("\"widen_sensitivity\":0.500,\"dev\":false,\"setup_done\":false,"));
         assert!(Status { dev: true, ..Status::default() }.to_json(1.5, 7).contains(",\"dev\":true,"));
         assert!(json.contains("\"last_calib_widen\":\"\",\"calib_failed_eye\":\"\","));

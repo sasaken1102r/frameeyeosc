@@ -17,6 +17,7 @@ use eyecam::livesvc::{self, CollectKind, Msg};
 use eyecam::preview;
 use eyecam::settings::{self, Settings};
 use eyecam::status::{self, CalibKind, Command, Status};
+use eyecam::stored::{self, Keeper};
 use eyecam::{now_raw, proto};
 use std::error::Error;
 use std::fs::{self, File, OpenOptions};
@@ -584,8 +585,9 @@ struct Daemon {
 }
 
 impl Daemon {
-    /// Publish into `dir` (created 0700 if missing; an existing one must be ours and not a symlink).
-    fn start(dir: &Path, live: Option<Arc<livesvc::Shared>>) -> Result<Self> {
+    /// Publish into `dir` (created 0700 if missing; an existing one must be ours and not a symlink), with what the data
+    /// folder `data` keeps (stored::Keeper; the fake daemon deletes nothing).
+    fn start(dir: &Path, live: Option<Arc<livesvc::Shared>>, data: &Path, fake: bool) -> Result<Self> {
         match fs::symlink_metadata(dir) {
             Ok(meta) if meta.is_dir() && meta.uid() == proto::USER_UID => {}
             Ok(_) => return Err(format!("{} exists and is not our directory", dir.display()).into()),
@@ -606,15 +608,16 @@ impl Daemon {
         let shutdown = Arc::new(AtomicBool::new(false));
         let (tx, requests) = mpsc::channel();
         file.write(&status);
+        let (keeper, counting) = Keeper::spawn(data.to_owned(), status.clone(), fake, shutdown.clone());
         let ctl = {
             let (status, shutdown, file) = (status.clone(), shutdown.clone(), file.clone());
-            thread::spawn(move || ctl_loop(listener, status, file, tx, shutdown))
+            thread::spawn(move || ctl_loop(listener, status, file, keeper, tx, shutdown))
         };
         let writer = {
             let (status, shutdown, file) = (status.clone(), shutdown.clone(), file.clone());
             thread::spawn(move || status_loop(status, file, shutdown))
         };
-        Ok(Self { status, requests, shutdown, threads: vec![ctl, writer], file })
+        Ok(Self { status, requests, shutdown, threads: vec![ctl, writer, counting], file })
     }
 
     fn set(&self, f: impl FnOnce(&mut Status)) {
@@ -665,13 +668,14 @@ fn ctl_loop(
     listener: SocketFile,
     status: Arc<Mutex<Status>>,
     file: Arc<StatusFile>,
+    keeper: Keeper,
     tx: mpsc::Sender<Request>,
     shutdown: Arc<AtomicBool>,
 ) {
     while !shutdown.load(Ordering::SeqCst) {
         match listener.0.accept() {
             Ok((stream, _)) => {
-                let reply = ctl_reply(&stream, &status, &file, &tx);
+                let reply = ctl_reply(&stream, &status, &file, &keeper, &tx);
                 if let Some(reply) = reply {
                     // The main thread updated the state before replying; publish it before the reply goes out,
                     // so a client reading status.json right after `ok` already sees the new state.
@@ -759,7 +763,13 @@ fn set_driftlog(on: bool, stem: Option<&str>, file: &StatusFile) -> String {
 }
 
 /// The reply to one connection (None: not the user, so it gets nothing).
-fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx: &mpsc::Sender<Request>) -> Option<String> {
+fn ctl_reply(
+    stream: &UnixStream,
+    status: &Mutex<Status>,
+    file: &StatusFile,
+    keeper: &Keeper,
+    tx: &mpsc::Sender<Request>,
+) -> Option<String> {
     if peer_cred(stream).ok()?.uid != proto::USER_UID {
         return None;
     }
@@ -780,6 +790,8 @@ fn ctl_reply(stream: &UnixStream, status: &Mutex<Status>, file: &StatusFile, tx:
         Ok(Command::Preview(on)) => set_preview(on, file),
         Ok(Command::DriftLogOn(stem)) => set_driftlog(true, stem.as_deref(), file),
         Ok(Command::DriftLogOff) => set_driftlog(false, None, file),
+        // (in every state, as the ones above; refused while a recording or a calibration runs)
+        Ok(Command::Delete(kind)) => keeper.request_delete(kind, status),
         Ok(command) => {
             let (reply, rx) = mpsc::channel();
             if tx.send(Request { command, reply }).is_err() {
@@ -799,7 +811,7 @@ fn serve(args: &Args) -> Result<()> {
         shared.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
         shared.driftlog.lock().unwrap().dir = args.out.join(driftlog::DIR_NAME);
     }
-    let daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()))?;
+    let daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()), &args.out, args.fake)?;
     let setting = source_setting(args);
     daemon.set(|s| {
         s.prox_min = args.prox_min;
@@ -1146,14 +1158,22 @@ fn idle(
                 | Command::SetLidVeto(_)
                 | Command::Preview(_)
                 | Command::DriftLogOn(_)
-                | Command::DriftLogOff => {
+                | Command::DriftLogOff
+                | Command::Delete(_) => {
                     answer(req, "ok");
                     continue;
                 }
             };
             let recording = mode == Mode::Record;
             let total = if recording { recording_seconds(args, &Some(steps.clone())) } else { steps.iter().map(|s| s.seconds).sum::<f64>() + 1.5 };
+            // Not while saved data is being deleted (checked under the status lock, as a delete is marked: one can't
+            // start in between)
+            let mut deleting = false;
             d.set(|s| {
+                deleting = !s.stored.deleting.is_empty();
+                if deleting {
+                    return;
+                }
                 s.state = if recording { "searching" } else { "calibrating" };
                 s.message = status::search_message("").into();
                 s.search = "";
@@ -1163,6 +1183,10 @@ fn idle(
                 s.protocol = name.clone();
                 s.session_dir.clear();
             });
+            if deleting {
+                answer(req, &format!("err {}", stored::START_DELETING));
+                continue;
+            }
             answer(req, "ok");
             eprintln!("start: {name}");
             if let Some(p) = pump.take() {
@@ -3224,7 +3248,7 @@ mod tests {
         let s = eyecam::replay::Session::open(Path::new(&std::env::var("EYECAM_SESSION").unwrap()), false).unwrap();
         let dir = std::env::temp_dir().join(format!("eyecam-livems-test-{}", std::process::id()));
         let shared = Arc::new(livesvc::Shared::default());
-        let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
+        let daemon = Daemon::start(&dir, Some(shared.clone()), &dir.join("data"), false).unwrap();
         let mut live = Live::start(&dir, None, shared.clone()).unwrap();
         live.send(Msg::Buffers(true));
         let mut img = vec![0u8; WIDTH * HEIGHT];
@@ -3300,7 +3324,7 @@ mod tests {
         for (dir, tmpfs) in [(&memory, true), (&disk, false)] {
             let _ = fs::remove_dir_all(dir);
             let shared = Arc::new(livesvc::Shared::default());
-            let daemon = Daemon::start(dir, Some(shared.clone())).unwrap();
+            let daemon = Daemon::start(dir, Some(shared.clone()), &dir.join("data"), false).unwrap();
             if tmpfs {
                 assert_eq!(ctl(dir, "preview on"), "ok");
                 assert!(shared.preview_wanted(now()));
@@ -3334,7 +3358,7 @@ mod tests {
         let _gone = RemoveDir(dir.clone());
         let shared = Arc::new(livesvc::Shared::default());
         shared.driftlog.lock().unwrap().dir = dir.join("data").join(driftlog::DIR_NAME);
-        let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
+        let daemon = Daemon::start(&dir, Some(shared.clone()), &dir.join("data"), false).unwrap();
         // The data folder is there (eyecam-rec makes it at start); drift/ in it is made on `on`
         fs::create_dir(dir.join("data")).unwrap();
         fs::set_permissions(dir.join("data"), fs::Permissions::from_mode(0o700)).unwrap();
@@ -3371,7 +3395,7 @@ mod tests {
         let _gone = RemoveDir(dir.clone());
         let shared = Arc::new(livesvc::Shared::default());
         shared.driftlog.lock().unwrap().dir = dir.join(driftlog::DIR_NAME);
-        let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
+        let daemon = Daemon::start(&dir, Some(shared.clone()), &dir.join("data"), false).unwrap();
         let reply = ctl(&dir, "driftlog on eyes_2026-10-12_14-03-09");
         let a = dir.join("drift/eyes_2026-10-12_14-03-09.eyecam.csv");
         assert_eq!(reply, format!("ok {}", a.display()));
@@ -3399,6 +3423,65 @@ mod tests {
         let json = fs::read_to_string(dir.join(status::STATUS_FILE)).unwrap();
         assert!(json.contains(&format!("\"driftlog\":{{\"on\":true,\"path\":\"{}\",", c.display())), "{json}");
         assert_eq!(ctl(&dir, "driftlog off"), "ok");
+        daemon.finish();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `delete rec` / `delete calib_images` on ctl.sock: refused while a recording or a calibration runs, else the data
+    /// folder's recordings (or the calibrations' eye images, their calib_result.json kept) go on the keeper's thread,
+    /// and status.json's `stored` says so; anything else is refused with why.
+    #[test]
+    fn saved_data_is_deleted_from_the_control_socket() {
+        if unsafe { libc::getuid() } != proto::USER_UID {
+            eprintln!("skipped: ctl.sock answers only uid {}", proto::USER_UID);
+            return;
+        }
+        let dir = Path::new("/dev/shm").join(format!("eyecam-stored-ctl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _gone = RemoveDir(dir.clone());
+        let data = dir.join("data");
+        for file in ["rec_2026-10-12_09-59-05/eye_L.raw", "calib_2026-10-31_17-03-35/eye_L.raw", "calib_2026-10-31_17-03-35/calib_result.json"] {
+            fs::create_dir_all(data.join(file).parent().unwrap()).unwrap();
+            fs::write(data.join(file), b"0123456789").unwrap();
+        }
+        let shared = Arc::new(livesvc::Shared::default());
+        let daemon = Daemon::start(&dir, Some(shared.clone()), &data, false).unwrap();
+        let stored = || {
+            let json = fs::read_to_string(dir.join(status::STATUS_FILE)).unwrap();
+            let start = json.find(",\"stored\":").unwrap_or_else(|| panic!("{json}"));
+            json[start..].to_string()
+        };
+        let wait = |what: &str| {
+            let t0 = std::time::Instant::now();
+            while !stored().contains(what) && t0.elapsed() < Duration::from_secs(10) {
+                thread::sleep(Duration::from_millis(20));
+            }
+            stored()
+        };
+        let counted = wait("\"rec\":{\"count\":1,\"bytes\":10},\"calib_images\":{\"count\":1,\"bytes\":10},");
+        assert!(counted.contains("\"deleting\":\"\",\"deleted\":null}"), "{counted}");
+        for state in ["searching", "recording", "calibrating"] {
+            daemon.set(|s| s.state = state);
+            let reply = ctl(&dir, "delete rec");
+            assert_eq!(reply, format!("err {}", stored::DELETE_BUSY), "{state}");
+            assert_eq!(eyecam::message_en::message_en(stored::DELETE_BUSY), "Can't delete while recording or calibrating");
+        }
+        assert!(data.join("rec_2026-10-12_09-59-05/eye_L.raw").exists());
+        for bad in ["delete", "delete all", "delete ../data"] {
+            assert_eq!(ctl(&dir, bad), format!("err {}", stored::DELETE_BAD_KIND), "{bad}");
+        }
+        // Idle (or still waiting for the buffers): deleted
+        daemon.set(|s| s.state = "waiting_fds");
+        assert_eq!(ctl(&dir, "delete calib_images"), "ok");
+        let done = wait("\"deleted\":{\"kind\":\"calib_images\",\"count\":1,\"bytes\":10,\"error\":\"\",");
+        assert!(done.contains("\"calib_images\":{\"count\":0,\"bytes\":0},\"deleting\":\"\","), "{done}");
+        assert!(!data.join("calib_2026-10-31_17-03-35/eye_L.raw").exists());
+        assert!(data.join("calib_2026-10-31_17-03-35/calib_result.json").exists());
+        daemon.set(|s| s.state = "idle");
+        assert_eq!(ctl(&dir, "delete rec"), "ok");
+        let done = wait("\"deleted\":{\"kind\":\"rec\",\"count\":1,");
+        assert!(done.contains("\"rec\":{\"count\":0,\"bytes\":0},"), "{done}");
+        assert!(!data.join("rec_2026-10-12_09-59-05").exists() && data.join("calib_2026-10-31_17-03-35").exists());
         daemon.finish();
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -3469,7 +3552,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("eyecam-{name}-{}", std::process::id()));
         let args = serve_args(&dir);
         let shared = Arc::new(livesvc::Shared::default());
-        let daemon = Daemon::start(&dir, Some(shared.clone())).unwrap();
+        let daemon = Daemon::start(&dir, Some(shared.clone()), &dir.join("data"), false).unwrap();
         daemon.set(|s| {
             s.state = "waiting_fds";
             s.message = INSTALL_TOOL.into();

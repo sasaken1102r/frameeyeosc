@@ -35,11 +35,11 @@ const MAX_FDS: usize = 8;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Source {
     /// eyecam-grab (sudo, or the installed capability copy): the behaviour before `source` existed.
-    #[default]
     Grab,
     /// dsp_service only.
     Dsp,
-    /// The installed eyecam-grab when it is there and working, else dsp_service.
+    /// The installed eyecam-grab when it is there and working, else dsp_service (no sudo needed): the default.
+    #[default]
     Auto,
 }
 
@@ -65,6 +65,16 @@ impl Source {
 
 /// How many automatic grabs in a row may fail before `auto` goes over to dsp_service.
 pub const AUTO_GRAB_TRIES: u32 = 2;
+
+/// How many connections to dsp_service in a row may fail before `auto` (the default) offers eyecam-grab instead: about
+/// 15 s with `backoff`, so a dsp_service that only starts a little after eyecam at boot doesn't show the sudo setup.
+pub const AUTO_DSP_TRIES: u32 = 4;
+
+/// status.json's auto_grab while the buffer is to come from dsp_service: "dsp" (the panel doesn't ask for eyecam-grab),
+/// or with `auto` once AUTO_DSP_TRIES connections in a row failed, "dsp_unreachable" (the panel offers it).
+pub fn auto_grab_label(auto: bool, failures: u32) -> &'static str {
+    if auto && failures >= AUTO_DSP_TRIES { "dsp_unreachable" } else { "dsp" }
+}
 
 /// Which route to take now for `setting` (Grab or Dsp, never Auto): `auto` takes the grab only when the installed copy
 /// is ready to use (`grab_ready`, autograb::State::Ready); otherwise, and once AUTO_GRAB_TRIES automatic grabs in a
@@ -287,6 +297,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn auto_offers_the_grab_only_after_some_failures() {
+        assert_eq!(auto_grab_label(true, 0), "dsp");
+        assert_eq!(auto_grab_label(true, AUTO_DSP_TRIES - 1), "dsp");
+        assert_eq!(auto_grab_label(true, AUTO_DSP_TRIES), "dsp_unreachable");
+        // `dsp` set by hand: never
+        assert_eq!(auto_grab_label(false, 100), "dsp");
+        // (the failures before the grab is offered take about 15 s)
+        let waited: f64 = (1..AUTO_DSP_TRIES).map(backoff).sum();
+        assert!((7.0..=20.0).contains(&waited), "{waited}");
+    }
+
+    #[test]
     fn checks_the_first_message() {
         assert!(check_hello(b"ADSP", 2).is_ok());
         assert!(check_hello(b"ADSP", 1).is_ok());
@@ -325,7 +347,7 @@ mod tests {
         }
         assert_eq!(Source::parse("DSP"), None);
         assert_eq!(Source::parse(""), None);
-        assert_eq!(Source::default(), Source::Grab);
+        assert_eq!(Source::default(), Source::Auto);
     }
 
     #[test]

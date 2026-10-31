@@ -1593,7 +1593,20 @@ impl std::fmt::Display for GrabFallBack {
 
 impl Error for GrabFallBack {}
 
-/// The `source` setting: --source, else settings.json, else eyecam-grab.
+/// connect_dsp gave up on dsp_service for the installed eyecam-grab, which became ready while dsp_service couldn't be
+/// reached (`source` auto, serve mode).
+#[derive(Debug)]
+struct DspFallBack;
+
+impl std::fmt::Display for DspFallBack {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{} could not be reached and eyecam-grab is ready", dspsrc::SERVICE)
+    }
+}
+
+impl Error for DspFallBack {}
+
+/// The `source` setting: --source, else settings.json, else auto.
 fn source_setting(args: &Args) -> Source {
     args.source.unwrap_or_else(|| Settings::load(&settings::path()).source)
 }
@@ -1607,17 +1620,21 @@ fn route(setting: Source, serve: bool) -> Source {
 
 /// Connect to dsp_service and take its buffer, trying again with dspsrc::backoff while it can't be reached (for `wait`
 /// seconds; serve mode waits forever). Control requests are refused meanwhile, as while waiting for eyecam-grab.
-fn connect_dsp(wait: f64, ctl: Option<&Daemon>) -> Result<dspsrc::Connection> {
-    let set = |message: String| {
+/// With `auto` in serve mode, after dspsrc::AUTO_DSP_TRIES failures in a row auto_grab says dsp_unreachable, so the
+/// panel offers eyecam-grab's sudo setup instead; dsp_service is still tried meanwhile, and once that eyecam-grab is
+/// ready this gives up with DspFallBack (the caller takes the grab).
+fn connect_dsp(wait: f64, ctl: Option<&Daemon>, auto: bool) -> Result<dspsrc::Connection> {
+    let auto = auto && ctl.is_some();
+    let set = |message: String, failures: u32| {
         if let Some(d) = ctl {
             d.set(|s| {
                 s.source = "dsp";
-                s.auto_grab = "dsp".into();
+                s.auto_grab = dspsrc::auto_grab_label(auto, failures).into();
                 s.message = message;
             });
         }
     };
-    set(DSP_WAITING.into());
+    set(DSP_WAITING.into(), 0);
     let deadline = now_raw() + wait;
     let mut failures = 0u32;
     let mut last = String::new();
@@ -1633,12 +1650,21 @@ fn connect_dsp(wait: f64, ctl: Option<&Daemon>) -> Result<dspsrc::Connection> {
                 if e != last {
                     eprintln!("{e} (trying again by itself)");
                 }
-                set(format!("{DSP_UNREACHABLE}: {e}"));
+                set(format!("{DSP_UNREACHABLE}: {e}"), failures);
                 last = e;
             }
         }
         let retry = now_raw() + dspsrc::backoff(failures);
+        let mut next_look = now_raw();
         while now_raw() < retry {
+            // (the panel's setup installs eyecam-grab while this waits; looked for once a second)
+            if auto && failures >= dspsrc::AUTO_DSP_TRIES && now_raw() >= next_look {
+                next_look = now_raw() + 1.0;
+                if matches!(autograb::find(), autograb::State::Ready(_)) {
+                    eprintln!("{last}: taking the installed eyecam-grab instead");
+                    return Err(Box::new(DspFallBack));
+                }
+            }
             if STOP.load(Ordering::SeqCst) {
                 return Err(format!("interrupted while waiting for {}", dspsrc::SERVICE).into());
             }
@@ -1851,7 +1877,8 @@ struct Buffers {
 
 impl Buffers {
     /// Take the buffers the way `route` says (Grab or Dsp). `fall_back` (`source` auto): leave the grab for dsp_service
-    /// once the automatic grab keeps failing.
+    /// once the automatic grab keeps failing, and dsp_service for the grab once that is ready while dsp_service can't
+    /// be reached (see connect_dsp).
     fn receive(wait: f64, ctl: Option<&Daemon>, route: Source, fall_back: bool) -> Result<Self> {
         if route == Source::Grab {
             match receive_buffers(wait, ctl, fall_back.then_some(dspsrc::AUTO_GRAB_TRIES)) {
@@ -1863,7 +1890,18 @@ impl Buffers {
                 Err(e) => return Err(e),
             }
         }
-        let mut conn = connect_dsp(wait, ctl)?;
+        let mut conn = match connect_dsp(wait, ctl, fall_back) {
+            Ok(conn) => conn,
+            Err(e) if e.is::<DspFallBack>() => {
+                if let Some(d) = ctl {
+                    d.set(|s| s.source = "grab");
+                }
+                let (header, fds) = receive_buffers(wait, ctl, None)?;
+                let tracker = Tracker::open(header.pid);
+                return Self::map(header, fds, tracker);
+            }
+            Err(e) => return Err(e),
+        };
         let fd = conn.take_buffer().ok_or("dsp_service: no buffer")?;
         // (no eye tracker pid: the buffer is dsp_service's, and the connection tells when it ends)
         let header = proto::Header { count: 1, pid: 0, sizes: vec![dspsrc::BUFFER_LEN] };

@@ -587,7 +587,9 @@ const std::string& shownMessage(const Status& status, Language language);
  * - TooOld: auto_grab "too_old" (below eyecam's safety floor; eyecam-rec doesn't start it), whatever else it says.
  * - Missing: not installed. Installed means eyecam-rec holds the buffers (has_buffers, or a state that only comes after
  *   it has them: idle, searching, recording, calibrating) or auto_grab says the tool is there ("ok", "trying",
- *   "waiting_tracker", "failed: ..."; not "missing", "no_cap", "unsafe: ..."). Without auto_grab (an older eyecam-rec)
+ *   "waiting_tracker", "failed: ...", or "dsp": the buffer comes from dsp_service, no tool needed; not "missing",
+ *   "no_cap", "unsafe: ...", "dsp_unreachable": dsp_service hasn't answered, so the tool's setup is offered
+ *   instead). Without auto_grab (an older eyecam-rec)
  *   only the buffers say so. A failed calibration's error still has has_buffers and auto_grab (eyecam-rec writes every
  *   field in every state), so it stays installed.
  * - Outdated: installed and working, with grab_outdated (an update brought a newer one).

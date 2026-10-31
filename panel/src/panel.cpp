@@ -3366,7 +3366,8 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         std::vector<Option> options;
         const char* names[kLidPresetCount] = {t.strengthLight, t.strengthMedium, t.strengthStrong, t.strengthMax};
         for (int i = 0; i < kLidPresetCount; ++i) options.push_back({names[i], {PanelAction::LidPreset, nullptr, i}});
-        drawSegmented(pen, kControlX, y + cy, 300, kControlH, options, preset, 20, locked);
+        // (wider than the other switches, so four English names keep their size)
+        drawSegmented(pen, kControlX, y + cy, 400, kControlH, options, preset, 20, locked);
         y += kRowH;
         drawRowDivider(pen, y);
     }

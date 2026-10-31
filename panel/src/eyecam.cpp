@@ -124,6 +124,9 @@ Status parseStatus(const std::string& text, double mtime) {
     status.message = readText(root, "message");
     status.messageEn = readText(root, "message_en");
     status.autoGrab = readText(root, "auto_grab");
+    status.source = readText(root, "source");
+    status.sourceSetting = readText(root, "source_setting");
+    status.grabState = readText(root, "grab_state");
     const JsonValue* outdated = root.get("grab_outdated");
     status.grabOutdated = outdated != nullptr && outdated->isBool() && outdated->boolean;
     const JsonValue* locked = root.get("locked");
@@ -782,6 +785,61 @@ bool isSensitivityCommand(const std::string& command) {
 
 std::string lidVetoCommand(bool on) {
     return on ? "set lid_veto on" : "set lid_veto off";
+}
+
+bool sourceCardShown(const Status& status) {
+    return !status.source.empty();
+}
+
+bool sourceChoiceShown(const Status& status) {
+    return sourceCardShown(status) && !status.grabState.empty();
+}
+
+SourceChoice sourceChoice(const Status& status) {
+    if (status.sourceSetting == "dsp") return SourceChoice::Dsp;
+    if (status.sourceSetting == "grab") return SourceChoice::Grab;
+    return SourceChoice::Auto;
+}
+
+std::string sourceCommand(SourceChoice choice) {
+    switch (choice) {
+        case SourceChoice::Dsp: return "set source dsp";
+        case SourceChoice::Grab: return "set source grab";
+        case SourceChoice::Auto: break;
+    }
+    return "set source auto";
+}
+
+GrabTool grabTool(const Status& status) {
+    if (status.grabState.empty()) return GrabTool::Unknown;
+    if (status.grabState == "missing") return GrabTool::Missing;
+    if (status.grabState == "ready") return GrabTool::Ready;
+    return GrabTool::Unusable;
+}
+
+bool sourceChoiceAllowed(const View& view, SourceChoice choice) {
+    const Status& s = view.status;
+    if (!view.visible || view.busy || !sourceChoiceShown(s) || choice == sourceChoice(s)) return false;
+    if (s.state != State::WaitingFds && s.state != State::Idle && s.state != State::Error) return false;
+    return choice != SourceChoice::Grab || grabTool(s) == GrabTool::Ready;
+}
+
+bool grabRemoveAllowed(const Status& status) {
+    const GrabTool tool = grabTool(status);
+    return (tool == GrabTool::Ready || tool == GrabTool::Unusable) && status.source == "dsp";
+}
+
+bool grabAfterReacquire(const Status& status) {
+    return status.sourceSetting == "auto" && status.source == "dsp" && grabTool(status) == GrabTool::Ready;
+}
+
+bool installNeedsPassword(const View& view) {
+    return grabTool(view.status) == GrabTool::Missing && view.password == PasswordState::NotSet;
+}
+
+bool passwordWanted(const View& view, bool eyecamTab) {
+    if (setupStep(view.status, PasswordState::Unknown) == SetupStep::Tool) return true;
+    return eyecamTab && sourceChoiceShown(view.status) && grabTool(view.status) == GrabTool::Missing;
 }
 
 bool StartConfirm::open(State state) {

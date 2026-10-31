@@ -9,7 +9,9 @@
 // own boxes, never starting a line, cut whole), and the other Frame apps (the row at the bottom of "Version" and its
 // count, the list's rows by state, the confirmation's command and buttons, scrolling), and the eye preview (its button
 // in the left column, alone or beside a notice; its sheet's buttons, what closes it, freeze, without the cameras), and
-// "Help train the AI" (its row on Debug tools, each screen's buttons, its recording, the delete's confirmation). Built
+// "Help train the AI" (its row on Debug tools, each screen's buttons, its recording, the delete's confirmation), and the
+// eye cameras page's "How the video is taken" card (its choices and the tool's Konsole button in each state, inside
+// the card in both languages). Built
 // with the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
@@ -19,6 +21,7 @@
 #include "icons.h"
 #include "model.h"
 #include "panel.h"
+#include "setup_tools.h"
 #include "text_layout.h"
 
 #include <cairo.h>
@@ -2089,6 +2092,152 @@ bool inCard(const EyePanel& panel) {
     return false;
 }
 
+/**
+ * The usable choices of "How the video is taken" as last drawn.
+ * @param panel the panel
+ * @return their SourceChoice values, in order
+ */
+std::vector<int> sourceChoices(const EyePanel& panel) {
+    std::vector<int> found;
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::EyecamSource)) found.push_back(area.hit.arg);
+    return found;
+}
+
+void testSourceCard(const FontSet& fonts) {
+    using eyecam::SourceChoice;
+    const int kAuto = static_cast<int>(SourceChoice::Auto);
+    const int kDsp = static_cast<int>(SourceChoice::Dsp);
+    const int kGrab = static_cast<int>(SourceChoice::Grab);
+    // For measuring the card's texts as it draws them
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 400, 80);
+    cairo_t* cr = cairo_create(surface);
+    const Pen pen {cr, &fonts};
+    for (const Language language : {Language::Ja, Language::En}) {
+        const UiText& t = uiText(language);
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Eyecam);
+        const auto card = [&](const char* source, const char* setting, const char* grab) {
+            PanelModel m = modelWith(Lids::Both);
+            m.language = language;
+            m.eyecam.status.source = source;
+            m.eyecam.status.sourceSetting = setting;
+            m.eyecam.status.grabState = grab;
+            return m;
+        };
+        // Every button of the card inside it, at least 44 px high (the page's rows above it too), the Konsole button's
+        // label and the tool's line beside it at their full size
+        const auto inside = [&](const PanelModel& m) {
+            bool ok = allInsideAndTall(panel);
+            for (const PanelAction action : {PanelAction::EyecamSource, PanelAction::SetupKonsole}) {
+                for (const EyePanel::HitArea& area : hits(panel, action)) {
+                    ok = ok && area.x >= 438 && area.x + area.w <= 1154 && area.h >= 42 && area.y + area.h <= 676;
+                }
+            }
+            const eyecam::Status& s = m.eyecam.status;
+            if (eyecam::sourceChoiceShown(s)) {
+                const bool missing = eyecam::grabTool(s) == eyecam::GrabTool::Missing;
+                const std::string label = missing ? t.srcInstall : t.srcRemove;
+                ok = ok && pen.measure(label, 16, true) + 64 <= 380;
+                const double buttonX = 1154 - 10 - (pen.measure(label, 16, true) + 64);
+                for (const char* state : {t.srcToolIn, t.srcToolOut, t.srcToolBroken}) {
+                    ok = ok && pen.measure(state, 16, false) <= buttonX - 14 - 454;
+                }
+                ok = ok && pen.measure(t.srcTitle, 18, true) <= 1154 - 10 - 300 - 14 - 488;
+                ok = ok && pen.measure(t.srcNowGrab, 15, false) <= 1154 - 10 - 300 - 14 - 504;
+            }
+            return ok;
+        };
+
+        // dsp in use with auto, the tool not installed: dsp to choose (auto is set, the tool can't be), and "Install"
+        PanelModel m = card("dsp", "auto", "missing");
+        panel.render(m);
+        CHECK(sourceChoices(panel) == std::vector<int>{kDsp});
+        std::vector<EyePanel::HitArea> konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleInstall);
+        CHECK(inside(m));
+        // ...SteamOS without a password: passwd first (sudo would fail), with why under it; still unknown: "Install"
+        m.eyecam.password = eyecam::PasswordState::NotSet;
+        panel.render(m);
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsolePasswd);
+        CHECK(sourceChoices(panel) == std::vector<int>{kDsp} && inside(m));
+        CHECK(pen.measure(t.setupPassButton, 16, true) + 64 <= 380);
+        m.eyecam.password = eyecam::PasswordState::Unknown;
+        panel.render(m);
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleInstall);
+        // ...installed: the tool can be chosen, and removed (the buffers come from dsp_service), the password
+        // whatever it is
+        m = card("dsp", "auto", "ready");
+        m.eyecam.password = eyecam::PasswordState::NotSet;
+        panel.render(m);
+        CHECK((sourceChoices(panel) == std::vector<int>{kDsp, kGrab}));
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleUninstall);
+        CHECK(inside(m));
+        m = card("dsp", "dsp", "ready");
+        panel.render(m);
+        CHECK((sourceChoices(panel) == std::vector<int>{kAuto, kGrab}));
+        CHECK(hits(panel, PanelAction::SetupKonsole).size() == 1 && inside(m));
+        // ...the tool in use: "Remove" can't be pressed (switch to dsp first)
+        for (const char* setting : {"grab", "auto"}) {
+            m = card("grab", setting, "ready");
+            panel.render(m);
+            CHECK(sourceChoices(panel).size() == 2 && hits(panel, PanelAction::SetupKonsole).empty() && inside(m));
+        }
+        // ...installed but not usable: not to be chosen, removable while dsp is in use
+        m = card("dsp", "auto", "no_cap");
+        panel.render(m);
+        CHECK(sourceChoices(panel) == std::vector<int>{kDsp});
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleUninstall && inside(m));
+        // ...waiting for the buffers, or after an error: the choice still there
+        for (const eyecam::State state : {eyecam::State::WaitingFds, eyecam::State::Error}) {
+            m = card("dsp", "dsp", "ready");
+            m.eyecam.status.state = state;
+            m.eyecam.status.stateText = state == eyecam::State::Error ? "error" : "waiting_fds";
+            m.eyecam.status.hasBuffers = false;
+            panel.render(m);
+            if (hits(panel, PanelAction::LidsPage).size() == 1) {  // (the usual page, not an error's screen)
+                CHECK((sourceChoices(panel) == std::vector<int>{kAuto, kGrab}) && inside(m));
+            }
+        }
+        // ...a command on its way: nothing to choose until its reply
+        m = card("dsp", "auto", "ready");
+        m.eyecam.busy = true;
+        panel.render(m);
+        CHECK(sourceChoices(panel).empty());
+        // ...recording (eyecam-rec refuses it then): shown, not to be chosen; the tool's Konsole still opens
+        m = card("dsp", "auto", "missing");
+        m.eyecam.status.state = eyecam::State::Recording;
+        m.eyecam.status.stateText = "recording";
+        panel.render(m);
+        CHECK(sourceChoices(panel).empty() && hits(panel, PanelAction::SetupKonsole).size() == 1);
+        // ...the tool's notice above it (outdated): the card still fits under the rows
+        m = card("grab", "grab", "ready");
+        m.eyecam.status.grabOutdated = true;
+        panel.render(m);
+        CHECK(sourceChoices(panel).size() == 2 && hits(panel, PanelAction::SetupKonsole).size() == 1 && inside(m));
+        // An eyecam-rec without grab_state (no "set source"): only what is in use, nothing to press; without source,
+        // no card
+        for (const char* source : {"dsp", ""}) {
+            m = card(source, source[0] != '\0' ? "auto" : "", "");
+            panel.render(m);
+            CHECK(sourceChoices(panel).empty() && hits(panel, PanelAction::SetupKonsole).empty() && inside(m));
+        }
+        // The card's buttons do what they say: a choice sends its setting, "Install" / "Remove" its Konsole
+        m = card("dsp", "auto", "ready");
+        panel.render(m);
+        for (const EyePanel::HitArea& area : hits(panel, PanelAction::EyecamSource)) {
+            const PanelHit hit = panel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+            panel.pointerUp();
+            CHECK(hit.action == PanelAction::EyecamSource && hit.arg == area.hit.arg);
+        }
+    }
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+}
+
 void testOutputCards(const FontSet& fonts) {
     // The Basic tab: three cards (VRChat, LiveLink, FrameEyeOSC), and ETVR as a small button under them with its notice
     // between the two only while it is the output
@@ -3281,6 +3430,7 @@ int main() {
     testOutputCards(fonts);
     testModuleLinkError(fonts);
     testToolNotice(fonts);
+    testSourceCard(fonts);
     testErrorBack(fonts);
     testWayOut(fonts);
     testCalibNeedsLids(fonts);

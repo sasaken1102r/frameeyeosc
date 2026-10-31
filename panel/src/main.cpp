@@ -385,7 +385,12 @@ void printUsage() {
         "                        lasterror (eyecam-rec's last error, 3 minutes ago), camfps=N (cam_fps: the eye\n"
         "                        cameras deliver N frames a second, 1..500; without it, an eyecam-rec before\n"
         "                        cam_fps. The calibration messages' counts follow it, with eyecam-rec's note under\n"
-        "                        60). The last calibration follows setup, failed=... and calib-error\n"
+        "                        60), source=dsp|grab (where the buffers come from: the usual page's \"How the\n"
+        "                        video is taken\" card; without it, an eyecam-rec before it, no card), setting=auto|dsp|grab\n"
+        "                        (source_setting; default auto), grab=ready|missing|no_cap|too_old|unsafe (grab_state:\n"
+        "                        the installed tool, \"installed\" = ready; without it, an eyecam-rec that can't say or\n"
+        "                        take \"set source\": the card shows only what is in use). The last calibration follows\n"
+        "                        setup, failed=... and calib-error\n"
         "      --sensitivity-drag V  Draw the widening sensitivity slider as if dragged to V (with sens=...)\n"
         "      --fake-password set|unset|unknown  The setup's password check (default: set)\n"
         "      --fake-contrib STATE  \"Record for squint training\" open on a made-up screen (the eye cameras set up\n"
@@ -518,6 +523,9 @@ struct FakeEyecam {
     bool lastError = false; ///< lasterror: eyecam-rec's last error
     double camFps = -1.0;   ///< camfps=N: the cameras' frame rate (-1 = an eyecam-rec before cam_fps)
     bool noPreview = false; ///< nopreview: an eyecam-rec without the eye preview (no "preview" in its status)
+    std::string source;     ///< source=dsp|grab: where the buffers come from ("" = an eyecam-rec before it)
+    std::string sourceSetting;  ///< setting=auto|dsp|grab: source_setting ("" = auto, with source=...)
+    std::string grabState;  ///< grab=...: grab_state, the installed tool ("" = an eyecam-rec without it)
 };
 
 /**
@@ -633,6 +641,15 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.saved = true;
         } else if (flag == "nopreview") {
             fake.noPreview = true;
+        } else if (flag == "source=dsp" || flag == "source=grab") {
+            fake.source = flag.substr(7);
+        } else if (flag == "setting=auto" || flag == "setting=dsp" || flag == "setting=grab") {
+            fake.sourceSetting = flag.substr(8);
+        } else if (flag == "grab=ready" || flag == "grab=installed" || flag == "grab=missing" || flag == "grab=no_cap" ||
+                   flag == "grab=too_old") {
+            fake.grabState = flag == "grab=installed" ? "ready" : flag.substr(5);
+        } else if (flag == "grab=unsafe") {
+            fake.grabState = "unsafe: /home/.eyecam/eyecam-grab is not owned by root";
         } else if (flag.rfind("sens=", 0) == 0 && flag.size() > 5 &&
                    flag.find_first_not_of("0123456789.", 5) == std::string::npos) {
             fake.sens = std::atof(flag.c_str() + 5);
@@ -1469,6 +1486,9 @@ eyecam::View fakeEyecam(const std::string& text) {
     }
     if (!fake.autoGrab.empty()) s.autoGrab = fake.autoGrab;
     s.grabOutdated = fake.outdated;
+    s.source = fake.source;
+    s.sourceSetting = fake.source.empty() ? "" : fake.sourceSetting.empty() ? "auto" : fake.sourceSetting;
+    s.grabState = fake.grabState;
     // Why the video isn't found (and the proximity reading that goes with it)
     s.hasSearch = !fake.search.empty();
     s.search = fake.search;
@@ -2479,7 +2499,7 @@ int runDumpPng(const Options& options) {
             // Wait for eyecam-rec's reply, and show the folder as it is after it
             if (hit.action == PanelAction::EyecamChoose || hit.action == PanelAction::EyecamStop ||
                 hit.action == PanelAction::EyecamCalib || hit.action == PanelAction::EyecamRelearn ||
-                hit.action == PanelAction::EyecamLidVeto) {
+                hit.action == PanelAction::EyecamLidVeto || hit.action == PanelAction::EyecamSource) {
                 while (eyecamControl.busy()) {
                     eyecamControl.poll(nowSeconds());
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -3314,15 +3334,17 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::EyecamStop:
         case PanelAction::EyecamCalib:
         case PanelAction::EyecamRelearn:
-        case PanelAction::EyecamLidVeto: {
+        case PanelAction::EyecamLidVeto:
+        case PanelAction::EyecamSource: {
             // One line to its socket ("start" or "start widen_nolight" from the light warning, "stop", a calibration,
-            // "relearn", or the eyelid veto's switch, which then shows as status.json says); the reply is read by the
-            // loop (eyecam::Control never waits)
+            // "relearn", the eyelid veto's switch, or how the video is taken, which then show as status.json says); the
+            // reply is read by the loop (eyecam::Control never waits)
             if (eyecamControl == nullptr) return;
             const std::string command =
                 hit.action == PanelAction::EyecamStop      ? std::string("stop")
                 : hit.action == PanelAction::EyecamRelearn ? std::string(eyecam::kRelearnCommand)
                 : hit.action == PanelAction::EyecamLidVeto ? eyecam::lidVetoCommand(hit.arg != 0)
+                : hit.action == PanelAction::EyecamSource  ? eyecam::sourceCommand(static_cast<eyecam::SourceChoice>(hit.arg))
                 : hit.action == PanelAction::EyecamCalib   ? eyecam::calibCommand(static_cast<eyecam::Calib>(hit.arg))
                                                            : eyecam::startCommand(static_cast<eyecam::StartChoice>(hit.arg));
             if (command.empty()) return;
@@ -4681,9 +4703,10 @@ int runOverlay(const Options& options) {
             // The setup: the password (only while it may still be needed: at (1) or (2), the tool not in), how its
             // calibration ended, and the short "ready" in the left column after it
             {
-                // (only while the panel shows on the dashboard: nobody reads it otherwise)
-                const bool wanted = visible && shown &&
-                                    eyecam::setupStep(s, eyecam::PasswordState::Unknown) == eyecam::SetupStep::Tool;
+                // (only while the panel shows on the dashboard: nobody reads it otherwise; also for the usual
+                // page's "Install", while that tab is open)
+                const bool wanted =
+                    visible && shown && eyecam::passwordWanted(model.eyecam, panel.tab() == PanelTab::Eyecam);
                 if (passwordCheck.tick(wanted, nowSeconds())) {
                     std::fprintf(stderr, "[setup] password: %s\n",
                                  passwordCheck.state() == eyecam::PasswordState::Set      ? "set"

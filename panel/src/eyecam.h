@@ -95,6 +95,21 @@ enum class Tool {
     Current,   ///< installed, working and up to date
 };
 
+/** The `source` setting, as the usual page's "How the video is taken" card offers it ("set source ..."). */
+enum class SourceChoice {
+    Auto,  ///< the installed tool when it works, else dsp_service (eyecam's default)
+    Dsp,   ///< Valve's dsp_service only (no sudo)
+    Grab,  ///< the tool (eyecam-grab) only
+};
+
+/** The installed tool as status.json's grab_state says, whatever the buffers come from. */
+enum class GrabTool {
+    Unknown,   ///< an eyecam-rec without grab_state
+    Missing,   ///< not installed
+    Ready,     ///< installed and usable
+    Unusable,  ///< installed but not usable (no capability, too old, unsafe)
+};
+
 /** What the usual page (and the left column) asks of a set-up user about the tool. */
 enum class ToolNotice {
     None,
@@ -228,6 +243,11 @@ struct Status {
     bool hasPreview = false;       ///< "preview" is there (an eyecam-rec that makes the eye preview's pictures)
     bool preview = false;          ///< ...it makes them now (the panel asked within the last few seconds)
     std::string autoGrab;          ///< "auto_grab": how eyecam-rec takes the buffers by itself ("" when missing)
+    std::string source;            ///< "source": where the buffers come from now, "grab" or "dsp" ("" when missing)
+    std::string sourceSetting;     ///< "source_setting": "auto", "dsp" or "grab" ("" when missing)
+    std::string grabState;         ///< "grab_state": the installed tool, "ready", "missing", "no_cap", "too_old",
+                                   ///< "unsafe: ..." ("" when missing: an eyecam-rec that can't say, nor take
+                                   ///< "set source")
     bool grabOutdated = false;     ///< "grab_outdated": the installed eyecam-grab (root's copy) differs from the one
                                    ///< bundled with eyecam-rec, so an update brought a new one (false when missing)
     bool hasBaseline = false;      ///< "baseline" is there: an eyecam-rec that learns the relaxed eyes by itself
@@ -822,6 +842,90 @@ private:
  * @return true for "set widen_sensitivity ..."
  */
 bool isSensitivityCommand(const std::string& command);
+
+/**
+ * Whether the usual page shows the "How the video is taken" card: status.json says where the buffers come from
+ * ("source"; an older eyecam-rec doesn't).
+ * @param status the status
+ * @return true to show it
+ */
+bool sourceCardShown(const Status& status);
+
+/**
+ * Whether the card offers the choice and the tool's row: an eyecam-rec that says how the tool stands (grab_state) and
+ * takes "set source" (both came together). Without it, the card only says what is in use.
+ * @param status the status
+ * @return true to offer them
+ */
+bool sourceChoiceShown(const Status& status);
+
+/**
+ * The `source` setting as status.json says it (source_setting; auto, eyecam's default, when missing or unknown).
+ * @param status the status
+ * @return the setting
+ */
+SourceChoice sourceChoice(const Status& status);
+
+/**
+ * The command that sets it (eyecam-rec saves it and, when the route changes, takes the buffers again by it; it refuses
+ * while recording or calibrating).
+ * @param choice the setting
+ * @return "set source auto", "set source dsp" or "set source grab"
+ */
+std::string sourceCommand(SourceChoice choice);
+
+/**
+ * The installed tool, from grab_state.
+ * @param status the status
+ * @return how it stands
+ */
+GrabTool grabTool(const Status& status);
+
+/**
+ * Whether a choice of the card can be pressed: the tab there (its status fresh), no command on its way, eyecam-rec not
+ * recording or calibrating (it refuses then: waiting for the buffers, idle or after an error only), the choice not
+ * the one set (pressing that does nothing), and "the tool" only while it is installed and usable.
+ * @param view eyecam-rec
+ * @param choice the choice
+ * @return true if it can
+ */
+bool sourceChoiceAllowed(const View& view, SourceChoice choice);
+
+/**
+ * Whether the tool's "Remove" can be pressed: it is installed, and the buffers come from dsp_service now (status.json
+ * source "dsp"), so removing it stops nothing. The panel only opens Konsole with the command typed in.
+ * @param status the status
+ * @return true if it can
+ */
+bool grabRemoveAllowed(const Status& status);
+
+/**
+ * Whether auto keeps dsp_service until it next takes the buffers although the tool is ready now (installed while
+ * dsp_service was in use): source_setting auto, source dsp, grab_state ready. The card says so ("the tool" switches
+ * at once).
+ * @param status the status
+ * @return true then
+ */
+bool grabAfterReacquire(const Status& status);
+
+/**
+ * Whether the card's tool row asks for a SteamOS password before "Install": the tool not installed and the password
+ * check says there is none (sudo would fail). Then it offers passwd in Konsole instead; while the check hasn't
+ * answered (Unknown), "Install" stays.
+ * @param view eyecam-rec (and the password check)
+ * @return true to ask for the password first
+ */
+bool installNeedsPassword(const View& view);
+
+/**
+ * Whether the SteamOS password is checked now (setup_tools::PasswordCheck, while the panel shows on the dashboard):
+ * the setup at (2) (the tool to install; setupStep with the password unknown, so the answer can't decide it), or the
+ * eye cameras tab open with the card offering "Install" (sourceChoiceShown, the tool missing).
+ * @param view eyecam-rec
+ * @param eyecamTab the eye cameras tab is the one open
+ * @return true while it is wanted
+ */
+bool passwordWanted(const View& view, bool eyecamTab);
 
 /**
  * The command that switches the eyelid veto (eyecam-rec takes it in every state, applies it at once and keeps it;

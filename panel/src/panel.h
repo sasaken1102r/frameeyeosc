@@ -93,8 +93,11 @@ enum class PanelAction {
     EyecamSensitivity, ///< the widening sensitivity slider: pressed and dragged inside the panel; the caller takes
                        ///< the value with takeSensitivity / sensitivityDragging
     EyecamLidVeto,     ///< the eyelid veto's switch: arg 1 on / 0 off (the caller sends eyecam::lidVetoCommand)
+    EyecamSource,      ///< the eye cameras page's "How the video is taken": arg = eyecam::SourceChoice (the caller sends
+                       ///< eyecam::sourceCommand)
     SetupKonsole,      ///< the eye cameras' setup: open a Konsole with the command typed in (arg 0 = the tool's install,
-                       ///< 1 = passwd; the caller starts it, never from --dump-png)
+                       ///< 1 = passwd, 2 = the tool's removal: setup_tools::KonsoleCommand; the caller starts it, never
+                       ///< from --dump-png)
     SetupVideo,        ///< ...open the setup video (only shown with a video URL)
     OpenModulePage,    ///< Output tab: open the FrameEyeOSC module's releases page in the Frame's Chromium
     SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
@@ -1491,6 +1494,20 @@ private:
      * @param view the settings shown
      */
     void drawCameraPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The usual page's "How the video is taken" card, while eyecam-rec says where the buffers come from: its title and
+     * what is in use; with an eyecam-rec that takes "set source", the choice (auto / dsp / the tool) and the tool's row
+     * (installed or not, and "Install" or "Remove" in Konsole: the panel never runs sudo); a line about the choice,
+     * then the trade-off between the two ways. What doesn't fit in `room` is left out, the trade-off first.
+     * @param pen drawing tools
+     * @param t texts
+     * @param view eyecam-rec
+     * @param top its top
+     * @param room the height it may take
+     * @return its height (0 when it isn't shown)
+     */
+    double drawSourceCard(const Pen& pen, const UiText& t, const eyecam::View& view, double top, double room);
 
     /**
      * The Eyelids tab's widening slider ("見開きの出やすさ"): dull at the left, sensitive and the value at the right.

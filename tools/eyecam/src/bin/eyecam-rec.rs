@@ -919,6 +919,11 @@ fn serve(args: &Args) -> Result<()> {
                 why = Some(SOURCE_CHANGED);
                 continue;
             }
+            // (the grab taken because dsp_service couldn't be reached kept failing: auto's route again, not an error)
+            Err(e) if e.is::<GrabFallBack>() => {
+                eprintln!("{e}: trying {} again", dspsrc::SERVICE);
+                continue;
+            }
             Err(e) => {
                 if STOP.load(Ordering::SeqCst) {
                     break;
@@ -2017,7 +2022,7 @@ struct Buffers {
 impl Buffers {
     /// Take the buffers the way `route` says (Grab or Dsp). `fall_back` (`source` auto): leave the grab for dsp_service
     /// once the automatic grab keeps failing, and dsp_service for the grab once that is ready while dsp_service can't
-    /// be reached (see connect_dsp).
+    /// be reached (see connect_dsp; that grab failing in turn ends with GrabFallBack, and serve starts over).
     fn receive(wait: f64, ctl: Option<&Daemon>, route: Source, fall_back: bool) -> Result<Self> {
         if route == Source::Grab {
             match receive_buffers(wait, ctl, fall_back.then_some(dspsrc::AUTO_GRAB_TRIES)) {
@@ -2035,7 +2040,9 @@ impl Buffers {
                 if let Some(d) = ctl {
                     d.set(|s| s.source = "grab");
                 }
-                let (header, fds) = receive_buffers(wait, ctl, None)?;
+                // (as auto's own grab: once it keeps failing, GrabFallBack goes back to serve, which takes auto's
+                // route again, dsp_service included)
+                let (header, fds) = receive_buffers(wait, ctl, Some(dspsrc::AUTO_GRAB_TRIES))?;
                 let tracker = Tracker::open(header.pid);
                 return Self::map(header, fds, tracker);
             }

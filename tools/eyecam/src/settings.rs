@@ -15,14 +15,15 @@ pub struct Settings {
     pub dev: bool,
     /// The eyelid veto (`veto`): off unless switched on here (`set lid_veto`, or by hand; followed while running).
     pub lid_veto: bool,
-    /// Where the camera buffers come from (dspsrc::Source): eyecam-grab unless set by hand. Read when eyecam-rec
-    /// starts (--source overrides it); written to the file only when it isn't the default.
+    /// Where the camera buffers come from (dspsrc::Source): auto (an installed eyecam-grab, else dsp_service) unless
+    /// set by hand. Read when eyecam-rec starts (--source overrides it); written to the file only when it isn't the
+    /// default.
     pub source: Source,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false, lid_veto: false, source: Source::Grab }
+        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false, lid_veto: false, source: Source::Auto }
     }
 }
 
@@ -68,7 +69,7 @@ impl Settings {
         let tmp = path.with_extension("json.tmp");
         // `source` only when set, so the file stays as it was for everyone who never set it.
         let source = match self.source {
-            Source::Grab => String::new(),
+            Source::Auto => String::new(),
             s => format!(",\n  \"source\": \"{}\"", s.label()),
         };
         let text = format!(
@@ -192,13 +193,13 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("settings.json");
         for (text, source) in [
-            ("{}", Source::Grab),
+            ("{}", Source::Auto),
             ("{\"source\": \"grab\"}", Source::Grab),
             ("{\"source\": \"dsp\"}", Source::Dsp),
             ("{\"source\": \"auto\", \"dev\": true}", Source::Auto),
             // Unknown or not a string: the default.
-            ("{\"source\": \"udmabuf\"}", Source::Grab),
-            ("{\"source\": 1}", Source::Grab),
+            ("{\"source\": \"udmabuf\"}", Source::Auto),
+            ("{\"source\": 1}", Source::Auto),
         ] {
             std::fs::write(&p, text).unwrap();
             assert_eq!(Settings::load(&p).source, source, "{text}");
@@ -208,7 +209,10 @@ mod tests {
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(!text.contains("source"), "{text}");
         assert!(text.ends_with("\"lid_veto\": false\n}\n"), "{text}");
-        // A set one is kept by a `set ...` of another setting.
+        // A set one is kept by a `set ...` of another setting, eyecam-grab set by hand too.
+        std::fs::write(&p, "{\"source\": \"grab\"}").unwrap();
+        Settings::update(&p, |s| s.lid_veto = true).unwrap();
+        assert_eq!(Settings::load(&p).source, Source::Grab);
         std::fs::write(&p, "{\"source\": \"dsp\", \"lid_veto\": true}").unwrap();
         Settings::update(&p, |s| s.widen_sensitivity = 0.6).unwrap();
         let s = Settings::load(&p);

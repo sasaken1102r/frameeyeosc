@@ -452,8 +452,12 @@ Tool toolState(const Status& status) {
         case State::Calibrating: installed = true; break;
         default: break;
     }
-    // auto_grab names what eyecam-rec found; without it (an older eyecam-rec) only the buffers say so
-    if (!grab.empty() && grab != "missing" && grab != "no_cap" && grab.rfind("unsafe", 0) != 0) installed = true;
+    // auto_grab names what eyecam-rec found; without it (an older eyecam-rec) only the buffers say so. With source
+    // auto, "dsp" needs no tool and "dsp_unreachable" (dsp_service hasn't answered for a while) offers it
+    if (!grab.empty() && grab != "missing" && grab != "no_cap" && grab != "dsp_unreachable" &&
+        grab.rfind("unsafe", 0) != 0) {
+        installed = true;
+    }
     if (!installed) return Tool::Missing;
     return status.grabOutdated ? Tool::Outdated : Tool::Current;
 }

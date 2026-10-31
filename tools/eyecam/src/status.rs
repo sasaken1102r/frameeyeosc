@@ -154,8 +154,9 @@ pub struct Status {
     /// eyecam-rec holds the camera buffers (eyecam-grab succeeded), whether or not frames are flowing.
     pub has_buffers: bool,
     /// The automatic eyecam-grab: "" (not tried), missing, no_cap, unsafe: ..., waiting_tracker, trying, ok,
-    /// failed: ...; "dsp" while the buffer comes from dsp_service instead (`source` dsp), which needs no eyecam-grab,
-    /// so the panel doesn't ask for one.
+    /// failed: ...; "dsp" while the buffer comes from dsp_service instead (`source` dsp, or auto without a ready
+    /// eyecam-grab), which needs no eyecam-grab, so the panel doesn't ask for one; "dsp_unreachable" when, with auto,
+    /// dsp_service has not answered for a while (dspsrc::AUTO_DSP_TRIES), so the panel offers eyecam-grab's setup.
     pub auto_grab: String,
     /// The installed eyecam-grab differs from the one shipped beside eyecam-rec (an update brought a new one):
     /// install_grab.sh has to be run again. False when either is missing.

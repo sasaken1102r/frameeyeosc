@@ -1130,6 +1130,24 @@ void testSetupStep() {
     const Status gone = setupStatus("waiting_fds", ", \"auto_grab\": \"missing\", \"setup_done\": true");
     CHECK(eyecam::setupStep(gone, PasswordState::Set) == SetupStep::Tool);
     CHECK(eyecam::toolNotice(gone, PasswordState::Set) == ToolNotice::None);
+    // The buffer from dsp_service (source auto, the default, without the tool): no sudo steps, even before it answers;
+    // once it hasn't answered for a while (dsp_unreachable), the tool's steps as for a missing tool
+    for (const PasswordState password : {PasswordState::Unknown, PasswordState::Set, PasswordState::NotSet}) {
+        const Status dsp = setupStatus("waiting_fds", ", \"auto_grab\": \"dsp\", \"setup_done\": false");
+        CHECK(eyecam::toolState(dsp) == Tool::Current && !eyecam::needsManualGrab(dsp));
+        CHECK(eyecam::setupStep(dsp, password) == SetupStep::Learn);
+        CHECK(eyecam::toolNotice(dsp, password) == ToolNotice::None);
+        const Status dspSetUp = setupStatus("idle", ", \"auto_grab\": \"dsp\", \"setup_done\": true");
+        CHECK(eyecam::setupStep(dspSetUp, password) == SetupStep::Done);
+        const SetupStep tool = password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
+        for (const char* done : {"false", "true"}) {
+            const Status away = setupStatus(
+                "waiting_fds", std::string(", \"auto_grab\": \"dsp_unreachable\", \"setup_done\": ") + done);
+            CHECK(eyecam::toolState(away) == Tool::Missing && eyecam::needsManualGrab(away));
+            CHECK(eyecam::setupStep(away, password) == tool);
+            CHECK(eyecam::toolNotice(away, password) == ToolNotice::None);
+        }
+    }
     // The notice goes by itself once eyecam-rec says the tool is current again (install_grab.sh ran)
     CHECK(eyecam::toolNotice(setupStatus("idle", working + ", \"setup_done\": true, \"grab_outdated\": false"),
                              PasswordState::Set) == ToolNotice::None);

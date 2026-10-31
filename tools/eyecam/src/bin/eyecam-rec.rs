@@ -397,7 +397,7 @@ fn run() -> Result<()> {
     }
 
     let setting = source_setting(&args);
-    let mut buffers = Buffers::receive(args.wait_grab, None, route(setting), setting == Source::Auto)?;
+    let mut buffers = Buffers::receive(args.wait_grab, None, route(setting, false), setting == Source::Auto)?;
     let mut prox = Proximity::find();
     let protocol = args.cues.as_ref().map_or(String::new(), |p| p.display().to_string());
     let ended = record(&mut buffers, &mut None, &args, steps, &protocol, &mut prox, None, None, Mode::Record, false)?;
@@ -830,7 +830,7 @@ fn serve(args: &Args) -> Result<()> {
     let mut why: Option<&str> = None;
     while !STOP.load(Ordering::SeqCst) {
         // (chosen again each time: `auto` takes an eyecam-grab installed meanwhile)
-        let route = route(setting);
+        let route = route(setting, true);
         let how = if route == Source::Dsp { DSP_WAITING } else { INSTALL_TOOL };
         let message = why.map_or(how.to_string(), |w| format!("{w}。{how}"));
         daemon.set(|s| {
@@ -1598,9 +1598,10 @@ fn source_setting(args: &Args) -> Source {
     args.source.unwrap_or_else(|| Settings::load(&settings::path()).source)
 }
 
-/// The route to take now for `setting` (Grab or Dsp; see dspsrc::pick).
-fn route(setting: Source) -> Source {
-    let ready = setting == Source::Auto && matches!(autograb::find(), autograb::State::Ready(_));
+/// The route to take now for `setting` (Grab or Dsp; see dspsrc::pick). `auto` takes the installed eyecam-grab only
+/// when it is run automatically (`serve`); a recording would wait for a manual sudo eyecam-grab, so it takes dsp.
+fn route(setting: Source, serve: bool) -> Source {
+    let ready = serve && setting == Source::Auto && matches!(autograb::find(), autograb::State::Ready(_));
     dspsrc::pick(setting, ready)
 }
 

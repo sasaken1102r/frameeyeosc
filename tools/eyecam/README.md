@@ -587,7 +587,9 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
     だけを読み取り専用で mmap し、32 MiB のほうはすぐ閉じる。返事は要求の種類 0（通知は要らない）だけで、バッファには何も書かない。
     相手が root の `dsp_service` であること・中身が 16 MiB の udmabuf であることを確かめる。つないだままにしておき、切れたら
     バッファを手放して、つなぎ直す（つながらない間は 1・2・4・8・16・30 秒おき）
-  - `auto`: インストール済みの eyecam-grab が使えるならそれ、なければ（または自動の grab が 2 回続けて失敗したら）dsp
+  - `auto`: `--serve` では、インストール済みの eyecam-grab が使えるならそれ、なければ（または自動の grab が 2 回続けて失敗したら）dsp。
+    dsp を使っている間に eyecam-grab を入れても、切り替わるのは次にバッファをもらい直すとき（dsp_service が切れたときなど）。
+    録画（`--serve` なし）では自動の grab が走らないので、いつも dsp
 - `eyecam-rec --dsp-selftest 5`: dsp_service につないでバッファを読み取り専用で mmap し、5 秒間スロットの見出しを見て
   （新しいフレームの数・見えたときの古さ）、リングを一度探して、表示して終わる。ソケットも status.json も作らないので、
   動いている eyecam.service の横で走らせてよい

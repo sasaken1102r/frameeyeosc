@@ -666,6 +666,8 @@ struct UiText {
     const char* setupAutoChecked;  ///< ...and how it was found
     const char* setupToolLabel;
     const char* setupToolDone;
+    const char* setupNotNeeded;  ///< the password and the tool with the buffer from dsp_service (green)
+    const char* setupNoSudo;     ///< ...and why, after the tool's
     const char* setupLearnLabel;
     const char* setupLearnDone;
     const char* setupPassPill;  ///< (1): the pill at the right of its title
@@ -839,6 +841,7 @@ struct UiText {
     const char* camIntroTitle;
     const char* camIntro[3];      ///< the three things they add
     const char* camIntroBox;      ///< the one-time setup, and the video staying in the Frame
+    const char* camIntroBoxNoSudo;  ///< the same with the buffer from dsp_service (no password)
     const char* camIntroButton;   ///< starts the setup checklist
     const char* camIntroNote;     ///< without them all works as before
     const char* rowWidenEase;  ///< the one widening slider

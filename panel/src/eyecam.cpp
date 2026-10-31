@@ -462,6 +462,10 @@ Tool toolState(const Status& status) {
     return status.grabOutdated ? Tool::Outdated : Tool::Current;
 }
 
+bool fromDsp(const Status& status) {
+    return status.autoGrab == "dsp";
+}
+
 bool toolInstalled(const Status& status) {
     const Tool tool = toolState(status);
     return tool == Tool::Outdated || tool == Tool::Current;

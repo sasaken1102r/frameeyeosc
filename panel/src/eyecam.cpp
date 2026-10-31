@@ -498,6 +498,7 @@ bool toolInstalled(const Status& status) {
 
 ToolNotice toolNotice(const Status& status, PasswordState password) {
     if (setupStep(status, password) != SetupStep::Done) return ToolNotice::None;
+    if (status.autoGrab == "dsp_unreachable") return ToolNotice::DspUnreachable;
     switch (toolState(status)) {
         case Tool::Outdated: return ToolNotice::Outdated;
         case Tool::TooOld: return ToolNotice::TooOld;
@@ -514,9 +515,13 @@ bool setupComplete(const Status& status) {
 SetupStep setupStep(const Status& status, PasswordState password) {
     const Tool tool = toolState(status);
     // Set up needs the tool there (without it the cameras stop at the next SteamVR start); an outdated or too old one
-    // is asked for on the usual page instead. An eyecam-rec without auto_grab can't tell (eyecam-grab was always run
-    // by hand), so there being set up is enough
-    if (setupComplete(status) && (tool != Tool::Missing || status.autoGrab.empty())) return SetupStep::Done;
+    // is asked for on the usual page instead, and so is the tool while dsp_service doesn't answer (the setup was done
+    // without it: it isn't undone). An eyecam-rec without auto_grab can't tell (eyecam-grab was always run by hand), so
+    // there being set up is enough
+    if (setupComplete(status) &&
+        (tool != Tool::Missing || status.autoGrab.empty() || status.autoGrab == "dsp_unreachable")) {
+        return SetupStep::Done;
+    }
     // The checklist's (2) is met only by a current tool
     if (tool == Tool::Current) return SetupStep::Learn;
     return password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
@@ -861,6 +866,7 @@ bool installNeedsPassword(const View& view) {
 
 bool passwordWanted(const View& view, bool eyecamTab) {
     if (setupStep(view.status, PasswordState::Unknown) == SetupStep::Tool) return true;
+    if (toolNotice(view.status, PasswordState::Unknown) == ToolNotice::DspUnreachable) return true;
     return eyecamTab && sourceChoiceShown(view.status) && grabTool(view.status) == GrabTool::Missing;
 }
 

@@ -115,6 +115,8 @@ enum class ToolNotice {
     None,
     Outdated,  ///< install it again when convenient: the one installed still works
     TooOld,    ///< install it again: until then the cameras are stopped (Valve's values only)
+    DspUnreachable,  ///< dsp_service doesn't answer (auto_grab "dsp_unreachable"): installing the tool gets the
+                     ///< cameras going without it (until then they are stopped, or dsp_service comes back)
 };
 
 /** The setup's steps, in order; the current one is the first not met. */
@@ -714,8 +716,9 @@ bool introShown(const View& view, bool begun);
 
 /**
  * The current step, from this status and password check alone: the first one not met.
- * - Set up (setupComplete): Done while the tool is there at all, outdated or too old included (the usual page asks for
- *   it then, see toolNotice); a missing one goes back to (1) / (2). An eyecam-rec without auto_grab can't say, so set
+ * - Set up (setupComplete): Done while the tool is there at all, outdated or too old included, or while dsp_service
+ *   doesn't answer (auto_grab "dsp_unreachable": the usual page asks for the tool then, see toolNotice); a missing one
+ *   goes back to (1) / (2). An eyecam-rec without auto_grab can't say, so set
  *   up is Done there.
  * - Not set up: (2) is met only by a Current tool (an outdated or too old one is asked for again there); then (3),
  *   whatever the password check says (it was needed to install it). Without it, (1) only while the password is known
@@ -940,8 +943,9 @@ bool installNeedsPassword(const View& view);
 
 /**
  * Whether the SteamOS password is checked now (setup_tools::PasswordCheck, while the panel shows on the dashboard):
- * the setup at (2) (the tool to install; setupStep with the password unknown, so the answer can't decide it), or the
- * eye cameras tab open with the card offering "Install" (sourceChoiceShown, the tool missing).
+ * the setup at (2) (the tool to install; setupStep with the password unknown, so the answer can't decide it), the
+ * usual page asking for the tool while dsp_service doesn't answer (ToolNotice::DspUnreachable), or the eye cameras tab
+ * open with the card offering "Install" (sourceChoiceShown, the tool missing).
  * @param view eyecam-rec
  * @param eyecamTab the eye cameras tab is the one open
  * @return true while it is wanted

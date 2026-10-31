@@ -1894,6 +1894,41 @@ void testToolNotice(const FontSet& fonts) {
         panel.render(m);
         CHECK(pointsTo(panel, PanelTab::Eyecam) == !current);
     }
+    // dsp_service not answering (auto, no tool) once set up: still the usual page, with a card to install the tool
+    // (passwd first while SteamOS has none) and the left column's card; the Basic tab's switch stays (set up). Not set
+    // up yet: the checklist's tool step, as before
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const eyecam::PasswordState password : {eyecam::PasswordState::Set, eyecam::PasswordState::NotSet}) {
+            PanelModel m = modelWith(Lids::Valve);
+            m.language = language;
+            m.eyecam.password = password;
+            eyecam::Status& e = m.eyecam.status;
+            e.autoGrab = "dsp_unreachable";
+            e.state = eyecam::State::WaitingFds;
+            e.stateText = "waiting_fds";
+            e.hasBuffers = false;
+            panel.setTab(PanelTab::Eyecam);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::LidsPage).size() == 1);
+            const std::vector<EyePanel::HitArea> konsole = hits(panel, PanelAction::SetupKonsole);
+            CHECK(konsole.size() == 1);
+            if (konsole.size() == 1) {
+                CHECK(konsole[0].hit.arg == (password == eyecam::PasswordState::NotSet ? setup_tools::kKonsolePasswd
+                                                                                       : setup_tools::kKonsoleInstall));
+            }
+            for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                if (area.x > 400 && area.y > 100) CHECK(area.y + area.h <= 676 && area.x + area.w <= 1154);
+            }
+            panel.setTab(PanelTab::Basic);
+            panel.render(m);
+            CHECK(pointsTo(panel, PanelTab::Eyecam));
+            CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() >= 1);
+            e.setupDone = false;
+            panel.setTab(PanelTab::Eyecam);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::LidsPage).empty() && hits(panel, PanelAction::SetBool, key::kCameraLids).empty());
+        }
+    }
 }
 
 void testFitRunning(const FontSet& fonts) {

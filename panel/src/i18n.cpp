@@ -153,6 +153,8 @@ UiText makeJapanese() {
     t.hintPupilBitsOff = "いまは瞳孔を VRChat に直接送っていないので効かないよ";
     t.rowNativeEyes = "VRChat 標準の目も動かす";
     t.hintNativeEyes = "VRCFT 用の値がないアバター用。まぶたが閉じすぎたらオフに";
+    t.rowVrcFaceTracking = "Face Tracking にも送る";
+    t.hintVrcFaceTracking = "VRChat の Face Tracking を設定したアバター用";
     t.rowTarget = "送り先の PC";
     t.hintTarget = "自動 = Steam Link の相手";
     t.targetAuto = "自動";
@@ -1210,6 +1212,8 @@ UiText makeEnglish() {
     t.hintPupilBitsOff = "No effect now: the pupils don't go straight to VRChat";
     t.rowNativeEyes = "VRChat's own eyes too";
     t.hintNativeEyes = "For avatars without VRCFT parameters. Turn off if eyelids close too far";
+    t.rowVrcFaceTracking = "Send to Face Tracking too";
+    t.hintVrcFaceTracking = "For avatars set up for VRChat Face Tracking";
     t.rowTarget = "Target PC";
     t.hintTarget = "Auto = the Steam Link PC";
     t.targetAuto = "Auto";

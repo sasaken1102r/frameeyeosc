@@ -2372,11 +2372,18 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
 void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
     const EyeStatus& s = m.status;
     double y = kRowTop;
-    const double cy = (kRowH - kControlH) / 2;
     const std::string output = v.text(key::kOutput);
     const bool livelink = output == kOutputLivelink;
     const bool module = output == kOutputModule;
     const bool etvr = output == kOutputEtvr;
+    const bool direct = !livelink && !module && !etvr;
+    // VRChat directly has the most rows: all of them a little shorter there (the other outputs' as on the other tabs)
+    const double rowH = direct ? 56 : kRowH;
+    const double controlH = direct ? 46 : kControlH;
+    const double cy = (rowH - controlH) / 2;
+    // ...and a line under a control (an example address, a hint) closer to it, the row with that line
+    const double lineDrop = direct ? 13 : 16;
+    const double lineRowH = rowH + (direct ? 18 : 24);
     // The pupils come from the eye cameras: their rows only while those are in use (with the badge), else one line
     const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
 
@@ -2388,18 +2395,18 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         const bool locked = v.locked(key::kPupilBits);
         const bool usable = row == PupilBitsRow::Usable;
         const int bits = static_cast<int>(std::lround(v.number(key::kPupilBits)));
-        drawRowLabel(pen, t, rowY, kRowH, t.rowPupilBits, "", locked, 0, true);
+        drawRowLabel(pen, t, rowY, rowH, t.rowPupilBits, "", locked, 0, true);
         std::vector<Option> options;
         for (int n = 0; n <= 4; ++n) {
             options.push_back({n == 0 ? std::string(t.pupilBitsFloat) : std::to_string(n),
                                {PanelAction::SetInteger, key::kPupilBits, n}, usable});
         }
         // Greyed like a locked control (the choice outlined, not filled), so it doesn't look in effect
-        drawSegmented(pen, kControlX, rowY + cy, kControlW, kControlH, options, bits >= 0 && bits <= 4 ? bits : -1, 19,
+        drawSegmented(pen, kControlX, rowY + cy, kControlW, controlH, options, bits >= 0 && bits <= 4 ? bits : -1, 19,
                       locked || !usable);
         const char* hint = usable ? t.hintPupilBits : t.hintPupilBitsOff;
-        pen.text(kControlX + 4, rowY + kRowH + 16, hint, fitSize(pen, hint, 15, 11, kControlW, false), kTextMuted);
-        return rowY + kRowH + 24;
+        pen.text(kControlX + 4, rowY + rowH + lineDrop, hint, fitSize(pen, hint, 15, 11, kControlW, false), kTextMuted);
+        return rowY + lineRowH;
     };
 
     // Target PC: automatic, fixed to the PC frameeyeosc sends to now, or typed on the keypad; any host set by hand
@@ -2409,15 +2416,15 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         const std::string host = v.text(key::kHost);
         const bool isAuto = host.empty() || host == "auto";
         const bool canFix = s.running && !hostOfTarget(s.target).empty();
-        drawRowLabel(pen, t, y, kRowH, t.rowTarget, t.hintTarget, locked);
-        drawSegmented(pen, kControlX, y + cy, kControlW, kControlH,
+        drawRowLabel(pen, t, y, rowH, t.rowTarget, t.hintTarget, locked);
+        drawSegmented(pen, kControlX, y + cy, kControlW, controlH,
                       {{t.targetAuto, {PanelAction::HostAuto, key::kHost, 0}},
                        {t.targetFixNow, {PanelAction::FixHost, key::kHost, 0}, canFix},
                        {isAuto ? std::string(t.targetEnter) : formatText(t.targetManualFormat, host),
                         {PanelAction::HostEnter, key::kHost, 0}}},
                       isAuto ? 0 : 2, 19, locked);
     }
-    y += kRowH + kRowGap;
+    y += rowH + kRowGap;
     // Port, with the chosen output's default as the hint
     {
         const bool locked = v.locked(key::kPort);
@@ -2425,24 +2432,24 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         const char* hint = livelink ? t.portDefaultLivelink
                            : module ? t.portDefaultModule
                                     : (etvr ? t.portDefaultEtvr : t.portDefaultVrchat);
-        drawRowLabel(pen, t, y, kRowH, t.rowPort, hint, locked);
-        drawStepper(pen, kControlX, y + cy, 220, kControlH, key::kPort, v.port(), std::to_string(v.port()), true,
+        drawRowLabel(pen, t, y, rowH, t.rowPort, hint, locked);
+        drawStepper(pen, kControlX, y + cy, 220, controlH, key::kPort, v.port(), std::to_string(v.port()), true,
                     locked);
         if (!isDefault && !locked) {
             const PanelHit hit {PanelAction::PortDefault, key::kPort, 0};
             const double bx = kControlX + 232;
             const double bw = 170;
             const int pointer = pointerState(hit);
-            fillRounded(pen, bx, y + cy, bw, kControlH, kControlH / 2, pointer > 0 ? kControlHover : kControl);
-            strokeRounded(pen, bx, y + cy, bw, kControlH, kControlH / 2, kBorder, 2);
+            fillRounded(pen, bx, y + cy, bw, controlH, controlH / 2, pointer > 0 ? kControlHover : kControl);
+            strokeRounded(pen, bx, y + cy, bw, controlH, controlH / 2, kBorder, 2);
             const double size = fitSize(pen, t.portReset, 18, 12, bw - 24, false);
-            textCentered(pen, bx + bw / 2, centerBaseline(y + cy, kControlH, size), t.portReset, size, kText, false);
-            addButton(hit, bx, y + cy, bw, kControlH);
+            textCentered(pen, bx + bw / 2, centerBaseline(y + cy, controlH, size), t.portReset, size, kText, false);
+            addButton(hit, bx, y + cy, bw, controlH);
         }
     }
-    y += kRowH + kRowGap;
+    y += rowH + kRowGap;
 
-    if (!livelink && !module && !etvr) {
+    if (direct) {
         // VRChat directly: the parameter prefix...
         {
             const bool locked = v.locked(key::kPrefix);
@@ -2450,18 +2457,18 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
             const bool none = prefix.empty() || prefix == "/";
             const int selected = prefix == "/FT" ? 0 : (none ? 1 : -1);
             const std::string hint = selected < 0 ? formatText(t.prefixOther, prefix) : "";
-            drawRowLabel(pen, t, y, kRowH, t.rowPrefix, hint, locked);
-            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+            drawRowLabel(pen, t, y, rowH, t.rowPrefix, hint, locked);
+            drawSegmented(pen, kControlX, y + cy, 300, controlH,
                           {{"/FT", {PanelAction::PrefixFt, key::kPrefix, 0}},
                            {t.prefixNone, {PanelAction::PrefixNone, key::kPrefix, 0}}},
                           selected, 20, locked);
             std::string path = prefix;
             while (!path.empty() && path.back() == '/') path.pop_back();
             const std::string example = std::string(t.prefixExample) + "/avatar/parameters" + path + "/v2/EyeLeftX";
-            pen.text(kControlX + 4, y + kRowH + 16, example, fitSize(pen, example, 15, 11, kControlW, false),
+            pen.text(kControlX + 4, y + rowH + lineDrop, example, fitSize(pen, example, 15, 11, kControlW, false),
                      kTextMuted);
         }
-        y += kRowH + 24;
+        y += lineRowH;
         // ...and how EyeTrackingActive goes out
         {
             const bool locked = v.locked(key::kEyeTrackingActive);
@@ -2470,42 +2477,57 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
             for (int i = 0; i < 3; ++i) {
                 if (type == kActiveTypes[i]) selected = i;
             }
-            drawRowLabel(pen, t, y, kRowH, t.rowActiveType, t.hintActiveType, locked);
-            drawSegmented(pen, kControlX, y + cy, kControlW, kControlH,
+            drawRowLabel(pen, t, y, rowH, t.rowActiveType, t.hintActiveType, locked);
+            drawSegmented(pen, kControlX, y + cy, kControlW, controlH,
                           {{"Bool", {PanelAction::SetActiveType, key::kEyeTrackingActive, 0}},
                            {"Float", {PanelAction::SetActiveType, key::kEyeTrackingActive, 1}},
                            {t.activeOff, {PanelAction::SetActiveType, key::kEyeTrackingActive, 2}}},
                           selected, 19, locked);
         }
-        y += kRowH + kRowGap;
+        y += rowH + kRowGap;
         // ...and, for avatars made for Steam Link's own OSC, its names too (never with the prefix)
         {
             const bool locked = v.locked(key::kSteamlinkParams);
-            drawRowLabel(pen, t, y, kRowH, t.rowSteamlink, t.hintSteamlink, locked);
-            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+            drawRowLabel(pen, t, y, rowH, t.rowSteamlink, t.hintSteamlink, locked);
+            drawSegmented(pen, kControlX, y + cy, 300, controlH,
                           {{t.on, {PanelAction::SetBool, key::kSteamlinkParams, 1}},
                            {t.off, {PanelAction::SetBool, key::kSteamlinkParams, 0}}},
                           v.flag(key::kSteamlinkParams) ? 0 : 1, 20, locked);
             const std::string example = std::string(t.prefixExample) + "/avatar/parameters/LeftEyeX" + t.steamlinkNoPrefix;
-            pen.text(kControlX + 4, y + kRowH + 16, example, fitSize(pen, example, 15, 11, kControlW, false),
+            pen.text(kControlX + 4, y + rowH + lineDrop, example, fitSize(pen, example, 15, 11, kControlW, false),
                      kTextMuted);
         }
-        y += kRowH + 24;
+        y += lineRowH;
         // ...and VRChat's own eye tracking input, for avatars without VRCFT parameters
         {
             const bool locked = v.locked(key::kNativeEyes);
             // The hint is too long for the label column: it goes under the control, like the example addresses above
-            drawRowLabel(pen, t, y, kRowH, t.rowNativeEyes, "", locked);
-            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+            drawRowLabel(pen, t, y, rowH, t.rowNativeEyes, "", locked);
+            drawSegmented(pen, kControlX, y + cy, 300, controlH,
                           {{t.on, {PanelAction::SetBool, key::kNativeEyes, 1}},
                            {t.off, {PanelAction::SetBool, key::kNativeEyes, 0}}},
                           v.flag(key::kNativeEyes) ? 0 : 1, 21, locked);
-            pen.text(kControlX + 4, y + kRowH + 16, t.hintNativeEyes,
+            pen.text(kControlX + 4, y + rowH + lineDrop, t.hintNativeEyes,
                      fitSize(pen, t.hintNativeEyes, 15, 11, kControlW, false), kTextMuted);
         }
-        y += kRowH + 24;
+        y += lineRowH;
+        // ...and VRChat's own face tracking input (/tracking/face/v1), for avatars with Face Tracking set up (only
+        // written to config.json so far: the core doesn't read it yet)
+        {
+            const bool locked = v.locked(key::kVrcFaceTracking);
+            // (its hint under the control too)
+            drawRowLabel(pen, t, y, rowH, t.rowVrcFaceTracking, "", locked);
+            drawSegmented(pen, kControlX, y + cy, 300, controlH,
+                          {{t.on, {PanelAction::SetBool, key::kVrcFaceTracking, 1}},
+                           {t.off, {PanelAction::SetBool, key::kVrcFaceTracking, 0}}},
+                          v.flag(key::kVrcFaceTracking) ? 0 : 1, 21, locked);
+            pen.text(kControlX + 4, y + rowH + lineDrop, t.hintVrcFaceTracking,
+                     fitSize(pen, t.hintVrcFaceTracking, 15, 11, kControlW, false), kTextMuted);
+        }
+        y += lineRowH;
         if (pupilsLineShown(output, camera)) {
-            drawCameraLine(pen, t.cameraLinePupils, y + 2);
+            // (a little further down than elsewhere: the hint above sits closer to its row here)
+            drawCameraLine(pen, t.cameraLinePupils, y + 6);
         } else {
             pupilBits(y);
         }
@@ -2523,14 +2545,14 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         // (where they go now under its title, once frameeyeosc says)
         const std::string target =
             on && s.running && !s.pupilTarget.empty() ? formatText(t.pupilsTargetFormat, s.pupilTarget) : std::string();
-        drawRowLabel(pen, t, y, kRowH, t.rowPupils, target, locked, 0, true);
-        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+        drawRowLabel(pen, t, y, rowH, t.rowPupils, target, locked, 0, true);
+        drawSegmented(pen, kControlX, y + cy, 300, controlH,
                       {{t.on, {PanelAction::SetBool, key::kPupilsToVrchat, 1}},
                        {t.off, {PanelAction::SetBool, key::kPupilsToVrchat, 0}}},
                       on ? 0 : 1, 21, locked);
-        pen.text(kControlX + 4, y + kRowH + 16, t.hintPupils, fitSize(pen, t.hintPupils, 15, 11, kControlW, false),
+        pen.text(kControlX + 4, y + rowH + lineDrop, t.hintPupils, fitSize(pen, t.hintPupils, 15, 11, kControlW, false),
                  kTextMuted);
-        y += kRowH + 24;
+        y += lineRowH;
         y = pupilBits(y);
     }
 

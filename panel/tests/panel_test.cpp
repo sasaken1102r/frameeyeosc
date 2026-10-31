@@ -3207,6 +3207,57 @@ void testContrib(const FontSet& fonts) {
     }
 }
 
+void testVrcFaceTrackingRow(const FontSet& fonts) {
+    // The Output tab's "Also send to VRChat face tracking": On / Off right under "VRChat's own eyes too", only while
+    // VRChat directly is the output. With the eye cameras in use (the pupil row under it), set up but off (the dashed
+    // line) or not there at all, in both languages: inside the card, apart from the rows around it
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const int cameras : {0, 1, 2}) {  // in use, switched off, no eyecam-rec
+            PanelModel m = cameras == 2 ? modelWith(Lids::Valve, false) : modelWith(Lids::Both);
+            m.language = language;
+            if (cameras == 1) {
+                m.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
+                m.status.camera.used[0] = m.status.camera.used[1] = false;
+            }
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Output);
+            panel.render(m);
+            const std::vector<EyePanel::HitArea> face = hits(panel, PanelAction::SetBool, key::kVrcFaceTracking);
+            const std::vector<EyePanel::HitArea> native = hits(panel, PanelAction::SetBool, key::kNativeEyes);
+            CHECK(face.size() == 2 && native.size() == 2);
+            if (face.size() != 2 || native.size() != 2) continue;
+            CHECK(face[0].hit.arg == 1 && face[1].hit.arg == 0);  // "On", "Off"
+            for (const EyePanel::HitArea& a : face) {
+                CHECK(a.x >= 438 && a.x + a.w <= 1154 + 0.5 && a.y >= 110 && a.y + a.h <= 676 && a.h >= 40);
+                // (below the native eyes' row and its hint)
+                for (const EyePanel::HitArea& n : native) CHECK(!overlaps(a, n) && a.y >= n.y + n.h + 16);
+            }
+            // ...and what comes under it (the pupils, or the dashed line to the eye cameras tab) further down
+            std::vector<EyePanel::HitArea> below = hits(panel, PanelAction::SetInteger, key::kPupilBits);
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) {
+                if (area.y > 100 && area.x > 400) below.push_back(area);
+            }
+            CHECK(below.size() == (cameras == 0 ? 5u : (cameras == 1 ? 1u : 0u)));
+            for (const EyePanel::HitArea& b : below) CHECK(b.y >= face[0].y + face[0].h + 16 && b.y + b.h <= 676);
+            CHECK(allInsideAndTall(panel));
+            // Locked: drawn, nothing to press (the row above still there)
+            PanelModel locked = m;
+            locked.status.locked.push_back(key::kVrcFaceTracking);
+            panel.render(locked);
+            CHECK(hits(panel, PanelAction::SetBool, key::kVrcFaceTracking).empty());
+            CHECK(hits(panel, PanelAction::SetBool, key::kNativeEyes).size() == 2);
+            // The other outputs: not there, their rows as before
+            for (const char* output : {kOutputLivelink, kOutputModule, kOutputEtvr}) {
+                PanelModel other = m;
+                other.config.root.set(key::kOutput, JsonValue::makeString(output));
+                panel.render(other);
+                CHECK(hits(panel, PanelAction::SetBool, key::kVrcFaceTracking).empty());
+                CHECK(hits(panel, PanelAction::SetBool, key::kNativeEyes).empty() && allInsideAndTall(panel));
+            }
+        }
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -3226,6 +3277,7 @@ int main() {
     testNumberSlider(fonts);
     testBrowsPage(fonts);
     testPupilBitsRow(fonts);
+    testVrcFaceTrackingRow(fonts);
     testOutputCards(fonts);
     testModuleLinkError(fonts);
     testToolNotice(fonts);

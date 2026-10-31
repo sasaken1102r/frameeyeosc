@@ -139,6 +139,7 @@ const std::vector<SettingSpec>& settingSpecs() {
         {key::kEyeTrackingActive, SettingType::String, 0, "bool", 0, 0, 0, 0},
         {key::kSteamlinkParams, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kNativeEyes, SettingType::Bool, 0, "", 0, 1, 1, 0},
+        {key::kVrcFaceTracking, SettingType::Bool, 0, "", 0, 1, 1, 0},  // (the core doesn't send anything yet)
         {key::kCameraLids, SettingType::Bool, 1, "", 0, 1, 1, 0},
         {key::kPupilsToVrchat, SettingType::Bool, 1, "", 0, 1, 1, 0},
         {key::kPupilBits, SettingType::Integer, 0, "", 0, 4, 1, 0},

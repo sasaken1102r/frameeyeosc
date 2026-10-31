@@ -10,6 +10,7 @@ mod livelink;
 mod osc;
 mod replay;
 mod status;
+mod vrc_face;
 
 use capture::{Capture, CaptureResult, CaptureState};
 use clap::{CommandFactory, FromArgMatches, Parser};
@@ -592,6 +593,10 @@ struct Args {
     /// avatars without VRCFT parameters
     #[arg(long)]
     native_eyes: bool,
+    /// In VRChat mode, also send VRChat's Face Tracking input (/tracking/face/v1): each eye's eyelid, widening and
+    /// gaze, the eye camera's squint and pupils and the brows, for avatars set up for VRChat Face Tracking
+    #[arg(long)]
+    vrc_face_tracking: bool,
     /// Also send the pupil dilation to VRChat as this many bool parameters (PupilDilation1, 2, 4, 8), for avatars
     /// that take it bit-packed; 0 sends only the float
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=4))]
@@ -3233,6 +3238,17 @@ impl Output {
         Ok(())
     }
 
+    /// Send one OSC message with a single blob argument; errors as in `send`.
+    fn send_blob(&mut self, addr: &str, blob: &[u8]) {
+        if self.socket.is_none() {
+            return;
+        }
+        osc::encode_blob(addr, blob, &mut self.packet);
+        let packet = std::mem::take(&mut self.packet);
+        self.send_datagram(&packet);
+        self.packet = packet;
+    }
+
     /// Send one datagram as it is (an encoded OSC message or a Live Link packet); errors as in `send`.
     fn send_datagram(&mut self, datagram: &[u8]) {
         let Some((socket, target)) = &self.socket else {
@@ -4284,6 +4300,38 @@ fn send_native_neutral(output: &mut Output, settings: &Settings) -> Result<(), B
     Ok(())
 }
 
+/// VRChat's Face Tracking address (vrc_face_tracking).
+const FACE_ADDRESS: &str = "/tracking/face/v1";
+
+/// VRChat's Face Tracking blob for a sample (see vrc_face): each eye's eyelid and gaze as sent (its own with "move
+/// eyes separately", else the combined one, as for the VRCFT parameters), the eye camera's squint and pupil for the
+/// eyes they are used for, and the brows raised with brow_from_widen.
+fn face_blob(sample: &Sample) -> [u8; vrc_face::LEN] {
+    let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
+    let camera = &sample.camera;
+    let eye = |side: usize, gaze: [f32; 2]| vrc_face::Eye {
+        lid: sample.lids[side],
+        gaze,
+        squint: camera.squint[side],
+        pupil_dilation: camera.pupil_dilation[side],
+        brow: sample.brows.map(|brows| brows[side]),
+    };
+    vrc_face::blob([eye(0, [left_x, left_y]), eye(1, [right_x, right_y])])
+}
+
+/// Where VRChat's Face Tracking input is being sent to, if anywhere. When this changes while eye tracking runs, the
+/// old destination gets a neutral blob (see `send_face_neutral`).
+fn face_stream(settings: &Settings) -> Option<(&str, u16)> {
+    (settings.sending && settings.output == OutputKind::Vrchat && settings.vrc_face_tracking)
+        .then(|| (settings.host.as_str(), settings.port()))
+}
+
+/// Relaxed open eyes looking straight ahead, pupils and brows at rest, as VRChat's Face Tracking input. VRChat's docs
+/// give no timeout for it, so without this the eyes could stay where they were (shut, if tracking was lost in a blink).
+fn send_face_neutral(output: &mut Output) {
+    output.send_blob(FACE_ADDRESS, &vrc_face::neutral());
+}
+
 /// Lets a packet through at most once per interval, on a steady beat that neither bursts nor drifts: the next one is
 /// due an interval after the last one was due, or after now if the samples paused for longer than that.
 #[derive(Default)]
@@ -4456,6 +4504,10 @@ impl Bridge {
         if self.active_since.is_some() && stream.is_some() && stream != native_stream(&settings) {
             send_native_neutral(&mut self.output, &self.settings)?;
         }
+        let stream = face_stream(&self.settings);
+        if self.active_since.is_some() && stream.is_some() && stream != face_stream(&settings) {
+            send_face_neutral(&mut self.output);
+        }
         let stream = livelink_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != livelink_stream(&settings) {
             self.send_livelink_neutral();
@@ -4544,6 +4596,9 @@ impl Bridge {
                         self.output.send(&addr, &args)?;
                     }
                 }
+                if face_stream(&self.settings).is_some() {
+                    self.output.send_blob(FACE_ADDRESS, &face_blob(&sample));
+                }
                 true
             };
             if sent && self.output.addr().is_some() {
@@ -4602,6 +4657,9 @@ impl Bridge {
         }
         if native_stream(&self.settings).is_some() {
             send_native_neutral(&mut self.output, &self.settings)?;
+        }
+        if face_stream(&self.settings).is_some() {
+            send_face_neutral(&mut self.output);
         }
         if livelink_stream(&self.settings).is_some() {
             self.send_livelink_neutral();
@@ -7397,6 +7455,103 @@ mod tests {
         let (addr, args) = receive();
         assert_eq!(addr, "/tracking/eye/EyesClosedAmount");
         assert_eq!(args, [OscType::Float(0.0)]);
+    }
+
+    #[test]
+    fn face_tracking_goes_out_only_in_vrchat_mode_when_turned_on() {
+        let on = Settings {
+            vrc_face_tracking: true,
+            ..settings()
+        };
+        assert!(face_stream(&settings()).is_none());
+        assert_eq!(face_stream(&on), Some(("auto", 9000)));
+        assert!(face_stream(&Settings { sending: false, ..on.clone() }).is_none());
+        for output in [OutputKind::Etvr, OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
+            assert!(face_stream(&Settings { output, ..on.clone() }).is_none());
+        }
+        // Independent of native_eyes: both can be on (the blob wins on avatars with the Face Tracking section)
+        assert_eq!(face_stream(&Settings { native_eyes: true, ..on.clone() }), face_stream(&on));
+        assert_ne!(face_stream(&on), face_stream(&Settings { port: Some(9001), ..on.clone() }));
+        assert_eq!(face_stream(&on), face_stream(&Settings { lid_open: 0.85, ..on.clone() }));
+    }
+
+    #[test]
+    fn face_blob_takes_each_eye_as_sent_with_the_camera_and_brows() {
+        // sample(): lids 0.375 / 0.75, gaze left (0.1, 0.2), right (0.3, 0.4)
+        let plain = face_blob(&sample());
+        assert_eq!((plain[9], plain[8]), (128, 0), "EyeClosedLeft / Right");
+        assert_eq!((plain[5], plain[6]), (26, 51), "EyeLookInLeft / UpLeft");
+        assert_eq!((plain[0], plain[2]), (77, 102), "EyeLookOutRight / UpRight");
+        assert!(plain[10..].iter().all(|&key| key == 0), "no camera, no brows: nothing else");
+        let full = Sample {
+            camera: CameraValues {
+                squint: [Some(0.2), None],
+                pupil_dilation: [Some(1.0), Some(0.0)],
+                pupil_diameter: [Some(8.0), Some(2.0)],
+            },
+            brows: Some([0.5, 1.0]),
+            ..sample()
+        };
+        let blob = face_blob(&full);
+        assert_eq!((blob[15], blob[14]), (51, 0), "EyeSquintLeft / Right");
+        assert_eq!((blob[11], blob[13]), (255, 0), "left pupil dilated");
+        assert_eq!((blob[10], blob[12]), (0, 255), "right pupil constricted");
+        assert_eq!((blob[23], blob[25]), (128, 128), "BrowInnerUpLeft / OuterUpLeft");
+        assert_eq!((blob[22], blob[24]), (255, 255), "BrowInnerUpRight / OuterUpRight");
+        assert_eq!(blob[..10], plain[..10], "eyelids and gaze unchanged");
+    }
+
+    /// Every `/tracking/face/v1` blob among the datagrams waiting at `listener`.
+    fn face_blobs(listener: &UdpSocket) -> Vec<Vec<u8>> {
+        let mut blobs = Vec::new();
+        while let Some(datagram) = receive(listener) {
+            let (_, packet) = rosc::decoder::decode_udp(&datagram).unwrap();
+            let OscPacket::Message(message) = packet else { panic!("not a message") };
+            if message.addr == FACE_ADDRESS {
+                let [rosc::OscType::Blob(blob)] = &message.args[..] else { panic!("not one blob: {:?}", message.args) };
+                blobs.push(blob.clone());
+            }
+        }
+        blobs
+    }
+
+    #[test]
+    fn face_tracking_sends_a_blob_per_sample_and_a_neutral_one_when_the_eyes_stop() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let vrchat = Settings {
+            host: "127.0.0.1".into(),
+            port: Some(listener.local_addr().unwrap().port()),
+            lid_calibration: false,
+            ..settings()
+        };
+        let on = Settings {
+            vrc_face_tracking: true,
+            ..vrchat.clone()
+        };
+        let look = [(std::f32::consts::PI / 8.0).tan(), -(std::f32::consts::PI / 8.0).tan()];
+        // Off: none
+        let mut bridge = test_bridge(vrchat.clone());
+        bridge.on_sample(reading(0, look, [1.0, 0.55])).unwrap();
+        assert!(face_blobs(&listener).is_empty());
+        // On: one per sample, the sample as sent, next to the VRCFT parameters
+        bridge.apply(reload(&on)).unwrap();
+        for index in 1..4 {
+            bridge.on_sample(reading(index, look, [1.0, 0.55])).unwrap();
+            let blobs = face_blobs(&listener);
+            assert_eq!(blobs, [face_blob(bridge.latest.as_ref().unwrap()).to_vec()]);
+            assert_eq!(blobs[0].len(), 102);
+        }
+        // Pausing sends one neutral blob, and nothing while paused
+        bridge.apply(reload(&Settings { sending: false, ..on.clone() })).unwrap();
+        assert_eq!(face_blobs(&listener), [vec![0u8; 102]]);
+        bridge.on_sample(reading(4, look, [1.0, 0.55])).unwrap();
+        assert!(face_blobs(&listener).is_empty());
+        // Losing the eye data sends one too
+        bridge.apply(reload(&on)).unwrap();
+        bridge.on_sample(reading(5, look, [1.0, 0.55])).unwrap();
+        assert_eq!(face_blobs(&listener).len(), 1);
+        bridge.on_lost("test").unwrap();
+        assert_eq!(face_blobs(&listener), [vec![0u8; 102]]);
     }
 
     #[test]

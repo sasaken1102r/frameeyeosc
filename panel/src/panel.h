@@ -954,9 +954,8 @@ private:
      * checklist).
      * @param pen drawing tools
      * @param t texts
-     * @param noSudo the buffer comes from dsp_service (eyecam::fromDsp): the setup needs no password
      */
-    void drawCameraIntro(const Pen& pen, const UiText& t, bool noSudo);
+    void drawCameraIntro(const Pen& pen, const UiText& t);
 
     /**
      * The Output tab: the target PC and port, then the VRChat-only rows (parameter prefix, EyeTrackingActive type, Steam Link's names, VRChat's own eye tracking),

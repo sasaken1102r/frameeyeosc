@@ -834,8 +834,6 @@ UiText makeJapanese() {
     t.camIntro[2] = "Valve がまぶたを低く読んだときに、カメラで開いてるのを確かめて直す";
     t.camIntroBox = "最初に 1 回だけ準備がいります（Konsole でパスワードを 1 回入れる）。目の映像は Frame の中だけで使い、"
                     "外には出しません。";
-    t.camIntroBoxNoSudo = "最初に 1 回だけ、目の動きを覚える準備がいります（パスワードはいりません）。目の映像は Frame の中"
-                          "だけで使い、外には出しません。";
     t.camIntroButton = "はじめる（約 2 分）";
     t.camIntroNote = "使わなくても、目の送信はふつうに動きます";
     t.rowWidenEase = "見開きの出やすさ";
@@ -1899,8 +1897,6 @@ UiText makeEnglish() {
     t.camIntro[2] = "When Valve reads an eyelid too low, the camera checks it's open and fixes it";
     t.camIntroBox = "It needs a one-time setup (you type your password once in Konsole). The eye video is used only "
                     "inside the Frame and never leaves it.";
-    t.camIntroBoxNoSudo = "It needs a one-time setup that learns your eye movements (no password needed). The eye video "
-                          "is used only inside the Frame and never leaves it.";
     t.camIntroButton = "Get started (about 2 min)";
     t.camIntroNote = "Without them, eye tracking works as usual";
     t.rowWidenEase = "How easily widening shows";

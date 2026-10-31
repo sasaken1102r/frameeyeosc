@@ -5757,7 +5757,7 @@ void EyePanel::drawRun(const Pen& pen, const UiText& t, const PanelModel& m, con
 void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
     // Not set up and nothing of the setup done yet: what they add, and "Get started" into the checklist
     if (eyecam::introShown(m.eyecam, setupBegun_)) {
-        drawCameraIntro(pen, t, eyecam::fromDsp(m.eyecam.status));
+        drawCameraIntro(pen, t);
         return;
     }
     const eyecam::SetupScreen screen = eyecam::setupScreen(m.eyecam);
@@ -5779,7 +5779,7 @@ void EyePanel::drawEyecam(const Pen& pen, const UiText& t, const PanelModel& m, 
     drawCameraPage(pen, t, m, v);
 }
 
-void EyePanel::drawCameraIntro(const Pen& pen, const UiText& t, bool noSudo) {
+void EyePanel::drawCameraIntro(const Pen& pen, const UiText& t) {
     const double x0 = kInnerX;
     const double x1 = kInnerRight;
     // The title with a camera before it
@@ -5801,8 +5801,7 @@ void EyePanel::drawCameraIntro(const Pen& pen, const UiText& t, bool noSudo) {
     {
         y += 24;
         const double pad = 18;
-        const char* box = noSudo ? t.camIntroBoxNoSudo : t.camIntroBox;
-        const std::vector<std::string> lines = wrapText(pen, box, 16, false, x1 - x0 - pad * 2 - 30, 3);
+        const std::vector<std::string> lines = wrapText(pen, t.camIntroBox, 16, false, x1 - x0 - pad * 2 - 30, 3);
         const double boxH = pad * 2 + lines.size() * 24 - 4;
         fillRounded(pen, x0, y, x1 - x0, boxH, 12, kBg);
         drawInfoIcon(pen, x0 + pad + 8, y + pad + 9, kAccent);

@@ -396,6 +396,7 @@ struct UiText {
     const char* advTrouble;         ///< the diagnostics and the recent records
     const char* advTools;           ///< the gaze dots, the eye log and the eye capture
     const char* advFiles;           ///< the files and the process
+    const char* advData;            ///< what is kept on the disk ("Saved data")
     const char* updateToFormat;     ///< the update button: "%s に更新する" (the new version)
     const char* updateNotesFormat;  ///< over the new release's summary: "%s の内容"
     // The other Frame apps (frame-apps' strings.md): the row at the bottom of "Version", the list it opens and the
@@ -1000,6 +1001,28 @@ struct UiText {
     const char* notRunning;
     const char* hoursMinutesFormat; ///< "%d h %d min"
     const char* minutesFormat;      ///< "%d min"
+    // Saved data (Files page): what is kept on the disk, each kind's count and size and its delete (stored::Kind)
+    const char* dataTitle;          ///< "Saved data"
+    const char* dataHint;           ///< ...what it is, beside the title
+    const char* dataRows[3];        ///< each kind's row
+    const char* dataRowHints[3];    ///< ...under it
+    const char* dataCountFormats[3];  ///< ...how many and their size (%d count, %s size)
+    const char* dataCountOneFormats[3];  ///< ...when there is one
+    const char* dataNone;           ///< nothing of that kind
+    const char* dataCounting;       ///< not counted yet
+    const char* dataNoEyecam;       ///< eyecam's rows while eyecam-rec doesn't run (or can't count them)
+    const char* dataBusy;           ///< ...while it records or calibrates
+    const char* dataRecordingNote;  ///< the eye log's row while one is recorded (left out, kept)
+    const char* dataDelete;         ///< each row's "Delete"
+    const char* dataDeleting;
+    const char* dataDeletedFormat;  ///< ...done (%s count and size)
+    const char* dataFailedFormat;   ///< ...not all of it (%s why)
+    const char* dataDeleteTitles[3];   ///< the confirmation's title, per kind
+    const char* dataDeleteFormats[3];  ///< ...what goes, what stays, and that it can't be undone (%s folder, %s count
+                                       ///< and size)
+    const char* dataDeleteRecording;   ///< ...added for the eye logs while one is recorded
+    const char* dataDeleteYes;
+    const char* dataCancel;
 
     // Recommendation prompt
     const char* promptVrchat;

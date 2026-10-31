@@ -211,6 +211,26 @@ struct LastCalib {
     double window[2][2] = {{0.0, 0.0}, {0.0, 0.0}};  ///< ...the search window's left and right edge (px)
 };
 
+/**
+ * status.json's "stored": what eyecam-rec's data folder keeps that the panel's "Saved data" can delete (stored.h), and
+ * its delete.
+ */
+struct Stored {
+    bool present = false;         ///< "stored" is there (a newer eyecam-rec)
+    double scannedUnix = 0.0;     ///< when it was counted (Unix seconds; 0 = not yet)
+    long long recCount = 0;       ///< the eye-camera recordings (rec_*)
+    long long recBytes = 0;
+    long long calibCount = 0;     ///< the calibrations that keep eye images (`dev` on)
+    long long calibBytes = 0;     ///< ...those images
+    std::string deleting;         ///< the delete under way: "rec" / "calib_images" ("" = none)
+    bool hasDeleted = false;      ///< a delete ended since eyecam-rec started
+    std::string deletedKind;      ///< ...of what ("rec" / "calib_images")
+    long long deletedCount = 0;   ///< ...how many went
+    long long deletedBytes = 0;
+    std::string deletedError;     ///< ...why not all: the first file that couldn't go and why ("" = all went)
+    double deletedUnix = 0.0;     ///< ...when it ended (Unix seconds)
+};
+
 /** status.json as read. Numbers missing from it are NaN (steps -1). */
 struct Status {
     bool present = false;    ///< the file was read and parsed as an object
@@ -292,6 +312,7 @@ struct Status {
     bool hasDriftlog = false;      ///< "driftlog" is there (a newer eyecam-rec that keeps a drift log on request)
     bool driftlogOn = false;       ///< ...it is on
     std::string driftlogPath;      ///< ...its file, or the last one ("" before the first)
+    Stored stored;                 ///< "stored"
 };
 
 /**

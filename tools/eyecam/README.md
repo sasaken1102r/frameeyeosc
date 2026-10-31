@@ -141,6 +141,9 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
  "last_error":"","last_error_en":"","last_error_unix":0.000,
  "lid_veto":{"on":true,"runs_per_s":4.200,"fired":12,"ms_mean":0.520,"ms_max":1.310},
  "driftlog":{"on":false,"path":"","rows":0,"bytes":0,"full":false,"error":""},
+ "started_unix":1791090000.000,"headset_off_count":2,
+ "stored":{"scanned_unix":1791099995.000,"rec":{"count":13,"bytes":25310000000},"calib_images":{"count":52,"bytes":21940000000},
+  "deleting":"","deleted":null},
  "pid":1234,"updated_unix":1791100000.123}
 ```
 
@@ -196,6 +199,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `driftlog` | object | ドリフトの記録（下の「ドリフトの記録」）。`on`（記録中。`driftlog on` から `off` まで）、`path`（書いているファイル。`off` のあとは最後のファイル。まだ一度も無ければ `""`）、`rows`（書いた行数）、`bytes`（ファイルの大きさ）、`full`（50 MB に達したのでそれ以上書いていない。`on` のまま）、`error`（書けなくなった理由。ふつうは `""`）。このフィールドがない古い eyecam-rec もある |
 | `started_unix` | number | この eyecam-rec が起動した時刻（UNIX 秒）。`headset_off_count` は起動ごとに 0 から数えるので、比べるのは同じ `started_unix` どうしだけ |
 | `headset_off_count` | int | 起動してから、HMD を外して（10 秒以上。`livesvc::NEW_WEAR_OFF_S`）またかぶった回数。外したとみなすのは、待機中にライブ処理がオンで目の映像が止まった（`locked` が false。映像が戻ったときに数える）か、近接センサーが一度「かぶっている」を読んだあとに「かぶっていない」を読み続けた（また「かぶっている」を読んだときに数える）とき。どちらもサスペンドの時間も数える時計（CLOCK_BOOTTIME）で測るので、外して Frame がスリープしても数える。1 回の取り外しは、先に戻った方で 1 回だけ数える。録画・校正のあいだは数えない（`livesvc::OffCount`）。パネルの「細めの学習用に撮る」が、2 本の録画のあいだに外したかを見るのに使う。このフィールドがない古い eyecam-rec もある |
+| `stored` | object | データのフォルダ（`--out`、ふつうは `~/eyecam`）に残っていて、パネルの「データ」から消せるもの（下の「保存してるデータ」）。`scanned_unix`（数えた時刻。起動直後のまだ数えていないあいだは 0）、`rec`（目の撮影の録画 `rec_日時/` の数 `count` と大きさ `bytes`）、`calib_images`（`dev` のときに校正が残す目の画像がある `calib_日時/` の数と、その画像の大きさ）、`deleting`（消している途中の種類 `rec` / `calib_images`。なければ `""`）、`deleted`（起動してから最後に終わった消去。`kind`・消した数 `count`・`bytes`・消せなかったものがあればその最初のファイルとシステムの理由 `error`〔全部消せたら `""`〕・終わった時刻 `unix`。まだ無ければ `null`）。10 秒ごとと、消し終わったときに数え直す。このフィールドがない古い eyecam-rec もある |
 | `pid` | int | デーモンのプロセス ID |
 | `updated_unix` | number | 書いた時刻（UNIX 秒） |
 
@@ -221,6 +225,7 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `preview on` / `preview off` | `ok`。パネルの目のプレビューの映像（下の「目のプレビュー」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は 3 秒だけ効くので、映像を見ているあいだは 1 秒ごとに送り直す（送り直しが止まれば、フレームが来ていなくても 3 秒で止まる）。`off` ですぐ止まる。run フォルダが tmpfs でなければ `on` は `err 目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ` |
 | `set widen_sensitivity <0〜1>` | `ok` または `err widen_sensitivity は 0 から 1 の数で`。見開きの感度（下の「見開きの感度」）。**どの state でもすぐ受け付けてすぐ返る**（スライダーを動かしながら送ってよい）。すぐにライブの値に効き、`~/.config/eyecam/settings.json` に保存される（新しいファイルに書いて rename）。次に起動したときもその値。保存できなければ `err 保存できなかった: …` |
 | `set lid_veto on` / `set lid_veto off` | `ok` または `err lid_veto は on か off で`。まぶたの拒否権（下の「まぶたの拒否権」）。**どの state でもすぐ受け付けてすぐ返る**。すぐにライブの処理に効き（次のフレームから）、`~/.config/eyecam/settings.json` の `lid_veto` に保存される（ほかのキーはそのまま。新しいファイルに書いて rename）。返事が届いた時点で status.json の `lid_veto.on` はもう新しい値。保存できなければ `err 保存できなかった: …` |
+| `delete rec` / `delete calib_images` | `ok`（消し始めた。返事が届いた時点で status.json の `stored.deleting` はもうその種類で、終わると `""` に戻って `stored.deleted` に結果が入る）または `err <理由>`。データのフォルダの目の撮影の録画（`rec_日時/` をまるごと）か、校正のフォルダ（`calib_日時/`）の目の画像（`eye_L.raw`・`eye_R.raw`・`headers.bin`・`lock_dump.bin` だけ）を消す（下の「保存してるデータ」）。**どの state でもすぐ受け付けてすぐ返る**が、`searching` / `recording` / `calibrating` のあいだは `err 録画や校正のあいだは消せないよ`、ほかの消去の途中は `err 消しているところ（終わるまで待ってね）`。消しているあいだは `start` / `calib …` を `err 保存してるデータを消しているところ（終わるまで待ってね）` で断る。種類がほかの言葉なら `err delete は rec か calib_images で` |
 | `set source auto` / `set source dsp` / `set source grab` | `ok` または `err source は auto か dsp か grab で`。バッファのもらい方（下の「settings.json」の `source`）。`~/.config/eyecam/settings.json` の `source` に保存して（ほかのキーはそのまま。`auto` は既定なのでキーを消す）、すぐにその設定で動く（`--source` を付けて起動していても、この起動のあいだは送った方。次の起動では `--source` が勝つ）。その設定で今選ぶ道（`auto` なら使える eyecam-grab があれば grab、なければ dsp）が、いまバッファをもらっている道と違えば、**バッファを手放してもらい直す**（tracker や dsp_service が切れたときと同じ道で、`waiting_fds` → `idle`。そのあいだ、ふつうは数秒、目のカメラの値は止まる）。同じなら保存するだけでバッファはそのまま。バッファを待っているあいだ（`waiting_fds`、`error` で取り直しを待つあいだ）は、設定が変わっただけでも待ち直す。もらい直すときは、返事が届いた時点で status.json は `state` が `waiting_fds`・`message` が `映像のもらい方を変えた`・`source_setting` が新しい値になっている。録画・校正のあいだ（`searching` / `recording` / `calibrating`）は `err 録画中` / `err 校正中` で断る（何も変えない）。保存できなければ `err 保存できなかった: …`（何も変えない） |
 | `driftlog on` / `driftlog on <stem>` / `driftlog off` | `on` は `ok <ファイルのパス>`（例 `ok /home/steamos/eyecam/drift/drift_2026-10-12_13-00-00.csv`）。`<stem>` はパネルの目のログの名前 `eyes_YYYY-MM-DD_HH-MM-SS` だけで、ファイルは `<stem>.eyecam.csv`（例 `ok /home/steamos/eyecam/drift/eyes_2026-10-12_14-03-09.eyecam.csv`）。その形でない名前は `err ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で`。ファイルが作れなければ `err ドリフトの記録を始められなかった: …`。`off` は `ok`（記録していなくても）。調査用のドリフトの記録（下の「ドリフトの記録」）。**どの state でもすぐ受け付けてすぐ返る**。`on` は毎回新しいファイルを作る（書いている途中のファイルは閉じる） |
 
@@ -233,8 +238,8 @@ unix stream ソケット（0600）。接続して 1 行（`\n` 終わり）送�
 | `searching` / `recording` | `err 録画中` | `ok` | `err 録画中`（`relearn` も） |
 | `calibrating` | `err 校正中` | `ok` | `err 校正中`（`relearn` も） |
 
-`set widen_sensitivity` と `set lid_veto` と `preview on` / `preview off` と `driftlog on` / `driftlog off` は上の表に関係なく、どの state（`waiting_fds` も）でも答える。
-`set source` は `waiting_fds` / `idle` / `error` で受け付け、`searching` / `recording` では `err 録画中`、`calibrating` では `err 校正中` で断る。
+`set widen_sensitivity` と `set lid_veto` と `preview on` / `preview off` と `driftlog on` / `driftlog off` と `delete …` は上の表に関係なく、どの state（`waiting_fds` も）でも答える（`delete` は録画中・校正中は断る）。
+`set source` は `waiting_fds` / `idle` / `error` で受け付け、`searching` / `recording` では `err 録画中`、`calibrating` では `err 校正中` で断る。`delete` の途中でも受け付ける（バッファとデータのフォルダは関係がないので。もらい直したあとも、消し終わるまで `start` / `calib …` は断る）。
 
 そのほかの返事: `err 知らないコマンド`、`err 応答がない`（10 秒以内に処理されなかった。ふつうは起きない）。
 
@@ -261,6 +266,7 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 `set widen_sensitivity` は status.json の `widen_sensitivity` に、`set lid_veto` は `lid_veto.on` に出るだけで、settings.json には書かない（`dev` だけは本物と同じく settings.json から読んで出す）。
 `set source` も settings.json には書かず、本物と同じく `source_setting` を変えて、道が変わるなら 2 秒 `waiting_fds` に戻る（`source` と `grab_state` は、その Frame に本当に入っている eyecam-grab で決まる）。録画・校正のあいだは本物と同じく断る。
 共有メモリ `live` は作らない。`preview on` / `off` には `ok` と答えるが、映像は作らない（`preview` は false のまま）。
+`stored` は `--out` のフォルダ（省くと `~/eyecam`）を本物と同じく数えて出す（読むだけ）。`delete …` には本物と同じく答えて `stored.deleted` に消すはずだった数を出すが、何も消さない。
 終了すると `state: "stopped"` を書く。`--run-dir` を省くと本物と同じ `/run/user/1000/eyecam/` を使う（本物の `--serve` と同時には動かせない）。
 
 ## ライブ処理（目の開き・見開き・細め・瞳孔）
@@ -498,6 +504,23 @@ fd も root もカメラも使わず、ファイルも書かずに、status.json
 `LOWER_DROP_MAX`）は、その線の 5 つと `upper_margin` が NaN。瞳が見えないフレームでも、最後の瞳の場所で測った線があれば書く。
 線は検出の中で当てはめた放物線をそのまま半分にしただけで、検出のしかたは変わらない（録画を `--replay` で流した CSV がこの欄の前と
 バイト単位で同じ）
+
+### 保存してるデータ（パネル向け、`stored` と `delete`）
+
+`--serve` のあいだ、データのフォルダ（`--out`、ふつうは `~/eyecam`）のうち大きくなるものを、自分のスレッドで（nice 15）10 秒ごとに数えて
+status.json の `stored` に出す。パネルの詳細タブの「データ」が、それを見て ctl.sock の `delete rec` / `delete calib_images` を送る。
+何を書いているかを知っている eyecam-rec が消すので、録画中・校正中は断り、消しているあいだは新しい録画や校正を始めない
+（`deleting` を status の鍵の中で立て、`start` / `calib` も同じ鍵の中で見る）。
+
+- `rec`: 目の撮影の録画 `rec_YYYY-MM-DD_HH-MM-SS/`（1 回で約 2.5 GB）。フォルダごと消す
+- `calib_images`: `dev` が settings.json でオンのときに校正が残す目の画像。`calib_YYYY-MM-DD_HH-MM-SS/` の `eye_L.raw`・`eye_R.raw`・
+  `headers.bin`・`lock_dump.bin` だけを消す（1 回で約 560 MB）。フォルダと、ほかのファイルは残す: `calib_result.json` は、calib.json に
+  見開きの履歴が無いときにそこから作り直す元（`live::CalibFile::history_from_results`）で、起動し直したあとの `last_calib` の元
+  （`status::LastCalib::newest_in`）で、パネルの記録と細めの学習用の録画が写しを取る元。`meta.txt`・`frames.csv`・`valve.csv`・
+  `cues.csv`・`calib_samples.csv` も小さい文字のファイルなので残す
+- 名前がこの形の、本物のフォルダだけ（リンクはたどらないし、リンク自体も消さない）。直下だけを見るので、細めの学習用の録画
+  （`contrib/`。パネルに、先に送ってから消すよう書いた自分の［録画を消す］がある）とドリフトの記録（`drift/`。数字だけで数 MB）は数えず、消さない
+- 消せないファイルがあっても残りは消し、最初のひとつのパスと理由を `stored.deleted.error` に出す
 
 ### ドリフトの記録（調査用、`driftlog`）
 

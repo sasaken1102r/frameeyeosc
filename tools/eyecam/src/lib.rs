@@ -18,6 +18,7 @@ pub mod ring;
 pub mod settings;
 pub mod shm;
 pub mod status;
+pub mod stored;
 pub mod veto;
 pub mod vision;
 

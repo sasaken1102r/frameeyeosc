@@ -149,12 +149,13 @@ const char* pageName(AdvPage page) {
         case AdvPage::Trouble: return "trouble";
         case AdvPage::Tools: return "tools";
         case AdvPage::Files: return "files";
+        case AdvPage::Data: return "data";
     }
     return "version";
 }
 
 bool parsePage(const std::string& name, AdvPage& page) {
-    for (const AdvPage p : {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files}) {
+    for (const AdvPage p : {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files, AdvPage::Data}) {
         if (name == pageName(p)) {
             page = p;
             return true;

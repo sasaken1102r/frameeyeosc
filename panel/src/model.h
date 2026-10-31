@@ -15,6 +15,7 @@
 #include "recorder.h"
 #include "report.h"
 #include "status.h"
+#include "stored.h"
 #include "update_check.h"
 
 #include <string>
@@ -61,6 +62,7 @@ struct PanelModel {
     AppsView apps;               ///< the other Frame apps (the row at the bottom of "Version" and the list it opens)
     eye_preview::View preview;   ///< the eye preview's values and pictures (only while its sheet is open)
     contrib::View contrib;       ///< "Help train the AI" (Debug tools; its sheet on the Advanced tab)
+    stored::View savedData;      ///< "Saved data" (the Data page): the eye logs' count, and each kind's delete
     std::string moduleLinkError; ///< why the Output tab's module link didn't open the browser ("" = none; its own
                                  ///< line under the link, never the eye cameras' setup's eyecam.spawnError)
 };

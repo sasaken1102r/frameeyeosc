@@ -143,6 +143,9 @@ enum class PanelAction {
     ContribDelete,     ///< "Delete the recordings": its confirmation (handled inside)
     ContribDeleteCancel,   ///< ...closed without deleting (handled inside)
     ContribDeleteConfirm,  ///< ...confirmed: the caller deletes the folder
+    DataDelete,        ///< a "Saved data" row's "Delete" (arg = stored::Kind): its confirmation (handled inside)
+    DataDeleteCancel,  ///< ...closed without deleting (handled inside)
+    DataDeleteConfirm, ///< ...confirmed (arg = stored::Kind): the caller deletes it, or asks eyecam-rec to
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -247,6 +250,7 @@ public:
     void setTab(PanelTab tab) {
         if (tab != tab_) advScroll_ = 0.0;
         tab_ = tab;
+        dataConfirm_ = -1;
     }
 
     /** @return the Advanced tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
@@ -259,6 +263,7 @@ public:
     void setAdvPage(AdvPage page) {
         if (page != advPage_) advScroll_ = 0.0;
         advPage_ = page;
+        dataConfirm_ = -1;
     }
 
     /** @return the Eyelids tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
@@ -420,6 +425,15 @@ public:
 
     /** Open the confirmation before deleting (for --fake-contrib). */
     void openContribDelete() { contribConfirm_ = true; }
+
+    /**
+     * Open "Saved data"'s confirmation before deleting a kind (for --fake-data).
+     * @param kind the kind
+     */
+    void openDataDelete(stored::Kind kind) { dataConfirm_ = static_cast<int>(kind); }
+
+    /** @return the kind whose delete is being confirmed (stored::Kind), -1 for none */
+    int dataConfirm() const { return dataConfirm_; }
 
     /** @return true while it wants the eye cameras' pictures (open, with its "Camera picture" on) */
     bool previewPictures() const { return previewOpen_ && previewCamera_; }
@@ -765,6 +779,8 @@ private:
     contrib::Page contribPage_ = contrib::Page::Record;  ///< ...opened as "Record" or "Recordings"
     bool contribAgreed_ = false;        ///< ..."Agree and continue" pressed (the question about glasses)
     bool contribConfirm_ = false;       ///< ...with the confirmation before deleting
+    int dataConfirm_ = -1;              ///< "Saved data": the kind whose delete is being confirmed (stored::Kind; -1
+                                        ///< none). In the Data page's place, closed by any other page or tab
     bool previewFrozen_ = false;        ///< ...stopped where it was
     bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
     eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at
@@ -1288,6 +1304,27 @@ private:
      * @return its height
      */
     double drawFilesPage(const Pen& pen, const UiText& t, const PanelModel& model, double top, double right);
+
+    /**
+     * "Data" ("Saved data"): what frameeyeosc and eyecam keep on the disk, each kind's count and size, and its "Delete"
+     * (eyecam's while eyecam-rec runs and counts them, never while it records or calibrates).
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param top the page's top
+     * @param right its right edge
+     * @return its height
+     */
+    double drawDataPage(const Pen& pen, const UiText& t, const PanelModel& model, double top, double right);
+
+    /**
+     * "Saved data"'s confirmation before a delete (dataConfirm_), in the Advanced tab's place: what goes, what stays,
+     * and that it can't be undone.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     */
+    void drawDataDelete(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
      * One record as a row: when, what, a short line, its result's badge and "View".

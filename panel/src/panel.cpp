@@ -650,6 +650,65 @@ std::string formatLong(const char* format, const std::string& first, const std::
     return text;
 }
 
+/**
+ * What "Saved data" knows of a kind now.
+ * @param m the model
+ * @param kind the kind
+ * @param usage how many and their size
+ * @return false while it isn't known (not counted yet, or eyecam-rec doesn't run or count them)
+ */
+bool dataUsage(const PanelModel& m, stored::Kind kind, stored::Usage& usage) {
+    const eyecam::Stored& s = m.eyecam.status.stored;
+    switch (kind) {
+        case stored::Kind::EyeLogs:
+            usage = m.savedData.eyeLogs;
+            return m.savedData.eyeLogsCounted;
+        case stored::Kind::EyecamRecordings: usage = {static_cast<int>(s.recCount), s.recBytes}; break;
+        case stored::Kind::CalibImages: usage = {static_cast<int>(s.calibCount), s.calibBytes}; break;
+    }
+    return m.eyecam.visible && s.present && s.scannedUnix > 0;
+}
+
+/**
+ * Whether eyecam-rec records or calibrates now (it deletes nothing then).
+ * @param m the model
+ * @return true if it does
+ */
+bool eyecamBusyForData(const PanelModel& m) {
+    const eyecam::State state = m.eyecam.status.state;
+    return state == eyecam::State::Searching || state == eyecam::State::Recording ||
+           state == eyecam::State::Calibrating;
+}
+
+/**
+ * Whether a kind's "Delete" can be pressed: there is some, no delete of it runs, and for eyecam's, eyecam-rec runs,
+ * counts them, deletes nothing else and neither records nor calibrates.
+ * @param m the model
+ * @param kind the kind
+ * @return true if it can
+ */
+bool dataDeletable(const PanelModel& m, stored::Kind kind) {
+    stored::Usage usage;
+    if (!dataUsage(m, kind, usage) || usage.count == 0 || m.savedData.of(kind).running) return false;
+    if (kind == stored::Kind::EyeLogs) return true;
+    return !eyecamBusyForData(m) && m.eyecam.status.stored.deleting.empty();
+}
+
+/**
+ * How many of a kind and their size, as its row says it.
+ * @param t texts
+ * @param kind the kind
+ * @param usage how many and their size
+ * @return "12 回分・2.4 GB"
+ */
+std::string dataCountText(const UiText& t, stored::Kind kind, const stored::Usage& usage) {
+    char text[128];
+    const int i = static_cast<int>(kind);
+    std::snprintf(text, sizeof(text), usage.count == 1 ? t.dataCountOneFormats[i] : t.dataCountFormats[i], usage.count,
+                  contrib::sizeText(usage.bytes).c_str());
+    return text;
+}
+
 std::string cameraUseText(const UiText& t, CameraUse use, const EyeStatus& s) {
     std::string text;
     switch (use) {
@@ -935,7 +994,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::AdvancedPage:
             // (from the left column's update notice too: the tab opens on it)
-            if (hit.arg < 0 || hit.arg > static_cast<int>(AdvPage::Files)) return {};
+            if (hit.arg < 0 || hit.arg > static_cast<int>(AdvPage::Data)) return {};
             setTab(PanelTab::Advanced);
             setAdvPage(static_cast<AdvPage>(hit.arg));
             closeAppsList();
@@ -1119,6 +1178,18 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             if (!contribConfirm_) return {};
             contribConfirm_ = false;
             contribPage_ = contrib::Page::Record;
+            return hit;
+        case PanelAction::DataDelete:
+            if (hit.arg < 0 || hit.arg >= stored::kKindCount) return {};
+            dataConfirm_ = hit.arg;
+            return {};
+        case PanelAction::DataDeleteCancel:
+            dataConfirm_ = -1;
+            return {};
+        case PanelAction::DataDeleteConfirm:
+            // The caller deletes it (or asks eyecam-rec to); the page shows it under way
+            if (dataConfirm_ < 0 || hit.arg != dataConfirm_) return {};
+            dataConfirm_ = -1;
             return hit;
         case PanelAction::EyecamChoose:
             if (!eyecamConfirm_.isOpen()) return {};
@@ -3791,6 +3862,11 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         drawRun(pen, t, m, m.contrib.running ? t.contribRow : "");
         return;
     }
+    // "Saved data"'s confirmation before a delete, in the Data page's place
+    if (dataConfirm_ >= 0 && advPage_ == AdvPage::Data) {
+        drawDataDelete(pen, t, m);
+        return;
+    }
     // The sub-tabs, and under them the one chosen (scrolled only if it doesn't fit)
     drawSubTabs(pen, t, m, kSubTabY, kSubTabH);
     drawScrolled(pen, kAdvPageTop, kAdvViewBottom, advScroll_, advMaxScroll_, advViewH_, advScrollable_,
@@ -3798,11 +3874,11 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
 }
 
 void EyePanel::drawSubTabs(const Pen& pen, const UiText& t, const PanelModel& m, double y, double h) {
-    const AdvPage pages[4] = {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files};
-    const char* labels[4] = {t.advVersion, t.advTrouble, t.advTools, t.advFiles};
+    const AdvPage pages[5] = {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files, AdvPage::Data};
+    const char* labels[5] = {t.advVersion, t.advTrouble, t.advTools, t.advFiles, t.advData};
     std::vector<Option> options;
     int selected = 0;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         options.push_back({labels[i], {PanelAction::AdvancedPage, nullptr, static_cast<int>(pages[i])}});
         if (advPage_ == pages[i]) selected = i;
     }
@@ -3910,6 +3986,7 @@ double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelMo
         case AdvPage::Trouble: return drawTroublePage(pen, t, m, top, right);
         case AdvPage::Tools: return drawToolsPage(pen, t, m, v, top, right);
         case AdvPage::Files: return drawFilesPage(pen, t, m, top, right);
+        case AdvPage::Data: return drawDataPage(pen, t, m, top, right);
     }
     return 0.0;
 }
@@ -4794,6 +4871,106 @@ double EyePanel::drawFilesPage(const Pen& pen, const UiText& t, const PanelModel
         y += infoH + std::max(26.0, (lines.size() - 1) * 24.0);
     }
     return y + 8 - top;
+}
+
+double EyePanel::drawDataPage(const Pen& pen, const UiText& t, const PanelModel& m, double top, double right) {
+    const stored::View& d = m.savedData;
+    double y = top + 4;
+    // The title, and what it is beside it
+    const double titleW = pen.text(kInnerX, y + 22, t.dataTitle, 20, kText, true);
+    const double hintX = kInnerX + titleW + 14;
+    pen.text(hintX, y + 22, ellipsize(pen, t.dataHint, 14, false, right - hintX, false), 14, kTextMuted);
+    y += 44;
+    // A row each: eyecam's only where eyecam-rec is installed (its status file is there)
+    const double h = 64;
+    const double bh = 44;
+    const double bw = std::max(110.0, pen.measure(t.dataDelete, 17, true) + 44);
+    for (int i = 0; i < stored::kKindCount; ++i) {
+        const stored::Kind kind = static_cast<stored::Kind>(i);
+        const bool eyecamKind = kind != stored::Kind::EyeLogs;
+        if (eyecamKind && !m.eyecam.status.present) continue;
+        const stored::Delete& job = d.of(kind);
+        drawRowLabel(pen, t, y, h, t.dataRows[i], t.dataRowHints[i], false);
+        // Beside it: how many and their size, and under that what goes on (or why it can't be deleted now)
+        stored::Usage usage;
+        const bool known = dataUsage(m, kind, usage);
+        const bool eyecamRuns = m.eyecam.visible && m.eyecam.status.stored.present;
+        const std::string value = known ? (usage.count == 0 ? std::string(t.dataNone) : dataCountText(t, kind, usage))
+                                        : std::string(eyecamKind && !eyecamRuns ? "—" : t.dataCounting);
+        std::string note;
+        Color noteColor = kTextMuted;
+        bool noteBold = false;
+        if (job.running) {
+            note = t.dataDeleting;
+            noteColor = kText;
+            noteBold = true;
+        } else if (eyecamKind && !eyecamRuns) {
+            note = t.dataNoEyecam;
+        } else if (eyecamKind && eyecamBusyForData(m)) {
+            note = t.dataBusy;
+        } else if (job.done && !job.ok) {
+            note = formatText(t.dataFailedFormat, job.error);
+            noteColor = kDanger;
+            noteBold = true;
+        } else if (job.done) {
+            note = formatText(t.dataDeletedFormat, dataCountText(t, kind, job.usage));
+            noteColor = kSuccess;
+            noteBold = true;
+        } else if (!eyecamKind && m.recording.recording) {
+            note = t.dataRecordingNote;
+        }
+        drawButton(pen, right - bw, y + (h - bh) / 2, bw, bh, t.dataDelete, {PanelAction::DataDelete, nullptr, i},
+                   dataDeletable(m, kind), false, 17);
+        const double textW = right - bw - 14 - kControlX;
+        if (note.empty()) {
+            pen.text(kControlX, centerBaseline(y, h, 17), ellipsize(pen, value, 17, false, textW, false), 17, kText);
+        } else {
+            pen.text(kControlX, y + h / 2 - 4, ellipsize(pen, value, 17, false, textW, false), 17, kText);
+            const double noteSize = fitSize(pen, note, 13, 11, textW, noteBold);
+            pen.text(kControlX, y + h / 2 + 17, ellipsize(pen, note, noteSize, noteBold, textW, false), noteSize,
+                     noteColor, noteBold);
+        }
+        y += h + 10;
+    }
+    return y + 8 - top;
+}
+
+void EyePanel::drawDataDelete(const Pen& pen, const UiText& t, const PanelModel& m) {
+    const stored::Kind kind = static_cast<stored::Kind>(dataConfirm_);
+    stored::Usage usage;
+    dataUsage(m, kind, usage);
+    // What goes, from where, and what stays
+    const std::string folder =
+        recorder::shortPath(kind == stored::Kind::EyeLogs ? recorder::defaultDir() : contrib::defaultHome()) + "/";
+    std::string body = formatLong(t.dataDeleteFormats[dataConfirm_], folder, dataCountText(t, kind, usage));
+    if (kind == stored::Kind::EyeLogs && m.recording.recording) {
+        body += (m.language == Language::En ? " " : "") + std::string(t.dataDeleteRecording);
+    }
+    // A card in the middle, as the other confirmations
+    const double w = kRight - kRightX - 120;
+    const double x = kRightX + 60;
+    const double ix = x + 28;
+    const double innerW = w - 56;
+    const std::vector<std::string> lines = wrapText(pen, body, 17, false, innerW, 5);
+    const double h = 26 + 32 + 14 + lines.size() * 26.0 + 22 + kControlH + 26;
+    double y = kContentY + 80 + std::max(0.0, (kContentH - 80 - h) / 2);
+    drawCard(pen, x, y, w, h, 20, kCard, kDanger, 2);
+    y += 26;
+    const char* title = t.dataDeleteTitles[dataConfirm_];
+    pen.text(ix, y + 24, title, fitSize(pen, title, 24, 16, innerW, true), kText, true);
+    y += 32 + 14;
+    for (const std::string& line : lines) {
+        pen.text(ix, y + 17, line, 17, kText);
+        y += 26;
+    }
+    y += 22;
+    const double yesW = std::max(160.0, pen.measure(t.dataDeleteYes, 18, true) + 56);
+    const double yesX = ix + innerW - yesW;
+    drawButton(pen, yesX, y, yesW, kControlH, t.dataDeleteYes, {PanelAction::DataDeleteConfirm, nullptr, dataConfirm_},
+               dataDeletable(m, kind), false, 18);
+    const double noW = std::max(140.0, pen.measure(t.dataCancel, 18, true) + 48);
+    drawButton(pen, yesX - 12 - noW, y, noW, kControlH, t.dataCancel, {PanelAction::DataDeleteCancel, nullptr, 0},
+               true, true, 18);
 }
 
 void EyePanel::drawRecord(const Pen& pen, const UiText& t, const PanelModel& m) {

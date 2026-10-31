@@ -68,7 +68,7 @@ pub const AUTO_GRAB_TRIES: u32 = 2;
 
 /// How many connections to dsp_service in a row may fail before `auto` (the default) offers eyecam-grab instead: about
 /// 15 s with `backoff`, so a dsp_service that only starts a little after eyecam at boot doesn't show the sudo setup.
-pub const AUTO_DSP_TRIES: u32 = 4;
+pub const AUTO_DSP_TRIES: u32 = 5;
 
 /// status.json's auto_grab while the buffer is to come from dsp_service: "dsp" (the panel doesn't ask for eyecam-grab),
 /// or with `auto` once AUTO_DSP_TRIES connections in a row failed, "dsp_unreachable" (the panel offers it).
@@ -303,9 +303,9 @@ mod tests {
         assert_eq!(auto_grab_label(true, AUTO_DSP_TRIES), "dsp_unreachable");
         // `dsp` set by hand: never
         assert_eq!(auto_grab_label(false, 100), "dsp");
-        // (the failures before the grab is offered take about 15 s)
+        // (the waits between the failures before the grab is offered: 1 + 2 + 4 + 8 s, the "about 15 s" the READMEs say)
         let waited: f64 = (1..AUTO_DSP_TRIES).map(backoff).sum();
-        assert!((7.0..=20.0).contains(&waited), "{waited}");
+        assert!((14.0..=16.0).contains(&waited), "{waited}");
     }
 
     #[test]

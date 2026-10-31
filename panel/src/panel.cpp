@@ -5824,7 +5824,8 @@ void EyePanel::drawCameraIntro(const Pen& pen, const UiText& t) {
     {
         y += 24;
         const double pad = 18;
-        const std::vector<std::string> lines = wrapText(pen, t.camIntroBox, 16, false, x1 - x0 - pad * 2 - 30, 3);
+        const char* box = eyecam::fromDsp(m.eyecam.status) ? t.camIntroBoxNoSudo : t.camIntroBox;
+        const std::vector<std::string> lines = wrapText(pen, box, 16, false, x1 - x0 - pad * 2 - 30, 3);
         const double boxH = pad * 2 + lines.size() * 24 - 4;
         fillRounded(pen, x0, y, x1 - x0, boxH, 12, kBg);
         drawInfoIcon(pen, x0 + pad + 8, y + pad + 9, kAccent);
@@ -5927,7 +5928,10 @@ void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, e
                             t.setupStepDone};
     const char* later[4] = {"", outdated ? t.setupToolUpdated : t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone};
     const char* doneLabels[3] = {t.setupPasswordLabel, t.setupToolLabel, t.setupLearnLabel};
-    const char* doneValues[3] = {t.setupPasswordSet, t.setupToolDone, t.setupLearnDone};
+    // (with the buffer from dsp_service neither the password nor the tool was needed)
+    const bool dsp = eyecam::fromDsp(m.eyecam.status);
+    const char* doneValues[3] = {dsp ? t.setupNotNeeded : t.setupPasswordSet, dsp ? t.setupNotNeeded : t.setupToolDone,
+                                 t.setupLearnDone};
 
     // The steps done in a row each, the current one in a card, those still to come under it
     const double cardTop = firstY - 17 + rowStep * current;
@@ -5950,7 +5954,8 @@ void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, e
         double x = circleX + 32;
         x += pen.text(x, cy + 6, doneLabels[i], 17, kText);
         x += pen.text(x, cy + 6, doneValues[i], 17, kSuccess, true);
-        if (i == 0) pen.text(x + 14, cy + 6, t.setupAutoChecked, 14, kTextMuted);
+        if (i == 0 && !dsp) pen.text(x + 14, cy + 6, t.setupAutoChecked, 14, kTextMuted);
+        if (i == 1 && dsp) pen.text(x + 14, cy + 6, t.setupNoSudo, 14, kTextMuted);
     }
     const double markY = cardTop + 34;
     if (done) {

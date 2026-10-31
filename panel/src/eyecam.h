@@ -608,6 +608,14 @@ Tool toolState(const Status& status);
 bool toolInstalled(const Status& status);
 
 /**
+ * Whether eyecam-rec takes the buffers from Valve's dsp_service (auto_grab "dsp"): no password or tool is needed, so
+ * the setup shows those steps as not needed.
+ * @param status the status
+ * @return true for dsp_service
+ */
+bool fromDsp(const Status& status);
+
+/**
  * What a set-up user is asked about the tool, on the usual page and in the left column: an outdated tool (still
  * working) or one below the safety floor (the cameras stopped) once the setup step is Done; nothing otherwise (before
  * that the checklist's (2) asks, as "install again"). Goes away by itself once eyecam-rec stops saying so.

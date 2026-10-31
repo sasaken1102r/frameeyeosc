@@ -114,7 +114,7 @@ struct Args {
     full_width: bool,
     beep: bool,
     volume: f32,
-    /// --source: where the buffers come from (else settings.json `source`, else eyecam-grab).
+    /// --source: where the buffers come from (else settings.json `source`, else auto).
     source: Option<Source>,
     /// --dsp-selftest: look at dsp_service's buffer for this many seconds, print what was seen, and exit.
     dsp_selftest: Option<f64>,
@@ -161,9 +161,9 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --cues FILE        play a beep cue protocol (lines `seconds label`, see protocol_widen.txt) and log cues.csv
   --swap             swap which camera is labelled L and R
   --wait-grab N      seconds to wait for `sudo eyecam-grab` (default 600; --serve waits forever)
-  --source S         where the camera buffers come from: grab (eyecam-grab, the default), dsp (Valve's dsp_service,
-                     no eyecam-grab needed; a test route) or auto (the installed eyecam-grab when it works, else dsp);
-                     overrides settings.json `source`
+  --source S         where the camera buffers come from: auto (the default: the installed eyecam-grab when it works,
+                     else dsp), grab (eyecam-grab) or dsp (Valve's dsp_service, no eyecam-grab needed; a test route);
+                     overrides settings.json `source` (and the panel's `set source`) at start
   --dsp-selftest N   connect to dsp_service, map its buffer read-only, count the eye camera frames for N seconds, look
                      for the ring once, print it all and exit (writes nothing; runs beside a running --serve)
   --wait-lock N      seconds to wait for eye frames each time they are searched for (default 300)

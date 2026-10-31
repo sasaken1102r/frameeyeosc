@@ -599,8 +599,7 @@ mod tests {
         }
         assert_eq!(parse_command("delete rec now"), Err("知らないコマンド".into()));
         use crate::dspsrc::Source;
-        assert_eq!(parse_command("set source auto
-"), Ok(Command::SetSource(Source::Auto)));
+        assert_eq!(parse_command("set source auto\n"), Ok(Command::SetSource(Source::Auto)));
         assert_eq!(parse_command(" set source dsp"), Ok(Command::SetSource(Source::Dsp)));
         assert_eq!(parse_command("set source grab"), Ok(Command::SetSource(Source::Grab)));
         for bad in ["set source", "set source udmabuf", "set source GRAB", "set source on"] {

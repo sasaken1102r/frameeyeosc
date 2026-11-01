@@ -3573,11 +3573,18 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// `path` and the folders above it under /dev/shm, each with its mode set outright: another test may be binding a
-    /// socket under umask 0177 meanwhile (see bind_private), which would leave a folder that can't be written into.
+    /// `path` and the folders above it under /dev/shm, made one at a time from the top, each with its mode set outright
+    /// before the next one goes in: another test may be binding a socket under umask 0177 meanwhile (see bind_private),
+    /// which would leave a folder that can't be written into (create_dir_all could then fail halfway down).
     fn private_dirs(path: &Path) {
-        fs::create_dir_all(path).unwrap();
-        for folder in path.ancestors().take_while(|p| p.starts_with("/dev/shm") && *p != Path::new("/dev/shm")) {
+        let mut folders: Vec<&Path> =
+            path.ancestors().take_while(|p| p.starts_with("/dev/shm") && *p != Path::new("/dev/shm")).collect();
+        folders.reverse();
+        for folder in folders {
+            match fs::create_dir(folder) {
+                Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => panic!("{}: {e}", folder.display()),
+                _ => {}
+            }
             fs::set_permissions(folder, fs::Permissions::from_mode(0o700)).unwrap();
         }
     }

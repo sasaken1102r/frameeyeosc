@@ -15,7 +15,7 @@ namespace {
  */
 UiText makeJapanese() {
     UiText t {};
-    t.title = "目の送信";
+    t.title = "アイトラッキング";
     t.badgeSending = "送信中";
     t.badgeWaiting = "目のデータ待ち";
     t.badgePaused = "一時停止中";

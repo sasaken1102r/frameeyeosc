@@ -162,6 +162,8 @@ struct UiText {
     const char* hintPupilBitsOff;  ///< ...under it while greyed (the pupils don't go straight to VRChat)
     const char* rowNativeEyes;      ///< also send VRChat's own eye tracking input (/tracking/eye/*)
     const char* hintNativeEyes;
+    const char* rowVrcFaceTracking;  ///< also send VRChat's own face tracking input (/tracking/face/v1)
+    const char* hintVrcFaceTracking;
     const char* rowTarget;
     const char* hintTarget;
     const char* targetAuto;
@@ -209,6 +211,7 @@ struct UiText {
     const char* strengthLight;
     const char* strengthMedium;
     const char* strengthStrong;
+    const char* strengthMax;        ///< the eyelid smoothing's fourth preset, above strong
     const char* custom;             ///< values don't match a preset
     const char* rawOnNote;          ///< smoothing is off, so these don't apply
     const char* rowFine;
@@ -393,6 +396,7 @@ struct UiText {
     const char* advTrouble;         ///< the diagnostics and the recent records
     const char* advTools;           ///< the gaze dots, the eye log and the eye capture
     const char* advFiles;           ///< the files and the process
+    const char* advData;            ///< what is kept on the disk ("Saved data")
     const char* updateToFormat;     ///< the update button: "%s に更新する" (the new version)
     const char* updateNotesFormat;  ///< over the new release's summary: "%s の内容"
     // The other Frame apps (frame-apps' strings.md): the row at the bottom of "Version", the list it opens and the
@@ -656,6 +660,9 @@ struct UiText {
     const char* toolNoticeTooOld;    ///< set up, the tool below the safety floor: the usual page's card (stronger)
     const char* nextToolOutdated;    ///< ...the left column's card, under "install again"
     const char* nextToolTooOld;
+    const char* toolNoticeDsp;        ///< set up, dsp_service not answering: the usual page's card (install the tool)
+    const char* toolNoticeDspPassword;  ///< ...the same, SteamOS without a password (its button opens passwd)
+    const char* nextToolDsp;          ///< ...the left column's card, under "install the tool"
     const char* setupStepLearn;  ///< step (3)
     const char* setupStepDone;  ///< step (4)
     const char* setupLaterTool;  ///< a step still to come, after its name
@@ -666,6 +673,8 @@ struct UiText {
     const char* setupAutoChecked;  ///< ...and how it was found
     const char* setupToolLabel;
     const char* setupToolDone;
+    const char* setupNotNeeded;  ///< the password and the tool with the buffer from dsp_service (green)
+    const char* setupNoSudo;     ///< ...and why, after the tool's
     const char* setupLearnLabel;
     const char* setupLearnDone;
     const char* setupPassPill;  ///< (1): the pill at the right of its title
@@ -883,6 +892,24 @@ struct UiText {
     const char* camPupilLine;  ///< the eye cameras page: under "Now" while the pupils go straight to VRChat
     const char* camWidenNotice;  ///< ...the pointer to the Eyelids tab
     const char* camWidenButton;  ///< ...its button
+    const char* srcTitle;        ///< ...the "How the video is taken" card: its title
+    const char* srcAuto;         ///< ...its choices: auto (the tool when it works, else dsp)
+    const char* srcDsp;          ///< ...dsp_service
+    const char* srcGrab;         ///< ...the tool
+    const char* srcNowDsp;       ///< ...under the title: the buffers come from dsp_service
+    const char* srcNowGrab;      ///< ...from the tool
+    const char* srcWaitDsp;      ///< ...being taken from dsp_service (waiting for them)
+    const char* srcWaitGrab;     ///< ...being taken with the tool
+    const char* srcToolIn;       ///< ...the tool's row: installed and usable
+    const char* srcToolOut;      ///< ...not installed
+    const char* srcToolBroken;   ///< ...installed but not usable
+    const char* srcInstall;      ///< ...its button while not installed (Konsole, sudo)
+    const char* srcRemove;       ///< ...while installed
+    const char* srcRemoveNeedsDsp;  ///< ...why "Remove" can't be pressed (the buffers come from the tool)
+    const char* srcSwitchLater;  ///< ...auto keeps dsp until it next takes the buffers, the tool ready meanwhile
+    const char* srcNeedsPassword;  ///< ...the tool missing and SteamOS without a password: set one first (the button
+                                   ///< opens passwd, setupPassButton)
+    const char* srcTradeoff;     ///< ...the bottom line: the tool or dsp, and keeping the other as a spare
     const char* calibCardTitle;  ///< a calibration from the page: the card title
     const char* calibResultTitle;  ///< ...how it ended: the card title
     const char* calibWearNote;  ///< ...at the right of the heading (this wear)
@@ -977,6 +1004,28 @@ struct UiText {
     const char* notRunning;
     const char* hoursMinutesFormat; ///< "%d h %d min"
     const char* minutesFormat;      ///< "%d min"
+    // Saved data (Files page): what is kept on the disk, each kind's count and size and its delete (stored::Kind)
+    const char* dataTitle;          ///< "Saved data"
+    const char* dataHint;           ///< ...what it is, beside the title
+    const char* dataRows[3];        ///< each kind's row
+    const char* dataRowHints[3];    ///< ...under it
+    const char* dataCountFormats[3];  ///< ...how many and their size (%d count, %s size)
+    const char* dataCountOneFormats[3];  ///< ...when there is one
+    const char* dataNone;           ///< nothing of that kind
+    const char* dataCounting;       ///< not counted yet
+    const char* dataNoEyecam;       ///< eyecam's rows while eyecam-rec doesn't run (or can't count them)
+    const char* dataBusy;           ///< ...while it records or calibrates
+    const char* dataRecordingNote;  ///< the eye log's row while one is recorded (left out, kept)
+    const char* dataDelete;         ///< each row's "Delete"
+    const char* dataDeleting;
+    const char* dataDeletedFormat;  ///< ...done (%s count and size)
+    const char* dataFailedFormat;   ///< ...not all of it (%s why)
+    const char* dataDeleteTitles[3];   ///< the confirmation's title, per kind
+    const char* dataDeleteFormats[3];  ///< ...what goes, what stays, and that it can't be undone (%s folder, %s count
+                                       ///< and size)
+    const char* dataDeleteRecording;   ///< ...added for the eye logs while one is recorded
+    const char* dataDeleteYes;
+    const char* dataCancel;
 
     // Recommendation prompt
     const char* promptVrchat;

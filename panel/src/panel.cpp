@@ -650,6 +650,65 @@ std::string formatLong(const char* format, const std::string& first, const std::
     return text;
 }
 
+/**
+ * What "Saved data" knows of a kind now.
+ * @param m the model
+ * @param kind the kind
+ * @param usage how many and their size
+ * @return false while it isn't known (not counted yet, or eyecam-rec doesn't run or count them)
+ */
+bool dataUsage(const PanelModel& m, stored::Kind kind, stored::Usage& usage) {
+    const eyecam::Stored& s = m.eyecam.status.stored;
+    switch (kind) {
+        case stored::Kind::EyeLogs:
+            usage = m.savedData.eyeLogs;
+            return m.savedData.eyeLogsCounted;
+        case stored::Kind::EyecamRecordings: usage = {static_cast<int>(s.recCount), s.recBytes}; break;
+        case stored::Kind::CalibImages: usage = {static_cast<int>(s.calibCount), s.calibBytes}; break;
+    }
+    return m.eyecam.visible && s.present && s.scannedUnix > 0;
+}
+
+/**
+ * Whether eyecam-rec records or calibrates now (it deletes nothing then).
+ * @param m the model
+ * @return true if it does
+ */
+bool eyecamBusyForData(const PanelModel& m) {
+    const eyecam::State state = m.eyecam.status.state;
+    return state == eyecam::State::Searching || state == eyecam::State::Recording ||
+           state == eyecam::State::Calibrating;
+}
+
+/**
+ * Whether a kind's "Delete" can be pressed: there is some, no delete of it runs, and for eyecam's, eyecam-rec runs,
+ * counts them, deletes nothing else and neither records nor calibrates.
+ * @param m the model
+ * @param kind the kind
+ * @return true if it can
+ */
+bool dataDeletable(const PanelModel& m, stored::Kind kind) {
+    stored::Usage usage;
+    if (!dataUsage(m, kind, usage) || usage.count == 0 || m.savedData.of(kind).running) return false;
+    if (kind == stored::Kind::EyeLogs) return true;
+    return !eyecamBusyForData(m) && m.eyecam.status.stored.deleting.empty();
+}
+
+/**
+ * How many of a kind and their size, as its row says it.
+ * @param t texts
+ * @param kind the kind
+ * @param usage how many and their size
+ * @return "12 回分・2.4 GB"
+ */
+std::string dataCountText(const UiText& t, stored::Kind kind, const stored::Usage& usage) {
+    char text[128];
+    const int i = static_cast<int>(kind);
+    std::snprintf(text, sizeof(text), usage.count == 1 ? t.dataCountOneFormats[i] : t.dataCountFormats[i], usage.count,
+                  contrib::sizeText(usage.bytes).c_str());
+    return text;
+}
+
 std::string cameraUseText(const UiText& t, CameraUse use, const EyeStatus& s) {
     std::string text;
     switch (use) {
@@ -935,7 +994,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::AdvancedPage:
             // (from the left column's update notice too: the tab opens on it)
-            if (hit.arg < 0 || hit.arg > static_cast<int>(AdvPage::Files)) return {};
+            if (hit.arg < 0 || hit.arg > static_cast<int>(AdvPage::Data)) return {};
             setTab(PanelTab::Advanced);
             setAdvPage(static_cast<AdvPage>(hit.arg));
             closeAppsList();
@@ -1119,6 +1178,18 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             if (!contribConfirm_) return {};
             contribConfirm_ = false;
             contribPage_ = contrib::Page::Record;
+            return hit;
+        case PanelAction::DataDelete:
+            if (hit.arg < 0 || hit.arg >= stored::kKindCount) return {};
+            dataConfirm_ = hit.arg;
+            return {};
+        case PanelAction::DataDeleteCancel:
+            dataConfirm_ = -1;
+            return {};
+        case PanelAction::DataDeleteConfirm:
+            // The caller deletes it (or asks eyecam-rec to); the page shows it under way
+            if (dataConfirm_ < 0 || hit.arg != dataConfirm_) return {};
+            dataConfirm_ = -1;
             return hit;
         case PanelAction::EyecamChoose:
             if (!eyecamConfirm_.isOpen()) return {};
@@ -1920,10 +1991,12 @@ void EyePanel::drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel
         return;
     }
     // What to do next, as a button to the eye cameras tab
-    // Set up, with an outdated or too old tool: install it again (from the usual page; the cameras may be stopped)
+    // Set up, with an outdated or too old tool: install it again (from the usual page; the cameras may be stopped); or
+    // dsp_service not answering: install it
     const eyecam::ToolNotice notice = eyecam::toolNotice(m.eyecam.status, m.eyecam.password);
     if (notice != eyecam::ToolNotice::None && (screen == SetupScreen::Done || screen == SetupScreen::Camera)) {
         const bool tooOld = notice == eyecam::ToolNotice::TooOld;
+        const bool dsp = notice == eyecam::ToolNotice::DspUnreachable;
         const PanelHit hit {PanelAction::Tab, nullptr, static_cast<int>(PanelTab::Eyecam)};
         const bool usable = tab_ != PanelTab::Eyecam;
         const int pointer = usable ? pointerState(hit) : 0;
@@ -1932,9 +2005,9 @@ void EyePanel::drawSetupNotice(const Pen& pen, const UiText& t, const PanelModel
         strokeRounded(pen, x0, y, w, h, 16, edge, 2);
         const double textW = w - 48;
         pen.text(x0 + 18, y + 23, t.nextTitle, fitSize(pen, t.nextTitle, 14, 10, textW, true), edge, true);
-        pen.text(x0 + 18, y + 48, t.setupStepToolAgain, fitSize(pen, t.setupStepToolAgain, 18, 12, textW, true), kText,
-                 true);
-        const char* sub = tooOld ? t.nextToolTooOld : t.nextToolOutdated;
+        const char* name = dsp ? t.setupStepTool : t.setupStepToolAgain;
+        pen.text(x0 + 18, y + 48, name, fitSize(pen, name, 18, 12, textW, true), kText, true);
+        const char* sub = dsp ? t.nextToolDsp : tooOld ? t.nextToolTooOld : t.nextToolOutdated;
         pen.text(x0 + 18, y + 70, sub, fitSize(pen, sub, 14, 10, textW, false), tooOld ? kText : kTextMuted);
         drawChevron(pen, x1 - 22, y + h / 2, 14, 2.5, edge);
         addButton(hit, x0, y, w, h, usable);
@@ -2372,11 +2445,18 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
 void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
     const EyeStatus& s = m.status;
     double y = kRowTop;
-    const double cy = (kRowH - kControlH) / 2;
     const std::string output = v.text(key::kOutput);
     const bool livelink = output == kOutputLivelink;
     const bool module = output == kOutputModule;
     const bool etvr = output == kOutputEtvr;
+    const bool direct = !livelink && !module && !etvr;
+    // VRChat directly has the most rows: all of them a little shorter there (the other outputs' as on the other tabs)
+    const double rowH = direct ? 56 : kRowH;
+    const double controlH = direct ? 46 : kControlH;
+    const double cy = (rowH - controlH) / 2;
+    // ...and a line under a control (an example address, a hint) closer to it, the row with that line
+    const double lineDrop = direct ? 13 : 16;
+    const double lineRowH = rowH + (direct ? 18 : 24);
     // The pupils come from the eye cameras: their rows only while those are in use (with the badge), else one line
     const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
 
@@ -2388,18 +2468,18 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         const bool locked = v.locked(key::kPupilBits);
         const bool usable = row == PupilBitsRow::Usable;
         const int bits = static_cast<int>(std::lround(v.number(key::kPupilBits)));
-        drawRowLabel(pen, t, rowY, kRowH, t.rowPupilBits, "", locked, 0, true);
+        drawRowLabel(pen, t, rowY, rowH, t.rowPupilBits, "", locked, 0, true);
         std::vector<Option> options;
         for (int n = 0; n <= 4; ++n) {
             options.push_back({n == 0 ? std::string(t.pupilBitsFloat) : std::to_string(n),
                                {PanelAction::SetInteger, key::kPupilBits, n}, usable});
         }
         // Greyed like a locked control (the choice outlined, not filled), so it doesn't look in effect
-        drawSegmented(pen, kControlX, rowY + cy, kControlW, kControlH, options, bits >= 0 && bits <= 4 ? bits : -1, 19,
+        drawSegmented(pen, kControlX, rowY + cy, kControlW, controlH, options, bits >= 0 && bits <= 4 ? bits : -1, 19,
                       locked || !usable);
         const char* hint = usable ? t.hintPupilBits : t.hintPupilBitsOff;
-        pen.text(kControlX + 4, rowY + kRowH + 16, hint, fitSize(pen, hint, 15, 11, kControlW, false), kTextMuted);
-        return rowY + kRowH + 24;
+        pen.text(kControlX + 4, rowY + rowH + lineDrop, hint, fitSize(pen, hint, 15, 11, kControlW, false), kTextMuted);
+        return rowY + lineRowH;
     };
 
     // Target PC: automatic, fixed to the PC frameeyeosc sends to now, or typed on the keypad; any host set by hand
@@ -2409,15 +2489,15 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         const std::string host = v.text(key::kHost);
         const bool isAuto = host.empty() || host == "auto";
         const bool canFix = s.running && !hostOfTarget(s.target).empty();
-        drawRowLabel(pen, t, y, kRowH, t.rowTarget, t.hintTarget, locked);
-        drawSegmented(pen, kControlX, y + cy, kControlW, kControlH,
+        drawRowLabel(pen, t, y, rowH, t.rowTarget, t.hintTarget, locked);
+        drawSegmented(pen, kControlX, y + cy, kControlW, controlH,
                       {{t.targetAuto, {PanelAction::HostAuto, key::kHost, 0}},
                        {t.targetFixNow, {PanelAction::FixHost, key::kHost, 0}, canFix},
                        {isAuto ? std::string(t.targetEnter) : formatText(t.targetManualFormat, host),
                         {PanelAction::HostEnter, key::kHost, 0}}},
                       isAuto ? 0 : 2, 19, locked);
     }
-    y += kRowH + kRowGap;
+    y += rowH + kRowGap;
     // Port, with the chosen output's default as the hint
     {
         const bool locked = v.locked(key::kPort);
@@ -2425,24 +2505,24 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         const char* hint = livelink ? t.portDefaultLivelink
                            : module ? t.portDefaultModule
                                     : (etvr ? t.portDefaultEtvr : t.portDefaultVrchat);
-        drawRowLabel(pen, t, y, kRowH, t.rowPort, hint, locked);
-        drawStepper(pen, kControlX, y + cy, 220, kControlH, key::kPort, v.port(), std::to_string(v.port()), true,
+        drawRowLabel(pen, t, y, rowH, t.rowPort, hint, locked);
+        drawStepper(pen, kControlX, y + cy, 220, controlH, key::kPort, v.port(), std::to_string(v.port()), true,
                     locked);
         if (!isDefault && !locked) {
             const PanelHit hit {PanelAction::PortDefault, key::kPort, 0};
             const double bx = kControlX + 232;
             const double bw = 170;
             const int pointer = pointerState(hit);
-            fillRounded(pen, bx, y + cy, bw, kControlH, kControlH / 2, pointer > 0 ? kControlHover : kControl);
-            strokeRounded(pen, bx, y + cy, bw, kControlH, kControlH / 2, kBorder, 2);
+            fillRounded(pen, bx, y + cy, bw, controlH, controlH / 2, pointer > 0 ? kControlHover : kControl);
+            strokeRounded(pen, bx, y + cy, bw, controlH, controlH / 2, kBorder, 2);
             const double size = fitSize(pen, t.portReset, 18, 12, bw - 24, false);
-            textCentered(pen, bx + bw / 2, centerBaseline(y + cy, kControlH, size), t.portReset, size, kText, false);
-            addButton(hit, bx, y + cy, bw, kControlH);
+            textCentered(pen, bx + bw / 2, centerBaseline(y + cy, controlH, size), t.portReset, size, kText, false);
+            addButton(hit, bx, y + cy, bw, controlH);
         }
     }
-    y += kRowH + kRowGap;
+    y += rowH + kRowGap;
 
-    if (!livelink && !module && !etvr) {
+    if (direct) {
         // VRChat directly: the parameter prefix...
         {
             const bool locked = v.locked(key::kPrefix);
@@ -2450,18 +2530,18 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
             const bool none = prefix.empty() || prefix == "/";
             const int selected = prefix == "/FT" ? 0 : (none ? 1 : -1);
             const std::string hint = selected < 0 ? formatText(t.prefixOther, prefix) : "";
-            drawRowLabel(pen, t, y, kRowH, t.rowPrefix, hint, locked);
-            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+            drawRowLabel(pen, t, y, rowH, t.rowPrefix, hint, locked);
+            drawSegmented(pen, kControlX, y + cy, 300, controlH,
                           {{"/FT", {PanelAction::PrefixFt, key::kPrefix, 0}},
                            {t.prefixNone, {PanelAction::PrefixNone, key::kPrefix, 0}}},
                           selected, 20, locked);
             std::string path = prefix;
             while (!path.empty() && path.back() == '/') path.pop_back();
             const std::string example = std::string(t.prefixExample) + "/avatar/parameters" + path + "/v2/EyeLeftX";
-            pen.text(kControlX + 4, y + kRowH + 16, example, fitSize(pen, example, 15, 11, kControlW, false),
+            pen.text(kControlX + 4, y + rowH + lineDrop, example, fitSize(pen, example, 15, 11, kControlW, false),
                      kTextMuted);
         }
-        y += kRowH + 24;
+        y += lineRowH;
         // ...and how EyeTrackingActive goes out
         {
             const bool locked = v.locked(key::kEyeTrackingActive);
@@ -2470,42 +2550,56 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
             for (int i = 0; i < 3; ++i) {
                 if (type == kActiveTypes[i]) selected = i;
             }
-            drawRowLabel(pen, t, y, kRowH, t.rowActiveType, t.hintActiveType, locked);
-            drawSegmented(pen, kControlX, y + cy, kControlW, kControlH,
+            drawRowLabel(pen, t, y, rowH, t.rowActiveType, t.hintActiveType, locked);
+            drawSegmented(pen, kControlX, y + cy, kControlW, controlH,
                           {{"Bool", {PanelAction::SetActiveType, key::kEyeTrackingActive, 0}},
                            {"Float", {PanelAction::SetActiveType, key::kEyeTrackingActive, 1}},
                            {t.activeOff, {PanelAction::SetActiveType, key::kEyeTrackingActive, 2}}},
                           selected, 19, locked);
         }
-        y += kRowH + kRowGap;
+        y += rowH + kRowGap;
         // ...and, for avatars made for Steam Link's own OSC, its names too (never with the prefix)
         {
             const bool locked = v.locked(key::kSteamlinkParams);
-            drawRowLabel(pen, t, y, kRowH, t.rowSteamlink, t.hintSteamlink, locked);
-            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+            drawRowLabel(pen, t, y, rowH, t.rowSteamlink, t.hintSteamlink, locked);
+            drawSegmented(pen, kControlX, y + cy, 300, controlH,
                           {{t.on, {PanelAction::SetBool, key::kSteamlinkParams, 1}},
                            {t.off, {PanelAction::SetBool, key::kSteamlinkParams, 0}}},
                           v.flag(key::kSteamlinkParams) ? 0 : 1, 20, locked);
             const std::string example = std::string(t.prefixExample) + "/avatar/parameters/LeftEyeX" + t.steamlinkNoPrefix;
-            pen.text(kControlX + 4, y + kRowH + 16, example, fitSize(pen, example, 15, 11, kControlW, false),
+            pen.text(kControlX + 4, y + rowH + lineDrop, example, fitSize(pen, example, 15, 11, kControlW, false),
                      kTextMuted);
         }
-        y += kRowH + 24;
+        y += lineRowH;
         // ...and VRChat's own eye tracking input, for avatars without VRCFT parameters
         {
             const bool locked = v.locked(key::kNativeEyes);
             // The hint is too long for the label column: it goes under the control, like the example addresses above
-            drawRowLabel(pen, t, y, kRowH, t.rowNativeEyes, "", locked);
-            drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+            drawRowLabel(pen, t, y, rowH, t.rowNativeEyes, "", locked);
+            drawSegmented(pen, kControlX, y + cy, 300, controlH,
                           {{t.on, {PanelAction::SetBool, key::kNativeEyes, 1}},
                            {t.off, {PanelAction::SetBool, key::kNativeEyes, 0}}},
                           v.flag(key::kNativeEyes) ? 0 : 1, 21, locked);
-            pen.text(kControlX + 4, y + kRowH + 16, t.hintNativeEyes,
+            pen.text(kControlX + 4, y + rowH + lineDrop, t.hintNativeEyes,
                      fitSize(pen, t.hintNativeEyes, 15, 11, kControlW, false), kTextMuted);
         }
-        y += kRowH + 24;
+        y += lineRowH;
+        // ...and VRChat's own face tracking input (/tracking/face/v1), for avatars with Face Tracking set up
+        {
+            const bool locked = v.locked(key::kVrcFaceTracking);
+            // (its hint under the control too)
+            drawRowLabel(pen, t, y, rowH, t.rowVrcFaceTracking, "", locked);
+            drawSegmented(pen, kControlX, y + cy, 300, controlH,
+                          {{t.on, {PanelAction::SetBool, key::kVrcFaceTracking, 1}},
+                           {t.off, {PanelAction::SetBool, key::kVrcFaceTracking, 0}}},
+                          v.flag(key::kVrcFaceTracking) ? 0 : 1, 21, locked);
+            pen.text(kControlX + 4, y + rowH + lineDrop, t.hintVrcFaceTracking,
+                     fitSize(pen, t.hintVrcFaceTracking, 15, 11, kControlW, false), kTextMuted);
+        }
+        y += lineRowH;
         if (pupilsLineShown(output, camera)) {
-            drawCameraLine(pen, t.cameraLinePupils, y + 2);
+            // (a little further down than elsewhere: the hint above sits closer to its row here)
+            drawCameraLine(pen, t.cameraLinePupils, y + 6);
         } else {
             pupilBits(y);
         }
@@ -2523,14 +2617,14 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         // (where they go now under its title, once frameeyeosc says)
         const std::string target =
             on && s.running && !s.pupilTarget.empty() ? formatText(t.pupilsTargetFormat, s.pupilTarget) : std::string();
-        drawRowLabel(pen, t, y, kRowH, t.rowPupils, target, locked, 0, true);
-        drawSegmented(pen, kControlX, y + cy, 300, kControlH,
+        drawRowLabel(pen, t, y, rowH, t.rowPupils, target, locked, 0, true);
+        drawSegmented(pen, kControlX, y + cy, 300, controlH,
                       {{t.on, {PanelAction::SetBool, key::kPupilsToVrchat, 1}},
                        {t.off, {PanelAction::SetBool, key::kPupilsToVrchat, 0}}},
                       on ? 0 : 1, 21, locked);
-        pen.text(kControlX + 4, y + kRowH + 16, t.hintPupils, fitSize(pen, t.hintPupils, 15, 11, kControlW, false),
+        pen.text(kControlX + 4, y + rowH + lineDrop, t.hintPupils, fitSize(pen, t.hintPupils, 15, 11, kControlW, false),
                  kTextMuted);
-        y += kRowH + 24;
+        y += lineRowH;
         y = pupilBits(y);
     }
 
@@ -3336,15 +3430,16 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         y = baseline - 7;
     }
     if (camera) drawRowDivider(pen, y);
-    // Eyelid smoothing: three presets (the two values themselves on "Fine-tune")
+    // Eyelid smoothing: four presets (the two values themselves on "Fine-tune")
     {
         const bool locked = v.locked(key::kLidMinCutoff) || v.locked(key::kLidBeta);
         const int preset = matchingLidPreset(v);
         drawRowLabel(pen, t, y, kRowH, t.rowLidSmooth, preset < 0 ? t.custom : t.lidSmoothHint, locked);
         std::vector<Option> options;
-        const char* names[3] = {t.strengthLight, t.strengthMedium, t.strengthStrong};
-        for (int i = 0; i < 3; ++i) options.push_back({names[i], {PanelAction::LidPreset, nullptr, i}});
-        drawSegmented(pen, kControlX, y + cy, 300, kControlH, options, preset, 20, locked);
+        const char* names[kLidPresetCount] = {t.strengthLight, t.strengthMedium, t.strengthStrong, t.strengthMax};
+        for (int i = 0; i < kLidPresetCount; ++i) options.push_back({names[i], {PanelAction::LidPreset, nullptr, i}});
+        // (wider than the other switches, so four English names keep their size)
+        drawSegmented(pen, kControlX, y + cy, 400, kControlH, options, preset, 20, locked);
         y += kRowH;
         drawRowDivider(pen, y);
     }
@@ -3768,6 +3863,11 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
         drawRun(pen, t, m, m.contrib.running ? t.contribRow : "");
         return;
     }
+    // "Saved data"'s confirmation before a delete, in the Data page's place
+    if (dataConfirm_ >= 0 && advPage_ == AdvPage::Data) {
+        drawDataDelete(pen, t, m);
+        return;
+    }
     // The sub-tabs, and under them the one chosen (scrolled only if it doesn't fit)
     drawSubTabs(pen, t, m, kSubTabY, kSubTabH);
     drawScrolled(pen, kAdvPageTop, kAdvViewBottom, advScroll_, advMaxScroll_, advViewH_, advScrollable_,
@@ -3775,11 +3875,11 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
 }
 
 void EyePanel::drawSubTabs(const Pen& pen, const UiText& t, const PanelModel& m, double y, double h) {
-    const AdvPage pages[4] = {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files};
-    const char* labels[4] = {t.advVersion, t.advTrouble, t.advTools, t.advFiles};
+    const AdvPage pages[5] = {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files, AdvPage::Data};
+    const char* labels[5] = {t.advVersion, t.advTrouble, t.advTools, t.advFiles, t.advData};
     std::vector<Option> options;
     int selected = 0;
-    for (int i = 0; i < 4; ++i) {
+    for (int i = 0; i < 5; ++i) {
         options.push_back({labels[i], {PanelAction::AdvancedPage, nullptr, static_cast<int>(pages[i])}});
         if (advPage_ == pages[i]) selected = i;
     }
@@ -3887,6 +3987,7 @@ double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelMo
         case AdvPage::Trouble: return drawTroublePage(pen, t, m, top, right);
         case AdvPage::Tools: return drawToolsPage(pen, t, m, v, top, right);
         case AdvPage::Files: return drawFilesPage(pen, t, m, top, right);
+        case AdvPage::Data: return drawDataPage(pen, t, m, top, right);
     }
     return 0.0;
 }
@@ -4771,6 +4872,106 @@ double EyePanel::drawFilesPage(const Pen& pen, const UiText& t, const PanelModel
         y += infoH + std::max(26.0, (lines.size() - 1) * 24.0);
     }
     return y + 8 - top;
+}
+
+double EyePanel::drawDataPage(const Pen& pen, const UiText& t, const PanelModel& m, double top, double right) {
+    const stored::View& d = m.savedData;
+    double y = top + 4;
+    // The title, and what it is beside it
+    const double titleW = pen.text(kInnerX, y + 22, t.dataTitle, 20, kText, true);
+    const double hintX = kInnerX + titleW + 14;
+    pen.text(hintX, y + 22, ellipsize(pen, t.dataHint, 14, false, right - hintX, false), 14, kTextMuted);
+    y += 44;
+    // A row each: eyecam's only where eyecam-rec is installed (its status file is there)
+    const double h = 64;
+    const double bh = 44;
+    const double bw = std::max(110.0, pen.measure(t.dataDelete, 17, true) + 44);
+    for (int i = 0; i < stored::kKindCount; ++i) {
+        const stored::Kind kind = static_cast<stored::Kind>(i);
+        const bool eyecamKind = kind != stored::Kind::EyeLogs;
+        if (eyecamKind && !m.eyecam.status.present) continue;
+        const stored::Delete& job = d.of(kind);
+        drawRowLabel(pen, t, y, h, t.dataRows[i], t.dataRowHints[i], false);
+        // Beside it: how many and their size, and under that what goes on (or why it can't be deleted now)
+        stored::Usage usage;
+        const bool known = dataUsage(m, kind, usage);
+        const bool eyecamRuns = m.eyecam.visible && m.eyecam.status.stored.present;
+        const std::string value = known ? (usage.count == 0 ? std::string(t.dataNone) : dataCountText(t, kind, usage))
+                                        : std::string(eyecamKind && !eyecamRuns ? "—" : t.dataCounting);
+        std::string note;
+        Color noteColor = kTextMuted;
+        bool noteBold = false;
+        if (job.running) {
+            note = t.dataDeleting;
+            noteColor = kText;
+            noteBold = true;
+        } else if (eyecamKind && !eyecamRuns) {
+            note = t.dataNoEyecam;
+        } else if (eyecamKind && eyecamBusyForData(m)) {
+            note = t.dataBusy;
+        } else if (job.done && !job.ok) {
+            note = formatText(t.dataFailedFormat, job.error);
+            noteColor = kDanger;
+            noteBold = true;
+        } else if (job.done) {
+            note = formatText(t.dataDeletedFormat, dataCountText(t, kind, job.usage));
+            noteColor = kSuccess;
+            noteBold = true;
+        } else if (!eyecamKind && m.recording.recording) {
+            note = t.dataRecordingNote;
+        }
+        drawButton(pen, right - bw, y + (h - bh) / 2, bw, bh, t.dataDelete, {PanelAction::DataDelete, nullptr, i},
+                   dataDeletable(m, kind), false, 17);
+        const double textW = right - bw - 14 - kControlX;
+        if (note.empty()) {
+            pen.text(kControlX, centerBaseline(y, h, 17), ellipsize(pen, value, 17, false, textW, false), 17, kText);
+        } else {
+            pen.text(kControlX, y + h / 2 - 4, ellipsize(pen, value, 17, false, textW, false), 17, kText);
+            const double noteSize = fitSize(pen, note, 13, 11, textW, noteBold);
+            pen.text(kControlX, y + h / 2 + 17, ellipsize(pen, note, noteSize, noteBold, textW, false), noteSize,
+                     noteColor, noteBold);
+        }
+        y += h + 10;
+    }
+    return y + 8 - top;
+}
+
+void EyePanel::drawDataDelete(const Pen& pen, const UiText& t, const PanelModel& m) {
+    const stored::Kind kind = static_cast<stored::Kind>(dataConfirm_);
+    stored::Usage usage;
+    dataUsage(m, kind, usage);
+    // What goes, from where, and what stays
+    const std::string folder =
+        recorder::shortPath(kind == stored::Kind::EyeLogs ? recorder::defaultDir() : contrib::defaultHome()) + "/";
+    std::string body = formatLong(t.dataDeleteFormats[dataConfirm_], folder, dataCountText(t, kind, usage));
+    if (kind == stored::Kind::EyeLogs && m.recording.recording) {
+        body += (m.language == Language::En ? " " : "") + std::string(t.dataDeleteRecording);
+    }
+    // A card in the middle, as the other confirmations
+    const double w = kRight - kRightX - 120;
+    const double x = kRightX + 60;
+    const double ix = x + 28;
+    const double innerW = w - 56;
+    const std::vector<std::string> lines = wrapText(pen, body, 17, false, innerW, 5);
+    const double h = 26 + 32 + 14 + lines.size() * 26.0 + 22 + kControlH + 26;
+    double y = kContentY + 80 + std::max(0.0, (kContentH - 80 - h) / 2);
+    drawCard(pen, x, y, w, h, 20, kCard, kDanger, 2);
+    y += 26;
+    const char* title = t.dataDeleteTitles[dataConfirm_];
+    pen.text(ix, y + 24, title, fitSize(pen, title, 24, 16, innerW, true), kText, true);
+    y += 32 + 14;
+    for (const std::string& line : lines) {
+        pen.text(ix, y + 17, line, 17, kText);
+        y += 26;
+    }
+    y += 22;
+    const double yesW = std::max(160.0, pen.measure(t.dataDeleteYes, 18, true) + 56);
+    const double yesX = ix + innerW - yesW;
+    drawButton(pen, yesX, y, yesW, kControlH, t.dataDeleteYes, {PanelAction::DataDeleteConfirm, nullptr, dataConfirm_},
+               dataDeletable(m, kind), false, 18);
+    const double noW = std::max(140.0, pen.measure(t.dataCancel, 18, true) + 48);
+    drawButton(pen, yesX - 12 - noW, y, noW, kControlH, t.dataCancel, {PanelAction::DataDeleteCancel, nullptr, 0},
+               true, true, 18);
 }
 
 void EyePanel::drawRecord(const Pen& pen, const UiText& t, const PanelModel& m) {
@@ -5904,7 +6105,10 @@ void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, e
                             t.setupStepDone};
     const char* later[4] = {"", outdated ? t.setupToolUpdated : t.setupLaterTool, t.setupLaterLearn, t.setupLaterDone};
     const char* doneLabels[3] = {t.setupPasswordLabel, t.setupToolLabel, t.setupLearnLabel};
-    const char* doneValues[3] = {t.setupPasswordSet, t.setupToolDone, t.setupLearnDone};
+    // (with the buffer from dsp_service neither the password nor the tool was needed)
+    const bool dsp = eyecam::fromDsp(m.eyecam.status);
+    const char* doneValues[3] = {dsp ? t.setupNotNeeded : t.setupPasswordSet, dsp ? t.setupNotNeeded : t.setupToolDone,
+                                 t.setupLearnDone};
 
     // The steps done in a row each, the current one in a card, those still to come under it
     const double cardTop = firstY - 17 + rowStep * current;
@@ -5927,7 +6131,8 @@ void EyePanel::drawSetup(const Pen& pen, const UiText& t, const PanelModel& m, e
         double x = circleX + 32;
         x += pen.text(x, cy + 6, doneLabels[i], 17, kText);
         x += pen.text(x, cy + 6, doneValues[i], 17, kSuccess, true);
-        if (i == 0) pen.text(x + 14, cy + 6, t.setupAutoChecked, 14, kTextMuted);
+        if (i == 0 && !dsp) pen.text(x + 14, cy + 6, t.setupAutoChecked, 14, kTextMuted);
+        if (i == 1 && dsp) pen.text(x + 14, cy + 6, t.setupNoSudo, 14, kTextMuted);
     }
     const double markY = cardTop + 34;
     if (done) {
@@ -6672,18 +6877,25 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         cairo_stroke(cr);
     };
 
-    // The tool to install again (set up): outdated but working, or below the safety floor with the cameras stopped.
-    // The same Konsole as the checklist's (2); it goes by itself once eyecam-rec stops saying so
+    // The tool to install again (set up): outdated but working, or below the safety floor with the cameras stopped;
+    // or to install while dsp_service doesn't answer (passwd first while SteamOS has none). The same Konsole as the
+    // checklist's (2); it goes by itself once eyecam-rec stops saying so
     const eyecam::ToolNotice notice = eyecam::toolNotice(s, view.password);
     if (notice != eyecam::ToolNotice::None) {
         const bool tooOld = notice == eyecam::ToolNotice::TooOld;
+        const bool dsp = notice == eyecam::ToolNotice::DspUnreachable;
+        const bool passwd = dsp && view.password == eyecam::PasswordState::NotSet;
+        const char* label = passwd ? t.setupPassButton : t.setupCheckButton;
+        const char* text = passwd ? t.toolNoticeDspPassword
+                           : dsp  ? t.toolNoticeDsp
+                           : tooOld ? t.toolNoticeTooOld
+                                    : t.toolNoticeOutdated;
         const Color edge = tooOld ? kDanger : kAccent;
         const double bh = 44;
-        const double bw = pen.measure(t.setupCheckButton, 17, true) + 64;
+        const double bw = pen.measure(label, 17, true) + 64;
         const double bx = kInnerRight - 14 - bw;
         const double textX = kInnerX + 52;
-        const std::vector<std::string> lines =
-            wrapText(pen, tooOld ? t.toolNoticeTooOld : t.toolNoticeOutdated, 16, true, bx - 16 - textX, 3);
+        const std::vector<std::string> lines = wrapText(pen, text, 16, true, bx - 16 - textX, 3);
         const bool failed = !view.spawnError.empty();
         const double textH = lines.size() * 22 + (failed ? 20 : 0);
         const double boxH = std::max(bh + 20, textH + 22);
@@ -6699,7 +6911,8 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
             pen.text(textX, baseline - 2, ellipsize(pen, view.spawnError, 13, true, bx - 16 - textX, false), 13, kDanger,
                      true);
         }
-        drawIconButton(pen, bx, y + (boxH - bh) / 2, bw, bh, t.setupCheckButton, {PanelAction::SetupKonsole, nullptr, 0},
+        drawIconButton(pen, bx, y + (boxH - bh) / 2, bw, bh, label,
+                       {PanelAction::SetupKonsole, nullptr, passwd ? setup_tools::kKonsolePasswd : setup_tools::kKonsoleInstall},
                        true, true, 17, ButtonIcon::Terminal);
         y += boxH + 6;
     }
@@ -6926,11 +7139,14 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         baseline -= 24;
     }
 
-    // "When...": what to do about widening, in a box down to the lines above with a gap of at least 10 px over their
-    // letters (rows that don't fit are left out, the box too if none does). `baseline` is now one line above the top
-    // line's baseline: that line's letters start about 14 px above its own baseline
-    const double boxTop = y + 8;
+    // How the video is taken, then "When...": what to do about widening, in a box down to the lines above with a gap
+    // of at least 10 px over their letters (rows that don't fit are left out, the box too if none does; the card goes
+    // first). `baseline` is now one line above the top line's baseline: that line's letters start about 14 px above
+    // its own baseline
     const double boxBottom = lines.empty() ? bottom + 2 : baseline + 24 - 14 - 10;
+    const double cardH = drawSourceCard(pen, t, view, y + 8, boxBottom - (y + 8));
+    if (cardH > 0) y += 8 + cardH;
+    const double boxTop = y + 8;
     const double rowStep = 30;
     const int rows = helpRows(boxTop, boxBottom);
     if (rows < 1) return;
@@ -6948,6 +7164,112 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         pen.text(kInnerX + 20, rowBaseline, situations[i], 16, kTextMuted);
         pen.text(colX, rowBaseline, remedies[i], fitSize(pen, remedies[i], 16, 11, kInnerRight - 16 - colX, false), kText);
     }
+}
+
+double EyePanel::drawSourceCard(const Pen& pen, const UiText& t, const eyecam::View& view, double top, double room) {
+    using eyecam::GrabTool;
+    using eyecam::SourceChoice;
+    const eyecam::Status& s = view.status;
+    if (!eyecam::sourceCardShown(s)) return 0;
+    cairo_t* cr = pen.cr;
+    const bool choice = eyecam::sourceChoiceShown(s);
+    const double x0 = kInnerX;
+    const double x1 = kInnerRight;
+    const double textX = x0 + 50;
+    const double headH = 58;
+    const double toolH = choice ? 52 : 0;
+    const double lineH = 19;
+    const GrabTool tool = eyecam::grabTool(s);
+    const bool removable = eyecam::grabRemoveAllowed(s);
+    // (no SteamOS password: sudo would fail, so passwd first, as the checklist's (1))
+    const bool passwordFirst = choice && eyecam::installNeedsPassword(view);
+
+    // Under the rows: a password to set first, why "Remove" can't be pressed, or that auto takes the tool later (or
+    // Konsole's failure), then the trade-off. Left out from the bottom up while the card doesn't fit
+    std::string note;
+    Color noteColor = kText;
+    if (choice && !view.spawnError.empty()) {
+        note = view.spawnError;
+        noteColor = kDanger;
+    } else if (passwordFirst) {
+        note = t.srcNeedsPassword;
+    } else if (choice && tool != GrabTool::Missing && !removable) {
+        note = t.srcRemoveNeedsDsp;
+    } else if (choice && eyecam::grabAfterReacquire(s)) {
+        note = t.srcSwitchLater;
+    }
+    const double wrapW = x1 - x0 - 32;
+    std::vector<std::string> noteLines = note.empty() ? std::vector<std::string>{}
+                                                      : wrapText(pen, note, 15, false, wrapW, 2);
+    std::vector<std::string> tradeLines = wrapText(pen, t.srcTradeoff, 14, false, wrapW, 2);
+    const auto height = [&] {
+        const double lines = static_cast<double>(noteLines.size() + tradeLines.size());
+        return 8 + headH + toolH + lines * lineH + (lines > 0 ? 12 : 2);
+    };
+    if (height() > room) tradeLines.clear();
+    if (height() > room) noteLines.clear();
+    const double h = height();
+    fillRounded(pen, x0, top, x1 - x0, h, 12, kBg);
+
+    // Its title and what is in use (the buffers held, or being taken), the choice at the right
+    double y = top + 8;
+    const double segW = 300;
+    const double segH = 42;
+    const double segX = x1 - 10 - segW;
+    const double textRight = (choice ? segX : x1) - 14;
+    drawCameraIcon(pen, x0 + 28, y + 20, kAccent);
+    pen.text(textX, y + 24, t.srcTitle, fitSize(pen, t.srcTitle, 18, 13, textRight - textX, true), kText, true);
+    const bool dsp = s.source == "dsp";
+    const std::string now = s.hasBuffers ? (dsp ? t.srcNowDsp : t.srcNowGrab) : (dsp ? t.srcWaitDsp : t.srcWaitGrab);
+    drawDot(cr, textX + 5, y + 43, 4.5, s.hasBuffers ? kSuccess : kTextMuted);
+    pen.text(textX + 16, y + 48, ellipsize(pen, now, 15, false, textRight - textX - 16, false), 15,
+             s.hasBuffers ? kText : kTextMuted);
+    if (choice) {
+        // (eyecam-rec refuses it while recording or calibrating: shown as it is, not pressable)
+        const bool running = s.state == eyecam::State::Searching || s.state == eyecam::State::Recording ||
+                             s.state == eyecam::State::Calibrating;
+        std::vector<Option> options;
+        for (const auto& [label, value] : {std::pair<const char*, SourceChoice>{t.srcAuto, SourceChoice::Auto},
+                                           {t.srcDsp, SourceChoice::Dsp},
+                                           {t.srcGrab, SourceChoice::Grab}}) {
+            options.push_back({label, {PanelAction::EyecamSource, nullptr, static_cast<int>(value)},
+                               eyecam::sourceChoiceAllowed(view, value)});
+        }
+        drawSegmented(pen, segX, y + (headH - segH) / 2, segW, segH, options, static_cast<int>(eyecam::sourceChoice(s)),
+                      16, running);
+    }
+    y += headH;
+
+    // The tool: installed or not, and its Konsole ("Install" with its sha256 first, as the checklist's (2), or passwd
+    // while SteamOS has no password; "Remove" only while the buffers come from dsp_service)
+    if (choice) {
+        const bool missing = tool == GrabTool::Missing;
+        const std::string label = passwordFirst ? t.setupPassButton : missing ? t.srcInstall : t.srcRemove;
+        const double bh = 42;
+        const double bw = std::min(380.0, pen.measure(label, 16, true) + 64);
+        const double bx = x1 - 10 - bw;
+        drawIconButton(pen, bx, y + (toolH - bh) / 2, bw, bh, label,
+                       {PanelAction::SetupKonsole, nullptr,
+                        passwordFirst ? setup_tools::kKonsolePasswd
+                        : missing     ? setup_tools::kKonsoleInstall
+                                      : setup_tools::kKonsoleUninstall},
+                       missing || removable, false, 16, ButtonIcon::Terminal);
+        const std::string state = missing ? t.srcToolOut : tool == GrabTool::Ready ? t.srcToolIn : t.srcToolBroken;
+        const double room = bx - 14 - (x0 + 16);
+        const double size = fitSize(pen, state, 16, 12, room, false);
+        pen.text(x0 + 16, centerBaseline(y, toolH, size), ellipsize(pen, state, size, false, room, false), size, kText);
+        y += toolH;
+    }
+    y += 4;
+    for (const std::string& line : noteLines) {
+        pen.text(x0 + 16, y + 14, line, 15, noteColor);
+        y += lineH;
+    }
+    for (const std::string& line : tradeLines) {
+        pen.text(x0 + 16, y + 14, line, 14, kTextMuted);
+        y += lineH;
+    }
+    return h;
 }
 
 void EyePanel::drawEyecamConfirm(const Pen& pen, const UiText& t, const eyecam::View& view, double y) {

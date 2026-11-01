@@ -29,6 +29,8 @@ const EXACT: &[(&str, &str)] = &[
     ("中断した（Ctrl-C / SIGTERM）", "Interrupted (Ctrl-C / SIGTERM)"),
     ("stop で止めた", "Stopped"),
     ("アイトラッカーが終了した", "The eye tracker exited"),
+    ("dsp_service との接続が切れた", "The connection to dsp_service closed"),
+    ("dsp_service から目のカメラのバッファをもらうところ", "Getting the eye camera buffer from dsp_service"),
     ("バッファが更新されなくなった", "The buffers stopped updating"),
     ("目の映像が見つからなかった（ヘッドセットをかぶってから start してね）", "Couldn't find the eye cameras (put the headset on, then start)"),
     ("ディスクの空きが 1 GB 未満", "Less than 1 GB of disk space left"),
@@ -45,6 +47,12 @@ const EXACT: &[(&str, &str)] = &[
     ("目の映像が来ていないので、普段の目を覚え直せない", "No eye video, so can't relearn your eyes"),
     ("校正中なので、普段の目を覚え直せない", "Calibrating, so can't relearn your eyes now"),
     ("lid_veto は on か off で", "lid_veto must be on or off"),
+    ("録画や校正のあいだは消せないよ", "Can't delete while recording or calibrating"),
+    ("消しているところ（終わるまで待ってね）", "Already deleting (wait until it's done)"),
+    ("保存してるデータを消しているところ（終わるまで待ってね）", "Deleting saved data (wait until it's done)"),
+    ("delete は rec か calib_images で", "delete takes rec or calib_images"),
+    ("source は auto か dsp か grab で", "source must be auto, dsp or grab"),
+    ("映像のもらい方を変えた", "Changed how the eye video is taken"),
 ];
 
 /// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
@@ -65,6 +73,7 @@ const PREFIX: &[(&str, &str)] = &[
     ("保存した（途中で止めた）: ", "Saved (stopped early): "),
     ("保存した: ", "Saved: "),
     ("バッファを受け取れなかった: ", "Couldn't get the buffers: "),
+    ("dsp_service につながらない: ", "Can't reach dsp_service (trying again): "),
     ("失敗した: ", "Failed: "),
     ("保存できなかった: ", "Couldn't save: "),
     ("プロトコルが見つからない: ", "Protocol not found: "),
@@ -287,6 +296,10 @@ mod tests {
             "（fake）校正できた（左目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]",
             "（fake）両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]",
             "アイトラッカーが終了した。パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
+            "dsp_service から目のカメラのバッファをもらうところ",
+            "dsp_service との接続が切れた。dsp_service から目のカメラのバッファをもらうところ",
+            "バッファが更新されなくなった。dsp_service から目のカメラのバッファをもらうところ",
+            "dsp_service につながらない: connect dsp_service: Connection refused (os error 111)",
             "バッファが更新されなくなった",
             "目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ",
             "校正の計算が終わらなかった",
@@ -328,6 +341,14 @@ mod tests {
             crate::livesvc::RELEARN_NO_VIDEO,
             crate::livesvc::RELEARN_CALIBRATING,
             crate::status::LID_VETO_BAD_VALUE,
+            crate::stored::DELETE_BUSY,
+            crate::stored::DELETE_UNDER_WAY,
+            crate::stored::START_DELETING,
+            crate::stored::DELETE_BAD_KIND,
+            crate::status::SOURCE_BAD_VALUE,
+            "映像のもらい方を変えた",
+            "映像のもらい方を変えた。dsp_service から目のカメラのバッファをもらうところ",
+            "映像のもらい方を変えた。パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
         ];
         for ja in all {
             let en = message_en(ja);
@@ -339,6 +360,10 @@ mod tests {
             "Right eye: the squint was narrower than the closed eye (try again without closing it) [f_sq -0.78]"
         );
         assert_eq!(message_en("保存した: rec_a"), "Saved: rec_a");
+        assert_eq!(
+            message_en("dsp_service との接続が切れた。dsp_service から目のカメラのバッファをもらうところ"),
+            "The connection to dsp_service closed. Getting the eye camera buffer from dsp_service"
+        );
         assert_eq!(
             message_en("左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）[1.54 / 普段 1.47]"),
             "Left eye: looking down didn't change the eye opening (try again and look down clearly) [1.54 / normal 1.47]"

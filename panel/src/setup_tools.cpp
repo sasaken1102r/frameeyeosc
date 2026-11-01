@@ -60,7 +60,10 @@ std::vector<std::string> konsoleArgv(const std::string& command, Language langua
 }
 
 std::vector<std::string> setupKonsoleArgv(int button, Language language) {
-    return konsoleArgv(button == 1 ? kPasswdCommand : kInstallCommand, language);
+    return konsoleArgv(button == kKonsolePasswd      ? kPasswdCommand
+                       : button == kKonsoleUninstall ? kUninstallCommand
+                                                     : kInstallCommand,
+                       language);
 }
 
 std::vector<std::string> videoArgv(const std::string& url) {

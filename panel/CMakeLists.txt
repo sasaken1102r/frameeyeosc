@@ -62,6 +62,7 @@ add_executable(frameeyeosc-panel
   src/setup_tools.cpp
   src/sounds.cpp
   src/status.cpp
+  src/stored.cpp
   src/target.cpp
   src/text_layout.cpp
   src/theme.cpp
@@ -224,6 +225,16 @@ target_compile_definitions(contrib-test PRIVATE EYECAM_SOURCE_DIR="${CMAKE_CURRE
 target_compile_options(contrib-test PRIVATE -Wall -Wextra)
 target_link_libraries(contrib-test PRIVATE Threads::Threads)
 add_test(NAME contrib COMMAND contrib-test)
+
+# "Saved data" (stored.{h,cpp}: which files are an eye log's, counting and deleting them in a folder under $TMPDIR, never
+# the one being recorded or one written to just now, nothing else in the folder; following eyecam-rec's deletes in its
+# status): panel/build/stored-test
+add_executable(stored-test tests/stored_test.cpp src/stored.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp
+  src/setup_tools.cpp src/recorder.cpp)
+target_include_directories(stored-test PRIVATE src)
+target_compile_options(stored-test PRIVATE -Wall -Wextra)
+target_link_libraries(stored-test PRIVATE Threads::Threads)
+add_test(NAME stored COMMAND stored-test)
 
 # The diagnostics page's texts and code (diag.{h,cpp}: the cards, the diagnostic code, SteamOS's version, SHA-256),
 # without cairo: panel/build/diag-test

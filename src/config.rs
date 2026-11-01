@@ -119,6 +119,10 @@ pub struct Settings {
     /// In VRChat mode, also send VRChat's own eye tracking input (/tracking/eye/*), which moves the eyes of
     /// avatars without VRCFT parameters.
     pub native_eyes: bool,
+    /// In VRChat mode, also send VRChat's Face Tracking input (/tracking/face/v1), for avatars set up for it: each
+    /// eye's eyelid, widening and gaze, the eye camera's squint and pupils, the brows raised with brow_from_widen (see
+    /// vrc_face). A switch on the panel's Output tab.
+    pub vrc_face_tracking: bool,
     /// Use eyecam-rec's eye-camera values (see eyecam_live) while they are fresh: each eye's eyelid from relaxed open
     /// up (widening), where it sees the eye closed or open through a squint (see main.rs, Smoother::check_lids), and
     /// its squint, once the camera is calibrated for this wear; and its pupil. Blinks stay the eye server's.
@@ -251,6 +255,7 @@ impl Default for Settings {
             eye_tracking_active: ActiveType::Bool,
             steamlink_params: false,
             native_eyes: false,
+            vrc_face_tracking: false,
             camera_lids: true,
             pupils_to_vrchat: true,
             camera_close_gate: true,
@@ -624,7 +629,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
             }
         )*};
     }
-    pin!(output, eye_tracking_active, steamlink_params, native_eyes, lid_widen, pupil_bits, eye_behavior);
+    pin!(output, eye_tracking_active, steamlink_params, native_eyes, vrc_face_tracking, lid_widen, pupil_bits, eye_behavior);
     // Given on the command line: this is 0.6.0 or later, whatever the file says
     if given.contains("lid_widen") {
         settings.scales_predate_fit = false;
@@ -1208,6 +1213,15 @@ mod tests {
         let (settings, locked) = merged(r#"{"native_eyes": false}"#, &["--native-eyes"]).unwrap();
         assert!(settings.native_eyes);
         assert_eq!(locked, ["native_eyes"]);
+    }
+
+    #[test]
+    fn vrc_face_tracking_is_off_until_asked_for() {
+        assert!(!merged("{}", &[]).unwrap().0.vrc_face_tracking);
+        assert!(merged(r#"{"vrc_face_tracking": true}"#, &[]).unwrap().0.vrc_face_tracking);
+        let (settings, locked) = merged(r#"{"vrc_face_tracking": false}"#, &["--vrc-face-tracking"]).unwrap();
+        assert!(settings.vrc_face_tracking);
+        assert_eq!(locked, ["vrc_face_tracking"]);
     }
 
     #[test]

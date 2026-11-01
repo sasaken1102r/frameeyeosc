@@ -313,14 +313,14 @@ void testLidPresets() {
     const LidPreset* presets = lidPresets();
     CHECK(findSetting(key::kLidMinCutoff)->defaultNumber == presets[1].minCutoff);
     CHECK(findSetting(key::kLidBeta)->defaultNumber == presets[1].beta);
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i + 1 < kLidPresetCount; ++i) {
         CHECK(presets[i].minCutoff > presets[i + 1].minCutoff && presets[i].beta > presets[i + 1].beta);
     }
     PanelModel model;
     model.config.exists = true;
     model.config.root.type = JsonValue::Type::Object;
     CHECK(matchingLidPreset(SettingsView(model)) == 1);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < kLidPresetCount; ++i) {
         model.config.root.set(key::kLidMinCutoff, JsonValue::makeNumber(presets[i].minCutoff));
         model.config.root.set(key::kLidBeta, JsonValue::makeNumber(presets[i].beta));
         CHECK(matchingLidPreset(SettingsView(model)) == i);
@@ -725,6 +725,29 @@ void testNativeEyes() {
     m.status = parseStatus(
         "{\"pid\": 1, \"locked\": [\"native_eyes\"], \"effective\": {\"native_eyes\": true}}", 0, false);
     CHECK(SettingsView(m).locked(key::kNativeEyes) && SettingsView(m).flag(key::kNativeEyes));
+}
+
+/** vrc_face_tracking (the Output tab's "VRChat face tracking" toggle, not read by the core yet): off by default, read
+ *  from config.json, and frameeyeosc's own value should it ever lock it. */
+void testVrcFaceTracking() {
+    const SettingSpec* spec = findSetting(key::kVrcFaceTracking);
+    CHECK(spec != nullptr && spec->type == SettingType::Bool && spec->defaultNumber == 0);
+    PanelModel m;
+    m.config.exists = true;
+    m.config.root.type = JsonValue::Type::Object;
+    CHECK(!SettingsView(m).flag(key::kVrcFaceTracking));
+    // A new config.json has it, off (so "Reset all" clears it too)
+    CHECK(spec != nullptr && defaultValue(*spec).isBool() && !defaultValue(*spec).boolean);
+    m.config.root.set(key::kVrcFaceTracking, JsonValue::makeBool(true));
+    CHECK(SettingsView(m).flag(key::kVrcFaceTracking) && !SettingsView(m).locked(key::kVrcFaceTracking));
+    // Not a bool: the default
+    m.config.root.set(key::kVrcFaceTracking, JsonValue::makeString("yes"));
+    CHECK(!SettingsView(m).flag(key::kVrcFaceTracking));
+    // Locked: its value, whatever the file says
+    m.config.root.set(key::kVrcFaceTracking, JsonValue::makeBool(false));
+    m.status = parseStatus(
+        "{\"pid\": 1, \"locked\": [\"vrc_face_tracking\"], \"effective\": {\"vrc_face_tracking\": true}}", 0, false);
+    CHECK(SettingsView(m).locked(key::kVrcFaceTracking) && SettingsView(m).flag(key::kVrcFaceTracking));
 }
 
 /** camera_lids (the eye capture tab's "Eyelids from the eye cameras"): on by default, read from config.json, and
@@ -1415,6 +1438,7 @@ int main() {
     testMigrateEyeOffsets();
     testSteamlinkParams();
     testNativeEyes();
+    testVrcFaceTracking();
     testCameraLids();
     testWiden();
     testBrowSettings();

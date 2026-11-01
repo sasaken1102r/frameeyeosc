@@ -70,7 +70,7 @@ enum class PanelAction {
                        ///< it (gazeScaleLinked); the caller, once it is closed, sets the second value to the first
                        ///< (gazeScaleRelink) and remembers the locks
     SetLidWiden,       ///< lid_widen = kLidWidenModes[arg]
-    LidPreset,         ///< eyelid smoothing preset arg (0 light, 1 medium, 2 strong)
+    LidPreset,         ///< eyelid smoothing preset arg (0 light, 1 medium, 2 strong, 3 max)
     NumberSlider,      ///< a setting's slider (key): pressed and dragged inside the panel; the caller takes the value
                        ///< with takeNumberSlider and writes it (SetNumber)
     SetNumber,         ///< key = arg / 1000 (onto its step grid)
@@ -93,8 +93,11 @@ enum class PanelAction {
     EyecamSensitivity, ///< the widening sensitivity slider: pressed and dragged inside the panel; the caller takes
                        ///< the value with takeSensitivity / sensitivityDragging
     EyecamLidVeto,     ///< the eyelid veto's switch: arg 1 on / 0 off (the caller sends eyecam::lidVetoCommand)
+    EyecamSource,      ///< the eye cameras page's "How the video is taken": arg = eyecam::SourceChoice (the caller sends
+                       ///< eyecam::sourceCommand)
     SetupKonsole,      ///< the eye cameras' setup: open a Konsole with the command typed in (arg 0 = the tool's install,
-                       ///< 1 = passwd; the caller starts it, never from --dump-png)
+                       ///< 1 = passwd, 2 = the tool's removal: setup_tools::KonsoleCommand; the caller starts it, never
+                       ///< from --dump-png)
     SetupVideo,        ///< ...open the setup video (only shown with a video URL)
     OpenModulePage,    ///< Output tab: open the FrameEyeOSC module's releases page in the Frame's Chromium
     SetupProceed,      ///< ...on to the usual page (its "start using", or "continue" with the standard widening)
@@ -140,6 +143,9 @@ enum class PanelAction {
     ContribDelete,     ///< "Delete the recordings": its confirmation (handled inside)
     ContribDeleteCancel,   ///< ...closed without deleting (handled inside)
     ContribDeleteConfirm,  ///< ...confirmed: the caller deletes the folder
+    DataDelete,        ///< a "Saved data" row's "Delete" (arg = stored::Kind): its confirmation (handled inside)
+    DataDeleteCancel,  ///< ...closed without deleting (handled inside)
+    DataDeleteConfirm, ///< ...confirmed (arg = stored::Kind): the caller deletes it, or asks eyecam-rec to
 };
 
 /** A button: its action, the config key it changes and an argument. */
@@ -244,6 +250,7 @@ public:
     void setTab(PanelTab tab) {
         if (tab != tab_) advScroll_ = 0.0;
         tab_ = tab;
+        dataConfirm_ = -1;
     }
 
     /** @return the Advanced tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
@@ -256,6 +263,7 @@ public:
     void setAdvPage(AdvPage page) {
         if (page != advPage_) advScroll_ = 0.0;
         advPage_ = page;
+        dataConfirm_ = -1;
     }
 
     /** @return the Eyelids tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
@@ -417,6 +425,15 @@ public:
 
     /** Open the confirmation before deleting (for --fake-contrib). */
     void openContribDelete() { contribConfirm_ = true; }
+
+    /**
+     * Open "Saved data"'s confirmation before deleting a kind (for --fake-data).
+     * @param kind the kind
+     */
+    void openDataDelete(stored::Kind kind) { dataConfirm_ = static_cast<int>(kind); }
+
+    /** @return the kind whose delete is being confirmed (stored::Kind), -1 for none */
+    int dataConfirm() const { return dataConfirm_; }
 
     /** @return true while it wants the eye cameras' pictures (open, with its "Camera picture" on) */
     bool previewPictures() const { return previewOpen_ && previewCamera_; }
@@ -762,6 +779,8 @@ private:
     contrib::Page contribPage_ = contrib::Page::Record;  ///< ...opened as "Record" or "Recordings"
     bool contribAgreed_ = false;        ///< ..."Agree and continue" pressed (the question about glasses)
     bool contribConfirm_ = false;       ///< ...with the confirmation before deleting
+    int dataConfirm_ = -1;              ///< "Saved data": the kind whose delete is being confirmed (stored::Kind; -1
+                                        ///< none). In the Data page's place, closed by any other page or tab
     bool previewFrozen_ = false;        ///< ...stopped where it was
     bool previewFreezePending_ = false; ///< ...the values to keep are taken at the next draw
     eye_preview::View previewKept_;     ///< ...the values and pictures it stopped at
@@ -1287,6 +1306,27 @@ private:
     double drawFilesPage(const Pen& pen, const UiText& t, const PanelModel& model, double top, double right);
 
     /**
+     * "Data" ("Saved data"): what frameeyeosc and eyecam keep on the disk, each kind's count and size, and its "Delete"
+     * (eyecam's while eyecam-rec runs and counts them, never while it records or calibrates).
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param top the page's top
+     * @param right its right edge
+     * @return its height
+     */
+    double drawDataPage(const Pen& pen, const UiText& t, const PanelModel& model, double top, double right);
+
+    /**
+     * "Saved data"'s confirmation before a delete (dataConfirm_), in the Advanced tab's place: what goes, what stays,
+     * and that it can't be undone.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     */
+    void drawDataDelete(const Pen& pen, const UiText& t, const PanelModel& model);
+
+    /**
      * One record as a row: when, what, a short line, its result's badge and "View".
      * @param pen drawing tools
      * @param t texts
@@ -1491,6 +1531,20 @@ private:
      * @param view the settings shown
      */
     void drawCameraPage(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The usual page's "How the video is taken" card, while eyecam-rec says where the buffers come from: its title and
+     * what is in use; with an eyecam-rec that takes "set source", the choice (auto / dsp / the tool) and the tool's row
+     * (installed or not, and "Install" or "Remove" in Konsole: the panel never runs sudo); a line about the choice,
+     * then the trade-off between the two ways. What doesn't fit in `room` is left out, the trade-off first.
+     * @param pen drawing tools
+     * @param t texts
+     * @param view eyecam-rec
+     * @param top its top
+     * @param room the height it may take
+     * @return its height (0 when it isn't shown)
+     */
+    double drawSourceCard(const Pen& pen, const UiText& t, const eyecam::View& view, double top, double room);
 
     /**
      * The Eyelids tab's widening slider ("見開きの出やすさ"): dull at the left, sensitive and the value at the right.

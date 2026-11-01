@@ -9,7 +9,9 @@
 // own boxes, never starting a line, cut whole), and the other Frame apps (the row at the bottom of "Version" and its
 // count, the list's rows by state, the confirmation's command and buttons, scrolling), and the eye preview (its button
 // in the left column, alone or beside a notice; its sheet's buttons, what closes it, freeze, without the cameras), and
-// "Help train the AI" (its row on Debug tools, each screen's buttons, its recording, the delete's confirmation). Built
+// "Help train the AI" (its row on Debug tools, each screen's buttons, its recording, the delete's confirmation), and the
+// eye cameras page's "How the video is taken" card (its choices and the tool's Konsole button in each state, inside
+// the card in both languages). Built
 // with the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
@@ -19,6 +21,7 @@
 #include "icons.h"
 #include "model.h"
 #include "panel.h"
+#include "setup_tools.h"
 #include "text_layout.h"
 
 #include <cairo.h>
@@ -954,7 +957,7 @@ void testLidsPages(const FontSet& fonts) {
                     CHECK(hits(panel, PanelAction::SetBool, key::kBrowFromWiden).size() == (brows ? 2u : 0u));
                     CHECK(hits(panel, PanelAction::NumberSlider, key::kBrowStrength).empty());
                     // Look: the widening (whatever drives it), the smoothing presets, the sync slider
-                    CHECK(hits(panel, PanelAction::LidPreset).size() == (look ? 3u : 0u));
+                    CHECK(hits(panel, PanelAction::LidPreset).size() == (look ? 4u : 0u));
                     // ...and widening at all (widen), with the eye cameras or without
                     CHECK(hits(panel, PanelAction::SetBool, key::kWiden).size() == (look ? 2u : 0u));
                     CHECK(hits(panel, PanelAction::NumberSlider, key::kLidSync).size() == (look ? 1u : 0u));
@@ -1289,14 +1292,14 @@ void testSubTabs(const FontSet& fonts) {
         panel.render(m);
         // The first time: "Version"; the other three can be pressed
         CHECK(panel.advPage() == AdvPage::Version && panel.advPageShown());
-        CHECK((subTabs(panel) == std::vector<int> {1, 2, 3}));
+        CHECK((subTabs(panel) == std::vector<int> {1, 2, 3, 4}));
         CHECK(hits(panel, PanelAction::UpdateCheck).size() == 1 && hits(panel, PanelAction::HistoryOpen).size() == 1);
         CHECK(hits(panel, PanelAction::SetBool, key::kUpdateCheck).size() == 1);
         // Each page with its own buttons, and nothing of the others'
         CHECK(pressArg(panel, PanelAction::AdvancedPage, static_cast<int>(AdvPage::Trouble)).action == PanelAction::None);
         CHECK(panel.advPage() == AdvPage::Trouble);
         panel.render(m);
-        CHECK((subTabs(panel) == std::vector<int> {0, 2, 3}));
+        CHECK((subTabs(panel) == std::vector<int> {0, 2, 3, 4}));
         CHECK(hits(panel, PanelAction::DiagOpen).size() == 1 && hits(panel, PanelAction::RecordsAll).size() == 1);
         CHECK(hits(panel, PanelAction::RecordOpen).size() == 3);
         CHECK(hits(panel, PanelAction::UpdateCheck).empty());
@@ -1326,7 +1329,7 @@ void testSubTabs(const FontSet& fonts) {
         next.setAdvPage(AdvPage::Tools);
         next.setTab(PanelTab::Advanced);
         next.render(m);
-        CHECK((subTabs(next) == std::vector<int> {0, 1, 3}));
+        CHECK((subTabs(next) == std::vector<int> {0, 1, 3, 4}));
         CHECK(hits(next, PanelAction::RecordToggle).size() == 1);
         // Without eyecam-rec, "Debug tools" has no eye capture
         PanelModel plain = modelWith(Lids::Valve, false);
@@ -1489,7 +1492,8 @@ void testPagesFit(const FontSet& fonts) {
     // records, an eye log that failed and keys locked by the command line
     for (const bool eyecam : {true, false}) {
         for (const Language language : {Language::Ja, Language::En}) {
-            for (const AdvPage page : {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files}) {
+            for (const AdvPage page : {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files,
+                                       AdvPage::Data}) {
                 EyePanel panel(fonts);
                 PanelModel m = modelWith(Lids::Both, eyecam);
                 m.language = language;
@@ -1890,6 +1894,41 @@ void testToolNotice(const FontSet& fonts) {
         panel.render(m);
         CHECK(pointsTo(panel, PanelTab::Eyecam) == !current);
     }
+    // dsp_service not answering (auto, no tool) once set up: still the usual page, with a card to install the tool
+    // (passwd first while SteamOS has none) and the left column's card; the Basic tab's switch stays (set up). Not set
+    // up yet: the checklist's tool step, as before
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const eyecam::PasswordState password : {eyecam::PasswordState::Set, eyecam::PasswordState::NotSet}) {
+            PanelModel m = modelWith(Lids::Valve);
+            m.language = language;
+            m.eyecam.password = password;
+            eyecam::Status& e = m.eyecam.status;
+            e.autoGrab = "dsp_unreachable";
+            e.state = eyecam::State::WaitingFds;
+            e.stateText = "waiting_fds";
+            e.hasBuffers = false;
+            panel.setTab(PanelTab::Eyecam);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::LidsPage).size() == 1);
+            const std::vector<EyePanel::HitArea> konsole = hits(panel, PanelAction::SetupKonsole);
+            CHECK(konsole.size() == 1);
+            if (konsole.size() == 1) {
+                CHECK(konsole[0].hit.arg == (password == eyecam::PasswordState::NotSet ? setup_tools::kKonsolePasswd
+                                                                                       : setup_tools::kKonsoleInstall));
+            }
+            for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                if (area.x > 400 && area.y > 100) CHECK(area.y + area.h <= 676 && area.x + area.w <= 1154);
+            }
+            panel.setTab(PanelTab::Basic);
+            panel.render(m);
+            CHECK(pointsTo(panel, PanelTab::Eyecam));
+            CHECK(hits(panel, PanelAction::SetBool, key::kCameraLids).size() >= 1);
+            e.setupDone = false;
+            panel.setTab(PanelTab::Eyecam);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::LidsPage).empty() && hits(panel, PanelAction::SetBool, key::kCameraLids).empty());
+        }
+    }
 }
 
 void testFitRunning(const FontSet& fonts) {
@@ -2087,6 +2126,152 @@ bool inCard(const EyePanel& panel) {
         if (area.hit.arg == static_cast<int>(PanelTab::Eyecam) && area.y > 100 && area.x > 400) return true;
     }
     return false;
+}
+
+/**
+ * The usable choices of "How the video is taken" as last drawn.
+ * @param panel the panel
+ * @return their SourceChoice values, in order
+ */
+std::vector<int> sourceChoices(const EyePanel& panel) {
+    std::vector<int> found;
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::EyecamSource)) found.push_back(area.hit.arg);
+    return found;
+}
+
+void testSourceCard(const FontSet& fonts) {
+    using eyecam::SourceChoice;
+    const int kAuto = static_cast<int>(SourceChoice::Auto);
+    const int kDsp = static_cast<int>(SourceChoice::Dsp);
+    const int kGrab = static_cast<int>(SourceChoice::Grab);
+    // For measuring the card's texts as it draws them
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 400, 80);
+    cairo_t* cr = cairo_create(surface);
+    const Pen pen {cr, &fonts};
+    for (const Language language : {Language::Ja, Language::En}) {
+        const UiText& t = uiText(language);
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Eyecam);
+        const auto card = [&](const char* source, const char* setting, const char* grab) {
+            PanelModel m = modelWith(Lids::Both);
+            m.language = language;
+            m.eyecam.status.source = source;
+            m.eyecam.status.sourceSetting = setting;
+            m.eyecam.status.grabState = grab;
+            return m;
+        };
+        // Every button of the card inside it, at least 44 px high (the page's rows above it too), the Konsole button's
+        // label and the tool's line beside it at their full size
+        const auto inside = [&](const PanelModel& m) {
+            bool ok = allInsideAndTall(panel);
+            for (const PanelAction action : {PanelAction::EyecamSource, PanelAction::SetupKonsole}) {
+                for (const EyePanel::HitArea& area : hits(panel, action)) {
+                    ok = ok && area.x >= 438 && area.x + area.w <= 1154 && area.h >= 42 && area.y + area.h <= 676;
+                }
+            }
+            const eyecam::Status& s = m.eyecam.status;
+            if (eyecam::sourceChoiceShown(s)) {
+                const bool missing = eyecam::grabTool(s) == eyecam::GrabTool::Missing;
+                const std::string label = missing ? t.srcInstall : t.srcRemove;
+                ok = ok && pen.measure(label, 16, true) + 64 <= 380;
+                const double buttonX = 1154 - 10 - (pen.measure(label, 16, true) + 64);
+                for (const char* state : {t.srcToolIn, t.srcToolOut, t.srcToolBroken}) {
+                    ok = ok && pen.measure(state, 16, false) <= buttonX - 14 - 454;
+                }
+                ok = ok && pen.measure(t.srcTitle, 18, true) <= 1154 - 10 - 300 - 14 - 488;
+                ok = ok && pen.measure(t.srcNowGrab, 15, false) <= 1154 - 10 - 300 - 14 - 504;
+            }
+            return ok;
+        };
+
+        // dsp in use with auto, the tool not installed: dsp to choose (auto is set, the tool can't be), and "Install"
+        PanelModel m = card("dsp", "auto", "missing");
+        panel.render(m);
+        CHECK(sourceChoices(panel) == std::vector<int>{kDsp});
+        std::vector<EyePanel::HitArea> konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleInstall);
+        CHECK(inside(m));
+        // ...SteamOS without a password: passwd first (sudo would fail), with why under it; still unknown: "Install"
+        m.eyecam.password = eyecam::PasswordState::NotSet;
+        panel.render(m);
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsolePasswd);
+        CHECK(sourceChoices(panel) == std::vector<int>{kDsp} && inside(m));
+        CHECK(pen.measure(t.setupPassButton, 16, true) + 64 <= 380);
+        m.eyecam.password = eyecam::PasswordState::Unknown;
+        panel.render(m);
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleInstall);
+        // ...installed: the tool can be chosen, and removed (the buffers come from dsp_service), the password
+        // whatever it is
+        m = card("dsp", "auto", "ready");
+        m.eyecam.password = eyecam::PasswordState::NotSet;
+        panel.render(m);
+        CHECK((sourceChoices(panel) == std::vector<int>{kDsp, kGrab}));
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleUninstall);
+        CHECK(inside(m));
+        m = card("dsp", "dsp", "ready");
+        panel.render(m);
+        CHECK((sourceChoices(panel) == std::vector<int>{kAuto, kGrab}));
+        CHECK(hits(panel, PanelAction::SetupKonsole).size() == 1 && inside(m));
+        // ...the tool in use: "Remove" can't be pressed (switch to dsp first)
+        for (const char* setting : {"grab", "auto"}) {
+            m = card("grab", setting, "ready");
+            panel.render(m);
+            CHECK(sourceChoices(panel).size() == 2 && hits(panel, PanelAction::SetupKonsole).empty() && inside(m));
+        }
+        // ...installed but not usable: not to be chosen, removable while dsp is in use
+        m = card("dsp", "auto", "no_cap");
+        panel.render(m);
+        CHECK(sourceChoices(panel) == std::vector<int>{kDsp});
+        konsole = hits(panel, PanelAction::SetupKonsole);
+        CHECK(konsole.size() == 1 && konsole[0].hit.arg == setup_tools::kKonsoleUninstall && inside(m));
+        // ...waiting for the buffers, or after an error: the choice still there
+        for (const eyecam::State state : {eyecam::State::WaitingFds, eyecam::State::Error}) {
+            m = card("dsp", "dsp", "ready");
+            m.eyecam.status.state = state;
+            m.eyecam.status.stateText = state == eyecam::State::Error ? "error" : "waiting_fds";
+            m.eyecam.status.hasBuffers = false;
+            panel.render(m);
+            if (hits(panel, PanelAction::LidsPage).size() == 1) {  // (the usual page, not an error's screen)
+                CHECK((sourceChoices(panel) == std::vector<int>{kAuto, kGrab}) && inside(m));
+            }
+        }
+        // ...a command on its way: nothing to choose until its reply
+        m = card("dsp", "auto", "ready");
+        m.eyecam.busy = true;
+        panel.render(m);
+        CHECK(sourceChoices(panel).empty());
+        // ...recording (eyecam-rec refuses it then): shown, not to be chosen; the tool's Konsole still opens
+        m = card("dsp", "auto", "missing");
+        m.eyecam.status.state = eyecam::State::Recording;
+        m.eyecam.status.stateText = "recording";
+        panel.render(m);
+        CHECK(sourceChoices(panel).empty() && hits(panel, PanelAction::SetupKonsole).size() == 1);
+        // ...the tool's notice above it (outdated): the card still fits under the rows
+        m = card("grab", "grab", "ready");
+        m.eyecam.status.grabOutdated = true;
+        panel.render(m);
+        CHECK(sourceChoices(panel).size() == 2 && hits(panel, PanelAction::SetupKonsole).size() == 1 && inside(m));
+        // An eyecam-rec without grab_state (no "set source"): only what is in use, nothing to press; without source,
+        // no card
+        for (const char* source : {"dsp", ""}) {
+            m = card(source, source[0] != '\0' ? "auto" : "", "");
+            panel.render(m);
+            CHECK(sourceChoices(panel).empty() && hits(panel, PanelAction::SetupKonsole).empty() && inside(m));
+        }
+        // The card's buttons do what they say: a choice sends its setting, "Install" / "Remove" its Konsole
+        m = card("dsp", "auto", "ready");
+        panel.render(m);
+        for (const EyePanel::HitArea& area : hits(panel, PanelAction::EyecamSource)) {
+            const PanelHit hit = panel.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+            panel.pointerUp();
+            CHECK(hit.action == PanelAction::EyecamSource && hit.arg == area.hit.arg);
+        }
+    }
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
 }
 
 void testOutputCards(const FontSet& fonts) {
@@ -3207,6 +3392,204 @@ void testContrib(const FontSet& fonts) {
     }
 }
 
+void testVrcFaceTrackingRow(const FontSet& fonts) {
+    // The Output tab's "Also send to VRChat face tracking": On / Off right under "VRChat's own eyes too", only while
+    // VRChat directly is the output. With the eye cameras in use (the pupil row under it), set up but off (the dashed
+    // line) or not there at all, in both languages: inside the card, apart from the rows around it
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const int cameras : {0, 1, 2}) {  // in use, switched off, no eyecam-rec
+            PanelModel m = cameras == 2 ? modelWith(Lids::Valve, false) : modelWith(Lids::Both);
+            m.language = language;
+            if (cameras == 1) {
+                m.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
+                m.status.camera.used[0] = m.status.camera.used[1] = false;
+            }
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Output);
+            panel.render(m);
+            const std::vector<EyePanel::HitArea> face = hits(panel, PanelAction::SetBool, key::kVrcFaceTracking);
+            const std::vector<EyePanel::HitArea> native = hits(panel, PanelAction::SetBool, key::kNativeEyes);
+            CHECK(face.size() == 2 && native.size() == 2);
+            if (face.size() != 2 || native.size() != 2) continue;
+            CHECK(face[0].hit.arg == 1 && face[1].hit.arg == 0);  // "On", "Off"
+            for (const EyePanel::HitArea& a : face) {
+                CHECK(a.x >= 438 && a.x + a.w <= 1154 + 0.5 && a.y >= 110 && a.y + a.h <= 676 && a.h >= 40);
+                // (below the native eyes' row and its hint)
+                for (const EyePanel::HitArea& n : native) CHECK(!overlaps(a, n) && a.y >= n.y + n.h + 16);
+            }
+            // ...and what comes under it (the pupils, or the dashed line to the eye cameras tab) further down
+            std::vector<EyePanel::HitArea> below = hits(panel, PanelAction::SetInteger, key::kPupilBits);
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::Tab)) {
+                if (area.y > 100 && area.x > 400) below.push_back(area);
+            }
+            CHECK(below.size() == (cameras == 0 ? 5u : (cameras == 1 ? 1u : 0u)));
+            for (const EyePanel::HitArea& b : below) CHECK(b.y >= face[0].y + face[0].h + 16 && b.y + b.h <= 676);
+            CHECK(allInsideAndTall(panel));
+            // Locked: drawn, nothing to press (the row above still there)
+            PanelModel locked = m;
+            locked.status.locked.push_back(key::kVrcFaceTracking);
+            panel.render(locked);
+            CHECK(hits(panel, PanelAction::SetBool, key::kVrcFaceTracking).empty());
+            CHECK(hits(panel, PanelAction::SetBool, key::kNativeEyes).size() == 2);
+            // The other outputs: not there, their rows as before
+            for (const char* output : {kOutputLivelink, kOutputModule, kOutputEtvr}) {
+                PanelModel other = m;
+                other.config.root.set(key::kOutput, JsonValue::makeString(output));
+                panel.render(other);
+                CHECK(hits(panel, PanelAction::SetBool, key::kVrcFaceTracking).empty());
+                CHECK(hits(panel, PanelAction::SetBool, key::kNativeEyes).empty() && allInsideAndTall(panel));
+            }
+        }
+    }
+}
+
+/**
+ * A model for "Data": the eye logs counted, and eyecam-rec (running, idle) counting its recordings and calibration images.
+ * @param language the language
+ * @return the model
+ */
+PanelModel dataModel(Language language) {
+    PanelModel m = modelWith(Lids::Both, true);
+    m.language = language;
+    m.savedData.eyeLogsCounted = true;
+    m.savedData.eyeLogs = {12, 2'412'000'000LL};
+    eyecam::Stored& s = m.eyecam.status.stored;
+    s.present = true;
+    s.scannedUnix = 1.0;
+    s.recCount = 13;
+    s.recBytes = 25'310'000'000LL;
+    s.calibCount = 52;
+    s.calibBytes = 21'940'000'000LL;
+    return m;
+}
+
+/**
+ * The usable "Delete"s on "Data", by kind.
+ * @param panel the panel (rendered)
+ * @return their kinds, top to bottom
+ */
+std::vector<int> dataDeletes(const EyePanel& panel) {
+    std::vector<int> kinds;
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::DataDelete)) kinds.push_back(area.hit.arg);
+    return kinds;
+}
+
+void testSavedData(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        PanelModel m = dataModel(language);
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Data);
+        panel.render(m);
+        // A row a kind, each with its "Delete", inside the card, one under the other, with no scrolling
+        CHECK((subTabs(panel) == std::vector<int> {0, 1, 2, 3}));
+        CHECK((dataDeletes(panel) == std::vector<int> {0, 1, 2}));
+        CHECK(panel.advancedMaxScroll() == 0.0 && hits(panel, PanelAction::AdvancedScroll).empty());
+        const std::vector<EyePanel::HitArea> rows = hits(panel, PanelAction::DataDelete);
+        for (size_t i = 0; i < rows.size(); ++i) {
+            CHECK(rows[i].x > 400 && rows[i].x + rows[i].w <= panel.width() - 20);
+            CHECK(rows[i].y >= 110 && rows[i].y + rows[i].h <= 676);
+            if (i > 0) CHECK(rows[i].y >= rows[i - 1].y + rows[i - 1].h);
+        }
+        // eyecam-rec recording, calibrating, or deleting already: only the eye logs
+        for (const eyecam::State state : {eyecam::State::Searching, eyecam::State::Recording,
+                                          eyecam::State::Calibrating}) {
+            PanelModel busy = dataModel(language);
+            busy.eyecam.status.state = state;
+            panel.render(busy);
+            // (a recording shows its steps in the tab's place)
+            if (state == eyecam::State::Calibrating) CHECK((dataDeletes(panel) == std::vector<int> {0}));
+            CHECK(hits(panel, PanelAction::DataDelete).size() <= 1);
+        }
+        PanelModel deleting = dataModel(language);
+        deleting.eyecam.status.stored.deleting = "rec";
+        deleting.savedData.of(stored::Kind::EyecamRecordings).running = true;
+        panel.render(deleting);
+        CHECK((dataDeletes(panel) == std::vector<int> {0}));
+        // An eye log's delete under way: not again; done: the others stay
+        PanelModel logs = dataModel(language);
+        logs.savedData.of(stored::Kind::EyeLogs).running = true;
+        panel.render(logs);
+        CHECK((dataDeletes(panel) == std::vector<int> {1, 2}));
+        // eyecam-rec stopped (or one that doesn't count them): its rows, without a delete; not installed: none
+        PanelModel stopped = dataModel(language);
+        stopped.eyecam.visible = false;
+        panel.render(stopped);
+        CHECK((dataDeletes(panel) == std::vector<int> {0}));
+        PanelModel older = dataModel(language);
+        older.eyecam.status.stored = eyecam::Stored();
+        panel.render(older);
+        CHECK((dataDeletes(panel) == std::vector<int> {0}));
+        PanelModel plain = modelWith(Lids::Valve, false);
+        plain.language = language;
+        plain.savedData = m.savedData;
+        panel.render(plain);
+        CHECK((dataDeletes(panel) == std::vector<int> {0}));
+        // Nothing to delete, or not counted yet: nothing to press
+        PanelModel none = dataModel(language);
+        none.savedData.eyeLogs = stored::Usage();
+        none.eyecam.status.stored.recCount = 0;
+        none.eyecam.status.stored.calibCount = 0;
+        panel.render(none);
+        CHECK(dataDeletes(panel).empty());
+        PanelModel counting = dataModel(language);
+        counting.savedData.eyeLogsCounted = false;
+        counting.eyecam.status.stored.scannedUnix = 0.0;
+        panel.render(counting);
+        CHECK(dataDeletes(panel).empty());
+        // Each kind's confirmation in the page's place: only its two buttons, inside the card; "Cancel" goes back
+        for (int kind = 0; kind < stored::kKindCount; ++kind) {
+            panel.render(m);
+            CHECK(pressArg(panel, PanelAction::DataDelete, kind).action == PanelAction::None);
+            CHECK(panel.dataConfirm() == kind);
+            for (const bool recording : {false, true}) {
+                PanelModel shown = m;
+                shown.recording.recording = recording;
+                panel.render(shown);
+                const std::vector<EyePanel::HitArea> yes = hits(panel, PanelAction::DataDeleteConfirm);
+                const std::vector<EyePanel::HitArea> no = hits(panel, PanelAction::DataDeleteCancel);
+                CHECK(yes.size() == 1 && no.size() == 1 && subTabs(panel).empty() && dataDeletes(panel).empty());
+                for (const std::vector<EyePanel::HitArea>* buttons : {&yes, &no}) {
+                    for (const EyePanel::HitArea& area : *buttons) {
+                        CHECK(area.x > 400 && area.x + area.w <= panel.width() - 20);
+                        CHECK(area.y >= 110 && area.y + area.h <= 676);
+                    }
+                }
+                if (!yes.empty()) CHECK(yes[0].hit.arg == kind);
+            }
+            CHECK(press(panel, PanelAction::DataDeleteCancel).action == PanelAction::None);
+            CHECK(panel.dataConfirm() == -1);
+        }
+        // Confirmed: the kind goes to the caller, and the page shows again
+        panel.render(m);
+        pressArg(panel, PanelAction::DataDelete, static_cast<int>(stored::Kind::CalibImages));
+        panel.render(m);
+        const PanelHit confirmed = press(panel, PanelAction::DataDeleteConfirm);
+        CHECK(confirmed.action == PanelAction::DataDeleteConfirm);
+        CHECK(confirmed.arg == static_cast<int>(stored::Kind::CalibImages) && panel.dataConfirm() == -1);
+        // eyecam-rec started calibrating meanwhile: "Delete" can't be pressed on it
+        panel.render(m);
+        pressArg(panel, PanelAction::DataDelete, static_cast<int>(stored::Kind::EyecamRecordings));
+        CHECK(panel.dataConfirm() == static_cast<int>(stored::Kind::EyecamRecordings));
+        PanelModel calibrating = dataModel(language);
+        calibrating.eyecam.status.state = eyecam::State::Calibrating;
+        panel.render(calibrating);
+        CHECK(hits(panel, PanelAction::DataDeleteConfirm).empty() && hits(panel, PanelAction::DataDeleteCancel).size() == 1);
+        // Another tab closes it
+        pressTab(panel, PanelTab::Basic);
+        CHECK(panel.dataConfirm() == -1);
+        // Done, and not all of it: drawn without trouble
+        PanelModel done = dataModel(language);
+        done.savedData.of(stored::Kind::EyeLogs).done = true;
+        done.savedData.of(stored::Kind::EyeLogs).ok = true;
+        done.savedData.of(stored::Kind::EyecamRecordings).done = true;
+        done.savedData.of(stored::Kind::EyecamRecordings).error = std::string(300, 'x');
+        panel.setTab(PanelTab::Advanced);
+        panel.render(done);
+        CHECK((dataDeletes(panel) == std::vector<int> {0, 1, 2}));
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -3226,9 +3609,11 @@ int main() {
     testNumberSlider(fonts);
     testBrowsPage(fonts);
     testPupilBitsRow(fonts);
+    testVrcFaceTrackingRow(fonts);
     testOutputCards(fonts);
     testModuleLinkError(fonts);
     testToolNotice(fonts);
+    testSourceCard(fonts);
     testErrorBack(fonts);
     testWayOut(fonts);
     testCalibNeedsLids(fonts);
@@ -3236,6 +3621,7 @@ int main() {
     testSearchSetup(fonts);
     testDiagPage(fonts);
     testSubTabs(fonts);
+    testSavedData(fonts);
     testGazeRingsRow(fonts);
     testUpdateNotice(fonts);
     testUpdateBeta(fonts);

@@ -11,8 +11,8 @@ The same file is kept in both repositories (frameeyeosc `docs/protocol.md` and V
 
 - UDP, one packet per datagram, nothing else in the datagram.
 - Default port **11112** on the PC (the module listens on every interface). It sits next to the LiveLink module's
-  11111 and stays clear of VRChat's OSC (9000/9001), the ETVR module (8889) and Project Babble (8888). Both ends let
-  the port be changed (frameeyeosc's `port` setting, the module's `FrameEyeOSCConfig.json`).
+  11111 and stays clear of VRChat's OSC (9000/9001), the ETVR module (8889) and 8888, which other eye trackers often
+  use. Both ends let the port be changed (frameeyeosc's `port` setting, the module's `FrameEyeOSCConfig.json`).
 - frameeyeosc sends every eye sample (about 90 a second, up to ~136 while streaming). The module reads every queued
   datagram each update and keeps the newest, so it never falls behind.
 - While frameeyeosc has no eye data (the headset off, the eye server stopped) it sends a packet without the

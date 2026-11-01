@@ -10,6 +10,7 @@ mod livelink;
 mod osc;
 mod replay;
 mod status;
+mod vrc_face;
 
 use capture::{Capture, CaptureResult, CaptureState};
 use clap::{CommandFactory, FromArgMatches, Parser};
@@ -287,7 +288,8 @@ const CAMERA_WIDEN_FADE: f32 = 0.05;
 // An eye's camera eyelid that stops coming (stale for a few frames, the pupil lost for a moment) keeps the eye on the
 // rules for eyes with it for up to CAMERA_GAP_HOLD, with the eye server's eyelid still raised to the camera's last one
 // (raised_to_camera; never lowered, closed or widened by it, since the camera often drops out just as the eye
-// narrows), before the eye goes over to the rules for eyes without it (the nearly open easing, the far-down slope);
+// narrows; but an eye already on the camera's eyelid keeps that last one, closed or widened too, see
+// Smoother::check_lids), before the eye goes over to the rules for eyes without it (the nearly open easing, the far-down slope);
 // and one that comes back after that is taken once it has kept coming for as long. Switching at once stepped an eye
 // the eye server reads low between the camera's raise and the eased eyelid at every such gap. The same length as
 // CAMERA_AGREE_HOLD, for the same reason: the camera's values come and go for 100-150 ms at a time.
@@ -591,6 +593,10 @@ struct Args {
     /// avatars without VRCFT parameters
     #[arg(long)]
     native_eyes: bool,
+    /// In VRChat mode, also send VRChat's Face Tracking input (/tracking/face/v1): each eye's eyelid, widening and
+    /// gaze, the eye camera's squint and pupils and the brows, for avatars set up for VRChat Face Tracking
+    #[arg(long)]
+    vrc_face_tracking: bool,
     /// Also send the pupil dilation to VRChat as this many bool parameters (PupilDilation1, 2, 4, 8), for avatars
     /// that take it bit-packed; 0 sends only the float
     #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=4))]
@@ -1204,8 +1210,12 @@ impl Smoother {
 
     /// Each eye's camera eyelid at `time` with its short gaps bridged, and the one held through a gap (see
     /// CAMERA_GAP_HOLD, CameraGap::steady).
-    fn steady_camera(&mut self, time: f64, read: [Option<CameraLid>; 2]) -> ([Option<CameraLid>; 2], [Option<f32>; 2]) {
-        let steady: [(Option<CameraLid>, Option<f32>); 2] =
+    fn steady_camera(
+        &mut self,
+        time: f64,
+        read: [Option<CameraLid>; 2],
+    ) -> ([Option<CameraLid>; 2], [Option<CameraLid>; 2]) {
+        let steady: [(Option<CameraLid>, Option<CameraLid>); 2] =
             std::array::from_fn(|eye| self.camera_gap[eye].steady(time, read[eye]));
         (steady.map(|(lid, _)| lid), steady.map(|(_, held)| held))
     }
@@ -1218,7 +1228,10 @@ impl Smoother {
     /// it open for CAMERA_DOUBT_CLEAR_OPEN. Before that the eye
     /// server's stands, so a blink the camera catches late (or not at all) still closes the eye, and the blink sync
     /// still closes an eye the eye server caught in one eye only. An eye without the camera's values is the eye
-    /// server's, as before, and starts over. Whichever it is, an eye the camera sees open goes no lower than
+    /// server's, as before, and starts over; but through a short gap in them (`held`, the camera's last eyelid, see
+    /// CameraGap::steady) the doubt goes on where it was, and an eye on the camera's eyelid keeps that last one: issue
+    /// 46's left eye, which the eye server read shut all along, went out closed while single stale samples started the
+    /// doubt over before it got to CAMERA_DOUBT_GRACE. Whichever it is, an eye the camera sees open goes no lower than
     /// --camera-lid-floor, except while the eye server reads it closing within the grace period (a blink); the third
     /// value says which eyes the floor holds. An eye the eye server has just read jumping to the ceiling (`ceiling`, its
     /// ceiling_share; for CEILING_JUMP) is lowered toward the camera's eyelid where that is clearly narrowed (see
@@ -1232,6 +1245,7 @@ impl Smoother {
         mapped: [f32; 2],
         ceiling: [f32; 2],
         camera: [Option<CameraLid>; 2],
+        held: [Option<CameraLid>; 2],
         raise_to: [Option<f32>; 2],
         settings: &Settings,
     ) -> ([f32; 2], [LidFrom; 2], [bool; 2]) {
@@ -1252,7 +1266,20 @@ impl Smoother {
             let jump = 1.0 - ((time - since - fresh) / (stale - fresh)).clamp(0.0, 1.0) as f32;
             let state = &mut self.lid_doubt[eye];
             let Some(camera) = camera[eye] else {
-                *state = LidDoubt::default();
+                match held[eye] {
+                    // Closed as the camera last saw it, the way it is closed while the camera's values come
+                    Some(lid) if state.camera && lid.closed => {
+                        from[eye] = if valve > 0.0 { LidFrom::CameraClosed } else { LidFrom::EyeServer };
+                        return 0.0;
+                    }
+                    Some(lid) if state.camera => {
+                        from[eye] = LidFrom::CameraOpen;
+                        floored[eye] = floor > 0.0;
+                        return if floored[eye] { lid.lid.max(floor) } else { lid.lid };
+                    }
+                    Some(_) => {}
+                    None => *state = LidDoubt::default(),
+                }
                 return valve;
             };
             let closing = valve < line;
@@ -1575,8 +1602,9 @@ struct CameraGap {
 
 impl CameraGap {
     /// At `time`, from the camera's eyelid as read (`read`): the one to use (None in a gap, and while one that came
-    /// back is not taken yet), and through a gap the last one, to raise the eye server's to only.
-    fn steady(&mut self, time: f64, read: Option<CameraLid>) -> (Option<CameraLid>, Option<f32>) {
+    /// back is not taken yet), and through a gap the last one, to raise the eye server's to and to go on with
+    /// (Smoother::check_lids).
+    fn steady(&mut self, time: f64, read: Option<CameraLid>) -> (Option<CameraLid>, Option<CameraLid>) {
         match (self.on, read) {
             (None, _) | (Some(true), Some(_)) => {
                 self.on = Some(read.is_some());
@@ -1585,7 +1613,7 @@ impl CameraGap {
                 (read, None)
             }
             (Some(true), None) => match self.last {
-                Some((lid, at)) if time - at <= CAMERA_GAP_HOLD => (None, Some(lid.lid)),
+                Some((lid, at)) if time - at <= CAMERA_GAP_HOLD => (None, Some(lid)),
                 _ => {
                     self.on = Some(false);
                     (None, None)
@@ -3210,6 +3238,17 @@ impl Output {
         Ok(())
     }
 
+    /// Send one OSC message with a single blob argument; errors as in `send`.
+    fn send_blob(&mut self, addr: &str, blob: &[u8]) {
+        if self.socket.is_none() {
+            return;
+        }
+        osc::encode_blob(addr, blob, &mut self.packet);
+        let packet = std::mem::take(&mut self.packet);
+        self.send_datagram(&packet);
+        self.packet = packet;
+    }
+
     /// Send one datagram as it is (an encoded OSC message or a Live Link packet); errors as in `send`.
     fn send_datagram(&mut self, datagram: &[u8]) {
         let Some((socket, target)) = &self.socket else {
@@ -3711,20 +3750,21 @@ fn process(
         let at_ceiling = ceiling_eyes(settings, saturated);
         let ceiling = [0, 1].map(|eye| if at_ceiling[eye] { ceiling_share(openness[eye]) } else { 0.0 });
         let (mapped, mut lid_from, floored) = if v2 {
-            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, raise_to, settings)
+            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, held, raise_to, settings)
         } else {
             (mapped, [LidFrom::EyeServer; 2], [false; 2])
         };
-        // Through a short gap in the camera's eyelid, the eye server's is still raised to the camera's last one
+        // Through a short gap in the camera's eyelid, the eye server's is still raised to the camera's last one (an eye
+        // on the camera's eyelid has that already)
         let mapped = [0, 1].map(|eye| match held[eye] {
-            Some(camera) => {
-                let (lid, raised) = raised_to_camera(mapped[eye], raise_to[eye].unwrap_or(camera), doubt_line(settings));
+            Some(camera) if lid_from[eye] != LidFrom::CameraOpen => {
+                let (lid, raised) = raised_to_camera(mapped[eye], raise_to[eye].unwrap_or(camera.lid), doubt_line(settings));
                 if raised {
                     lid_from[eye] = LidFrom::CameraRaised;
                 }
                 lid
             }
-            None => mapped[eye],
+            _ => mapped[eye],
         });
         // From relaxed open up (or widened on the camera while not closing), an eye the camera sees takes the camera's
         // eyelid; a closing one stays the eye server's. Widening in one eye only is halved (see share_widening)
@@ -3738,7 +3778,9 @@ fn process(
         // widening, so it is capped again after that. Closing, half-closed and blinks are below relaxed open and
         // untouched. The widen sustain applies to the camera's widening too. With widening off (`widen`) every eye is
         // capped the same way, the camera's included, so its closing and squint stay as they are.
-        let saturation_capped = camera_lids.map(|camera| saturated && camera.is_none());
+        // (an eye on the camera's eyelid through a short gap in it, too: that is the camera's, see Smoother::check_lids)
+        let saturation_capped = [0, 1]
+            .map(|eye| saturated && camera_lids[eye].is_none() && lid_from[eye] != LidFrom::CameraOpen);
         let capped = saturation_capped.map(|capped| !settings.widen || capped);
         // The brows go by the eyelids before the `widen` cap, but after the saturation's (brow_from_widen)
         let before_cap = [0, 1].map(|eye| if saturation_capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
@@ -4258,6 +4300,38 @@ fn send_native_neutral(output: &mut Output, settings: &Settings) -> Result<(), B
     Ok(())
 }
 
+/// VRChat's Face Tracking address (vrc_face_tracking).
+const FACE_ADDRESS: &str = "/tracking/face/v1";
+
+/// VRChat's Face Tracking blob for a sample (see vrc_face): each eye's eyelid and gaze as sent (its own with "move
+/// eyes separately", else the combined one, as for the VRCFT parameters), the eye camera's squint and pupil for the
+/// eyes they are used for, and the brows raised with brow_from_widen.
+fn face_blob(sample: &Sample) -> [u8; vrc_face::LEN] {
+    let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
+    let camera = &sample.camera;
+    let eye = |side: usize, gaze: [f32; 2]| vrc_face::Eye {
+        lid: sample.lids[side],
+        gaze,
+        squint: camera.squint[side],
+        pupil_dilation: camera.pupil_dilation[side],
+        brow: sample.brows.map(|brows| brows[side]),
+    };
+    vrc_face::blob([eye(0, [left_x, left_y]), eye(1, [right_x, right_y])])
+}
+
+/// Where VRChat's Face Tracking input is being sent to, if anywhere. When this changes while eye tracking runs, the
+/// old destination gets a neutral blob (see `send_face_neutral`).
+fn face_stream(settings: &Settings) -> Option<(&str, u16)> {
+    (settings.sending && settings.output == OutputKind::Vrchat && settings.vrc_face_tracking)
+        .then(|| (settings.host.as_str(), settings.port()))
+}
+
+/// Relaxed open eyes looking straight ahead, pupils and brows at rest, as VRChat's Face Tracking input. VRChat's docs
+/// give no timeout for it, so without this the eyes could stay where they were (shut, if tracking was lost in a blink).
+fn send_face_neutral(output: &mut Output) {
+    output.send_blob(FACE_ADDRESS, &vrc_face::neutral());
+}
+
 /// Lets a packet through at most once per interval, on a steady beat that neither bursts nor drifts: the next one is
 /// due an interval after the last one was due, or after now if the samples paused for longer than that.
 #[derive(Default)]
@@ -4430,6 +4504,10 @@ impl Bridge {
         if self.active_since.is_some() && stream.is_some() && stream != native_stream(&settings) {
             send_native_neutral(&mut self.output, &self.settings)?;
         }
+        let stream = face_stream(&self.settings);
+        if self.active_since.is_some() && stream.is_some() && stream != face_stream(&settings) {
+            send_face_neutral(&mut self.output);
+        }
         let stream = livelink_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != livelink_stream(&settings) {
             self.send_livelink_neutral();
@@ -4518,6 +4596,9 @@ impl Bridge {
                         self.output.send(&addr, &args)?;
                     }
                 }
+                if face_stream(&self.settings).is_some() {
+                    self.output.send_blob(FACE_ADDRESS, &face_blob(&sample));
+                }
                 true
             };
             if sent && self.output.addr().is_some() {
@@ -4576,6 +4657,9 @@ impl Bridge {
         }
         if native_stream(&self.settings).is_some() {
             send_native_neutral(&mut self.output, &self.settings)?;
+        }
+        if face_stream(&self.settings).is_some() {
+            send_face_neutral(&mut self.output);
         }
         if livelink_stream(&self.settings).is_some() {
             self.send_livelink_neutral();
@@ -5313,8 +5397,8 @@ mod tests {
         // The first sample says which it is
         assert_eq!(gap.steady(0.0, lid(0.6)), (lid(0.6), None));
         // A gap of up to 0.2 s keeps the last eyelid to raise to; longer, and the eye is off the camera
-        assert_eq!(gap.steady(0.1, None), (None, Some(0.6)));
-        assert_eq!(gap.steady(0.2, None), (None, Some(0.6)));
+        assert_eq!(gap.steady(0.1, None), (None, lid(0.6)));
+        assert_eq!(gap.steady(0.2, None), (None, lid(0.6)));
         assert_eq!(gap.steady(0.21, None), (None, None));
         // Back: taken once it has kept coming for 0.2 s
         assert_eq!(gap.steady(0.3, lid(0.5)), (None, None));
@@ -7374,6 +7458,103 @@ mod tests {
     }
 
     #[test]
+    fn face_tracking_goes_out_only_in_vrchat_mode_when_turned_on() {
+        let on = Settings {
+            vrc_face_tracking: true,
+            ..settings()
+        };
+        assert!(face_stream(&settings()).is_none());
+        assert_eq!(face_stream(&on), Some(("auto", 9000)));
+        assert!(face_stream(&Settings { sending: false, ..on.clone() }).is_none());
+        for output in [OutputKind::Etvr, OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
+            assert!(face_stream(&Settings { output, ..on.clone() }).is_none());
+        }
+        // Independent of native_eyes: both can be on (the blob wins on avatars with the Face Tracking section)
+        assert_eq!(face_stream(&Settings { native_eyes: true, ..on.clone() }), face_stream(&on));
+        assert_ne!(face_stream(&on), face_stream(&Settings { port: Some(9001), ..on.clone() }));
+        assert_eq!(face_stream(&on), face_stream(&Settings { lid_open: 0.85, ..on.clone() }));
+    }
+
+    #[test]
+    fn face_blob_takes_each_eye_as_sent_with_the_camera_and_brows() {
+        // sample(): lids 0.375 / 0.75, gaze left (0.1, 0.2), right (0.3, 0.4)
+        let plain = face_blob(&sample());
+        assert_eq!((plain[9], plain[8]), (128, 0), "EyeClosedLeft / Right");
+        assert_eq!((plain[5], plain[6]), (26, 51), "EyeLookInLeft / UpLeft");
+        assert_eq!((plain[0], plain[2]), (77, 102), "EyeLookOutRight / UpRight");
+        assert!(plain[10..].iter().all(|&key| key == 0), "no camera, no brows: nothing else");
+        let full = Sample {
+            camera: CameraValues {
+                squint: [Some(0.2), None],
+                pupil_dilation: [Some(1.0), Some(0.0)],
+                pupil_diameter: [Some(8.0), Some(2.0)],
+            },
+            brows: Some([0.5, 1.0]),
+            ..sample()
+        };
+        let blob = face_blob(&full);
+        assert_eq!((blob[15], blob[14]), (51, 0), "EyeSquintLeft / Right");
+        assert_eq!((blob[11], blob[13]), (255, 0), "left pupil dilated");
+        assert_eq!((blob[10], blob[12]), (0, 255), "right pupil constricted");
+        assert_eq!((blob[23], blob[25]), (128, 128), "BrowInnerUpLeft / OuterUpLeft");
+        assert_eq!((blob[22], blob[24]), (255, 255), "BrowInnerUpRight / OuterUpRight");
+        assert_eq!(blob[..10], plain[..10], "eyelids and gaze unchanged");
+    }
+
+    /// Every `/tracking/face/v1` blob among the datagrams waiting at `listener`.
+    fn face_blobs(listener: &UdpSocket) -> Vec<Vec<u8>> {
+        let mut blobs = Vec::new();
+        while let Some(datagram) = receive(listener) {
+            let (_, packet) = rosc::decoder::decode_udp(&datagram).unwrap();
+            let OscPacket::Message(message) = packet else { panic!("not a message") };
+            if message.addr == FACE_ADDRESS {
+                let [rosc::OscType::Blob(blob)] = &message.args[..] else { panic!("not one blob: {:?}", message.args) };
+                blobs.push(blob.clone());
+            }
+        }
+        blobs
+    }
+
+    #[test]
+    fn face_tracking_sends_a_blob_per_sample_and_a_neutral_one_when_the_eyes_stop() {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let vrchat = Settings {
+            host: "127.0.0.1".into(),
+            port: Some(listener.local_addr().unwrap().port()),
+            lid_calibration: false,
+            ..settings()
+        };
+        let on = Settings {
+            vrc_face_tracking: true,
+            ..vrchat.clone()
+        };
+        let look = [(std::f32::consts::PI / 8.0).tan(), -(std::f32::consts::PI / 8.0).tan()];
+        // Off: none
+        let mut bridge = test_bridge(vrchat.clone());
+        bridge.on_sample(reading(0, look, [1.0, 0.55])).unwrap();
+        assert!(face_blobs(&listener).is_empty());
+        // On: one per sample, the sample as sent, next to the VRCFT parameters
+        bridge.apply(reload(&on)).unwrap();
+        for index in 1..4 {
+            bridge.on_sample(reading(index, look, [1.0, 0.55])).unwrap();
+            let blobs = face_blobs(&listener);
+            assert_eq!(blobs, [face_blob(bridge.latest.as_ref().unwrap()).to_vec()]);
+            assert_eq!(blobs[0].len(), 102);
+        }
+        // Pausing sends one neutral blob, and nothing while paused
+        bridge.apply(reload(&Settings { sending: false, ..on.clone() })).unwrap();
+        assert_eq!(face_blobs(&listener), [vec![0u8; 102]]);
+        bridge.on_sample(reading(4, look, [1.0, 0.55])).unwrap();
+        assert!(face_blobs(&listener).is_empty());
+        // Losing the eye data sends one too
+        bridge.apply(reload(&on)).unwrap();
+        bridge.on_sample(reading(5, look, [1.0, 0.55])).unwrap();
+        assert_eq!(face_blobs(&listener).len(), 1);
+        bridge.on_lost("test").unwrap();
+        assert_eq!(face_blobs(&listener), [vec![0u8; 102]]);
+    }
+
+    #[test]
     fn steamlink_names_go_out_only_in_vrchat_mode_when_turned_on() {
         let on = Settings {
             steamlink_params: true,
@@ -9055,6 +9236,52 @@ mod tests {
     }
 
     #[test]
+    fn single_stale_camera_samples_do_not_start_the_doubt_over() {
+        // Issue 46: the eye server read the left eye shut all along, the camera saw it open, but single stale samples
+        // (one every 20, about 0.22 s) started the doubt over before CAMERA_DOUBT_GRACE: it went out closed all along
+        let settings = camera_settings();
+        let mut smoother = Smoother::new(&settings);
+        let stale = |i: usize| i % 20 == 10;
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, |_| [0.03, 0.8], |i| {
+            let mut live = camera(0.75, 0.0);
+            live.fresh[0] = !stale(i);
+            Some(live)
+        });
+        // On the camera's eyelid as without the gaps (CAMERA_DOUBT_GRACE, counted on the fresh samples only), then
+        // through them too
+        assert!(sent[..20].iter().all(|sample| sample.lids[0] == 0.0));
+        assert!(sent[60..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen), "{:?}", sent[80].lid_from);
+        assert!(sent[90..].iter().all(|sample| (sample.lids[0] - LID_RELAXED).abs() < 0.01), "{:?}", sent[100].lids);
+        // A gap longer than CAMERA_GAP_HOLD still hands the eye back to the eye server's, closed
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, |_| [0.03, 0.8], |i| {
+            let mut live = camera(0.75, 0.0);
+            live.fresh[0] = !(180..270).contains(&i);
+            Some(live)
+        });
+        assert_eq!(sent[170].lid_from[0], LidFrom::CameraOpen);
+        assert!(sent[220..270].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer && sample.lids[0] < 0.05));
+        // A stale sample just after the camera saw the eye close stays closed, not on the camera's last open eyelid at
+        // the floor (and the blink hold goes on)
+        let settings = Settings { camera_lid_floor: 0.25, ..camera_settings() };
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 1.0, |_| [0.03, 0.8], |i| {
+            let mut live = camera(0.75, 0.0);
+            // (both eyes, a blink: one eye alone is held back by CloseGate first)
+            if i >= 40 {
+                for eye in &mut live.eyes {
+                    (eye.lid, eye.closed) = (0.0, true);
+                }
+            }
+            live.fresh[0] = i != 45;
+            Some(live)
+        });
+        assert_eq!(sent[39].lid_from[0], LidFrom::CameraOpen);
+        assert!(sent[40..60].iter().all(|sample| sample.lids[0] == 0.0), "{:?}", sent[45].lids);
+        assert_ne!(sent[45].lid_from[0], LidFrom::CameraOpen);
+    }
+
+    #[test]
     fn short_jumps_up_do_not_hand_a_squinting_eye_back() {
         let settings = camera_settings();
         let mut smoother = Smoother::new(&settings);
@@ -9254,7 +9481,7 @@ mod tests {
                 let valve = if i < 14 { 0.0 } else { 0.59 };
                 let camera = if (4..18).contains(&i) { shut } else { open };
                 let (_, from, _) =
-                    smoother.check_lids(time, dt as f32, [valve, 0.59], [0.0; 2], [camera, open], [None; 2], &settings);
+                    smoother.check_lids(time, dt as f32, [valve, 0.59], [0.0; 2], [camera, open], [None; 2], [None; 2], &settings);
                 assert_ne!(from[0], LidFrom::CameraOpen, "blink {blink}, sample {i}");
                 time += dt;
             }
@@ -9262,7 +9489,7 @@ mod tests {
         // One long closing the camera sees open still takes its eyelid
         let mut from = [LidFrom::EyeServer; 2];
         for _ in 0..40 {
-            (_, from, _) = smoother.check_lids(time, dt as f32, [0.0, 0.59], [0.0; 2], [open; 2], [None; 2], &settings);
+            (_, from, _) = smoother.check_lids(time, dt as f32, [0.0, 0.59], [0.0; 2], [open; 2], [None; 2], [None; 2], &settings);
             time += dt;
         }
         assert_eq!(from[0], LidFrom::CameraOpen);

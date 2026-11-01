@@ -15,7 +15,7 @@ namespace {
  */
 UiText makeJapanese() {
     UiText t {};
-    t.title = "目の送信";
+    t.title = "アイトラッキング";
     t.badgeSending = "送信中";
     t.badgeWaiting = "目のデータ待ち";
     t.badgePaused = "一時停止中";
@@ -153,6 +153,8 @@ UiText makeJapanese() {
     t.hintPupilBitsOff = "いまは瞳孔を VRChat に直接送っていないので効かないよ";
     t.rowNativeEyes = "VRChat 標準の目も動かす";
     t.hintNativeEyes = "VRCFT 用の値がないアバター用。まぶたが閉じすぎたらオフに";
+    t.rowVrcFaceTracking = "Face Tracking にも送る";
+    t.hintVrcFaceTracking = "VRChat の Face Tracking を設定したアバター用";
     t.rowTarget = "送り先の PC";
     t.hintTarget = "自動 = Steam Link の相手";
     t.targetAuto = "自動";
@@ -204,6 +206,7 @@ UiText makeJapanese() {
     t.strengthLight = "弱";
     t.strengthMedium = "中";
     t.strengthStrong = "強";
+    t.strengthMax = "最強";
     t.custom = "カスタム（下の値）";
     t.rawOnNote = "スムージングがオフです";
     t.rowFine = "細かく変える";
@@ -387,6 +390,7 @@ UiText makeJapanese() {
     t.advTrouble = "困ったとき";
     t.advTools = "動作確認";
     t.advFiles = "ファイル";
+    t.advData = "データ";
     t.updateToFormat = "%s に更新する";
     t.updateNotesFormat = "%s の内容";
     t.appsAllTitle = "ささけん＠の Frame アプリ";
@@ -647,6 +651,10 @@ UiText makeJapanese() {
     t.toolNoticeTooOld = "安全のため、道具を入れ直してね。入れ直すまでカメラは止まってて、まぶたは Valve の値だけで送ってるよ";
     t.nextToolOutdated = "今の道具のままでも動くよ";
     t.nextToolTooOld = "入れ直すまでカメラは止まってるよ";
+    t.toolNoticeDsp = "dsp_service につながらないよ。道具を入れると、つながらなくてもカメラが使えるよ";
+    t.toolNoticeDspPassword =
+        "dsp_service につながらないよ。道具を入れると使えるけど、先に SteamOS のパスワードを決めてね";
+    t.nextToolDsp = "dsp_service につながらないよ";
     t.setupStepLearn = "目の動きを覚える";
     t.setupStepDone = "完了";
     t.setupLaterTool = "Konsole でパスワードを打つだけ";
@@ -657,6 +665,8 @@ UiText makeJapanese() {
     t.setupAutoChecked = "（自動で確認）";
     t.setupToolLabel = "道具：";
     t.setupToolDone = "入ったよ";
+    t.setupNotNeeded = "いらないよ";
+    t.setupNoSudo = "（sudo なしで映像をもらえてる）";
     t.setupLearnLabel = "目の動き：";
     t.setupLearnDone = "覚えたよ";
     t.setupPassPill = "決めたら自動で進むよ";
@@ -878,6 +888,24 @@ UiText makeJapanese() {
     t.camPupilLine = "瞳孔の大きさは、そのまま VRChat に届くよ";
     t.camWidenNotice = "見開きの出やすさは「まぶた」タブで変えてね";
     t.camWidenButton = "まぶたへ";
+    t.srcTitle = "映像のもらい方";
+    t.srcAuto = "自動";
+    t.srcDsp = "dsp";
+    t.srcGrab = "道具";
+    t.srcNowDsp = "いまは dsp（sudo なし）";
+    t.srcNowGrab = "いまは道具（eyecam-grab）";
+    t.srcWaitDsp = "dsp からもらうところ";
+    t.srcWaitGrab = "道具でもらうところ";
+    t.srcToolIn = "道具（eyecam-grab）: 入ってる";
+    t.srcToolOut = "道具（eyecam-grab）: 入ってない";
+    t.srcToolBroken = "道具（eyecam-grab）: 入ってるけど使えない";
+    t.srcInstall = "入れる（Konsole で 1 回パスワード）";
+    t.srcRemove = "消す（Konsole で 1 回パスワード）";
+    t.srcRemoveNeedsDsp = "消すなら、先に dsp に切り替えてね";
+    t.srcSwitchLater = "自動は、次にもらい直すときから道具を使うよ（すぐなら「道具」）";
+    t.srcNeedsPassword = "入れるには SteamOS のパスワードが要るよ。先に決めてね（Steam の設定の「開発者」でも）";
+    t.srcTradeoff = "道具は長く使ってきたやり方。dsp は sudo いらずだけど新しくて、Valve の dsp_service 頼み。"
+                    "どっちも Valve の中身頼みだから、片方を控えに残しておくと安心";
     t.calibCardTitle = "指示どおりに目を動かしてね";
     t.calibResultTitle = "校正の結果";
     t.calibWearNote = "違和感があるときの調整";
@@ -982,6 +1010,40 @@ UiText makeJapanese() {
     t.notRunning = "動いていません";
     t.hoursMinutesFormat = "%d 時間 %d 分";
     t.minutesFormat = "%d 分";
+    t.dataTitle = "保存してるデータ";
+    t.dataHint = "この Frame に残しているもの";
+    t.dataRows[0] = "目のログ";
+    t.dataRows[1] = "目の撮影の映像";
+    t.dataRows[2] = "校正の目の画像";
+    t.dataRowHints[0] = "目の値の記録（CSV）";
+    t.dataRowHints[1] = "開発用の目の撮影";
+    t.dataRowHints[2] = "開発者モードのときだけ残る";
+    t.dataCountFormats[0] = "%d 回分・%s";
+    t.dataCountFormats[1] = "%d 本・%s";
+    t.dataCountFormats[2] = "%d 回分・%s";
+    t.dataCountOneFormats[0] = t.dataCountFormats[0];
+    t.dataCountOneFormats[1] = t.dataCountFormats[1];
+    t.dataCountOneFormats[2] = t.dataCountFormats[2];
+    t.dataNone = "なし";
+    t.dataCounting = "数えています…";
+    t.dataNoEyecam = "目のカメラ（eyecam-rec）が動いているときに数えるよ";
+    t.dataBusy = "撮影や校正のあいだは消せないよ";
+    t.dataRecordingNote = "今記録している分は入れていないよ（消さないよ）";
+    t.dataDelete = "消す";
+    t.dataDeleting = "消しています…";
+    t.dataDeletedFormat = "消したよ（%s）";
+    t.dataFailedFormat = "消せなかった: %s";
+    t.dataDeleteTitles[0] = "目のログを全部消す？";
+    t.dataDeleteTitles[1] = "目の撮影の映像を全部消す？";
+    t.dataDeleteTitles[2] = "校正の目の画像を消す？";
+    t.dataDeleteFormats[0] = "%s の目のログ（%s）を消します。設定と校正はそのまま残るよ。元に戻せないよ。";
+    t.dataDeleteFormats[1] = "%s の目の撮影の映像（%s）を消します。校正の結果と、細めの学習用の録画は残るよ。"
+                             "元に戻せないよ。";
+    t.dataDeleteFormats[2] = "%s の校正のフォルダから、目の画像（%s）だけ消します。校正の結果（calib_result.json）は"
+                             "残るので、見開きの調整はそのまま。元に戻せないよ。";
+    t.dataDeleteRecording = "今記録している目のログは残すよ。";
+    t.dataDeleteYes = "消す";
+    t.dataCancel = "やめる";
 
     t.promptVrchat = "VRChat 向けのおすすめ設定にする？";
     t.promptEtvr = "VRCFaceTracking（ETVR）向けのおすすめ設定にする？";
@@ -1210,6 +1272,8 @@ UiText makeEnglish() {
     t.hintPupilBitsOff = "No effect now: the pupils don't go straight to VRChat";
     t.rowNativeEyes = "VRChat's own eyes too";
     t.hintNativeEyes = "For avatars without VRCFT parameters. Turn off if eyelids close too far";
+    t.rowVrcFaceTracking = "Send to Face Tracking too";
+    t.hintVrcFaceTracking = "For avatars set up for VRChat Face Tracking";
     t.rowTarget = "Target PC";
     t.hintTarget = "Auto = the Steam Link PC";
     t.targetAuto = "Auto";
@@ -1261,6 +1325,7 @@ UiText makeEnglish() {
     t.strengthLight = "Light";
     t.strengthMedium = "Medium";
     t.strengthStrong = "Strong";
+    t.strengthMax = "Max";
     t.custom = "Custom (values below)";
     t.rawOnNote = "Smoothing is off";
     t.rowFine = "Fine tune";
@@ -1445,6 +1510,7 @@ UiText makeEnglish() {
     t.advTrouble = "Having trouble";
     t.advTools = "Debug tools";
     t.advFiles = "Files";
+    t.advData = "Data";
     t.updateToFormat = "Update to %s";
     t.updateNotesFormat = "What's new in %s";
     t.appsAllTitle = "Frame apps by sasaken@";
@@ -1708,6 +1774,10 @@ UiText makeEnglish() {
         "values only";
     t.nextToolOutdated = "The current one still works";
     t.nextToolTooOld = "The cameras are stopped until then";
+    t.toolNoticeDsp = "Can't reach dsp_service. With the tool installed, the cameras work without it";
+    t.toolNoticeDspPassword =
+        "Can't reach dsp_service. Installing the tool fixes it, but set a SteamOS password first";
+    t.nextToolDsp = "Can't reach dsp_service";
     t.setupStepLearn = "Learn your eye movements";
     t.setupStepDone = "Done";
     t.setupLaterTool = "Just type your password in Konsole";
@@ -1718,6 +1788,8 @@ UiText makeEnglish() {
     t.setupAutoChecked = "(checked automatically)";
     t.setupToolLabel = "Tool: ";
     t.setupToolDone = "installed";
+    t.setupNotNeeded = "not needed";
+    t.setupNoSudo = "(the video comes without sudo)";
     t.setupLearnLabel = "Eye movements: ";
     t.setupLearnDone = "learned";
     t.setupPassPill = "Moves on once set";
@@ -1940,6 +2012,24 @@ UiText makeEnglish() {
     t.camPupilLine = "Pupil size goes straight to VRChat";
     t.camWidenNotice = "Change how easily widening shows on the Eyelids tab";
     t.camWidenButton = "Eyelids";
+    t.srcTitle = "How the video is taken";
+    t.srcAuto = "Auto";
+    t.srcDsp = "dsp";
+    t.srcGrab = "Tool";
+    t.srcNowDsp = "Now: dsp (no sudo)";
+    t.srcNowGrab = "Now: the tool (eyecam-grab)";
+    t.srcWaitDsp = "Getting it from dsp";
+    t.srcWaitGrab = "Getting it with the tool";
+    t.srcToolIn = "Tool (eyecam-grab): installed";
+    t.srcToolOut = "Tool (eyecam-grab): not installed";
+    t.srcToolBroken = "Tool (eyecam-grab): installed, not usable";
+    t.srcInstall = "Install (password once, in Konsole)";
+    t.srcRemove = "Remove (password once, in Konsole)";
+    t.srcRemoveNeedsDsp = "To remove it, switch to dsp first";
+    t.srcSwitchLater = "Auto uses the tool from the next time it takes the video (Tool switches now)";
+    t.srcNeedsPassword = "Installing needs a SteamOS password. Set one first (or under Developer in Steam settings)";
+    t.srcTradeoff = "The tool is the long-proven way; dsp needs no sudo but is new and relies on Valve's dsp_service. "
+                    "Both depend on Valve internals, so keeping one as a spare helps";
     t.calibCardTitle = "Move your eyes as shown";
     t.calibResultTitle = "Result";
     t.calibWearNote = "When something feels off";
@@ -2047,6 +2137,40 @@ UiText makeEnglish() {
     t.notRunning = "Not running";
     t.hoursMinutesFormat = "%d h %d min";
     t.minutesFormat = "%d min";
+    t.dataTitle = "Saved data";
+    t.dataHint = "What this Frame keeps";
+    t.dataRows[0] = "Eye logs";
+    t.dataRows[1] = "Eye recordings";
+    t.dataRows[2] = "Calibration eye images";
+    t.dataRowHints[0] = "Eye values (CSV)";
+    t.dataRowHints[1] = "The developer eye recording";
+    t.dataRowHints[2] = "Kept in developer mode only";
+    t.dataCountFormats[0] = "%d logs, %s";
+    t.dataCountFormats[1] = "%d recordings, %s";
+    t.dataCountFormats[2] = "%d calibrations, %s";
+    t.dataCountOneFormats[0] = "%d log, %s";
+    t.dataCountOneFormats[1] = "%d recording, %s";
+    t.dataCountOneFormats[2] = "%d calibration, %s";
+    t.dataNone = "None";
+    t.dataCounting = "Counting…";
+    t.dataNoEyecam = "Counted while the eye cameras (eyecam-rec) run";
+    t.dataBusy = "Can't delete while recording or calibrating";
+    t.dataRecordingNote = "The log being recorded isn't counted (it stays)";
+    t.dataDelete = "Delete";
+    t.dataDeleting = "Deleting…";
+    t.dataDeletedFormat = "Deleted (%s)";
+    t.dataFailedFormat = "Couldn't delete: %s";
+    t.dataDeleteTitles[0] = "Delete all eye logs?";
+    t.dataDeleteTitles[1] = "Delete all eye recordings?";
+    t.dataDeleteTitles[2] = "Delete the calibration eye images?";
+    t.dataDeleteFormats[0] = "Deletes the eye logs in %s (%s). Your settings and calibration stay. This can't be undone.";
+    t.dataDeleteFormats[1] = "Deletes the eye recordings in %s (%s). The calibration results and the squint-training "
+                             "recordings stay. This can't be undone.";
+    t.dataDeleteFormats[2] = "Deletes only the eye images in the calibration folders in %s (%s). The calibration results "
+                             "(calib_result.json) stay, so widening stays as tuned. This can't be undone.";
+    t.dataDeleteRecording = "The eye log being recorded stays.";
+    t.dataDeleteYes = "Delete";
+    t.dataCancel = "Cancel";
 
     t.promptVrchat = "Use the recommended settings for VRChat?";
     t.promptEtvr = "Use the recommended settings for VRCFaceTracking (ETVR)?";

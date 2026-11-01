@@ -1,4 +1,5 @@
-//! The OSC 1.0 messages this sender sends: an address and float, int or bool arguments, no bundles. Encoded here
+//! The OSC 1.0 messages this sender sends: an address and float, int or bool arguments, or one blob (VRChat's Face
+//! Tracking input), no bundles. Encoded here
 //! rather than with the rosc crate, which is only a dev-dependency now: the tests check every byte against it.
 //! (From PR #33 by cinnacappu.)
 
@@ -39,6 +40,20 @@ pub fn encode(address: &str, args: &[Value], packet: &mut Vec<u8>) {
             Value::Bool(_) => {}
         }
     }
+}
+
+/// One OSC message with a single blob argument into `packet` (cleared first): the address and the `,b` type tag as OSC
+/// strings, then the blob's size as a big-endian i32 and its bytes, padded with NULs to a multiple of four bytes (none
+/// when it already is one). For VRChat's Face Tracking input (vrc_face).
+pub fn encode_blob(address: &str, blob: &[u8], packet: &mut Vec<u8>) {
+    packet.clear();
+    packet.extend_from_slice(address.as_bytes());
+    pad(packet);
+    packet.extend_from_slice(b",b");
+    pad(packet);
+    packet.extend_from_slice(&(blob.len() as i32).to_be_bytes());
+    packet.extend_from_slice(blob);
+    packet.resize((packet.len() + 3) & !3, 0);
 }
 
 /// The NUL ending an OSC string and the NULs up to the next multiple of four bytes (one to four of them).
@@ -136,6 +151,26 @@ pub mod tests {
             encode("/x", &[Value::Float(0.5)], &mut packet);
         }
         assert_eq!(packet.capacity(), capacity);
+    }
+
+    #[test]
+    fn blobs_match_rosc_for_every_size_and_address_alignment() {
+        let mut packet = Vec::new();
+        for address in ["/tracking/face/v1", "/x", "/xy", "/xyz", "/xyzw"] {
+            for len in [0, 1, 2, 3, 4, 5, 101, 102, 103, 104] {
+                let blob: Vec<u8> = (0..len).map(|i| (i * 7 + 1) as u8).collect();
+                encode_blob(address, &blob, &mut packet);
+                let message = OscMessage {
+                    addr: address.to_owned(),
+                    args: vec![OscType::Blob(blob.clone())],
+                };
+                assert_eq!(packet, encoder::encode(&OscPacket::Message(message)).unwrap(), "{address:?} {len}");
+                assert_eq!(packet.len() % 4, 0);
+            }
+        }
+        // VRChat's Face Tracking message: 20 + 4 + 4 + 102 + 2 bytes
+        encode_blob("/tracking/face/v1", &[0; 102], &mut packet);
+        assert_eq!(packet.len(), 132);
     }
 
     #[test]

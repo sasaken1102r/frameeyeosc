@@ -15,6 +15,7 @@
 #include "recorder.h"
 #include "report.h"
 #include "status.h"
+#include "stored.h"
 #include "update_check.h"
 
 #include <string>
@@ -61,6 +62,7 @@ struct PanelModel {
     AppsView apps;               ///< the other Frame apps (the row at the bottom of "Version" and the list it opens)
     eye_preview::View preview;   ///< the eye preview's values and pictures (only while its sheet is open)
     contrib::View contrib;       ///< "Help train the AI" (Debug tools; its sheet on the Advanced tab)
+    stored::View savedData;      ///< "Saved data" (the Data page): the eye logs' count, and each kind's delete
     std::string moduleLinkError; ///< why the Output tab's module link didn't open the browser ("" = none; its own
                                  ///< line under the link, never the eye cameras' setup's eyecam.spawnError)
 };
@@ -300,8 +302,11 @@ struct LidPreset {
     double beta;
 };
 
+/** How many eyelid smoothing presets there are. */
+constexpr int kLidPresetCount = 4;
+
 /**
- * The three eyelid smoothing presets: light, medium (= the defaults), strong.
+ * The eyelid smoothing presets: light, medium (= the defaults), strong, max.
  * @return the presets
  */
 const LidPreset* lidPresets();
@@ -309,7 +314,7 @@ const LidPreset* lidPresets();
 /**
  * Which eyelid preset the current values match.
  * @param view the settings
- * @return 0..2, or -1 for custom values
+ * @return 0..kLidPresetCount - 1, or -1 for custom values
  */
 int matchingLidPreset(const SettingsView& view);
 

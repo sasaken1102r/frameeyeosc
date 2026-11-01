@@ -3,6 +3,7 @@
 pub mod autograb;
 pub mod cues;
 pub mod driftlog;
+pub mod dspsrc;
 pub mod feat;
 pub mod json;
 pub mod live;
@@ -17,6 +18,7 @@ pub mod ring;
 pub mod settings;
 pub mod shm;
 pub mod status;
+pub mod stored;
 pub mod veto;
 pub mod vision;
 

@@ -124,6 +124,9 @@ Status parseStatus(const std::string& text, double mtime) {
     status.message = readText(root, "message");
     status.messageEn = readText(root, "message_en");
     status.autoGrab = readText(root, "auto_grab");
+    status.source = readText(root, "source");
+    status.sourceSetting = readText(root, "source_setting");
+    status.grabState = readText(root, "grab_state");
     const JsonValue* outdated = root.get("grab_outdated");
     status.grabOutdated = outdated != nullptr && outdated->isBool() && outdated->boolean;
     const JsonValue* locked = root.get("locked");
@@ -274,6 +277,28 @@ Status parseStatus(const std::string& text, double mtime) {
         const JsonValue* on = drift->get("on");
         status.driftlogOn = on != nullptr && on->isBool() && on->boolean;
         status.driftlogPath = readText(*drift, "path");
+    }
+    // What its data folder keeps (missing on an older eyecam-rec: "Saved data" shows no counts for it)
+    if (const JsonValue* stored = root.get("stored"); stored != nullptr && stored->isObject()) {
+        Stored& d = status.stored;
+        d.present = true;
+        d.scannedUnix = readNumber(*stored, "scanned_unix", 0.0);
+        const auto usage = [&](const char* name, long long& count, long long& bytes) {
+            const JsonValue* u = stored->get(name);
+            count = u != nullptr && u->isObject() ? static_cast<long long>(readNumber(*u, "count", 0.0)) : 0;
+            bytes = u != nullptr && u->isObject() ? static_cast<long long>(readNumber(*u, "bytes", 0.0)) : 0;
+        };
+        usage("rec", d.recCount, d.recBytes);
+        usage("calib_images", d.calibCount, d.calibBytes);
+        d.deleting = readText(*stored, "deleting");
+        if (const JsonValue* deleted = stored->get("deleted"); deleted != nullptr && deleted->isObject()) {
+            d.hasDeleted = true;
+            d.deletedKind = readText(*deleted, "kind");
+            d.deletedCount = static_cast<long long>(readNumber(*deleted, "count", 0.0));
+            d.deletedBytes = static_cast<long long>(readNumber(*deleted, "bytes", 0.0));
+            d.deletedError = readText(*deleted, "error");
+            d.deletedUnix = readNumber(*deleted, "unix", 0.0);
+        }
     }
     return status;
 }
@@ -452,10 +477,18 @@ Tool toolState(const Status& status) {
         case State::Calibrating: installed = true; break;
         default: break;
     }
-    // auto_grab names what eyecam-rec found; without it (an older eyecam-rec) only the buffers say so
-    if (!grab.empty() && grab != "missing" && grab != "no_cap" && grab.rfind("unsafe", 0) != 0) installed = true;
+    // auto_grab names what eyecam-rec found; without it (an older eyecam-rec) only the buffers say so. With source
+    // auto, "dsp" needs no tool and "dsp_unreachable" (dsp_service hasn't answered for a while) offers it
+    if (!grab.empty() && grab != "missing" && grab != "no_cap" && grab != "dsp_unreachable" &&
+        grab.rfind("unsafe", 0) != 0) {
+        installed = true;
+    }
     if (!installed) return Tool::Missing;
     return status.grabOutdated ? Tool::Outdated : Tool::Current;
+}
+
+bool fromDsp(const Status& status) {
+    return status.autoGrab == "dsp";
 }
 
 bool toolInstalled(const Status& status) {
@@ -465,6 +498,7 @@ bool toolInstalled(const Status& status) {
 
 ToolNotice toolNotice(const Status& status, PasswordState password) {
     if (setupStep(status, password) != SetupStep::Done) return ToolNotice::None;
+    if (status.autoGrab == "dsp_unreachable") return ToolNotice::DspUnreachable;
     switch (toolState(status)) {
         case Tool::Outdated: return ToolNotice::Outdated;
         case Tool::TooOld: return ToolNotice::TooOld;
@@ -481,9 +515,13 @@ bool setupComplete(const Status& status) {
 SetupStep setupStep(const Status& status, PasswordState password) {
     const Tool tool = toolState(status);
     // Set up needs the tool there (without it the cameras stop at the next SteamVR start); an outdated or too old one
-    // is asked for on the usual page instead. An eyecam-rec without auto_grab can't tell (eyecam-grab was always run
-    // by hand), so there being set up is enough
-    if (setupComplete(status) && (tool != Tool::Missing || status.autoGrab.empty())) return SetupStep::Done;
+    // is asked for on the usual page instead, and so is the tool while dsp_service doesn't answer (the setup was done
+    // without it: it isn't undone). An eyecam-rec without auto_grab can't tell (eyecam-grab was always run by hand), so
+    // there being set up is enough
+    if (setupComplete(status) &&
+        (tool != Tool::Missing || status.autoGrab.empty() || status.autoGrab == "dsp_unreachable")) {
+        return SetupStep::Done;
+    }
     // The checklist's (2) is met only by a current tool
     if (tool == Tool::Current) return SetupStep::Learn;
     return password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
@@ -774,6 +812,62 @@ bool isSensitivityCommand(const std::string& command) {
 
 std::string lidVetoCommand(bool on) {
     return on ? "set lid_veto on" : "set lid_veto off";
+}
+
+bool sourceCardShown(const Status& status) {
+    return !status.source.empty();
+}
+
+bool sourceChoiceShown(const Status& status) {
+    return sourceCardShown(status) && !status.grabState.empty();
+}
+
+SourceChoice sourceChoice(const Status& status) {
+    if (status.sourceSetting == "dsp") return SourceChoice::Dsp;
+    if (status.sourceSetting == "grab") return SourceChoice::Grab;
+    return SourceChoice::Auto;
+}
+
+std::string sourceCommand(SourceChoice choice) {
+    switch (choice) {
+        case SourceChoice::Dsp: return "set source dsp";
+        case SourceChoice::Grab: return "set source grab";
+        case SourceChoice::Auto: break;
+    }
+    return "set source auto";
+}
+
+GrabTool grabTool(const Status& status) {
+    if (status.grabState.empty()) return GrabTool::Unknown;
+    if (status.grabState == "missing") return GrabTool::Missing;
+    if (status.grabState == "ready") return GrabTool::Ready;
+    return GrabTool::Unusable;
+}
+
+bool sourceChoiceAllowed(const View& view, SourceChoice choice) {
+    const Status& s = view.status;
+    if (!view.visible || view.busy || !sourceChoiceShown(s) || choice == sourceChoice(s)) return false;
+    if (s.state != State::WaitingFds && s.state != State::Idle && s.state != State::Error) return false;
+    return choice != SourceChoice::Grab || grabTool(s) == GrabTool::Ready;
+}
+
+bool grabRemoveAllowed(const Status& status) {
+    const GrabTool tool = grabTool(status);
+    return (tool == GrabTool::Ready || tool == GrabTool::Unusable) && status.source == "dsp";
+}
+
+bool grabAfterReacquire(const Status& status) {
+    return status.sourceSetting == "auto" && status.source == "dsp" && grabTool(status) == GrabTool::Ready;
+}
+
+bool installNeedsPassword(const View& view) {
+    return grabTool(view.status) == GrabTool::Missing && view.password == PasswordState::NotSet;
+}
+
+bool passwordWanted(const View& view, bool eyecamTab) {
+    if (setupStep(view.status, PasswordState::Unknown) == SetupStep::Tool) return true;
+    if (toolNotice(view.status, PasswordState::Unknown) == ToolNotice::DspUnreachable) return true;
+    return eyecamTab && sourceChoiceShown(view.status) && grabTool(view.status) == GrabTool::Missing;
 }
 
 bool StartConfirm::open(State state) {

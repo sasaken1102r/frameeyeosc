@@ -117,11 +117,17 @@ int matchingGazePreset(const SettingsView& view) {
     return -1;
 }
 
-/** Light follows quickly, strong smooths more; medium is lid_min_cutoff / lid_beta's defaults. */
-const LidPreset kLidPresets[3] = {
+/**
+ * Light follows quickly, strong smooths more; medium is lid_min_cutoff / lid_beta's defaults. Max is for avatars that
+ * smooth nothing themselves (VRChat's Face Tracking): on the developer's recordings it moves an open eye about a fifth
+ * less than strong and still closes for 98.7 % of the blinks (strong 99.8 %). A blink still closes at once either way
+ * (Smoother::hold_shut).
+ */
+const LidPreset kLidPresets[kLidPresetCount] = {
     {10.0, 8.0},
     {6.0, 5.0},
     {3.0, 2.5},
+    {1.5, 1.0},
 };
 
 const LidPreset* lidPresets() {
@@ -131,7 +137,7 @@ const LidPreset* lidPresets() {
 int matchingLidPreset(const SettingsView& view) {
     const double minCutoff = view.number(key::kLidMinCutoff);
     const double beta = view.number(key::kLidBeta);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < kLidPresetCount; ++i) {
         if (std::fabs(kLidPresets[i].minCutoff - minCutoff) < 1e-6 && std::fabs(kLidPresets[i].beta - beta) < 1e-6) {
             return i;
         }

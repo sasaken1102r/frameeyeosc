@@ -9,7 +9,7 @@
 #include <vector>
 
 /** The Advanced tab's sub-tabs, in the order the segmented control shows them. */
-enum class AdvPage { Version, Trouble, Tools, Files };
+enum class AdvPage { Version, Trouble, Tools, Files, Data };
 
 /** The Eyelids tab's sub-tabs, in the order its segmented control shows them. */
 enum class LidsPage { Look, Blinks, Fine, Brows };
@@ -27,7 +27,7 @@ std::string defaultPath();
 
 /**
  * @param page a sub-tab
- * @return its name in the file ("version", "trouble", "tools", "files")
+ * @return its name in the file ("version", "trouble", "tools", "files", "data")
  */
 const char* pageName(AdvPage page);
 

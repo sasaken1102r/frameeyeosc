@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0-beta.1 (2026-10-31)
+## 0.9.0 (2026-11-01)
 
 The eye cameras now usually work without sudo: eyecam first takes the cameras' video, read-only, from Valve's dsp_service, which already runs on the Frame, and the one-time sudo step for its own tool (eyecam-grab) is only offered when that doesn't work (a test feature; if you already installed the tool, it keeps being used). The Eye cameras tab gets a "How the video is taken" card to switch between the two and install or remove the tool, and Advanced gets a "Data" page that shows and deletes the eye logs and eye-camera recordings kept on the Frame. With "Use", short gaps in the camera's values no longer leave the camera's eyelids unused (#46). New: "Send to Face Tracking too" for VRChat's own Face Tracking (#44), and a "Max" eyelid smoothing.
 

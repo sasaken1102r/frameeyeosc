@@ -191,7 +191,7 @@ Frame のほかのアプリ（コントローラーのボタンなど）から�
 | `eye_tracking_active` | `--eye-tracking-active` | `"bool"` | VRChat モードで `EyeTrackingActive` をどう送るか: `"bool"`（true / false）、`"float"`（1.0 / 0.0。アバターによってはこちらが必要）、`"off"`（送らない。止めたときや目を見失ったときの 1 回の「無効」も送らない）。ETVR モードと LiveLink モードではもともと送らない |
 | `steamlink_params` | `--steamlink-params` | `false` | VRChat モードで、SteamVR の Steam Link が自分の OSC で送るアバターのパラメータ（`LeftEyeX`、`RightEyeLid` など）も送る。それに合わせて作ったアバター用（[Steam Link の OSC 向けのアバター](#steam-link-の-osc-向けのアバター)）。頭（`prefix`）は付けない。ETVR モードと LiveLink モードでは使わない |
 | `native_eyes` | `--native-eyes` | `false` | VRChat モードで、VRChat 自身のアイトラッキング入力（`/tracking/eye/*`）も送る。VRCFT のパラメータを持たないアバターの目が動く（[VRChat のアイトラッキング入力](#vrchat-のアイトラッキング入力)）。送り方タブにスイッチがある |
-| `vrc_face_tracking` | `--vrc-face-tracking` | `false` | VRChat モードで、VRChat の Face Tracking 入力（`/tracking/face/v1`）にも送る。VRChat の Face Tracking を設定したアバター用。送り方タブの「Face Tracking にも送る」。まだ何も送らない（送る側は作業中） |
+| `vrc_face_tracking` | `--vrc-face-tracking` | `false` | VRChat モードで、VRChat の Face Tracking 入力（`/tracking/face/v1`）にも送る。目ごとのまぶた・見開き・視線と、目のカメラの細めと瞳、`brow_from_widen` で上げた眉を送る。VRChat の Face Tracking を設定したアバター用（[VRChat の Face Tracking](#vrchat-の-face-tracking)）。送り方タブの「Face Tracking にも送る」 |
 | `camera_lids` | `--no-camera-lids` | `true` | 準備が済んでいれば、目のカメラの値を使う（[目のカメラ](#目のカメラ)）: 普通に開いた目から上のまぶた（見開き）と、カメラが閉じている・細めても開いていると見た目のまぶた、目を細めた動き、瞳孔の大きさ。`false` で Valve の値だけ。frameeyeosc が eyecam-rec にも映像からの計算を止めさせる（`live off`。eyecam 自体は動き続ける。[止める・取り除く](#止める取り除く)）。「基本」タブの「目のカメラ」の「使う / 使わない」 |
 | `pupils_to_vrchat` | `--no-pupils-to-vrchat` | `true` | LiveLink モードで、目のカメラの瞳孔の大きさを VRChat に直接送る（同じ PC のポート 9000）。LiveLink モジュールは瞳孔を運ばないため。ほかのモードでは関係ない |
 | `pupil_bits` | `--pupil-bits` | `0` | 目のカメラの瞳孔を VRChat に送るとき、開き具合をこの個数の bool のパラメータ（`v2/PupilDilation1`、`2`、`4`、`8`）でも送る。ビットで受け取るアバター用。`0` で小数だけ。1〜4。[ビットで受け取るアバターの瞳孔](#ビットで受け取るアバターの瞳孔) を参照。送り方タブの「瞳孔の受け取り方」 |
@@ -266,6 +266,33 @@ frameeyeosc がこれを送るのは VRChat モードのときだけです。ETV
 - Eyelids: 「Eyelid Type」を Blendshapes に（まぶたをボーンで動かすアバターは Bones）、「Eyelids Mesh」に顔のメッシュ、「Blink」に目を閉じるブレンドシェイプ（`vrc.blink`、`blink`、`Eye_Close` などの名前が多い）
 
 ここを変えたら、アバターをアップロードし直してください。
+
+## VRChat の Face Tracking
+
+`"vrc_face_tracking": true`（または `--vrc-face-tracking`）にすると、VRChat モードのとき、VRChat の Face Tracking 入力 `/tracking/face/v1` にも送ります。Unified Expressions のトラッキングキーごとに 1 バイト、102 バイトの blob が 1 つです。動くのは、アバターの Avatar Descriptor の Face Tracking セクションで対応づけたブレンドシェイプと目のボーンです。VRCFT のパラメータも PC の VRCFaceTracking もいりません。`native_eyes` とちがって目ごとに送るので、ウインク・見開き・細め・瞳も伝わります。既定ではオフです。送り方タブの「Face Tracking にも送る」で切り替えられます（送り先が「VRChat」のとき）。VRChat の Face Tracking は新しい機能なので（VRChat の beta ドキュメント、2026 年 10 月）、それに対応した VRChat と SDK が必要です。
+
+目ごとに送るもの:
+
+- `EyeClosed`: 送っているまぶたから（1 で閉じる、普通に開いた目から上は 0）。`EyeWide`: 普通に開いた目を超えた分
+- `EyeLookOut` / `In` / `Up` / `Down`: 送っている視線から（「左右の目を別々に動かす」なら目ごとの、それ以外は共通の視線）。1.0 = 45° で、`v2/EyeLeftX` / `Y` と同じ値です
+- 目のカメラがあるとき: `EyeSquint`。瞳はいつもより大きければ `EyeDilation`、小さければ `EyeConstrict`
+- `brow_from_widen` のとき: `BrowInnerUp` と `BrowOuterUp`
+
+ほかのキーはすべて 0 です。目を見失ったとき、送信を止めたとき、送り先を変えたときは、すべてのキーが 0 の blob（普通に開いて正面を見ている目）を 1 回送ります。
+
+アバター側の設定（Unity で VRC Avatar Descriptor → Face Tracking の［Enable］を押す）:
+
+- Face Tracking のメッシュに顔のメッシュを足します
+- 対応づけるのは frameeyeosc が送るキーだけにします。「Auto-Fill Filter」に `eye` と入れて Auto-Fill すると、目のキーが埋まります。選ばれたものは確かめてください（`EyePupil_...` のような名前も拾うことがあります）。None のままのキーは何も動かさないので、口などに送る 0 は何も変えません。手の表情やほかのアニメーターのレイヤーで動く口は、そのまま動きます
+- まぶた: 「Eyelid Type」を Face Tracking に
+- 視線: 「Eye Gaze Mode」が Bone Rotation なら、EyeLook のキーで目のボーンが回り、1.0 で Eye Look の Rotation States に届きます。Both はボーンに eyeLook のブレンドシェイプが足されるので、目が回りすぎることがあります
+- 瞳には「Use All Tracking Keys」が必要です（SDK 3.10.6-beta.2 ではこのチェックが切り替わらないことがあり、Inspector の Debug モードなら変えられます）
+- Perfect Sync（ARKit）の顔の眉: `BrowInnerUpLeft` と `BrowInnerUpRight` をどちらも `browInnerUp` に（VRChat は 2 つのうち大きいほうを使います）、`BrowOuterUpLeft` / `Right` を `browOuterUpLeft` / `Right` に
+- Avatar Optimizer: Trace and Optimize の「BlendShape を最適化する」がオンだと、Face Tracking セクションでしか使っていないブレンドシェイプが消されます。VRChat のログに `Avatar Face Tracking Blendshape '...' not found on any mesh` と出て、動きません。このオプションをオフにすると戻ります
+
+ここを変えたら、アバターをアップロードし直してください。
+
+こういうアバターでは blob が `/tracking/eye/*` より優先されるので、セクションのないアバターのために `native_eyes` はオンのままで大丈夫です。ただし、blob ごとに Face Tracking の状態がまるごと入れ替わります。`/tracking/face/v1` に送るほかのプログラム（ほかのフェイストラッカー）と frameeyeosc は、アバターが対応づけたすべてのキーで交互に入れ替わるので、送るのはどちらか 1 つにしてください。
 
 ## 状態ファイル
 

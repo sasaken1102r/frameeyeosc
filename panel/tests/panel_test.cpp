@@ -756,7 +756,7 @@ std::vector<uint8_t> belowCard(EyePanel& panel) {
 
 /**
  * Mark ⑤ on "Blinks & squint"'s sent eyelid bars: both values where they land, each faded while it applies to neither
- * eye, the second badge moved aside where they'd overlap, gone when off; none on Fine-tune, which links there instead.
+ * eye, the second badge moved aside where they'd overlap, gone when off; none on Fine-tune.
  */
 void testSnapMark(const FontSet& fonts) {
     // Eye data coming, no cameras: lid_open_snap (0.53) applies, camera_lid_open_snap (0.63) is faded. The bars run from

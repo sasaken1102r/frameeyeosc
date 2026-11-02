@@ -884,7 +884,6 @@ UiText makeJapanese() {
     t.capSnapCamera = "カメラの目";
     t.valveReadTitle = "Valve の値の読み方";
     t.valveReadStandby = "いまは予備：目のカメラが見失ったときに使うよ";
-    t.snapMoved = "「ほぼ開いてたら全開にする」は「まばたき・細め」に移ったよ";
     t.sentLidsTitle = "送るまぶた";
     t.sentLidsHint = "アバターに届く値（点線がふつうに開いた目）";
     t.chipValve = "Valve";
@@ -2015,7 +2014,6 @@ UiText makeEnglish() {
     t.capSnapCamera = "Camera eyes";
     t.valveReadTitle = "Reading Valve's values";
     t.valveReadStandby = "Standing by: used when the eye cameras lose an eye";
-    t.snapMoved = "\"Treat nearly open as open\" moved to \"Blinks & squint\"";
     t.sentLidsTitle = "Sent eyelids";
     t.sentLidsHint = "What the avatar gets (dotted: a normally open eye)";
     t.chipValve = "Valve";

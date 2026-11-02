@@ -803,17 +803,13 @@ void testSnapMark(const FontSet& fonts) {
     CHECK(!panel.snapMark().shown && std::isnan(panel.snapMark().x[0]) && std::isnan(panel.snapMark().x[1]));
     CHECK(hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 1);
     CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).size() == 1);
-    // Fine-tune: neither the mark nor the row, but a line that opens "Blinks & squint"
+    // Fine-tune: neither the mark nor the row, and nothing below the switch that opens "Blinks & squint"
     m.config.root.set(key::kLidOpenSnap, JsonValue::makeNumber(0.53));
     m.config.root.set(key::kCameraLidOpenSnap, JsonValue::makeNumber(0.63));
     panel.setLidsPage(LidsPage::Fine);
     panel.render(m);
     CHECK(!panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).empty());
-    bool link = false;
-    for (const EyePanel::HitArea& area : hits(panel, PanelAction::LidsPage)) {
-        if (area.hit.arg == static_cast<int>(LidsPage::Blinks) && area.y > 200) link = area.y + area.h <= 676;
-    }
-    CHECK(link);
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::LidsPage)) CHECK(area.y < 200);
     // Other pages: nothing
     panel.setLidsPage(LidsPage::Look);
     panel.render(m);

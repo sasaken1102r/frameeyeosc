@@ -3877,27 +3877,6 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         cairo_pop_group_to_source(cr);
         cairo_paint_with_alpha(cr, kStandbyAlpha);
     }
-    // ⑤ went to "Blinks & squint" in 0.9.1, with the sent eyelid it is set on: a dashed line here that opens that page,
-    // for those who look for it here
-    {
-        const double h = 44;
-        const double w = kInnerRight - kInnerX;
-        const PanelHit hit {PanelAction::LidsPage, nullptr, static_cast<int>(LidsPage::Blinks)};
-        if (pointerState(hit) > 0) fillRounded(pen, kInnerX, y, w, h, 12, kControlHover);
-        const double dash[2] = {6, 4};
-        cairo_set_dash(cr, dash, 2, 0);
-        strokeRounded(pen, kInnerX, y, w, h, 12, kBorder, 1.5);
-        cairo_set_dash(cr, nullptr, 0, 0);
-        drawNumberBadge(pen, kInnerX + 24, y + h / 2, 5, kSnap);
-        const double arrowW = pen.measure(ICON_ARROW_RIGHT, 18, false);
-        const double ax = kInnerRight - 16 - arrowW;
-        pen.text(ax, centerBaseline(y, h, 18), ICON_ARROW_RIGHT, 18, kText);
-        const double tx = kInnerX + 46;
-        const double size = fitSize(pen, t.snapMoved, 15, 11, ax - 12 - tx, false);
-        pen.text(tx, centerBaseline(y, h, size), t.snapMoved, size, kText);
-        addButton(hit, kInnerX, y, w, h, true);
-        y += h + 12;
-    }
     // Eyelid smoothing: the two One Euro values behind the presets, each named on its left (one row high, so the
     // page fits with the row above)
     {

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1-beta.2 (2026-11-02)
+
+The Eyelids tab is easier to read with the eye cameras: "Treat nearly open as open" moved to "Blinks & squint", onto new bars of the eyelids as they are sent, and "Fine-tune" now only shows how Valve's values are read.
+
+日本語: 目のカメラを使っているときのまぶたタブが見やすくなりました。「ほぼ開いてたら全開にする」は、新しい「送るまぶた」の棒と一緒に「まばたき・細め」に移りました。「細かく直す」は Valve の値の読み方だけになりました。
+
+- Panel, Eyelids › "Blinks & squint": new "Sent eyelids" bars, each eye's eyelid as it goes out now, green where it is the eye cameras' (with whose it is on the right), with a dotted line at a normally open eye. "Treat nearly open as open" (⑤) is drawn on them, one line per value, and its two values sit below as "Valve eyes" (`lid_open_snap`) and "Camera eyes" (`camera_lid_open_snap`); a line is faded while no eye uses it. "Lowest eyelid when narrowed" is drawn on them in green too, while the eye cameras are in use.
+- Panel, Eyelids › "Fine-tune": now titled "Reading Valve's values", with the auto calibration, per-eye scales, the four openness marks and the eyelid smoothing. Its bars show Valve's openness, so ⑤ (set on the eyelids as sent) is no longer here. While the eye cameras supply both eyes, the page says it is standing by for when they lose an eye, and is drawn a little faded (still usable).
+
 ## 0.9.1-beta.1 (2026-11-02)
 
 With the eye cameras, the gaze no longer stands still when SteamOS keeps reading both eyes as closed while they are open, and re-centering works then too (#43). After the headset was off for more than 10 seconds, the eye cameras' eyelids are used again as soon as it is back on, instead of after 30 seconds. "Treat nearly open as open" now also works on the eyes the eye cameras read, with its own value.

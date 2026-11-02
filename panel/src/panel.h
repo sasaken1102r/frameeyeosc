@@ -666,10 +666,10 @@ public:
 
     /** Mark ⑤ (lid_open_snap) on the Eyelids tab's bars as last drawn. */
     struct SnapMark {
-        bool shown = false;                 ///< drawn (the "Fine-tune" page, and the snap not off)
-        double x[2] = {NAN, NAN};           ///< each eye's line (px)
-        bool faded[2] = {false, false};     ///< the cameras supply that eye, so it doesn't apply there
-        double badgeX = NAN;                ///< the ⑤ badge's center (moved aside from ① to ④ where it would overlap)
+        bool shown = false;                 ///< drawn (the "Blinks & squint" page, and a snap not off)
+        double x[2] = {NAN, NAN};           ///< the line of lid_open_snap, of camera_lid_open_snap (px; NaN = not drawn)
+        bool faded[2] = {false, false};     ///< it applies to neither eye now
+        double badgeX[2] = {NAN, NAN};      ///< each ⑤ badge's center (the second moved aside where they'd overlap)
     };
 
     /**
@@ -1119,6 +1119,17 @@ private:
      * @param top where it starts
      */
     void drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double top);
+    /**
+     * The sent eyelid part of "Blinks & squint": each eye's eyelid as sent with ⑤ and the camera floor on it, and ⑤'s
+     * row.
+     * @param pen the pen
+     * @param t the texts
+     * @param m the model
+     * @param v the settings
+     * @param y where it starts
+     * @return where the next row starts
+     */
+    double drawSentLids(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double y);
     /**
      * The Eyelids tab's "Brows": raising the brows with widening (brow_from_widen) and, while it is on, how far
      * (brow_strength).

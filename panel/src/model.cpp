@@ -365,12 +365,6 @@ bool configNeedsMigration(const JsonValue& root) {
     return root.get(key::kLidWiden) == nullptr || !current || snapIsShare(root);
 }
 
-double snapOnBar(double snap, double lidClosed, double lidOpen, double scale) {
-    // frameeyeosc's LID_RELAXED
-    constexpr double kRelaxed = 0.75;
-    return (lidClosed + snap / kRelaxed * (lidOpen - lidClosed)) * scale;
-}
-
 WidenState widenState(const SettingsView& view) {
     // frameeyeosc's WIDEN_LOW / WIDEN_NORMAL / WIDEN_HIGH starts and WIDEN_ROOM_LIMIT
     constexpr double kWidenStart[4] = {NAN, 0.10, 0.07, 0.04};

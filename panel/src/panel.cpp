@@ -45,6 +45,10 @@ constexpr double kLabelW = 206;
 constexpr double kControlX = kInnerX + kLabelW + 14;
 constexpr double kControlW = kInnerRight - kControlX;
 constexpr double kRowTop = 116;
+/** A relaxed open eye, as sent (VRCFT): the sent eyelid bars' dotted line, and where ⑤ is off. */
+constexpr double kLidRelaxed = 0.75;
+/** How strongly Fine-tune's part is drawn while it only stands by for the cameras (still to be changed). */
+constexpr double kStandbyAlpha = 0.6;
 /** Below this many samples a second from the eye tracker, the left column marks the rate as low. */
 constexpr double kRowH = 64;
 constexpr double kRowGap = 2;
@@ -3282,6 +3286,7 @@ void EyePanel::drawLids(const Pen& pen, const UiText& t, const PanelModel& m, co
         options.push_back({labels[i], {PanelAction::LidsPage, nullptr, static_cast<int>(pages[i])}});
     }
     drawPageSwitch(pen, kSubTabY, kSubTabH, options, static_cast<int>(lidsPage_), -1);
+    snapMark_ = {};
     switch (lidsPage_) {
         case LidsPage::Look: drawLidsLook(pen, t, m, v, kAdvPageTop); break;
         case LidsPage::Blinks: drawLidsBlinks(pen, t, m, v, kAdvPageTop); break;
@@ -3502,9 +3507,10 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
         y += kRowH;
         drawRowDivider(pen, y);
     }
+    y = drawSentLids(pen, t, m, v, y);
     // The lowest eyelid while an eye camera sees the eye open (camera_lid_floor; 0 = off): while the eye cameras are in
     // use (before they know the eyes too, so it can be set; without an eye on them the note says when it takes effect).
-    // Otherwise a line saying what they would add
+    // Otherwise a line saying what they would add. Its stepper's edges in the green of its line on the bars above
     if (!eyecam::inUse(m.eyecam, v.flag(key::kCameraLids))) {
         drawCameraLine(pen, t.cameraLineFloor, y + 16);
     } else {
@@ -3517,7 +3523,7 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
         const double stepperW = 196;
         const double floor = v.number(key::kCameraLidFloor);
         drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kCameraLidFloor, floor,
-                    formatSetting(key::kCameraLidFloor, floor), !v1, locked);
+                    formatSetting(key::kCameraLidFloor, floor), !v1, locked, -1e9, 1e9, &kSuccess);
         if (v1) fadeGroup(pen);
         const double nx = kControlX + stepperW + 16;
         if (v1) {
@@ -3536,6 +3542,165 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
     }
 }
 
+double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double y) {
+    const EyeStatus& s = m.status;
+    cairo_t* cr = pen.cr;
+    const double cy = (kRowH - kControlH) / 2;
+    const bool v1 = eyesV1(v);
+    // The title, and what the bars show
+    {
+        y += 8;
+        const double titleSize = 18;
+        pen.text(kInnerX + 4, y + 22, t.sentLidsTitle, titleSize, kText, true);
+        const double hx = kInnerX + 4 + pen.measure(t.sentLidsTitle, titleSize, true) + 14;
+        const double size = fitSize(pen, t.sentLidsHint, 14, 10, kInnerRight - hx, false);
+        pen.text(hx, y + 21, t.sentLidsHint, size, kTextMuted);
+        y += 34;
+    }
+    // Each eye's eyelid as sent now (VRCFT, 0..1), in the cameras' green where its eyelid is theirs and with whose it is
+    // on the right; relaxed open dotted; ⑤ for the eyes without the cameras' eyelid (lid_open_snap) and for those with
+    // it (camera_lid_open_snap), each faded while it applies to neither eye (neither in v1, where ⑤ isn't used); the
+    // camera floor in green while it is on (v2, the cameras in use), faded while no eye is on them
+    {
+        const double chipW = 92;
+        const double barX = kInnerX + 34;
+        const double barW = kInnerRight - chipW - barX;
+        /**
+         * x of a sent eyelid on the bars.
+         */
+        const auto xOf = [&](double value) { return std::round(barX + std::clamp(value, 0.0, 1.0) * barW); };
+        const bool live = s.running && s.tracking && s.hasSent;
+        const bool onCamera[2] = {live && s.camera.used[0], live && s.camera.used[1]};
+        const double badgeY = y + 10;
+        const double top = y + 24;
+        const double bh = 18;
+        const double step = 28;
+        const double bottom = top + step + bh;
+        for (int eye = 0; eye < 2; ++eye) {
+            const double by = top + eye * step;
+            pen.text(kInnerX, centerBaseline(by, bh, 17), eye == 0 ? t.left : t.right, 17, kText, true);
+            fillRounded(pen, barX, by, barW, bh, 6, kBg);
+            const double value = live ? s.lidsVrcft.v[eye] : NAN;
+            if (std::isfinite(value)) {
+                fillRounded(pen, barX, by, std::max(12.0, xOf(value) - barX), bh, 6, onCamera[eye] ? kSuccess : kAccent);
+            }
+            strokeRounded(pen, barX, by, barW, bh, 6, kBorder, 1.5);
+            if (live) {
+                const double cx = barX + barW + 14;
+                if (onCamera[eye]) {
+                    cameraBadge(pen, t, cx, by + bh / 2);
+                } else {
+                    const double w = pen.measure(t.chipValve, 13, true) + 18;
+                    strokeRounded(pen, cx, by - 2, w, bh + 4, (bh + 4) / 2, kBorder, 1.5);
+                    pen.text(cx + 9, centerBaseline(by - 2, bh + 4, 13), t.chipValve, 13, kTextMuted, true);
+                }
+            }
+        }
+        if (!live) textCentered(pen, barX + barW / 2, centerBaseline(top, bh, 14), t.noEyeData, 14, kTextMuted, false);
+        // Relaxed open: dotted
+        {
+            const double x = xOf(kLidRelaxed);
+            const double dots[2] = {2, 3};
+            cairo_set_dash(cr, dots, 2, 0);
+            pen.color(kTextMuted);
+            cairo_set_line_width(cr, 2);
+            cairo_move_to(cr, x, top - 4);
+            cairo_line_to(cr, x, bottom + 4);
+            cairo_stroke(cr);
+            cairo_set_dash(cr, nullptr, 0, 0);
+        }
+        // The camera floor
+        const double floor = v.number(key::kCameraLidFloor);
+        if (!v1 && eyecam::inUse(m.eyecam, v.flag(key::kCameraLids)) && std::isfinite(floor) && floor > 0) {
+            const bool any = onCamera[0] || onCamera[1];
+            const double x = xOf(floor);
+            for (const bool edge : {true, false}) {
+                pen.color(edge ? kBg : (any || !live ? kSuccess : kSuccessFaded));
+                cairo_set_line_width(cr, edge ? 5 : 2);
+                cairo_move_to(cr, x, top - 4);
+                cairo_line_to(cr, x, bottom + 4);
+                cairo_stroke(cr);
+            }
+        }
+        // ⑤, both values
+        snapMark_ = {};
+        const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
+        const double dash[2] = {5, 4};
+        for (int i = 0; i < 2; ++i) {
+            const double snap = v.number(keys[i]);
+            if (v1 || !std::isfinite(snap) || snap >= kLidRelaxed - 1e-9) continue;
+            // (without eye data, as for the eyes as set up: the cameras' value where they are in use)
+            const bool applies = live ? (i == 0 ? !onCamera[0] || !onCamera[1] : onCamera[0] || onCamera[1])
+                                      : (i == 0 || eyecam::inUse(m.eyecam, v.flag(key::kCameraLids)));
+            snapMark_.shown = true;
+            snapMark_.x[i] = xOf(snap);
+            snapMark_.faded[i] = !applies;
+            cairo_set_dash(cr, dash, 2, 0);
+            for (const bool edge : {true, false}) {
+                pen.color(edge ? kBg : (applies ? kSnap : kSnapFaded));
+                cairo_set_line_width(cr, edge ? 5 : 2);
+                cairo_move_to(cr, snapMark_.x[i], top - 4);
+                cairo_line_to(cr, snapMark_.x[i], bottom + 4);
+                cairo_stroke(cr);
+            }
+            cairo_set_dash(cr, nullptr, 0, 0);
+        }
+        // Their badges, the second moved aside where they would overlap, with a short lead back to its line
+        for (int i = 0; i < 2; ++i) {
+            if (!std::isfinite(snapMark_.x[i])) continue;
+            double bx = snapMark_.x[i];
+            if (i == 1 && std::isfinite(snapMark_.badgeX[0]) && std::abs(bx - snapMark_.badgeX[0]) < 22) {
+                bx = snapMark_.badgeX[0] + (bx >= snapMark_.x[0] ? 22 : -22);
+            }
+            bx = std::clamp(bx, barX + 10, barX + barW - 10);
+            const Color fill = snapMark_.faded[i] ? kSnapFaded : kSnap;
+            if (std::abs(bx - snapMark_.x[i]) > 0.5) {
+                pen.color(fill);
+                cairo_set_line_width(cr, 2);
+                cairo_move_to(cr, bx, badgeY + 6);
+                cairo_line_to(cr, snapMark_.x[i], top - 4);
+                cairo_stroke(cr);
+            }
+            drawNumberBadge(pen, bx, badgeY, 5, fill);
+            snapMark_.badgeX[i] = bx;
+        }
+        y = bottom + 14;
+    }
+    // ⑤'s row: in v2 both values, each with whose eyes it is for on its left; in v1 only lid_open_snap, faded, with why
+    // and the way to the switch beside it. In ⑤'s color, as are the steppers' edges
+    {
+        const bool locked = v.locked(key::kLidOpenSnap) || (!v1 && v.locked(key::kCameraLidOpenSnap));
+        if (v1) cairo_push_group(cr);
+        drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 5, kSnap);
+        drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked, 26);
+        const double stepperW = 150;
+        if (v1) {
+            const double snap = v.number(key::kLidOpenSnap);
+            drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kLidOpenSnap, snap,
+                        formatSetting(key::kLidOpenSnap, snap), false, v.locked(key::kLidOpenSnap), -1e9, 1e9, &kSnap);
+        } else {
+            const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
+            const char* captions[2] = {t.capSnapValve, t.capSnapCamera};
+            const double captionW = 84;
+            for (int i = 0; i < 2; ++i) {
+                const double x = kControlX + i * (captionW + stepperW + 12);
+                const double value = v.number(keys[i]);
+                const double size = fitSize(pen, captions[i], 15, 10, captionW - 6, true);
+                pen.text(x, centerBaseline(y, kRowH, size), captions[i], size, kText, true);
+                drawStepper(pen, x + captionW, y + cy, stepperW, kControlH, keys[i], value,
+                            formatSetting(keys[i], value), true, v.locked(keys[i]), -1e9, 1e9, &kSnap);
+            }
+        }
+        if (v1) {
+            fadeGroup(pen);
+            drawV2OnlyNote(pen, t, t.snapV2Only, kControlX + stepperW + 16, y, kRowH);
+        }
+        y += kRowH;
+        drawRowDivider(pen, y);
+    }
+    return y;
+}
+
 void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
                                double top) {
     const EyeStatus& s = m.status;
@@ -3548,7 +3713,10 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     const bool anyFitted = widen.fitted[0] || widen.fitted[1];
     const bool fromCameras = lidsFromCameras(s);
 
-    // A line on what decides the eyelids (the sub-tab above names the page)
+    // The page is how Valve's openness is read (the sent eyelid, with ⑤, is on "Blinks & squint"): its title, and beside
+    // it what decides the marks now. While the cameras supply both eyes all of it only stands by for when they lose an
+    // eye, so it says so and is drawn lighter, still to be changed
+    const bool standby = s.running && s.camera.used[0] && s.camera.used[1];
     {
         const char* note = t.marksTitle;
         bool notice = false;
@@ -3569,10 +3737,18 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             note = t.lidsCamMarksOpen;
             notice = false;
         }
-        pen.text(kInnerX + 4, y + 20, note, fitSize(pen, note, 16, 10, kInnerRight - kInnerX - 4, notice),
-                 notice ? kText : kTextMuted, notice);
+        if (standby) {
+            note = t.valveReadStandby;
+            notice = true;
+        }
+        const double titleSize = 18;
+        pen.text(kInnerX + 4, y + 22, t.valveReadTitle, titleSize, kText, true);
+        const double nx = kInnerX + 4 + pen.measure(t.valveReadTitle, titleSize, true) + 14;
+        const double size = fitSize(pen, note, 15, 10, kInnerRight - nx, notice);
+        pen.text(nx, y + 21, note, size, notice ? kText : kTextMuted, notice);
         y += 38;
     }
+    if (standby) cairo_push_group(cr);
     // Auto calibration: on / off, what it learned, reset (only for eyes without a fit, and not from the cameras)
     if (!anyFitted && !fromCameras) {
         const bool locked = v.locked(key::kLidCalibration);
@@ -3662,41 +3838,6 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         if (!live) {
             textCentered(pen, barX + barW / 2, centerBaseline(top + 50, 20, 14), t.noEyeData, 14, kTextMuted, false);
         }
-        // Mark ⑤, lid_open_snap: where it lands on each eye's bar (snapOnBar; a fitted eye's own scale moves it), faded
-        // for an eye the cameras supply (it doesn't apply there); one line through both bars where they agree, else a
-        // tick on each. None while off (0.75)
-        snapMark_ = {};
-        const double snap = v.number(key::kLidOpenSnap);
-        const SettingSpec* snapSpec = findSetting(key::kLidOpenSnap);
-        // (not in v1, where it doesn't apply)
-        if (!eyesV1(v) && std::isfinite(snap) && snapSpec != nullptr && snap < snapSpec->max - 1e-9) {
-            const char* scaleKeys[2] = {key::kLidScaleLeft, key::kLidScaleRight};
-            for (int eye = 0; eye < 2; ++eye) {
-                const double fixed = v.number(scaleKeys[eye]);
-                const double scale = widen.fitted[eye] && std::isfinite(fixed) ? fixed : 1.0;
-                const double value = snapOnBar(snap, v.number(key::kLidClosed), v.number(key::kLidOpen), scale);
-                snapMark_.x[eye] = std::round(xOf(value));
-                snapMark_.faded[eye] = s.running && s.camera.used[eye];
-            }
-            snapMark_.shown = true;
-            const double dash[2] = {5, 4};
-            const bool together = snapMark_.x[0] == snapMark_.x[1] && snapMark_.faded[0] == snapMark_.faded[1];
-            for (int eye = 0; eye < 2; ++eye) {
-                const double by = top + 50 + eye * 28;
-                const double x = snapMark_.x[eye];
-                if (together && eye == 1) continue;
-                // Dashes with dark edges, like the marks' lines, so they show on the accent fill too
-                cairo_set_dash(cr, dash, 2, 0);
-                for (const bool edge : {true, false}) {
-                    pen.color(edge ? kBg : (snapMark_.faded[eye] ? kSnapFaded : kSnap));
-                    cairo_set_line_width(cr, edge ? 5 : 2);
-                    cairo_move_to(cr, x, together ? top + 44 : by - 4);
-                    cairo_line_to(cr, x, together ? top + 104 : by + 24);
-                    cairo_stroke(cr);
-                }
-                cairo_set_dash(cr, nullptr, 0, 0);
-            }
-        }
         // Mark lines: a light line with dark edges, visible on the accent fill and on the dark track
         for (int i = 0; i < 4; ++i) {
             const double x = std::round(xOf(v.number(marks[i])));
@@ -3711,35 +3852,6 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             cairo_line_to(cr, x, top + 104);
             cairo_stroke(cr);
             drawNumberBadge(pen, x, top + 34, i + 1);
-        }
-        // ⑤'s badge over the line of an eye it applies to (the left one if neither), moved aside from ① to ④ where it
-        // would overlap them, with a short lead back to its line
-        if (snapMark_.shown) {
-            const int eye = !snapMark_.faded[0] || snapMark_.faded[1] ? 0 : 1;
-            const double lineX = snapMark_.x[eye];
-            double badgeX = lineX;
-            for (int pass = 0; pass < 4; ++pass) {
-                bool moved = false;
-                for (int i = 0; i < 4; ++i) {
-                    const double markX = std::round(xOf(v.number(marks[i])));
-                    if (std::abs(badgeX - markX) < 22) {
-                        badgeX = lineX <= markX ? markX - 22 : markX + 22;
-                        moved = true;
-                    }
-                }
-                if (!moved) break;
-            }
-            badgeX = std::clamp(badgeX, barX + 10, barX + barW - 10);
-            const Color fill = snapMark_.faded[eye] ? kSnapFaded : kSnap;
-            if (std::abs(badgeX - lineX) > 0.5) {
-                pen.color(fill);
-                cairo_set_line_width(cr, 2);
-                cairo_move_to(cr, badgeX, top + 40);
-                cairo_line_to(cr, lineX, top + 46);
-                cairo_stroke(cr);
-            }
-            drawNumberBadge(pen, badgeX, top + 34, 5, fill);
-            snapMark_.badgeX = badgeX;
         }
         y = top + 110;
     }
@@ -3761,41 +3873,9 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         }
         y += kCaptionRowH + kRowGap;
     }
-    // From which sent eyelid an eye goes out fully open: lid_open_snap for the eyes without the cameras' eyelid,
-    // camera_lid_open_snap for those with it (0.75 = off). Always there, like the marks: the first is the openness the
-    // bars show for eyes without a fit
-    {
-        // Led by ⑤, the mark lid_open_snap sets on the bars, in that mark's color (so are the steppers' edges). A v2
-        // rule: in v1 only lid_open_snap, faded, with why and the way to the switch beside it
-        const bool v1 = eyesV1(v);
-        const bool locked = v.locked(key::kLidOpenSnap) || (!v1 && v.locked(key::kCameraLidOpenSnap));
-        if (v1) cairo_push_group(pen.cr);
-        drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 5, kSnap);
-        drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked, 26);
-        const double stepperW = 150;
-        if (v1) {
-            const double snap = v.number(key::kLidOpenSnap);
-            drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kLidOpenSnap, snap,
-                        formatSetting(key::kLidOpenSnap, snap), false, v.locked(key::kLidOpenSnap), -1e9, 1e9, &kSnap);
-        } else {
-            // Each value with whose eyes it is for on its left
-            const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
-            const char* captions[2] = {t.capSnapValve, t.capSnapCamera};
-            const double captionW = 70;
-            for (int i = 0; i < 2; ++i) {
-                const double x = kControlX + i * (captionW + stepperW + 24);
-                const double value = v.number(keys[i]);
-                const double size = fitSize(pen, captions[i], 17, 11, captionW - 8, true);
-                pen.text(x, centerBaseline(y, kRowH, 17), captions[i], size, kText, true);
-                drawStepper(pen, x + captionW, y + cy, stepperW, kControlH, keys[i], value,
-                            formatSetting(keys[i], value), true, v.locked(keys[i]), -1e9, 1e9, &kSnap);
-            }
-        }
-        if (v1) {
-            fadeGroup(pen);
-            drawV2OnlyNote(pen, t, t.snapV2Only, kControlX + stepperW + 16, y, kRowH);
-        }
-        y += kRowH + kRowGap;
+    if (standby) {
+        cairo_pop_group_to_source(cr);
+        cairo_paint_with_alpha(cr, kStandbyAlpha);
     }
     // Eyelid smoothing: the two One Euro values behind the presets, each named on its left (one row high, so the
     // page fits with the row above)

@@ -886,6 +886,11 @@ struct UiText {
     const char* lidOpenSnapHint;  ///< ...its hint
     const char* capSnapValve;     ///< ...in v2, the caption of lid_open_snap (the eyes without the cameras' eyelid)
     const char* capSnapCamera;    ///< ...and of camera_lid_open_snap (the eyes with it)
+    const char* valveReadTitle;   ///< Fine-tune's title: how Valve's openness is read
+    const char* valveReadStandby; ///< ...beside it while the cameras supply both eyes
+    const char* sentLidsTitle;    ///< Blinks & squint: the sent eyelid part's title
+    const char* sentLidsHint;     ///< ...beside it
+    const char* chipValve;        ///< ...on the right of an eye's bar whose eyelid is Valve's
     const char* lidSmoothHint;  ///< the eyelid smoothing presets: hint
     const char* syncOff;  ///< the lid sync slider: its left end
     const char* syncStrong;  ///< ...its right end

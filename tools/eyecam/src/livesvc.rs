@@ -705,7 +705,10 @@ impl Worker {
             [false, true] => "R keeps its open-eye levels while learning them again",
             [false, false] => "learning it again",
         };
-        eprintln!("live: the eye frames stopped for {gap:.0} s; a new wear ({seen} over the last {NEW_WEAR_LOOK_S} s): {kept}");
+        // (after the hint's "same wear" when the frames come back: this one wins, and this wear's calibration is gone)
+        eprintln!(
+            "live: the eye frames had stopped for {gap:.0} s (over {NEW_WEAR_GAP} s): a new wear after all, this wear's calibration gone ({seen} over the last {NEW_WEAR_LOOK_S} s before): {kept}"
+        );
     }
 
     /// eyecam-rec's hint that a new wear may have begun (NEW_WEAR_OFF_S): a new wear unless a calibration is running

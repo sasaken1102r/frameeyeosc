@@ -880,7 +880,8 @@ UiText makeJapanese() {
     t.lidFloorNoteIdle = "目のカメラが目を見てるときに効くよ（今は Valve の値だけなので変わらない）";
     t.rowLidOpenSnap = "ほぼ開いてたら全開にする";
     t.lidOpenSnapHint = "0.75 でオフ";
-    t.lidOpenSnapNote = "送るまぶたがこれより開いてたら、ふつうに開いた目にするよ（目のカメラがある目は使わない）";
+    t.capSnapValve = "Valve";
+    t.capSnapCamera = "カメラ";
     t.lidSmoothHint = "強いほどなめらか";
     t.syncOff = "そろえない";
     t.syncStrong = "強く";
@@ -2004,7 +2005,8 @@ UiText makeEnglish() {
     t.lidFloorNoteIdle = "Works while the eye cameras watch the eyes (now Valve's values only, so no change)";
     t.rowLidOpenSnap = "Treat nearly open as open";
     t.lidOpenSnapHint = "0.75 = off";
-    t.lidOpenSnapNote = "At least this open: sent as a normally open eye (not for eyes the cameras read)";
+    t.capSnapValve = "Valve";
+    t.capSnapCamera = "Camera";
     t.lidSmoothHint = "Stronger = smoother";
     t.syncOff = "Off";
     t.syncStrong = "Strong";

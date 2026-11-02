@@ -195,6 +195,9 @@ pub struct Settings {
     /// open eases smoothly up to relaxed open, so an open eye the eye tracker reads a little low goes out open (see
     /// main.rs, snapped_open). 0.75 = off.
     pub lid_open_snap: f32,
+    /// The same for eyes with the eye camera's eyelid (main.rs, snapped_open_from): a small dip of the camera's
+    /// eyelid below relaxed open goes out open. Widening, and squints and blinks below it, are unchanged. 0.75 = off.
+    pub camera_lid_open_snap: f32,
     /// Gaze zero point and how far the gaze goes, on the -1..1 scale (see `correct_gaze`).
     pub gaze_offset_x: f32,
     pub gaze_offset_y: f32,
@@ -291,6 +294,7 @@ impl Default for Settings {
             blink_sync_below: 0.35,
             camera_lid_floor: 0.0,
             lid_open_snap: 0.53,
+            camera_lid_open_snap: 0.63,
             gaze_offset_x: 0.0,
             gaze_offset_y: 0.0,
             gaze_gain_x: 1.0,
@@ -393,6 +397,7 @@ impl Settings {
             self.blink_sync_below,
             self.camera_lid_floor,
             self.lid_open_snap,
+            self.camera_lid_open_snap,
             self.gaze_offset_x,
             self.gaze_offset_y,
             self.gaze_gain_x,
@@ -473,6 +478,9 @@ impl Settings {
         }
         if !LID_OPEN_SNAP_RANGE.contains(&self.lid_open_snap) {
             return Err("lid_open_snap must be between 0 and 0.75 (0.75 = off)".into());
+        }
+        if !LID_OPEN_SNAP_RANGE.contains(&self.camera_lid_open_snap) {
+            return Err("camera_lid_open_snap must be between 0 and 0.75 (0.75 = off)".into());
         }
         if !(GAZE_OFFSET_RANGE.contains(&self.gaze_offset_x) && GAZE_OFFSET_RANGE.contains(&self.gaze_offset_y)) {
             return Err("gaze_offset_x/y must be between -0.5 and 0.5".into());
@@ -706,6 +714,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
         blink_sync_below,
         camera_lid_floor,
         lid_open_snap,
+        camera_lid_open_snap,
         gaze_offset_x,
         gaze_offset_y,
         gaze_gain_x,
@@ -1156,6 +1165,12 @@ mod tests {
         let (settings, locked) = merged(r#"{"lid_open_snap": 0.9}"#, &["--lid-open-snap", "0.6"]).unwrap();
         assert_eq!((settings.lid_open_snap, locked), (0.6, vec!["lid_open_snap"]));
         assert!(merged("{}", &["--lid-open-snap", "0.8"]).is_err());
+        // camera_lid_open_snap: 0.63 by default, the same range, no conversion from a share
+        assert_eq!(merged("{}", &[]).unwrap().0.camera_lid_open_snap, 0.63);
+        assert_eq!(merged(r#"{"camera_lid_open_snap": 0.75}"#, &[]).unwrap().0.camera_lid_open_snap, 0.75);
+        assert!(merged(r#"{"camera_lid_open_snap": 0.9}"#, &[]).is_err());
+        let (settings, locked) = merged("{}", &["--camera-lid-open-snap", "0.7"]).unwrap();
+        assert_eq!((settings.camera_lid_open_snap, locked), (0.7, vec!["camera_lid_open_snap"]));
 
         // camera_lid_floor: off (0) by default, 0 and 0.75 allowed, and the command line wins over the file
         assert_eq!(merged("{}", &[]).unwrap().0.camera_lid_floor, 0.0);

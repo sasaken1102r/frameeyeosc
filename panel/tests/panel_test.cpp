@@ -777,6 +777,13 @@ void testSnapMark(const FontSet& fonts) {
     // The badge sits on its line (nothing of ① to ④ near), and the row's stepper is there
     CHECK(mark.badgeX == mark.x[0]);
     CHECK(hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 2);
+    // ...and beside it the one for the eyes on the cameras' eyelid (camera_lid_open_snap, 0.63 by default), on the row
+    CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).size() == 2);
+    const double rowY = hits(panel, PanelAction::Step, key::kLidOpenSnap)[0].y;
+    for (const EyePanel::HitArea& area : hits(panel, PanelAction::Step, key::kCameraLidOpenSnap)) {
+        CHECK(area.x + area.w <= 1154 && std::fabs(area.y - rowY) < 1e-9);
+    }
+    CHECK(std::fabs(findSetting(key::kCameraLidOpenSnap)->defaultNumber - 0.63) < 1e-9);
     // Next to ②: the badge moves aside
     m.config.root.set(key::kLidScaleLeft, JsonValue::makeNumber(1.2));
     panel.render(m);
@@ -837,6 +844,7 @@ void testEyeBehavior(const FontSet& fonts) {
     CHECK(panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 2 && !toVersion());
     panel.render(v1);
     CHECK(!panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).empty() && toVersion());
+    CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).empty());
     panel.setLidsPage(LidsPage::Blinks);
     m.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));
     v1.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));

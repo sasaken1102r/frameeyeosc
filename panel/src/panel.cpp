@@ -3761,31 +3761,39 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         }
         y += kCaptionRowH + kRowGap;
     }
-    // From which Valve openness an eye without the cameras' eyelid goes out fully open (lid_open_snap; 1.00 = off).
-    // Always there, like the marks: it is the openness the bars show for eyes without a fit
+    // From which sent eyelid an eye goes out fully open: lid_open_snap for the eyes without the cameras' eyelid,
+    // camera_lid_open_snap for those with it (0.75 = off). Always there, like the marks: the first is the openness the
+    // bars show for eyes without a fit
     {
-        // Led by ⑤, the mark it sets on the bars, in that mark's color (so are the stepper's edges). A v2 rule: faded
-        // in v1, with why and the way to the switch beside it
-        const bool locked = v.locked(key::kLidOpenSnap);
+        // Led by ⑤, the mark lid_open_snap sets on the bars, in that mark's color (so are the steppers' edges). A v2
+        // rule: in v1 only lid_open_snap, faded, with why and the way to the switch beside it
         const bool v1 = eyesV1(v);
+        const bool locked = v.locked(key::kLidOpenSnap) || (!v1 && v.locked(key::kCameraLidOpenSnap));
         if (v1) cairo_push_group(pen.cr);
         drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 5, kSnap);
         drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked, 26);
         const double stepperW = 150;
-        const double snap = v.number(key::kLidOpenSnap);
-        drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kLidOpenSnap, snap,
-                    formatSetting(key::kLidOpenSnap, snap), !v1, locked, -1e9, 1e9, &kSnap);
-        if (v1) fadeGroup(pen);
-        const double nx = kControlX + stepperW + 16;
         if (v1) {
-            drawV2OnlyNote(pen, t, t.snapV2Only, nx, y, kRowH);
+            const double snap = v.number(key::kLidOpenSnap);
+            drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kLidOpenSnap, snap,
+                        formatSetting(key::kLidOpenSnap, snap), false, v.locked(key::kLidOpenSnap), -1e9, 1e9, &kSnap);
         } else {
-            const std::vector<std::string> lines = wrapText(pen, t.lidOpenSnapNote, 13, false, kInnerRight - nx, 3);
-            double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
-            for (const std::string& line : lines) {
-                pen.text(nx, baseline, line, 13, kTextMuted);
-                baseline += 17;
+            // Each value with whose eyes it is for on its left
+            const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
+            const char* captions[2] = {t.capSnapValve, t.capSnapCamera};
+            const double captionW = 70;
+            for (int i = 0; i < 2; ++i) {
+                const double x = kControlX + i * (captionW + stepperW + 24);
+                const double value = v.number(keys[i]);
+                const double size = fitSize(pen, captions[i], 17, 11, captionW - 8, true);
+                pen.text(x, centerBaseline(y, kRowH, 17), captions[i], size, kText, true);
+                drawStepper(pen, x + captionW, y + cy, stepperW, kControlH, keys[i], value,
+                            formatSetting(keys[i], value), true, v.locked(keys[i]), -1e9, 1e9, &kSnap);
             }
+        }
+        if (v1) {
+            fadeGroup(pen);
+            drawV2OnlyNote(pen, t, t.snapV2Only, kControlX + stepperW + 16, y, kRowH);
         }
         y += kRowH + kRowGap;
     }

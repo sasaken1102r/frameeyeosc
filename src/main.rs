@@ -734,6 +734,10 @@ struct Args {
     /// relaxed open (0.75), reached halfway there. 0.75 disables
     #[arg(long, default_value_t = 0.53)]
     lid_open_snap: f32,
+    /// The same for eyes with the eye camera's eyelid: a small dip below relaxed open goes out open (VRCFT, 0..0.75).
+    /// 0.75 disables
+    #[arg(long, default_value_t = 0.63)]
+    camera_lid_open_snap: f32,
     /// Gaze that counts as straight ahead, left/right (-0.5..0.5 on the -1..1 scale; 1.0 = 45°)
     #[arg(long, default_value_t = 0.0, allow_negative_numbers = true)]
     gaze_offset_x: f32,
@@ -2086,7 +2090,11 @@ fn raised_to_camera(lid: f32, camera: f32, line: f32) -> (f32, bool) {
 /// unchanged), and in between a cubic that leaves --lid-open-snap at the same slope and meets relaxed open flat, so
 /// it is smooth at both ends and never falls. With --lid-open-snap at relaxed open (0.75) nothing changes (off).
 fn snapped_open(lids: [f32; 2], zoned: [bool; 2], settings: &Settings) -> [f32; 2] {
-    let from = settings.lid_open_snap;
+    snapped_open_from(lids, zoned, settings.lid_open_snap)
+}
+
+/// snapped_open from `from` (--lid-open-snap, or --camera-lid-open-snap for the eyes with the camera's eyelid).
+fn snapped_open_from(lids: [f32; 2], zoned: [bool; 2], from: f32) -> [f32; 2] {
     let to = from + LID_OPEN_SNAP_RAMP * (LID_RELAXED - from);
     std::array::from_fn(|eye| {
         let lid = lids[eye];
@@ -3795,6 +3803,10 @@ fn process(
         // eyelid; a closing one stays the eye server's. Widening in one eye only is halved (see share_widening)
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
         let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from, v2);
+        // The eyes with the camera's eyelid (the others had --lid-open-snap above) ease up to relaxed open from
+        // --camera-lid-open-snap: a small dip of an open eye goes out open, a squint or blink below it doesn't. On the
+        // eyelid as mixed, wherever its part below relaxed open came from, before the filter
+        let mixed = if v2 { snapped_open_from(mixed, zoned.map(|zoned| !zoned), settings.camera_lid_open_snap) } else { mixed };
         // While the openness is saturated, nothing above relaxed open is widening, except where the camera says so.
         // Capped before the widen sustain and the filter, so the filter rests at relaxed open (a closing eye starts
         // closing at once) and a widen starts over once it isn't saturated any more; and the filter itself right after
@@ -8845,7 +8857,8 @@ mod tests {
 
     #[test]
     fn an_open_eye_the_eye_server_reads_low_goes_out_as_the_camera_sees_it() {
-        let settings = saturated_fit();
+        // (without --camera-lid-open-snap, which would ease the camera's own 0.65 below up as well)
+        let settings = Settings { camera_lid_open_snap: LID_RELAXED, ..saturated_fit() };
         let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
         // Straight ahead, read 0.85 (VRCFT 0.55 through the fit) while the camera sees it relaxed open: relaxed open
         let low = lid_to_vrcft(lid_inputs([0.85; 2], 0.0, [1.0; 2], &settings)[0], &settings);
@@ -9301,6 +9314,36 @@ mod tests {
         let mut smoother = Smoother::new(&settings);
         let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, |_| [0.0; 2], |_| None);
         assert!(sent.iter().all(|sample| sample.gaze_held && !sample.capture_usable()));
+    }
+
+    #[test]
+    fn eyes_on_the_camera_ease_open_from_camera_lid_open_snap() {
+        // Swept over the camera's eyelid, the eye server reading the eyes a little low (raised to the camera's, see
+        // raised_to_camera): a small dip below relaxed open goes out open, one well below it (a squint) as before, and
+        // nothing goes lower; without the camera's values nothing changes
+        let on = camera_settings();
+        let off = Settings { camera_lid_open_snap: LID_RELAXED, ..camera_settings() };
+        let last = |settings: &Settings, lid: Option<f32>| {
+            let mut smoother = Smoother::new(settings);
+            let camera = |_| lid.map(|lid| camera(lid, 0.0));
+            camera_samples(settings, &mut smoother, 100.0, 2.0, |_| [0.6; 2], camera).last().unwrap().lids[0]
+        };
+        let (mut eased, mut kept) = (0, 0);
+        for step in 6..=15 {
+            let lid = step as f32 * 0.05;
+            let (before, after) = (last(&off, Some(lid)), last(&on, Some(lid)));
+            assert!(after >= before - 1e-6, "{lid}: {before} -> {after}");
+            if (0.69..0.745).contains(&before) {
+                assert!(after > 0.749, "{lid}: {before} -> {after}");
+                eased += 1;
+            }
+            if before < 0.6 {
+                assert!((after - before).abs() < 1e-6, "{lid}: {before} -> {after}");
+                kept += 1;
+            }
+        }
+        assert!(eased > 0 && kept > 0, "{eased} {kept}");
+        assert_eq!(last(&off, None), last(&on, None));
     }
 
     #[test]
@@ -9844,9 +9887,11 @@ mod tests {
 
     #[test]
     fn the_cameras_widening_shows_unless_the_eye_server_reads_the_eye_closing() {
-        // Without lid_sync, so each eye's own eyelid shows
+        // Without lid_sync, so each eye's own eyelid shows (and without --camera-lid-open-snap, which would ease the
+        // camera's own 0.7 below up as well)
         let settings = Settings {
             lid_sync: 0.0,
+            camera_lid_open_snap: LID_RELAXED,
             ..camera_settings()
         };
         // Both eyes widened on the camera; the eye server reads the right one lower (VRCFT 0.6, at least

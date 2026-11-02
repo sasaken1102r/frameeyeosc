@@ -57,6 +57,8 @@ constexpr Color kDotLeft = hexColor(0x6ee2ff);
 constexpr Color kDotRight = hexColor(0xd9701c);
 constexpr Color kSuccess = hexColor(0x3fb950);    ///< sending
 constexpr Color kSuccessTint = blendColor(kSuccess, kCard, 0.15);
+/** The camera floor's line on the sent eyelid bars while no eye is on the cameras */
+constexpr Color kSuccessFaded = blendColor(kSuccess, kCard, 0.4);
 constexpr Color kDanger = hexColor(0xf85149);     ///< errors, not running
 constexpr Color kDangerTint = blendColor(kDanger, kCard, 0.15);
 constexpr Color kDangerSoft = hexColor(0xff8a8a); ///< red text on the red tint (kDanger is only 4.4:1 there)

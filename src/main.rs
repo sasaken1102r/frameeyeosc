@@ -1012,6 +1012,10 @@ struct Smoother {
     lid_vertical: Option<f32>,
     // How long each eye has been read alone below --gaze-hold-below (see ONE_EYE_HOLD_MAX_S).
     one_eye_low: OneEyeLow,
+    // Per eye: whether its eyelid was the camera's last sample because the camera saw it open while the eye server
+    // read it closing (LidFrom::CameraOpen), and had been since longer than ONE_EYE_HOLD_MAX_S. Such an eye doesn't
+    // hold the gaze (shut_for_gaze).
+    seen_open: [bool; 2],
     // Left, right and combined raw x from the last sample above --gaze-down-hold-x-deg.
     down_hold_x: Option<[f32; 3]>,
     // Per eye: since when its eyelid has been above relaxed open (see sustain_widen), and when it last was.
@@ -1053,6 +1057,7 @@ impl Smoother {
             last_gaze: [None; 3],
             lid_vertical: None,
             one_eye_low: OneEyeLow::default(),
+            seen_open: [false; 2],
             down_hold_x: None,
             widen_sustain: WidenSustain::default(),
             saturation: Saturation::default(),
@@ -1165,6 +1170,7 @@ impl Smoother {
         self.last_gaze = [None; 3];
         self.lid_vertical = None;
         self.one_eye_low = OneEyeLow::default();
+        self.seen_open = [false; 2];
         self.down_hold_x = None;
         self.widen_sustain = WidenSustain::default();
         self.camera = CameraSmoother::default();
@@ -1310,6 +1316,11 @@ impl Smoother {
             if state.doubted >= CAMERA_DOUBT_GRACE.max(CAMERA_DOUBT_FRAMES * camera.frame) {
                 state.camera = true;
             }
+            if state.camera {
+                state.camera_since.get_or_insert(time);
+            } else {
+                state.camera_since = None;
+            }
             if camera.closed {
                 from[eye] = if valve > 0.0 { LidFrom::CameraClosed } else { LidFrom::EyeServer };
                 return 0.0;
@@ -1433,9 +1444,11 @@ impl OneEyeLow {
 }
 
 /// Whether the eyes are shut enough to hold the gaze: either one's Frame openness below --gaze-hold-below, but for an
-/// eye whose reading is `doubted` (Smoother::doubt_one_low_eye).
-fn shut_for_gaze(openness: [f32; 2], doubted: [bool; 2], settings: &Settings) -> bool {
-    (0..2).any(|eye| openness[eye] < settings.gaze_hold_below && !doubted[eye])
+/// eye whose reading is `doubted` (Smoother::doubt_one_low_eye) or that the camera sees open (`seen_open`, see
+/// Smoother::seen_open). SteamOS can get stuck reading both eyes at 0.000 while they are open (issue 43: after a night
+/// in VR, the camera's eyelids about 0.8-0.9, the gaze of both eyes still moving together), and the gaze stood still.
+fn shut_for_gaze(openness: [f32; 2], doubted: [bool; 2], seen_open: [bool; 2], settings: &Settings) -> bool {
+    (0..2).any(|eye| openness[eye] < settings.gaze_hold_below && !doubted[eye] && !seen_open[eye])
 }
 
 /// Intentional cross-eye for --independent-eyes: Valve's own left - right is let through only while it stays far beyond
@@ -1920,8 +1933,9 @@ struct LidDoubt {
     doubted: f64,
     // Since when they have agreed.
     agree_since: Option<f64>,
-    // Whether the eyelid is the camera's.
+    // Whether the eyelid is the camera's, and since when (through blinks the camera sees closed, too).
     camera: bool,
+    camera_since: Option<f64>,
     // Since when the eye server has read the eye open (CAMERA_DOUBT_CLEAR_OPEN).
     open_since: Option<f64>,
     // For the replay's diagnostics (FEO_DOUBT_DIAG): the last sample's eye-server eyelid, whether it was closing (below
@@ -3679,7 +3693,7 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let doubted = smoother.doubt_one_low_eye(data.sample_time, data.openness, settings.gaze_hold_below);
-        let shut_eyes = shut_for_gaze(data.openness, doubted, settings);
+        let shut_eyes = shut_for_gaze(data.openness, doubted, [false; 2], settings);
         let brows = brows_for(settings, smoother, data.sample_time, None, before_cap, lids, mapped);
         (gaze, unscaled_gaze, lids, shut_eyes, openness_scaled, camera, lid_from, close_held, brows)
     } else {
@@ -3697,7 +3711,10 @@ fn process(
         // --gaze-hold-below for longer than a wink counts as unreliable instead (ONE_EYE_HOLD_MAX_S)
         let doubted = smoother.doubt_one_low_eye(data.sample_time, data.openness, settings.gaze_hold_below);
         let usable_gaze = [0, 1].map(|eye| reliable[eye] && !doubted[eye]);
-        let open = !shut_for_gaze(data.openness, doubted, settings);
+        // An eye on the camera's eyelid because the camera sees it open doesn't hold the gaze, but keeps giving it: its
+        // gaze is the eye server's as usual (as of the last sample, since its eyelid is only worked out below)
+        let seen_open = smoother.seen_open;
+        let open = !shut_for_gaze(data.openness, doubted, seen_open, settings);
         let trusted = usable_gaze.map(|usable| usable && open);
         let corrected = correct_gaze(smoother.hold_down_x(raw_gaze, trusted, settings), settings);
         let readings: [f32; 8] =
@@ -3715,7 +3732,7 @@ fn process(
         // One unreliable eye takes the other's gaze (choose_gaze), so only both being unreliable holds it; with
         // --eye-behavior 1 each eye's own gaze is held while it is unreliable, but a doubted eye looks where the other
         // one does (its own gaze is no better than its openness)
-        let hold = if shut_for_gaze(openness, doubted, settings) || usable_gaze == [false; 2] {
+        let hold = if shut_for_gaze(openness, doubted, seen_open, settings) || usable_gaze == [false; 2] {
             [true; 3]
         } else if settings.independent_eyes && !v2 {
             for eye in (0..2).filter(|eye| doubted[*eye]) {
@@ -3754,6 +3771,14 @@ fn process(
         } else {
             (mapped, [LidFrom::EyeServer; 2], [false; 2])
         };
+        // Only once the camera has had the eyelid for longer than a wink: until then a blink the camera is a frame or
+        // two late to see closed still holds the gaze from its start, as the eye server's reading says
+        smoother.seen_open = [0, 1].map(|eye| {
+            lid_from[eye] == LidFrom::CameraOpen
+                && smoother.lid_doubt[eye]
+                    .camera_since
+                    .is_some_and(|since| data.sample_time - since > ONE_EYE_HOLD_MAX_S)
+        });
         // Through a short gap in the camera's eyelid, the eye server's is still raised to the camera's last one (an eye
         // on the camera's eyelid has that already)
         let mapped = [0, 1].map(|eye| match held[eye] {
@@ -9233,6 +9258,49 @@ mod tests {
         let mut smoother = Smoother::new(&settings);
         let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, |_| [0.8, 0.0], |_| None);
         assert!(sent.iter().all(|sample| !sample.capture_usable()));
+    }
+
+    #[test]
+    fn both_eyes_stuck_shut_on_the_eye_server_do_not_hold_the_gaze_while_the_camera_sees_them_open() {
+        // Issue 43: after a night in VR the eye server read both eyes 0.000, the camera saw them open (about 0.8-0.9)
+        let settings = camera_settings();
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, |_| [0.0; 2], |_| Some(camera(0.8, 0.0)));
+        // Held as for a blink until the camera's eyelids take over (CAMERA_DOUBT_GRACE, 27 samples) and then for
+        // ONE_EYE_HOLD_MAX_S more; from then on not, and a gaze capture counts the samples from the takeover
+        assert!(sent[..110].iter().all(|sample| sample.gaze_held));
+        assert!(sent[40..].iter().all(|sample| sample.camera_open() == [true; 2] && sample.capture_usable()));
+        assert!(sent[130..].iter().all(|sample| !sample.gaze_held));
+        // A blink the camera sees closed in the middle still holds it, and the gaze goes on right after (one shorter
+        // than CAMERA_AGREE_HOLD: a longer one hands the eyelid back to the eye server, see Smoother::check_lids)
+        let mut smoother = Smoother::new(&settings);
+        let blink = |i: usize| (200..212).contains(&i);
+        let sent = camera_samples(
+            &settings,
+            &mut smoother,
+            100.0,
+            3.0,
+            |_| [0.0; 2],
+            |i| Some(if blink(i) { camera_eyes([(0.0, 0.0, true); 2]) } else { camera(0.8, 0.0) }),
+        );
+        assert!(!sent[199].gaze_held && !sent[214].gaze_held);
+        assert!(sent[201..212].iter().all(|sample| sample.gaze_held));
+        // A blink on an eye the eye server reads open still holds it (the camera never has the eyelid)
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(
+            &settings,
+            &mut smoother,
+            100.0,
+            2.0,
+            |i| if (100..120).contains(&i) { [0.0; 2] } else { [0.8; 2] },
+            |_| Some(camera(0.75, 0.0)),
+        );
+        assert!(sent[101..120].iter().all(|sample| sample.gaze_held));
+        assert!(!sent[90].gaze_held && !sent[170].gaze_held);
+        // Without the camera's values, as before: held all along
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, |_| [0.0; 2], |_| None);
+        assert!(sent.iter().all(|sample| sample.gaze_held && !sample.capture_usable()));
     }
 
     #[test]

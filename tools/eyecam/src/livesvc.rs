@@ -11,7 +11,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-/// A new wear (HMD taken off and put back on) when an eye's frames stop for this long.
+/// A new wear (HMD taken off and put back on) when an eye's frames stop for this long. An eye that looked worn over
+/// its last frames before they stopped (as new_wear_hint sees it) keeps its open-eye levels in use while the new wear
+/// learns its own, as with `relearn` (Worker::new_wear_after_gap): otherwise the eye camera was left out for the 30 s
+/// warm-up after every time the HMD was put back on (2026-11-02: off for 13 s, "same wear" from the hint, and the
+/// re-center that followed failed three times on an eye the eye server read shut).
 const NEW_WEAR_GAP: f64 = 10.0;
 /// eyecam-rec also says when a new wear may have begun (`Msg::NewWear`): the eye frames came back after they stopped,
 /// however short the gap, or the proximity sensor says worn after NEW_WEAR_OFF_S of not worn. It is taken as one
@@ -669,17 +673,48 @@ impl Worker {
         self.last_t = [f64::NEG_INFINITY; 2];
     }
 
-    /// eyecam-rec's hint that a new wear may have begun (NEW_WEAR_OFF_S): a new wear unless a calibration is running
-    /// or an eye looks worn (its pupil share and iris radius). Returns whether it was taken as one.
-    fn new_wear_hint(&mut self, why: &str) -> bool {
+    /// Per eye, whether it looks worn over its last NEW_WEAR_LOOK_S of frames (its pupil share and iris radius), and
+    /// what was seen, for the log.
+    fn worn_eyes(&self) -> ([bool; 2], String) {
         let looks = |e: usize| {
             let share = self.wear_seen[e].share();
             let r = self.wear_r[e];
             let r_ok = self.params[e].hist.is_none_or(|h| r >= NEW_WEAR_R.0 * h.r_px && r <= NEW_WEAR_R.1 * h.r_px);
             (share >= NEW_WEAR_KEEP_SHARE && r_ok, format!("{}: pupil {:.0}%, iris radius {:.1} px", ["L", "R"][e], 100.0 * share, r))
         };
-        let (eyes, seen): (Vec<bool>, Vec<String>) = [looks(0), looks(1)].into_iter().unzip();
-        let seen = seen.join(", ");
+        let [(l, l_seen), (r, r_seen)] = [looks(0), looks(1)];
+        ([l, r], format!("{l_seen}, {r_seen}"))
+    }
+
+    /// The frames stopped for `gap` s, longer than NEW_WEAR_GAP: a new wear, but an eye that looked worn over its last
+    /// frames keeps its open-eye levels in use while they are learnt again (as `relearn`), so the eye camera's eyelid
+    /// goes on at once. Everything else about the wear is learnt again as before, and this wear's calibration is gone.
+    fn new_wear_after_gap(&mut self, gap: f64) {
+        let (worn, seen) = self.worn_eyes();
+        let levels = [0, 1].map(|e| if worn[e] { self.engines[e].baseline_px() } else { None });
+        self.new_wear();
+        for (engine, levels) in self.engines.iter_mut().zip(levels) {
+            if let Some((b, ap_n)) = levels {
+                engine.seed_px(b, ap_n);
+                engine.relearn();
+            }
+        }
+        let kept = match levels.map(|l| l.is_some()) {
+            [true, true] => "both eyes keep their open-eye levels while learning them again",
+            [true, false] => "L keeps its open-eye levels while learning them again",
+            [false, true] => "R keeps its open-eye levels while learning them again",
+            [false, false] => "learning it again",
+        };
+        // (after the hint's "same wear" when the frames come back: this one wins, and this wear's calibration is gone)
+        eprintln!(
+            "live: the eye frames had stopped for {gap:.0} s (over {NEW_WEAR_GAP} s): a new wear after all, this wear's calibration gone ({seen} over the last {NEW_WEAR_LOOK_S} s before): {kept}"
+        );
+    }
+
+    /// eyecam-rec's hint that a new wear may have begun (NEW_WEAR_OFF_S): a new wear unless a calibration is running
+    /// or an eye looks worn (its pupil share and iris radius). Returns whether it was taken as one.
+    fn new_wear_hint(&mut self, why: &str) -> bool {
+        let (eyes, seen) = self.worn_eyes();
         if self.collect.is_some() {
             eprintln!("live: {why}; same wear (a calibration is running)");
             false
@@ -699,7 +734,7 @@ impl Worker {
         }
         let t = t_cam_ns as f64 * 1e-9;
         if t - self.last_t[eye] > NEW_WEAR_GAP && self.last_t[eye].is_finite() {
-            self.new_wear();
+            self.new_wear_after_gap(t - self.last_t[eye]);
         }
         self.last_t[eye] = t;
         self.last_seen[eye] = Some(Instant::now());
@@ -1547,6 +1582,22 @@ mod tests {
         w.collect = Some(CollectKind::Wear);
         assert!(!w.new_wear_hint("test"));
         assert!(w.params.iter().all(|p| p.wear == Some(wear)));
+        w.collect = None;
+        // Frames stopped for longer than NEW_WEAR_GAP: a new wear (this wear's calibration gone), but an eye that was
+        // worn up to then keeps its open-eye levels in use while it learns them again; one that wasn't starts over.
+        calibrated(&mut w);
+        let levels = w.engines[1].baseline_px();
+        frames(&mut w, 1200.0, 10.0, 0.9, 50.0);
+        w.new_wear_after_gap(60.0);
+        assert!(w.params.iter().all(|p| p.wear.is_none()));
+        assert!(!w.engines[0].baseline_ready());
+        assert!(w.engines[1].baseline_ready() && w.engines[1].relearning() && w.engines[1].baseline_px() == levels);
+        assert_eq!(w.engines[1].warmup_remaining_s(), live::WARMUP_S);
+        // Neither worn (an empty HMD): both start over, as before
+        calibrated(&mut w);
+        frames(&mut w, 1300.0, 10.0, 0.0, 50.0);
+        w.new_wear_after_gap(60.0);
+        assert!(w.engines.iter().all(|e| !e.baseline_ready() && !e.relearning()));
         drop(w);
         std::fs::remove_dir_all(&dir).unwrap();
     }

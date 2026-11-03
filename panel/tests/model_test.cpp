@@ -1529,7 +1529,7 @@ void testExtrasRead() {
     CHECK(e[0].problem == Problem::None);
     CHECK(e[1].name == "Gaze" && !e[1].enabled && e[1].format == "osc" && e[1].problem == Problem::None);
     CHECK(e[1].index == 1);
-    // A key or a format of a newer version: that entry only (0.10's betas' tracking_eye and lids too: never released)
+    // A key or a format of a newer version: that entry only (an earlier draft's tracking_eye and lids too: never released)
     CHECK(e[2].problem == Problem::Newer && e[3].problem == Problem::Newer);
     CHECK(e[6].problem == Problem::Newer && e[7].problem == Problem::Newer);
     // enabled not a bool, a host with a space, port 0, a long name, not an object: written wrong

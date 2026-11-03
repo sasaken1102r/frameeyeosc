@@ -1091,6 +1091,96 @@ struct UiText {
     const char* reasonIo;
     const char* reasonUpdater;          ///< usage, script-failed, spawn-failed
     const char* reasonOther;            ///< any other code
+
+    // The Output tab's sub-tabs, and "Other apps": up to three more destinations (extra_outputs) and lan_only
+    const char* outputPageMain;      ///< the sub-tab with the main destination (the rows from before)
+    const char* outputPageApps;      ///< the sub-tab with the other apps
+    const char* extrasTitle;         ///< the list's title
+    const char* extrasSub;           ///< ...and what it is, under it
+    const char* extrasSend;          ///< a row's switch: send
+    const char* extrasStop;          ///< ...stop
+    const char* extrasEdit;          ///< a row's "Change"
+    const char* extrasAddFormat;     ///< "+ Add a destination (%d left)"
+    const char* extrasFull;          ///< three already: how to add another
+    const char* extrasMoreFormat;    ///< more entries than are used ("%d more in config.json")
+    const char* extrasOldCore;       ///< the running frameeyeosc is older: it can't send to other apps
+    const char* extrasNotList;       ///< config.json's extra_outputs isn't a list
+    const char* rowLanOnly;          ///< lan_only's row
+    const char* hintLanOnly;         ///< ...under its title
+    const char* lanOnlyOnHint;       ///< ...under the switch while on
+    const char* lanOnlyOffHint;      ///< ...while off (a warning)
+    const char* extrasAddTitle;      ///< the flow's title, adding
+    const char* extrasEditTitle;     ///< ...changing
+    const char* extrasStepFormat;    ///< step 1's line under the title
+    const char* extrasStepHost;      ///< step 2's
+    const char* extrasStepPort;      ///< step 3's
+    const char* extrasStepOfFormat;  ///< "%d / 3"
+    const char* formatFeo1Title;     ///< the feo1 card
+    const char* formatFeo1Desc;
+    const char* formatFeo1Lines[2];
+    const char* formatEyeTitle;      ///< the tracking_eye card
+    const char* formatEyeDesc;
+    const char* formatEyeLines[2];
+    const char* formatEyeShort;      ///< tracking_eye in the left column and the list ("eye OSC")
+    const char* extrasWithLids;      ///< after it in the list when the eyelids go too ("+ eyelids")
+    const char* formatHint;          ///< how to tell which one, under the cards
+    const char* extrasCancel;
+    const char* extrasNext;
+    const char* extrasBack;
+    const char* extrasAddSave;       ///< step 3's button, adding
+    const char* extrasEditSave;      ///< ...changing
+    const char* extrasDelete;        ///< "Delete this destination" (changing only)
+    const char* extrasDeleteFormat;  ///< its confirmation ("Delete %s? ...")
+    const char* extrasDeleteNo;
+    const char* extrasDeleteYes;
+    const char* hostMain;            ///< step 2's choices, and the line under them
+    const char* hostMainSub;
+    const char* hostAuto;
+    const char* hostAutoSub;
+    const char* hostMainShort;       ///< "main" in a row of the list ("main PC")
+    const char* hostFrame;
+    const char* hostFrameSub;
+    const char* hostIp;
+    const char* hostIpSub;
+    const char* hostKeepFormat;      ///< a host the keypad can't type, kept as written ("As is: %s")
+    const char* hostKeepSub;
+    const char* hostUnknown;         ///< where "main" / "auto" goes while it isn't known yet
+    const char* ipEmpty;             ///< the typed address: nothing yet
+    const char* ipTyping;            ///< ...not an address yet
+    const char* ipLan;
+    const char* ipVpn;
+    const char* ipPublic;            ///< outside the home network, allowed (lan_only off)
+    const char* ipPublicBlocked;     ///< ...refused (lan_only on)
+    const char* ipBroadcast;
+    const char* ipMulticast;
+    const char* ipUnspecified;
+    const char* portNoteFeo1;        ///< step 3's port row
+    const char* portNoteEye;
+    const char* rowExtraLids;        ///< tracking_eye: the eyelids too
+    const char* hintExtraLids;
+    const char* rowSummary;
+    const char* hintSummary;
+    const char* clashMain;           ///< the same address and port as the main destination
+    const char* clashPupils;         ///< ...as the pupils (LiveLink)
+    const char* clashDuplicateFormat;  ///< ...as another entry ("Same as %s")
+    const char* extrasChanged;       ///< config.json changed under the flow: nothing written
+    const char* tagVpn;              ///< the tags after an address
+    const char* tagPublic;
+    const char* pupilsLine;          ///< the left column's line for the pupils straight to VRChat
+    // Why a destination sends nothing (status.json's refused / last_error; other words are shown as they are)
+    const char* reasonSameAsMain;
+    const char* reasonDuplicate;
+    const char* reasonPublicAddress;
+    const char* reasonBroadcast;
+    const char* reasonMulticast;
+    const char* reasonNotAddress;
+    const char* reasonNoSteamLink;
+    const char* reasonResolveFormat;     ///< "could not resolve: %s"
+    const char* reasonCantSendFormat;    ///< "can't send yet: %s"
+    const char* reasonSendFailedFormat;  ///< "sending failed: %s"
+    const char* reasonNewerEntry;        ///< an entry a newer frameeyeosc wrote
+    const char* reasonBadEntry;          ///< an entry written wrong
+    const char* reasonOverLimit;         ///< after the first three
 };
 
 /**

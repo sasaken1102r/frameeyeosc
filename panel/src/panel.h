@@ -146,7 +146,28 @@ enum class PanelAction {
     DataDelete,        ///< a "Saved data" row's "Delete" (arg = stored::Kind): its confirmation (handled inside)
     DataDeleteCancel,  ///< ...closed without deleting (handled inside)
     DataDeleteConfirm, ///< ...confirmed (arg = stored::Kind): the caller deletes it, or asks eyecam-rec to
+    OutputPage,        ///< show the Output tab's sub-tab arg (OutputPage; handled inside the panel, which opens the
+                       ///< tab; the caller remembers it, see outputPage)
+    ExtraSend,         ///< "Other apps": a row's Send / Stop, arg = index * 2 + 1 to send, index * 2 to stop (the
+                       ///< caller writes extra_outputs[index].enabled)
+    ExtraAdd,          ///< ..."Add a destination": the flow's first step (handled inside)
+    ExtraEdit,         ///< ...a row's "Change", arg = its index: the flow with its values (handled inside)
+    ExtraCancel,       ///< ...the flow's "Cancel": back to the list (handled inside)
+    ExtraStep,         ///< ...the flow's "Next" / "Back": to step arg (ExtrasStep; handled inside)
+    ExtraFormat,       ///< ...step 1's cards: arg 0 feo1, 1 tracking_eye (handled inside)
+    ExtraHost,         ///< ...step 2's choices: arg = extras::HostChoice (handled inside)
+    ExtraKey,          ///< ...step 2's keypad: arg = '0'-'9', '.' or host_entry::kBackspace (handled inside)
+    ExtraPort,         ///< ...step 3's port, arg -1 / 1 (handled inside)
+    ExtraLids,         ///< ...step 3's eyelids (tracking_eye), arg 1 on / 0 off (handled inside)
+    ExtraSave,         ///< ...step 3's "Add and send" / "Save": the caller writes extrasDraft() (extras::applyDraft)
+                       ///< and closes the flow (closeExtrasFlow), or says why it couldn't (setExtrasError)
+    ExtraDelete,       ///< ...step 3's "Delete this destination" while changing: its confirmation (handled inside)
+    ExtraDeleteCancel, ///< ...closed without deleting (handled inside)
+    ExtraDeleteConfirm,  ///< ...confirmed: the caller takes the entry out (extras::removeEntry) and closes the flow
 };
+
+/** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
+enum class ExtrasStep { List, Format, Host, Port };
 
 /** A button: its action, the config key it changes and an argument. */
 struct PanelHit {
@@ -249,6 +270,8 @@ public:
      */
     void setTab(PanelTab tab) {
         if (tab != tab_) advScroll_ = 0.0;
+        // (the Output tab's add / change flow starts over once the tab is left)
+        if (tab != PanelTab::Output) closeExtrasFlow();
         tab_ = tab;
         dataConfirm_ = -1;
     }
@@ -299,6 +322,54 @@ public:
     void setGazeScaleLinked(int pair, bool linked) {
         if (pair >= 0 && pair < 2) gazeScaleLinked_[pair] = linked;
     }
+
+    /** @return the Output tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
+    OutputPage outputPage() const { return outputPage_; }
+
+    /**
+     * Choose the Output tab's sub-tab (the one remembered from before, at start; or for --output-page). Its add /
+     * change flow closes.
+     * @param page the sub-tab
+     */
+    void setOutputPage(OutputPage page) {
+        outputPage_ = page;
+        closeExtrasFlow();
+    }
+
+    /** @return the add / change flow's step on "Other apps" (List: no flow) */
+    ExtrasStep extrasStep() const { return extrasStep_; }
+
+    /** @return the flow's choices so far */
+    const extras::Draft& extrasDraft() const { return extrasDraft_; }
+
+    /** @return true while the flow's delete confirmation shows */
+    bool extrasDeleteOpen() const { return extrasStep_ == ExtrasStep::Port && extrasDeleteOpen_; }
+
+    /**
+     * Open the add / change flow at a step with these choices (for --extras-flow; the buttons do it otherwise).
+     * @param step the step (List closes it)
+     * @param draft the choices
+     * @param confirmDelete with the delete's confirmation open (changing, step 3)
+     */
+    void openExtrasFlow(ExtrasStep step, const extras::Draft& draft, bool confirmDelete = false) {
+        extrasStep_ = step;
+        extrasDraft_ = draft;
+        extrasDeleteOpen_ = confirmDelete && draft.edit >= 0;
+        extrasError_.clear();
+    }
+
+    /** Close the flow (written, or the tab left): the list shows. */
+    void closeExtrasFlow() {
+        extrasStep_ = ExtrasStep::List;
+        extrasDeleteOpen_ = false;
+        extrasError_.clear();
+    }
+
+    /**
+     * Say in the flow why its last write didn't go through (cleared by its next press).
+     * @param message the message
+     */
+    void setExtrasError(const std::string& message) { extrasError_ = message; }
 
     /** @return whether "Get test versions" is on (update checks use frame-updater's beta channel) */
     bool updateBeta() const { return updateBeta_; }
@@ -731,6 +802,14 @@ private:
     AdvPage advPage_ = AdvPage::Version;  ///< the Advanced tab's sub-tab
     LidsPage lidsPage_ = LidsPage::Look;  ///< the Eyelids tab's sub-tab
     GazePage gazePage_ = GazePage::Motion;  ///< the Gaze tab's sub-tab
+    OutputPage outputPage_ = OutputPage::Main;  ///< the Output tab's sub-tab
+    ExtrasStep extrasStep_ = ExtrasStep::List;  ///< "Other apps"' add / change flow (List: none)
+    extras::Draft extrasDraft_;         ///< ...its choices so far
+    bool extrasDeleteOpen_ = false;     ///< ...with the delete's confirmation (changing, step 3)
+    std::string extrasError_;           ///< ...why its last write didn't go through ("" = none)
+    std::vector<extras::Entry> extrasShown_;  ///< the list's entries as last drawn (ExtraEdit's arg is an index)
+    std::vector<std::string> extrasRaw_;      ///< ...each as config.json had it (extras::rawEntry)
+    bool extrasLanOnly_ = true;         ///< lan_only as last drawn (the host step's "Next")
     bool gazeScaleLinked_[2] = {true, true};  ///< the gaze scale's locks: left / right, up / down
     bool updateBeta_ = false;             ///< "Get test versions" (panel.json's update_beta)
     SnapMark snapMark_;                   ///< mark ③ as last drawn
@@ -985,6 +1064,87 @@ private:
      * @param view the settings shown
      */
     void drawOutput(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The Output tab: its two sub-tabs (the main destination, other apps) and under them the one chosen.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     */
+    void drawOutputTab(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * "Other apps": the list (a row per entry with its switch, what and where, why it sends nothing, "Change"),
+     * "Add" and lan_only; or the add / change flow in its place.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     */
+    void drawExtras(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The add / change flow's step in place of the list.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     */
+    void drawExtrasFlow(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * One row of the list: Send / Stop, the name, the format and address, a VPN / PUBLIC tag, why it sends nothing
+     * (in red), and "Change".
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (its live state)
+     * @param entry the entry
+     * @param y top
+     * @param h height
+     * @param locked locked by the command line (greyed, nothing to press)
+     */
+    void drawExtraRow(const Pen& pen, const UiText& t, const PanelModel& model, const extras::Entry& entry, double y,
+                      double h, bool locked);
+
+    /**
+     * The flow's title, the line under it and its 1 / 2 / 3 progress at the right.
+     * @param pen drawing tools
+     * @param t texts
+     * @param sub the line under it
+     * @param step 1..3
+     * @return where what follows starts
+     */
+    double drawExtrasHeader(const Pen& pen, const UiText& t, const char* sub, int step);
+
+    /**
+     * The flow's bottom row: the left button (Cancel / Back) and the right one (Next / Add / Save), with the last
+     * write's failure above them.
+     * @param pen drawing tools
+     * @param left its label
+     * @param leftHit what it does
+     * @param right its label
+     * @param rightHit what it does
+     * @param rightUsable whether it can be pressed
+     */
+    void drawExtrasFooter(const Pen& pen, const char* left, const PanelHit& leftHit, const char* right,
+                          const PanelHit& rightHit, bool rightUsable);
+
+    /**
+     * The left column's destinations under the main one: the pupils straight to VRChat, then each extra output that
+     * is turned on (red with why while it sends nothing).
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param x0 left
+     * @param x1 right
+     * @param y the first line's baseline
+     * @param step px between lines
+     * @param draw draw them (else only count)
+     * @return how many lines
+     */
+    int drawMoreDestinations(const Pen& pen, const UiText& t, const PanelModel& model, double x0, double x1, double y,
+                             double step, bool draw = true);
 
     /**
      * The Gaze tab: its sub-tabs, and under them the one chosen.
@@ -1756,6 +1916,15 @@ private:
  * @return the line
  */
 std::string appsCountText(const UiText& t, const std::vector<frame_apps::Entry>& entries);
+
+/**
+ * Why a destination sends nothing, in the panel's language: frameeyeosc's known reasons (status.json's refused and
+ * last_error: "same as main", "public address", "could not resolve: ...") translated, any other one as it is.
+ * @param t texts
+ * @param reason frameeyeosc's words
+ * @return the text
+ */
+std::string extraReasonText(const UiText& t, const std::string& reason);
 
 /**
  * Draw the dashboard thumbnail (an eye and "Eye"). The launcher icons in contrib/icons are the same picture.

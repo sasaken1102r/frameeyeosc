@@ -11,12 +11,14 @@
 // in the left column, alone or beside a notice; its sheet's buttons, what closes it, freeze, without the cameras), and
 // "Help train the AI" (its row on Debug tools, each screen's buttons, its recording, the delete's confirmation), and the
 // eye cameras page's "How the video is taken" card (its choices and the tool's Konsole button in each state, inside
-// the card in both languages). Built
+// the card in both languages), and the Output tab's "Other apps" (its sub-tabs, the list, the add / change flow pressed
+// through, each screen's buttons pressed in turn, frameeyeosc's reasons in words). Built
 // with the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
 #include "draw.h"
 #include "frame_apps.h"
+#include "host_entry.h"
 #include "i18n.h"
 #include "icons.h"
 #include "model.h"
@@ -3599,6 +3601,398 @@ void testSavedData(const FontSet& fonts) {
     }
 }
 
+/**
+ * A model for "Other apps": frameeyeosc 0.10 running, sending to VRChat at 192.168.0.60:9000 (automatic), with these
+ * entries in config.json.
+ * @param language the language
+ * @param list extra_outputs as JSON
+ * @param lanOnly lan_only
+ * @return the model
+ */
+PanelModel extrasModel(Language language, const std::string& list, bool lanOnly = true) {
+    PanelModel m = modelWith(Lids::Valve, false);
+    m.language = language;
+    JsonValue entries;
+    std::string error;
+    CHECK(parseJson(list, entries, error));
+    m.config.root.set(key::kExtraOutputs, entries);
+    m.config.root.set(key::kLanOnly, JsonValue::makeBool(lanOnly));
+    EyeStatus& s = m.status;
+    s.output = kOutputVrchat;
+    s.sending = true;
+    s.targetMode = "auto";
+    s.target = "192.168.0.60:9000";
+    s.extrasKnown = true;
+    s.lanOnly = lanOnly;
+    s.net = "lan";
+    return m;
+}
+
+/** Three entries: on the main output's PC, a VPN address with eyelids, and a public address. */
+const char* const kThreeExtras = R"j([
+    {"format": "feo1", "host": "main", "port": 11113},
+    {"name": "Gaze", "format": "tracking_eye", "host": "100.101.5.7", "port": 9015, "lids": true},
+    {"format": "feo1", "host": "203.0.113.5", "port": 11113}])j";
+
+/**
+ * frameeyeosc's state for kThreeExtras: the first two sending, the third refused (lan_only on) or sent to and marked
+ * public (off).
+ * @param m the model
+ * @param lanOnly lan_only
+ */
+void liveThree(PanelModel& m, bool lanOnly) {
+    const char* targets[3] = {"192.168.0.60:11113", "100.101.5.7:9015", lanOnly ? "" : "203.0.113.5:11113"};
+    const char* nets[3] = {"lan", "vpn", lanOnly ? "" : "public"};
+    const char* names[3] = {"App 1", "Gaze", "App 3"};
+    m.status.extras.clear();
+    for (int i = 0; i < 3; ++i) {
+        ExtraLive e;
+        e.index = i + 1;
+        e.name = names[i];
+        e.enabled = true;
+        e.format = i == 1 ? "tracking_eye" : "feo1";
+        e.port = i == 1 ? 9015 : 11113;
+        e.target = targets[i];
+        e.net = nets[i];
+        e.sending = !e.target.empty();
+        if (i == 2 && lanOnly) e.refused = "public address";
+        m.status.extras.push_back(e);
+    }
+}
+
+/**
+ * Whether the card's own buttons (not the tab row, the sub-tabs or the left column) are inside the card, tall and
+ * wide enough to point at, and apart from each other.
+ * @param panel the panel (rendered)
+ * @return true if so
+ */
+bool cardButtonsApart(const EyePanel& panel) {
+    std::vector<EyePanel::HitArea> own;
+    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+        if (area.x < 400 || area.y < 170) continue;
+        own.push_back(area);
+    }
+    bool ok = true;
+    for (size_t i = 0; i < own.size(); ++i) {
+        const EyePanel::HitArea& a = own[i];
+        if (a.x < 438 - 0.5 || a.x + a.w > 1154 + 0.5 || a.y + a.h > 676 || a.h < 40 || a.w < 40) {
+            std::fprintf(stderr, "  button %d (arg %d) at %.0f,%.0f %.0fx%.0f\n", static_cast<int>(a.hit.action),
+                         a.hit.arg, a.x, a.y, a.w, a.h);
+            ok = false;
+        }
+        for (size_t j = i + 1; j < own.size(); ++j) ok = ok && !overlaps(a, own[j]);
+    }
+    return ok;
+}
+
+/**
+ * The Output tab's sub-tabs and "Other apps"' list: a row per entry (Send / Stop, Change), "Add" below three, lan_only;
+ * greyed while the command line locks them; the list without its live state from an older frameeyeosc; in both
+ * languages, inside the card and apart.
+ */
+void testExtrasPage(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool lanOnly : {true, false}) {
+            PanelModel m = extrasModel(language, kThreeExtras, lanOnly);
+            liveThree(m, lanOnly);
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Output);
+            panel.render(m);
+            // The main destination first: the rows from before, and the other sub-tab to press
+            CHECK(panel.outputPage() == OutputPage::Main);
+            std::vector<EyePanel::HitArea> pages = hits(panel, PanelAction::OutputPage);
+            CHECK(pages.size() == 1 && pages[0].hit.arg == static_cast<int>(OutputPage::Apps) && pages[0].y < 170);
+            CHECK(hits(panel, PanelAction::HostAuto).size() == 1 && hits(panel, PanelAction::ExtraSend).empty());
+            CHECK(allInsideAndTall(panel));
+            CHECK(pressArg(panel, PanelAction::OutputPage, 1).action == PanelAction::None);
+            CHECK(panel.outputPage() == OutputPage::Apps && panel.tab() == PanelTab::Output);
+            panel.render(m);
+            pages = hits(panel, PanelAction::OutputPage);
+            CHECK(pages.size() == 1 && pages[0].hit.arg == static_cast<int>(OutputPage::Main));
+            // Three rows (Send / Stop, Change), no "Add", lan_only's On / Off
+            const std::vector<EyePanel::HitArea> sends = hits(panel, PanelAction::ExtraSend);
+            CHECK(sends.size() == 6);
+            for (size_t i = 0; i < sends.size(); ++i) {
+                CHECK(sends[i].hit.arg == static_cast<int>(i / 2) * 2 + (i % 2 == 0 ? 1 : 0));
+            }
+            CHECK(hits(panel, PanelAction::ExtraEdit).size() == 3 && hits(panel, PanelAction::ExtraAdd).empty());
+            CHECK(hits(panel, PanelAction::SetBool, key::kLanOnly).size() == 2);
+            CHECK(allInsideAndTall(panel) && cardButtonsApart(panel));
+            // Send / Stop goes to the caller
+            CHECK(pressArg(panel, PanelAction::ExtraSend, 4).action == PanelAction::ExtraSend);
+            // Two: "Add" across the card
+            PanelModel two = extrasModel(language, R"j([{"format": "feo1", "host": "main", "port": 11113},
+                {"enabled": false, "format": "tracking_eye", "host": "127.0.0.1", "port": 9015}])j", lanOnly);
+            panel.render(two);
+            const std::vector<EyePanel::HitArea> add = hits(panel, PanelAction::ExtraAdd);
+            CHECK(add.size() == 1 && add[0].w > 700 && hits(panel, PanelAction::ExtraEdit).size() == 2);
+            CHECK(allInsideAndTall(panel) && cardButtonsApart(panel));
+            // None yet, and a list that isn't one (nothing to add to)
+            PanelModel none = extrasModel(language, "[]", lanOnly);
+            panel.render(none);
+            CHECK(hits(panel, PanelAction::ExtraAdd).size() == 1 && hits(panel, PanelAction::ExtraEdit).empty());
+            PanelModel odd = extrasModel(language, R"j({"format": "feo1"})j", lanOnly);
+            panel.render(odd);
+            CHECK(hits(panel, PanelAction::ExtraAdd).empty() && hits(panel, PanelAction::ExtraEdit).empty());
+            CHECK(hits(panel, PanelAction::SetBool, key::kLanOnly).size() == 2);
+            // Locked by the command line (--extra, --no-lan-only): drawn, nothing to press
+            PanelModel locked = m;
+            locked.status.locked = {key::kExtraOutputs, key::kLanOnly};
+            locked.status.effective = locked.config.root;
+            panel.render(locked);
+            CHECK(hits(panel, PanelAction::ExtraSend).empty() && hits(panel, PanelAction::ExtraEdit).empty());
+            CHECK(hits(panel, PanelAction::ExtraAdd).empty());
+            CHECK(hits(panel, PanelAction::SetBool, key::kLanOnly).empty());
+            // An older frameeyeosc (no "extras" in status.json): the list as written, still to be changed
+            PanelModel old = m;
+            old.status.extrasKnown = false;
+            old.status.extras.clear();
+            panel.render(old);
+            CHECK(hits(panel, PanelAction::ExtraEdit).size() == 3 && hits(panel, PanelAction::ExtraSend).size() == 6);
+            CHECK(allInsideAndTall(panel) && cardButtonsApart(panel));
+            // ...and with frameeyeosc not running
+            PanelModel stopped = m;
+            stopped.status.running = false;
+            panel.render(stopped);
+            CHECK(hits(panel, PanelAction::ExtraEdit).size() == 3 && allInsideAndTall(panel));
+            // Remembered while other tabs show
+            pressTab(panel, PanelTab::Gaze);
+            panel.render(m);
+            pressTab(panel, PanelTab::Output);
+            panel.render(m);
+            CHECK(panel.outputPage() == OutputPage::Apps && hits(panel, PanelAction::ExtraEdit).size() == 3);
+        }
+    }
+}
+
+/**
+ * The add / change flow, pressed through as the laser pointer would: the format (Next only once chosen), the host (an
+ * address typed on the keypad; a public one only with lan_only off, never a broadcast), the port with the eyelids for
+ * tracking_eye, and the summary (Save not while it repeats the main output's or another entry's destination); a
+ * change's delete with its confirmation in the panel; what the presses hand the caller and what that writes. Every
+ * screen's buttons pressed in turn on a panel in that state ("sweep"): each does what it says, inside the card.
+ */
+void testExtrasFlow(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        PanelModel m = extrasModel(language, R"j([{"format": "feo1", "host": "main", "port": 11113}])j");
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Output);
+        panel.setOutputPage(OutputPage::Apps);
+        panel.render(m);
+        CHECK(press(panel, PanelAction::ExtraAdd).action == PanelAction::None);
+        CHECK(panel.extrasStep() == ExtrasStep::Format && panel.extrasDraft().name == "App 2");
+        panel.render(m);
+        // 1: two cards, Cancel; Next once one is chosen
+        CHECK(hits(panel, PanelAction::ExtraFormat).size() == 2 && hits(panel, PanelAction::ExtraStep).empty());
+        CHECK(hits(panel, PanelAction::ExtraCancel).size() == 1 && cardButtonsApart(panel));
+        pressArg(panel, PanelAction::ExtraFormat, 1);
+        CHECK(panel.extrasDraft().format == "tracking_eye" && panel.extrasDraft().port == 9015);
+        panel.render(m);
+        CHECK(press(panel, PanelAction::ExtraStep).action == PanelAction::None);
+        CHECK(panel.extrasStep() == ExtrasStep::Host);
+        panel.render(m);
+        // 2: four choices (the main output's PC chosen), Back and Next
+        CHECK(hits(panel, PanelAction::ExtraHost).size() == 4 && hits(panel, PanelAction::ExtraStep).size() == 2);
+        CHECK(hits(panel, PanelAction::ExtraKey).empty() && cardButtonsApart(panel));
+        pressArg(panel, PanelAction::ExtraHost, static_cast<int>(extras::HostChoice::Ip));
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraKey).size() == 12 && cardButtonsApart(panel));
+        // (Next not yet: nothing typed; only Back)
+        CHECK(hits(panel, PanelAction::ExtraStep).size() == 1);
+        const auto type = [&](const std::string& text, const PanelModel& model) {
+            for (const char c : text) {
+                pressArg(panel, PanelAction::ExtraKey, c);
+                panel.render(model);
+            }
+        };
+        type("203.0.113.5", m);
+        CHECK(panel.extrasDraft().ip == "203.0.113.5" && hits(panel, PanelAction::ExtraStep).size() == 1);
+        // A press of Next that isn't drawn does nothing either (lan_only on)
+        panel.openExtrasFlow(ExtrasStep::Host, panel.extrasDraft());
+        // ...with lan_only off it can go on
+        PanelModel open = extrasModel(language, R"j([{"format": "feo1", "host": "main", "port": 11113}])j", false);
+        panel.render(open);
+        CHECK(hits(panel, PanelAction::ExtraStep).size() == 2);
+        panel.render(m);
+        for (int i = 0; i < 11; ++i) pressArg(panel, PanelAction::ExtraKey, host_entry::kBackspace);
+        panel.render(m);
+        CHECK(panel.extrasDraft().ip.empty());
+        type("255.255.255.255", m);
+        CHECK(hits(panel, PanelAction::ExtraStep).size() == 1);
+        for (int i = 0; i < 15; ++i) pressArg(panel, PanelAction::ExtraKey, host_entry::kBackspace);
+        panel.render(m);
+        type("192.168.1.30", m);
+        CHECK(hits(panel, PanelAction::ExtraStep).size() == 2);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Port));
+        CHECK(panel.extrasStep() == ExtrasStep::Port);
+        panel.render(m);
+        // 3: the port, the eyelids (tracking_eye), Back and "Add and send"; no delete while adding
+        CHECK(hits(panel, PanelAction::ExtraPort).size() == 2 && hits(panel, PanelAction::ExtraLids).size() == 2);
+        CHECK(hits(panel, PanelAction::ExtraSave).size() == 1 && hits(panel, PanelAction::ExtraDelete).empty());
+        CHECK(cardButtonsApart(panel));
+        pressArg(panel, PanelAction::ExtraLids, 1);
+        pressArg(panel, PanelAction::ExtraPort, 1);
+        CHECK(panel.extrasDraft().lids && panel.extrasDraft().port == 9016);
+        panel.render(m);
+        // Save goes to the caller, which writes it and closes the flow
+        CHECK(press(panel, PanelAction::ExtraSave).action == PanelAction::ExtraSave);
+        std::string error;
+        CHECK(extras::applyDraft(m.config.root, panel.extrasDraft(), error));
+        panel.closeExtrasFlow();
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraEdit).size() == 2 && hits(panel, PanelAction::ExtraAdd).size() == 1);
+        const extras::List list = extrasList(m);
+        CHECK(list.entries.size() == 2 && list.entries[1].host == "192.168.1.30" && list.entries[1].port == 9016);
+        CHECK(list.entries.size() == 2 && list.entries[1].lids && list.entries[1].format == "tracking_eye");
+        // The same destination as the first entry: no Save until the port changes
+        press(panel, PanelAction::ExtraAdd);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraFormat, 0);
+        panel.render(m);
+        press(panel, PanelAction::ExtraStep);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Port));
+        panel.render(m);
+        CHECK(panel.extrasStep() == ExtrasStep::Port && hits(panel, PanelAction::ExtraSave).empty());
+        pressArg(panel, PanelAction::ExtraPort, 1);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraSave).size() == 1);
+        // ...or the main output's (VRChat at 9000 on the same PC)
+        extras::Draft main = panel.extrasDraft();
+        main.port = 9000;
+        panel.openExtrasFlow(ExtrasStep::Port, main);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraSave).empty());
+        // Changing the first: its values, and delete with a confirmation in the panel
+        panel.closeExtrasFlow();
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraEdit, 0);
+        CHECK(panel.extrasStep() == ExtrasStep::Format && panel.extrasDraft().edit == 0);
+        CHECK(panel.extrasDraft().format == "feo1" && !panel.extrasDraft().original.empty());
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Host));
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Port));
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraDelete).size() == 1 && hits(panel, PanelAction::ExtraSave).size() == 1);
+        CHECK(press(panel, PanelAction::ExtraDelete).action == PanelAction::None && panel.extrasDeleteOpen());
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraDeleteConfirm).size() == 1);
+        CHECK(hits(panel, PanelAction::ExtraDeleteCancel).size() == 1 && hits(panel, PanelAction::ExtraSave).empty());
+        CHECK(cardButtonsApart(panel));
+        CHECK(press(panel, PanelAction::ExtraDeleteCancel).action == PanelAction::None && !panel.extrasDeleteOpen());
+        panel.render(m);
+        press(panel, PanelAction::ExtraDelete);
+        panel.render(m);
+        CHECK(press(panel, PanelAction::ExtraDeleteConfirm).action == PanelAction::ExtraDeleteConfirm);
+        const extras::Draft gone = panel.extrasDraft();
+        CHECK(extras::removeEntry(m.config.root, gone.edit, gone.original, error));
+        CHECK(extrasList(m).entries.size() == 1 && extrasList(m).entries[0].host == "192.168.1.30");
+        // Another tab closes the flow; the lock closes it too
+        panel.openExtrasFlow(ExtrasStep::Host, extras::newDraft(1));
+        panel.render(m);
+        pressTab(panel, PanelTab::Basic);
+        CHECK(panel.extrasStep() == ExtrasStep::List);
+        panel.render(m);
+        pressTab(panel, PanelTab::Output);
+        CHECK(panel.tab() == PanelTab::Output && panel.outputPage() == OutputPage::Apps);
+        panel.openExtrasFlow(ExtrasStep::Format, extras::newDraft(1));
+        PanelModel locked = m;
+        locked.status.locked = {key::kExtraOutputs};
+        locked.status.effective = locked.config.root;
+        panel.render(locked);
+        CHECK(panel.extrasStep() == ExtrasStep::List && hits(panel, PanelAction::ExtraFormat).empty());
+
+        // The sweep: each screen's buttons, each pressed on a panel in that state
+        PanelModel three = extrasModel(language, kThreeExtras);
+        liveThree(three, true);
+        extras::Draft adding = extras::newDraft(1);
+        extras::chooseFormat(adding, extras::kTrackingEye);
+        extras::Draft typed = adding;
+        typed.host = extras::HostChoice::Ip;
+        typed.ip = "100.101.5.8";
+        const extras::List threeList = extrasList(three);
+        extras::Draft editing = extras::draftOf(threeList.entries[1], extras::rawEntry(three.config.root, 1));
+        extras::Draft kept = editing;
+        kept.kept = "bridge-pc.local";
+        kept.host = extras::HostChoice::Keep;
+        const struct {
+            ExtrasStep step;
+            extras::Draft draft;
+            bool confirm;
+            size_t least;  ///< buttons it has at least, the tab row's left out
+        } screens[] = {
+            {ExtrasStep::List, adding, false, 6 + 3 + 2},
+            {ExtrasStep::Format, extras::newDraft(1), false, 3},
+            {ExtrasStep::Format, adding, false, 4},
+            {ExtrasStep::Host, adding, false, 4 + 2},
+            {ExtrasStep::Host, typed, false, 4 + 12 + 2},
+            {ExtrasStep::Host, kept, false, 5 + 2},
+            {ExtrasStep::Port, typed, false, 6},
+            {ExtrasStep::Port, editing, false, 7},
+            {ExtrasStep::Port, editing, true, 7},
+        };
+        for (const auto& screen : screens) {
+            const auto setUp = [&](EyePanel& p) {
+                p.setTab(PanelTab::Output);
+                p.setOutputPage(OutputPage::Apps);
+                p.render(three);
+                if (screen.step != ExtrasStep::List) p.openExtrasFlow(screen.step, screen.draft, screen.confirm);
+                p.render(three);
+            };
+            EyePanel shown(fonts);
+            setUp(shown);
+            CHECK(cardButtonsApart(shown) && allInsideAndTall(shown));
+            std::vector<EyePanel::HitArea> own;
+            for (const EyePanel::HitArea& area : shown.hitAreas()) {
+                if (area.x > 400 && area.y > 100) own.push_back(area);
+            }
+            CHECK(own.size() >= screen.least);
+            for (const EyePanel::HitArea& area : own) {
+                EyePanel p(fonts);
+                setUp(p);
+                const PanelHit got = p.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+                // What it hands the caller is itself, or nothing (handled inside)
+                CHECK(got.action == PanelAction::None || got == area.hit);
+                const PanelAction a = area.hit.action;
+                if (a == PanelAction::ExtraCancel) CHECK(p.extrasStep() == ExtrasStep::List);
+                if (a == PanelAction::ExtraStep) CHECK(static_cast<int>(p.extrasStep()) == area.hit.arg);
+                if (a == PanelAction::ExtraEdit) CHECK(p.extrasDraft().edit == area.hit.arg);
+                if (a == PanelAction::ExtraAdd) CHECK(p.extrasStep() == ExtrasStep::Format);
+                if (a == PanelAction::ExtraDelete) CHECK(p.extrasDeleteOpen());
+                if (a == PanelAction::ExtraDeleteCancel) CHECK(!p.extrasDeleteOpen());
+                if (a == PanelAction::ExtraHost) CHECK(static_cast<int>(p.extrasDraft().host) == area.hit.arg);
+                if (a == PanelAction::ExtraSave || a == PanelAction::ExtraDeleteConfirm ||
+                    a == PanelAction::ExtraSend) {
+                    CHECK(got == area.hit);
+                }
+            }
+        }
+    }
+}
+
+/** frameeyeosc's reasons, translated where known, as they are where not. */
+void testExtraReasons() {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    CHECK(extraReasonText(ja, "public address") == ja.reasonPublicAddress);
+    CHECK(extraReasonText(en, "same as main") == en.reasonSameAsMain);
+    CHECK(extraReasonText(en, "duplicate") == en.reasonDuplicate);
+    CHECK(extraReasonText(ja, "broadcast refused") == ja.reasonBroadcast);
+    CHECK(extraReasonText(ja, "multicast refused") == ja.reasonMulticast);
+    CHECK(extraReasonText(ja, "not an address to send to") == ja.reasonNotAddress);
+    CHECK(extraReasonText(ja, "no Steam Link") == ja.reasonNoSteamLink);
+    CHECK(extraReasonText(en, "could not resolve: Name or service not known") ==
+          "can't find it: Name or service not known");
+    CHECK(extraReasonText(ja, "sending failed: Network is unreachable (os error 101)") ==
+          "送れない: Network is unreachable (os error 101)");
+    CHECK(extraReasonText(en, "can't send yet: No route to host") == "can't send yet: No route to host");
+    CHECK(extraReasonText(ja, "unknown key \"pupils\" (written by a newer frameeyeosc?)") == ja.reasonNewerEntry);
+    CHECK(extraReasonText(en, "only 3 extra outputs are used") == en.reasonOverLimit);
+    // Unknown: as it is
+    CHECK(extraReasonText(ja, "port must be between 1 and 65535") == "port must be between 1 and 65535");
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -3645,6 +4039,9 @@ int main() {
     testIconText(fonts);
     testApps(fonts);
     testPreview(fonts);
+    testExtraReasons();
+    testExtrasPage(fonts);
+    testExtrasFlow(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

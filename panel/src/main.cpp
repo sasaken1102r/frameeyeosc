@@ -95,6 +95,9 @@ struct Options {
     std::string lidsPage;         ///< --lids-page (--lid-marks: fine): the Eyelids tab's sub-tab (look, blinks, fine,
                                   ///< brows)
     std::string gazePage;         ///< --gaze-page: the Gaze tab's sub-tab (motion, reach, glitch)
+    std::string outputPage;       ///< --output-page: the Output tab's sub-tab (main, apps)
+    std::string extrasFlow;       ///< --extras-flow: "Other apps"' add / change flow at a step (parseExtrasFlow)
+    std::string fakeExtras;       ///< --fake-extras: made-up extra outputs (fakeExtras)
     bool history = false;         ///< --history: the version history open (on the Advanced tab)
     std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
     double historyScroll = -1.0;  ///< --history-scroll: px it is scrolled (-1 = as opened)
@@ -263,6 +266,12 @@ void printUsage() {
         "      --fit-details [gaze|lids]  Open \"Fine-tune\" on the Eye fit tab (default: its gaze page)\n"
         "      --lids-page look|blinks|fine|brows  The Eyelids tab's sub-tab (default look)\n"
         "      --gaze-page motion|reach|glitch  The Gaze tab's sub-tab (default motion)\n"
+        "      --output-page main|apps  The Output tab's sub-tab (default main)\n"
+        "      --extras-flow STEP[,KEY=VALUE...]  \"Other apps\"' add / change flow at STEP (format, host or\n"
+        "                        port), with\n"
+        "                        format=feo1|tracking_eye, host=main|auto|frame|ip|keep, ip=A.B.C.D, kept=HOST,\n"
+        "                        port=N, lids=1, edit=N (change entry N, from 0, starting from its values) and delete\n"
+        "                        (its confirmation open). Opens the Output tab's \"Other apps\"\n"
         "      --lid-marks       The same as --lids-page fine (the lid marks)\n"
         "      --history         Open the version history (Advanced tab)\n"
         "      --history-open VERSION  ...with this version's row open instead of the installed one\n"
@@ -310,6 +319,11 @@ void printUsage() {
         "      --fake-pupil-bits N  pupil_bits 0..4 (the Output tab's \"pupils as bits\" row, with the eye cameras)\n"
         "      --fake-slow-tracker  The eye tracker delivers only 15 samples a second\n"
         "      --fake-locked     Some keys locked by the command line\n"
+        "      --fake-extras one|mixed|refused|errors|old|main-refused  Made-up extra outputs (\"Other apps\"): one\n"
+        "                        sending; three sending (LAN, VPN, PUBLIC; lan_only off); three with the public one\n"
+        "                        refused (lan_only on); same as main, a name that can't be found and one a newer\n"
+        "                        version wrote; two in config.json that an older frameeyeosc (no \"extras\") doesn't\n"
+        "                        send; or one with the main output refused (a public address)\n"
         "      --fake-config-error  frameeyeosc reports a config error\n"
         "      --fake-source-error  frameeyeosc can't read the eye tracker (an unsupported shared-memory version)\n"
         "      --fake-core-error  frameeyeosc logged a problem 2 minutes ago (its last_error)\n"
@@ -842,6 +856,30 @@ bool parseOptions(int argc, char** argv, Options& options) {
             GazePage page;
             if (!ui_state::parseGazePage(options.gazePage, page)) {
                 std::fprintf(stderr, "--gaze-page must be motion, reach or glitch: %s\n", options.gazePage.c_str());
+                return false;
+            }
+        } else if (arg == "--output-page" && hasNext) {
+            options.outputPage = argv[++i];
+            OutputPage page;
+            if (!ui_state::parseOutputPage(options.outputPage, page)) {
+                std::fprintf(stderr, "--output-page must be main or apps: %s\n", options.outputPage.c_str());
+                return false;
+            }
+        } else if (arg == "--extras-flow" && hasNext) {
+            options.extrasFlow = argv[++i];
+            const std::string step = options.extrasFlow.substr(0, options.extrasFlow.find(','));
+            if (step != "format" && step != "host" && step != "port") {
+                std::fprintf(stderr, "--extras-flow must start with format, host or port: %s\n",
+                             options.extrasFlow.c_str());
+                return false;
+            }
+        } else if (arg == "--fake-extras" && hasNext) {
+            options.fake = true;
+            options.fakeExtras = argv[++i];
+            if (options.fakeExtras != "one" && options.fakeExtras != "mixed" && options.fakeExtras != "refused" &&
+                options.fakeExtras != "errors" && options.fakeExtras != "old" && options.fakeExtras != "main-refused") {
+                std::fprintf(stderr, "--fake-extras must be one, mixed, refused, errors, old or main-refused: %s\n",
+                             options.fakeExtras.c_str());
                 return false;
             }
         } else if (arg == "--adv-page" && hasNext) {
@@ -1990,6 +2028,156 @@ void takeSliders(EyePanel& panel, Apply apply) {
  * @param options the command line
  * @return the model
  */
+/**
+ * --fake-extras: made-up extra outputs in config.json and as frameeyeosc sends to them (status.json's extras).
+ * @param m the model (its config and status; running)
+ * @param state one, mixed, refused, errors, old or main-refused ("" = none, from a frameeyeosc that has them)
+ */
+void fakeExtras(PanelModel& m, const std::string& state) {
+    EyeStatus& s = m.status;
+    JsonValue& root = m.config.root;
+    s.extrasKnown = state != "old";
+    s.net = "lan";
+    if (state.empty()) return;
+    struct Fake {
+        const char* name;  ///< "" = none written (App N)
+        const char* format;
+        const char* host;
+        int port;
+        bool lids;
+        bool enabled;
+        const char* target;
+        const char* net;
+        const char* refused;
+        const char* lastError;
+        const char* extraKey;  ///< a key a newer version wrote ("" = none)
+    };
+    std::vector<Fake> fakes;
+    const bool lanOff = state == "mixed";
+    if (state == "one" || state == "old" || state == "main-refused") {
+        fakes.push_back({"", "feo1", "main", 11113, false, true, "192.168.0.60:11113", "lan", "", "", ""});
+    }
+    if (state == "old") {
+        fakes.push_back({"Gaze", "tracking_eye", "192.168.0.61", 9015, true, false, "", "", "", "", ""});
+    }
+    if (state == "mixed" || state == "refused") {
+        fakes.push_back({"", "feo1", "main", 11113, false, true, "192.168.0.60:11113", "lan", "", "", ""});
+        fakes.push_back({"Gaze", "tracking_eye", "100.101.5.7", 9015, true, true, "100.101.5.7:9015", "vpn", "", "",
+                         ""});
+        fakes.push_back({"", "feo1", "203.0.113.5", 11113, false, true, lanOff ? "203.0.113.5:11113" : "",
+                         lanOff ? "public" : "", lanOff ? "" : "public address", "", ""});
+    }
+    if (state == "errors") {
+        fakes.push_back({"", "feo1", "main", 9000, false, true, "", "", "same as main", "", ""});
+        fakes.push_back({"Bridge", "feo1", "bridge-pc.local", 11113, false, true, "", "", "",
+                         "could not resolve: failed to lookup address information: Name or service not known", ""});
+        fakes.push_back({"", "feo1", "192.168.0.61", 11113, false, true, "", "", "", "", "pupils"});
+    }
+    if (lanOff) root.set(key::kLanOnly, JsonValue::makeBool(false));
+    s.lanOnly = !lanOff;
+    JsonValue list;
+    list.type = JsonValue::Type::Array;
+    for (size_t i = 0; i < fakes.size(); ++i) {
+        const Fake& f = fakes[i];
+        JsonValue entry;
+        entry.type = JsonValue::Type::Object;
+        if (f.name[0] != '\0') entry.set("name", JsonValue::makeString(f.name));
+        entry.set("enabled", JsonValue::makeBool(f.enabled));
+        entry.set("format", JsonValue::makeString(f.format));
+        entry.set("host", JsonValue::makeString(f.host));
+        entry.set("port", JsonValue::makeNumber(f.port, true));
+        if (std::string(f.format) == "tracking_eye") entry.set("lids", JsonValue::makeBool(f.lids));
+        if (f.extraKey[0] != '\0') entry.set(f.extraKey, JsonValue::makeBool(true));
+        list.items.push_back(entry);
+        ExtraLive live;
+        live.index = static_cast<int>(i) + 1;
+        live.name = f.name[0] != '\0' ? f.name : "App " + std::to_string(i + 1);
+        live.enabled = f.enabled && f.extraKey[0] == '\0';
+        live.format = f.extraKey[0] != '\0' ? "" : f.format;
+        live.host = f.extraKey[0] != '\0' ? "" : f.host;
+        live.port = f.extraKey[0] != '\0' ? 0 : f.port;
+        live.lids = f.lids;
+        live.target = f.target;
+        live.net = f.net;
+        live.sending = !live.target.empty();
+        live.rate = live.sending ? 89.6 : 0.0;
+        live.refused = f.extraKey[0] != '\0' ? "unknown key \"" + std::string(f.extraKey) +
+                                                   "\" (written by a newer frameeyeosc?)"
+                                             : f.refused;
+        live.lastError = f.lastError;
+        s.extras.push_back(live);
+    }
+    root.set(key::kExtraOutputs, list);
+    if (state == "main-refused") {
+        root.set(key::kHost, JsonValue::makeString("203.0.113.9"));
+        s.targetMode = "fixed";
+        s.target.clear();
+        s.net.clear();
+        s.refused = "public address";
+        s.extras[0].target.clear();
+        s.extras[0].sending = false;
+        s.extras[0].lastError = "no Steam Link";
+    }
+    if (!s.extrasKnown) s.extras.clear();
+}
+
+/**
+ * --extras-flow: "Other apps"' add / change flow, at STEP with KEY=VALUE choices (see printUsage).
+ * @param spec the value
+ * @param model the model (edit=N starts from that entry)
+ * @param draft the choices
+ * @param step the step
+ * @param confirmDelete delete's confirmation open
+ */
+void parseExtrasFlow(const std::string& spec, const PanelModel& model, extras::Draft& draft, ExtrasStep& step,
+                     bool& confirmDelete) {
+    std::vector<std::string> parts;
+    for (size_t from = 0;;) {
+        const size_t comma = spec.find(',', from);
+        parts.push_back(spec.substr(from, comma == std::string::npos ? std::string::npos : comma - from));
+        if (comma == std::string::npos) break;
+        from = comma + 1;
+    }
+    const extras::List list = extrasList(model);
+    draft = extras::newDraft(static_cast<int>(list.entries.size()));
+    draft.format = extras::kFeo1;
+    step = parts[0] == "port" ? ExtrasStep::Port : parts[0] == "host" ? ExtrasStep::Host : ExtrasStep::Format;
+    if (parts[0] == "format") draft.format.clear();
+    confirmDelete = false;
+    for (size_t i = 1; i < parts.size(); ++i) {
+        const std::string& part = parts[i];
+        const size_t eq = part.find('=');
+        const std::string key = part.substr(0, eq);
+        const std::string value = eq == std::string::npos ? std::string() : part.substr(eq + 1);
+        if (key == "edit") {
+            const int index = std::atoi(value.c_str());
+            if (index >= 0 && index < static_cast<int>(list.entries.size())) {
+                draft = extras::draftOf(list.entries[static_cast<size_t>(index)],
+                                        extras::rawEntry(model.config.root, index));
+            }
+        } else if (key == "format") {
+            draft.format = value;
+        } else if (key == "host") {
+            using extras::HostChoice;
+            draft.host = value == "auto"    ? HostChoice::Auto
+                         : value == "frame" ? HostChoice::Frame
+                         : value == "ip"    ? HostChoice::Ip
+                         : value == "keep"  ? HostChoice::Keep
+                                            : HostChoice::Main;
+        } else if (key == "ip") {
+            draft.ip = value;
+        } else if (key == "kept") {
+            draft.kept = value;
+        } else if (key == "port") {
+            draft.port = std::clamp(std::atoi(value.c_str()), 1, 65535);
+        } else if (key == "lids") {
+            draft.lids = value == "1";
+        } else if (key == "delete") {
+            confirmDelete = true;
+        }
+    }
+}
+
 PanelModel fakeModel(const Options& options) {
     PanelModel m;
     m.configPath = options.configPath;
@@ -2196,6 +2384,7 @@ PanelModel fakeModel(const Options& options) {
                 if (camera == "both") s.pupilDilation = 0.46;
             }
         }
+        fakeExtras(m, options.fakeExtras);
         s.effective = root;
         if (options.fakeLocked) {
             s.locked = {key::kOutput,          key::kPort,        key::kRaw,         key::kLidOpen,
@@ -2212,6 +2401,9 @@ PanelModel fakeModel(const Options& options) {
             s.effective.set(key::kCameraLids, JsonValue::makeBool(true));
             s.effective.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
             s.effective.set(key::kPupilBits, JsonValue::makeNumber(3, true));
+            // ...and the extra outputs and lan_only (--extra, --no-lan-only), as frameeyeosc lists them
+            s.locked.push_back(key::kExtraOutputs);
+            s.locked.push_back(key::kLanOnly);
         }
     } else {
         s.readError = "no status file";
@@ -2489,6 +2681,18 @@ int runDumpPng(const Options& options) {
         if (AdvPage page; ui_state::parsePage(options.advPage, page)) panel.setAdvPage(page);
         if (LidsPage page; ui_state::parseLidsPage(options.lidsPage, page)) panel.setLidsPage(page);
         if (GazePage page; ui_state::parseGazePage(options.gazePage, page)) panel.setGazePage(page);
+        if (OutputPage page; ui_state::parseOutputPage(options.outputPage, page)) panel.setOutputPage(page);
+        if (!options.extrasFlow.empty()) {
+            panel.setTab(PanelTab::Output);
+            panel.setOutputPage(OutputPage::Apps);
+            // (drawn once first: the list's entries, for a change's)
+            panel.render(model);
+            extras::Draft draft;
+            ExtrasStep step = ExtrasStep::Format;
+            bool confirmDelete = false;
+            parseExtrasFlow(options.extrasFlow, model, draft, step, confirmDelete);
+            panel.openExtrasFlow(step, draft, confirmDelete);
+        }
         // The gaze scale's locks as at a start with them left closed: open where the two values differ
         {
             const SettingsView view(model);
@@ -2897,6 +3101,14 @@ std::string statusSignature(const EyeStatus& s) {
                  std::to_string(c.recalibSuggested) + std::to_string(c.used[0]) + std::to_string(c.used[1]) +
                  std::to_string(c.pupilUsed[0]) + std::to_string(c.pupilUsed[1]) + c.error;
     signature += "|" + s.pupilTarget;
+    // The destinations' addresses, tags and refusals (the left column and "Other apps")
+    signature += "|" + std::to_string(s.extrasKnown) + std::to_string(s.lanOnly) + s.net + "|" + s.refused + "|" +
+                 s.pupilNet + "|" + s.pupilRefused;
+    for (const ExtraLive& e : s.extras) {
+        signature += "|" + e.name + "," + std::to_string(e.enabled) + e.format + "," + e.host + ":" +
+                     std::to_string(e.port) + std::to_string(e.lids) + std::to_string(e.sending) + e.target + "," +
+                     e.net + "," + e.refused + "," + e.lastError;
+    }
     signature += "|" + s.configError + "|" + s.sourceError + "|" + s.dominantEye + "|" +
                  (s.opennessSaturated ? "saturated" : "") + "|" + s.configPath + "|" + s.calibrationPath + "|";
     for (const auto& name : s.locked) signature += name + ",";
@@ -3414,6 +3626,57 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::GazePage:
         case PanelAction::LidsPage:
         case PanelAction::RecordBack: return;  // handled inside the panel
+        case PanelAction::OutputPage:
+        case PanelAction::ExtraAdd:
+        case PanelAction::ExtraEdit:
+        case PanelAction::ExtraCancel:
+        case PanelAction::ExtraStep:
+        case PanelAction::ExtraFormat:
+        case PanelAction::ExtraHost:
+        case PanelAction::ExtraKey:
+        case PanelAction::ExtraPort:
+        case PanelAction::ExtraLids:
+        case PanelAction::ExtraDelete:
+        case PanelAction::ExtraDeleteCancel: return;  // handled inside the panel
+        case PanelAction::ExtraSend:
+        case PanelAction::ExtraSave:
+        case PanelAction::ExtraDeleteConfirm: {
+            // "Other apps": the list changed in place (the other entries, and the keys the panel doesn't know, as they
+            // are). Tried on the file as it is first: an entry gone or changed meanwhile writes nothing
+            if (view.locked(key::kExtraOutputs)) return;
+            const extras::Draft draft = panel.extrasDraft();
+            const PanelAction action = hit.action;
+            const int arg = hit.arg;
+            const auto apply = [draft, action, arg](JsonValue& root, std::string& why) {
+                if (action == PanelAction::ExtraSend) return extras::setEnabled(root, arg / 2, arg % 2 == 1, why);
+                if (action == PanelAction::ExtraSave) return extras::applyDraft(root, draft, why);
+                return extras::removeEntry(root, draft.edit, draft.original, why);
+            };
+            const ConfigFile current = readConfigFile(model.configPath);
+            JsonValue trial = current.exists ? current.root : JsonValue();
+            if (!current.exists) trial.type = JsonValue::Type::Object;
+            std::string why;
+            if (current.error.empty() && !apply(trial, why)) {
+                std::fprintf(stderr, "[action] extra output not written: %s\n", why.c_str());
+                panel.setExtrasError(uiText(model.language).extrasChanged);
+                model.config = readConfigFile(model.configPath);
+                return;
+            }
+            // (entries counted from 1, as config_error does; a new one at the end)
+            const int entry = action == PanelAction::ExtraSend ? arg / 2 + 1
+                              : draft.edit >= 0                ? draft.edit + 1
+                                                               : static_cast<int>(extrasList(model).entries.size()) + 1;
+            std::fprintf(stderr, "[action] extra output %s: entry %d\n",
+                         action == PanelAction::ExtraSend   ? (arg % 2 == 1 ? "on" : "off")
+                         : action == PanelAction::ExtraSave ? (draft.edit < 0 ? "added" : "changed")
+                                                            : "deleted",
+                         entry);
+            change = [apply](JsonValue& root) {
+                std::string ignored;
+                apply(root, ignored);
+            };
+            break;
+        }
         case PanelAction::AppsClose:
         case PanelAction::AppsInstall:
         case PanelAction::AppsMenu:
@@ -3614,6 +3877,10 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         model.panelError.clear();
         model.panelErrorBroken = false;
         if (!openPrompt.empty()) panel.showPrompt(openPrompt);
+        // "Other apps": written, back to the list
+        if (hit.action == PanelAction::ExtraSave || hit.action == PanelAction::ExtraDeleteConfirm) {
+            panel.closeExtrasFlow();
+        }
         // The eye fit starts over: the up gains of the fits before don't count any more (not in --dump-png)
         if (hit.action == PanelAction::FitReset && fit != nullptr) {
             std::string stateError;
@@ -3923,6 +4190,8 @@ int runOverlay(const Options& options) {
     panel.setLidsPage(savedLidsPage);
     GazePage savedGazePage = ui_state::readGazePage(uiStatePath);
     panel.setGazePage(savedGazePage);
+    OutputPage savedOutputPage = ui_state::readOutputPage(uiStatePath);
+    panel.setOutputPage(savedOutputPage);
     // The gaze scale's locks as left, but open where the two values differ (a closed lock means they are the same)
     bool savedLinks[2] = {true, true};
     ui_state::readGazeScaleLinks(uiStatePath, savedLinks);
@@ -5005,6 +5274,14 @@ int runOverlay(const Options& options) {
             savedGazePage = panel.gazePage();
             std::string error;
             if (!ui_state::writeGazePage(uiStatePath, savedGazePage, error)) {
+                std::fprintf(stderr, "[panel] %s\n", error.c_str());
+            }
+        }
+        // ...and the Output tab's
+        if (panel.outputPage() != savedOutputPage) {
+            savedOutputPage = panel.outputPage();
+            std::string error;
+            if (!ui_state::writeOutputPage(uiStatePath, savedOutputPage, error)) {
                 std::fprintf(stderr, "[panel] %s\n", error.c_str());
             }
         }

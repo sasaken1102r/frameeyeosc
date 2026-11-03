@@ -755,8 +755,8 @@ std::vector<uint8_t> belowCard(EyePanel& panel) {
 }
 
 /**
- * Mark ⑤ on "Blinks & squint"'s sent eyelid bars: both values where they land, each faded while it applies to neither
- * eye, the second badge moved aside where they'd overlap, gone when off; none on Fine-tune.
+ * Mark ③ on "Blinks & squint"'s sent eyelid bars: both values where they land, each faded while it applies to neither
+ * eye, the second badge moved aside where they'd overlap, gone when off; none on "Valve eyelids".
  */
 void testSnapMark(const FontSet& fonts) {
     // Eye data coming, no cameras: lid_open_snap (0.53) applies, camera_lid_open_snap (0.63) is faded. The bars run from
@@ -803,7 +803,7 @@ void testSnapMark(const FontSet& fonts) {
     CHECK(!panel.snapMark().shown && std::isnan(panel.snapMark().x[0]) && std::isnan(panel.snapMark().x[1]));
     CHECK(hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 1);
     CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).size() == 1);
-    // Fine-tune: neither the mark nor the row, and nothing below the switch that opens "Blinks & squint"
+    // Valve eyelids: neither the mark nor the row, and nothing below the switch that opens "Blinks & squint"
     m.config.root.set(key::kLidOpenSnap, JsonValue::makeNumber(0.53));
     m.config.root.set(key::kCameraLidOpenSnap, JsonValue::makeNumber(0.63));
     panel.setLidsPage(LidsPage::Fine);
@@ -831,7 +831,7 @@ void testEyeBehavior(const FontSet& fonts) {
     panel.render(locked);
     CHECK(hits(panel, PanelAction::SetInteger, key::kEyeBehavior).empty());
 
-    // v1: the Eyelids rows that only v2 uses are faded (nothing to press) with a button to that switch, and (5) is not
+    // v1: the Eyelids rows that only v2 uses are faded (nothing to press) with a button to that switch, and (3) is not
     // drawn on the bars; v2 has them as usual
     PanelModel v1 = m;
     v1.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
@@ -993,8 +993,8 @@ void testLidsPages(const FontSet& fonts) {
                     CHECK(hits(panel, PanelAction::Step, key::kBlinkHoldMs).empty() == !blinks);
                     CHECK(hits(panel, PanelAction::Step, key::kBlinkSyncBelow).empty() == !blinks);
                     CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == (blinks && eyecam ? 1u : 0u));
-                    // Fine-tune: the scales, the marks (3 and 4 not while the cameras drive both), the smoothing
-                    // values, and the auto calibration for eyes without a fit, unless the cameras drive both
+                    // Valve eyelids: the scales, the two marks (no widening marks), the smoothing values, and the
+                    // auto calibration for eyes without a fit, unless the cameras drive both
                     CHECK(hits(panel, PanelAction::ScaleAuto).size() == (fine ? 1u : 0u));
                     for (const char* name : {key::kLidClosed, key::kLidOpen, key::kLidMinCutoff, key::kLidBeta}) {
                         CHECK(hits(panel, PanelAction::Step, name).empty() == !fine);
@@ -1005,7 +1005,7 @@ void testLidsPages(const FontSet& fonts) {
                     CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).size() == (blinks ? 2u : 0u));
                     const bool camerasBoth = lids == Lids::Both;
                     for (const char* name : {key::kLidWidenStart, key::kLidWide}) {
-                        CHECK(hits(panel, PanelAction::Step, name).empty() == (!fine || camerasBoth));
+                        CHECK(hits(panel, PanelAction::Step, name).empty());
                     }
                     const bool calibration = fine && !camerasBoth;
                     CHECK(hits(panel, PanelAction::SetBool, key::kLidCalibration).size() == (calibration ? 2u : 0u));

@@ -45,9 +45,9 @@ constexpr double kLabelW = 206;
 constexpr double kControlX = kInnerX + kLabelW + 14;
 constexpr double kControlW = kInnerRight - kControlX;
 constexpr double kRowTop = 116;
-/** A relaxed open eye, as sent (VRCFT): the sent eyelid bars' dotted line, and where ⑤ is off. */
+/** A relaxed open eye, as sent (VRCFT): the sent eyelid bars' dotted line, and where ③ is off. */
 constexpr double kLidRelaxed = 0.75;
-/** How strongly Fine-tune's part is drawn while it only stands by for the cameras (still to be changed). */
+/** How strongly "Valve eyelids"' part is drawn while it only stands by for the cameras (still to be changed). */
 constexpr double kStandbyAlpha = 0.6;
 /** Below this many samples a second from the eye tracker, the left column marks the rate as low. */
 constexpr double kRowH = 64;
@@ -344,12 +344,12 @@ void drawPlusMinus(cairo_t* cr, double cx, double cy, double s, bool plus, Color
 }
 
 /**
- * A numbered circle (the lid marks ① to ⑤).
+ * A numbered circle (the lid marks ① to ③).
  * @param pen drawing tools
  * @param cx center x
  * @param cy center y
  * @param number 1..5
- * @param fill its color (⑤ has its own)
+ * @param fill its color (③ has its own)
  */
 /**
  * Whether the eyes move as up to 0.7.5 (eye_behavior 1), where the eyelid rules since don't apply.
@@ -3410,8 +3410,12 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
                                                                   : t.widenHintValve;
         drawRowLabel(pen, t, y, h, t.rowWidenEase, hint, locked, 0, true);
         drawWidenSlider(pen, t, m, v, widen, kControlX, kInnerRight, y + 6, 40);
+        // (an eye on Valve's values without a fit doesn't widen at all while the openness is saturated: one eye on
+        // the cameras with the other on a saturated SteamOS)
+        const bool saturated = m.status.running && m.status.opennessSaturated;
+        const char* unfitted = saturated ? t.widenSaturated : t.widenNoteUnfitted;
         const char* note = !widens                              ? t.widenNoteOff
-                           : widen.unfittedNote                   ? t.widenNoteUnfitted
+                           : widen.unfittedNote                   ? unfitted
                            : widen.control == WidenControl::Valve ? t.widenNoteValve
                                                                   : t.widenNoteCamera;
         pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
@@ -3435,7 +3439,7 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         y = baseline - 7;
     }
     if (camera) drawRowDivider(pen, y);
-    // Eyelid smoothing: four presets (the two values themselves on "Fine-tune")
+    // Eyelid smoothing: four presets (the two values themselves on "Valve eyelids")
     {
         const bool locked = v.locked(key::kLidMinCutoff) || v.locked(key::kLidBeta);
         const int preset = matchingLidPreset(v);
@@ -3558,8 +3562,8 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
         y += 34;
     }
     // Each eye's eyelid as sent now (VRCFT, 0..1), in the cameras' green where its eyelid is theirs and with whose it is
-    // on the right; relaxed open dotted; ⑤ for the eyes without the cameras' eyelid (lid_open_snap) and for those with
-    // it (camera_lid_open_snap), each faded while it applies to neither eye (neither in v1, where ⑤ isn't used); the
+    // on the right; relaxed open dotted; ③ for the eyes without the cameras' eyelid (lid_open_snap) and for those with
+    // it (camera_lid_open_snap), each faded while it applies to neither eye (neither in v1, where ③ isn't used); the
     // camera floor in green while it is on (v2, the cameras in use), faded while no eye is on them
     {
         const double chipW = 92;
@@ -3622,7 +3626,7 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
                 cairo_stroke(cr);
             }
         }
-        // ⑤, both values
+        // ③, both values
         snapMark_ = {};
         const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
         const double dash[2] = {5, 4};
@@ -3661,17 +3665,17 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
                 cairo_line_to(cr, snapMark_.x[i], top - 4);
                 cairo_stroke(cr);
             }
-            drawNumberBadge(pen, bx, badgeY, 5, fill);
+            drawNumberBadge(pen, bx, badgeY, 3, fill);
             snapMark_.badgeX[i] = bx;
         }
         y = bottom + 14;
     }
-    // ⑤'s row: in v2 both values, each with whose eyes it is for on its left; in v1 only lid_open_snap, faded, with why
-    // and the way to the switch beside it. In ⑤'s color, as are the steppers' edges
+    // ③'s row: in v2 both values, each with whose eyes it is for on its left; in v1 only lid_open_snap, faded, with why
+    // and the way to the switch beside it. In ③'s color, as are the steppers' edges
     {
         const bool locked = v.locked(key::kLidOpenSnap) || (!v1 && v.locked(key::kCameraLidOpenSnap));
         if (v1) cairo_push_group(cr);
-        drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 5, kSnap);
+        drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 3, kSnap);
         drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked, 26);
         const double stepperW = 150;
         if (v1) {
@@ -3708,12 +3712,12 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     double y = top;
     const double cy = (kRowH - kControlH) / 2;
     // Eyes with an eye fit: closing and opening come from the fit, widening from the slider (lid_widen). The learned
-    // calibration and marks 3 and 4 only matter for eyes without one
+    // calibration and the marks only matter for eyes without one
     const WidenState widen = widenState(v);
     const bool anyFitted = widen.fitted[0] || widen.fitted[1];
     const bool fromCameras = lidsFromCameras(s);
 
-    // The page is how Valve's openness is read (the sent eyelid, with ⑤, is on "Blinks & squint"): its title, and beside
+    // The page is how Valve's openness is read (the sent eyelid, with ③, is on "Blinks & squint"): its title, and beside
     // it what decides the marks now. While the cameras supply both eyes all of it only stands by for when they lose an
     // eye, so it says so and is drawn lighter, still to be changed
     const bool standby = s.running && s.camera.used[0] && s.camera.used[1];
@@ -3732,11 +3736,7 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             note = t.opennessSaturated;
             notice = true;
         }
-        // (the cameras widen by their own sensitivity: the widening marks and that cap don't matter then)
-        if (fromCameras) {
-            note = t.lidsCamMarksOpen;
-            notice = false;
-        }
+        // (while the cameras drive both eyelids all of it stands by, the cap included)
         if (standby) {
             note = t.valveReadStandby;
             notice = true;
@@ -3815,8 +3815,10 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         }
     }
     y += kRowH + kRowGap;
-    // The raw openness of each eye with the four marks laid over it
-    const char* marks[4] = {key::kLidClosed, key::kLidOpen, key::kLidWidenStart, key::kLidWide};
+    // The raw openness of each eye with the two marks laid over it. No widening marks: SteamOS caps the openness at
+    // 1.0 (a relaxed open eye reads it), so above relaxed open nothing comes from Valve's values for eyes without a
+    // fit; lid_widen_start and lid_wide stay settings (config.json, --lid-widen-start, --lid-wide)
+    const char* marks[2] = {key::kLidClosed, key::kLidOpen};
     {
         const double top = y - 14;
         const double barX = kInnerX + 34;
@@ -3839,7 +3841,7 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             textCentered(pen, barX + barW / 2, centerBaseline(top + 50, 20, 14), t.noEyeData, 14, kTextMuted, false);
         }
         // Mark lines: a light line with dark edges, visible on the accent fill and on the dark track
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 2; ++i) {
             const double x = std::round(xOf(v.number(marks[i])));
             pen.color(kBg);
             cairo_set_line_width(cr, 6);
@@ -3855,20 +3857,19 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         }
         y = top + 110;
     }
-    // The four marks (3 and 4 greyed for fitted eyes, which widen by the slider, and while the cameras drive both)
+    // The two marks, side by side
     {
-        const char* captions[4] = {t.markClosed, t.markOpen, t.markWidenStart, t.markWide};
+        const char* captions[2] = {t.markClosed, t.markOpen};
         const double gap = 12;
-        const double w = (kInnerRight - kInnerX - gap * 3) / 4;
-        for (int i = 0; i < 4; ++i) {
+        const double w = (kInnerRight - kInnerX - gap) / 2;
+        for (int i = 0; i < 2; ++i) {
             const double x = kInnerX + i * (w + gap);
             drawCaption(pen, x + 2, y + 18, captions[i], i + 1, v.locked(marks[i]));
             double low = 0;
             double high = 0;
             lidMarkBounds(marks[i], v, low, high);
             const double value = v.number(marks[i]);
-            const bool usable = !((anyFitted || fromCameras) && i >= 2);
-            drawStepper(pen, x, y + 28, w, kControlH, marks[i], value, formatSetting(marks[i], value), usable,
+            drawStepper(pen, x, y + 28, w, kControlH, marks[i], value, formatSetting(marks[i], value), true,
                         v.locked(marks[i]), low, high);
         }
         y += kCaptionRowH + kRowGap;

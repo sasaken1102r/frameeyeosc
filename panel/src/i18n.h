@@ -226,7 +226,7 @@ struct UiText {
     const char* eyeBehaviorV2Line;    ///< ...and a line under it on what each does
     const char* eyeBehaviorV1Line;
     const char* eyeBehaviorLeftV1;    ///< the left column while v1 is on
-    const char* snapV2Only;           ///< Eyelids > Fine-tune, in v1: (5) is not used
+    const char* snapV2Only;           ///< Eyelids > Blinks & squint, in v1: (3) is not used
     const char* floorV2Only;          ///< Eyelids > Blinks & squint, in v1: the floor is not used
     const char* toVersionPage;        ///< the button beside them: "Advanced > Version"
     const char* hintIndependentV1;    ///< "Move eyes separately" in v1
@@ -352,8 +352,7 @@ struct UiText {
     const char* widenFollowsRight;
     const char* widenNoRoom;         ///< neither eye has room
     const char* opennessSaturated;   ///< a relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through
-    const char* lidMarksFitted;      ///< above the bars for fitted eyes (the marks folded away)
-    const char* lidMarksUnused;      ///< the same, the marks open: 3 and 4 are only for eyes without a fit
+    const char* lidMarksUnused;      ///< the same, the marks open: they are only for eyes without a fit
 
     // Lids tab
     const char* rowCalibration;
@@ -370,8 +369,6 @@ struct UiText {
     const char* marksTitle;         ///< "Open and close your eyes and match the lines"
     const char* markClosed;
     const char* markOpen;
-    const char* markWidenStart;
-    const char* markWide;
     const char* rowSync;
     const char* hintSync;
     const char* rowBlink;
@@ -823,10 +820,9 @@ struct UiText {
     const char* camHelp3;
     const char* camHelp3Do;
     const char* lidsCamButton;
-    const char* lidsCamMarks;  ///< ...the folded marks' line
     const char* lidsLook;  ///< the Eyelids tab's sub-tabs: the look (widening, smoothing, sync)
     const char* lidsBlinks;  ///< ...blinks and squints
-    const char* lidsFine;  ///< ...the values by hand
+    const char* lidsFine;  ///< ...how Valve's values are read ("Valve eyelids")
     const char* lidsBrows;  ///< ...the brows (raised with widening)
     const char* gazeMotion;  ///< the Gaze tab's sub-tabs: how the gaze moves (smoothing, deadzone)
     const char* gazeReach;  ///< ...how far it goes (the gaze scale, each eye on its own)
@@ -882,11 +878,11 @@ struct UiText {
     const char* lidFloorHint;  ///< ...its hint
     const char* lidFloorNote;  ///< ...beside it
     const char* lidFloorNoteIdle;  ///< ...beside it while no eye is on the cameras
-    const char* rowLidOpenSnap;  ///< lid_open_snap (Fine-tune, under the marks; a sent eyelid, VRCFT)
+    const char* rowLidOpenSnap;  ///< lid_open_snap (Blinks & squint, under the sent eyelids; VRCFT)
     const char* lidOpenSnapHint;  ///< ...its hint
     const char* capSnapValve;     ///< ...in v2, the caption of lid_open_snap (the eyes without the cameras' eyelid)
     const char* capSnapCamera;    ///< ...and of camera_lid_open_snap (the eyes with it)
-    const char* valveReadTitle;   ///< Fine-tune's title: how Valve's openness is read
+    const char* valveReadTitle;   ///< "Valve eyelids"' title: how Valve's openness is read
     const char* valveReadStandby; ///< ...beside it while the cameras supply both eyes
     const char* sentLidsTitle;    ///< Blinks & squint: the sent eyelid part's title
     const char* sentLidsHint;     ///< ...beside it
@@ -919,7 +915,6 @@ struct UiText {
     const char* calibCardTitle;  ///< a calibration from the page: the card title
     const char* calibResultTitle;  ///< ...how it ended: the card title
     const char* calibWearNote;  ///< ...at the right of the heading (this wear)
-    const char* lidsCamMarksOpen;  ///< ...the same with the marks open  ///< ...at the bottom of the tab
     const char* devTitle;  ///< Advanced tab: the developer section (eye recording)
     const char* devRecord;  ///< ...its row
     const char* devRecordHint;

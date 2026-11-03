@@ -1905,7 +1905,9 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     // the gaze boxes getting smaller (and the eyelid rows closer when there are many)
     const double labelW = pen.text(x0, 154, t.destination, 15, kTextMuted, true);
     const int more = s.running ? drawMoreDestinations(pen, t, m, x0, x1, 0, kDestStep, false) : 0;
-    const double shift = std::max(0.0, more * kDestStep - 24);
+    const TrackerRateCause cause = trackerRateCause(s);
+    const StatusLayout rows = statusLayout(more, cause != TrackerRateCause::None, false, false);
+    const double shift = rows.shift;
     if (!s.running) {
         pen.text(x0, 180, t.notRunningHint1, fitSize(pen, t.notRunningHint1, 16, 12, x1 - x0, false), kText);
         pen.text(x0, 204, t.notRunningHint2, fitSize(pen, t.notRunningHint2, 16, 12, x1 - x0, false), kText);
@@ -1959,11 +1961,9 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     }
     // While it is low, a line under it says who was slow: frameeyeosc or the eye tracker. The eyelids make room for it
     // (they move down into the space above the gaze)
-    const TrackerRateCause cause = trackerRateCause(s);
-    const double dy = shift + (cause == TrackerRateCause::None ? 0 : 14);
-    // Many more destinations: the eyelid rows closer (8 px each), the gaze moves down that much less
-    const double squeeze = shift >= 40 && cause == TrackerRateCause::None ? 16 : 0;
-    const double g = shift - squeeze;
+    // (with many more destinations the eyelid rows get closer, and the gaze moves down that much less: statusLayout)
+    const double dy = rows.dy;
+    const double g = rows.g;
     if (cause != TrackerRateCause::None) {
         const char* line = cause == TrackerRateCause::Here ? t.trackerRateSlowHere : t.trackerRateSlowTracker;
         pen.text(x1, 269 + shift, line, fitSize(pen, line, 14, 11, x1 - x0, false), kTextMuted, false, true);
@@ -2003,7 +2003,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         }
     }
     for (int eye = 0; eye < 2; ++eye) {
-        const double top = 296 + dy + eye * (48 - squeeze / 2);
+        const double top = rows.eyeTop[eye];
         pen.text(x0, top + 26, eye == 0 ? t.left : t.right, 18, kText, true);
         const double barX = x0 + 30;
         const double barW = x1 - 58 - barX;
@@ -2021,8 +2021,8 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         pen.text(x1, top + 36, twoDecimals(sent), 16, kText, true, true);
     }
     pen.color(kDivider);
-    cairo_move_to(cr, x0, 402.5 + g);
-    cairo_line_to(cr, x1, 402.5 + g);
+    cairo_move_to(cr, x0, rows.divider);
+    cairo_line_to(cr, x1, rows.divider);
     cairo_stroke(cr);
 
     // Gaze: raw = ring, sent = filled dot
@@ -2100,6 +2100,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     const bool setupCard = !failure && (nextCard || readyCard);
     // Each eye's own pad while the eyes move separately; one pad for the shared gaze otherwise
     const bool perEye = SettingsView(m).flag(key::kIndependentEyes);
+    const StatusLayout gazeRows = statusLayout(more, cause != TrackerRateCause::None, perEye, setupCard);
     if (perEye) {
         // The legend on the title line: ring = raw, the two eye colors = sent
         if (oneEye == nullptr) {
@@ -2116,7 +2117,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
             lx -= 14;
             drawRing(cr, lx, 425 + g, 6, 2, kText);
         }
-        const double box = std::max(48.0, (setupCard ? 100 : 132) - g);
+        const double box = gazeRows.box;
         const char* labels[2] = {t.leftEye, t.rightEye};
         const Color colors[2] = {kDotLeft, kDotRight};
         for (int eye = 0; eye < 2; ++eye) {
@@ -2134,7 +2135,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
             }
         }
     } else {
-        const double box = std::max(64.0, (setupCard ? 132 : 164) - g);
+        const double box = gazeRows.box;
         const double bx = x0;
         const double by = 444 + g;
         gazePad(bx, by, box, s.gaze, s.sentGaze, kAccent);
@@ -2143,8 +2144,8 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         const double lx = bx + box + 18;
         // The legend beside the box, its four lines closer together when moved down (above the bottom row, or the
         // eye cameras' setup there)
-        const double first = by + 32;
-        const double k = std::min(96.0, std::max(64.0, (setupCard ? 580 : 612) - first)) / 96;
+        const double first = gazeRows.legendFirst;
+        const double k = gazeRows.legendK;
         drawRing(cr, lx + 9, first - 6, 8, 2.5, kText);
         pen.text(lx + 26, first, t.legendRaw, 15, kText);
         pen.text(lx, first + 26 * k, hasRaw ? xyText(s.gaze) : "—",
@@ -2881,6 +2882,38 @@ std::string extraReasonText(const UiText& t, const std::string& reason) {
     return reason;
 }
 
+StatusLayout statusLayout(int more, bool slow, bool perEye, bool setupCard) {
+    StatusLayout l;
+    l.shift = std::max(0.0, std::clamp(more, 0, 4) * kDestStep - 24);
+    l.dy = l.shift + (slow ? 14 : 0);
+    // Many lines: each eyelid row 8 px closer to the one before (the bars still apart)
+    const double squeeze = l.shift >= 40 ? 16 : 0;
+    for (int eye = 0; eye < 2; ++eye) l.eyeTop[eye] = 296 + l.dy + eye * (48 - squeeze / 2);
+    l.divider = std::max(402.5 + l.shift - squeeze, l.eyeTop[1] + 36 + 8.5);
+    l.g = l.divider - 402.5;
+    l.limit = setupCard ? 590 : 626;
+    if (perEye) {
+        l.box = std::max(48.0, (setupCard ? 100 : 132) - l.g);
+        l.lowest = 464 + l.g + l.box + 20;
+    } else {
+        l.box = std::max(64.0, (setupCard ? 132 : 164) - l.g);
+        // (the legend's four lines closer together, and higher up beside the box, when there is less room under it)
+        const double end = setupCard ? 580 : 612;
+        l.legendFirst = std::max(444 + l.g + 18, std::min(444 + l.g + 32, end - 64));
+        l.legendK = std::min(96.0, end - l.legendFirst) / 96;
+        l.lowest = l.legendFirst + 96 * l.legendK;
+    }
+    return l;
+}
+
+const char* extrasSaveLabel(const UiText& t, const extras::Draft& draft, const extras::List& list) {
+    if (draft.edit < 0) return t.extrasAddSave;
+    for (const extras::Entry& entry : list.entries) {
+        if (entry.index == draft.edit && !entry.enabled) return t.extrasSaveAndSend;
+    }
+    return t.extrasEditSave;
+}
+
 void EyePanel::drawOutputTab(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
     // Two sub-tabs, drawn as the Gaze, Eyelids and Advanced tabs' (the first time the main destination, then the one
     // open last)
@@ -3424,7 +3457,7 @@ void EyePanel::drawExtrasFlow(const Pen& pen, const UiText& t, const PanelModel&
         }
     }
     drawExtrasFooter(pen, t.extrasBack, {PanelAction::ExtraStep, nullptr, static_cast<int>(ExtrasStep::Host)},
-                     d.edit >= 0 ? t.extrasEditSave : t.extrasAddSave, {PanelAction::ExtraSave, nullptr, 0},
+                     extrasSaveLabel(t, d, list), {PanelAction::ExtraSave, nullptr, 0},
                      clash == extras::Clash::None && !extrasDeleteOpen_);
 }
 

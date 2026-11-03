@@ -1137,6 +1137,7 @@ UiText makeJapanese() {
     t.extrasBack = "戻る";
     t.extrasAddSave = "追加して送る";
     t.extrasEditSave = "変更を保存";
+    t.extrasSaveAndSend = "保存して送る";
     t.extrasDelete = "この送り先を消す";
     t.extrasDeleteFormat = "「%s」を消す？ もう送らなくなるよ";
     t.extrasDeleteNo = "やめる";
@@ -2327,7 +2328,8 @@ UiText makeEnglish() {
     t.extrasNext = "Next";
     t.extrasBack = "Back";
     t.extrasAddSave = "Add and send";
-    t.extrasEditSave = "Save";
+    t.extrasEditSave = "Save changes";
+    t.extrasSaveAndSend = "Save and send";
     t.extrasDelete = "Delete this destination";
     t.extrasDeleteFormat = "Delete \"%s\"? Nothing goes there any more";
     t.extrasDeleteNo = "Keep";

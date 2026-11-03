@@ -1129,6 +1129,7 @@ struct UiText {
     const char* extrasBack;
     const char* extrasAddSave;       ///< step 3's button, adding
     const char* extrasEditSave;      ///< ...changing
+    const char* extrasSaveAndSend;   ///< ...changing one that is stopped (saving turns it on)
     const char* extrasDelete;        ///< "Delete this destination" (changing only)
     const char* extrasDeleteFormat;  ///< its confirmation ("Delete %s? ...")
     const char* extrasDeleteNo;

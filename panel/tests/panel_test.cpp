@@ -32,6 +32,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -3994,6 +3995,110 @@ void testExtraReasons() {
     CHECK(extraReasonText(ja, "port must be between 1 and 65535") == "port must be between 1 and 65535");
 }
 
+/**
+ * The left column's rows under more destinations (statusLayout): in order and apart, ending above the bottom row, for
+ * 0 to 4 destination lines with or without the slow-tracker line, per-eye gaze and the eye cameras' setup; where they
+ * always were without destination lines. Then drawn: LiveLink with its pupils and three other apps, the eye tracker
+ * slow, both gaze layouts, in both languages: the eyelid bars never reach the line above the gaze.
+ */
+void testStatusLayout(const FontSet& fonts) {
+    for (int more = 0; more <= 4; ++more) {
+        for (const bool slow : {false, true}) {
+            for (const bool perEye : {false, true}) {
+                for (const bool setup : {false, true}) {
+                    const StatusLayout l = statusLayout(more, slow, perEye, setup);
+                    // The destination lines end above the rates; the slow line between the rate and the line under it
+                    if (more > 0) CHECK(180 + 21 + 1 + (more - 1) * 21 + 5 <= 228 + l.shift - 15);
+                    if (slow) CHECK(250 + l.shift + 5 <= 269 + l.shift - 11 && 269 + l.shift + 4 <= 262.5 + l.dy);
+                    // The eyelid rows: under their title, apart, and the line above the gaze 8 px under the second
+                    CHECK(l.eyeTop[0] >= 282 + l.dy + 10);
+                    CHECK(l.eyeTop[1] >= l.eyeTop[0] + 36 + 4);
+                    CHECK(l.eyeTop[1] + 36 + 8 <= l.divider);
+                    // The gaze: the box(es) and the lowest text above the bottom row
+                    CHECK(l.box >= 48 && l.lowest + 4 <= l.limit);
+                    CHECK((perEye ? 464 : 444) + l.g + l.box + 10 <= l.limit);
+                    if (more == 0) {
+                        CHECK(l.shift == 0 && l.divider == 402.5 && l.g == 0);
+                        CHECK(l.box == (perEye ? (setup ? 100 : 132) : (setup ? 132 : 164)));
+                    }
+                }
+            }
+        }
+    }
+    // Drawn: no pixel of an eyelid bar (the accent) from the second eye's bars down to just under the line
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool perEye : {false, true}) {
+            PanelModel m = extrasModel(language, kThreeExtras);
+            liveThree(m, true);
+            EyeStatus& s = m.status;
+            s.output = kOutputLivelink;
+            m.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+            s.target = "192.168.0.60:11111";
+            s.pupilTarget = "192.168.0.60:9000";
+            s.pupilNet = "lan";
+            s.tracking = s.hasRaw = s.hasSent = true;
+            s.opennessScaled = {{0.84, 0.77}};
+            s.lids = {{1.0, 1.0}};
+            s.trackerRate = 15.0;
+            s.missedRate = 0.0;
+            s.maxProcessingMs = 1.4;
+            if (perEye) m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(true));
+            CHECK(trackerRateCause(s) != TrackerRateCause::None);
+            EyePanel panel(fonts);
+            panel.render(m);
+            CHECK(allInsideAndTall(panel));
+            const StatusLayout l = statusLayout(4, true, perEye, false);
+            CHECK(l.shift == 60);
+            const std::vector<uint8_t>& rgba = panel.toRgba();
+            const auto accent = [&](int x, int y) {
+                const uint8_t* px = &rgba[(static_cast<size_t>(y) * panel.width() + x) * 4];
+                return std::abs(px[0] - 0xe2) < 16 && std::abs(px[1] - 0x7d) < 16 && std::abs(px[2] - 0xfd) < 16;
+            };
+            int bar = 0;
+            int below = 0;
+            for (int x = 80; x < 310; ++x) {
+                // (the second eye's sent bar: full, so its row has the accent)
+                bar += accent(x, static_cast<int>(l.eyeTop[1]) + 28) ? 1 : 0;
+                for (int y = static_cast<int>(l.eyeTop[1]) + 38; y <= static_cast<int>(l.divider) + 3; ++y) {
+                    below += accent(x, y) ? 1 : 0;
+                }
+            }
+            CHECK(bar > 200 && below == 0);
+            // The preview button still at the bottom, inside the column
+            const std::vector<EyePanel::HitArea> preview = hits(panel, PanelAction::PreviewOpen);
+            CHECK(preview.size() == 1 && preview[0].y >= l.lowest && preview[0].y + preview[0].h <= 676);
+        }
+    }
+}
+
+/** The change's last button says when saving starts a stopped entry again; pressing it hands Save to the caller. */
+void testExtrasSaveLabel(const FontSet& fonts) {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    PanelModel m = extrasModel(Language::Ja, R"j([{"format": "feo1", "host": "main", "port": 11113},
+        {"enabled": false, "format": "tracking_eye", "host": "127.0.0.1", "port": 9015}])j");
+    const extras::List list = extrasList(m);
+    CHECK(std::string(extrasSaveLabel(ja, extras::newDraft(2), list)) == "追加して送る");
+    const extras::Draft running = extras::draftOf(list.entries[0], extras::rawEntry(m.config.root, 0));
+    const extras::Draft stopped = extras::draftOf(list.entries[1], extras::rawEntry(m.config.root, 1));
+    CHECK(std::string(extrasSaveLabel(ja, running, list)) == "変更を保存");
+    CHECK(std::string(extrasSaveLabel(ja, stopped, list)) == "保存して送る");
+    CHECK(std::string(extrasSaveLabel(en, running, list)) == "Save changes");
+    CHECK(std::string(extrasSaveLabel(en, stopped, list)) == "Save and send");
+    // Saved: it sends again
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Output);
+    panel.setOutputPage(OutputPage::Apps);
+    panel.render(m);
+    pressArg(panel, PanelAction::ExtraEdit, 1);
+    panel.openExtrasFlow(ExtrasStep::Port, panel.extrasDraft());
+    panel.render(m);
+    CHECK(press(panel, PanelAction::ExtraSave).action == PanelAction::ExtraSave);
+    std::string error;
+    CHECK(extras::applyDraft(m.config.root, panel.extrasDraft(), error));
+    CHECK(extrasList(m).entries[1].enabled);
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -4043,6 +4148,8 @@ int main() {
     testExtraReasons();
     testExtrasPage(fonts);
     testExtrasFlow(fonts);
+    testExtrasSaveLabel(fonts);
+    testStatusLayout(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

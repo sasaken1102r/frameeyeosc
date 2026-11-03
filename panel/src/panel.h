@@ -1926,6 +1926,43 @@ std::string appsCountText(const UiText& t, const std::vector<frame_apps::Entry>&
  */
 std::string extraReasonText(const UiText& t, const std::string& reason);
 
+/** Where the left column's rows under the destinations go (statusLayout). */
+struct StatusLayout {
+    double shift = 0;      ///< how far the rates and everything under them move down for the destination lines
+    double dy = 0;         ///< ...the eyelids, which also make room for the slow-tracker line
+    double eyeTop[2] = {0, 0};  ///< each eye's eyelid rows (their bars and the sent value end 36 px under it)
+    double divider = 0;    ///< the line above the gaze
+    double g = 0;          ///< how far the gaze part moves down
+    double box = 0;        ///< the gaze box's size (each eye's, while they move separately)
+    double legendFirst = 0;  ///< the shared box's legend: its first line's baseline...
+    double legendK = 1;    ///< ...and how close its lines are (1 = as without the destination lines)
+    double lowest = 0;     ///< the lowest baseline the gaze part draws (the legend's last line, or each eye's x / y)
+    double limit = 0;      ///< where the bottom row starts (the eye cameras' setup, or the message and preview button)
+};
+
+/**
+ * Where the left column's rows go under the destinations: down by the lines more destinations take, the eyelid rows
+ * closer together when that is a lot (both with the slow-tracker line or without), the line above the gaze never
+ * closer than 8 px under the second eye's row, and the gaze boxes smaller by what the gaze part moved down, so that
+ * it still ends above the bottom row. With no more destinations, everything is where it always was.
+ * @param more the destination lines under the main one (0 to 4)
+ * @param slow the slow-tracker line is shown (trackerRateCause isn't None)
+ * @param perEye a gaze box for each eye
+ * @param setupCard the eye cameras' setup at the bottom
+ * @return the places
+ */
+StatusLayout statusLayout(int more, bool slow, bool perEye, bool setupCard);
+
+/**
+ * The add / change flow's last button: "Add and send" while adding; while changing, "Save and send" for an entry that
+ * is stopped now (saving turns it on), else "Save changes".
+ * @param t texts
+ * @param draft the flow's choices
+ * @param list the list now
+ * @return the label
+ */
+const char* extrasSaveLabel(const UiText& t, const extras::Draft& draft, const extras::List& list);
+
 /**
  * Draw the dashboard thumbnail (an eye and "Eye"). The launcher icons in contrib/icons are the same picture.
  * @param fonts the fonts

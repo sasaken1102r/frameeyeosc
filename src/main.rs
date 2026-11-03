@@ -4607,13 +4607,17 @@ impl Bridge {
             self.send_livelink_neutral();
         }
         let stream = feo_stream(&self.settings);
+        let mut idle = None;
         if self.active_since.is_some() && stream.is_some() && stream != feo_stream(&settings) {
-            self.send_feo_idle();
+            let packet = self.next_feo_idle();
+            self.output.send_datagram(&packet);
+            idle = Some(packet);
         }
-        // Each extra whose stream stops or changes gets its final message (a FrameEyeOSC one with the shared sequence)
+        // Each extra whose stream stops or changes gets its final message; for feo1 the same packet without TRACKING
+        // as the main output's when that stops too (pausing), so the sequence moves on by one for all of them
         let (session, sequence) = (self.feo_session, &mut self.feo_sequence);
         self.extras.apply(&settings, self.active_since.is_some(), &mut || {
-            feo_idle_packet(session, next_sequence(sequence)).to_vec()
+            idle.get_or_insert_with(|| feo_idle_packet(session, next_sequence(sequence))).to_vec()
         });
         self.output.set_target(Target::of(&settings));
         self.output.set_lan_only(settings.lan_only);
@@ -4862,12 +4866,6 @@ impl Bridge {
         let packet = feo_idle_packet(self.feo_session, self.next_feo_sequence());
         self.feo_idle = Some(Instant::now());
         packet
-    }
-
-    /// A FrameEyeOSC packet without TRACKING to the main output: relaxed open eyes looking straight ahead.
-    fn send_feo_idle(&mut self) {
-        let packet = self.next_feo_idle();
-        self.output.send_datagram(&packet);
     }
 
     /// While sending to VRCFT's FrameEyeOSC module, or to a feo1 extra, without eye data, keep telling it so (see
@@ -11325,10 +11323,21 @@ mod tests {
             assert_eq!(drain(&second), sent);
             let sequences: Vec<u32> = sent.iter().map(|packet| feo_header(packet).0).collect();
             assert_eq!(sequences, (0..20).collect::<Vec<u32>>());
-            // Lost: one packet without TRACKING for all three, again the same one
-            bridge.on_lost("test").unwrap();
+            // Paused: one packet without TRACKING for all three, the same one
+            bridge.apply(reload(&Settings { sending: false, ..settings.clone() })).unwrap();
             let idle = drain(&main);
             assert_eq!((idle.len(), feo_header(&idle[0])), (1, (20, false)));
+            assert_eq!((drain(&relay), drain(&second)), (idle.clone(), idle));
+            bridge.apply(reload(&settings)).unwrap();
+            bridge.refresh_extras();
+            bridge.on_sample(reading(20, [0.2, -0.1], [1.0, 0.6])).unwrap();
+            let sent = drain(&main);
+            assert_eq!(feo_header(&sent[0]), (21, true));
+            assert_eq!((drain(&relay), drain(&second)), (sent.clone(), sent));
+            // Lost: again one for all three
+            bridge.on_lost("test").unwrap();
+            let idle = drain(&main);
+            assert_eq!((idle.len(), feo_header(&idle[0])), (1, (22, false)));
             assert_eq!((drain(&relay), drain(&second)), (idle.clone(), idle));
         }
     }

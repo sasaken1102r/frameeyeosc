@@ -1137,7 +1137,7 @@ UiText makeJapanese() {
     t.extrasEditSave = "変更を保存";
     t.extrasSaveAndSend = "保存して送る";
     t.extrasDelete = "この送り先を消す";
-    t.extrasDeleteFormat = "「%s」を消す？ もう送らなくなるよ";
+    t.extrasDeleteFormat = "「%s」を消す？もう送らなくなるよ";
     t.extrasDeleteNo = "やめる";
     t.extrasDeleteYes = "消す";
     t.extrasRowDelete = "消す";
@@ -2329,11 +2329,11 @@ UiText makeEnglish() {
     t.extrasEditSave = "Save changes";
     t.extrasSaveAndSend = "Save and send";
     t.extrasDelete = "Delete this destination";
-    t.extrasDeleteFormat = "Delete \"%s\"? Nothing goes there any more";
-    t.extrasDeleteNo = "Keep";
+    t.extrasDeleteFormat = "Delete \"%s\"? It stops sending there";
+    t.extrasDeleteNo = "Cancel";
     t.extrasDeleteYes = "Delete";
     t.extrasRowDelete = "Delete";
-    t.extrasRowDeleteFormat = "Delete \"%s\"? It stops sending there.";
+    t.extrasRowDeleteFormat = "Delete \"%s\"? It stops sending there";
     t.extrasRowDeleteNo = "Cancel";
     t.hostMain = "Same PC as main";
     t.hostMainSub = "Follows the main destination, Steam Link included";

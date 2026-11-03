@@ -3732,11 +3732,7 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             note = t.opennessSaturated;
             notice = true;
         }
-        // (the cameras widen by their own sensitivity: the widening marks and that cap don't matter then)
-        if (fromCameras) {
-            note = t.lidsCamMarksOpen;
-            notice = false;
-        }
+        // (while the cameras drive both eyelids all of it stands by, the cap included)
         if (standby) {
             note = t.valveReadStandby;
             notice = true;
@@ -3815,8 +3811,10 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         }
     }
     y += kRowH + kRowGap;
-    // The raw openness of each eye with the four marks laid over it
-    const char* marks[4] = {key::kLidClosed, key::kLidOpen, key::kLidWidenStart, key::kLidWide};
+    // The raw openness of each eye with the two marks laid over it. No widening marks: SteamOS caps the openness at
+    // 1.0 (a relaxed open eye reads it), so above relaxed open nothing comes from Valve's values for eyes without a
+    // fit; lid_widen_start and lid_wide stay settings (config.json, --lid-widen-start, --lid-wide)
+    const char* marks[2] = {key::kLidClosed, key::kLidOpen};
     {
         const double top = y - 14;
         const double barX = kInnerX + 34;
@@ -3839,7 +3837,7 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
             textCentered(pen, barX + barW / 2, centerBaseline(top + 50, 20, 14), t.noEyeData, 14, kTextMuted, false);
         }
         // Mark lines: a light line with dark edges, visible on the accent fill and on the dark track
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 0; i < 2; ++i) {
             const double x = std::round(xOf(v.number(marks[i])));
             pen.color(kBg);
             cairo_set_line_width(cr, 6);
@@ -3855,20 +3853,19 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
         }
         y = top + 110;
     }
-    // The four marks (3 and 4 greyed for fitted eyes, which widen by the slider, and while the cameras drive both)
+    // The two marks, side by side
     {
-        const char* captions[4] = {t.markClosed, t.markOpen, t.markWidenStart, t.markWide};
+        const char* captions[2] = {t.markClosed, t.markOpen};
         const double gap = 12;
-        const double w = (kInnerRight - kInnerX - gap * 3) / 4;
-        for (int i = 0; i < 4; ++i) {
+        const double w = (kInnerRight - kInnerX - gap) / 2;
+        for (int i = 0; i < 2; ++i) {
             const double x = kInnerX + i * (w + gap);
             drawCaption(pen, x + 2, y + 18, captions[i], i + 1, v.locked(marks[i]));
             double low = 0;
             double high = 0;
             lidMarkBounds(marks[i], v, low, high);
             const double value = v.number(marks[i]);
-            const bool usable = !((anyFitted || fromCameras) && i >= 2);
-            drawStepper(pen, x, y + 28, w, kControlH, marks[i], value, formatSetting(marks[i], value), usable,
+            drawStepper(pen, x, y + 28, w, kControlH, marks[i], value, formatSetting(marks[i], value), true,
                         v.locked(marks[i]), low, high);
         }
         y += kCaptionRowH + kRowGap;

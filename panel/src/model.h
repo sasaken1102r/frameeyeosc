@@ -610,7 +610,7 @@ enum class WidenControl {
 /** The widening slider as the Eyelids tab shows it. */
 struct WidenSlider {
     WidenControl control = WidenControl::Valve;
-    bool unfittedNote = false;  ///< an eye on Valve's values has no eye fit: its widening is marks 3 and 4 instead
+    bool unfittedNote = false;  ///< an eye on Valve's values has no eye fit: it widens only near the top of Valve's values
 };
 
 /**

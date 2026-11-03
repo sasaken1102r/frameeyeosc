@@ -993,8 +993,8 @@ void testLidsPages(const FontSet& fonts) {
                     CHECK(hits(panel, PanelAction::Step, key::kBlinkHoldMs).empty() == !blinks);
                     CHECK(hits(panel, PanelAction::Step, key::kBlinkSyncBelow).empty() == !blinks);
                     CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == (blinks && eyecam ? 1u : 0u));
-                    // Fine-tune: the scales, the marks (3 and 4 not while the cameras drive both), the smoothing
-                    // values, and the auto calibration for eyes without a fit, unless the cameras drive both
+                    // Valve eyelids: the scales, the two marks (no widening marks), the smoothing values, and the
+                    // auto calibration for eyes without a fit, unless the cameras drive both
                     CHECK(hits(panel, PanelAction::ScaleAuto).size() == (fine ? 1u : 0u));
                     for (const char* name : {key::kLidClosed, key::kLidOpen, key::kLidMinCutoff, key::kLidBeta}) {
                         CHECK(hits(panel, PanelAction::Step, name).empty() == !fine);
@@ -1005,7 +1005,7 @@ void testLidsPages(const FontSet& fonts) {
                     CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).size() == (blinks ? 2u : 0u));
                     const bool camerasBoth = lids == Lids::Both;
                     for (const char* name : {key::kLidWidenStart, key::kLidWide}) {
-                        CHECK(hits(panel, PanelAction::Step, name).empty() == (!fine || camerasBoth));
+                        CHECK(hits(panel, PanelAction::Step, name).empty());
                     }
                     const bool calibration = fine && !camerasBoth;
                     CHECK(hits(panel, PanelAction::SetBool, key::kLidCalibration).size() == (calibration ? 2u : 0u));

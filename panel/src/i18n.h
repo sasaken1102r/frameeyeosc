@@ -353,7 +353,7 @@ struct UiText {
     const char* widenNoRoom;         ///< neither eye has room
     const char* opennessSaturated;   ///< a relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through
     const char* lidMarksFitted;      ///< above the bars for fitted eyes (the marks folded away)
-    const char* lidMarksUnused;      ///< the same, the marks open: 3 and 4 are only for eyes without a fit
+    const char* lidMarksUnused;      ///< the same, the marks open: they are only for eyes without a fit
 
     // Lids tab
     const char* rowCalibration;
@@ -370,8 +370,6 @@ struct UiText {
     const char* marksTitle;         ///< "Open and close your eyes and match the lines"
     const char* markClosed;
     const char* markOpen;
-    const char* markWidenStart;
-    const char* markWide;
     const char* rowSync;
     const char* hintSync;
     const char* rowBlink;
@@ -826,7 +824,7 @@ struct UiText {
     const char* lidsCamMarks;  ///< ...the folded marks' line
     const char* lidsLook;  ///< the Eyelids tab's sub-tabs: the look (widening, smoothing, sync)
     const char* lidsBlinks;  ///< ...blinks and squints
-    const char* lidsFine;  ///< ...the values by hand
+    const char* lidsFine;  ///< ...how Valve's values are read ("Valve eyelids")
     const char* lidsBrows;  ///< ...the brows (raised with widening)
     const char* gazeMotion;  ///< the Gaze tab's sub-tabs: how the gaze moves (smoothing, deadzone)
     const char* gazeReach;  ///< ...how far it goes (the gaze scale, each eye on its own)
@@ -919,7 +917,6 @@ struct UiText {
     const char* calibCardTitle;  ///< a calibration from the page: the card title
     const char* calibResultTitle;  ///< ...how it ended: the card title
     const char* calibWearNote;  ///< ...at the right of the heading (this wear)
-    const char* lidsCamMarksOpen;  ///< ...the same with the marks open  ///< ...at the bottom of the tab
     const char* devTitle;  ///< Advanced tab: the developer section (eye recording)
     const char* devRecord;  ///< ...its row
     const char* devRecordHint;

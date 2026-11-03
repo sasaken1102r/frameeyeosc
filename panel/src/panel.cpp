@@ -1914,9 +1914,11 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         const char* receiver = s.output == kOutputLivelink ? t.outputLivelinkShort
                                : s.output == kOutputModule ? t.outputModuleShort
                                                            : t.outputVrchatShort;
-        // Refused (lan_only, a broadcast address): red, with why, in place of the address
+        // Refused (lan_only, a broadcast address): the host as set in red with a cross, and why in place of
+        // automatic / fixed
         const bool refused = !s.refused.empty();
-        const std::string where = refused ? std::string(ICON_CROSS " ") + extraReasonText(t, s.refused)
+        const std::string host = SettingsView(m).text(key::kHost);
+        const std::string where = refused ? std::string(ICON_CROSS " ") + host
                                   : s.target.empty() ? std::string(t.searchingPc)
                                                      : s.target;
         const std::string destination = std::string(receiver) + " " ICON_ARROW_RIGHT " " + where;
@@ -1925,11 +1927,16 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         const double size = fitSize(pen, destination, 19, 13, room, true);
         pen.text(x0, 180, ellipsize(pen, destination, size, true, room, false), size, refused ? kDanger : kText, true);
         if (tagW > 0) drawNetTag(pen, t, s.net, x1, 180, 12);
-        const char* mode = s.targetMode == "fixed" ? t.modeFixed : t.modeAuto;
+        const std::string mode = refused ? extraReasonText(t, s.refused)
+                                         : std::string(s.targetMode == "fixed" ? t.modeFixed : t.modeAuto);
+        const Color modeColor = refused ? kDanger : kTextMuted;
         if (more == 0) {
-            pen.text(x0, 204, mode, 15, kTextMuted);
+            pen.text(x0, 204, ellipsize(pen, mode, 15, refused, x1 - x0, false), 15, modeColor, refused);
         } else {
-            pen.text(x1, 154, mode, fitSize(pen, mode, 14, 10, x1 - x0 - labelW - 12, false), kTextMuted, false, true);
+            const double modeRoom = x1 - x0 - labelW - 12;
+            const double modeSize = fitSize(pen, mode, 14, 10, modeRoom, refused);
+            pen.text(x1, 154, ellipsize(pen, mode, modeSize, refused, modeRoom, false), modeSize, modeColor, refused,
+                     true);
             drawMoreDestinations(pen, t, m, x0, x1, 180 + kDestStep + 1, kDestStep);
         }
     }

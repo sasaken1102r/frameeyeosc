@@ -2114,9 +2114,12 @@ void fakeExtras(PanelModel& m, const std::string& state) {
         s.target.clear();
         s.net.clear();
         s.refused = "public address";
+        // ("main" follows it to the same public address: refused the same way)
         s.extras[0].target.clear();
+        s.extras[0].net.clear();
         s.extras[0].sending = false;
-        s.extras[0].lastError = "no Steam Link";
+        s.extras[0].rate = 0.0;
+        s.extras[0].refused = "public address";
     }
     if (!s.extrasKnown) s.extras.clear();
 }

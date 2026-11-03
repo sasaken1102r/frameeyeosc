@@ -3413,7 +3413,7 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         // (an eye on Valve's values without a fit doesn't widen at all while the openness is saturated: one eye on
         // the cameras with the other on a saturated SteamOS)
         const char* note = !widens              ? t.widenNoteOff
-                           : widen.unfittedNote ? (m.status.opennessSaturated ? t.widenSaturated : t.widenNoteUnfitted)
+                           : widen.unfittedNote ? (m.status.running && m.status.opennessSaturated ? t.widenSaturated : t.widenNoteUnfitted)
                            : widen.control == WidenControl::Valve ? t.widenNoteValve
                                                                   : t.widenNoteCamera;
         pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);

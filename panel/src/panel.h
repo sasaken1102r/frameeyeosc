@@ -664,16 +664,16 @@ public:
      */
     std::vector<HitArea> hitAreas() const;
 
-    /** Mark ⑤ (lid_open_snap) on the Eyelids tab's bars as last drawn. */
+    /** Mark ③ (lid_open_snap) on the Eyelids tab's bars as last drawn. */
     struct SnapMark {
         bool shown = false;                 ///< drawn (the "Blinks & squint" page, and a snap not off)
         double x[2] = {NAN, NAN};           ///< the line of lid_open_snap, of camera_lid_open_snap (px; NaN = not drawn)
         bool faded[2] = {false, false};     ///< it applies to neither eye now
-        double badgeX[2] = {NAN, NAN};      ///< each ⑤ badge's center (the second moved aside where they'd overlap)
+        double badgeX[2] = {NAN, NAN};      ///< each ③ badge's center (the second moved aside where they'd overlap)
     };
 
     /**
-     * Mark ⑤ as last drawn (panel-test checks where it goes).
+     * Mark ③ as last drawn (panel-test checks where it goes).
      * @return it
      */
     const SnapMark& snapMark() const { return snapMark_; }
@@ -733,7 +733,7 @@ private:
     GazePage gazePage_ = GazePage::Motion;  ///< the Gaze tab's sub-tab
     bool gazeScaleLinked_[2] = {true, true};  ///< the gaze scale's locks: left / right, up / down
     bool updateBeta_ = false;             ///< "Get test versions" (panel.json's update_beta)
-    SnapMark snapMark_;                   ///< mark ⑤ as last drawn
+    SnapMark snapMark_;                   ///< mark ③ as last drawn
     std::string recordOpen_;            ///< the record shown on the Advanced tab ("" = none)
     bool recordsAllOpen_ = false;       ///< all records are listed on the Advanced tab (a record may be open over them)
     std::vector<std::string> recordNames_;  ///< the records as last drawn (RecordOpen's arg is an index)
@@ -1120,7 +1120,7 @@ private:
      */
     void drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v, double top);
     /**
-     * The sent eyelid part of "Blinks & squint": each eye's eyelid as sent with ⑤ and the camera floor on it, and ⑤'s
+     * The sent eyelid part of "Blinks & squint": each eye's eyelid as sent with ③ and the camera floor on it, and ③'s
      * row.
      * @param pen the pen
      * @param t the texts

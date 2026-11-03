@@ -221,7 +221,7 @@ UiText makeJapanese() {
     t.eyeBehaviorV2Line = "v2：左右の目をそろえて動かし、目のカメラやほぼ開いた目で閉じ気味を直すよ";
     t.eyeBehaviorV1Line = "v1：Valve の値をそのまま送る、0.7.5 までの動き";
     t.eyeBehaviorLeftV1 = "目の動かし方 v1";
-    t.snapV2Only = "⑤ は v2 だけで効くよ。今は v1 なので使ってない";
+    t.snapV2Only = "③ は v2 だけで効くよ。今は v1 なので使ってない";
     t.floorV2Only = "v2 だけで効くよ。今は v1 なので使ってない";
     t.toVersionPage = "詳細 " ICON_CHEVRON_RIGHT " バージョンへ";
     t.hintIndependentV1 = "目ごとの視線をそのまま（v1）";
@@ -1341,7 +1341,7 @@ UiText makeEnglish() {
     t.eyeBehaviorV2Line = "v2: moves both eyes together, and the eye cameras and nearly open eyes keep eyelids from drooping";
     t.eyeBehaviorV1Line = "v1: sends Valve's values as they are, as up to 0.7.5";
     t.eyeBehaviorLeftV1 = "Eyes: v1";
-    t.snapV2Only = "⑤ works in v2 only; now on v1, so it isn't used";
+    t.snapV2Only = "③ works in v2 only; now on v1, so it isn't used";
     t.floorV2Only = "Works in v2 only; now on v1, so it isn't used";
     t.toVersionPage = "Advanced " ICON_CHEVRON_RIGHT " Version";
     t.hintIndependentV1 = "Each eye's own gaze (v1)";

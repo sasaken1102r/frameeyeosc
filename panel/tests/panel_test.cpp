@@ -755,7 +755,7 @@ std::vector<uint8_t> belowCard(EyePanel& panel) {
 }
 
 /**
- * Mark ⑤ on "Blinks & squint"'s sent eyelid bars: both values where they land, each faded while it applies to neither
+ * Mark ③ on "Blinks & squint"'s sent eyelid bars: both values where they land, each faded while it applies to neither
  * eye, the second badge moved aside where they'd overlap, gone when off; none on "Valve eyelids".
  */
 void testSnapMark(const FontSet& fonts) {
@@ -831,7 +831,7 @@ void testEyeBehavior(const FontSet& fonts) {
     panel.render(locked);
     CHECK(hits(panel, PanelAction::SetInteger, key::kEyeBehavior).empty());
 
-    // v1: the Eyelids rows that only v2 uses are faded (nothing to press) with a button to that switch, and (5) is not
+    // v1: the Eyelids rows that only v2 uses are faded (nothing to press) with a button to that switch, and (3) is not
     // drawn on the bars; v2 has them as usual
     PanelModel v1 = m;
     v1.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));

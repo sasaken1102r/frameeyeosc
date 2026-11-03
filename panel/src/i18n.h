@@ -226,7 +226,7 @@ struct UiText {
     const char* eyeBehaviorV2Line;    ///< ...and a line under it on what each does
     const char* eyeBehaviorV1Line;
     const char* eyeBehaviorLeftV1;    ///< the left column while v1 is on
-    const char* snapV2Only;           ///< Eyelids > Blinks & squint, in v1: (5) is not used
+    const char* snapV2Only;           ///< Eyelids > Blinks & squint, in v1: (3) is not used
     const char* floorV2Only;          ///< Eyelids > Blinks & squint, in v1: the floor is not used
     const char* toVersionPage;        ///< the button beside them: "Advanced > Version"
     const char* hintIndependentV1;    ///< "Move eyes separately" in v1

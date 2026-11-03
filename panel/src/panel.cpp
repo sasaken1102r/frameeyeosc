@@ -45,7 +45,7 @@ constexpr double kLabelW = 206;
 constexpr double kControlX = kInnerX + kLabelW + 14;
 constexpr double kControlW = kInnerRight - kControlX;
 constexpr double kRowTop = 116;
-/** A relaxed open eye, as sent (VRCFT): the sent eyelid bars' dotted line, and where ⑤ is off. */
+/** A relaxed open eye, as sent (VRCFT): the sent eyelid bars' dotted line, and where ③ is off. */
 constexpr double kLidRelaxed = 0.75;
 /** How strongly "Valve eyelids"' part is drawn while it only stands by for the cameras (still to be changed). */
 constexpr double kStandbyAlpha = 0.6;
@@ -344,12 +344,12 @@ void drawPlusMinus(cairo_t* cr, double cx, double cy, double s, bool plus, Color
 }
 
 /**
- * A numbered circle (the lid marks ① to ⑤).
+ * A numbered circle (the lid marks ① to ③).
  * @param pen drawing tools
  * @param cx center x
  * @param cy center y
  * @param number 1..5
- * @param fill its color (⑤ has its own)
+ * @param fill its color (③ has its own)
  */
 /**
  * Whether the eyes move as up to 0.7.5 (eye_behavior 1), where the eyelid rules since don't apply.
@@ -3562,8 +3562,8 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
         y += 34;
     }
     // Each eye's eyelid as sent now (VRCFT, 0..1), in the cameras' green where its eyelid is theirs and with whose it is
-    // on the right; relaxed open dotted; ⑤ for the eyes without the cameras' eyelid (lid_open_snap) and for those with
-    // it (camera_lid_open_snap), each faded while it applies to neither eye (neither in v1, where ⑤ isn't used); the
+    // on the right; relaxed open dotted; ③ for the eyes without the cameras' eyelid (lid_open_snap) and for those with
+    // it (camera_lid_open_snap), each faded while it applies to neither eye (neither in v1, where ③ isn't used); the
     // camera floor in green while it is on (v2, the cameras in use), faded while no eye is on them
     {
         const double chipW = 92;
@@ -3626,7 +3626,7 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
                 cairo_stroke(cr);
             }
         }
-        // ⑤, both values
+        // ③, both values
         snapMark_ = {};
         const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
         const double dash[2] = {5, 4};
@@ -3665,17 +3665,17 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
                 cairo_line_to(cr, snapMark_.x[i], top - 4);
                 cairo_stroke(cr);
             }
-            drawNumberBadge(pen, bx, badgeY, 5, fill);
+            drawNumberBadge(pen, bx, badgeY, 3, fill);
             snapMark_.badgeX[i] = bx;
         }
         y = bottom + 14;
     }
-    // ⑤'s row: in v2 both values, each with whose eyes it is for on its left; in v1 only lid_open_snap, faded, with why
-    // and the way to the switch beside it. In ⑤'s color, as are the steppers' edges
+    // ③'s row: in v2 both values, each with whose eyes it is for on its left; in v1 only lid_open_snap, faded, with why
+    // and the way to the switch beside it. In ③'s color, as are the steppers' edges
     {
         const bool locked = v.locked(key::kLidOpenSnap) || (!v1 && v.locked(key::kCameraLidOpenSnap));
         if (v1) cairo_push_group(cr);
-        drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 5, kSnap);
+        drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 3, kSnap);
         drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked, 26);
         const double stepperW = 150;
         if (v1) {
@@ -3717,7 +3717,7 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     const bool anyFitted = widen.fitted[0] || widen.fitted[1];
     const bool fromCameras = lidsFromCameras(s);
 
-    // The page is how Valve's openness is read (the sent eyelid, with ⑤, is on "Blinks & squint"): its title, and beside
+    // The page is how Valve's openness is read (the sent eyelid, with ③, is on "Blinks & squint"): its title, and beside
     // it what decides the marks now. While the cameras supply both eyes all of it only stands by for when they lose an
     // eye, so it says so and is drawn lighter, still to be changed
     const bool standby = s.running && s.camera.used[0] && s.camera.used[1];

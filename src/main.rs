@@ -11584,4 +11584,136 @@ mod tests {
         assert_eq!(status["effective"]["lan_only"], true);
         assert_eq!(status["pupil_net"], serde_json::Value::Null);
     }
+
+    /// What the main loop looks up before each sample, for wire_dump.
+    fn wire_refresh(bridge: &mut Bridge) {
+        bridge.output.refresh();
+        bridge.pupil_output.refresh();
+        bridge.refresh_extras();
+    }
+
+    /// Not a check by itself (ignored): runs the recording FEO_WIRE_RECORDING through the bridge with several settings
+    /// and writes every datagram that reaches a listener (the main output, the pupils straight to VRChat, and the
+    /// extra outputs FEO_WIRE_ARGS gives on the command line, `{X1}` and `{X2}` standing for their ports) to
+    /// FEO_WIRE_OUT, one per line, with the time stamps zeroed. Two builds' files can then be compared byte for byte:
+    /// `FEO_WIRE_RECORDING=eyes.csv FEO_WIRE_OUT=wire.txt cargo test --release wire_dump -- --ignored`.
+    #[test]
+    #[ignore]
+    fn wire_dump() {
+        use std::io::Write as _;
+        let Some(recording) = std::env::var_os("FEO_WIRE_RECORDING") else {
+            return;
+        };
+        let rows = replay::load(Path::new(&recording)).unwrap();
+        let mut out = io::BufWriter::new(fs::File::create(std::env::var_os("FEO_WIRE_OUT").unwrap()).unwrap());
+        let bind = || UdpSocket::bind("127.0.0.1:0").unwrap();
+        let listeners = [("main", bind()), ("pupils", bind()), ("x1", bind()), ("x2", bind())];
+        let port = |index: usize| listeners[index].1.local_addr().unwrap().port();
+        for (_, listener) in &listeners {
+            listener.set_nonblocking(true).unwrap();
+        }
+        let argv: Vec<String> = std::env::var("FEO_WIRE_ARGS")
+            .unwrap_or_default()
+            .replace("{X1}", &port(2).to_string())
+            .replace("{X2}", &port(3).to_string())
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        let configs = [
+            ("vrchat", r#"{"output": "vrchat"}"#),
+            (
+                "vrchat_all",
+                r#"{"output": "vrchat", "native_eyes": true, "steamlink_params": true, "vrc_face_tracking": true,
+                    "pupil_bits": 3, "brow_from_widen": true, "eye_tracking_active": "float",
+                    "independent_eyes": true}"#,
+            ),
+            ("livelink", r#"{"output": "livelink", "brow_from_widen": true}"#),
+            ("frameeyeosc", r#"{"output": "frameeyeosc"}"#),
+            (
+                "frameeyeosc_brows",
+                r#"{"output": "frameeyeosc", "brow_from_widen": true, "independent_eyes": true, "own_eye_gaze": 0.3,
+                    "gaze_scale_left": 1.4, "raw": false, "lid_widen": "high"}"#,
+            ),
+            ("frameeyeosc_raw", r#"{"output": "frameeyeosc", "raw": true, "camera_lids": false}"#),
+        ];
+        let live_dir = eyecam_live::tests::TempDir::new("wire-dump");
+        let live_path = live_dir.0.join("live");
+        for (name, json) in configs {
+            let mut settings: Settings = serde_json::from_str(json).unwrap();
+            settings.host = "127.0.0.1".into();
+            settings.port = Some(port(0));
+            // Learning starts 20 s of wall time in, which would differ between runs
+            settings.lid_calibration = false;
+            let argv = std::iter::once("frameeyeosc".to_owned()).chain(argv.clone());
+            let matches = Args::command().try_get_matches_from(argv).unwrap();
+            let args = Args::from_arg_matches(&matches).unwrap();
+            config::apply_args(&mut settings, &args, &config::given_options(&matches));
+            // The pupils straight to VRChat go to their own listener, not VRChat's port, also after each reload
+            let pupils = Target::Fixed { host: "127.0.0.1".into(), port: port(1) };
+            let apply = |bridge: &mut Bridge, settings: &Settings| {
+                bridge.apply(reload(settings)).unwrap();
+                bridge.pupil_output.set_target(pupils.clone());
+            };
+            let mut bridge = test_bridge(settings.clone());
+            apply(&mut bridge, &settings);
+            bridge.camera = LiveReader::new(live_path.clone(), Instant::now());
+            let mut dump = |bridge: &mut Bridge, index: usize| {
+                // (what reaches a loopback listener is there once sent)
+                wire_refresh(bridge);
+                for (stream, listener) in &listeners {
+                    let mut buffer = [0u8; 2048];
+                    while let Ok(size) = listener.recv(&mut buffer) {
+                        let mut datagram = buffer[..size].to_vec();
+                        if datagram.starts_with(b"FEO1") {
+                            datagram[16..24].fill(0);
+                        } else if size == livelink::PACKET_LEN && datagram[0] != b'/' {
+                            let at = livelink::PACKET_LEN - 244 - 1 - 16;
+                            datagram[at..at + 8].fill(0);
+                        }
+                        let hex: String = datagram.iter().map(|byte| format!("{byte:02x}")).collect();
+                        writeln!(out, "{name}\t{index}\t{stream}\t{hex}").unwrap();
+                    }
+                }
+            };
+            dump(&mut bridge, 0);
+            let mut last_time: Option<f64> = None;
+            for (index, (data, camera)) in rows.iter().enumerate() {
+                if last_time.is_some_and(|last| data.sample_time - last > TIMEOUT.as_secs_f64()) {
+                    bridge.on_lost("gap").unwrap();
+                }
+                last_time = Some(data.sample_time);
+                let now_ns = eyecam_live::monotonic_ns();
+                let eyes = std::array::from_fn(|eye| {
+                    let read = camera.map(|camera| (camera.eyes[eye], camera.fresh[eye]));
+                    let (values, fresh) = read.unwrap_or_default();
+                    eyecam_live::tests::TestEye {
+                        time_ns: now_ns,
+                        valid: values.valid && fresh,
+                        closed: values.closed,
+                        lid: values.lid,
+                        wide: values.wide,
+                        squint: values.squint,
+                        pupil_mm: values.pupil_mm,
+                        pupil_dilation: values.pupil_dilation,
+                        confidence: values.confidence,
+                    }
+                });
+                let (calib_state, live) = camera.map_or((0, false), |camera| (camera.calib_state, camera.live));
+                eyecam_live::tests::write_live(&live_path, &eyecam_live::tests::live_bytes(1, calib_state, live, eyes));
+                bridge.livelink_throttle = Throttle::default();
+                bridge.pupil_bits = PupilBits::default();
+                // Paused for a moment halfway through, and back
+                if index == rows.len() / 2 {
+                    apply(&mut bridge, &Settings { sending: false, ..settings.clone() });
+                    dump(&mut bridge, index);
+                    apply(&mut bridge, &settings);
+                }
+                bridge.on_sample(*data).unwrap();
+                dump(&mut bridge, index);
+            }
+            bridge.on_lost("end").unwrap();
+            dump(&mut bridge, rows.len());
+        }
+        out.flush().unwrap();
+    }
 }

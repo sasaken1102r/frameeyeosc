@@ -396,7 +396,7 @@ The gaze is the one the main output sends: after the eye fit and the gaze scale 
 
 - At most 3 are used; entries after the third send nothing.
 - An entry with a mistake, an unknown format or a key this frameeyeosc doesn't know (one written by a newer frameeyeosc, say) sends nothing, and the error names it (`extra_outputs entry 2: …`, in the panel and the status file); the rest of the file is used. An unknown key stops the entry on purpose: a newer key might limit what goes out, and an older frameeyeosc that skipped it would send more than you chose.
-- One on the same address and port as the main output, or as the pupils sent straight to VRChat, is refused ("same as main"), and so is one on the same address and port as an earlier one ("duplicate").
+- One on the same address and port as the main output is refused ("same as main"), as is one on those of the pupils sent straight to VRChat ("same as the pupils") or of an earlier one ("duplicate").
 - `lan_only` applies to each of them, as to the main output (see [Settings](#settings)).
 - Pausing (`sending`) pauses them too. When one is turned off or moved, or its format changes, while the eye data runs, the old destination gets its last message first ("not tracking", or eyes looking ahead).
 - A `tracking_eye` destination on the port where Steam Link's own eye OSC arrives means two senders on one port: turn one of them off. Likewise, don't feed a relay from a `feo1` destination while the relay also passes it on to the VRCFaceTracking the main output sends to.

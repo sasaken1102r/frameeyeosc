@@ -3977,6 +3977,7 @@ void testExtraReasons() {
     const UiText& en = uiText(Language::En);
     CHECK(extraReasonText(ja, "public address") == ja.reasonPublicAddress);
     CHECK(extraReasonText(en, "same as main") == en.reasonSameAsMain);
+    CHECK(extraReasonText(en, "same as the pupils") == en.reasonSameAsPupils);
     CHECK(extraReasonText(en, "duplicate") == en.reasonDuplicate);
     CHECK(extraReasonText(ja, "broadcast refused") == ja.reasonBroadcast);
     CHECK(extraReasonText(ja, "multicast refused") == ja.reasonMulticast);

@@ -41,7 +41,7 @@ brows block (see "Extension area"); frameeyeosc 0.10 sends none.
 | 0 | 4 | `u8[4]` | magic | ASCII `FEO1` (`46 45 4F 31`) |
 | 4 | 2 | `u16` | version | `1` |
 | 6 | 2 | `u16` | length | Bytes of the packet: `108` with brows, else `76` (more with extension records) |
-| 8 | 4 | `u32` | sequence | +1 per packet, wraps; starts at 0 when frameeyeosc starts |
+| 8 | 4 | `u32` | sequence | +1 per packet, wraps; starts at 0 when frameeyeosc starts. It can skip one (a last packet sent to another destination); receivers always take a step forward |
 | 12 | 4 | `u32` | flags | See below |
 | 16 | 8 | `u64` | time_us | Sender's wall clock, microseconds since the Unix epoch (diagnostics only) |
 | 24 | 24 | eye | left | The left eye |
@@ -128,7 +128,10 @@ The framing is fixed now; no record types are assigned yet, and frameeyeosc 0.10
   brows are sent), and its extension area is bytes 108 up to `length`. No flag bit signals it: `length` alone does.
 - The area is a run of records. Each is a little-endian `u16 type` and `u16 len` (payload bytes), then the payload,
   then zeros up to the next multiple of 4 bytes, which `len` does not count.
-- Receivers skip a type they don't know by its `len`. A type appears at most once per packet. A payload only ever
+- The sender counts the last record's padding in `length`; a receiver accepts a `length` with or without it (the
+  padding is never read).
+- Receivers skip a type they don't know by its `len`. A type appears at most once per packet; if a type appears again
+  anyway, the receiver uses the first one and skips the others. A payload only ever
   grows by appending, so a receiver reads `min(len, what it knows)`. A record that runs past `length` ends the
   parsing (the fixed part is still used), and so does type `0x0000` or `0xFFFF`.
 - Types: `0x0000` and `0xFFFF` are invalid; `0x0001`-`0x7FFF` are assigned only in this file, and never reused;

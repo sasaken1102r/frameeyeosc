@@ -76,7 +76,8 @@ struct Extra {
     config: ExtraOutput,
     output: Output,
     stream: Option<Stream>,
-    // Why it is refused although its address is allowed: "same as main" or "duplicate" (see Extras::refresh).
+    // Why it is refused although its address is allowed: "same as main", "same as the pupils" or "duplicate"
+    // (see Extras::refresh).
     duplicate: Option<&'static str>,
     // When its samples of the last RATE_WINDOW went out.
     sent: VecDeque<Instant>,
@@ -182,7 +183,7 @@ impl Extras {
     }
 
     /// Look each extra that sends up again when due, and refuse one whose address and port are already taken:
-    /// `taken` the main output's and the pupils' (with the reason, "same as main"), then each earlier extra's
+    /// `taken` the main output's and the pupils' (with their reasons, "same as main" and "same as the pupils"), then each earlier extra's
     /// ("duplicate").
     pub fn refresh(&mut self, taken: &[(SocketAddr, &'static str)]) {
         let mut taken = taken.to_vec();

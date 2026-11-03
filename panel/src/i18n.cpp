@@ -1176,6 +1176,7 @@ UiText makeJapanese() {
     t.tagPublic = "PUBLIC";
     t.pupilsLine = "瞳孔（VRChat）";
     t.reasonSameAsMain = "メインと同じ宛先";
+    t.reasonSameAsPupils = "瞳孔の送り先と同じ宛先";
     t.reasonDuplicate = "ほかの送り先と同じ宛先";
     t.reasonPublicAddress = "LAN の外なので止めてる";
     t.reasonBroadcast = "ブロードキャストには送れない";
@@ -2366,6 +2367,7 @@ UiText makeEnglish() {
     t.tagPublic = "PUBLIC";
     t.pupilsLine = "Pupils (VRChat)";
     t.reasonSameAsMain = "same as main";
+    t.reasonSameAsPupils = "same as the pupils";
     t.reasonDuplicate = "same as another";
     t.reasonPublicAddress = "outside home network";
     t.reasonBroadcast = "broadcast refused";

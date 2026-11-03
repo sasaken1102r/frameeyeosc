@@ -1169,6 +1169,7 @@ struct UiText {
     const char* pupilsLine;          ///< the left column's line for the pupils straight to VRChat
     // Why a destination sends nothing (status.json's refused / last_error; other words are shown as they are)
     const char* reasonSameAsMain;
+    const char* reasonSameAsPupils;
     const char* reasonDuplicate;
     const char* reasonPublicAddress;
     const char* reasonBroadcast;

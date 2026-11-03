@@ -2847,6 +2847,7 @@ std::string extraReasonText(const UiText& t, const std::string& reason) {
         const char* UiText::*text;
     } kReasons[] = {
         {"same as main", &UiText::reasonSameAsMain},
+        {"same as the pupils", &UiText::reasonSameAsPupils},
         {"duplicate", &UiText::reasonDuplicate},
         {"public address", &UiText::reasonPublicAddress},
         {"broadcast refused", &UiText::reasonBroadcast},

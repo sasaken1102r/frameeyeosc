@@ -4883,12 +4883,15 @@ impl Bridge {
     }
 
     /// Look the extra outputs up again when due, refusing one whose address and port are the main output's or the
-    /// pupils' ("same as main") or an earlier extra's ("duplicate").
+    /// pupils' ("same as main", "same as the pupils") or an earlier extra's ("duplicate").
     fn refresh_extras(&mut self) {
         let main = self.output.addr().filter(|_| self.settings.sending);
         let pupils = self.pupil_output.addr().filter(|_| pupil_stream(&self.settings).is_some());
-        let taken: Vec<(SocketAddr, &'static str)> =
-            main.into_iter().chain(pupils).map(|addr| (addr, "same as main")).collect();
+        let taken: Vec<(SocketAddr, &'static str)> = main
+            .map(|addr| (addr, "same as main"))
+            .into_iter()
+            .chain(pupils.map(|addr| (addr, "same as the pupils")))
+            .collect();
         self.extras.refresh(&taken);
     }
 

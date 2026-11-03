@@ -7,6 +7,7 @@
 #include "config.h"
 #include "contrib.h"
 #include "diag.h"
+#include "extras.h"
 #include "eyecam.h"
 #include "eye_preview.h"
 #include "frame_apps.h"
@@ -425,6 +426,28 @@ std::vector<SettingChange> gazeScaleRelink(const SettingsView& view, int pair);
  * @return the host, or "" if there is none
  */
 std::string hostOfTarget(const std::string& target);
+
+/**
+ * The port of an "IP:PORT" target.
+ * @param target "IP:PORT" or "[IPv6]:PORT"
+ * @return the port, or 0
+ */
+int portOfTarget(const std::string& target);
+
+/**
+ * extra_outputs as shown: config.json's, or frameeyeosc's while it is locked by its command line (--extra).
+ * @param model the model
+ * @return the list
+ */
+extras::List extrasList(const PanelModel& model);
+
+/**
+ * The destinations an extra output must not repeat, as far as the panel can tell: the main output's (as frameeyeosc
+ * sends to it now, or as set), the Steam Link PC's and the pupils' (LiveLink).
+ * @param model the model
+ * @return them
+ */
+extras::Taken extrasTaken(const PanelModel& model);
 
 /** Where the eyelids come from, as frameeyeosc reports it (the eye capture tab's line under camera_lids). */
 enum class CameraUse {

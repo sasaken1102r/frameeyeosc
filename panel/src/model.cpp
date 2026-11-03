@@ -594,6 +594,41 @@ std::string hostOfTarget(const std::string& target) {
     return colon == std::string::npos ? target : target.substr(0, colon);
 }
 
+int portOfTarget(const std::string& target) {
+    const size_t colon = target.find_last_of(':');
+    if (colon == std::string::npos || colon + 1 >= target.size()) return 0;
+    const std::string port = target.substr(colon + 1);
+    if (port.size() > 5 || port.find_first_not_of("0123456789") != std::string::npos) return 0;
+    const int value = std::stoi(port);
+    return value >= 1 && value <= 65535 ? value : 0;
+}
+
+extras::List extrasList(const PanelModel& model) {
+    const SettingsView view(model);
+    if (view.locked(key::kExtraOutputs)) return extras::readList(model.status.effective.get(key::kExtraOutputs), true);
+    return extras::readList(model.config.root.get(key::kExtraOutputs));
+}
+
+extras::Taken extrasTaken(const PanelModel& model) {
+    const SettingsView view(model);
+    const EyeStatus& s = model.status;
+    extras::Taken taken;
+    const bool live = s.running && !s.target.empty();
+    if (live && s.targetMode == "auto") taken.steamLink = hostOfTarget(s.target);
+    if (live) {
+        taken.mainHost = hostOfTarget(s.target);
+    } else {
+        const std::string host = view.text(key::kHost);
+        taken.mainHost = extras::hostKey(host.empty() ? std::string(extras::kHostAuto) : host, taken);
+    }
+    taken.mainPort = live && portOfTarget(s.target) > 0 ? portOfTarget(s.target) : view.port();
+    if (s.running && !s.pupilTarget.empty()) {
+        taken.pupilHost = hostOfTarget(s.pupilTarget);
+        taken.pupilPort = portOfTarget(s.pupilTarget);
+    }
+    return taken;
+}
+
 std::string updateNotes(const frame_updater::UpdateStatus& update, Language language) {
     if (update.state != frame_updater::UpdateState::Available || update.backToStable) return "";
     if (language == Language::Ja && !update.notesJa.empty()) return update.notesJa;

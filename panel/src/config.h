@@ -72,6 +72,17 @@ constexpr const char* kPupilsToVrchat = "pupils_to_vrchat";
  * avatars that take it bit-packed; 0 (the default) sends the float only.
  */
 constexpr const char* kPupilBits = "pupil_bits";
+/**
+ * Send only inside the home network (default on; frameeyeosc 0.10 on): addresses outside it are refused for the main
+ * output, the pupils and every extra output; off, they are allowed and marked PUBLIC. The Output tab's "Other apps".
+ */
+constexpr const char* kLanOnly = "lan_only";
+/**
+ * Up to three more destinations (frameeyeosc 0.10 on): a list of {name, enabled, format, host, port, lids}. Not in the
+ * key table (it is no single value): read and written by extras.h, which keeps every entry it doesn't change, and the
+ * keys it doesn't know in the one it changes, as they are. "Reset all" leaves it alone.
+ */
+constexpr const char* kExtraOutputs = "extra_outputs";
 /** Removed in 0.10 (1 was the eyes as up to 0.7.5): taken out of config.json once (migrateRemovedSettings). */
 constexpr const char* kRemovedEyeBehavior = "eye_behavior";
 /** Eyelids (and squint) from the eye cameras where eyecam-rec reads them live and is calibrated (default on). */

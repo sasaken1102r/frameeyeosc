@@ -2,9 +2,11 @@
 
 mod capture;
 mod config;
+mod dest;
 mod dots;
 mod eyecam_ctl;
 mod eyecam_live;
+mod extras;
 mod feo;
 mod livelink;
 mod osc;
@@ -623,6 +625,18 @@ struct Args {
     /// Parameter name prefix; "" or "/" for none
     #[arg(long, default_value = "/FT")]
     prefix: String,
+    /// Also send to addresses outside the home network (public ones), for every destination; by default they are
+    /// refused
+    #[arg(long)]
+    no_lan_only: bool,
+    /// Also send to another app: FORMAT feo1 (FrameEyeOSC packets) or tracking_eye (VRChat's /tracking/eye/CenterVec;
+    /// +lids adds EyesClosedAmount), HOST an IP address, a host name, "main" (the main output's host) or "auto" (the
+    /// Steam Link PC). Up to 3 times; replaces config.json's extra_outputs
+    #[arg(long, value_name = "FORMAT@HOST:PORT[+lids]", conflicts_with = "no_extras")]
+    extra: Vec<String>,
+    /// Send to no other app, whatever config.json's extra_outputs says
+    #[arg(long)]
+    no_extras: bool,
     /// Send unsmoothed values (eyelid remapping still applies)
     #[arg(long)]
     raw: bool,
@@ -3074,6 +3088,16 @@ struct Output {
     resolve_error: Option<String>,
     // The OSC message being sent, its buffer kept from one message to the next.
     packet: Vec<u8>,
+    // lan_only: a fixed host outside the home network table is refused (see dest). The Steam Link PC is only warned
+    // about (its addresses over the wireless adapter are not checked yet).
+    lan_only: bool,
+    // Why the target is not sent to (dest::refusal, or "broadcast refused"), while it is refused; logged once each.
+    refused: Option<&'static str>,
+    // The Steam Link PC warned about being outside the table, so each address is logged once.
+    warned: Option<IpAddr>,
+    // Said after the address in the log lines of a sender other than the main output ("" for the main one, whose lines
+    // stay as they were).
+    label: String,
 }
 
 impl Output {
@@ -3089,6 +3113,10 @@ impl Output {
             connect_error: None,
             resolve_error: None,
             packet: Vec::new(),
+            lan_only: true,
+            refused: None,
+            warned: None,
+            label: String::new(),
         }
     }
 
@@ -3098,6 +3126,35 @@ impl Output {
             self.target = target;
             self.last_resolve = None;
         }
+    }
+
+    /// Take the lan_only setting; a change looks the target up again at the next refresh, so a public address is
+    /// refused or allowed at once.
+    fn set_lan_only(&mut self, lan_only: bool) {
+        if lan_only != self.lan_only {
+            self.lan_only = lan_only;
+            self.last_resolve = None;
+        }
+    }
+
+    /// The kind of address the target is (see dest), while there is one to send to.
+    fn net(&self) -> Option<dest::Net> {
+        self.addr().map(|addr| dest::classify(addr.ip()))
+    }
+
+    /// What keeps the target from being sent to, if anything, short (for status.json): it can't be looked up or
+    /// connected to, there is no Steam Link PC, or sending fails. A refused address is in `refused` instead.
+    fn problem(&self) -> Option<String> {
+        if let Some(reason) = &self.resolve_error {
+            return Some(format!("could not resolve: {reason}"));
+        }
+        if let Some(reason) = &self.connect_error {
+            return Some(format!("can't send yet: {reason}"));
+        }
+        if self.socket.is_none() && self.refused.is_none() && matches!(self.target, Target::SteamLink { .. }) {
+            return Some("no Steam Link".into());
+        }
+        self.health.failing.as_ref().map(|reason| format!("sending failed: {reason}"))
     }
 
     /// Look the target up again, and check the route to it, when due. Never fails: without a network the socket
@@ -3123,13 +3180,36 @@ impl Output {
     /// Look the target up and connect to it if it moved.
     fn look_up(&mut self, now: Instant) {
         self.last_resolve = Some(now);
+        let label = &self.label;
         let wanted = match &self.target {
             Target::Fixed { host, port } => match (host.as_str(), *port).to_socket_addrs() {
-                Ok(mut addrs) => {
+                Ok(addrs) => {
                     if self.resolve_error.take().is_some() {
                         eprintln!("Resolved {host} again");
                     }
-                    addrs.next()
+                    // The first address the home network table allows (IPv4 first), checked at every look-up
+                    match dest::pick(addrs, self.lan_only) {
+                        Ok((addr, _)) => {
+                            self.refused = None;
+                            Some(addr)
+                        }
+                        Err(None) => None,
+                        Err(Some(reason)) => {
+                            if self.refused != Some(reason) {
+                                let hint = if reason == "public address" {
+                                    " outside the home network, and lan_only is on"
+                                } else {
+                                    ""
+                                };
+                                status::log_error(&format!(
+                                    "Not sending to {host}:{port}{label}: {reason}{hint}; checking again every {} s",
+                                    RESOLVE_INTERVAL.as_secs()
+                                ));
+                                self.refused = Some(reason);
+                            }
+                            None
+                        }
+                    }
                 }
                 Err(error) => {
                     let reason = error.to_string();
@@ -3143,7 +3223,20 @@ impl Output {
                     None
                 }
             },
-            Target::SteamLink { port } => steam_link_peer().map(|ip| SocketAddr::new(ip, *port)),
+            Target::SteamLink { port } => {
+                let peer = steam_link_peer();
+                // Only warned about, never refused, until the addresses Steam Link uses over its wireless adapter and
+                // Wi-Fi have been checked on hardware
+                let outside = |ip: &IpAddr| !matches!(dest::classify(*ip), dest::Net::Lan | dest::Net::Vpn);
+                if let Some(ip) = peer.filter(outside)
+                    && self.warned != Some(ip)
+                {
+                    eprintln!("The Steam Link PC {ip}{label} is outside the home network ranges; sending to it anyway");
+                    self.warned = Some(ip);
+                }
+                self.refused = None;
+                peer.map(|ip| SocketAddr::new(ip, *port))
+            }
         };
         if wanted == self.socket.as_ref().map(|(_, addr)| *addr) {
             return;
@@ -3151,8 +3244,9 @@ impl Output {
         self.socket = match wanted {
             Some(addr) => match connect(addr) {
                 Ok(socket) => {
-                    eprintln!("Sending OSC to {addr}");
+                    eprintln!("Sending OSC to {addr}{}", self.label);
                     self.connect_error = None;
+                    self.refused = None;
                     self.health = SendHealth::default();
                     // A new socket starts from the current route
                     self.last_route_check = Some(now);
@@ -3160,11 +3254,25 @@ impl Output {
                     Some((socket, addr))
                 }
                 // e.g. "Network is unreachable" while Wi-Fi comes up after boot
+                // Sockets never set SO_BROADCAST, so the system refuses a subnet's broadcast address
+                Err(error) if error.raw_os_error() == Some(libc::EACCES) => {
+                    if self.refused != Some("broadcast refused") {
+                        status::log_error(&format!(
+                            "Not sending to {addr}{}: broadcast refused ({error}); checking again every {} s",
+                            self.label,
+                            RESOLVE_INTERVAL.as_secs()
+                        ));
+                        self.refused = Some("broadcast refused");
+                    }
+                    self.connect_error = None;
+                    None
+                }
                 Err(error) => {
                     let reason = error.to_string();
                     if self.connect_error.as_ref() != Some(&reason) {
                         status::log_error(&format!(
-                            "Can't send OSC to {addr} yet ({reason}); retrying every {} s",
+                            "Can't send OSC to {addr}{} yet ({reason}); retrying every {} s",
+                            self.label,
                             RESOLVE_INTERVAL.as_secs()
                         ));
                         self.connect_error = Some(reason);
@@ -3173,7 +3281,7 @@ impl Output {
                 }
             },
             None if matches!(self.target, Target::SteamLink { .. }) => {
-                status::log_error("No Steam Link connection found; waiting for one");
+                status::log_error(&format!("No Steam Link connection found{}; waiting for one", self.label));
                 None
             }
             None => None,
@@ -3297,8 +3405,22 @@ fn per_second(times: &VecDeque<Instant>) -> f32 {
 
 /// A UDP socket connected to `addr` (connecting only sets where packets go; it fails without a route). It never
 /// blocks: a datagram the network can't take at once is dropped (see Drops) rather than holding up the eye data.
+/// It is never read, so its receive buffer is the smallest the system allows (asking for 0 gives that), and it never
+/// sets SO_BROADCAST.
 fn connect(addr: SocketAddr) -> io::Result<UdpSocket> {
     let socket = UdpSocket::bind(if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
+    let zero: libc::c_int = 0;
+    // SAFETY: the option value is a c_int that outlives the call, and the descriptor is the socket's own. A failure
+    // only leaves the default buffer.
+    unsafe {
+        libc::setsockopt(
+            std::os::fd::AsRawFd::as_raw_fd(&socket),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&raw const zero).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        );
+    }
     socket.connect(addr)?;
     socket.set_nonblocking(true)?;
     Ok(socket)
@@ -4211,12 +4333,17 @@ fn native_messages(settings: &Settings, gaze: [f32; 6], lids: [f32; 2]) -> Vec<(
     } else {
         ("/tracking/eye/CenterVec", floats(&gaze_vector([x, y])))
     };
-    // One value for both eyes, 0 open to 1 closed; VRChat has nothing for widening or winks.
-    let open = (lids[0] + lids[1]) / 2.0 / 0.75;
     vec![
         (look.0.into(), look.1),
-        ("/tracking/eye/EyesClosedAmount".into(), floats(&[(1.0 - open).clamp(0.0, 1.0)])),
+        ("/tracking/eye/EyesClosedAmount".into(), floats(&[eyes_closed_amount(lids)])),
     ]
+}
+
+/// VRChat's EyesClosedAmount for VRCFT eyelids as sent: one value for both eyes, 0 open to 1 closed; VRChat has
+/// nothing for widening or winks.
+fn eyes_closed_amount(lids: [f32; 2]) -> f32 {
+    let open = (lids[0] + lids[1]) / 2.0 / 0.75;
+    (1.0 - open).clamp(0.0, 1.0)
 }
 
 /// Where Steam Link's avatar parameters are being sent to, if anywhere. When this changes while eye tracking runs,
@@ -4317,6 +4444,18 @@ fn livelink_stream(settings: &Settings) -> Option<(&str, u16)> {
 /// module's one-second timeout.
 fn feo_stream(settings: &Settings) -> Option<(&str, u16)> {
     (settings.sending && settings.output == OutputKind::FrameEyeOsc).then(|| (settings.host.as_str(), settings.port()))
+}
+
+/// The sequence number in `counter`, which then moves on (wrapping).
+fn next_sequence(counter: &mut u32) -> u32 {
+    let sequence = *counter;
+    *counter = sequence.wrapping_add(1);
+    sequence
+}
+
+/// A FrameEyeOSC packet without TRACKING (relaxed open eyes looking straight ahead), stamped now.
+fn feo_idle_packet(session: u32, sequence: u32) -> [u8; feo::PACKET_LEN] {
+    feo::packet(session, sequence, false, feo::time_us(SystemTime::now()), [feo::Eye::NEUTRAL; 2])
 }
 
 /// Why the samples stopped, for the log line when tracking is lost.
@@ -4423,6 +4562,8 @@ struct Bridge {
     pupil_output: Output,
     // The pupil dilation's bits that went out (pupil_bits), wherever pupils go to VRChat.
     pupil_bits: PupilBits,
+    // The extra outputs (extra_outputs): more destinations next to the main output.
+    extras: extras::Extras,
 }
 
 impl Bridge {
@@ -4469,9 +4610,16 @@ impl Bridge {
         if self.active_since.is_some() && stream.is_some() && stream != feo_stream(&settings) {
             self.send_feo_idle();
         }
+        // Each extra whose stream stops or changes gets its final message (a FrameEyeOSC one with the shared sequence)
+        let (session, sequence) = (self.feo_session, &mut self.feo_sequence);
+        self.extras.apply(&settings, self.active_since.is_some(), &mut || {
+            feo_idle_packet(session, next_sequence(sequence)).to_vec()
+        });
         self.output.set_target(Target::of(&settings));
+        self.output.set_lan_only(settings.lan_only);
         // Nothing to set back when the pupils stop going there: they just hold
         self.pupil_output.set_target(pupil_target(&settings));
+        self.pupil_output.set_lan_only(settings.lan_only);
         // All the bits again with the next sample, wherever they go now and however many
         self.pupil_bits.reset();
         self.smoother.configure(&settings);
@@ -4504,6 +4652,11 @@ impl Bridge {
             self.calibration.save_if_due();
         }
         if self.settings.sending {
+            // The FrameEyeOSC packet, built once for the main output and every feo1 extra (one sequence for all)
+            let feo = (self.settings.output == OutputKind::FrameEyeOsc || self.extras.wants_feo()).then(|| {
+                let sequence = self.next_feo_sequence();
+                feo_packet(&sample, self.feo_session, sequence, feo::time_us(SystemTime::now()))
+            });
             let sent = if self.settings.output == OutputKind::LiveLink {
                 // The newest sample, at most LIVELINK_MAX_HZ times a second; the ones in between are dropped
                 let interval = Duration::from_secs(1) / LIVELINK_MAX_HZ;
@@ -4519,10 +4672,8 @@ impl Bridge {
                     }
                 }
                 ready
-            } else if self.settings.output == OutputKind::FrameEyeOsc {
-                let sequence = self.next_feo_sequence();
-                let packet = feo_packet(&sample, self.feo_session, sequence, feo::time_us(SystemTime::now()));
-                self.output.send_datagram(&packet);
+            } else if let Some(packet) = feo.as_ref().filter(|_| self.settings.output == OutputKind::FrameEyeOsc) {
+                self.output.send_datagram(packet);
                 true
             } else {
                 for (addr, arg) in osc_messages(&self.settings, &sample) {
@@ -4552,6 +4703,8 @@ impl Bridge {
             if sent && self.output.addr().is_some() {
                 self.sent.push_back(now);
             }
+            let combined = [sample.gaze[4], sample.gaze[5]];
+            self.extras.send_sample(now, feo.as_deref(), combined, sample.lids);
         }
         self.received.push_back(now);
         for times in [&mut self.sent, &mut self.received] {
@@ -4612,9 +4765,13 @@ impl Bridge {
         if livelink_stream(&self.settings).is_some() {
             self.send_livelink_neutral();
         }
-        if feo_stream(&self.settings).is_some() {
-            self.send_feo_idle();
+        // One packet without TRACKING for the main output and the feo1 extras; the other extras' final messages
+        let main_feo = feo_stream(&self.settings).is_some();
+        let idle = (main_feo || self.extras.wants_feo()).then(|| self.next_feo_idle());
+        if let Some(packet) = idle.as_ref().filter(|_| main_feo) {
+            self.output.send_datagram(packet);
         }
+        self.extras.send_lost(idle.as_ref().map(|packet| &packet[..]));
         self.smoother.reset();
         // The next wear may read differently; reset keeps what this one reads only over short gaps
         self.smoother.cross_eye.level = CrossEyeLevel::default();
@@ -4695,29 +4852,46 @@ impl Bridge {
         }
     }
 
-    /// The sequence number for the next FrameEyeOSC packet.
+    /// The sequence number for the next FrameEyeOSC packet (the main output's and the feo1 extras' alike).
     fn next_feo_sequence(&mut self) -> u32 {
-        let sequence = self.feo_sequence;
-        self.feo_sequence = sequence.wrapping_add(1);
-        sequence
+        next_sequence(&mut self.feo_sequence)
     }
 
-    /// A FrameEyeOSC packet without TRACKING: relaxed open eyes looking straight ahead.
-    fn send_feo_idle(&mut self) {
-        let sequence = self.next_feo_sequence();
-        let time_us = feo::time_us(SystemTime::now());
-        let packet = feo::packet(self.feo_session, sequence, false, time_us, [feo::Eye::NEUTRAL; 2]);
-        self.output.send_datagram(&packet);
+    /// The next FrameEyeOSC packet without TRACKING, with this as the last one sent (see keep_feo_alive).
+    fn next_feo_idle(&mut self) -> [u8; feo::PACKET_LEN] {
+        let packet = feo_idle_packet(self.feo_session, self.next_feo_sequence());
         self.feo_idle = Some(Instant::now());
+        packet
     }
 
-    /// While sending to VRCFT's FrameEyeOSC module without eye data, keep telling it so (see FEO_IDLE_INTERVAL).
-    /// Paused, nothing goes out.
+    /// A FrameEyeOSC packet without TRACKING to the main output: relaxed open eyes looking straight ahead.
+    fn send_feo_idle(&mut self) {
+        let packet = self.next_feo_idle();
+        self.output.send_datagram(&packet);
+    }
+
+    /// While sending to VRCFT's FrameEyeOSC module, or to a feo1 extra, without eye data, keep telling it so (see
+    /// FEO_IDLE_INTERVAL): one packet for all of them. Paused, nothing goes out.
     fn keep_feo_alive(&mut self) {
         let due = self.feo_idle.is_none_or(|sent| sent.elapsed() >= FEO_IDLE_INTERVAL);
-        if self.active_since.is_none() && feo_stream(&self.settings).is_some() && due {
-            self.send_feo_idle();
+        let main = feo_stream(&self.settings).is_some();
+        if self.active_since.is_none() && (main || self.extras.wants_feo()) && due {
+            let packet = self.next_feo_idle();
+            if main {
+                self.output.send_datagram(&packet);
+            }
+            self.extras.send_feo_idle(&packet);
         }
+    }
+
+    /// Look the extra outputs up again when due, refusing one whose address and port are the main output's or the
+    /// pupils' ("same as main") or an earlier extra's ("duplicate").
+    fn refresh_extras(&mut self) {
+        let main = self.output.addr().filter(|_| self.settings.sending);
+        let pupils = self.pupil_output.addr().filter(|_| pupil_stream(&self.settings).is_some());
+        let taken: Vec<(SocketAddr, &'static str)> =
+            main.into_iter().chain(pupils).map(|addr| (addr, "same as main")).collect();
+        self.extras.refresh(&taken);
     }
 
     /// `source_error`: why the eye tracker's shared memory can't be read, if it can't; `dominant_eye`: the eye the
@@ -4746,6 +4920,12 @@ impl Bridge {
             target_mode: if settings.host == "auto" { "auto" } else { "fixed" },
             target: self.output.addr().map(|addr| addr.to_string()),
             pupil_target: self.pupil_output.addr().filter(|_| pupils).map(|addr| addr.to_string()),
+            lan_only: settings.lan_only,
+            net: self.output.net(),
+            refused: self.output.refused,
+            pupil_net: self.pupil_output.net().filter(|_| pupils),
+            pupil_refused: self.pupil_output.refused.filter(|_| pupils),
+            extras: self.extras.status(now),
             rate: per_second(&self.sent),
             tracker_rate,
             missed_rate,
@@ -4881,6 +5061,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.target != "auto" && config::split_target(&args.target).is_none() {
         return Err("--target must be HOST:PORT or auto".into());
     }
+    config::check_extra_args(&args.extra)?;
     let in_config_dir = |name: &str| Some(config::config_dir()?.join(name));
     let calibration_path = args.calibration_file.clone().or_else(|| in_config_dir("calibration"));
     let config_path = args.config.clone().or_else(|| in_config_dir("config.json"));
@@ -4903,9 +5084,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(dir) = camera_path.parent() {
         eyecam_ctl::LiveControl::new(dir.to_owned()).spawn(live_wanted.clone())?;
     }
-    let pupil_output = Output::new(pupil_target(&settings));
+    let mut pupil_output = Output::new(pupil_target(&settings));
+    pupil_output.set_lan_only(settings.lan_only);
+    let mut output = Output::new(Target::of(&settings));
+    output.set_lan_only(settings.lan_only);
     let mut bridge = Bridge {
-        output: Output::new(Target::of(&settings)),
+        output,
+        extras: extras::Extras::new(&settings),
         smoother: Smoother::new(&settings),
         calibration: LidCalibration::load(calibration_path, settings.lid_open),
         config,
@@ -4948,6 +5133,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         if pupil_stream(&bridge.settings).is_some() {
             bridge.pupil_output.refresh();
         }
+        bridge.refresh_extras();
         if let Some(line) = eye.open_if_due(Instant::now()) {
             // ("Can't read eye data" is kept for the panel)
             if eye.error.is_some() {
@@ -7012,6 +7198,7 @@ mod tests {
             // Never VRChat's port on this machine in a test: a test that wants the pupils points it at its own listener
             pupil_output: Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9 }),
             pupil_bits: PupilBits::default(),
+            extras: extras::Extras::new(&Settings::default()),
         };
         bridge.output.refresh();
         bridge

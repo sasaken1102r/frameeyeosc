@@ -54,6 +54,13 @@ const ETVR_PORT: u64 = 8889;
 // which 0.10 removed. The key is still read, and ignored, so the files and command lines from before keep working.
 pub const V1_REMOVED: &str = "eye_behavior 1 (the eyes as up to 0.7.5) was removed in 0.10; the eyes move as with \
     eye_behavior 2, the only behaviour now";
+/// The most extra outputs (extra_outputs entries, or --extra options) used; entries after these send nothing.
+pub const MAX_EXTRAS: usize = 3;
+// An extra output's name is only shown, so it is short printable ASCII.
+const MAX_NAME_CHARS: usize = 16;
+// The keys an extra_outputs entry may have. Any other key makes the entry unusable: it may be a later version's
+// restriction on what goes out, which this one would otherwise drop and so send more than the user chose.
+const EXTRA_KEYS: [&str; 6] = ["name", "enabled", "format", "host", "port", "lids"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -110,6 +117,189 @@ pub enum Widen {
     High,
 }
 
+/// What an extra output sends (its `format`; both names are permanent: a variant gets a new name).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExtraFormat {
+    /// FrameEyeOSC packets (docs/protocol.md), byte for byte the ones the main output's FrameEyeOSC would send
+    Feo1,
+    /// VRChat's own eye tracking input: /tracking/eye/CenterVec, and with `lids` /tracking/eye/EyesClosedAmount
+    TrackingEye,
+}
+
+impl ExtraFormat {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Feo1 => "feo1",
+            Self::TrackingEye => "tracking_eye",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        [Self::Feo1, Self::TrackingEye].into_iter().find(|format| format.name() == text)
+    }
+}
+
+/// One more destination for the eye data, next to the main output (an extra_outputs entry in config.json, or an
+/// --extra option). Read entry by entry (parse_extras): an entry that can't be used is kept, with `error` saying why,
+/// and sends nothing, while the rest of the file still loads.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ExtraOutput {
+    /// Only shown: printable ASCII, at most 16 characters; "App N" (N its place in the list) without one.
+    pub name: String,
+    pub enabled: bool,
+    /// None only for an entry that can't be used.
+    pub format: Option<ExtraFormat>,
+    /// "main" (the main output's host, the Steam Link PC with its "auto"), "auto" (the Steam Link PC), an IP address
+    /// or a host name.
+    pub host: String,
+    pub port: u16,
+    /// tracking_eye only: also send EyesClosedAmount.
+    pub lids: bool,
+    /// Why this entry can't be used, if so.
+    pub error: Option<String>,
+}
+
+impl ExtraOutput {
+    /// Its format, while it is turned on and can be used.
+    pub fn usable(&self) -> Option<ExtraFormat> {
+        self.format.filter(|_| self.enabled && self.error.is_none())
+    }
+
+    /// An entry that can't be used, for `why`.
+    fn unusable(name: String, why: String) -> Self {
+        Self {
+            name,
+            enabled: false,
+            format: None,
+            host: String::new(),
+            port: 0,
+            lids: false,
+            error: Some(why),
+        }
+    }
+}
+
+/// The name of the extra output in place `index` (from 0) without one of its own.
+fn default_name(index: usize) -> String {
+    format!("App {}", index + 1)
+}
+
+/// Whether `host` is an IP address, or could be a host name: not empty, no port (`:`) and no white space.
+fn host_ok(host: &str) -> bool {
+    host.parse::<IpAddr>().is_ok() || !(host.is_empty() || host.contains(|c: char| c == ':' || c.is_whitespace()))
+}
+
+/// One extra_outputs entry, in place `index` (from 0); one that can't be used has `error` set.
+fn parse_extra(index: usize, entry: &serde_json::Value) -> ExtraOutput {
+    use serde_json::Value;
+    let Some(entry) = entry.as_object() else {
+        return ExtraOutput::unusable(default_name(index), "not an object".into());
+    };
+    let name = match entry.get("name") {
+        None | Some(Value::Null) => Ok(default_name(index)),
+        Some(Value::String(name)) if name.is_empty() => Ok(default_name(index)),
+        Some(Value::String(name))
+            if name.chars().count() <= MAX_NAME_CHARS && name.chars().all(|c| c.is_ascii_graphic() || c == ' ') =>
+        {
+            Ok(name.clone())
+        }
+        _ => Err(format!("name must be printable ASCII, at most {MAX_NAME_CHARS} characters")),
+    };
+    let checked = || -> Result<ExtraOutput, String> {
+        // A key this version does not know first: the entry was most likely written by a later one
+        if let Some(key) = entry.keys().find(|key| !EXTRA_KEYS.contains(&key.as_str())) {
+            return Err(format!("unknown key \"{key}\" (written by a newer frameeyeosc?)"));
+        }
+        let format = match entry.get("format") {
+            Some(Value::String(text)) => ExtraFormat::parse(text)
+                .ok_or_else(|| format!("unknown format \"{text}\" (written by a newer frameeyeosc?)"))?,
+            _ => return Err("format must be \"feo1\" or \"tracking_eye\"".into()),
+        };
+        if format != ExtraFormat::TrackingEye && entry.contains_key("lids") {
+            return Err("lids is only for tracking_eye".into());
+        }
+        let flag = |key: &str, default: bool| match entry.get(key) {
+            None => Ok(default),
+            Some(Value::Bool(value)) => Ok(*value),
+            _ => Err(format!("{key} must be true or false")),
+        };
+        let host = match entry.get("host") {
+            Some(Value::String(host)) if host == "main" || host == "auto" || host_ok(host) => host.clone(),
+            _ => return Err("host must be \"main\", \"auto\", an IP address or a host name without a port".into()),
+        };
+        let port = match entry.get("port").and_then(Value::as_u64) {
+            Some(port @ 1..=65535) => port as u16,
+            _ => return Err("port must be between 1 and 65535".into()),
+        };
+        Ok(ExtraOutput {
+            name: name.clone()?,
+            enabled: flag("enabled", true)?,
+            format: Some(format),
+            host,
+            port,
+            lids: flag("lids", false)?,
+            error: None,
+        })
+    };
+    checked().unwrap_or_else(|why| ExtraOutput::unusable(name.clone().unwrap_or_else(|_| default_name(index)), why))
+}
+
+/// config.json's extra_outputs, entry by entry, and why the list as a whole could not be read, if so (not a list:
+/// no extra outputs). Entries after the first MAX_EXTRAS are kept, unusable.
+fn parse_extras(value: Option<&serde_json::Value>) -> (Vec<ExtraOutput>, Option<String>) {
+    let entries = match value {
+        None | Some(serde_json::Value::Null) => return (Vec::new(), None),
+        Some(serde_json::Value::Array(entries)) => entries,
+        Some(_) => return (Vec::new(), Some("extra_outputs must be a list; no extra outputs used".into())),
+    };
+    let mut extras: Vec<ExtraOutput> =
+        entries.iter().enumerate().map(|(index, entry)| parse_extra(index, entry)).collect();
+    for extra in extras.iter_mut().skip(MAX_EXTRAS) {
+        if extra.error.is_none() {
+            *extra = ExtraOutput::unusable(extra.name.clone(), format!("only {MAX_EXTRAS} extra outputs are used"));
+        }
+    }
+    (extras, None)
+}
+
+/// One --extra option, FORMAT@HOST:PORT with +lids after it for tracking_eye's eyelids, in place `index` (from 0).
+pub fn parse_extra_arg(index: usize, text: &str) -> Result<ExtraOutput, String> {
+    let wrong = |why: &str| format!("--extra {text}: {why} (FORMAT@HOST:PORT[+lids], FORMAT feo1 or tracking_eye)");
+    let mut parts = text.split('+');
+    let destination = parts.next().unwrap_or_default();
+    let options: Vec<&str> = parts.collect();
+    let (format, target) = destination.split_once('@').ok_or_else(|| wrong("no @"))?;
+    let format = ExtraFormat::parse(format).ok_or_else(|| wrong("unknown format"))?;
+    let (host, port) = split_target(target).ok_or_else(|| wrong("not HOST:PORT"))?;
+    if port == 0 || !(host == "main" || host == "auto" || host_ok(&host)) {
+        return Err(wrong("not HOST:PORT"));
+    }
+    let lids = match options[..] {
+        [] => false,
+        ["lids"] if format == ExtraFormat::TrackingEye => true,
+        ["lids"] => return Err(wrong("+lids is only for tracking_eye")),
+        _ => return Err(wrong("the only option is +lids")),
+    };
+    Ok(ExtraOutput {
+        name: default_name(index),
+        enabled: true,
+        format: Some(format),
+        host,
+        port,
+        lids,
+        error: None,
+    })
+}
+
+/// Check the --extra options (main() stops on an error, as for any other bad option).
+pub fn check_extra_args(extras: &[String]) -> Result<(), String> {
+    if extras.len() > MAX_EXTRAS {
+        return Err(format!("--extra can be given at most {MAX_EXTRAS} times"));
+    }
+    extras.iter().enumerate().try_for_each(|(index, text)| parse_extra_arg(index, text).map(|_| ()))
+}
+
 /// Everything that can change while running. Field names are the config.json keys, and the
 /// defaults match the command-line defaults in `Args`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -123,6 +313,16 @@ pub struct Settings {
     pub port: Option<u16>,
     /// Without a trailing slash; empty for no prefix.
     pub prefix: String,
+    /// Send only inside the home network: an address outside the table in dest (a public one) is refused, for every
+    /// destination (the main output, the pupils straight to VRChat, each extra output). Off, it is allowed and shown as
+    /// public. The Steam Link PC is only warned about, never refused, until its addresses are checked on hardware.
+    pub lan_only: bool,
+    /// Up to MAX_EXTRAS more destinations (see extras.rs). Not read by serde: see parse_extras.
+    #[serde(skip_deserializing)]
+    pub extra_outputs: Vec<ExtraOutput>,
+    /// Why config.json's extra_outputs could not be read as a list, if so (see extras_problems).
+    #[serde(skip)]
+    pub extras_error: Option<String>,
     pub eye_tracking_active: ActiveType,
     /// With the VRChat output, also send the avatar parameters Steam Link's own OSC sends (LeftEyeX, RightEyeLid,
     /// ...), without the prefix. Ignored by the other outputs.
@@ -263,6 +463,9 @@ impl Default for Settings {
             host: "auto".into(),
             port: None,
             prefix: "/FT".into(),
+            lan_only: true,
+            extra_outputs: Vec::new(),
+            extras_error: None,
             eye_tracking_active: ActiveType::Bool,
             steamlink_params: false,
             native_eyes: false,
@@ -333,6 +536,16 @@ impl Default for Settings {
 impl Settings {
     pub fn port(&self) -> u16 {
         self.port.unwrap_or(self.output.default_port())
+    }
+
+    /// What keeps extra_outputs from being used as written, for config_error: the list itself, and each entry that
+    /// can't be used ("extra_outputs entry 2: ..."). None when all is well.
+    pub fn extras_problems(&self) -> Option<String> {
+        let entries = self.extra_outputs.iter().enumerate().filter_map(|(index, extra)| {
+            extra.error.as_ref().map(|error| format!("extra_outputs entry {}: {error}", index + 1))
+        });
+        let problems: Vec<String> = self.extras_error.iter().cloned().chain(entries).collect();
+        (!problems.is_empty()).then(|| problems.join("; "))
     }
 
     /// Whether the user's gaze scale changes anything (not 1 on all four sides).
@@ -427,9 +640,7 @@ impl Settings {
         {
             return Err("settings must be finite numbers".into());
         }
-        let host_ok = self.host.parse::<IpAddr>().is_ok()
-            || !(self.host.is_empty() || self.host.contains(|c: char| c == ':' || c.is_whitespace()));
-        if !host_ok {
+        if !host_ok(&self.host) {
             return Err("host must be \"auto\", an IP address or a host name without a port".into());
         }
         if self.port == Some(0) {
@@ -603,6 +814,7 @@ fn parse(text: &str) -> Result<(Settings, Asked), String> {
             settings.lid_open_snap = snap_from_share(share as f32);
         }
     }
+    (settings.extra_outputs, settings.extras_error) = parse_extras(written.get("extra_outputs"));
     let requests: Requests = serde_json::from_str(text).map_err(|error| error.to_string())?;
     let (capture_id, capture) = requests.gaze_capture();
     let asked = Asked {
@@ -693,6 +905,23 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
     if given.contains("prefix") {
         settings.prefix.clone_from(&args.prefix);
         locked.push("prefix");
+    }
+    if given.contains("no_lan_only") {
+        settings.lan_only = !args.no_lan_only;
+        locked.push("lan_only");
+    }
+    // The whole list, replacing the file's (and whatever was wrong with it); main() has already checked the options
+    if given.contains("extra") || given.contains("no_extras") {
+        settings.extra_outputs = args
+            .extra
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                parse_extra_arg(index, text).unwrap_or_else(|why| ExtraOutput::unusable(default_name(index), why))
+            })
+            .collect();
+        settings.extras_error = None;
+        locked.push("extra_outputs");
     }
     pin!(
         raw,
@@ -792,6 +1021,8 @@ pub struct Config {
     // The lines about removed settings logged so far (log_removed), so each goes out once however often the file is
     // read again.
     logged: Vec<&'static str>,
+    // What was last logged about extra_outputs (note_extras), so it is logged again only when it changes.
+    logged_extras: Option<String>,
 }
 
 impl Config {
@@ -808,6 +1039,7 @@ impl Config {
             reset: None,
             capture_id: None,
             logged: Vec::new(),
+            logged_extras: None,
         }
     }
 
@@ -834,6 +1066,7 @@ impl Config {
                     eprintln!("Loaded {}", self.display_path());
                     self.log_removed(&asked.removed);
                 }
+                self.note_extras(&settings);
                 // Whatever the file asked for before this start is not repeated.
                 self.reset = Some(asked.as_ref().map_or(0, |asked| asked.calibration_reset));
                 self.capture_id = Some(asked.as_ref().map_or(0, |asked| asked.capture_id));
@@ -871,7 +1104,7 @@ impl Config {
                     }
                     None => eprintln!("{} is gone; using the defaults", self.display_path()),
                 }
-                self.error = None;
+                self.note_extras(&settings);
                 // Removing the file resets the counters to 0 but is not itself a request.
                 let reset = asked.as_ref().map(|asked| asked.calibration_reset);
                 let reset_calibration = reset.is_some_and(|new| self.reset.is_some_and(|old| old != new));
@@ -892,6 +1125,17 @@ impl Config {
                 None
             }
         }
+    }
+
+    /// Keep what keeps extra_outputs from being used as written as `error` (the rest of the file is used), and log it
+    /// when it is new.
+    fn note_extras(&mut self, settings: &Settings) {
+        let problems = settings.extras_problems();
+        if let Some(problems) = problems.as_ref().filter(|problems| self.logged_extras.as_ref() != Some(*problems)) {
+            eprintln!("{}: {problems}; the rest is used", self.display_path());
+        }
+        self.logged_extras.clone_from(&problems);
+        self.error = problems;
     }
 
     /// The merged settings, and the requests if the file exists.

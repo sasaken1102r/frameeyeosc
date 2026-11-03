@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.1-beta.3 (2026-11-03)
+
+The Eyelids tab's "Fine-tune" page is now "Valve eyelids", without the two widening marks, which no longer did anything on current SteamOS. "Treat nearly open as open" is now mark 3 (it was 5), so the marks run 1, 2, 3.
+
+日本語: まぶたタブの「細かく直す」は「Valve のまぶた」になり、今の SteamOS ではもう何もしていなかった見開きの 2 つの目盛りをなくしました。「ほぼ開いてたら全開にする」は 5 番から 3 番になり、目盛りの番号は 1・2・3 とつながります。
+
+- Panel, Eyelids › "Valve eyelids" (was "Fine-tune"): only the closed and open marks are left on the openness bars (1 and 2, two values side by side). Marks 3 and 4 ("Widen start", "Widest") are gone. On SteamOS 0.4.3 and later (the current stable 0.4.5 too) a relaxed open eye reads 1.0, and frameeyeosc already sent no widening from Valve's values for an eye without an eye fit then, so they had no effect. `lid_widen_start` and `lid_wide` stay as settings (`config.json`, `--lid-widen-start`, `--lid-wide`). The Eye fit tab's own "Fine-tune" keeps its name.
+- Panel, Eyelids › "Blinks & squint": "Treat nearly open as open" is now mark 3 (it was 5) on the sent eyelid bars and its row.
+- Panel, Eyelids › "Look": below the widening slider, an eye without an eye fit is now explained as widening only near the top of Valve's values (it pointed to the removed marks). While one eye is on the eye cameras and SteamOS caps the openness, it says Valve's values alone can't widen.
+
 ## 0.9.1-beta.2 (2026-11-02)
 
 The Eyelids tab is easier to read with the eye cameras: "Treat nearly open as open" moved to "Blinks & squint", onto new bars of the eyelids as they are sent, and "Fine-tune" now only shows how Valve's values are read.

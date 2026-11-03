@@ -5,7 +5,7 @@ VRCFaceTracking (on the PC). The module turns it into VRCFT's eye data, and VRCF
 itself (including the pupils, in whatever form the avatar takes them).
 
 From 0.10 the same packets can also go to up to three more destinations ("extra outputs", format `feo1`; see
-"Other formats" for `tracking_eye`, the other one). Every destination of one frameeyeosc gets the very same bytes:
+"Other formats" for `osc`, the other one). Every destination of one frameeyeosc gets the very same bytes:
 each packet is built once per sample, with one `session` and one `sequence` for all of them.
 
 The same file is kept in both repositories (frameeyeosc `docs/protocol.md` and VRCFT-FrameEyeOSC
@@ -89,7 +89,7 @@ Each brow (16 bytes):
 
 ## Conventions
 
-These hold for every format frameeyeosc sends (FEO1 here, `tracking_eye` below, and its VRChat and LiveLink outputs).
+These hold for every format frameeyeosc sends (FEO1 here, `osc` below, and its VRChat and LiveLink outputs).
 
 - **Gaze** is relative to the headset and linear in angle: ±1 = ±45°, clamped to -1..1, + right and + up. It is the
   gaze after the eye fit and after the user's gaze scale: the same values the main output sends and the panel's gaze
@@ -151,8 +151,9 @@ Frozen for good: offsets 0-107 with their units and meanings, flag bits 0-6, the
 - **A breaking change** gets a separate format, `feo2`, that a destination has to choose; `feo1` stays the default
   and stays supported. (A different `version` is dropped by every receiver of today, so it is never used for an
   addition.)
-- The format names `feo1` and `tracking_eye` are never renamed or changed; any variant (per-eye `tracking_eye`, VMC,
-  ...) gets a new name.
+- The format names `feo1` and `osc` are never renamed or reused. `feo1` changes only as this file allows (extension
+  records), `osc` only by new addresses (see its contract below); anything else (a breaking change, VMC, ...) gets a
+  new name.
 - **Not contracts:** status.json, the panel's gaze-dot stream (`FEOD`) and the panel's `--action` commands are
   frameeyeosc's own and change without notice. Only this file is a contract.
 
@@ -233,21 +234,44 @@ Both repositories' tests run these through their receivers.
    0000803e0000000000000000ff0f400001020304
    ```
 
-## Other formats: `tracking_eye`
+## Other formats: `osc`
 
-An extra output in the `tracking_eye` format sends VRChat's own eye tracking input, for apps that read it (a gaze or
-foveation tool, say): plain OSC 1.0 messages, one per UDP datagram, no bundles and no time tags. frameeyeosc never adds
-addresses to this set.
+An extra output in the `osc` format sends plain OSC 1.0 messages, one per UDP datagram, no bundles and no time tags:
+VRChat's own eye tracking input, for apps that read it (a gaze tool, say), and VRCFT's v2 avatar parameters, for apps
+that read those names. Each eye sample sends one set, in this order:
 
 | Address | Tags | Value | Sent |
 |---|---|---|---|
-| `/tracking/eye/CenterVec` | `,fff` | A unit vector `normalize(tan(gaze_x·π/4), tan(gaze_y·π/4), 1)` for the combined gaze (see "Conventions"): Unity axes, +x right, +y up, +z forward | Every sample |
-| `/tracking/eye/EyesClosedAmount` | `,f` | `clamp(1 - (eyelid_left + eyelid_right) / 2 / 0.75, 0, 1)`: 0 open (relaxed or widened), 1 closed | Every sample, only with the destination's `lids` on |
+| `/tracking/eye/CenterVec` | `,fff` | A unit vector `normalize(tan(gaze_x·π/4), tan(gaze_y·π/4), 1)` for the combined gaze (see "Conventions"): Unity axes, +x right, +y up, +z forward | Always |
+| `/tracking/eye/EyesClosedAmount` | `,f` | `clamp(1 - (eyelid_left + eyelid_right) / 2 / 0.75, 0, 1)`: 0 open (relaxed or widened), 1 closed | Always |
+| `/avatar/parameters/FT/v2/EyeLeftX`, `EyeLeftY`, `EyeRightX`, `EyeRightY` | `,f` | Each eye's gaze, -1..1 (see "Conventions"): its own with "move eyes separately", else the combined gaze | Always |
+| `/avatar/parameters/FT/v2/EyeLidLeft`, `EyeLidRight` | `,f` | Each eyelid on VRCFT's scale, 0..1: 0 closed, 0.75 relaxed open, 1 fully widened | Always |
+| `/avatar/parameters/FT/v2/EyeX`, `EyeY` | `,f` | The combined gaze, -1..1 | Always |
+| `/avatar/parameters/FT/v2/EyeSquintLeft`, `EyeSquintRight` | `,f` | The eye camera's squint for that eye, 0..1 | While the eye camera drives that eye's eyelid |
+| `/avatar/parameters/FT/v2/EyeSquint` | `,f` | The mean of the eyes' squint that is sent, 0..1 | While either eye's squint is sent |
+| `/avatar/parameters/FT/v2/PupilDilation` | `,f` | The eye camera's pupil dilation, 0..1, the mean of the eyes whose pupil is used | While either eye's pupil is used |
+| `/avatar/parameters/FT/v2/PupilDiameterLeft`, `PupilDiameterRight` | `,f` | That eye's pupil diameter in cm (mm / 10), at most 1 | While that eye's pupil is used |
+| `/avatar/parameters/FT/v2/PupilDiameter` | `,f` | The mean of the diameters that are sent | While either eye's pupil is used |
+| `/avatar/parameters/FT/v2/BrowExpressionLeft`, `BrowExpressionRight`, `BrowExpression`, `BrowUpLeft`, `BrowUpRight`, `BrowUp`, `BrowInnerUp`, `BrowOuterUp` | `,f` | How far each brow is raised with widening, 0..1 (left, right, and the mean for the others); never lowered | While "raise brows with widening" is on |
+| The squint and brow addresses above | `,f` | 0, once, for each one that was sent with the sample before and is not with this one (`EyeSquint` once neither eye's is) | When they stop |
 
-- The set of addresses depends only on the destination's own `lids` setting. It is always `CenterVec` (also with "move
-  eyes separately"), never `PitchYaw` or `LeftRightVec`, and never pupils, squint or brows.
-- When the eye data stops, when sending pauses, and when the destination changes or is turned off: one `CenterVec`
-  0, 0, 1 (and `EyesClosedAmount` 0 with `lids`), then nothing. There is no keepalive: silence is this format's "no
-  data". (VRChat falls back after its own timeout.)
-- A `tracking_eye` destination on the port where Steam Link's own eye OSC arrives means two senders on one port; turn
-  one of them off.
+- The values are the ones the main VRChat output sends for the same sample, under the same names. The set does not
+  depend on the main output or its settings: the prefix is always `/FT` (VRCFT's own), whatever frameeyeosc's
+  parameter prefix is, and it never has the main output's `EyeTrackingActive`, pupil bits (`PupilDilation1`, ...),
+  Steam Link names (`LeftEyeX`, ...), Face Tracking blob or `LeftRightVec`. The squint, pupils and brows come only
+  with that data, as in the table.
+- It is sent with every eye sample (about 90 a second, up to ~136): 10 to 25 datagrams a sample.
+- When the eye data stops, when sending pauses, and when the destination changes (host, port or format) or is turned
+  off: one final set for relaxed open eyes looking straight ahead, then nothing. The final set is `CenterVec` 0, 0, 1,
+  `EyesClosedAmount` 0, `EyeLeftX`, `EyeLeftY`, `EyeRightX`, `EyeRightY` 0, `EyeLidLeft`, `EyeLidRight` 0.75, `EyeX`,
+  `EyeY` 0, and 0 for each squint and brow address sent with the last sample. The pupils are left as they were, as
+  the main VRChat output leaves them. There is no keepalive: silence is this format's "no data" (VRChat falls back
+  after its own timeout). A frameeyeosc that is killed sends nothing more.
+- **Contract:** an address in this set never changes its meaning, type or units. frameeyeosc may add addresses later;
+  receivers MUST ignore addresses they don't know, and MUST NOT count on an address that the table sends only with
+  its data. Conventions as in "Conventions".
+- An `osc` destination pointed at VRChat itself moves the avatar like the main VRChat output (the VRCFT parameters),
+  and VRChat's own eyes too (`/tracking/eye`). Don't point it at a port VRChat already gets from the main output:
+  two senders for the same parameters fight. frameeyeosc refuses only the main output's own address and port ("same
+  as main"). Likewise, an `osc` destination on the port where Steam Link's own eye OSC arrives means two senders on
+  one port; turn one of them off.

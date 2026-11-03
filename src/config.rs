@@ -49,6 +49,10 @@ pub const ETVR_REMOVED: &str = "The ETVR output was removed in 0.10; sending to 
     For VRCFaceTracking, use its LiveLink or FrameEyeOSC module (output \"livelink\" or \"frameeyeosc\")";
 // The ETVR output's port: a port config.json sets to this for the ETVR output is taken as unset, VRChat's 9000.
 const ETVR_PORT: u64 = 8889;
+// What is logged, once, when config.json or the command line still asks for eye_behavior 1 (the eyes as up to 0.7.5),
+// which 0.10 removed. The key is still read, and ignored, so the files and command lines from before keep working.
+pub const V1_REMOVED: &str = "eye_behavior 1 (the eyes as up to 0.7.5) was removed in 0.10; the eyes move as with \
+    eye_behavior 2, the only behaviour now";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -161,9 +165,6 @@ pub struct Settings {
     pub brow_from_widen: bool,
     /// How far the brows go up at full widening with brow_from_widen, 0..1.
     pub brow_strength: f32,
-    /// How the eyes move: 2 (the default) as now; 1 as up to 0.7.5, the gaze and eyelid processing of that release
-    /// (see main.rs, process). Fixes since (the eye cameras' left and right, the eye fit) apply either way.
-    pub eye_behavior: u8,
     /// The settings file has no `lid_widen` (written by 0.5.x or earlier, whose lid_scale_* did nothing for fitted
     /// eyes): a fitted eye's scale is then ignored (see main.rs, lid_scales). Not a setting of its own.
     #[serde(skip)]
@@ -175,7 +176,7 @@ pub struct Settings {
     pub gaze_deadzone: f32,
     pub gaze_hold_below: f32,
     pub independent_eyes: bool,
-    /// With independent_eyes (eye_behavior 2), how much of each eye's own sideways gaze is used, 0..1: 0 the combined
+    /// With independent_eyes, how much of each eye's own sideways gaze is used, 0..1: 0 the combined
     /// gaze turned in by VERGENCE_DEG (and the cross-eye gate), 1 each eye's own as Valve reads it (see main.rs,
     /// own_eye_gaze).
     pub own_eye_gaze: f32,
@@ -270,7 +271,6 @@ impl Default for Settings {
             camera_close_gate: true,
             camera_closed_doubt: true,
             pupil_bits: 0,
-            eye_behavior: 2,
             lid_widen: Widen::Normal,
             widen: true,
             brow_from_widen: false,
@@ -332,11 +332,6 @@ impl Default for Settings {
 impl Settings {
     pub fn port(&self) -> u16 {
         self.port.unwrap_or(self.output.default_port())
-    }
-
-    /// Whether the eyes move as now (eye_behavior 2), not as up to 0.7.5 (1).
-    pub fn v2(&self) -> bool {
-        self.eye_behavior >= 2
     }
 
     /// Whether the user's gaze scale changes anything (not 1 on all four sides).
@@ -461,9 +456,6 @@ impl Settings {
         if !scales.iter().flatten().all(|scale| *scale > 0.0) {
             return Err("lid_scale_left/right must be positive".into());
         }
-        if !(1..=2).contains(&self.eye_behavior) {
-            return Err("eye_behavior must be 1 (as up to 0.7.5) or 2".into());
-        }
         if self.pupil_bits > MAX_PUPIL_BITS {
             return Err(format!("pupil_bits must be 0 (a float only) to {MAX_PUPIL_BITS}"));
         }
@@ -579,7 +571,8 @@ struct Asked {
     calibration_reset: i64,
     capture_id: i64,
     capture: Option<GazeCapture>,
-    /// The lines to log for what it still asks for that was removed (ETVR_REMOVED), each logged once per run.
+    /// The lines to log for what it still asks for that was removed (ETVR_REMOVED, V1_REMOVED), each logged once per
+    /// run.
     removed: Vec<&'static str>,
 }
 
@@ -595,6 +588,10 @@ fn parse(text: &str) -> Result<(Settings, Asked), String> {
         if written.get("port").and_then(serde_json::Value::as_u64) == Some(ETVR_PORT) {
             settings.port = None;
         }
+    }
+    // eye_behavior is no setting any more: whatever it says is ignored, and 1 (the eyes as up to 0.7.5) logged
+    if written.get("eye_behavior").and_then(serde_json::Value::as_u64) == Some(1) {
+        removed.push(V1_REMOVED);
     }
     let scaled = ["lid_scale_left", "lid_scale_right"]
         .iter()
@@ -617,13 +614,17 @@ fn parse(text: &str) -> Result<(Settings, Asked), String> {
 }
 
 /// The lines to log for what the command line still asks for that was removed: --output etvr (read as vrchat, see
-/// OutputKind). A port given there with it is kept: everything on the command line is the user's own choice.
-pub fn removed_options(matches: &ArgMatches) -> Vec<&'static str> {
+/// OutputKind) and --eye-behavior 1 (taken and ignored). A port given there with --output etvr is kept: everything on
+/// the command line is the user's own choice.
+pub fn removed_options(args: &Args, matches: &ArgMatches) -> Vec<&'static str> {
     let given = |id: &str| matches.value_source(id) == Some(ValueSource::CommandLine);
     let mut removed = Vec::new();
     let etvr = matches.get_raw("output").is_some_and(|mut values| values.any(|value| value == "etvr"));
     if given("output") && etvr {
         removed.push(ETVR_REMOVED);
+    }
+    if args.eye_behavior == Some(1) {
+        removed.push(V1_REMOVED);
     }
     removed
 }
@@ -667,7 +668,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
             }
         )*};
     }
-    pin!(output, eye_tracking_active, steamlink_params, native_eyes, vrc_face_tracking, lid_widen, pupil_bits, eye_behavior);
+    pin!(output, eye_tracking_active, steamlink_params, native_eyes, vrc_face_tracking, lid_widen, pupil_bits);
     // Given on the command line: this is 0.6.0 or later, whatever the file says
     if given.contains("lid_widen") {
         settings.scales_predate_fit = false;
@@ -1173,7 +1174,8 @@ mod tests {
         }
         // A port set by hand for something else stays, as does 8889 for any other output
         let (settings, _) = parse(r#"{"output": "etvr", "port": 9100, "host": "10.0.0.2"}"#).unwrap();
-        assert_eq!((settings.output, settings.port, settings.host.as_str()), (OutputKind::Vrchat, Some(9100), "10.0.0.2"));
+        let kept = (settings.output, settings.port, settings.host.as_str());
+        assert_eq!(kept, (OutputKind::Vrchat, Some(9100), "10.0.0.2"));
         let (settings, asked) = parse(r#"{"output": "livelink", "port": 8889}"#).unwrap();
         assert_eq!((settings.port, asked.removed.len()), (Some(8889), 0));
         assert!(parse(r#"{"output": "vrchat"}"#).unwrap().1.removed.is_empty());
@@ -1183,10 +1185,6 @@ mod tests {
         // --output etvr: VRChat too, locked, with the same line; a port given with it stays
         let (settings, locked) = merged("{}", &["--output", "etvr", "--port", "8889"]).unwrap();
         assert_eq!((settings.output, settings.port, locked), (OutputKind::Vrchat, Some(8889), vec!["output", "port"]));
-        let removed = |argv: &[&str]| {
-            let matches = Args::command().try_get_matches_from(std::iter::once("frameeyeosc").chain(argv.iter().copied()));
-            removed_options(&matches.unwrap())
-        };
         assert_eq!(removed(&["--output", "etvr"]), [ETVR_REMOVED]);
         assert_eq!(removed(&["--output=etvr"]), [ETVR_REMOVED]);
         assert!(removed(&["--output", "vrchat"]).is_empty() && removed(&[]).is_empty());
@@ -1200,8 +1198,16 @@ mod tests {
         let (args, given) = cli(&[]);
         let mut config = Config::new(None, args, given);
         config.log_removed(&[ETVR_REMOVED]);
-        config.log_removed(&[ETVR_REMOVED, ETVR_REMOVED]);
-        assert_eq!(config.logged, [ETVR_REMOVED]);
+        config.log_removed(&[ETVR_REMOVED, V1_REMOVED, ETVR_REMOVED]);
+        config.log_removed(&[V1_REMOVED]);
+        assert_eq!(config.logged, [ETVR_REMOVED, V1_REMOVED]);
+    }
+
+    /// removed_options for this command line.
+    fn removed(argv: &[&str]) -> Vec<&'static str> {
+        let matches = Args::command().try_get_matches_from(std::iter::once("frameeyeosc").chain(argv.iter().copied()));
+        let matches = matches.unwrap();
+        removed_options(&Args::from_arg_matches(&matches).unwrap(), &matches)
     }
 
     #[test]
@@ -1339,16 +1345,30 @@ mod tests {
     }
 
     #[test]
-    fn eye_behavior_is_2_unless_set_to_1() {
-        assert_eq!(merged("{}", &[]).unwrap().0.eye_behavior, 2);
-        assert!(merged("{}", &[]).unwrap().0.v2());
-        let (v1, _) = merged(r#"{"eye_behavior": 1}"#, &[]).unwrap();
-        assert!(v1.eye_behavior == 1 && !v1.v2());
-        for bad in ["0", "3", "\"v1\"", "1.5"] {
-            assert!(merged(&format!(r#"{{"eye_behavior": {bad}}}"#), &[]).is_err(), "{bad}");
+    fn the_removed_eye_behavior_is_taken_and_ignored() {
+        // 1 (the eyes as up to 0.7.5) is logged once, 2 and anything else is not; the settings are the defaults
+        let (settings, asked) = parse(r#"{"eye_behavior": 1}"#).unwrap();
+        assert_eq!((settings, asked.removed), (Settings::default(), vec![V1_REMOVED]));
+        for other in ["2", "0", "3", "\"v1\"", "1.5", "null"] {
+            let (settings, asked) = parse(&format!(r#"{{"eye_behavior": {other}}}"#)).unwrap();
+            assert_eq!((settings, asked.removed.len()), (Settings::default(), 0), "{other}");
         }
-        let (settings, locked) = merged(r#"{"eye_behavior": 1}"#, &["--eye-behavior", "2"]).unwrap();
-        assert_eq!((settings.eye_behavior, locked), (2, vec!["eye_behavior"]));
+        // With what goes with it: each eye's own gaze and the camera's rules stay as they are
+        let file = r#"{"eye_behavior": 1, "independent_eyes": true, "own_eye_gaze": 0.4, "camera_close_gate": false}"#;
+        let (settings, _) = merged(file, &[]).unwrap();
+        assert!(settings.independent_eyes && !settings.camera_close_gate && settings.own_eye_gaze == 0.4);
+        // Nor written back: the status file has no eye_behavior
+        assert!(serde_json::to_value(Settings::default()).unwrap().get("eye_behavior").is_none());
+        // --eye-behavior 1 or 2: taken, nothing locked; 1 logged; anything else still an error; not in --help
+        for value in ["1", "2"] {
+            let (settings, locked) = merged("{}", &["--eye-behavior", value]).unwrap();
+            assert_eq!((settings, locked.len()), (Settings::default(), 0), "{value}");
+        }
+        assert_eq!(removed(&["--eye-behavior", "1"]), [V1_REMOVED]);
+        assert_eq!(removed(&["--eye-behavior", "1", "--output", "etvr"]), [ETVR_REMOVED, V1_REMOVED]);
+        assert!(removed(&["--eye-behavior", "2"]).is_empty());
+        assert!(Args::command().try_get_matches_from(["frameeyeosc", "--eye-behavior", "3"]).is_err());
+        assert!(!Args::command().render_long_help().to_string().contains("eye-behavior"));
     }
 
     #[test]

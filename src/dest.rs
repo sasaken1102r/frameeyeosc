@@ -85,16 +85,14 @@ pub fn refusal(ip: IpAddr) -> &'static str {
     }
 }
 
-/// The address to send to among those a host name was looked up as: the first allowed one, IPv4 before IPv6 (each in
-/// the order looked up), with its kind. When none is allowed, the reason the first of them (IPv4 first) is refused;
-/// None for no address at all.
+/// The address to send to among those a host name was looked up as: the first allowed one in the order looked up (as
+/// the main output took the first one before there was a gate), with its kind. When none is allowed, the reason the
+/// first of them is refused; None for no address at all.
 pub fn pick(
     addrs: impl IntoIterator<Item = SocketAddr>,
     lan_only: bool,
 ) -> Result<(SocketAddr, Net), Option<&'static str>> {
-    let mut addrs: Vec<SocketAddr> = addrs.into_iter().collect();
-    // (a stable sort: each family keeps its order)
-    addrs.sort_by_key(SocketAddr::is_ipv6);
+    let addrs: Vec<SocketAddr> = addrs.into_iter().collect();
     for addr in &addrs {
         let net = classify(addr.ip());
         if net.allowed(lan_only) {
@@ -193,19 +191,20 @@ mod tests {
     }
 
     #[test]
-    fn a_host_with_several_addresses_uses_the_first_allowed_ipv4_first() {
+    fn a_host_with_several_addresses_uses_the_first_allowed() {
         let addrs = |list: &[&str]| -> Vec<SocketAddr> { list.iter().map(|text| text.parse().unwrap()).collect() };
         let picked = |list: &[&str], lan_only| pick(addrs(list), lan_only);
         let at = |text: &str| text.parse::<SocketAddr>().unwrap();
-        // IPv4 first, whatever order they were looked up in; each family in its own order
-        assert_eq!(picked(&["[fd00::5]:9000", "192.168.0.5:9000"], true), Ok((at("192.168.0.5:9000"), Net::Lan)));
+        // In the order they were looked up in (as before there was a gate), whatever the family
+        assert_eq!(picked(&["[fd00::5]:9000", "192.168.0.5:9000"], true), Ok((at("[fd00::5]:9000"), Net::Lan)));
+        assert_eq!(picked(&["192.168.0.5:9000", "[fd00::5]:9000"], true), Ok((at("192.168.0.5:9000"), Net::Lan)));
         assert_eq!(picked(&["10.0.0.2:1", "10.0.0.1:1"], true), Ok((at("10.0.0.2:1"), Net::Lan)));
         // A public one is skipped for an allowed one, even an IPv6 one after it
         assert_eq!(picked(&["8.8.8.8:9000", "[fd00::5]:9000"], true), Ok((at("[fd00::5]:9000"), Net::Lan)));
         assert_eq!(picked(&["8.8.8.8:9000", "100.64.1.2:9000"], true), Ok((at("100.64.1.2:9000"), Net::Vpn)));
         // Only public ones: refused while lan_only is on, the first one otherwise
         assert_eq!(picked(&["[2001:db8::1]:9000", "8.8.8.8:9000"], true), Err(Some("public address")));
-        assert_eq!(picked(&["[2001:db8::1]:9000", "8.8.8.8:9000"], false), Ok((at("8.8.8.8:9000"), Net::Public)));
+        assert_eq!(picked(&["[2001:db8::1]:9000", "8.8.8.8:9000"], false), Ok((at("[2001:db8::1]:9000"), Net::Public)));
         // Never multicast, whatever lan_only says
         assert_eq!(picked(&["239.1.2.3:9000"], false), Err(Some("multicast refused")));
         assert_eq!(picked(&["239.1.2.3:9000", "8.8.8.8:9000"], false), Ok((at("8.8.8.8:9000"), Net::Public)));

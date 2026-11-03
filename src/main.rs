@@ -3187,7 +3187,7 @@ impl Output {
                     if self.resolve_error.take().is_some() {
                         eprintln!("Resolved {host} again");
                     }
-                    // The first address the home network table allows (IPv4 first), checked at every look-up
+                    // The first address the home network table allows (in the order looked up), checked at every look-up
                     match dest::pick(addrs, self.lan_only) {
                         Ok((addr, _)) => {
                             self.refused = None;

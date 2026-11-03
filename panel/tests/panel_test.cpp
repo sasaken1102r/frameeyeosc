@@ -756,7 +756,7 @@ std::vector<uint8_t> belowCard(EyePanel& panel) {
 
 /**
  * Mark ⑤ on "Blinks & squint"'s sent eyelid bars: both values where they land, each faded while it applies to neither
- * eye, the second badge moved aside where they'd overlap, gone when off; none on Fine-tune.
+ * eye, the second badge moved aside where they'd overlap, gone when off; none on "Valve eyelids".
  */
 void testSnapMark(const FontSet& fonts) {
     // Eye data coming, no cameras: lid_open_snap (0.53) applies, camera_lid_open_snap (0.63) is faded. The bars run from
@@ -803,7 +803,7 @@ void testSnapMark(const FontSet& fonts) {
     CHECK(!panel.snapMark().shown && std::isnan(panel.snapMark().x[0]) && std::isnan(panel.snapMark().x[1]));
     CHECK(hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 1);
     CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).size() == 1);
-    // Fine-tune: neither the mark nor the row, and nothing below the switch that opens "Blinks & squint"
+    // Valve eyelids: neither the mark nor the row, and nothing below the switch that opens "Blinks & squint"
     m.config.root.set(key::kLidOpenSnap, JsonValue::makeNumber(0.53));
     m.config.root.set(key::kCameraLidOpenSnap, JsonValue::makeNumber(0.63));
     panel.setLidsPage(LidsPage::Fine);

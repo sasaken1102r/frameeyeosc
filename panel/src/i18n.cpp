@@ -349,7 +349,6 @@ UiText makeJapanese() {
     t.widenFollowsRight = "右目は左目に合わせて見開きます（開き具合が上限に近いため）";
     t.widenNoRoom = "両目とも開き具合が上限に近いため、見開きません";
     t.opennessSaturated = "この SteamOS では開き具合が 1.0 で頭打ちのため、見開きは届きません";
-    t.lidMarksFitted = "閉じ・開きは目を合わせた値、見開きは「見開きやすさ」で決まります";
     t.lidMarksUnused = "目盛りは目を合わせていない目のためのものです";
 
     t.rowCalibration = "自動キャリブレーション";
@@ -812,7 +811,6 @@ UiText makeJapanese() {
     t.camHelp3 = "HMD をかぶり直した";
     t.camHelp3Do = "何もしなくて OK（自動で覚え直すよ）";
     t.lidsCamButton = "目のカメラへ";
-    t.lidsCamMarks = "カメラ使用中は見開きの目盛り（見開き始め・最大）は出さないよ";
     t.lidsLook = "見た目";
     t.lidsBlinks = "まばたき・細め";
     t.lidsFine = "Valve のまぶた";
@@ -1472,7 +1470,6 @@ UiText makeEnglish() {
     t.widenFollowsRight = "The right eye widens with the left (its openness is near the limit)";
     t.widenNoRoom = "Neither eye widens: both read near the openness limit";
     t.opennessSaturated = "This SteamOS caps eye openness at 1.0, so widening can't come through";
-    t.lidMarksFitted = "Closing and opening come from the eye fit, widening from Widen";
     t.lidMarksUnused = "The marks are for eyes without an eye fit";
 
     t.rowCalibration = "Auto calibration";
@@ -1938,7 +1935,6 @@ UiText makeEnglish() {
     t.camHelp3 = "Put the headset back on";
     t.camHelp3Do = "Nothing to do (it relearns by itself)";
     t.lidsCamButton = "Eye cameras";
-    t.lidsCamMarks = "With the cameras, the widening marks (3 and 4) aren't used";
     t.lidsLook = "Look";
     t.lidsBlinks = "Blinks & squint";
     t.lidsFine = "Valve eyelids";

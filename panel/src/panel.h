@@ -1609,9 +1609,9 @@ private:
     double numberAt(const std::string& name, double x) const;
 
     /**
-     * The Eyelids tab's "Fine-tune": a line on what decides the eyelids, the auto calibration (eyes without a fit,
-     * not from the cameras), the per-eye scales, the openness bars with the four marks and their values, and the
-     * smoothing values.
+     * The Eyelids tab's "Valve eyelids": a line on what decides the eyelids, the auto calibration (eyes without a fit,
+     * not from the cameras), the per-eye scales, the openness bars with the closed and open marks and their values,
+     * and the smoothing values.
      * @param pen drawing tools
      * @param t texts
      * @param m the model

@@ -47,7 +47,7 @@ constexpr double kControlW = kInnerRight - kControlX;
 constexpr double kRowTop = 116;
 /** A relaxed open eye, as sent (VRCFT): the sent eyelid bars' dotted line, and where ⑤ is off. */
 constexpr double kLidRelaxed = 0.75;
-/** How strongly Fine-tune's part is drawn while it only stands by for the cameras (still to be changed). */
+/** How strongly "Valve eyelids"' part is drawn while it only stands by for the cameras (still to be changed). */
 constexpr double kStandbyAlpha = 0.6;
 /** Below this many samples a second from the eye tracker, the left column marks the rate as low. */
 constexpr double kRowH = 64;
@@ -3410,8 +3410,10 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
                                                                   : t.widenHintValve;
         drawRowLabel(pen, t, y, h, t.rowWidenEase, hint, locked, 0, true);
         drawWidenSlider(pen, t, m, v, widen, kControlX, kInnerRight, y + 6, 40);
-        const char* note = !widens                              ? t.widenNoteOff
-                           : widen.unfittedNote                   ? t.widenNoteUnfitted
+        // (an eye on Valve's values without a fit doesn't widen at all while the openness is saturated: one eye on
+        // the cameras with the other on a saturated SteamOS)
+        const char* note = !widens              ? t.widenNoteOff
+                           : widen.unfittedNote ? (m.status.opennessSaturated ? t.widenSaturated : t.widenNoteUnfitted)
                            : widen.control == WidenControl::Valve ? t.widenNoteValve
                                                                   : t.widenNoteCamera;
         pen.text(kControlX, y + 66, note, fitSize(pen, note, 14, 11, kInnerRight - kControlX, false), kTextMuted);
@@ -3435,7 +3437,7 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         y = baseline - 7;
     }
     if (camera) drawRowDivider(pen, y);
-    // Eyelid smoothing: four presets (the two values themselves on "Fine-tune")
+    // Eyelid smoothing: four presets (the two values themselves on "Valve eyelids")
     {
         const bool locked = v.locked(key::kLidMinCutoff) || v.locked(key::kLidBeta);
         const int preset = matchingLidPreset(v);
@@ -3708,7 +3710,7 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     double y = top;
     const double cy = (kRowH - kControlH) / 2;
     // Eyes with an eye fit: closing and opening come from the fit, widening from the slider (lid_widen). The learned
-    // calibration and marks 3 and 4 only matter for eyes without one
+    // calibration and the marks only matter for eyes without one
     const WidenState widen = widenState(v);
     const bool anyFitted = widen.fitted[0] || widen.fitted[1];
     const bool fromCameras = lidsFromCameras(s);

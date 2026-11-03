@@ -614,7 +614,7 @@ WidenSlider widenSlider(const SettingsView& view, const EyeStatus& status) {
         slider.control = WidenControl::Saturated;
         return slider;
     }
-    // lid_widen reaches only fitted eyes: one on Valve's values without a fit widens by marks 3 and 4
+    // lid_widen reaches only fitted eyes: one on Valve's values without a fit widens by lid_widen_start / lid_wide
     const WidenState widen = widenState(view);
     for (int eye = 0; eye < 2; ++eye) {
         if (!used[eye] && !widen.fitted[eye]) slider.unfittedNote = true;

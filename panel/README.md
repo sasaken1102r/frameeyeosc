@@ -179,7 +179,7 @@ ssh steamos@<Frame の IP> 'cd ~/frameeyeosc-panel && cmake -G Ninja -S . -B bui
 ```sh
 ./build/frameeyeosc-panel --print                 # 設定・状態・自動起動を、パネルが読んだとおりに表示
 ./build/frameeyeosc-panel --dump-png out/panel_2026-09-27_00-00-00.png --tab lids --language en
-./build/frameeyeosc-panel --dump-png out/lids_2026-10-07_00-00-00.png --tab lids --lids-page fine --fake-openness-saturated   # まぶたタブの「細かく直す」
+./build/frameeyeosc-panel --dump-png out/lids_2026-10-07_00-00-00.png --tab lids --lids-page fine --fake-openness-saturated   # まぶたタブの「Valve のまぶた」
 ./build/frameeyeosc-panel --dump-png out/output_2026-09-30_00-00-00.png --tab output --fake-livelink   # 送り方タブ（LiveLink のとき）
 ./build/frameeyeosc-panel --dump-png out/output_2026-10-14_00-00-00.png --tab output --fake-frameeyeosc --fake-camera both --fake-eyecam idle:setup:auto=ok:buffers   # 送り方タブ（FrameEyeOSC で目のカメラを使っているとき）
 ./build/frameeyeosc-panel --dump-png out/output_2026-10-16_00-00-00.png --tab output --fake-frameeyeosc --fake-module-link-error   # 送り方タブ（モジュールの入手先でブラウザーを開けなかったとき）

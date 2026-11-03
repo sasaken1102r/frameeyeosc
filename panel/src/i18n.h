@@ -1132,6 +1132,9 @@ struct UiText {
     const char* extrasDeleteFormat;  ///< its confirmation ("Delete %s? ...")
     const char* extrasDeleteNo;
     const char* extrasDeleteYes;
+    const char* extrasRowDelete;     ///< a row's own "Delete" in the list, next to "Change"
+    const char* extrasRowDeleteFormat;  ///< ...the row turned into its confirmation ("Delete "%s"? ...")
+    const char* extrasRowDeleteNo;   ///< ...its "Cancel" (its "Delete" is extrasDeleteYes)
     const char* hostMain;            ///< step 2's choices, and the line under them
     const char* hostMainSub;
     const char* hostAuto;

@@ -4071,6 +4071,146 @@ void testStatusLayout(const FontSet& fonts) {
     }
 }
 
+/**
+ * A row's own "Delete" in the list: next to "Change" in every row, greyed with it while locked; pressed, that row asks
+ * in its place ("Cancel", a red "Delete"); one row at a time, and another row's button, a tab, the other sub-page, a
+ * lock or the entry changing closes it; "Delete" hands the caller that row and how it was, which removeEntry takes
+ * out (and refuses once it changed). Every button of the asking list pressed in turn. Both languages.
+ */
+void testExtrasRowDelete(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        PanelModel m = extrasModel(language, kThreeExtras);
+        liveThree(m, true);
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Output);
+        panel.setOutputPage(OutputPage::Apps);
+        panel.render(m);
+        std::vector<EyePanel::HitArea> deletes = hits(panel, PanelAction::ExtraRowDelete);
+        const std::vector<EyePanel::HitArea> edits = hits(panel, PanelAction::ExtraEdit);
+        CHECK(deletes.size() == 3 && edits.size() == 3);
+        for (size_t i = 0; i < deletes.size() && i < edits.size(); ++i) {
+            CHECK(deletes[i].hit.arg == static_cast<int>(i) && deletes[i].y == edits[i].y);
+            CHECK(deletes[i].x + deletes[i].w <= edits[i].x && deletes[i].w >= 40 && deletes[i].h >= 40);
+        }
+        CHECK(allInsideAndTall(panel) && cardButtonsApart(panel) && panel.extrasRowDelete() == -1);
+        // The second asks: its own two buttons in its place, the other rows as they were
+        CHECK(pressArg(panel, PanelAction::ExtraRowDelete, 1).action == PanelAction::None);
+        CHECK(panel.extrasRowDelete() == 1 && panel.extrasRowDeleteOriginal() == extras::rawEntry(m.config.root, 1));
+        panel.render(m);
+        const std::vector<EyePanel::HitArea> yes = hits(panel, PanelAction::ExtraRowDeleteConfirm);
+        const std::vector<EyePanel::HitArea> no = hits(panel, PanelAction::ExtraRowDeleteCancel);
+        CHECK(yes.size() == 1 && no.size() == 1 && yes[0].hit.arg == 1 && no[0].hit.arg == 1);
+        CHECK(hits(panel, PanelAction::ExtraRowDelete).size() == 2 && hits(panel, PanelAction::ExtraEdit).size() == 2);
+        CHECK(hits(panel, PanelAction::ExtraSend).size() == 4 && allInsideAndTall(panel) && cardButtonsApart(panel));
+        if (yes.size() == 1 && no.size() == 1) CHECK(no[0].x + no[0].w <= yes[0].x && yes[0].y == deletes[1].y);
+        // Cancel
+        CHECK(press(panel, PanelAction::ExtraRowDeleteCancel).action == PanelAction::None);
+        CHECK(panel.extrasRowDelete() == -1);
+        // One at a time: another row's "Delete" moves the question there
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 0);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 2);
+        CHECK(panel.extrasRowDelete() == 2);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraRowDeleteConfirm).size() == 1);
+        // ...and any other button closes it: another row's Send / Stop, its Change (the flow), lan_only
+        pressArg(panel, PanelAction::ExtraSend, 1);
+        CHECK(panel.extrasRowDelete() == -1);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 2);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraEdit, 0);
+        CHECK(panel.extrasRowDelete() == -1 && panel.extrasStep() == ExtrasStep::Format);
+        panel.closeExtrasFlow();
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 2);
+        panel.render(m);
+        pressArg(panel, PanelAction::SetBool, 0);
+        CHECK(panel.extrasRowDelete() == -1);
+        // ...a tab, the other sub-page
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 1);
+        panel.render(m);
+        pressTab(panel, PanelTab::Gaze);
+        CHECK(panel.extrasRowDelete() == -1);
+        panel.render(m);
+        pressTab(panel, PanelTab::Output);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 1);
+        panel.render(m);
+        pressArg(panel, PanelAction::OutputPage, static_cast<int>(OutputPage::Main));
+        CHECK(panel.extrasRowDelete() == -1);
+        panel.setOutputPage(OutputPage::Apps);
+        // ...a lock (and while locked: no Delete to press)
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 1);
+        PanelModel locked = m;
+        locked.status.locked = {key::kExtraOutputs};
+        locked.status.effective = locked.config.root;
+        panel.render(locked);
+        CHECK(panel.extrasRowDelete() == -1 && hits(panel, PanelAction::ExtraRowDelete).empty());
+        CHECK(hits(panel, PanelAction::ExtraRowDeleteConfirm).empty() && hits(panel, PanelAction::ExtraEdit).empty());
+        // ...the entry changing under it (by hand, another write)
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 0);
+        PanelModel changed = m;
+        std::string error;
+        CHECK(extras::setEnabled(changed.config.root, 0, false, error));
+        panel.render(changed);
+        CHECK(panel.extrasRowDelete() == -1);
+        // Delete: the caller gets that row and how it was; taken out, the others as they were
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 1);
+        panel.render(m);
+        const PanelHit got = press(panel, PanelAction::ExtraRowDeleteConfirm);
+        CHECK(got.action == PanelAction::ExtraRowDeleteConfirm && got.arg == 1);
+        const std::string first = extras::rawEntry(m.config.root, 0);
+        const std::string third = extras::rawEntry(m.config.root, 2);
+        // (changed meanwhile: refused, nothing written)
+        PanelModel stale = m;
+        CHECK(extras::setEnabled(stale.config.root, 1, false, error));
+        const std::string staleText = writeJson(stale.config.root);
+        CHECK(!extras::removeEntry(stale.config.root, got.arg, panel.extrasRowDeleteOriginal(), error));
+        CHECK(writeJson(stale.config.root) == staleText);
+        CHECK(extras::removeEntry(m.config.root, got.arg, panel.extrasRowDeleteOriginal(), error));
+        CHECK(extras::rawEntry(m.config.root, 0) == first && extras::rawEntry(m.config.root, 1) == third);
+        panel.closeExtrasFlow();
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraRowDelete).size() == 2 && hits(panel, PanelAction::ExtraAdd).size() == 1);
+        // A Delete pressed with no row asking does nothing
+        CHECK(panel.pointerDown(0, 0, 0.0).action == PanelAction::None);
+
+        // The sweep: each button of the list with a row asking, pressed on a panel in that state
+        PanelModel three = extrasModel(language, kThreeExtras);
+        liveThree(three, true);
+        const auto setUp = [&](EyePanel& p) {
+            p.setTab(PanelTab::Output);
+            p.setOutputPage(OutputPage::Apps);
+            p.render(three);
+            p.openExtrasRowDelete(1);
+            p.render(three);
+        };
+        EyePanel shown(fonts);
+        setUp(shown);
+        std::vector<EyePanel::HitArea> own;
+        for (const EyePanel::HitArea& area : shown.hitAreas()) {
+            if (area.x > 400 && area.y > 100) own.push_back(area);
+        }
+        CHECK(own.size() >= 4 + 2 + 2 + 2 + 2);
+        for (const EyePanel::HitArea& area : own) {
+            EyePanel p(fonts);
+            setUp(p);
+            const PanelHit hit = p.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+            CHECK(hit.action == PanelAction::None || hit == area.hit);
+            const PanelAction a = area.hit.action;
+            if (a == PanelAction::ExtraRowDeleteConfirm) CHECK(hit == area.hit && p.extrasRowDelete() == 1);
+            else if (a == PanelAction::ExtraRowDelete) CHECK(p.extrasRowDelete() == area.hit.arg);
+            else CHECK(p.extrasRowDelete() == -1);
+        }
+    }
+}
+
 /** The change's last button says when saving starts a stopped entry again; pressing it hands Save to the caller. */
 void testExtrasSaveLabel(const FontSet& fonts) {
     const UiText& ja = uiText(Language::Ja);
@@ -4149,6 +4289,7 @@ int main() {
     testExtrasPage(fonts);
     testExtrasFlow(fonts);
     testExtrasSaveLabel(fonts);
+    testExtrasRowDelete(fonts);
     testStatusLayout(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);

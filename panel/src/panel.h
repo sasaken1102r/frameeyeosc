@@ -163,6 +163,11 @@ enum class PanelAction {
     ExtraDelete,       ///< ...step 3's "Delete this destination" while changing: its confirmation (handled inside)
     ExtraDeleteCancel, ///< ...closed without deleting (handled inside)
     ExtraDeleteConfirm,  ///< ...confirmed: the caller takes the entry out (extras::removeEntry) and closes the flow
+    ExtraRowDelete,    ///< "Other apps": a row's own "Delete", arg = its index: the row turns into its confirmation
+                       ///< (handled inside; only one row at a time)
+    ExtraRowDeleteCancel,   ///< ...its "Cancel" (handled inside)
+    ExtraRowDeleteConfirm,  ///< ...its red "Delete", arg = its index: the caller takes it out (extras::removeEntry
+                            ///< with extrasRowDeleteOriginal) and closes the confirmation (closeExtrasFlow)
 };
 
 /** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
@@ -351,6 +356,7 @@ public:
      * @param confirmDelete with the delete's confirmation open (changing, step 3)
      */
     void openExtrasFlow(ExtrasStep step, const extras::Draft& draft, bool confirmDelete = false) {
+        extrasRowDelete_ = -1;
         extrasStep_ = step;
         extrasDraft_ = draft;
         extrasDeleteOpen_ = confirmDelete && draft.edit >= 0;
@@ -362,6 +368,23 @@ public:
         extrasStep_ = ExtrasStep::List;
         extrasDeleteOpen_ = false;
         extrasError_.clear();
+        extrasRowDelete_ = -1;
+    }
+
+    /** @return the row of the list asking whether to delete it (its index; -1 = none) */
+    int extrasRowDelete() const { return extrasStep_ == ExtrasStep::List ? extrasRowDelete_ : -1; }
+
+    /** @return that row as config.json had it when its "Delete" was pressed (extras::rawEntry) */
+    const std::string& extrasRowDeleteOriginal() const { return extrasRowDeleteOriginal_; }
+
+    /**
+     * Turn a row of the list into its delete confirmation, as its "Delete" does (for --extras-row-delete).
+     * @param index the row (its index in the list as last drawn)
+     */
+    void openExtrasRowDelete(int index) {
+        if (index < 0 || index >= static_cast<int>(extrasShown_.size())) return;
+        extrasRowDelete_ = index;
+        extrasRowDeleteOriginal_ = extrasRaw_[static_cast<size_t>(index)];
     }
 
     /**
@@ -809,6 +832,8 @@ private:
     std::vector<extras::Entry> extrasShown_;  ///< the list's entries as last drawn (ExtraEdit's arg is an index)
     std::vector<std::string> extrasRaw_;      ///< ...each as config.json had it (extras::rawEntry)
     bool extrasLanOnly_ = true;         ///< lan_only as last drawn (the host step's "Next")
+    int extrasRowDelete_ = -1;          ///< the list's row asking whether to delete it (-1 = none)
+    std::string extrasRowDeleteOriginal_;  ///< ...as config.json had it then (the delete checks it is still so)
     bool gazeScaleLinked_[2] = {true, true};  ///< the gaze scale's locks: left / right, up / down
     bool updateBeta_ = false;             ///< "Get test versions" (panel.json's update_beta)
     SnapMark snapMark_;                   ///< mark ③ as last drawn

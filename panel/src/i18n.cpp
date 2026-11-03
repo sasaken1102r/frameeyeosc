@@ -1107,7 +1107,7 @@ UiText makeJapanese() {
     t.extrasStop = "止める";
     t.extrasEdit = "変更";
     t.extrasAddFormat = ICON_PLUS " 送り先を追加（あと %d つ）";
-    t.extrasFull = "送り先は 3 つまで。使わないものを「変更」から消すと足せます";
+    t.extrasFull = "送り先は 3 つまで。使わないものを「消す」と足せます";
     t.extrasMoreFormat = "config.json にあと %d つ（3 つまでしか使いません）";
     t.extrasOldCore = "本体を更新すると使えます（いま動いている本体はほかのアプリに送れません）";
     t.extrasNotList = "config.json の extra_outputs がリストになっていません";
@@ -1140,6 +1140,9 @@ UiText makeJapanese() {
     t.extrasDeleteFormat = "「%s」を消す？ もう送らなくなるよ";
     t.extrasDeleteNo = "やめる";
     t.extrasDeleteYes = "消す";
+    t.extrasRowDelete = "消す";
+    t.extrasRowDeleteFormat = "「%s」を消す？もう送らなくなるよ";
+    t.extrasRowDeleteNo = "やめる";
     t.hostMain = "メインと同じ PC";
     t.hostMainSub = "Steam Link の相手が変わってもついていく";
     t.hostAuto = "Steam Link の PC";
@@ -2295,7 +2298,7 @@ UiText makeEnglish() {
     t.extrasStop = "Stop";
     t.extrasEdit = "Change";
     t.extrasAddFormat = ICON_PLUS " Add a destination (%d left)";
-    t.extrasFull = "3 at most. Delete one under \"Change\" to add another";
+    t.extrasFull = "3 at most. Delete one to add another";
     t.extrasMoreFormat = "%d more in config.json (only 3 are used)";
     t.extrasOldCore = "Update frameeyeosc to use this (the running one can't send to other apps)";
     t.extrasNotList = "extra_outputs in config.json isn't a list";
@@ -2329,6 +2332,9 @@ UiText makeEnglish() {
     t.extrasDeleteFormat = "Delete \"%s\"? Nothing goes there any more";
     t.extrasDeleteNo = "Keep";
     t.extrasDeleteYes = "Delete";
+    t.extrasRowDelete = "Delete";
+    t.extrasRowDeleteFormat = "Delete \"%s\"? It stops sending there.";
+    t.extrasRowDeleteNo = "Cancel";
     t.hostMain = "Same PC as main";
     t.hostMainSub = "Follows the main destination, Steam Link included";
     t.hostAuto = "Steam Link PC";

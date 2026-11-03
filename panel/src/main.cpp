@@ -97,6 +97,7 @@ struct Options {
     std::string gazePage;         ///< --gaze-page: the Gaze tab's sub-tab (motion, reach, glitch)
     std::string outputPage;       ///< --output-page: the Output tab's sub-tab (main, apps)
     std::string extrasFlow;       ///< --extras-flow: "Other apps"' add / change flow at a step (parseExtrasFlow)
+    int extrasRowDelete = -1;     ///< --extras-row-delete N: the list's row N asking whether to delete it
     std::string fakeExtras;       ///< --fake-extras: made-up extra outputs (fakeExtras)
     bool history = false;         ///< --history: the version history open (on the Advanced tab)
     std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
@@ -267,6 +268,7 @@ void printUsage() {
         "      --lids-page look|blinks|fine|brows  The Eyelids tab's sub-tab (default look)\n"
         "      --gaze-page motion|reach|glitch  The Gaze tab's sub-tab (default motion)\n"
         "      --output-page main|apps  The Output tab's sub-tab (default main)\n"
+        "      --extras-row-delete N  \"Other apps\"' row N (from 0) asking whether to delete it (its own Delete)\n"
         "      --extras-flow STEP[,KEY=VALUE...]  \"Other apps\"' add / change flow at STEP (format, host or\n"
         "                        port), with\n"
         "                        format=feo1|osc, host=main|auto|frame|ip|keep, ip=A.B.C.D, kept=HOST, port=N,\n"
@@ -865,6 +867,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 std::fprintf(stderr, "--output-page must be main or apps: %s\n", options.outputPage.c_str());
                 return false;
             }
+        } else if (arg == "--extras-row-delete" && hasNext) {
+            options.extrasRowDelete = std::atoi(argv[++i]);
         } else if (arg == "--extras-flow" && hasNext) {
             options.extrasFlow = argv[++i];
             const std::string step = options.extrasFlow.substr(0, options.extrasFlow.find(','));
@@ -2692,6 +2696,13 @@ int runDumpPng(const Options& options) {
             parseExtrasFlow(options.extrasFlow, model, draft, step, confirmDelete);
             panel.openExtrasFlow(step, draft, confirmDelete);
         }
+        if (options.extrasRowDelete >= 0) {
+            panel.setTab(PanelTab::Output);
+            panel.setOutputPage(OutputPage::Apps);
+            // (drawn once first: the list's rows)
+            panel.render(model);
+            panel.openExtrasRowDelete(options.extrasRowDelete);
+        }
         // The gaze scale's locks as at a start with them left closed: open where the two values differ
         {
             const SettingsView view(model);
@@ -3635,19 +3646,27 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::ExtraKey:
         case PanelAction::ExtraPort:
         case PanelAction::ExtraDelete:
-        case PanelAction::ExtraDeleteCancel: return;  // handled inside the panel
+        case PanelAction::ExtraDeleteCancel:
+        case PanelAction::ExtraRowDelete:
+        case PanelAction::ExtraRowDeleteCancel: return;  // handled inside the panel
         case PanelAction::ExtraSend:
         case PanelAction::ExtraSave:
-        case PanelAction::ExtraDeleteConfirm: {
+        case PanelAction::ExtraDeleteConfirm:
+        case PanelAction::ExtraRowDeleteConfirm: {
             // "Other apps": the list changed in place (the other entries, and the keys the panel doesn't know, as they
             // are). Tried on the file as it is first: an entry gone or changed meanwhile writes nothing
             if (view.locked(key::kExtraOutputs)) return;
             const extras::Draft draft = panel.extrasDraft();
             const PanelAction action = hit.action;
             const int arg = hit.arg;
-            const auto apply = [draft, action, arg](JsonValue& root, std::string& why) {
+            // (a row's own delete: that row, as it was when its "Delete" was pressed)
+            const std::string rowOriginal = panel.extrasRowDeleteOriginal();
+            const auto apply = [draft, action, arg, rowOriginal](JsonValue& root, std::string& why) {
                 if (action == PanelAction::ExtraSend) return extras::setEnabled(root, arg / 2, arg % 2 == 1, why);
                 if (action == PanelAction::ExtraSave) return extras::applyDraft(root, draft, why);
+                if (action == PanelAction::ExtraRowDeleteConfirm) {
+                    return extras::removeEntry(root, arg, rowOriginal, why);
+                }
                 return extras::removeEntry(root, draft.edit, draft.original, why);
             };
             const ConfigFile current = readConfigFile(model.configPath);
@@ -3656,13 +3675,16 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             std::string why;
             if (current.error.empty() && !apply(trial, why)) {
                 std::fprintf(stderr, "[action] extra output not written: %s\n", why.c_str());
+                // (a row's question closes: what it asked about isn't there as it was)
+                if (action == PanelAction::ExtraRowDeleteConfirm) panel.closeExtrasFlow();
                 panel.setExtrasError(uiText(model.language).extrasChanged);
                 model.config = readConfigFile(model.configPath);
                 return;
             }
             // (entries counted from 1, as config_error does; a new one at the end)
-            const int entry = action == PanelAction::ExtraSend ? arg / 2 + 1
-                              : draft.edit >= 0                ? draft.edit + 1
+            const int entry = action == PanelAction::ExtraSend               ? arg / 2 + 1
+                              : action == PanelAction::ExtraRowDeleteConfirm ? arg + 1
+                              : draft.edit >= 0                              ? draft.edit + 1
                                                                : static_cast<int>(extrasList(model).entries.size()) + 1;
             std::fprintf(stderr, "[action] extra output %s: entry %d\n",
                          action == PanelAction::ExtraSend   ? (arg % 2 == 1 ? "on" : "off")
@@ -3876,7 +3898,8 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         model.panelErrorBroken = false;
         if (!openPrompt.empty()) panel.showPrompt(openPrompt);
         // "Other apps": written, back to the list
-        if (hit.action == PanelAction::ExtraSave || hit.action == PanelAction::ExtraDeleteConfirm) {
+        if (hit.action == PanelAction::ExtraSave || hit.action == PanelAction::ExtraDeleteConfirm ||
+            hit.action == PanelAction::ExtraRowDeleteConfirm) {
             panel.closeExtrasFlow();
         }
         // The eye fit starts over: the up gains of the fits before don't count any more (not in --dump-png)

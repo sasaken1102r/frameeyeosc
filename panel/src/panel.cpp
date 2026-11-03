@@ -1068,6 +1068,13 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
     // ...and closes the eye preview (a tab, the left column's notices): only its own buttons keep it
     const bool previewButton = hit.action == PanelAction::PreviewOpen || previewSheetAction(hit.action);
     if (hit.action != PanelAction::None && !previewButton) previewOpen_ = false;
+    // ...and "Other apps"' row asking whether to delete it: only its own two buttons keep it (another row's "Delete"
+    // opens that one's instead); a write the list couldn't make is forgotten
+    const bool rowDelete = hit.action == PanelAction::ExtraRowDelete ||
+                           hit.action == PanelAction::ExtraRowDeleteCancel ||
+                           hit.action == PanelAction::ExtraRowDeleteConfirm;
+    if (hit.action != PanelAction::None && !rowDelete) extrasRowDelete_ = -1;
+    if (hit.action != PanelAction::None && extrasStep_ == ExtrasStep::List) extrasError_.clear();
     switch (hit.action) {
         case PanelAction::PreviewOpen:
             // (pressed again while it is open: it closes)
@@ -1151,6 +1158,17 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             closeAppsList();
             closeContrib();
             return {};
+        case PanelAction::ExtraRowDelete:
+            // The row turns into its question (another row's closes)
+            extrasError_.clear();
+            openExtrasRowDelete(hit.arg);
+            return {};
+        case PanelAction::ExtraRowDeleteCancel:
+            extrasRowDelete_ = -1;
+            return {};
+        case PanelAction::ExtraRowDeleteConfirm:
+            // The caller takes it out (only the row asking, and only while the list shows)
+            return extrasRowDelete() >= 0 && hit.arg == extrasRowDelete_ ? hit : PanelHit {};
         case PanelAction::ExtraAdd:
             openExtrasFlow(ExtrasStep::Format, extras::newDraft(static_cast<int>(extrasShown_.size())));
             return {};
@@ -2988,6 +3006,11 @@ void EyePanel::drawExtras(const Pen& pen, const UiText& t, const PanelModel& m, 
     extrasLanOnly_ = v.flag(key::kLanOnly);
     // Locked by the command line (--extra, --no-extras), or not a list: nothing to add or change
     if (locked || !list.isList) closeExtrasFlow();
+    // A row asking whether to delete it: only while it is still there as it was
+    if (extrasRowDelete_ >= 0 && (extrasRowDelete_ >= static_cast<int>(extrasRaw_.size()) ||
+                                  extrasRaw_[static_cast<size_t>(extrasRowDelete_)] != extrasRowDeleteOriginal_)) {
+        extrasRowDelete_ = -1;
+    }
     if (extrasStep_ != ExtrasStep::List) {
         drawExtrasFlow(pen, t, m, v);
         return;
@@ -3020,6 +3043,11 @@ void EyePanel::drawExtras(const Pen& pen, const UiText& t, const PanelModel& m, 
     for (int i = 0; i < std::min(count, extras::kMax); ++i) {
         drawExtraRow(pen, t, m, list.entries[static_cast<size_t>(i)], y, kExtraRowH, locked);
         y += kExtraRowH + kExtraRowGap;
+    }
+    // A delete from a row that couldn't be written (config.json changed meanwhile)
+    if (!extrasError_.empty()) {
+        pen.text(kInnerX, y + 14, ellipsize(pen, extrasError_, 15, true, w, false), 15, kDanger, true);
+        y += 26;
     }
     // More than are used (written by hand): only said
     if (count > extras::kMax) {
@@ -3096,6 +3124,28 @@ void EyePanel::drawExtraRow(const Pen& pen, const UiText& t, const PanelModel& m
         }
     }
     const bool bad = !why.empty();
+    if (!locked && entry.index == extrasRowDelete_) {
+        // Asking whether to delete it, in its own place: the question, "Cancel" and a red "Delete"
+        fillRounded(pen, x0, y, x1 - x0, h, 12, kDangerTint);
+        strokeRounded(pen, x0, y, x1 - x0, h, 12, kDanger, 1.5);
+        const double bh = 44;
+        const double by = y + (h - bh) / 2;
+        const double yesW = std::max(110.0, pen.measure(t.extrasDeleteYes, 17, true) + 40);
+        const double noW = std::max(110.0, pen.measure(t.extrasRowDeleteNo, 17, true) + 40);
+        const double yesX = x1 - 12 - yesW;
+        const double noX = yesX - 10 - noW;
+        const std::string ask = formatText(t.extrasRowDeleteFormat, entry.name);
+        const double room = noX - 16 - (x0 + 18);
+        const double size = fitSize(pen, ask, 17, 12, room, true);
+        pen.text(x0 + 18, centerBaseline(y, h, size), ellipsize(pen, ask, size, true, room, false), size, kText, true);
+        drawButton(pen, noX, by, noW, bh, t.extrasRowDeleteNo,
+                   {PanelAction::ExtraRowDeleteCancel, nullptr, entry.index}, true, false, 17);
+        const PanelHit confirm {PanelAction::ExtraRowDeleteConfirm, nullptr, entry.index};
+        fillRounded(pen, yesX, by, yesW, bh, bh / 2, pointerState(confirm) == 2 ? kAccentPressed : kDanger);
+        textCentered(pen, yesX + yesW / 2, centerBaseline(by, bh, 17), t.extrasDeleteYes, 17, kOnAccent, true);
+        addButton(confirm, yesX, by, yesW, bh);
+        return;
+    }
     // Its tag: as frameeyeosc sends to it, else from the address as written
     const std::string net = live != nullptr ? (live->sending ? live->net : std::string())
                                             : netOfHost(entry.host, extrasLanOnly_);
@@ -3107,12 +3157,31 @@ void EyePanel::drawExtraRow(const Pen& pen, const UiText& t, const PanelModel& m
                   {{t.extrasSend, {PanelAction::ExtraSend, nullptr, entry.index * 2 + 1}},
                    {t.extrasStop, {PanelAction::ExtraSend, nullptr, entry.index * 2}}},
                   entry.enabled ? 0 : 1, 15, locked);
-    // "Change" at the right, the tag before it
-    const double bw = 108;
+    // "Delete" and "Change" at the right (the same width, their labels smaller where they don't fit), the tag before
+    const double bw = 100;
     const double bx = x1 - 12 - bw;
+    const double dx = bx - 8 - bw;
+    {
+        // Delete: quiet red, like "Reset all"; greyed like "Change" while locked
+        const PanelHit hit {PanelAction::ExtraRowDelete, nullptr, entry.index};
+        const bool usable = !locked;
+        const double by = y + (h - sh) / 2;
+        const int pointer = usable ? pointerState(hit) : 0;
+        if (usable) {
+            fillRounded(pen, dx, by, bw, sh, sh / 2, pointer > 0 ? kDangerTint : kQuitFill);
+            strokeRounded(pen, dx, by, bw, sh, sh / 2, kDanger, 2);
+        } else {
+            fillRounded(pen, dx, by, bw, sh, sh / 2, kControl);
+            strokeRounded(pen, dx, by, bw, sh, sh / 2, kDivider, 2);
+        }
+        const double size = fitSize(pen, t.extrasRowDelete, 16, 12, bw - 24, true);
+        textCentered(pen, dx + bw / 2, centerBaseline(by, sh, size), t.extrasRowDelete, size,
+                     usable ? kText : kTextDisabled, true);
+        addButton(hit, dx, by, bw, sh, usable);
+    }
     drawButton(pen, bx, y + (h - sh) / 2, bw, sh, t.extrasEdit, {PanelAction::ExtraEdit, nullptr, entry.index}, !locked,
                false, 16);
-    double right = bx - 14;
+    double right = dx - 14;
     const double tagW = drawNetTag(pen, t, net, right, y + h / 2 + 4, 12, false);
     if (tagW > 0) {
         drawNetTag(pen, t, net, right, y + h / 2 + 4, 12);

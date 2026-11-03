@@ -89,8 +89,8 @@ pub struct ExtraStatus {
     pub host: String,
     pub port: u16,
     pub lids: bool,
-    /// Turned on, usable, not paused and not refused as a duplicate: what it gets goes out, once its address is found
-    /// and allowed.
+    /// Turned on, usable, not paused and not refused (`refused` null): what it gets goes out, once its address is
+    /// found.
     pub sending: bool,
     /// The address it goes to while sending; None while it isn't, or there is none yet.
     pub target: Option<String>,

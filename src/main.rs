@@ -11542,6 +11542,7 @@ mod tests {
         let bridge = bridge_with(&vpn);
         let status = serde_json::to_value(bridge.status(None, None)).unwrap();
         assert_eq!(status["extras"][0]["refused"], "public address");
+        assert_eq!(status["extras"][0]["sending"], false);
         assert_eq!(status["extras"][0]["target"], serde_json::Value::Null);
         assert_eq!(status["extras"][1]["net"], "vpn");
         assert_eq!(status["extras"][1]["refused"], serde_json::Value::Null);

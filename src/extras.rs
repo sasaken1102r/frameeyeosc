@@ -170,7 +170,12 @@ impl Extras {
             extra.output.label = format!(" for {}", describe(config));
             extra.stream = new;
             if starts {
-                eprintln!("Sending to {}:{} for {}", config.host, config.port, describe(config));
+                let host = match config.host.as_str() {
+                    "main" => "the main output's host",
+                    "auto" => "the Steam Link PC",
+                    host => host,
+                };
+                eprintln!("Starting {} to {host}, port {}", describe(config), config.port);
             }
         }
         self.list.truncate(settings.extra_outputs.len());
@@ -257,7 +262,8 @@ impl Extras {
             .enumerate()
             .map(|(index, extra)| {
                 let config = &extra.config;
-                let sending = extra.sending();
+                // (not while its address is refused either)
+                let sending = extra.sending() && extra.output.refused.is_none();
                 let refused = config.error.clone().or(extra.duplicate.map(Into::into)).or_else(|| {
                     extra.stream.as_ref().and(extra.output.refused).map(Into::into)
                 });

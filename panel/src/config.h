@@ -78,7 +78,7 @@ constexpr const char* kPupilBits = "pupil_bits";
  */
 constexpr const char* kLanOnly = "lan_only";
 /**
- * Up to three more destinations (frameeyeosc 0.10 on): a list of {name, enabled, format, host, port, lids}. Not in the
+ * Up to three more destinations (frameeyeosc 0.10 on): a list of {name, enabled, format, host, port}. Not in the
  * key table (it is no single value): read and written by extras.h, which keeps every entry it doesn't change, and the
  * keys it doesn't know in the one it changes, as they are. "Reset all" leaves it alone.
  */

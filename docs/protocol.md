@@ -271,7 +271,7 @@ that read those names. Each eye sample sends one set, in this order:
   receivers MUST ignore addresses they don't know, and MUST NOT count on an address that the table sends only with
   its data. Conventions as in "Conventions".
 - An `osc` destination pointed at VRChat itself moves the avatar like the main VRChat output (the VRCFT parameters),
-  and VRChat's own eyes too (`/tracking/eye`). Don't point it at a port VRChat already gets from the main output:
-  two senders for the same parameters fight. frameeyeosc refuses only the main output's own address and port ("same
-  as main"). Likewise, an `osc` destination on the port where Steam Link's own eye OSC arrives means two senders on
+  and VRChat's own eyes too (`/tracking/eye`). Don't point it at a VRChat that already gets the eyes from the main
+  output, directly or through VRCFaceTracking: two senders for the same parameters fight. frameeyeosc refuses only
+  the addresses and ports it sends to itself (the main output's, the pupils', an earlier extra's). Likewise, an `osc` destination on the port where Steam Link's own eye OSC arrives means two senders on
   one port; turn one of them off.

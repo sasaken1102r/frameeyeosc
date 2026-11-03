@@ -3501,7 +3501,8 @@ fn parse_proc_ip(hex: &str) -> Option<IpAddr> {
     }
 }
 
-// Like Steam Link's OSC sender, ±45° maps to ±1; +Y is up (VRCFT convention, unverified on hardware).
+// Like Steam Link's OSC sender, ±45° maps to ±1; +Y is up (VRCFT convention; checked on hardware 2026-11-03:
+// looking up turns an avatar's eyes up through VRCFT, and through VRChat's own /tracking/eye/CenterVec too).
 fn gaze_angles([x, y, z]: [f32; 3]) -> [f32; 2] {
     let scale = 4.0 / std::f32::consts::PI;
     [

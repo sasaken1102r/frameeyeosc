@@ -29,7 +29,8 @@ body:
       label: Output / 送り先
       options:
         - VRChat directly / VRChat に直接
-        - VRCFaceTracking (ETVR)
+        - VRCFaceTracking (LiveLink)
+        - VRCFaceTracking (FrameEyeOSC)
         - Not sure / わからない
   - type: dropdown
     id: connection

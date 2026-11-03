@@ -859,7 +859,7 @@ struct UiText {
     const char* lidFloorNoteIdle;  ///< ...beside it while no eye is on the cameras
     const char* rowLidOpenSnap;  ///< lid_open_snap (Blinks & squint, under the sent eyelids; VRCFT)
     const char* lidOpenSnapHint;  ///< ...its hint
-    const char* capSnapValve;     ///< ...in v2, the caption of lid_open_snap (the eyes without the cameras' eyelid)
+    const char* capSnapValve;     ///< ...the caption of lid_open_snap (the eyes without the cameras' eyelid)
     const char* capSnapCamera;    ///< ...and of camera_lid_open_snap (the eyes with it)
     const char* valveReadTitle;   ///< "Valve eyelids"' title: how Valve's openness is read
     const char* valveReadStandby; ///< ...beside it while the cameras supply both eyes

@@ -11468,7 +11468,8 @@ mod tests {
             extra_outputs: vec![
                 extra(config::ExtraFormat::TrackingEye, "main", main_port, false),
                 extra(config::ExtraFormat::TrackingEye, "127.0.0.1", gaze_port, false),
-                extra(config::ExtraFormat::Feo1, "localhost", gaze_port, false),
+                // (not "localhost": it may look up as ::1 first, a different address)
+                extra(config::ExtraFormat::Feo1, "127.0.0.1", gaze_port, false),
             ],
             ..settings()
         };

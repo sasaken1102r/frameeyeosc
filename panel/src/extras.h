@@ -18,7 +18,7 @@ constexpr int kMax = 3;
 /** The two formats (permanent names). */
 constexpr const char* kFeo1 = "feo1";
 constexpr const char* kTrackingEye = "tracking_eye";
-/** The port each format starts at (FrameEyeBridge's, and the one the gaze tools tend to use). */
+/** The port each format starts at (next to the FrameEyeOSC module's 11112, and the one gaze tools tend to use). */
 constexpr int kPortFeo1 = 11113;
 constexpr int kPortTrackingEye = 9015;
 /** "host": follow the main output's PC, the Steam Link PC, or this Frame. */

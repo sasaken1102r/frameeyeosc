@@ -1122,7 +1122,7 @@ UiText makeJapanese() {
     t.extrasStepPort = "ポート：アプリが受け取るポート番号";
     t.extrasStepOfFormat = "%d / 3";
     t.formatFeo1Title = "FrameEyeOSC と同じ形";
-    t.formatFeo1Desc = "FrameEyeBridge や、2 台目の VRCFT 向け";
+    t.formatFeo1Desc = "中継ツールや、2 台目の VRCFT 向け";
     t.formatFeo1Lines[0] = "視線・まぶた・細め・瞳孔";
     t.formatFeo1Lines[1] = "メインの FrameEyeOSC と同じ中身";
     t.formatEyeTitle = "視線の OSC";
@@ -1163,7 +1163,7 @@ UiText makeJapanese() {
     t.ipBroadcast = "ブロードキャストには送れません";
     t.ipMulticast = "マルチキャストには送れません";
     t.ipUnspecified = "このアドレスには送れません";
-    t.portNoteFeo1 = "FrameEyeBridge の既定は 11113";
+    t.portNoteFeo1 = "最初は 11113（メインの 11112 の隣）";
     t.portNoteEye = "アプリの受け取りポートに合わせてね";
     t.rowExtraLids = "まぶたも送る";
     t.hintExtraLids = "視線だけで足りるアプリが多いよ";
@@ -2314,7 +2314,7 @@ UiText makeEnglish() {
     t.extrasStepPort = "Port: where the app listens";
     t.extrasStepOfFormat = "%d / 3";
     t.formatFeo1Title = "Same as FrameEyeOSC";
-    t.formatFeo1Desc = "For FrameEyeBridge, or a second VRCFT";
+    t.formatFeo1Desc = "For relay tools, or a second VRCFT";
     t.formatFeo1Lines[0] = "Gaze, eyelids, squint, pupils";
     t.formatFeo1Lines[1] = "What the main FrameEyeOSC output sends";
     t.formatEyeTitle = "Gaze OSC";
@@ -2355,7 +2355,7 @@ UiText makeEnglish() {
     t.ipBroadcast = "Can't send to a broadcast address";
     t.ipMulticast = "Can't send to a multicast address";
     t.ipUnspecified = "Not an address to send to";
-    t.portNoteFeo1 = "FrameEyeBridge uses 11113";
+    t.portNoteFeo1 = "Starts at 11113, next to the main 11112";
     t.portNoteEye = "Match the app's port";
     t.rowExtraLids = "Eyelids too";
     t.hintExtraLids = "Most apps only need gaze";

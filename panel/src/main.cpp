@@ -131,7 +131,6 @@ struct Options {
     bool fakePaused = false;
     bool fakeNoTracking = false;
     bool fakeSlowTracker = false; ///< --fake-slow-tracker: the eye tracker delivers 15 samples a second
-    bool fakeEtvr = false;
     bool fakeLivelink = false;
     bool fakeModule = false;
     bool fakePupilsOff = false;   ///< --fake-pupils-off: pupils_to_vrchat off
@@ -147,10 +146,9 @@ struct Options {
     bool fakeModuleLinkError = false;  ///< --fake-module-link-error: the Output tab's module link couldn't open Chromium
     bool fakeCustom = false;
     bool fakeIndependent = false; ///< --fake-independent: independent_eyes on, the gaze pad per eye
-    bool fakeV1 = false;          ///< --fake-v1: eye_behavior 1 (the eyes as up to 0.7.5)
     std::string fakeDominantEye;  ///< --fake-dominant-eye: "left" / "right" ("Track Dominant Eye Only")
     bool fakeOpennessSaturated = false;  ///< --fake-openness-saturated: a relaxed open eye reads 1.0
-    std::string fakePrompt;       ///< vrchat / etvr / livelink
+    std::string fakePrompt;       ///< vrchat / livelink / frameeyeosc
     std::string fakeUpdate;       ///< a made-up update state (see printUsage)
     std::string fakeUpdateNotes;  ///< --fake-update-notes: the new release's summary ("both", "en" or "long")
     bool updateBeta = false;      ///< --update-beta: "Get test versions" on (instead of panel.json's)
@@ -305,7 +303,7 @@ void printUsage() {
         "      --preview-update-prompt  Show the \"update to ...?\" question (with --fake-update available)\n"
         "      --fake            Draw a made-up state (running, sending to VRChat) instead of the files.\n"
         "                        Each --fake-* below implies --fake\n"
-        "      --fake-not-running / --fake-paused / --fake-no-tracking / --fake-etvr / --fake-livelink / --fake-fixed\n"
+        "      --fake-not-running / --fake-paused / --fake-no-tracking / --fake-livelink / --fake-fixed\n"
         "      --fake-frameeyeosc  Sending to VRCFT's FrameEyeOSC module\n"
         "      --fake-target-null  Auto target not found yet\n"
         "      --fake-pupils-off  pupils_to_vrchat off (the Output tab's row for LiveLink with the eye cameras)\n"
@@ -320,14 +318,13 @@ void printUsage() {
         "      --fake-module-link-error  The Output tab's module link couldn't open the browser (with --fake-frameeyeosc)\n"
         "      --fake-custom     Gaze smoothing values that match no preset\n"
         "      --fake-independent  Move eyes separately (the left column shows each eye's gaze)\n"
-        "      --fake-v1         The eyes move as up to 0.7.5 (eye_behavior 1)\n"
         "      --fake-gaze-scale L,R,U,D  The gaze scale (gaze_scale_left, _right, _up, _down; 0.05..2). A pair whose\n"
         "                        two values differ shows its lock open\n"
         "      --fake-gaze-dots  The debug gaze dots on (gaze_debug_dots; the Advanced tab's Debug tools)\n"
         "      --fake-rings-off  The dots' rings off (gaze_debug_rings)\n"
         "      --fake-dominant-eye left|right  \"Track Dominant Eye Only\" is on with that eye\n"
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
-        "      --fake-prompt vrchat|etvr|livelink|frameeyeosc  The recommended-settings question\n"
+        "      --fake-prompt vrchat|livelink|frameeyeosc  The recommended-settings question\n"
         "      --fake-autostart on|off|missing|unknown\n"
         "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed|\n"
         "                    test|testbadge|onbeta|back|backmanual\n"
@@ -1001,8 +998,6 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeSlowTracker = true;
         } else if (arg == "--fake-no-tracking") {
             options.fake = options.fakeNoTracking = true;
-        } else if (arg == "--fake-etvr") {
-            options.fake = options.fakeEtvr = true;
         } else if (arg == "--fake-livelink") {
             options.fake = options.fakeLivelink = true;
         } else if (arg == "--fake-frameeyeosc") {
@@ -1039,8 +1034,6 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeCustom = true;
         } else if (arg == "--fake-independent") {
             options.fake = options.fakeIndependent = true;
-        } else if (arg == "--fake-v1") {
-            options.fake = options.fakeV1 = true;
         } else if (arg == "--fake-no-widen") {
             options.fake = options.fakeNoWiden = true;
         } else if (arg == "--fake-brows") {
@@ -1081,9 +1074,9 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeOpennessSaturated = true;
         } else if (arg == "--fake-prompt" && hasNext) {
             options.fakePrompt = argv[++i];
-            if (options.fakePrompt != kOutputVrchat && options.fakePrompt != kOutputEtvr &&
-                options.fakePrompt != kOutputLivelink && options.fakePrompt != kOutputModule) {
-                std::fprintf(stderr, "--fake-prompt must be vrchat, etvr, livelink or frameeyeosc: %s\n",
+            if (options.fakePrompt != kOutputVrchat && options.fakePrompt != kOutputLivelink &&
+                options.fakePrompt != kOutputModule) {
+                std::fprintf(stderr, "--fake-prompt must be vrchat, livelink or frameeyeosc: %s\n",
                              options.fakePrompt.c_str());
                 return false;
             }
@@ -2004,7 +1997,6 @@ PanelModel fakeModel(const Options& options) {
     m.config.exists = true;
     m.config.root.type = JsonValue::Type::Object;
     JsonValue& root = m.config.root;
-    if (options.fakeEtvr) root.set(key::kOutput, JsonValue::makeString(kOutputEtvr));
     if (options.fakeLivelink) root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
     if (options.fakeModule) root.set(key::kOutput, JsonValue::makeString(kOutputModule));
     if (options.fakePupilsOff) root.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
@@ -2028,7 +2020,6 @@ PanelModel fakeModel(const Options& options) {
     }
     if (options.fakeBroken) m.config.error = "expected , or } between members (near character 212)";
     if (options.fakeIndependent) root.set(key::kIndependentEyes, JsonValue::makeBool(true));
-    if (options.fakeV1) root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
     if (options.fakeGazeDots) root.set(key::kGazeDebugDots, JsonValue::makeBool(true));
     if (options.fakeRingsOff) root.set(key::kGazeDebugRings, JsonValue::makeBool(false));
     for (size_t i = 0; i < options.fakeGazeScale.size() && i < 4; ++i) {
@@ -2125,24 +2116,20 @@ PanelModel fakeModel(const Options& options) {
     EyeStatus& s = m.status;
     if (!options.fakeNotRunning) {
         const double now = unixNow();
-        const bool etvr = options.fakeEtvr;
         s.present = true;
         s.running = true;
         s.pid = 12345;
         s.time = now;
         s.started = now - 4980;
         s.sending = !options.fakePaused;
-        s.output = etvr                   ? kOutputEtvr
-                   : options.fakeLivelink ? kOutputLivelink
-                   : options.fakeModule   ? kOutputModule
-                                          : kOutputVrchat;
+        s.output = options.fakeLivelink ? kOutputLivelink
+                   : options.fakeModule ? kOutputModule
+                                        : kOutputVrchat;
         s.targetMode = options.fakeFixed ? "fixed" : "auto";
         if (!options.fakeTargetNull) {
-            s.target = std::string("192.168.0.60:") +
-                       (etvr                   ? "8889"
-                        : options.fakeLivelink ? "11111"
-                        : options.fakeModule   ? "11112"
-                                               : (options.fakeCustom ? "9001" : "9000"));
+            s.target = std::string("192.168.0.60:") + (options.fakeLivelink ? "11111"
+                                                       : options.fakeModule ? "11112"
+                                                                            : (options.fakeCustom ? "9001" : "9000"));
         }
         s.trackerRate = options.fakeSlowTracker ? 15.0 : 89.6;
         s.missedRate = 0;
@@ -2157,7 +2144,7 @@ PanelModel fakeModel(const Options& options) {
             s.gaze = {{0.22, -0.14}};
             s.hasSent = true;
             s.lidsVrcft = {{0.75, 0.72}};
-            s.lids = etvr ? Pair {{1.0, 0.96}} : s.lidsVrcft;
+            s.lids = s.lidsVrcft;
             s.sentGaze = {{0.17, -0.10}};
             // Each eye turned in a little (left eye right of the combined gaze, right eye left of it)
             s.rawGazeEye[0] = {{0.27, -0.14}};
@@ -2976,7 +2963,7 @@ long long writeCaptureRequest(PanelModel& model, const char* target, double seco
 
 /**
  * Bring an older config.json up to date, once (see migrateLidScales, migrateGazePresets, migrateEyeOffsets,
- * migrateFitPolicy and migrateLidOpenSnap), and read it again.
+ * migrateFitPolicy, migrateLidOpenSnap and migrateRemovedSettings), and read it again.
  * @param model the model (its config is re-read after a write)
  */
 void migrateConfig(PanelModel& model) {
@@ -2986,11 +2973,13 @@ void migrateConfig(PanelModel& model) {
     std::string snapLog;
     std::string eyeLog;
     std::string fitLog;
+    std::string removedLog;
     bool lids = false;
     bool gaze = false;
     bool snap = false;
     bool eyes = false;
     bool fitPolicy = false;
+    bool removed = false;
     std::string error;
     const bool ok = updateConfigFile(
         model.configPath,
@@ -3000,6 +2989,7 @@ void migrateConfig(PanelModel& model) {
             eyes = migrateEyeOffsets(root, eyeLog);
             fitPolicy = migrateFitPolicy(root, fitLog);
             snap = migrateLidOpenSnap(root, snapLog);
+            removed = migrateRemovedSettings(root, removedLog);
         },
         error);
     if (!ok) {
@@ -3020,6 +3010,7 @@ void migrateConfig(PanelModel& model) {
                      fitLog.empty() ? "nothing else was set" : fitLog.c_str());
     }
     if (snap) std::fprintf(stderr, "[config] %s\n", snapLog.c_str());
+    if (removed && !removedLog.empty()) std::fprintf(stderr, "[config] %s\n", removedLog.c_str());
     model.config = readConfigFile(model.configPath);
 }
 

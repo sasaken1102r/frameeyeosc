@@ -30,8 +30,8 @@ enum class PanelAction {
     HostAuto,          ///< host = "auto"
     FixHost,           ///< host = the IP frameeyeosc sends to now
     PortDefault,       ///< port = null
-    SetOutput,         ///< output = outputOfArg(arg) (0 vrchat, 1 etvr, 2 livelink), port = null, then ask about
-                       ///< the recommendation
+    SetOutput,         ///< output = outputOfArg(arg) (0 vrchat, 2 livelink, 3 frameeyeosc), port = null, then ask
+                       ///< about the recommendation
     SetActiveType,     ///< eye_tracking_active = kActiveTypes[arg] (bool, float, off)
     Preset,            ///< gaze smoothing preset arg (0 light, 1 medium, 2 strong)
     NumberOn,          ///< key = its default, or its onNumber if that is off (for numbers where 0 means off)
@@ -229,7 +229,7 @@ public:
 
     /**
      * Ask once whether to apply the recommended settings of an output type.
-     * @param output kOutputVrchat, kOutputEtvr or kOutputLivelink
+     * @param output kOutputVrchat, kOutputLivelink or kOutputModule
      */
     void showPrompt(const std::string& output);
 
@@ -978,7 +978,7 @@ private:
 
     /**
      * The Output tab: the target PC and port, then the VRChat-only rows (parameter prefix, EyeTrackingActive type, Steam Link's names, VRChat's own eye tracking),
-     * or what to set up in VRCFT for LiveLink and ETVR.
+     * or what to set up in VRCFT for LiveLink and FrameEyeOSC.
      * @param pen drawing tools
      * @param t texts
      * @param model the model
@@ -1200,20 +1200,9 @@ private:
                             double top, double right);
 
     /**
-     * Beside a v2-only row in v1: why it is faded, and a button to the switch (Advanced > Version).
-     * @param pen drawing tools
-     * @param t texts
-     * @param note why
-     * @param x left of the note
-     * @param y row top
-     * @param h row height
-     */
-    void drawV2OnlyNote(const Pen& pen, const UiText& t, const char* note, double x, double y, double h);
-
-    /**
      * "Version": the version (large), when it was last checked and what came of it, the update button and the new
-     * release's summary, under them "Version history", the automatic check's chip and "Check now", and last how the
-     * eyes move (eye_behavior: v2 or v1) with a line on each.
+     * release's summary, under them "Version history", the automatic check's chip and "Check now", and "Get test
+     * versions".
      * @param pen drawing tools
      * @param t texts
      * @param model the model

@@ -72,7 +72,8 @@ constexpr const char* kPupilsToVrchat = "pupils_to_vrchat";
  * avatars that take it bit-packed; 0 (the default) sends the float only.
  */
 constexpr const char* kPupilBits = "pupil_bits";
-constexpr const char* kEyeBehavior = "eye_behavior";  ///< 2 (the default) as now, 1 as up to 0.7.5
+/** Removed in 0.10 (1 was the eyes as up to 0.7.5): taken out of config.json once (migrateRemovedSettings). */
+constexpr const char* kRemovedEyeBehavior = "eye_behavior";
 /** Eyelids (and squint) from the eye cameras where eyecam-rec reads them live and is calibrated (default on). */
 constexpr const char* kCameraLids = "camera_lids";
 constexpr const char* kRaw = "raw";
@@ -159,7 +160,9 @@ constexpr const char* kUpdateCheck = "update_check";  ///< panel only: look for 
 
 /** Output types (the "output" key). */
 constexpr const char* kOutputVrchat = "vrchat";
-constexpr const char* kOutputEtvr = "etvr";
+/** The ETVR output, removed in 0.10: read as kOutputVrchat (SettingsView, the status file) until
+ *  migrateRemovedSettings writes that into config.json. */
+constexpr const char* kOutputRemovedEtvr = "etvr";
 constexpr const char* kOutputLivelink = "livelink";  ///< Live Link Face packets for VRCFaceTracking's LiveLink module
 constexpr const char* kOutputModule = "frameeyeosc";  ///< FEO1 packets for VRCFaceTracking's FrameEyeOSC module
 /** eye_tracking_active values: how EyeTrackingActive is sent in VRChat mode */
@@ -171,7 +174,8 @@ constexpr const char* kAutoRecenterModes[2] = {"off", "center"};
 constexpr const char* kLidWidenModes[4] = {"off", "low", "normal", "high"};
 /** Default ports of the output types (used while "port" is null). */
 constexpr int kPortVrchat = 9000;
-constexpr int kPortEtvr = 8889;
+/** The removed ETVR output's default port: set with "etvr", migrateRemovedSettings puts it back to null. */
+constexpr int kPortRemovedEtvr = 8889;
 constexpr int kPortLivelink = 11111;
 constexpr int kPortModule = 11112;
 

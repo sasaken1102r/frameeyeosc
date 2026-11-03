@@ -315,11 +315,8 @@ void testPupilBitsRow(const FontSet& fonts) {
     PanelModel camerasOff = direct;
     camerasOff.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
     CHECK(segments(camerasOff).empty());
-    // Not there: without the eye cameras, or for ETVR; locked: nothing to press
+    // Not there: without the eye cameras; locked: nothing to press
     CHECK(segments(modelWith(Lids::Valve, false)).empty());
-    PanelModel etvr = direct;
-    etvr.config.root.set(key::kOutput, JsonValue::makeString(kOutputEtvr));
-    CHECK(segments(etvr).empty());
     PanelModel locked = direct;
     locked.status.locked.push_back(key::kPupilBits);
     CHECK(segments(locked).empty());
@@ -816,48 +813,65 @@ void testSnapMark(const FontSet& fonts) {
     CHECK(!panel.snapMark().shown);
 }
 
-void testEyeBehavior(const FontSet& fonts) {
-    // Advanced > Version: "How the eyes move", v2 (the default) or v1; both segments to press, nothing when locked
+/**
+ * Whether two renders offer the very same buttons in the very same places.
+ * @param a the buttons of one
+ * @param b the other's
+ * @return true if they do
+ */
+bool sameButtons(const std::vector<EyePanel::HitArea>& a, const std::vector<EyePanel::HitArea>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const bool keys = (a[i].hit.key == nullptr) == (b[i].hit.key == nullptr) &&
+                          (a[i].hit.key == nullptr || std::string(a[i].hit.key) == b[i].hit.key);
+        if (a[i].hit.action != b[i].hit.action || a[i].hit.arg != b[i].hit.arg || !keys) return false;
+        if (a[i].x != b[i].x || a[i].y != b[i].y || a[i].w != b[i].w || a[i].h != b[i].h) return false;
+    }
+    return true;
+}
+
+void testRemovedEyeBehavior(const FontSet& fonts) {
+    // eye_behavior went in 0.10: no switch on Advanced > Version, and a config.json that still says 1 (until the panel
+    // takes it out) offers the very same rows as without it, the ones v1 faded included
+    PanelModel m = modelWith(Lids::Valve);
+    m.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));
+    PanelModel v1 = m;
+    v1.config.root.set(key::kRemovedEyeBehavior, JsonValue::makeNumber(1, true));
     EyePanel panel(fonts);
+    const auto same = [&]() {
+        panel.render(m);
+        const std::vector<EyePanel::HitArea> plain = panel.hitAreas();
+        const bool snap = panel.snapMark().shown;
+        panel.render(v1);
+        return sameButtons(panel.hitAreas(), plain) && panel.snapMark().shown == snap;
+    };
     panel.setTab(PanelTab::Advanced);
     panel.setAdvPage(AdvPage::Version);
-    PanelModel m = modelWith(Lids::Valve);
-    panel.render(m);
-    std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetInteger, key::kEyeBehavior);
-    CHECK(found.size() == 2 && found[0].hit.arg == 2 && found[1].hit.arg == 1);
-    for (const EyePanel::HitArea& area : found) CHECK(area.y >= 110 && area.y + area.h <= 676);
-    PanelModel locked = m;
-    locked.status.locked.push_back(key::kEyeBehavior);
-    panel.render(locked);
-    CHECK(hits(panel, PanelAction::SetInteger, key::kEyeBehavior).empty());
-
-    // v1: the Eyelids rows that only v2 uses are faded (nothing to press) with a button to that switch, and (3) is not
-    // drawn on the bars; v2 has them as usual
-    PanelModel v1 = m;
-    v1.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
-    const auto toVersion = [&]() {
-        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AdvancedPage)) {
-            if (area.hit.arg == static_cast<int>(AdvPage::Version) && area.y > 100) return true;
-        }
-        return false;
-    };
+    CHECK(same() && hits(panel, PanelAction::SetInteger).empty());
     panel.setTab(PanelTab::Lids);
     panel.setLidsPage(LidsPage::Blinks);
-    panel.render(m);
-    CHECK(panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 2 && !toVersion());
-    panel.render(v1);
-    CHECK(!panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).empty() && toVersion());
-    CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).empty());
-    panel.setLidsPage(LidsPage::Blinks);
-    m.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));
-    v1.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));
-    panel.render(m);
-    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == 2 && !toVersion());
-    panel.render(v1);
-    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).empty() && toVersion());
-    // The button goes there
-    pressArg(panel, PanelAction::AdvancedPage, static_cast<int>(AdvPage::Version));
-    CHECK(panel.tab() == PanelTab::Advanced && panel.advPage() == AdvPage::Version);
+    CHECK(same());
+    CHECK(panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 2);
+    CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).size() == 2);
+    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == 2);
+    for (const bool independent : {false, true}) {
+        m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
+        v1.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
+        panel.setTab(PanelTab::Gaze);
+        panel.setGazePage(GazePage::Reach);
+        CHECK(same());
+        CHECK(hits(panel, PanelAction::Step, key::kOwnEyeGaze).empty() == !independent);
+        panel.setTab(PanelTab::Basic);
+        CHECK(same());
+    }
+    // No row anywhere sends to the Version page any more
+    for (const PanelTab tab : {PanelTab::Basic, PanelTab::Gaze, PanelTab::Lids}) {
+        panel.setTab(tab);
+        panel.render(v1);
+        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AdvancedPage)) {
+            CHECK(area.hit.arg != static_cast<int>(AdvPage::Version) || area.y < 100);
+        }
+    }
 }
 
 void testBrowsPage(const FontSet& fonts) {
@@ -1038,16 +1052,15 @@ std::vector<int> gazeTabs(const EyePanel& panel) {
 
 void testGazePages(const FontSet& fonts) {
     // The Gaze tab's three sub-tabs: each with its own rows and none of the others', everything inside the card
-    // (no scrolling), in both languages, with keys locked by the command line or not, v1 or v2, one eye or both
+    // (no scrolling), in both languages, with keys locked by the command line or not, one eye or both
     const char* scaleKeys[4] = {key::kGazeScaleLeft, key::kGazeScaleRight, key::kGazeScaleUp, key::kGazeScaleDown};
     for (const Language language : {Language::Ja, Language::En}) {
         for (const bool locked : {false, true}) {
-            for (const bool v1 : {false, true}) {
+            for (const bool oneEye : {false, true}) {
                 PanelModel m = modelWith(Lids::Valve, false);
                 m.language = language;
                 if (locked) m.status.locked = {"raw", "independent_eyes", "gaze_hold_below", "gaze_scale_right"};
-                if (v1) m.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
-                if (v1) m.status.dominantEye = "left";
+                if (oneEye) m.status.dominantEye = "left";
                 EyePanel basic(fonts);
                 basic.render(m);
                 const std::vector<uint8_t> plain = belowCard(basic);
@@ -1102,40 +1115,31 @@ void testGazePages(const FontSet& fonts) {
 }
 
 /** own_eye_gaze (Gaze > Reach, "Own gaze per eye", under "Move eyes separately"): − / ＋ in steps of 5 % only while
- *  the eyes move separately in v2 and it isn't locked; faded otherwise, in v1 with the button to that switch. Inside
- *  the card in both languages. */
+ *  the eyes move separately and it isn't locked; faded otherwise. Inside the card in both languages. */
 void testOwnEyeGazeRow(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         for (const bool independent : {false, true}) {
-            for (const bool v1 : {false, true}) {
-                for (const bool locked : {false, true}) {
-                    for (const double value : {0.0, 0.5, 1.0}) {
-                        PanelModel m = modelWith(Lids::Valve, false);
-                        m.language = language;
-                        m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
-                        m.config.root.set(key::kOwnEyeGaze, JsonValue::makeNumber(value));
-                        if (v1) m.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
-                        if (locked) m.status.locked.push_back(key::kOwnEyeGaze);
-                        EyePanel panel(fonts);
-                        panel.setTab(PanelTab::Gaze);
-                        panel.setGazePage(GazePage::Reach);
-                        panel.render(m);
-                        const std::vector<EyePanel::HitArea> steps = hits(panel, PanelAction::Step, key::kOwnEyeGaze);
-                        const bool usable = independent && !v1 && !locked;
-                        // At 0 % only ＋, at 100 % only −
-                        CHECK(steps.size() == (!usable ? 0u : (value > 0 && value < 1 ? 2u : 1u)));
-                        const std::vector<EyePanel::HitArea> separate =
-                            hits(panel, PanelAction::SetBool, key::kIndependentEyes);
-                        CHECK(separate.size() == 2);
-                        for (const EyePanel::HitArea& area : steps) {
-                            CHECK(area.w >= 44 && area.h >= 44 && area.x >= 400 && area.x + area.w <= 1176);
-                            CHECK(area.y > separate[0].y + separate[0].h && area.y + area.h <= 664);
-                        }
-                        int toVersion = 0;
-                        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AdvancedPage)) {
-                            if (area.x >= 400 && area.hit.arg == static_cast<int>(AdvPage::Version)) ++toVersion;
-                        }
-                        CHECK(toVersion == (v1 ? 1 : 0));
+            for (const bool locked : {false, true}) {
+                for (const double value : {0.0, 0.5, 1.0}) {
+                    PanelModel m = modelWith(Lids::Valve, false);
+                    m.language = language;
+                    m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
+                    m.config.root.set(key::kOwnEyeGaze, JsonValue::makeNumber(value));
+                    if (locked) m.status.locked.push_back(key::kOwnEyeGaze);
+                    EyePanel panel(fonts);
+                    panel.setTab(PanelTab::Gaze);
+                    panel.setGazePage(GazePage::Reach);
+                    panel.render(m);
+                    const std::vector<EyePanel::HitArea> steps = hits(panel, PanelAction::Step, key::kOwnEyeGaze);
+                    const bool usable = independent && !locked;
+                    // At 0 % only ＋, at 100 % only −
+                    CHECK(steps.size() == (!usable ? 0u : (value > 0 && value < 1 ? 2u : 1u)));
+                    const std::vector<EyePanel::HitArea> separate =
+                        hits(panel, PanelAction::SetBool, key::kIndependentEyes);
+                    CHECK(separate.size() == 2);
+                    for (const EyePanel::HitArea& area : steps) {
+                        CHECK(area.w >= 44 && area.h >= 44 && area.x >= 400 && area.x + area.w <= 1176);
+                        CHECK(area.y > separate[0].y + separate[0].h && area.y + area.h <= 664);
                     }
                 }
             }
@@ -2287,8 +2291,7 @@ void testSourceCard(const FontSet& fonts) {
 }
 
 void testOutputCards(const FontSet& fonts) {
-    // The Basic tab: three cards (VRChat, LiveLink, FrameEyeOSC), and ETVR as a small button under them with its notice
-    // between the two only while it is the output
+    // The Basic tab: three cards (VRChat, LiveLink, FrameEyeOSC), nothing more for the ETVR output removed in 0.10
     for (Language language : {Language::Ja, Language::En}) {
         EyePanel panel(fonts);
         PanelModel m = modelWith(Lids::Both);
@@ -2298,11 +2301,11 @@ void testOutputCards(const FontSet& fonts) {
             copy.config.root.set(key::kOutput, JsonValue::makeString(output));
             return copy;
         };
-        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule, kOutputEtvr}) {
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule}) {
             panel.render(with(output));
             const std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetOutput);
-            CHECK(found.size() == 4);
-            if (found.size() != 4) continue;
+            CHECK(found.size() == 3);
+            if (found.size() != 3) continue;
             // The cards in a row, as wide as each other, in the order VRChat, LiveLink, FrameEyeOSC
             const int args[3] = {0, 2, 3};
             for (int c = 0; c < 3; ++c) {
@@ -2310,21 +2313,6 @@ void testOutputCards(const FontSet& fonts) {
                 CHECK(found[c].y == found[0].y && std::fabs(found[c].w - found[0].w) < 0.5 && found[c].h > 80);
                 if (c > 0) CHECK(found[c].x > found[c - 1].x + found[c - 1].w);
             }
-            // ETVR: a small button under them
-            const EyePanel::HitArea& etvr = found[3];
-            CHECK(etvr.hit.arg == 1 && etvr.w < found[0].w && etvr.h >= 40 && etvr.h < 50);
-            CHECK(etvr.x == found[0].x);
-            // ...right under the cards, or under the notice (between the two) while ETVR is the output, or under the
-            // one-line hint (where to go if the eyes don't move) while VRChat directly is
-            const double gap = etvr.y - (found[0].y + found[0].h);
-            if (std::string(output) == kOutputEtvr) {
-                CHECK(gap > 60 && gap < 90);
-            } else if (std::string(output) == kOutputVrchat) {
-                CHECK(gap > 30 && gap < 50);
-            } else {
-                CHECK(gap > 0 && gap < 20);
-            }
-            CHECK(outputDeprecated(output) == (std::string(output) == kOutputEtvr));
             // Everything still fits, the rows below too
             CHECK(allInsideAndTall(panel));
             CHECK(hits(panel, PanelAction::ResetAll).size() == 1 && hits(panel, PanelAction::Quit).size() == 1);
@@ -2332,28 +2320,38 @@ void testOutputCards(const FontSet& fonts) {
             const std::vector<EyePanel::HitArea> quit = hits(panel, PanelAction::Quit);
             if (!quit.empty()) CHECK(quit[0].y + quit[0].h <= 664);
         }
-        // Pressing the small button switches to ETVR; a card to its output
+        // A config.json that still says "etvr" (until the panel brings it up to date), and an older frameeyeosc's
+        // status.json, show VRChat directly
+        panel.render(with(kOutputVrchat));
+        const std::vector<EyePanel::HitArea> vrchat = panel.hitAreas();
+        PanelModel etvr = with(kOutputRemovedEtvr);
+        etvr.status.output = kOutputRemovedEtvr;
+        panel.render(etvr);
+        CHECK(sameButtons(panel.hitAreas(), vrchat));
+        // Pressing a card switches to its output
         panel.render(with(kOutputLivelink));
         std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetOutput);
-        if (found.size() == 4) {
-            const PanelHit pressed = panel.pointerDown(found[3].x + found[3].w / 2, found[3].y + found[3].h / 2, 0.0);
-            panel.pointerUp();
-            CHECK(pressed.action == PanelAction::SetOutput && pressed.arg == 1);
+        if (found.size() == 3) {
             const PanelHit card = panel.pointerDown(found[2].x + found[2].w / 2, found[2].y + found[2].h / 2, 0.0);
             panel.pointerUp();
             CHECK(card.action == PanelAction::SetOutput && card.arg == 3);
         }
         // Locked: drawn, nothing to press
-        PanelModel locked = with(kOutputEtvr);
+        PanelModel locked = with(kOutputLivelink);
         locked.status.locked.push_back(key::kOutput);
         panel.render(locked);
         CHECK(hits(panel, PanelAction::SetOutput).empty());
         // The Output tab has no module row any more: the destination is chosen on the cards alone
         panel.setTab(PanelTab::Output);
-        for (const char* output : {kOutputLivelink, kOutputModule, kOutputEtvr}) {
+        for (const char* output : {kOutputLivelink, kOutputModule}) {
             panel.render(with(output));
             CHECK(hits(panel, PanelAction::SetOutput).empty() && allInsideAndTall(panel));
         }
+        // ...and "etvr" its rows for VRChat directly
+        panel.render(with(kOutputVrchat));
+        const std::vector<EyePanel::HitArea> direct = panel.hitAreas();
+        panel.render(with(kOutputRemovedEtvr));
+        CHECK(sameButtons(panel.hitAreas(), direct) && !hits(panel, PanelAction::SetBool, key::kNativeEyes).empty());
         // (FrameEyeOSC: no pupil rows, VRCFT sends them as the avatar takes them; LiveLink keeps its)
         panel.render(with(kOutputModule));
         CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).empty());
@@ -2398,7 +2396,7 @@ void testModuleLinkError(const FontSet& fonts) {
     // Drawn only for FrameEyeOSC (where the link is), and only with a failure
     CHECK(moduleLinkErrorShown(kOutputModule, "flatpak not found"));
     CHECK(!moduleLinkErrorShown(kOutputModule, ""));
-    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) {
+    for (const char* output : {kOutputVrchat, kOutputLivelink}) {
         CHECK(!moduleLinkErrorShown(output, "flatpak not found"));
     }
     for (Language language : {Language::Ja, Language::En}) {
@@ -2477,14 +2475,13 @@ void testCameraRows(const FontSet& fonts) {
         panel.render(none);
         CHECK(!inCard(panel));  // nothing there only for the cameras
         panel.setTab(PanelTab::Output);
-        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, kOutputModule}) {
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule}) {
             PanelModel m = none;
             m.config.root.set(key::kOutput, JsonValue::makeString(output));
             panel.render(m);
             CHECK(hits(panel, PanelAction::SetInteger, key::kPupilBits).empty());
             CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).empty());
-            // (ETVR sends no pupils at all: no line there)
-            CHECK(inCard(panel) == (std::string(output) != kOutputEtvr));
+            CHECK(inCard(panel));
             CHECK(allInsideAndTall(panel));
         }
         // ...and their tab says what they add, with "Get started" into the setup checklist
@@ -3444,7 +3441,7 @@ void testVrcFaceTrackingRow(const FontSet& fonts) {
             CHECK(hits(panel, PanelAction::SetBool, key::kVrcFaceTracking).empty());
             CHECK(hits(panel, PanelAction::SetBool, key::kNativeEyes).size() == 2);
             // The other outputs: not there, their rows as before
-            for (const char* output : {kOutputLivelink, kOutputModule, kOutputEtvr}) {
+            for (const char* output : {kOutputLivelink, kOutputModule}) {
                 PanelModel other = m;
                 other.config.root.set(key::kOutput, JsonValue::makeString(output));
                 panel.render(other);
@@ -3611,7 +3608,7 @@ int main() {
     testLidVetoSwitch(fonts);
     testLidsPages(fonts);
     testSnapMark(fonts);
-    testEyeBehavior(fonts);
+    testRemovedEyeBehavior(fonts);
     testLidsRemembered(fonts);
     testGazePages(fonts);
     testOwnEyeGazeRow(fonts);

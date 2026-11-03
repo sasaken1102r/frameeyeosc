@@ -31,7 +31,6 @@ struct UiText {
     const char* notRunningHint2;    ///< (line 2)
     const char* destination;        ///< "Destination" label
     const char* outputVrchatShort;  ///< "VRChat" in the destination line
-    const char* outputEtvrShort;    ///< "VRCFaceTracking" in the destination line
     const char* outputLivelinkShort;  ///< "VRCFT (LiveLink)" in the destination line
     const char* outputModuleShort;  ///< "VRCFT (FrameEyeOSC)" in the destination line
     const char* searchingPc;        ///< auto target not found yet
@@ -116,18 +115,12 @@ struct UiText {
     const char* outputVrchat;       ///< the destination cards' titles
     const char* outputLivelink;
     const char* outputModule;
-    const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
     const char* outputAllInOne;     ///< the tag on the FrameEyeOSC card
     const char* vrchatDirectHint;   ///< under the cards while sending to VRChat directly: where to go if eyes don't move
-    /** Each output's two lines (VRChat, LiveLink, ETVR, FrameEyeOSC): sync, VRCFT. A leading ICON_CHECK and a
-     *  space hang in front of the lines on a card (icons.h). ETVR's go on one line after its
-     *  small button, joined by outputMarkSeparator. */
-    const char* outputMarks[4][2];
-    const char* outputMarkSeparator;
-    const char* outputDeprecated;    ///< the label after the small ETVR button under the cards
-    const char* etvrNotice1;         ///< the notice while ETVR is the output: it goes away in the next version...
-    const char* etvrNotice2;         ///< ...and to pick another destination above
+    /** Each output's two lines (VRChat, LiveLink, FrameEyeOSC): sync, VRCFT. A leading ICON_CHECK and a
+     *  space hang in front of the lines on a card (icons.h). */
+    const char* outputMarks[3][2];
     // The Basic tab's eye cameras row: not set up (a way to their tab), or set up (the camera_lids switch)
     const char* rowEyeCameras;
     const char* hintEyeCamerasNew;   ///< ...not set up: what they add
@@ -180,17 +173,14 @@ struct UiText {
     const char* portDefaultVrchat;  ///< the port row's hint: the default port of the output type
     const char* portDefaultLivelink;
     const char* portDefaultModule;
-    const char* portDefaultEtvr;
     const char* portReset;          ///< back to default port
-    // Output tab, for LiveLink, FrameEyeOSC and ETVR: what to set up in VRCFT on the PC
+    // Output tab, for LiveLink and FrameEyeOSC: what to set up in VRCFT on the PC
     const char* vrcftSetupTitle;
     // Up to four steps each; the ones not used stay nullptr
     const char* vrcftStepsLivelink[4];
     const char* vrcftStepsModule[4];
-    const char* vrcftStepsEtvr[4];
     const char* vrcftModuleLink;    ///< where the FrameEyeOSC module's zip is, under its first step
     const char* vrcftSetupNote;     ///< the parameter names and syncing are up to VRCFT
-    const char* vrcftNoWide;        ///< ETVR: widened eyes don't come through
     const char* vrcftModulePupils;  ///< FrameEyeOSC with the eye cameras: the pupils go through VRCFT too
     const char* vrcftModuleLinkFailedFormat;  ///< the link couldn't open Chromium ("Couldn't open the browser: %s")
     const char* rowLanguage;
@@ -219,17 +209,6 @@ struct UiText {
     const char* hintDeadzone;
     const char* rowHold;
     const char* hintHold;
-    const char* rowEyeBehavior;       ///< Advanced > Version: "How the eyes move" (eye_behavior)...
-    const char* hintEyeBehavior;      ///< ...its hint
-    const char* eyeBehaviorV2;        ///< ...the segments: v2 (recommended)...
-    const char* eyeBehaviorV1;        ///< ...and v1 (up to 0.7.5)
-    const char* eyeBehaviorV2Line;    ///< ...and a line under it on what each does
-    const char* eyeBehaviorV1Line;
-    const char* eyeBehaviorLeftV1;    ///< the left column while v1 is on
-    const char* snapV2Only;           ///< Eyelids > Blinks & squint, in v1: (3) is not used
-    const char* floorV2Only;          ///< Eyelids > Blinks & squint, in v1: the floor is not used
-    const char* toVersionPage;        ///< the button beside them: "Advanced > Version"
-    const char* hintIndependentV1;    ///< "Move eyes separately" in v1
     const char* rowIndependent;
     const char* hintIndependent;
     const char* hintIndependentOneEye;  ///< instead, while the Frame tracks one eye alone (both eyes get its gaze)
@@ -1030,11 +1009,8 @@ struct UiText {
 
     // Recommendation prompt
     const char* promptVrchat;
-    const char* promptEtvr;
     const char* promptVrchatDetail1;
     const char* promptVrchatDetail2;
-    const char* promptEtvrDetail1;
-    const char* promptEtvrDetail2;
     const char* promptLivelink;
     const char* promptLivelinkDetail1;
     const char* promptLivelinkDetail2;

@@ -352,15 +352,6 @@ void drawPlusMinus(cairo_t* cr, double cx, double cy, double s, bool plus, Color
  * @param fill its color (③ has its own)
  */
 /**
- * Whether the eyes move as up to 0.7.5 (eye_behavior 1), where the eyelid rules since don't apply.
- * @param v the settings
- * @return true for v1
- */
-bool eyesV1(const SettingsView& v) {
-    return std::lround(v.number(key::kEyeBehavior)) == 1;
-}
-
-/**
  * Paint what was drawn since cairo_push_group faded (a row that doesn't apply now).
  * @param pen drawing tools
  */
@@ -1724,21 +1715,15 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         pen.text(x0, 180, t.notRunningHint1, fitSize(pen, t.notRunningHint1, 16, 12, x1 - x0, false), kText);
         pen.text(x0, 204, t.notRunningHint2, fitSize(pen, t.notRunningHint2, 16, 12, x1 - x0, false), kText);
     } else {
-        const char* receiver = s.output == kOutputEtvr       ? t.outputEtvrShort
-                               : s.output == kOutputLivelink ? t.outputLivelinkShort
-                               : s.output == kOutputModule   ? t.outputModuleShort
-                                                             : t.outputVrchatShort;
+        // (anything else is VRChat: an older frameeyeosc's "etvr" too, as 0.10 reads it)
+        const char* receiver = s.output == kOutputLivelink ? t.outputLivelinkShort
+                               : s.output == kOutputModule ? t.outputModuleShort
+                                                           : t.outputVrchatShort;
         const std::string destination = std::string(receiver) + " " ICON_ARROW_RIGHT " " +
                                          (s.target.empty() ? std::string(t.searchingPc) : s.target);
         const double size = fitSize(pen, destination, 19, 13, x1 - x0, true);
         pen.text(x0, 180, destination, size, kText, true);
-        const double modeW = pen.text(x0, 204, s.targetMode == "fixed" ? t.modeFixed : t.modeAuto, 15, kTextMuted);
-        // v1 (as up to 0.7.5) said on the same line, so it is not forgotten
-        if (eyesV1(SettingsView(m))) {
-            const double room = x1 - x0 - modeW - 12;
-            pen.text(x1, 204, t.eyeBehaviorLeftV1, fitSize(pen, t.eyeBehaviorLeftV1, 15, 11, room, true), kAccent, true,
-                     true);
-        }
+        pen.text(x0, 204, s.targetMode == "fixed" ? t.modeFixed : t.modeAuto, 15, kTextMuted);
     }
     pen.text(x0, 228, t.rateLabel, 15, kTextMuted, true);
     {
@@ -2163,8 +2148,7 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
     // The eye cameras: the way to set them up, or their switch
     drawEyeCamerasRow(pen, t, m, v, y, kRowH);
     y += kRowH + kRowGap;
-    // Reset all / quit (both ask for a second press), at the right end of the next two rows: the destination's ETVR
-    // button and notice leave no room for a row of their own
+    // Reset all / quit (both ask for a second press), at the right end of the next two rows
     const auto dangerButton = [&](bool isQuit, double rowY) {
         const PanelHit hit {isQuit ? PanelAction::Quit : PanelAction::ResetAll, nullptr, 0};
         const bool armed = isQuit ? quitArmed_ : resetArmed_;
@@ -2204,7 +2188,7 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
         dangerButton(true, y);
     }
     y += kRowH + 22;
-    // What pressing does, where there is room for it (not under the ETVR notice)
+    // What pressing does, where there is room for it
     const std::vector<std::string> lines = wrapText(pen, t.footer, 15, false, kInnerRight - kInnerX, 2);
     if (y + (lines.size() - 1) * 22 + 6 <= kContentY + kContentH - 10) {
         for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
@@ -2274,11 +2258,9 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
                  kTextMuted);
     }
 
-    // The cards in the order VRChat, LiveLink, FrameEyeOSC (their button arguments are 0, 2, 3); ETVR (1) is the small
-    // button under them
+    // The cards in the order VRChat, LiveLink, FrameEyeOSC (their button arguments are 0, 2, 3; 1 was ETVR)
     const int args[3] = {0, 2, 3};
     const char* titles[3] = {t.outputVrchat, t.outputLivelink, t.outputModule};
-    const int marks[3] = {0, 1, 3};  // rows of t.outputMarks
     const double gap = 12;
     const double cardW = (kInnerRight - kInnerX - gap * 2) / 3;
     const double pad = 14;
@@ -2299,7 +2281,7 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
     std::vector<Line> lines[3];
     size_t most = 0;
     for (int c = 0; c < 3; ++c) {
-        for (const char* text : t.outputMarks[marks[c]]) {
+        for (const char* text : t.outputMarks[c]) {
             std::string rest;
             const LineMark mark = splitMark(text, rest);
             const double indent = mark == LineMark::None ? 0 : markW;
@@ -2358,90 +2340,16 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         }
         addButton(hit, cx, top, cardW, cardH, usable);
     }
-    double by = top + cardH + 10;
-
-    // While ETVR is the output: it goes away in the next version, pick another of the three
-    if (outputDeprecated(output)) {
-        const double boxW = kInnerRight - kInnerX;
-        const double boxH = 56;
-        fillRounded(pen, kInnerX, by, boxW, boxH, 12, kWarningTint);
-        strokeRounded(pen, kInnerX, by, boxW, boxH, 12, kWarning, 2);
-        // A warning triangle with an exclamation mark
-        const double ix = kInnerX + 26;
-        const double iy = by + boxH / 2;
-        pen.color(kWarning);
-        cairo_set_line_width(pen.cr, 2);
-        cairo_set_line_join(pen.cr, CAIRO_LINE_JOIN_ROUND);
-        cairo_set_line_cap(pen.cr, CAIRO_LINE_CAP_ROUND);
-        cairo_move_to(pen.cr, ix, iy - 10);
-        cairo_line_to(pen.cr, ix + 11, iy + 9);
-        cairo_line_to(pen.cr, ix - 11, iy + 9);
-        cairo_close_path(pen.cr);
-        cairo_stroke(pen.cr);
-        cairo_move_to(pen.cr, ix, iy - 3);
-        cairo_line_to(pen.cr, ix, iy + 2);
-        cairo_move_to(pen.cr, ix, iy + 5.5);
-        cairo_line_to(pen.cr, ix, iy + 6);
-        cairo_stroke(pen.cr);
-        const double tx = kInnerX + 50;
-        const double textW = kInnerRight - 16 - tx;
-        pen.text(tx, by + 24, t.etvrNotice1, fitSize(pen, t.etvrNotice1, 15, 11, textW, true), kWarningText, true);
-        pen.text(tx, by + 45, t.etvrNotice2, fitSize(pen, t.etvrNotice2, 14, 11, textW, false), kWarningTextSoft);
-        by += boxH + 8;
-    }
+    double by = top + cardH;
 
     // VRChat directly: an avatar that takes its eye parameters as bits (or with other names) doesn't move; VRCFT fits
     // them to each avatar. Plain grey: a way out, not a warning
     if (selected == argOfOutput(kOutputVrchat)) {
+        by += 10;
         const double textW = kInnerRight - kInnerX;
         pen.text(kInnerX + 4, by + 15, t.vrchatDirectHint, fitSize(pen, t.vrchatDirectHint, 15, 11, textW - 4, false),
                  kTextMuted);
         by += 28;
-    }
-
-    // ETVR: a small button, "Deprecated", and what it carries
-    {
-        const bool isSelected = selected == argOfOutput(kOutputEtvr);
-        const PanelHit hit {PanelAction::SetOutput, key::kOutput, argOfOutput(kOutputEtvr)};
-        const bool usable = !locked;
-        const int pointer = usable ? pointerState(hit) : 0;
-        const std::string label = std::string(isSelected ? ICON_CHECK " " : "") + t.outputEtvr;
-        const double size = 16;
-        const double bh = 40;
-        const double bw = pen.measure(label, size, isSelected) + 32;
-        Color fill = kCard;
-        if (isSelected && !locked) {
-            fill = kWarningTint;
-        } else if (pointer > 0) {
-            fill = kControlHover;
-        }
-        fillRounded(pen, kInnerX, by, bw, bh, bh / 2, fill);
-        strokeRounded(pen, kInnerX, by, bw, bh, bh / 2, isSelected && !locked ? kWarning : kBorder, isSelected ? 2 : 1.5);
-        const Color textColor = locked ? kTextDisabled : (isSelected ? kWarningText : kTextMuted);
-        textCentered(pen, kInnerX + bw / 2, centerBaseline(by, bh, size), label, size, textColor, isSelected);
-        addButton(hit, kInnerX, by, bw, bh, usable);
-        // "Deprecated"
-        const double tagSize = 13;
-        const double tagH = 24;
-        const double tagX = kInnerX + bw + 12;
-        const double tagW = pen.measure(t.outputDeprecated, tagSize, false) + 16;
-        strokeRounded(pen, tagX, by + (bh - tagH) / 2, tagW, tagH, 8, kBorder, 1);
-        textCentered(pen, tagX + tagW / 2, centerBaseline(by + (bh - tagH) / 2, tagH, tagSize), t.outputDeprecated,
-                     tagSize, kTextMuted, false);
-        // Its two lines on one (the leading marks only go on the cards)
-        std::string carries;
-        for (const char* text : t.outputMarks[2]) {  // (row 2: ETVR)
-            std::string rest;
-            splitMark(text, rest);
-            if (!carries.empty()) carries += t.outputMarkSeparator;
-            carries += rest;
-        }
-        const double cx = tagX + tagW + 14;
-        const double room = kInnerRight - cx;
-        const double carriesSize = fitSize(pen, carries, 14, 11, room, false);
-        pen.text(cx, centerBaseline(by, bh, carriesSize), ellipsize(pen, carries, carriesSize, false, room, false),
-                 carriesSize, kTextMuted);
-        by += bh;
     }
     return by - y + 8;
 }
@@ -2452,8 +2360,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const std::string output = v.text(key::kOutput);
     const bool livelink = output == kOutputLivelink;
     const bool module = output == kOutputModule;
-    const bool etvr = output == kOutputEtvr;
-    const bool direct = !livelink && !module && !etvr;
+    const bool direct = !livelink && !module;
     // VRChat directly has the most rows: all of them a little shorter there (the other outputs' as on the other tabs)
     const double rowH = direct ? 56 : kRowH;
     const double controlH = direct ? 46 : kControlH;
@@ -2506,9 +2413,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     {
         const bool locked = v.locked(key::kPort);
         const bool isDefault = v.portIsDefault();
-        const char* hint = livelink ? t.portDefaultLivelink
-                           : module ? t.portDefaultModule
-                                    : (etvr ? t.portDefaultEtvr : t.portDefaultVrchat);
+        const char* hint = livelink ? t.portDefaultLivelink : module ? t.portDefaultModule : t.portDefaultVrchat;
         drawRowLabel(pen, t, y, rowH, t.rowPort, hint, locked);
         drawStepper(pen, kControlX, y + cy, 220, controlH, key::kPort, v.port(), std::to_string(v.port()), true,
                     locked);
@@ -2632,7 +2537,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         y = pupilBits(y);
     }
 
-    // LiveLink, FrameEyeOSC and ETVR: what to set up in VRCFT on the PC (nothing else is set here)
+    // LiveLink and FrameEyeOSC: what to set up in VRCFT on the PC (nothing else is set here)
     const double boxX = kInnerX;
     const double boxW = kInnerRight - kInnerX;
     const double pad = 20;
@@ -2641,7 +2546,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const double stepStep = 26;
     const double badgeW = 32;
     const double textW = boxW - pad * 2 - badgeW;
-    const char* const* steps = livelink ? t.vrcftStepsLivelink : (module ? t.vrcftStepsModule : t.vrcftStepsEtvr);
+    const char* const* steps = livelink ? t.vrcftStepsLivelink : t.vrcftStepsModule;
     std::vector<std::vector<std::string>> stepLines;
     size_t stepLineCount = 0;
     for (int i = 0; i < 4 && steps[i] != nullptr; ++i) {
@@ -2655,7 +2560,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const bool linkFailed = link && moduleLinkErrorShown(output, m.moduleLinkError);
     if (linkFailed) ++stepLineCount;
     std::string note = t.vrcftSetupNote;
-    const char* more = etvr ? t.vrcftNoWide : (module && camera ? t.vrcftModulePupils : nullptr);
+    const char* more = module && camera ? t.vrcftModulePupils : nullptr;
     if (more != nullptr) {
         // A space between English sentences, none after "。"
         if (!note.empty() && note.back() == '.') note += " ";
@@ -2831,7 +2736,7 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
     {
         const bool locked = v.locked(key::kIndependentEyes);
         const bool oneEye = m.status.running && !m.status.dominantEye.empty();
-        const char* hint = oneEye ? t.hintIndependentOneEye : eyesV1(v) ? t.hintIndependentV1 : t.hintIndependent;
+        const char* hint = oneEye ? t.hintIndependentOneEye : t.hintIndependent;
         drawRowLabel(pen, t, y, kRowH, t.rowIndependent, hint, locked);
         drawSegmented(pen, kControlX, y + cy, 300, kControlH,
                       {{t.on, {PanelAction::SetBool, key::kIndependentEyes, 1}},
@@ -2839,12 +2744,11 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
                       v.flag(key::kIndependentEyes) ? 0 : 1, 20, locked);
     }
     y += kRowH + kRowGap;
-    // How much of each eye's own sideways gaze (own_eye_gaze): only while the eyes move separately in v2, faded
-    // otherwise; in v1 with why and the way to the switch beside it, else what the ends do
+    // How much of each eye's own sideways gaze (own_eye_gaze): only while the eyes move separately, faded otherwise;
+    // what the ends do beside it
     {
         const bool locked = v.locked(key::kOwnEyeGaze);
-        const bool v1 = eyesV1(v);
-        const bool usable = !v1 && v.flag(key::kIndependentEyes);
+        const bool usable = v.flag(key::kIndependentEyes);
         const double stepperW = 196;
         const double value = v.number(key::kOwnEyeGaze);
         const double nx = kControlX + stepperW + 16;
@@ -2852,7 +2756,7 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
         drawRowLabel(pen, t, y, kRowH, t.rowOwnEyeGaze, "", locked);
         drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kOwnEyeGaze, value, formatPercent(value), usable,
                     locked);
-        if (!v1) {
+        {
             const std::vector<std::string> lines = wrapText(pen, t.hintOwnEyeGaze, 13, false, kInnerRight - nx, 3);
             double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
             for (const std::string& line : lines) {
@@ -2861,7 +2765,6 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
             }
         }
         if (!usable) fadeGroup(pen);
-        if (v1) drawV2OnlyNote(pen, t, t.floorV2Only, nx, y, kRowH);
     }
 }
 
@@ -3520,19 +3423,13 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
     } else {
         const bool onCameras = s.running && (s.camera.used[0] || s.camera.used[1]);
         const bool locked = v.locked(key::kCameraLidFloor);
-        // A v2 rule: faded in v1, with why and the way to the switch beside it
-        const bool v1 = eyesV1(v);
-        if (v1) cairo_push_group(pen.cr);
         drawRowLabel(pen, t, y, kRowH, t.rowLidFloor, t.lidFloorHint, locked, 0, true);
         const double stepperW = 196;
         const double floor = v.number(key::kCameraLidFloor);
         drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kCameraLidFloor, floor,
-                    formatSetting(key::kCameraLidFloor, floor), !v1, locked, -1e9, 1e9, &kSuccess);
-        if (v1) fadeGroup(pen);
+                    formatSetting(key::kCameraLidFloor, floor), true, locked, -1e9, 1e9, &kSuccess);
         const double nx = kControlX + stepperW + 16;
-        if (v1) {
-            drawV2OnlyNote(pen, t, t.floorV2Only, nx, y, kRowH);
-        } else {
+        {
             const char* note = onCameras ? t.lidFloorNote : t.lidFloorNoteIdle;
             const std::vector<std::string> lines = wrapText(pen, note, 13, false, kInnerRight - nx, 3);
             double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
@@ -3550,7 +3447,6 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
     const EyeStatus& s = m.status;
     cairo_t* cr = pen.cr;
     const double cy = (kRowH - kControlH) / 2;
-    const bool v1 = eyesV1(v);
     // The title, and what the bars show
     {
         y += 8;
@@ -3563,8 +3459,8 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
     }
     // Each eye's eyelid as sent now (VRCFT, 0..1), in the cameras' green where its eyelid is theirs and with whose it is
     // on the right; relaxed open dotted; ③ for the eyes without the cameras' eyelid (lid_open_snap) and for those with
-    // it (camera_lid_open_snap), each faded while it applies to neither eye (neither in v1, where ③ isn't used); the
-    // camera floor in green while it is on (v2, the cameras in use), faded while no eye is on them
+    // it (camera_lid_open_snap), each faded while it applies to neither eye; the camera floor in green while it is on
+    // (the cameras in use), faded while no eye is on them
     {
         const double chipW = 92;
         const double barX = kInnerX + 34;
@@ -3615,7 +3511,7 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
         }
         // The camera floor
         const double floor = v.number(key::kCameraLidFloor);
-        if (!v1 && eyecam::inUse(m.eyecam, v.flag(key::kCameraLids)) && std::isfinite(floor) && floor > 0) {
+        if (eyecam::inUse(m.eyecam, v.flag(key::kCameraLids)) && std::isfinite(floor) && floor > 0) {
             const bool any = onCamera[0] || onCamera[1];
             const double x = xOf(floor);
             for (const bool edge : {true, false}) {
@@ -3632,7 +3528,7 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
         const double dash[2] = {5, 4};
         for (int i = 0; i < 2; ++i) {
             const double snap = v.number(keys[i]);
-            if (v1 || !std::isfinite(snap) || snap >= kLidRelaxed - 1e-9) continue;
+            if (!std::isfinite(snap) || snap >= kLidRelaxed - 1e-9) continue;
             // (without eye data, as for the eyes as set up: the cameras' value where they are in use)
             const bool applies = live ? (i == 0 ? !onCamera[0] || !onCamera[1] : onCamera[0] || onCamera[1])
                                       : (i == 0 || eyecam::inUse(m.eyecam, v.flag(key::kCameraLids)));
@@ -3670,19 +3566,13 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
         }
         y = bottom + 14;
     }
-    // ③'s row: in v2 both values, each with whose eyes it is for on its left; in v1 only lid_open_snap, faded, with why
-    // and the way to the switch beside it. In ③'s color, as are the steppers' edges
+    // ③'s row: both values, each with whose eyes it is for on its left. In ③'s color, as are the steppers' edges
     {
-        const bool locked = v.locked(key::kLidOpenSnap) || (!v1 && v.locked(key::kCameraLidOpenSnap));
-        if (v1) cairo_push_group(cr);
+        const bool locked = v.locked(key::kLidOpenSnap) || v.locked(key::kCameraLidOpenSnap);
         drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 3, kSnap);
         drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked, 26);
         const double stepperW = 150;
-        if (v1) {
-            const double snap = v.number(key::kLidOpenSnap);
-            drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kLidOpenSnap, snap,
-                        formatSetting(key::kLidOpenSnap, snap), false, v.locked(key::kLidOpenSnap), -1e9, 1e9, &kSnap);
-        } else {
+        {
             const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
             const char* captions[2] = {t.capSnapValve, t.capSnapCamera};
             const double captionW = 84;
@@ -3694,10 +3584,6 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
                 drawStepper(pen, x + captionW, y + cy, stepperW, kControlH, keys[i], value,
                             formatSetting(keys[i], value), true, v.locked(keys[i]), -1e9, 1e9, &kSnap);
             }
-        }
-        if (v1) {
-            fadeGroup(pen);
-            drawV2OnlyNote(pen, t, t.snapV2Only, kControlX + stepperW + 16, y, kRowH);
         }
         y += kRowH;
         drawRowDivider(pen, y);
@@ -4081,20 +3967,6 @@ double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelMo
     return 0.0;
 }
 
-void EyePanel::drawV2OnlyNote(const Pen& pen, const UiText& t, const char* note, double x, double y, double h) {
-    const double bh = 34;
-    const double bw = pen.measure(t.toVersionPage, 14, true) + 28;
-    const double bx = kInnerRight - bw;
-    drawButton(pen, bx, y + (h - bh) / 2, bw, bh, t.toVersionPage,
-               {PanelAction::AdvancedPage, nullptr, static_cast<int>(AdvPage::Version)}, true, false, 14);
-    const std::vector<std::string> lines = wrapText(pen, note, 13, false, bx - 12 - x, 3);
-    double baseline = y + h / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
-    for (const std::string& line : lines) {
-        pen.text(x, baseline, line, 13, kText);
-        baseline += 17;
-    }
-}
-
 double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
                                  double top, double right) {
     using frame_updater::UpdateState;
@@ -4282,25 +4154,6 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
                       {{t.on, {PanelAction::UpdateBeta, nullptr, 1}}, {t.off, {PanelAction::UpdateBeta, nullptr, 0}}},
                       updateBeta_ ? 0 : 1, 16, false);
         ey += h + 14;
-    }
-    // How the eyes move (eye_behavior): v2, or v1 as up to 0.7.5, and a line on what each does
-    {
-        const double h = 46;
-        const bool locked = v.locked(key::kEyeBehavior);
-        const double segW = std::min(420.0, right - kInnerX - 260);
-        const double labelW = right - segW - 16 - kInnerX;
-        const std::string hint = locked ? t.locked : t.hintEyeBehavior;
-        pen.text(kInnerX, ey + 20, t.rowEyeBehavior, fitSize(pen, t.rowEyeBehavior, 18, 13, labelW, true), kText, true);
-        pen.text(kInnerX, ey + 40, hint, fitSize(pen, hint, 14, 11, labelW, false), kTextMuted);
-        drawSegmented(pen, right - segW, ey + 2, segW, 42,
-                      {{t.eyeBehaviorV2, {PanelAction::SetInteger, key::kEyeBehavior, 2}},
-                       {t.eyeBehaviorV1, {PanelAction::SetInteger, key::kEyeBehavior, 1}}},
-                      eyesV1(v) ? 1 : 0, 16, locked);
-        ey += h + 4;
-        for (const char* line : {t.eyeBehaviorV2Line, t.eyeBehaviorV1Line}) {
-            ey += 19;
-            pen.text(kInnerX, ey, line, fitSize(pen, line, 14, 11, right - kInnerX, false), kTextMuted);
-        }
     }
     // Last, the other Frame apps: at the bottom of the card while the page fits, else under the rest (scrolled to)
     if (!m.apps.entries.empty()) {
@@ -5633,7 +5486,6 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     pen.roundedRect(0, 0, kWidth, kHeight, 24);
     cairo_fill(pen.cr);
     const bool update = !updatePromptVersion_.empty();
-    const bool etvr = promptOutput_ == kOutputEtvr;
     const bool livelink = promptOutput_ == kOutputLivelink;
     const bool module = promptOutput_ == kOutputModule;
     const double w = 760;
@@ -5643,18 +5495,15 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     drawCard(pen, x, y, w, h, 24, kCard, kAccent, 2);
     const std::string title = update ? formatText(updatePromptBack_ ? t.updateBackConfirmFormat : t.updateConfirmFormat,
                                                   updatePromptVersion_)
-                                     : etvr       ? t.promptEtvr
                                      : livelink   ? t.promptLivelink
                                      : module     ? t.promptModule
                                                   : t.promptVrchat;
     const double titleSize = fitSize(pen, title, 24, 16, w - 60, true);
     textCentered(pen, x + w / 2, y + 62, title, titleSize, kText, true);
-    std::string detail1 = etvr       ? t.promptEtvrDetail1
-                          : livelink ? t.promptLivelinkDetail1
+    std::string detail1 = livelink   ? t.promptLivelinkDetail1
                           : module   ? t.promptModuleDetail1
                                      : t.promptVrchatDetail1;
-    std::string detail2 = etvr       ? t.promptEtvrDetail2
-                          : livelink ? t.promptLivelinkDetail2
+    std::string detail2 = livelink   ? t.promptLivelinkDetail2
                           : module   ? t.promptModuleDetail2
                                      : t.promptVrchatDetail2;
     if (update) {

@@ -534,14 +534,13 @@ void testMigrateEyeOffsets() {
     CHECK(migrateEyeOffsets(old, log) && std::fabs(numberIn(old, key::kGazeOffsetXRight) - 0.01) < 1e-9);
 }
 
-/** An eye fit from before version 4 keeps only the zero point and the up gain, once, whatever eye_behavior is. */
+/** An eye fit from before version 4 keeps only the zero point and the up gain, once. */
 void testMigrateFitPolicy() {
-    const auto fitted = [](double version, int behavior) {
+    const auto fitted = [](double version) {
         JsonValue root;
         root.type = JsonValue::Type::Object;
         root.set(key::kLidWiden, JsonValue::makeString("normal"));
         root.set(key::kVersion, JsonValue::makeNumber(version, true));
-        if (behavior > 0) root.set(key::kEyeBehavior, JsonValue::makeNumber(behavior, true));
         root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.012));
         root.set(key::kGazeOffsetY, JsonValue::makeNumber(-0.02));
         root.set(key::kGazeGainX, JsonValue::makeNumber(0.93));
@@ -556,16 +555,15 @@ void testMigrateFitPolicy() {
         root.set(key::kGazeScaleUp, JsonValue::makeNumber(1.2));
         return root;
     };
-    for (const int behavior : {0, 1, 2}) {
-        JsonValue root = fitted(kEyeOffsetsVersion, behavior);
+    {
+        JsonValue root = fitted(kEyeOffsetsVersion);
         std::string log;
         CHECK(configNeedsMigration(root) && migrateFitPolicy(root, log));
         CHECK(numberIn(root, key::kGazeRollDeg) == 0.0 && numberIn(root, key::kGazeGainX) == 1.0);
         CHECK(numberIn(root, key::kGazeGainDown) == 1.0);
-        // Kept: the zero point, the up gain, and anything not the fit's (the gaze scale, eye_behavior)
+        // Kept: the zero point, the up gain, and anything not the fit's (the gaze scale)
         CHECK(numberIn(root, key::kGazeOffsetX) == 0.012 && numberIn(root, key::kGazeOffsetY) == -0.02);
         CHECK(numberIn(root, key::kGazeGainUp) == 0.9 && numberIn(root, key::kGazeScaleUp) == 1.2);
-        CHECK(behavior == 0 || numberIn(root, key::kEyeBehavior) == behavior);
         for (const char* name :
              {key::kGazeOffsetXLeft, key::kGazeOffsetXRight, key::kGazeGainXLeft, key::kGazeGainXRight}) {
             CHECK(root.get(name) != nullptr && root.get(name)->isNull());
@@ -590,10 +588,10 @@ void testMigrateFitPolicy() {
     CHECK(migrateFitPolicy(plain, log) && log.empty() && numberIn(plain, key::kVersion) == kConfigVersion);
     CHECK(plain.get(key::kGazeRollDeg) == nullptr && plain.get(key::kAutoRecenter)->text == "off");
     // A file of the current version is left alone
-    JsonValue current = fitted(kConfigVersion, 2);
+    JsonValue current = fitted(kConfigVersion);
     CHECK(!migrateFitPolicy(current, log) && numberIn(current, key::kGazeRollDeg) == 6.7);
     // A version 2 file goes through each step in turn
-    JsonValue old = fitted(2, 1);
+    JsonValue old = fitted(2);
     old.set(key::kGazeOffsetXRight, JsonValue::makeNumber(0.02));
     CHECK(migrateEyeOffsets(old, log) && migrateFitPolicy(old, log) && !configNeedsMigration(old));
     CHECK(old.get(key::kGazeOffsetXRight)->isNull() && numberIn(old, key::kGazeGainUp) == 0.9);
@@ -601,13 +599,12 @@ void testMigrateFitPolicy() {
 
 /** The destination cards' button arguments stand for the output types both ways. */
 void testOutputArgs() {
-    for (int arg = 0; arg < 4; ++arg) CHECK(argOfOutput(outputOfArg(arg)) == arg);
+    for (const int arg : {0, 2, 3}) CHECK(argOfOutput(outputOfArg(arg)) == arg);
     CHECK(std::string(outputOfArg(2)) == kOutputLivelink);
     CHECK(std::string(outputOfArg(3)) == kOutputModule);
-    CHECK(argOfOutput("osc") == -1);
-    // ETVR is going away: the Basic tab warns while it is the output (it still works)
-    CHECK(outputDeprecated(kOutputEtvr));
-    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule, ""}) CHECK(!outputDeprecated(output));
+    // 1 was ETVR, removed in 0.10: VRChat, like anything else
+    CHECK(std::string(outputOfArg(1)) == kOutputVrchat && std::string(outputOfArg(7)) == kOutputVrchat);
+    CHECK(argOfOutput("osc") == -1 && argOfOutput(kOutputRemovedEtvr) == -1);
     // Its own default port
     PanelModel m;
     m.config.root.type = JsonValue::Type::Object;
@@ -620,6 +617,69 @@ void testOutputArgs() {
     for (size_t i = 0; i < module.size() && i < livelink.size(); ++i) {
         CHECK(std::string(module[i].key) == livelink[i].key && module[i].value.number == livelink[i].value.number);
     }
+}
+
+/**
+ * What 0.10 removed: config.json's "output": "etvr" (with the ETVR port 8889 set with it) and eye_behavior go, once,
+ * whatever the version; until then, and from an older frameeyeosc's status.json, "etvr" reads as VRChat.
+ */
+void testMigrateRemovedSettings() {
+    const auto file = [](const char* output, double port, double behavior) {
+        JsonValue root;
+        root.type = JsonValue::Type::Object;
+        root.set(key::kLidWiden, JsonValue::makeString("normal"));
+        root.set(key::kVersion, JsonValue::makeNumber(kConfigVersion, true));
+        if (output != nullptr) root.set(key::kOutput, JsonValue::makeString(output));
+        if (port > 0) root.set(key::kPort, JsonValue::makeNumber(port, true));
+        if (behavior > 0) root.set(key::kRemovedEyeBehavior, JsonValue::makeNumber(behavior, true));
+        return root;
+    };
+    const auto has = [](const std::string& log, const char* what) { return log.find(what) != std::string::npos; };
+    // ETVR: VRChat, with VRChat's own port where it had the ETVR module's
+    {
+        JsonValue root = file(kOutputRemovedEtvr, kPortRemovedEtvr, 0);
+        std::string log;
+        CHECK(configNeedsMigration(root) && migrateRemovedSettings(root, log));
+        CHECK(root.get(key::kOutput)->text == kOutputVrchat && root.get(key::kPort)->isNull());
+        CHECK(has(log, "\"etvr\" -> \"vrchat\"") && has(log, "port 8889 -> null"));
+        // Once only
+        CHECK(!configNeedsMigration(root) && !migrateRemovedSettings(root, log) && log.empty());
+    }
+    // A port set by hand for something else stays; 8889 for another output is that output's own
+    {
+        JsonValue root = file(kOutputRemovedEtvr, 9100, 0);
+        std::string log;
+        CHECK(migrateRemovedSettings(root, log) && numberIn(root, key::kPort) == 9100 && !has(log, "port"));
+        JsonValue other = file(kOutputLivelink, kPortRemovedEtvr, 0);
+        CHECK(!configNeedsMigration(other) && !migrateRemovedSettings(other, log));
+        CHECK(numberIn(other, key::kPort) == kPortRemovedEtvr);
+    }
+    // eye_behavior goes: 1 said in the log, 2 (what earlier panels wrote) quietly; nothing else changes
+    for (const double behavior : {1.0, 2.0}) {
+        JsonValue root = file(kOutputModule, 0, behavior);
+        std::string log;
+        CHECK(configNeedsMigration(root) && migrateRemovedSettings(root, log));
+        CHECK(root.get(key::kRemovedEyeBehavior) == nullptr && root.get(key::kOutput)->text == kOutputModule);
+        CHECK(has(log, "eye_behavior 1") == (behavior == 1.0) && (behavior == 1.0 || log.empty()));
+        CHECK(!configNeedsMigration(root) && writeJson(root).find("eye_behavior") == std::string::npos);
+    }
+    // Both at once, on one log line
+    {
+        JsonValue root = file(kOutputRemovedEtvr, 0, 1);
+        std::string log;
+        CHECK(migrateRemovedSettings(root, log) && has(log, "etvr") && has(log, "; eye_behavior 1"));
+        CHECK(root.get(key::kPort) == nullptr && !configNeedsMigration(root));
+    }
+    // Until it is written, "etvr" reads as VRChat, with VRChat's port; locked by an older frameeyeosc too
+    PanelModel m;
+    m.config.root = file(kOutputRemovedEtvr, 0, 0);
+    CHECK(SettingsView(m).text(key::kOutput) == kOutputVrchat && SettingsView(m).port() == kPortVrchat);
+    m.status = parseStatus(
+        "{\"pid\": 1, \"output\": \"etvr\", \"locked\": [\"output\"], \"effective\": {\"output\": \"etvr\"}}", 0,
+        false);
+    CHECK(SettingsView(m).locked(key::kOutput) && SettingsView(m).text(key::kOutput) == kOutputVrchat);
+    // eye_behavior is no setting any more: a new config.json doesn't have it
+    CHECK(findSetting(key::kRemovedEyeBehavior) == nullptr);
 }
 
 /** status.json says why frameeyeosc can't read the eye tracker in source_error; null or missing means it can. */
@@ -940,12 +1000,11 @@ void testPupilsToVrchat() {
     CHECK(pupilsRowShown(kOutputLivelink, true));
     CHECK(!pupilsRowShown(kOutputLivelink, false));
     CHECK(!pupilsRowShown(kOutputVrchat, true));
-    CHECK(!pupilsRowShown(kOutputEtvr, true));
     CHECK(!pupilsRowShown("", true));
     // ...and in their place, without them, the one dashed line (where pupils could go: VRChat directly and LiveLink)
     CHECK(pupilsLineShown(kOutputLivelink, false) && pupilsLineShown(kOutputVrchat, false));
-    CHECK(!pupilsLineShown(kOutputEtvr, false) && !pupilsLineShown("", false));
-    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, kOutputModule}) {
+    CHECK(!pupilsLineShown("", false));
+    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule}) {
         CHECK(!pupilsLineShown(output, true));
     }
     // The FrameEyeOSC module carries the pupils itself (through VRCFT): the line without the cameras, never the row
@@ -1003,10 +1062,9 @@ void testPupilBits() {
     CHECK(pupilBitsRow(kOutputVrchat, true, false) == PupilBitsRow::Usable);  // pupils_to_vrchat is LiveLink's
     CHECK(pupilBitsRow(kOutputLivelink, true, true) == PupilBitsRow::Usable);
     CHECK(pupilBitsRow(kOutputLivelink, true, false) == PupilBitsRow::Greyed);
-    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, ""}) {
+    for (const char* output : {kOutputVrchat, kOutputLivelink, ""}) {
         CHECK(pupilBitsRow(output, false, true) == PupilBitsRow::Hidden);  // not in use (camera_lids off too)
     }
-    CHECK(pupilBitsRow(kOutputEtvr, true, true) == PupilBitsRow::Hidden);
     // FrameEyeOSC: VRCFT sends the pupils in whatever form the avatar takes them
     CHECK(pupilBitsRow(kOutputModule, true, true) == PupilBitsRow::Hidden);
     CHECK(pupilBitsRow(kOutputModule, true, false) == PupilBitsRow::Hidden);
@@ -1429,6 +1487,7 @@ int main() {
     testLidPresets();
     testMigrateLidScales();
     testMigrateLidOpenSnap();
+    testMigrateRemovedSettings();
     testSourceError();
     testDominantEyeAndSaturation();
     testTrackerRateCause();

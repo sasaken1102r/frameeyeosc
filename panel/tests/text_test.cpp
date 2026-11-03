@@ -332,10 +332,9 @@ void testOutputMarks() {
     CHECK(std::string(en.hintOutput).find(ICON_DOUBLE_RING) == std::string::npos);
     SAME(ja.outputMarks[0][0], "同期 " ICON_TRIANGLE_OUTLINE);
     SAME(ja.outputMarks[1][0], "同期 " ICON_RING);
-    SAME(ja.outputMarks[2][0], "同期 " ICON_RING);
-    SAME(ja.outputMarks[3][0], "同期 " ICON_DOUBLE_RING);
+    SAME(ja.outputMarks[2][0], "同期 " ICON_DOUBLE_RING);
     SAME(en.outputMarks[1][0], ICON_CHECK " Synced to others");
-    SAME(en.outputMarks[3][0], ICON_CHECK " Synced, pupils too");
+    SAME(en.outputMarks[2][0], ICON_CHECK " Synced, pupils too");
     CHECK(std::string(ja.hintOutput).find(ICON_TRIANGLE_OUTLINE) != std::string::npos);
     SAME(ja.outputAllInOne, "全部入り");
     for (const UiText* t : {&ja, &en}) {

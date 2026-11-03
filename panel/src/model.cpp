@@ -48,10 +48,6 @@ constexpr double kNewGazeDeadzone = 0.005;
 /** The presets' names in the log. */
 const char* const kPresetNames[3] = {"light", "medium", "strong"};
 
-/** Eyelid smoothing recommended for ETVR (provisional; to be tuned on the headset). */
-constexpr double kEtvrLidMinCutoff = 10.0;
-constexpr double kEtvrLidBeta = 10.0;
-
 /** The smallest gap between two neighbouring lid marks. */
 constexpr double kLidGap = 0.01;
 
@@ -62,10 +58,16 @@ bool SettingsView::locked(const std::string& name) const {
 }
 
 JsonValue SettingsView::value(const std::string& name) const {
+    JsonValue v = model_.config.value(name);
     if (locked(name)) {
-        if (const JsonValue* effective = model_.status.effective.get(name)) return *effective;
+        if (const JsonValue* effective = model_.status.effective.get(name)) v = *effective;
     }
-    return model_.config.value(name);
+    // The ETVR output, removed in 0.10, is VRChat now (as frameeyeosc reads it), in a file not yet brought up to date
+    // (migrateRemovedSettings) or from an older frameeyeosc
+    if (name == key::kOutput && v.isString() && v.text == kOutputRemovedEtvr) {
+        return JsonValue::makeString(kOutputVrchat);
+    }
+    return v;
 }
 
 double SettingsView::number(const std::string& name) const {
@@ -89,7 +91,6 @@ int SettingsView::port() const {
     const double value = number(key::kPort);
     if (std::isfinite(value)) return static_cast<int>(std::lround(value));
     const std::string output = text(key::kOutput);
-    if (output == kOutputEtvr) return kPortEtvr;
     if (output == kOutputLivelink) return kPortLivelink;
     if (output == kOutputModule) return kPortModule;
     return kPortVrchat;
@@ -146,7 +147,6 @@ int matchingLidPreset(const SettingsView& view) {
 }
 
 const char* outputOfArg(int arg) {
-    if (arg == 1) return kOutputEtvr;
     if (arg == 2) return kOutputLivelink;
     if (arg == 3) return kOutputModule;
     return kOutputVrchat;
@@ -154,18 +154,13 @@ const char* outputOfArg(int arg) {
 
 int argOfOutput(const std::string& output) {
     if (output == kOutputVrchat) return 0;
-    if (output == kOutputEtvr) return 1;
     if (output == kOutputLivelink) return 2;
     if (output == kOutputModule) return 3;
     return -1;
 }
 
-bool outputDeprecated(const std::string& output) {
-    return output == kOutputEtvr;
-}
-
 std::vector<SettingChange> recommendedSettings(const std::string& output, const SettingsView& view) {
-    const bool etvr = output == kOutputEtvr;
+    (void)output;  // (the same for every output now)
     const GazePreset& medium = kGazePresets[1];
     const SettingSpec* lidMinCutoff = findSetting(key::kLidMinCutoff);
     const SettingSpec* lidBeta = findSetting(key::kLidBeta);
@@ -173,8 +168,8 @@ std::vector<SettingChange> recommendedSettings(const std::string& output, const 
         {key::kGazeMinCutoff, JsonValue::makeNumber(medium.minCutoff)},
         {key::kGazeBeta, JsonValue::makeNumber(medium.beta)},
         {key::kGazeDCutoff, JsonValue::makeNumber(medium.dCutoff)},
-        {key::kLidMinCutoff, JsonValue::makeNumber(etvr ? kEtvrLidMinCutoff : lidMinCutoff->defaultNumber)},
-        {key::kLidBeta, JsonValue::makeNumber(etvr ? kEtvrLidBeta : lidBeta->defaultNumber)},
+        {key::kLidMinCutoff, JsonValue::makeNumber(lidMinCutoff->defaultNumber)},
+        {key::kLidBeta, JsonValue::makeNumber(lidBeta->defaultNumber)},
     };
     std::vector<SettingChange> changes;
     for (const SettingChange& change : all) {
@@ -342,6 +337,25 @@ bool snapIsShare(const JsonValue& root) {
     return snap != nullptr && snap->isNumber() && snap->number > kSnapMax + 1e-9 && snap->number <= kOldSnapMax + 1e-9;
 }
 
+/**
+ * Whether the output is the ETVR output, removed in 0.10.
+ * @param root the config's root object
+ * @return true if it is
+ */
+bool outputIsEtvr(const JsonValue& root) {
+    const JsonValue* output = root.get(key::kOutput);
+    return output != nullptr && output->isString() && output->text == kOutputRemovedEtvr;
+}
+
+/**
+ * Whether a settings file still has what 0.10 removed (see migrateRemovedSettings).
+ * @param root the config's root object
+ * @return true if it has
+ */
+bool hasRemovedSettings(const JsonValue& root) {
+    return outputIsEtvr(root) || root.get(key::kRemovedEyeBehavior) != nullptr;
+}
+
 }  // namespace
 
 bool migrateLidOpenSnap(JsonValue& root, std::string& log) {
@@ -358,11 +372,35 @@ bool migrateLidOpenSnap(JsonValue& root, std::string& log) {
     return true;
 }
 
+bool migrateRemovedSettings(JsonValue& root, std::string& log) {
+    log.clear();
+    if (root.type != JsonValue::Type::Object || !hasRemovedSettings(root)) return false;
+    if (outputIsEtvr(root)) {
+        root.set(key::kOutput, JsonValue::makeString(kOutputVrchat));
+        log = "output \"etvr\" -> \"vrchat\" (the ETVR output was removed in 0.10)";
+        const JsonValue* port = root.get(key::kPort);
+        if (port != nullptr && port->isNumber() && port->number == kPortRemovedEtvr) {
+            root.set(key::kPort, JsonValue::makeNull());
+            log += ", port 8889 -> null (VRChat's 9000)";
+        }
+    }
+    const JsonValue* behavior = root.get(key::kRemovedEyeBehavior);
+    if (behavior != nullptr && behavior->isNumber() && behavior->number == 1) {
+        if (!log.empty()) log += "; ";
+        log += "eye_behavior 1 taken out (v1, the eyes as up to 0.7.5, was removed in 0.10)";
+    }
+    std::vector<std::pair<std::string, JsonValue>>& members = root.members;
+    members.erase(std::remove_if(members.begin(), members.end(),
+                                 [](const auto& member) { return member.first == key::kRemovedEyeBehavior; }),
+                  members.end());
+    return true;
+}
+
 bool configNeedsMigration(const JsonValue& root) {
     if (root.type != JsonValue::Type::Object) return false;
     const JsonValue* version = root.get(key::kVersion);
     const bool current = version != nullptr && version->isNumber() && version->number >= kConfigVersion;
-    return root.get(key::kLidWiden) == nullptr || !current || snapIsShare(root);
+    return root.get(key::kLidWiden) == nullptr || !current || snapIsShare(root) || hasRemovedSettings(root);
 }
 
 WidenState widenState(const SettingsView& view) {

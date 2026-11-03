@@ -17,10 +17,10 @@ namespace extras {
 constexpr int kMax = 3;
 /** The two formats (permanent names). */
 constexpr const char* kFeo1 = "feo1";
-constexpr const char* kTrackingEye = "tracking_eye";
+constexpr const char* kOsc = "osc";
 /** The port each format starts at (next to the FrameEyeOSC module's 11112, and the one gaze tools tend to use). */
 constexpr int kPortFeo1 = 11113;
-constexpr int kPortTrackingEye = 9015;
+constexpr int kPortOsc = 9015;
 /** "host": follow the main output's PC, the Steam Link PC, or this Frame. */
 constexpr const char* kHostMain = "main";
 constexpr const char* kHostAuto = "auto";
@@ -42,7 +42,6 @@ struct Entry {
     std::string format;        ///< as written ("" when missing or not a string)
     std::string host;          ///< as written
     int port = 0;              ///< 0 when missing or not 1..65535
-    bool lids = false;
     Problem problem = Problem::None;
     std::string error;         ///< the settings in effect's "error" (frameeyeosc's words), if read from them
 };
@@ -108,12 +107,11 @@ struct Draft {
     int edit = -1;            ///< the entry being changed (its index), -1 while adding
     std::string original;     ///< ...that entry as it was when the flow opened (writeJson), to refuse a stale save
     std::string name;         ///< shown in the summary ("App N" for a new one)
-    std::string format;       ///< kFeo1 / kTrackingEye; "" until chosen
+    std::string format;       ///< kFeo1 / kOsc; "" until chosen
     HostChoice host = HostChoice::Main;
     std::string ip;           ///< typed (HostChoice::Ip)
     std::string kept;         ///< the host as written (HostChoice::Keep)
     int port = kPortFeo1;
-    bool lids = false;        ///< tracking_eye only
 };
 
 /**
@@ -134,13 +132,13 @@ Draft draftOf(const Entry& entry, const std::string& original);
 /**
  * Choose a format: a different one starts from its own port (as the mock: the same one keeps the port).
  * @param draft the draft
- * @param format kFeo1 or kTrackingEye
+ * @param format kFeo1 or kOsc
  */
 void chooseFormat(Draft& draft, const std::string& format);
 
 /**
  * The port a format starts at.
- * @param format kFeo1 or kTrackingEye
+ * @param format kFeo1 or kOsc
  * @return its port
  */
 int defaultPort(const std::string& format);
@@ -212,10 +210,9 @@ std::string hostKey(const std::string& host, const Taken& taken);
 Clash findClash(const Draft& draft, const List& list, const Taken& taken, int& other);
 
 /**
- * Write the draft into config.json's root: a new entry at the end (enabled, its format, host, port, and lids for
- * tracking_eye; no name, so it is "App N"), or the entry being changed (those keys set, lids taken out for feo1,
- * turned on; every other key, a newer frameeyeosc's too, kept where it is). The other entries are left exactly as they
- * are.
+ * Write the draft into config.json's root: a new entry at the end (enabled, its format, host and port; no name, so it
+ * is "App N"), or the entry being changed (those keys set, turned on; every other key, a newer frameeyeosc's too, kept
+ * where it is). The other entries are left exactly as they are.
  * @param root config.json's object
  * @param draft the draft
  * @param error why it can't (not a list, no room, the entry changed or gone meanwhile)

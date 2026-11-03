@@ -16,7 +16,7 @@ namespace extras {
 namespace {
 
 /** The keys an entry may have (frameeyeosc's EXTRA_KEYS): any other one is a newer version's. */
-constexpr const char* kKeys[6] = {"name", "enabled", "format", "host", "port", "lids"};
+constexpr const char* kKeys[5] = {"name", "enabled", "format", "host", "port"};
 /** A name is only shown: printable ASCII, at most this many characters (frameeyeosc's MAX_NAME_CHARS). */
 constexpr size_t kMaxNameChars = 16;
 constexpr const char* kListKey = "extra_outputs";
@@ -34,7 +34,7 @@ bool knownKey(const std::string& key) {
  * @return whether it is one of the two formats
  */
 bool knownFormat(const std::string& format) {
-    return format == kFeo1 || format == kTrackingEye;
+    return format == kFeo1 || format == kOsc;
 }
 
 /**
@@ -98,17 +98,6 @@ JsonValue* member(JsonValue& object, const std::string& key) {
         if (name == key) return &value;
     }
     return nullptr;
-}
-
-/**
- * Take a member out of an object (the others keep their order).
- * @param object the object
- * @param key the key
- */
-void erase(JsonValue& object, const std::string& key) {
-    auto& members = object.members;
-    members.erase(std::remove_if(members.begin(), members.end(), [&key](const auto& m) { return m.first == key; }),
-                  members.end());
 }
 
 /**
@@ -191,7 +180,6 @@ Entry readEntry(const JsonValue& item, int index) {
         v != nullptr && v->isNumber() && v->integer && v->number >= 1 && v->number <= 65535) {
         entry.port = static_cast<int>(v->number);
     }
-    if (const JsonValue* v = item.get("lids"); v != nullptr && v->isBool()) entry.lids = v->boolean;
     // In frameeyeosc's order: a key it doesn't know first (most likely a newer version's), then the values
     for (const auto& [key, value] : item.members) {
         if (!knownKey(key)) {
@@ -204,14 +192,9 @@ Entry readEntry(const JsonValue& item, int index) {
         entry.problem = Problem::Invalid;
     } else if (!knownFormat(format->text)) {
         entry.problem = Problem::Newer;
-    } else if (format->text != kTrackingEye && item.get("lids") != nullptr) {
-        entry.problem = Problem::Invalid;
     }
     if (entry.problem != Problem::None) return entry;
-    for (const char* flag : {"enabled", "lids"}) {
-        const JsonValue* v = item.get(flag);
-        if (v != nullptr && !v->isBool()) entry.problem = Problem::Invalid;
-    }
+    if (const JsonValue* v = item.get("enabled"); v != nullptr && !v->isBool()) entry.problem = Problem::Invalid;
     const JsonValue* host = item.get("host");
     if (host == nullptr || !host->isString() || !hostOk(host->text)) entry.problem = Problem::Invalid;
     if (entry.port == 0 || nameBad) entry.problem = Problem::Invalid;
@@ -242,7 +225,6 @@ Entry readEffectiveEntry(const JsonValue& item, int index) {
     if (const JsonValue* v = item.get("port"); v != nullptr && v->isNumber() && v->number >= 1 && v->number <= 65535) {
         entry.port = static_cast<int>(v->number);
     }
-    if (const JsonValue* v = item.get("lids"); v != nullptr && v->isBool()) entry.lids = v->boolean;
     if (const JsonValue* v = item.get("error"); v != nullptr && v->isString() && !v->text.empty()) {
         entry.error = validUtf8(v->text);
         entry.problem = entry.error.find("newer") != std::string::npos ? Problem::Newer : Problem::Invalid;
@@ -300,7 +282,7 @@ Net classify(const std::string& text) {
 }
 
 int defaultPort(const std::string& format) {
-    return format == kTrackingEye ? kPortTrackingEye : kPortFeo1;
+    return format == kOsc ? kPortOsc : kPortFeo1;
 }
 
 Draft newDraft(int count) {
@@ -316,7 +298,6 @@ Draft draftOf(const Entry& entry, const std::string& original) {
     draft.name = entry.name;
     draft.format = knownFormat(entry.format) ? entry.format : std::string();
     draft.port = entry.port > 0 ? entry.port : defaultPort(draft.format);
-    draft.lids = draft.format == kTrackingEye && entry.lids;
     const std::string& host = entry.host;
     if (host == kHostMain || host.empty()) {
         draft.host = HostChoice::Main;
@@ -338,7 +319,6 @@ void chooseFormat(Draft& draft, const std::string& format) {
     if (!knownFormat(format)) return;
     if (draft.format != format) draft.port = defaultPort(format);
     draft.format = format;
-    if (format != kTrackingEye) draft.lids = false;
 }
 
 std::string draftHost(const Draft& draft) {
@@ -403,7 +383,6 @@ bool applyDraft(JsonValue& root, const Draft& draft, std::string& error) {
     }
     JsonValue* list = listOf(root, draft.edit < 0, error);
     if (list == nullptr) return false;
-    const bool lids = draft.format == kTrackingEye;
     if (draft.edit < 0) {
         if (static_cast<int>(list->items.size()) >= kMax) {
             error = "extra_outputs has 3 entries already";
@@ -415,7 +394,6 @@ bool applyDraft(JsonValue& root, const Draft& draft, std::string& error) {
         entry.set("format", JsonValue::makeString(draft.format));
         entry.set("host", JsonValue::makeString(draftHost(draft)));
         entry.set("port", JsonValue::makeNumber(draft.port, true));
-        if (lids) entry.set("lids", JsonValue::makeBool(draft.lids));
         list->items.push_back(std::move(entry));
         return true;
     }
@@ -430,11 +408,6 @@ bool applyDraft(JsonValue& root, const Draft& draft, std::string& error) {
     entry->set("format", JsonValue::makeString(draft.format));
     entry->set("host", JsonValue::makeString(draftHost(draft)));
     entry->set("port", JsonValue::makeNumber(draft.port, true));
-    if (lids) {
-        entry->set("lids", JsonValue::makeBool(draft.lids));
-    } else {
-        erase(*entry, "lids");
-    }
     return true;
 }
 

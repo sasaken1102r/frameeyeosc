@@ -1510,28 +1510,31 @@ void testExtrasRead() {
     CHECK(!extras::readList(&text).isList && extras::readList(&text).entries.empty());
     const JsonValue root = rootOf(R"j({"extra_outputs": [
         {"format": "feo1", "host": "main", "port": 11113},
-        {"name": "Gaze", "enabled": false, "format": "tracking_eye", "host": "192.168.1.30", "port": 9015,
-         "lids": true},
+        {"name": "Gaze", "enabled": false, "format": "osc", "host": "192.168.1.30", "port": 9015},
         {"format": "feo1", "host": "main", "port": 11114, "pupils": true},
         {"format": "feo2", "host": "main", "port": 11115},
-        {"format": "feo1", "host": "main", "port": 11116, "lids": false},
-        {"format": "tracking_eye", "host": "a b", "port": 9015},
+        {"format": "feo1", "host": "main", "port": 11116, "enabled": "yes"},
+        {"format": "osc", "host": "a b", "port": 9015},
+        {"format": "tracking_eye", "host": "main", "port": 9015},
+        {"format": "osc", "host": "main", "port": 9015, "lids": true},
         {"format": "feo1", "host": "main", "port": 0},
         {"name": "Way too long a name", "format": "feo1", "host": "main", "port": 11117},
         7
     ]})j");
     const extras::List list = extras::readList(root.get(key::kExtraOutputs));
-    CHECK(list.isList && list.entries.size() == 9);
-    if (list.entries.size() != 9) return;
+    CHECK(list.isList && list.entries.size() == 11);
+    if (list.entries.size() != 11) return;
     const auto& e = list.entries;
     CHECK(e[0].name == "App 1" && e[0].enabled && e[0].format == "feo1" && e[0].host == "main" && e[0].port == 11113);
     CHECK(e[0].problem == Problem::None);
-    CHECK(e[1].name == "Gaze" && !e[1].enabled && e[1].lids && e[1].problem == Problem::None && e[1].index == 1);
-    // A key or a format of a newer version: that entry only
+    CHECK(e[1].name == "Gaze" && !e[1].enabled && e[1].format == "osc" && e[1].problem == Problem::None);
+    CHECK(e[1].index == 1);
+    // A key or a format of a newer version: that entry only (0.10's betas' tracking_eye and lids too: never released)
     CHECK(e[2].problem == Problem::Newer && e[3].problem == Problem::Newer);
-    // lids on feo1, a host with a space, port 0, a long name, not an object: written wrong
-    for (int i : {4, 5, 6, 7, 8}) CHECK(e[static_cast<size_t>(i)].problem == Problem::Invalid);
-    CHECK(e[7].name == "App 8" && e[8].name == "App 9");
+    CHECK(e[6].problem == Problem::Newer && e[7].problem == Problem::Newer);
+    // enabled not a bool, a host with a space, port 0, a long name, not an object: written wrong
+    for (int i : {4, 5, 8, 9, 10}) CHECK(e[static_cast<size_t>(i)].problem == Problem::Invalid);
+    CHECK(e[9].name == "App 10" && e[10].name == "App 11");
     // After the first three: not used (when nothing else is wrong)
     const JsonValue four = rootOf(R"j({"extra_outputs": [
         {"format": "feo1", "host": "main", "port": 1}, {"format": "feo1", "host": "main", "port": 2},
@@ -1541,9 +1544,8 @@ void testExtrasRead() {
     CHECK(more.entries.size() == 4 && more.entries[3].problem == Problem::Limit);
     // The settings in effect (while locked): frameeyeosc's own reading, its error saying why
     const JsonValue effective = rootOf(R"j({"extra_outputs": [
-        {"name": "App 1", "enabled": true, "format": "feo1", "host": "192.168.0.60", "port": 11113, "lids": false,
-         "error": null},
-        {"name": "App 2", "enabled": false, "format": null, "host": "", "port": 0, "lids": false,
+        {"name": "App 1", "enabled": true, "format": "feo1", "host": "192.168.0.60", "port": 11113, "error": null},
+        {"name": "App 2", "enabled": false, "format": null, "host": "", "port": 0,
          "error": "unknown key \"pupils\" (written by a newer frameeyeosc?)"}]})j");
     const extras::List locked = extras::readList(effective.get(key::kExtraOutputs), true);
     CHECK(locked.entries.size() == 2);
@@ -1554,7 +1556,7 @@ void testExtrasRead() {
     // ...and the model reads that one while extra_outputs is locked, config.json's otherwise
     PanelModel m;
     m.config.root = root;
-    CHECK(extrasList(m).entries.size() == 9);
+    CHECK(extrasList(m).entries.size() == 11);
     m.status = parseStatus(R"j({"pid": 1, "locked": ["extra_outputs"], "effective": )j" + writeJson(effective) + "}", 0,
                            false);
     CHECK(extrasList(m).entries.size() == 2);
@@ -1650,25 +1652,24 @@ void testExtrasAddresses() {
 void testExtrasDraft() {
     extras::Draft d = extras::newDraft(1);
     CHECK(d.name == "App 2" && d.edit < 0 && d.format.empty() && d.host == extras::HostChoice::Main);
-    extras::chooseFormat(d, extras::kTrackingEye);
-    CHECK(d.format == "tracking_eye" && d.port == 9015);
+    extras::chooseFormat(d, extras::kOsc);
+    CHECK(d.format == "osc" && d.port == 9015);
     d.port = 9100;
-    extras::chooseFormat(d, extras::kTrackingEye);
+    extras::chooseFormat(d, extras::kOsc);
     CHECK(d.port == 9100);  // the same one keeps the port
-    d.lids = true;
     extras::chooseFormat(d, extras::kFeo1);
-    CHECK(d.format == "feo1" && d.port == 11113 && !d.lids);
+    CHECK(d.format == "feo1" && d.port == 11113);
     extras::chooseFormat(d, "feo2");
     CHECK(d.format == "feo1");
     const JsonValue root = rootOf(R"j({"extra_outputs": [
-        {"format": "tracking_eye", "host": "100.101.5.7", "port": 9016, "lids": true},
+        {"format": "osc", "host": "100.101.5.7", "port": 9016},
         {"name": "Bridge", "format": "feo1", "host": "bridge-pc.local", "port": 11113},
         {"format": "feo1", "host": "auto", "port": 11113},
         {"format": "feo1", "host": "127.0.0.1", "port": 11113}]})j");
     const extras::List list = extras::readList(root.get(key::kExtraOutputs));
     extras::Draft e = extras::draftOf(list.entries[0], entryText(root, 0));
-    CHECK(e.edit == 0 && e.format == "tracking_eye" && e.host == extras::HostChoice::Ip && e.ip == "100.101.5.7");
-    CHECK(e.port == 9016 && e.lids && e.original == entryText(root, 0) && e.name == "App 1");
+    CHECK(e.edit == 0 && e.format == "osc" && e.host == extras::HostChoice::Ip && e.ip == "100.101.5.7");
+    CHECK(e.port == 9016 && e.original == entryText(root, 0) && e.name == "App 1");
     e = extras::draftOf(list.entries[1], entryText(root, 1));
     CHECK(e.host == extras::HostChoice::Keep && e.kept == "bridge-pc.local" && e.name == "Bridge");
     CHECK(extras::draftOf(list.entries[2], "").host == extras::HostChoice::Auto);
@@ -1686,7 +1687,7 @@ void testExtrasWrite() {
   "extra_outputs": [
     {"name": "Bridge", "format": "feo1", "host": "192.168.0.10", "port": 11113, "pupils": true, "max_hz": 60,
      "later": {"list": [1, 2.5, "x"], "on": false}},
-    {"format": "tracking_eye", "host": "main", "port": 9015, "lids": true, "extensions": ["timing"]},
+    {"format": "osc", "host": "main", "port": 9015, "extensions": ["timing"]},
     {"enabled": false, "format": "feo1", "host": "127.0.0.1", "port": 11114}
   ],
   "a_newer_key": [1, 2]
@@ -1710,7 +1711,7 @@ void testExtrasWrite() {
     if (list2 == nullptr || list2->items.size() != 3) return;
     const JsonValue& changed = list2->items[1];
     CHECK(changed.get("format")->text == "feo1" && changed.get("host")->text == "192.168.0.20");
-    CHECK(changed.get("port")->number == 11113 && changed.get("port")->integer && changed.get("lids") == nullptr);
+    CHECK(changed.get("port")->number == 11113 && changed.get("port")->integer);
     CHECK(changed.get("enabled") != nullptr && changed.get("enabled")->boolean);
     // (a newer version's key kept, as it was)
     const JsonValue* kept = changed.get("extensions");
@@ -1733,7 +1734,7 @@ void testExtrasWrite() {
     CHECK(!extras::setEnabled(root, 5, true, error));
     // Three already: no room
     extras::Draft add = extras::newDraft(3);
-    extras::chooseFormat(add, extras::kTrackingEye);
+    extras::chooseFormat(add, extras::kOsc);
     const size_t count = root.get(key::kExtraOutputs)->items.size();
     CHECK(!extras::applyDraft(root, add, error) && root.get(key::kExtraOutputs)->items.size() == count);
     // Take the second out: the others exactly as they were, in their order
@@ -1742,22 +1743,24 @@ void testExtrasWrite() {
     CHECK(root.get(key::kExtraOutputs)->items.size() == 2 && entryText(root, 0) == firstNow);
     CHECK(entryText(root, 1) == third);
     CHECK(!extras::removeEntry(root, 7, "", error));
-    // Added at the end: enabled, format, host, port and (tracking_eye) lids; no name, so it is "App N"
-    add.lids = true;
+    // Added at the end: enabled, format, host and port; no name, so it is "App N"
     add.host = extras::HostChoice::Frame;
     CHECK(extras::applyDraft(root, add, error));
     const extras::List after = extras::readList(root.get(key::kExtraOutputs));
     CHECK(after.entries.size() == 3 && after.entries[2].name == "App 3" && after.entries[2].host == "127.0.0.1");
-    CHECK(after.entries.size() == 3 && after.entries[2].lids && after.entries[2].port == 9015 &&
+    CHECK(after.entries.size() == 3 && after.entries[2].format == "osc" && after.entries[2].port == 9015 &&
           after.entries[2].problem == extras::Problem::None && after.entries[2].enabled);
-    CHECK(entryText(root, 2).find("\"name\"") == std::string::npos);
+    // (exactly these keys: no lids any more)
+    CHECK(entryText(root, 2) == writeJson(rootOf(R"j({"enabled": true, "format": "osc", "host": "127.0.0.1",
+                                                      "port": 9015})j")));
     // No list yet: made; a list that isn't one: left alone
     JsonValue fresh = rootOf(R"j({"output": "vrchat"})j");
     extras::Draft feo = extras::newDraft(0);
     extras::chooseFormat(feo, extras::kFeo1);
     CHECK(extras::applyDraft(fresh, feo, error));
     CHECK(fresh.get(key::kExtraOutputs) != nullptr && fresh.get(key::kExtraOutputs)->items.size() == 1);
-    CHECK(entryText(fresh, 0).find("\"lids\"") == std::string::npos);
+    CHECK(entryText(fresh, 0) ==
+          writeJson(rootOf(R"j({"enabled": true, "format": "feo1", "host": "main", "port": 11113})j")));
     JsonValue odd = rootOf(R"j({"extra_outputs": {"format": "feo1"}})j");
     const std::string oddText = writeJson(odd);
     CHECK(!extras::applyDraft(odd, feo, error) && writeJson(odd) == oddText);
@@ -1771,7 +1774,7 @@ void testExtrasClash() {
     m.config.root = rootOf(R"j({"output": "frameeyeosc", "extra_outputs": [
         {"format": "feo1", "host": "192.168.0.60", "port": 11113},
         {"enabled": false, "format": "feo1", "host": "192.168.0.60", "port": 11114},
-        {"format": "tracking_eye", "host": "main", "port": 9015}]})j");
+        {"format": "osc", "host": "main", "port": 9015}]})j");
     // Not running: the main output as set (auto, its default port)
     extras::Taken taken = extrasTaken(m);
     CHECK(taken.mainHost == "auto" && taken.mainPort == 11112 && taken.steamLink.empty() && taken.pupilHost.empty());
@@ -1820,14 +1823,14 @@ void testExtrasStatus() {
     CHECK(old.present && !old.extrasKnown && old.extras.empty() && old.net.empty() && old.refused.empty());
     const EyeStatus s = parseStatus(R"j({"pid": 1, "target": null, "lan_only": false, "net": null,
         "refused": "public address", "pupil_net": "lan", "pupil_refused": null, "extras": [
-        {"index": 1, "name": "App 1", "enabled": true, "format": "feo1", "host": "main", "port": 11113, "lids": false,
+        {"index": 1, "name": "App 1", "enabled": true, "format": "feo1", "host": "main", "port": 11113,
          "sending": true, "target": "192.168.0.60:11113", "net": "lan", "rate": 89.6, "dropped_rate": 0.0,
          "refused": null, "last_error": null},
-        {"index": 2, "name": "App 2", "enabled": false, "format": null, "host": "", "port": 0, "lids": false,
+        {"index": 2, "name": "App 2", "enabled": false, "format": null, "host": "", "port": 0,
          "sending": false, "target": null, "net": null, "rate": 0.0, "dropped_rate": 0.0,
          "refused": "unknown key \"pupils\" (written by a newer frameeyeosc?)", "last_error": null},
-        {"index": 3, "name": "Gaze", "enabled": true, "format": "tracking_eye", "host": "auto", "port": 9015,
-         "lids": true, "sending": true, "target": null, "net": null, "rate": 0.0, "dropped_rate": 0.0,
+        {"index": 3, "name": "Gaze", "enabled": true, "format": "osc", "host": "auto", "port": 9015,
+         "sending": true, "target": null, "net": null, "rate": 0.0, "dropped_rate": 0.0,
          "refused": null, "last_error": "no Steam Link"}]})j",
                                     0, false);
     CHECK(s.extrasKnown && !s.lanOnly && s.net.empty() && s.refused == "public address" && s.pupilNet == "lan");
@@ -1836,7 +1839,7 @@ void testExtrasStatus() {
     CHECK(s.extras[0].index == 1 && s.extras[0].sending && s.extras[0].target == "192.168.0.60:11113");
     CHECK(s.extras[0].net == "lan" && s.extras[0].port == 11113 && s.extras[0].rate > 89);
     CHECK(s.extras[1].format.empty() && !s.extras[1].enabled && s.extras[1].refused.find("newer") != std::string::npos);
-    CHECK(s.extras[2].lids && s.extras[2].lastError == "no Steam Link" && s.extras[2].target.empty());
+    CHECK(s.extras[2].format == "osc" && s.extras[2].lastError == "no Steam Link" && s.extras[2].target.empty());
     // lan_only missing (but extras there) reads as on, its default
     CHECK(parseStatus(R"j({"pid": 1, "extras": []})j", 0, false).lanOnly);
     // lan_only is a setting with the default on; "Reset all" puts it back

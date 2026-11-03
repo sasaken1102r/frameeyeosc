@@ -58,10 +58,9 @@ struct ExtraLive {
     int index = 0;            ///< its place in extra_outputs, from 1
     std::string name;
     bool enabled = false;
-    std::string format;       ///< "feo1" / "tracking_eye"; "" for an entry that can't be used
+    std::string format;       ///< "feo1" / "osc"; "" for an entry that can't be used
     std::string host;         ///< as written
     int port = 0;
-    bool lids = false;
     bool sending = false;     ///< turned on, usable, not paused and not refused
     std::string target;       ///< "IP:PORT" while sending ("" = none yet)
     std::string net;          ///< what kind of address target is: "lan", "vpn" or "public" ("" = none)

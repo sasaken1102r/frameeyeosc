@@ -519,13 +519,11 @@ std::string netOfHost(const std::string& host, bool lanOnly) {
 }
 
 /**
- * An extra output's format as the list and the left column show it.
- * @param t texts
- * @param format "feo1" / "tracking_eye" (anything else as it is)
- * @return "feo1", "eye OSC"
+ * An extra output's format as the list and the left column show it: its name in config.json.
+ * @param format "feo1" / "osc" (anything else as it is)
+ * @return "feo1", "osc"; "?" for none
  */
-std::string formatShort(const UiText& t, const std::string& format) {
-    if (format == extras::kTrackingEye) return t.formatEyeShort;
+std::string formatShort(const std::string& format) {
     return format.empty() ? std::string("?") : format;
 }
 
@@ -1177,7 +1175,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         }
         case PanelAction::ExtraFormat:
-            extras::chooseFormat(extrasDraft_, hit.arg == 1 ? extras::kTrackingEye : extras::kFeo1);
+            extras::chooseFormat(extrasDraft_, hit.arg == 1 ? extras::kOsc : extras::kFeo1);
             extrasError_.clear();
             return {};
         case PanelAction::ExtraHost:
@@ -1193,9 +1191,6 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::ExtraPort:
             extrasDraft_.port = std::clamp(extrasDraft_.port + (hit.arg < 0 ? -1 : 1), 1, 65535);
             extrasError_.clear();
-            return {};
-        case PanelAction::ExtraLids:
-            extrasDraft_.lids = hit.arg != 0 && extrasDraft_.format == extras::kTrackingEye;
             return {};
         case PanelAction::ExtraDelete:
             extrasDeleteOpen_ = extrasDraft_.edit >= 0;
@@ -2953,7 +2948,7 @@ int EyePanel::drawMoreDestinations(const Pen& pen, const UiText& t, const PanelM
             const std::string& why = !e.refused.empty() ? e.refused : e.lastError;
             const bool bad = !why.empty();
             const std::string address = !e.target.empty() ? e.target : e.host + ":" + std::to_string(e.port);
-            lines.push_back({e.name, formatShort(t, e.format), bad ? extraReasonText(t, why) : address,
+            lines.push_back({e.name, formatShort(e.format), bad ? extraReasonText(t, why) : address,
                              bad ? std::string() : e.net, bad});
         }
     }
@@ -3137,8 +3132,7 @@ void EyePanel::drawExtraRow(const Pen& pen, const UiText& t, const PanelModel& m
     } else if (host == extras::kHostAuto) {
         host = t.hostAuto;
     }
-    std::string what = formatShort(t, entry.format);
-    if (entry.format == extras::kTrackingEye && entry.lids) what += std::string(" ") + t.extrasWithLids;
+    std::string what = formatShort(entry.format);
     what += std::string("  " ICON_ARROW_RIGHT " ") + host + (entry.port > 0 ? ":" + std::to_string(entry.port) : "");
     pen.text(tx, nameY + 21, ellipsize(pen, what, 15, false, room, false), 15, kTextMuted);
     if (!entry.enabled) fadeGroup(pen);
@@ -3195,9 +3189,14 @@ void EyePanel::drawExtrasFlow(const Pen& pen, const UiText& t, const PanelModel&
         const double gap = 16;
         const double cw = (w - gap) / 2;
         const double ch = 166;
+        // (the bullets on the same line in both cards, below the longer description)
+        size_t descLines = 1;
+        for (const char* desc : {t.formatFeo1Desc, t.formatOscDesc}) {
+            descLines = std::max(descLines, wrapText(pen, desc, 15, false, cw - 36, 2).size());
+        }
         for (int i = 0; i < 2; ++i) {
-            const bool eye = i == 1;
-            const char* format = eye ? extras::kTrackingEye : extras::kFeo1;
+            const bool osc = i == 1;
+            const char* format = osc ? extras::kOsc : extras::kFeo1;
             const bool chosen = d.format == format;
             const PanelHit hit {PanelAction::ExtraFormat, nullptr, i};
             const double cx = x0 + i * (cw + gap);
@@ -3214,18 +3213,18 @@ void EyePanel::drawExtrasFlow(const Pen& pen, const UiText& t, const PanelModel&
                 drawCheck(cr, tx + 8, ty - 7, 18, kAccent);
                 tx += 26;
             }
-            const char* title = eye ? t.formatEyeTitle : t.formatFeo1Title;
+            const char* title = osc ? t.formatOscTitle : t.formatFeo1Title;
             pen.text(tx, ty, title, fitSize(pen, title, 19, 13, cx + cw - 24 - chipW - tx, true), kText, true);
             // (muted only on the plain card: the chosen and pointed-at ones keep full text)
             const Color soft = chosen || pointer > 0 ? kText : kTextMuted;
             double ly = ty + 30;
-            for (const std::string& line : wrapText(pen, eye ? t.formatEyeDesc : t.formatFeo1Desc, 15, false,
+            for (const std::string& line : wrapText(pen, osc ? t.formatOscDesc : t.formatFeo1Desc, 15, false,
                                                     cw - 36, 2)) {
                 pen.text(cx + 18, ly, line, 15, soft);
                 ly += 21;
             }
-            ly += 8;
-            const char* const* bullets = eye ? t.formatEyeLines : t.formatFeo1Lines;
+            ly = ty + 30 + static_cast<double>(descLines) * 21 + 8;
+            const char* const* bullets = osc ? t.formatOscLines : t.formatFeo1Lines;
             for (int b = 0; b < 2; ++b) {
                 drawDot(cr, cx + 24, ly - 5, 3, kAccent);
                 pen.text(cx + 34, ly, ellipsize(pen, bullets[b], 15, false, cw - 52, false), 15, kText);
@@ -3346,12 +3345,11 @@ void EyePanel::drawExtrasFlow(const Pen& pen, const UiText& t, const PanelModel&
                          extras::hostUsable(check));
         return;
     }
-    // 3: the port (each format starts at its own), the eyelids for tracking_eye, and what it comes to, red where it
-    // repeats another destination; while changing, delete
+    // 3: the port (each format starts at its own) and what it comes to, red where it repeats another destination;
+    // while changing, delete
     double y = drawExtrasHeader(pen, t, t.extrasStepPort, 3) + 4;
     const double rowH = kRowH;
-    const bool eye = d.format == extras::kTrackingEye;
-    drawRowLabel(pen, t, y, rowH, t.rowPort, eye ? t.portNoteEye : t.portNoteFeo1, false);
+    drawRowLabel(pen, t, y, rowH, t.rowPort, d.format == extras::kOsc ? t.portNoteOsc : t.portNoteFeo1, false);
     {
         // − port ＋, as the main port's
         const double sx = kControlX;
@@ -3377,13 +3375,6 @@ void EyePanel::drawExtrasFlow(const Pen& pen, const UiText& t, const PanelModel&
         textCentered(pen, sx + sw / 2, centerBaseline(sy, sh, 20), std::to_string(d.port), 20, kText, true);
     }
     y += rowH + kRowGap;
-    if (eye) {
-        drawRowLabel(pen, t, y, rowH, t.rowExtraLids, t.hintExtraLids, false);
-        drawSegmented(pen, kControlX, y + (rowH - kControlH) / 2, 300, kControlH,
-                      {{t.on, {PanelAction::ExtraLids, nullptr, 1}}, {t.off, {PanelAction::ExtraLids, nullptr, 0}}},
-                      d.lids ? 0 : 1, 20);
-        y += rowH + kRowGap;
-    }
     // What it comes to: the name, the format, where (as far as known) and its tag; red where it repeats one
     int other = -1;
     const extras::List list = extrasList(m);

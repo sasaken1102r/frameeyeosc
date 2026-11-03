@@ -201,7 +201,6 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
             e.host = readText(item, "host");
             const double port = readNumber(item, "port", 0);
             e.port = std::isfinite(port) && port >= 0 && port <= 65535 ? static_cast<int>(port) : 0;
-            e.lids = readBool(item, "lids");
             e.sending = readBool(item, "sending");
             e.target = readText(item, "target");
             e.net = readText(item, "net");

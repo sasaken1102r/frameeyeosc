@@ -1118,11 +1118,9 @@ struct UiText {
     const char* formatFeo1Title;     ///< the feo1 card
     const char* formatFeo1Desc;
     const char* formatFeo1Lines[2];
-    const char* formatEyeTitle;      ///< the tracking_eye card
-    const char* formatEyeDesc;
-    const char* formatEyeLines[2];
-    const char* formatEyeShort;      ///< tracking_eye in the left column and the list ("eye OSC")
-    const char* extrasWithLids;      ///< after it in the list when the eyelids go too ("+ eyelids")
+    const char* formatOscTitle;      ///< the osc card
+    const char* formatOscDesc;
+    const char* formatOscLines[2];
     const char* formatHint;          ///< how to tell which one, under the cards
     const char* extrasCancel;
     const char* extrasNext;
@@ -1156,9 +1154,7 @@ struct UiText {
     const char* ipMulticast;
     const char* ipUnspecified;
     const char* portNoteFeo1;        ///< step 3's port row
-    const char* portNoteEye;
-    const char* rowExtraLids;        ///< tracking_eye: the eyelids too
-    const char* hintExtraLids;
+    const char* portNoteOsc;
     const char* rowSummary;
     const char* hintSummary;
     const char* clashMain;           ///< the same address and port as the main destination

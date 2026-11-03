@@ -3629,10 +3629,10 @@ PanelModel extrasModel(Language language, const std::string& list, bool lanOnly 
     return m;
 }
 
-/** Three entries: on the main output's PC, a VPN address with eyelids, and a public address. */
+/** Three entries: on the main output's PC, osc to a VPN address, and a public address. */
 const char* const kThreeExtras = R"j([
     {"format": "feo1", "host": "main", "port": 11113},
-    {"name": "Gaze", "format": "tracking_eye", "host": "100.101.5.7", "port": 9015, "lids": true},
+    {"name": "Gaze", "format": "osc", "host": "100.101.5.7", "port": 9015},
     {"format": "feo1", "host": "203.0.113.5", "port": 11113}])j";
 
 /**
@@ -3651,7 +3651,7 @@ void liveThree(PanelModel& m, bool lanOnly) {
         e.index = i + 1;
         e.name = names[i];
         e.enabled = true;
-        e.format = i == 1 ? "tracking_eye" : "feo1";
+        e.format = i == 1 ? "osc" : "feo1";
         e.port = i == 1 ? 9015 : 11113;
         e.target = targets[i];
         e.net = nets[i];
@@ -3723,7 +3723,7 @@ void testExtrasPage(const FontSet& fonts) {
             CHECK(pressArg(panel, PanelAction::ExtraSend, 4).action == PanelAction::ExtraSend);
             // Two: "Add" across the card
             PanelModel two = extrasModel(language, R"j([{"format": "feo1", "host": "main", "port": 11113},
-                {"enabled": false, "format": "tracking_eye", "host": "127.0.0.1", "port": 9015}])j", lanOnly);
+                {"enabled": false, "format": "osc", "host": "127.0.0.1", "port": 9015}])j", lanOnly);
             panel.render(two);
             const std::vector<EyePanel::HitArea> add = hits(panel, PanelAction::ExtraAdd);
             CHECK(add.size() == 1 && add[0].w > 700 && hits(panel, PanelAction::ExtraEdit).size() == 2);
@@ -3768,8 +3768,8 @@ void testExtrasPage(const FontSet& fonts) {
 
 /**
  * The add / change flow, pressed through as the laser pointer would: the format (Next only once chosen), the host (an
- * address typed on the keypad; a public one only with lan_only off, never a broadcast), the port with the eyelids for
- * tracking_eye, and the summary (Save not while it repeats the main output's or another entry's destination); a
+ * address typed on the keypad; a public one only with lan_only off, never a broadcast), the port, and the summary
+ * (Save not while it repeats the main output's or another entry's destination); a
  * change's delete with its confirmation in the panel; what the presses hand the caller and what that writes. Every
  * screen's buttons pressed in turn on a panel in that state ("sweep"): each does what it says, inside the card.
  */
@@ -3787,7 +3787,7 @@ void testExtrasFlow(const FontSet& fonts) {
         CHECK(hits(panel, PanelAction::ExtraFormat).size() == 2 && hits(panel, PanelAction::ExtraStep).empty());
         CHECK(hits(panel, PanelAction::ExtraCancel).size() == 1 && cardButtonsApart(panel));
         pressArg(panel, PanelAction::ExtraFormat, 1);
-        CHECK(panel.extrasDraft().format == "tracking_eye" && panel.extrasDraft().port == 9015);
+        CHECK(panel.extrasDraft().format == "osc" && panel.extrasDraft().port == 9015);
         panel.render(m);
         CHECK(press(panel, PanelAction::ExtraStep).action == PanelAction::None);
         CHECK(panel.extrasStep() == ExtrasStep::Host);
@@ -3827,13 +3827,12 @@ void testExtrasFlow(const FontSet& fonts) {
         pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Port));
         CHECK(panel.extrasStep() == ExtrasStep::Port);
         panel.render(m);
-        // 3: the port, the eyelids (tracking_eye), Back and "Add and send"; no delete while adding
-        CHECK(hits(panel, PanelAction::ExtraPort).size() == 2 && hits(panel, PanelAction::ExtraLids).size() == 2);
+        // 3: the port (nothing else to choose for osc), Back and "Add and send"; no delete while adding
+        CHECK(hits(panel, PanelAction::ExtraPort).size() == 2 && hits(panel, PanelAction::SetBool).empty());
         CHECK(hits(panel, PanelAction::ExtraSave).size() == 1 && hits(panel, PanelAction::ExtraDelete).empty());
         CHECK(cardButtonsApart(panel));
-        pressArg(panel, PanelAction::ExtraLids, 1);
         pressArg(panel, PanelAction::ExtraPort, 1);
-        CHECK(panel.extrasDraft().lids && panel.extrasDraft().port == 9016);
+        CHECK(panel.extrasDraft().port == 9016);
         panel.render(m);
         // Save goes to the caller, which writes it and closes the flow
         CHECK(press(panel, PanelAction::ExtraSave).action == PanelAction::ExtraSave);
@@ -3844,7 +3843,8 @@ void testExtrasFlow(const FontSet& fonts) {
         CHECK(hits(panel, PanelAction::ExtraEdit).size() == 2 && hits(panel, PanelAction::ExtraAdd).size() == 1);
         const extras::List list = extrasList(m);
         CHECK(list.entries.size() == 2 && list.entries[1].host == "192.168.1.30" && list.entries[1].port == 9016);
-        CHECK(list.entries.size() == 2 && list.entries[1].lids && list.entries[1].format == "tracking_eye");
+        CHECK(list.entries.size() == 2 && list.entries[1].format == "osc");
+        CHECK(extras::rawEntry(m.config.root, 1).find("lids") == std::string::npos);
         // The same destination as the first entry: no Save until the port changes
         press(panel, PanelAction::ExtraAdd);
         panel.render(m);
@@ -3908,7 +3908,7 @@ void testExtrasFlow(const FontSet& fonts) {
         PanelModel three = extrasModel(language, kThreeExtras);
         liveThree(three, true);
         extras::Draft adding = extras::newDraft(1);
-        extras::chooseFormat(adding, extras::kTrackingEye);
+        extras::chooseFormat(adding, extras::kOsc);
         extras::Draft typed = adding;
         typed.host = extras::HostChoice::Ip;
         typed.ip = "100.101.5.8";
@@ -3929,9 +3929,9 @@ void testExtrasFlow(const FontSet& fonts) {
             {ExtrasStep::Host, adding, false, 4 + 2},
             {ExtrasStep::Host, typed, false, 4 + 12 + 2},
             {ExtrasStep::Host, kept, false, 5 + 2},
-            {ExtrasStep::Port, typed, false, 6},
-            {ExtrasStep::Port, editing, false, 7},
-            {ExtrasStep::Port, editing, true, 7},
+            {ExtrasStep::Port, typed, false, 4},
+            {ExtrasStep::Port, editing, false, 5},
+            {ExtrasStep::Port, editing, true, 6},
         };
         for (const auto& screen : screens) {
             const auto setUp = [&](EyePanel& p) {
@@ -4076,7 +4076,7 @@ void testExtrasSaveLabel(const FontSet& fonts) {
     const UiText& ja = uiText(Language::Ja);
     const UiText& en = uiText(Language::En);
     PanelModel m = extrasModel(Language::Ja, R"j([{"format": "feo1", "host": "main", "port": 11113},
-        {"enabled": false, "format": "tracking_eye", "host": "127.0.0.1", "port": 9015}])j");
+        {"enabled": false, "format": "osc", "host": "127.0.0.1", "port": 9015}])j");
     const extras::List list = extrasList(m);
     CHECK(std::string(extrasSaveLabel(ja, extras::newDraft(2), list)) == "追加して送る");
     const extras::Draft running = extras::draftOf(list.entries[0], extras::rawEntry(m.config.root, 0));

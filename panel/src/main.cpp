@@ -269,8 +269,8 @@ void printUsage() {
         "      --output-page main|apps  The Output tab's sub-tab (default main)\n"
         "      --extras-flow STEP[,KEY=VALUE...]  \"Other apps\"' add / change flow at STEP (format, host or\n"
         "                        port), with\n"
-        "                        format=feo1|tracking_eye, host=main|auto|frame|ip|keep, ip=A.B.C.D, kept=HOST,\n"
-        "                        port=N, lids=1, edit=N (change entry N, from 0, starting from its values) and delete\n"
+        "                        format=feo1|osc, host=main|auto|frame|ip|keep, ip=A.B.C.D, kept=HOST, port=N,\n"
+        "                        edit=N (change entry N, from 0, starting from its values) and delete\n"
         "                        (its confirmation open). Opens the Output tab's \"Other apps\"\n"
         "      --lid-marks       The same as --lids-page fine (the lid marks)\n"
         "      --history         Open the version history (Advanced tab)\n"
@@ -2044,7 +2044,6 @@ void fakeExtras(PanelModel& m, const std::string& state) {
         const char* format;
         const char* host;
         int port;
-        bool lids;
         bool enabled;
         const char* target;
         const char* net;
@@ -2055,23 +2054,22 @@ void fakeExtras(PanelModel& m, const std::string& state) {
     std::vector<Fake> fakes;
     const bool lanOff = state == "mixed";
     if (state == "one" || state == "old" || state == "main-refused") {
-        fakes.push_back({"", "feo1", "main", 11113, false, true, "192.168.0.60:11113", "lan", "", "", ""});
+        fakes.push_back({"", "feo1", "main", 11113, true, "192.168.0.60:11113", "lan", "", "", ""});
     }
     if (state == "old") {
-        fakes.push_back({"Gaze", "tracking_eye", "192.168.0.61", 9015, true, false, "", "", "", "", ""});
+        fakes.push_back({"Gaze", "osc", "192.168.0.61", 9015, false, "", "", "", "", ""});
     }
     if (state == "mixed" || state == "refused") {
-        fakes.push_back({"", "feo1", "main", 11113, false, true, "192.168.0.60:11113", "lan", "", "", ""});
-        fakes.push_back({"Gaze", "tracking_eye", "100.101.5.7", 9015, true, true, "100.101.5.7:9015", "vpn", "", "",
-                         ""});
-        fakes.push_back({"", "feo1", "203.0.113.5", 11113, false, true, lanOff ? "203.0.113.5:11113" : "",
+        fakes.push_back({"", "feo1", "main", 11113, true, "192.168.0.60:11113", "lan", "", "", ""});
+        fakes.push_back({"Gaze", "osc", "100.101.5.7", 9015, true, "100.101.5.7:9015", "vpn", "", "", ""});
+        fakes.push_back({"", "feo1", "203.0.113.5", 11113, true, lanOff ? "203.0.113.5:11113" : "",
                          lanOff ? "public" : "", lanOff ? "" : "public address", "", ""});
     }
     if (state == "errors") {
-        fakes.push_back({"", "feo1", "main", 9000, false, true, "", "", "same as main", "", ""});
-        fakes.push_back({"Bridge", "feo1", "bridge-pc.local", 11113, false, true, "", "", "",
+        fakes.push_back({"", "feo1", "main", 9000, true, "", "", "same as main", "", ""});
+        fakes.push_back({"Bridge", "feo1", "bridge-pc.local", 11113, true, "", "", "",
                          "could not resolve: failed to lookup address information: Name or service not known", ""});
-        fakes.push_back({"", "feo1", "192.168.0.61", 11113, false, true, "", "", "", "", "pupils"});
+        fakes.push_back({"", "feo1", "192.168.0.61", 11113, true, "", "", "", "", "pupils"});
     }
     if (lanOff) root.set(key::kLanOnly, JsonValue::makeBool(false));
     s.lanOnly = !lanOff;
@@ -2086,7 +2084,6 @@ void fakeExtras(PanelModel& m, const std::string& state) {
         entry.set("format", JsonValue::makeString(f.format));
         entry.set("host", JsonValue::makeString(f.host));
         entry.set("port", JsonValue::makeNumber(f.port, true));
-        if (std::string(f.format) == "tracking_eye") entry.set("lids", JsonValue::makeBool(f.lids));
         if (f.extraKey[0] != '\0') entry.set(f.extraKey, JsonValue::makeBool(true));
         list.items.push_back(entry);
         ExtraLive live;
@@ -2096,7 +2093,6 @@ void fakeExtras(PanelModel& m, const std::string& state) {
         live.format = f.extraKey[0] != '\0' ? "" : f.format;
         live.host = f.extraKey[0] != '\0' ? "" : f.host;
         live.port = f.extraKey[0] != '\0' ? 0 : f.port;
-        live.lids = f.lids;
         live.target = f.target;
         live.net = f.net;
         live.sending = !live.target.empty();
@@ -2159,6 +2155,8 @@ void parseExtrasFlow(const std::string& spec, const PanelModel& model, extras::D
                                         extras::rawEntry(model.config.root, index));
             }
         } else if (key == "format") {
+            // (a known one starts from its own port, as in the flow)
+            extras::chooseFormat(draft, value);
             draft.format = value;
         } else if (key == "host") {
             using extras::HostChoice;
@@ -2173,8 +2171,6 @@ void parseExtrasFlow(const std::string& spec, const PanelModel& model, extras::D
             draft.kept = value;
         } else if (key == "port") {
             draft.port = std::clamp(std::atoi(value.c_str()), 1, 65535);
-        } else if (key == "lids") {
-            draft.lids = value == "1";
         } else if (key == "delete") {
             confirmDelete = true;
         }
@@ -3109,7 +3105,7 @@ std::string statusSignature(const EyeStatus& s) {
                  s.pupilNet + "|" + s.pupilRefused;
     for (const ExtraLive& e : s.extras) {
         signature += "|" + e.name + "," + std::to_string(e.enabled) + e.format + "," + e.host + ":" +
-                     std::to_string(e.port) + std::to_string(e.lids) + std::to_string(e.sending) + e.target + "," +
+                     std::to_string(e.port) + std::to_string(e.sending) + e.target + "," +
                      e.net + "," + e.refused + "," + e.lastError;
     }
     signature += "|" + s.configError + "|" + s.sourceError + "|" + s.dominantEye + "|" +
@@ -3638,7 +3634,6 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::ExtraHost:
         case PanelAction::ExtraKey:
         case PanelAction::ExtraPort:
-        case PanelAction::ExtraLids:
         case PanelAction::ExtraDelete:
         case PanelAction::ExtraDeleteCancel: return;  // handled inside the panel
         case PanelAction::ExtraSend:

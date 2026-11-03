@@ -46,7 +46,8 @@ const CAPTURE_SECONDS_RANGE: std::ops::RangeInclusive<f64> = 0.5..=5.0;
 pub const CAPTURE_SKIP: f64 = 0.5;
 // What is logged, once, when config.json or the command line still asks for the ETVR output, which 0.10 removed.
 pub const ETVR_REMOVED: &str = "The ETVR output was removed in 0.10; sending to VRChat (output \"vrchat\") instead. \
-    For VRCFaceTracking, use its LiveLink or FrameEyeOSC module (output \"livelink\" or \"frameeyeosc\")";
+    For VRCFaceTracking, use its LiveLink or FrameEyeOSC module (output \"livelink\" or \"frameeyeosc\"). \
+    config.json's port 8889 becomes VRChat's 9000; any other port, and one given on the command line, stays as given";
 // The ETVR output's port: a port config.json sets to this for the ETVR output is taken as unset, VRChat's 9000.
 const ETVR_PORT: u64 = 8889;
 // What is logged, once, when config.json or the command line still asks for eye_behavior 1 (the eyes as up to 0.7.5),

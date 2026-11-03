@@ -60,7 +60,7 @@ pub const MAX_EXTRAS: usize = 3;
 const MAX_NAME_CHARS: usize = 16;
 // The keys an extra_outputs entry may have. Any other key makes the entry unusable: it may be a later version's
 // restriction on what goes out, which this one would otherwise drop and so send more than the user chose.
-const EXTRA_KEYS: [&str; 6] = ["name", "enabled", "format", "host", "port", "lids"];
+const EXTRA_KEYS: [&str; 5] = ["name", "enabled", "format", "host", "port"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -123,20 +123,21 @@ pub enum Widen {
 pub enum ExtraFormat {
     /// FrameEyeOSC packets (docs/protocol.md), byte for byte the ones the main output's FrameEyeOSC would send
     Feo1,
-    /// VRChat's own eye tracking input: /tracking/eye/CenterVec, and with `lids` /tracking/eye/EyesClosedAmount
-    TrackingEye,
+    /// Plain OSC: VRChat's /tracking/eye/CenterVec and EyesClosedAmount, and VRCFT's v2 avatar parameters under /FT
+    /// (docs/protocol.md, "Other formats: osc")
+    Osc,
 }
 
 impl ExtraFormat {
     pub fn name(self) -> &'static str {
         match self {
             Self::Feo1 => "feo1",
-            Self::TrackingEye => "tracking_eye",
+            Self::Osc => "osc",
         }
     }
 
     fn parse(text: &str) -> Option<Self> {
-        [Self::Feo1, Self::TrackingEye].into_iter().find(|format| format.name() == text)
+        [Self::Feo1, Self::Osc].into_iter().find(|format| format.name() == text)
     }
 }
 
@@ -154,8 +155,6 @@ pub struct ExtraOutput {
     /// or a host name.
     pub host: String,
     pub port: u16,
-    /// tracking_eye only: also send EyesClosedAmount.
-    pub lids: bool,
     /// Why this entry can't be used, if so.
     pub error: Option<String>,
 }
@@ -174,7 +173,6 @@ impl ExtraOutput {
             format: None,
             host: String::new(),
             port: 0,
-            lids: false,
             error: Some(why),
         }
     }
@@ -214,15 +212,7 @@ fn parse_extra(index: usize, entry: &serde_json::Value) -> ExtraOutput {
         let format = match entry.get("format") {
             Some(Value::String(text)) => ExtraFormat::parse(text)
                 .ok_or_else(|| format!("unknown format \"{text}\" (written by a newer frameeyeosc?)"))?,
-            _ => return Err("format must be \"feo1\" or \"tracking_eye\"".into()),
-        };
-        if format != ExtraFormat::TrackingEye && entry.contains_key("lids") {
-            return Err("lids is only for tracking_eye".into());
-        }
-        let flag = |key: &str, default: bool| match entry.get(key) {
-            None => Ok(default),
-            Some(Value::Bool(value)) => Ok(*value),
-            _ => Err(format!("{key} must be true or false")),
+            _ => return Err("format must be \"feo1\" or \"osc\"".into()),
         };
         let host = match entry.get("host") {
             Some(Value::String(host)) if host == "main" || host == "auto" || host_ok(host) => host.clone(),
@@ -232,13 +222,17 @@ fn parse_extra(index: usize, entry: &serde_json::Value) -> ExtraOutput {
             Some(port @ 1..=65535) => port as u16,
             _ => return Err("port must be between 1 and 65535".into()),
         };
+        let enabled = match entry.get("enabled") {
+            None => true,
+            Some(Value::Bool(value)) => *value,
+            _ => return Err("enabled must be true or false".into()),
+        };
         Ok(ExtraOutput {
             name: name.clone()?,
-            enabled: flag("enabled", true)?,
+            enabled,
             format: Some(format),
             host,
             port,
-            lids: flag("lids", false)?,
             error: None,
         })
     };
@@ -263,31 +257,21 @@ fn parse_extras(value: Option<&serde_json::Value>) -> (Vec<ExtraOutput>, Option<
     (extras, None)
 }
 
-/// One --extra option, FORMAT@HOST:PORT with +lids after it for tracking_eye's eyelids, in place `index` (from 0).
+/// One --extra option, FORMAT@HOST:PORT, in place `index` (from 0).
 pub fn parse_extra_arg(index: usize, text: &str) -> Result<ExtraOutput, String> {
-    let wrong = |why: &str| format!("--extra {text}: {why} (FORMAT@HOST:PORT[+lids], FORMAT feo1 or tracking_eye)");
-    let mut parts = text.split('+');
-    let destination = parts.next().unwrap_or_default();
-    let options: Vec<&str> = parts.collect();
-    let (format, target) = destination.split_once('@').ok_or_else(|| wrong("no @"))?;
+    let wrong = |why: &str| format!("--extra {text}: {why} (FORMAT@HOST:PORT, FORMAT feo1 or osc)");
+    let (format, target) = text.split_once('@').ok_or_else(|| wrong("no @"))?;
     let format = ExtraFormat::parse(format).ok_or_else(|| wrong("unknown format"))?;
     let (host, port) = split_target(target).ok_or_else(|| wrong("not HOST:PORT"))?;
     if port == 0 || !(host == "main" || host == "auto" || host_ok(&host)) {
         return Err(wrong("not HOST:PORT"));
     }
-    let lids = match options[..] {
-        [] => false,
-        ["lids"] if format == ExtraFormat::TrackingEye => true,
-        ["lids"] => return Err(wrong("+lids is only for tracking_eye")),
-        _ => return Err(wrong("the only option is +lids")),
-    };
     Ok(ExtraOutput {
         name: default_name(index),
         enabled: true,
         format: Some(format),
         host,
         port,
-        lids,
         error: None,
     })
 }
@@ -1804,8 +1788,8 @@ mod tests {
         let (extras, problems) = extras_of(
             r#"{"extra_outputs": [
                 {"name": "Bridge", "enabled": true, "format": "feo1", "host": "192.168.0.10", "port": 11113},
-                {"format": "tracking_eye", "host": "main", "port": 9015, "lids": true},
-                {"name": "", "enabled": false, "format": "tracking_eye", "host": "auto", "port": 9015}
+                {"format": "osc", "host": "main", "port": 9015},
+                {"name": "", "enabled": false, "format": "osc", "host": "auto", "port": 9015}
             ]}"#,
         );
         assert_eq!(problems, None);
@@ -1817,13 +1801,12 @@ mod tests {
                 format: Some(ExtraFormat::Feo1),
                 host: "192.168.0.10".into(),
                 port: 11113,
-                lids: false,
                 error: None,
             }
         );
         // Without a name: "App N"; enabled unless turned off
-        assert_eq!((extras[1].name.as_str(), extras[1].enabled, extras[1].lids), ("App 2", true, true));
-        assert_eq!(extras[1].usable(), Some(ExtraFormat::TrackingEye));
+        assert_eq!((extras[1].name.as_str(), extras[1].enabled), ("App 2", true));
+        assert_eq!(extras[1].usable(), Some(ExtraFormat::Osc));
         assert_eq!((extras[2].name.as_str(), extras[2].usable()), ("App 3", None));
         // None at all, or null: none, and nothing wrong
         assert_eq!(extras_of("{}"), (Vec::new(), None));
@@ -1833,11 +1816,13 @@ mod tests {
 
     #[test]
     fn a_bad_extra_entry_disables_only_itself() {
-        let good = r#"{"format": "tracking_eye", "host": "10.0.0.2", "port": 9015}"#;
+        let good = r#"{"format": "osc", "host": "10.0.0.2", "port": 9015}"#;
         for (entry, why) in [
             (r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113, "pupils": true}"#, "unknown key \"pupils\""),
             (r#"{"format": "feo2", "host": "10.0.0.2", "port": 11113}"#, "unknown format \"feo2\""),
-            (r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113, "lids": false}"#, "lids is only for"),
+            // (0.10's betas' tracking_eye, never released: no alias)
+            (r#"{"format": "tracking_eye", "host": "10.0.0.2", "port": 9015}"#, "unknown format \"tracking_eye\""),
+            (r#"{"format": "osc", "host": "10.0.0.2", "port": 9015, "lids": true}"#, "unknown key \"lids\""),
             (r#"{"host": "10.0.0.2", "port": 11113}"#, "format must be"),
             (r#"{"format": 1, "host": "10.0.0.2", "port": 11113}"#, "format must be"),
             (r#"{"format": "feo1", "host": "10.0.0.2", "port": 0}"#, "port must be"),
@@ -1847,7 +1832,6 @@ mod tests {
             (r#"{"format": "feo1", "host": "", "port": 11113}"#, "host must be"),
             (r#"{"format": "feo1", "port": 11113}"#, "host must be"),
             (r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113, "enabled": "yes"}"#, "enabled must be"),
-            (r#"{"format": "tracking_eye", "host": "10.0.0.2", "port": 9015, "lids": 1}"#, "lids must be"),
             (r#"{"name": "あいう", "format": "feo1", "host": "10.0.0.2", "port": 11113}"#, "name must be"),
             (r#"{"name": "seventeen chars..", "format": "feo1", "host": "10.0.0.2", "port": 11113}"#, "name must be"),
             (r#"{"name": 5, "format": "feo1", "host": "10.0.0.2", "port": 11113}"#, "name must be"),
@@ -1859,7 +1843,7 @@ mod tests {
             assert_eq!(extras[0].usable(), None, "{entry}");
             // config_error names the entry; the next entry and the rest of the file are used
             assert_eq!(problems, Some(format!("extra_outputs entry 1: {error}")));
-            assert_eq!(extras[1].usable(), Some(ExtraFormat::TrackingEye), "{entry}");
+            assert_eq!(extras[1].usable(), Some(ExtraFormat::Osc), "{entry}");
             let alone = format!(r#"{{"lid_sync": 0.3, "extra_outputs": [{entry}]}}"#);
             assert_eq!(merged(&alone, &[]).unwrap().0.lid_sync, 0.3);
         }
@@ -1900,21 +1884,21 @@ mod tests {
     fn extras_on_the_command_line_replace_the_files_and_are_locked() {
         let file = r#"{"extra_outputs": [{"format": "feo1", "host": "10.0.0.2", "port": 11113, "pupils": true}]}"#;
         let (settings, locked) =
-            merged(file, &["--extra", "feo1@192.168.0.10:11113", "--extra", "tracking_eye@main:9015+lids"]).unwrap();
+            merged(file, &["--extra", "feo1@192.168.0.10:11113", "--extra", "osc@main:9015"]).unwrap();
         assert_eq!(locked, ["extra_outputs"]);
         assert_eq!(settings.extras_problems(), None);
         let extras = &settings.extra_outputs;
         assert_eq!(extras.len(), 2);
         assert_eq!(
-            (extras[0].name.as_str(), extras[0].usable(), extras[0].host.as_str(), extras[0].port, extras[0].lids),
-            ("App 1", Some(ExtraFormat::Feo1), "192.168.0.10", 11113, false)
+            (extras[0].name.as_str(), extras[0].usable(), extras[0].host.as_str(), extras[0].port),
+            ("App 1", Some(ExtraFormat::Feo1), "192.168.0.10", 11113)
         );
         assert_eq!(
-            (extras[1].name.as_str(), extras[1].usable(), extras[1].host.as_str(), extras[1].port, extras[1].lids),
-            ("App 2", Some(ExtraFormat::TrackingEye), "main", 9015, true)
+            (extras[1].name.as_str(), extras[1].usable(), extras[1].host.as_str(), extras[1].port),
+            ("App 2", Some(ExtraFormat::Osc), "main", 9015)
         );
         // A bracketed IPv6 address, and the Steam Link PC
-        let argv = ["--extra", "feo1@[fd00::2]:11113", "--extra", "tracking_eye@auto:9015"];
+        let argv = ["--extra", "feo1@[fd00::2]:11113", "--extra", "osc@auto:9015"];
         let (settings, _) = merged("{}", &argv).unwrap();
         assert_eq!(settings.extra_outputs[0].host, "fd00::2");
         assert_eq!(settings.extra_outputs[1].host, "auto");
@@ -1931,7 +1915,7 @@ mod tests {
 
     #[test]
     fn bad_extra_options_are_refused() {
-        assert_eq!(check_extra_args(&["feo1@10.0.0.2:11113".into(), "tracking_eye@main:9015+lids".into()]), Ok(()));
+        assert_eq!(check_extra_args(&["feo1@10.0.0.2:11113".into(), "osc@main:9015".into()]), Ok(()));
         for bad in [
             "feo1",
             "feo1@10.0.0.2",
@@ -1939,9 +1923,9 @@ mod tests {
             "feo1@:11113",
             "feo2@10.0.0.2:11113",
             "feo1@10.0.0.2:11113+lids",
-            "tracking_eye@10.0.0.2:9015+pupils",
-            "tracking_eye@10.0.0.2:9015+lids+lids",
-            "tracking_eye@bad host:9015",
+            "osc@10.0.0.2:9015+lids",
+            "tracking_eye@10.0.0.2:9015",
+            "osc@bad host:9015",
         ] {
             let error = check_extra_args(&[bad.into()]).unwrap_err();
             assert!(error.starts_with(&format!("--extra {bad}: ")), "{error}");

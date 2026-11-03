@@ -629,10 +629,10 @@ struct Args {
     /// refused
     #[arg(long)]
     no_lan_only: bool,
-    /// Also send to another app: FORMAT feo1 (FrameEyeOSC packets) or tracking_eye (VRChat's /tracking/eye/CenterVec;
-    /// +lids adds EyesClosedAmount), HOST an IP address, a host name, "main" (the main output's host) or "auto" (the
-    /// Steam Link PC). Up to 3 times; replaces config.json's extra_outputs
-    #[arg(long, value_name = "FORMAT@HOST:PORT[+lids]", conflicts_with = "no_extras")]
+    /// Also send to another app: FORMAT feo1 (FrameEyeOSC packets) or osc (VRChat's /tracking/eye/CenterVec and
+    /// EyesClosedAmount, and VRCFT's v2 avatar parameters under /FT), HOST an IP address, a host name, "main" (the main
+    /// output's host) or "auto" (the Steam Link PC). Up to 3 times; replaces config.json's extra_outputs
+    #[arg(long, value_name = "FORMAT@HOST:PORT", conflicts_with = "no_extras")]
     extra: Vec<String>,
     /// Send to no other app, whatever config.json's extra_outputs says
     #[arg(long)]
@@ -4050,20 +4050,7 @@ fn feo_packet(sample: &Sample, session: u32, sequence: u32, time_us: u64) -> Vec
 /// camera_params) and the brows (brow_params), and with `steamlink_params` Steam Link's names after it.
 fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> {
     let prefix = format!("/avatar/parameters{}", settings.prefix);
-    let [left_x, left_y, right_x, right_y, x, y] = sample.gaze;
-    let [lid_left, lid_right] = sample.lids;
-    let mut values = vec![
-        ("EyeLeftX", left_x),
-        ("EyeLeftY", left_y),
-        ("EyeRightX", right_x),
-        ("EyeRightY", right_y),
-        ("EyeLidLeft", lid_left),
-        ("EyeLidRight", lid_right),
-        ("EyeX", x),
-        ("EyeY", y),
-    ];
-    values.extend(camera_params(&sample.camera));
-    values.extend(sample.brows.map(brow_params).unwrap_or_default());
+    let values = v2_params(sample.gaze, sample.lids, &sample.camera, sample.brows);
     let mut messages = Vec::with_capacity(21);
     messages.extend(active_message(settings, true));
     messages.extend(
@@ -4075,6 +4062,32 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
         messages.extend(steamlink_messages(sample.gaze, sample.lids));
     }
     messages
+}
+
+/// The VRCFT v2 float parameters (without the prefix) for a sample's gaze (left x/y, right x/y, combined x/y; each
+/// eye's its own with "move eyes separately", else the combined one), VRCFT eyelids, eye-camera values (camera_params)
+/// and brows (brow_params): what osc_messages sends, and the osc extra format too (extras.rs).
+fn v2_params(
+    gaze: [f32; 6],
+    lids: [f32; 2],
+    camera: &CameraValues,
+    brows: Option<[f32; 2]>,
+) -> Vec<(&'static str, f32)> {
+    let [left_x, left_y, right_x, right_y, x, y] = gaze;
+    let [lid_left, lid_right] = lids;
+    let mut values = vec![
+        ("EyeLeftX", left_x),
+        ("EyeLeftY", left_y),
+        ("EyeRightX", right_x),
+        ("EyeRightY", right_y),
+        ("EyeLidLeft", lid_left),
+        ("EyeLidRight", lid_right),
+        ("EyeX", x),
+        ("EyeY", y),
+    ];
+    values.extend(camera_params(camera));
+    values.extend(brows.map(brow_params).unwrap_or_default());
+    values
 }
 
 /// The eye camera's values as VRCFT v2 parameters: each eye's squint while the camera drives its eyelid, and the
@@ -4114,12 +4127,17 @@ fn brow_params(brows: [f32; 2]) -> Vec<(&'static str, f32)> {
 /// data lost, sending paused or VRChat moved): VRChat keeps a parameter's last value, so the avatar would otherwise
 /// keep its brows up.
 fn brow_release(settings: &Settings, out: bool, brows: Option<[f32; 2]>) -> Vec<(String, OscType)> {
+    brow_release_at(&settings.prefix, out, brows)
+}
+
+/// brow_release under the parameter prefix `prefix` ("/FT", or "" for none).
+fn brow_release_at(prefix: &str, out: bool, brows: Option<[f32; 2]>) -> Vec<(String, OscType)> {
     if !out || brows.is_some() {
         return Vec::new();
     }
     BROW_PARAMS
         .into_iter()
-        .map(|name| (format!("/avatar/parameters{}/v2/{name}", settings.prefix), OscType::Float(0.0)))
+        .map(|name| (format!("/avatar/parameters{prefix}/v2/{name}"), OscType::Float(0.0)))
         .collect()
 }
 
@@ -4238,6 +4256,11 @@ fn mean(values: [Option<f32>; 2]) -> Option<f32> {
 /// Squint 0 for each eye whose squint went out (`out`) but does not with this sample (`squint`), and for the combined
 /// one once no eye's does: VRChat keeps a parameter's last value, so the avatar would otherwise stay squinting.
 fn squint_release(settings: &Settings, out: [bool; 2], squint: [Option<f32>; 2]) -> Vec<(String, OscType)> {
+    squint_release_at(&settings.prefix, out, squint)
+}
+
+/// squint_release under the parameter prefix `prefix` ("/FT", or "" for none).
+fn squint_release_at(prefix: &str, out: [bool; 2], squint: [Option<f32>; 2]) -> Vec<(String, OscType)> {
     let stopped = [0, 1].map(|eye| out[eye] && squint[eye].is_none());
     let names = [
         ("EyeSquintLeft", stopped[0]),
@@ -4247,7 +4270,7 @@ fn squint_release(settings: &Settings, out: [bool; 2], squint: [Option<f32>; 2])
     names
         .into_iter()
         .filter(|(_, stopped)| *stopped)
-        .map(|(name, _)| (format!("/avatar/parameters{}/v2/{name}", settings.prefix), OscType::Float(0.0)))
+        .map(|(name, _)| (format!("/avatar/parameters{prefix}/v2/{name}"), OscType::Float(0.0)))
         .collect()
 }
 
@@ -4708,8 +4731,7 @@ impl Bridge {
             if sent && self.output.addr().is_some() {
                 self.sent.push_back(now);
             }
-            let combined = [sample.gaze[4], sample.gaze[5]];
-            self.extras.send_sample(now, feo.as_deref(), combined, sample.lids);
+            self.extras.send_sample(now, feo.as_deref(), &sample);
         }
         self.received.push_back(now);
         for times in [&mut self.sent, &mut self.received] {
@@ -11256,14 +11278,13 @@ mod tests {
     }
 
     /// An extra output entry for the tests.
-    fn extra(format: config::ExtraFormat, host: &str, port: u16, lids: bool) -> config::ExtraOutput {
+    fn extra(format: config::ExtraFormat, host: &str, port: u16) -> config::ExtraOutput {
         config::ExtraOutput {
             name: format.name().into(),
             enabled: true,
             format: Some(format),
             host: host.into(),
             port,
-            lids,
             error: None,
         }
     }
@@ -11310,8 +11331,8 @@ mod tests {
                 brow_from_widen: brows,
                 lid_calibration: false,
                 extra_outputs: vec![
-                    extra(config::ExtraFormat::Feo1, "main", relay_port, false),
-                    extra(config::ExtraFormat::Feo1, "127.0.0.1", second_port, false),
+                    extra(config::ExtraFormat::Feo1, "main", relay_port),
+                    extra(config::ExtraFormat::Feo1, "127.0.0.1", second_port),
                 ],
                 ..settings()
             };
@@ -11354,7 +11375,7 @@ mod tests {
             host: "127.0.0.1".into(),
             port: Some(vrchat_port),
             lid_calibration: false,
-            extra_outputs: vec![extra(config::ExtraFormat::Feo1, "main", relay_port, false)],
+            extra_outputs: vec![extra(config::ExtraFormat::Feo1, "main", relay_port)],
             ..settings()
         };
         let mut bridge = bridge_with(&settings);
@@ -11393,7 +11414,7 @@ mod tests {
         bridge.on_sample(reading(6, [0.2, -0.1], [1.0, 0.6])).unwrap();
         assert_eq!(feo_header(&drain(&relay)[0]), (9, true));
         let elsewhere = Settings {
-            extra_outputs: vec![extra(config::ExtraFormat::Feo1, "127.0.0.1", moved_port, false)],
+            extra_outputs: vec![extra(config::ExtraFormat::Feo1, "127.0.0.1", moved_port)],
             ..settings.clone()
         };
         bridge.apply(reload(&elsewhere)).unwrap();
@@ -11413,50 +11434,158 @@ mod tests {
         assert!(drain(&moved).is_empty());
     }
 
+    /// The main VRChat output's VRCFT v2 float messages among `messages` (its parameter prefix `prefix`), as the osc
+    /// format names them: under /avatar/parameters/FT/v2/. Not its EyeTrackingActive, pupil bits, Steam Link names or
+    /// VRChat's own eye tracking input.
+    fn main_v2_floats(messages: &[(String, Vec<OscType>)], prefix: &str) -> Vec<(String, Vec<OscType>)> {
+        let v2 = format!("/avatar/parameters{prefix}/v2/");
+        messages
+            .iter()
+            .filter(|(_, args)| matches!(args[..], [OscType::Float(_)]))
+            .filter_map(|(addr, args)| {
+                Some((format!("/avatar/parameters/FT/v2/{}", addr.strip_prefix(&v2)?), args.clone()))
+            })
+            .collect()
+    }
+
+    /// VRChat's eye tracking input as the osc format sends it: CenterVec for the combined gaze, EyesClosedAmount.
+    fn osc_eyes(gaze: [f32; 2], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
+        vec![
+            ("/tracking/eye/CenterVec".to_owned(), gaze_vector(gaze).map(OscType::Float).to_vec()),
+            ("/tracking/eye/EyesClosedAmount".to_owned(), vec![OscType::Float(eyes_closed_amount(lids))]),
+        ]
+    }
+
     #[test]
-    fn a_tracking_eye_extra_sends_center_vec_and_falls_silent_when_the_eyes_stop() {
-        let (gaze, gaze_port) = listener();
+    fn the_osc_set_is_the_main_vrchat_outputs_v2_floats_whatever_its_settings() {
+        // Each eye its own gaze (as with "move eyes separately"), the camera's squint and pupils for both eyes, one
+        // or none, the brows on and off: in turn, so the squint and brows also stop
+        let both = CameraValues {
+            squint: [Some(0.2), Some(0.4)],
+            pupil_dilation: [Some(0.5), Some(0.7)],
+            pupil_diameter: [Some(4.0), Some(12.0)],
+        };
+        let left = CameraValues {
+            squint: [Some(0.3), None],
+            pupil_dilation: [None, Some(0.6)],
+            pupil_diameter: [None, Some(5.0)],
+        };
+        let none = CameraValues::default();
+        let steps = [(both, Some([0.4, 0.1])), (left, Some([0.0, 0.3])), (none, None), (both, None), (none, None)];
+        let variants = [
+            settings(),
+            Settings { prefix: String::new(), steamlink_params: true, pupil_bits: 3, ..settings() },
+            Settings {
+                prefix: "/Custom".into(),
+                eye_tracking_active: ActiveType::Float,
+                native_eyes: true,
+                independent_eyes: true,
+                pupil_bits: 4,
+                ..settings()
+            },
+        ];
+        for settings in variants {
+            let mut held = extras::Held::default();
+            let (mut squint_out, mut brow_out, mut bits) = ([false; 2], false, PupilBits::default());
+            for (index, (camera, brows)) in steps.into_iter().enumerate() {
+                let gaze = [0.1, -0.2, 0.3 + index as f32 * 0.1, 0.4, 0.2, 0.1];
+                let sample = Sample { gaze, camera, brows, ..sample() };
+                // What the main VRChat output sends with this sample, in its order (see Bridge::on_sample)
+                let mut main: Vec<(String, Vec<OscType>)> = osc_messages(&settings, &sample)
+                    .into_iter()
+                    .chain(bits.messages(&settings, pupil_dilation(&camera), Instant::now()))
+                    .chain(squint_release(&settings, squint_out, camera.squint))
+                    .chain(brow_release(&settings, brow_out, brows))
+                    .map(|(addr, value)| (addr, vec![value]))
+                    .collect();
+                main.extend(native_messages(&settings, gaze, sample.lids));
+                squint_out = camera.squint.map(|squint| squint.is_some());
+                brow_out = brows.is_some();
+                let osc = extras::osc_sample(&sample, &mut held);
+                assert_eq!(osc[..2], osc_eyes([0.2, 0.1], sample.lids)[..], "{index}");
+                assert_eq!(osc[2..], main_v2_floats(&main, &settings.prefix)[..], "{index}");
+                assert!(osc[2..].iter().all(|(addr, _)| addr.starts_with("/avatar/parameters/FT/v2/")));
+            }
+        }
+    }
+
+    #[test]
+    fn an_osc_extra_sends_the_main_vrchat_outputs_v2_floats_and_a_neutral_set_when_the_eyes_stop() {
         let (main, main_port) = listener();
-        for (lids, independent) in [(false, false), (true, false), (true, true)] {
+        let (osc, osc_port) = listener();
+        let decode = |listener: &UdpSocket| -> Vec<_> { drain(listener).iter().map(|d| decode_osc(d)).collect() };
+        for (prefix, independent, brows) in [("/FT", false, false), ("", true, true), ("/Custom", true, false)] {
             let settings = Settings {
-                output: OutputKind::LiveLink,
                 host: "127.0.0.1".into(),
                 port: Some(main_port),
+                prefix: prefix.into(),
                 independent_eyes: independent,
+                brow_from_widen: brows,
+                steamlink_params: true,
+                native_eyes: true,
+                pupil_bits: 3,
                 lid_calibration: false,
-                extra_outputs: vec![extra(config::ExtraFormat::TrackingEye, "127.0.0.1", gaze_port, lids)],
+                extra_outputs: vec![extra(config::ExtraFormat::Osc, "127.0.0.1", osc_port)],
                 ..settings()
             };
             let mut bridge = bridge_with(&settings);
-            for index in 0..5 {
-                bridge.on_sample(reading(index, [0.3, 0.2], [1.0, 0.5])).unwrap();
+            for index in 0..20 {
+                // The eyes apart, widening and back
+                let openness = if index < 10 { [1.0, 0.95] } else { [0.6, 0.5] };
+                let data = EyeData {
+                    gaze: [[0.35, 0.2, -1.0], [0.2, 0.25, -1.0]],
+                    pre_fusion_gaze: [[0.35, 0.2, -1.0], [0.2, 0.25, -1.0]],
+                    ..reading(index, [0.3, 0.2], openness)
+                };
+                bridge.on_sample(data).unwrap();
                 let sample = bridge.latest.as_ref().unwrap();
-                let messages: Vec<_> = drain(&gaze).iter().map(|datagram| decode_osc(datagram)).collect();
-                let mut expected = vec![(
-                    "/tracking/eye/CenterVec".to_owned(),
-                    gaze_vector([sample.gaze[4], sample.gaze[5]]).map(OscType::Float).to_vec(),
-                )];
-                if lids {
-                    let closed = eyes_closed_amount(sample.lids);
-                    assert!(closed > 0.0);
-                    expected.push(("/tracking/eye/EyesClosedAmount".to_owned(), vec![OscType::Float(closed)]));
-                }
-                // Every sample (LiveLink's own rate limit is the main output's), always CenterVec
-                assert_eq!(messages, expected, "{index}");
+                let (at_main, at_osc) = (decode(&main), decode(&osc));
+                // Every sample: VRChat's eye input, then the main output's v2 floats under /FT, whatever its prefix
+                assert_eq!(at_osc[..2], osc_eyes([sample.gaze[4], sample.gaze[5]], sample.lids)[..], "{index}");
+                assert_eq!(at_osc[2..], main_v2_floats(&at_main, prefix)[..], "{prefix} {index}");
+                assert_eq!(at_osc.len(), if brows { 18 } else { 10 });
             }
-            assert!(!drain(&main).is_empty());
-            // Lost: relaxed open eyes looking ahead once, then silence
+            // Lost: relaxed open eyes looking ahead and the brows back to 0 (as the main output's), once
             bridge.on_lost("test").unwrap();
-            let ahead = [0.0, 0.0, 1.0].map(OscType::Float).to_vec();
-            let mut neutral = vec![("/tracking/eye/CenterVec".to_owned(), ahead)];
-            if lids {
-                neutral.push(("/tracking/eye/EyesClosedAmount".to_owned(), vec![OscType::Float(0.0)]));
+            let (at_main, at_osc) = (decode(&main), decode(&osc));
+            let mut neutral = osc_eyes([0.0; 2], [LID_RELAXED; 2]);
+            let gaze = ["EyeLeftX", "EyeLeftY", "EyeRightX", "EyeRightY"].map(|name| (name, 0.0));
+            let rest = [("EyeLidLeft", LID_RELAXED), ("EyeLidRight", LID_RELAXED), ("EyeX", 0.0), ("EyeY", 0.0)];
+            for (name, value) in gaze.into_iter().chain(rest) {
+                neutral.push((format!("/avatar/parameters/FT/v2/{name}"), vec![OscType::Float(value)]));
             }
-            assert_eq!(drain(&gaze).iter().map(|datagram| decode_osc(datagram)).collect::<Vec<_>>(), neutral);
+            assert_eq!(at_osc[..10], neutral[..]);
+            assert_eq!(at_osc[10..], main_v2_floats(&at_main, prefix)[..]);
+            assert_eq!(at_osc.len(), if brows { 18 } else { 10 });
+            // Then nothing, not even while the other outputs are kept alive
             bridge.feo_idle = None;
             bridge.keep_feo_alive();
             bridge.keep_livelink_alive();
-            assert!(drain(&gaze).is_empty());
+            assert!(decode(&osc).is_empty());
+            // Paused while tracking: the same neutral set, then nothing; back on: the samples again
+            bridge.on_sample(reading(20, [0.3, 0.2], [0.6, 0.5])).unwrap();
+            drain(&osc);
+            bridge.apply(reload(&Settings { sending: false, ..settings.clone() })).unwrap();
+            assert_eq!(decode(&osc)[..10], neutral[..]);
+            bridge.on_sample(reading(21, [0.3, 0.2], [0.6, 0.5])).unwrap();
+            assert!(decode(&osc).is_empty());
+            bridge.apply(reload(&settings)).unwrap();
+            bridge.refresh_extras();
+            bridge.on_sample(reading(22, [0.3, 0.2], [0.6, 0.5])).unwrap();
+            assert_eq!(decode(&osc)[0].0, "/tracking/eye/CenterVec");
+            // Moved to another port: the old one gets the neutral set, the new one the samples
+            let (moved, moved_port) = listener();
+            let elsewhere =
+                Settings { extra_outputs: vec![extra(config::ExtraFormat::Osc, "127.0.0.1", moved_port)], ..settings };
+            bridge.apply(reload(&elsewhere)).unwrap();
+            bridge.refresh_extras();
+            assert_eq!(decode(&osc)[..10], neutral[..]);
+            bridge.on_sample(reading(23, [0.3, 0.2], [0.6, 0.5])).unwrap();
+            assert!(decode(&osc).is_empty());
+            assert_eq!(decode(&moved).len(), if brows { 18 } else { 10 });
+            bridge.on_lost("test").unwrap();
+            drain(&moved);
+            drain(&main);
         }
     }
 
@@ -11470,20 +11599,20 @@ mod tests {
             port: Some(main_port),
             lid_calibration: false,
             extra_outputs: vec![
-                extra(config::ExtraFormat::TrackingEye, "main", main_port, false),
-                extra(config::ExtraFormat::TrackingEye, "127.0.0.1", gaze_port, false),
+                extra(config::ExtraFormat::Osc, "main", main_port),
+                extra(config::ExtraFormat::Osc, "127.0.0.1", gaze_port),
                 // (not "localhost": it may look up as ::1 first, a different address)
-                extra(config::ExtraFormat::Feo1, "127.0.0.1", gaze_port, false),
+                extra(config::ExtraFormat::Feo1, "127.0.0.1", gaze_port),
             ],
             ..settings()
         };
         let mut bridge = bridge_with(&settings);
         bridge.on_sample(reading(0, [0.3, 0.2], [1.0, 1.0])).unwrap();
-        // Only the main output's packet at the main port, only the first extra's message at the other
+        // Only the main output's packet at the main port, only the first extra's messages at the other
         let at_main = drain(&main);
         assert_eq!((at_main.len(), &at_main[0][..4]), (1, &b"FEO1"[..]));
         let at_gaze = drain(&gaze);
-        assert_eq!(at_gaze.len(), 1);
+        assert_eq!(at_gaze.len(), 10);
         assert_eq!(decode_osc(&at_gaze[0]).0, "/tracking/eye/CenterVec");
         let status = serde_json::to_value(bridge.status(None, None)).unwrap();
         let refused: Vec<_> = status["extras"].as_array().unwrap().iter().map(|extra| &extra["refused"]).collect();
@@ -11502,7 +11631,7 @@ mod tests {
         bridge.on_sample(reading(1, [0.3, 0.2], [1.0, 1.0])).unwrap();
         assert_eq!(drain(&moved).len(), 1);
         assert_eq!(decode_osc(&drain(&main)[0]).0, "/tracking/eye/CenterVec");
-        assert_eq!(drain(&gaze).len(), 1);
+        assert_eq!(drain(&gaze).len(), 10);
     }
 
     #[test]
@@ -11539,8 +11668,8 @@ mod tests {
         let vpn = Settings {
             host: "192.168.0.10".into(),
             extra_outputs: vec![
-                extra(config::ExtraFormat::TrackingEye, "192.0.2.1", 9015, false),
-                extra(config::ExtraFormat::TrackingEye, "100.64.0.7", 9015, false),
+                extra(config::ExtraFormat::Osc, "192.0.2.1", 9015),
+                extra(config::ExtraFormat::Osc, "100.64.0.7", 9015),
             ],
             ..settings()
         };
@@ -11558,17 +11687,16 @@ mod tests {
         let settings = Settings {
             host: "127.0.0.1".into(),
             extra_outputs: vec![
-                config::ExtraOutput { enabled: false, ..extra(config::ExtraFormat::Feo1, "127.0.0.1", 11113, false) },
+                config::ExtraOutput { enabled: false, ..extra(config::ExtraFormat::Feo1, "127.0.0.1", 11113) },
                 config::ExtraOutput {
                     name: "App 2".into(),
                     enabled: false,
                     format: None,
                     host: String::new(),
                     port: 0,
-                    lids: false,
                     error: Some("unknown key \"pupils\" (written by a newer frameeyeosc?)".into()),
                 },
-                extra(config::ExtraFormat::TrackingEye, "127.0.0.1", 9015, true),
+                extra(config::ExtraFormat::Osc, "127.0.0.1", 9015),
             ],
             ..settings()
         };
@@ -11577,13 +11705,13 @@ mod tests {
         assert_eq!(
             status["extras"][0],
             serde_json::json!({"index": 1, "name": "feo1", "enabled": false, "format": "feo1", "host": "127.0.0.1",
-                "port": 11113, "lids": false, "sending": false, "target": null, "net": null, "rate": 0.0,
+                "port": 11113, "sending": false, "target": null, "net": null, "rate": 0.0,
                 "dropped_rate": 0.0, "refused": null, "last_error": null})
         );
         assert_eq!(status["extras"][1]["format"], serde_json::Value::Null);
         assert_eq!(status["extras"][1]["refused"], "unknown key \"pupils\" (written by a newer frameeyeosc?)");
-        assert_eq!(status["extras"][2]["format"], "tracking_eye");
-        assert_eq!(status["extras"][2]["lids"], true);
+        assert_eq!(status["extras"][2]["format"], "osc");
+        assert_eq!(status["extras"][2].get("lids"), None);
         assert_eq!(status["extras"][2]["target"], "127.0.0.1:9015");
         // The settings in effect list them too
         assert_eq!(status["effective"]["extra_outputs"].as_array().unwrap().len(), 3);

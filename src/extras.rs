@@ -4,9 +4,11 @@
 //! - `feo1`: the FrameEyeOSC packets of docs/protocol.md, byte for byte the ones the main output's FrameEyeOSC sends
 //!   (the same packet, built once per sample: one session and one sequence for every destination). Without eye data a
 //!   packet without TRACKING every FEO_IDLE_INTERVAL, as there.
-//! - `tracking_eye`: VRChat's own eye tracking input, plain OSC messages (no bundles): /tracking/eye/CenterVec from the
-//!   combined gaze as sent (always CenterVec, also with independent_eyes), and with `lids` EyesClosedAmount. When the
-//!   eye data stops, one CenterVec 0,0,1 (and EyesClosedAmount 0) and then nothing: silence is its "no data".
+//! - `osc`: plain OSC messages (no bundles), the same set for every receiver whatever the main output's settings:
+//!   VRChat's own eye tracking input (/tracking/eye/CenterVec from the combined gaze as sent, always CenterVec, also
+//!   with independent_eyes, and EyesClosedAmount), then the main VRChat output's VRCFT v2 float parameters for the
+//!   same sample (see osc_set) under the fixed prefix /FT. When the eye data stops, one set for relaxed open eyes
+//!   looking ahead (with the squint and brows that went out set back to 0) and then nothing: silence is its "no data".
 //!
 //! Each extra goes through the address check (dest) like the main output, and one whose address and port are the main
 //! output's, the pupils' (LiveLink mode) or an earlier extra's is refused. Pausing (sending false) pauses them too.
@@ -16,30 +18,38 @@
 use crate::config::{ExtraFormat, ExtraOutput, Settings};
 use crate::osc::Value as OscType;
 use crate::status::ExtraStatus;
-use crate::{Output, RATE_WINDOW, Target, eyes_closed_amount, gaze_vector, status};
+use crate::{
+    CameraValues, LID_RELAXED, Output, RATE_WINDOW, Sample, Target, brow_release_at, eyes_closed_amount, gaze_vector,
+    squint_release_at, status, v2_params,
+};
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::Instant;
 
 const CENTER_VEC: &str = "/tracking/eye/CenterVec";
 const EYES_CLOSED: &str = "/tracking/eye/EyesClosedAmount";
+/// The osc format's VRCFT parameters always go under VRCFT's own prefix, not the main output's prefix setting.
+const PREFIX: &str = "/FT";
 
 /// What an extra sends and where, while it sends: when this changes, the old destination gets its final message.
 #[derive(Clone, PartialEq)]
 struct Stream {
     format: ExtraFormat,
     target: Target,
-    lids: bool,
+}
+
+/// What an osc extra's receiver holds from the messages that went out: which eyes' squint and whether the brows, to
+/// set them back to 0 once they stop (as the main VRChat output does: squint_release, brow_release).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Held {
+    pub squint: [bool; 2],
+    pub brows: bool,
 }
 
 /// What `extra` sends with these settings, if anything: nothing while it is off or can't be used, or sending is paused.
 fn stream(settings: &Settings, extra: &ExtraOutput) -> Option<Stream> {
     let format = extra.usable().filter(|_| settings.sending)?;
-    Some(Stream {
-        format,
-        target: target(settings, extra),
-        lids: extra.lids && format == ExtraFormat::TrackingEye,
-    })
+    Some(Stream { format, target: target(settings, extra) })
 }
 
 /// Where `extra` goes: "main" the main output's host (the Steam Link PC with its "auto"), "auto" the Steam Link PC,
@@ -56,19 +66,52 @@ fn target(settings: &Settings, extra: &ExtraOutput) -> Target {
     }
 }
 
-/// How an extra is named in the log: its name, format and whether it carries the eyelids.
+/// How an extra is named in the log: its name and format.
 fn describe(extra: &ExtraOutput) -> String {
     let format = extra.format.map_or("?", ExtraFormat::name);
-    let lids = if extra.lids { ", lids" } else { "" };
-    format!("extra output \"{}\" ({format}{lids})", extra.name)
+    format!("extra output \"{}\" ({format})", extra.name)
 }
 
-/// The tracking_eye messages for a sample: CenterVec for the combined gaze as sent (x, y in -1..1, 1 = 45°; see
-/// gaze_vector), and EyesClosedAmount for the VRCFT eyelids as sent when `lids` has them.
-pub fn tracking_eye_messages(gaze: [f32; 2], lids: Option<[f32; 2]>) -> Vec<(&'static str, Vec<OscType>)> {
-    let mut messages = vec![(CENTER_VEC, gaze_vector(gaze).map(OscType::Float).to_vec())];
-    messages.extend(lids.map(|lids| (EYES_CLOSED, vec![OscType::Float(eyes_closed_amount(lids))])));
+/// The osc messages for a sample's gaze (left x/y, right x/y, combined x/y), VRCFT eyelids, eye-camera values and
+/// brows as sent, in this order:
+/// - CenterVec for the combined gaze (x, y in -1..1, 1 = 45°; see gaze_vector), and EyesClosedAmount for the eyelids;
+/// - the main VRChat output's VRCFT v2 float parameters for them (v2_params: the gaze per eye and combined, the
+///   eyelids, the squint and pupils for the eyes they are used for, the brows with brow_from_widen) under
+///   /avatar/parameters/FT/v2/, never the main output's EyeTrackingActive, pupil bits or Steam Link names;
+/// - 0 for the squint and brows that went out before (`held`) and stop with these (squint_release, brow_release).
+///
+/// `held` then holds what went out now.
+pub fn osc_set(
+    gaze: [f32; 6],
+    lids: [f32; 2],
+    camera: &CameraValues,
+    brows: Option<[f32; 2]>,
+    held: &mut Held,
+) -> Vec<(String, Vec<OscType>)> {
+    let floats = |values: &[f32]| -> Vec<OscType> { values.iter().copied().map(OscType::Float).collect() };
+    let mut messages = vec![
+        (CENTER_VEC.to_owned(), floats(&gaze_vector([gaze[4], gaze[5]]))),
+        (EYES_CLOSED.to_owned(), floats(&[eyes_closed_amount(lids)])),
+    ];
+    let v2 = v2_params(gaze, lids, camera, brows).into_iter();
+    messages.extend(v2.map(|(name, value)| (format!("/avatar/parameters{PREFIX}/v2/{name}"), floats(&[value]))));
+    let released = squint_release_at(PREFIX, held.squint, camera.squint).into_iter();
+    let released = released.chain(brow_release_at(PREFIX, held.brows, brows));
+    messages.extend(released.map(|(addr, value)| (addr, vec![value])));
+    *held = Held { squint: camera.squint.map(|squint| squint.is_some()), brows: brows.is_some() };
     messages
+}
+
+/// The osc set for one sample.
+pub fn osc_sample(sample: &Sample, held: &mut Held) -> Vec<(String, Vec<OscType>)> {
+    osc_set(sample.gaze, sample.lids, &sample.camera, sample.brows, held)
+}
+
+/// The osc format's final set: relaxed open eyes looking straight ahead, without squint, pupils or brows (CenterVec
+/// 0, 0, 1, EyesClosedAmount 0, the gaze 0 and the eyelids 0.75), and 0 for the squint and brows that went out. The
+/// pupils are left as they were, as the main VRChat output leaves them.
+pub fn osc_final(held: &mut Held) -> Vec<(String, Vec<OscType>)> {
+    osc_set([0.0; 6], [LID_RELAXED; 2], &CameraValues::default(), None, held)
 }
 
 /// One extra output: its entry, its sender, and what it sends now.
@@ -81,6 +124,8 @@ struct Extra {
     duplicate: Option<&'static str>,
     // When its samples of the last RATE_WINDOW went out.
     sent: VecDeque<Instant>,
+    // osc: what its receiver holds from it.
+    held: Held,
 }
 
 impl Extra {
@@ -90,19 +135,17 @@ impl Extra {
         self.stream.is_some() && self.duplicate.is_none()
     }
 
-    /// Its final message, where it sends now: `feo` (a packet without TRACKING) for feo1, relaxed open eyes looking
-    /// ahead for tracking_eye.
+    /// Its final message, where it sends now: `feo` (a packet without TRACKING) for feo1, osc_final for osc.
     fn send_final(&mut self, feo: &[u8]) {
         let Some(stream) = self.stream.as_ref().filter(|_| self.duplicate.is_none()) else {
             return;
         };
         match stream.format {
             ExtraFormat::Feo1 => self.output.send_datagram(feo),
-            ExtraFormat::TrackingEye => {
-                let lids = stream.lids.then_some([crate::LID_RELAXED; 2]);
-                for (addr, args) in tracking_eye_messages([0.0; 2], lids) {
+            ExtraFormat::Osc => {
+                for (addr, args) in osc_final(&mut self.held) {
                     // (never an error: see Output::send)
-                    let _ = self.output.send(addr, &args);
+                    let _ = self.output.send(&addr, &args);
                 }
             }
         }
@@ -127,7 +170,7 @@ impl Extras {
         let mut idle: Option<Vec<u8>> = None;
         let mut idle_packet = |format: ExtraFormat| match format {
             ExtraFormat::Feo1 => idle.get_or_insert_with(&mut *feo_idle).clone(),
-            ExtraFormat::TrackingEye => Vec::new(),
+            ExtraFormat::Osc => Vec::new(),
         };
         let empty = ExtraOutput {
             name: String::new(),
@@ -135,7 +178,6 @@ impl Extras {
             format: None,
             host: String::new(),
             port: 0,
-            lids: false,
             error: None,
         };
         for index in 0..self.list.len().max(settings.extra_outputs.len()) {
@@ -161,10 +203,15 @@ impl Extras {
                     stream: None,
                     duplicate: None,
                     sent: VecDeque::new(),
+                    held: Held::default(),
                 });
             }
             let extra = &mut self.list[index];
             let starts = new.is_some() && extra.stream != new;
+            if extra.stream != new {
+                // (its old receiver got its final message, or had it already when the eye data stopped)
+                extra.held = Held::default();
+            }
             extra.config = config.clone();
             extra.output.set_target(target(settings, config));
             extra.output.set_lan_only(settings.lan_only);
@@ -215,9 +262,8 @@ impl Extras {
         self.list.iter().any(|extra| extra.sending() && extra.config.format == Some(ExtraFormat::Feo1))
     }
 
-    /// Send one sample: `feo` (this sample's FrameEyeOSC packet, if built) to feo1, and the combined gaze and VRCFT
-    /// eyelids as sent to tracking_eye.
-    pub fn send_sample(&mut self, now: Instant, feo: Option<&[u8]>, gaze: [f32; 2], lids: [f32; 2]) {
+    /// Send one sample: `feo` (this sample's FrameEyeOSC packet, if built) to feo1, and the sample's osc set to osc.
+    pub fn send_sample(&mut self, now: Instant, feo: Option<&[u8]>, sample: &Sample) {
         for extra in self.list.iter_mut().filter(|extra| extra.sending()) {
             let Some(stream) = &extra.stream else { continue };
             match stream.format {
@@ -225,9 +271,9 @@ impl Extras {
                     Some(packet) => extra.output.send_datagram(packet),
                     None => continue,
                 },
-                ExtraFormat::TrackingEye => {
-                    for (addr, args) in tracking_eye_messages(gaze, stream.lids.then_some(lids)) {
-                        let _ = extra.output.send(addr, &args);
+                ExtraFormat::Osc => {
+                    for (addr, args) in osc_sample(sample, &mut extra.held) {
+                        let _ = extra.output.send(&addr, &args);
                     }
                 }
             }
@@ -247,7 +293,7 @@ impl Extras {
         }
     }
 
-    /// While there is no eye data: the packet without TRACKING to each feo1 extra (tracking_eye stays silent).
+    /// While there is no eye data: the packet without TRACKING to each feo1 extra (osc stays silent).
     pub fn send_feo_idle(&mut self, packet: &[u8]) {
         for extra in self.list.iter_mut().filter(|extra| extra.sending()) {
             if extra.config.format == Some(ExtraFormat::Feo1) {
@@ -275,7 +321,6 @@ impl Extras {
                     format: config.format,
                     host: config.host.clone(),
                     port: config.port,
-                    lids: config.lids,
                     sending,
                     target: extra.output.addr().filter(|_| sending).map(|addr| addr.to_string()),
                     net: extra.output.net().filter(|_| sending),
@@ -302,9 +347,19 @@ mod tests {
             .collect()
     }
 
+    /// The osc set for a gaze (left x/y, right x/y, combined x/y) and eyelids, without camera values or brows.
+    fn plain(gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
+        osc_set(gaze, lids, &CameraValues::default(), None, &mut Held::default())
+    }
+
+    fn addresses(messages: &[(String, Vec<OscType>)]) -> Vec<&str> {
+        messages.iter().map(|(addr, _)| addr.as_str()).collect()
+    }
+
     #[test]
     fn center_vec_points_where_the_gaze_does() {
-        let center = |gaze: [f32; 2]| floats(&tracking_eye_messages(gaze, None)[0].1);
+        // (the combined gaze; each eye's own never moves it)
+        let center = |[x, y]: [f32; 2]| floats(&plain([0.9, -0.9, -0.9, 0.9, x, y], [0.75; 2])[0].1);
         let close = |a: Vec<f32>, b: [f32; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-6);
         // Unity axes: +x right, +y up, +z forward; 1 = 45°
         assert_eq!(center([0.0, 0.0]), [0.0, 0.0, 1.0]);
@@ -325,14 +380,19 @@ mod tests {
     }
 
     #[test]
-    fn eyelids_go_out_only_with_lids() {
-        let messages = tracking_eye_messages([0.1, 0.2], None);
-        assert_eq!(messages.iter().map(|(addr, _)| *addr).collect::<Vec<_>>(), [CENTER_VEC]);
-        let messages = tracking_eye_messages([0.1, 0.2], Some([0.375, 0.375]));
-        assert_eq!(messages.iter().map(|(addr, _)| *addr).collect::<Vec<_>>(), [CENTER_VEC, EYES_CLOSED]);
-        assert_eq!(floats(&messages[1].1), [0.5]);
-        // 0 open (relaxed or widened) to 1 shut, both eyes as one
-        let closed = |lids| floats(&tracking_eye_messages([0.0; 2], Some(lids))[1].1)[0];
+    fn every_sample_has_the_eyes_and_the_fixed_vrcft_names() {
+        let messages = plain([0.1, 0.2, 0.3, 0.4, 0.2, 0.3], [0.375, 0.5]);
+        let v2 = |name: &str| format!("/avatar/parameters/FT/v2/{name}");
+        let expected = [CENTER_VEC.to_owned(), EYES_CLOSED.to_owned()].into_iter().chain(
+            ["EyeLeftX", "EyeLeftY", "EyeRightX", "EyeRightY", "EyeLidLeft", "EyeLidRight", "EyeX", "EyeY"].map(v2),
+        );
+        assert_eq!(addresses(&messages), expected.collect::<Vec<_>>());
+        // One float each (CenterVec three), as sent
+        let values: Vec<Vec<f32>> = messages.iter().map(|(_, args)| floats(args)).collect();
+        assert_eq!(values[2..], [[0.1], [0.2], [0.3], [0.4], [0.375], [0.5], [0.2], [0.3]]);
+        assert_eq!(values[1], [1.0 - 0.4375 / 0.75]);
+        // EyesClosedAmount: 0 open (relaxed or widened) to 1 shut, both eyes as one
+        let closed = |lids| floats(&plain([0.0; 6], lids)[1].1)[0];
         assert_eq!(closed([0.75, 0.75]), 0.0);
         assert_eq!(closed([1.0, 1.0]), 0.0);
         assert_eq!(closed([0.0, 0.0]), 1.0);
@@ -340,14 +400,49 @@ mod tests {
     }
 
     #[test]
+    fn squint_and_brows_go_back_to_0_once_they_stop_and_the_final_set_is_relaxed_eyes_ahead() {
+        let camera = CameraValues { squint: [Some(0.4), Some(0.2)], ..CameraValues::default() };
+        let mut held = Held::default();
+        let with = osc_set([0.0; 6], [0.75; 2], &camera, Some([0.5, 0.3]), &mut held);
+        assert_eq!(held, Held { squint: [true, true], brows: true });
+        assert!(addresses(&with).contains(&"/avatar/parameters/FT/v2/EyeSquint"));
+        assert!(addresses(&with).contains(&"/avatar/parameters/FT/v2/BrowUp"));
+        // The left eye's squint stops: 0 for it, not yet for the combined one; the brows stop: 0 for all of them
+        let left_gone = CameraValues { squint: [None, Some(0.2)], ..CameraValues::default() };
+        let next = osc_set([0.0; 6], [0.75; 2], &left_gone, None, &mut held);
+        let zeros: Vec<&str> = next[10..]
+            .iter()
+            .filter(|(_, args)| args == &[OscType::Float(0.0)])
+            .map(|(addr, _)| addr.as_str())
+            .collect();
+        assert!(zeros.contains(&"/avatar/parameters/FT/v2/EyeSquintLeft"));
+        assert!(!zeros.contains(&"/avatar/parameters/FT/v2/EyeSquint"));
+        assert!(zeros.contains(&"/avatar/parameters/FT/v2/BrowExpression"));
+        assert_eq!(held, Held { squint: [false, true], brows: false });
+        // The final set: relaxed open eyes looking ahead, and 0 for the squint still out; then nothing more to release
+        let last = osc_final(&mut held);
+        let ahead = [0.0, 0.0, 1.0].map(OscType::Float).to_vec();
+        let mut expected = vec![(CENTER_VEC.to_owned(), ahead), (EYES_CLOSED.to_owned(), vec![OscType::Float(0.0)])];
+        for (name, value) in [("EyeLeftX", 0.0), ("EyeLeftY", 0.0), ("EyeRightX", 0.0), ("EyeRightY", 0.0)]
+            .into_iter()
+            .chain([("EyeLidLeft", 0.75), ("EyeLidRight", 0.75), ("EyeX", 0.0), ("EyeY", 0.0)])
+            .chain([("EyeSquintRight", 0.0), ("EyeSquint", 0.0)])
+        {
+            expected.push((format!("/avatar/parameters/FT/v2/{name}"), vec![OscType::Float(value)]));
+        }
+        assert_eq!(last, expected);
+        assert_eq!(held, Held::default());
+        assert_eq!(osc_final(&mut held), expected[..10]);
+    }
+
+    #[test]
     fn main_follows_the_main_outputs_host_and_auto_the_steam_link_pc() {
         let extra = |host: &str| ExtraOutput {
             name: "x".into(),
             enabled: true,
-            format: Some(ExtraFormat::TrackingEye),
+            format: Some(ExtraFormat::Osc),
             host: host.into(),
             port: 9015,
-            lids: false,
             error: None,
         };
         let fixed = Settings { host: "192.168.0.10".into(), ..Settings::default() };

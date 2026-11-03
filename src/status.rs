@@ -83,12 +83,11 @@ pub struct ExtraStatus {
     pub index: usize,
     pub name: String,
     pub enabled: bool,
-    /// "feo1" or "tracking_eye"; None for an entry that can't be used.
+    /// "feo1" or "osc"; None for an entry that can't be used.
     pub format: Option<ExtraFormat>,
     /// As written: "main", "auto", an IP address or a host name.
     pub host: String,
     pub port: u16,
-    pub lids: bool,
     /// Turned on, usable, not paused and not refused (`refused` null): what it gets goes out, once its address is
     /// found.
     pub sending: bool,

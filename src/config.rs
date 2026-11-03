@@ -902,10 +902,15 @@ impl Config {
             }
             _ => None,
         };
-        let (mut settings, asked) = match text {
+        let (mut settings, mut asked) = match text {
             Some(text) => parse(&text).map(|(settings, asked)| (settings, Some(asked)))?,
             None => (Settings::default(), None),
         };
+        // An output given on the command line is sent instead of the file's, so the file's "etvr" is not what goes
+        // out (--output etvr itself is logged by removed_options)
+        if let Some(asked) = asked.as_mut().filter(|_| self.given.contains("output")) {
+            asked.removed.retain(|line| *line != ETVR_REMOVED);
+        }
         apply_args(&mut settings, &self.args, &self.given);
         settings.validate()?;
         Ok((settings, asked))
@@ -1201,6 +1206,26 @@ mod tests {
         config.log_removed(&[ETVR_REMOVED, V1_REMOVED, ETVR_REMOVED]);
         config.log_removed(&[V1_REMOVED]);
         assert_eq!(config.logged, [ETVR_REMOVED, V1_REMOVED]);
+    }
+
+    #[test]
+    fn the_files_etvr_is_not_logged_when_the_command_line_gives_the_output() {
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-config-etvr-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        fs::write(&path, r#"{"output": "etvr", "port": 8889, "eye_behavior": 1}"#).unwrap();
+        // --output livelink: LiveLink goes out, on its own port (8889 was the ETVR module's), and only V1 is logged
+        let (args, given) = cli(&["--output", "livelink"]);
+        let config = Config::new(Some(path.clone()), args, given);
+        let (settings, asked) = config.read().unwrap();
+        assert_eq!((settings.output, settings.port), (OutputKind::LiveLink, None));
+        assert_eq!(asked.unwrap().removed, [V1_REMOVED]);
+        // Without it, the file's "etvr" is what is read, and logged
+        let (args, given) = cli(&[]);
+        let (settings, asked) = Config::new(Some(path), args, given).read().unwrap();
+        assert_eq!(settings.output, OutputKind::Vrchat);
+        assert_eq!(asked.unwrap().removed, [ETVR_REMOVED, V1_REMOVED]);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     /// removed_options for this command line.

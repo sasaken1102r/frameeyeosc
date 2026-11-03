@@ -11252,4 +11252,327 @@ mod tests {
             assert!(!bridge.brow_out);
         }
     }
+
+    /// An extra output entry for the tests.
+    fn extra(format: config::ExtraFormat, host: &str, port: u16, lids: bool) -> config::ExtraOutput {
+        config::ExtraOutput {
+            name: format.name().into(),
+            enabled: true,
+            format: Some(format),
+            host: host.into(),
+            port,
+            lids,
+            error: None,
+        }
+    }
+
+    /// A listener on the loopback, and its port.
+    fn listener() -> (UdpSocket, u16) {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        (listener, port)
+    }
+
+    /// Everything waiting at `listener` (each next datagram within 50 ms).
+    fn drain(listener: &UdpSocket) -> Vec<Vec<u8>> {
+        let mut buffer = [0u8; 2048];
+        listener.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        std::iter::from_fn(|| listener.recv(&mut buffer).ok().map(|size| buffer[..size].to_vec())).collect()
+    }
+
+    /// A FrameEyeOSC packet's sequence and whether it has TRACKING.
+    fn feo_header(packet: &[u8]) -> (u32, bool) {
+        let sequence = u32::from_le_bytes(packet[8..12].try_into().unwrap());
+        (sequence, u32::from_le_bytes(packet[12..16].try_into().unwrap()) & 1 == 1)
+    }
+
+    /// The bridge with `settings` applied as a reload (so the extras are set up as at a config change) and looked up.
+    fn bridge_with(settings: &Settings) -> Bridge {
+        let mut bridge = test_bridge(Settings { extra_outputs: Vec::new(), ..settings.clone() });
+        bridge.apply(reload(settings)).unwrap();
+        bridge.output.refresh();
+        bridge.refresh_extras();
+        bridge
+    }
+
+    #[test]
+    fn a_feo1_extra_gets_the_main_outputs_bytes() {
+        let (main, main_port) = listener();
+        let (relay, relay_port) = listener();
+        let (second, second_port) = listener();
+        for brows in [false, true] {
+            let settings = Settings {
+                output: OutputKind::FrameEyeOsc,
+                host: "127.0.0.1".into(),
+                port: Some(main_port),
+                brow_from_widen: brows,
+                lid_calibration: false,
+                extra_outputs: vec![
+                    extra(config::ExtraFormat::Feo1, "main", relay_port, false),
+                    extra(config::ExtraFormat::Feo1, "127.0.0.1", second_port, false),
+                ],
+                ..settings()
+            };
+            let mut bridge = bridge_with(&settings);
+            for index in 0..20 {
+                bridge.on_sample(reading(index, [0.2, -0.1], [1.0, 0.6])).unwrap();
+            }
+            let sent = drain(&main);
+            assert_eq!(sent.len(), 20);
+            assert_eq!(sent[0].len(), if brows { 108 } else { 76 });
+            // The same packet, built once: one session and sequence for all
+            assert_eq!(drain(&relay), sent);
+            assert_eq!(drain(&second), sent);
+            let sequences: Vec<u32> = sent.iter().map(|packet| feo_header(packet).0).collect();
+            assert_eq!(sequences, (0..20).collect::<Vec<u32>>());
+            // Lost: one packet without TRACKING for all three, again the same one
+            bridge.on_lost("test").unwrap();
+            let idle = drain(&main);
+            assert_eq!((idle.len(), feo_header(&idle[0])), (1, (20, false)));
+            assert_eq!((drain(&relay), drain(&second)), (idle.clone(), idle));
+        }
+    }
+
+    #[test]
+    fn a_feo1_extra_without_the_frameeyeosc_output_counts_on_by_itself() {
+        let (vrchat, vrchat_port) = listener();
+        let (relay, relay_port) = listener();
+        let settings = Settings {
+            host: "127.0.0.1".into(),
+            port: Some(vrchat_port),
+            lid_calibration: false,
+            extra_outputs: vec![extra(config::ExtraFormat::Feo1, "main", relay_port, false)],
+            ..settings()
+        };
+        let mut bridge = bridge_with(&settings);
+        // Before any eye data: the packet without TRACKING, every FEO_IDLE_INTERVAL; VRChat gets nothing
+        bridge.keep_feo_alive();
+        bridge.keep_feo_alive();
+        assert_eq!(drain(&relay).iter().map(|packet| feo_header(packet)).collect::<Vec<_>>(), [(0, false)]);
+        bridge.feo_idle = Some(Instant::now() - FEO_IDLE_INTERVAL);
+        bridge.keep_feo_alive();
+        assert_eq!(feo_header(&drain(&relay)[0]), (1, false));
+        assert!(drain(&vrchat).is_empty());
+        // A packet per sample, as the FrameEyeOSC output would send it, next to VRChat's OSC
+        for index in 0..5 {
+            bridge.on_sample(reading(index, [0.2, -0.1], [1.0, 0.6])).unwrap();
+            let packets = drain(&relay);
+            let expected = feo_packet(bridge.latest.as_ref().unwrap(), 7, 2 + index as u32, 0);
+            assert_eq!(packets.len(), 1);
+            assert_eq!((&packets[0][..16], &packets[0][24..]), (&expected[..16], &expected[24..]));
+        }
+        assert!(!drain(&vrchat).is_empty());
+        // Paused: its last packet, without TRACKING, and nothing after it (not even while idle)
+        bridge.apply(reload(&Settings { sending: false, ..settings.clone() })).unwrap();
+        assert_eq!(drain(&relay).iter().map(|packet| feo_header(packet)).collect::<Vec<_>>(), [(7, false)]);
+        bridge.on_sample(reading(5, [0.2, -0.1], [1.0, 0.6])).unwrap();
+        bridge.on_lost("test").unwrap();
+        bridge.feo_idle = None;
+        bridge.keep_feo_alive();
+        assert!(drain(&relay).is_empty());
+        // Back on: the sequence goes on from where it was, never back
+        bridge.apply(reload(&settings)).unwrap();
+        bridge.refresh_extras();
+        bridge.keep_feo_alive();
+        assert_eq!(feo_header(&drain(&relay)[0]), (8, false));
+        // Moved to another port while tracking: the old one gets its last packet, the new one the samples
+        let (moved, moved_port) = listener();
+        bridge.on_sample(reading(6, [0.2, -0.1], [1.0, 0.6])).unwrap();
+        assert_eq!(feo_header(&drain(&relay)[0]), (9, true));
+        let elsewhere = Settings {
+            extra_outputs: vec![extra(config::ExtraFormat::Feo1, "127.0.0.1", moved_port, false)],
+            ..settings.clone()
+        };
+        bridge.apply(reload(&elsewhere)).unwrap();
+        bridge.refresh_extras();
+        assert_eq!(drain(&relay).iter().map(|packet| feo_header(packet)).collect::<Vec<_>>(), [(10, false)]);
+        bridge.on_sample(reading(7, [0.2, -0.1], [1.0, 0.6])).unwrap();
+        assert_eq!(feo_header(&drain(&moved)[0]), (11, true));
+        assert!(drain(&relay).is_empty());
+        // Turned off: its last packet
+        let off = Settings {
+            extra_outputs: vec![config::ExtraOutput { enabled: false, ..elsewhere.extra_outputs[0].clone() }],
+            ..settings.clone()
+        };
+        bridge.apply(reload(&off)).unwrap();
+        assert_eq!(feo_header(&drain(&moved)[0]), (12, false));
+        bridge.on_sample(reading(8, [0.2, -0.1], [1.0, 0.6])).unwrap();
+        assert!(drain(&moved).is_empty());
+    }
+
+    #[test]
+    fn a_tracking_eye_extra_sends_center_vec_and_falls_silent_when_the_eyes_stop() {
+        let (gaze, gaze_port) = listener();
+        let (main, main_port) = listener();
+        for (lids, independent) in [(false, false), (true, false), (true, true)] {
+            let settings = Settings {
+                output: OutputKind::LiveLink,
+                host: "127.0.0.1".into(),
+                port: Some(main_port),
+                independent_eyes: independent,
+                lid_calibration: false,
+                extra_outputs: vec![extra(config::ExtraFormat::TrackingEye, "127.0.0.1", gaze_port, lids)],
+                ..settings()
+            };
+            let mut bridge = bridge_with(&settings);
+            for index in 0..5 {
+                bridge.on_sample(reading(index, [0.3, 0.2], [1.0, 0.5])).unwrap();
+                let sample = bridge.latest.as_ref().unwrap();
+                let messages: Vec<_> = drain(&gaze).iter().map(|datagram| decode_osc(datagram)).collect();
+                let mut expected = vec![(
+                    "/tracking/eye/CenterVec".to_owned(),
+                    gaze_vector([sample.gaze[4], sample.gaze[5]]).map(OscType::Float).to_vec(),
+                )];
+                if lids {
+                    let closed = eyes_closed_amount(sample.lids);
+                    assert!(closed > 0.0);
+                    expected.push(("/tracking/eye/EyesClosedAmount".to_owned(), vec![OscType::Float(closed)]));
+                }
+                // Every sample (LiveLink's own rate limit is the main output's), always CenterVec
+                assert_eq!(messages, expected, "{index}");
+            }
+            assert!(!drain(&main).is_empty());
+            // Lost: relaxed open eyes looking ahead once, then silence
+            bridge.on_lost("test").unwrap();
+            let ahead = [0.0, 0.0, 1.0].map(OscType::Float).to_vec();
+            let mut neutral = vec![("/tracking/eye/CenterVec".to_owned(), ahead)];
+            if lids {
+                neutral.push(("/tracking/eye/EyesClosedAmount".to_owned(), vec![OscType::Float(0.0)]));
+            }
+            assert_eq!(drain(&gaze).iter().map(|datagram| decode_osc(datagram)).collect::<Vec<_>>(), neutral);
+            bridge.feo_idle = None;
+            bridge.keep_feo_alive();
+            bridge.keep_livelink_alive();
+            assert!(drain(&gaze).is_empty());
+        }
+    }
+
+    #[test]
+    fn an_extra_on_the_main_outputs_address_or_an_earlier_extras_is_refused() {
+        let (main, main_port) = listener();
+        let (gaze, gaze_port) = listener();
+        let settings = Settings {
+            output: OutputKind::FrameEyeOsc,
+            host: "127.0.0.1".into(),
+            port: Some(main_port),
+            lid_calibration: false,
+            extra_outputs: vec![
+                extra(config::ExtraFormat::TrackingEye, "main", main_port, false),
+                extra(config::ExtraFormat::TrackingEye, "127.0.0.1", gaze_port, false),
+                extra(config::ExtraFormat::Feo1, "localhost", gaze_port, false),
+            ],
+            ..settings()
+        };
+        let mut bridge = bridge_with(&settings);
+        bridge.on_sample(reading(0, [0.3, 0.2], [1.0, 1.0])).unwrap();
+        // Only the main output's packet at the main port, only the first extra's message at the other
+        let at_main = drain(&main);
+        assert_eq!((at_main.len(), &at_main[0][..4]), (1, &b"FEO1"[..]));
+        let at_gaze = drain(&gaze);
+        assert_eq!(at_gaze.len(), 1);
+        assert_eq!(decode_osc(&at_gaze[0]).0, "/tracking/eye/CenterVec");
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        let refused: Vec<_> = status["extras"].as_array().unwrap().iter().map(|extra| &extra["refused"]).collect();
+        assert_eq!(refused, [&serde_json::json!("same as main"), &serde_json::Value::Null, &"duplicate".into()]);
+        assert_eq!(status["extras"][1]["sending"], true);
+        assert_eq!(status["extras"][1]["target"], format!("127.0.0.1:{gaze_port}"));
+        assert_eq!(status["extras"][1]["net"], "lan");
+        assert_eq!(status["extras"][0]["sending"], false);
+        // The main output moves away (its last packet without TRACKING to the old port): the first one sends, and the
+        // third one is still the second one's duplicate
+        let (moved, moved_port) = listener();
+        bridge.apply(reload(&Settings { port: Some(moved_port), ..settings.clone() })).unwrap();
+        bridge.output.refresh();
+        bridge.refresh_extras();
+        assert_eq!(drain(&main).iter().map(|packet| feo_header(packet).1).collect::<Vec<_>>(), [false]);
+        bridge.on_sample(reading(1, [0.3, 0.2], [1.0, 1.0])).unwrap();
+        assert_eq!(drain(&moved).len(), 1);
+        assert_eq!(decode_osc(&drain(&main)[0]).0, "/tracking/eye/CenterVec");
+        assert_eq!(drain(&gaze).len(), 1);
+    }
+
+    #[test]
+    fn lan_only_refuses_a_public_main_output_and_off_marks_it_public() {
+        // 192.0.2.1 is a documentation address: public, and nothing is sent to it here
+        let public = Settings {
+            host: "192.0.2.1".into(),
+            ..settings()
+        };
+        let mut bridge = bridge_with(&public);
+        assert_eq!(bridge.output.addr(), None);
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!((&status["lan_only"], &status["refused"]), (&true.into(), &"public address".into()));
+        assert_eq!(status["net"], serde_json::Value::Null);
+        assert_eq!(status["target"], serde_json::Value::Null);
+        // Off: sent to, and marked public
+        bridge.apply(reload(&Settings { lan_only: false, ..public.clone() })).unwrap();
+        bridge.output.refresh();
+        assert_eq!(bridge.output.addr(), Some("192.0.2.1:9000".parse().unwrap()));
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!((&status["refused"], &status["net"]), (&serde_json::Value::Null, &"public".into()));
+        // On again: refused at once
+        bridge.apply(reload(&public)).unwrap();
+        bridge.output.refresh();
+        assert_eq!(bridge.output.addr(), None);
+        // A home network address is unchanged either way
+        for lan_only in [true, false] {
+            let mut bridge = bridge_with(&Settings { host: "192.168.0.10".into(), lan_only, ..settings() });
+            assert_eq!(bridge.output.addr(), Some("192.168.0.10:9000".parse().unwrap()));
+            assert_eq!(bridge.output.net(), Some(dest::Net::Lan));
+            bridge.output.refresh();
+        }
+        // The same check for an extra; a VPN address is marked so
+        let vpn = Settings {
+            host: "192.168.0.10".into(),
+            extra_outputs: vec![
+                extra(config::ExtraFormat::TrackingEye, "192.0.2.1", 9015, false),
+                extra(config::ExtraFormat::TrackingEye, "100.64.0.7", 9015, false),
+            ],
+            ..settings()
+        };
+        let bridge = bridge_with(&vpn);
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(status["extras"][0]["refused"], "public address");
+        assert_eq!(status["extras"][0]["target"], serde_json::Value::Null);
+        assert_eq!(status["extras"][1]["net"], "vpn");
+        assert_eq!(status["extras"][1]["refused"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn status_lists_every_extra_entry_in_order() {
+        let settings = Settings {
+            host: "127.0.0.1".into(),
+            extra_outputs: vec![
+                config::ExtraOutput { enabled: false, ..extra(config::ExtraFormat::Feo1, "127.0.0.1", 11113, false) },
+                config::ExtraOutput {
+                    name: "App 2".into(),
+                    enabled: false,
+                    format: None,
+                    host: String::new(),
+                    port: 0,
+                    lids: false,
+                    error: Some("unknown key \"pupils\" (written by a newer frameeyeosc?)".into()),
+                },
+                extra(config::ExtraFormat::TrackingEye, "127.0.0.1", 9015, true),
+            ],
+            ..settings()
+        };
+        let bridge = bridge_with(&settings);
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(
+            status["extras"][0],
+            serde_json::json!({"index": 1, "name": "feo1", "enabled": false, "format": "feo1", "host": "127.0.0.1",
+                "port": 11113, "lids": false, "sending": false, "target": null, "net": null, "rate": 0.0,
+                "dropped_rate": 0.0, "refused": null, "last_error": null})
+        );
+        assert_eq!(status["extras"][1]["format"], serde_json::Value::Null);
+        assert_eq!(status["extras"][1]["refused"], "unknown key \"pupils\" (written by a newer frameeyeosc?)");
+        assert_eq!(status["extras"][2]["format"], "tracking_eye");
+        assert_eq!(status["extras"][2]["lids"], true);
+        assert_eq!(status["extras"][2]["target"], "127.0.0.1:9015");
+        // The settings in effect list them too
+        assert_eq!(status["effective"]["extra_outputs"].as_array().unwrap().len(), 3);
+        assert_eq!(status["effective"]["lan_only"], true);
+        assert_eq!(status["pupil_net"], serde_json::Value::Null);
+    }
 }

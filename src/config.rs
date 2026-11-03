@@ -1780,4 +1780,197 @@ mod tests {
         assert!(Config::new(None, args, given).load().is_err());
         fs::remove_dir_all(dir).unwrap();
     }
+
+    /// The extra outputs a file gives, and its config_error.
+    fn extras_of(file: &str) -> (Vec<ExtraOutput>, Option<String>) {
+        let (settings, _) = merged(file, &[]).unwrap();
+        let problems = settings.extras_problems();
+        (settings.extra_outputs, problems)
+    }
+
+    #[test]
+    fn lan_only_is_on_until_turned_off() {
+        assert!(merged("{}", &[]).unwrap().0.lan_only);
+        assert!(!merged(r#"{"lan_only": false}"#, &[]).unwrap().0.lan_only);
+        // A top-level key keeps the usual rule: a bad value rejects the file
+        assert!(merged(r#"{"lan_only": "no"}"#, &[]).is_err());
+        let (settings, locked) = merged(r#"{"lan_only": true}"#, &["--no-lan-only"]).unwrap();
+        assert!(!settings.lan_only);
+        assert_eq!(locked, ["lan_only"]);
+    }
+
+    #[test]
+    fn extra_outputs_are_read_entry_by_entry() {
+        let (extras, problems) = extras_of(
+            r#"{"extra_outputs": [
+                {"name": "Bridge", "enabled": true, "format": "feo1", "host": "192.168.0.10", "port": 11113},
+                {"format": "tracking_eye", "host": "main", "port": 9015, "lids": true},
+                {"name": "", "enabled": false, "format": "tracking_eye", "host": "auto", "port": 9015}
+            ]}"#,
+        );
+        assert_eq!(problems, None);
+        assert_eq!(
+            extras[0],
+            ExtraOutput {
+                name: "Bridge".into(),
+                enabled: true,
+                format: Some(ExtraFormat::Feo1),
+                host: "192.168.0.10".into(),
+                port: 11113,
+                lids: false,
+                error: None,
+            }
+        );
+        // Without a name: "App N"; enabled unless turned off
+        assert_eq!((extras[1].name.as_str(), extras[1].enabled, extras[1].lids), ("App 2", true, true));
+        assert_eq!(extras[1].usable(), Some(ExtraFormat::TrackingEye));
+        assert_eq!((extras[2].name.as_str(), extras[2].usable()), ("App 3", None));
+        // None at all, or null: none, and nothing wrong
+        assert_eq!(extras_of("{}"), (Vec::new(), None));
+        assert_eq!(extras_of(r#"{"extra_outputs": null}"#), (Vec::new(), None));
+        assert_eq!(extras_of(r#"{"extra_outputs": []}"#), (Vec::new(), None));
+    }
+
+    #[test]
+    fn a_bad_extra_entry_disables_only_itself() {
+        let good = r#"{"format": "tracking_eye", "host": "10.0.0.2", "port": 9015}"#;
+        for (entry, why) in [
+            (r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113, "pupils": true}"#, "unknown key \"pupils\""),
+            (r#"{"format": "feo2", "host": "10.0.0.2", "port": 11113}"#, "unknown format \"feo2\""),
+            (r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113, "lids": false}"#, "lids is only for"),
+            (r#"{"host": "10.0.0.2", "port": 11113}"#, "format must be"),
+            (r#"{"format": 1, "host": "10.0.0.2", "port": 11113}"#, "format must be"),
+            (r#"{"format": "feo1", "host": "10.0.0.2", "port": 0}"#, "port must be"),
+            (r#"{"format": "feo1", "host": "10.0.0.2", "port": 70000}"#, "port must be"),
+            (r#"{"format": "feo1", "host": "10.0.0.2"}"#, "port must be"),
+            (r#"{"format": "feo1", "host": "10.0.0.2:11113", "port": 11113}"#, "host must be"),
+            (r#"{"format": "feo1", "host": "", "port": 11113}"#, "host must be"),
+            (r#"{"format": "feo1", "port": 11113}"#, "host must be"),
+            (r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113, "enabled": "yes"}"#, "enabled must be"),
+            (r#"{"format": "tracking_eye", "host": "10.0.0.2", "port": 9015, "lids": 1}"#, "lids must be"),
+            (r#"{"name": "あいう", "format": "feo1", "host": "10.0.0.2", "port": 11113}"#, "name must be"),
+            (r#"{"name": "seventeen chars..", "format": "feo1", "host": "10.0.0.2", "port": 11113}"#, "name must be"),
+            (r#"{"name": 5, "format": "feo1", "host": "10.0.0.2", "port": 11113}"#, "name must be"),
+            (r#"["feo1", "10.0.0.2", 11113]"#, "not an object"),
+        ] {
+            let (extras, problems) = extras_of(&format!(r#"{{"lid_sync": 0.3, "extra_outputs": [{entry}, {good}]}}"#));
+            let error = extras[0].error.as_deref().unwrap_or_default();
+            assert!(error.starts_with(why), "{entry}: {error}");
+            assert_eq!(extras[0].usable(), None, "{entry}");
+            // config_error names the entry; the next entry and the rest of the file are used
+            assert_eq!(problems, Some(format!("extra_outputs entry 1: {error}")));
+            assert_eq!(extras[1].usable(), Some(ExtraFormat::TrackingEye), "{entry}");
+            let alone = format!(r#"{{"lid_sync": 0.3, "extra_outputs": [{entry}]}}"#);
+            assert_eq!(merged(&alone, &[]).unwrap().0.lid_sync, 0.3);
+        }
+        // An entry from a later version keeps its name when it has a good one
+        let (extras, _) =
+            extras_of(r#"{"extra_outputs": [{"name": "Bridge", "format": "feo2", "host": "x", "port": 1}]}"#);
+        assert_eq!(extras[0].name, "Bridge");
+        // A 16-character name is fine
+        let sixteen = r#"{"name": "sixteen chars...", "format": "feo1", "host": "x", "port": 1}"#;
+        let (extras, _) = extras_of(&format!(r#"{{"extra_outputs": [{sixteen}]}}"#));
+        assert_eq!(extras[0].error, None);
+    }
+
+    #[test]
+    fn at_most_three_extras_and_a_list_or_none() {
+        let entry = r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113}"#;
+        let five = [entry; 5].join(", ");
+        let (extras, problems) = extras_of(&format!(r#"{{"extra_outputs": [{five}]}}"#));
+        assert_eq!(extras.len(), 5);
+        assert!(extras[..3].iter().all(|extra| extra.usable().is_some()));
+        assert!(extras[3..].iter().all(|extra| extra.usable().is_none()));
+        assert_eq!(
+            problems.as_deref(),
+            Some(
+                "extra_outputs entry 4: only 3 extra outputs are used; \
+                 extra_outputs entry 5: only 3 extra outputs are used"
+            )
+        );
+        for file in [r#"{"extra_outputs": {}}"#, r#"{"extra_outputs": "feo1@x:1"}"#, r#"{"extra_outputs": 3}"#] {
+            let (settings, _) = merged(file, &[]).unwrap();
+            assert!(settings.extra_outputs.is_empty(), "{file}");
+            let problems = settings.extras_problems();
+            assert_eq!(problems.as_deref(), Some("extra_outputs must be a list; no extra outputs used"));
+        }
+    }
+
+    #[test]
+    fn extras_on_the_command_line_replace_the_files_and_are_locked() {
+        let file = r#"{"extra_outputs": [{"format": "feo1", "host": "10.0.0.2", "port": 11113, "pupils": true}]}"#;
+        let (settings, locked) =
+            merged(file, &["--extra", "feo1@192.168.0.10:11113", "--extra", "tracking_eye@main:9015+lids"]).unwrap();
+        assert_eq!(locked, ["extra_outputs"]);
+        assert_eq!(settings.extras_problems(), None);
+        let extras = &settings.extra_outputs;
+        assert_eq!(extras.len(), 2);
+        assert_eq!(
+            (extras[0].name.as_str(), extras[0].usable(), extras[0].host.as_str(), extras[0].port, extras[0].lids),
+            ("App 1", Some(ExtraFormat::Feo1), "192.168.0.10", 11113, false)
+        );
+        assert_eq!(
+            (extras[1].name.as_str(), extras[1].usable(), extras[1].host.as_str(), extras[1].port, extras[1].lids),
+            ("App 2", Some(ExtraFormat::TrackingEye), "main", 9015, true)
+        );
+        // A bracketed IPv6 address, and the Steam Link PC
+        let argv = ["--extra", "feo1@[fd00::2]:11113", "--extra", "tracking_eye@auto:9015"];
+        let (settings, _) = merged("{}", &argv).unwrap();
+        assert_eq!(settings.extra_outputs[0].host, "fd00::2");
+        assert_eq!(settings.extra_outputs[1].host, "auto");
+        // --no-extras: none, whatever the file says, and locked
+        let (settings, locked) = merged(file, &["--no-extras"]).unwrap();
+        assert_eq!((settings.extra_outputs.len(), locked), (0, vec!["extra_outputs"]));
+        assert_eq!(settings.extras_problems(), None);
+        assert!(cli_error(&["--no-extras", "--extra", "feo1@x:1"]));
+    }
+
+    fn cli_error(argv: &[&str]) -> bool {
+        Args::command().try_get_matches_from(std::iter::once("frameeyeosc").chain(argv.iter().copied())).is_err()
+    }
+
+    #[test]
+    fn bad_extra_options_are_refused() {
+        assert_eq!(check_extra_args(&["feo1@10.0.0.2:11113".into(), "tracking_eye@main:9015+lids".into()]), Ok(()));
+        for bad in [
+            "feo1",
+            "feo1@10.0.0.2",
+            "feo1@10.0.0.2:0",
+            "feo1@:11113",
+            "feo2@10.0.0.2:11113",
+            "feo1@10.0.0.2:11113+lids",
+            "tracking_eye@10.0.0.2:9015+pupils",
+            "tracking_eye@10.0.0.2:9015+lids+lids",
+            "tracking_eye@bad host:9015",
+        ] {
+            let error = check_extra_args(&[bad.into()]).unwrap_err();
+            assert!(error.starts_with(&format!("--extra {bad}: ")), "{error}");
+        }
+        let four = vec!["feo1@10.0.0.2:11113".to_owned(); 4];
+        assert_eq!(check_extra_args(&four), Err("--extra can be given at most 3 times".into()));
+    }
+
+    #[test]
+    fn a_bad_extra_entry_is_reported_but_the_file_is_used() {
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-config-extras-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        let entry = r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113}"#;
+        write_atomically(&path, &format!(r#"{{"lid_open": 0.85, "extra_outputs": [{{"format": "feo9"}}, {entry}]}}"#));
+        let (args, given) = cli(&[]);
+        let mut config = Config::new(Some(path.clone()), args, given);
+        let settings = config.load().unwrap();
+        assert_eq!(settings.lid_open, 0.85);
+        assert_eq!(settings.extra_outputs[1].usable(), Some(ExtraFormat::Feo1));
+        let error = config.error.clone().unwrap();
+        assert!(error.starts_with("extra_outputs entry 1: unknown format \"feo9\""), "{error}");
+        // Fixed: the error goes; broken again: back
+        write_atomically(&path, &format!(r#"{{"lid_open": 0.9, "extra_outputs": [{entry}]}}"#));
+        assert_eq!(config.check().unwrap().settings.lid_open, 0.9);
+        assert_eq!(config.error, None);
+        write_atomically(&path, r#"{"lid_open": 0.8, "extra_outputs": 1}"#);
+        assert_eq!(config.check().unwrap().settings.lid_open, 0.8);
+        assert_eq!(config.error.as_deref(), Some("extra_outputs must be a list; no extra outputs used"));
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

@@ -44,14 +44,21 @@ const CAPTURE_SECONDS_RANGE: std::ops::RangeInclusive<f64> = 0.5..=5.0;
 // ...and skips its first half second, while the eyes settle, unless the request says otherwise (at most all but
 // the last 0.2 s).
 pub const CAPTURE_SKIP: f64 = 0.5;
+// What is logged, once, when config.json or the command line still asks for the ETVR output, which 0.10 removed.
+pub const ETVR_REMOVED: &str = "The ETVR output was removed in 0.10; sending to VRChat (output \"vrchat\") instead. \
+    For VRCFaceTracking, use its LiveLink or FrameEyeOSC module (output \"livelink\" or \"frameeyeosc\")";
+// The ETVR output's port: a port config.json sets to this for the ETVR output is taken as unset, VRChat's 9000.
+const ETVR_PORT: u64 = 8889;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum OutputKind {
     /// VRChat avatar parameters (eyelid 0.75 = relaxed, 1.0 = widened)
+    // "etvr", the ETVR output removed in 0.10, is still read as this one, in config.json and on the command line, so
+    // a setup that still asks for it starts (see parse and removed_options, which log ETVR_REMOVED)
+    #[serde(alias = "etvr")]
+    #[value(alias = "etvr")]
     Vrchat,
-    /// VRCFaceTracking's ETVR Tracking Module (six values, eyelid 1.0 = relaxed)
-    Etvr,
     /// VRCFaceTracking's LiveLink module (Live Link Face packets: eyelids, widening and gaze per eye)
     #[value(name = "livelink")]
     LiveLink,
@@ -64,7 +71,6 @@ impl OutputKind {
     pub fn default_port(self) -> u16 {
         match self {
             Self::Vrchat => 9000,
-            Self::Etvr => 8889,
             Self::LiveLink => crate::livelink::DEFAULT_PORT,
             Self::FrameEyeOsc => crate::feo::DEFAULT_PORT,
         }
@@ -573,12 +579,23 @@ struct Asked {
     calibration_reset: i64,
     capture_id: i64,
     capture: Option<GazeCapture>,
+    /// The lines to log for what it still asks for that was removed (ETVR_REMOVED), each logged once per run.
+    removed: Vec<&'static str>,
 }
 
 /// Parse config.json: missing keys keep their defaults and unknown keys are ignored.
 fn parse(text: &str) -> Result<(Settings, Asked), String> {
     let mut settings: Settings = serde_json::from_str(text).map_err(|error| error.to_string())?;
     let written: serde_json::Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    let mut removed = Vec::new();
+    // "etvr" was read as "vrchat" (OutputKind); the ETVR port set with it is the ETVR module's, where nothing listens
+    // for VRChat's parameters. Another port was set by hand for something else (an OSC router, say), and is kept
+    if written.get("output").and_then(serde_json::Value::as_str) == Some("etvr") {
+        removed.push(ETVR_REMOVED);
+        if written.get("port").and_then(serde_json::Value::as_u64) == Some(ETVR_PORT) {
+            settings.port = None;
+        }
+    }
     let scaled = ["lid_scale_left", "lid_scale_right"]
         .iter()
         .any(|name| written.get(name).is_some_and(|value| !value.is_null()));
@@ -594,8 +611,21 @@ fn parse(text: &str) -> Result<(Settings, Asked), String> {
         calibration_reset: requests.calibration_reset,
         capture_id,
         capture,
+        removed,
     };
     Ok((settings, asked))
+}
+
+/// The lines to log for what the command line still asks for that was removed: --output etvr (read as vrchat, see
+/// OutputKind). A port given there with it is kept: everything on the command line is the user's own choice.
+pub fn removed_options(matches: &ArgMatches) -> Vec<&'static str> {
+    let given = |id: &str| matches.value_source(id) == Some(ValueSource::CommandLine);
+    let mut removed = Vec::new();
+    let etvr = matches.get_raw("output").is_some_and(|mut values| values.any(|value| value == "etvr"));
+    if given("output") && etvr {
+        removed.push(ETVR_REMOVED);
+    }
+    removed
 }
 
 /// Where a lid_open_snap from when it was a share of the eye's open reading started, as an eyelid (VRCFT, to 0.01):
@@ -757,6 +787,9 @@ pub struct Config {
     // None until there has been one.
     reset: Option<i64>,
     capture_id: Option<i64>,
+    // The lines about removed settings logged so far (log_removed), so each goes out once however often the file is
+    // read again.
+    logged: Vec<&'static str>,
 }
 
 impl Config {
@@ -772,6 +805,17 @@ impl Config {
             last_check: Instant::now(),
             reset: None,
             capture_id: None,
+            logged: Vec::new(),
+        }
+    }
+
+    /// Log each of these lines about removed settings (from the file or the command line) that this run has not yet.
+    pub fn log_removed(&mut self, lines: &[&'static str]) {
+        for line in lines {
+            if !self.logged.contains(line) {
+                eprintln!("{line}");
+                self.logged.push(line);
+            }
         }
     }
 
@@ -784,8 +828,9 @@ impl Config {
         self.stamp = self.stamp();
         match self.read() {
             Ok((settings, asked)) => {
-                if asked.is_some() {
+                if let Some(asked) = &asked {
                     eprintln!("Loaded {}", self.display_path());
+                    self.log_removed(&asked.removed);
                 }
                 // Whatever the file asked for before this start is not repeated.
                 self.reset = Some(asked.as_ref().map_or(0, |asked| asked.calibration_reset));
@@ -817,8 +862,11 @@ impl Config {
         self.stamp = stamp;
         match self.read() {
             Ok((settings, asked)) => {
-                match asked {
-                    Some(_) => eprintln!("Loaded {}", self.display_path()),
+                match &asked {
+                    Some(asked) => {
+                        eprintln!("Loaded {}", self.display_path());
+                        self.log_removed(&asked.removed);
+                    }
                     None => eprintln!("{} is gone; using the defaults", self.display_path()),
                 }
                 self.error = None;
@@ -1116,8 +1164,49 @@ mod tests {
     }
 
     #[test]
+    fn the_removed_etvr_output_is_read_as_vrchat() {
+        // config.json: VRChat, with the ETVR port taken as unset, and one line to log
+        for file in [r#"{"output": "etvr"}"#, r#"{"output": "etvr", "port": 8889}"#] {
+            let (settings, asked) = parse(file).unwrap();
+            assert_eq!((settings.output, settings.port, settings.port()), (OutputKind::Vrchat, None, 9000), "{file}");
+            assert_eq!(asked.removed, [ETVR_REMOVED]);
+        }
+        // A port set by hand for something else stays, as does 8889 for any other output
+        let (settings, _) = parse(r#"{"output": "etvr", "port": 9100, "host": "10.0.0.2"}"#).unwrap();
+        assert_eq!((settings.output, settings.port, settings.host.as_str()), (OutputKind::Vrchat, Some(9100), "10.0.0.2"));
+        let (settings, asked) = parse(r#"{"output": "livelink", "port": 8889}"#).unwrap();
+        assert_eq!((settings.port, asked.removed.len()), (Some(8889), 0));
+        assert!(parse(r#"{"output": "vrchat"}"#).unwrap().1.removed.is_empty());
+        // It goes out as "vrchat" (the status file, which the panel reads)
+        let (settings, _) = merged(r#"{"output": "etvr"}"#, &[]).unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap()["output"], "vrchat");
+        // --output etvr: VRChat too, locked, with the same line; a port given with it stays
+        let (settings, locked) = merged("{}", &["--output", "etvr", "--port", "8889"]).unwrap();
+        assert_eq!((settings.output, settings.port, locked), (OutputKind::Vrchat, Some(8889), vec!["output", "port"]));
+        let removed = |argv: &[&str]| {
+            let matches = Args::command().try_get_matches_from(std::iter::once("frameeyeosc").chain(argv.iter().copied()));
+            removed_options(&matches.unwrap())
+        };
+        assert_eq!(removed(&["--output", "etvr"]), [ETVR_REMOVED]);
+        assert_eq!(removed(&["--output=etvr"]), [ETVR_REMOVED]);
+        assert!(removed(&["--output", "vrchat"]).is_empty() && removed(&[]).is_empty());
+        // Not in --help
+        let help = Args::command().render_long_help().to_string();
+        assert!(!help.contains("etvr") && !help.contains("ETVR"), "{help}");
+    }
+
+    #[test]
+    fn removed_settings_are_logged_once_per_run() {
+        let (args, given) = cli(&[]);
+        let mut config = Config::new(None, args, given);
+        config.log_removed(&[ETVR_REMOVED]);
+        config.log_removed(&[ETVR_REMOVED, ETVR_REMOVED]);
+        assert_eq!(config.logged, [ETVR_REMOVED]);
+    }
+
+    #[test]
     fn command_line_options_win_and_are_locked() {
-        let file = r#"{"output": "etvr", "host": "10.0.0.2", "port": 9100, "raw": false,
+        let file = r#"{"output": "livelink", "host": "10.0.0.2", "port": 9100, "raw": false,
             "lid_open": 0.85, "lid_calibration": true, "gaze_beta": 2.0}"#;
         let (settings, locked) = merged(
             file,
@@ -1128,7 +1217,7 @@ mod tests {
         assert!(settings.raw && !settings.lid_calibration);
         assert_eq!(settings.gaze_beta, 1.5);
         // Not given on the command line, so the file's values stay.
-        assert_eq!(settings.output, OutputKind::Etvr);
+        assert_eq!(settings.output, OutputKind::LiveLink);
         assert_eq!(settings.lid_open, 0.85);
         assert_eq!(locked, ["host", "port", "raw", "gaze_beta", "lid_calibration"]);
 

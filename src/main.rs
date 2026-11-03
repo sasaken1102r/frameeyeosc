@@ -41,8 +41,6 @@ const REOPEN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(100);
 // The status file's send rate counts the samples sent within this window.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
-// Relaxed open is 0.75 in VRCFT units but 1.0 for the ETVR Tracking Module, which does not widen by default.
-const ETVR_LID_SCALE: f32 = 1.0 / 0.75;
 // While sending to VRCFT's LiveLink module without eye data, a neutral packet this often: the module logs "connection
 // lost" after a second without packets, and only starts if one arrives within 180 s of VRCFT loading it.
 const LIVELINK_IDLE_INTERVAL: Duration = Duration::from_millis(500);
@@ -577,8 +575,8 @@ fn shm_layout(version: u32) -> Result<ShmLayout, String> {
 #[derive(Parser)]
 #[command(about = "Send Steam Frame eye tracking from shared memory over OSC")]
 struct Args {
-    /// What to send: VRChat avatar parameters, VRCFaceTracking's ETVR Tracking Module format, Live Link Face
-    /// packets for VRCFaceTracking's LiveLink module, or FEO1 packets for VRCFaceTracking's FrameEyeOSC module
+    /// What to send: VRChat avatar parameters, Live Link Face packets for VRCFaceTracking's LiveLink module, or FEO1
+    /// packets for VRCFaceTracking's FrameEyeOSC module
     #[arg(long, value_enum, default_value_t = OutputKind::Vrchat)]
     output: OutputKind,
     /// How EyeTrackingActive is sent in VRChat mode: a bool, a float (1.0 / 0.0; some avatars
@@ -619,8 +617,7 @@ struct Args {
     /// OSC destination as HOST:PORT, or "auto" for the PC that Steam Link is streaming from
     #[arg(long, default_value = "auto")]
     target: String,
-    /// OSC port used with --target auto [default: 9000 for vrchat, 8889 for etvr, 11111 for livelink, 11112 for
-    /// frameeyeosc]
+    /// OSC port used with --target auto [default: 9000 for vrchat, 11111 for livelink, 11112 for frameeyeosc]
     #[arg(long)]
     port: Option<u16>,
     /// Parameter name prefix; "" or "/" for none
@@ -2547,11 +2544,6 @@ fn lid_to_vrcft(openness: f32, settings: &Settings) -> f32 {
     }
 }
 
-/// The ETVR Tracking Module treats 1.0 as a relaxed open eye, so widening is cut off there.
-fn lid_to_etvr(vrcft: f32) -> f32 {
-    (vrcft * ETVR_LID_SCALE).clamp(0.0, 1.0)
-}
-
 struct EyeSource {
     map: MmapMut,
     path: PathBuf,
@@ -3548,8 +3540,8 @@ impl Sample {
 /// A sample's copy for the panel (its gaze dots and eye preview; dots.rs): the gaze as sent, before smoothing and before
 /// the user's gaze scale (with whether that scale is in use: not 1 on all sides), and
 /// each eye's eyelid as sent, Valve's openness, squint and pupil as sent, and the eye camera's own values as read for it
-/// (`camera`; NaN for an eye without fresh ones), and the brows as sent (brow_from_widen; none while the output takes
-/// none: ETVR). Only for display: nothing here goes to VRChat or VRCFT.
+/// (`camera`; NaN for an eye without fresh ones), and the brows as sent (brow_from_widen). Only for display: nothing
+/// here goes to VRChat or VRCFT.
 fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Option<&Live>) -> dots::DotSample {
     let nan = f32::NAN;
     dots::DotSample {
@@ -3575,7 +3567,7 @@ fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Opti
                 camera_closed: seen.is_some_and(|seen| seen.closed),
             }
         }),
-        brows: sample.brows.filter(|_| settings.output != OutputKind::Etvr),
+        brows: sample.brows,
     }
 }
 
@@ -3961,22 +3953,13 @@ fn shut_lids(lids: &mut [f32; 2], shut: [bool; 2]) {
     }
 }
 
-/// Eyelids on the scale of the given output. LiveLink gets the VRCFT eyelids, split into blink and widening in the
-/// packet (VRCFT puts the same eyelid back together), and the FrameEyeOSC module the VRCFT eyelids as they are.
-fn output_lids(output: OutputKind, lids: [f32; 2]) -> [f32; 2] {
-    match output {
-        OutputKind::Vrchat | OutputKind::LiveLink | OutputKind::FrameEyeOsc => lids,
-        OutputKind::Etvr => lids.map(lid_to_etvr),
-    }
-}
-
 /// The Live Link packet for one sample, stamped `time` seconds into the day. Each eye's gaze is its own with
 /// "move eyes separately", else the combined one (as for the other outputs), and the brows raised with brow_from_widen.
-/// Nothing else goes to LiveLink: no EyeTrackingActive and no parameter prefix, which only VRChat reads.
+/// The VRCFT eyelids go split into blink and widening (VRCFT puts the same eyelid back together). Nothing else goes to
+/// LiveLink: no EyeTrackingActive and no parameter prefix, which only VRChat reads.
 fn livelink_packet(sample: &Sample, time: f64) -> [u8; livelink::PACKET_LEN] {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
-    let lids = output_lids(OutputKind::LiveLink, sample.lids);
-    let shapes = livelink::shapes(lids, [left_x, left_y, right_x, right_y]);
+    let shapes = livelink::shapes(sample.lids, [left_x, left_y, right_x, right_y]);
     let shapes = match sample.brows {
         Some(brows) => livelink::with_brows(shapes, brows),
         None => shapes,
@@ -3988,13 +3971,13 @@ fn livelink_packet(sample: &Sample, time: f64) -> [u8; livelink::PACKET_LEN] {
 /// with "move eyes separately", else the combined one), with the eye camera's squint and pupils for the eyes they are
 /// used for. VRCFT then sends the pupils to each avatar in the form it takes them, so none go straight to VRChat.
 /// With brow_from_widen the 108-byte packet with the brows raised (never lowered or pinched), else the 76-byte one.
+/// The eyelids are the VRCFT ones as they are.
 fn feo_packet(sample: &Sample, session: u32, sequence: u32, time_us: u64) -> Vec<u8> {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
-    let lids = output_lids(OutputKind::FrameEyeOsc, sample.lids);
     let camera = &sample.camera;
     let eye = |side: usize, gaze: [f32; 2]| feo::Eye {
         gaze,
-        lid: lids[side],
+        lid: sample.lids[side],
         squint: camera.squint[side],
         pupil: camera.pupil_diameter[side].zip(camera.pupil_dilation[side]),
     };
@@ -4005,13 +3988,12 @@ fn feo_packet(sample: &Sample, session: u32, sequence: u32, time_us: u64) -> Vec
     }
 }
 
-/// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set with the eye camera's squint and pupils (see
-/// camera_params), and with `steamlink_params` Steam Link's names after it. The ETVR Tracking Module gets per-eye
-/// values only: EyeX/EyeY switch it to a single-eye mode that reads an eyelid we do not send.
+/// The OSC messages to VRChat for one sample: the full VRCFT v2 eye set with the eye camera's squint and pupils (see
+/// camera_params) and the brows (brow_params), and with `steamlink_params` Steam Link's names after it.
 fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> {
     let prefix = format!("/avatar/parameters{}", settings.prefix);
     let [left_x, left_y, right_x, right_y, x, y] = sample.gaze;
-    let [lid_left, lid_right] = output_lids(settings.output, sample.lids);
+    let [lid_left, lid_right] = sample.lids;
     let mut values = vec![
         ("EyeLeftX", left_x),
         ("EyeLeftY", left_y),
@@ -4019,20 +4001,19 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
         ("EyeRightY", right_y),
         ("EyeLidLeft", lid_left),
         ("EyeLidRight", lid_right),
+        ("EyeX", x),
+        ("EyeY", y),
     ];
+    values.extend(camera_params(&sample.camera));
+    values.extend(sample.brows.map(brow_params).unwrap_or_default());
     let mut messages = Vec::with_capacity(21);
-    if settings.output == OutputKind::Vrchat {
-        messages.extend(active_message(settings, true));
-        values.extend([("EyeX", x), ("EyeY", y)]);
-        values.extend(camera_params(&sample.camera));
-        values.extend(sample.brows.map(brow_params).unwrap_or_default());
-    }
+    messages.extend(active_message(settings, true));
     messages.extend(
         values
             .into_iter()
             .map(|(suffix, value)| (format!("{prefix}/v2/{suffix}"), OscType::Float(value))),
     );
-    if settings.output == OutputKind::Vrchat && settings.steamlink_params {
+    if settings.steamlink_params {
         messages.extend(steamlink_messages(sample.gaze, sample.lids));
     }
     messages
@@ -4615,19 +4596,17 @@ impl Bridge {
                 for (addr, arg) in osc_messages(&self.settings, &sample) {
                     self.output.send(&addr, &[arg])?;
                 }
-                if self.settings.output == OutputKind::Vrchat {
-                    for (addr, arg) in self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now) {
-                        self.output.send(&addr, &[arg])?;
-                    }
-                    for (addr, arg) in squint_release(&self.settings, self.squint_out, sample.camera.squint) {
-                        self.output.send(&addr, &[arg])?;
-                    }
-                    self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
-                    for (addr, arg) in brow_release(&self.settings, self.brow_out, sample.brows) {
-                        self.output.send(&addr, &[arg])?;
-                    }
-                    self.brow_out = sample.brows.is_some();
+                for (addr, arg) in self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now) {
+                    self.output.send(&addr, &[arg])?;
                 }
+                for (addr, arg) in squint_release(&self.settings, self.squint_out, sample.camera.squint) {
+                    self.output.send(&addr, &[arg])?;
+                }
+                self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
+                for (addr, arg) in brow_release(&self.settings, self.brow_out, sample.brows) {
+                    self.output.send(&addr, &[arg])?;
+                }
+                self.brow_out = sample.brows.is_some();
                 if native_stream(&self.settings).is_some() {
                     for (addr, args) in native_messages(&self.settings, sample.gaze, sample.lids) {
                         self.output.send(&addr, &args)?;
@@ -4849,7 +4828,7 @@ impl Bridge {
                 gaze_right: pair(sample.raw_gaze, 2),
             }),
             sent: self.latest.as_ref().map(|sample| SentValues {
-                lids: status::round(output_lids(settings.output, sample.lids)),
+                lids: status::round(sample.lids),
                 lids_vrcft: status::round(sample.lids),
                 gaze: pair(sample.gaze, 4),
                 gaze_left: pair(sample.gaze, 0),
@@ -4975,7 +4954,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config_path = args.config.clone().or_else(|| in_config_dir("config.json"));
     let replay = args.replay.clone().map(|input| (input, args.replay_out.clone()));
     let camera_path = args.eyecam_live.clone().unwrap_or_else(eyecam_live::live_path);
+    let removed = config::removed_options(&matches);
     let mut config = Config::new(config_path, args, config::given_options(&matches));
+    // What the command line still asks for that was removed, before the file's, each line once
+    config.log_removed(&removed);
     let settings = config.load()?;
     if let Some((input, output)) = replay {
         // Starts from the saved calibration like a real run, but never writes it back.
@@ -7029,19 +7011,6 @@ mod tests {
         assert!(lid_to_vrcft(0.55, &args) > 0.0 && lid_to_vrcft(0.55, &args) < 0.75);
     }
 
-    #[test]
-    fn etvr_eyelids_treat_relaxed_as_fully_open() {
-        assert_eq!(lid_to_etvr(0.0), 0.0);
-        assert_eq!(lid_to_etvr(0.375), 0.5);
-        assert_eq!(lid_to_etvr(0.75), 1.0);
-        // Widening does not reach the ETVR Tracking Module.
-        assert_eq!(lid_to_etvr(1.0), 1.0);
-        assert_eq!(output_lids(OutputKind::Vrchat, [0.375, 1.0]), [0.375, 1.0]);
-        assert_eq!(output_lids(OutputKind::Etvr, [0.375, 1.0]), [0.5, 1.0]);
-        // LiveLink keeps the VRCFT eyelids (the packet splits them into blink and widening)
-        assert_eq!(output_lids(OutputKind::LiveLink, [0.375, 1.0]), [0.375, 1.0]);
-    }
-
     fn sample() -> Sample {
         Sample {
             openness: [0.8; 2],
@@ -7112,13 +7081,10 @@ mod tests {
         assert_eq!(active_message(&with(ActiveType::Off), false), None);
         // Changing the type ends the old stream (it gets its own last "not active")
         assert_ne!(vrchat_stream(&with(ActiveType::Bool)), vrchat_stream(&with(ActiveType::Float)));
-        // ETVR never gets it
-        let etvr = Settings {
-            output: OutputKind::Etvr,
-            ..with(ActiveType::Float)
-        };
-        assert!(sent(&etvr).iter().all(|(addr, _)| !addr.ends_with("EyeTrackingActive")));
-        assert!(vrchat_stream(&etvr).is_none());
+        // The other outputs never get it
+        for output in [OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
+            assert!(vrchat_stream(&Settings { output, ..with(ActiveType::Float) }).is_none());
+        }
     }
 
     #[test]
@@ -7146,28 +7112,6 @@ mod tests {
         send_inactive(&mut output, &off).unwrap();
         listener.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
         assert!(listener.recv(&mut buffer).is_err());
-    }
-
-    #[test]
-    fn etvr_gets_only_the_six_per_eye_values() {
-        let messages = sent(&Settings {
-            output: OutputKind::Etvr,
-            ..settings()
-        });
-        let addrs: Vec<&str> = messages.iter().map(|(addr, _)| addr.as_str()).collect();
-        assert_eq!(
-            addrs,
-            [
-                "/avatar/parameters/FT/v2/EyeLeftX",
-                "/avatar/parameters/FT/v2/EyeLeftY",
-                "/avatar/parameters/FT/v2/EyeRightX",
-                "/avatar/parameters/FT/v2/EyeRightY",
-                "/avatar/parameters/FT/v2/EyeLidLeft",
-                "/avatar/parameters/FT/v2/EyeLidRight",
-            ]
-        );
-        assert_eq!(messages[4].1, OscType::Float(0.5));
-        assert_eq!(messages[5].1, OscType::Float(1.0));
     }
 
     #[test]
@@ -7465,7 +7409,7 @@ mod tests {
         assert!(native_stream(&settings()).is_none());
         assert_eq!(native_stream(&on), Some(("auto", 9000)));
         assert!(native_stream(&Settings { sending: false, ..on.clone() }).is_none());
-        for output in [OutputKind::Etvr, OutputKind::LiveLink] {
+        for output in [OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
             assert!(native_stream(&Settings { output, ..on.clone() }).is_none());
         }
         // Moving the stream ends the old one (it gets its own last neutral eyes)
@@ -7503,7 +7447,7 @@ mod tests {
         assert!(face_stream(&settings()).is_none());
         assert_eq!(face_stream(&on), Some(("auto", 9000)));
         assert!(face_stream(&Settings { sending: false, ..on.clone() }).is_none());
-        for output in [OutputKind::Etvr, OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
+        for output in [OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
             assert!(face_stream(&Settings { output, ..on.clone() }).is_none());
         }
         // Independent of native_eyes: both can be on (the blob wins on avatars with the Face Tracking section)
@@ -7600,7 +7544,7 @@ mod tests {
         assert!(steamlink_stream(&settings()).is_none());
         assert_eq!(steamlink_stream(&on), Some(("auto", 9000)));
         assert!(steamlink_stream(&Settings { sending: false, ..on.clone() }).is_none());
-        for output in [OutputKind::Etvr, OutputKind::LiveLink] {
+        for output in [OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
             assert!(steamlink_stream(&Settings { output, ..on.clone() }).is_none());
         }
         assert_ne!(steamlink_stream(&on), steamlink_stream(&Settings { port: Some(9001), ..on.clone() }));
@@ -7721,7 +7665,7 @@ mod tests {
     }
 
     #[test]
-    fn steamlink_names_ignore_the_prefix_and_other_outputs() {
+    fn steamlink_names_ignore_the_prefix() {
         for prefix in ["", "/Custom"] {
             let messages = sent(&Settings {
                 prefix: prefix.into(),
@@ -7730,11 +7674,6 @@ mod tests {
             assert_eq!(messages[9].0, "/avatar/parameters/LeftEyeX");
             assert_eq!(messages[20].0, "/avatar/parameters/LeftEyeWidenToggle");
         }
-        let etvr = Settings {
-            output: OutputKind::Etvr,
-            ..steamlink()
-        };
-        assert_eq!(sent(&etvr), sent(&Settings { output: OutputKind::Etvr, ..settings() }));
     }
 
     #[test]
@@ -7776,7 +7715,6 @@ mod tests {
             steamlink(),
             Settings { prefix: String::new(), ..steamlink() },
             Settings { prefix: "/x".into(), ..settings() },
-            Settings { output: OutputKind::Etvr, ..settings() },
             Settings { eye_tracking_active: ActiveType::Float, ..settings() },
             Settings { pupil_bits: 4, ..settings() },
             Settings { independent_eyes: true, ..settings() },
@@ -7815,12 +7753,7 @@ mod tests {
     #[test]
     fn each_output_has_its_default_port() {
         assert_eq!(settings().port(), 9000);
-        let etvr = Settings {
-            output: OutputKind::Etvr,
-            ..settings()
-        };
-        assert_eq!(etvr.port(), 8889);
-        assert_eq!(Settings { port: Some(9100), ..etvr }.port(), 9100);
+        assert_eq!(Settings { port: Some(9100), ..settings() }.port(), 9100);
         assert!(Target::of(&settings()) == Target::SteamLink { port: 9000 });
         let livelink = Settings {
             output: OutputKind::LiveLink,
@@ -7838,8 +7771,8 @@ mod tests {
             sending: false,
             ..settings()
         };
-        let etvr = Settings {
-            output: OutputKind::Etvr,
+        let module = Settings {
+            output: OutputKind::FrameEyeOsc,
             ..settings()
         };
         let moved = Settings {
@@ -7847,7 +7780,7 @@ mod tests {
             ..settings()
         };
         assert!(vrchat_stream(&base).is_some());
-        assert!(vrchat_stream(&paused).is_none() && vrchat_stream(&etvr).is_none());
+        assert!(vrchat_stream(&paused).is_none() && vrchat_stream(&module).is_none());
         assert_ne!(vrchat_stream(&base), vrchat_stream(&moved));
         let tweaked = Settings {
             lid_open: 0.85,
@@ -7860,7 +7793,7 @@ mod tests {
             ..settings()
         };
         assert_eq!(livelink_stream(&livelink), Some(("auto", 11111)));
-        assert!(livelink_stream(&base).is_none() && livelink_stream(&etvr).is_none());
+        assert!(livelink_stream(&base).is_none() && livelink_stream(&module).is_none());
         assert!(livelink_stream(&Settings { sending: false, ..livelink.clone() }).is_none());
         assert_ne!(livelink_stream(&livelink), livelink_stream(&Settings { port: Some(11112), ..livelink.clone() }));
         assert_eq!(livelink_stream(&livelink), livelink_stream(&Settings { lid_open: 0.85, ..livelink.clone() }));
@@ -10308,12 +10241,7 @@ mod tests {
         assert_eq!((value("EyeSquintLeft"), value("EyeSquintRight"), value("EyeSquint")), (None, Some(0.4), Some(0.4)));
         assert_eq!((value("PupilDiameterLeft"), value("PupilDiameterRight")), (Some(0.4), None));
         assert_eq!((value("PupilDilation"), value("PupilDiameter")), (Some(0.5), Some(0.4)));
-        // Not to the other outputs; the Steam Link names stay last; the prefix applies
-        let etvr = Settings {
-            output: OutputKind::Etvr,
-            ..settings()
-        };
-        assert_eq!(osc_messages(&etvr, &Sample { camera, ..sample() }), sent(&etvr));
+        // The Steam Link names stay last; the prefix applies
         let messages = osc_messages(&steamlink(), &Sample { camera, ..sample() });
         assert_eq!(messages.len(), 28);
         assert_eq!(messages[16..], steamlink_messages(sample().gaze, sample().lids)[..]);
@@ -10359,7 +10287,7 @@ mod tests {
         // Only in LiveLink mode, while sending, with the setting on; to port 9000 of the LiveLink target's host
         assert_eq!(pupil_stream(&livelink), Some(("auto", 9000)));
         assert!(pupil_stream(&settings()).is_none());
-        assert!(pupil_stream(&Settings { output: OutputKind::Etvr, ..livelink.clone() }).is_none());
+        assert!(pupil_stream(&Settings { output: OutputKind::FrameEyeOsc, ..livelink.clone() }).is_none());
         assert!(pupil_stream(&Settings { sending: false, ..livelink.clone() }).is_none());
         assert!(pupil_stream(&Settings { pupils_to_vrchat: false, ..livelink.clone() }).is_none());
         assert!(pupil_target(&livelink) == Target::SteamLink { port: 9000 });
@@ -10910,8 +10838,6 @@ mod tests {
         for eye in eyes {
             most = most.max(eye.wide).max(eye.vrcft_lid() - LID_RELAXED);
         }
-        // The ETVR Tracking Module's eyelid stops at relaxed open (1.0) anyway
-        assert!(output_lids(OutputKind::Etvr, sample.lids).iter().all(|lid| *lid <= 1.0));
         most
     }
 
@@ -11229,8 +11155,6 @@ mod tests {
         let all = osc_messages(&Settings { steamlink_params: true, ..settings.clone() }, &on);
         let first = all.iter().position(|(addr, _)| addr.contains("Brow")).unwrap();
         assert!(all[first - 1].0.ends_with("v2/EyeY") && all[first + 8].0 == "/avatar/parameters/LeftEyeX");
-        // Not to the ETVR module (it has no brows)
-        assert!(brows(osc_messages(&Settings { output: OutputKind::Etvr, ..settings.clone() }, &on)).is_empty());
         // Released: every one 0 once, with the prefix
         let zero = |prefix: &str| -> Vec<(String, OscType)> {
             BROW_PARAMS.iter().map(|name| (format!("/avatar/parameters{prefix}/v2/{name}"), OscType::Float(0.0))).collect()
@@ -11246,12 +11170,11 @@ mod tests {
         let settings = Settings { brow_from_widen: true, ..settings() };
         let data = reading(0, [0.0, 0.0], [1.0, 1.0]);
         let on = Sample { brows: Some([0.6, 0.2]), ..sample() };
-        // To every output that takes brows, the panel's copy has them; ETVR takes none, so none are shown
+        // To every output, the panel's copy has them
         for output in [OutputKind::Vrchat, OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
             let settings = Settings { output, ..settings.clone() };
             assert_eq!(dot_sample(&settings, &data, &on, None).brows, Some([0.6, 0.2]), "{output:?}");
         }
-        assert_eq!(dot_sample(&Settings { output: OutputKind::Etvr, ..settings.clone() }, &data, &on, None).brows, None);
         // brow_from_widen off (no brows in the sample): none, and the datagram is as before
         let off = dot_sample(&settings, &data, &sample(), None);
         assert_eq!(off.brows, None);

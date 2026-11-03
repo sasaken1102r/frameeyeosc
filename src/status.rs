@@ -106,7 +106,8 @@ pub struct RawValues {
     pub gaze_right: [f32; 2],
 }
 
-/// What goes out (or would, while paused). `lids` is on the output's own scale.
+/// What goes out (or would, while paused). `lids` is on the output's own scale, which is VRCFT's for every output
+/// (`lids_vrcft`, the same values, stays for panels that read it).
 #[derive(Serialize)]
 pub struct SentValues {
     pub lids: [f32; 2],

@@ -1560,6 +1560,46 @@ void testExtrasRead() {
     CHECK(extrasList(m).entries.size() == 2);
 }
 
+/**
+ * Hand-written entries the way frameeyeosc's parse_extra reads them (config.rs): a port must be a whole number written
+ * as one (as_u64: 9015.0 and 9015e0 are not), and a host with a colon must be a real IPv6 address (host_ok); white
+ * space is Unicode's.
+ */
+void testExtrasCoreEdges() {
+    const auto problem = [](const std::string& entry) {
+        const JsonValue root = rootOf("{\"extra_outputs\": [" + entry + "]}");
+        const extras::List list = extras::readList(root.get(key::kExtraOutputs));
+        return list.entries.size() == 1 ? list.entries[0].problem : extras::Problem::Limit;
+    };
+    using extras::Problem;
+    const auto feo = [](const std::string& host, const std::string& port) {
+        return "{\"format\": \"feo1\", \"host\": \"" + host + "\", \"port\": " + port + "}";
+    };
+    CHECK(problem(feo("main", "9015")) == Problem::None);
+    CHECK(problem(feo("main", "9015.0")) == Problem::Invalid);
+    CHECK(problem(feo("main", "9015e0")) == Problem::Invalid);
+    CHECK(problem(feo("main", "9015.5")) == Problem::Invalid);
+    CHECK(problem(feo("main", "-9015")) == Problem::Invalid);
+    CHECK(problem(feo("main", "65536")) == Problem::Invalid && problem(feo("main", "65535")) == Problem::None);
+    CHECK(problem(feo("main", "\"9015\"")) == Problem::Invalid);
+    // IPv6: only real addresses (no scope); anything else with a colon is a port written into the host
+    for (const char* good : {"::1", "2001:db8::1", "fe80::1", "::ffff:192.168.0.1", "dead::beef"}) {
+        CHECK(problem(feo(good, "11113")) == Problem::None);
+    }
+    for (const char* bad : {"dead:beef", "fe80::1%eth0", "host:9000", "192.168.0.10:11113", ":::", "1:2:3:4:5:6:7:8:9",
+                            "::ffff:192.168.01.1", "[::1]"}) {
+        CHECK(problem(feo(bad, "11113")) == Problem::Invalid);
+    }
+    // A host name: anything without a colon or white space (Unicode's too: an ideographic space, a no-break space)
+    CHECK(problem(feo("bridge-pc.local", "11113")) == Problem::None);
+    CHECK(problem(feo("bridge_pc", "11113")) == Problem::None);
+    CHECK(problem(feo("a b", "11113")) == Problem::Invalid && problem(feo("a\\tb", "11113")) == Problem::Invalid);
+    CHECK(problem(feo("a　b", "11113")) == Problem::Invalid);
+    CHECK(problem(feo("a b", "11113")) == Problem::Invalid);
+    CHECK(problem(feo("ブリッジ", "11113")) == Problem::None);
+    CHECK(problem(feo("", "11113")) == Problem::Invalid);
+}
+
 /** The address kinds, as frameeyeosc's dest.rs sorts them, and what the host step says. */
 void testExtrasAddresses() {
     using extras::Net;
@@ -1807,6 +1847,7 @@ void testExtrasStatus() {
 
 int main() {
     testExtrasRead();
+    testExtrasCoreEdges();
     testExtrasAddresses();
     testExtrasDraft();
     testExtrasWrite();

@@ -3,9 +3,13 @@
 
 #include "host_entry.h"
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 
 namespace extras {
 
@@ -34,19 +38,53 @@ bool knownFormat(const std::string& format) {
 }
 
 /**
- * Whether a host could be used as frameeyeosc reads it: "main", "auto", an IP address, or a host name (not empty, no
- * port, no white space). An IPv6 address has colons: only hex digits, colons, dots and a scope (%) then.
+ * Whether a character is white space as Rust's char::is_whitespace says (Unicode's White_Space, which frameeyeosc's
+ * host check uses).
+ * @param c the code point
+ * @return true if it is
+ */
+bool whiteSpace(uint32_t c) {
+    return (c >= 0x09 && c <= 0x0d) || c == 0x20 || c == 0x85 || c == 0xa0 || c == 0x1680 ||
+           (c >= 0x2000 && c <= 0x200a) || c == 0x2028 || c == 0x2029 || c == 0x202f || c == 0x205f || c == 0x3000;
+}
+
+/**
+ * Whether a text has white space anywhere (read as UTF-8; a byte that starts no character counts as none).
+ * @param text the text
+ * @return true if it has
+ */
+bool hasWhiteSpace(const std::string& text) {
+    for (size_t i = 0; i < text.size();) {
+        const auto byte = static_cast<unsigned char>(text[i]);
+        const size_t length = byte < 0x80             ? 1
+                              : (byte >> 5) == 0x6    ? 2
+                              : (byte >> 4) == 0xe    ? 3
+                              : (byte >> 3) == 0x1e   ? 4
+                                                      : 1;
+        uint32_t c = length == 1 ? byte : byte & (0x7fu >> length);
+        for (size_t k = 1; k < length && i + k < text.size(); ++k) {
+            c = (c << 6) | (static_cast<unsigned char>(text[i + k]) & 0x3fu);
+        }
+        if (whiteSpace(c)) return true;
+        i += length;
+    }
+    return false;
+}
+
+/**
+ * Whether a host could be used as frameeyeosc reads it (config.rs, host_ok): an IP address, or anything that could be
+ * a host name: not empty, no colon (a port) and no white space. So a host with a colon must be an IPv6 address that
+ * parses as one (no scope: frameeyeosc's parser takes none).
  * @param host as written
  * @return true if it could
  */
 bool hostOk(const std::string& host) {
-    if (host.empty()) return false;
-    for (const char c : host) {
-        if (std::isspace(static_cast<unsigned char>(c))) return false;
+    in6_addr v6 {};
+    if (host.find(':') != std::string::npos) {
+        // (a NUL inside would end the text for inet_pton early)
+        return host.find('\0') == std::string::npos && ::inet_pton(AF_INET6, host.c_str(), &v6) == 1;
     }
-    if (host.find(':') == std::string::npos) return true;
-    const size_t scope = host.find('%');
-    return host.substr(0, scope).find_first_not_of("0123456789abcdefABCDEF:.") == std::string::npos;
+    return !host.empty() && !hasWhiteSpace(host);
 }
 
 /**
@@ -150,7 +188,7 @@ Entry readEntry(const JsonValue& item, int index) {
     if (const JsonValue* v = item.get("format"); v != nullptr && v->isString()) entry.format = v->text;
     if (const JsonValue* v = item.get("host"); v != nullptr && v->isString()) entry.host = v->text;
     if (const JsonValue* v = item.get("port");
-        v != nullptr && v->isNumber() && v->number >= 1 && v->number <= 65535 && v->number == std::floor(v->number)) {
+        v != nullptr && v->isNumber() && v->integer && v->number >= 1 && v->number <= 65535) {
         entry.port = static_cast<int>(v->number);
     }
     if (const JsonValue* v = item.get("lids"); v != nullptr && v->isBool()) entry.lids = v->boolean;

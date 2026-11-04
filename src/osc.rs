@@ -120,7 +120,7 @@ pub mod tests {
 
     #[test]
     fn bundles_decode_as_rosc_bundles_in_order_and_stay_under_the_limit() {
-        let messages: Vec<(String, Vec<Value>)> = (0..30)
+        let messages: Vec<(String, Vec<Value>)> = (0..40)
             .map(|n| (format!("/avatar/parameters/FT/v2/Name{}", "x".repeat(n % 7)), vec![Value::Float(n as f32)]))
             .collect();
         for max in [MAX_BUNDLE, 200, 1] {

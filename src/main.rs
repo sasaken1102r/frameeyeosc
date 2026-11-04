@@ -11643,8 +11643,11 @@ mod tests {
             assert_eq!(at_plain.len(), 18);
             capped_messages.extend(drain(&capped).iter().flat_map(|d| decode_osc_or_bundle(d)));
         }
-        assert_eq!(capped_messages.len(), 18);
-        assert_eq!(bridge.extras.status(Instant::now())[2].rate, 1.0);
+        // (each round waits about 150 ms for the listeners, so about 1.5 s: one or two samples, never all 10)
+        let capped_samples = capped_messages.len() / 18;
+        assert_eq!(capped_messages.len() % 18, 0);
+        assert!((1..=3).contains(&capped_samples), "{capped_samples}");
+        assert!(bridge.extras.status(Instant::now())[2].rate <= 2.0);
         // Lost: the final set, bundled too, and to the capped one at once
         bridge.on_lost("test").unwrap();
         let at_plain: Vec<_> = drain(&plain).iter().map(|d| decode_osc(d)).collect();

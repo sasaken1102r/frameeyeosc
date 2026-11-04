@@ -365,12 +365,6 @@ bool configNeedsMigration(const JsonValue& root) {
     return root.get(key::kLidWiden) == nullptr || !current || snapIsShare(root);
 }
 
-double snapOnBar(double snap, double lidClosed, double lidOpen, double scale) {
-    // frameeyeosc's LID_RELAXED
-    constexpr double kRelaxed = 0.75;
-    return (lidClosed + snap / kRelaxed * (lidOpen - lidClosed)) * scale;
-}
-
 WidenState widenState(const SettingsView& view) {
     // frameeyeosc's WIDEN_LOW / WIDEN_NORMAL / WIDEN_HIGH starts and WIDEN_ROOM_LIMIT
     constexpr double kWidenStart[4] = {NAN, 0.10, 0.07, 0.04};
@@ -620,7 +614,7 @@ WidenSlider widenSlider(const SettingsView& view, const EyeStatus& status) {
         slider.control = WidenControl::Saturated;
         return slider;
     }
-    // lid_widen reaches only fitted eyes: one on Valve's values without a fit widens by marks 3 and 4
+    // lid_widen reaches only fitted eyes: one on Valve's values without a fit widens by lid_widen_start / lid_wide
     const WidenState widen = widenState(view);
     for (int eye = 0; eye < 2; ++eye) {
         if (!used[eye] && !widen.fitted[eye]) slider.unfittedNote = true;

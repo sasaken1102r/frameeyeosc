@@ -21,13 +21,14 @@ const OPEN_FLOOR: f32 = 0.3;
 
 /// Whether a sample's gaze counts in a capture: both eyes open enough and at least one eye's gaze reliable. An eye the
 /// eye server reads closing while the eye camera has seen it open for longer than a blink (`camera_open`: its eyelid
-/// is the camera's, LidFrom::CameraOpen) counts as open enough, as long as the eye server reads the other eye open
-/// enough itself. The eye server can get stuck reading one eye at 0.000 for a whole wear while that eye is open
-/// (2026-10-11: the right eye, the camera's eyelid about 0.75), its combined gaze (the one measured) as steady as
-/// ever, and then every sample failed the floor and so did every eye fit. Without such an eye, the same as before.
+/// is the camera's, LidFrom::CameraOpen) counts as open enough. The eye server can get stuck reading one eye at 0.000
+/// for a whole wear while that eye is open (2026-10-11: the right eye, the camera's eyelid about 0.75), its combined
+/// gaze (the one measured) as steady as ever, and then every sample failed the floor and so did every eye fit; after a
+/// night in VR it read both eyes 0.000 (issue 43), and every re-center timed out. Without such an eye, the same as
+/// before.
 pub fn usable(openness: [f32; 2], camera_open: [bool; 2], reliable: [bool; 2]) -> bool {
     let open = openness.map(|openness| openness >= OPEN_FLOOR);
-    open.contains(&true) && (0..2).all(|eye| open[eye] || camera_open[eye]) && reliable.contains(&true)
+    (0..2).all(|eye| open[eye] || camera_open[eye]) && reliable.contains(&true)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -360,10 +361,11 @@ mod tests {
         // The eye server stuck at 0.000 for the right eye, which the camera sees open: it counts, the left eye open.
         assert!(usable([0.95, 0.0], [false, true], [true, false]));
         assert!(usable([0.0, 0.95], [true, false], [true; 2]));
-        // Still not without a reliable eye, nor with neither eye open on the eye server (one must be measured by it),
-        // nor for an eye the camera does not see open.
+        // Both eyes stuck there and seen open by the camera (issue 43) count too.
+        assert!(usable([0.0, 0.0], [true; 2], [true; 2]));
+        // Still not without a reliable eye, nor for an eye the camera does not see open.
         assert!(!usable([0.95, 0.0], [false, true], [false; 2]));
-        assert!(!usable([0.0, 0.0], [true; 2], [true; 2]));
+        assert!(!usable([0.0, 0.0], [true, false], [true; 2]));
         assert!(!usable([0.95, 0.0], [true, false], [true; 2]));
         // Camera-open on an eye that is open anyway changes nothing.
         assert_eq!(usable([0.95, 0.9], [true, false], [true; 2]), usable([0.95, 0.9], [false; 2], [true; 2]));

@@ -221,7 +221,7 @@ UiText makeJapanese() {
     t.eyeBehaviorV2Line = "v2：左右の目をそろえて動かし、目のカメラやほぼ開いた目で閉じ気味を直すよ";
     t.eyeBehaviorV1Line = "v1：Valve の値をそのまま送る、0.7.5 までの動き";
     t.eyeBehaviorLeftV1 = "目の動かし方 v1";
-    t.snapV2Only = "⑤ は v2 だけで効くよ。今は v1 なので使ってない";
+    t.snapV2Only = "③ は v2 だけで効くよ。今は v1 なので使ってない";
     t.floorV2Only = "v2 だけで効くよ。今は v1 なので使ってない";
     t.toVersionPage = "詳細 " ICON_CHEVRON_RIGHT " バージョンへ";
     t.hintIndependentV1 = "目ごとの視線をそのまま（v1）";
@@ -349,8 +349,7 @@ UiText makeJapanese() {
     t.widenFollowsRight = "右目は左目に合わせて見開きます（開き具合が上限に近いため）";
     t.widenNoRoom = "両目とも開き具合が上限に近いため、見開きません";
     t.opennessSaturated = "この SteamOS では開き具合が 1.0 で頭打ちのため、見開きは届きません";
-    t.lidMarksFitted = "閉じ・開きは目を合わせた値、見開きは「見開きやすさ」で決まります";
-    t.lidMarksUnused = "③④は目を合わせていない目のための目盛りです";
+    t.lidMarksUnused = "目盛りは目を合わせていない目のためのものです";
 
     t.rowCalibration = "自動キャリブレーション";
     t.learnedFormat = "覚えた値 左 %s・右 %s";
@@ -366,8 +365,6 @@ UiText makeJapanese() {
     t.marksTitle = "目を開け閉めしながら、線を今の値に合わせます（倍率を掛けた後の生の値）";
     t.markClosed = "閉じ";
     t.markOpen = "普通";
-    t.markWidenStart = "見開き始め";
-    t.markWide = "見開き最大";
     t.rowSync = "左右をそろえる強さ";
     t.hintSync = "0 = そろえない。ウインクは通す";
     t.rowBlink = "まばたきを届ける";
@@ -814,11 +811,9 @@ UiText makeJapanese() {
     t.camHelp3 = "HMD をかぶり直した";
     t.camHelp3Do = "何もしなくて OK（自動で覚え直すよ）";
     t.lidsCamButton = "目のカメラへ";
-    t.lidsCamMarks = "カメラ使用中は見開きの目盛り（見開き始め・最大）は出さないよ";
-    t.lidsCamMarksOpen = "カメラ使用中は ③④ を使わないよ";
     t.lidsLook = "見た目";
     t.lidsBlinks = "まばたき・細め";
-    t.lidsFine = "細かく直す";
+    t.lidsFine = "Valve のまぶた";
     t.lidsBrows = "眉";
     t.gazeMotion = "動き";
     t.gazeReach = "動く範囲";
@@ -851,7 +846,7 @@ UiText makeJapanese() {
     t.widenHintSaturated = "この SteamOS では効かないよ";
     t.widenNoteCamera = "勝手に出るなら鈍いほうへ・出にくいなら敏感なほうへ";
     t.widenNoteValve = "左端は見開きなし。右ほど出やすいよ（4 段階）";
-    t.widenNoteUnfitted = "目を合わせていない目は、「細かく直す」の目盛りで決まるよ";
+    t.widenNoteUnfitted = "目を合わせていない目は、Valve の値がほぼ最大のときだけ見開くよ";
     t.widenSaturated = "Valve の値だけだと見開きが出ないよ";
     t.rowWidenSwitch = "見開き";
     t.widenSwitchHint = "閉じ・細めはそのまま";
@@ -880,7 +875,13 @@ UiText makeJapanese() {
     t.lidFloorNoteIdle = "目のカメラが目を見てるときに効くよ（今は Valve の値だけなので変わらない）";
     t.rowLidOpenSnap = "ほぼ開いてたら全開にする";
     t.lidOpenSnapHint = "0.75 でオフ";
-    t.lidOpenSnapNote = "送るまぶたがこれより開いてたら、ふつうに開いた目にするよ（目のカメラがある目は使わない）";
+    t.capSnapValve = "Valve の目";
+    t.capSnapCamera = "カメラの目";
+    t.valveReadTitle = "Valve の値の読み方";
+    t.valveReadStandby = "いまは予備：目のカメラが見失ったときに使うよ";
+    t.sentLidsTitle = "送るまぶた";
+    t.sentLidsHint = "アバターに届く値（点線がふつうに開いた目）";
+    t.chipValve = "Valve";
     t.lidSmoothHint = "強いほどなめらか";
     t.syncOff = "そろえない";
     t.syncStrong = "強く";
@@ -1340,7 +1341,7 @@ UiText makeEnglish() {
     t.eyeBehaviorV2Line = "v2: moves both eyes together, and the eye cameras and nearly open eyes keep eyelids from drooping";
     t.eyeBehaviorV1Line = "v1: sends Valve's values as they are, as up to 0.7.5";
     t.eyeBehaviorLeftV1 = "Eyes: v1";
-    t.snapV2Only = "⑤ works in v2 only; now on v1, so it isn't used";
+    t.snapV2Only = "③ works in v2 only; now on v1, so it isn't used";
     t.floorV2Only = "Works in v2 only; now on v1, so it isn't used";
     t.toVersionPage = "Advanced " ICON_CHEVRON_RIGHT " Version";
     t.hintIndependentV1 = "Each eye's own gaze (v1)";
@@ -1469,8 +1470,7 @@ UiText makeEnglish() {
     t.widenFollowsRight = "The right eye widens with the left (its openness is near the limit)";
     t.widenNoRoom = "Neither eye widens: both read near the openness limit";
     t.opennessSaturated = "This SteamOS caps eye openness at 1.0, so widening can't come through";
-    t.lidMarksFitted = "Closing and opening come from the eye fit, widening from Widen";
-    t.lidMarksUnused = "Marks 3 and 4 are for eyes without an eye fit";
+    t.lidMarksUnused = "The marks are for eyes without an eye fit";
 
     t.rowCalibration = "Auto calibration";
     t.learnedFormat = "Learned L %s / R %s";
@@ -1486,8 +1486,6 @@ UiText makeEnglish() {
     t.marksTitle = "Blink and open wide, then move the lines to match (raw value after scaling)";
     t.markClosed = "Closed";
     t.markOpen = "Open";
-    t.markWidenStart = "Widen start";
-    t.markWide = "Widest";
     t.rowSync = "Sync both lids";
     t.hintSync = "0 = off. Winks pass through";
     t.rowBlink = "Make blinks visible";
@@ -1937,11 +1935,9 @@ UiText makeEnglish() {
     t.camHelp3 = "Put the headset back on";
     t.camHelp3Do = "Nothing to do (it relearns by itself)";
     t.lidsCamButton = "Eye cameras";
-    t.lidsCamMarks = "With the cameras, the widening marks (3 and 4) aren't used";
-    t.lidsCamMarksOpen = "Marks 3 and 4 aren't used while the cameras drive the eyelids";
     t.lidsLook = "Look";
     t.lidsBlinks = "Blinks & squint";
-    t.lidsFine = "Fine-tune";
+    t.lidsFine = "Valve eyelids";
     t.lidsBrows = "Brows";
     t.gazeMotion = "Motion";
     t.gazeReach = "Reach";
@@ -1974,7 +1970,7 @@ UiText makeEnglish() {
     t.widenHintSaturated = "No effect on this SteamOS";
     t.widenNoteCamera = "Widens by itself: toward Dull. Hard to widen: toward Sensitive";
     t.widenNoteValve = "Far left: no widening. Further right widens more easily (4 stops)";
-    t.widenNoteUnfitted = "Eyes without an eye fit follow the marks on \"Fine-tune\"";
+    t.widenNoteUnfitted = "Eyes without an eye fit widen only near Valve's highest values";
     t.widenSaturated = "Valve's values alone can't widen";
     t.rowWidenSwitch = "Widening";
     t.widenSwitchHint = "Blinks and squint stay";
@@ -2004,7 +2000,13 @@ UiText makeEnglish() {
     t.lidFloorNoteIdle = "Works while the eye cameras watch the eyes (now Valve's values only, so no change)";
     t.rowLidOpenSnap = "Treat nearly open as open";
     t.lidOpenSnapHint = "0.75 = off";
-    t.lidOpenSnapNote = "At least this open: sent as a normally open eye (not for eyes the cameras read)";
+    t.capSnapValve = "Valve eyes";
+    t.capSnapCamera = "Camera eyes";
+    t.valveReadTitle = "Reading Valve's values";
+    t.valveReadStandby = "Standing by: used when the eye cameras lose an eye";
+    t.sentLidsTitle = "Sent eyelids";
+    t.sentLidsHint = "What the avatar gets (dotted: a normally open eye)";
+    t.chipValve = "Valve";
     t.lidSmoothHint = "Stronger = smoother";
     t.syncOff = "Off";
     t.syncStrong = "Strong";

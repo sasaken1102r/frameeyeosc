@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.0 (unreleased)
+## 0.10.0-beta.1 (2026-11-04)
 
 frameeyeosc can now send the same eye data to up to 3 more apps next to the main output: in the FrameEyeOSC format (`feo1`), or as plain OSC (`osc`) with VRChat's own eye input and VRCFaceTracking's v2 names. Set them up on the Output tab's new "Other apps" page. "Only inside my home network" (`lan_only`, on at first) keeps eye data from going to addresses outside your home network, the main output's too. The ETVR output and eye behavior v1 (the eyes as up to 0.7.5) are gone. Port numbers can now be typed on a keypad. Update the panel together with frameeyeosc: the panel's "Update" button does both (by hand: `./install.sh --with-panel`).
 

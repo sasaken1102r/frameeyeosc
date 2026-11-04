@@ -236,7 +236,9 @@ Both repositories' tests run these through their receivers.
 
 ## Other formats: `osc`
 
-An extra output in the `osc` format sends plain OSC 1.0 messages, one per UDP datagram, no bundles and no time tags:
+An extra output in the `osc` format sends plain OSC 1.0 messages, one per UDP datagram (or, when its entry sets
+`bundle`, in OSC 1.0 bundles: time tag 1, "immediately", the messages in the order below, at most 1472 bytes a bundle,
+so one set can take two bundles; never nested; with `max_rate`, some samples' sets are skipped):
 VRChat's own eye tracking input, for apps that read it (a gaze tool, say), and VRCFT's v2 avatar parameters, for apps
 that read those names. Each eye sample sends one set, in this order:
 

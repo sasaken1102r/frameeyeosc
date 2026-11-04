@@ -16,7 +16,11 @@ namespace extras {
 namespace {
 
 /** The keys an entry may have (frameeyeosc's EXTRA_KEYS): any other one is a newer version's. */
-constexpr const char* kKeys[5] = {"name", "enabled", "format", "host", "port"};
+constexpr const char* kKeys[7] = {"name", "enabled", "format", "host", "port", "bundle", "max_rate"};
+/** The keys only the osc format takes (bundle: OSC bundles; max_rate: samples a second); set only in config.json. */
+constexpr const char* kOscOnlyKeys[2] = {"bundle", "max_rate"};
+/** The highest max_rate (frameeyeosc's MAX_EXTRA_RATE). */
+constexpr double kMaxRate = 1000.0;
 /** A name is only shown: printable ASCII, at most this many characters (frameeyeosc's MAX_NAME_CHARS). */
 constexpr size_t kMaxNameChars = 16;
 constexpr const char* kListKey = "extra_outputs";
@@ -195,6 +199,15 @@ Entry readEntry(const JsonValue& item, int index) {
     }
     if (entry.problem != Problem::None) return entry;
     if (const JsonValue* v = item.get("enabled"); v != nullptr && !v->isBool()) entry.problem = Problem::Invalid;
+    const JsonValue* bundle = item.get("bundle");
+    if (bundle != nullptr && !bundle->isBool()) entry.problem = Problem::Invalid;
+    const JsonValue* rate = item.get("max_rate");
+    const bool rateSet = rate != nullptr && !rate->isNull();
+    if (rateSet && !(rate->isNumber() && rate->number >= 1 && rate->number <= kMaxRate)) entry.problem = Problem::Invalid;
+    // (feo1 is one datagram a sample already)
+    if (format->text != kOsc && ((bundle != nullptr && bundle->isBool() && bundle->boolean) || rateSet)) {
+        entry.problem = Problem::Invalid;
+    }
     const JsonValue* host = item.get("host");
     if (host == nullptr || !host->isString() || !hostOk(host->text)) entry.problem = Problem::Invalid;
     if (entry.port == 0 || nameBad) entry.problem = Problem::Invalid;
@@ -408,6 +421,16 @@ bool applyDraft(JsonValue& root, const Draft& draft, std::string& error) {
     entry->set("format", JsonValue::makeString(draft.format));
     entry->set("host", JsonValue::makeString(draftHost(draft)));
     entry->set("port", JsonValue::makeNumber(draft.port, true));
+    // Changed to feo1: the osc-only keys would make the entry unusable, so they go
+    if (draft.format != kOsc) {
+        auto& members = entry->members;
+        members.erase(std::remove_if(members.begin(), members.end(),
+                                     [](const auto& member) {
+                                         return std::any_of(std::begin(kOscOnlyKeys), std::end(kOscOnlyKeys),
+                                                            [&member](const char* key) { return member.first == key; });
+                                     }),
+                      members.end());
+    }
     return true;
 }
 

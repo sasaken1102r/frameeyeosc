@@ -1600,6 +1600,21 @@ void testExtrasCoreEdges() {
     CHECK(problem(feo("a b", "11113")) == Problem::Invalid);
     CHECK(problem(feo("ブリッジ", "11113")) == Problem::None);
     CHECK(problem(feo("", "11113")) == Problem::Invalid);
+    // bundle and max_rate: osc only (off they are fine on feo1 too), a bool and 1-1000 or null
+    const auto osc = [](const std::string& more) {
+        return "{\"format\": \"osc\", \"host\": \"127.0.0.1\", \"port\": 9000" + more + "}";
+    };
+    CHECK(problem(osc(", \"bundle\": true, \"max_rate\": 45")) == Problem::None);
+    CHECK(problem(osc(", \"bundle\": false, \"max_rate\": null")) == Problem::None);
+    CHECK(problem(osc(", \"max_rate\": 22.5")) == Problem::None && problem(osc(", \"max_rate\": 1000")) == Problem::None);
+    CHECK(problem(osc(", \"bundle\": 1")) == Problem::Invalid);
+    CHECK(problem(osc(", \"max_rate\": 0")) == Problem::Invalid);
+    CHECK(problem(osc(", \"max_rate\": 1001")) == Problem::Invalid);
+    CHECK(problem(osc(", \"max_rate\": \"45\"")) == Problem::Invalid);
+    CHECK(problem("{\"format\": \"feo1\", \"host\": \"x\", \"port\": 1, \"bundle\": true}") == Problem::Invalid);
+    CHECK(problem("{\"format\": \"feo1\", \"host\": \"x\", \"port\": 1, \"max_rate\": 45}") == Problem::Invalid);
+    CHECK(problem("{\"format\": \"feo1\", \"host\": \"x\", \"port\": 1, \"bundle\": false, \"max_rate\": null}") ==
+          Problem::None);
 }
 
 /** The address kinds, as frameeyeosc's dest.rs sorts them, and what the host step says. */
@@ -1766,6 +1781,25 @@ void testExtrasWrite() {
     CHECK(!extras::applyDraft(odd, feo, error) && writeJson(odd) == oddText);
     // Not finished (no format): nothing
     CHECK(!extras::applyDraft(fresh, extras::newDraft(1), error));
+    // bundle and max_rate stay through a change that keeps osc, and go with a change to feo1
+    JsonValue bundled = rootOf(R"j({"extra_outputs": [{"format": "osc", "host": "127.0.0.1", "port": 9000,
+                                                       "bundle": true, "max_rate": 45}]})j");
+    const extras::List bundledList = extras::readList(bundled.get(key::kExtraOutputs));
+    CHECK(bundledList.entries.size() == 1 && bundledList.entries[0].problem == extras::Problem::None);
+    if (bundledList.entries.size() != 1) return;
+    extras::Draft keep = extras::draftOf(bundledList.entries[0], entryText(bundled, 0));
+    keep.port = 9001;
+    CHECK(extras::applyDraft(bundled, keep, error));
+    CHECK(entryText(bundled, 0) == writeJson(rootOf(R"j({"format": "osc", "host": "127.0.0.1", "port": 9001,
+                                                         "bundle": true, "max_rate": 45, "enabled": true})j")));
+    extras::Draft toFeo = extras::draftOf(extras::readList(bundled.get(key::kExtraOutputs)).entries[0],
+                                          entryText(bundled, 0));
+    extras::chooseFormat(toFeo, extras::kFeo1);
+    CHECK(extras::applyDraft(bundled, toFeo, error));
+    const extras::List feoList = extras::readList(bundled.get(key::kExtraOutputs));
+    CHECK(feoList.entries.size() == 1 && feoList.entries[0].problem == extras::Problem::None);
+    CHECK(entryText(bundled, 0).find("bundle") == std::string::npos);
+    CHECK(entryText(bundled, 0).find("max_rate") == std::string::npos);
 }
 
 /** A destination the draft repeats: the main output's, the pupils', another turned-on entry's. */

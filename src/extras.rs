@@ -186,7 +186,6 @@ impl Extra {
         true
     }
 }
-}
 
 /// Every extra output, in the order of extra_outputs.
 pub struct Extras {

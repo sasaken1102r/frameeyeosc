@@ -1,5 +1,5 @@
 //! The OSC 1.0 messages this sender sends: an address and float, int or bool arguments, or one blob (VRChat's Face
-//! Tracking input), no bundles. Encoded here
+//! Tracking input), each on its own or (an extra output's `bundle`) in bundles. Encoded here
 //! rather than with the rosc crate, which is only a dev-dependency now: the tests check every byte against it.
 //! (From PR #33 by cinnacappu.)
 
@@ -56,6 +56,30 @@ pub fn encode_blob(address: &str, blob: &[u8], packet: &mut Vec<u8>) {
     packet.resize((packet.len() + 3) & !3, 0);
 }
 
+/// The largest bundle `bundles` makes: what fits one Ethernet frame's UDP payload (1500 - 20 IPv4 - 8 UDP bytes), so a
+/// bundle is never split into IP fragments on the way.
+pub const MAX_BUNDLE: usize = 1472;
+
+/// Messages as OSC bundles of at most `max` bytes each, in order: as many messages to a bundle as fit, each bundle
+/// "#bundle", the time tag 1 ("immediately") and each message as its size (a big-endian i32) and its bytes. A message
+/// too big for a bundle of its own still gets one.
+pub fn bundles(messages: &[(String, Vec<Value>)], max: usize) -> Vec<Vec<u8>> {
+    const HEAD: [u8; 16] = *b"#bundle\0\0\0\0\0\0\0\0\x01";
+    let mut out: Vec<Vec<u8>> = Vec::new();
+    let mut message = Vec::new();
+    for (address, args) in messages {
+        encode(address, args, &mut message);
+        let fits = out.last().is_some_and(|bundle| bundle.len() + 4 + message.len() <= max);
+        if !fits {
+            out.push(HEAD.to_vec());
+        }
+        let bundle = out.last_mut().expect("just pushed");
+        bundle.extend_from_slice(&(message.len() as i32).to_be_bytes());
+        bundle.extend_from_slice(&message);
+    }
+    out
+}
+
 /// The NUL ending an OSC string and the NULs up to the next multiple of four bytes (one to four of them).
 fn pad(packet: &mut Vec<u8>) {
     packet.resize((packet.len() + 4) & !3, 0);
@@ -92,6 +116,37 @@ pub mod tests {
             args: args.iter().copied().map(to_rosc).collect(),
         };
         encoder::encode(&OscPacket::Message(message)).unwrap()
+    }
+
+    #[test]
+    fn bundles_decode_as_rosc_bundles_in_order_and_stay_under_the_limit() {
+        let messages: Vec<(String, Vec<Value>)> = (0..30)
+            .map(|n| (format!("/avatar/parameters/FT/v2/Name{}", "x".repeat(n % 7)), vec![Value::Float(n as f32)]))
+            .collect();
+        for max in [MAX_BUNDLE, 200, 1] {
+            let bundles = bundles(&messages, max);
+            let mut seen = Vec::new();
+            for bundle in &bundles {
+                // (a single message bigger than `max` still goes, alone)
+                assert!(bundle.len() <= max || bundle.len() <= 16 + 4 + 64, "{max}: {}", bundle.len());
+                let (rest, packet) = rosc::decoder::decode_udp(bundle).unwrap();
+                assert!(rest.is_empty());
+                let OscPacket::Bundle(bundle) = packet else { panic!("not a bundle") };
+                assert_eq!((bundle.timetag.seconds, bundle.timetag.fractional), (0, 1));
+                for content in bundle.content {
+                    let OscPacket::Message(message) = content else { panic!("nested bundle") };
+                    seen.push((message.addr, message.args.into_iter().map(from_rosc).collect::<Vec<_>>()));
+                }
+            }
+            assert_eq!(seen, messages, "{max}");
+            if max == MAX_BUNDLE {
+                assert_eq!(bundles.len(), 2);
+            }
+            if max == 1 {
+                assert_eq!(bundles.len(), messages.len());
+            }
+        }
+        assert!(bundles(&[], MAX_BUNDLE).is_empty());
     }
 
     #[test]

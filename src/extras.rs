@@ -4,11 +4,15 @@
 //! - `feo1`: the FrameEyeOSC packets of docs/protocol.md, byte for byte the ones the main output's FrameEyeOSC sends
 //!   (the same packet, built once per sample: one session and one sequence for every destination). Without eye data a
 //!   packet without TRACKING every FEO_IDLE_INTERVAL, as there.
-//! - `osc`: plain OSC messages (no bundles), the same set for every receiver whatever the main output's settings:
+//! - `osc`: plain OSC messages, one datagram each (or, with `bundle`, each sample's messages in OSC bundles of up to
+//!   osc::MAX_BUNDLE bytes: one or two datagrams a sample), the same set for every receiver whatever the main output's
+//!   settings:
 //!   VRChat's own eye tracking input (/tracking/eye/CenterVec from the combined gaze as sent, always CenterVec, also
 //!   with independent_eyes, and EyesClosedAmount), then the main VRChat output's VRCFT v2 float parameters for the
 //!   same sample (see osc_set) under the fixed prefix /FT. When the eye data stops, one set for relaxed open eyes
 //!   looking ahead (with the squint and brows that went out set back to 0) and then nothing: silence is its "no data".
+//!
+//! An osc extra's `max_rate` sends at most that many samples a second and skips the rest (its final set always goes).
 //!
 //! Each extra goes through the address check (dest) like the main output, and one whose address and port are the main
 //! output's, the pupils' (LiveLink mode) or an earlier extra's is refused. Pausing (sending false) pauses them too.
@@ -24,7 +28,7 @@ use crate::{
 };
 use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const CENTER_VEC: &str = "/tracking/eye/CenterVec";
 const EYES_CLOSED: &str = "/tracking/eye/EyesClosedAmount";
@@ -126,6 +130,8 @@ struct Extra {
     sent: VecDeque<Instant>,
     // osc: what its receiver holds from it.
     held: Held,
+    // osc with max_rate: when its next sample is due.
+    next_due: Option<Instant>,
 }
 
 impl Extra {
@@ -143,13 +149,43 @@ impl Extra {
         match stream.format {
             ExtraFormat::Feo1 => self.output.send_datagram(feo),
             ExtraFormat::Osc => {
-                for (addr, args) in osc_final(&mut self.held) {
-                    // (never an error: see Output::send)
-                    let _ = self.output.send(&addr, &args);
-                }
+                let messages = osc_final(&mut self.held);
+                self.send_osc(&messages);
             }
         }
     }
+
+    /// osc messages, one datagram each or (`bundle`) in bundles.
+    fn send_osc(&mut self, messages: &[(String, Vec<OscType>)]) {
+        if self.config.bundle {
+            for bundle in crate::osc::bundles(messages, crate::osc::MAX_BUNDLE) {
+                self.output.send_datagram(&bundle);
+            }
+        } else {
+            for (addr, args) in messages {
+                // (never an error: see Output::send)
+                let _ = self.output.send(addr, args);
+            }
+        }
+    }
+
+    /// Whether the sample at `now` goes out under max_rate (always without one), and if so when the next is due.
+    fn due(&mut self, now: Instant) -> bool {
+        let Some(rate) = self.config.max_rate else {
+            return true;
+        };
+        let period = Duration::from_secs_f32(1.0 / rate);
+        // A quarter period early still counts, so 90 samples a second capped at 45 send every other one even with
+        // the samples' jitter
+        if self.next_due.is_some_and(|due| now + period / 4 < due) {
+            return false;
+        }
+        // Keep the cadence while on time; after a gap start again from now
+        let from = self.next_due.filter(|due| now < *due + period).unwrap_or(now);
+        self.next_due = Some(from + period);
+        true
+    }
+}
 }
 
 /// Every extra output, in the order of extra_outputs.
@@ -178,6 +214,8 @@ impl Extras {
             format: None,
             host: String::new(),
             port: 0,
+            bundle: false,
+            max_rate: None,
             error: None,
         };
         for index in 0..self.list.len().max(settings.extra_outputs.len()) {
@@ -204,6 +242,7 @@ impl Extras {
                     duplicate: None,
                     sent: VecDeque::new(),
                     held: Held::default(),
+                    next_due: None,
                 });
             }
             let extra = &mut self.list[index];
@@ -211,6 +250,7 @@ impl Extras {
             if extra.stream != new {
                 // (its old receiver got its final message, or had it already when the eye data stopped)
                 extra.held = Held::default();
+                extra.next_due = None;
             }
             extra.config = config.clone();
             extra.output.set_target(target(settings, config));
@@ -272,8 +312,11 @@ impl Extras {
                     None => continue,
                 },
                 ExtraFormat::Osc => {
-                    for (addr, args) in osc_sample(sample, &mut extra.held) {
-                        let _ = extra.output.send(&addr, &args);
+                    if extra.due(now) {
+                        let messages = osc_sample(sample, &mut extra.held);
+                        extra.send_osc(&messages);
+                    } else {
+                        continue;
                     }
                 }
             }
@@ -436,6 +479,42 @@ mod tests {
     }
 
     #[test]
+    fn max_rate_keeps_every_other_sample_of_90_at_45_with_jitter_and_restarts_after_a_gap() {
+        let config = ExtraOutput {
+            name: "x".into(),
+            enabled: true,
+            format: Some(ExtraFormat::Osc),
+            host: "127.0.0.1".into(),
+            port: 9000,
+            bundle: true,
+            max_rate: Some(45.0),
+            error: None,
+        };
+        let mut extra = Extra {
+            output: Output::new(Target::Fixed { host: "127.0.0.1".into(), port: 9000 }),
+            config,
+            stream: None,
+            duplicate: None,
+            sent: VecDeque::new(),
+            held: Held::default(),
+            next_due: None,
+        };
+        let start = Instant::now();
+        // 90 samples a second for 10 s, each up to 2 ms early or late
+        let jitter = [0.0, 1.5, -2.0, 0.5, 2.0, -1.0, -0.5, 1.0];
+        let times = (0..900).map(|n| start + Duration::from_secs_f64(1.0 + n as f64 / 90.0 + jitter[n % 8] / 1000.0));
+        let sent = times.clone().filter(|time| extra.due(*time)).count();
+        assert_eq!(sent, 450);
+        // After a second without samples the next one goes, then every other one again
+        let later = start + Duration::from_secs(12);
+        let after: Vec<bool> = (0..6).map(|n| extra.due(later + Duration::from_secs_f64(n as f64 / 90.0))).collect();
+        assert_eq!(after, [true, false, true, false, true, false]);
+        // Without max_rate every sample goes
+        extra.config.max_rate = None;
+        assert!(times.map(|time| extra.due(time)).all(|due| due));
+    }
+
+    #[test]
     fn main_follows_the_main_outputs_host_and_auto_the_steam_link_pc() {
         let extra = |host: &str| ExtraOutput {
             name: "x".into(),
@@ -443,6 +522,8 @@ mod tests {
             format: Some(ExtraFormat::Osc),
             host: host.into(),
             port: 9015,
+            bundle: false,
+            max_rate: None,
             error: None,
         };
         let fixed = Settings { host: "192.168.0.10".into(), ..Settings::default() };

@@ -60,7 +60,9 @@ pub const MAX_EXTRAS: usize = 3;
 const MAX_NAME_CHARS: usize = 16;
 // The keys an extra_outputs entry may have. Any other key makes the entry unusable: it may be a later version's
 // restriction on what goes out, which this one would otherwise drop and so send more than the user chose.
-const EXTRA_KEYS: [&str; 5] = ["name", "enabled", "format", "host", "port"];
+const EXTRA_KEYS: [&str; 7] = ["name", "enabled", "format", "host", "port", "bundle", "max_rate"];
+/// The highest max_rate an extra output takes (samples a second); the eye tracker gives about 90.
+pub const MAX_EXTRA_RATE: f64 = 1000.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
@@ -155,6 +157,10 @@ pub struct ExtraOutput {
     /// or a host name.
     pub host: String,
     pub port: u16,
+    /// osc only: each sample's messages as OSC bundles (as few datagrams as fit) instead of one datagram each.
+    pub bundle: bool,
+    /// osc only: at most this many samples a second (the rest are skipped); None sends every sample.
+    pub max_rate: Option<f32>,
     /// Why this entry can't be used, if so.
     pub error: Option<String>,
 }
@@ -173,6 +179,8 @@ impl ExtraOutput {
             format: None,
             host: String::new(),
             port: 0,
+            bundle: false,
+            max_rate: None,
             error: Some(why),
         }
     }
@@ -227,12 +235,30 @@ fn parse_extra(index: usize, entry: &serde_json::Value) -> ExtraOutput {
             Some(Value::Bool(value)) => *value,
             _ => return Err("enabled must be true or false".into()),
         };
+        let bundle = match entry.get("bundle") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            _ => return Err("bundle must be true or false".into()),
+        };
+        let max_rate = match entry.get("max_rate") {
+            None | Some(Value::Null) => None,
+            Some(value) => match value.as_f64() {
+                Some(rate) if (1.0..=MAX_EXTRA_RATE).contains(&rate) => Some(rate as f32),
+                _ => return Err(format!("max_rate must be between 1 and {MAX_EXTRA_RATE} (samples a second) or null")),
+            },
+        };
+        // (feo1 is one datagram a sample already, and its receivers watch its sequence)
+        if format != ExtraFormat::Osc && (bundle || max_rate.is_some()) {
+            return Err("bundle and max_rate are only for the osc format".into());
+        }
         Ok(ExtraOutput {
             name: name.clone()?,
             enabled,
             format: Some(format),
             host,
             port,
+            bundle,
+            max_rate,
             error: None,
         })
     };
@@ -272,6 +298,8 @@ pub fn parse_extra_arg(index: usize, text: &str) -> Result<ExtraOutput, String> 
         format: Some(format),
         host,
         port,
+        bundle: false,
+        max_rate: None,
         error: None,
     })
 }
@@ -1801,6 +1829,8 @@ mod tests {
                 format: Some(ExtraFormat::Feo1),
                 host: "192.168.0.10".into(),
                 port: 11113,
+                bundle: false,
+                max_rate: None,
                 error: None,
             }
         );
@@ -1836,6 +1866,12 @@ mod tests {
             (r#"{"name": "seventeen chars..", "format": "feo1", "host": "10.0.0.2", "port": 11113}"#, "name must be"),
             (r#"{"name": 5, "format": "feo1", "host": "10.0.0.2", "port": 11113}"#, "name must be"),
             (r#"["feo1", "10.0.0.2", 11113]"#, "not an object"),
+            (r#"{"format": "osc", "host": "10.0.0.2", "port": 9015, "bundle": 1}"#, "bundle must be"),
+            (r#"{"format": "osc", "host": "10.0.0.2", "port": 9015, "max_rate": 0}"#, "max_rate must be"),
+            (r#"{"format": "osc", "host": "10.0.0.2", "port": 9015, "max_rate": 1001}"#, "max_rate must be"),
+            (r#"{"format": "osc", "host": "10.0.0.2", "port": 9015, "max_rate": "45"}"#, "max_rate must be"),
+            (r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113, "bundle": true}"#, "bundle and max_rate"),
+            (r#"{"format": "feo1", "host": "10.0.0.2", "port": 11113, "max_rate": 45}"#, "bundle and max_rate"),
         ] {
             let (extras, problems) = extras_of(&format!(r#"{{"lid_sync": 0.3, "extra_outputs": [{entry}, {good}]}}"#));
             let error = extras[0].error.as_deref().unwrap_or_default();
@@ -1855,6 +1891,26 @@ mod tests {
         let sixteen = r#"{"name": "sixteen chars...", "format": "feo1", "host": "x", "port": 1}"#;
         let (extras, _) = extras_of(&format!(r#"{{"extra_outputs": [{sixteen}]}}"#));
         assert_eq!(extras[0].error, None);
+    }
+
+    #[test]
+    fn an_osc_extra_can_bundle_and_cap_its_rate() {
+        let (extras, problems) = extras_of(
+            r#"{"extra_outputs": [
+                {"format": "osc", "host": "127.0.0.1", "port": 9000, "bundle": true, "max_rate": 45},
+                {"format": "osc", "host": "127.0.0.1", "port": 9001, "bundle": false, "max_rate": null},
+                {"format": "osc", "host": "127.0.0.1", "port": 9002, "max_rate": 22.5}
+            ]}"#,
+        );
+        assert_eq!(problems, None);
+        assert_eq!((extras[0].bundle, extras[0].max_rate), (true, Some(45.0)));
+        assert_eq!((extras[1].bundle, extras[1].max_rate), (false, None));
+        assert_eq!((extras[2].bundle, extras[2].max_rate), (false, Some(22.5)));
+        assert!(extras.iter().all(|extra| extra.usable() == Some(ExtraFormat::Osc)));
+        // feo1 with them off is fine
+        let feo1 = r#"{"format": "feo1", "host": "127.0.0.1", "port": 11113, "bundle": false, "max_rate": null}"#;
+        let (extras, problems) = extras_of(&format!(r#"{{"extra_outputs": [{feo1}]}}"#));
+        assert_eq!((problems, extras[0].usable()), (None, Some(ExtraFormat::Feo1)));
     }
 
     #[test]

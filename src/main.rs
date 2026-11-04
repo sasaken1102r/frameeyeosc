@@ -11285,6 +11285,8 @@ mod tests {
             format: Some(format),
             host: host.into(),
             port,
+            bundle: false,
+            max_rate: None,
             error: None,
         }
     }
@@ -11589,6 +11591,69 @@ mod tests {
         }
     }
 
+    /// Each OSC message in `datagram`, a message or a bundle of messages.
+    fn decode_osc_or_bundle(datagram: &[u8]) -> Vec<(String, Vec<OscType>)> {
+        let (_, packet) = rosc::decoder::decode_udp(datagram).unwrap();
+        match packet {
+            OscPacket::Message(message) => vec![(message.addr, message.args.into_iter().map(from_rosc).collect())],
+            OscPacket::Bundle(bundle) => {
+                assert_eq!((bundle.timetag.seconds, bundle.timetag.fractional), (0, 1));
+                let messages = bundle.content.into_iter().map(|content| match content {
+                    OscPacket::Message(message) => (message.addr, message.args.into_iter().map(from_rosc).collect()),
+                    OscPacket::Bundle(_) => panic!("nested bundle"),
+                });
+                messages.collect()
+            }
+        }
+    }
+
+    #[test]
+    fn a_bundled_osc_extra_sends_the_same_messages_in_one_datagram_a_sample_and_max_rate_skips_samples() {
+        let (_main, main_port) = listener();
+        let (plain, plain_port) = listener();
+        let (bundled, bundled_port) = listener();
+        let (capped, capped_port) = listener();
+        let settings = Settings {
+            host: "127.0.0.1".into(),
+            port: Some(main_port),
+            brow_from_widen: true,
+            lid_calibration: false,
+            extra_outputs: vec![
+                extra(config::ExtraFormat::Osc, "127.0.0.1", plain_port),
+                config::ExtraOutput { bundle: true, ..extra(config::ExtraFormat::Osc, "127.0.0.1", bundled_port) },
+                // (1 a second: of samples sent at once only the first goes)
+                config::ExtraOutput {
+                    bundle: true,
+                    max_rate: Some(1.0),
+                    ..extra(config::ExtraFormat::Osc, "127.0.0.1", capped_port)
+                },
+            ],
+            ..settings()
+        };
+        let mut bridge = bridge_with(&settings);
+        let mut capped_messages = Vec::new();
+        for index in 0..10 {
+            bridge.on_sample(reading(index, [0.3, 0.2], [0.8, 0.7])).unwrap();
+            let at_plain: Vec<_> = drain(&plain).iter().map(|d| decode_osc(d)).collect();
+            let at_bundled = drain(&bundled);
+            // The same messages in the same order, in a single datagram
+            assert_eq!(at_bundled.len(), 1, "{index}");
+            assert!(at_bundled[0].starts_with(b"#bundle\0") && at_bundled[0].len() <= osc::MAX_BUNDLE);
+            assert_eq!(decode_osc_or_bundle(&at_bundled[0]), at_plain, "{index}");
+            assert_eq!(at_plain.len(), 18);
+            capped_messages.extend(drain(&capped).iter().flat_map(|d| decode_osc_or_bundle(d)));
+        }
+        assert_eq!(capped_messages.len(), 18);
+        assert_eq!(bridge.extras.status(Instant::now())[2].rate, 1.0);
+        // Lost: the final set, bundled too, and to the capped one at once
+        bridge.on_lost("test").unwrap();
+        let at_plain: Vec<_> = drain(&plain).iter().map(|d| decode_osc(d)).collect();
+        let at_bundled: Vec<_> = drain(&bundled).iter().flat_map(|d| decode_osc_or_bundle(d)).collect();
+        let at_capped: Vec<_> = drain(&capped).iter().flat_map(|d| decode_osc_or_bundle(d)).collect();
+        assert_eq!(at_plain[0].0, "/tracking/eye/CenterVec");
+        assert_eq!((&at_bundled, &at_capped), (&at_plain, &at_plain));
+    }
+
     #[test]
     fn an_extra_on_the_main_outputs_address_or_an_earlier_extras_is_refused() {
         let (main, main_port) = listener();
@@ -11694,6 +11759,8 @@ mod tests {
                     format: None,
                     host: String::new(),
                     port: 0,
+                    bundle: false,
+                    max_rate: None,
                     error: Some("unknown key \"pupils\" (written by a newer frameeyeosc?)".into()),
                 },
                 extra(config::ExtraFormat::Osc, "127.0.0.1", 9015),

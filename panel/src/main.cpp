@@ -2058,13 +2058,13 @@ void fakeExtras(PanelModel& m, const std::string& state) {
     std::vector<Fake> fakes;
     const bool lanOff = state == "mixed";
     if (state == "one" || state == "old" || state == "main-refused") {
-        fakes.push_back({"", "feo1", "main", 11113, true, "192.168.0.60:11113", "lan", "", "", ""});
+        fakes.push_back({"", "feo1", "main", 11113, true, "192.0.2.60:11113", "lan", "", "", ""});
     }
     if (state == "old") {
-        fakes.push_back({"Gaze", "osc", "192.168.0.61", 9015, false, "", "", "", "", ""});
+        fakes.push_back({"Gaze", "osc", "192.0.2.61", 9015, false, "", "", "", "", ""});
     }
     if (state == "mixed" || state == "refused") {
-        fakes.push_back({"", "feo1", "main", 11113, true, "192.168.0.60:11113", "lan", "", "", ""});
+        fakes.push_back({"", "feo1", "main", 11113, true, "192.0.2.60:11113", "lan", "", "", ""});
         fakes.push_back({"Gaze", "osc", "100.101.5.7", 9015, true, "100.101.5.7:9015", "vpn", "", "", ""});
         fakes.push_back({"", "feo1", "203.0.113.5", 11113, true, lanOff ? "203.0.113.5:11113" : "",
                          lanOff ? "public" : "", lanOff ? "" : "public address", "", ""});
@@ -2073,7 +2073,7 @@ void fakeExtras(PanelModel& m, const std::string& state) {
         fakes.push_back({"", "feo1", "main", 9000, true, "", "", "same as main", "", ""});
         fakes.push_back({"Bridge", "feo1", "bridge-pc.local", 11113, true, "", "", "",
                          "could not resolve: failed to lookup address information: Name or service not known", ""});
-        fakes.push_back({"", "feo1", "192.168.0.61", 11113, true, "", "", "", "", "pupils"});
+        fakes.push_back({"", "feo1", "192.0.2.61", 11113, true, "", "", "", "", "pupils"});
     }
     if (lanOff) root.set(key::kLanOnly, JsonValue::makeBool(false));
     s.lanOnly = !lanOff;
@@ -2192,7 +2192,7 @@ PanelModel fakeModel(const Options& options) {
     if (options.fakeModule) root.set(key::kOutput, JsonValue::makeString(kOutputModule));
     if (options.fakePupilsOff) root.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
     if (options.fakePupilBits >= 0) root.set(key::kPupilBits, JsonValue::makeNumber(options.fakePupilBits, true));
-    if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
+    if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.0.2.60"));
     if (!options.fakeWiden.empty()) root.set(key::kLidWiden, JsonValue::makeString(options.fakeWiden));
     if (options.fakeNoWiden) root.set(key::kWiden, JsonValue::makeBool(false));
     if (options.fakeBrows) root.set(key::kBrowFromWiden, JsonValue::makeBool(true));
@@ -2318,7 +2318,7 @@ PanelModel fakeModel(const Options& options) {
                                         : kOutputVrchat;
         s.targetMode = options.fakeFixed ? "fixed" : "auto";
         if (!options.fakeTargetNull) {
-            s.target = std::string("192.168.0.60:") + (options.fakeLivelink ? "11111"
+            s.target = std::string("192.0.2.60:") + (options.fakeLivelink ? "11111"
                                                        : options.fakeModule ? "11112"
                                                                             : (options.fakeCustom ? "9001" : "9000"));
         }
@@ -2363,13 +2363,13 @@ PanelModel fakeModel(const Options& options) {
             s.sourceError = "unsupported eye shared-memory version 6; supported: 4, 5";
         }
         if (options.fakeCoreError) {
-            s.lastError = "Can't send OSC to 192.168.0.60:9000 yet (Network is unreachable (os error 101)); retrying "
+            s.lastError = "Can't send OSC to 192.0.2.60:9000 yet (Network is unreachable (os error 101)); retrying "
                           "every 5 s";
             s.lastErrorTime = now - 120;
         }
         s.dominantEye = options.fakeDominantEye;
         // LiveLink: the pupils go straight to VRChat on the same PC (while the setting is on)
-        if (options.fakeLivelink && m.config.flag(key::kPupilsToVrchat)) s.pupilTarget = "192.168.0.60:9000";
+        if (options.fakeLivelink && m.config.flag(key::kPupilsToVrchat)) s.pupilTarget = "192.0.2.60:9000";
         s.opennessSaturated = options.fakeOpennessSaturated;
         if (!options.fakeCamera.empty()) {
             const std::string& camera = options.fakeCamera;

@@ -385,16 +385,18 @@ FrameEyeOSC は frameeyeosc 専用の VRCFaceTracking モジュールです（�
 | `format` | （必須） | `"feo1"` か `"osc"`（下） |
 | `host` | （必須） | `"main"` は本体の送り先と同じ PC（本体が `"auto"` なら Steam Link の PC）、`"auto"` は Steam Link の PC。それ以外は IP アドレスかホスト名（ポートは付けない） |
 | `port` | （必須） | 1〜65535 |
+| `bundle` | `false` | `osc` のときだけ: 1 サンプルぶんのメッセージを、1 つずつ別のパケットにせず OSC バンドルにまとめます（タイムタグは「すぐ」、1 つ 1472 バイトまでなので、1 サンプルは UDP パケット 1〜2 つ）。Frame の中で動かす Windows 版 VRChat のように、パケット 1 つごとの処理が重い受け手向けです |
+| `max_rate` | `null` | `osc` のときだけ: 1 秒に送るサンプルの数の上限（1〜1000。目のデータは 1 秒に約 90）。超えたぶんは飛ばします。`null` は全部送ります。目のデータが止まったときの最後のメッセージは必ず送ります |
 
 形式は 2 つです:
 
 - `feo1`: FrameEyeOSC のパケット（[docs/protocol.md](docs/protocol.md)）。本体が何を送っていても、FrameEyeOSC モードが送るのと 1 バイトも違わないものです。視線とまぶた、目のカメラを使っていれば細めと瞳孔の大きさ、`brow_from_widen` なら眉も入ります。パケットは 1 回だけ作って、この形式の送り先すべて（と FrameEyeOSC モードの本体）に、同じ通し番号で送ります。目のデータがない間は、FrameEyeOSC モードと同じく「追っていない」を 1 秒に 2 回送ります
-- `osc`: ふつうの OSC メッセージ（UDP パケット 1 つに 1 つ、バンドルなし）。VRChat の目の入力や VRCFaceTracking のパラメーター名を読むアプリ向けです。サンプルごとに、まず VRChat の目の入力として `/tracking/eye/CenterVec`（両目まとめた視線を向きにしたもの。「左右の目を別々に動かす」のときも同じ）と `/tracking/eye/EyesClosedAmount`（両目のまぶたをまとめた 1 つの値。0 開き、1 閉じ）。続けて VRCFaceTracking の v2 のアバターパラメーターを、VRChat モードが送るのと同じ値で、`prefix` の設定にかかわらずいつも `/avatar/parameters/FT/v2/` の下に送ります: `EyeLeftX`/`Y`、`EyeRightX`/`Y`、`EyeLidLeft`/`Right`、`EyeX`/`Y` はいつも、細めと瞳孔（目のカメラを使っているとき）と眉（`brow_from_widen` のとき）はあるときだけ。`EyeTrackingActive`、瞳孔のビット、Steam Link の名前、フェイストラッキングのデータは送りません。目のデータが止まったら、普通に開いて正面を見た目を 1 回送り（細めと眉は 0 に戻します）、データが戻るまで何も送りません。アドレスの一覧は [docs/protocol.md](docs/protocol.md#other-formats-osc) にあります。あとのバージョンでアドレスが増えることはありますが、今あるものは変えません
+- `osc`: ふつうの OSC メッセージ（UDP パケット 1 つに 1 つ。`bundle` ならバンドルにまとめます）。VRChat の目の入力や VRCFaceTracking のパラメーター名を読むアプリ向けです。サンプルごとに、まず VRChat の目の入力として `/tracking/eye/CenterVec`（両目まとめた視線を向きにしたもの。「左右の目を別々に動かす」のときも同じ）と `/tracking/eye/EyesClosedAmount`（両目のまぶたをまとめた 1 つの値。0 開き、1 閉じ）。続けて VRCFaceTracking の v2 のアバターパラメーターを、VRChat モードが送るのと同じ値で、`prefix` の設定にかかわらずいつも `/avatar/parameters/FT/v2/` の下に送ります: `EyeLeftX`/`Y`、`EyeRightX`/`Y`、`EyeLidLeft`/`Right`、`EyeX`/`Y` はいつも、細めと瞳孔（目のカメラを使っているとき）と眉（`brow_from_widen` のとき）はあるときだけ。`EyeTrackingActive`、瞳孔のビット、Steam Link の名前、フェイストラッキングのデータは送りません。目のデータが止まったら、普通に開いて正面を見た目を 1 回送り（細めと眉は 0 に戻します）、データが戻るまで何も送りません。アドレスの一覧は [docs/protocol.md](docs/protocol.md#other-formats-osc) にあります。あとのバージョンでアドレスが増えることはありますが、今あるものは変えません
 
 視線は本体が送るのと同じ値です（目合わせと視線の倍率のあと、1.0 = 45°）。
 
 - 使うのは 3 つまでです。4 つ目から先は送りません
-- 書き間違いや知らない形式、この frameeyeosc の知らないキー（新しい frameeyeosc が書いたものなど）がある項目は送らず、どの項目かをエラーに出します（`extra_outputs entry 2: …`。パネルと状態ファイルに出ます）。ファイルのほかの部分はそのまま使います。知らないキーで項目を止めるのはわざとです: 新しいキーは送るものを減らす設定かもしれず、それを読み飛ばした古い frameeyeosc は、選んだより多くを送ってしまいます
+- 書き間違いや知らない形式、この frameeyeosc の知らないキー（新しい frameeyeosc が書いたものなど）がある項目は送らず、どの項目かをエラーに出します（`extra_outputs entry 2: …`。パネルと状態ファイルに出ます）。ファイルのほかの部分はそのまま使います。知らないキーで項目を止めるのはわざとです: 新しいキーは送るものを減らす設定かもしれず、それを読み飛ばした古い frameeyeosc は、選んだより多くを送ってしまいます。`feo1` の項目に `bundle` か `max_rate` を書いても止まります（`false` と `null` なら大丈夫）。パネルではこの 2 つは設定しません。パネルで項目を `feo1` に変えると消えます
 - 本体の送り先と同じ住所・ポートのものは送りません（"same as main"）。VRChat に直接送る瞳孔と同じもの（"same as the pupils"）、前の項目と同じもの（"duplicate"）も送りません
 - `lan_only` は本体と同じくそれぞれに効きます（[設定](#設定)）
 - 一時停止（`sending`）すると、これも止まります。目のデータが来ている間に、オフにしたり送り先や形式を変えたりすると、前の送り先に最後のメッセージ（「追っていない」か、正面を見た目）を先に送ります

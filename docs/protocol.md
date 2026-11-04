@@ -271,7 +271,8 @@ that read those names. Each eye sample sends one set, in this order:
   after its own timeout). A frameeyeosc that is killed sends nothing more.
 - **Contract:** an address in this set never changes its meaning, type or units. frameeyeosc may add addresses later;
   receivers MUST ignore addresses they don't know, and MUST NOT count on an address that the table sends only with
-  its data. Conventions as in "Conventions".
+  its data. Receivers MUST accept both single messages and OSC bundles (the user chooses per entry with `bundle`).
+  Conventions as in "Conventions".
 - An `osc` destination pointed at VRChat itself moves the avatar like the main VRChat output (the VRCFT parameters),
   and VRChat's own eyes too (`/tracking/eye`). Don't point it at a VRChat that already gets the eyes from the main
   output, directly or through VRCFaceTracking: two senders for the same parameters fight. frameeyeosc refuses only

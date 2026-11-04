@@ -526,9 +526,9 @@ If it differs, don't type the password (close Konsole) and reinstall frameeyeosc
 
 0.10 took out two things earlier releases have: the ETVR mode (sending to VRCFaceTracking's ETVR Tracking Module; the LiveLink and FrameEyeOSC modes carry widened eyes too) and the eyes as up to 0.7.5 ("v1", `eye_behavior` 1, which 0.7.6 to 0.9.x could switch to on the panel's Advanced › Version page). Settings from before keep working: `"output": "etvr"` (or `--output etvr`) sends to VRChat instead, and a `port` of 8889 set with it in the settings file goes back to VRChat's 9000 (a port given on the command line stays as given); `eye_behavior` (or `--eye-behavior`) is still read and does nothing. frameeyeosc logs one line for `"etvr"` and for an `eye_behavior` of 1, and the panel writes the new values into the settings file. When you move from ETVR to the LiveLink or FrameEyeOSC mode, turn off the ETVR Tracking Module in VRCFaceTracking.
 
-If you need either of them, install the last 0.9 release again (0.9.0 below; if Releases has a newer 0.9.x, use its number instead):
+If you need either of them, install the last 0.9 release again (0.9.1 below; if Releases has a newer 0.9.x, use its number instead):
 
-1. From GitHub's [Releases](https://github.com/sasaken1102r/frameeyeosc/releases/tag/v0.9.0), download that release's `frameeyeosc-0.9.0-steamframe-aarch64.tar.gz` and `SHA256SUMS` onto the Frame
+1. From GitHub's [Releases](https://github.com/sasaken1102r/frameeyeosc/releases/tag/v0.9.1), download that release's `frameeyeosc-0.9.1-steamframe-aarch64.tar.gz` and `SHA256SUMS` onto the Frame
 2. In Konsole, keep a copy of your settings first
    ```sh
    cp -a ~/.config/frameeyeosc ~/frameeyeosc-config-0.10
@@ -537,7 +537,7 @@ If you need either of them, install the last 0.9 release again (0.9.0 below; if 
 3. Unpack and install (the tar.gz holds a `frameeyeosc` folder)
    ```sh
    sha256sum -c SHA256SUMS
-   tar xzf frameeyeosc-0.9.0-steamframe-aarch64.tar.gz
+   tar xzf frameeyeosc-0.9.1-steamframe-aarch64.tar.gz
    cd frameeyeosc && ./install.sh --with-panel
    ```
 4. The 0.10 panel has already written the new values into the settings file, so pick ETVR, or v1 (Advanced › Version), again on that release's panel

@@ -526,9 +526,9 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 
 0.10 では、前の版にあった 2 つをなくしました: ETVR モード（VRCFaceTracking の ETVR Tracking Module に送るモード。見開きは LiveLink と FrameEyeOSC のモードでも伝わります）と、0.7.5 までの目の動かし方（v1。`eye_behavior` を 1。0.7.6〜0.9.x ではパネルの「詳細」›「バージョン」で切り替えられました）。今までの設定はそのまま使えます: `"output": "etvr"`（や `--output etvr`）は VRChat に送り、設定ファイルで一緒に `port` を 8889 にしていたら VRChat の 9000 番に戻します（コマンドラインで指定したポートはそのまま）。`eye_behavior`（や `--eye-behavior`）は読みますが何もしません。`"etvr"` と `eye_behavior` 1 のときは frameeyeosc がログに 1 行書き、パネルが設定ファイルを新しい値に書き直します。ETVR から LiveLink か FrameEyeOSC のモードに移るときは、VRCFaceTracking の ETVR Tracking Module を止めてください。
 
-どちらかがどうしても要るときは、0.9 の最後の版を入れ直してください（下は 0.9.0。Releases にもっと新しい 0.9.x があれば、その番号に読み替えてください）:
+どちらかがどうしても要るときは、0.9 の最後の版を入れ直してください（下は 0.9.1。Releases にもっと新しい 0.9.x があれば、その番号に読み替えてください）:
 
-1. GitHub の [Releases](https://github.com/sasaken1102r/frameeyeosc/releases/tag/v0.9.0) から、戻したい版の `frameeyeosc-0.9.0-steamframe-aarch64.tar.gz` と `SHA256SUMS` を Frame にダウンロードする
+1. GitHub の [Releases](https://github.com/sasaken1102r/frameeyeosc/releases/tag/v0.9.1) から、戻したい版の `frameeyeosc-0.9.1-steamframe-aarch64.tar.gz` と `SHA256SUMS` を Frame にダウンロードする
 2. Konsole で、入れる前の設定を残しておく
    ```sh
    cp -a ~/.config/frameeyeosc ~/frameeyeosc-config-0.10
@@ -537,7 +537,7 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 3. 展開して入れる（tar.gz の中は `frameeyeosc` フォルダーです）
    ```sh
    sha256sum -c SHA256SUMS
-   tar xzf frameeyeosc-0.9.0-steamframe-aarch64.tar.gz
+   tar xzf frameeyeosc-0.9.1-steamframe-aarch64.tar.gz
    cd frameeyeosc && ./install.sh --with-panel
    ```
 4. 0.10 のパネルが設定ファイルをもう新しい値に書き直しているので、戻した版のパネルで ETVR か v1（「詳細」›「バージョン」）を選び直す

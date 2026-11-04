@@ -1,4 +1,4 @@
-// Tests for checking a typed target PC address (host_entry.cpp), the eye fit's failure texts in both languages and
+// Tests for checking a typed target PC address and port (host_entry.cpp), the eye fit's failure texts in both languages and
 // how a fit ends in its record (fit_text.cpp), and that no text draws an arrow or symbol as a character (they are icon
 // markers, icons.h). Built with the panel as text-test; exits non-zero on failure.
 #include "fit_text.h"
@@ -67,6 +67,46 @@ void testHosts() {
     SAME(host_entry::keypadInput(text, 'a'), "192.168.1.2");
     SAME(host_entry::keypadInput("", host_entry::kBackspace), "");
     SAME(host_entry::keypadInput("255.255.255.255", '1'), "255.255.255.255");
+}
+
+/** The port's keypad: digits only, at most 5, no leading zero; OK only for 1-65535. */
+void testPorts() {
+    using host_entry::Keypad;
+    using host_entry::PortError;
+    using host_entry::checkPort;
+    using host_entry::keypadInput;
+    // Typed key by key, as from the main port's 9000
+    std::string text = "9000";
+    for (int i = 0; i < 4; ++i) text = keypadInput(text, host_entry::kBackspace, Keypad::Port);
+    SAME(text, "");
+    for (const char c : std::string("11112")) text = keypadInput(text, c, Keypad::Port);
+    SAME(text, "11112");
+    // Digits past 5 are left out; a dot or anything else isn't a port's key
+    SAME(keypadInput(text, '3', Keypad::Port), "11112");
+    SAME(keypadInput("1111", '.', Keypad::Port), "1111");
+    SAME(keypadInput("1111", 'a', Keypad::Port), "1111");
+    SAME(keypadInput("", host_entry::kBackspace, Keypad::Port), "");
+    SAME(keypadInput("11112", host_entry::kBackspace, Keypad::Port), "1111");
+    // A digit after a lone 0 takes its place (no "08000"); 0 stays a 0 until then
+    SAME(keypadInput("", '0', Keypad::Port), "0");
+    SAME(keypadInput("0", '8', Keypad::Port), "8");
+    SAME(keypadInput("0", '0', Keypad::Port), "0");
+    SAME(keypadInput("10", '0', Keypad::Port), "100");
+    // The address's keypad is as it was (the default)
+    SAME(keypadInput("192", '.'), "192.");
+    SAME(keypadInput("11112", '3'), "111123");
+
+    // 1-65535 only
+    int port = -1;
+    CHECK(checkPort("11112", port) == PortError::None && port == 11112);
+    CHECK(checkPort("1", port) == PortError::None && port == 1);
+    CHECK(checkPort("65535", port) == PortError::None && port == 65535);
+    CHECK(checkPort("9000", port) == PortError::None && port == 9000);
+    port = -1;
+    CHECK(checkPort("", port) == PortError::Empty && port == -1);
+    for (const char* bad : {"0", "65536", "70000", "99999", "123456", "9000.", "-1", "11 12", "abc"}) {
+        CHECK(checkPort(bad, port) == PortError::Range && port == -1);
+    }
 }
 
 void testFailureTexts() {
@@ -352,6 +392,7 @@ void testOutputMarks() {
  */
 int main() {
     testHosts();
+    testPorts();
     testFailureTexts();
     testFitRecord();
     testLidFitLines();

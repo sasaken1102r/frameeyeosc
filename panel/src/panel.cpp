@@ -1210,6 +1210,11 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             extrasDraft_.port = std::clamp(extrasDraft_.port + (hit.arg < 0 ? -1 : 1), 1, 65535);
             extrasError_.clear();
             return {};
+        case PanelAction::ExtraPortEnter:
+            // The keypad, starting with the port now (its OK sets it as − and ＋ do)
+            if (extrasStep_ != ExtrasStep::Port) return {};
+            openPortEntry(KeypadFor::ExtraPort, extrasDraft_.port);
+            return {};
         case PanelAction::ExtraDelete:
             extrasDeleteOpen_ = extrasDraft_.edit >= 0;
             return {};
@@ -1313,12 +1318,41 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::FitDetailsPage:
             fitDetailsPage_ = hit.arg;
             return {};
-        case PanelAction::HostKey:
-            hostEntryText_ = host_entry::keypadInput(hostEntryText_, hit.arg);
-            hostEntryError_.clear();
+        case PanelAction::PortEnter:
+            // The main output's port: the keypad, starting with the port now (not drawn while it is locked)
+            openPortEntry(KeypadFor::Port, hit.arg);
             return {};
-        case PanelAction::HostCancel:
-            closeHostEntry();
+        case PanelAction::KeypadKey:
+            if (!keypadOpen_) return {};
+            keypadText_ = host_entry::keypadInput(
+                keypadText_, hit.arg,
+                keypadFor_ == KeypadFor::Host ? host_entry::Keypad::Host : host_entry::Keypad::Port);
+            keypadError_.clear();
+            portError_ = host_entry::PortError::None;
+            return {};
+        case PanelAction::KeypadOk: {
+            if (!keypadOpen_) return {};
+            // The target PC: the caller checks and writes it
+            if (keypadFor_ == KeypadFor::Host) return hit;
+            // A port: 1-65535, or why not under it
+            int port = 0;
+            portError_ = host_entry::checkPort(keypadText_, port);
+            if (portError_ != host_entry::PortError::None) return {};
+            const KeypadFor kind = keypadFor_;
+            closeKeypad();
+            if (kind == KeypadFor::ExtraPort) {
+                // Into the draft as − and ＋ put it (the clash checks follow it)
+                if (extrasStep_ == ExtrasStep::Port) {
+                    extrasDraft_.port = port;
+                    extrasError_.clear();
+                }
+                return {};
+            }
+            // The main output's: the caller writes it as a setting's choice
+            return {PanelAction::SetInteger, key::kPort, port};
+        }
+        case PanelAction::KeypadCancel:
+            closeKeypad();
             return {};
         case PanelAction::EyecamStart:
             // Never straight to the light: the warning first, with a start without it
@@ -1474,9 +1508,22 @@ void EyePanel::showPrompt(const std::string& output) {
 }
 
 void EyePanel::openHostEntry(const std::string& text) {
-    hostEntryOpen_ = true;
-    hostEntryText_ = text;
-    hostEntryError_.clear();
+    keypadOpen_ = true;
+    keypadFor_ = KeypadFor::Host;
+    keypadText_ = text;
+    keypadError_.clear();
+    portError_ = host_entry::PortError::None;
+    hover_ = {};
+    pressed_ = {};
+}
+
+void EyePanel::openPortEntry(KeypadFor kind, int port) {
+    if (kind == KeypadFor::Host) return;
+    keypadOpen_ = true;
+    keypadFor_ = kind;
+    keypadText_ = port >= 1 && port <= 65535 ? std::to_string(port) : std::string();
+    keypadError_.clear();
+    portError_ = host_entry::PortError::None;
     hover_ = {};
     pressed_ = {};
 }
@@ -1491,9 +1538,10 @@ bool EyePanel::syncEyecam(const eyecam::View& view) {
     return eyecamConfirm_.sync(view.status.state, view.visible && tab_ == PanelTab::Advanced);
 }
 
-void EyePanel::closeHostEntry() {
-    hostEntryOpen_ = false;
-    hostEntryError_.clear();
+void EyePanel::closeKeypad() {
+    keypadOpen_ = false;
+    keypadError_.clear();
+    portError_ = host_entry::PortError::None;
     hover_ = {};
     pressed_ = {};
 }
@@ -1645,7 +1693,7 @@ void EyePanel::setHistoryScroll(double px) {
 }
 
 bool EyePanel::scroll(double dy) {
-    if (!wantsScroll() || promptOpen() || hostEntryOpen_) return false;
+    if (!wantsScroll() || promptOpen() || keypadOpen_) return false;
     if (appsListOpen_) {
         const double next = std::clamp(appsScroll_ + dy, 0.0, appsMaxScroll_);
         if (std::fabs(next - appsScroll_) < 1e-3) return false;
@@ -1808,7 +1856,7 @@ void EyePanel::drawSegmented(const Pen& pen, double x, double y, double w, doubl
 
 void EyePanel::drawStepper(const Pen& pen, double x, double y, double w, double h, const char* name, double value,
                            const std::string& text, bool usable, bool locked, double low, double high,
-                           const Color* outline) {
+                           const Color* outline, const PanelHit* tap) {
     const SettingSpec* spec = findSetting(name);
     const bool active = usable && !locked;
     const double lower = spec != nullptr ? std::max(spec->min, low) : low;
@@ -1843,7 +1891,25 @@ void EyePanel::drawStepper(const Pen& pen, double x, double y, double w, double 
     cairo_stroke(pen.cr);
     const double size = fitSize(pen, text, 20, 12, w - buttonW * 2 - 12, true);
     const Color color = locked ? kTextMuted : (usable ? kText : kTextDisabled);
+    if (tap != nullptr && active) {
+        drawValueTap(pen, *tap, x + buttonW, y, w - 2 * buttonW, h, pen.measure(text, size, true));
+    }
     textCentered(pen, x + w / 2, centerBaseline(y, h, size), text, size, color, true);
+}
+
+void EyePanel::drawValueTap(const Pen& pen, const PanelHit& hit, double x, double y, double w, double h,
+                            double textW) {
+    const int pointer = pointerState(hit);
+    if (pointer > 0) {
+        fillRounded(pen, x + 4, y + 4, w - 8, h - 8, (h - 8) / 2, pointer == 2 ? kAccentTint : kControlHover);
+    }
+    // (a line under the value: it can be typed)
+    pen.color(pointer > 0 ? kAccent : kTextMuted);
+    cairo_set_line_width(pen.cr, 2);
+    cairo_move_to(pen.cr, x + (w - textW) / 2, y + h - 12);
+    cairo_line_to(pen.cr, x + (w + textW) / 2, y + h - 12);
+    cairo_stroke(pen.cr);
+    addButton(hit, x, y, w, h);
 }
 
 void EyePanel::drawCaption(const Pen& pen, double x, double baseline, const std::string& text, int number,
@@ -2658,8 +2724,10 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         const bool isDefault = v.portIsDefault();
         const char* hint = livelink ? t.portDefaultLivelink : module ? t.portDefaultModule : t.portDefaultVrchat;
         drawRowLabel(pen, t, y, rowH, t.rowPort, hint, locked);
+        // (the value opens the keypad: a port like 11112 is typed, − and ＋ nudge it)
+        const PanelHit tap {PanelAction::PortEnter, key::kPort, v.port()};
         drawStepper(pen, kControlX, y + cy, 220, controlH, key::kPort, v.port(), std::to_string(v.port()), true,
-                    locked);
+                    locked, -1e9, 1e9, nullptr, &tap);
         if (!isDefault && !locked) {
             const PanelHit hit {PanelAction::PortDefault, key::kPort, 0};
             const double bx = kControlX + 232;
@@ -3441,7 +3509,11 @@ void EyePanel::drawExtrasFlow(const Pen& pen, const UiText& t, const PanelModel&
                           pointer == 2 ? kOnAccent : (can ? kText : kTextDisabled));
             addButton(hit, bx, sy, buttonW, sh, can);
         }
-        textCentered(pen, sx + sw / 2, centerBaseline(sy, sh, 20), std::to_string(d.port), 20, kText, true);
+        // (the value opens the keypad, as the main port's)
+        const std::string port = std::to_string(d.port);
+        drawValueTap(pen, {PanelAction::ExtraPortEnter, nullptr, 0}, sx + buttonW, sy, sw - 2 * buttonW, sh,
+                     pen.measure(port, 20, true));
+        textCentered(pen, sx + sw / 2, centerBaseline(sy, sh, 20), port, 20, kText, true);
     }
     y += rowH + kRowGap;
     // What it comes to: the name, the format, where (as far as known) and its tag; red where it repeats one
@@ -6450,7 +6522,8 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     }
 }
 
-void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
+void EyePanel::drawKeypad(const Pen& pen, const UiText& t) {
+    const bool host = keypadFor_ == KeypadFor::Host;
     // Only the keypad's buttons stay usable
     buttons_.clear();
     cairo_set_source_rgba(pen.cr, 0, 0, 0, 0.62);
@@ -6461,8 +6534,8 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
     const double x = (kWidth - w) / 2;
     const double y = (kHeight - h) / 2;
     drawCard(pen, x, y, w, h, 24, kCard, kAccent, 2);
-    textCentered(pen, x + w / 2, y + 52, t.hostEntryTitle, fitSize(pen, t.hostEntryTitle, 24, 16, w - 60, true), kText,
-                 true);
+    const char* title = host ? t.hostEntryTitle : t.portEntryTitle;
+    textCentered(pen, x + w / 2, y + 52, title, fitSize(pen, title, 24, 16, w - 60, true), kText, true);
 
     // What is typed, with a caret
     const double fx = x + 40;
@@ -6471,28 +6544,34 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
     const double fh = 60;
     fillRounded(pen, fx, fy, fw, fh, 14, kControl);
     strokeRounded(pen, fx, fy, fw, fh, 14, kAccent, 2);
-    const double textSize = fitSize(pen, hostEntryText_ + "|", 28, 14, fw - 40, true);
-    const double tw = pen.text(fx + 20, centerBaseline(fy, fh, textSize), hostEntryText_, textSize, kText, true);
+    const double textSize = fitSize(pen, keypadText_ + "|", 28, 14, fw - 40, true);
+    const double tw = pen.text(fx + 20, centerBaseline(fy, fh, textSize), keypadText_, textSize, kText, true);
     pen.color(kAccent);
     cairo_rectangle(pen.cr, fx + 22 + tw, fy + 14, 2.5, fh - 28);
     cairo_fill(pen.cr);
     // Why it can't be used, or how to type it
-    const bool error = !hostEntryError_.empty();
-    const std::string below = error ? hostEntryError_ : std::string(t.hostEntryHint);
+    using host_entry::PortError;
+    const std::string problem = host                             ? keypadError_
+                                : portError_ == PortError::Empty ? std::string(t.hostErrEmpty)
+                                : portError_ == PortError::Range ? std::string(t.portErrRange)
+                                                                 : std::string();
+    const bool error = !problem.empty();
+    const std::string below = error ? problem : std::string(host ? t.hostEntryHint : t.portEntryHint);
     pen.text(fx + 4, fy + fh + 30, below, fitSize(pen, below, 17, 12, fw - 8, error), error ? kDanger : kTextMuted,
              error);
 
-    // The keypad: 1-9, then ".", "0" and backspace
+    // The keypad: 1-9, then "." (the address's only: a port's leaves its place empty), "0" and backspace
     const double keyW = 124;
     const double keyH = 64;
     const double gap = 12;
     const double kx = x + 40;
     const double ky = y + 196;
-    const int keys[12] = {'1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', host_entry::kBackspace};
+    const int keys[12] = {'1', '2', '3', '4', '5', '6', '7', '8', '9', host ? '.' : 0, '0', host_entry::kBackspace};
     for (int i = 0; i < 12; ++i) {
+        if (keys[i] == 0) continue;
         const double bx = kx + (i % 3) * (keyW + gap);
         const double by = ky + (i / 3) * (keyH + gap);
-        const PanelHit hit {PanelAction::HostKey, nullptr, keys[i]};
+        const PanelHit hit {PanelAction::KeypadKey, nullptr, keys[i]};
         const int pointer = pointerState(hit);
         fillRounded(pen, bx, by, keyW, keyH, 16, pointer == 2 ? kAccentPressed : (pointer == 1 ? kControlHover : kControl));
         strokeRounded(pen, bx, by, keyW, keyH, 16, kBorder, 2);
@@ -6515,8 +6594,8 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
         bool accent;
         double y;
         double h;
-    } side[2] = {{{PanelAction::HostOk, nullptr, 0}, t.hostEntryOk, true, ky, 3 * keyH + 2 * gap},
-                 {{PanelAction::HostCancel, nullptr, 0}, t.hostEntryCancel, false, ky + 3 * (keyH + gap), keyH}};
+    } side[2] = {{{PanelAction::KeypadOk, nullptr, 0}, t.hostEntryOk, true, ky, 3 * keyH + 2 * gap},
+                 {{PanelAction::KeypadCancel, nullptr, 0}, t.hostEntryCancel, false, ky + 3 * (keyH + gap), keyH}};
     for (const auto& button : side) {
         const int pointer = pointerState(button.hit);
         if (button.accent) {
@@ -9029,7 +9108,7 @@ void EyePanel::render(const PanelModel& model) {
         }
     }
     if (promptOpen()) drawPrompt(pen, t);
-    if (hostEntryOpen_) drawHostEntry(pen, t);
+    if (keypadOpen_) drawKeypad(pen, t);
 
     // Forget hover on a button that is gone or can no longer be pressed
     bool hoverFound = false;

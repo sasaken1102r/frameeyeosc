@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.10.0 (unreleased)
+
+frameeyeosc can now send the same eye data to up to 3 more apps next to the main output: in the FrameEyeOSC format (`feo1`), or as plain OSC (`osc`) with VRChat's own eye input and VRCFaceTracking's v2 names. Set them up on the Output tab's new "Other apps" page. "Only inside my home network" (`lan_only`, on at first) keeps eye data from going to addresses outside your home network, the main output's too. The ETVR output and eye behavior v1 (the eyes as up to 0.7.5) are gone. Port numbers can now be typed on a keypad. Update the panel together with frameeyeosc: the panel's "Update" button does both.
+
+日本語: メインの送り先のほかに、同じ目のデータを 3 つまでほかのアプリにも送れるようになりました。形式は FrameEyeOSC の形式（`feo1`）か、VRChat の目の入力と VRCFaceTracking の v2 の名前を入れたふつうの OSC（`osc`）です。送り方タブの新しい「ほかのアプリ」で設定できます。「家のネットワークの中だけ」（`lan_only`、最初はオン）にすると、メインも含めて、家のネットワークの外の住所には目のデータを送りません。ETVR 出力と目の動かし方 v1（0.7.5 までの動き）はなくしました。ポートの番号はテンキーで打てるようになりました。パネルも一緒に更新してね（パネルの「更新」なら両方入ります）。
+
+- New: other apps (`extra_outputs` in `config.json`, `--extra FORMAT@HOST:PORT`, `--no-extras`). Up to 3 destinations, each with a name, on/off, format, host (`"main"` for the main output's host, `"auto"` for the Steam Link PC, or an IP address or host name) and port.
+  - `feo1` sends the FrameEyeOSC packets of `docs/protocol.md`, byte for byte the ones the FrameEyeOSC mode sends: the same packet and sequence number for every destination.
+  - `osc` sends `/tracking/eye/CenterVec` and `/tracking/eye/EyesClosedAmount`, then VRCFaceTracking's v2 float parameters with the values VRChat mode sends, always under `/avatar/parameters/FT/v2/`. When the eye data stops, it sends relaxed open eyes looking ahead once.
+  - An entry with a mistake, or with a key or format this version doesn't know, sends nothing and is named in the error; the rest of the file is still used.
+  - An entry on the same address and port as the main output, the pupils, or an earlier entry is refused.
+  - Each one is logged, shown in the panel's left column, and listed in the status file.
+- New for `osc` entries in `config.json`: `bundle` sends each sample's messages as OSC bundles, one or two UDP packets a sample instead of one per message (10 to 25). `max_rate` caps the samples a second. Both are off at first. They are for receivers that are slow per packet: on the developer's Frame, a VRChat run on the Frame itself dropped packets and the eyes stuttered until `bundle` was turned on.
+- New setting `lan_only` ("Only inside my home network" under Other apps; `--no-lan-only`; on at first). Eye data goes only to private addresses (and 100.64–127.x, shown as VPN), for the main output, the pupils sent straight to VRChat and every other app. A public address is refused and shown in red with why. Off, it is allowed and marked PUBLIC. The Steam Link PC is only warned about, never refused.
+- `docs/protocol.md` now fixes what a FrameEyeOSC receiver must accept: lengths 72 to 1472, an extension area after byte 108 (0.10 sends none), and a sequence that can skip. It also has 4 test packets and the `osc` format's address list and contract.
+- Panel, Output tab: now two pages, "Main destination" and "Other apps"; the one open last comes back. Other apps lists each destination with Send / Stop, Change and Delete, which asks in the row first. "Add a destination" goes through format, address and port.
+- Panel, ports: tapping the port number, on the main destination's "Port" row and in step 3 of adding another app, opens a keypad like the IP one. It takes 1 to 65535. − / ＋ stay.
+- Removed: the ETVR output. `"output": "etvr"` (in `config.json` or `--output etvr`) now sends to VRChat directly, and the log says so. `config.json`'s port 8889 becomes VRChat's 9000; any other port stays as given. For VRCFaceTracking, use its LiveLink or FrameEyeOSC module. The panel changes such a `config.json` once.
+- Removed: eye behavior v1 (`eye_behavior: 1`, the eyes as up to 0.7.5). The eyes always move as with v2, and `eye_behavior` is accepted and ignored. To keep v1, stay on 0.9.
+
 ## 0.9.1-beta.3 (2026-11-03)
 
 The Eyelids tab's "Fine-tune" page is now "Valve eyelids", without the two widening marks, which no longer did anything on current SteamOS. "Treat nearly open as open" is now mark 3 (it was 5), so the marks run 1, 2, 3.

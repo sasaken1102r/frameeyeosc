@@ -1,4 +1,4 @@
-// Typing the target PC's IPv4 address on the panel's keypad.
+// Typing the target PC's IPv4 address or a port on the panel's keypad.
 #include "host_entry.h"
 
 namespace host_entry {
@@ -23,9 +23,27 @@ HostError checkHost(const std::string& text) {
     return parts == 4 ? HostError::None : HostError::Ipv4;
 }
 
-std::string keypadInput(const std::string& text, int key) {
+PortError checkPort(const std::string& text, int& port) {
+    if (text.empty()) return PortError::Empty;
+    // (more digits than a port has, or anything else, can't be one)
+    if (text.size() > kPortKeypadMax || text.find_first_not_of("0123456789") != std::string::npos) {
+        return PortError::Range;
+    }
+    const int value = std::stoi(text);
+    if (value < 1 || value > 65535) return PortError::Range;
+    port = value;
+    return PortError::None;
+}
+
+std::string keypadInput(const std::string& text, int key, Keypad keypad) {
     if (key == kBackspace) return text.empty() ? text : text.substr(0, text.size() - 1);
     const bool digit = key >= '0' && key <= '9';
+    if (keypad == Keypad::Port) {
+        if (!digit) return text;
+        // (no leading zero: "0" then "8" is 8)
+        if (text == "0") return std::string(1, static_cast<char>(key));
+        return text.size() >= kPortKeypadMax ? text : text + static_cast<char>(key);
+    }
     if ((!digit && key != '.') || text.size() >= kKeypadMax) return text;
     return text + static_cast<char>(key);
 }

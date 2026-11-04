@@ -12,7 +12,8 @@
 // "Help train the AI" (its row on Debug tools, each screen's buttons, its recording, the delete's confirmation), and the
 // eye cameras page's "How the video is taken" card (its choices and the tool's Konsole button in each state, inside
 // the card in both languages), and the Output tab's "Other apps" (its sub-tabs, the list, the add / change flow pressed
-// through, each screen's buttons pressed in turn, frameeyeosc's reasons in words). Built
+// through, each screen's buttons pressed in turn, frameeyeosc's reasons in words), and the port's keypad (the main
+// port row's and step 3's). Built
 // with the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
@@ -3972,6 +3973,120 @@ void testExtrasFlow(const FontSet& fonts) {
     }
 }
 
+/**
+ * The port's keypad, pressed as the laser pointer would: the main output's port row (its value opens the keypad with
+ * the port now; digits, backspace, OK and Cancel, no '.'; OK refuses 0 / above 65535 and stays open, takes 1-65535 as
+ * the setting's SetInteger; not while the port is locked; − and ＋ stay), and "Other apps"' step 3 (OK puts it in
+ * the draft as − and ＋ do, so the main output's port is refused there as before). In both languages, inside the card.
+ */
+void testPortKeypad(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        PanelModel m = extrasModel(language, R"j([{"format": "feo1", "host": "main", "port": 11113}])j");
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Output);
+        panel.setOutputPage(OutputPage::Main);
+        panel.render(m);
+        // The row: − and ＋, the value between them
+        CHECK(hits(panel, PanelAction::Step, key::kPort).size() == 2);
+        const std::vector<EyePanel::HitArea> value = hits(panel, PanelAction::PortEnter, key::kPort);
+        CHECK(value.size() == 1 && value[0].hit.arg == 9000 && cardButtonsApart(panel));
+        CHECK(press(panel, PanelAction::PortEnter).action == PanelAction::None);
+        CHECK(panel.keypadOpen() && panel.keypadFor() == KeypadFor::Port && panel.keypadText() == "9000");
+        panel.render(m);
+        // Only the keypad's buttons: ten digits and backspace (no '.'), OK and Cancel
+        const std::vector<EyePanel::HitArea> keys = hits(panel, PanelAction::KeypadKey);
+        CHECK(keys.size() == 11 && hits(panel, PanelAction::KeypadOk).size() == 1);
+        CHECK(hits(panel, PanelAction::KeypadCancel).size() == 1 && panel.hitAreas().size() == 13);
+        CHECK(std::none_of(keys.begin(), keys.end(), [](const EyePanel::HitArea& k) { return k.hit.arg == '.'; }));
+        const auto type = [&](const std::string& text) {
+            for (const char c : text) {
+                pressArg(panel, PanelAction::KeypadKey, c == '<' ? host_entry::kBackspace : c);
+                panel.render(m);
+            }
+        };
+        // Above 65535: OK refuses it and stays open, the next key clears the error
+        type("<<<<70000");
+        CHECK(panel.keypadText() == "70000");
+        CHECK(press(panel, PanelAction::KeypadOk).action == PanelAction::None && panel.keypadOpen());
+        panel.render(m);
+        type("<");
+        CHECK(panel.keypadText() == "7000");
+        // Past 5 digits nothing more goes in; nothing typed is refused too
+        type("12");
+        CHECK(panel.keypadText() == "70001");
+        type("<<<<<");
+        CHECK(press(panel, PanelAction::KeypadOk).action == PanelAction::None && panel.keypadOpen());
+        panel.render(m);
+        // Cancel: closed, nothing handed on
+        CHECK(press(panel, PanelAction::KeypadCancel).action == PanelAction::None && !panel.keypadOpen());
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::PortEnter).size() == 1);
+        // OK with 11112: handed on as the port's SetInteger, closed
+        press(panel, PanelAction::PortEnter);
+        panel.render(m);
+        type("<<<<11112");
+        const PanelHit ok = press(panel, PanelAction::KeypadOk);
+        CHECK(ok.action == PanelAction::SetInteger && ok.key != nullptr && std::string(ok.key) == key::kPort);
+        CHECK(ok.arg == 11112 && !panel.keypadOpen());
+        // Locked by the command line: no keypad (nor − and ＋)
+        PanelModel locked = m;
+        locked.status.locked = {key::kPort};
+        locked.status.effective.set(key::kPort, JsonValue::makeNumber(9123, true));
+        panel.render(locked);
+        CHECK(hits(panel, PanelAction::PortEnter).empty() && hits(panel, PanelAction::Step, key::kPort).empty());
+
+        // "Other apps"' step 3: the value opens the keypad with the draft's port; OK sets the draft's port
+        panel.setOutputPage(OutputPage::Apps);
+        panel.render(m);
+        press(panel, PanelAction::ExtraAdd);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraFormat, 1);
+        panel.render(m);
+        press(panel, PanelAction::ExtraStep);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Port));
+        panel.render(m);
+        CHECK(panel.extrasStep() == ExtrasStep::Port && panel.extrasDraft().port == 9015);
+        CHECK(hits(panel, PanelAction::ExtraPort).size() == 2 && hits(panel, PanelAction::ExtraPortEnter).size() == 1);
+        CHECK(cardButtonsApart(panel) && hits(panel, PanelAction::ExtraSave).size() == 1);
+        CHECK(press(panel, PanelAction::ExtraPortEnter).action == PanelAction::None);
+        CHECK(panel.keypadOpen() && panel.keypadFor() == KeypadFor::ExtraPort && panel.keypadText() == "9015");
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraSave).empty() && hits(panel, PanelAction::KeypadKey).size() == 11);
+        // 0 is refused; the draft keeps its port
+        type("<<<<0");
+        CHECK(press(panel, PanelAction::KeypadOk).action == PanelAction::None && panel.keypadOpen());
+        CHECK(panel.extrasDraft().port == 9015);
+        panel.render(m);
+        // The main output's port (VRChat at 9000 on the same PC): set, and Save is held back as with − and ＋
+        type("9000");
+        CHECK(press(panel, PanelAction::KeypadOk).action == PanelAction::None && !panel.keypadOpen());
+        CHECK(panel.extrasDraft().port == 9000 && panel.extrasStep() == ExtrasStep::Port);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraSave).empty());
+        // Another port: Save is back; Cancel leaves the draft as it was
+        press(panel, PanelAction::ExtraPortEnter);
+        panel.render(m);
+        type("<<<<9016");
+        press(panel, PanelAction::KeypadOk);
+        panel.render(m);
+        CHECK(panel.extrasDraft().port == 9016 && hits(panel, PanelAction::ExtraSave).size() == 1);
+        press(panel, PanelAction::ExtraPortEnter);
+        panel.render(m);
+        type("<<<<1");
+        CHECK(press(panel, PanelAction::KeypadCancel).action == PanelAction::None && !panel.keypadOpen());
+        CHECK(panel.extrasDraft().port == 9016);
+        // A keypad left open on a step 3 that is gone (the flow closed) changes nothing when OK is pressed
+        panel.render(m);
+        press(panel, PanelAction::ExtraPortEnter);
+        panel.render(m);
+        panel.closeExtrasFlow();
+        type("<<<<1234");
+        press(panel, PanelAction::KeypadOk);
+        CHECK(!panel.keypadOpen() && panel.extrasStep() == ExtrasStep::List);
+    }
+}
+
 /** frameeyeosc's reasons, translated where known, as they are where not. */
 void testExtraReasons() {
     const UiText& ja = uiText(Language::Ja);
@@ -4290,6 +4405,7 @@ int main() {
     testExtrasFlow(fonts);
     testExtrasSaveLabel(fonts);
     testExtrasRowDelete(fonts);
+    testPortKeypad(fonts);
     testStatusLayout(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);

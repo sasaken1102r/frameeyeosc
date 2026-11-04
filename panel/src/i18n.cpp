@@ -159,6 +159,9 @@ UiText makeJapanese() {
     t.hostEntryCancel = "やめる";
     t.hostErrEmpty = "何も入っていません";
     t.hostErrIpv4 = "IP アドレスの形ではありません（0〜255 の数 4 つを . で区切る）";
+    t.portEntryTitle = "ポート番号";
+    t.portEntryHint = "1〜65535 の数";
+    t.portErrRange = "1〜65535 の数にしてね";
     t.rowPort = "ポート";
     t.portDefaultVrchat = "VRChat の既定は 9000";
     t.portDefaultLivelink = "LiveLink の既定は 11111";
@@ -1342,6 +1345,9 @@ UiText makeEnglish() {
     t.hostEntryCancel = "Cancel";
     t.hostErrEmpty = "Nothing entered";
     t.hostErrIpv4 = "Not an IP address (four numbers 0-255 separated by dots)";
+    t.portEntryTitle = "Port number";
+    t.portEntryHint = "A number from 1 to 65535";
+    t.portErrRange = "Must be a number from 1 to 65535";
     t.rowPort = "Port";
     t.portDefaultVrchat = "VRChat default: 9000";
     t.portDefaultLivelink = "LiveLink default: 11111";

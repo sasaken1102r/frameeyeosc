@@ -3573,8 +3573,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         }
         case PanelAction::FitDetails:
         case PanelAction::FitDetailsPage:
-        case PanelAction::HostKey:
-        case PanelAction::HostCancel:
+        case PanelAction::PortEnter:
+        case PanelAction::KeypadKey:
+        case PanelAction::KeypadCancel:
         case PanelAction::HistoryClose:
         case PanelAction::DiagClose:
         case PanelAction::HistoryRow:
@@ -3645,6 +3646,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::ExtraHost:
         case PanelAction::ExtraKey:
         case PanelAction::ExtraPort:
+        case PanelAction::ExtraPortEnter:
         case PanelAction::ExtraDelete:
         case PanelAction::ExtraDeleteCancel:
         case PanelAction::ExtraRowDelete:
@@ -3724,16 +3726,18 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             panel.openHostEntry(ip ? host : "");
             return;
         }
-        case PanelAction::HostOk: {
-            const std::string host = panel.hostEntryText();
+        case PanelAction::KeypadOk: {
+            // (only the target PC's comes here: a port's is checked in the panel and comes as SetInteger)
+            if (panel.keypadFor() != KeypadFor::Host) return;
+            const std::string host = panel.keypadText();
             const host_entry::HostError problem = host_entry::checkHost(host);
             if (problem != host_entry::HostError::None) {
                 std::fprintf(stderr, "[action] typed host \"%s\" can't be used (%d)\n", host.c_str(),
                              static_cast<int>(problem));
-                panel.setHostEntryError(hostErrorText(uiText(model.language), problem));
+                panel.setKeypadError(hostErrorText(uiText(model.language), problem));
                 return;
             }
-            panel.closeHostEntry();
+            panel.closeKeypad();
             std::fprintf(stderr, "[action] host typed: %s\n", host.c_str());
             change = [host](JsonValue& root) { root.set(key::kHost, JsonValue::makeString(host)); };
             break;
@@ -5360,9 +5364,9 @@ int runOverlay(const Options& options) {
                 vr.logOverlayState("after the first draw");
             }
         }
-        // The IP keypad and the eye capture's light warning don't stay open behind a closed dashboard
+        // The keypad (IP or port) and the eye capture's light warning don't stay open behind a closed dashboard
         if (!visible && wasVisible) {
-            panel.closeHostEntry();
+            panel.closeKeypad();
             // ...nor the eye preview (its pictures stop with it)
             panel.closePreview();
             panel.closeEyecamConfirm();

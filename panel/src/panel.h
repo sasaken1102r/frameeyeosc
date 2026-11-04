@@ -2,6 +2,7 @@
 // --contrast-report checks what is drawn.
 #pragma once
 
+#include "host_entry.h"
 #include "model.h"
 #include "ui_state.h"
 
@@ -75,9 +76,12 @@ enum class PanelAction {
                        ///< with takeNumberSlider and writes it (SetNumber)
     SetNumber,         ///< key = arg / 1000 (onto its step grid)
     HostEnter,         ///< open the keypad for the target PC (the caller fills in the host now)
-    HostKey,           ///< a keypad key: arg = '0'-'9', '.' or host_entry::kBackspace (handled inside the panel)
-    HostOk,            ///< use the typed host (the caller checks and writes it)
-    HostCancel,        ///< close the keypad (handled inside the panel)
+    PortEnter,         ///< the port row's value: open the keypad for the port, arg = the port now (handled inside)
+    KeypadKey,         ///< a keypad key: arg = '0'-'9', '.' (the address's only) or host_entry::kBackspace (handled
+                       ///< inside the panel)
+    KeypadOk,          ///< the keypad's OK: for the target PC, the caller checks and writes the typed host; for a
+                       ///< port, checked inside and handed on as SetInteger (key::kPort) or put in "Other apps"' draft
+    KeypadCancel,      ///< close the keypad (handled inside the panel)
     HistoryOpen,       ///< open the version history on the Advanced tab (the panel opens it; the caller reads the
                        ///< changelog)
     HistoryClose,      ///< back to the Advanced tab (handled inside the panel)
@@ -158,6 +162,7 @@ enum class PanelAction {
     ExtraHost,         ///< ...step 2's choices: arg = extras::HostChoice (handled inside)
     ExtraKey,          ///< ...step 2's keypad: arg = '0'-'9', '.' or host_entry::kBackspace (handled inside)
     ExtraPort,         ///< ...step 3's port, arg -1 / 1 (handled inside)
+    ExtraPortEnter,    ///< ...step 3's port value: the keypad for it (handled inside; its OK sets the draft's port)
     ExtraSave,         ///< ...step 3's "Add and send" / "Save": the caller writes extrasDraft() (extras::applyDraft)
                        ///< and closes the flow (closeExtrasFlow), or says why it couldn't (setExtrasError)
     ExtraDelete,       ///< ...step 3's "Delete this destination" while changing: its confirmation (handled inside)
@@ -172,6 +177,9 @@ enum class PanelAction {
 
 /** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
 enum class ExtrasStep { List, Format, Host, Port };
+
+/** What the keypad types: the target PC's address, the main output's port, or "Other apps"' draft's port. */
+enum class KeypadFor { Host, Port, ExtraPort };
 
 /** A button: its action, the config key it changes and an argument. */
 struct PanelHit {
@@ -447,11 +455,21 @@ public:
      */
     void openHostEntry(const std::string& text);
 
-    /** Close the keypad. */
-    void closeHostEntry();
+    /**
+     * Open the keypad for a port (only its buttons work while it is open).
+     * @param kind the main output's port or "Other apps"' draft's (not KeypadFor::Host)
+     * @param port what it starts with
+     */
+    void openPortEntry(KeypadFor kind, int port);
+
+    /** Close the keypad (the address's or a port's). */
+    void closeKeypad();
 
     /** @return true while the keypad is open */
-    bool hostEntryOpen() const { return hostEntryOpen_; }
+    bool keypadOpen() const { return keypadOpen_; }
+
+    /** @return what the keypad is for (while it is open) */
+    KeypadFor keypadFor() const { return keypadFor_; }
 
     /**
      * Open the light warning on the Advanced tab, as its recording's start button does (for --fake-eyecam confirm).
@@ -712,15 +730,15 @@ public:
      */
     bool scroll(double dy);
 
-    /** @return what is typed */
-    const std::string& hostEntryText() const { return hostEntryText_; }
+    /** @return what is typed on the keypad */
+    const std::string& keypadText() const { return keypadText_; }
 
 
     /**
      * Show why the typed host can't be used (cleared by the next key).
      * @param message the message ("" for none)
      */
-    void setHostEntryError(const std::string& message) { hostEntryError_ = message; }
+    void setKeypadError(const std::string& message) { keypadError_ = message; }
 
     /**
      * The image as un-premultiplied RGBA for OpenVR.
@@ -804,9 +822,11 @@ private:
     std::string promptOutput_;  ///< the output type the prompt asks about; empty = no prompt
     std::string updatePromptVersion_;  ///< the release the update prompt asks about; empty = no prompt
     bool updatePromptBack_ = false;    ///< ...going back to it from a test version
-    bool hostEntryOpen_ = false;  ///< the keypad for the target PC is open
-    std::string hostEntryText_;   ///< what is typed in it
-    std::string hostEntryError_;  ///< why it can't be used, shown under it
+    bool keypadOpen_ = false;                 ///< the keypad (the target PC's or a port's) is open
+    KeypadFor keypadFor_ = KeypadFor::Host;   ///< ...for what
+    std::string keypadText_;                  ///< what is typed in it
+    std::string keypadError_;                 ///< why the typed host can't be used (the caller's), shown under it
+    host_entry::PortError portError_ = host_entry::PortError::None;  ///< why the typed port can't be used
     bool historyOpen_ = false;          ///< the version history is shown on the Advanced tab
     bool historyRowPending_ = false;    ///< open the installed version's row at the next draw
     bool historyScrollSet_ = false;     ///< --history-scroll gave the scroll; don't move it to the open row
@@ -1848,7 +1868,7 @@ private:
      * @param pen drawing tools
      * @param t texts
      */
-    void drawHostEntry(const Pen& pen, const UiText& t);
+    void drawKeypad(const Pen& pen, const UiText& t);
 
     /**
      * A notice at the bottom of the status column while a new release is available, installing or installed.
@@ -1916,10 +1936,24 @@ private:
      * @param low extra lower bound
      * @param high extra upper bound
      * @param outline its outline while usable (nullptr: the usual border)
+     * @param tap the value's own button while usable (nullptr: none), as the port's keypad
      */
     void drawStepper(const Pen& pen, double x, double y, double w, double h, const char* name, double value,
                      const std::string& text, bool usable, bool locked, double low = -1e9, double high = 1e9,
-                     const Color* outline = nullptr);
+                     const Color* outline = nullptr, const PanelHit* tap = nullptr);
+
+    /**
+     * The value between a stepper's − and ＋ as a button (the port's keypad): a light fill while pointed at, a line
+     * under where the value goes. Drawn before the value.
+     * @param pen drawing tools
+     * @param hit what it does
+     * @param x left (after −)
+     * @param y the stepper's top
+     * @param w width (up to ＋)
+     * @param h the stepper's height
+     * @param textW the value's width as drawn
+     */
+    void drawValueTap(const Pen& pen, const PanelHit& hit, double x, double y, double w, double h, double textW);
 
     /**
      * A caption above a stepper, optionally led by a numbered circle (the lid marks).

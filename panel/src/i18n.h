@@ -169,6 +169,9 @@ struct UiText {
     const char* hostEntryCancel;
     const char* hostErrEmpty;
     const char* hostErrIpv4;
+    const char* portEntryTitle;     ///< the keypad for a port (the main output's, "Other apps"' step 3)
+    const char* portEntryHint;
+    const char* portErrRange;       ///< (nothing typed: hostErrEmpty)
     const char* rowPort;
     const char* portDefaultVrchat;  ///< the port row's hint: the default port of the output type
     const char* portDefaultLivelink;

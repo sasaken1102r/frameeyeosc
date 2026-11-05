@@ -135,6 +135,8 @@ struct Options {
     bool fakePaused = false;
     bool fakeNoTracking = false;
     bool fakeSlowTracker = false; ///< --fake-slow-tracker: the eye tracker delivers 15 samples a second
+    std::string fakeEyeRateMin;   ///< --fake-eye-rate-min: SteamVR's eyeTrackingRateMin, a number or "none" ("" = none)
+    std::string fakeEyeRateNote;  ///< --fake-eye-rate-note: "done" / "refused" after "Set 90" ("" = neither)
     bool fakeLivelink = false;
     bool fakeModule = false;
     bool fakePupilsOff = false;   ///< --fake-pupils-off: pupils_to_vrchat off
@@ -320,6 +322,9 @@ void printUsage() {
         "      --fake-pupils-off  pupils_to_vrchat off (the Output tab's row for LiveLink with the eye cameras)\n"
         "      --fake-pupil-bits N  pupil_bits 0..4 (the Output tab's \"pupils as bits\" row, with the eye cameras)\n"
         "      --fake-slow-tracker  The eye tracker delivers only 15 samples a second\n"
+        "      --fake-eye-rate-min N|none  SteamVR's eyeTrackingRateMin (none: a SteamVR without it, as when not given);\n"
+        "                        below 90 with --fake-slow-tracker the left column offers \"Set 90\"\n"
+        "      --fake-eye-rate-note done|refused  The left column's line after \"Set 90\" was pressed\n"
         "      --fake-locked     Some keys locked by the command line\n"
         "      --fake-extras one|mixed|refused|errors|old|main-refused  Made-up extra outputs (\"Other apps\"): one\n"
         "                        sending; three sending (LAN, VPN, PUBLIC; lan_only off); three with the public one\n"
@@ -1038,6 +1043,12 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakePaused = true;
         } else if (arg == "--fake-slow-tracker") {
             options.fake = options.fakeSlowTracker = true;
+        } else if (arg == "--fake-eye-rate-min" && hasNext) {
+            options.fake = true;
+            options.fakeEyeRateMin = argv[++i];
+        } else if (arg == "--fake-eye-rate-note" && hasNext) {
+            options.fake = true;
+            options.fakeEyeRateNote = argv[++i];
         } else if (arg == "--fake-no-tracking") {
             options.fake = options.fakeNoTracking = true;
         } else if (arg == "--fake-livelink") {
@@ -2452,6 +2463,21 @@ PanelModel fakeModel(const Options& options) {
     // The diagnostics page's SteamOS and camera tool, as on the developer's headset
     m.system.steamos = "0.4.3 (20260930.6234839)";
     m.system.grabHash = "294d06c6";
+    // SteamVR's eye camera speed (a SteamVR without the setting unless given), and what "Set 90" came to
+    if (!options.fakeEyeRateMin.empty() && options.fakeEyeRateMin != "none") {
+        char* end = nullptr;
+        const double min = std::strtod(options.fakeEyeRateMin.c_str(), &end);
+        if (end != options.fakeEyeRateMin.c_str() && *end == '\0' && std::isfinite(min)) {
+            m.eyeRate.setting.exists = true;
+            m.eyeRate.setting.min = min;
+        } else {
+            std::fprintf(stderr, "--fake-eye-rate-min: not a number: %s\n", options.fakeEyeRateMin.c_str());
+        }
+    }
+    const double now = nowSeconds();
+    if (options.fakeEyeRateNote == "done") eye_rate::pressed(m.eyeRate, true, now);
+    if (options.fakeEyeRateNote == "refused") eye_rate::pressed(m.eyeRate, false, now);
+    eye_rate::update(m.eyeRate, m.status, now);
     return m;
 }
 
@@ -2494,6 +2520,30 @@ void readSystem(PanelModel& model) {
     model.system.grabHash = grabHash.get(diag::defaultGrabPath());
     model.system.grabUnreadable = grabHash.unreadable();
     model.system.installedHash = installedHash.get(diag::kInstalledGrabPath);
+}
+
+/**
+ * Read SteamVR's eye camera speed (eyeTrackingRateMin) into the model, logged when it changes.
+ * @param model where to put it (eyeRate.setting)
+ * @param vr the connection to SteamVR
+ */
+void readEyeRate(PanelModel& model, const VrOverlay& vr) {
+    eye_rate::Setting setting;
+    double min = NAN;
+    std::string error;
+    if (vr.eyeRateMin(min, error)) {
+        setting.exists = true;
+        setting.min = min;
+    }
+    if (setting != model.eyeRate.setting) {
+        if (setting.exists) {
+            std::fprintf(stderr, "[VR] %s/%s is %.1f\n", eye_rate::kSection, eye_rate::kKey, setting.min);
+        } else {
+            std::fprintf(stderr, "[VR] no %s/%s in this SteamVR (%s)\n", eye_rate::kSection, eye_rate::kKey,
+                         error.c_str());
+        }
+    }
+    model.eyeRate.setting = setting;
 }
 
 void loadHistory(PanelModel& model) {
@@ -3715,6 +3765,21 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::PreviewFreeze: return;  // handled inside the panel; the loop follows previewOpen
         case PanelAction::RecordOpen: openRecordView(model, panel.recordShown()); return;
         case PanelAction::RecordsAll: loadRecords(model); return;
+        case PanelAction::EyeRateSet:
+        case PanelAction::EyeRateChoose: {
+            // SteamVR's own setting (not config.json): "Set 90" and "Always 90 a second" write 90, "Let SteamVR
+            // decide" removes it; read back at once (drawn without SteamVR, only said)
+            const bool full = hit.action == PanelAction::EyeRateSet ||
+                              static_cast<eye_rate::Choice>(hit.arg) == eye_rate::Choice::Full;
+            if (vr == nullptr) {
+                std::printf("eye rate: would %s\n", full ? "set eyeTrackingRateMin to 90" : "remove eyeTrackingRateMin");
+                return;
+            }
+            const bool written = full ? vr->setEyeRateMin(eye_rate::kFull) : vr->clearEyeRateMin();
+            if (hit.action == PanelAction::EyeRateSet) eye_rate::pressed(model.eyeRate, written, nowSeconds());
+            readEyeRate(model, *vr);
+            return;
+        }
         case PanelAction::DiagOpen:
             readSystem(model);
             std::fprintf(stderr, "[diag] opened: %s\n", diag::code(model).c_str());
@@ -4391,6 +4456,8 @@ int runOverlay(const Options& options) {
     uint64_t drawnUpdate = 0;
     std::string lastSignature;
     std::string drawnDiag;          // what the diagnostics page showed last
+    std::string drawnEyeRate;       // SteamVR's eye camera speed and the left column's line about it, as drawn last
+    double lastEyeRateRead = -1e9;
     std::string drawnCode;          // the diagnostic code the Advanced tab showed last
     double lastDiagRead = -1e9;
     std::string lastStamp = configStamp(model.configPath);
@@ -4489,6 +4556,17 @@ int runOverlay(const Options& options) {
                 model.moduleLinkError.clear();
                 dirty = true;
             }
+        }
+        // SteamVR's eye camera speed, read every few seconds while the panel shows (it can be changed elsewhere); the
+        // left column's line about it follows the status and the time ("Set 90"'s confirmation, then its check)
+        if (visible && nowSeconds() >= lastEyeRateRead + eye_rate::kReadSec) {
+            lastEyeRateRead = nowSeconds();
+            readEyeRate(model, vr);
+        }
+        eye_rate::update(model.eyeRate, model.status, nowSeconds());
+        if (const std::string rate = eye_rate::signature(model.eyeRate); rate != drawnEyeRate) {
+            drawnEyeRate = rate;
+            dirty = true;
         }
 
         bool pointerDirty = false;  // the pointer changed something on the panel (hover, a press)

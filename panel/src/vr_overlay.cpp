@@ -1,6 +1,7 @@
 // Implementation of the OpenVR connection and overlay.
 #include "vr_overlay.h"
 
+#include "eye_rate.h"
 #include "gaze_fit.h"
 #include "openvr.h"
 
@@ -387,6 +388,39 @@ double VrOverlay::userIpdMeters() const {
         return gaze_fit::kDefaultIpdM;
     }
     return ipd;
+}
+
+bool VrOverlay::eyeRateMin(double& value, std::string& error) const {
+    if (!connected_) {
+        error = "not connected";
+        return false;
+    }
+    vr::EVRSettingsError e = vr::VRSettingsError_None;
+    const float min = vr::VRSettings()->GetFloat(eye_rate::kSection, eye_rate::kKey, &e);
+    if (e != vr::VRSettingsError_None || !std::isfinite(min)) {
+        error = e != vr::VRSettingsError_None ? vr::VRSettings()->GetSettingsErrorNameFromEnum(e) : "not a number";
+        return false;
+    }
+    value = min;
+    return true;
+}
+
+bool VrOverlay::setEyeRateMin(double value) const {
+    if (!connected_) return false;
+    vr::EVRSettingsError e = vr::VRSettingsError_None;
+    vr::VRSettings()->SetFloat(eye_rate::kSection, eye_rate::kKey, static_cast<float>(value), &e);
+    std::fprintf(stderr, "[VR] %s/%s = %.1f: %s\n", eye_rate::kSection, eye_rate::kKey, value,
+                 vr::VRSettings()->GetSettingsErrorNameFromEnum(e));
+    return e == vr::VRSettingsError_None;
+}
+
+bool VrOverlay::clearEyeRateMin() const {
+    if (!connected_) return false;
+    vr::EVRSettingsError e = vr::VRSettingsError_None;
+    vr::VRSettings()->RemoveKeyInSection(eye_rate::kSection, eye_rate::kKey, &e);
+    std::fprintf(stderr, "[VR] %s/%s removed (SteamVR's default): %s\n", eye_rate::kSection, eye_rate::kKey,
+                 vr::VRSettings()->GetSettingsErrorNameFromEnum(e));
+    return e == vr::VRSettingsError_None;
 }
 
 bool VrOverlay::showTarget(double yawDeg, double pitchDeg, const uint8_t* rgba, int size) {

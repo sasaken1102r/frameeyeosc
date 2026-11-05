@@ -49,6 +49,7 @@ add_executable(frameeyeosc-panel
   src/eyecam.cpp
   src/eye_preview.cpp
   src/extras.cpp
+  src/eye_rate.cpp
   src/gaze_dots.cpp
   src/gaze_fit.cpp
   src/fit_text.cpp
@@ -143,6 +144,13 @@ target_include_directories(recorder-test PRIVATE src)
 target_compile_options(recorder-test PRIVATE -Wall -Wextra)
 add_test(NAME recorder COMMAND recorder-test)
 
+# SteamVR's eye camera speed (eye_rate.{h,cpp}: when the left column offers "Set 90", the confirmation and "not taken"
+# after it, "Having trouble"'s choice), without OpenVR: panel/build/eye-rate-test
+add_executable(eye-rate-test tests/eye_rate_test.cpp src/eye_rate.cpp src/status.cpp src/json.cpp)
+target_include_directories(eye-rate-test PRIVATE src)
+target_compile_options(eye-rate-test PRIVATE -Wall -Wextra)
+add_test(NAME eye-rate COMMAND eye-rate-test)
+
 # The shared rules: what an eye fit writes and "Reset" clears, the re-wear fit auto_recenter asks for, the output
 # cards' arguments: panel/build/model-test
 add_executable(model-test tests/model_test.cpp src/model.cpp src/config.cpp src/json.cpp src/gaze_fit.cpp
@@ -164,6 +172,7 @@ add_executable(panel-test tests/panel_test.cpp
   src/eyecam.cpp
   src/eye_preview.cpp
   src/extras.cpp
+  src/eye_rate.cpp
   src/fit_text.cpp
   src/gaze_fit.cpp
   src/host_entry.cpp

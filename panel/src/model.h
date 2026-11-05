@@ -8,6 +8,7 @@
 #include "contrib.h"
 #include "diag.h"
 #include "extras.h"
+#include "eye_rate.h"
 #include "eyecam.h"
 #include "eye_preview.h"
 #include "frame_apps.h"
@@ -66,6 +67,7 @@ struct PanelModel {
     stored::View savedData;      ///< "Saved data" (the Data page): the eye logs' count, and each kind's delete
     std::string moduleLinkError; ///< why the Output tab's module link didn't open the browser ("" = none; its own
                                  ///< line under the link, never the eye cameras' setup's eyecam.spawnError)
+    eye_rate::View eyeRate;      ///< SteamVR's eye camera speed (the left column's "Set 90", "Having trouble"'s row)
 };
 
 /**

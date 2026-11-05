@@ -35,6 +35,10 @@ UiText makeJapanese() {
     t.trackerRateLowHint = "少なめ";
     t.trackerRateSlowHere = "本体の処理が追いついていません";
     t.trackerRateSlowTracker = "Frame から届く数が少なめです";
+    t.eyeRateSlow = "SteamVR が目のカメラを遅くしています";
+    t.eyeRateSet = "90 にする";
+    t.eyeRateDone = "目のカメラを毎秒 90 にしました";
+    t.eyeRateRefused = "SteamVR が受け付けませんでした";
     t.lidsTitle = "まぶた";
     t.legendRaw = "生の値";
     t.legendSent = "送った値";
@@ -395,6 +399,11 @@ UiText makeJapanese() {
     t.appsErrorNoDisplay = "Konsole を開けませんでした: 画面が見つかりません（DISPLAY がありません）";
     t.appsErrorNoKonsole = "Konsole を開けませんでした: Konsole が入っていません";
     t.appsErrorFailed = "Konsole を開けませんでした";
+    t.rowEyeRate = "目のカメラの速さ";
+    t.hintEyeRate = "SteamVR の設定です。少ないと視線とまぶたがカクカクします";
+    t.eyeRateFull = "いつも毎秒 90";
+    t.eyeRateSteamVr = "SteamVR に任せる";
+    t.eyeRateNowFormat = "いまの目のデータ: 毎秒 %.0f 回";
     t.recordsTitle = "最近の記録";
     t.recordsHint = "校正と目合わせのたびに残すよ";
     t.recordsNone = "まだ記録はないよ。校正か目合わせをすると残るよ";
@@ -1221,6 +1230,10 @@ UiText makeEnglish() {
     t.trackerRateLowHint = "low";
     t.trackerRateSlowHere = "frameeyeosc can't keep up";
     t.trackerRateSlowTracker = "The Frame itself sends few";
+    t.eyeRateSlow = "SteamVR slows the eye cameras";
+    t.eyeRateSet = "Set 90";
+    t.eyeRateDone = "Eye cameras set to 90 a second";
+    t.eyeRateRefused = "SteamVR didn't take it";
     t.lidsTitle = "Eyelids";
     t.legendRaw = "Raw";
     t.legendSent = "Sent";
@@ -1581,6 +1594,11 @@ UiText makeEnglish() {
     t.appsErrorNoDisplay = "Couldn't open Konsole: no screen (DISPLAY isn't set)";
     t.appsErrorNoKonsole = "Couldn't open Konsole: Konsole isn't installed";
     t.appsErrorFailed = "Couldn't open Konsole";
+    t.rowEyeRate = "Eye camera speed";
+    t.hintEyeRate = "A SteamVR setting. Too few and gaze and eyelids stutter";
+    t.eyeRateFull = "Always 90 a second";
+    t.eyeRateSteamVr = "Let SteamVR decide";
+    t.eyeRateNowFormat = "Eye data now: %.0f a second";
     t.recordsTitle = "Recent records";
     t.recordsHint = "Kept for each calibration and eye fit";
     t.recordsNone = "None yet. Each calibration and eye fit leaves one";

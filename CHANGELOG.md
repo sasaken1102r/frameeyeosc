@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.0 (unreleased)
+
+With SteamOS 0.5.7's SteamVR, which can run the eye cameras at 15 a second, the panel now offers to set them back to 90 a second.
+
+日本語: SteamOS 0.5.7 の SteamVR は目のカメラを毎秒 15 で動かすことがあるので、パネルから毎秒 90 に戻せるようになりました。
+
+- Panel, eye camera speed: SteamOS 0.5.7's SteamVR has a new setting for the eye cameras' lowest speed (`eyeTrackingRateMin` in SteamVR's settings), and it can then run them at 15 a second, which makes the gaze and eyelids stutter. When the left column shows "Eye data" low because of the Frame and that setting is below 90, the line under it now says "SteamVR slows the eye cameras" with "Set 90", which sets it to 90 at once (no SteamVR restart), then says whether it took. Advanced › Having trouble has a new "Eye camera speed" row: "Always 90 a second" or "Let SteamVR decide" (SteamVR's own default), with the eye data's rate now. With an older SteamVR, which has no such setting, neither shows.
+
 ## 0.10.0-beta.1 (2026-11-04)
 
 frameeyeosc can now send the same eye data to up to 3 more apps next to the main output: in the FrameEyeOSC format (`feo1`), or as plain OSC (`osc`) with VRChat's own eye input and VRCFaceTracking's v2 names. Set them up on the Output tab's new "Other apps" page. "Only inside my home network" (`lan_only`, on at first) keeps eye data from going to addresses outside your home network, the main output's too. The ETVR output and eye behavior v1 (the eyes as up to 0.7.5) are gone. Port numbers can now be typed on a keypad. Update the panel together with frameeyeosc: the panel's "Update" button does both (by hand: `./install.sh --with-panel`).
@@ -17,7 +25,6 @@ frameeyeosc can now send the same eye data to up to 3 more apps next to the main
 - `docs/protocol.md` now fixes what a FrameEyeOSC receiver must accept: lengths 72 to 1472, an extension area after byte 108 (0.10 sends none), and a sequence that can skip. It also has 4 test packets and the `osc` format's address list and contract.
 - Panel, Output tab: now two pages, "Main destination" and "Other apps"; the one open last comes back. Other apps lists each destination with Send / Stop, Change and Delete, which asks in the row first. "Add a destination" goes through format, address and port.
 - Panel, ports: tapping the port number, on the main destination's "Port" row and in step 3 of adding another app, opens a keypad like the IP one. It takes 1 to 65535. − / ＋ stay.
-- Panel, eye camera speed: SteamOS 0.5.7's SteamVR has a new setting for the eye cameras' lowest speed (`eyeTrackingRateMin` in SteamVR's settings), and it can then run them at 15 a second, which makes the gaze and eyelids stutter. When the left column shows "Eye data" low because of the Frame and that setting is below 90, the line under it now says "SteamVR slows the eye cameras" with "Set 90", which sets it to 90 at once (no SteamVR restart), then says whether it took. Advanced › Having trouble has a new "Eye camera speed" row: "Always 90 a second" or "Let SteamVR decide" (SteamVR's own default), with the eye data's rate now. With an older SteamVR, which has no such setting, neither shows.
 - Removed: the ETVR output. `"output": "etvr"` (in `config.json` or `--output etvr`) now sends to VRChat directly, and the log says so. `config.json`'s port 8889 becomes VRChat's 9000; any other port stays as given. For VRCFaceTracking, use its LiveLink or FrameEyeOSC module. The panel changes such a `config.json` once (the output, that port, and `eye_behavior`). To keep ETVR, stay on 0.9 (or go back: see the README, "Going back to an earlier release").
 - Removed: eye behavior v1 (`eye_behavior: 1`, the eyes as up to 0.7.5). The eyes always move as with v2, and `eye_behavior` is accepted and ignored (the panel takes it out of `config.json` once). To keep v1, stay on 0.9 (or go back: see the README, "Going back to an earlier release").
 

@@ -144,15 +144,21 @@ void testWriteFailed() {
     CHECK(eye_rate::update(v, slow, 50.0 + eye_rate::kRefusedSec) && v.line == Line::Offer);
 }
 
-/** The rate low only for frameeyeosc's own reason after the press: the check still says "not taken" (it is low). */
+/** The rate low only for frameeyeosc's own reason at the check: SteamVR did take it, so not "not taken". */
 void testRefusedWhileOtherCause() {
     View v = withMin(15);
     eye_rate::pressed(v, true, 10.0);
+    v.setting.min = 90;
     eye_rate::update(v, status(Rate::SlowHere), 15.0);
-    CHECK(v.line == Line::Refused);
-    // ...but the offer itself only comes back for the eye tracker being slow
+    CHECK(v.line == Line::None);
+    CHECK(!v.refused && v.pressedAt < 0);
     eye_rate::update(v, status(Rate::SlowHere), 15.0 + eye_rate::kRefusedSec);
     CHECK(v.line == Line::None);
+    // Still the eye tracker at the check: "not taken"
+    View t = withMin(15);
+    eye_rate::pressed(t, true, 10.0);
+    eye_rate::update(t, status(Rate::SlowTracker), 15.0);
+    CHECK(t.line == Line::Refused && t.refused);
     // Not tracking at the check: nothing to tell, so not "not taken"
     View w = withMin(15);
     eye_rate::pressed(w, true, 10.0);

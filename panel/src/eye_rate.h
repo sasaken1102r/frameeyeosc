@@ -94,7 +94,8 @@ bool offered(const View& v, const EyeStatus& s);
 void pressed(View& v, bool written, double now);
 
 /**
- * Move the state on: the confirmation's time, the check after it, "not taken"'s time, and the line to show.
+ * Move the state on: the confirmation's time, the check after it (still low because of the eye tracker is "not
+ * taken"; low because frameeyeosc is slow then is not), "not taken"'s time, and the line to show.
  * @param v the state
  * @param s the status now
  * @param now seconds

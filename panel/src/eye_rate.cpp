@@ -36,9 +36,10 @@ void pressed(View& v, bool written, double now) {
 
 bool update(View& v, const EyeStatus& s, double now) {
     const Line before = v.line;
-    // The check once the confirmation has shown its time: still low is SteamVR not taking it
+    // The check once the confirmation has shown its time: still low because of the eye tracker is SteamVR not taking
+    // it (low because frameeyeosc itself is slow then isn't: the cameras did speed up)
     if (v.pressedAt >= 0 && now - v.pressedAt >= kCheckSec) {
-        if (low(s)) {
+        if (low(s) && trackerRateCause(s) == TrackerRateCause::Tracker) {
             v.refusedAt = v.pressedAt + kCheckSec;
             v.refused = true;
         }

@@ -42,6 +42,10 @@ struct UiText {
     const char* trackerRateLowHint;  ///< shown when it is low
     const char* trackerRateSlowHere;     ///< the line below a low rate: frameeyeosc was too slow to take the samples
     const char* trackerRateSlowTracker;  ///< the line below a low rate: the eye tracker itself delivered few
+    const char* eyeRateSlow;     ///< ...in its place while SteamVR's eyeTrackingRateMin is below 90 (eye_rate::Line::Offer)
+    const char* eyeRateSet;      ///< ...the pill after it, which writes 90
+    const char* eyeRateDone;     ///< ...in its place for a few seconds after it was pressed
+    const char* eyeRateRefused;  ///< ...the eye data still low after that (the offer shows again)
     const char* lidsTitle;          ///< eyelids heading
     const char* legendRaw;          ///< raw value (legend)
     const char* legendSent;         ///< sent value (legend)
@@ -404,6 +408,11 @@ struct UiText {
     const char* appsErrorNoDisplay;     ///< ...NoDisplay
     const char* appsErrorNoKonsole;     ///< ...NoKonsole
     const char* appsErrorFailed;        ///< ...Failed and UnknownApp
+    const char* rowEyeRate;          ///< "Having trouble"'s row for the eye cameras' speed (SteamVR's eyeTrackingRateMin)
+    const char* hintEyeRate;         ///< ...under it
+    const char* eyeRateFull;         ///< ...its choice: eyeTrackingRateMin 90
+    const char* eyeRateSteamVr;      ///< ...its choice: the key removed (SteamVR's default)
+    const char* eyeRateNowFormat;    ///< ...the line under it: the eye data's rate now (%.0f)
     // Records of calibrations and eye fits (report.h): the "Having trouble" page, a record, all records, report.txt
     const char* recordsTitle;       ///< "Recent records"
     const char* recordsHint;        ///< beside it

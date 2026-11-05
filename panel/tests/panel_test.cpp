@@ -1525,6 +1525,11 @@ void testPagesFit(const FontSet& fonts) {
                 m.update.installable = true;
                 m.update.latest = "0.7.6";
                 m.update.notes = std::string(300, 'y');
+                // (with "Having trouble"'s eye camera speed and the rate under it)
+                m.eyeRate.setting.exists = true;
+                m.eyeRate.setting.min = 15;
+                m.status.tracking = true;
+                m.status.trackerRate = 15;
                 panel.setTab(PanelTab::Advanced);
                 panel.setAdvPage(page);
                 panel.render(m);
@@ -4354,6 +4359,107 @@ void testExtrasSaveLabel(const FontSet& fonts) {
     CHECK(extrasList(m).entries[1].enabled);
 }
 
+/**
+ * SteamVR's eye camera speed: the left column's "Set 90" only for a slow eye tracker with the setting below 90 (not for
+ * frameeyeosc's own slowness, at 90, or without the setting), on the reason's line between the rate and the line
+ * before the eyelids, with no destination lines and with four; pressing it hands it to the caller; the confirmation
+ * and "not taken" in its place, not pressable. "Having trouble"'s two choices only with the setting, inside the card
+ * and apart, the page still fitting. Both languages.
+ */
+void testEyeRate(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool many : {false, true}) {
+            PanelModel m = extrasModel(language, many ? kThreeExtras : "[]");
+            if (many) {
+                liveThree(m, true);
+                m.status.pupilTarget = "192.168.0.60:9000";
+                m.status.pupilNet = "lan";
+            }
+            EyeStatus& s = m.status;
+            s.tracking = s.hasRaw = s.hasSent = true;
+            s.trackerRate = 15.0;
+            s.missedRate = 0.0;
+            s.maxProcessingMs = 1.4;
+            s.droppedRate = 0.0;
+            m.eyeRate.setting.exists = true;
+            m.eyeRate.setting.min = 15;
+            eye_rate::update(m.eyeRate, s, 0.0);
+            CHECK(m.eyeRate.line == eye_rate::Line::Offer);
+            EyePanel panel(fonts);
+            panel.render(m);
+            const StatusLayout l = statusLayout(many ? 4 : 0, true, false, false);
+            const std::vector<EyePanel::HitArea> offer = hits(panel, PanelAction::EyeRateSet);
+            CHECK(offer.size() == 1);
+            if (offer.size() == 1) {
+                const EyePanel::HitArea& a = offer[0];
+                CHECK(a.x >= 44 && a.x + a.w <= 376);
+                CHECK(a.y >= 228 + l.shift + 4 && a.y + a.h <= 262.5 + l.dy);
+            }
+            CHECK(press(panel, PanelAction::EyeRateSet).action == PanelAction::EyeRateSet);
+            // frameeyeosc itself slow: today's line, nothing to press
+            s.trackerRate = 46.0;
+            s.missedRate = 44.0;
+            eye_rate::update(m.eyeRate, s, 0.0);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::EyeRateSet).empty());
+            // At 90, or a SteamVR without it: nothing either
+            s.trackerRate = 15.0;
+            s.missedRate = 0.0;
+            for (const bool exists : {true, false}) {
+                m.eyeRate.setting.exists = exists;
+                m.eyeRate.setting.min = exists ? 90 : NAN;
+                eye_rate::update(m.eyeRate, s, 0.0);
+                panel.render(m);
+                CHECK(hits(panel, PanelAction::EyeRateSet).empty());
+            }
+            // The confirmation, then "not taken": not pressable; then the offer again
+            m.eyeRate.setting.exists = true;
+            m.eyeRate.setting.min = 15;
+            eye_rate::pressed(m.eyeRate, true, 10.0);
+            eye_rate::update(m.eyeRate, s, 10.0);
+            panel.render(m);
+            CHECK(m.eyeRate.line == eye_rate::Line::Done && hits(panel, PanelAction::EyeRateSet).empty());
+            eye_rate::update(m.eyeRate, s, 10.0 + eye_rate::kCheckSec);
+            panel.render(m);
+            CHECK(m.eyeRate.line == eye_rate::Line::Refused && hits(panel, PanelAction::EyeRateSet).empty());
+            eye_rate::update(m.eyeRate, s, 10.0 + eye_rate::kCheckSec + eye_rate::kRefusedSec);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::EyeRateSet).size() == 1);
+        }
+        // "Having trouble": the two choices with the setting, in the card and apart, the page fitting
+        for (const bool exists : {true, false}) {
+            PanelModel m = modelWith(Lids::Both, false);
+            m.language = language;
+            m.records.list = records(10);
+            m.status.tracking = true;
+            m.status.trackerRate = 15;
+            m.eyeRate.setting.exists = exists;
+            m.eyeRate.setting.min = exists ? 15 : NAN;
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Advanced);
+            panel.setAdvPage(AdvPage::Trouble);
+            panel.render(m);
+            const std::vector<EyePanel::HitArea> choices = hits(panel, PanelAction::EyeRateChoose);
+            if (exists) {
+                CHECK(choices.size() == 2 && choices[0].hit.arg == static_cast<int>(eye_rate::Choice::Full) &&
+                      choices[1].hit.arg == static_cast<int>(eye_rate::Choice::SteamVr));
+            } else {
+                CHECK(choices.empty());
+            }
+            // (the records' own "View" buttons are smaller, so only these two are checked against everything else)
+            for (const EyePanel::HitArea& a : choices) {
+                CHECK(a.x >= 438 - 0.5 && a.x + a.w <= 1154 + 0.5 && a.y >= 174 && a.y + a.h <= 664 && a.h >= 40);
+                for (const EyePanel::HitArea& b : panel.hitAreas()) {
+                    if (b.hit != a.hit) CHECK(!overlaps(a, b));
+                }
+            }
+            CHECK(!panel.wantsScroll());
+            CHECK(pressArg(panel, PanelAction::EyeRateChoose, static_cast<int>(eye_rate::Choice::SteamVr)).action ==
+                  (exists ? PanelAction::EyeRateChoose : PanelAction::None));
+        }
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -4407,6 +4513,7 @@ int main() {
     testExtrasRowDelete(fonts);
     testPortKeypad(fonts);
     testStatusLayout(fonts);
+    testEyeRate(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

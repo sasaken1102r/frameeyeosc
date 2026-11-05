@@ -173,6 +173,10 @@ enum class PanelAction {
     ExtraRowDeleteCancel,   ///< ...its "Cancel" (handled inside)
     ExtraRowDeleteConfirm,  ///< ...its red "Delete", arg = its index: the caller takes it out (extras::removeEntry
                             ///< with extrasRowDeleteOriginal) and closes the confirmation (closeExtrasFlow)
+    EyeRateSet,        ///< the left column's "Set 90" (eye_rate::Line::Offer): the caller writes SteamVR's
+                       ///< eyeTrackingRateMin 90 and tells eye_rate::pressed
+    EyeRateChoose,     ///< "Having trouble"'s eye camera speed: arg = eye_rate::Choice (the caller writes 90, or removes
+                       ///< the key for SteamVR's default)
 };
 
 /** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
@@ -1031,6 +1035,18 @@ private:
     void drawStatus(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
+     * The left column's line under a low eye data rate while SteamVR runs the eye cameras slowly: what it does, right
+     * aligned before a "Set 90" pill (the whole line, and the rate's row above it, can be pressed). If the words don't
+     * fit beside the pill even small, the line is the words with a chevron instead.
+     * @param pen drawing tools
+     * @param t texts
+     * @param x0 the column's text left
+     * @param x1 ...right
+     * @param baseline the line's baseline (where the reason goes)
+     */
+    void drawEyeRateOffer(const Pen& pen, const UiText& t, double x0, double x1, double baseline);
+
+    /**
      * The tab row (the eye capture tab last, only while eyecamTab_).
      * @param pen drawing tools
      * @param t texts
@@ -1484,6 +1500,18 @@ private:
      * @return its height
      */
     double drawTroublePage(const Pen& pen, const UiText& t, const PanelModel& model, double top, double right);
+
+    /**
+     * "Having trouble"'s eye camera speed (SteamVR's eyeTrackingRateMin): its title and hint, "Always 90 a second" /
+     * "Let SteamVR decide", and the eye data's rate now under the hint. Only drawn when this SteamVR has the setting.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param y the row's top
+     * @param right the page's right edge
+     * @return the height used (0 when not drawn)
+     */
+    double drawEyeRateRow(const Pen& pen, const UiText& t, const PanelModel& model, double y, double right);
 
     /**
      * "Debug tools": the gaze dots and their distance, the eye log, and the eye capture while eyecam-rec runs.

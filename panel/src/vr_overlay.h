@@ -111,6 +111,29 @@ public:
      */
     double userIpdMeters() const;
 
+    /**
+     * SteamVR's slowest eye camera rate (steamvr / eyeTrackingRateMin, eye_rate::kSection / kKey), set or its default.
+     * Not logged (read every few seconds; the caller logs what changed).
+     * @param value set to it when there is one
+     * @param error set to SteamVR's reason when there isn't (UnsetSettingHasNoDefault: a SteamVR without it)
+     * @return true if this SteamVR has the setting
+     */
+    bool eyeRateMin(double& value, std::string& error) const;
+
+    /**
+     * Set it (IVRSettings::SetFloat; SteamVR follows at once and keeps it in steamvr.vrsettings). Logged.
+     * @param value the rate
+     * @return true if SteamVR took the write
+     */
+    bool setEyeRateMin(double value) const;
+
+    /**
+     * Remove it from the user's settings (IVRSettings::RemoveKeyInSection), giving SteamVR its own default back.
+     * Logged.
+     * @return true if SteamVR took it
+     */
+    bool clearEyeRateMin() const;
+
 
     /**
      * Show the eye fit's target: an overlay of its own (not on the dashboard), fixed to the headset

@@ -1923,6 +1923,34 @@ void EyePanel::drawCaption(const Pen& pen, double x, double baseline, const std:
     if (locked) drawLock(pen, tx + 8, baseline + 1, 15, kTextMuted);
 }
 
+void EyePanel::drawEyeRateOffer(const Pen& pen, const UiText& t, double x0, double x1, double baseline) {
+    const PanelHit hit {PanelAction::EyeRateSet, nullptr, 0};
+    const int pointer = pointerState(hit);
+    // The pill in the line's own height (under the rate, above the line before the eyelids), the words before it
+    const double pillSize = 12;
+    const double pillH = 18;
+    const double pillTop = baseline - 12.5;
+    const double pillW = pen.measure(t.eyeRateSet, pillSize, true) + 18;
+    const double pillX = x1 - pillW;
+    const double room = pillX - 8 - x0;
+    const double minSize = 11;
+    if (pen.measure(t.eyeRateSlow, minSize, false) <= room) {
+        fillRounded(pen, pillX, pillTop, pillW, pillH, pillH / 2, pointer == 2 ? kAccentPressed : kAccent);
+        textCentered(pen, pillX + pillW / 2, centerBaseline(pillTop, pillH, pillSize), t.eyeRateSet, pillSize,
+                     kOnAccent, true);
+        const double size = fitSize(pen, t.eyeRateSlow, 14, minSize, room, false);
+        pen.text(pillX - 8, baseline, t.eyeRateSlow, size, pointer > 0 ? kText : kTextMuted, false, true);
+    } else {
+        // Too long beside it: the words alone, in the accent, with a chevron
+        const std::string line = std::string(t.eyeRateSlow) + " " ICON_CHEVRON_RIGHT;
+        const double size = fitSize(pen, line, 14, minSize, x1 - x0, true);
+        pen.text(x1, baseline, ellipsize(pen, line, size, true, x1 - x0, false), size,
+                 pointer == 2 ? kAccentPressed : kAccent, true, true);
+    }
+    // (pressed anywhere on the line, or on the rate's row above it: nothing else there can be)
+    addButton(hit, x0, baseline - 25, x1 - x0, 32, true);
+}
+
 void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) {
     cairo_t* cr = pen.cr;
     const EyeStatus& s = m.status;
@@ -1985,7 +2013,9 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     const double labelW = pen.text(x0, 154, t.destination, 15, kTextMuted, true);
     const int more = s.running ? drawMoreDestinations(pen, t, m, x0, x1, 0, kDestStep, false) : 0;
     const TrackerRateCause cause = trackerRateCause(s);
-    const StatusLayout rows = statusLayout(more, cause != TrackerRateCause::None, false, false);
+    // (the line under the eye data's rate also stays while "Set 90"'s confirmation or "not taken" shows)
+    const bool slowRow = eye_rate::rowShown(m.eyeRate, cause);
+    const StatusLayout rows = statusLayout(more, slowRow, false, false);
     const double shift = rows.shift;
     if (!s.running) {
         pen.text(x0, 180, t.notRunningHint1, fitSize(pen, t.notRunningHint1, 16, 12, x1 - x0, false), kText);
@@ -2043,7 +2073,17 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     // (with many more destinations the eyelid rows get closer, and the gaze moves down that much less: statusLayout)
     const double dy = rows.dy;
     const double g = rows.g;
-    if (cause != TrackerRateCause::None) {
+    // SteamVR running the eye cameras slowly (its eyeTrackingRateMin below 90): that line, with "Set 90", in the reason's
+    // place; after the press, that it was set, or that SteamVR didn't take it (eye_rate)
+    const eye_rate::Line rateLine = m.eyeRate.line;
+    if (rateLine == eye_rate::Line::Offer && cause == TrackerRateCause::Tracker) {
+        drawEyeRateOffer(pen, t, x0, x1, 269 + shift);
+    } else if (rateLine == eye_rate::Line::Done || rateLine == eye_rate::Line::Refused) {
+        const bool done = rateLine == eye_rate::Line::Done;
+        const char* line = done ? t.eyeRateDone : t.eyeRateRefused;
+        pen.text(x1, 269 + shift, line, fitSize(pen, line, 14, 11, x1 - x0, true), done ? kSuccess : kDanger, true,
+                 true);
+    } else if (cause != TrackerRateCause::None) {
         const char* line = cause == TrackerRateCause::Here ? t.trackerRateSlowHere : t.trackerRateSlowTracker;
         pen.text(x1, 269 + shift, line, fitSize(pen, line, 14, 11, x1 - x0, false), kTextMuted, false, true);
     }
@@ -2179,7 +2219,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     const bool setupCard = !failure && (nextCard || readyCard);
     // Each eye's own pad while the eyes move separately; one pad for the shared gaze otherwise
     const bool perEye = SettingsView(m).flag(key::kIndependentEyes);
-    const StatusLayout gazeRows = statusLayout(more, cause != TrackerRateCause::None, perEye, setupCard);
+    const StatusLayout gazeRows = statusLayout(more, slowRow, perEye, setupCard);
     if (perEye) {
         // The legend on the title line: ring = raw, the two eye colors = sent
         if (oneEye == nullptr) {
@@ -5444,6 +5484,11 @@ double EyePanel::drawTroublePage(const Pen& pen, const UiText& t, const PanelMod
         pen.text(kInnerX, y + 48, ellipsize(pen, t.diagRowHint, 14, false, room, false), 14, kTextMuted);
         y += h + 16;
     }
+    // SteamVR's eye camera speed (only with a SteamVR that has the setting)
+    {
+        const double h = drawEyeRateRow(pen, t, m, y, right);
+        if (h > 0) y += h + 16;
+    }
     // The newest records
     {
         const double titleW = pen.text(kInnerX, y + 18, t.recordsTitle, 17, kText, true);
@@ -5484,6 +5529,45 @@ double EyePanel::drawTroublePage(const Pen& pen, const UiText& t, const PanelMod
         y += h;
     }
     return y + 8 - top;
+}
+
+double EyePanel::drawEyeRateRow(const Pen& pen, const UiText& t, const PanelModel& m, double y, double right) {
+    const eye_rate::View& rate = m.eyeRate;
+    if (!rate.setting.exists) return 0.0;
+    // The two choices on the right, as wide as the longer one needs (narrower beside the scroll buttons)
+    const double segSize = 17;
+    const double segH = 48;
+    const double segW = std::min(
+        right - kInnerX - 260,
+        2 * (std::max(pen.measure(t.eyeRateFull, segSize, true), pen.measure(t.eyeRateSteamVr, segSize, true)) +
+             segSize * 0.9 + 28) +
+            10);
+    const double segX = right - segW;
+    const int chosen = eye_rate::choice(rate.setting) == eye_rate::Choice::Full ? 0 : 1;
+    drawSegmented(pen, segX, y + 6, segW, segH,
+                  {{t.eyeRateFull, {PanelAction::EyeRateChoose, nullptr, static_cast<int>(eye_rate::Choice::Full)}},
+                   {t.eyeRateSteamVr,
+                    {PanelAction::EyeRateChoose, nullptr, static_cast<int>(eye_rate::Choice::SteamVr)}}},
+                  chosen, segSize);
+    // The title and hint as the diagnostics' (the hint on two lines if it needs them), the rate now under them
+    const double room = segX - 16 - kInnerX;
+    pen.text(kInnerX, y + 24, t.rowEyeRate, fitSize(pen, t.rowEyeRate, 20, 14, room, true), kText, true);
+    double baseline = y + 48;
+    for (const std::string& line : wrapText(pen, t.hintEyeRate, 14, false, room, 2)) {
+        pen.text(kInnerX, baseline, line, 14, kTextMuted);
+        baseline += 19;
+    }
+    const EyeStatus& s = m.status;
+    if (s.running && s.tracking && std::isfinite(s.trackerRate)) {
+        const bool low = eye_rate::low(s);
+        char text[128];
+        std::snprintf(text, sizeof(text), t.eyeRateNowFormat, s.trackerRate);
+        std::string now = text;
+        if (low) now += std::string("  ") + t.trackerRateLowHint;
+        pen.text(kInnerX, baseline + 3, ellipsize(pen, now, 14, low, room, false), 14, low ? kDanger : kText, low);
+    }
+    baseline += 3;
+    return std::max(segH + 12, baseline + 6 - y);
 }
 
 void EyePanel::drawRecordRow(const Pen& pen, const UiText& t, const report::Summary& r, double x0, double x1, double y,

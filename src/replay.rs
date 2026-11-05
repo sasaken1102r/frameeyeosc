@@ -1208,6 +1208,14 @@ pub fn run(input: &Path, output: Option<&Path>, settings: &Settings, calibration
     Ok(())
 }
 
+/// A recording's samples that can be run, each with the eye camera's values read with it (for main.rs's wire_dump).
+#[cfg(test)]
+pub fn load(path: &Path) -> Result<Vec<(EyeData, Option<Live>)>, String> {
+    let text = fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    let (rows, _) = parse(&text)?;
+    Ok(rows.into_iter().filter(|row| row.data.is_finite()).map(|row| (row.data, row.camera)).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

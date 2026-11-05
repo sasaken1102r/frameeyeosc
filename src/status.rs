@@ -1,11 +1,12 @@
 //! status.json, which the panel reads to show what is being sent and where.
 
 use crate::capture::CaptureResult;
-use crate::config::{OutputKind, Settings};
+use crate::config::{ExtraFormat, OutputKind, Settings};
+use crate::dest::Net;
 use serde::Serialize;
-use std::fs::{self, DirBuilder};
-use std::io;
-use std::os::unix::fs::DirBuilderExt;
+use std::fs::{self, DirBuilder, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -25,6 +26,19 @@ pub struct Status<'a> {
     pub target: Option<String>,
     /// Where the eye camera's pupils go straight to VRChat in LiveLink mode (see pupils_to_vrchat); None otherwise.
     pub pupil_target: Option<String>,
+    /// The lan_only setting: addresses outside the home network table are refused (see dest).
+    pub lan_only: bool,
+    /// What kind of address `target` is: "lan", "vpn" (100.64/10) or "public" (only with lan_only off, or the Steam
+    /// Link PC, which is never refused); None without a target.
+    pub net: Option<Net>,
+    /// Why the main output's host is not sent to ("public address", "broadcast refused", ...); None while it is not
+    /// refused.
+    pub refused: Option<&'a str>,
+    /// The same two for `pupil_target` (None while the pupils don't go straight to VRChat).
+    pub pupil_net: Option<Net>,
+    pub pupil_refused: Option<&'a str>,
+    /// One per extra_outputs entry, in order (an entry that can't be used too).
+    pub extras: Vec<ExtraStatus>,
     pub rate: f32,
     /// Samples from the eye tracker in the last second (sent or not): about 90-136 while streaming,
     /// and it has been seen at 15. None until tracking has run for a second (the count is still filling).
@@ -60,6 +74,37 @@ pub struct Status<'a> {
     pub gaze_capture: Option<&'a CaptureResult>,
     /// The last problem frameeyeosc logged (see `log_error`), kept after it clears; None if there was none yet.
     pub last_error: Option<LastError>,
+}
+
+/// One extra output as it is now.
+#[derive(Debug, PartialEq, Serialize)]
+pub struct ExtraStatus {
+    /// Its place in extra_outputs, from 1 (config_error's "entry N").
+    pub index: usize,
+    pub name: String,
+    pub enabled: bool,
+    /// "feo1" or "osc"; None for an entry that can't be used.
+    pub format: Option<ExtraFormat>,
+    /// As written: "main", "auto", an IP address or a host name.
+    pub host: String,
+    pub port: u16,
+    /// Turned on, usable, not paused and not refused (`refused` null): what it gets goes out, once its address is
+    /// found.
+    pub sending: bool,
+    /// The address it goes to while sending; None while it isn't, or there is none yet.
+    pub target: Option<String>,
+    /// What kind of address `target` is: "lan", "vpn" or "public".
+    pub net: Option<Net>,
+    /// Samples sent in the last second.
+    pub rate: f32,
+    /// Datagrams dropped in the last second because the network could not take them at once.
+    pub dropped_rate: f32,
+    /// Why it sends nothing although turned on, short: what is wrong with its entry (as in config_error), "same as
+    /// main" (the main output's or the pupils' address and port), "duplicate" (an earlier extra's), "public address",
+    /// "broadcast refused", ...
+    pub refused: Option<String>,
+    /// What keeps it from sending while it should ("no Steam Link", "could not resolve: ...", "sending failed: ...").
+    pub last_error: Option<String>,
 }
 
 /// One problem frameeyeosc logged: the log line, and when (Unix seconds).
@@ -106,7 +151,8 @@ pub struct RawValues {
     pub gaze_right: [f32; 2],
 }
 
-/// What goes out (or would, while paused). `lids` is on the output's own scale.
+/// What goes out (or would, while paused). `lids` is on the output's own scale, which is VRCFT's for every output
+/// (`lids_vrcft`, the same values, stays for panels that read it).
 #[derive(Serialize)]
 pub struct SentValues {
     pub lids: [f32; 2],
@@ -212,14 +258,22 @@ impl StatusFile {
     fn replace(&mut self, status: &Status) -> io::Result<()> {
         self.json.clear();
         serde_json::to_writer(&mut self.json, status)?;
-        if let Err(error) = fs::write(&self.temporary, &self.json) {
+        if let Err(error) = write_private(&self.temporary, &self.json) {
             let Some(dir) = self.path.parent().filter(|_| error.kind() == io::ErrorKind::NotFound)
             else {
                 return Err(error);
             };
             DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-            fs::write(&self.temporary, &self.json)?;
+            write_private(&self.temporary, &self.json)?;
         }
         fs::rename(&self.temporary, &self.path)
     }
+}
+
+/// Write `bytes` to `path`, readable by this user only (it is in a folder only this user can open anyway).
+fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+    // (a file left by an earlier version keeps its mode when written again)
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.write_all(bytes)
 }

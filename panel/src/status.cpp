@@ -182,6 +182,34 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
     }
     status.dominantEye = readText(root, "dominant_eye");
     status.pupilTarget = readText(root, "pupil_target");
+    // Sending to other apps and lan_only (0.10 on; an older frameeyeosc has neither)
+    if (const JsonValue* list = root.get("extras"); list != nullptr && list->isArray()) {
+        status.extrasKnown = true;
+        status.lanOnly = !root.get("lan_only") || !root.get("lan_only")->isBool() || root.get("lan_only")->boolean;
+        status.net = readText(root, "net");
+        status.refused = readText(root, "refused");
+        status.pupilNet = readText(root, "pupil_net");
+        status.pupilRefused = readText(root, "pupil_refused");
+        for (const JsonValue& item : list->items) {
+            if (!item.isObject()) continue;
+            ExtraLive e;
+            const double index = readNumber(item, "index", 0);
+            e.index = std::isfinite(index) && index >= 0 && index < 1000 ? static_cast<int>(index) : 0;
+            e.name = readText(item, "name");
+            e.enabled = readBool(item, "enabled");
+            e.format = readText(item, "format");
+            e.host = readText(item, "host");
+            const double port = readNumber(item, "port", 0);
+            e.port = std::isfinite(port) && port >= 0 && port <= 65535 ? static_cast<int>(port) : 0;
+            e.sending = readBool(item, "sending");
+            e.target = readText(item, "target");
+            e.net = readText(item, "net");
+            e.rate = readNumber(item, "rate", 0);
+            e.refused = readText(item, "refused");
+            e.lastError = readText(item, "last_error");
+            status.extras.push_back(std::move(e));
+        }
+    }
     if (status.dominantEye != "left" && status.dominantEye != "right") status.dominantEye.clear();
     status.opennessSaturated = readBool(root, "openness_saturated");
     if (const JsonValue* locked = root.get("locked"); locked != nullptr && locked->isArray()) {

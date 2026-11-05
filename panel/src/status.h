@@ -53,6 +53,23 @@ struct CameraStatus {
     std::string error;              ///< why not, in frameeyeosc's words ("" = none)
 };
 
+/** One extra output as frameeyeosc sends to it now (status.json's "extras", from 0.10). */
+struct ExtraLive {
+    int index = 0;            ///< its place in extra_outputs, from 1
+    std::string name;
+    bool enabled = false;
+    std::string format;       ///< "feo1" / "osc"; "" for an entry that can't be used
+    std::string host;         ///< as written
+    int port = 0;
+    bool sending = false;     ///< turned on, usable, not paused and not refused
+    std::string target;       ///< "IP:PORT" while sending ("" = none yet)
+    std::string net;          ///< what kind of address target is: "lan", "vpn" or "public" ("" = none)
+    double rate = 0.0;        ///< samples sent in the last second
+    std::string refused;      ///< why it sends nothing although turned on ("same as main", "public address", ...)
+    std::string lastError;    ///< what keeps it from sending while it should ("no Steam Link", "could not resolve:
+                              ///< ...")
+};
+
 /** What the panel knows about frameeyeosc from status.json. */
 struct EyeStatus {
     bool present = false;   ///< the file was read and parsed
@@ -63,7 +80,7 @@ struct EyeStatus {
     double time = 0.0;      ///< when it was written (Unix seconds)
     double started = 0.0;   ///< when frameeyeosc started (Unix seconds)
     bool sending = false;
-    std::string output;     ///< "vrchat" / "etvr" / "livelink" / "frameeyeosc"
+    std::string output;     ///< "vrchat" / "livelink" / "frameeyeosc" (an older frameeyeosc's "etvr" shows as VRChat)
     std::string targetMode; ///< "auto" / "fixed"
     std::string target;     ///< "IP:PORT"; empty while the Steam Link PC is not found
     double rate = 0.0;      ///< samples sent in the last second
@@ -87,6 +104,13 @@ struct EyeStatus {
     double pupilDilation = NAN;  ///< pupil dilation sent from the eye cameras (NaN while not sent)
     CameraStatus camera;     ///< the eye cameras
     std::string pupilTarget; ///< where the pupils go straight to VRChat in LiveLink mode ("host:9000"; "" = nowhere)
+    bool extrasKnown = false;  ///< status.json has "extras" (frameeyeosc 0.10 on: it sends to other apps, lan_only)
+    std::vector<ExtraLive> extras;  ///< one per extra_outputs entry, in order
+    bool lanOnly = true;     ///< lan_only in effect (only with extrasKnown)
+    std::string net;         ///< what kind of address target is: "lan", "vpn", "public" ("" = none, or older)
+    std::string refused;     ///< why the main output's host isn't sent to ("public address", ...; "" = it is)
+    std::string pupilNet;    ///< the same two for pupilTarget
+    std::string pupilRefused;
 
     bool calibrationEnabled = false;
     Pair relaxed {};         ///< learned relaxed openness per eye (NaN = not learned)

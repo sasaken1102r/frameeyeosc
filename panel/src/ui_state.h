@@ -1,6 +1,6 @@
-// What the panel remembers of itself between starts (not a setting): which sub-tab of the Gaze, Eyelids and Advanced
-// tabs was open last, whether the gaze scale's pairs are linked (their locks), the up gains the last whole eye fits
-// measured (the fit writes their mean, gaze_fit::meanUpGain), and whether "Get test versions" is on.
+// What the panel remembers of itself between starts (not a setting): which sub-tab of the Output, Gaze, Eyelids and
+// Advanced tabs was open last, whether the gaze scale's pairs are linked (their locks), the up gains the last whole
+// eye fits measured (the fit writes their mean, gaze_fit::meanUpGain), and whether "Get test versions" is on.
 // Kept in its own small file, $XDG_STATE_HOME/frameeyeosc/panel.json (~/.local/state/frameeyeosc/panel.json), next to
 // the records, so config.json isn't rewritten for it: frameeyeosc never sees it, and "Reset all" leaves it alone.
 #pragma once
@@ -16,6 +16,9 @@ enum class LidsPage { Look, Blinks, Fine, Brows };
 
 /** The Gaze tab's sub-tabs, in the order its segmented control shows them. */
 enum class GazePage { Motion, Reach, Glitch };
+
+/** The Output tab's sub-tabs, in the order its segmented control shows them: the main destination, other apps. */
+enum class OutputPage { Main, Apps };
 
 namespace ui_state {
 
@@ -111,6 +114,35 @@ GazePage readGazePage(const std::string& path);
  * @return true if written
  */
 bool writeGazePage(const std::string& path, GazePage page, std::string& error);
+
+/**
+ * @param page an Output sub-tab
+ * @return its name in the file ("main", "apps")
+ */
+const char* outputPageName(OutputPage page);
+
+/**
+ * @param name an Output sub-tab's name
+ * @param page where to write it
+ * @return true if known
+ */
+bool parseOutputPage(const std::string& name, OutputPage& page);
+
+/**
+ * The Output sub-tab open last.
+ * @param path the file
+ * @return it, or Main (the first time, or when the file is missing or broken)
+ */
+OutputPage readOutputPage(const std::string& path);
+
+/**
+ * Remember the Output sub-tab open now (as writePage).
+ * @param path the file (its folder is made if missing)
+ * @param page the sub-tab
+ * @param error why it failed
+ * @return true if written
+ */
+bool writeOutputPage(const std::string& path, OutputPage page, std::string& error);
 
 /**
  * Whether each pair of the gaze scale was left linked (its lock closed): [0] left / right, [1] up / down.

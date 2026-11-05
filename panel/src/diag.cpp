@@ -387,7 +387,6 @@ std::string code(const PanelModel& m) {
         case Core::Error: out += std::string(kDot) + "FE"; break;
         case Core::NotRunning: out += std::string(kDot) + "F0"; break;
     }
-    out += std::string(kDot) + (std::lround(SettingsView(m).number(key::kEyeBehavior)) == 1 ? "V1" : "V2");
     return out;
 }
 
@@ -416,7 +415,6 @@ std::vector<Card> cards(const UiText& t, const PanelModel& m) {
         const std::string output = settings.text(key::kOutput);
         const std::string name = output == kOutputLivelink ? t.outputLivelink
                                  : output == kOutputModule ? t.outputModule
-                                 : output == kOutputEtvr   ? t.outputEtvr
                                                            : t.outputVrchat;
         const std::string host = settings.text(key::kHost);
         const std::string mode = host == "auto" || host.empty() ? t.diagModeAuto : std::string(t.diagModeFixed) + " " + host;

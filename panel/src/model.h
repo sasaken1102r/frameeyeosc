@@ -7,6 +7,8 @@
 #include "config.h"
 #include "contrib.h"
 #include "diag.h"
+#include "extras.h"
+#include "eye_rate.h"
 #include "eyecam.h"
 #include "eye_preview.h"
 #include "frame_apps.h"
@@ -65,6 +67,7 @@ struct PanelModel {
     stored::View savedData;      ///< "Saved data" (the Data page): the eye logs' count, and each kind's delete
     std::string moduleLinkError; ///< why the Output tab's module link didn't open the browser ("" = none; its own
                                  ///< line under the link, never the eye cameras' setup's eyecam.spawnError)
+    eye_rate::View eyeRate;      ///< SteamVR's eye camera speed (the left column's "Set 90", "Having trouble"'s row)
 };
 
 /**
@@ -217,9 +220,9 @@ bool migrateEyeOffsets(JsonValue& root, std::string& log);
 /**
  * Bring an eye fit from before version 4 over to what the fit keeps now, once: only the zero point (gaze_offset_x / _y)
  * and the up gain carry over from one wear to the next, so the tilt goes to 0, the sideways and down gains to 1, and
- * each eye's own sideways zero point and gain are taken out (null); auto_recenter "tilt" becomes "center". The same for
- * either eye_behavior (the fit is shared). version is then written as 4, which marks the file as done. Run after
- * migrateEyeOffsets, which only looks at files below version 3.
+ * each eye's own sideways zero point and gain are taken out (null); auto_recenter "tilt" becomes "center". version is
+ * then written as 4, which marks the file as done. Run after migrateEyeOffsets, which only looks at files below
+ * version 3.
  * @param root the config's root object (changed in place)
  * @param log what was changed, for the log (empty if nothing but the version)
  * @return true if root changed (the version was older)
@@ -227,8 +230,19 @@ bool migrateEyeOffsets(JsonValue& root, std::string& log);
 bool migrateFitPolicy(JsonValue& root, std::string& log);
 
 /**
- * Whether a settings file still needs migrateLidScales, migrateGazePresets, migrateEyeOffsets, migrateFitPolicy or
- * migrateLidOpenSnap (no lid_widen, a version below 4, or a lid_open_snap above 0.75).
+ * Take out what 0.10 removed, once: "output": "etvr" becomes "vrchat" (and a port of 8889 set with it, the ETVR
+ * module's, null: VRChat's default), and eye_behavior goes (0.10 has only the behaviour that was 2). Whatever the
+ * version.
+ * @param root the config's root object (changed in place)
+ * @param log what was changed, for the log (empty if only an eye_behavior of 2 went)
+ * @return true if root changed
+ */
+bool migrateRemovedSettings(JsonValue& root, std::string& log);
+
+/**
+ * Whether a settings file still needs migrateLidScales, migrateGazePresets, migrateEyeOffsets, migrateFitPolicy,
+ * migrateLidOpenSnap or migrateRemovedSettings (no lid_widen, a version below 4, a lid_open_snap above 0.75, the ETVR
+ * output or eye_behavior).
  * @param root the config's root object
  * @return true if one of them would change it
  */
@@ -313,31 +327,22 @@ struct SettingChange {
 
 /**
  * The output type a SetOutput / PromptYes button stands for.
- * @param arg 0 VRChat, 1 ETVR, 2 LiveLink, 3 FrameEyeOSC (anything else is VRChat)
- * @return kOutputVrchat, kOutputEtvr, kOutputLivelink or kOutputModule
+ * @param arg 0 VRChat, 2 LiveLink, 3 FrameEyeOSC (anything else is VRChat; 1 was ETVR, removed in 0.10)
+ * @return kOutputVrchat, kOutputLivelink or kOutputModule
  */
 const char* outputOfArg(int arg);
 
 /**
  * The button argument of an output type (the other way round from outputOfArg).
  * @param output the "output" value
- * @return 0 VRChat, 1 ETVR, 2 LiveLink, 3 FrameEyeOSC; -1 for anything else
+ * @return 0 VRChat, 2 LiveLink, 3 FrameEyeOSC; -1 for anything else
  */
 int argOfOutput(const std::string& output);
 
 /**
- * Whether the Basic tab warns that the output is going away (ETVR: deprecated, removed in the next version), between
- * the destination cards and the small ETVR button.
- * @param output the "output" setting
- * @return true to show the notice
- */
-bool outputDeprecated(const std::string& output);
-
-/**
- * The recommended settings of an output type (asked once after switching). Locked keys are left out.
- * VRChat, LiveLink and FrameEyeOSC: the default gaze and eyelid smoothing (those modules smooth nothing). ETVR:
- * default gaze smoothing and lighter eyelid smoothing, because the ETVR module already smooths the eyelids.
- * @param output kOutputVrchat, kOutputEtvr, kOutputLivelink or kOutputModule
+ * The recommended settings of an output type (asked once after switching). Locked keys are left out: the default
+ * gaze and eyelid smoothing (neither VRChat nor the LiveLink and FrameEyeOSC modules smooth anything).
+ * @param output kOutputVrchat, kOutputLivelink or kOutputModule
  * @param view the settings (to skip locked keys)
  * @return the changes
  */
@@ -423,6 +428,28 @@ std::vector<SettingChange> gazeScaleRelink(const SettingsView& view, int pair);
  * @return the host, or "" if there is none
  */
 std::string hostOfTarget(const std::string& target);
+
+/**
+ * The port of an "IP:PORT" target.
+ * @param target "IP:PORT" or "[IPv6]:PORT"
+ * @return the port, or 0
+ */
+int portOfTarget(const std::string& target);
+
+/**
+ * extra_outputs as shown: config.json's, or frameeyeosc's while it is locked by its command line (--extra).
+ * @param model the model
+ * @return the list
+ */
+extras::List extrasList(const PanelModel& model);
+
+/**
+ * The destinations an extra output must not repeat, as far as the panel can tell: the main output's (as frameeyeosc
+ * sends to it now, or as set), the Steam Link PC's and the pupils' (LiveLink).
+ * @param model the model
+ * @return them
+ */
+extras::Taken extrasTaken(const PanelModel& model);
 
 /** Where the eyelids come from, as frameeyeosc reports it (the eye capture tab's line under camera_lids). */
 enum class CameraUse {
@@ -549,8 +576,8 @@ bool moduleLinkErrorShown(const std::string& output, const std::string& error);
 
 /** How the Output tab shows "How the avatar takes pupils" (pupil_bits). */
 enum class PupilBitsRow {
-    Hidden,  ///< not there: the eye cameras not in use, ETVR (no pupils go to VRChat), or FrameEyeOSC (VRCFT sends
-             ///< them in whatever form the avatar takes)
+    Hidden,  ///< not there: the eye cameras not in use, or FrameEyeOSC (VRCFT sends them in whatever form the avatar
+             ///< takes)
     Greyed,  ///< there, but the pupils don't go straight to VRChat now (LiveLink with pupils_to_vrchat off)
     Usable,  ///< there and in effect
 };

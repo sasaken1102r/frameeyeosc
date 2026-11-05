@@ -985,6 +985,22 @@ void testUiState() {
     CHECK(ui_state::parseGazePage("glitch", gaze) && gaze == GazePage::Glitch);
     CHECK(!ui_state::parseGazePage("Reach", gaze) && gaze == GazePage::Glitch);
 
+    // The Output tab's: the first time the main destination, kept beside the others
+    ::unlink(path.c_str());
+    CHECK(ui_state::readOutputPage(path) == OutputPage::Main);
+    for (const OutputPage output : {OutputPage::Apps, OutputPage::Main, OutputPage::Apps}) {
+        CHECK(ui_state::writeOutputPage(path, output, error));
+        CHECK(ui_state::readOutputPage(path) == output);
+    }
+    CHECK(has(readText(path), "\"output_page\": \"apps\""));
+    CHECK(ui_state::writeGazePage(path, GazePage::Glitch, error));
+    CHECK(ui_state::readOutputPage(path) == OutputPage::Apps && ui_state::readGazePage(path) == GazePage::Glitch);
+    writeText(path, "{\"output_page\": \"others\"}");
+    CHECK(ui_state::readOutputPage(path) == OutputPage::Main);
+    OutputPage output = OutputPage::Main;
+    CHECK(ui_state::parseOutputPage("apps", output) && output == OutputPage::Apps);
+    CHECK(!ui_state::parseOutputPage("Apps", output) && output == OutputPage::Apps);
+
     // "Get test versions": off the first time, when missing, broken or not a boolean; kept beside the others
     ::unlink(path.c_str());
     CHECK(!ui_state::readUpdateBeta(path));

@@ -101,7 +101,7 @@ pub fn wide(lid: f32) -> f32 {
 /// units, and VRCFT sends `Gaze.x/y` straight on as v2/EyeLeftX/Y (EParam) and turns them into VRChat's own eye
 /// angles as `atan(x)` yaw and `-atan(y)` pitch (Vector2.ToYaw/ToPitch, positive pitch looking down), so Gaze is
 /// +x right, +y up with 1 = 45°, like frameeyeosc's values. EyeYaw = x and EyePitch = -y therefore give VRCFT the
-/// Gaze the ETVR module gets from our EyeLeftX/Y, and the avatar the v2/EyeLeftX/Y that `--output vrchat` sends.
+/// same Gaze as the v2/EyeLeftX/Y that `--output vrchat` sends the avatar.
 /// (Pitch positive looking down is also ARKit's own convention.)
 pub fn shapes([lid_left, lid_right]: [f32; 2], [left_x, left_y, right_x, right_y]: [f32; 4]) -> [f32; BLENDSHAPES] {
     let mut shapes = [0.0; BLENDSHAPES];

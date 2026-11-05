@@ -78,6 +78,11 @@ constexpr double kAppsViewTop = kAppsHeadY + 56 + 14;          ///< the apps, sc
 constexpr double kAppsViewBottom = kAppsFootY - 14;
 constexpr double kAppsLineH = 72;         ///< an app in the list
 constexpr double kAppsLineGap = 8;
+constexpr double kExtraRowH = 72;         ///< "Other apps": a row of the list
+constexpr double kExtraRowGap = 8;
+constexpr double kExtrasFootH = 48;       ///< ...the flow's bottom row (Cancel / Back, Next / Add / Save)
+constexpr double kExtrasFootY = kContentY + kContentH - 16 - kExtrasFootH;
+constexpr double kDestStep = 21;          ///< the left column's lines for more destinations
 
 /**
  * The largest text size (down to a minimum) that fits a width.
@@ -352,15 +357,6 @@ void drawPlusMinus(cairo_t* cr, double cx, double cy, double s, bool plus, Color
  * @param fill its color (③ has its own)
  */
 /**
- * Whether the eyes move as up to 0.7.5 (eye_behavior 1), where the eyelid rules since don't apply.
- * @param v the settings
- * @return true for v1
- */
-bool eyesV1(const SettingsView& v) {
-    return std::lround(v.number(key::kEyeBehavior)) == 1;
-}
-
-/**
  * Paint what was drawn since cairo_push_group faded (a row that doesn't apply now).
  * @param pen drawing tools
  */
@@ -479,6 +475,82 @@ void drawCameraIcon(const Pen& pen, double cx, double cy, Color c) {
     cairo_line_to(cr, cx - 2.5, cy - 9);
     cairo_line_to(cr, cx + 2.5, cy - 9);
     cairo_line_to(cr, cx + 4, cy - 6);
+    cairo_stroke(cr);
+}
+
+/**
+ * The tag after an address that isn't in the home network: "VPN" (100.64/10, blue) or "PUBLIC" (amber); none
+ * otherwise. Measured (draw false) or drawn, right-aligned.
+ * @param pen drawing tools
+ * @param t texts
+ * @param net what kind of address ("lan", "vpn", "public"; frameeyeosc's words)
+ * @param right its right edge
+ * @param baseline the line's baseline it sits on
+ * @param size its text size
+ * @param draw draw it (else only measure)
+ * @return its width (0 = none)
+ */
+double drawNetTag(const Pen& pen, const UiText& t, const std::string& net, double right, double baseline, double size,
+                  bool draw = true) {
+    const bool vpn = net == "vpn";
+    if (!vpn && net != "public") return 0;
+    const char* label = vpn ? t.tagVpn : t.tagPublic;
+    const double w = pen.measure(label, size, true) + 12;
+    if (!draw) return w;
+    const double h = size + 8;
+    const double top = baseline - size * 0.36 - h / 2;
+    fillRounded(pen, right - w, top, w, h, 4, vpn ? kVpnTint : kWarningTint);
+    pen.text(right - w + 6, baseline, label, size, vpn ? kSnap : kWarning, true);
+    return w;
+}
+
+/**
+ * The tag's kind for an address as written, while frameeyeosc doesn't say: a typed VPN address, or a public one with
+ * lan_only off.
+ * @param host the host as written
+ * @param lanOnly lan_only
+ * @return "vpn", "public" or ""
+ */
+std::string netOfHost(const std::string& host, bool lanOnly) {
+    const extras::Net net = extras::classify(host);
+    if (net == extras::Net::Vpn) return "vpn";
+    if (net == extras::Net::Public && !lanOnly) return "public";
+    return "";
+}
+
+/**
+ * An extra output's format as the list and the left column show it: its name in config.json.
+ * @param format "feo1" / "osc" (anything else as it is)
+ * @return "feo1", "osc"; "?" for none
+ */
+std::string formatShort(const std::string& format) {
+    return format.empty() ? std::string("?") : format;
+}
+
+/**
+ * A keypad's backspace key: a left-pointing key shape with an x, drawn (no font needed).
+ * @param pen drawing tools
+ * @param cx center x
+ * @param cy center y
+ * @param scale 1 = the target PC keypad's size
+ * @param color its color
+ */
+void drawBackspace(const Pen& pen, double cx, double cy, double scale, Color color) {
+    cairo_t* cr = pen.cr;
+    pen.color(color);
+    cairo_set_line_width(cr, 2.5);
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+    cairo_move_to(cr, cx - 22 * scale, cy);
+    cairo_line_to(cr, cx - 10 * scale, cy - 13 * scale);
+    cairo_line_to(cr, cx + 22 * scale, cy - 13 * scale);
+    cairo_line_to(cr, cx + 22 * scale, cy + 13 * scale);
+    cairo_line_to(cr, cx - 10 * scale, cy + 13 * scale);
+    cairo_close_path(cr);
+    cairo_stroke(cr);
+    cairo_move_to(cr, cx - 1 * scale, cy - 6 * scale);
+    cairo_line_to(cr, cx + 11 * scale, cy + 6 * scale);
+    cairo_move_to(cr, cx + 11 * scale, cy - 6 * scale);
+    cairo_line_to(cr, cx - 1 * scale, cy + 6 * scale);
     cairo_stroke(cr);
 }
 
@@ -819,6 +891,50 @@ std::vector<std::string> sentences(const std::string& text) {
 }
 
 /**
+ * Lines for a hint of a few sentences: a sentence that fits goes on the line before it, else on a new one (wrapped
+ * itself if it is too long), so that a line never breaks in the middle of a word or a short sentence when it
+ * needn't.
+ * @param pen drawing tools
+ * @param text the text ("。" or ". " between sentences)
+ * @param size text size
+ * @param bold bold
+ * @param width the width
+ * @param maxLines at most this many lines
+ * @return the lines
+ */
+std::vector<std::string> sentenceLines(const Pen& pen, const std::string& text, double size, bool bold, double width,
+                                       size_t maxLines) {
+    constexpr const char* kJaStop = "。";
+    std::vector<std::string> lines;
+    for (size_t from = 0; from < text.size();) {
+        const size_t ja = text.find(kJaStop, from);
+        const size_t en = text.find(". ", from);
+        size_t end = text.size();
+        if (ja != std::string::npos && (en == std::string::npos || ja < en)) {
+            end = ja + std::strlen(kJaStop);
+        } else if (en != std::string::npos) {
+            end = en + 1;
+        }
+        std::string part = text.substr(from, end - from);
+        from = end;
+        while (!part.empty() && part[0] == ' ') part.erase(0, 1);
+        if (part.empty()) continue;
+        // (no space after "。")
+        const std::string stop = kJaStop;
+        const bool afterJa = !lines.empty() && lines.back().size() >= stop.size() &&
+                             lines.back().compare(lines.back().size() - stop.size(), stop.size(), stop) == 0;
+        const std::string joined = lines.empty() ? part : lines.back() + (afterJa ? "" : " ") + part;
+        if (!lines.empty() && pen.measure(joined, size, bold) <= width) {
+            lines.back() = joined;
+            continue;
+        }
+        for (const std::string& line : wrapText(pen, part, size, bold, width, maxLines)) lines.push_back(line);
+    }
+    if (lines.size() > maxLines) lines.resize(maxLines);
+    return lines;
+}
+
+/**
  * Whether an action is one of the eye preview sheet's own buttons (its cross, choices, switches and freeze).
  * @param action the action
  * @return true if it is
@@ -952,6 +1068,13 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
     // ...and closes the eye preview (a tab, the left column's notices): only its own buttons keep it
     const bool previewButton = hit.action == PanelAction::PreviewOpen || previewSheetAction(hit.action);
     if (hit.action != PanelAction::None && !previewButton) previewOpen_ = false;
+    // ...and "Other apps"' row asking whether to delete it: only its own two buttons keep it (another row's "Delete"
+    // opens that one's instead); a write the list couldn't make is forgotten
+    const bool rowDelete = hit.action == PanelAction::ExtraRowDelete ||
+                           hit.action == PanelAction::ExtraRowDeleteCancel ||
+                           hit.action == PanelAction::ExtraRowDeleteConfirm;
+    if (hit.action != PanelAction::None && !rowDelete) extrasRowDelete_ = -1;
+    if (hit.action != PanelAction::None && extrasStep_ == ExtrasStep::List) extrasError_.clear();
     switch (hit.action) {
         case PanelAction::PreviewOpen:
             // (pressed again while it is open: it closes)
@@ -989,6 +1112,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::Tab:
             setTab(static_cast<PanelTab>(hit.arg));
+            closeExtrasFlow();
             closeAppsList();
             closeContrib();
             historyOpen_ = false;
@@ -1027,6 +1151,82 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             closeAppsList();
             closeContrib();
             return {};
+        case PanelAction::OutputPage:
+            if (hit.arg < 0 || hit.arg > static_cast<int>(OutputPage::Apps)) return {};
+            setTab(PanelTab::Output);
+            setOutputPage(static_cast<OutputPage>(hit.arg));
+            closeAppsList();
+            closeContrib();
+            return {};
+        case PanelAction::ExtraRowDelete:
+            // The row turns into its question (another row's closes)
+            extrasError_.clear();
+            openExtrasRowDelete(hit.arg);
+            return {};
+        case PanelAction::ExtraRowDeleteCancel:
+            extrasRowDelete_ = -1;
+            return {};
+        case PanelAction::ExtraRowDeleteConfirm:
+            // The caller takes it out (only the row asking, and only while the list shows)
+            return extrasRowDelete() >= 0 && hit.arg == extrasRowDelete_ ? hit : PanelHit {};
+        case PanelAction::ExtraAdd:
+            openExtrasFlow(ExtrasStep::Format, extras::newDraft(static_cast<int>(extrasShown_.size())));
+            return {};
+        case PanelAction::ExtraEdit:
+            if (hit.arg < 0 || hit.arg >= static_cast<int>(extrasShown_.size())) return {};
+            openExtrasFlow(ExtrasStep::Format, extras::draftOf(extrasShown_[hit.arg], extrasRaw_[hit.arg]));
+            return {};
+        case PanelAction::ExtraCancel:
+            closeExtrasFlow();
+            return {};
+        case PanelAction::ExtraStep: {
+            // Next only once the step is done: a format chosen, a host that can be sent to
+            const ExtrasStep step = static_cast<ExtrasStep>(hit.arg);
+            if (hit.arg < 0 || hit.arg > static_cast<int>(ExtrasStep::Port) || step == ExtrasStep::List) return {};
+            if (step != ExtrasStep::Format && extrasDraft_.format.empty()) return {};
+            if (step == ExtrasStep::Port && !extras::hostUsable(extras::checkHost(extrasDraft_, extrasLanOnly_))) {
+                return {};
+            }
+            extrasStep_ = step;
+            extrasDeleteOpen_ = false;
+            extrasError_.clear();
+            return {};
+        }
+        case PanelAction::ExtraFormat:
+            extras::chooseFormat(extrasDraft_, hit.arg == 1 ? extras::kOsc : extras::kFeo1);
+            extrasError_.clear();
+            return {};
+        case PanelAction::ExtraHost:
+            if (hit.arg < 0 || hit.arg > static_cast<int>(extras::HostChoice::Keep)) return {};
+            if (hit.arg == static_cast<int>(extras::HostChoice::Keep) && extrasDraft_.kept.empty()) return {};
+            extrasDraft_.host = static_cast<extras::HostChoice>(hit.arg);
+            extrasError_.clear();
+            return {};
+        case PanelAction::ExtraKey:
+            extrasDraft_.ip = host_entry::keypadInput(extrasDraft_.ip, hit.arg);
+            extrasError_.clear();
+            return {};
+        case PanelAction::ExtraPort:
+            extrasDraft_.port = std::clamp(extrasDraft_.port + (hit.arg < 0 ? -1 : 1), 1, 65535);
+            extrasError_.clear();
+            return {};
+        case PanelAction::ExtraPortEnter:
+            // The keypad, starting with the port now (its OK sets it as − and ＋ do)
+            if (extrasStep_ != ExtrasStep::Port) return {};
+            openPortEntry(KeypadFor::ExtraPort, extrasDraft_.port);
+            return {};
+        case PanelAction::ExtraDelete:
+            extrasDeleteOpen_ = extrasDraft_.edit >= 0;
+            return {};
+        case PanelAction::ExtraDeleteCancel:
+            extrasDeleteOpen_ = false;
+            return {};
+        case PanelAction::ExtraDeleteConfirm:
+            // The caller takes it out
+            return extrasDeleteOpen() ? hit : PanelHit {};
+        case PanelAction::ExtraSave:
+            // The caller writes it
+            return extrasStep_ == ExtrasStep::Port && !extrasDeleteOpen_ ? hit : PanelHit {};
         case PanelAction::GazeScaleLink:
             // Opened or closed here; the caller writes the second value once it is closed
             if (hit.arg < 0 || hit.arg > 1) return {};
@@ -1118,12 +1318,41 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::FitDetailsPage:
             fitDetailsPage_ = hit.arg;
             return {};
-        case PanelAction::HostKey:
-            hostEntryText_ = host_entry::keypadInput(hostEntryText_, hit.arg);
-            hostEntryError_.clear();
+        case PanelAction::PortEnter:
+            // The main output's port: the keypad, starting with the port now (not drawn while it is locked)
+            openPortEntry(KeypadFor::Port, hit.arg);
             return {};
-        case PanelAction::HostCancel:
-            closeHostEntry();
+        case PanelAction::KeypadKey:
+            if (!keypadOpen_) return {};
+            keypadText_ = host_entry::keypadInput(
+                keypadText_, hit.arg,
+                keypadFor_ == KeypadFor::Host ? host_entry::Keypad::Host : host_entry::Keypad::Port);
+            keypadError_.clear();
+            portError_ = host_entry::PortError::None;
+            return {};
+        case PanelAction::KeypadOk: {
+            if (!keypadOpen_) return {};
+            // The target PC: the caller checks and writes it
+            if (keypadFor_ == KeypadFor::Host) return hit;
+            // A port: 1-65535, or why not under it
+            int port = 0;
+            portError_ = host_entry::checkPort(keypadText_, port);
+            if (portError_ != host_entry::PortError::None) return {};
+            const KeypadFor kind = keypadFor_;
+            closeKeypad();
+            if (kind == KeypadFor::ExtraPort) {
+                // Into the draft as − and ＋ put it (the clash checks follow it)
+                if (extrasStep_ == ExtrasStep::Port) {
+                    extrasDraft_.port = port;
+                    extrasError_.clear();
+                }
+                return {};
+            }
+            // The main output's: the caller writes it as a setting's choice
+            return {PanelAction::SetInteger, key::kPort, port};
+        }
+        case PanelAction::KeypadCancel:
+            closeKeypad();
             return {};
         case PanelAction::EyecamStart:
             // Never straight to the light: the warning first, with a start without it
@@ -1279,9 +1508,22 @@ void EyePanel::showPrompt(const std::string& output) {
 }
 
 void EyePanel::openHostEntry(const std::string& text) {
-    hostEntryOpen_ = true;
-    hostEntryText_ = text;
-    hostEntryError_.clear();
+    keypadOpen_ = true;
+    keypadFor_ = KeypadFor::Host;
+    keypadText_ = text;
+    keypadError_.clear();
+    portError_ = host_entry::PortError::None;
+    hover_ = {};
+    pressed_ = {};
+}
+
+void EyePanel::openPortEntry(KeypadFor kind, int port) {
+    if (kind == KeypadFor::Host) return;
+    keypadOpen_ = true;
+    keypadFor_ = kind;
+    keypadText_ = port >= 1 && port <= 65535 ? std::to_string(port) : std::string();
+    keypadError_.clear();
+    portError_ = host_entry::PortError::None;
     hover_ = {};
     pressed_ = {};
 }
@@ -1296,9 +1538,10 @@ bool EyePanel::syncEyecam(const eyecam::View& view) {
     return eyecamConfirm_.sync(view.status.state, view.visible && tab_ == PanelTab::Advanced);
 }
 
-void EyePanel::closeHostEntry() {
-    hostEntryOpen_ = false;
-    hostEntryError_.clear();
+void EyePanel::closeKeypad() {
+    keypadOpen_ = false;
+    keypadError_.clear();
+    portError_ = host_entry::PortError::None;
     hover_ = {};
     pressed_ = {};
 }
@@ -1450,7 +1693,7 @@ void EyePanel::setHistoryScroll(double px) {
 }
 
 bool EyePanel::scroll(double dy) {
-    if (!wantsScroll() || promptOpen() || hostEntryOpen_) return false;
+    if (!wantsScroll() || promptOpen() || keypadOpen_) return false;
     if (appsListOpen_) {
         const double next = std::clamp(appsScroll_ + dy, 0.0, appsMaxScroll_);
         if (std::fabs(next - appsScroll_) < 1e-3) return false;
@@ -1613,7 +1856,7 @@ void EyePanel::drawSegmented(const Pen& pen, double x, double y, double w, doubl
 
 void EyePanel::drawStepper(const Pen& pen, double x, double y, double w, double h, const char* name, double value,
                            const std::string& text, bool usable, bool locked, double low, double high,
-                           const Color* outline) {
+                           const Color* outline, const PanelHit* tap) {
     const SettingSpec* spec = findSetting(name);
     const bool active = usable && !locked;
     const double lower = spec != nullptr ? std::max(spec->min, low) : low;
@@ -1648,7 +1891,25 @@ void EyePanel::drawStepper(const Pen& pen, double x, double y, double w, double 
     cairo_stroke(pen.cr);
     const double size = fitSize(pen, text, 20, 12, w - buttonW * 2 - 12, true);
     const Color color = locked ? kTextMuted : (usable ? kText : kTextDisabled);
+    if (tap != nullptr && active) {
+        drawValueTap(pen, *tap, x + buttonW, y, w - 2 * buttonW, h, pen.measure(text, size, true));
+    }
     textCentered(pen, x + w / 2, centerBaseline(y, h, size), text, size, color, true);
+}
+
+void EyePanel::drawValueTap(const Pen& pen, const PanelHit& hit, double x, double y, double w, double h,
+                            double textW) {
+    const int pointer = pointerState(hit);
+    if (pointer > 0) {
+        fillRounded(pen, x + 4, y + 4, w - 8, h - 8, (h - 8) / 2, pointer == 2 ? kAccentTint : kControlHover);
+    }
+    // (a line under the value: it can be typed)
+    pen.color(pointer > 0 ? kAccent : kTextMuted);
+    cairo_set_line_width(pen.cr, 2);
+    cairo_move_to(pen.cr, x + (w - textW) / 2, y + h - 12);
+    cairo_line_to(pen.cr, x + (w + textW) / 2, y + h - 12);
+    cairo_stroke(pen.cr);
+    addButton(hit, x, y, w, h);
 }
 
 void EyePanel::drawCaption(const Pen& pen, double x, double baseline, const std::string& text, int number,
@@ -1660,6 +1921,34 @@ void EyePanel::drawCaption(const Pen& pen, double x, double baseline, const std:
     }
     tx += pen.text(tx, baseline, text, 15, kText, false);
     if (locked) drawLock(pen, tx + 8, baseline + 1, 15, kTextMuted);
+}
+
+void EyePanel::drawEyeRateOffer(const Pen& pen, const UiText& t, double x0, double x1, double baseline) {
+    const PanelHit hit {PanelAction::EyeRateSet, nullptr, 0};
+    const int pointer = pointerState(hit);
+    // The pill in the line's own height (under the rate, above the line before the eyelids), the words before it
+    const double pillSize = 12;
+    const double pillH = 18;
+    const double pillTop = baseline - 12.5;
+    const double pillW = pen.measure(t.eyeRateSet, pillSize, true) + 18;
+    const double pillX = x1 - pillW;
+    const double room = pillX - 8 - x0;
+    const double minSize = 11;
+    if (pen.measure(t.eyeRateSlow, minSize, false) <= room) {
+        fillRounded(pen, pillX, pillTop, pillW, pillH, pillH / 2, pointer == 2 ? kAccentPressed : kAccent);
+        textCentered(pen, pillX + pillW / 2, centerBaseline(pillTop, pillH, pillSize), t.eyeRateSet, pillSize,
+                     kOnAccent, true);
+        const double size = fitSize(pen, t.eyeRateSlow, 14, minSize, room, false);
+        pen.text(pillX - 8, baseline, t.eyeRateSlow, size, pointer > 0 ? kText : kTextMuted, false, true);
+    } else {
+        // Too long beside it: the words alone, in the accent, with a chevron
+        const std::string line = std::string(t.eyeRateSlow) + " " ICON_CHEVRON_RIGHT;
+        const double size = fitSize(pen, line, 14, minSize, x1 - x0, true);
+        pen.text(x1, baseline, ellipsize(pen, line, size, true, x1 - x0, false), size,
+                 pointer == 2 ? kAccentPressed : kAccent, true, true);
+    }
+    // (pressed anywhere on the line, or on the rate's row above it: nothing else there can be)
+    addButton(hit, x0, baseline - 25, x1 - x0, 32, true);
 }
 
 void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) {
@@ -1718,36 +2007,58 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         pen.text(x0 + 40, centerBaseline(y, h, size), label, size, kind == Kind::NotRunning ? kText : fg, true);
     }
 
-    // Destination and rate
-    pen.text(x0, 154, t.destination, 15, kTextMuted, true);
+    // Destination and rate. More destinations (the pupils straight to VRChat, other apps) get a line each under the
+    // main one, whose automatic / fixed then goes on the label's line; everything under them moves down for them,
+    // the gaze boxes getting smaller (and the eyelid rows closer when there are many)
+    const double labelW = pen.text(x0, 154, t.destination, 15, kTextMuted, true);
+    const int more = s.running ? drawMoreDestinations(pen, t, m, x0, x1, 0, kDestStep, false) : 0;
+    const TrackerRateCause cause = trackerRateCause(s);
+    // (the line under the eye data's rate also stays while "Set 90"'s confirmation or "not taken" shows)
+    const bool slowRow = eye_rate::rowShown(m.eyeRate, cause);
+    const StatusLayout rows = statusLayout(more, slowRow, false, false);
+    const double shift = rows.shift;
     if (!s.running) {
         pen.text(x0, 180, t.notRunningHint1, fitSize(pen, t.notRunningHint1, 16, 12, x1 - x0, false), kText);
         pen.text(x0, 204, t.notRunningHint2, fitSize(pen, t.notRunningHint2, 16, 12, x1 - x0, false), kText);
     } else {
-        const char* receiver = s.output == kOutputEtvr       ? t.outputEtvrShort
-                               : s.output == kOutputLivelink ? t.outputLivelinkShort
-                               : s.output == kOutputModule   ? t.outputModuleShort
-                                                             : t.outputVrchatShort;
-        const std::string destination = std::string(receiver) + " " ICON_ARROW_RIGHT " " +
-                                         (s.target.empty() ? std::string(t.searchingPc) : s.target);
-        const double size = fitSize(pen, destination, 19, 13, x1 - x0, true);
-        pen.text(x0, 180, destination, size, kText, true);
-        const double modeW = pen.text(x0, 204, s.targetMode == "fixed" ? t.modeFixed : t.modeAuto, 15, kTextMuted);
-        // v1 (as up to 0.7.5) said on the same line, so it is not forgotten
-        if (eyesV1(SettingsView(m))) {
-            const double room = x1 - x0 - modeW - 12;
-            pen.text(x1, 204, t.eyeBehaviorLeftV1, fitSize(pen, t.eyeBehaviorLeftV1, 15, 11, room, true), kAccent, true,
+        // (anything else is VRChat: an older frameeyeosc's "etvr" too, as 0.10 reads it)
+        const char* receiver = s.output == kOutputLivelink ? t.outputLivelinkShort
+                               : s.output == kOutputModule ? t.outputModuleShort
+                                                           : t.outputVrchatShort;
+        // Refused (lan_only, a broadcast address): the host as set in red with a cross, and why in place of
+        // automatic / fixed
+        const bool refused = !s.refused.empty();
+        const std::string host = SettingsView(m).text(key::kHost);
+        const std::string where = refused ? std::string(ICON_CROSS " ") + host
+                                  : s.target.empty() ? std::string(t.searchingPc)
+                                                     : s.target;
+        const std::string destination = std::string(receiver) + " " ICON_ARROW_RIGHT " " + where;
+        const double tagW = refused ? 0.0 : drawNetTag(pen, t, s.net, x1, 180, 12, false);
+        const double room = x1 - x0 - (tagW > 0 ? tagW + 6 : 0);
+        const double size = fitSize(pen, destination, 19, 13, room, true);
+        pen.text(x0, 180, ellipsize(pen, destination, size, true, room, false), size, refused ? kDanger : kText, true);
+        if (tagW > 0) drawNetTag(pen, t, s.net, x1, 180, 12);
+        const std::string mode = refused ? extraReasonText(t, s.refused)
+                                         : std::string(s.targetMode == "fixed" ? t.modeFixed : t.modeAuto);
+        const Color modeColor = refused ? kDanger : kTextMuted;
+        if (more == 0) {
+            pen.text(x0, 204, ellipsize(pen, mode, 15, refused, x1 - x0, false), 15, modeColor, refused);
+        } else {
+            const double modeRoom = x1 - x0 - labelW - 12;
+            const double modeSize = fitSize(pen, mode, 14, 10, modeRoom, refused);
+            pen.text(x1, 154, ellipsize(pen, mode, modeSize, refused, modeRoom, false), modeSize, modeColor, refused,
                      true);
+            drawMoreDestinations(pen, t, m, x0, x1, 180 + kDestStep + 1, kDestStep);
         }
     }
-    pen.text(x0, 228, t.rateLabel, 15, kTextMuted, true);
+    pen.text(x0, 228 + shift, t.rateLabel, 15, kTextMuted, true);
     {
         char rate[64];
         std::snprintf(rate, sizeof(rate), t.rateFormat, s.rate);
-        pen.text(x1, 228, s.running ? std::string(rate) : std::string("—"), 17, kText, true, true);
+        pen.text(x1, 228 + shift, s.running ? std::string(rate) : std::string("—"), 17, kText, true, true);
     }
     // How fast the eye tracker delivers samples, sent or not: it has been seen at 15 and 46 a second instead of 90+
-    pen.text(x0, 250, t.trackerRateLabel, 15, kTextMuted, true);
+    pen.text(x0, 250 + shift, t.trackerRateLabel, 15, kTextMuted, true);
     {
         const bool known = s.running && s.tracking && std::isfinite(s.trackerRate);
         const bool low = known && s.trackerRate < kLowTrackerRate;
@@ -1755,15 +2066,26 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         std::snprintf(rate, sizeof(rate), t.rateFormat, s.trackerRate);
         const std::string text = known ? (low ? std::string(t.trackerRateLowHint) + "  " + rate : std::string(rate))
                                        : std::string("—");
-        pen.text(x1, 250, text, 17, low ? kDanger : kText, true, true);
+        pen.text(x1, 250 + shift, text, 17, low ? kDanger : kText, true, true);
     }
     // While it is low, a line under it says who was slow: frameeyeosc or the eye tracker. The eyelids make room for it
     // (they move down into the space above the gaze)
-    const TrackerRateCause cause = trackerRateCause(s);
-    const double dy = cause == TrackerRateCause::None ? 0 : 14;
-    if (cause != TrackerRateCause::None) {
+    // (with many more destinations the eyelid rows get closer, and the gaze moves down that much less: statusLayout)
+    const double dy = rows.dy;
+    const double g = rows.g;
+    // SteamVR running the eye cameras slowly (its eyeTrackingRateMin below 90): that line, with "Set 90", in the reason's
+    // place; after the press, that it was set, or that SteamVR didn't take it (eye_rate)
+    const eye_rate::Line rateLine = m.eyeRate.line;
+    if (rateLine == eye_rate::Line::Offer && cause == TrackerRateCause::Tracker) {
+        drawEyeRateOffer(pen, t, x0, x1, 269 + shift);
+    } else if (rateLine == eye_rate::Line::Done || rateLine == eye_rate::Line::Refused) {
+        const bool done = rateLine == eye_rate::Line::Done;
+        const char* line = done ? t.eyeRateDone : t.eyeRateRefused;
+        pen.text(x1, 269 + shift, line, fitSize(pen, line, 14, 11, x1 - x0, true), done ? kSuccess : kDanger, true,
+                 true);
+    } else if (cause != TrackerRateCause::None) {
         const char* line = cause == TrackerRateCause::Here ? t.trackerRateSlowHere : t.trackerRateSlowTracker;
-        pen.text(x1, 269, line, fitSize(pen, line, 14, 11, x1 - x0, false), kTextMuted, false, true);
+        pen.text(x1, 269 + shift, line, fitSize(pen, line, 14, 11, x1 - x0, false), kTextMuted, false, true);
     }
     pen.color(kDivider);
     cairo_set_line_width(cr, 1);
@@ -1800,7 +2122,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         }
     }
     for (int eye = 0; eye < 2; ++eye) {
-        const double top = 296 + dy + eye * 48;
+        const double top = rows.eyeTop[eye];
         pen.text(x0, top + 26, eye == 0 ? t.left : t.right, 18, kText, true);
         const double barX = x0 + 30;
         const double barW = x1 - 58 - barX;
@@ -1818,12 +2140,12 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         pen.text(x1, top + 36, twoDecimals(sent), 16, kText, true, true);
     }
     pen.color(kDivider);
-    cairo_move_to(cr, x0, 402.5);
-    cairo_line_to(cr, x1, 402.5);
+    cairo_move_to(cr, x0, rows.divider);
+    cairo_line_to(cr, x1, rows.divider);
     cairo_stroke(cr);
 
     // Gaze: raw = ring, sent = filled dot
-    pen.text(x0, 430, t.gazeTitle, 15, kTextMuted, true);
+    pen.text(x0, 430 + g, t.gazeTitle, 15, kTextMuted, true);
     // "Track Dominant Eye Only": the Frame tracks one eye, and both eyes get its gaze. Said on the title
     // line, right-aligned (the per-eye legend gives it its place)
     const char* oneEye = !s.running              ? nullptr
@@ -1833,7 +2155,7 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     if (oneEye != nullptr) {
         const double room = x1 - x0 - pen.measure(t.gazeTitle, 15, true) - 14;
         const double size = fitSize(pen, oneEye, 14, 10, room, false);
-        pen.text(x1 - pen.measure(oneEye, size, false), 430, oneEye, size, kText);
+        pen.text(x1 - pen.measure(oneEye, size, false), 430 + g, oneEye, size, kText);
     }
     /**
      * A gaze pad: crosshair, a circle at half range, the raw gaze as a ring and the sent gaze as a dot, seen the way
@@ -1897,49 +2219,60 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
     const bool setupCard = !failure && (nextCard || readyCard);
     // Each eye's own pad while the eyes move separately; one pad for the shared gaze otherwise
     const bool perEye = SettingsView(m).flag(key::kIndependentEyes);
+    const StatusLayout gazeRows = statusLayout(more, slowRow, perEye, setupCard);
     if (perEye) {
         // The legend on the title line: ring = raw, the two eye colors = sent
         if (oneEye == nullptr) {
             const double sentW = pen.measure(t.legendSent, 14, false);
             const double rawW = pen.measure(t.legendRaw, 14, false);
             double lx = x1 - sentW;
-            pen.text(lx, 430, t.legendSent, 14, kText);
+            pen.text(lx, 430 + g, t.legendSent, 14, kText);
             lx -= 14;
-            drawDot(cr, lx, 425, 5, kDotRight);
+            drawDot(cr, lx, 425 + g, 5, kDotRight);
             lx -= 12;
-            drawDot(cr, lx, 425, 5, kDotLeft);
+            drawDot(cr, lx, 425 + g, 5, kDotLeft);
             lx -= 18 + rawW;
-            pen.text(lx, 430, t.legendRaw, 14, kText);
+            pen.text(lx, 430 + g, t.legendRaw, 14, kText);
             lx -= 14;
-            drawRing(cr, lx, 425, 6, 2, kText);
+            drawRing(cr, lx, 425 + g, 6, 2, kText);
         }
-        const double box = setupCard ? 100 : 132;
+        const double box = gazeRows.box;
         const char* labels[2] = {t.leftEye, t.rightEye};
         const Color colors[2] = {kDotLeft, kDotRight};
         for (int eye = 0; eye < 2; ++eye) {
             // The left eye on the left, as the user sees it (not mirrored)
             const double bx = eye == 0 ? x0 : x1 - box;
-            pen.text(bx + 2, 456, labels[eye], 15, kText, true);
-            const bool hasSent = gazePad(bx, 464, box, s.rawGazeEye[eye], s.sentGazeEye[eye], colors[eye]);
+            pen.text(bx + 2, 456 + g, labels[eye], 15, kText, true);
+            const bool hasSent = gazePad(bx, 464 + g, box, s.rawGazeEye[eye], s.sentGazeEye[eye], colors[eye]);
             const std::string xy = hasSent ? xyText(s.sentGazeEye[eye]) : "—";
-            pen.text(bx + 2, 464 + box + 20, xy, fitSize(pen, xy, 14, 10, box, false), kTextMuted);
+            // (the right eye's against the column's right edge: the boxes get small with many destinations)
+            const double xySize = fitSize(pen, xy, 14, 10, box, false);
+            if (eye == 0) {
+                pen.text(bx + 2, 464 + g + box + 20, xy, xySize, kTextMuted);
+            } else {
+                pen.text(x1, 464 + g + box + 20, xy, xySize, kTextMuted, false, true);
+            }
         }
     } else {
-        const double box = setupCard ? 132 : 164;
+        const double box = gazeRows.box;
         const double bx = x0;
-        const double by = 444;
+        const double by = 444 + g;
         gazePad(bx, by, box, s.gaze, s.sentGaze, kAccent);
         const bool hasRaw = live && s.hasRaw && s.gaze.valid();
         const bool hasSent = live && s.hasSent && s.sentGaze.valid();
         const double lx = bx + box + 18;
-        drawRing(cr, lx + 9, 470, 8, 2.5, kText);
-        pen.text(lx + 26, 476, t.legendRaw, 15, kText);
-        pen.text(lx, 502, hasRaw ? xyText(s.gaze) : "—", fitSize(pen, xyText(s.gaze), 15, 11, x1 - lx, false),
-                 kTextMuted);
-        drawDot(cr, lx + 9, 540, 7, kAccent);
-        pen.text(lx + 26, 546, t.legendSent, 15, kText);
-        pen.text(lx, 572, hasSent ? xyText(s.sentGaze) : "—", fitSize(pen, xyText(s.sentGaze), 15, 11, x1 - lx, false),
-                 kTextMuted);
+        // The legend beside the box, its four lines closer together when moved down (above the bottom row, or the
+        // eye cameras' setup there)
+        const double first = gazeRows.legendFirst;
+        const double k = gazeRows.legendK;
+        drawRing(cr, lx + 9, first - 6, 8, 2.5, kText);
+        pen.text(lx + 26, first, t.legendRaw, 15, kText);
+        pen.text(lx, first + 26 * k, hasRaw ? xyText(s.gaze) : "—",
+                 fitSize(pen, xyText(s.gaze), 15, 11, x1 - lx, false), kTextMuted);
+        drawDot(cr, lx + 9, first + 64 * k, 7, kAccent);
+        pen.text(lx + 26, first + 70 * k, t.legendSent, 15, kText);
+        pen.text(lx, first + 96 * k, hasSent ? xyText(s.sentGaze) : "—",
+                 fitSize(pen, xyText(s.sentGaze), 15, 11, x1 - lx, false), kTextMuted);
     }
 
     // One red message at the bottom: the panel's own failure first, then why frameeyeosc can't read the eye tracker,
@@ -2163,8 +2496,7 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
     // The eye cameras: the way to set them up, or their switch
     drawEyeCamerasRow(pen, t, m, v, y, kRowH);
     y += kRowH + kRowGap;
-    // Reset all / quit (both ask for a second press), at the right end of the next two rows: the destination's ETVR
-    // button and notice leave no room for a row of their own
+    // Reset all / quit (both ask for a second press), at the right end of the next two rows
     const auto dangerButton = [&](bool isQuit, double rowY) {
         const PanelHit hit {isQuit ? PanelAction::Quit : PanelAction::ResetAll, nullptr, 0};
         const bool armed = isQuit ? quitArmed_ : resetArmed_;
@@ -2204,7 +2536,7 @@ void EyePanel::drawBasic(const Pen& pen, const UiText& t, const PanelModel& m, c
         dangerButton(true, y);
     }
     y += kRowH + 22;
-    // What pressing does, where there is room for it (not under the ETVR notice)
+    // What pressing does, where there is room for it
     const std::vector<std::string> lines = wrapText(pen, t.footer, 15, false, kInnerRight - kInnerX, 2);
     if (y + (lines.size() - 1) * 22 + 6 <= kContentY + kContentH - 10) {
         for (size_t i = 0; i < lines.size(); ++i) pen.text(kInnerX, y + i * 22, lines[i], 15, kTextMuted);
@@ -2274,11 +2606,9 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
                  kTextMuted);
     }
 
-    // The cards in the order VRChat, LiveLink, FrameEyeOSC (their button arguments are 0, 2, 3); ETVR (1) is the small
-    // button under them
+    // The cards in the order VRChat, LiveLink, FrameEyeOSC (their button arguments are 0, 2, 3; 1 was ETVR)
     const int args[3] = {0, 2, 3};
     const char* titles[3] = {t.outputVrchat, t.outputLivelink, t.outputModule};
-    const int marks[3] = {0, 1, 3};  // rows of t.outputMarks
     const double gap = 12;
     const double cardW = (kInnerRight - kInnerX - gap * 2) / 3;
     const double pad = 14;
@@ -2299,7 +2629,7 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
     std::vector<Line> lines[3];
     size_t most = 0;
     for (int c = 0; c < 3; ++c) {
-        for (const char* text : t.outputMarks[marks[c]]) {
+        for (const char* text : t.outputMarks[c]) {
             std::string rest;
             const LineMark mark = splitMark(text, rest);
             const double indent = mark == LineMark::None ? 0 : markW;
@@ -2358,109 +2688,35 @@ double EyePanel::drawOutputCards(const Pen& pen, const UiText& t, const Settings
         }
         addButton(hit, cx, top, cardW, cardH, usable);
     }
-    double by = top + cardH + 10;
-
-    // While ETVR is the output: it goes away in the next version, pick another of the three
-    if (outputDeprecated(output)) {
-        const double boxW = kInnerRight - kInnerX;
-        const double boxH = 56;
-        fillRounded(pen, kInnerX, by, boxW, boxH, 12, kWarningTint);
-        strokeRounded(pen, kInnerX, by, boxW, boxH, 12, kWarning, 2);
-        // A warning triangle with an exclamation mark
-        const double ix = kInnerX + 26;
-        const double iy = by + boxH / 2;
-        pen.color(kWarning);
-        cairo_set_line_width(pen.cr, 2);
-        cairo_set_line_join(pen.cr, CAIRO_LINE_JOIN_ROUND);
-        cairo_set_line_cap(pen.cr, CAIRO_LINE_CAP_ROUND);
-        cairo_move_to(pen.cr, ix, iy - 10);
-        cairo_line_to(pen.cr, ix + 11, iy + 9);
-        cairo_line_to(pen.cr, ix - 11, iy + 9);
-        cairo_close_path(pen.cr);
-        cairo_stroke(pen.cr);
-        cairo_move_to(pen.cr, ix, iy - 3);
-        cairo_line_to(pen.cr, ix, iy + 2);
-        cairo_move_to(pen.cr, ix, iy + 5.5);
-        cairo_line_to(pen.cr, ix, iy + 6);
-        cairo_stroke(pen.cr);
-        const double tx = kInnerX + 50;
-        const double textW = kInnerRight - 16 - tx;
-        pen.text(tx, by + 24, t.etvrNotice1, fitSize(pen, t.etvrNotice1, 15, 11, textW, true), kWarningText, true);
-        pen.text(tx, by + 45, t.etvrNotice2, fitSize(pen, t.etvrNotice2, 14, 11, textW, false), kWarningTextSoft);
-        by += boxH + 8;
-    }
+    double by = top + cardH;
 
     // VRChat directly: an avatar that takes its eye parameters as bits (or with other names) doesn't move; VRCFT fits
     // them to each avatar. Plain grey: a way out, not a warning
     if (selected == argOfOutput(kOutputVrchat)) {
+        by += 10;
         const double textW = kInnerRight - kInnerX;
         pen.text(kInnerX + 4, by + 15, t.vrchatDirectHint, fitSize(pen, t.vrchatDirectHint, 15, 11, textW - 4, false),
                  kTextMuted);
         by += 28;
-    }
-
-    // ETVR: a small button, "Deprecated", and what it carries
-    {
-        const bool isSelected = selected == argOfOutput(kOutputEtvr);
-        const PanelHit hit {PanelAction::SetOutput, key::kOutput, argOfOutput(kOutputEtvr)};
-        const bool usable = !locked;
-        const int pointer = usable ? pointerState(hit) : 0;
-        const std::string label = std::string(isSelected ? ICON_CHECK " " : "") + t.outputEtvr;
-        const double size = 16;
-        const double bh = 40;
-        const double bw = pen.measure(label, size, isSelected) + 32;
-        Color fill = kCard;
-        if (isSelected && !locked) {
-            fill = kWarningTint;
-        } else if (pointer > 0) {
-            fill = kControlHover;
-        }
-        fillRounded(pen, kInnerX, by, bw, bh, bh / 2, fill);
-        strokeRounded(pen, kInnerX, by, bw, bh, bh / 2, isSelected && !locked ? kWarning : kBorder, isSelected ? 2 : 1.5);
-        const Color textColor = locked ? kTextDisabled : (isSelected ? kWarningText : kTextMuted);
-        textCentered(pen, kInnerX + bw / 2, centerBaseline(by, bh, size), label, size, textColor, isSelected);
-        addButton(hit, kInnerX, by, bw, bh, usable);
-        // "Deprecated"
-        const double tagSize = 13;
-        const double tagH = 24;
-        const double tagX = kInnerX + bw + 12;
-        const double tagW = pen.measure(t.outputDeprecated, tagSize, false) + 16;
-        strokeRounded(pen, tagX, by + (bh - tagH) / 2, tagW, tagH, 8, kBorder, 1);
-        textCentered(pen, tagX + tagW / 2, centerBaseline(by + (bh - tagH) / 2, tagH, tagSize), t.outputDeprecated,
-                     tagSize, kTextMuted, false);
-        // Its two lines on one (the leading marks only go on the cards)
-        std::string carries;
-        for (const char* text : t.outputMarks[2]) {  // (row 2: ETVR)
-            std::string rest;
-            splitMark(text, rest);
-            if (!carries.empty()) carries += t.outputMarkSeparator;
-            carries += rest;
-        }
-        const double cx = tagX + tagW + 14;
-        const double room = kInnerRight - cx;
-        const double carriesSize = fitSize(pen, carries, 14, 11, room, false);
-        pen.text(cx, centerBaseline(by, bh, carriesSize), ellipsize(pen, carries, carriesSize, false, room, false),
-                 carriesSize, kTextMuted);
-        by += bh;
     }
     return by - y + 8;
 }
 
 void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
     const EyeStatus& s = m.status;
-    double y = kRowTop;
+    // (under the sub-tabs)
+    double y = kAdvPageTop;
     const std::string output = v.text(key::kOutput);
     const bool livelink = output == kOutputLivelink;
     const bool module = output == kOutputModule;
-    const bool etvr = output == kOutputEtvr;
-    const bool direct = !livelink && !module && !etvr;
-    // VRChat directly has the most rows: all of them a little shorter there (the other outputs' as on the other tabs)
-    const double rowH = direct ? 56 : kRowH;
-    const double controlH = direct ? 46 : kControlH;
+    const bool direct = !livelink && !module;
+    // VRChat directly has the most rows: all of them shorter there (the other outputs' as on the other tabs)
+    const double rowH = direct ? 50 : kRowH;
+    const double controlH = direct ? 42 : kControlH;
     const double cy = (rowH - controlH) / 2;
     // ...and a line under a control (an example address, a hint) closer to it, the row with that line
-    const double lineDrop = direct ? 13 : 16;
-    const double lineRowH = rowH + (direct ? 18 : 24);
+    const double lineDrop = direct ? 12 : 16;
+    const double lineRowH = rowH + (direct ? 16 : 24);
     // The pupils come from the eye cameras: their rows only while those are in use (with the badge), else one line
     const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
 
@@ -2506,12 +2762,12 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     {
         const bool locked = v.locked(key::kPort);
         const bool isDefault = v.portIsDefault();
-        const char* hint = livelink ? t.portDefaultLivelink
-                           : module ? t.portDefaultModule
-                                    : (etvr ? t.portDefaultEtvr : t.portDefaultVrchat);
+        const char* hint = livelink ? t.portDefaultLivelink : module ? t.portDefaultModule : t.portDefaultVrchat;
         drawRowLabel(pen, t, y, rowH, t.rowPort, hint, locked);
+        // (the value opens the keypad: a port like 11112 is typed, − and ＋ nudge it)
+        const PanelHit tap {PanelAction::PortEnter, key::kPort, v.port()};
         drawStepper(pen, kControlX, y + cy, 220, controlH, key::kPort, v.port(), std::to_string(v.port()), true,
-                    locked);
+                    locked, -1e9, 1e9, nullptr, &tap);
         if (!isDefault && !locked) {
             const PanelHit hit {PanelAction::PortDefault, key::kPort, 0};
             const double bx = kControlX + 232;
@@ -2632,7 +2888,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         y = pupilBits(y);
     }
 
-    // LiveLink, FrameEyeOSC and ETVR: what to set up in VRCFT on the PC (nothing else is set here)
+    // LiveLink and FrameEyeOSC: what to set up in VRCFT on the PC (nothing else is set here)
     const double boxX = kInnerX;
     const double boxW = kInnerRight - kInnerX;
     const double pad = 20;
@@ -2641,7 +2897,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const double stepStep = 26;
     const double badgeW = 32;
     const double textW = boxW - pad * 2 - badgeW;
-    const char* const* steps = livelink ? t.vrcftStepsLivelink : (module ? t.vrcftStepsModule : t.vrcftStepsEtvr);
+    const char* const* steps = livelink ? t.vrcftStepsLivelink : t.vrcftStepsModule;
     std::vector<std::vector<std::string>> stepLines;
     size_t stepLineCount = 0;
     for (int i = 0; i < 4 && steps[i] != nullptr; ++i) {
@@ -2655,7 +2911,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const bool linkFailed = link && moduleLinkErrorShown(output, m.moduleLinkError);
     if (linkFailed) ++stepLineCount;
     std::string note = t.vrcftSetupNote;
-    const char* more = etvr ? t.vrcftNoWide : (module && camera ? t.vrcftModulePupils : nullptr);
+    const char* more = module && camera ? t.vrcftModulePupils : nullptr;
     if (more != nullptr) {
         // A space between English sentences, none after "。"
         if (!note.empty() && note.back() == '.') note += " ";
@@ -2705,6 +2961,676 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         pen.text(boxX + pad, baseline, line, 15, kTextMuted);
         baseline += 21;
     }
+}
+
+std::string extraReasonText(const UiText& t, const std::string& reason) {
+    static const struct {
+        const char* reason;
+        const char* UiText::*text;
+    } kReasons[] = {
+        {"same as main", &UiText::reasonSameAsMain},
+        {"same as the pupils", &UiText::reasonSameAsPupils},
+        {"duplicate", &UiText::reasonDuplicate},
+        {"public address", &UiText::reasonPublicAddress},
+        {"broadcast refused", &UiText::reasonBroadcast},
+        {"multicast refused", &UiText::reasonMulticast},
+        {"not an address to send to", &UiText::reasonNotAddress},
+        {"no Steam Link", &UiText::reasonNoSteamLink},
+    };
+    for (const auto& known : kReasons) {
+        if (reason == known.reason) return t.*known.text;
+    }
+    // ...and the ones with frameeyeosc's detail after them (the system's words, kept as they are)
+    static const struct {
+        const char* prefix;
+        const char* UiText::*format;
+    } kDetailed[] = {
+        {"could not resolve: ", &UiText::reasonResolveFormat},
+        {"can't send yet: ", &UiText::reasonCantSendFormat},
+        {"sending failed: ", &UiText::reasonSendFailedFormat},
+    };
+    for (const auto& known : kDetailed) {
+        const std::string prefix = known.prefix;
+        if (reason.compare(0, prefix.size(), prefix) == 0) {
+            return formatText(t.*known.format, reason.substr(prefix.size()));
+        }
+    }
+    // An entry frameeyeosc can't use (config_error's words): written by a newer version, or after the first three
+    if (reason.find("newer frameeyeosc") != std::string::npos) return t.reasonNewerEntry;
+    if (reason.rfind("only ", 0) == 0 && reason.find("extra outputs are used") != std::string::npos) {
+        return t.reasonOverLimit;
+    }
+    return reason;
+}
+
+StatusLayout statusLayout(int more, bool slow, bool perEye, bool setupCard) {
+    StatusLayout l;
+    l.shift = std::max(0.0, std::clamp(more, 0, 4) * kDestStep - 24);
+    l.dy = l.shift + (slow ? 14 : 0);
+    // Many lines: each eyelid row 8 px closer to the one before (the bars still apart)
+    const double squeeze = l.shift >= 40 ? 16 : 0;
+    for (int eye = 0; eye < 2; ++eye) l.eyeTop[eye] = 296 + l.dy + eye * (48 - squeeze / 2);
+    l.divider = std::max(402.5 + l.shift - squeeze, l.eyeTop[1] + 36 + 8.5);
+    l.g = l.divider - 402.5;
+    l.limit = setupCard ? 590 : 626;
+    if (perEye) {
+        l.box = std::max(48.0, (setupCard ? 100 : 132) - l.g);
+        l.lowest = 464 + l.g + l.box + 20;
+    } else {
+        l.box = std::max(64.0, (setupCard ? 132 : 164) - l.g);
+        // (the legend's four lines closer together, and higher up beside the box, when there is less room under it)
+        const double end = setupCard ? 580 : 612;
+        l.legendFirst = std::max(444 + l.g + 18, std::min(444 + l.g + 32, end - 64));
+        l.legendK = std::min(96.0, end - l.legendFirst) / 96;
+        l.lowest = l.legendFirst + 96 * l.legendK;
+    }
+    return l;
+}
+
+const char* extrasSaveLabel(const UiText& t, const extras::Draft& draft, const extras::List& list) {
+    if (draft.edit < 0) return t.extrasAddSave;
+    for (const extras::Entry& entry : list.entries) {
+        if (entry.index == draft.edit && !entry.enabled) return t.extrasSaveAndSend;
+    }
+    return t.extrasEditSave;
+}
+
+void EyePanel::drawOutputTab(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+    // Two sub-tabs, drawn as the Gaze, Eyelids and Advanced tabs' (the first time the main destination, then the one
+    // open last)
+    const std::vector<Option> options = {
+        {t.outputPageMain, {PanelAction::OutputPage, nullptr, static_cast<int>(OutputPage::Main)}},
+        {t.outputPageApps, {PanelAction::OutputPage, nullptr, static_cast<int>(OutputPage::Apps)}},
+    };
+    drawPageSwitch(pen, kSubTabY, kSubTabH, options, static_cast<int>(outputPage_), -1);
+    if (outputPage_ == OutputPage::Apps) {
+        drawExtras(pen, t, m, v);
+    } else {
+        drawOutput(pen, t, m, v);
+    }
+}
+
+int EyePanel::drawMoreDestinations(const Pen& pen, const UiText& t, const PanelModel& m, double x0, double x1,
+                                   double y, double step, bool draw) {
+    const EyeStatus& s = m.status;
+    struct Line {
+        std::string name;
+        std::string format;  ///< "" for the pupils
+        std::string where;   ///< the address, or why nothing goes there
+        std::string net;     ///< its tag's kind
+        bool bad;
+    };
+    std::vector<Line> lines;
+    // The pupils straight to VRChat (LiveLink), then each extra output that is turned on: one line each, four at most
+    // (five with the main one)
+    if (!s.pupilTarget.empty() || !s.pupilRefused.empty()) {
+        const bool bad = !s.pupilRefused.empty();
+        lines.push_back({t.pupilsLine, "", bad ? extraReasonText(t, s.pupilRefused) : s.pupilTarget,
+                         bad ? std::string() : s.pupilNet, bad});
+    }
+    if (s.extrasKnown) {
+        for (const ExtraLive& e : s.extras) {
+            if (!e.enabled || lines.size() >= 4) continue;
+            const std::string& why = !e.refused.empty() ? e.refused : e.lastError;
+            const bool bad = !why.empty();
+            const std::string address = !e.target.empty() ? e.target : e.host + ":" + std::to_string(e.port);
+            lines.push_back({e.name, formatShort(e.format), bad ? extraReasonText(t, why) : address,
+                             bad ? std::string() : e.net, bad});
+        }
+    }
+    if (!draw) return static_cast<int>(lines.size());
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const Line& line = lines[i];
+        const double base = y + static_cast<double>(i) * step;
+        const Color color = line.bad ? kDanger : kText;
+        // + for one that sends, x for one that doesn't (never the color alone)
+        double x = x0 + pen.text(x0, base, line.bad ? ICON_CROSS : ICON_PLUS, 13, color, true) + 5;
+        const double tagW = drawNetTag(pen, t, line.net, x1, base, 11, false);
+        const double right = x1 - (tagW > 0 ? tagW + 6 : 0);
+        x += pen.text(x, base, ellipsize(pen, line.name, 14, true, 120, false), 14, color, true) + 6;
+        if (!line.format.empty() && !line.bad) {
+            // The format in a small chip, monospaced like its name in config.json (not on a red line: room for why)
+            const double fw = pen.measureMono(line.format, 11) + 10;
+            fillRounded(pen, x, base - 12, fw, 16, 4, kControl);
+            pen.textMono(x + 5, base - 0.5, line.format, 11, kTextMuted);
+            x += fw + 6;
+        }
+        const std::string where = std::string(ICON_ARROW_RIGHT " ") + line.where;
+        pen.text(x, base, ellipsize(pen, where, 13, line.bad, right - x, false), 13, line.bad ? kDanger : kTextMuted,
+                 line.bad);
+        if (tagW > 0) drawNetTag(pen, t, line.net, x1, base, 11);
+    }
+    return static_cast<int>(lines.size());
+}
+
+void EyePanel::drawExtras(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+    const EyeStatus& s = m.status;
+    const extras::List list = extrasList(m);
+    const bool locked = v.locked(key::kExtraOutputs);
+    // What the presses need: the entries as drawn, each as config.json has it, and lan_only
+    extrasShown_ = list.entries;
+    extrasRaw_.clear();
+    for (const extras::Entry& entry : list.entries) extrasRaw_.push_back(extras::rawEntry(m.config.root, entry.index));
+    extrasLanOnly_ = v.flag(key::kLanOnly);
+    // Locked by the command line (--extra, --no-extras), or not a list: nothing to add or change
+    if (locked || !list.isList) closeExtrasFlow();
+    // A row asking whether to delete it: only while it is still there as it was
+    if (extrasRowDelete_ >= 0 && (extrasRowDelete_ >= static_cast<int>(extrasRaw_.size()) ||
+                                  extrasRaw_[static_cast<size_t>(extrasRowDelete_)] != extrasRowDeleteOriginal_)) {
+        extrasRowDelete_ = -1;
+    }
+    if (extrasStep_ != ExtrasStep::List) {
+        drawExtrasFlow(pen, t, m, v);
+        return;
+    }
+    const double w = kInnerRight - kInnerX;
+    double y = kAdvPageTop;
+    // The title (the lock at its right while the command line sets the list) and what it is
+    double titleRight = kInnerRight;
+    if (locked) {
+        const double lw = pen.measure(t.locked, 15, false);
+        pen.text(kInnerRight - lw, y + 20, t.locked, 15, kTextMuted);
+        drawLock(pen, kInnerRight - lw - 20, y + 20, 16, kTextMuted);
+        titleRight -= lw + 32;
+    }
+    pen.text(kInnerX, y + 20, t.extrasTitle, fitSize(pen, t.extrasTitle, 20, 14, titleRight - kInnerX, true), kText,
+             true);
+    pen.text(kInnerX, y + 44, t.extrasSub, fitSize(pen, t.extrasSub, 15, 11, w, false), kTextMuted);
+    y += 58;
+    // An older frameeyeosc runs: the list is kept for it, but nothing goes out until it is updated
+    if (s.running && !s.extrasKnown) {
+        drawInfoIcon(pen, kInnerX + 9, y + 9, kText);
+        pen.text(kInnerX + 26, y + 14, t.extrasOldCore, fitSize(pen, t.extrasOldCore, 15, 11, w - 26, false), kText);
+        y += 30;
+    }
+    if (!list.isList) {
+        pen.text(kInnerX, y + 16, t.extrasNotList, fitSize(pen, t.extrasNotList, 15, 11, w, true), kDanger, true);
+        y += 30;
+    }
+    const int count = static_cast<int>(list.entries.size());
+    for (int i = 0; i < std::min(count, extras::kMax); ++i) {
+        drawExtraRow(pen, t, m, list.entries[static_cast<size_t>(i)], y, kExtraRowH, locked);
+        y += kExtraRowH + kExtraRowGap;
+    }
+    // A delete from a row that couldn't be written (config.json changed meanwhile)
+    if (!extrasError_.empty()) {
+        pen.text(kInnerX, y + 14, ellipsize(pen, extrasError_, 15, true, w, false), 15, kDanger, true);
+        y += 26;
+    }
+    // More than are used (written by hand): only said
+    if (count > extras::kMax) {
+        char text[200];
+        std::snprintf(text, sizeof(text), t.extrasMoreFormat, count - extras::kMax);
+        pen.text(kInnerX, y + 14, text, fitSize(pen, text, 15, 11, w, false), kTextMuted);
+        y += 26;
+    }
+    if (list.isList && count < extras::kMax) {
+        // "Add": a dashed outline in the accent across the card
+        const PanelHit hit {PanelAction::ExtraAdd, nullptr, 0};
+        const bool usable = !locked;
+        const double h = 48;
+        if (usable && pointerState(hit) > 0) fillRounded(pen, kInnerX, y, w, h, h / 2, kControlHover);
+        const double dash[2] = {7, 5};
+        cairo_set_dash(pen.cr, dash, 2, 0);
+        strokeRounded(pen, kInnerX, y, w, h, h / 2, usable ? kAccent : kBorder, 2);
+        cairo_set_dash(pen.cr, nullptr, 0, 0);
+        char label[200];
+        std::snprintf(label, sizeof(label), t.extrasAddFormat, extras::kMax - count);
+        const double size = fitSize(pen, label, 17, 12, w - 40, true);
+        textCentered(pen, kInnerX + w / 2, centerBaseline(y, h, size), label, size, usable ? kAccent : kTextDisabled,
+                     true);
+        addButton(hit, kInnerX, y, w, h, usable);
+        y += h + 10;
+    } else if (list.isList) {
+        pen.text(kInnerX, y + 14, t.extrasFull, fitSize(pen, t.extrasFull, 15, 11, w, false), kTextMuted);
+        y += 26;
+    }
+    // lan_only under a line: on for the main destination and every one here
+    drawRowDivider(pen, y + 2);
+    y += 10;
+    const bool lanLocked = v.locked(key::kLanOnly);
+    const bool lanOnly = v.flag(key::kLanOnly);
+    const double rowH = kRowH;
+    drawRowLabel(pen, t, y, rowH, t.rowLanOnly, t.hintLanOnly, lanLocked);
+    drawSegmented(pen, kControlX, y + (rowH - kControlH) / 2, 300, kControlH,
+                  {{t.on, {PanelAction::SetBool, key::kLanOnly, 1}}, {t.off, {PanelAction::SetBool, key::kLanOnly, 0}}},
+                  lanOnly ? 0 : 1, 20, lanLocked);
+    // ...and what that means: off, a warning
+    const char* hint = lanOnly ? t.lanOnlyOnHint : t.lanOnlyOffHint;
+    const std::vector<std::string> lines = sentenceLines(pen, hint, 15, !lanOnly, kControlW, 3);
+    for (size_t i = 0; i < lines.size(); ++i) {
+        pen.text(kControlX + 4, y + rowH + 12 + static_cast<double>(i) * 20, lines[i], 15,
+                 lanOnly ? kTextMuted : kWarning, !lanOnly);
+    }
+}
+
+void EyePanel::drawExtraRow(const Pen& pen, const UiText& t, const PanelModel& m, const extras::Entry& entry, double y,
+                            double h, bool locked) {
+    cairo_t* cr = pen.cr;
+    const EyeStatus& s = m.status;
+    const double x0 = kInnerX;
+    const double x1 = kInnerRight;
+    // What frameeyeosc says of it (0.10 on, while it runs)
+    const ExtraLive* live = nullptr;
+    if (s.running && s.extrasKnown) {
+        for (const ExtraLive& e : s.extras) {
+            if (e.index == entry.index + 1) live = &e;
+        }
+    }
+    // Why it sends nothing: frameeyeosc's reason while it runs, else what the panel sees in the entry
+    std::string why;
+    if (live != nullptr && (entry.enabled || entry.problem != extras::Problem::None)) {
+        const std::string& reason = !live->refused.empty() ? live->refused : live->lastError;
+        if (!reason.empty()) why = extraReasonText(t, reason);
+    }
+    if (why.empty()) {
+        switch (entry.problem) {
+            case extras::Problem::None: break;
+            case extras::Problem::Newer: why = t.reasonNewerEntry; break;
+            case extras::Problem::Invalid: why = t.reasonBadEntry; break;
+            case extras::Problem::Limit: why = t.reasonOverLimit; break;
+        }
+    }
+    const bool bad = !why.empty();
+    if (!locked && entry.index == extrasRowDelete_) {
+        // Asking whether to delete it, in its own place: the question, "Cancel" and a red "Delete"
+        fillRounded(pen, x0, y, x1 - x0, h, 12, kDangerTint);
+        strokeRounded(pen, x0, y, x1 - x0, h, 12, kDanger, 1.5);
+        const double bh = 44;
+        const double by = y + (h - bh) / 2;
+        const double yesW = std::max(110.0, pen.measure(t.extrasDeleteYes, 17, true) + 40);
+        const double noW = std::max(110.0, pen.measure(t.extrasRowDeleteNo, 17, true) + 40);
+        const double yesX = x1 - 12 - yesW;
+        const double noX = yesX - 10 - noW;
+        const std::string ask = formatText(t.extrasRowDeleteFormat, entry.name);
+        const double room = noX - 16 - (x0 + 18);
+        const double size = fitSize(pen, ask, 17, 12, room, true);
+        pen.text(x0 + 18, centerBaseline(y, h, size), ellipsize(pen, ask, size, true, room, false), size, kText, true);
+        drawButton(pen, noX, by, noW, bh, t.extrasRowDeleteNo,
+                   {PanelAction::ExtraRowDeleteCancel, nullptr, entry.index}, true, false, 17);
+        const PanelHit confirm {PanelAction::ExtraRowDeleteConfirm, nullptr, entry.index};
+        fillRounded(pen, yesX, by, yesW, bh, bh / 2, pointerState(confirm) == 2 ? kAccentPressed : kDanger);
+        textCentered(pen, yesX + yesW / 2, centerBaseline(by, bh, 17), t.extrasDeleteYes, 17, kOnAccent, true);
+        addButton(confirm, yesX, by, yesW, bh);
+        return;
+    }
+    // Its tag: as frameeyeosc sends to it, else from the address as written
+    const std::string net = live != nullptr ? (live->sending ? live->net : std::string())
+                                            : netOfHost(entry.host, extrasLanOnly_);
+    strokeRounded(pen, x0, y, x1 - x0, h, 12, bad && entry.enabled ? kDanger : kDivider, 1.5);
+    // Send / Stop at the left
+    const double sw = 168;
+    const double sh = 44;
+    drawSegmented(pen, x0 + 12, y + (h - sh) / 2, sw, sh,
+                  {{t.extrasSend, {PanelAction::ExtraSend, nullptr, entry.index * 2 + 1}},
+                   {t.extrasStop, {PanelAction::ExtraSend, nullptr, entry.index * 2}}},
+                  entry.enabled ? 0 : 1, 15, locked);
+    // "Delete" and "Change" at the right (the same width, their labels smaller where they don't fit), the tag before
+    const double bw = 100;
+    const double bx = x1 - 12 - bw;
+    const double dx = bx - 8 - bw;
+    {
+        // Delete: quiet red, like "Reset all"; greyed like "Change" while locked
+        const PanelHit hit {PanelAction::ExtraRowDelete, nullptr, entry.index};
+        const bool usable = !locked;
+        const double by = y + (h - sh) / 2;
+        const int pointer = usable ? pointerState(hit) : 0;
+        if (usable) {
+            fillRounded(pen, dx, by, bw, sh, sh / 2, pointer > 0 ? kDangerTint : kQuitFill);
+            strokeRounded(pen, dx, by, bw, sh, sh / 2, kDanger, 2);
+        } else {
+            fillRounded(pen, dx, by, bw, sh, sh / 2, kControl);
+            strokeRounded(pen, dx, by, bw, sh, sh / 2, kDivider, 2);
+        }
+        const double size = fitSize(pen, t.extrasRowDelete, 16, 12, bw - 24, true);
+        textCentered(pen, dx + bw / 2, centerBaseline(by, sh, size), t.extrasRowDelete, size,
+                     usable ? kText : kTextDisabled, true);
+        addButton(hit, dx, by, bw, sh, usable);
+    }
+    drawButton(pen, bx, y + (h - sh) / 2, bw, sh, t.extrasEdit, {PanelAction::ExtraEdit, nullptr, entry.index}, !locked,
+               false, 16);
+    double right = dx - 14;
+    const double tagW = drawNetTag(pen, t, net, right, y + h / 2 + 4, 12, false);
+    if (tagW > 0) {
+        drawNetTag(pen, t, net, right, y + h / 2 + 4, 12);
+        right -= tagW + 10;
+    }
+    // Its name, what and where (faded while stopped), and why it sends nothing in red
+    const double tx = x0 + 12 + sw + 18;
+    const double room = right - tx;
+    const double nameY = bad ? y + 25 : y + 30;
+    if (!entry.enabled) cairo_push_group(cr);
+    pen.text(tx, nameY, ellipsize(pen, entry.name, 17, true, room, false), 17, kText, true);
+    std::string host = entry.host;
+    if (live != nullptr && !live->target.empty()) {
+        host = hostOfTarget(live->target);
+    } else if (host == extras::kHostMain) {
+        host = t.hostMainShort;
+    } else if (host == extras::kHostAuto) {
+        host = t.hostAuto;
+    }
+    std::string what = formatShort(entry.format);
+    what += std::string("  " ICON_ARROW_RIGHT " ") + host + (entry.port > 0 ? ":" + std::to_string(entry.port) : "");
+    pen.text(tx, nameY + 21, ellipsize(pen, what, 15, false, room, false), 15, kTextMuted);
+    if (!entry.enabled) fadeGroup(pen);
+    if (bad) pen.text(tx, nameY + 40, ellipsize(pen, why, 14, true, room, false), 14, kDanger, true);
+}
+
+double EyePanel::drawExtrasHeader(const Pen& pen, const UiText& t, const char* sub, int step) {
+    const double top = kAdvPageTop;
+    // 1 / 2 / 3 at the right: three bars, the ones done and this one in the accent, and the step's number
+    char count[32];
+    std::snprintf(count, sizeof(count), t.extrasStepOfFormat, step);
+    const double countW = pen.measure(count, 15, false);
+    const double barW = 26;
+    const double progW = 3 * barW + 2 * 6 + 10 + countW;
+    const double px = kInnerRight - progW;
+    for (int i = 0; i < 3; ++i) {
+        fillRounded(pen, px + i * (barW + 6), top + 11, barW, 6, 3, i < step ? kAccent : kBorder);
+    }
+    pen.text(kInnerRight - countW, top + 19, count, 15, kTextMuted);
+    const char* title = extrasDraft_.edit >= 0 ? t.extrasEditTitle : t.extrasAddTitle;
+    pen.text(kInnerX, top + 20, title, fitSize(pen, title, 20, 14, px - 16 - kInnerX, true), kText, true);
+    pen.text(kInnerX, top + 44, sub, fitSize(pen, sub, 15, 11, kInnerRight - kInnerX, false), kTextMuted);
+    return top + 58;
+}
+
+void EyePanel::drawExtrasFooter(const Pen& pen, const char* left, const PanelHit& leftHit, const char* right,
+                                const PanelHit& rightHit, bool rightUsable) {
+    const double y = kExtrasFootY;
+    if (!extrasError_.empty()) {
+        pen.text(kInnerX, y - 14, ellipsize(pen, extrasError_, 15, true, kInnerRight - kInnerX, false), 15, kDanger,
+                 true);
+    }
+    drawButton(pen, kInnerX, y, 180, kExtrasFootH, left, leftHit, true, false, 18);
+    drawButton(pen, kInnerRight - 240, y, 240, kExtrasFootH, right, rightHit, rightUsable, true, 18);
+}
+
+void EyePanel::drawExtrasFlow(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
+    (void)v;
+    cairo_t* cr = pen.cr;
+    const extras::Draft& d = extrasDraft_;
+    const double x0 = kInnerX;
+    const double x1 = kInnerRight;
+    const double w = x1 - x0;
+    const extras::Taken taken = extrasTaken(m);
+    // Where "main" and "auto" go now, as far as the panel knows ("" = not yet)
+    const auto known = [](const std::string& host) {
+        return host.empty() || host == extras::kHostAuto ? std::string() : host;
+    };
+    const std::string mainAt = known(taken.mainHost);
+    const std::string steamLinkAt = known(taken.steamLink);
+    if (extrasStep_ == ExtrasStep::Format) {
+        // 1: two cards, each with its permanent name, what it is for and what it carries
+        double y = drawExtrasHeader(pen, t, t.extrasStepFormat, 1) + 8;
+        const double gap = 16;
+        const double cw = (w - gap) / 2;
+        const double ch = 166;
+        // (the bullets on the same line in both cards, below the longer description)
+        size_t descLines = 1;
+        for (const char* desc : {t.formatFeo1Desc, t.formatOscDesc}) {
+            descLines = std::max(descLines, wrapText(pen, desc, 15, false, cw - 36, 2).size());
+        }
+        for (int i = 0; i < 2; ++i) {
+            const bool osc = i == 1;
+            const char* format = osc ? extras::kOsc : extras::kFeo1;
+            const bool chosen = d.format == format;
+            const PanelHit hit {PanelAction::ExtraFormat, nullptr, i};
+            const double cx = x0 + i * (cw + gap);
+            const int pointer = pointerState(hit);
+            const Color fill = chosen ? kAccentTint : (pointer > 0 ? kControlHover : kControl);
+            fillRounded(pen, cx, y, cw, ch, 14, fill);
+            strokeRounded(pen, cx, y, cw, ch, 14, chosen ? kAccent : kBorder, 2);
+            const double chipW = pen.measureMono(format, 13) + 16;
+            fillRounded(pen, cx + cw - 14 - chipW, y + 14, chipW, 24, 6, chosen ? kAccent : kBg);
+            pen.textMono(cx + cw - 14 - chipW + 8, y + 31, format, 13, chosen ? kOnAccent : kTextMuted);
+            double tx = cx + 18;
+            const double ty = y + 34;
+            if (chosen) {
+                drawCheck(cr, tx + 8, ty - 7, 18, kAccent);
+                tx += 26;
+            }
+            const char* title = osc ? t.formatOscTitle : t.formatFeo1Title;
+            pen.text(tx, ty, title, fitSize(pen, title, 19, 13, cx + cw - 24 - chipW - tx, true), kText, true);
+            // (muted only on the plain card: the chosen and pointed-at ones keep full text)
+            const Color soft = chosen || pointer > 0 ? kText : kTextMuted;
+            double ly = ty + 30;
+            for (const std::string& line : wrapText(pen, osc ? t.formatOscDesc : t.formatFeo1Desc, 15, false,
+                                                    cw - 36, 2)) {
+                pen.text(cx + 18, ly, line, 15, soft);
+                ly += 21;
+            }
+            ly = ty + 30 + static_cast<double>(descLines) * 21 + 8;
+            const char* const* bullets = osc ? t.formatOscLines : t.formatFeo1Lines;
+            for (int b = 0; b < 2; ++b) {
+                drawDot(cr, cx + 24, ly - 5, 3, kAccent);
+                pen.text(cx + 34, ly, ellipsize(pen, bullets[b], 15, false, cw - 52, false), 15, kText);
+                ly += 23;
+            }
+            addButton(hit, cx, y, cw, ch);
+        }
+        y += ch + 28;
+        for (const std::string& line : wrapText(pen, t.formatHint, 15, false, w, 2)) {
+            pen.text(x0, y, line, 15, kTextMuted);
+            y += 21;
+        }
+        drawExtrasFooter(pen, t.extrasCancel, {PanelAction::ExtraCancel, nullptr, 0}, t.extrasNext,
+                         {PanelAction::ExtraStep, nullptr, static_cast<int>(ExtrasStep::Host)}, !d.format.empty());
+        return;
+    }
+    if (extrasStep_ == ExtrasStep::Host) {
+        // 2: the main output's PC, the Steam Link PC, this Frame, or an address typed (and one config.json has that
+        // the keypad can't type, kept)
+        double y = drawExtrasHeader(pen, t, t.extrasStepHost, 2) + 8;
+        using extras::HostChoice;
+        std::vector<Option> options = {
+            {t.hostMain, {PanelAction::ExtraHost, nullptr, static_cast<int>(HostChoice::Main)}},
+            {t.hostAuto, {PanelAction::ExtraHost, nullptr, static_cast<int>(HostChoice::Auto)}},
+            {t.hostFrame, {PanelAction::ExtraHost, nullptr, static_cast<int>(HostChoice::Frame)}},
+            {t.hostIp, {PanelAction::ExtraHost, nullptr, static_cast<int>(HostChoice::Ip)}},
+        };
+        if (!d.kept.empty()) {
+            options.push_back({formatText(t.hostKeepFormat, d.kept),
+                               {PanelAction::ExtraHost, nullptr, static_cast<int>(HostChoice::Keep)}});
+        }
+        drawSegmented(pen, x0, y, w, 52, options, static_cast<int>(d.host), 17);
+        y += 52 + 20;
+        const extras::HostCheck check = extras::checkHost(d, extrasLanOnly_);
+        if (d.host != HostChoice::Ip) {
+            // What it is, and where it goes now
+            const char* sub = d.host == HostChoice::Main   ? t.hostMainSub
+                              : d.host == HostChoice::Auto ? t.hostAutoSub
+                              : d.host == HostChoice::Frame ? t.hostFrameSub
+                                                           : t.hostKeepSub;
+            const std::string at = d.host == HostChoice::Main   ? (mainAt.empty() ? t.hostUnknown : mainAt)
+                                   : d.host == HostChoice::Auto ? (steamLinkAt.empty() ? t.hostUnknown : steamLinkAt)
+                                   : d.host == HostChoice::Frame ? std::string(extras::kHostFrame)
+                                                                : d.kept;
+            const double subW = pen.text(x0, y + 8, sub, fitSize(pen, sub, 17, 12, w * 0.65, false), kTextMuted);
+            const std::string arrow = std::string("  " ICON_ARROW_RIGHT "  ") + at;
+            pen.text(x0 + subW, y + 8, ellipsize(pen, arrow, 17, true, w - subW, false), 17, kText, true);
+        } else {
+            // The address typed, what kind it is, and the keypad at the right
+            const double padW = 276;
+            const double padX = x1 - padW;
+            const double fieldW = padX - 24 - x0;
+            const double fh = 60;
+            fillRounded(pen, x0, y, fieldW, fh, 14, kControl);
+            strokeRounded(pen, x0, y, fieldW, fh, 14, kAccent, 2);
+            const double size = std::min(26.0, (fieldW - 48) / std::max(1.0, pen.measureMono("255.255.255.255", 1)));
+            pen.textMono(x0 + 18, centerBaseline(y, fh, size), d.ip, size, kText);
+            pen.color(kAccent);
+            cairo_rectangle(cr, x0 + 20 + pen.measureMono(d.ip, size), y + 14, 2.5, fh - 28);
+            cairo_fill(cr);
+            using extras::HostCheck;
+            const char* says = t.ipEmpty;
+            Color color = kTextMuted;
+            bool strong = false;  // (a warning or a refusal: bold)
+            switch (check) {
+                case HostCheck::Ok:
+                case HostCheck::Empty: break;
+                case HostCheck::Typing: says = t.ipTyping; break;
+                case HostCheck::Lan: says = t.ipLan; color = kSuccess; break;
+                case HostCheck::Vpn: says = t.ipVpn; color = kSuccess; break;
+                case HostCheck::Public:
+                    says = t.ipPublic;
+                    color = kWarning;
+                    strong = true;
+                    break;
+                case HostCheck::PublicBlocked:
+                case HostCheck::Broadcast:
+                case HostCheck::Multicast:
+                case HostCheck::Unspecified:
+                    says = check == HostCheck::PublicBlocked ? t.ipPublicBlocked
+                           : check == HostCheck::Broadcast   ? t.ipBroadcast
+                           : check == HostCheck::Multicast   ? t.ipMulticast
+                                                             : t.ipUnspecified;
+                    color = kDanger;
+                    strong = true;
+                    break;
+            }
+            double ly = y + fh + 30;
+            for (const std::string& line : sentenceLines(pen, says, 16, strong, fieldW, 3)) {
+                pen.text(x0 + 4, ly, line, 16, color, strong);
+                ly += 23;
+            }
+            // The keypad: 1-9, then ".", "0" and backspace, as the target PC's
+            const int keys[12] = {'1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', host_entry::kBackspace};
+            const double gap = 8;
+            const double keyW = (padW - 2 * gap) / 3;
+            const double keyH = 52;
+            for (int i = 0; i < 12; ++i) {
+                const double kx = padX + (i % 3) * (keyW + gap);
+                const double ky = y + (i / 3) * (keyH + gap);
+                const PanelHit hit {PanelAction::ExtraKey, nullptr, keys[i]};
+                const int pointer = pointerState(hit);
+                fillRounded(pen, kx, ky, keyW, keyH, 12,
+                            pointer == 2 ? kAccentPressed : (pointer == 1 ? kControlHover : kControl));
+                strokeRounded(pen, kx, ky, keyW, keyH, 12, kBorder, 2);
+                const Color key = pointer == 2 ? kOnAccent : kText;
+                if (keys[i] == host_entry::kBackspace) {
+                    drawBackspace(pen, kx + keyW / 2, ky + keyH / 2, 0.8, key);
+                } else {
+                    textCentered(pen, kx + keyW / 2, centerBaseline(ky, keyH, 24), std::string(1, keys[i]), 24, key,
+                                 true);
+                }
+                addButton(hit, kx, ky, keyW, keyH);
+            }
+        }
+        drawExtrasFooter(pen, t.extrasBack, {PanelAction::ExtraStep, nullptr, static_cast<int>(ExtrasStep::Format)},
+                         t.extrasNext, {PanelAction::ExtraStep, nullptr, static_cast<int>(ExtrasStep::Port)},
+                         extras::hostUsable(check));
+        return;
+    }
+    // 3: the port (each format starts at its own) and what it comes to, red where it repeats another destination;
+    // while changing, delete
+    double y = drawExtrasHeader(pen, t, t.extrasStepPort, 3) + 4;
+    const double rowH = kRowH;
+    drawRowLabel(pen, t, y, rowH, t.rowPort, d.format == extras::kOsc ? t.portNoteOsc : t.portNoteFeo1, false);
+    {
+        // − port ＋, as the main port's
+        const double sx = kControlX;
+        const double sy = y + (rowH - kControlH) / 2;
+        const double sw = 240;
+        const double sh = kControlH;
+        fillRounded(pen, sx, sy, sw, sh, sh / 2, kControl);
+        strokeRounded(pen, sx, sy, sw, sh, sh / 2, kBorder, 2);
+        const double buttonW = sh;
+        for (int side = 0; side < 2; ++side) {
+            const PanelHit hit {PanelAction::ExtraPort, nullptr, side == 0 ? -1 : 1};
+            const bool can = side == 0 ? d.port > 1 : d.port < 65535;
+            const double bx = side == 0 ? sx : sx + sw - buttonW;
+            const int pointer = can ? pointerState(hit) : 0;
+            if (pointer > 0) {
+                fillRounded(pen, bx + 4, sy + 4, buttonW - 8, sh - 8, (sh - 8) / 2,
+                            pointer == 2 ? kAccentPressed : kControlHover);
+            }
+            drawPlusMinus(cr, bx + buttonW / 2, sy + sh / 2, 16, side == 1,
+                          pointer == 2 ? kOnAccent : (can ? kText : kTextDisabled));
+            addButton(hit, bx, sy, buttonW, sh, can);
+        }
+        // (the value opens the keypad, as the main port's)
+        const std::string port = std::to_string(d.port);
+        drawValueTap(pen, {PanelAction::ExtraPortEnter, nullptr, 0}, sx + buttonW, sy, sw - 2 * buttonW, sh,
+                     pen.measure(port, 20, true));
+        textCentered(pen, sx + sw / 2, centerBaseline(sy, sh, 20), port, 20, kText, true);
+    }
+    y += rowH + kRowGap;
+    // What it comes to: the name, the format, where (as far as known) and its tag; red where it repeats one
+    int other = -1;
+    const extras::List list = extrasList(m);
+    const extras::Clash clash = extras::findClash(d, list, taken, other);
+    drawRowLabel(pen, t, y, rowH, t.rowSummary, t.hintSummary, false);
+    {
+        using extras::HostChoice;
+        const std::string host = d.host == HostChoice::Main   ? (mainAt.empty() ? std::string(t.hostMain) : mainAt)
+                                 : d.host == HostChoice::Auto ? (steamLinkAt.empty() ? std::string(t.hostAuto)
+                                                                                     : steamLinkAt)
+                                                              : extras::draftHost(d);
+        const double base = y + rowH / 2 + 7;
+        double x = kControlX;
+        x += pen.text(x, base, ellipsize(pen, d.name, 18, true, 160, false), 18, kText, true) + 12;
+        const std::string format = d.format;
+        const double fw = pen.measureMono(format, 13) + 14;
+        fillRounded(pen, x, base - 16, fw, 22, 5, kControl);
+        pen.textMono(x + 7, base - 1, format, 13, kTextMuted);
+        x += fw + 12;
+        const std::string net = netOfHost(extras::draftHost(d), extrasLanOnly_);
+        const double tagW = drawNetTag(pen, t, net, x1, base, 12, false);
+        const std::string where = std::string(ICON_ARROW_RIGHT " ") + host + ":" + std::to_string(d.port);
+        const double room = x1 - x - (tagW > 0 ? tagW + 10 : 0);
+        const double used = pen.text(x, base, ellipsize(pen, where, 17, false, room, false), 17, kText);
+        if (tagW > 0) drawNetTag(pen, t, net, x + used + 10 + tagW, base, 12);
+    }
+    y += rowH;
+    if (clash != extras::Clash::None) {
+        std::string name = extras::defaultName(other);
+        for (const extras::Entry& entry : list.entries) {
+            if (entry.index == other) name = entry.name;
+        }
+        const std::string text = clash == extras::Clash::Main     ? std::string(t.clashMain)
+                                 : clash == extras::Clash::Pupils ? std::string(t.clashPupils)
+                                                                  : formatText(t.clashDuplicateFormat, name);
+        pen.text(kControlX, y + 4, ellipsize(pen, text, 15, true, x1 - kControlX, false), 15, kDanger, true);
+        y += 22;
+    }
+    y += 12;
+    if (d.edit >= 0) {
+        if (!extrasDeleteOpen_) {
+            // Delete: quiet red, like "Reset all" (its confirmation comes next, in the panel)
+            const PanelHit hit {PanelAction::ExtraDelete, nullptr, 0};
+            const double bw = std::min(w, pen.measure(t.extrasDelete, 17, true) + 56);
+            const double bh = 46;
+            fillRounded(pen, x0, y, bw, bh, bh / 2, pointerState(hit) > 0 ? kDangerTint : kQuitFill);
+            strokeRounded(pen, x0, y, bw, bh, bh / 2, kDanger, 2);
+            textCentered(pen, x0 + bw / 2, centerBaseline(y, bh, 17), t.extrasDelete, 17, kText, true);
+            addButton(hit, x0, y, bw, bh);
+        } else {
+            // Its confirmation: what goes, "Keep" and "Delete"
+            const double bh = 68;
+            fillRounded(pen, x0, y, w, bh, 14, kDangerTint);
+            strokeRounded(pen, x0, y, w, bh, 14, kDanger, 1.5);
+            const double bw = 132;
+            const double gap = 10;
+            const double yes = x1 - 12 - bw;
+            const double no = yes - gap - bw;
+            const std::string ask = formatText(t.extrasDeleteFormat, d.name);
+            const double room = no - 16 - (x0 + 18);
+            const double size = fitSize(pen, ask, 17, 12, room, true);
+            pen.text(x0 + 18, centerBaseline(y, bh, size), ellipsize(pen, ask, size, true, room, false), size, kText,
+                     true);
+            drawButton(pen, no, y + (bh - 46) / 2, bw, 46, t.extrasDeleteNo,
+                       {PanelAction::ExtraDeleteCancel, nullptr, 0}, true, false, 17);
+            const PanelHit confirm {PanelAction::ExtraDeleteConfirm, nullptr, 0};
+            fillRounded(pen, yes, y + (bh - 46) / 2, bw, 46, 23, pointerState(confirm) == 2 ? kAccentPressed : kDanger);
+            textCentered(pen, yes + bw / 2, centerBaseline(y + (bh - 46) / 2, 46, 17), t.extrasDeleteYes, 17,
+                         kOnAccent, true);
+            addButton(confirm, yes, y + (bh - 46) / 2, bw, 46);
+        }
+    }
+    drawExtrasFooter(pen, t.extrasBack, {PanelAction::ExtraStep, nullptr, static_cast<int>(ExtrasStep::Host)},
+                     extrasSaveLabel(t, d, list), {PanelAction::ExtraSave, nullptr, 0},
+                     clash == extras::Clash::None && !extrasDeleteOpen_);
 }
 
 void EyePanel::drawGaze(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v) {
@@ -2831,7 +3757,7 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
     {
         const bool locked = v.locked(key::kIndependentEyes);
         const bool oneEye = m.status.running && !m.status.dominantEye.empty();
-        const char* hint = oneEye ? t.hintIndependentOneEye : eyesV1(v) ? t.hintIndependentV1 : t.hintIndependent;
+        const char* hint = oneEye ? t.hintIndependentOneEye : t.hintIndependent;
         drawRowLabel(pen, t, y, kRowH, t.rowIndependent, hint, locked);
         drawSegmented(pen, kControlX, y + cy, 300, kControlH,
                       {{t.on, {PanelAction::SetBool, key::kIndependentEyes, 1}},
@@ -2839,12 +3765,11 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
                       v.flag(key::kIndependentEyes) ? 0 : 1, 20, locked);
     }
     y += kRowH + kRowGap;
-    // How much of each eye's own sideways gaze (own_eye_gaze): only while the eyes move separately in v2, faded
-    // otherwise; in v1 with why and the way to the switch beside it, else what the ends do
+    // How much of each eye's own sideways gaze (own_eye_gaze): only while the eyes move separately, faded otherwise;
+    // what the ends do beside it
     {
         const bool locked = v.locked(key::kOwnEyeGaze);
-        const bool v1 = eyesV1(v);
-        const bool usable = !v1 && v.flag(key::kIndependentEyes);
+        const bool usable = v.flag(key::kIndependentEyes);
         const double stepperW = 196;
         const double value = v.number(key::kOwnEyeGaze);
         const double nx = kControlX + stepperW + 16;
@@ -2852,7 +3777,7 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
         drawRowLabel(pen, t, y, kRowH, t.rowOwnEyeGaze, "", locked);
         drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kOwnEyeGaze, value, formatPercent(value), usable,
                     locked);
-        if (!v1) {
+        {
             const std::vector<std::string> lines = wrapText(pen, t.hintOwnEyeGaze, 13, false, kInnerRight - nx, 3);
             double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
             for (const std::string& line : lines) {
@@ -2861,7 +3786,6 @@ void EyePanel::drawGazeReach(const Pen& pen, const UiText& t, const PanelModel& 
             }
         }
         if (!usable) fadeGroup(pen);
-        if (v1) drawV2OnlyNote(pen, t, t.floorV2Only, nx, y, kRowH);
     }
 }
 
@@ -3520,19 +4444,13 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
     } else {
         const bool onCameras = s.running && (s.camera.used[0] || s.camera.used[1]);
         const bool locked = v.locked(key::kCameraLidFloor);
-        // A v2 rule: faded in v1, with why and the way to the switch beside it
-        const bool v1 = eyesV1(v);
-        if (v1) cairo_push_group(pen.cr);
         drawRowLabel(pen, t, y, kRowH, t.rowLidFloor, t.lidFloorHint, locked, 0, true);
         const double stepperW = 196;
         const double floor = v.number(key::kCameraLidFloor);
         drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kCameraLidFloor, floor,
-                    formatSetting(key::kCameraLidFloor, floor), !v1, locked, -1e9, 1e9, &kSuccess);
-        if (v1) fadeGroup(pen);
+                    formatSetting(key::kCameraLidFloor, floor), true, locked, -1e9, 1e9, &kSuccess);
         const double nx = kControlX + stepperW + 16;
-        if (v1) {
-            drawV2OnlyNote(pen, t, t.floorV2Only, nx, y, kRowH);
-        } else {
+        {
             const char* note = onCameras ? t.lidFloorNote : t.lidFloorNoteIdle;
             const std::vector<std::string> lines = wrapText(pen, note, 13, false, kInnerRight - nx, 3);
             double baseline = y + kRowH / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
@@ -3550,7 +4468,6 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
     const EyeStatus& s = m.status;
     cairo_t* cr = pen.cr;
     const double cy = (kRowH - kControlH) / 2;
-    const bool v1 = eyesV1(v);
     // The title, and what the bars show
     {
         y += 8;
@@ -3563,8 +4480,8 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
     }
     // Each eye's eyelid as sent now (VRCFT, 0..1), in the cameras' green where its eyelid is theirs and with whose it is
     // on the right; relaxed open dotted; ③ for the eyes without the cameras' eyelid (lid_open_snap) and for those with
-    // it (camera_lid_open_snap), each faded while it applies to neither eye (neither in v1, where ③ isn't used); the
-    // camera floor in green while it is on (v2, the cameras in use), faded while no eye is on them
+    // it (camera_lid_open_snap), each faded while it applies to neither eye; the camera floor in green while it is on
+    // (the cameras in use), faded while no eye is on them
     {
         const double chipW = 92;
         const double barX = kInnerX + 34;
@@ -3615,7 +4532,7 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
         }
         // The camera floor
         const double floor = v.number(key::kCameraLidFloor);
-        if (!v1 && eyecam::inUse(m.eyecam, v.flag(key::kCameraLids)) && std::isfinite(floor) && floor > 0) {
+        if (eyecam::inUse(m.eyecam, v.flag(key::kCameraLids)) && std::isfinite(floor) && floor > 0) {
             const bool any = onCamera[0] || onCamera[1];
             const double x = xOf(floor);
             for (const bool edge : {true, false}) {
@@ -3632,7 +4549,7 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
         const double dash[2] = {5, 4};
         for (int i = 0; i < 2; ++i) {
             const double snap = v.number(keys[i]);
-            if (v1 || !std::isfinite(snap) || snap >= kLidRelaxed - 1e-9) continue;
+            if (!std::isfinite(snap) || snap >= kLidRelaxed - 1e-9) continue;
             // (without eye data, as for the eyes as set up: the cameras' value where they are in use)
             const bool applies = live ? (i == 0 ? !onCamera[0] || !onCamera[1] : onCamera[0] || onCamera[1])
                                       : (i == 0 || eyecam::inUse(m.eyecam, v.flag(key::kCameraLids)));
@@ -3670,19 +4587,13 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
         }
         y = bottom + 14;
     }
-    // ③'s row: in v2 both values, each with whose eyes it is for on its left; in v1 only lid_open_snap, faded, with why
-    // and the way to the switch beside it. In ③'s color, as are the steppers' edges
+    // ③'s row: both values, each with whose eyes it is for on its left. In ③'s color, as are the steppers' edges
     {
-        const bool locked = v.locked(key::kLidOpenSnap) || (!v1 && v.locked(key::kCameraLidOpenSnap));
-        if (v1) cairo_push_group(cr);
+        const bool locked = v.locked(key::kLidOpenSnap) || v.locked(key::kCameraLidOpenSnap);
         drawNumberBadge(pen, kInnerX + 10, y + kRowH / 2 - 9, 3, kSnap);
         drawRowLabel(pen, t, y, kRowH, t.rowLidOpenSnap, t.lidOpenSnapHint, locked, 26);
         const double stepperW = 150;
-        if (v1) {
-            const double snap = v.number(key::kLidOpenSnap);
-            drawStepper(pen, kControlX, y + cy, stepperW, kControlH, key::kLidOpenSnap, snap,
-                        formatSetting(key::kLidOpenSnap, snap), false, v.locked(key::kLidOpenSnap), -1e9, 1e9, &kSnap);
-        } else {
+        {
             const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
             const char* captions[2] = {t.capSnapValve, t.capSnapCamera};
             const double captionW = 84;
@@ -3694,10 +4605,6 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
                 drawStepper(pen, x + captionW, y + cy, stepperW, kControlH, keys[i], value,
                             formatSetting(keys[i], value), true, v.locked(keys[i]), -1e9, 1e9, &kSnap);
             }
-        }
-        if (v1) {
-            fadeGroup(pen);
-            drawV2OnlyNote(pen, t, t.snapV2Only, kControlX + stepperW + 16, y, kRowH);
         }
         y += kRowH;
         drawRowDivider(pen, y);
@@ -4081,20 +4988,6 @@ double EyePanel::drawAdvancedPage(const Pen& pen, const UiText& t, const PanelMo
     return 0.0;
 }
 
-void EyePanel::drawV2OnlyNote(const Pen& pen, const UiText& t, const char* note, double x, double y, double h) {
-    const double bh = 34;
-    const double bw = pen.measure(t.toVersionPage, 14, true) + 28;
-    const double bx = kInnerRight - bw;
-    drawButton(pen, bx, y + (h - bh) / 2, bw, bh, t.toVersionPage,
-               {PanelAction::AdvancedPage, nullptr, static_cast<int>(AdvPage::Version)}, true, false, 14);
-    const std::vector<std::string> lines = wrapText(pen, note, 13, false, bx - 12 - x, 3);
-    double baseline = y + h / 2 + 4 - (static_cast<double>(lines.size()) - 1) * 8.5;
-    for (const std::string& line : lines) {
-        pen.text(x, baseline, line, 13, kText);
-        baseline += 17;
-    }
-}
-
 double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelModel& m, const SettingsView& v,
                                  double top, double right) {
     using frame_updater::UpdateState;
@@ -4282,25 +5175,6 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
                       {{t.on, {PanelAction::UpdateBeta, nullptr, 1}}, {t.off, {PanelAction::UpdateBeta, nullptr, 0}}},
                       updateBeta_ ? 0 : 1, 16, false);
         ey += h + 14;
-    }
-    // How the eyes move (eye_behavior): v2, or v1 as up to 0.7.5, and a line on what each does
-    {
-        const double h = 46;
-        const bool locked = v.locked(key::kEyeBehavior);
-        const double segW = std::min(420.0, right - kInnerX - 260);
-        const double labelW = right - segW - 16 - kInnerX;
-        const std::string hint = locked ? t.locked : t.hintEyeBehavior;
-        pen.text(kInnerX, ey + 20, t.rowEyeBehavior, fitSize(pen, t.rowEyeBehavior, 18, 13, labelW, true), kText, true);
-        pen.text(kInnerX, ey + 40, hint, fitSize(pen, hint, 14, 11, labelW, false), kTextMuted);
-        drawSegmented(pen, right - segW, ey + 2, segW, 42,
-                      {{t.eyeBehaviorV2, {PanelAction::SetInteger, key::kEyeBehavior, 2}},
-                       {t.eyeBehaviorV1, {PanelAction::SetInteger, key::kEyeBehavior, 1}}},
-                      eyesV1(v) ? 1 : 0, 16, locked);
-        ey += h + 4;
-        for (const char* line : {t.eyeBehaviorV2Line, t.eyeBehaviorV1Line}) {
-            ey += 19;
-            pen.text(kInnerX, ey, line, fitSize(pen, line, 14, 11, right - kInnerX, false), kTextMuted);
-        }
     }
     // Last, the other Frame apps: at the bottom of the card while the page fits, else under the rest (scrolled to)
     if (!m.apps.entries.empty()) {
@@ -4610,6 +5484,11 @@ double EyePanel::drawTroublePage(const Pen& pen, const UiText& t, const PanelMod
         pen.text(kInnerX, y + 48, ellipsize(pen, t.diagRowHint, 14, false, room, false), 14, kTextMuted);
         y += h + 16;
     }
+    // SteamVR's eye camera speed (only with a SteamVR that has the setting)
+    {
+        const double h = drawEyeRateRow(pen, t, m, y, right);
+        if (h > 0) y += h + 16;
+    }
     // The newest records
     {
         const double titleW = pen.text(kInnerX, y + 18, t.recordsTitle, 17, kText, true);
@@ -4650,6 +5529,45 @@ double EyePanel::drawTroublePage(const Pen& pen, const UiText& t, const PanelMod
         y += h;
     }
     return y + 8 - top;
+}
+
+double EyePanel::drawEyeRateRow(const Pen& pen, const UiText& t, const PanelModel& m, double y, double right) {
+    const eye_rate::View& rate = m.eyeRate;
+    if (!rate.setting.exists) return 0.0;
+    // The two choices on the right, as wide as the longer one needs (narrower beside the scroll buttons)
+    const double segSize = 17;
+    const double segH = 48;
+    const double segW = std::min(
+        right - kInnerX - 260,
+        2 * (std::max(pen.measure(t.eyeRateFull, segSize, true), pen.measure(t.eyeRateSteamVr, segSize, true)) +
+             segSize * 0.9 + 28) +
+            10);
+    const double segX = right - segW;
+    const int chosen = eye_rate::choice(rate.setting) == eye_rate::Choice::Full ? 0 : 1;
+    drawSegmented(pen, segX, y + 6, segW, segH,
+                  {{t.eyeRateFull, {PanelAction::EyeRateChoose, nullptr, static_cast<int>(eye_rate::Choice::Full)}},
+                   {t.eyeRateSteamVr,
+                    {PanelAction::EyeRateChoose, nullptr, static_cast<int>(eye_rate::Choice::SteamVr)}}},
+                  chosen, segSize);
+    // The title and hint as the diagnostics' (the hint on two lines if it needs them), the rate now under them
+    const double room = segX - 16 - kInnerX;
+    pen.text(kInnerX, y + 24, t.rowEyeRate, fitSize(pen, t.rowEyeRate, 20, 14, room, true), kText, true);
+    double baseline = y + 48;
+    for (const std::string& line : wrapText(pen, t.hintEyeRate, 14, false, room, 2)) {
+        pen.text(kInnerX, baseline, line, 14, kTextMuted);
+        baseline += 19;
+    }
+    const EyeStatus& s = m.status;
+    if (s.running && s.tracking && std::isfinite(s.trackerRate)) {
+        const bool low = eye_rate::low(s);
+        char text[128];
+        std::snprintf(text, sizeof(text), t.eyeRateNowFormat, s.trackerRate);
+        std::string now = text;
+        if (low) now += std::string("  ") + t.trackerRateLowHint;
+        pen.text(kInnerX, baseline + 3, ellipsize(pen, now, 14, low, room, false), 14, low ? kDanger : kText, low);
+    }
+    baseline += 3;
+    return std::max(segH + 12, baseline + 6 - y);
 }
 
 void EyePanel::drawRecordRow(const Pen& pen, const UiText& t, const report::Summary& r, double x0, double x1, double y,
@@ -5633,7 +6551,6 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     pen.roundedRect(0, 0, kWidth, kHeight, 24);
     cairo_fill(pen.cr);
     const bool update = !updatePromptVersion_.empty();
-    const bool etvr = promptOutput_ == kOutputEtvr;
     const bool livelink = promptOutput_ == kOutputLivelink;
     const bool module = promptOutput_ == kOutputModule;
     const double w = 760;
@@ -5643,18 +6560,15 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     drawCard(pen, x, y, w, h, 24, kCard, kAccent, 2);
     const std::string title = update ? formatText(updatePromptBack_ ? t.updateBackConfirmFormat : t.updateConfirmFormat,
                                                   updatePromptVersion_)
-                                     : etvr       ? t.promptEtvr
                                      : livelink   ? t.promptLivelink
                                      : module     ? t.promptModule
                                                   : t.promptVrchat;
     const double titleSize = fitSize(pen, title, 24, 16, w - 60, true);
     textCentered(pen, x + w / 2, y + 62, title, titleSize, kText, true);
-    std::string detail1 = etvr       ? t.promptEtvrDetail1
-                          : livelink ? t.promptLivelinkDetail1
+    std::string detail1 = livelink   ? t.promptLivelinkDetail1
                           : module   ? t.promptModuleDetail1
                                      : t.promptVrchatDetail1;
-    std::string detail2 = etvr       ? t.promptEtvrDetail2
-                          : livelink ? t.promptLivelinkDetail2
+    std::string detail2 = livelink   ? t.promptLivelinkDetail2
                           : module   ? t.promptModuleDetail2
                                      : t.promptVrchatDetail2;
     if (update) {
@@ -5692,7 +6606,8 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     }
 }
 
-void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
+void EyePanel::drawKeypad(const Pen& pen, const UiText& t) {
+    const bool host = keypadFor_ == KeypadFor::Host;
     // Only the keypad's buttons stay usable
     buttons_.clear();
     cairo_set_source_rgba(pen.cr, 0, 0, 0, 0.62);
@@ -5703,8 +6618,8 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
     const double x = (kWidth - w) / 2;
     const double y = (kHeight - h) / 2;
     drawCard(pen, x, y, w, h, 24, kCard, kAccent, 2);
-    textCentered(pen, x + w / 2, y + 52, t.hostEntryTitle, fitSize(pen, t.hostEntryTitle, 24, 16, w - 60, true), kText,
-                 true);
+    const char* title = host ? t.hostEntryTitle : t.portEntryTitle;
+    textCentered(pen, x + w / 2, y + 52, title, fitSize(pen, title, 24, 16, w - 60, true), kText, true);
 
     // What is typed, with a caret
     const double fx = x + 40;
@@ -5713,52 +6628,40 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
     const double fh = 60;
     fillRounded(pen, fx, fy, fw, fh, 14, kControl);
     strokeRounded(pen, fx, fy, fw, fh, 14, kAccent, 2);
-    const double textSize = fitSize(pen, hostEntryText_ + "|", 28, 14, fw - 40, true);
-    const double tw = pen.text(fx + 20, centerBaseline(fy, fh, textSize), hostEntryText_, textSize, kText, true);
+    const double textSize = fitSize(pen, keypadText_ + "|", 28, 14, fw - 40, true);
+    const double tw = pen.text(fx + 20, centerBaseline(fy, fh, textSize), keypadText_, textSize, kText, true);
     pen.color(kAccent);
     cairo_rectangle(pen.cr, fx + 22 + tw, fy + 14, 2.5, fh - 28);
     cairo_fill(pen.cr);
     // Why it can't be used, or how to type it
-    const bool error = !hostEntryError_.empty();
-    const std::string below = error ? hostEntryError_ : std::string(t.hostEntryHint);
+    using host_entry::PortError;
+    const std::string problem = host                             ? keypadError_
+                                : portError_ == PortError::Empty ? std::string(t.hostErrEmpty)
+                                : portError_ == PortError::Range ? std::string(t.portErrRange)
+                                                                 : std::string();
+    const bool error = !problem.empty();
+    const std::string below = error ? problem : std::string(host ? t.hostEntryHint : t.portEntryHint);
     pen.text(fx + 4, fy + fh + 30, below, fitSize(pen, below, 17, 12, fw - 8, error), error ? kDanger : kTextMuted,
              error);
 
-    // The keypad: 1-9, then ".", "0" and backspace
+    // The keypad: 1-9, then "." (the address's only: a port's leaves its place empty), "0" and backspace
     const double keyW = 124;
     const double keyH = 64;
     const double gap = 12;
     const double kx = x + 40;
     const double ky = y + 196;
-    const int keys[12] = {'1', '2', '3', '4', '5', '6', '7', '8', '9', '.', '0', host_entry::kBackspace};
+    const int keys[12] = {'1', '2', '3', '4', '5', '6', '7', '8', '9', host ? '.' : 0, '0', host_entry::kBackspace};
     for (int i = 0; i < 12; ++i) {
+        if (keys[i] == 0) continue;
         const double bx = kx + (i % 3) * (keyW + gap);
         const double by = ky + (i / 3) * (keyH + gap);
-        const PanelHit hit {PanelAction::HostKey, nullptr, keys[i]};
+        const PanelHit hit {PanelAction::KeypadKey, nullptr, keys[i]};
         const int pointer = pointerState(hit);
         fillRounded(pen, bx, by, keyW, keyH, 16, pointer == 2 ? kAccentPressed : (pointer == 1 ? kControlHover : kControl));
         strokeRounded(pen, bx, by, keyW, keyH, 16, kBorder, 2);
         const Color color = pointer == 2 ? kOnAccent : kText;
         if (keys[i] == host_entry::kBackspace) {
-            // A left-pointing key shape with an x, drawn (no font needed)
-            const double cx = bx + keyW / 2;
-            const double cy = by + keyH / 2;
-            cairo_t* cr = pen.cr;
-            pen.color(color);
-            cairo_set_line_width(cr, 2.5);
-            cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
-            cairo_move_to(cr, cx - 22, cy);
-            cairo_line_to(cr, cx - 10, cy - 13);
-            cairo_line_to(cr, cx + 22, cy - 13);
-            cairo_line_to(cr, cx + 22, cy + 13);
-            cairo_line_to(cr, cx - 10, cy + 13);
-            cairo_close_path(cr);
-            cairo_stroke(cr);
-            cairo_move_to(cr, cx - 1, cy - 6);
-            cairo_line_to(cr, cx + 11, cy + 6);
-            cairo_move_to(cr, cx + 11, cy - 6);
-            cairo_line_to(cr, cx - 1, cy + 6);
-            cairo_stroke(cr);
+            drawBackspace(pen, bx + keyW / 2, by + keyH / 2, 1.0, color);
         } else {
             const std::string label(1, static_cast<char>(keys[i]));
             textCentered(pen, bx + keyW / 2, centerBaseline(by, keyH, 28), label, 28, color, true);
@@ -5775,8 +6678,8 @@ void EyePanel::drawHostEntry(const Pen& pen, const UiText& t) {
         bool accent;
         double y;
         double h;
-    } side[2] = {{{PanelAction::HostOk, nullptr, 0}, t.hostEntryOk, true, ky, 3 * keyH + 2 * gap},
-                 {{PanelAction::HostCancel, nullptr, 0}, t.hostEntryCancel, false, ky + 3 * (keyH + gap), keyH}};
+    } side[2] = {{{PanelAction::KeypadOk, nullptr, 0}, t.hostEntryOk, true, ky, 3 * keyH + 2 * gap},
+                 {{PanelAction::KeypadCancel, nullptr, 0}, t.hostEntryCancel, false, ky + 3 * (keyH + gap), keyH}};
     for (const auto& button : side) {
         const int pointer = pointerState(button.hit);
         if (button.accent) {
@@ -8264,7 +9167,7 @@ void EyePanel::render(const PanelModel& model) {
     } else {
         switch (tab_) {
             case PanelTab::Basic: drawBasic(pen, t, model, view); break;
-            case PanelTab::Output: drawOutput(pen, t, model, view); break;
+            case PanelTab::Output: drawOutputTab(pen, t, model, view); break;
             case PanelTab::Gaze: drawGaze(pen, t, model, view); break;
             case PanelTab::EyeFit: drawEyeFit(pen, t, model, view); break;
             case PanelTab::Lids: drawLids(pen, t, model, view); break;
@@ -8289,7 +9192,7 @@ void EyePanel::render(const PanelModel& model) {
         }
     }
     if (promptOpen()) drawPrompt(pen, t);
-    if (hostEntryOpen_) drawHostEntry(pen, t);
+    if (keypadOpen_) drawKeypad(pen, t);
 
     // Forget hover on a button that is gone or can no longer be pressed
     bool hoverFound = false;

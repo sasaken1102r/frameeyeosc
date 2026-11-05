@@ -11,12 +11,15 @@
 // in the left column, alone or beside a notice; its sheet's buttons, what closes it, freeze, without the cameras), and
 // "Help train the AI" (its row on Debug tools, each screen's buttons, its recording, the delete's confirmation), and the
 // eye cameras page's "How the video is taken" card (its choices and the tool's Konsole button in each state, inside
-// the card in both languages). Built
+// the card in both languages), and the Output tab's "Other apps" (its sub-tabs, the list, the add / change flow pressed
+// through, each screen's buttons pressed in turn, frameeyeosc's reasons in words), and the port's keypad (the main
+// port row's and step 3's). Built
 // with the panel as panel-test (it renders offscreen with the panel's fonts) and
 // run after it is built; exits non-zero on failure.
 #include "config.h"
 #include "draw.h"
 #include "frame_apps.h"
+#include "host_entry.h"
 #include "i18n.h"
 #include "icons.h"
 #include "model.h"
@@ -30,6 +33,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -315,11 +319,8 @@ void testPupilBitsRow(const FontSet& fonts) {
     PanelModel camerasOff = direct;
     camerasOff.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
     CHECK(segments(camerasOff).empty());
-    // Not there: without the eye cameras, or for ETVR; locked: nothing to press
+    // Not there: without the eye cameras; locked: nothing to press
     CHECK(segments(modelWith(Lids::Valve, false)).empty());
-    PanelModel etvr = direct;
-    etvr.config.root.set(key::kOutput, JsonValue::makeString(kOutputEtvr));
-    CHECK(segments(etvr).empty());
     PanelModel locked = direct;
     locked.status.locked.push_back(key::kPupilBits);
     CHECK(segments(locked).empty());
@@ -816,48 +817,65 @@ void testSnapMark(const FontSet& fonts) {
     CHECK(!panel.snapMark().shown);
 }
 
-void testEyeBehavior(const FontSet& fonts) {
-    // Advanced > Version: "How the eyes move", v2 (the default) or v1; both segments to press, nothing when locked
+/**
+ * Whether two renders offer the very same buttons in the very same places.
+ * @param a the buttons of one
+ * @param b the other's
+ * @return true if they do
+ */
+bool sameButtons(const std::vector<EyePanel::HitArea>& a, const std::vector<EyePanel::HitArea>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const bool keys = (a[i].hit.key == nullptr) == (b[i].hit.key == nullptr) &&
+                          (a[i].hit.key == nullptr || std::string(a[i].hit.key) == b[i].hit.key);
+        if (a[i].hit.action != b[i].hit.action || a[i].hit.arg != b[i].hit.arg || !keys) return false;
+        if (a[i].x != b[i].x || a[i].y != b[i].y || a[i].w != b[i].w || a[i].h != b[i].h) return false;
+    }
+    return true;
+}
+
+void testRemovedEyeBehavior(const FontSet& fonts) {
+    // eye_behavior went in 0.10: no switch on Advanced > Version, and a config.json that still says 1 (until the panel
+    // takes it out) offers the very same rows as without it, the ones v1 faded included
+    PanelModel m = modelWith(Lids::Valve);
+    m.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));
+    PanelModel v1 = m;
+    v1.config.root.set(key::kRemovedEyeBehavior, JsonValue::makeNumber(1, true));
     EyePanel panel(fonts);
+    const auto same = [&]() {
+        panel.render(m);
+        const std::vector<EyePanel::HitArea> plain = panel.hitAreas();
+        const bool snap = panel.snapMark().shown;
+        panel.render(v1);
+        return sameButtons(panel.hitAreas(), plain) && panel.snapMark().shown == snap;
+    };
     panel.setTab(PanelTab::Advanced);
     panel.setAdvPage(AdvPage::Version);
-    PanelModel m = modelWith(Lids::Valve);
-    panel.render(m);
-    std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetInteger, key::kEyeBehavior);
-    CHECK(found.size() == 2 && found[0].hit.arg == 2 && found[1].hit.arg == 1);
-    for (const EyePanel::HitArea& area : found) CHECK(area.y >= 110 && area.y + area.h <= 676);
-    PanelModel locked = m;
-    locked.status.locked.push_back(key::kEyeBehavior);
-    panel.render(locked);
-    CHECK(hits(panel, PanelAction::SetInteger, key::kEyeBehavior).empty());
-
-    // v1: the Eyelids rows that only v2 uses are faded (nothing to press) with a button to that switch, and (3) is not
-    // drawn on the bars; v2 has them as usual
-    PanelModel v1 = m;
-    v1.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
-    const auto toVersion = [&]() {
-        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AdvancedPage)) {
-            if (area.hit.arg == static_cast<int>(AdvPage::Version) && area.y > 100) return true;
-        }
-        return false;
-    };
+    CHECK(same() && hits(panel, PanelAction::SetInteger).empty());
     panel.setTab(PanelTab::Lids);
     panel.setLidsPage(LidsPage::Blinks);
-    panel.render(m);
-    CHECK(panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 2 && !toVersion());
-    panel.render(v1);
-    CHECK(!panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).empty() && toVersion());
-    CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).empty());
-    panel.setLidsPage(LidsPage::Blinks);
-    m.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));
-    v1.config.root.set(key::kCameraLidFloor, JsonValue::makeNumber(0.25));
-    panel.render(m);
-    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == 2 && !toVersion());
-    panel.render(v1);
-    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).empty() && toVersion());
-    // The button goes there
-    pressArg(panel, PanelAction::AdvancedPage, static_cast<int>(AdvPage::Version));
-    CHECK(panel.tab() == PanelTab::Advanced && panel.advPage() == AdvPage::Version);
+    CHECK(same());
+    CHECK(panel.snapMark().shown && hits(panel, PanelAction::Step, key::kLidOpenSnap).size() == 2);
+    CHECK(hits(panel, PanelAction::Step, key::kCameraLidOpenSnap).size() == 2);
+    CHECK(hits(panel, PanelAction::Step, key::kCameraLidFloor).size() == 2);
+    for (const bool independent : {false, true}) {
+        m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
+        v1.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
+        panel.setTab(PanelTab::Gaze);
+        panel.setGazePage(GazePage::Reach);
+        CHECK(same());
+        CHECK(hits(panel, PanelAction::Step, key::kOwnEyeGaze).empty() == !independent);
+        panel.setTab(PanelTab::Basic);
+        CHECK(same());
+    }
+    // No row anywhere sends to the Version page any more
+    for (const PanelTab tab : {PanelTab::Basic, PanelTab::Gaze, PanelTab::Lids}) {
+        panel.setTab(tab);
+        panel.render(v1);
+        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AdvancedPage)) {
+            CHECK(area.hit.arg != static_cast<int>(AdvPage::Version) || area.y < 100);
+        }
+    }
 }
 
 void testBrowsPage(const FontSet& fonts) {
@@ -1038,16 +1056,15 @@ std::vector<int> gazeTabs(const EyePanel& panel) {
 
 void testGazePages(const FontSet& fonts) {
     // The Gaze tab's three sub-tabs: each with its own rows and none of the others', everything inside the card
-    // (no scrolling), in both languages, with keys locked by the command line or not, v1 or v2, one eye or both
+    // (no scrolling), in both languages, with keys locked by the command line or not, one eye or both
     const char* scaleKeys[4] = {key::kGazeScaleLeft, key::kGazeScaleRight, key::kGazeScaleUp, key::kGazeScaleDown};
     for (const Language language : {Language::Ja, Language::En}) {
         for (const bool locked : {false, true}) {
-            for (const bool v1 : {false, true}) {
+            for (const bool oneEye : {false, true}) {
                 PanelModel m = modelWith(Lids::Valve, false);
                 m.language = language;
                 if (locked) m.status.locked = {"raw", "independent_eyes", "gaze_hold_below", "gaze_scale_right"};
-                if (v1) m.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
-                if (v1) m.status.dominantEye = "left";
+                if (oneEye) m.status.dominantEye = "left";
                 EyePanel basic(fonts);
                 basic.render(m);
                 const std::vector<uint8_t> plain = belowCard(basic);
@@ -1102,40 +1119,31 @@ void testGazePages(const FontSet& fonts) {
 }
 
 /** own_eye_gaze (Gaze > Reach, "Own gaze per eye", under "Move eyes separately"): − / ＋ in steps of 5 % only while
- *  the eyes move separately in v2 and it isn't locked; faded otherwise, in v1 with the button to that switch. Inside
- *  the card in both languages. */
+ *  the eyes move separately and it isn't locked; faded otherwise. Inside the card in both languages. */
 void testOwnEyeGazeRow(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         for (const bool independent : {false, true}) {
-            for (const bool v1 : {false, true}) {
-                for (const bool locked : {false, true}) {
-                    for (const double value : {0.0, 0.5, 1.0}) {
-                        PanelModel m = modelWith(Lids::Valve, false);
-                        m.language = language;
-                        m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
-                        m.config.root.set(key::kOwnEyeGaze, JsonValue::makeNumber(value));
-                        if (v1) m.config.root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
-                        if (locked) m.status.locked.push_back(key::kOwnEyeGaze);
-                        EyePanel panel(fonts);
-                        panel.setTab(PanelTab::Gaze);
-                        panel.setGazePage(GazePage::Reach);
-                        panel.render(m);
-                        const std::vector<EyePanel::HitArea> steps = hits(panel, PanelAction::Step, key::kOwnEyeGaze);
-                        const bool usable = independent && !v1 && !locked;
-                        // At 0 % only ＋, at 100 % only −
-                        CHECK(steps.size() == (!usable ? 0u : (value > 0 && value < 1 ? 2u : 1u)));
-                        const std::vector<EyePanel::HitArea> separate =
-                            hits(panel, PanelAction::SetBool, key::kIndependentEyes);
-                        CHECK(separate.size() == 2);
-                        for (const EyePanel::HitArea& area : steps) {
-                            CHECK(area.w >= 44 && area.h >= 44 && area.x >= 400 && area.x + area.w <= 1176);
-                            CHECK(area.y > separate[0].y + separate[0].h && area.y + area.h <= 664);
-                        }
-                        int toVersion = 0;
-                        for (const EyePanel::HitArea& area : hits(panel, PanelAction::AdvancedPage)) {
-                            if (area.x >= 400 && area.hit.arg == static_cast<int>(AdvPage::Version)) ++toVersion;
-                        }
-                        CHECK(toVersion == (v1 ? 1 : 0));
+            for (const bool locked : {false, true}) {
+                for (const double value : {0.0, 0.5, 1.0}) {
+                    PanelModel m = modelWith(Lids::Valve, false);
+                    m.language = language;
+                    m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(independent));
+                    m.config.root.set(key::kOwnEyeGaze, JsonValue::makeNumber(value));
+                    if (locked) m.status.locked.push_back(key::kOwnEyeGaze);
+                    EyePanel panel(fonts);
+                    panel.setTab(PanelTab::Gaze);
+                    panel.setGazePage(GazePage::Reach);
+                    panel.render(m);
+                    const std::vector<EyePanel::HitArea> steps = hits(panel, PanelAction::Step, key::kOwnEyeGaze);
+                    const bool usable = independent && !locked;
+                    // At 0 % only ＋, at 100 % only −
+                    CHECK(steps.size() == (!usable ? 0u : (value > 0 && value < 1 ? 2u : 1u)));
+                    const std::vector<EyePanel::HitArea> separate =
+                        hits(panel, PanelAction::SetBool, key::kIndependentEyes);
+                    CHECK(separate.size() == 2);
+                    for (const EyePanel::HitArea& area : steps) {
+                        CHECK(area.w >= 44 && area.h >= 44 && area.x >= 400 && area.x + area.w <= 1176);
+                        CHECK(area.y > separate[0].y + separate[0].h && area.y + area.h <= 664);
                     }
                 }
             }
@@ -1517,6 +1525,11 @@ void testPagesFit(const FontSet& fonts) {
                 m.update.installable = true;
                 m.update.latest = "0.7.6";
                 m.update.notes = std::string(300, 'y');
+                // (with "Having trouble"'s eye camera speed and the rate under it)
+                m.eyeRate.setting.exists = true;
+                m.eyeRate.setting.min = 15;
+                m.status.tracking = true;
+                m.status.trackerRate = 15;
                 panel.setTab(PanelTab::Advanced);
                 panel.setAdvPage(page);
                 panel.render(m);
@@ -2287,8 +2300,7 @@ void testSourceCard(const FontSet& fonts) {
 }
 
 void testOutputCards(const FontSet& fonts) {
-    // The Basic tab: three cards (VRChat, LiveLink, FrameEyeOSC), and ETVR as a small button under them with its notice
-    // between the two only while it is the output
+    // The Basic tab: three cards (VRChat, LiveLink, FrameEyeOSC), nothing more for the ETVR output removed in 0.10
     for (Language language : {Language::Ja, Language::En}) {
         EyePanel panel(fonts);
         PanelModel m = modelWith(Lids::Both);
@@ -2298,11 +2310,11 @@ void testOutputCards(const FontSet& fonts) {
             copy.config.root.set(key::kOutput, JsonValue::makeString(output));
             return copy;
         };
-        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule, kOutputEtvr}) {
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule}) {
             panel.render(with(output));
             const std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetOutput);
-            CHECK(found.size() == 4);
-            if (found.size() != 4) continue;
+            CHECK(found.size() == 3);
+            if (found.size() != 3) continue;
             // The cards in a row, as wide as each other, in the order VRChat, LiveLink, FrameEyeOSC
             const int args[3] = {0, 2, 3};
             for (int c = 0; c < 3; ++c) {
@@ -2310,21 +2322,6 @@ void testOutputCards(const FontSet& fonts) {
                 CHECK(found[c].y == found[0].y && std::fabs(found[c].w - found[0].w) < 0.5 && found[c].h > 80);
                 if (c > 0) CHECK(found[c].x > found[c - 1].x + found[c - 1].w);
             }
-            // ETVR: a small button under them
-            const EyePanel::HitArea& etvr = found[3];
-            CHECK(etvr.hit.arg == 1 && etvr.w < found[0].w && etvr.h >= 40 && etvr.h < 50);
-            CHECK(etvr.x == found[0].x);
-            // ...right under the cards, or under the notice (between the two) while ETVR is the output, or under the
-            // one-line hint (where to go if the eyes don't move) while VRChat directly is
-            const double gap = etvr.y - (found[0].y + found[0].h);
-            if (std::string(output) == kOutputEtvr) {
-                CHECK(gap > 60 && gap < 90);
-            } else if (std::string(output) == kOutputVrchat) {
-                CHECK(gap > 30 && gap < 50);
-            } else {
-                CHECK(gap > 0 && gap < 20);
-            }
-            CHECK(outputDeprecated(output) == (std::string(output) == kOutputEtvr));
             // Everything still fits, the rows below too
             CHECK(allInsideAndTall(panel));
             CHECK(hits(panel, PanelAction::ResetAll).size() == 1 && hits(panel, PanelAction::Quit).size() == 1);
@@ -2332,28 +2329,38 @@ void testOutputCards(const FontSet& fonts) {
             const std::vector<EyePanel::HitArea> quit = hits(panel, PanelAction::Quit);
             if (!quit.empty()) CHECK(quit[0].y + quit[0].h <= 664);
         }
-        // Pressing the small button switches to ETVR; a card to its output
+        // A config.json that still says "etvr" (until the panel brings it up to date), and an older frameeyeosc's
+        // status.json, show VRChat directly
+        panel.render(with(kOutputVrchat));
+        const std::vector<EyePanel::HitArea> vrchat = panel.hitAreas();
+        PanelModel etvr = with(kOutputRemovedEtvr);
+        etvr.status.output = kOutputRemovedEtvr;
+        panel.render(etvr);
+        CHECK(sameButtons(panel.hitAreas(), vrchat));
+        // Pressing a card switches to its output
         panel.render(with(kOutputLivelink));
         std::vector<EyePanel::HitArea> found = hits(panel, PanelAction::SetOutput);
-        if (found.size() == 4) {
-            const PanelHit pressed = panel.pointerDown(found[3].x + found[3].w / 2, found[3].y + found[3].h / 2, 0.0);
-            panel.pointerUp();
-            CHECK(pressed.action == PanelAction::SetOutput && pressed.arg == 1);
+        if (found.size() == 3) {
             const PanelHit card = panel.pointerDown(found[2].x + found[2].w / 2, found[2].y + found[2].h / 2, 0.0);
             panel.pointerUp();
             CHECK(card.action == PanelAction::SetOutput && card.arg == 3);
         }
         // Locked: drawn, nothing to press
-        PanelModel locked = with(kOutputEtvr);
+        PanelModel locked = with(kOutputLivelink);
         locked.status.locked.push_back(key::kOutput);
         panel.render(locked);
         CHECK(hits(panel, PanelAction::SetOutput).empty());
         // The Output tab has no module row any more: the destination is chosen on the cards alone
         panel.setTab(PanelTab::Output);
-        for (const char* output : {kOutputLivelink, kOutputModule, kOutputEtvr}) {
+        for (const char* output : {kOutputLivelink, kOutputModule}) {
             panel.render(with(output));
             CHECK(hits(panel, PanelAction::SetOutput).empty() && allInsideAndTall(panel));
         }
+        // ...and "etvr" its rows for VRChat directly
+        panel.render(with(kOutputVrchat));
+        const std::vector<EyePanel::HitArea> direct = panel.hitAreas();
+        panel.render(with(kOutputRemovedEtvr));
+        CHECK(sameButtons(panel.hitAreas(), direct) && !hits(panel, PanelAction::SetBool, key::kNativeEyes).empty());
         // (FrameEyeOSC: no pupil rows, VRCFT sends them as the avatar takes them; LiveLink keeps its)
         panel.render(with(kOutputModule));
         CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).empty());
@@ -2398,7 +2405,7 @@ void testModuleLinkError(const FontSet& fonts) {
     // Drawn only for FrameEyeOSC (where the link is), and only with a failure
     CHECK(moduleLinkErrorShown(kOutputModule, "flatpak not found"));
     CHECK(!moduleLinkErrorShown(kOutputModule, ""));
-    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr}) {
+    for (const char* output : {kOutputVrchat, kOutputLivelink}) {
         CHECK(!moduleLinkErrorShown(output, "flatpak not found"));
     }
     for (Language language : {Language::Ja, Language::En}) {
@@ -2477,14 +2484,13 @@ void testCameraRows(const FontSet& fonts) {
         panel.render(none);
         CHECK(!inCard(panel));  // nothing there only for the cameras
         panel.setTab(PanelTab::Output);
-        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputEtvr, kOutputModule}) {
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule}) {
             PanelModel m = none;
             m.config.root.set(key::kOutput, JsonValue::makeString(output));
             panel.render(m);
             CHECK(hits(panel, PanelAction::SetInteger, key::kPupilBits).empty());
             CHECK(hits(panel, PanelAction::SetBool, key::kPupilsToVrchat).empty());
-            // (ETVR sends no pupils at all: no line there)
-            CHECK(inCard(panel) == (std::string(output) != kOutputEtvr));
+            CHECK(inCard(panel));
             CHECK(allInsideAndTall(panel));
         }
         // ...and their tab says what they add, with "Get started" into the setup checklist
@@ -3444,7 +3450,7 @@ void testVrcFaceTrackingRow(const FontSet& fonts) {
             CHECK(hits(panel, PanelAction::SetBool, key::kVrcFaceTracking).empty());
             CHECK(hits(panel, PanelAction::SetBool, key::kNativeEyes).size() == 2);
             // The other outputs: not there, their rows as before
-            for (const char* output : {kOutputLivelink, kOutputModule, kOutputEtvr}) {
+            for (const char* output : {kOutputLivelink, kOutputModule}) {
                 PanelModel other = m;
                 other.config.root.set(key::kOutput, JsonValue::makeString(output));
                 panel.render(other);
@@ -3602,6 +3608,858 @@ void testSavedData(const FontSet& fonts) {
     }
 }
 
+/**
+ * A model for "Other apps": frameeyeosc 0.10 running, sending to VRChat at 192.168.0.60:9000 (automatic), with these
+ * entries in config.json.
+ * @param language the language
+ * @param list extra_outputs as JSON
+ * @param lanOnly lan_only
+ * @return the model
+ */
+PanelModel extrasModel(Language language, const std::string& list, bool lanOnly = true) {
+    PanelModel m = modelWith(Lids::Valve, false);
+    m.language = language;
+    JsonValue entries;
+    std::string error;
+    CHECK(parseJson(list, entries, error));
+    m.config.root.set(key::kExtraOutputs, entries);
+    m.config.root.set(key::kLanOnly, JsonValue::makeBool(lanOnly));
+    EyeStatus& s = m.status;
+    s.output = kOutputVrchat;
+    s.sending = true;
+    s.targetMode = "auto";
+    s.target = "192.168.0.60:9000";
+    s.extrasKnown = true;
+    s.lanOnly = lanOnly;
+    s.net = "lan";
+    return m;
+}
+
+/** Three entries: on the main output's PC, osc to a VPN address, and a public address. */
+const char* const kThreeExtras = R"j([
+    {"format": "feo1", "host": "main", "port": 11113},
+    {"name": "Gaze", "format": "osc", "host": "100.101.5.7", "port": 9015},
+    {"format": "feo1", "host": "203.0.113.5", "port": 11113}])j";
+
+/**
+ * frameeyeosc's state for kThreeExtras: the first two sending, the third refused (lan_only on) or sent to and marked
+ * public (off).
+ * @param m the model
+ * @param lanOnly lan_only
+ */
+void liveThree(PanelModel& m, bool lanOnly) {
+    const char* targets[3] = {"192.168.0.60:11113", "100.101.5.7:9015", lanOnly ? "" : "203.0.113.5:11113"};
+    const char* nets[3] = {"lan", "vpn", lanOnly ? "" : "public"};
+    const char* names[3] = {"App 1", "Gaze", "App 3"};
+    m.status.extras.clear();
+    for (int i = 0; i < 3; ++i) {
+        ExtraLive e;
+        e.index = i + 1;
+        e.name = names[i];
+        e.enabled = true;
+        e.format = i == 1 ? "osc" : "feo1";
+        e.port = i == 1 ? 9015 : 11113;
+        e.target = targets[i];
+        e.net = nets[i];
+        e.sending = !e.target.empty();
+        if (i == 2 && lanOnly) e.refused = "public address";
+        m.status.extras.push_back(e);
+    }
+}
+
+/**
+ * Whether the card's own buttons (not the tab row, the sub-tabs or the left column) are inside the card, tall and
+ * wide enough to point at, and apart from each other.
+ * @param panel the panel (rendered)
+ * @return true if so
+ */
+bool cardButtonsApart(const EyePanel& panel) {
+    std::vector<EyePanel::HitArea> own;
+    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+        if (area.x < 400 || area.y < 170) continue;
+        own.push_back(area);
+    }
+    bool ok = true;
+    for (size_t i = 0; i < own.size(); ++i) {
+        const EyePanel::HitArea& a = own[i];
+        if (a.x < 438 - 0.5 || a.x + a.w > 1154 + 0.5 || a.y + a.h > 676 || a.h < 40 || a.w < 40) {
+            std::fprintf(stderr, "  button %d (arg %d) at %.0f,%.0f %.0fx%.0f\n", static_cast<int>(a.hit.action),
+                         a.hit.arg, a.x, a.y, a.w, a.h);
+            ok = false;
+        }
+        for (size_t j = i + 1; j < own.size(); ++j) ok = ok && !overlaps(a, own[j]);
+    }
+    return ok;
+}
+
+/**
+ * The Output tab's sub-tabs and "Other apps"' list: a row per entry (Send / Stop, Change), "Add" below three, lan_only;
+ * greyed while the command line locks them; the list without its live state from an older frameeyeosc; in both
+ * languages, inside the card and apart.
+ */
+void testExtrasPage(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool lanOnly : {true, false}) {
+            PanelModel m = extrasModel(language, kThreeExtras, lanOnly);
+            liveThree(m, lanOnly);
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Output);
+            panel.render(m);
+            // The main destination first: the rows from before, and the other sub-tab to press
+            CHECK(panel.outputPage() == OutputPage::Main);
+            std::vector<EyePanel::HitArea> pages = hits(panel, PanelAction::OutputPage);
+            CHECK(pages.size() == 1 && pages[0].hit.arg == static_cast<int>(OutputPage::Apps) && pages[0].y < 170);
+            CHECK(hits(panel, PanelAction::HostAuto).size() == 1 && hits(panel, PanelAction::ExtraSend).empty());
+            CHECK(allInsideAndTall(panel));
+            CHECK(pressArg(panel, PanelAction::OutputPage, 1).action == PanelAction::None);
+            CHECK(panel.outputPage() == OutputPage::Apps && panel.tab() == PanelTab::Output);
+            panel.render(m);
+            pages = hits(panel, PanelAction::OutputPage);
+            CHECK(pages.size() == 1 && pages[0].hit.arg == static_cast<int>(OutputPage::Main));
+            // Three rows (Send / Stop, Change), no "Add", lan_only's On / Off
+            const std::vector<EyePanel::HitArea> sends = hits(panel, PanelAction::ExtraSend);
+            CHECK(sends.size() == 6);
+            for (size_t i = 0; i < sends.size(); ++i) {
+                CHECK(sends[i].hit.arg == static_cast<int>(i / 2) * 2 + (i % 2 == 0 ? 1 : 0));
+            }
+            CHECK(hits(panel, PanelAction::ExtraEdit).size() == 3 && hits(panel, PanelAction::ExtraAdd).empty());
+            CHECK(hits(panel, PanelAction::SetBool, key::kLanOnly).size() == 2);
+            CHECK(allInsideAndTall(panel) && cardButtonsApart(panel));
+            // Send / Stop goes to the caller
+            CHECK(pressArg(panel, PanelAction::ExtraSend, 4).action == PanelAction::ExtraSend);
+            // Two: "Add" across the card
+            PanelModel two = extrasModel(language, R"j([{"format": "feo1", "host": "main", "port": 11113},
+                {"enabled": false, "format": "osc", "host": "127.0.0.1", "port": 9015}])j", lanOnly);
+            panel.render(two);
+            const std::vector<EyePanel::HitArea> add = hits(panel, PanelAction::ExtraAdd);
+            CHECK(add.size() == 1 && add[0].w > 700 && hits(panel, PanelAction::ExtraEdit).size() == 2);
+            CHECK(allInsideAndTall(panel) && cardButtonsApart(panel));
+            // None yet, and a list that isn't one (nothing to add to)
+            PanelModel none = extrasModel(language, "[]", lanOnly);
+            panel.render(none);
+            CHECK(hits(panel, PanelAction::ExtraAdd).size() == 1 && hits(panel, PanelAction::ExtraEdit).empty());
+            PanelModel odd = extrasModel(language, R"j({"format": "feo1"})j", lanOnly);
+            panel.render(odd);
+            CHECK(hits(panel, PanelAction::ExtraAdd).empty() && hits(panel, PanelAction::ExtraEdit).empty());
+            CHECK(hits(panel, PanelAction::SetBool, key::kLanOnly).size() == 2);
+            // Locked by the command line (--extra, --no-lan-only): drawn, nothing to press
+            PanelModel locked = m;
+            locked.status.locked = {key::kExtraOutputs, key::kLanOnly};
+            locked.status.effective = locked.config.root;
+            panel.render(locked);
+            CHECK(hits(panel, PanelAction::ExtraSend).empty() && hits(panel, PanelAction::ExtraEdit).empty());
+            CHECK(hits(panel, PanelAction::ExtraAdd).empty());
+            CHECK(hits(panel, PanelAction::SetBool, key::kLanOnly).empty());
+            // An older frameeyeosc (no "extras" in status.json): the list as written, still to be changed
+            PanelModel old = m;
+            old.status.extrasKnown = false;
+            old.status.extras.clear();
+            panel.render(old);
+            CHECK(hits(panel, PanelAction::ExtraEdit).size() == 3 && hits(panel, PanelAction::ExtraSend).size() == 6);
+            CHECK(allInsideAndTall(panel) && cardButtonsApart(panel));
+            // ...and with frameeyeosc not running
+            PanelModel stopped = m;
+            stopped.status.running = false;
+            panel.render(stopped);
+            CHECK(hits(panel, PanelAction::ExtraEdit).size() == 3 && allInsideAndTall(panel));
+            // Remembered while other tabs show
+            pressTab(panel, PanelTab::Gaze);
+            panel.render(m);
+            pressTab(panel, PanelTab::Output);
+            panel.render(m);
+            CHECK(panel.outputPage() == OutputPage::Apps && hits(panel, PanelAction::ExtraEdit).size() == 3);
+        }
+    }
+}
+
+/**
+ * The add / change flow, pressed through as the laser pointer would: the format (Next only once chosen), the host (an
+ * address typed on the keypad; a public one only with lan_only off, never a broadcast), the port, and the summary
+ * (Save not while it repeats the main output's or another entry's destination); a
+ * change's delete with its confirmation in the panel; what the presses hand the caller and what that writes. Every
+ * screen's buttons pressed in turn on a panel in that state ("sweep"): each does what it says, inside the card.
+ */
+void testExtrasFlow(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        PanelModel m = extrasModel(language, R"j([{"format": "feo1", "host": "main", "port": 11113}])j");
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Output);
+        panel.setOutputPage(OutputPage::Apps);
+        panel.render(m);
+        CHECK(press(panel, PanelAction::ExtraAdd).action == PanelAction::None);
+        CHECK(panel.extrasStep() == ExtrasStep::Format && panel.extrasDraft().name == "App 2");
+        panel.render(m);
+        // 1: two cards, Cancel; Next once one is chosen
+        CHECK(hits(panel, PanelAction::ExtraFormat).size() == 2 && hits(panel, PanelAction::ExtraStep).empty());
+        CHECK(hits(panel, PanelAction::ExtraCancel).size() == 1 && cardButtonsApart(panel));
+        pressArg(panel, PanelAction::ExtraFormat, 1);
+        CHECK(panel.extrasDraft().format == "osc" && panel.extrasDraft().port == 9015);
+        panel.render(m);
+        CHECK(press(panel, PanelAction::ExtraStep).action == PanelAction::None);
+        CHECK(panel.extrasStep() == ExtrasStep::Host);
+        panel.render(m);
+        // 2: four choices (the main output's PC chosen), Back and Next
+        CHECK(hits(panel, PanelAction::ExtraHost).size() == 4 && hits(panel, PanelAction::ExtraStep).size() == 2);
+        CHECK(hits(panel, PanelAction::ExtraKey).empty() && cardButtonsApart(panel));
+        pressArg(panel, PanelAction::ExtraHost, static_cast<int>(extras::HostChoice::Ip));
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraKey).size() == 12 && cardButtonsApart(panel));
+        // (Next not yet: nothing typed; only Back)
+        CHECK(hits(panel, PanelAction::ExtraStep).size() == 1);
+        const auto type = [&](const std::string& text, const PanelModel& model) {
+            for (const char c : text) {
+                pressArg(panel, PanelAction::ExtraKey, c);
+                panel.render(model);
+            }
+        };
+        type("203.0.113.5", m);
+        CHECK(panel.extrasDraft().ip == "203.0.113.5" && hits(panel, PanelAction::ExtraStep).size() == 1);
+        // A press of Next that isn't drawn does nothing either (lan_only on)
+        panel.openExtrasFlow(ExtrasStep::Host, panel.extrasDraft());
+        // ...with lan_only off it can go on
+        PanelModel open = extrasModel(language, R"j([{"format": "feo1", "host": "main", "port": 11113}])j", false);
+        panel.render(open);
+        CHECK(hits(panel, PanelAction::ExtraStep).size() == 2);
+        panel.render(m);
+        for (int i = 0; i < 11; ++i) pressArg(panel, PanelAction::ExtraKey, host_entry::kBackspace);
+        panel.render(m);
+        CHECK(panel.extrasDraft().ip.empty());
+        type("255.255.255.255", m);
+        CHECK(hits(panel, PanelAction::ExtraStep).size() == 1);
+        for (int i = 0; i < 15; ++i) pressArg(panel, PanelAction::ExtraKey, host_entry::kBackspace);
+        panel.render(m);
+        type("192.168.1.30", m);
+        CHECK(hits(panel, PanelAction::ExtraStep).size() == 2);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Port));
+        CHECK(panel.extrasStep() == ExtrasStep::Port);
+        panel.render(m);
+        // 3: the port (nothing else to choose for osc), Back and "Add and send"; no delete while adding
+        CHECK(hits(panel, PanelAction::ExtraPort).size() == 2 && hits(panel, PanelAction::SetBool).empty());
+        CHECK(hits(panel, PanelAction::ExtraSave).size() == 1 && hits(panel, PanelAction::ExtraDelete).empty());
+        CHECK(cardButtonsApart(panel));
+        pressArg(panel, PanelAction::ExtraPort, 1);
+        CHECK(panel.extrasDraft().port == 9016);
+        panel.render(m);
+        // Save goes to the caller, which writes it and closes the flow
+        CHECK(press(panel, PanelAction::ExtraSave).action == PanelAction::ExtraSave);
+        std::string error;
+        CHECK(extras::applyDraft(m.config.root, panel.extrasDraft(), error));
+        panel.closeExtrasFlow();
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraEdit).size() == 2 && hits(panel, PanelAction::ExtraAdd).size() == 1);
+        const extras::List list = extrasList(m);
+        CHECK(list.entries.size() == 2 && list.entries[1].host == "192.168.1.30" && list.entries[1].port == 9016);
+        CHECK(list.entries.size() == 2 && list.entries[1].format == "osc");
+        CHECK(extras::rawEntry(m.config.root, 1).find("lids") == std::string::npos);
+        // The same destination as the first entry: no Save until the port changes
+        press(panel, PanelAction::ExtraAdd);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraFormat, 0);
+        panel.render(m);
+        press(panel, PanelAction::ExtraStep);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Port));
+        panel.render(m);
+        CHECK(panel.extrasStep() == ExtrasStep::Port && hits(panel, PanelAction::ExtraSave).empty());
+        pressArg(panel, PanelAction::ExtraPort, 1);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraSave).size() == 1);
+        // ...or the main output's (VRChat at 9000 on the same PC)
+        extras::Draft main = panel.extrasDraft();
+        main.port = 9000;
+        panel.openExtrasFlow(ExtrasStep::Port, main);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraSave).empty());
+        // Changing the first: its values, and delete with a confirmation in the panel
+        panel.closeExtrasFlow();
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraEdit, 0);
+        CHECK(panel.extrasStep() == ExtrasStep::Format && panel.extrasDraft().edit == 0);
+        CHECK(panel.extrasDraft().format == "feo1" && !panel.extrasDraft().original.empty());
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Host));
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Port));
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraDelete).size() == 1 && hits(panel, PanelAction::ExtraSave).size() == 1);
+        CHECK(press(panel, PanelAction::ExtraDelete).action == PanelAction::None && panel.extrasDeleteOpen());
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraDeleteConfirm).size() == 1);
+        CHECK(hits(panel, PanelAction::ExtraDeleteCancel).size() == 1 && hits(panel, PanelAction::ExtraSave).empty());
+        CHECK(cardButtonsApart(panel));
+        CHECK(press(panel, PanelAction::ExtraDeleteCancel).action == PanelAction::None && !panel.extrasDeleteOpen());
+        panel.render(m);
+        press(panel, PanelAction::ExtraDelete);
+        panel.render(m);
+        CHECK(press(panel, PanelAction::ExtraDeleteConfirm).action == PanelAction::ExtraDeleteConfirm);
+        const extras::Draft gone = panel.extrasDraft();
+        CHECK(extras::removeEntry(m.config.root, gone.edit, gone.original, error));
+        CHECK(extrasList(m).entries.size() == 1 && extrasList(m).entries[0].host == "192.168.1.30");
+        // Another tab closes the flow; the lock closes it too
+        panel.openExtrasFlow(ExtrasStep::Host, extras::newDraft(1));
+        panel.render(m);
+        pressTab(panel, PanelTab::Basic);
+        CHECK(panel.extrasStep() == ExtrasStep::List);
+        panel.render(m);
+        pressTab(panel, PanelTab::Output);
+        CHECK(panel.tab() == PanelTab::Output && panel.outputPage() == OutputPage::Apps);
+        panel.openExtrasFlow(ExtrasStep::Format, extras::newDraft(1));
+        PanelModel locked = m;
+        locked.status.locked = {key::kExtraOutputs};
+        locked.status.effective = locked.config.root;
+        panel.render(locked);
+        CHECK(panel.extrasStep() == ExtrasStep::List && hits(panel, PanelAction::ExtraFormat).empty());
+
+        // The sweep: each screen's buttons, each pressed on a panel in that state
+        PanelModel three = extrasModel(language, kThreeExtras);
+        liveThree(three, true);
+        extras::Draft adding = extras::newDraft(1);
+        extras::chooseFormat(adding, extras::kOsc);
+        extras::Draft typed = adding;
+        typed.host = extras::HostChoice::Ip;
+        typed.ip = "100.101.5.8";
+        const extras::List threeList = extrasList(three);
+        extras::Draft editing = extras::draftOf(threeList.entries[1], extras::rawEntry(three.config.root, 1));
+        extras::Draft kept = editing;
+        kept.kept = "bridge-pc.local";
+        kept.host = extras::HostChoice::Keep;
+        const struct {
+            ExtrasStep step;
+            extras::Draft draft;
+            bool confirm;
+            size_t least;  ///< buttons it has at least, the tab row's left out
+        } screens[] = {
+            {ExtrasStep::List, adding, false, 6 + 3 + 2},
+            {ExtrasStep::Format, extras::newDraft(1), false, 3},
+            {ExtrasStep::Format, adding, false, 4},
+            {ExtrasStep::Host, adding, false, 4 + 2},
+            {ExtrasStep::Host, typed, false, 4 + 12 + 2},
+            {ExtrasStep::Host, kept, false, 5 + 2},
+            {ExtrasStep::Port, typed, false, 4},
+            {ExtrasStep::Port, editing, false, 5},
+            {ExtrasStep::Port, editing, true, 6},
+        };
+        for (const auto& screen : screens) {
+            const auto setUp = [&](EyePanel& p) {
+                p.setTab(PanelTab::Output);
+                p.setOutputPage(OutputPage::Apps);
+                p.render(three);
+                if (screen.step != ExtrasStep::List) p.openExtrasFlow(screen.step, screen.draft, screen.confirm);
+                p.render(three);
+            };
+            EyePanel shown(fonts);
+            setUp(shown);
+            CHECK(cardButtonsApart(shown) && allInsideAndTall(shown));
+            std::vector<EyePanel::HitArea> own;
+            for (const EyePanel::HitArea& area : shown.hitAreas()) {
+                if (area.x > 400 && area.y > 100) own.push_back(area);
+            }
+            CHECK(own.size() >= screen.least);
+            for (const EyePanel::HitArea& area : own) {
+                EyePanel p(fonts);
+                setUp(p);
+                const PanelHit got = p.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+                // What it hands the caller is itself, or nothing (handled inside)
+                CHECK(got.action == PanelAction::None || got == area.hit);
+                const PanelAction a = area.hit.action;
+                if (a == PanelAction::ExtraCancel) CHECK(p.extrasStep() == ExtrasStep::List);
+                if (a == PanelAction::ExtraStep) CHECK(static_cast<int>(p.extrasStep()) == area.hit.arg);
+                if (a == PanelAction::ExtraEdit) CHECK(p.extrasDraft().edit == area.hit.arg);
+                if (a == PanelAction::ExtraAdd) CHECK(p.extrasStep() == ExtrasStep::Format);
+                if (a == PanelAction::ExtraDelete) CHECK(p.extrasDeleteOpen());
+                if (a == PanelAction::ExtraDeleteCancel) CHECK(!p.extrasDeleteOpen());
+                if (a == PanelAction::ExtraHost) CHECK(static_cast<int>(p.extrasDraft().host) == area.hit.arg);
+                if (a == PanelAction::ExtraSave || a == PanelAction::ExtraDeleteConfirm ||
+                    a == PanelAction::ExtraSend) {
+                    CHECK(got == area.hit);
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The port's keypad, pressed as the laser pointer would: the main output's port row (its value opens the keypad with
+ * the port now; digits, backspace, OK and Cancel, no '.'; OK refuses 0 / above 65535 and stays open, takes 1-65535 as
+ * the setting's SetInteger; not while the port is locked; − and ＋ stay), and "Other apps"' step 3 (OK puts it in
+ * the draft as − and ＋ do, so the main output's port is refused there as before). In both languages, inside the card.
+ */
+void testPortKeypad(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        PanelModel m = extrasModel(language, R"j([{"format": "feo1", "host": "main", "port": 11113}])j");
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Output);
+        panel.setOutputPage(OutputPage::Main);
+        panel.render(m);
+        // The row: − and ＋, the value between them
+        CHECK(hits(panel, PanelAction::Step, key::kPort).size() == 2);
+        const std::vector<EyePanel::HitArea> value = hits(panel, PanelAction::PortEnter, key::kPort);
+        CHECK(value.size() == 1 && value[0].hit.arg == 9000 && cardButtonsApart(panel));
+        CHECK(press(panel, PanelAction::PortEnter).action == PanelAction::None);
+        CHECK(panel.keypadOpen() && panel.keypadFor() == KeypadFor::Port && panel.keypadText() == "9000");
+        panel.render(m);
+        // Only the keypad's buttons: ten digits and backspace (no '.'), OK and Cancel
+        const std::vector<EyePanel::HitArea> keys = hits(panel, PanelAction::KeypadKey);
+        CHECK(keys.size() == 11 && hits(panel, PanelAction::KeypadOk).size() == 1);
+        CHECK(hits(panel, PanelAction::KeypadCancel).size() == 1 && panel.hitAreas().size() == 13);
+        CHECK(std::none_of(keys.begin(), keys.end(), [](const EyePanel::HitArea& k) { return k.hit.arg == '.'; }));
+        const auto type = [&](const std::string& text) {
+            for (const char c : text) {
+                pressArg(panel, PanelAction::KeypadKey, c == '<' ? host_entry::kBackspace : c);
+                panel.render(m);
+            }
+        };
+        // Above 65535: OK refuses it and stays open, the next key clears the error
+        type("<<<<70000");
+        CHECK(panel.keypadText() == "70000");
+        CHECK(press(panel, PanelAction::KeypadOk).action == PanelAction::None && panel.keypadOpen());
+        panel.render(m);
+        type("<");
+        CHECK(panel.keypadText() == "7000");
+        // Past 5 digits nothing more goes in; nothing typed is refused too
+        type("12");
+        CHECK(panel.keypadText() == "70001");
+        type("<<<<<");
+        CHECK(press(panel, PanelAction::KeypadOk).action == PanelAction::None && panel.keypadOpen());
+        panel.render(m);
+        // Cancel: closed, nothing handed on
+        CHECK(press(panel, PanelAction::KeypadCancel).action == PanelAction::None && !panel.keypadOpen());
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::PortEnter).size() == 1);
+        // OK with 11112: handed on as the port's SetInteger, closed
+        press(panel, PanelAction::PortEnter);
+        panel.render(m);
+        type("<<<<11112");
+        const PanelHit ok = press(panel, PanelAction::KeypadOk);
+        CHECK(ok.action == PanelAction::SetInteger && ok.key != nullptr && std::string(ok.key) == key::kPort);
+        CHECK(ok.arg == 11112 && !panel.keypadOpen());
+        // Locked by the command line: no keypad (nor − and ＋)
+        PanelModel locked = m;
+        locked.status.locked = {key::kPort};
+        locked.status.effective.set(key::kPort, JsonValue::makeNumber(9123, true));
+        panel.render(locked);
+        CHECK(hits(panel, PanelAction::PortEnter).empty() && hits(panel, PanelAction::Step, key::kPort).empty());
+
+        // "Other apps"' step 3: the value opens the keypad with the draft's port; OK sets the draft's port
+        panel.setOutputPage(OutputPage::Apps);
+        panel.render(m);
+        press(panel, PanelAction::ExtraAdd);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraFormat, 1);
+        panel.render(m);
+        press(panel, PanelAction::ExtraStep);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraStep, static_cast<int>(ExtrasStep::Port));
+        panel.render(m);
+        CHECK(panel.extrasStep() == ExtrasStep::Port && panel.extrasDraft().port == 9015);
+        CHECK(hits(panel, PanelAction::ExtraPort).size() == 2 && hits(panel, PanelAction::ExtraPortEnter).size() == 1);
+        CHECK(cardButtonsApart(panel) && hits(panel, PanelAction::ExtraSave).size() == 1);
+        CHECK(press(panel, PanelAction::ExtraPortEnter).action == PanelAction::None);
+        CHECK(panel.keypadOpen() && panel.keypadFor() == KeypadFor::ExtraPort && panel.keypadText() == "9015");
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraSave).empty() && hits(panel, PanelAction::KeypadKey).size() == 11);
+        // 0 is refused; the draft keeps its port
+        type("<<<<0");
+        CHECK(press(panel, PanelAction::KeypadOk).action == PanelAction::None && panel.keypadOpen());
+        CHECK(panel.extrasDraft().port == 9015);
+        panel.render(m);
+        // The main output's port (VRChat at 9000 on the same PC): set, and Save is held back as with − and ＋
+        type("9000");
+        CHECK(press(panel, PanelAction::KeypadOk).action == PanelAction::None && !panel.keypadOpen());
+        CHECK(panel.extrasDraft().port == 9000 && panel.extrasStep() == ExtrasStep::Port);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraSave).empty());
+        // Another port: Save is back; Cancel leaves the draft as it was
+        press(panel, PanelAction::ExtraPortEnter);
+        panel.render(m);
+        type("<<<<9016");
+        press(panel, PanelAction::KeypadOk);
+        panel.render(m);
+        CHECK(panel.extrasDraft().port == 9016 && hits(panel, PanelAction::ExtraSave).size() == 1);
+        press(panel, PanelAction::ExtraPortEnter);
+        panel.render(m);
+        type("<<<<1");
+        CHECK(press(panel, PanelAction::KeypadCancel).action == PanelAction::None && !panel.keypadOpen());
+        CHECK(panel.extrasDraft().port == 9016);
+        // A keypad left open on a step 3 that is gone (the flow closed) changes nothing when OK is pressed
+        panel.render(m);
+        press(panel, PanelAction::ExtraPortEnter);
+        panel.render(m);
+        panel.closeExtrasFlow();
+        type("<<<<1234");
+        press(panel, PanelAction::KeypadOk);
+        CHECK(!panel.keypadOpen() && panel.extrasStep() == ExtrasStep::List);
+    }
+}
+
+/** frameeyeosc's reasons, translated where known, as they are where not. */
+void testExtraReasons() {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    CHECK(extraReasonText(ja, "public address") == ja.reasonPublicAddress);
+    CHECK(extraReasonText(en, "same as main") == en.reasonSameAsMain);
+    CHECK(extraReasonText(en, "same as the pupils") == en.reasonSameAsPupils);
+    CHECK(extraReasonText(en, "duplicate") == en.reasonDuplicate);
+    CHECK(extraReasonText(ja, "broadcast refused") == ja.reasonBroadcast);
+    CHECK(extraReasonText(ja, "multicast refused") == ja.reasonMulticast);
+    CHECK(extraReasonText(ja, "not an address to send to") == ja.reasonNotAddress);
+    CHECK(extraReasonText(ja, "no Steam Link") == ja.reasonNoSteamLink);
+    CHECK(extraReasonText(en, "could not resolve: Name or service not known") ==
+          "can't find it: Name or service not known");
+    CHECK(extraReasonText(ja, "sending failed: Network is unreachable (os error 101)") ==
+          "送れない: Network is unreachable (os error 101)");
+    CHECK(extraReasonText(en, "can't send yet: No route to host") == "can't send yet: No route to host");
+    CHECK(extraReasonText(ja, "unknown key \"pupils\" (written by a newer frameeyeosc?)") == ja.reasonNewerEntry);
+    CHECK(extraReasonText(en, "only 3 extra outputs are used") == en.reasonOverLimit);
+    // Unknown: as it is
+    CHECK(extraReasonText(ja, "port must be between 1 and 65535") == "port must be between 1 and 65535");
+}
+
+/**
+ * The left column's rows under more destinations (statusLayout): in order and apart, ending above the bottom row, for
+ * 0 to 4 destination lines with or without the slow-tracker line, per-eye gaze and the eye cameras' setup; where they
+ * always were without destination lines. Then drawn: LiveLink with its pupils and three other apps, the eye tracker
+ * slow, both gaze layouts, in both languages: the eyelid bars never reach the line above the gaze.
+ */
+void testStatusLayout(const FontSet& fonts) {
+    for (int more = 0; more <= 4; ++more) {
+        for (const bool slow : {false, true}) {
+            for (const bool perEye : {false, true}) {
+                for (const bool setup : {false, true}) {
+                    const StatusLayout l = statusLayout(more, slow, perEye, setup);
+                    // The destination lines end above the rates; the slow line between the rate and the line under it
+                    if (more > 0) CHECK(180 + 21 + 1 + (more - 1) * 21 + 5 <= 228 + l.shift - 15);
+                    if (slow) CHECK(250 + l.shift + 5 <= 269 + l.shift - 11 && 269 + l.shift + 4 <= 262.5 + l.dy);
+                    // The eyelid rows: under their title, apart, and the line above the gaze 8 px under the second
+                    CHECK(l.eyeTop[0] >= 282 + l.dy + 10);
+                    CHECK(l.eyeTop[1] >= l.eyeTop[0] + 36 + 4);
+                    CHECK(l.eyeTop[1] + 36 + 8 <= l.divider);
+                    // The gaze: the box(es) and the lowest text above the bottom row
+                    CHECK(l.box >= 48 && l.lowest + 4 <= l.limit);
+                    CHECK((perEye ? 464 : 444) + l.g + l.box + 10 <= l.limit);
+                    if (more == 0) {
+                        CHECK(l.shift == 0 && l.divider == 402.5 && l.g == 0);
+                        CHECK(l.box == (perEye ? (setup ? 100 : 132) : (setup ? 132 : 164)));
+                    }
+                }
+            }
+        }
+    }
+    // Drawn: no pixel of an eyelid bar (the accent) from the second eye's bars down to just under the line
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool perEye : {false, true}) {
+            PanelModel m = extrasModel(language, kThreeExtras);
+            liveThree(m, true);
+            EyeStatus& s = m.status;
+            s.output = kOutputLivelink;
+            m.config.root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
+            s.target = "192.168.0.60:11111";
+            s.pupilTarget = "192.168.0.60:9000";
+            s.pupilNet = "lan";
+            s.tracking = s.hasRaw = s.hasSent = true;
+            s.opennessScaled = {{0.84, 0.77}};
+            s.lids = {{1.0, 1.0}};
+            s.trackerRate = 15.0;
+            s.missedRate = 0.0;
+            s.maxProcessingMs = 1.4;
+            if (perEye) m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(true));
+            CHECK(trackerRateCause(s) != TrackerRateCause::None);
+            EyePanel panel(fonts);
+            panel.render(m);
+            CHECK(allInsideAndTall(panel));
+            const StatusLayout l = statusLayout(4, true, perEye, false);
+            CHECK(l.shift == 60);
+            const std::vector<uint8_t>& rgba = panel.toRgba();
+            const auto accent = [&](int x, int y) {
+                const uint8_t* px = &rgba[(static_cast<size_t>(y) * panel.width() + x) * 4];
+                return std::abs(px[0] - 0xe2) < 16 && std::abs(px[1] - 0x7d) < 16 && std::abs(px[2] - 0xfd) < 16;
+            };
+            int bar = 0;
+            int below = 0;
+            for (int x = 80; x < 310; ++x) {
+                // (the second eye's sent bar: full, so its row has the accent)
+                bar += accent(x, static_cast<int>(l.eyeTop[1]) + 28) ? 1 : 0;
+                for (int y = static_cast<int>(l.eyeTop[1]) + 38; y <= static_cast<int>(l.divider) + 3; ++y) {
+                    below += accent(x, y) ? 1 : 0;
+                }
+            }
+            CHECK(bar > 200 && below == 0);
+            // The preview button still at the bottom, inside the column
+            const std::vector<EyePanel::HitArea> preview = hits(panel, PanelAction::PreviewOpen);
+            CHECK(preview.size() == 1 && preview[0].y >= l.lowest && preview[0].y + preview[0].h <= 676);
+        }
+    }
+}
+
+/**
+ * A row's own "Delete" in the list: next to "Change" in every row, greyed with it while locked; pressed, that row asks
+ * in its place ("Cancel", a red "Delete"); one row at a time, and another row's button, a tab, the other sub-page, a
+ * lock or the entry changing closes it; "Delete" hands the caller that row and how it was, which removeEntry takes
+ * out (and refuses once it changed). Every button of the asking list pressed in turn. Both languages.
+ */
+void testExtrasRowDelete(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        PanelModel m = extrasModel(language, kThreeExtras);
+        liveThree(m, true);
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Output);
+        panel.setOutputPage(OutputPage::Apps);
+        panel.render(m);
+        std::vector<EyePanel::HitArea> deletes = hits(panel, PanelAction::ExtraRowDelete);
+        const std::vector<EyePanel::HitArea> edits = hits(panel, PanelAction::ExtraEdit);
+        CHECK(deletes.size() == 3 && edits.size() == 3);
+        for (size_t i = 0; i < deletes.size() && i < edits.size(); ++i) {
+            CHECK(deletes[i].hit.arg == static_cast<int>(i) && deletes[i].y == edits[i].y);
+            CHECK(deletes[i].x + deletes[i].w <= edits[i].x && deletes[i].w >= 40 && deletes[i].h >= 40);
+        }
+        CHECK(allInsideAndTall(panel) && cardButtonsApart(panel) && panel.extrasRowDelete() == -1);
+        // The second asks: its own two buttons in its place, the other rows as they were
+        CHECK(pressArg(panel, PanelAction::ExtraRowDelete, 1).action == PanelAction::None);
+        CHECK(panel.extrasRowDelete() == 1 && panel.extrasRowDeleteOriginal() == extras::rawEntry(m.config.root, 1));
+        panel.render(m);
+        const std::vector<EyePanel::HitArea> yes = hits(panel, PanelAction::ExtraRowDeleteConfirm);
+        const std::vector<EyePanel::HitArea> no = hits(panel, PanelAction::ExtraRowDeleteCancel);
+        CHECK(yes.size() == 1 && no.size() == 1 && yes[0].hit.arg == 1 && no[0].hit.arg == 1);
+        CHECK(hits(panel, PanelAction::ExtraRowDelete).size() == 2 && hits(panel, PanelAction::ExtraEdit).size() == 2);
+        CHECK(hits(panel, PanelAction::ExtraSend).size() == 4 && allInsideAndTall(panel) && cardButtonsApart(panel));
+        if (yes.size() == 1 && no.size() == 1) CHECK(no[0].x + no[0].w <= yes[0].x && yes[0].y == deletes[1].y);
+        // Cancel
+        CHECK(press(panel, PanelAction::ExtraRowDeleteCancel).action == PanelAction::None);
+        CHECK(panel.extrasRowDelete() == -1);
+        // One at a time: another row's "Delete" moves the question there
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 0);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 2);
+        CHECK(panel.extrasRowDelete() == 2);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraRowDeleteConfirm).size() == 1);
+        // ...and any other button closes it: another row's Send / Stop, its Change (the flow), lan_only
+        pressArg(panel, PanelAction::ExtraSend, 1);
+        CHECK(panel.extrasRowDelete() == -1);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 2);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraEdit, 0);
+        CHECK(panel.extrasRowDelete() == -1 && panel.extrasStep() == ExtrasStep::Format);
+        panel.closeExtrasFlow();
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 2);
+        panel.render(m);
+        pressArg(panel, PanelAction::SetBool, 0);
+        CHECK(panel.extrasRowDelete() == -1);
+        // ...a tab, the other sub-page
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 1);
+        panel.render(m);
+        pressTab(panel, PanelTab::Gaze);
+        CHECK(panel.extrasRowDelete() == -1);
+        panel.render(m);
+        pressTab(panel, PanelTab::Output);
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 1);
+        panel.render(m);
+        pressArg(panel, PanelAction::OutputPage, static_cast<int>(OutputPage::Main));
+        CHECK(panel.extrasRowDelete() == -1);
+        panel.setOutputPage(OutputPage::Apps);
+        // ...a lock (and while locked: no Delete to press)
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 1);
+        PanelModel locked = m;
+        locked.status.locked = {key::kExtraOutputs};
+        locked.status.effective = locked.config.root;
+        panel.render(locked);
+        CHECK(panel.extrasRowDelete() == -1 && hits(panel, PanelAction::ExtraRowDelete).empty());
+        CHECK(hits(panel, PanelAction::ExtraRowDeleteConfirm).empty() && hits(panel, PanelAction::ExtraEdit).empty());
+        // ...the entry changing under it (by hand, another write)
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 0);
+        PanelModel changed = m;
+        std::string error;
+        CHECK(extras::setEnabled(changed.config.root, 0, false, error));
+        panel.render(changed);
+        CHECK(panel.extrasRowDelete() == -1);
+        // Delete: the caller gets that row and how it was; taken out, the others as they were
+        panel.render(m);
+        pressArg(panel, PanelAction::ExtraRowDelete, 1);
+        panel.render(m);
+        const PanelHit got = press(panel, PanelAction::ExtraRowDeleteConfirm);
+        CHECK(got.action == PanelAction::ExtraRowDeleteConfirm && got.arg == 1);
+        const std::string first = extras::rawEntry(m.config.root, 0);
+        const std::string third = extras::rawEntry(m.config.root, 2);
+        // (changed meanwhile: refused, nothing written)
+        PanelModel stale = m;
+        CHECK(extras::setEnabled(stale.config.root, 1, false, error));
+        const std::string staleText = writeJson(stale.config.root);
+        CHECK(!extras::removeEntry(stale.config.root, got.arg, panel.extrasRowDeleteOriginal(), error));
+        CHECK(writeJson(stale.config.root) == staleText);
+        CHECK(extras::removeEntry(m.config.root, got.arg, panel.extrasRowDeleteOriginal(), error));
+        CHECK(extras::rawEntry(m.config.root, 0) == first && extras::rawEntry(m.config.root, 1) == third);
+        panel.closeExtrasFlow();
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ExtraRowDelete).size() == 2 && hits(panel, PanelAction::ExtraAdd).size() == 1);
+        // A Delete pressed with no row asking does nothing
+        CHECK(panel.pointerDown(0, 0, 0.0).action == PanelAction::None);
+
+        // The sweep: each button of the list with a row asking, pressed on a panel in that state
+        PanelModel three = extrasModel(language, kThreeExtras);
+        liveThree(three, true);
+        const auto setUp = [&](EyePanel& p) {
+            p.setTab(PanelTab::Output);
+            p.setOutputPage(OutputPage::Apps);
+            p.render(three);
+            p.openExtrasRowDelete(1);
+            p.render(three);
+        };
+        EyePanel shown(fonts);
+        setUp(shown);
+        std::vector<EyePanel::HitArea> own;
+        for (const EyePanel::HitArea& area : shown.hitAreas()) {
+            if (area.x > 400 && area.y > 100) own.push_back(area);
+        }
+        CHECK(own.size() >= 4 + 2 + 2 + 2 + 2);
+        for (const EyePanel::HitArea& area : own) {
+            EyePanel p(fonts);
+            setUp(p);
+            const PanelHit hit = p.pointerDown(area.x + area.w / 2, area.y + area.h / 2, 0.0);
+            CHECK(hit.action == PanelAction::None || hit == area.hit);
+            const PanelAction a = area.hit.action;
+            if (a == PanelAction::ExtraRowDeleteConfirm) CHECK(hit == area.hit && p.extrasRowDelete() == 1);
+            else if (a == PanelAction::ExtraRowDelete) CHECK(p.extrasRowDelete() == area.hit.arg);
+            else CHECK(p.extrasRowDelete() == -1);
+        }
+    }
+}
+
+/** The change's last button says when saving starts a stopped entry again; pressing it hands Save to the caller. */
+void testExtrasSaveLabel(const FontSet& fonts) {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    PanelModel m = extrasModel(Language::Ja, R"j([{"format": "feo1", "host": "main", "port": 11113},
+        {"enabled": false, "format": "osc", "host": "127.0.0.1", "port": 9015}])j");
+    const extras::List list = extrasList(m);
+    CHECK(std::string(extrasSaveLabel(ja, extras::newDraft(2), list)) == "追加して送る");
+    const extras::Draft running = extras::draftOf(list.entries[0], extras::rawEntry(m.config.root, 0));
+    const extras::Draft stopped = extras::draftOf(list.entries[1], extras::rawEntry(m.config.root, 1));
+    CHECK(std::string(extrasSaveLabel(ja, running, list)) == "変更を保存");
+    CHECK(std::string(extrasSaveLabel(ja, stopped, list)) == "保存して送る");
+    CHECK(std::string(extrasSaveLabel(en, running, list)) == "Save changes");
+    CHECK(std::string(extrasSaveLabel(en, stopped, list)) == "Save and send");
+    // Saved: it sends again
+    EyePanel panel(fonts);
+    panel.setTab(PanelTab::Output);
+    panel.setOutputPage(OutputPage::Apps);
+    panel.render(m);
+    pressArg(panel, PanelAction::ExtraEdit, 1);
+    panel.openExtrasFlow(ExtrasStep::Port, panel.extrasDraft());
+    panel.render(m);
+    CHECK(press(panel, PanelAction::ExtraSave).action == PanelAction::ExtraSave);
+    std::string error;
+    CHECK(extras::applyDraft(m.config.root, panel.extrasDraft(), error));
+    CHECK(extrasList(m).entries[1].enabled);
+}
+
+/**
+ * SteamVR's eye camera speed: the left column's "Set 90" only for a slow eye tracker with the setting below 90 (not for
+ * frameeyeosc's own slowness, at 90, or without the setting), on the reason's line between the rate and the line
+ * before the eyelids, with no destination lines and with four; pressing it hands it to the caller; the confirmation
+ * and "not taken" in its place, not pressable. "Having trouble"'s two choices only with the setting, inside the card
+ * and apart, the page still fitting. Both languages.
+ */
+void testEyeRate(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool many : {false, true}) {
+            PanelModel m = extrasModel(language, many ? kThreeExtras : "[]");
+            if (many) {
+                liveThree(m, true);
+                m.status.pupilTarget = "192.168.0.60:9000";
+                m.status.pupilNet = "lan";
+            }
+            EyeStatus& s = m.status;
+            s.tracking = s.hasRaw = s.hasSent = true;
+            s.trackerRate = 15.0;
+            s.missedRate = 0.0;
+            s.maxProcessingMs = 1.4;
+            s.droppedRate = 0.0;
+            m.eyeRate.setting.exists = true;
+            m.eyeRate.setting.min = 15;
+            eye_rate::update(m.eyeRate, s, 0.0);
+            CHECK(m.eyeRate.line == eye_rate::Line::Offer);
+            EyePanel panel(fonts);
+            panel.render(m);
+            const StatusLayout l = statusLayout(many ? 4 : 0, true, false, false);
+            const std::vector<EyePanel::HitArea> offer = hits(panel, PanelAction::EyeRateSet);
+            CHECK(offer.size() == 1);
+            if (offer.size() == 1) {
+                const EyePanel::HitArea& a = offer[0];
+                CHECK(a.x >= 44 && a.x + a.w <= 376);
+                CHECK(a.y >= 228 + l.shift + 4 && a.y + a.h <= 262.5 + l.dy);
+            }
+            CHECK(press(panel, PanelAction::EyeRateSet).action == PanelAction::EyeRateSet);
+            // frameeyeosc itself slow: today's line, nothing to press
+            s.trackerRate = 46.0;
+            s.missedRate = 44.0;
+            eye_rate::update(m.eyeRate, s, 0.0);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::EyeRateSet).empty());
+            // At 90, or a SteamVR without it: nothing either
+            s.trackerRate = 15.0;
+            s.missedRate = 0.0;
+            for (const bool exists : {true, false}) {
+                m.eyeRate.setting.exists = exists;
+                m.eyeRate.setting.min = exists ? 90 : NAN;
+                eye_rate::update(m.eyeRate, s, 0.0);
+                panel.render(m);
+                CHECK(hits(panel, PanelAction::EyeRateSet).empty());
+            }
+            // The confirmation, then "not taken": not pressable; then the offer again
+            m.eyeRate.setting.exists = true;
+            m.eyeRate.setting.min = 15;
+            eye_rate::pressed(m.eyeRate, true, 10.0);
+            eye_rate::update(m.eyeRate, s, 10.0);
+            panel.render(m);
+            CHECK(m.eyeRate.line == eye_rate::Line::Done && hits(panel, PanelAction::EyeRateSet).empty());
+            eye_rate::update(m.eyeRate, s, 10.0 + eye_rate::kCheckSec);
+            panel.render(m);
+            CHECK(m.eyeRate.line == eye_rate::Line::Refused && hits(panel, PanelAction::EyeRateSet).empty());
+            eye_rate::update(m.eyeRate, s, 10.0 + eye_rate::kCheckSec + eye_rate::kRefusedSec);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::EyeRateSet).size() == 1);
+        }
+        // "Having trouble": the two choices with the setting, in the card and apart, the page fitting
+        for (const bool exists : {true, false}) {
+            PanelModel m = modelWith(Lids::Both, false);
+            m.language = language;
+            m.records.list = records(10);
+            m.status.tracking = true;
+            m.status.trackerRate = 15;
+            m.eyeRate.setting.exists = exists;
+            m.eyeRate.setting.min = exists ? 15 : NAN;
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Advanced);
+            panel.setAdvPage(AdvPage::Trouble);
+            panel.render(m);
+            const std::vector<EyePanel::HitArea> choices = hits(panel, PanelAction::EyeRateChoose);
+            if (exists) {
+                CHECK(choices.size() == 2 && choices[0].hit.arg == static_cast<int>(eye_rate::Choice::Full) &&
+                      choices[1].hit.arg == static_cast<int>(eye_rate::Choice::SteamVr));
+            } else {
+                CHECK(choices.empty());
+            }
+            // (the records' own "View" buttons are smaller, so only these two are checked against everything else)
+            for (const EyePanel::HitArea& a : choices) {
+                CHECK(a.x >= 438 - 0.5 && a.x + a.w <= 1154 + 0.5 && a.y >= 174 && a.y + a.h <= 664 && a.h >= 40);
+                for (const EyePanel::HitArea& b : panel.hitAreas()) {
+                    if (b.hit != a.hit) CHECK(!overlaps(a, b));
+                }
+            }
+            CHECK(!panel.wantsScroll());
+            CHECK(pressArg(panel, PanelAction::EyeRateChoose, static_cast<int>(eye_rate::Choice::SteamVr)).action ==
+                  (exists ? PanelAction::EyeRateChoose : PanelAction::None));
+        }
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -3611,7 +4469,7 @@ int main() {
     testLidVetoSwitch(fonts);
     testLidsPages(fonts);
     testSnapMark(fonts);
-    testEyeBehavior(fonts);
+    testRemovedEyeBehavior(fonts);
     testLidsRemembered(fonts);
     testGazePages(fonts);
     testOwnEyeGazeRow(fonts);
@@ -3648,6 +4506,14 @@ int main() {
     testIconText(fonts);
     testApps(fonts);
     testPreview(fonts);
+    testExtraReasons();
+    testExtrasPage(fonts);
+    testExtrasFlow(fonts);
+    testExtrasSaveLabel(fonts);
+    testExtrasRowDelete(fonts);
+    testPortKeypad(fonts);
+    testStatusLayout(fonts);
+    testEyeRate(fonts);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);
         return 1;

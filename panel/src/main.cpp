@@ -95,6 +95,10 @@ struct Options {
     std::string lidsPage;         ///< --lids-page (--lid-marks: fine): the Eyelids tab's sub-tab (look, blinks, fine,
                                   ///< brows)
     std::string gazePage;         ///< --gaze-page: the Gaze tab's sub-tab (motion, reach, glitch)
+    std::string outputPage;       ///< --output-page: the Output tab's sub-tab (main, apps)
+    std::string extrasFlow;       ///< --extras-flow: "Other apps"' add / change flow at a step (parseExtrasFlow)
+    int extrasRowDelete = -1;     ///< --extras-row-delete N: the list's row N asking whether to delete it
+    std::string fakeExtras;       ///< --fake-extras: made-up extra outputs (fakeExtras)
     bool history = false;         ///< --history: the version history open (on the Advanced tab)
     std::string historyOpen;      ///< --history-open: the version whose row is open ("" = the installed one)
     double historyScroll = -1.0;  ///< --history-scroll: px it is scrolled (-1 = as opened)
@@ -131,7 +135,8 @@ struct Options {
     bool fakePaused = false;
     bool fakeNoTracking = false;
     bool fakeSlowTracker = false; ///< --fake-slow-tracker: the eye tracker delivers 15 samples a second
-    bool fakeEtvr = false;
+    std::string fakeEyeRateMin;   ///< --fake-eye-rate-min: SteamVR's eyeTrackingRateMin, a number or "none" ("" = none)
+    std::string fakeEyeRateNote;  ///< --fake-eye-rate-note: "done" / "refused" after "Set 90" ("" = neither)
     bool fakeLivelink = false;
     bool fakeModule = false;
     bool fakePupilsOff = false;   ///< --fake-pupils-off: pupils_to_vrchat off
@@ -147,10 +152,9 @@ struct Options {
     bool fakeModuleLinkError = false;  ///< --fake-module-link-error: the Output tab's module link couldn't open Chromium
     bool fakeCustom = false;
     bool fakeIndependent = false; ///< --fake-independent: independent_eyes on, the gaze pad per eye
-    bool fakeV1 = false;          ///< --fake-v1: eye_behavior 1 (the eyes as up to 0.7.5)
     std::string fakeDominantEye;  ///< --fake-dominant-eye: "left" / "right" ("Track Dominant Eye Only")
     bool fakeOpennessSaturated = false;  ///< --fake-openness-saturated: a relaxed open eye reads 1.0
-    std::string fakePrompt;       ///< vrchat / etvr / livelink
+    std::string fakePrompt;       ///< vrchat / livelink / frameeyeosc
     std::string fakeUpdate;       ///< a made-up update state (see printUsage)
     std::string fakeUpdateNotes;  ///< --fake-update-notes: the new release's summary ("both", "en" or "long")
     bool updateBeta = false;      ///< --update-beta: "Get test versions" on (instead of panel.json's)
@@ -265,6 +269,13 @@ void printUsage() {
         "      --fit-details [gaze|lids]  Open \"Fine-tune\" on the Eye fit tab (default: its gaze page)\n"
         "      --lids-page look|blinks|fine|brows  The Eyelids tab's sub-tab (default look)\n"
         "      --gaze-page motion|reach|glitch  The Gaze tab's sub-tab (default motion)\n"
+        "      --output-page main|apps  The Output tab's sub-tab (default main)\n"
+        "      --extras-row-delete N  \"Other apps\"' row N (from 0) asking whether to delete it (its own Delete)\n"
+        "      --extras-flow STEP[,KEY=VALUE...]  \"Other apps\"' add / change flow at STEP (format, host or\n"
+        "                        port), with\n"
+        "                        format=feo1|osc, host=main|auto|frame|ip|keep, ip=A.B.C.D, kept=HOST, port=N,\n"
+        "                        edit=N (change entry N, from 0, starting from its values) and delete\n"
+        "                        (its confirmation open). Opens the Output tab's \"Other apps\"\n"
         "      --lid-marks       The same as --lids-page fine (the lid marks)\n"
         "      --history         Open the version history (Advanced tab)\n"
         "      --history-open VERSION  ...with this version's row open instead of the installed one\n"
@@ -305,13 +316,21 @@ void printUsage() {
         "      --preview-update-prompt  Show the \"update to ...?\" question (with --fake-update available)\n"
         "      --fake            Draw a made-up state (running, sending to VRChat) instead of the files.\n"
         "                        Each --fake-* below implies --fake\n"
-        "      --fake-not-running / --fake-paused / --fake-no-tracking / --fake-etvr / --fake-livelink / --fake-fixed\n"
+        "      --fake-not-running / --fake-paused / --fake-no-tracking / --fake-livelink / --fake-fixed\n"
         "      --fake-frameeyeosc  Sending to VRCFT's FrameEyeOSC module\n"
         "      --fake-target-null  Auto target not found yet\n"
         "      --fake-pupils-off  pupils_to_vrchat off (the Output tab's row for LiveLink with the eye cameras)\n"
         "      --fake-pupil-bits N  pupil_bits 0..4 (the Output tab's \"pupils as bits\" row, with the eye cameras)\n"
         "      --fake-slow-tracker  The eye tracker delivers only 15 samples a second\n"
+        "      --fake-eye-rate-min N|none  SteamVR's eyeTrackingRateMin (none: a SteamVR without it, as when not given);\n"
+        "                        below 90 with --fake-slow-tracker the left column offers \"Set 90\"\n"
+        "      --fake-eye-rate-note done|refused  The left column's line after \"Set 90\" was pressed\n"
         "      --fake-locked     Some keys locked by the command line\n"
+        "      --fake-extras one|mixed|refused|errors|old|main-refused  Made-up extra outputs (\"Other apps\"): one\n"
+        "                        sending; three sending (LAN, VPN, PUBLIC; lan_only off); three with the public one\n"
+        "                        refused (lan_only on); same as main, a name that can't be found and one a newer\n"
+        "                        version wrote; two in config.json that an older frameeyeosc (no \"extras\") doesn't\n"
+        "                        send; or one with the main output refused (a public address)\n"
         "      --fake-config-error  frameeyeosc reports a config error\n"
         "      --fake-source-error  frameeyeosc can't read the eye tracker (an unsupported shared-memory version)\n"
         "      --fake-core-error  frameeyeosc logged a problem 2 minutes ago (its last_error)\n"
@@ -320,14 +339,13 @@ void printUsage() {
         "      --fake-module-link-error  The Output tab's module link couldn't open the browser (with --fake-frameeyeosc)\n"
         "      --fake-custom     Gaze smoothing values that match no preset\n"
         "      --fake-independent  Move eyes separately (the left column shows each eye's gaze)\n"
-        "      --fake-v1         The eyes move as up to 0.7.5 (eye_behavior 1)\n"
         "      --fake-gaze-scale L,R,U,D  The gaze scale (gaze_scale_left, _right, _up, _down; 0.05..2). A pair whose\n"
         "                        two values differ shows its lock open\n"
         "      --fake-gaze-dots  The debug gaze dots on (gaze_debug_dots; the Advanced tab's Debug tools)\n"
         "      --fake-rings-off  The dots' rings off (gaze_debug_rings)\n"
         "      --fake-dominant-eye left|right  \"Track Dominant Eye Only\" is on with that eye\n"
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
-        "      --fake-prompt vrchat|etvr|livelink|frameeyeosc  The recommended-settings question\n"
+        "      --fake-prompt vrchat|livelink|frameeyeosc  The recommended-settings question\n"
         "      --fake-autostart on|off|missing|unknown\n"
         "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed|\n"
         "                    test|testbadge|onbeta|back|backmanual\n"
@@ -847,6 +865,32 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 std::fprintf(stderr, "--gaze-page must be motion, reach or glitch: %s\n", options.gazePage.c_str());
                 return false;
             }
+        } else if (arg == "--output-page" && hasNext) {
+            options.outputPage = argv[++i];
+            OutputPage page;
+            if (!ui_state::parseOutputPage(options.outputPage, page)) {
+                std::fprintf(stderr, "--output-page must be main or apps: %s\n", options.outputPage.c_str());
+                return false;
+            }
+        } else if (arg == "--extras-row-delete" && hasNext) {
+            options.extrasRowDelete = std::atoi(argv[++i]);
+        } else if (arg == "--extras-flow" && hasNext) {
+            options.extrasFlow = argv[++i];
+            const std::string step = options.extrasFlow.substr(0, options.extrasFlow.find(','));
+            if (step != "format" && step != "host" && step != "port") {
+                std::fprintf(stderr, "--extras-flow must start with format, host or port: %s\n",
+                             options.extrasFlow.c_str());
+                return false;
+            }
+        } else if (arg == "--fake-extras" && hasNext) {
+            options.fake = true;
+            options.fakeExtras = argv[++i];
+            if (options.fakeExtras != "one" && options.fakeExtras != "mixed" && options.fakeExtras != "refused" &&
+                options.fakeExtras != "errors" && options.fakeExtras != "old" && options.fakeExtras != "main-refused") {
+                std::fprintf(stderr, "--fake-extras must be one, mixed, refused, errors, old or main-refused: %s\n",
+                             options.fakeExtras.c_str());
+                return false;
+            }
         } else if (arg == "--adv-page" && hasNext) {
             options.advPage = argv[++i];
             AdvPage page;
@@ -999,10 +1043,14 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakePaused = true;
         } else if (arg == "--fake-slow-tracker") {
             options.fake = options.fakeSlowTracker = true;
+        } else if (arg == "--fake-eye-rate-min" && hasNext) {
+            options.fake = true;
+            options.fakeEyeRateMin = argv[++i];
+        } else if (arg == "--fake-eye-rate-note" && hasNext) {
+            options.fake = true;
+            options.fakeEyeRateNote = argv[++i];
         } else if (arg == "--fake-no-tracking") {
             options.fake = options.fakeNoTracking = true;
-        } else if (arg == "--fake-etvr") {
-            options.fake = options.fakeEtvr = true;
         } else if (arg == "--fake-livelink") {
             options.fake = options.fakeLivelink = true;
         } else if (arg == "--fake-frameeyeosc") {
@@ -1039,8 +1087,6 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeCustom = true;
         } else if (arg == "--fake-independent") {
             options.fake = options.fakeIndependent = true;
-        } else if (arg == "--fake-v1") {
-            options.fake = options.fakeV1 = true;
         } else if (arg == "--fake-no-widen") {
             options.fake = options.fakeNoWiden = true;
         } else if (arg == "--fake-brows") {
@@ -1081,9 +1127,9 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.fake = options.fakeOpennessSaturated = true;
         } else if (arg == "--fake-prompt" && hasNext) {
             options.fakePrompt = argv[++i];
-            if (options.fakePrompt != kOutputVrchat && options.fakePrompt != kOutputEtvr &&
-                options.fakePrompt != kOutputLivelink && options.fakePrompt != kOutputModule) {
-                std::fprintf(stderr, "--fake-prompt must be vrchat, etvr, livelink or frameeyeosc: %s\n",
+            if (options.fakePrompt != kOutputVrchat && options.fakePrompt != kOutputLivelink &&
+                options.fakePrompt != kOutputModule) {
+                std::fprintf(stderr, "--fake-prompt must be vrchat, livelink or frameeyeosc: %s\n",
                              options.fakePrompt.c_str());
                 return false;
             }
@@ -1997,6 +2043,155 @@ void takeSliders(EyePanel& panel, Apply apply) {
  * @param options the command line
  * @return the model
  */
+/**
+ * --fake-extras: made-up extra outputs in config.json and as frameeyeosc sends to them (status.json's extras).
+ * @param m the model (its config and status; running)
+ * @param state one, mixed, refused, errors, old or main-refused ("" = none, from a frameeyeosc that has them)
+ */
+void fakeExtras(PanelModel& m, const std::string& state) {
+    EyeStatus& s = m.status;
+    JsonValue& root = m.config.root;
+    s.extrasKnown = state != "old";
+    s.net = "lan";
+    if (state.empty()) return;
+    struct Fake {
+        const char* name;  ///< "" = none written (App N)
+        const char* format;
+        const char* host;
+        int port;
+        bool enabled;
+        const char* target;
+        const char* net;
+        const char* refused;
+        const char* lastError;
+        const char* extraKey;  ///< a key a newer version wrote ("" = none)
+    };
+    std::vector<Fake> fakes;
+    const bool lanOff = state == "mixed";
+    if (state == "one" || state == "old" || state == "main-refused") {
+        fakes.push_back({"", "feo1", "main", 11113, true, "192.0.2.60:11113", "lan", "", "", ""});
+    }
+    if (state == "old") {
+        fakes.push_back({"Gaze", "osc", "192.0.2.61", 9015, false, "", "", "", "", ""});
+    }
+    if (state == "mixed" || state == "refused") {
+        fakes.push_back({"", "feo1", "main", 11113, true, "192.0.2.60:11113", "lan", "", "", ""});
+        fakes.push_back({"Gaze", "osc", "100.101.5.7", 9015, true, "100.101.5.7:9015", "vpn", "", "", ""});
+        fakes.push_back({"", "feo1", "203.0.113.5", 11113, true, lanOff ? "203.0.113.5:11113" : "",
+                         lanOff ? "public" : "", lanOff ? "" : "public address", "", ""});
+    }
+    if (state == "errors") {
+        fakes.push_back({"", "feo1", "main", 9000, true, "", "", "same as main", "", ""});
+        fakes.push_back({"Bridge", "feo1", "bridge-pc.local", 11113, true, "", "", "",
+                         "could not resolve: failed to lookup address information: Name or service not known", ""});
+        fakes.push_back({"", "feo1", "192.0.2.61", 11113, true, "", "", "", "", "pupils"});
+    }
+    if (lanOff) root.set(key::kLanOnly, JsonValue::makeBool(false));
+    s.lanOnly = !lanOff;
+    JsonValue list;
+    list.type = JsonValue::Type::Array;
+    for (size_t i = 0; i < fakes.size(); ++i) {
+        const Fake& f = fakes[i];
+        JsonValue entry;
+        entry.type = JsonValue::Type::Object;
+        if (f.name[0] != '\0') entry.set("name", JsonValue::makeString(f.name));
+        entry.set("enabled", JsonValue::makeBool(f.enabled));
+        entry.set("format", JsonValue::makeString(f.format));
+        entry.set("host", JsonValue::makeString(f.host));
+        entry.set("port", JsonValue::makeNumber(f.port, true));
+        if (f.extraKey[0] != '\0') entry.set(f.extraKey, JsonValue::makeBool(true));
+        list.items.push_back(entry);
+        ExtraLive live;
+        live.index = static_cast<int>(i) + 1;
+        live.name = f.name[0] != '\0' ? f.name : "App " + std::to_string(i + 1);
+        live.enabled = f.enabled && f.extraKey[0] == '\0';
+        live.format = f.extraKey[0] != '\0' ? "" : f.format;
+        live.host = f.extraKey[0] != '\0' ? "" : f.host;
+        live.port = f.extraKey[0] != '\0' ? 0 : f.port;
+        live.target = f.target;
+        live.net = f.net;
+        live.sending = !live.target.empty();
+        live.rate = live.sending ? 89.6 : 0.0;
+        live.refused = f.extraKey[0] != '\0' ? "unknown key \"" + std::string(f.extraKey) +
+                                                   "\" (written by a newer frameeyeosc?)"
+                                             : f.refused;
+        live.lastError = f.lastError;
+        s.extras.push_back(live);
+    }
+    root.set(key::kExtraOutputs, list);
+    if (state == "main-refused") {
+        root.set(key::kHost, JsonValue::makeString("203.0.113.9"));
+        s.targetMode = "fixed";
+        s.target.clear();
+        s.net.clear();
+        s.refused = "public address";
+        // ("main" follows it to the same public address: refused the same way)
+        s.extras[0].target.clear();
+        s.extras[0].net.clear();
+        s.extras[0].sending = false;
+        s.extras[0].rate = 0.0;
+        s.extras[0].refused = "public address";
+    }
+    if (!s.extrasKnown) s.extras.clear();
+}
+
+/**
+ * --extras-flow: "Other apps"' add / change flow, at STEP with KEY=VALUE choices (see printUsage).
+ * @param spec the value
+ * @param model the model (edit=N starts from that entry)
+ * @param draft the choices
+ * @param step the step
+ * @param confirmDelete delete's confirmation open
+ */
+void parseExtrasFlow(const std::string& spec, const PanelModel& model, extras::Draft& draft, ExtrasStep& step,
+                     bool& confirmDelete) {
+    std::vector<std::string> parts;
+    for (size_t from = 0;;) {
+        const size_t comma = spec.find(',', from);
+        parts.push_back(spec.substr(from, comma == std::string::npos ? std::string::npos : comma - from));
+        if (comma == std::string::npos) break;
+        from = comma + 1;
+    }
+    const extras::List list = extrasList(model);
+    draft = extras::newDraft(static_cast<int>(list.entries.size()));
+    draft.format = extras::kFeo1;
+    step = parts[0] == "port" ? ExtrasStep::Port : parts[0] == "host" ? ExtrasStep::Host : ExtrasStep::Format;
+    if (parts[0] == "format") draft.format.clear();
+    confirmDelete = false;
+    for (size_t i = 1; i < parts.size(); ++i) {
+        const std::string& part = parts[i];
+        const size_t eq = part.find('=');
+        const std::string key = part.substr(0, eq);
+        const std::string value = eq == std::string::npos ? std::string() : part.substr(eq + 1);
+        if (key == "edit") {
+            const int index = std::atoi(value.c_str());
+            if (index >= 0 && index < static_cast<int>(list.entries.size())) {
+                draft = extras::draftOf(list.entries[static_cast<size_t>(index)],
+                                        extras::rawEntry(model.config.root, index));
+            }
+        } else if (key == "format") {
+            // (a known one starts from its own port, as in the flow)
+            extras::chooseFormat(draft, value);
+            draft.format = value;
+        } else if (key == "host") {
+            using extras::HostChoice;
+            draft.host = value == "auto"    ? HostChoice::Auto
+                         : value == "frame" ? HostChoice::Frame
+                         : value == "ip"    ? HostChoice::Ip
+                         : value == "keep"  ? HostChoice::Keep
+                                            : HostChoice::Main;
+        } else if (key == "ip") {
+            draft.ip = value;
+        } else if (key == "kept") {
+            draft.kept = value;
+        } else if (key == "port") {
+            draft.port = std::clamp(std::atoi(value.c_str()), 1, 65535);
+        } else if (key == "delete") {
+            confirmDelete = true;
+        }
+    }
+}
+
 PanelModel fakeModel(const Options& options) {
     PanelModel m;
     m.configPath = options.configPath;
@@ -2004,12 +2199,11 @@ PanelModel fakeModel(const Options& options) {
     m.config.exists = true;
     m.config.root.type = JsonValue::Type::Object;
     JsonValue& root = m.config.root;
-    if (options.fakeEtvr) root.set(key::kOutput, JsonValue::makeString(kOutputEtvr));
     if (options.fakeLivelink) root.set(key::kOutput, JsonValue::makeString(kOutputLivelink));
     if (options.fakeModule) root.set(key::kOutput, JsonValue::makeString(kOutputModule));
     if (options.fakePupilsOff) root.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
     if (options.fakePupilBits >= 0) root.set(key::kPupilBits, JsonValue::makeNumber(options.fakePupilBits, true));
-    if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.168.0.60"));
+    if (options.fakeFixed) root.set(key::kHost, JsonValue::makeString("192.0.2.60"));
     if (!options.fakeWiden.empty()) root.set(key::kLidWiden, JsonValue::makeString(options.fakeWiden));
     if (options.fakeNoWiden) root.set(key::kWiden, JsonValue::makeBool(false));
     if (options.fakeBrows) root.set(key::kBrowFromWiden, JsonValue::makeBool(true));
@@ -2028,7 +2222,6 @@ PanelModel fakeModel(const Options& options) {
     }
     if (options.fakeBroken) m.config.error = "expected , or } between members (near character 212)";
     if (options.fakeIndependent) root.set(key::kIndependentEyes, JsonValue::makeBool(true));
-    if (options.fakeV1) root.set(key::kEyeBehavior, JsonValue::makeNumber(1, true));
     if (options.fakeGazeDots) root.set(key::kGazeDebugDots, JsonValue::makeBool(true));
     if (options.fakeRingsOff) root.set(key::kGazeDebugRings, JsonValue::makeBool(false));
     for (size_t i = 0; i < options.fakeGazeScale.size() && i < 4; ++i) {
@@ -2125,24 +2318,20 @@ PanelModel fakeModel(const Options& options) {
     EyeStatus& s = m.status;
     if (!options.fakeNotRunning) {
         const double now = unixNow();
-        const bool etvr = options.fakeEtvr;
         s.present = true;
         s.running = true;
         s.pid = 12345;
         s.time = now;
         s.started = now - 4980;
         s.sending = !options.fakePaused;
-        s.output = etvr                   ? kOutputEtvr
-                   : options.fakeLivelink ? kOutputLivelink
-                   : options.fakeModule   ? kOutputModule
-                                          : kOutputVrchat;
+        s.output = options.fakeLivelink ? kOutputLivelink
+                   : options.fakeModule ? kOutputModule
+                                        : kOutputVrchat;
         s.targetMode = options.fakeFixed ? "fixed" : "auto";
         if (!options.fakeTargetNull) {
-            s.target = std::string("192.168.0.60:") +
-                       (etvr                   ? "8889"
-                        : options.fakeLivelink ? "11111"
-                        : options.fakeModule   ? "11112"
-                                               : (options.fakeCustom ? "9001" : "9000"));
+            s.target = std::string("192.0.2.60:") + (options.fakeLivelink ? "11111"
+                                                       : options.fakeModule ? "11112"
+                                                                            : (options.fakeCustom ? "9001" : "9000"));
         }
         s.trackerRate = options.fakeSlowTracker ? 15.0 : 89.6;
         s.missedRate = 0;
@@ -2157,7 +2346,7 @@ PanelModel fakeModel(const Options& options) {
             s.gaze = {{0.22, -0.14}};
             s.hasSent = true;
             s.lidsVrcft = {{0.75, 0.72}};
-            s.lids = etvr ? Pair {{1.0, 0.96}} : s.lidsVrcft;
+            s.lids = s.lidsVrcft;
             s.sentGaze = {{0.17, -0.10}};
             // Each eye turned in a little (left eye right of the combined gaze, right eye left of it)
             s.rawGazeEye[0] = {{0.27, -0.14}};
@@ -2185,13 +2374,13 @@ PanelModel fakeModel(const Options& options) {
             s.sourceError = "unsupported eye shared-memory version 6; supported: 4, 5";
         }
         if (options.fakeCoreError) {
-            s.lastError = "Can't send OSC to 192.168.0.60:9000 yet (Network is unreachable (os error 101)); retrying "
+            s.lastError = "Can't send OSC to 192.0.2.60:9000 yet (Network is unreachable (os error 101)); retrying "
                           "every 5 s";
             s.lastErrorTime = now - 120;
         }
         s.dominantEye = options.fakeDominantEye;
         // LiveLink: the pupils go straight to VRChat on the same PC (while the setting is on)
-        if (options.fakeLivelink && m.config.flag(key::kPupilsToVrchat)) s.pupilTarget = "192.168.0.60:9000";
+        if (options.fakeLivelink && m.config.flag(key::kPupilsToVrchat)) s.pupilTarget = "192.0.2.60:9000";
         s.opennessSaturated = options.fakeOpennessSaturated;
         if (!options.fakeCamera.empty()) {
             const std::string& camera = options.fakeCamera;
@@ -2209,6 +2398,7 @@ PanelModel fakeModel(const Options& options) {
                 if (camera == "both") s.pupilDilation = 0.46;
             }
         }
+        fakeExtras(m, options.fakeExtras);
         s.effective = root;
         if (options.fakeLocked) {
             s.locked = {key::kOutput,          key::kPort,        key::kRaw,         key::kLidOpen,
@@ -2225,6 +2415,9 @@ PanelModel fakeModel(const Options& options) {
             s.effective.set(key::kCameraLids, JsonValue::makeBool(true));
             s.effective.set(key::kPupilsToVrchat, JsonValue::makeBool(false));
             s.effective.set(key::kPupilBits, JsonValue::makeNumber(3, true));
+            // ...and the extra outputs and lan_only (--extra, --no-lan-only), as frameeyeosc lists them
+            s.locked.push_back(key::kExtraOutputs);
+            s.locked.push_back(key::kLanOnly);
         }
     } else {
         s.readError = "no status file";
@@ -2270,6 +2463,21 @@ PanelModel fakeModel(const Options& options) {
     // The diagnostics page's SteamOS and camera tool, as on the developer's headset
     m.system.steamos = "0.4.3 (20260930.6234839)";
     m.system.grabHash = "294d06c6";
+    // SteamVR's eye camera speed (a SteamVR without the setting unless given), and what "Set 90" came to
+    if (!options.fakeEyeRateMin.empty() && options.fakeEyeRateMin != "none") {
+        char* end = nullptr;
+        const double min = std::strtod(options.fakeEyeRateMin.c_str(), &end);
+        if (end != options.fakeEyeRateMin.c_str() && *end == '\0' && std::isfinite(min)) {
+            m.eyeRate.setting.exists = true;
+            m.eyeRate.setting.min = min;
+        } else {
+            std::fprintf(stderr, "--fake-eye-rate-min: not a number: %s\n", options.fakeEyeRateMin.c_str());
+        }
+    }
+    const double now = nowSeconds();
+    if (options.fakeEyeRateNote == "done") eye_rate::pressed(m.eyeRate, true, now);
+    if (options.fakeEyeRateNote == "refused") eye_rate::pressed(m.eyeRate, false, now);
+    eye_rate::update(m.eyeRate, m.status, now);
     return m;
 }
 
@@ -2312,6 +2520,30 @@ void readSystem(PanelModel& model) {
     model.system.grabHash = grabHash.get(diag::defaultGrabPath());
     model.system.grabUnreadable = grabHash.unreadable();
     model.system.installedHash = installedHash.get(diag::kInstalledGrabPath);
+}
+
+/**
+ * Read SteamVR's eye camera speed (eyeTrackingRateMin) into the model, logged when it changes.
+ * @param model where to put it (eyeRate.setting)
+ * @param vr the connection to SteamVR
+ */
+void readEyeRate(PanelModel& model, const VrOverlay& vr) {
+    eye_rate::Setting setting;
+    double min = NAN;
+    std::string error;
+    if (vr.eyeRateMin(min, error)) {
+        setting.exists = true;
+        setting.min = min;
+    }
+    if (setting != model.eyeRate.setting) {
+        if (setting.exists) {
+            std::fprintf(stderr, "[VR] %s/%s is %.1f\n", eye_rate::kSection, eye_rate::kKey, setting.min);
+        } else {
+            std::fprintf(stderr, "[VR] no %s/%s in this SteamVR (%s)\n", eye_rate::kSection, eye_rate::kKey,
+                         error.c_str());
+        }
+    }
+    model.eyeRate.setting = setting;
 }
 
 void loadHistory(PanelModel& model) {
@@ -2502,6 +2734,25 @@ int runDumpPng(const Options& options) {
         if (AdvPage page; ui_state::parsePage(options.advPage, page)) panel.setAdvPage(page);
         if (LidsPage page; ui_state::parseLidsPage(options.lidsPage, page)) panel.setLidsPage(page);
         if (GazePage page; ui_state::parseGazePage(options.gazePage, page)) panel.setGazePage(page);
+        if (OutputPage page; ui_state::parseOutputPage(options.outputPage, page)) panel.setOutputPage(page);
+        if (!options.extrasFlow.empty()) {
+            panel.setTab(PanelTab::Output);
+            panel.setOutputPage(OutputPage::Apps);
+            // (drawn once first: the list's entries, for a change's)
+            panel.render(model);
+            extras::Draft draft;
+            ExtrasStep step = ExtrasStep::Format;
+            bool confirmDelete = false;
+            parseExtrasFlow(options.extrasFlow, model, draft, step, confirmDelete);
+            panel.openExtrasFlow(step, draft, confirmDelete);
+        }
+        if (options.extrasRowDelete >= 0) {
+            panel.setTab(PanelTab::Output);
+            panel.setOutputPage(OutputPage::Apps);
+            // (drawn once first: the list's rows)
+            panel.render(model);
+            panel.openExtrasRowDelete(options.extrasRowDelete);
+        }
         // The gaze scale's locks as at a start with them left closed: open where the two values differ
         {
             const SettingsView view(model);
@@ -2910,6 +3161,14 @@ std::string statusSignature(const EyeStatus& s) {
                  std::to_string(c.recalibSuggested) + std::to_string(c.used[0]) + std::to_string(c.used[1]) +
                  std::to_string(c.pupilUsed[0]) + std::to_string(c.pupilUsed[1]) + c.error;
     signature += "|" + s.pupilTarget;
+    // The destinations' addresses, tags and refusals (the left column and "Other apps")
+    signature += "|" + std::to_string(s.extrasKnown) + std::to_string(s.lanOnly) + s.net + "|" + s.refused + "|" +
+                 s.pupilNet + "|" + s.pupilRefused;
+    for (const ExtraLive& e : s.extras) {
+        signature += "|" + e.name + "," + std::to_string(e.enabled) + e.format + "," + e.host + ":" +
+                     std::to_string(e.port) + std::to_string(e.sending) + e.target + "," +
+                     e.net + "," + e.refused + "," + e.lastError;
+    }
     signature += "|" + s.configError + "|" + s.sourceError + "|" + s.dominantEye + "|" +
                  (s.opennessSaturated ? "saturated" : "") + "|" + s.configPath + "|" + s.calibrationPath + "|";
     for (const auto& name : s.locked) signature += name + ",";
@@ -2976,7 +3235,7 @@ long long writeCaptureRequest(PanelModel& model, const char* target, double seco
 
 /**
  * Bring an older config.json up to date, once (see migrateLidScales, migrateGazePresets, migrateEyeOffsets,
- * migrateFitPolicy and migrateLidOpenSnap), and read it again.
+ * migrateFitPolicy, migrateLidOpenSnap and migrateRemovedSettings), and read it again.
  * @param model the model (its config is re-read after a write)
  */
 void migrateConfig(PanelModel& model) {
@@ -2986,11 +3245,13 @@ void migrateConfig(PanelModel& model) {
     std::string snapLog;
     std::string eyeLog;
     std::string fitLog;
+    std::string removedLog;
     bool lids = false;
     bool gaze = false;
     bool snap = false;
     bool eyes = false;
     bool fitPolicy = false;
+    bool removed = false;
     std::string error;
     const bool ok = updateConfigFile(
         model.configPath,
@@ -3000,6 +3261,7 @@ void migrateConfig(PanelModel& model) {
             eyes = migrateEyeOffsets(root, eyeLog);
             fitPolicy = migrateFitPolicy(root, fitLog);
             snap = migrateLidOpenSnap(root, snapLog);
+            removed = migrateRemovedSettings(root, removedLog);
         },
         error);
     if (!ok) {
@@ -3020,6 +3282,7 @@ void migrateConfig(PanelModel& model) {
                      fitLog.empty() ? "nothing else was set" : fitLog.c_str());
     }
     if (snap) std::fprintf(stderr, "[config] %s\n", snapLog.c_str());
+    if (removed && !removedLog.empty()) std::fprintf(stderr, "[config] %s\n", removedLog.c_str());
     model.config = readConfigFile(model.configPath);
 }
 
@@ -3360,8 +3623,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         }
         case PanelAction::FitDetails:
         case PanelAction::FitDetailsPage:
-        case PanelAction::HostKey:
-        case PanelAction::HostCancel:
+        case PanelAction::PortEnter:
+        case PanelAction::KeypadKey:
+        case PanelAction::KeypadCancel:
         case PanelAction::HistoryClose:
         case PanelAction::DiagClose:
         case PanelAction::HistoryRow:
@@ -3423,6 +3687,68 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::GazePage:
         case PanelAction::LidsPage:
         case PanelAction::RecordBack: return;  // handled inside the panel
+        case PanelAction::OutputPage:
+        case PanelAction::ExtraAdd:
+        case PanelAction::ExtraEdit:
+        case PanelAction::ExtraCancel:
+        case PanelAction::ExtraStep:
+        case PanelAction::ExtraFormat:
+        case PanelAction::ExtraHost:
+        case PanelAction::ExtraKey:
+        case PanelAction::ExtraPort:
+        case PanelAction::ExtraPortEnter:
+        case PanelAction::ExtraDelete:
+        case PanelAction::ExtraDeleteCancel:
+        case PanelAction::ExtraRowDelete:
+        case PanelAction::ExtraRowDeleteCancel: return;  // handled inside the panel
+        case PanelAction::ExtraSend:
+        case PanelAction::ExtraSave:
+        case PanelAction::ExtraDeleteConfirm:
+        case PanelAction::ExtraRowDeleteConfirm: {
+            // "Other apps": the list changed in place (the other entries, and the keys the panel doesn't know, as they
+            // are). Tried on the file as it is first: an entry gone or changed meanwhile writes nothing
+            if (view.locked(key::kExtraOutputs)) return;
+            const extras::Draft draft = panel.extrasDraft();
+            const PanelAction action = hit.action;
+            const int arg = hit.arg;
+            // (a row's own delete: that row, as it was when its "Delete" was pressed)
+            const std::string rowOriginal = panel.extrasRowDeleteOriginal();
+            const auto apply = [draft, action, arg, rowOriginal](JsonValue& root, std::string& why) {
+                if (action == PanelAction::ExtraSend) return extras::setEnabled(root, arg / 2, arg % 2 == 1, why);
+                if (action == PanelAction::ExtraSave) return extras::applyDraft(root, draft, why);
+                if (action == PanelAction::ExtraRowDeleteConfirm) {
+                    return extras::removeEntry(root, arg, rowOriginal, why);
+                }
+                return extras::removeEntry(root, draft.edit, draft.original, why);
+            };
+            const ConfigFile current = readConfigFile(model.configPath);
+            JsonValue trial = current.exists ? current.root : JsonValue();
+            if (!current.exists) trial.type = JsonValue::Type::Object;
+            std::string why;
+            if (current.error.empty() && !apply(trial, why)) {
+                std::fprintf(stderr, "[action] extra output not written: %s\n", why.c_str());
+                // (a row's question closes: what it asked about isn't there as it was)
+                if (action == PanelAction::ExtraRowDeleteConfirm) panel.closeExtrasFlow();
+                panel.setExtrasError(uiText(model.language).extrasChanged);
+                model.config = readConfigFile(model.configPath);
+                return;
+            }
+            // (entries counted from 1, as config_error does; a new one at the end)
+            const int entry = action == PanelAction::ExtraSend               ? arg / 2 + 1
+                              : action == PanelAction::ExtraRowDeleteConfirm ? arg + 1
+                              : draft.edit >= 0                              ? draft.edit + 1
+                                                               : static_cast<int>(extrasList(model).entries.size()) + 1;
+            std::fprintf(stderr, "[action] extra output %s: entry %d\n",
+                         action == PanelAction::ExtraSend   ? (arg % 2 == 1 ? "on" : "off")
+                         : action == PanelAction::ExtraSave ? (draft.edit < 0 ? "added" : "changed")
+                                                            : "deleted",
+                         entry);
+            change = [apply](JsonValue& root) {
+                std::string ignored;
+                apply(root, ignored);
+            };
+            break;
+        }
         case PanelAction::AppsClose:
         case PanelAction::AppsInstall:
         case PanelAction::AppsMenu:
@@ -3439,6 +3765,21 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::PreviewFreeze: return;  // handled inside the panel; the loop follows previewOpen
         case PanelAction::RecordOpen: openRecordView(model, panel.recordShown()); return;
         case PanelAction::RecordsAll: loadRecords(model); return;
+        case PanelAction::EyeRateSet:
+        case PanelAction::EyeRateChoose: {
+            // SteamVR's own setting (not config.json): "Set 90" and "Always 90 a second" write 90, "Let SteamVR
+            // decide" removes it; read back at once (drawn without SteamVR, only said)
+            const bool full = hit.action == PanelAction::EyeRateSet ||
+                              static_cast<eye_rate::Choice>(hit.arg) == eye_rate::Choice::Full;
+            if (vr == nullptr) {
+                std::printf("eye rate: would %s\n", full ? "set eyeTrackingRateMin to 90" : "remove eyeTrackingRateMin");
+                return;
+            }
+            const bool written = full ? vr->setEyeRateMin(eye_rate::kFull) : vr->clearEyeRateMin();
+            if (hit.action == PanelAction::EyeRateSet) eye_rate::pressed(model.eyeRate, written, nowSeconds());
+            readEyeRate(model, *vr);
+            return;
+        }
         case PanelAction::DiagOpen:
             readSystem(model);
             std::fprintf(stderr, "[diag] opened: %s\n", diag::code(model).c_str());
@@ -3450,16 +3791,18 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             panel.openHostEntry(ip ? host : "");
             return;
         }
-        case PanelAction::HostOk: {
-            const std::string host = panel.hostEntryText();
+        case PanelAction::KeypadOk: {
+            // (only the target PC's comes here: a port's is checked in the panel and comes as SetInteger)
+            if (panel.keypadFor() != KeypadFor::Host) return;
+            const std::string host = panel.keypadText();
             const host_entry::HostError problem = host_entry::checkHost(host);
             if (problem != host_entry::HostError::None) {
                 std::fprintf(stderr, "[action] typed host \"%s\" can't be used (%d)\n", host.c_str(),
                              static_cast<int>(problem));
-                panel.setHostEntryError(hostErrorText(uiText(model.language), problem));
+                panel.setKeypadError(hostErrorText(uiText(model.language), problem));
                 return;
             }
-            panel.closeHostEntry();
+            panel.closeKeypad();
             std::fprintf(stderr, "[action] host typed: %s\n", host.c_str());
             change = [host](JsonValue& root) { root.set(key::kHost, JsonValue::makeString(host)); };
             break;
@@ -3623,6 +3966,11 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         model.panelError.clear();
         model.panelErrorBroken = false;
         if (!openPrompt.empty()) panel.showPrompt(openPrompt);
+        // "Other apps": written, back to the list
+        if (hit.action == PanelAction::ExtraSave || hit.action == PanelAction::ExtraDeleteConfirm ||
+            hit.action == PanelAction::ExtraRowDeleteConfirm) {
+            panel.closeExtrasFlow();
+        }
         // The eye fit starts over: the up gains of the fits before don't count any more (not in --dump-png)
         if (hit.action == PanelAction::FitReset && fit != nullptr) {
             std::string stateError;
@@ -3932,6 +4280,8 @@ int runOverlay(const Options& options) {
     panel.setLidsPage(savedLidsPage);
     GazePage savedGazePage = ui_state::readGazePage(uiStatePath);
     panel.setGazePage(savedGazePage);
+    OutputPage savedOutputPage = ui_state::readOutputPage(uiStatePath);
+    panel.setOutputPage(savedOutputPage);
     // The gaze scale's locks as left, but open where the two values differ (a closed lock means they are the same)
     bool savedLinks[2] = {true, true};
     ui_state::readGazeScaleLinks(uiStatePath, savedLinks);
@@ -4106,6 +4456,8 @@ int runOverlay(const Options& options) {
     uint64_t drawnUpdate = 0;
     std::string lastSignature;
     std::string drawnDiag;          // what the diagnostics page showed last
+    std::string drawnEyeRate;       // SteamVR's eye camera speed and the left column's line about it, as drawn last
+    double lastEyeRateRead = -1e9;
     std::string drawnCode;          // the diagnostic code the Advanced tab showed last
     double lastDiagRead = -1e9;
     std::string lastStamp = configStamp(model.configPath);
@@ -4204,6 +4556,17 @@ int runOverlay(const Options& options) {
                 model.moduleLinkError.clear();
                 dirty = true;
             }
+        }
+        // SteamVR's eye camera speed, read every few seconds while the panel shows (it can be changed elsewhere); the
+        // left column's line about it follows the status and the time ("Set 90"'s confirmation, then its check)
+        if (visible && nowSeconds() >= lastEyeRateRead + eye_rate::kReadSec) {
+            lastEyeRateRead = nowSeconds();
+            readEyeRate(model, vr);
+        }
+        eye_rate::update(model.eyeRate, model.status, nowSeconds());
+        if (const std::string rate = eye_rate::signature(model.eyeRate); rate != drawnEyeRate) {
+            drawnEyeRate = rate;
+            dirty = true;
         }
 
         bool pointerDirty = false;  // the pointer changed something on the panel (hover, a press)
@@ -5017,6 +5380,14 @@ int runOverlay(const Options& options) {
                 std::fprintf(stderr, "[panel] %s\n", error.c_str());
             }
         }
+        // ...and the Output tab's
+        if (panel.outputPage() != savedOutputPage) {
+            savedOutputPage = panel.outputPage();
+            std::string error;
+            if (!ui_state::writeOutputPage(uiStatePath, savedOutputPage, error)) {
+                std::fprintf(stderr, "[panel] %s\n", error.c_str());
+            }
+        }
         // ...and the gaze scale's locks
         if (panel.gazeScaleLinked(0) != savedLinks[0] || panel.gazeScaleLinked(1) != savedLinks[1]) {
             savedLinks[0] = panel.gazeScaleLinked(0);
@@ -5071,9 +5442,9 @@ int runOverlay(const Options& options) {
                 vr.logOverlayState("after the first draw");
             }
         }
-        // The IP keypad and the eye capture's light warning don't stay open behind a closed dashboard
+        // The keypad (IP or port) and the eye capture's light warning don't stay open behind a closed dashboard
         if (!visible && wasVisible) {
-            panel.closeHostEntry();
+            panel.closeKeypad();
             // ...nor the eye preview (its pictures stop with it)
             panel.closePreview();
             panel.closeEyecamConfirm();

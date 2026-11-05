@@ -48,6 +48,8 @@ add_executable(frameeyeosc-panel
   src/draw.cpp
   src/eyecam.cpp
   src/eye_preview.cpp
+  src/extras.cpp
+  src/eye_rate.cpp
   src/gaze_dots.cpp
   src/gaze_fit.cpp
   src/fit_text.cpp
@@ -142,10 +144,17 @@ target_include_directories(recorder-test PRIVATE src)
 target_compile_options(recorder-test PRIVATE -Wall -Wextra)
 add_test(NAME recorder COMMAND recorder-test)
 
+# SteamVR's eye camera speed (eye_rate.{h,cpp}: when the left column offers "Set 90", the confirmation and "not taken"
+# after it, "Having trouble"'s choice), without OpenVR: panel/build/eye-rate-test
+add_executable(eye-rate-test tests/eye_rate_test.cpp src/eye_rate.cpp src/status.cpp src/json.cpp)
+target_include_directories(eye-rate-test PRIVATE src)
+target_compile_options(eye-rate-test PRIVATE -Wall -Wextra)
+add_test(NAME eye-rate COMMAND eye-rate-test)
+
 # The shared rules: what an eye fit writes and "Reset" clears, the re-wear fit auto_recenter asks for, the output
 # cards' arguments: panel/build/model-test
 add_executable(model-test tests/model_test.cpp src/model.cpp src/config.cpp src/json.cpp src/gaze_fit.cpp
-  src/status.cpp ${FRAME_UPDATER_DIR}/cpp/update_check.cpp)
+  src/status.cpp src/extras.cpp src/host_entry.cpp ${FRAME_UPDATER_DIR}/cpp/update_check.cpp)
 target_include_directories(model-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_options(model-test PRIVATE -Wall -Wextra)
 add_test(NAME model COMMAND model-test)
@@ -162,6 +171,8 @@ add_executable(panel-test tests/panel_test.cpp
   src/draw.cpp
   src/eyecam.cpp
   src/eye_preview.cpp
+  src/extras.cpp
+  src/eye_rate.cpp
   src/fit_text.cpp
   src/gaze_fit.cpp
   src/host_entry.cpp
@@ -239,7 +250,7 @@ add_test(NAME stored COMMAND stored-test)
 # The diagnostics page's texts and code (diag.{h,cpp}: the cards, the diagnostic code, SteamOS's version, SHA-256),
 # without cairo: panel/build/diag-test
 add_executable(diag-test tests/diag_test.cpp src/diag.cpp src/eyecam.cpp src/i18n.cpp src/json.cpp src/status.cpp
-  src/model.cpp src/config.cpp src/gaze_fit.cpp src/setup_tools.cpp src/recorder.cpp
+  src/model.cpp src/config.cpp src/gaze_fit.cpp src/setup_tools.cpp src/recorder.cpp src/extras.cpp src/host_entry.cpp
   ${FRAME_UPDATER_DIR}/cpp/update_check.cpp)
 target_include_directories(diag-test PRIVATE src ${FRAME_UPDATER_DIR}/cpp ${FRAME_APPS_DIR}/cpp)
 target_compile_options(diag-test PRIVATE -Wall -Wextra)

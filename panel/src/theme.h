@@ -50,6 +50,8 @@ constexpr Color kAccentTint = blendColor(kAccent, kCard, kAccentTintAlpha);  ///
 constexpr Color kSnap = hexColor(0x79c0ff);
 /** Mark ③ for an eye the cameras supply (it doesn't apply there): the blue sunk into the card */
 constexpr Color kSnapFaded = blendColor(kSnap, kCard, 0.4);
+/** The VPN tag after an address (100.64/10): the blue on its own tint */
+constexpr Color kVpnTint = blendColor(kSnap, kCard, 0.15);
 // ---- States (never by color alone; there is always a symbol or a word) ----
 /** The debug gaze dots: combined, left eye (light cyan) and right eye (a darker orange), told apart by lightness too */
 constexpr Color kDotBoth = hexColor(0xe6edf3);
@@ -63,10 +65,9 @@ constexpr Color kDanger = hexColor(0xf85149);     ///< errors, not running
 constexpr Color kDangerTint = blendColor(kDanger, kCard, 0.15);
 constexpr Color kDangerSoft = hexColor(0xff8a8a); ///< red text on the red tint (kDanger is only 4.4:1 there)
 constexpr Color kQuitFill = blendColor(kDanger, kCard, 0.12);  ///< quit / reset buttons (quiet)
-constexpr Color kWarning = hexColor(0xf0b45a);      ///< something to act on soon (the ETVR notice's edge and mark)
+constexpr Color kWarning = hexColor(0xf0b45a);      ///< something to act on soon (a warning box's edge and mark)
 constexpr Color kWarningTint = blendColor(kWarning, kCard, 0.12);
 constexpr Color kWarningText = hexColor(0xf6d6a8);  ///< text on the warning tint
-constexpr Color kWarningTextSoft = hexColor(0xd9c7ab);
 // ---- The eye preview: its drawn eyes, and the marks on the eye cameras' pictures ----
 constexpr Color kEyeLid = hexColor(0x3d444d);       ///< the drawn lids (skin) above and below the open eye
 constexpr Color kEyeWhite = hexColor(0xd8dee4);     ///< the white of the drawn eye

@@ -2,9 +2,11 @@
 
 mod capture;
 mod config;
+mod dest;
 mod dots;
 mod eyecam_ctl;
 mod eyecam_live;
+mod extras;
 mod feo;
 mod livelink;
 mod osc;
@@ -41,8 +43,6 @@ const REOPEN_INTERVAL: Duration = Duration::from_secs(1);
 const POLL: Duration = Duration::from_millis(100);
 // The status file's send rate counts the samples sent within this window.
 const RATE_WINDOW: Duration = Duration::from_secs(1);
-// Relaxed open is 0.75 in VRCFT units but 1.0 for the ETVR Tracking Module, which does not widen by default.
-const ETVR_LID_SCALE: f32 = 1.0 / 0.75;
 // While sending to VRCFT's LiveLink module without eye data, a neutral packet this often: the module logs "connection
 // lost" after a second without packets, and only starts if one arrives within 180 s of VRCFT loading it.
 const LIVELINK_IDLE_INTERVAL: Duration = Duration::from_millis(500);
@@ -577,8 +577,8 @@ fn shm_layout(version: u32) -> Result<ShmLayout, String> {
 #[derive(Parser)]
 #[command(about = "Send Steam Frame eye tracking from shared memory over OSC")]
 struct Args {
-    /// What to send: VRChat avatar parameters, VRCFaceTracking's ETVR Tracking Module format, Live Link Face
-    /// packets for VRCFaceTracking's LiveLink module, or FEO1 packets for VRCFaceTracking's FrameEyeOSC module
+    /// What to send: VRChat avatar parameters, Live Link Face packets for VRCFaceTracking's LiveLink module, or FEO1
+    /// packets for VRCFaceTracking's FrameEyeOSC module
     #[arg(long, value_enum, default_value_t = OutputKind::Vrchat)]
     output: OutputKind,
     /// How EyeTrackingActive is sent in VRChat mode: a bool, a float (1.0 / 0.0; some avatars
@@ -619,13 +619,24 @@ struct Args {
     /// OSC destination as HOST:PORT, or "auto" for the PC that Steam Link is streaming from
     #[arg(long, default_value = "auto")]
     target: String,
-    /// OSC port used with --target auto [default: 9000 for vrchat, 8889 for etvr, 11111 for livelink, 11112 for
-    /// frameeyeosc]
+    /// OSC port used with --target auto [default: 9000 for vrchat, 11111 for livelink, 11112 for frameeyeosc]
     #[arg(long)]
     port: Option<u16>,
     /// Parameter name prefix; "" or "/" for none
     #[arg(long, default_value = "/FT")]
     prefix: String,
+    /// Also send to addresses outside the home network (public ones), for every destination; by default they are
+    /// refused
+    #[arg(long)]
+    no_lan_only: bool,
+    /// Also send to another app: FORMAT feo1 (FrameEyeOSC packets) or osc (VRChat's /tracking/eye/CenterVec and
+    /// EyesClosedAmount, and VRCFT's v2 avatar parameters under /FT), HOST an IP address, a host name, "main" (the main
+    /// output's host) or "auto" (the Steam Link PC). Up to 3 times; replaces config.json's extra_outputs
+    #[arg(long, value_name = "FORMAT@HOST:PORT", conflicts_with = "no_extras")]
+    extra: Vec<String>,
+    /// Send to no other app, whatever config.json's extra_outputs says
+    #[arg(long)]
+    no_extras: bool,
     /// Send unsmoothed values (eyelid remapping still applies)
     #[arg(long)]
     raw: bool,
@@ -646,20 +657,18 @@ struct Args {
     #[arg(long, default_value_t = 0.5)]
     gaze_hold_below: f32,
     /// Turn the eyes in a little toward each other (about 2 m away) instead of sending the combined gaze for both eyes;
-    /// each keeps its own up / down (the Frame's own per-eye sideways gaze is too unsteady to send). With
-    /// --eye-behavior 1, each eye's own gaze as the Frame reads it
+    /// each keeps its own up / down (the Frame's own per-eye sideways gaze is too unsteady to send)
     #[arg(long)]
     independent_eyes: bool,
     /// With --independent-eyes, how much of each eye's own sideways gaze goes out, 0..1: 0 the eyes turned in as above,
     /// 1 each eye's sideways gaze as the Frame reads it (unsteady); between, that far from one to the other. Eyelids,
-    /// smoothing and holding stay as they are. Not with --eye-behavior 1, which sends each eye's own gaze anyway
+    /// smoothing and holding stay as they are
     #[arg(long, default_value_t = 0.0)]
     own_eye_gaze: f32,
-    /// How the eyes move: 2 (the default) as now; 1 as up to 0.7.5 (each eye's own gaze with --independent-eyes, no
-    /// cross-eye gate, and none of the eyelid rules added since: the eye camera only widens, nothing eases nearly open
-    /// eyelids up, no --camera-lid-floor or --lid-open-snap)
-    #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u8).range(1..=2))]
-    eye_behavior: u8,
+    /// Removed in 0.10 (1 was the eyes as up to 0.7.5; they always move as with 2 now). Still taken, and not shown, so
+    /// a command line from before starts; 1 is logged (config::V1_REMOVED)
+    #[arg(long, hide = true, value_parser = clap::value_parser!(u8).range(1..=2))]
+    eye_behavior: Option<u8>,
     /// One Euro minimum cutoff in Hz for eyelids
     #[arg(long, default_value_t = 6.0)]
     lid_min_cutoff: f32,
@@ -1188,29 +1197,15 @@ impl Smoother {
         self.brows = BrowRaise::default();
     }
 
-    /// Start over what only --eye-behavior 2 keeps (the camera's eyelid's doubt and gaps, the ceiling rule, the
-    /// cross-eye gate but for what the wear reads, the camera's held-back "closed"), for a switch between it and 1; the
-    /// filters go on, so the eyes don't jump.
-    fn reset_behavior(&mut self) {
-        self.lid_doubt = [LidDoubt::default(); 2];
-        self.ceiling_since = [None; 2];
-        self.cross_eye.restart();
-        self.camera_gap = [CameraGap::default(); 2];
-        self.side = SideCheck::default();
-        self.raise_peak = RaisePeak::default();
-        self.close_gate = CloseGate::default();
-    }
-
     /// The camera's eyelids with a "closed" in one eye that is not yet a blink or a wink held back (see CloseGate), and
-    /// which eyes that held back; as they are with --eye-behavior 1 (which leaves the camera's "closed" alone) or
-    /// camera_close_gate off.
+    /// which eyes that held back; as they are with camera_close_gate off.
     fn gate_closed(
         &mut self,
         settings: &Settings,
         data: &EyeData,
         lids: [Option<CameraLid>; 2],
     ) -> ([Option<CameraLid>; 2], [bool; 2]) {
-        if settings.v2() && settings.camera_close_gate {
+        if settings.camera_close_gate {
             let pitch = gaze_angles(data.fixation_point)[1] * 45.0;
             self.close_gate.check(data.sample_time, lids, data.openness, pitch)
         } else {
@@ -1480,7 +1475,7 @@ struct CrossEye {
 }
 
 impl CrossEye {
-    /// Start over (after a gap in the samples, or a switch of --eye-behavior), keeping what this wear reads.
+    /// Start over (after a gap in the samples), keeping what this wear reads.
     fn restart(&mut self) {
         *self = CrossEye {
             level: std::mem::take(&mut self.level),
@@ -2025,15 +2020,6 @@ fn mix_lid(valve: f32, camera: Option<f32>) -> f32 {
     mix_lid_by(valve, valve, camera)
 }
 
-/// mix_lid as it was up to 0.7.5, for --eye-behavior 1: from relaxed open up, the camera's eyelid, kept at relaxed open
-/// or above; below it, the eye server's.
-fn mix_lid_v1(valve: f32, camera: Option<f32>) -> f32 {
-    match camera {
-        Some(camera) if valve >= LID_RELAXED => camera.clamp(LID_RELAXED, 1.0),
-        _ => valve,
-    }
-}
-
 /// mix_lid with the eye server's side of camera_widen_share going by `read` instead of `valve`: for an eyelid
 /// raised_to_camera raised, the eyelid before that, so the raising doesn't let all of the camera's widening through
 /// where the eye server read the eye well below relaxed open (on 2026-10-08 22:20, 2 of the right eye's 16% of samples
@@ -2393,6 +2379,7 @@ fn fitted_lid(openness: f32, vertical: f32, fit: &LidFit, settings: &Settings) -
 ///
 /// An eye without an eye fit keeps the lid marks: its raw openness times its scale, widening between
 /// --lid-widen-start and --lid-wide (--lid-widen does not apply, having no measured open reading to start from).
+#[cfg(test)]
 fn lid_inputs(openness: [f32; 2], vertical: f32, scales: [f32; 2], settings: &Settings) -> [f32; 2] {
     lid_inputs_with(openness, vertical, scales, settings, settings.lid_fit())
 }
@@ -2483,18 +2470,15 @@ fn gaze_quality(data: &EyeData, limit: f32) -> [bool; 2] {
 /// Each eye wobbles on its own (L/R changes correlate only ~0.35), so both share the combined gaze
 /// unless --independent-eyes is given. An eye with unreliable gaze is left out of the combined gaze and the other eye
 /// stands in for it. With --independent-eyes each eye looks the combined way, turned in by half of VERGENCE_DEG (the
-/// Frame's own per-eye x is no good for that), and keeps its own up / down; an unreliable eye takes the other's. With
-/// --eye-behavior 1 (`v2` false), each eye's own gaze as it is, as up to 0.7.5 (an unreliable one is held instead).
-fn choose_gaze(angles: [f32; 6], reliable: [bool; 2], independent: bool, v2: bool) -> [f32; 6] {
+/// Frame's own per-eye x is no good for that), and keeps its own up / down; an unreliable eye takes the other's.
+fn choose_gaze(angles: [f32; 6], reliable: [bool; 2], independent: bool) -> [f32; 6] {
     let [left_x, left_y, right_x, right_y, x, y] = angles;
     let [x, y] = match reliable {
         [true, false] => [left_x, left_y],
         [false, true] => [right_x, right_y],
         _ => [x, y],
     };
-    if independent && !v2 {
-        [left_x, left_y, right_x, right_y, x, y]
-    } else if independent {
+    if independent {
         let [left_y, right_y] = match reliable {
             [true, false] => [left_y, left_y],
             [false, true] => [right_y, right_y],
@@ -2507,7 +2491,7 @@ fn choose_gaze(angles: [f32; 6], reliable: [bool; 2], independent: bool, v2: boo
     }
 }
 
-/// With --independent-eyes (`gaze` from choose_gaze with --eye-behavior 2), each eye's sideways gaze moved `own` of the
+/// With --independent-eyes (`gaze` from choose_gaze), each eye's sideways gaze moved `own` of the
 /// way (--own-eye-gaze) to its own as Valve reads it in `angles`; an eye that isn't `usable` takes the other's, as in
 /// choose_gaze. Up / down and the combined gaze are left as they are, and 0 leaves everything exactly as it is.
 fn own_eye_gaze(gaze: [f32; 6], angles: [f32; 6], usable: [bool; 2], own: f32) -> [f32; 6] {
@@ -2545,11 +2529,6 @@ fn lid_to_vrcft(openness: f32, settings: &Settings) -> f32 {
     } else {
         0.75
     }
-}
-
-/// The ETVR Tracking Module treats 1.0 as a relaxed open eye, so widening is cut off there.
-fn lid_to_etvr(vrcft: f32) -> f32 {
-    (vrcft * ETVR_LID_SCALE).clamp(0.0, 1.0)
 }
 
 struct EyeSource {
@@ -3109,6 +3088,16 @@ struct Output {
     resolve_error: Option<String>,
     // The OSC message being sent, its buffer kept from one message to the next.
     packet: Vec<u8>,
+    // lan_only: a fixed host outside the home network table is refused (see dest). The Steam Link PC is only warned
+    // about (its addresses over the wireless adapter are not checked yet).
+    lan_only: bool,
+    // Why the target is not sent to (dest::refusal, or "broadcast refused"), while it is refused; logged once each.
+    refused: Option<&'static str>,
+    // The Steam Link PC warned about being outside the table, so each address is logged once.
+    warned: Option<IpAddr>,
+    // Said after the address in the log lines of a sender other than the main output ("" for the main one, whose lines
+    // stay as they were).
+    label: String,
 }
 
 impl Output {
@@ -3124,6 +3113,10 @@ impl Output {
             connect_error: None,
             resolve_error: None,
             packet: Vec::new(),
+            lan_only: true,
+            refused: None,
+            warned: None,
+            label: String::new(),
         }
     }
 
@@ -3133,6 +3126,35 @@ impl Output {
             self.target = target;
             self.last_resolve = None;
         }
+    }
+
+    /// Take the lan_only setting; a change looks the target up again at the next refresh, so a public address is
+    /// refused or allowed at once.
+    fn set_lan_only(&mut self, lan_only: bool) {
+        if lan_only != self.lan_only {
+            self.lan_only = lan_only;
+            self.last_resolve = None;
+        }
+    }
+
+    /// The kind of address the target is (see dest), while there is one to send to.
+    fn net(&self) -> Option<dest::Net> {
+        self.addr().map(|addr| dest::classify(addr.ip()))
+    }
+
+    /// What keeps the target from being sent to, if anything, short (for status.json): it can't be looked up or
+    /// connected to, there is no Steam Link PC, or sending fails. A refused address is in `refused` instead.
+    fn problem(&self) -> Option<String> {
+        if let Some(reason) = &self.resolve_error {
+            return Some(format!("could not resolve: {reason}"));
+        }
+        if let Some(reason) = &self.connect_error {
+            return Some(format!("can't send yet: {reason}"));
+        }
+        if self.socket.is_none() && self.refused.is_none() && matches!(self.target, Target::SteamLink { .. }) {
+            return Some("no Steam Link".into());
+        }
+        self.health.failing.as_ref().map(|reason| format!("sending failed: {reason}"))
     }
 
     /// Look the target up again, and check the route to it, when due. Never fails: without a network the socket
@@ -3158,13 +3180,36 @@ impl Output {
     /// Look the target up and connect to it if it moved.
     fn look_up(&mut self, now: Instant) {
         self.last_resolve = Some(now);
+        let label = &self.label;
         let wanted = match &self.target {
             Target::Fixed { host, port } => match (host.as_str(), *port).to_socket_addrs() {
-                Ok(mut addrs) => {
+                Ok(addrs) => {
                     if self.resolve_error.take().is_some() {
                         eprintln!("Resolved {host} again");
                     }
-                    addrs.next()
+                    // The first address the home network table allows (in the order looked up), checked at every look-up
+                    match dest::pick(addrs, self.lan_only) {
+                        Ok((addr, _)) => {
+                            self.refused = None;
+                            Some(addr)
+                        }
+                        Err(None) => None,
+                        Err(Some(reason)) => {
+                            if self.refused != Some(reason) {
+                                let hint = if reason == "public address" {
+                                    " outside the home network, and lan_only is on"
+                                } else {
+                                    ""
+                                };
+                                status::log_error(&format!(
+                                    "Not sending to {host}:{port}{label}: {reason}{hint}; checking again every {} s",
+                                    RESOLVE_INTERVAL.as_secs()
+                                ));
+                                self.refused = Some(reason);
+                            }
+                            None
+                        }
+                    }
                 }
                 Err(error) => {
                     let reason = error.to_string();
@@ -3178,7 +3223,20 @@ impl Output {
                     None
                 }
             },
-            Target::SteamLink { port } => steam_link_peer().map(|ip| SocketAddr::new(ip, *port)),
+            Target::SteamLink { port } => {
+                let peer = steam_link_peer();
+                // Only warned about, never refused, until the addresses Steam Link uses over its wireless adapter and
+                // Wi-Fi have been checked on hardware
+                let outside = |ip: &IpAddr| !matches!(dest::classify(*ip), dest::Net::Lan | dest::Net::Vpn);
+                if let Some(ip) = peer.filter(outside)
+                    && self.warned != Some(ip)
+                {
+                    eprintln!("The Steam Link PC {ip}{label} is outside the home network ranges; sending to it anyway");
+                    self.warned = Some(ip);
+                }
+                self.refused = None;
+                peer.map(|ip| SocketAddr::new(ip, *port))
+            }
         };
         if wanted == self.socket.as_ref().map(|(_, addr)| *addr) {
             return;
@@ -3186,8 +3244,9 @@ impl Output {
         self.socket = match wanted {
             Some(addr) => match connect(addr) {
                 Ok(socket) => {
-                    eprintln!("Sending OSC to {addr}");
+                    eprintln!("Sending OSC to {addr}{}", self.label);
                     self.connect_error = None;
+                    self.refused = None;
                     self.health = SendHealth::default();
                     // A new socket starts from the current route
                     self.last_route_check = Some(now);
@@ -3195,11 +3254,25 @@ impl Output {
                     Some((socket, addr))
                 }
                 // e.g. "Network is unreachable" while Wi-Fi comes up after boot
+                // Sockets never set SO_BROADCAST, so the system refuses a subnet's broadcast address
+                Err(error) if error.raw_os_error() == Some(libc::EACCES) => {
+                    if self.refused != Some("broadcast refused") {
+                        status::log_error(&format!(
+                            "Not sending to {addr}{}: broadcast refused ({error}); checking again every {} s",
+                            self.label,
+                            RESOLVE_INTERVAL.as_secs()
+                        ));
+                        self.refused = Some("broadcast refused");
+                    }
+                    self.connect_error = None;
+                    None
+                }
                 Err(error) => {
                     let reason = error.to_string();
                     if self.connect_error.as_ref() != Some(&reason) {
                         status::log_error(&format!(
-                            "Can't send OSC to {addr} yet ({reason}); retrying every {} s",
+                            "Can't send OSC to {addr}{} yet ({reason}); retrying every {} s",
+                            self.label,
                             RESOLVE_INTERVAL.as_secs()
                         ));
                         self.connect_error = Some(reason);
@@ -3208,7 +3281,7 @@ impl Output {
                 }
             },
             None if matches!(self.target, Target::SteamLink { .. }) => {
-                status::log_error("No Steam Link connection found; waiting for one");
+                status::log_error(&format!("No Steam Link connection found{}; waiting for one", self.label));
                 None
             }
             None => None,
@@ -3332,8 +3405,22 @@ fn per_second(times: &VecDeque<Instant>) -> f32 {
 
 /// A UDP socket connected to `addr` (connecting only sets where packets go; it fails without a route). It never
 /// blocks: a datagram the network can't take at once is dropped (see Drops) rather than holding up the eye data.
+/// It is never read, so its receive buffer is the smallest the system allows (asking for 0 gives that), and it never
+/// sets SO_BROADCAST.
 fn connect(addr: SocketAddr) -> io::Result<UdpSocket> {
     let socket = UdpSocket::bind(if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })?;
+    let zero: libc::c_int = 0;
+    // SAFETY: the option value is a c_int that outlives the call, and the descriptor is the socket's own. A failure
+    // only leaves the default buffer.
+    unsafe {
+        libc::setsockopt(
+            std::os::fd::AsRawFd::as_raw_fd(&socket),
+            libc::SOL_SOCKET,
+            libc::SO_RCVBUF,
+            (&raw const zero).cast(),
+            size_of::<libc::c_int>() as libc::socklen_t,
+        );
+    }
     socket.connect(addr)?;
     socket.set_nonblocking(true)?;
     Ok(socket)
@@ -3414,7 +3501,8 @@ fn parse_proc_ip(hex: &str) -> Option<IpAddr> {
     }
 }
 
-// Like Steam Link's OSC sender, ±45° maps to ±1; +Y is up (VRCFT convention, unverified on hardware).
+// Like Steam Link's OSC sender, ±45° maps to ±1; +Y is up (VRCFT convention; checked on hardware 2026-11-03:
+// looking up turns an avatar's eyes up through VRCFT, and through VRChat's own /tracking/eye/CenterVec too).
 fn gaze_angles([x, y, z]: [f32; 3]) -> [f32; 2] {
     let scale = 4.0 / std::f32::consts::PI;
     [
@@ -3458,10 +3546,10 @@ fn correct_gaze(angles: [f32; 6], settings: &Settings) -> [f32; 6] {
 /// combined x/y): looking left (x below 0) goes `gaze_scale_left` times as far from the fitted zero point, and so on.
 ///
 /// Where: on the shared (combined) direction, once everything else is done (after the filters and, with
-/// --independent-eyes in v2, after the cross-eye gate), in both eye behaviours. The combined x/y is scaled, and each
-/// eye moves by the same amount, so whatever separates the eyes stays as it was: v2's fixed VERGENCE_DEG and an
-/// intentional cross-eye let through, v1's per-eye readings (an eye held while unreliable moves with the combined
-/// gaze), and each eye's own up / down. After the filters, so they (the deadzone, how fast the One Euro filter
+/// --independent-eyes, after the cross-eye gate). The combined x/y is scaled, and each eye moves by the same amount, so
+/// whatever separates the eyes stays as it was: the fixed VERGENCE_DEG, an intentional cross-eye let through, each
+/// eye's own share (--own-eye-gaze) and each eye's own up / down. After the filters, so they (the deadzone, how fast
+/// the One Euro filter
 /// loosens) and the eyelid fit's look up / down (`vertical`, taken before this) behave the same whatever the scale; a
 /// gaze capture reads the raw gaze, so the eye fit never sees it either.
 ///
@@ -3548,8 +3636,8 @@ impl Sample {
 /// A sample's copy for the panel (its gaze dots and eye preview; dots.rs): the gaze as sent, before smoothing and before
 /// the user's gaze scale (with whether that scale is in use: not 1 on all sides), and
 /// each eye's eyelid as sent, Valve's openness, squint and pupil as sent, and the eye camera's own values as read for it
-/// (`camera`; NaN for an eye without fresh ones), and the brows as sent (brow_from_widen; none while the output takes
-/// none: ETVR). Only for display: nothing here goes to VRChat or VRCFT.
+/// (`camera`; NaN for an eye without fresh ones), and the brows as sent (brow_from_widen). Only for display: nothing
+/// here goes to VRChat or VRCFT.
 fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Option<&Live>) -> dots::DotSample {
     let nan = f32::NAN;
     dots::DotSample {
@@ -3575,7 +3663,7 @@ fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Opti
                 camera_closed: seen.is_some_and(|seen| seen.closed),
             }
         }),
-        brows: sample.brows.filter(|_| settings.output != OutputKind::Etvr),
+        brows: sample.brows,
     }
 }
 
@@ -3638,30 +3726,23 @@ fn process(
     let raw_gaze = [left[0], left[1], right[0], right[1], x, y];
     let reliable = gaze_quality(data, settings.gaze_quality_limit);
     let blink_stages = settings.blink_hold_ms > 0.0 || settings.blink_sync_below > 0.0;
-    // --eye-behavior 1 is 0.7.5's processing: each eye's own gaze, and of the eyelid rules since, none (no nearly open
-    // easing or far-down slope, the camera only for widening, no floor, no ceiling rule, no shared widening)
-    let v2 = settings.v2();
     let mut cross_eye = false;
     let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows) = if settings.raw {
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
-        let camera_lids = side_checked(smoother, data, camera_lids, v2, settings.camera_closed_doubt);
+        let camera_lids = side_checked(smoother, data, camera_lids, settings.camera_closed_doubt);
         let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
         let corrected = correct_gaze(raw_gaze, settings);
-        let unscaled_gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes, v2);
-        let unscaled_gaze = if settings.independent_eyes && v2 {
+        let unscaled_gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes);
+        let unscaled_gaze = if settings.independent_eyes {
             own_eye_gaze(unscaled_gaze, corrected, [true; 2], settings.own_eye_gaze)
         } else {
             unscaled_gaze
         };
         let gaze = scale_gaze(unscaled_gaze, settings);
-        let zoned = camera_lids.map(|camera| v2 && camera.is_none());
+        let zoned = camera_lids.map(|camera| camera.is_none());
         let fits = fits_at(settings, corrected[5], zoned);
         let openness_scaled = lid_inputs_with(data.openness, corrected[5], scales, settings, fits);
-        let mapped = if v2 {
-            snapped_lids(data.openness, corrected[5], scales, settings, fits, zoned)
-        } else {
-            openness_scaled.map(|openness| lid_to_vrcft(openness, settings))
-        };
+        let mapped = snapped_lids(data.openness, corrected[5], scales, settings, fits, zoned);
         let valve = mapped;
         // Without the timed stages, the camera's eyelid does not take over from a closing eye server's (that waits
         // longer than a blink); an eye it sees closed still closes, and one it sees open while the eye server does
@@ -3670,9 +3751,9 @@ fn process(
         let floor = settings.camera_lid_floor;
         let line = doubt_line(settings);
         let floored = [0, 1].map(|eye| {
-            v2 && floor > 0.0 && camera_lids[eye].is_some_and(|camera| !camera.closed && mapped[eye] >= line)
+            floor > 0.0 && camera_lids[eye].is_some_and(|camera| !camera.closed && mapped[eye] >= line)
         });
-        let mapped = [0, 1].map(|eye| match camera_lids[eye].filter(|_| v2) {
+        let mapped = [0, 1].map(|eye| match camera_lids[eye] {
             Some(camera) if camera.closed => {
                 if mapped[eye] > 0.0 {
                     lid_from[eye] = LidFrom::CameraClosed;
@@ -3689,7 +3770,7 @@ fn process(
             None => mapped[eye],
         });
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
-        let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from, v2);
+        let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from);
         let shut = sync_blinks(mapped.map(|lid| lid <= 0.0), mapped, settings.blink_sync_below);
         // The brows go by the eyelids before the cap below (brow_from_widen)
         let before_cap = mixed;
@@ -3708,13 +3789,12 @@ fn process(
         let dt = smoother.advance(data.sample_time);
         // After advance(), which starts the smoothing over after a gap
         let (camera_lids, camera) = smoother.camera.take(settings, camera, true);
-        let camera_lids = side_checked(smoother, data, camera_lids, v2, settings.camera_closed_doubt);
+        let camera_lids = side_checked(smoother, data, camera_lids, settings.camera_closed_doubt);
         // A "closed" in one eye that is not a blink or a wink yet: the camera's last open eyelid (see CloseGate)
         let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
-        let raise_to = if v2 { smoother.raise_peak.step(data.sample_time, data.openness, camera_lids) } else { [None; 2] };
-        // With --eye-behavior 2 short gaps in the camera's eyelid are bridged (see CAMERA_GAP_HOLD)
-        let (camera_lids, held) =
-            if v2 { smoother.steady_camera(data.sample_time, camera_lids) } else { (camera_lids, [None; 2]) };
+        let raise_to = smoother.raise_peak.step(data.sample_time, data.openness, camera_lids);
+        // Short gaps in the camera's eyelid are bridged (see CAMERA_GAP_HOLD)
+        let (camera_lids, held) = smoother.steady_camera(data.sample_time, camera_lids);
         // Before anything else, so the filters see the gaze the way it will be sent. An eye read alone below
         // --gaze-hold-below for longer than a wink counts as unreliable instead (ONE_EYE_HOLD_MAX_S)
         let doubted = smoother.doubt_one_low_eye(data.sample_time, data.openness, settings.gaze_hold_below);
@@ -3732,23 +3812,14 @@ fn process(
         let readings = if settings.despike { despiked } else { readings };
         let angles: [f32; 6] = std::array::from_fn(|i| readings[i]);
         let openness = [readings[6], readings[7]];
-        let mut gaze = choose_gaze(angles, usable_gaze, settings.independent_eyes, v2);
+        let mut gaze = choose_gaze(angles, usable_gaze, settings.independent_eyes);
         // Here, so the filters see each eye's own share too (--own-eye-gaze)
-        if settings.independent_eyes && v2 {
+        if settings.independent_eyes {
             gaze = own_eye_gaze(gaze, angles, usable_gaze, settings.own_eye_gaze);
         }
-        // One unreliable eye takes the other's gaze (choose_gaze), so only both being unreliable holds it; with
-        // --eye-behavior 1 each eye's own gaze is held while it is unreliable, but a doubted eye looks where the other
-        // one does (its own gaze is no better than its openness)
+        // One unreliable eye takes the other's gaze (choose_gaze), so only both being unreliable holds it
         let hold = if shut_for_gaze(openness, doubted, seen_open, settings) || usable_gaze == [false; 2] {
             [true; 3]
-        } else if settings.independent_eyes && !v2 {
-            for eye in (0..2).filter(|eye| doubted[*eye]) {
-                let other = 1 - eye;
-                gaze[2 * eye] = gaze[2 * other];
-                gaze[2 * eye + 1] = gaze[2 * other + 1];
-            }
-            [!usable_gaze[0] && !doubted[0], !usable_gaze[1] && !doubted[1], false]
         } else {
             [false; 3]
         };
@@ -3760,13 +3831,9 @@ fn process(
         smoother.lid_vertical = Some(vertical);
         // For eyes without the camera's eyelid, eyelids near relaxed open count as open, and far down less is
         // expected (see LID_OPEN_SNAP_RAMP)
-        let zoned = [0, 1].map(|eye| v2 && camera_lids[eye].is_none() && held[eye].is_none());
+        let zoned = [0, 1].map(|eye| camera_lids[eye].is_none() && held[eye].is_none());
         let fits = fits_at(settings, vertical, zoned);
-        let mapped = if v2 {
-            snapped_lids(openness, vertical, scales, settings, fits, zoned)
-        } else {
-            lid_inputs(openness, vertical, scales, settings).map(|openness| lid_to_vrcft(openness, settings))
-        };
+        let mapped = snapped_lids(openness, vertical, scales, settings, fits, zoned);
         let valve = mapped;
         // Corrected by the camera where it sees an eye closed, or open for longer than a blink while the eye server
         // reads it closing; everything after this (closing, the blink sync, lid_sync) goes by the corrected eyelids
@@ -3774,11 +3841,8 @@ fn process(
         // Only for eyes whose open reading is itself at the ceiling (see ceiling_eyes)
         let at_ceiling = ceiling_eyes(settings, saturated);
         let ceiling = [0, 1].map(|eye| if at_ceiling[eye] { ceiling_share(openness[eye]) } else { 0.0 });
-        let (mapped, mut lid_from, floored) = if v2 {
-            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, held, raise_to, settings)
-        } else {
-            (mapped, [LidFrom::EyeServer; 2], [false; 2])
-        };
+        let (mapped, mut lid_from, floored) =
+            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, held, raise_to, settings);
         // Only once the camera has had the eyelid for longer than a wink: until then a blink the camera is a frame or
         // two late to see closed still holds the gaze from its start, as the eye server's reading says
         smoother.seen_open = [0, 1].map(|eye| {
@@ -3802,11 +3866,11 @@ fn process(
         // From relaxed open up (or widened on the camera while not closing), an eye the camera sees takes the camera's
         // eyelid; a closing one stays the eye server's. Widening in one eye only is halved (see share_widening)
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
-        let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from, v2);
+        let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from);
         // The eyes with the camera's eyelid (the others had --lid-open-snap above) ease up to relaxed open from
         // --camera-lid-open-snap: a small dip of an open eye goes out open, a squint or blink below it doesn't. On the
         // eyelid as mixed, wherever its part below relaxed open came from, before the filter
-        let mixed = if v2 { snapped_open_from(mixed, zoned.map(|zoned| !zoned), settings.camera_lid_open_snap) } else { mixed };
+        let mixed = snapped_open_from(mixed, zoned.map(|zoned| !zoned), settings.camera_lid_open_snap);
         // While the openness is saturated, nothing above relaxed open is widening, except where the camera says so.
         // Capped before the widen sustain and the filter, so the filter rests at relaxed open (a closing eye starts
         // closing at once) and a widen starts over once it isn't saturated any more; and the filter itself right after
@@ -3838,7 +3902,7 @@ fn process(
             usable,
             wide,
         );
-        if settings.independent_eyes && v2 {
+        if settings.independent_eyes {
             let extra = (vergence - VERGENCE_DEG) / 2.0 / 45.0 * (1.0 - settings.own_eye_gaze);
             gaze[0] = (gaze[0] + extra).clamp(-1.0, 1.0);
             gaze[2] = (gaze[2] - extra).clamp(-1.0, 1.0);
@@ -3881,7 +3945,7 @@ fn process(
         gaze_held,
         camera,
         lid_from,
-        closed_overruled: if v2 { smoother.side.overruled } else { [false; 2] },
+        closed_overruled: smoother.side.overruled,
         cross_eye,
         close_held,
         brows,
@@ -3889,35 +3953,21 @@ fn process(
 }
 
 /// The camera's eyelids with a "closed" while looking to the side, or while the eye server reads the eye open and is
-/// sure of it, doubted (SideCheck); with --eye-behavior 1 (`v2` false) as read.
+/// sure of it, doubted (SideCheck).
 fn side_checked(
     smoother: &mut Smoother,
     data: &EyeData,
     camera: [Option<CameraLid>; 2],
-    v2: bool,
     doubt: bool,
 ) -> [Option<CameraLid>; 2] {
-    if v2 {
-        smoother.side.doubt_off = !doubt;
-        smoother.side.step(data.sample_time, data.openness, gaze_variance(data), outward_degrees(data), camera)
-    } else {
-        camera
-    }
+    smoother.side.doubt_off = !doubt;
+    smoother.side.step(data.sample_time, data.openness, gaze_variance(data), outward_degrees(data), camera)
 }
 
 /// The eyelids with the eye camera's widening mixed in (`camera`, each eye's camera eyelid while it may be used), from
 /// the corrected ones (`mapped`) and the eye server's before that (`valve`), marking where widening came from the
-/// camera: camera_widen_share's fade and share_widening. With --eye-behavior 1 (`v2` false), 0.7.5's mix_lid_v1.
-fn mixed_lids(
-    mapped: [f32; 2],
-    valve: [f32; 2],
-    camera: [Option<f32>; 2],
-    lid_from: &mut [LidFrom; 2],
-    v2: bool,
-) -> [f32; 2] {
-    if !v2 {
-        return [0, 1].map(|eye| mix_lid_v1(mapped[eye], camera[eye]));
-    }
+/// camera: camera_widen_share's fade and share_widening.
+fn mixed_lids(mapped: [f32; 2], valve: [f32; 2], camera: [Option<f32>; 2], lid_from: &mut [LidFrom; 2]) -> [f32; 2] {
     let basis = widen_basis(mapped, valve, *lid_from);
     let mixed = share_widening([0, 1].map(|eye| mix_lid_by(mapped[eye], basis[eye], camera[eye])), camera);
     mark_widened(lid_from, basis, camera);
@@ -3961,22 +4011,13 @@ fn shut_lids(lids: &mut [f32; 2], shut: [bool; 2]) {
     }
 }
 
-/// Eyelids on the scale of the given output. LiveLink gets the VRCFT eyelids, split into blink and widening in the
-/// packet (VRCFT puts the same eyelid back together), and the FrameEyeOSC module the VRCFT eyelids as they are.
-fn output_lids(output: OutputKind, lids: [f32; 2]) -> [f32; 2] {
-    match output {
-        OutputKind::Vrchat | OutputKind::LiveLink | OutputKind::FrameEyeOsc => lids,
-        OutputKind::Etvr => lids.map(lid_to_etvr),
-    }
-}
-
 /// The Live Link packet for one sample, stamped `time` seconds into the day. Each eye's gaze is its own with
 /// "move eyes separately", else the combined one (as for the other outputs), and the brows raised with brow_from_widen.
-/// Nothing else goes to LiveLink: no EyeTrackingActive and no parameter prefix, which only VRChat reads.
+/// The VRCFT eyelids go split into blink and widening (VRCFT puts the same eyelid back together). Nothing else goes to
+/// LiveLink: no EyeTrackingActive and no parameter prefix, which only VRChat reads.
 fn livelink_packet(sample: &Sample, time: f64) -> [u8; livelink::PACKET_LEN] {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
-    let lids = output_lids(OutputKind::LiveLink, sample.lids);
-    let shapes = livelink::shapes(lids, [left_x, left_y, right_x, right_y]);
+    let shapes = livelink::shapes(sample.lids, [left_x, left_y, right_x, right_y]);
     let shapes = match sample.brows {
         Some(brows) => livelink::with_brows(shapes, brows),
         None => shapes,
@@ -3988,13 +4029,13 @@ fn livelink_packet(sample: &Sample, time: f64) -> [u8; livelink::PACKET_LEN] {
 /// with "move eyes separately", else the combined one), with the eye camera's squint and pupils for the eyes they are
 /// used for. VRCFT then sends the pupils to each avatar in the form it takes them, so none go straight to VRChat.
 /// With brow_from_widen the 108-byte packet with the brows raised (never lowered or pinched), else the 76-byte one.
+/// The eyelids are the VRCFT ones as they are.
 fn feo_packet(sample: &Sample, session: u32, sequence: u32, time_us: u64) -> Vec<u8> {
     let [left_x, left_y, right_x, right_y, _, _] = sample.gaze;
-    let lids = output_lids(OutputKind::FrameEyeOsc, sample.lids);
     let camera = &sample.camera;
     let eye = |side: usize, gaze: [f32; 2]| feo::Eye {
         gaze,
-        lid: lids[side],
+        lid: sample.lids[side],
         squint: camera.squint[side],
         pupil: camera.pupil_diameter[side].zip(camera.pupil_dilation[side]),
     };
@@ -4005,13 +4046,35 @@ fn feo_packet(sample: &Sample, session: u32, sequence: u32, time_us: u64) -> Vec
     }
 }
 
-/// The OSC messages for one sample. VRChat gets the full VRCFT v2 eye set with the eye camera's squint and pupils (see
-/// camera_params), and with `steamlink_params` Steam Link's names after it. The ETVR Tracking Module gets per-eye
-/// values only: EyeX/EyeY switch it to a single-eye mode that reads an eyelid we do not send.
+/// The OSC messages to VRChat for one sample: the full VRCFT v2 eye set with the eye camera's squint and pupils (see
+/// camera_params) and the brows (brow_params), and with `steamlink_params` Steam Link's names after it.
 fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> {
     let prefix = format!("/avatar/parameters{}", settings.prefix);
-    let [left_x, left_y, right_x, right_y, x, y] = sample.gaze;
-    let [lid_left, lid_right] = output_lids(settings.output, sample.lids);
+    let values = v2_params(sample.gaze, sample.lids, &sample.camera, sample.brows);
+    let mut messages = Vec::with_capacity(21);
+    messages.extend(active_message(settings, true));
+    messages.extend(
+        values
+            .into_iter()
+            .map(|(suffix, value)| (format!("{prefix}/v2/{suffix}"), OscType::Float(value))),
+    );
+    if settings.steamlink_params {
+        messages.extend(steamlink_messages(sample.gaze, sample.lids));
+    }
+    messages
+}
+
+/// The VRCFT v2 float parameters (without the prefix) for a sample's gaze (left x/y, right x/y, combined x/y; each
+/// eye's its own with "move eyes separately", else the combined one), VRCFT eyelids, eye-camera values (camera_params)
+/// and brows (brow_params): what osc_messages sends, and the osc extra format too (extras.rs).
+fn v2_params(
+    gaze: [f32; 6],
+    lids: [f32; 2],
+    camera: &CameraValues,
+    brows: Option<[f32; 2]>,
+) -> Vec<(&'static str, f32)> {
+    let [left_x, left_y, right_x, right_y, x, y] = gaze;
+    let [lid_left, lid_right] = lids;
     let mut values = vec![
         ("EyeLeftX", left_x),
         ("EyeLeftY", left_y),
@@ -4019,23 +4082,12 @@ fn osc_messages(settings: &Settings, sample: &Sample) -> Vec<(String, OscType)> 
         ("EyeRightY", right_y),
         ("EyeLidLeft", lid_left),
         ("EyeLidRight", lid_right),
+        ("EyeX", x),
+        ("EyeY", y),
     ];
-    let mut messages = Vec::with_capacity(21);
-    if settings.output == OutputKind::Vrchat {
-        messages.extend(active_message(settings, true));
-        values.extend([("EyeX", x), ("EyeY", y)]);
-        values.extend(camera_params(&sample.camera));
-        values.extend(sample.brows.map(brow_params).unwrap_or_default());
-    }
-    messages.extend(
-        values
-            .into_iter()
-            .map(|(suffix, value)| (format!("{prefix}/v2/{suffix}"), OscType::Float(value))),
-    );
-    if settings.output == OutputKind::Vrchat && settings.steamlink_params {
-        messages.extend(steamlink_messages(sample.gaze, sample.lids));
-    }
-    messages
+    values.extend(camera_params(camera));
+    values.extend(brows.map(brow_params).unwrap_or_default());
+    values
 }
 
 /// The eye camera's values as VRCFT v2 parameters: each eye's squint while the camera drives its eyelid, and the
@@ -4075,12 +4127,17 @@ fn brow_params(brows: [f32; 2]) -> Vec<(&'static str, f32)> {
 /// data lost, sending paused or VRChat moved): VRChat keeps a parameter's last value, so the avatar would otherwise
 /// keep its brows up.
 fn brow_release(settings: &Settings, out: bool, brows: Option<[f32; 2]>) -> Vec<(String, OscType)> {
+    brow_release_at(&settings.prefix, out, brows)
+}
+
+/// brow_release under the parameter prefix `prefix` ("/FT", or "" for none).
+fn brow_release_at(prefix: &str, out: bool, brows: Option<[f32; 2]>) -> Vec<(String, OscType)> {
     if !out || brows.is_some() {
         return Vec::new();
     }
     BROW_PARAMS
         .into_iter()
-        .map(|name| (format!("/avatar/parameters{}/v2/{name}", settings.prefix), OscType::Float(0.0)))
+        .map(|name| (format!("/avatar/parameters{prefix}/v2/{name}"), OscType::Float(0.0)))
         .collect()
 }
 
@@ -4199,6 +4256,11 @@ fn mean(values: [Option<f32>; 2]) -> Option<f32> {
 /// Squint 0 for each eye whose squint went out (`out`) but does not with this sample (`squint`), and for the combined
 /// one once no eye's does: VRChat keeps a parameter's last value, so the avatar would otherwise stay squinting.
 fn squint_release(settings: &Settings, out: [bool; 2], squint: [Option<f32>; 2]) -> Vec<(String, OscType)> {
+    squint_release_at(&settings.prefix, out, squint)
+}
+
+/// squint_release under the parameter prefix `prefix` ("/FT", or "" for none).
+fn squint_release_at(prefix: &str, out: [bool; 2], squint: [Option<f32>; 2]) -> Vec<(String, OscType)> {
     let stopped = [0, 1].map(|eye| out[eye] && squint[eye].is_none());
     let names = [
         ("EyeSquintLeft", stopped[0]),
@@ -4208,7 +4270,7 @@ fn squint_release(settings: &Settings, out: [bool; 2], squint: [Option<f32>; 2])
     names
         .into_iter()
         .filter(|(_, stopped)| *stopped)
-        .map(|(name, _)| (format!("/avatar/parameters{}/v2/{name}", settings.prefix), OscType::Float(0.0)))
+        .map(|(name, _)| (format!("/avatar/parameters{prefix}/v2/{name}"), OscType::Float(0.0)))
         .collect()
 }
 
@@ -4295,12 +4357,17 @@ fn native_messages(settings: &Settings, gaze: [f32; 6], lids: [f32; 2]) -> Vec<(
     } else {
         ("/tracking/eye/CenterVec", floats(&gaze_vector([x, y])))
     };
-    // One value for both eyes, 0 open to 1 closed; VRChat has nothing for widening or winks.
-    let open = (lids[0] + lids[1]) / 2.0 / 0.75;
     vec![
         (look.0.into(), look.1),
-        ("/tracking/eye/EyesClosedAmount".into(), floats(&[(1.0 - open).clamp(0.0, 1.0)])),
+        ("/tracking/eye/EyesClosedAmount".into(), floats(&[eyes_closed_amount(lids)])),
     ]
+}
+
+/// VRChat's EyesClosedAmount for VRCFT eyelids as sent: one value for both eyes, 0 open to 1 closed; VRChat has
+/// nothing for widening or winks.
+fn eyes_closed_amount(lids: [f32; 2]) -> f32 {
+    let open = (lids[0] + lids[1]) / 2.0 / 0.75;
+    (1.0 - open).clamp(0.0, 1.0)
 }
 
 /// Where Steam Link's avatar parameters are being sent to, if anywhere. When this changes while eye tracking runs,
@@ -4401,6 +4468,18 @@ fn livelink_stream(settings: &Settings) -> Option<(&str, u16)> {
 /// module's one-second timeout.
 fn feo_stream(settings: &Settings) -> Option<(&str, u16)> {
     (settings.sending && settings.output == OutputKind::FrameEyeOsc).then(|| (settings.host.as_str(), settings.port()))
+}
+
+/// The sequence number in `counter`, which then moves on (wrapping).
+fn next_sequence(counter: &mut u32) -> u32 {
+    let sequence = *counter;
+    *counter = sequence.wrapping_add(1);
+    sequence
+}
+
+/// A FrameEyeOSC packet without TRACKING (relaxed open eyes looking straight ahead), stamped now.
+fn feo_idle_packet(session: u32, sequence: u32) -> [u8; feo::PACKET_LEN] {
+    feo::packet(session, sequence, false, feo::time_us(SystemTime::now()), [feo::Eye::NEUTRAL; 2])
 }
 
 /// Why the samples stopped, for the log line when tracking is lost.
@@ -4507,6 +4586,8 @@ struct Bridge {
     pupil_output: Output,
     // The pupil dilation's bits that went out (pupil_bits), wherever pupils go to VRChat.
     pupil_bits: PupilBits,
+    // The extra outputs (extra_outputs): more destinations next to the main output.
+    extras: extras::Extras,
 }
 
 impl Bridge {
@@ -4550,18 +4631,26 @@ impl Bridge {
             self.send_livelink_neutral();
         }
         let stream = feo_stream(&self.settings);
+        let mut idle = None;
         if self.active_since.is_some() && stream.is_some() && stream != feo_stream(&settings) {
-            self.send_feo_idle();
+            let packet = self.next_feo_idle();
+            self.output.send_datagram(&packet);
+            idle = Some(packet);
         }
+        // Each extra whose stream stops or changes gets its final message; for feo1 the same packet without TRACKING
+        // as the main output's when that stops too (pausing), so the sequence moves on by one for all of them
+        let (session, sequence) = (self.feo_session, &mut self.feo_sequence);
+        self.extras.apply(&settings, self.active_since.is_some(), &mut || {
+            idle.get_or_insert_with(|| feo_idle_packet(session, next_sequence(sequence))).to_vec()
+        });
         self.output.set_target(Target::of(&settings));
+        self.output.set_lan_only(settings.lan_only);
         // Nothing to set back when the pupils stop going there: they just hold
         self.pupil_output.set_target(pupil_target(&settings));
+        self.pupil_output.set_lan_only(settings.lan_only);
         // All the bits again with the next sample, wherever they go now and however many
         self.pupil_bits.reset();
         self.smoother.configure(&settings);
-        if settings.eye_behavior != self.settings.eye_behavior {
-            self.smoother.reset_behavior();
-        }
         if reset_calibration {
             eprintln!("Starting eyelid calibration over");
             self.calibration.reset(settings.lid_open);
@@ -4591,6 +4680,11 @@ impl Bridge {
             self.calibration.save_if_due();
         }
         if self.settings.sending {
+            // The FrameEyeOSC packet, built once for the main output and every feo1 extra (one sequence for all)
+            let feo = (self.settings.output == OutputKind::FrameEyeOsc || self.extras.wants_feo()).then(|| {
+                let sequence = self.next_feo_sequence();
+                feo_packet(&sample, self.feo_session, sequence, feo::time_us(SystemTime::now()))
+            });
             let sent = if self.settings.output == OutputKind::LiveLink {
                 // The newest sample, at most LIVELINK_MAX_HZ times a second; the ones in between are dropped
                 let interval = Duration::from_secs(1) / LIVELINK_MAX_HZ;
@@ -4606,28 +4700,24 @@ impl Bridge {
                     }
                 }
                 ready
-            } else if self.settings.output == OutputKind::FrameEyeOsc {
-                let sequence = self.next_feo_sequence();
-                let packet = feo_packet(&sample, self.feo_session, sequence, feo::time_us(SystemTime::now()));
-                self.output.send_datagram(&packet);
+            } else if let Some(packet) = feo.as_ref().filter(|_| self.settings.output == OutputKind::FrameEyeOsc) {
+                self.output.send_datagram(packet);
                 true
             } else {
                 for (addr, arg) in osc_messages(&self.settings, &sample) {
                     self.output.send(&addr, &[arg])?;
                 }
-                if self.settings.output == OutputKind::Vrchat {
-                    for (addr, arg) in self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now) {
-                        self.output.send(&addr, &[arg])?;
-                    }
-                    for (addr, arg) in squint_release(&self.settings, self.squint_out, sample.camera.squint) {
-                        self.output.send(&addr, &[arg])?;
-                    }
-                    self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
-                    for (addr, arg) in brow_release(&self.settings, self.brow_out, sample.brows) {
-                        self.output.send(&addr, &[arg])?;
-                    }
-                    self.brow_out = sample.brows.is_some();
+                for (addr, arg) in self.pupil_bits.messages(&self.settings, pupil_dilation(&sample.camera), now) {
+                    self.output.send(&addr, &[arg])?;
                 }
+                for (addr, arg) in squint_release(&self.settings, self.squint_out, sample.camera.squint) {
+                    self.output.send(&addr, &[arg])?;
+                }
+                self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
+                for (addr, arg) in brow_release(&self.settings, self.brow_out, sample.brows) {
+                    self.output.send(&addr, &[arg])?;
+                }
+                self.brow_out = sample.brows.is_some();
                 if native_stream(&self.settings).is_some() {
                     for (addr, args) in native_messages(&self.settings, sample.gaze, sample.lids) {
                         self.output.send(&addr, &args)?;
@@ -4641,6 +4731,7 @@ impl Bridge {
             if sent && self.output.addr().is_some() {
                 self.sent.push_back(now);
             }
+            self.extras.send_sample(now, feo.as_deref(), &sample);
         }
         self.received.push_back(now);
         for times in [&mut self.sent, &mut self.received] {
@@ -4701,9 +4792,13 @@ impl Bridge {
         if livelink_stream(&self.settings).is_some() {
             self.send_livelink_neutral();
         }
-        if feo_stream(&self.settings).is_some() {
-            self.send_feo_idle();
+        // One packet without TRACKING for the main output and the feo1 extras; the other extras' final messages
+        let main_feo = feo_stream(&self.settings).is_some();
+        let idle = (main_feo || self.extras.wants_feo()).then(|| self.next_feo_idle());
+        if let Some(packet) = idle.as_ref().filter(|_| main_feo) {
+            self.output.send_datagram(packet);
         }
+        self.extras.send_lost(idle.as_ref().map(|packet| &packet[..]));
         self.smoother.reset();
         // The next wear may read differently; reset keeps what this one reads only over short gaps
         self.smoother.cross_eye.level = CrossEyeLevel::default();
@@ -4784,29 +4879,43 @@ impl Bridge {
         }
     }
 
-    /// The sequence number for the next FrameEyeOSC packet.
+    /// The sequence number for the next FrameEyeOSC packet (the main output's and the feo1 extras' alike).
     fn next_feo_sequence(&mut self) -> u32 {
-        let sequence = self.feo_sequence;
-        self.feo_sequence = sequence.wrapping_add(1);
-        sequence
+        next_sequence(&mut self.feo_sequence)
     }
 
-    /// A FrameEyeOSC packet without TRACKING: relaxed open eyes looking straight ahead.
-    fn send_feo_idle(&mut self) {
-        let sequence = self.next_feo_sequence();
-        let time_us = feo::time_us(SystemTime::now());
-        let packet = feo::packet(self.feo_session, sequence, false, time_us, [feo::Eye::NEUTRAL; 2]);
-        self.output.send_datagram(&packet);
+    /// The next FrameEyeOSC packet without TRACKING, with this as the last one sent (see keep_feo_alive).
+    fn next_feo_idle(&mut self) -> [u8; feo::PACKET_LEN] {
+        let packet = feo_idle_packet(self.feo_session, self.next_feo_sequence());
         self.feo_idle = Some(Instant::now());
+        packet
     }
 
-    /// While sending to VRCFT's FrameEyeOSC module without eye data, keep telling it so (see FEO_IDLE_INTERVAL).
-    /// Paused, nothing goes out.
+    /// While sending to VRCFT's FrameEyeOSC module, or to a feo1 extra, without eye data, keep telling it so (see
+    /// FEO_IDLE_INTERVAL): one packet for all of them. Paused, nothing goes out.
     fn keep_feo_alive(&mut self) {
         let due = self.feo_idle.is_none_or(|sent| sent.elapsed() >= FEO_IDLE_INTERVAL);
-        if self.active_since.is_none() && feo_stream(&self.settings).is_some() && due {
-            self.send_feo_idle();
+        let main = feo_stream(&self.settings).is_some();
+        if self.active_since.is_none() && (main || self.extras.wants_feo()) && due {
+            let packet = self.next_feo_idle();
+            if main {
+                self.output.send_datagram(&packet);
+            }
+            self.extras.send_feo_idle(&packet);
         }
+    }
+
+    /// Look the extra outputs up again when due, refusing one whose address and port are the main output's or the
+    /// pupils' ("same as main", "same as the pupils") or an earlier extra's ("duplicate").
+    fn refresh_extras(&mut self) {
+        let main = self.output.addr().filter(|_| self.settings.sending);
+        let pupils = self.pupil_output.addr().filter(|_| pupil_stream(&self.settings).is_some());
+        let taken: Vec<(SocketAddr, &'static str)> = main
+            .map(|addr| (addr, "same as main"))
+            .into_iter()
+            .chain(pupils.map(|addr| (addr, "same as the pupils")))
+            .collect();
+        self.extras.refresh(&taken);
     }
 
     /// `source_error`: why the eye tracker's shared memory can't be read, if it can't; `dominant_eye`: the eye the
@@ -4835,6 +4944,12 @@ impl Bridge {
             target_mode: if settings.host == "auto" { "auto" } else { "fixed" },
             target: self.output.addr().map(|addr| addr.to_string()),
             pupil_target: self.pupil_output.addr().filter(|_| pupils).map(|addr| addr.to_string()),
+            lan_only: settings.lan_only,
+            net: self.output.net(),
+            refused: self.output.refused,
+            pupil_net: self.pupil_output.net().filter(|_| pupils),
+            pupil_refused: self.pupil_output.refused.filter(|_| pupils),
+            extras: self.extras.status(now),
             rate: per_second(&self.sent),
             tracker_rate,
             missed_rate,
@@ -4849,7 +4964,7 @@ impl Bridge {
                 gaze_right: pair(sample.raw_gaze, 2),
             }),
             sent: self.latest.as_ref().map(|sample| SentValues {
-                lids: status::round(output_lids(settings.output, sample.lids)),
+                lids: status::round(sample.lids),
                 lids_vrcft: status::round(sample.lids),
                 gaze: pair(sample.gaze, 4),
                 gaze_left: pair(sample.gaze, 0),
@@ -4970,12 +5085,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     if args.target != "auto" && config::split_target(&args.target).is_none() {
         return Err("--target must be HOST:PORT or auto".into());
     }
+    config::check_extra_args(&args.extra)?;
     let in_config_dir = |name: &str| Some(config::config_dir()?.join(name));
     let calibration_path = args.calibration_file.clone().or_else(|| in_config_dir("calibration"));
     let config_path = args.config.clone().or_else(|| in_config_dir("config.json"));
     let replay = args.replay.clone().map(|input| (input, args.replay_out.clone()));
     let camera_path = args.eyecam_live.clone().unwrap_or_else(eyecam_live::live_path);
+    let removed = config::removed_options(&args, &matches);
     let mut config = Config::new(config_path, args, config::given_options(&matches));
+    // What the command line still asks for that was removed, before the file's, each line once
+    config.log_removed(&removed);
     let settings = config.load()?;
     if let Some((input, output)) = replay {
         // Starts from the saved calibration like a real run, but never writes it back.
@@ -4989,9 +5108,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     if let Some(dir) = camera_path.parent() {
         eyecam_ctl::LiveControl::new(dir.to_owned()).spawn(live_wanted.clone())?;
     }
-    let pupil_output = Output::new(pupil_target(&settings));
+    let mut pupil_output = Output::new(pupil_target(&settings));
+    pupil_output.set_lan_only(settings.lan_only);
+    let mut output = Output::new(Target::of(&settings));
+    output.set_lan_only(settings.lan_only);
     let mut bridge = Bridge {
-        output: Output::new(Target::of(&settings)),
+        output,
+        extras: extras::Extras::new(&settings),
         smoother: Smoother::new(&settings),
         calibration: LidCalibration::load(calibration_path, settings.lid_open),
         config,
@@ -5034,6 +5157,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         if pupil_stream(&bridge.settings).is_some() {
             bridge.pupil_output.refresh();
         }
+        bridge.refresh_extras();
         if let Some(line) = eye.open_if_due(Instant::now()) {
             // ("Can't read eye data" is kept for the panel)
             if eye.error.is_some() {
@@ -5161,14 +5285,14 @@ mod tests {
     #[test]
     fn unreliable_eye_gives_way_to_the_other() {
         let angles = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        assert_eq!(choose_gaze(angles, [true; 2], false, true), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
-        assert_eq!(choose_gaze(angles, [true, false], false, true), [1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
-        assert_eq!(choose_gaze(angles, [false; 2], false, true), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
+        assert_eq!(choose_gaze(angles, [true; 2], false), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
+        assert_eq!(choose_gaze(angles, [true, false], false), [1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
+        assert_eq!(choose_gaze(angles, [false; 2], false), [5.0, 6.0, 5.0, 6.0, 5.0, 6.0]);
         // Each eye on its own: the unreliable left eye takes the right eye's up / down, and both turn in from the
         // right eye's sideways gaze
         let half = VERGENCE_DEG / 2.0 / 45.0;
         let angles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
-        assert_eq!(choose_gaze(angles, [false, true], true, true), [0.3 + half, 0.4, 0.3 - half, 0.4, 0.3, 0.4]);
+        assert_eq!(choose_gaze(angles, [false, true], true), [0.3 + half, 0.4, 0.3 - half, 0.4, 0.3, 0.4]);
     }
 
     /// Both eyes open, the combined gaze straight ahead, and Valve's per-eye x `vergence` degrees apart at sample `index`.
@@ -5472,77 +5596,16 @@ mod tests {
     }
 
     #[test]
-    fn switching_eye_behavior_starts_over_what_only_v2_keeps() {
-        let mut bridge = test_bridge(settings());
-        let mark = |bridge: &mut Bridge| {
-            bridge.smoother.lid_doubt[0].camera = true;
-            bridge.smoother.ceiling_since[1] = Some(1.0);
-            bridge.smoother.cross_eye.engaged = true;
-            bridge.smoother.camera_gap[0].on = Some(true);
-            bridge.smoother.last_time = Some(5.0);
-        };
-        let cleared = |bridge: &Bridge| {
-            !bridge.smoother.lid_doubt[0].camera
-                && bridge.smoother.ceiling_since == [None; 2]
-                && !bridge.smoother.cross_eye.engaged
-                && bridge.smoother.camera_gap[0].on.is_none()
-                // The filters go on
-                && bridge.smoother.last_time == Some(5.0)
-        };
-        let v1 = Settings {
-            eye_behavior: 1,
-            ..settings()
-        };
-        for next in [v1.clone(), settings()] {
-            mark(&mut bridge);
-            bridge.apply(reload(&next)).unwrap();
-            assert!(cleared(&bridge));
-        }
-        // Another change keeps them
-        mark(&mut bridge);
-        bridge.apply(reload(&Settings { lid_sync: 0.3, ..settings() })).unwrap();
-        assert!(bridge.smoother.cross_eye.engaged && bridge.smoother.lid_doubt[0].camera);
-    }
-
-    #[test]
-    fn eye_behavior_1_sends_each_eyes_own_gaze_and_0_7_5s_eyelids() {
-        let v1 = Settings {
-            eye_behavior: 1,
-            ..independent()
-        };
-        // Each eye's own gaze as the Frame reads it, an unreliable one held (choose_gaze leaves it as it is)
-        let angles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
-        assert_eq!(choose_gaze(angles, [true; 2], true, false), angles);
-        assert_eq!(choose_gaze(angles, [false, true], true, false), [0.1, 0.2, 0.3, 0.4, 0.3, 0.4]);
-        // Valve's 10° apart goes out 10° apart (not the fixed vergence), and 30° held is no cross-eye gate
-        let apart: Vec<EyeData> = (0..90).map(|i| crossed(i, 10.0, [0.9; 2])).collect();
-        let sent = run(&v1, &apart);
-        assert!((sent_vergence(&sent[89]) - 10.0).abs() < 0.05, "{}", sent_vergence(&sent[89]));
-        let crossed_long: Vec<EyeData> = (0..180).map(|i| crossed(i, 30.0, [0.9; 2])).collect();
-        assert!(run(&v1, &crossed_long).iter().all(|sample| !sample.cross_eye));
-        // A nearly open eyelid (VRCFT 0.6 at the default lid marks) is not eased up to relaxed open
-        let nearly: Vec<EyeData> = (0..120).map(|i| reading(i, [0.0, 0.0], [0.7; 2])).collect();
-        let lid = |settings: &Settings| run(settings, &nearly)[119].lids[0];
-        assert!((lid(&v1) - 0.6).abs() < 1e-3, "{}", lid(&v1));
-        assert!(lid(&independent()) > 0.65);
-        // From relaxed open up the camera's eyelid, kept at relaxed open or above; below it the eye server's
-        assert_eq!(mix_lid_v1(0.8, Some(0.7)), LID_RELAXED);
-        assert_eq!(mix_lid_v1(0.8, Some(0.9)), 0.9);
-        assert_eq!(mix_lid_v1(0.6, Some(0.9)), 0.6);
-        assert_eq!(mix_lid_v1(0.8, None), 0.8);
-    }
-
-    #[test]
     fn independent_eyes_turn_in_by_the_fixed_vergence_from_the_combined_gaze() {
         let half = VERGENCE_DEG / 2.0 / 45.0;
         // The Frame's own per-eye x 17° apart (as at 22:44 on 2026-10-08): only the combined x counts
         let angles = [0.11, -0.1, -0.276, -0.1, -0.083, -0.1];
-        assert_eq!(choose_gaze(angles, [true; 2], true, true), [-0.083 + half, -0.1, -0.083 - half, -0.1, -0.083, -0.1]);
+        assert_eq!(choose_gaze(angles, [true; 2], true), [-0.083 + half, -0.1, -0.083 - half, -0.1, -0.083, -0.1]);
         // Each eye keeps its own up / down
         let angles = [0.0, 0.2, 0.0, 0.25, 0.0, 0.22];
-        assert_eq!(choose_gaze(angles, [true; 2], true, true)[1..4], [0.2, -half, 0.25]);
+        assert_eq!(choose_gaze(angles, [true; 2], true)[1..4], [0.2, -half, 0.25]);
         // Never past the end of the range
-        assert_eq!(choose_gaze([1.0, 0.0, 1.0, 0.0, 1.0, 0.0], [true; 2], true, true)[0], 1.0);
+        assert_eq!(choose_gaze([1.0, 0.0, 1.0, 0.0, 1.0, 0.0], [true; 2], true)[0], 1.0);
         // Through the filters: the left - right sent stays the vergence whatever the per-eye readings do
         let settings = Settings {
             independent_eyes: true,
@@ -5649,7 +5712,7 @@ mod tests {
     }
 
     #[test]
-    fn own_eye_gaze_does_nothing_without_independent_eyes_or_in_v1() {
+    fn own_eye_gaze_does_nothing_without_independent_eyes() {
         let readings: Vec<EyeData> = (0..150)
             .map(|i| {
                 let wobble = if i % 20 < 10 { 0.2 } else { -0.1 };
@@ -5658,13 +5721,10 @@ mod tests {
             .chain((150..450).map(|i| crossed(i, 30.0, [0.9; 2])))
             .collect();
         let gaze = |sent: Vec<Sample>| -> Vec<[u32; 6]> { sent.iter().map(|it| it.gaze.map(f32::to_bits)).collect() };
-        let v1 = Settings { eye_behavior: 1, ..settings() };
-        for base in [settings(), Settings { independent_eyes: true, ..v1.clone() }, v1] {
-            for raw in [false, true] {
-                let base = Settings { raw, ..base.clone() };
-                let own = Settings { own_eye_gaze: 1.0, ..base.clone() };
-                assert_eq!(gaze(run(&own, &readings)), gaze(run(&base, &readings)));
-            }
+        for raw in [false, true] {
+            let base = Settings { raw, ..settings() };
+            let own = Settings { own_eye_gaze: 1.0, ..base.clone() };
+            assert_eq!(gaze(run(&own, &readings)), gaze(run(&base, &readings)));
         }
     }
 
@@ -5683,9 +5743,9 @@ mod tests {
         assert!((gaze[0] - expected - quarter).abs() < 0.02 && (gaze[2] - expected + quarter).abs() < 0.02, "{gaze:?}");
         // An eye unreliable for its gaze alone (the quality limit) the same, in choose_gaze's place
         let angles = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
-        let shared = choose_gaze(angles, [false, true], true, true);
+        let shared = choose_gaze(angles, [false, true], true);
         assert_eq!(own_eye_gaze(shared, angles, [false, true], 1.0), [0.3, 0.4, 0.3, 0.4, 0.3, 0.4]);
-        let shared = choose_gaze(angles, [true, false], true, true);
+        let shared = choose_gaze(angles, [true, false], true);
         assert_eq!(own_eye_gaze(shared, angles, [true, false], 1.0), [0.1, 0.2, 0.1, 0.2, 0.1, 0.2]);
     }
 
@@ -5741,23 +5801,21 @@ mod tests {
         assert!(close(scale_gaze(gaze(0.4, -0.3), &scaled(1.0, 0.05, 1.0, 2.0)), gaze(0.02, -0.6)));
         assert_eq!(scale_gaze(gaze(0.6, -0.7), &scaled(1.0, 2.0, 1.0, 2.0)), gaze(1.0, -1.0));
         // Through the processing: settled on (-0.2, 0.1) on the -1..1 scale, left goes 1.5 times as far and up half
-        // as far, in both eye behaviours, smoothed or raw
+        // as far, smoothed or raw
         let tan = |angle: f32| (angle * 45.0).to_radians().tan();
         let readings: Vec<EyeData> = (0..180).map(|i| reading(i, [tan(-0.2), tan(0.1)], [0.85; 2])).collect();
-        for eye_behavior in [1, 2] {
-            for raw in [false, true] {
-                let base = Settings { eye_behavior, raw, ..settings() };
-                let plain_sample = &run(&base, &readings)[179];
-                let wider_sample = &run(&Settings { gaze_scale_left: 1.5, gaze_scale_up: 0.5, ..base }, &readings)[179];
-                let [plain, wider] = [plain_sample.gaze, wider_sample.gaze];
-                // The gaze before the scale (for the panel's dots) is what goes out without it
-                assert_eq!(plain_sample.unscaled_gaze, plain);
-                assert_eq!(wider_sample.unscaled_gaze, plain);
-                assert!((wider[4] - plain[4] * 1.5).abs() < 1e-5, "{plain:?} {wider:?}");
-                assert!((wider[5] - plain[5] * 0.5).abs() < 1e-6, "{plain:?} {wider:?}");
-                assert!((plain[4] + 0.2).abs() < 1e-3 && (plain[5] - 0.1).abs() < 1e-3, "{plain:?}");
-                assert_eq!(wider, gaze(wider[4], wider[5]));
-            }
+        for raw in [false, true] {
+            let base = Settings { raw, ..settings() };
+            let plain_sample = &run(&base, &readings)[179];
+            let wider_sample = &run(&Settings { gaze_scale_left: 1.5, gaze_scale_up: 0.5, ..base }, &readings)[179];
+            let [plain, wider] = [plain_sample.gaze, wider_sample.gaze];
+            // The gaze before the scale (for the panel's dots) is what goes out without it
+            assert_eq!(plain_sample.unscaled_gaze, plain);
+            assert_eq!(wider_sample.unscaled_gaze, plain);
+            assert!((wider[4] - plain[4] * 1.5).abs() < 1e-5, "{plain:?} {wider:?}");
+            assert!((wider[5] - plain[5] * 0.5).abs() < 1e-6, "{plain:?} {wider:?}");
+            assert!((plain[4] + 0.2).abs() < 1e-3 && (plain[5] - 0.1).abs() < 1e-3, "{plain:?}");
+            assert_eq!(wider, gaze(wider[4], wider[5]));
         }
     }
 
@@ -5770,7 +5828,7 @@ mod tests {
             gaze_scale_down: 1.5,
             ..base
         };
-        // v2 with --independent-eyes: the fixed vergence, looking left and up or right and down
+        // With --independent-eyes: the fixed vergence, looking left and up or right and down
         for [x, y] in [[-0.3f32, 0.2f32], [0.3, -0.2]] {
             let readings: Vec<EyeData> = (0..120).map(|i| reading(i, [x, y], [0.85; 2])).collect();
             let plain = run(&independent(), &readings);
@@ -5793,23 +5851,6 @@ mod tests {
         let sent = run(&scale(independent()), &readings);
         let last = &sent[299];
         assert!(last.cross_eye && (sent_vergence(last) - 30.0).abs() < 0.2, "{}", sent_vergence(last));
-        // v1 with --independent-eyes: Valve's 10° apart stays 10° apart
-        let v1 = Settings {
-            eye_behavior: 1,
-            ..independent()
-        };
-        let apart: Vec<EyeData> = (0..90)
-            .map(|i| {
-                let mut data = crossed(i, 10.0, [0.9; 2]);
-                data.fixation_point[0] = 0.2;
-                data
-            })
-            .collect();
-        let plain = run(&v1, &apart);
-        let sent = run(&scale(v1), &apart);
-        assert!((sent_vergence(&sent[89]) - sent_vergence(&plain[89])).abs() < 1e-3);
-        assert!((sent_vergence(&sent[89]) - 10.0).abs() < 0.05, "{}", sent_vergence(&sent[89]));
-        assert!(sent[89].gaze[4] > plain[89].gaze[4] + 0.05);
         // Looking far down with an eye fit: the eyelids go by where the eyes really look, not the scaled gaze
         let fit = |settings: &mut Settings| {
             (settings.lid_fit_closed_left, settings.lid_fit_up_left) = (Some(0.15), Some(0.93));
@@ -6459,21 +6500,19 @@ mod tests {
             .map(|i| left_eye_off(i, sweep(i, 100), if i < 10 { [1.1; 2] } else { [0.06, 1.1] }))
             .collect();
         let expected = gaze_angles([0.4, 0.0, -1.0])[0];
-        for eye_behavior in [1, 2] {
-            for independent_eyes in [false, true] {
-                let settings = Settings { eye_behavior, independent_eyes, ..settings() };
-                let sent = run(&settings, &readings);
-                let case = format!("v{eye_behavior}, independent {independent_eyes}");
-                // Held through the first ONE_EYE_HOLD_MAX_S, as a wink...
-                assert!(sent[20..90].iter().all(|sample| sample.gaze_held), "{case}");
-                // ...then the right eye moves both, the left eye's own gaze left out.
-                assert!(sent[105..].iter().all(|sample| !sample.gaze_held), "{case}");
-                let half = if independent_eyes && eye_behavior == 2 { VERGENCE_DEG / 2.0 / 45.0 } else { 0.0 };
-                let wanted = [expected + half, 0.0, expected - half, 0.0, expected, 0.0];
-                let gaze = sent.last().unwrap().gaze;
-                for (value, wanted) in gaze.into_iter().zip(wanted) {
-                    assert!((value - wanted).abs() < 0.02, "{case}: {gaze:?}");
-                }
+        for independent_eyes in [false, true] {
+            let settings = Settings { independent_eyes, ..settings() };
+            let sent = run(&settings, &readings);
+            let case = format!("independent {independent_eyes}");
+            // Held through the first ONE_EYE_HOLD_MAX_S, as a wink...
+            assert!(sent[20..90].iter().all(|sample| sample.gaze_held), "{case}");
+            // ...then the right eye moves both, the left eye's own gaze left out.
+            assert!(sent[105..].iter().all(|sample| !sample.gaze_held), "{case}");
+            let half = if independent_eyes { VERGENCE_DEG / 2.0 / 45.0 } else { 0.0 };
+            let wanted = [expected + half, 0.0, expected - half, 0.0, expected, 0.0];
+            let gaze = sent.last().unwrap().gaze;
+            for (value, wanted) in gaze.into_iter().zip(wanted) {
+                assert!((value - wanted).abs() < 0.02, "{case}: {gaze:?}");
             }
         }
         // The same in --raw (where the gaze is never held, only said to be).
@@ -7029,19 +7068,6 @@ mod tests {
         assert!(lid_to_vrcft(0.55, &args) > 0.0 && lid_to_vrcft(0.55, &args) < 0.75);
     }
 
-    #[test]
-    fn etvr_eyelids_treat_relaxed_as_fully_open() {
-        assert_eq!(lid_to_etvr(0.0), 0.0);
-        assert_eq!(lid_to_etvr(0.375), 0.5);
-        assert_eq!(lid_to_etvr(0.75), 1.0);
-        // Widening does not reach the ETVR Tracking Module.
-        assert_eq!(lid_to_etvr(1.0), 1.0);
-        assert_eq!(output_lids(OutputKind::Vrchat, [0.375, 1.0]), [0.375, 1.0]);
-        assert_eq!(output_lids(OutputKind::Etvr, [0.375, 1.0]), [0.5, 1.0]);
-        // LiveLink keeps the VRCFT eyelids (the packet splits them into blink and widening)
-        assert_eq!(output_lids(OutputKind::LiveLink, [0.375, 1.0]), [0.375, 1.0]);
-    }
-
     fn sample() -> Sample {
         Sample {
             openness: [0.8; 2],
@@ -7112,13 +7138,10 @@ mod tests {
         assert_eq!(active_message(&with(ActiveType::Off), false), None);
         // Changing the type ends the old stream (it gets its own last "not active")
         assert_ne!(vrchat_stream(&with(ActiveType::Bool)), vrchat_stream(&with(ActiveType::Float)));
-        // ETVR never gets it
-        let etvr = Settings {
-            output: OutputKind::Etvr,
-            ..with(ActiveType::Float)
-        };
-        assert!(sent(&etvr).iter().all(|(addr, _)| !addr.ends_with("EyeTrackingActive")));
-        assert!(vrchat_stream(&etvr).is_none());
+        // The other outputs never get it
+        for output in [OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
+            assert!(vrchat_stream(&Settings { output, ..with(ActiveType::Float) }).is_none());
+        }
     }
 
     #[test]
@@ -7146,28 +7169,6 @@ mod tests {
         send_inactive(&mut output, &off).unwrap();
         listener.set_read_timeout(Some(Duration::from_millis(200))).unwrap();
         assert!(listener.recv(&mut buffer).is_err());
-    }
-
-    #[test]
-    fn etvr_gets_only_the_six_per_eye_values() {
-        let messages = sent(&Settings {
-            output: OutputKind::Etvr,
-            ..settings()
-        });
-        let addrs: Vec<&str> = messages.iter().map(|(addr, _)| addr.as_str()).collect();
-        assert_eq!(
-            addrs,
-            [
-                "/avatar/parameters/FT/v2/EyeLeftX",
-                "/avatar/parameters/FT/v2/EyeLeftY",
-                "/avatar/parameters/FT/v2/EyeRightX",
-                "/avatar/parameters/FT/v2/EyeRightY",
-                "/avatar/parameters/FT/v2/EyeLidLeft",
-                "/avatar/parameters/FT/v2/EyeLidRight",
-            ]
-        );
-        assert_eq!(messages[4].1, OscType::Float(0.5));
-        assert_eq!(messages[5].1, OscType::Float(1.0));
     }
 
     #[test]
@@ -7221,6 +7222,7 @@ mod tests {
             // Never VRChat's port on this machine in a test: a test that wants the pupils points it at its own listener
             pupil_output: Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9 }),
             pupil_bits: PupilBits::default(),
+            extras: extras::Extras::new(&Settings::default()),
         };
         bridge.output.refresh();
         bridge
@@ -7465,7 +7467,7 @@ mod tests {
         assert!(native_stream(&settings()).is_none());
         assert_eq!(native_stream(&on), Some(("auto", 9000)));
         assert!(native_stream(&Settings { sending: false, ..on.clone() }).is_none());
-        for output in [OutputKind::Etvr, OutputKind::LiveLink] {
+        for output in [OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
             assert!(native_stream(&Settings { output, ..on.clone() }).is_none());
         }
         // Moving the stream ends the old one (it gets its own last neutral eyes)
@@ -7503,7 +7505,7 @@ mod tests {
         assert!(face_stream(&settings()).is_none());
         assert_eq!(face_stream(&on), Some(("auto", 9000)));
         assert!(face_stream(&Settings { sending: false, ..on.clone() }).is_none());
-        for output in [OutputKind::Etvr, OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
+        for output in [OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
             assert!(face_stream(&Settings { output, ..on.clone() }).is_none());
         }
         // Independent of native_eyes: both can be on (the blob wins on avatars with the Face Tracking section)
@@ -7600,7 +7602,7 @@ mod tests {
         assert!(steamlink_stream(&settings()).is_none());
         assert_eq!(steamlink_stream(&on), Some(("auto", 9000)));
         assert!(steamlink_stream(&Settings { sending: false, ..on.clone() }).is_none());
-        for output in [OutputKind::Etvr, OutputKind::LiveLink] {
+        for output in [OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
             assert!(steamlink_stream(&Settings { output, ..on.clone() }).is_none());
         }
         assert_ne!(steamlink_stream(&on), steamlink_stream(&Settings { port: Some(9001), ..on.clone() }));
@@ -7721,7 +7723,7 @@ mod tests {
     }
 
     #[test]
-    fn steamlink_names_ignore_the_prefix_and_other_outputs() {
+    fn steamlink_names_ignore_the_prefix() {
         for prefix in ["", "/Custom"] {
             let messages = sent(&Settings {
                 prefix: prefix.into(),
@@ -7730,11 +7732,6 @@ mod tests {
             assert_eq!(messages[9].0, "/avatar/parameters/LeftEyeX");
             assert_eq!(messages[20].0, "/avatar/parameters/LeftEyeWidenToggle");
         }
-        let etvr = Settings {
-            output: OutputKind::Etvr,
-            ..steamlink()
-        };
-        assert_eq!(sent(&etvr), sent(&Settings { output: OutputKind::Etvr, ..settings() }));
     }
 
     #[test]
@@ -7776,7 +7773,6 @@ mod tests {
             steamlink(),
             Settings { prefix: String::new(), ..steamlink() },
             Settings { prefix: "/x".into(), ..settings() },
-            Settings { output: OutputKind::Etvr, ..settings() },
             Settings { eye_tracking_active: ActiveType::Float, ..settings() },
             Settings { pupil_bits: 4, ..settings() },
             Settings { independent_eyes: true, ..settings() },
@@ -7815,12 +7811,7 @@ mod tests {
     #[test]
     fn each_output_has_its_default_port() {
         assert_eq!(settings().port(), 9000);
-        let etvr = Settings {
-            output: OutputKind::Etvr,
-            ..settings()
-        };
-        assert_eq!(etvr.port(), 8889);
-        assert_eq!(Settings { port: Some(9100), ..etvr }.port(), 9100);
+        assert_eq!(Settings { port: Some(9100), ..settings() }.port(), 9100);
         assert!(Target::of(&settings()) == Target::SteamLink { port: 9000 });
         let livelink = Settings {
             output: OutputKind::LiveLink,
@@ -7838,8 +7829,8 @@ mod tests {
             sending: false,
             ..settings()
         };
-        let etvr = Settings {
-            output: OutputKind::Etvr,
+        let module = Settings {
+            output: OutputKind::FrameEyeOsc,
             ..settings()
         };
         let moved = Settings {
@@ -7847,7 +7838,7 @@ mod tests {
             ..settings()
         };
         assert!(vrchat_stream(&base).is_some());
-        assert!(vrchat_stream(&paused).is_none() && vrchat_stream(&etvr).is_none());
+        assert!(vrchat_stream(&paused).is_none() && vrchat_stream(&module).is_none());
         assert_ne!(vrchat_stream(&base), vrchat_stream(&moved));
         let tweaked = Settings {
             lid_open: 0.85,
@@ -7860,7 +7851,7 @@ mod tests {
             ..settings()
         };
         assert_eq!(livelink_stream(&livelink), Some(("auto", 11111)));
-        assert!(livelink_stream(&base).is_none() && livelink_stream(&etvr).is_none());
+        assert!(livelink_stream(&base).is_none() && livelink_stream(&module).is_none());
         assert!(livelink_stream(&Settings { sending: false, ..livelink.clone() }).is_none());
         assert_ne!(livelink_stream(&livelink), livelink_stream(&Settings { port: Some(11112), ..livelink.clone() }));
         assert_eq!(livelink_stream(&livelink), livelink_stream(&Settings { lid_open: 0.85, ..livelink.clone() }));
@@ -9514,12 +9505,6 @@ mod tests {
         let sent = run(25.0, [0..0, 150..170]);
         assert!(sent[152..170].iter().all(|sample| sample.lids[1] == 0.0), "{:?}", sent[160].lids);
         assert!(sent[90..270].iter().all(|sample| sample.lids[0] > 0.5), "{:?}", sent[160].lids);
-        // --eye-behavior 1 never closed an eye on the camera's word, and still does not
-        let v1 = Settings { eye_behavior: 1, ..settings.clone() };
-        let mut smoother = Smoother::new(&v1);
-        let sent = camera_samples(&v1, &mut smoother, 100.0, 2.0, |_| [0.9; 2], |_| Some(camera_eyes([(0.0, 0.0, true), (0.75, 0.0, false)])));
-        assert!(sent[90..].iter().all(|sample| sample.lids[0] > 0.5));
-        assert!(smoother.side.open_lid == [None; 2] && smoother.side.shut_at == [None; 2], "not even kept with 1");
     }
 
     #[test]
@@ -9700,10 +9685,6 @@ mod tests {
         assert!(sent[137..390].iter().all(|sample| sample.closed_overruled == [true, false]), "{:?}", sent[137].closed_overruled);
         assert!(sent[170..390].iter().all(|sample| sample.lids[0] > 0.7 && sample.lid_from[0] != LidFrom::CameraClosed), "{:?}", sent[170].lids);
         assert!(sent[390..].iter().all(|sample| sample.closed_overruled == [false; 2]));
-        // --eye-behavior 1 never closed an eye on the camera's word, and is as before
-        let v1 = Settings { eye_behavior: 1, ..settings.clone() };
-        let sent = doubt_samples(&v1, |_| [0.9; 2], sure, 90..390);
-        assert!(sent.iter().all(|sample| sample.closed_overruled == [false; 2] && sample.lids[0] > 0.7));
     }
 
     #[test]
@@ -10308,12 +10289,7 @@ mod tests {
         assert_eq!((value("EyeSquintLeft"), value("EyeSquintRight"), value("EyeSquint")), (None, Some(0.4), Some(0.4)));
         assert_eq!((value("PupilDiameterLeft"), value("PupilDiameterRight")), (Some(0.4), None));
         assert_eq!((value("PupilDilation"), value("PupilDiameter")), (Some(0.5), Some(0.4)));
-        // Not to the other outputs; the Steam Link names stay last; the prefix applies
-        let etvr = Settings {
-            output: OutputKind::Etvr,
-            ..settings()
-        };
-        assert_eq!(osc_messages(&etvr, &Sample { camera, ..sample() }), sent(&etvr));
+        // The Steam Link names stay last; the prefix applies
         let messages = osc_messages(&steamlink(), &Sample { camera, ..sample() });
         assert_eq!(messages.len(), 28);
         assert_eq!(messages[16..], steamlink_messages(sample().gaze, sample().lids)[..]);
@@ -10359,7 +10335,7 @@ mod tests {
         // Only in LiveLink mode, while sending, with the setting on; to port 9000 of the LiveLink target's host
         assert_eq!(pupil_stream(&livelink), Some(("auto", 9000)));
         assert!(pupil_stream(&settings()).is_none());
-        assert!(pupil_stream(&Settings { output: OutputKind::Etvr, ..livelink.clone() }).is_none());
+        assert!(pupil_stream(&Settings { output: OutputKind::FrameEyeOsc, ..livelink.clone() }).is_none());
         assert!(pupil_stream(&Settings { sending: false, ..livelink.clone() }).is_none());
         assert!(pupil_stream(&Settings { pupils_to_vrchat: false, ..livelink.clone() }).is_none());
         assert!(pupil_target(&livelink) == Target::SteamLink { port: 9000 });
@@ -10910,8 +10886,6 @@ mod tests {
         for eye in eyes {
             most = most.max(eye.wide).max(eye.vrcft_lid() - LID_RELAXED);
         }
-        // The ETVR Tracking Module's eyelid stops at relaxed open (1.0) anyway
-        assert!(output_lids(OutputKind::Etvr, sample.lids).iter().all(|lid| *lid <= 1.0));
         most
     }
 
@@ -10936,10 +10910,10 @@ mod tests {
                 _ => camera(0.75, 0.0),
             })
         };
-        for (behavior, raw) in [(2, false), (1, false), (2, true), (1, true)] {
-            let on = Settings { eye_behavior: behavior, raw, ..camera_settings() };
+        for raw in [false, true] {
+            let on = Settings { raw, ..camera_settings() };
             let off = Settings { widen: false, ..on.clone() };
-            let label = format!("eye_behavior {behavior}, raw {raw}");
+            let label = format!("raw {raw}");
             let runs: [(&str, Vec<Sample>, Vec<Sample>); 2] = [
                 ("camera", widen_run(&on, blink(0.8), camera_widened), widen_run(&off, blink(0.8), camera_widened)),
                 ("valve", widen_run(&on, blink(1.0), no_camera), widen_run(&off, blink(1.0), no_camera)),
@@ -11141,10 +11115,10 @@ mod tests {
 
     #[test]
     fn brows_go_by_the_eyelids_before_the_widen_cap_and_hold_through_blinks() {
-        for (behavior, raw) in [(2, false), (1, false), (2, true)] {
-            let on = Settings { brow_from_widen: true, eye_behavior: behavior, raw, ..camera_settings() };
+        for raw in [false, true] {
+            let on = Settings { brow_from_widen: true, raw, ..camera_settings() };
             let no_widen = Settings { widen: false, ..on.clone() };
-            let label = format!("eye_behavior {behavior}, raw {raw}");
+            let label = format!("raw {raw}");
             for ((name, with), (_, without)) in brow_runs(&on).into_iter().zip(brow_runs(&no_widen)) {
                 // Widening off: no eyelid goes out widened...
                 assert!(all_relaxed_or_below(&without), "{label}, {name}");
@@ -11167,12 +11141,12 @@ mod tests {
 
     #[test]
     fn brows_off_change_nothing_and_on_change_only_the_brows() {
-        for (behavior, raw) in [(2, false), (1, false), (2, true), (1, true)] {
-            let off = Settings { eye_behavior: behavior, raw, ..camera_settings() };
+        for raw in [false, true] {
+            let off = Settings { raw, ..camera_settings() };
             let on = Settings { brow_from_widen: true, ..off.clone() };
             for ((name, without), (_, with)) in brow_runs(&off).into_iter().zip(brow_runs(&on)) {
                 for (i, (a, b)) in without.iter().zip(&with).enumerate() {
-                    let label = format!("eye_behavior {behavior}, raw {raw}, {name}: sample {i}");
+                    let label = format!("raw {raw}, {name}: sample {i}");
                     // Off: no brows anywhere
                     assert_eq!(a.brows, None, "{label}");
                     assert!(osc_messages(&off, a).iter().all(|(addr, _)| !addr.contains("Brow")), "{label}");
@@ -11229,8 +11203,6 @@ mod tests {
         let all = osc_messages(&Settings { steamlink_params: true, ..settings.clone() }, &on);
         let first = all.iter().position(|(addr, _)| addr.contains("Brow")).unwrap();
         assert!(all[first - 1].0.ends_with("v2/EyeY") && all[first + 8].0 == "/avatar/parameters/LeftEyeX");
-        // Not to the ETVR module (it has no brows)
-        assert!(brows(osc_messages(&Settings { output: OutputKind::Etvr, ..settings.clone() }, &on)).is_empty());
         // Released: every one 0 once, with the prefix
         let zero = |prefix: &str| -> Vec<(String, OscType)> {
             BROW_PARAMS.iter().map(|name| (format!("/avatar/parameters{prefix}/v2/{name}"), OscType::Float(0.0))).collect()
@@ -11246,12 +11218,11 @@ mod tests {
         let settings = Settings { brow_from_widen: true, ..settings() };
         let data = reading(0, [0.0, 0.0], [1.0, 1.0]);
         let on = Sample { brows: Some([0.6, 0.2]), ..sample() };
-        // To every output that takes brows, the panel's copy has them; ETVR takes none, so none are shown
+        // To every output, the panel's copy has them
         for output in [OutputKind::Vrchat, OutputKind::LiveLink, OutputKind::FrameEyeOsc] {
             let settings = Settings { output, ..settings.clone() };
             assert_eq!(dot_sample(&settings, &data, &on, None).brows, Some([0.6, 0.2]), "{output:?}");
         }
-        assert_eq!(dot_sample(&Settings { output: OutputKind::Etvr, ..settings.clone() }, &data, &on, None).brows, None);
         // brow_from_widen off (no brows in the sample): none, and the datagram is as before
         let off = dot_sample(&settings, &data, &sample(), None);
         assert_eq!(off.brows, None);
@@ -11304,5 +11275,649 @@ mod tests {
             assert_eq!(param(&received, &brow("InnerUp")), Some(0.0), "{received:?}");
             assert!(!bridge.brow_out);
         }
+    }
+
+    /// An extra output entry for the tests.
+    fn extra(format: config::ExtraFormat, host: &str, port: u16) -> config::ExtraOutput {
+        config::ExtraOutput {
+            name: format.name().into(),
+            enabled: true,
+            format: Some(format),
+            host: host.into(),
+            port,
+            bundle: false,
+            max_rate: None,
+            error: None,
+        }
+    }
+
+    /// A listener on the loopback, and its port.
+    fn listener() -> (UdpSocket, u16) {
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        (listener, port)
+    }
+
+    /// Everything waiting at `listener` (each next datagram within 50 ms).
+    fn drain(listener: &UdpSocket) -> Vec<Vec<u8>> {
+        let mut buffer = [0u8; 2048];
+        listener.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        std::iter::from_fn(|| listener.recv(&mut buffer).ok().map(|size| buffer[..size].to_vec())).collect()
+    }
+
+    /// A FrameEyeOSC packet's sequence and whether it has TRACKING.
+    fn feo_header(packet: &[u8]) -> (u32, bool) {
+        let sequence = u32::from_le_bytes(packet[8..12].try_into().unwrap());
+        (sequence, u32::from_le_bytes(packet[12..16].try_into().unwrap()) & 1 == 1)
+    }
+
+    /// The bridge with `settings` applied as a reload (so the extras are set up as at a config change) and looked up.
+    fn bridge_with(settings: &Settings) -> Bridge {
+        let mut bridge = test_bridge(Settings { extra_outputs: Vec::new(), ..settings.clone() });
+        bridge.apply(reload(settings)).unwrap();
+        bridge.output.refresh();
+        bridge.refresh_extras();
+        bridge
+    }
+
+    #[test]
+    fn a_feo1_extra_gets_the_main_outputs_bytes() {
+        let (main, main_port) = listener();
+        let (relay, relay_port) = listener();
+        let (second, second_port) = listener();
+        for brows in [false, true] {
+            let settings = Settings {
+                output: OutputKind::FrameEyeOsc,
+                host: "127.0.0.1".into(),
+                port: Some(main_port),
+                brow_from_widen: brows,
+                lid_calibration: false,
+                extra_outputs: vec![
+                    extra(config::ExtraFormat::Feo1, "main", relay_port),
+                    extra(config::ExtraFormat::Feo1, "127.0.0.1", second_port),
+                ],
+                ..settings()
+            };
+            let mut bridge = bridge_with(&settings);
+            for index in 0..20 {
+                bridge.on_sample(reading(index, [0.2, -0.1], [1.0, 0.6])).unwrap();
+            }
+            let sent = drain(&main);
+            assert_eq!(sent.len(), 20);
+            assert_eq!(sent[0].len(), if brows { 108 } else { 76 });
+            // The same packet, built once: one session and sequence for all
+            assert_eq!(drain(&relay), sent);
+            assert_eq!(drain(&second), sent);
+            let sequences: Vec<u32> = sent.iter().map(|packet| feo_header(packet).0).collect();
+            assert_eq!(sequences, (0..20).collect::<Vec<u32>>());
+            // Paused: one packet without TRACKING for all three, the same one
+            bridge.apply(reload(&Settings { sending: false, ..settings.clone() })).unwrap();
+            let idle = drain(&main);
+            assert_eq!((idle.len(), feo_header(&idle[0])), (1, (20, false)));
+            assert_eq!((drain(&relay), drain(&second)), (idle.clone(), idle));
+            bridge.apply(reload(&settings)).unwrap();
+            bridge.refresh_extras();
+            bridge.on_sample(reading(20, [0.2, -0.1], [1.0, 0.6])).unwrap();
+            let sent = drain(&main);
+            assert_eq!(feo_header(&sent[0]), (21, true));
+            assert_eq!((drain(&relay), drain(&second)), (sent.clone(), sent));
+            // Lost: again one for all three
+            bridge.on_lost("test").unwrap();
+            let idle = drain(&main);
+            assert_eq!((idle.len(), feo_header(&idle[0])), (1, (22, false)));
+            assert_eq!((drain(&relay), drain(&second)), (idle.clone(), idle));
+        }
+    }
+
+    #[test]
+    fn a_feo1_extra_without_the_frameeyeosc_output_counts_on_by_itself() {
+        let (vrchat, vrchat_port) = listener();
+        let (relay, relay_port) = listener();
+        let settings = Settings {
+            host: "127.0.0.1".into(),
+            port: Some(vrchat_port),
+            lid_calibration: false,
+            extra_outputs: vec![extra(config::ExtraFormat::Feo1, "main", relay_port)],
+            ..settings()
+        };
+        let mut bridge = bridge_with(&settings);
+        // Before any eye data: the packet without TRACKING, every FEO_IDLE_INTERVAL; VRChat gets nothing
+        bridge.keep_feo_alive();
+        bridge.keep_feo_alive();
+        assert_eq!(drain(&relay).iter().map(|packet| feo_header(packet)).collect::<Vec<_>>(), [(0, false)]);
+        bridge.feo_idle = Some(Instant::now() - FEO_IDLE_INTERVAL);
+        bridge.keep_feo_alive();
+        assert_eq!(feo_header(&drain(&relay)[0]), (1, false));
+        assert!(drain(&vrchat).is_empty());
+        // A packet per sample, as the FrameEyeOSC output would send it, next to VRChat's OSC
+        for index in 0..5 {
+            bridge.on_sample(reading(index, [0.2, -0.1], [1.0, 0.6])).unwrap();
+            let packets = drain(&relay);
+            let expected = feo_packet(bridge.latest.as_ref().unwrap(), 7, 2 + index as u32, 0);
+            assert_eq!(packets.len(), 1);
+            assert_eq!((&packets[0][..16], &packets[0][24..]), (&expected[..16], &expected[24..]));
+        }
+        assert!(!drain(&vrchat).is_empty());
+        // Paused: its last packet, without TRACKING, and nothing after it (not even while idle)
+        bridge.apply(reload(&Settings { sending: false, ..settings.clone() })).unwrap();
+        assert_eq!(drain(&relay).iter().map(|packet| feo_header(packet)).collect::<Vec<_>>(), [(7, false)]);
+        bridge.on_sample(reading(5, [0.2, -0.1], [1.0, 0.6])).unwrap();
+        bridge.on_lost("test").unwrap();
+        bridge.feo_idle = None;
+        bridge.keep_feo_alive();
+        assert!(drain(&relay).is_empty());
+        // Back on: the sequence goes on from where it was, never back
+        bridge.apply(reload(&settings)).unwrap();
+        bridge.refresh_extras();
+        bridge.keep_feo_alive();
+        assert_eq!(feo_header(&drain(&relay)[0]), (8, false));
+        // Moved to another port while tracking: the old one gets its last packet, the new one the samples
+        let (moved, moved_port) = listener();
+        bridge.on_sample(reading(6, [0.2, -0.1], [1.0, 0.6])).unwrap();
+        assert_eq!(feo_header(&drain(&relay)[0]), (9, true));
+        let elsewhere = Settings {
+            extra_outputs: vec![extra(config::ExtraFormat::Feo1, "127.0.0.1", moved_port)],
+            ..settings.clone()
+        };
+        bridge.apply(reload(&elsewhere)).unwrap();
+        bridge.refresh_extras();
+        assert_eq!(drain(&relay).iter().map(|packet| feo_header(packet)).collect::<Vec<_>>(), [(10, false)]);
+        bridge.on_sample(reading(7, [0.2, -0.1], [1.0, 0.6])).unwrap();
+        assert_eq!(feo_header(&drain(&moved)[0]), (11, true));
+        assert!(drain(&relay).is_empty());
+        // Turned off: its last packet
+        let off = Settings {
+            extra_outputs: vec![config::ExtraOutput { enabled: false, ..elsewhere.extra_outputs[0].clone() }],
+            ..settings.clone()
+        };
+        bridge.apply(reload(&off)).unwrap();
+        assert_eq!(feo_header(&drain(&moved)[0]), (12, false));
+        bridge.on_sample(reading(8, [0.2, -0.1], [1.0, 0.6])).unwrap();
+        assert!(drain(&moved).is_empty());
+    }
+
+    /// The main VRChat output's VRCFT v2 float messages among `messages` (its parameter prefix `prefix`), as the osc
+    /// format names them: under /avatar/parameters/FT/v2/. Not its EyeTrackingActive, pupil bits, Steam Link names or
+    /// VRChat's own eye tracking input.
+    fn main_v2_floats(messages: &[(String, Vec<OscType>)], prefix: &str) -> Vec<(String, Vec<OscType>)> {
+        let v2 = format!("/avatar/parameters{prefix}/v2/");
+        messages
+            .iter()
+            .filter(|(_, args)| matches!(args[..], [OscType::Float(_)]))
+            .filter_map(|(addr, args)| {
+                Some((format!("/avatar/parameters/FT/v2/{}", addr.strip_prefix(&v2)?), args.clone()))
+            })
+            .collect()
+    }
+
+    /// VRChat's eye tracking input as the osc format sends it: CenterVec for the combined gaze, EyesClosedAmount.
+    fn osc_eyes(gaze: [f32; 2], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
+        vec![
+            ("/tracking/eye/CenterVec".to_owned(), gaze_vector(gaze).map(OscType::Float).to_vec()),
+            ("/tracking/eye/EyesClosedAmount".to_owned(), vec![OscType::Float(eyes_closed_amount(lids))]),
+        ]
+    }
+
+    #[test]
+    fn the_osc_set_is_the_main_vrchat_outputs_v2_floats_whatever_its_settings() {
+        // Each eye its own gaze (as with "move eyes separately"), the camera's squint and pupils for both eyes, one
+        // or none, the brows on and off: in turn, so the squint and brows also stop
+        let both = CameraValues {
+            squint: [Some(0.2), Some(0.4)],
+            pupil_dilation: [Some(0.5), Some(0.7)],
+            pupil_diameter: [Some(4.0), Some(12.0)],
+        };
+        let left = CameraValues {
+            squint: [Some(0.3), None],
+            pupil_dilation: [None, Some(0.6)],
+            pupil_diameter: [None, Some(5.0)],
+        };
+        let none = CameraValues::default();
+        let steps = [(both, Some([0.4, 0.1])), (left, Some([0.0, 0.3])), (none, None), (both, None), (none, None)];
+        let variants = [
+            settings(),
+            Settings { prefix: String::new(), steamlink_params: true, pupil_bits: 3, ..settings() },
+            Settings {
+                prefix: "/Custom".into(),
+                eye_tracking_active: ActiveType::Float,
+                native_eyes: true,
+                independent_eyes: true,
+                pupil_bits: 4,
+                ..settings()
+            },
+        ];
+        for settings in variants {
+            let mut held = extras::Held::default();
+            let (mut squint_out, mut brow_out, mut bits) = ([false; 2], false, PupilBits::default());
+            for (index, (camera, brows)) in steps.into_iter().enumerate() {
+                let gaze = [0.1, -0.2, 0.3 + index as f32 * 0.1, 0.4, 0.2, 0.1];
+                let sample = Sample { gaze, camera, brows, ..sample() };
+                // What the main VRChat output sends with this sample, in its order (see Bridge::on_sample)
+                let mut main: Vec<(String, Vec<OscType>)> = osc_messages(&settings, &sample)
+                    .into_iter()
+                    .chain(bits.messages(&settings, pupil_dilation(&camera), Instant::now()))
+                    .chain(squint_release(&settings, squint_out, camera.squint))
+                    .chain(brow_release(&settings, brow_out, brows))
+                    .map(|(addr, value)| (addr, vec![value]))
+                    .collect();
+                main.extend(native_messages(&settings, gaze, sample.lids));
+                squint_out = camera.squint.map(|squint| squint.is_some());
+                brow_out = brows.is_some();
+                let osc = extras::osc_sample(&sample, &mut held);
+                assert_eq!(osc[..2], osc_eyes([0.2, 0.1], sample.lids)[..], "{index}");
+                assert_eq!(osc[2..], main_v2_floats(&main, &settings.prefix)[..], "{index}");
+                assert!(osc[2..].iter().all(|(addr, _)| addr.starts_with("/avatar/parameters/FT/v2/")));
+            }
+        }
+    }
+
+    #[test]
+    fn an_osc_extra_sends_the_main_vrchat_outputs_v2_floats_and_a_neutral_set_when_the_eyes_stop() {
+        let (main, main_port) = listener();
+        let (osc, osc_port) = listener();
+        let decode = |listener: &UdpSocket| -> Vec<_> { drain(listener).iter().map(|d| decode_osc(d)).collect() };
+        for (prefix, independent, brows) in [("/FT", false, false), ("", true, true), ("/Custom", true, false)] {
+            let settings = Settings {
+                host: "127.0.0.1".into(),
+                port: Some(main_port),
+                prefix: prefix.into(),
+                independent_eyes: independent,
+                brow_from_widen: brows,
+                steamlink_params: true,
+                native_eyes: true,
+                pupil_bits: 3,
+                lid_calibration: false,
+                extra_outputs: vec![extra(config::ExtraFormat::Osc, "127.0.0.1", osc_port)],
+                ..settings()
+            };
+            let mut bridge = bridge_with(&settings);
+            for index in 0..20 {
+                // The eyes apart, widening and back
+                let openness = if index < 10 { [1.0, 0.95] } else { [0.6, 0.5] };
+                let data = EyeData {
+                    gaze: [[0.35, 0.2, -1.0], [0.2, 0.25, -1.0]],
+                    pre_fusion_gaze: [[0.35, 0.2, -1.0], [0.2, 0.25, -1.0]],
+                    ..reading(index, [0.3, 0.2], openness)
+                };
+                bridge.on_sample(data).unwrap();
+                let sample = bridge.latest.as_ref().unwrap();
+                let (at_main, at_osc) = (decode(&main), decode(&osc));
+                // Every sample: VRChat's eye input, then the main output's v2 floats under /FT, whatever its prefix
+                assert_eq!(at_osc[..2], osc_eyes([sample.gaze[4], sample.gaze[5]], sample.lids)[..], "{index}");
+                assert_eq!(at_osc[2..], main_v2_floats(&at_main, prefix)[..], "{prefix} {index}");
+                assert_eq!(at_osc.len(), if brows { 18 } else { 10 });
+            }
+            // Lost: relaxed open eyes looking ahead and the brows back to 0 (as the main output's), once
+            bridge.on_lost("test").unwrap();
+            let (at_main, at_osc) = (decode(&main), decode(&osc));
+            let mut neutral = osc_eyes([0.0; 2], [LID_RELAXED; 2]);
+            let gaze = ["EyeLeftX", "EyeLeftY", "EyeRightX", "EyeRightY"].map(|name| (name, 0.0));
+            let rest = [("EyeLidLeft", LID_RELAXED), ("EyeLidRight", LID_RELAXED), ("EyeX", 0.0), ("EyeY", 0.0)];
+            for (name, value) in gaze.into_iter().chain(rest) {
+                neutral.push((format!("/avatar/parameters/FT/v2/{name}"), vec![OscType::Float(value)]));
+            }
+            assert_eq!(at_osc[..10], neutral[..]);
+            assert_eq!(at_osc[10..], main_v2_floats(&at_main, prefix)[..]);
+            assert_eq!(at_osc.len(), if brows { 18 } else { 10 });
+            // Then nothing, not even while the other outputs are kept alive
+            bridge.feo_idle = None;
+            bridge.keep_feo_alive();
+            bridge.keep_livelink_alive();
+            assert!(decode(&osc).is_empty());
+            // Paused while tracking: the same neutral set, then nothing; back on: the samples again
+            bridge.on_sample(reading(20, [0.3, 0.2], [0.6, 0.5])).unwrap();
+            drain(&osc);
+            bridge.apply(reload(&Settings { sending: false, ..settings.clone() })).unwrap();
+            assert_eq!(decode(&osc)[..10], neutral[..]);
+            bridge.on_sample(reading(21, [0.3, 0.2], [0.6, 0.5])).unwrap();
+            assert!(decode(&osc).is_empty());
+            bridge.apply(reload(&settings)).unwrap();
+            bridge.refresh_extras();
+            bridge.on_sample(reading(22, [0.3, 0.2], [0.6, 0.5])).unwrap();
+            assert_eq!(decode(&osc)[0].0, "/tracking/eye/CenterVec");
+            // Moved to another port: the old one gets the neutral set, the new one the samples
+            let (moved, moved_port) = listener();
+            let elsewhere =
+                Settings { extra_outputs: vec![extra(config::ExtraFormat::Osc, "127.0.0.1", moved_port)], ..settings };
+            bridge.apply(reload(&elsewhere)).unwrap();
+            bridge.refresh_extras();
+            assert_eq!(decode(&osc)[..10], neutral[..]);
+            bridge.on_sample(reading(23, [0.3, 0.2], [0.6, 0.5])).unwrap();
+            assert!(decode(&osc).is_empty());
+            assert_eq!(decode(&moved).len(), if brows { 18 } else { 10 });
+            bridge.on_lost("test").unwrap();
+            drain(&moved);
+            drain(&main);
+        }
+    }
+
+    /// Each OSC message in `datagram`, a message or a bundle of messages.
+    fn decode_osc_or_bundle(datagram: &[u8]) -> Vec<(String, Vec<OscType>)> {
+        let (_, packet) = rosc::decoder::decode_udp(datagram).unwrap();
+        match packet {
+            OscPacket::Message(message) => vec![(message.addr, message.args.into_iter().map(from_rosc).collect())],
+            OscPacket::Bundle(bundle) => {
+                assert_eq!((bundle.timetag.seconds, bundle.timetag.fractional), (0, 1));
+                let messages = bundle.content.into_iter().map(|content| match content {
+                    OscPacket::Message(message) => (message.addr, message.args.into_iter().map(from_rosc).collect()),
+                    OscPacket::Bundle(_) => panic!("nested bundle"),
+                });
+                messages.collect()
+            }
+        }
+    }
+
+    #[test]
+    fn a_bundled_osc_extra_sends_the_same_messages_in_one_datagram_a_sample_and_max_rate_skips_samples() {
+        let (_main, main_port) = listener();
+        let (plain, plain_port) = listener();
+        let (bundled, bundled_port) = listener();
+        let (capped, capped_port) = listener();
+        let settings = Settings {
+            host: "127.0.0.1".into(),
+            port: Some(main_port),
+            brow_from_widen: true,
+            lid_calibration: false,
+            extra_outputs: vec![
+                extra(config::ExtraFormat::Osc, "127.0.0.1", plain_port),
+                config::ExtraOutput { bundle: true, ..extra(config::ExtraFormat::Osc, "127.0.0.1", bundled_port) },
+                // (1 a second: of samples sent at once only the first goes)
+                config::ExtraOutput {
+                    bundle: true,
+                    max_rate: Some(1.0),
+                    ..extra(config::ExtraFormat::Osc, "127.0.0.1", capped_port)
+                },
+            ],
+            ..settings()
+        };
+        let mut bridge = bridge_with(&settings);
+        let mut capped_messages = Vec::new();
+        for index in 0..10 {
+            bridge.on_sample(reading(index, [0.3, 0.2], [0.8, 0.7])).unwrap();
+            let at_plain: Vec<_> = drain(&plain).iter().map(|d| decode_osc(d)).collect();
+            let at_bundled = drain(&bundled);
+            // The same messages in the same order, in a single datagram
+            assert_eq!(at_bundled.len(), 1, "{index}");
+            assert!(at_bundled[0].starts_with(b"#bundle\0") && at_bundled[0].len() <= osc::MAX_BUNDLE);
+            assert_eq!(decode_osc_or_bundle(&at_bundled[0]), at_plain, "{index}");
+            assert_eq!(at_plain.len(), 18);
+            capped_messages.extend(drain(&capped).iter().flat_map(|d| decode_osc_or_bundle(d)));
+        }
+        // (each round waits about 150 ms for the listeners, so about 1.5 s: one or two samples, never all 10)
+        let capped_samples = capped_messages.len() / 18;
+        assert_eq!(capped_messages.len() % 18, 0);
+        assert!((1..=3).contains(&capped_samples), "{capped_samples}");
+        assert!(bridge.extras.status(Instant::now())[2].rate <= 2.0);
+        // Lost: the final set, bundled too, and to the capped one at once
+        bridge.on_lost("test").unwrap();
+        let at_plain: Vec<_> = drain(&plain).iter().map(|d| decode_osc(d)).collect();
+        let at_bundled: Vec<_> = drain(&bundled).iter().flat_map(|d| decode_osc_or_bundle(d)).collect();
+        let at_capped: Vec<_> = drain(&capped).iter().flat_map(|d| decode_osc_or_bundle(d)).collect();
+        assert_eq!(at_plain[0].0, "/tracking/eye/CenterVec");
+        assert_eq!((&at_bundled, &at_capped), (&at_plain, &at_plain));
+    }
+
+    #[test]
+    fn an_extra_on_the_main_outputs_address_or_an_earlier_extras_is_refused() {
+        let (main, main_port) = listener();
+        let (gaze, gaze_port) = listener();
+        let settings = Settings {
+            output: OutputKind::FrameEyeOsc,
+            host: "127.0.0.1".into(),
+            port: Some(main_port),
+            lid_calibration: false,
+            extra_outputs: vec![
+                extra(config::ExtraFormat::Osc, "main", main_port),
+                extra(config::ExtraFormat::Osc, "127.0.0.1", gaze_port),
+                // (not "localhost": it may look up as ::1 first, a different address)
+                extra(config::ExtraFormat::Feo1, "127.0.0.1", gaze_port),
+            ],
+            ..settings()
+        };
+        let mut bridge = bridge_with(&settings);
+        bridge.on_sample(reading(0, [0.3, 0.2], [1.0, 1.0])).unwrap();
+        // Only the main output's packet at the main port, only the first extra's messages at the other
+        let at_main = drain(&main);
+        assert_eq!((at_main.len(), &at_main[0][..4]), (1, &b"FEO1"[..]));
+        let at_gaze = drain(&gaze);
+        assert_eq!(at_gaze.len(), 10);
+        assert_eq!(decode_osc(&at_gaze[0]).0, "/tracking/eye/CenterVec");
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        let refused: Vec<_> = status["extras"].as_array().unwrap().iter().map(|extra| &extra["refused"]).collect();
+        assert_eq!(refused, [&serde_json::json!("same as main"), &serde_json::Value::Null, &"duplicate".into()]);
+        assert_eq!(status["extras"][1]["sending"], true);
+        assert_eq!(status["extras"][1]["target"], format!("127.0.0.1:{gaze_port}"));
+        assert_eq!(status["extras"][1]["net"], "lan");
+        assert_eq!(status["extras"][0]["sending"], false);
+        // The main output moves away (its last packet without TRACKING to the old port): the first one sends, and the
+        // third one is still the second one's duplicate
+        let (moved, moved_port) = listener();
+        bridge.apply(reload(&Settings { port: Some(moved_port), ..settings.clone() })).unwrap();
+        bridge.output.refresh();
+        bridge.refresh_extras();
+        assert_eq!(drain(&main).iter().map(|packet| feo_header(packet).1).collect::<Vec<_>>(), [false]);
+        bridge.on_sample(reading(1, [0.3, 0.2], [1.0, 1.0])).unwrap();
+        assert_eq!(drain(&moved).len(), 1);
+        assert_eq!(decode_osc(&drain(&main)[0]).0, "/tracking/eye/CenterVec");
+        assert_eq!(drain(&gaze).len(), 10);
+    }
+
+    #[test]
+    fn lan_only_refuses_a_public_main_output_and_off_marks_it_public() {
+        // 192.0.2.1 is a documentation address: public, and nothing is sent to it here
+        let public = Settings {
+            host: "192.0.2.1".into(),
+            ..settings()
+        };
+        let mut bridge = bridge_with(&public);
+        assert_eq!(bridge.output.addr(), None);
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!((&status["lan_only"], &status["refused"]), (&true.into(), &"public address".into()));
+        assert_eq!(status["net"], serde_json::Value::Null);
+        assert_eq!(status["target"], serde_json::Value::Null);
+        // Off: sent to, and marked public
+        bridge.apply(reload(&Settings { lan_only: false, ..public.clone() })).unwrap();
+        bridge.output.refresh();
+        assert_eq!(bridge.output.addr(), Some("192.0.2.1:9000".parse().unwrap()));
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!((&status["refused"], &status["net"]), (&serde_json::Value::Null, &"public".into()));
+        // On again: refused at once
+        bridge.apply(reload(&public)).unwrap();
+        bridge.output.refresh();
+        assert_eq!(bridge.output.addr(), None);
+        // A home network address is unchanged either way
+        for lan_only in [true, false] {
+            let mut bridge = bridge_with(&Settings { host: "192.168.0.10".into(), lan_only, ..settings() });
+            assert_eq!(bridge.output.addr(), Some("192.168.0.10:9000".parse().unwrap()));
+            assert_eq!(bridge.output.net(), Some(dest::Net::Lan));
+            bridge.output.refresh();
+        }
+        // The same check for an extra; a VPN address is marked so
+        let vpn = Settings {
+            host: "192.168.0.10".into(),
+            extra_outputs: vec![
+                extra(config::ExtraFormat::Osc, "192.0.2.1", 9015),
+                extra(config::ExtraFormat::Osc, "100.64.0.7", 9015),
+            ],
+            ..settings()
+        };
+        let bridge = bridge_with(&vpn);
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(status["extras"][0]["refused"], "public address");
+        assert_eq!(status["extras"][0]["sending"], false);
+        assert_eq!(status["extras"][0]["target"], serde_json::Value::Null);
+        assert_eq!(status["extras"][1]["net"], "vpn");
+        assert_eq!(status["extras"][1]["refused"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn status_lists_every_extra_entry_in_order() {
+        let settings = Settings {
+            host: "127.0.0.1".into(),
+            extra_outputs: vec![
+                config::ExtraOutput { enabled: false, ..extra(config::ExtraFormat::Feo1, "127.0.0.1", 11113) },
+                config::ExtraOutput {
+                    name: "App 2".into(),
+                    enabled: false,
+                    format: None,
+                    host: String::new(),
+                    port: 0,
+                    bundle: false,
+                    max_rate: None,
+                    error: Some("unknown key \"pupils\" (written by a newer frameeyeosc?)".into()),
+                },
+                extra(config::ExtraFormat::Osc, "127.0.0.1", 9015),
+            ],
+            ..settings()
+        };
+        let bridge = bridge_with(&settings);
+        let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+        assert_eq!(
+            status["extras"][0],
+            serde_json::json!({"index": 1, "name": "feo1", "enabled": false, "format": "feo1", "host": "127.0.0.1",
+                "port": 11113, "sending": false, "target": null, "net": null, "rate": 0.0,
+                "dropped_rate": 0.0, "refused": null, "last_error": null})
+        );
+        assert_eq!(status["extras"][1]["format"], serde_json::Value::Null);
+        assert_eq!(status["extras"][1]["refused"], "unknown key \"pupils\" (written by a newer frameeyeosc?)");
+        assert_eq!(status["extras"][2]["format"], "osc");
+        assert_eq!(status["extras"][2].get("lids"), None);
+        assert_eq!(status["extras"][2]["target"], "127.0.0.1:9015");
+        // The settings in effect list them too
+        assert_eq!(status["effective"]["extra_outputs"].as_array().unwrap().len(), 3);
+        assert_eq!(status["effective"]["lan_only"], true);
+        assert_eq!(status["pupil_net"], serde_json::Value::Null);
+    }
+
+    /// What the main loop looks up before each sample, for wire_dump.
+    fn wire_refresh(bridge: &mut Bridge) {
+        bridge.output.refresh();
+        bridge.pupil_output.refresh();
+        bridge.refresh_extras();
+    }
+
+    /// Not a check by itself (ignored): runs the recording FEO_WIRE_RECORDING through the bridge with several settings
+    /// and writes every datagram that reaches a listener (the main output, the pupils straight to VRChat, and the
+    /// extra outputs FEO_WIRE_ARGS gives on the command line, `{X1}` and `{X2}` standing for their ports) to
+    /// FEO_WIRE_OUT, one per line, with the time stamps zeroed. Two builds' files can then be compared byte for byte:
+    /// `FEO_WIRE_RECORDING=eyes.csv FEO_WIRE_OUT=wire.txt cargo test --release wire_dump -- --ignored`.
+    #[test]
+    #[ignore]
+    fn wire_dump() {
+        use std::io::Write as _;
+        let Some(recording) = std::env::var_os("FEO_WIRE_RECORDING") else {
+            return;
+        };
+        let rows = replay::load(Path::new(&recording)).unwrap();
+        let mut out = io::BufWriter::new(fs::File::create(std::env::var_os("FEO_WIRE_OUT").unwrap()).unwrap());
+        let bind = || UdpSocket::bind("127.0.0.1:0").unwrap();
+        let listeners = [("main", bind()), ("pupils", bind()), ("x1", bind()), ("x2", bind())];
+        let port = |index: usize| listeners[index].1.local_addr().unwrap().port();
+        for (_, listener) in &listeners {
+            listener.set_nonblocking(true).unwrap();
+        }
+        let argv: Vec<String> = std::env::var("FEO_WIRE_ARGS")
+            .unwrap_or_default()
+            .replace("{X1}", &port(2).to_string())
+            .replace("{X2}", &port(3).to_string())
+            .split_whitespace()
+            .map(String::from)
+            .collect();
+        let configs = [
+            ("vrchat", r#"{"output": "vrchat"}"#),
+            (
+                "vrchat_all",
+                r#"{"output": "vrchat", "native_eyes": true, "steamlink_params": true, "vrc_face_tracking": true,
+                    "pupil_bits": 3, "brow_from_widen": true, "eye_tracking_active": "float",
+                    "independent_eyes": true}"#,
+            ),
+            ("livelink", r#"{"output": "livelink", "brow_from_widen": true}"#),
+            ("frameeyeosc", r#"{"output": "frameeyeosc"}"#),
+            (
+                "frameeyeosc_brows",
+                r#"{"output": "frameeyeosc", "brow_from_widen": true, "independent_eyes": true, "own_eye_gaze": 0.3,
+                    "gaze_scale_left": 1.4, "raw": false, "lid_widen": "high"}"#,
+            ),
+            ("frameeyeosc_raw", r#"{"output": "frameeyeosc", "raw": true, "camera_lids": false}"#),
+        ];
+        let live_dir = eyecam_live::tests::TempDir::new("wire-dump");
+        let live_path = live_dir.0.join("live");
+        for (name, json) in configs {
+            let mut settings: Settings = serde_json::from_str(json).unwrap();
+            settings.host = "127.0.0.1".into();
+            settings.port = Some(port(0));
+            // Learning starts 20 s of wall time in, which would differ between runs
+            settings.lid_calibration = false;
+            let argv = std::iter::once("frameeyeosc".to_owned()).chain(argv.clone());
+            let matches = Args::command().try_get_matches_from(argv).unwrap();
+            let args = Args::from_arg_matches(&matches).unwrap();
+            config::apply_args(&mut settings, &args, &config::given_options(&matches));
+            // The pupils straight to VRChat go to their own listener, not VRChat's port, also after each reload
+            let pupils = Target::Fixed { host: "127.0.0.1".into(), port: port(1) };
+            let apply = |bridge: &mut Bridge, settings: &Settings| {
+                bridge.apply(reload(settings)).unwrap();
+                bridge.pupil_output.set_target(pupils.clone());
+            };
+            let mut bridge = test_bridge(settings.clone());
+            apply(&mut bridge, &settings);
+            bridge.camera = LiveReader::new(live_path.clone(), Instant::now());
+            let mut dump = |bridge: &mut Bridge, index: usize| {
+                // (what reaches a loopback listener is there once sent)
+                wire_refresh(bridge);
+                for (stream, listener) in &listeners {
+                    let mut buffer = [0u8; 2048];
+                    while let Ok(size) = listener.recv(&mut buffer) {
+                        let mut datagram = buffer[..size].to_vec();
+                        if datagram.starts_with(b"FEO1") {
+                            datagram[16..24].fill(0);
+                        } else if size == livelink::PACKET_LEN && datagram[0] != b'/' {
+                            let at = livelink::PACKET_LEN - 244 - 1 - 16;
+                            datagram[at..at + 8].fill(0);
+                        }
+                        let hex: String = datagram.iter().map(|byte| format!("{byte:02x}")).collect();
+                        writeln!(out, "{name}\t{index}\t{stream}\t{hex}").unwrap();
+                    }
+                }
+            };
+            dump(&mut bridge, 0);
+            let mut last_time: Option<f64> = None;
+            for (index, (data, camera)) in rows.iter().enumerate() {
+                if last_time.is_some_and(|last| data.sample_time - last > TIMEOUT.as_secs_f64()) {
+                    bridge.on_lost("gap").unwrap();
+                }
+                last_time = Some(data.sample_time);
+                let now_ns = eyecam_live::monotonic_ns();
+                let eyes = std::array::from_fn(|eye| {
+                    let read = camera.map(|camera| (camera.eyes[eye], camera.fresh[eye]));
+                    let (values, fresh) = read.unwrap_or_default();
+                    eyecam_live::tests::TestEye {
+                        time_ns: now_ns,
+                        valid: values.valid && fresh,
+                        closed: values.closed,
+                        lid: values.lid,
+                        wide: values.wide,
+                        squint: values.squint,
+                        pupil_mm: values.pupil_mm,
+                        pupil_dilation: values.pupil_dilation,
+                        confidence: values.confidence,
+                    }
+                });
+                let (calib_state, live) = camera.map_or((0, false), |camera| (camera.calib_state, camera.live));
+                eyecam_live::tests::write_live(&live_path, &eyecam_live::tests::live_bytes(1, calib_state, live, eyes));
+                bridge.livelink_throttle = Throttle::default();
+                bridge.pupil_bits = PupilBits::default();
+                // Paused for a moment halfway through, and back
+                if index == rows.len() / 2 {
+                    apply(&mut bridge, &Settings { sending: false, ..settings.clone() });
+                    dump(&mut bridge, index);
+                    apply(&mut bridge, &settings);
+                }
+                bridge.on_sample(*data).unwrap();
+                dump(&mut bridge, index);
+            }
+            bridge.on_lost("end").unwrap();
+            dump(&mut bridge, rows.len());
+        }
+        out.flush().unwrap();
     }
 }

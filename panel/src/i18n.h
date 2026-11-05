@@ -31,7 +31,6 @@ struct UiText {
     const char* notRunningHint2;    ///< (line 2)
     const char* destination;        ///< "Destination" label
     const char* outputVrchatShort;  ///< "VRChat" in the destination line
-    const char* outputEtvrShort;    ///< "VRCFaceTracking" in the destination line
     const char* outputLivelinkShort;  ///< "VRCFT (LiveLink)" in the destination line
     const char* outputModuleShort;  ///< "VRCFT (FrameEyeOSC)" in the destination line
     const char* searchingPc;        ///< auto target not found yet
@@ -43,6 +42,10 @@ struct UiText {
     const char* trackerRateLowHint;  ///< shown when it is low
     const char* trackerRateSlowHere;     ///< the line below a low rate: frameeyeosc was too slow to take the samples
     const char* trackerRateSlowTracker;  ///< the line below a low rate: the eye tracker itself delivered few
+    const char* eyeRateSlow;     ///< ...in its place while SteamVR's eyeTrackingRateMin is below 90 (eye_rate::Line::Offer)
+    const char* eyeRateSet;      ///< ...the pill after it, which writes 90
+    const char* eyeRateDone;     ///< ...in its place for a few seconds after it was pressed
+    const char* eyeRateRefused;  ///< ...the eye data still low after that (the offer shows again)
     const char* lidsTitle;          ///< eyelids heading
     const char* legendRaw;          ///< raw value (legend)
     const char* legendSent;         ///< sent value (legend)
@@ -116,18 +119,12 @@ struct UiText {
     const char* outputVrchat;       ///< the destination cards' titles
     const char* outputLivelink;
     const char* outputModule;
-    const char* outputEtvr;
     const char* outputRecommended;  ///< the tag on the LiveLink card
     const char* outputAllInOne;     ///< the tag on the FrameEyeOSC card
     const char* vrchatDirectHint;   ///< under the cards while sending to VRChat directly: where to go if eyes don't move
-    /** Each output's two lines (VRChat, LiveLink, ETVR, FrameEyeOSC): sync, VRCFT. A leading ICON_CHECK and a
-     *  space hang in front of the lines on a card (icons.h). ETVR's go on one line after its
-     *  small button, joined by outputMarkSeparator. */
-    const char* outputMarks[4][2];
-    const char* outputMarkSeparator;
-    const char* outputDeprecated;    ///< the label after the small ETVR button under the cards
-    const char* etvrNotice1;         ///< the notice while ETVR is the output: it goes away in the next version...
-    const char* etvrNotice2;         ///< ...and to pick another destination above
+    /** Each output's two lines (VRChat, LiveLink, FrameEyeOSC): sync, VRCFT. A leading ICON_CHECK and a
+     *  space hang in front of the lines on a card (icons.h). */
+    const char* outputMarks[3][2];
     // The Basic tab's eye cameras row: not set up (a way to their tab), or set up (the camera_lids switch)
     const char* rowEyeCameras;
     const char* hintEyeCamerasNew;   ///< ...not set up: what they add
@@ -176,21 +173,21 @@ struct UiText {
     const char* hostEntryCancel;
     const char* hostErrEmpty;
     const char* hostErrIpv4;
+    const char* portEntryTitle;     ///< the keypad for a port (the main output's, "Other apps"' step 3)
+    const char* portEntryHint;
+    const char* portErrRange;       ///< (nothing typed: hostErrEmpty)
     const char* rowPort;
     const char* portDefaultVrchat;  ///< the port row's hint: the default port of the output type
     const char* portDefaultLivelink;
     const char* portDefaultModule;
-    const char* portDefaultEtvr;
     const char* portReset;          ///< back to default port
-    // Output tab, for LiveLink, FrameEyeOSC and ETVR: what to set up in VRCFT on the PC
+    // Output tab, for LiveLink and FrameEyeOSC: what to set up in VRCFT on the PC
     const char* vrcftSetupTitle;
     // Up to four steps each; the ones not used stay nullptr
     const char* vrcftStepsLivelink[4];
     const char* vrcftStepsModule[4];
-    const char* vrcftStepsEtvr[4];
     const char* vrcftModuleLink;    ///< where the FrameEyeOSC module's zip is, under its first step
     const char* vrcftSetupNote;     ///< the parameter names and syncing are up to VRCFT
-    const char* vrcftNoWide;        ///< ETVR: widened eyes don't come through
     const char* vrcftModulePupils;  ///< FrameEyeOSC with the eye cameras: the pupils go through VRCFT too
     const char* vrcftModuleLinkFailedFormat;  ///< the link couldn't open Chromium ("Couldn't open the browser: %s")
     const char* rowLanguage;
@@ -219,17 +216,6 @@ struct UiText {
     const char* hintDeadzone;
     const char* rowHold;
     const char* hintHold;
-    const char* rowEyeBehavior;       ///< Advanced > Version: "How the eyes move" (eye_behavior)...
-    const char* hintEyeBehavior;      ///< ...its hint
-    const char* eyeBehaviorV2;        ///< ...the segments: v2 (recommended)...
-    const char* eyeBehaviorV1;        ///< ...and v1 (up to 0.7.5)
-    const char* eyeBehaviorV2Line;    ///< ...and a line under it on what each does
-    const char* eyeBehaviorV1Line;
-    const char* eyeBehaviorLeftV1;    ///< the left column while v1 is on
-    const char* snapV2Only;           ///< Eyelids > Blinks & squint, in v1: (3) is not used
-    const char* floorV2Only;          ///< Eyelids > Blinks & squint, in v1: the floor is not used
-    const char* toVersionPage;        ///< the button beside them: "Advanced > Version"
-    const char* hintIndependentV1;    ///< "Move eyes separately" in v1
     const char* rowIndependent;
     const char* hintIndependent;
     const char* hintIndependentOneEye;  ///< instead, while the Frame tracks one eye alone (both eyes get its gaze)
@@ -422,6 +408,11 @@ struct UiText {
     const char* appsErrorNoDisplay;     ///< ...NoDisplay
     const char* appsErrorNoKonsole;     ///< ...NoKonsole
     const char* appsErrorFailed;        ///< ...Failed and UnknownApp
+    const char* rowEyeRate;          ///< "Having trouble"'s row for the eye cameras' speed (SteamVR's eyeTrackingRateMin)
+    const char* hintEyeRate;         ///< ...under it
+    const char* eyeRateFull;         ///< ...its choice: eyeTrackingRateMin 90
+    const char* eyeRateSteamVr;      ///< ...its choice: the key removed (SteamVR's default)
+    const char* eyeRateNowFormat;    ///< ...the line under it: the eye data's rate now (%.0f)
     // Records of calibrations and eye fits (report.h): the "Having trouble" page, a record, all records, report.txt
     const char* recordsTitle;       ///< "Recent records"
     const char* recordsHint;        ///< beside it
@@ -880,7 +871,7 @@ struct UiText {
     const char* lidFloorNoteIdle;  ///< ...beside it while no eye is on the cameras
     const char* rowLidOpenSnap;  ///< lid_open_snap (Blinks & squint, under the sent eyelids; VRCFT)
     const char* lidOpenSnapHint;  ///< ...its hint
-    const char* capSnapValve;     ///< ...in v2, the caption of lid_open_snap (the eyes without the cameras' eyelid)
+    const char* capSnapValve;     ///< ...the caption of lid_open_snap (the eyes without the cameras' eyelid)
     const char* capSnapCamera;    ///< ...and of camera_lid_open_snap (the eyes with it)
     const char* valveReadTitle;   ///< "Valve eyelids"' title: how Valve's openness is read
     const char* valveReadStandby; ///< ...beside it while the cameras supply both eyes
@@ -1030,11 +1021,8 @@ struct UiText {
 
     // Recommendation prompt
     const char* promptVrchat;
-    const char* promptEtvr;
     const char* promptVrchatDetail1;
     const char* promptVrchatDetail2;
-    const char* promptEtvrDetail1;
-    const char* promptEtvrDetail2;
     const char* promptLivelink;
     const char* promptLivelinkDetail1;
     const char* promptLivelinkDetail2;
@@ -1115,6 +1103,97 @@ struct UiText {
     const char* reasonIo;
     const char* reasonUpdater;          ///< usage, script-failed, spawn-failed
     const char* reasonOther;            ///< any other code
+
+    // The Output tab's sub-tabs, and "Other apps": up to three more destinations (extra_outputs) and lan_only
+    const char* outputPageMain;      ///< the sub-tab with the main destination (the rows from before)
+    const char* outputPageApps;      ///< the sub-tab with the other apps
+    const char* extrasTitle;         ///< the list's title
+    const char* extrasSub;           ///< ...and what it is, under it
+    const char* extrasSend;          ///< a row's switch: send
+    const char* extrasStop;          ///< ...stop
+    const char* extrasEdit;          ///< a row's "Change"
+    const char* extrasAddFormat;     ///< "+ Add a destination (%d left)"
+    const char* extrasFull;          ///< three already: how to add another
+    const char* extrasMoreFormat;    ///< more entries than are used ("%d more in config.json")
+    const char* extrasOldCore;       ///< the running frameeyeosc is older: it can't send to other apps
+    const char* extrasNotList;       ///< config.json's extra_outputs isn't a list
+    const char* rowLanOnly;          ///< lan_only's row
+    const char* hintLanOnly;         ///< ...under its title
+    const char* lanOnlyOnHint;       ///< ...under the switch while on
+    const char* lanOnlyOffHint;      ///< ...while off (a warning)
+    const char* extrasAddTitle;      ///< the flow's title, adding
+    const char* extrasEditTitle;     ///< ...changing
+    const char* extrasStepFormat;    ///< step 1's line under the title
+    const char* extrasStepHost;      ///< step 2's
+    const char* extrasStepPort;      ///< step 3's
+    const char* extrasStepOfFormat;  ///< "%d / 3"
+    const char* formatFeo1Title;     ///< the feo1 card
+    const char* formatFeo1Desc;
+    const char* formatFeo1Lines[2];
+    const char* formatOscTitle;      ///< the osc card
+    const char* formatOscDesc;
+    const char* formatOscLines[2];
+    const char* formatHint;          ///< how to tell which one, under the cards
+    const char* extrasCancel;
+    const char* extrasNext;
+    const char* extrasBack;
+    const char* extrasAddSave;       ///< step 3's button, adding
+    const char* extrasEditSave;      ///< ...changing
+    const char* extrasSaveAndSend;   ///< ...changing one that is stopped (saving turns it on)
+    const char* extrasDelete;        ///< "Delete this destination" (changing only)
+    const char* extrasDeleteFormat;  ///< its confirmation ("Delete %s? ...")
+    const char* extrasDeleteNo;
+    const char* extrasDeleteYes;
+    const char* extrasRowDelete;     ///< a row's own "Delete" in the list, next to "Change"
+    const char* extrasRowDeleteFormat;  ///< ...the row turned into its confirmation ("Delete "%s"? ...")
+    const char* extrasRowDeleteNo;   ///< ...its "Cancel" (its "Delete" is extrasDeleteYes)
+    const char* hostMain;            ///< step 2's choices, and the line under them
+    const char* hostMainSub;
+    const char* hostAuto;
+    const char* hostAutoSub;
+    const char* hostMainShort;       ///< "main" in a row of the list ("main PC")
+    const char* hostFrame;
+    const char* hostFrameSub;
+    const char* hostIp;
+    const char* hostIpSub;
+    const char* hostKeepFormat;      ///< a host the keypad can't type, kept as written ("As is: %s")
+    const char* hostKeepSub;
+    const char* hostUnknown;         ///< where "main" / "auto" goes while it isn't known yet
+    const char* ipEmpty;             ///< the typed address: nothing yet
+    const char* ipTyping;            ///< ...not an address yet
+    const char* ipLan;
+    const char* ipVpn;
+    const char* ipPublic;            ///< outside the home network, allowed (lan_only off)
+    const char* ipPublicBlocked;     ///< ...refused (lan_only on)
+    const char* ipBroadcast;
+    const char* ipMulticast;
+    const char* ipUnspecified;
+    const char* portNoteFeo1;        ///< step 3's port row
+    const char* portNoteOsc;
+    const char* rowSummary;
+    const char* hintSummary;
+    const char* clashMain;           ///< the same address and port as the main destination
+    const char* clashPupils;         ///< ...as the pupils (LiveLink)
+    const char* clashDuplicateFormat;  ///< ...as another entry ("Same as %s")
+    const char* extrasChanged;       ///< config.json changed under the flow: nothing written
+    const char* tagVpn;              ///< the tags after an address
+    const char* tagPublic;
+    const char* pupilsLine;          ///< the left column's line for the pupils straight to VRChat
+    // Why a destination sends nothing (status.json's refused / last_error; other words are shown as they are)
+    const char* reasonSameAsMain;
+    const char* reasonSameAsPupils;
+    const char* reasonDuplicate;
+    const char* reasonPublicAddress;
+    const char* reasonBroadcast;
+    const char* reasonMulticast;
+    const char* reasonNotAddress;
+    const char* reasonNoSteamLink;
+    const char* reasonResolveFormat;     ///< "could not resolve: %s"
+    const char* reasonCantSendFormat;    ///< "can't send yet: %s"
+    const char* reasonSendFailedFormat;  ///< "sending failed: %s"
+    const char* reasonNewerEntry;        ///< an entry a newer frameeyeosc wrote
+    const char* reasonBadEntry;          ///< an entry written wrong
+    const char* reasonOverLimit;         ///< after the first three
 };
 
 /**

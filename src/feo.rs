@@ -326,6 +326,152 @@ pub mod tests {
         assert!(module_eyes(&packet).is_some());
     }
 
+    /// What a receiver that follows docs/protocol.md ("Receiving rules", "Extension area") takes from a datagram.
+    #[derive(Clone, Debug, PartialEq)]
+    pub struct Received {
+        pub sequence: u32,
+        /// Only the bits 0-6 it knows; 7-31 are ignored.
+        pub flags: u32,
+        pub time_us: u64,
+        /// Each eye's six floats, in packet order.
+        pub eyes: [[f32; 6]; 2],
+        pub session: u32,
+        pub brows: Option<[Brow; 2]>,
+        /// The extension records, (type, payload), in order.
+        pub records: Vec<(u16, Vec<u8>)>,
+    }
+
+    /// The reference parser of docs/protocol.md: None for a datagram that is dropped.
+    pub fn receive(datagram: &[u8]) -> Option<Received> {
+        let u16_at = |at: usize| u16::from_le_bytes(datagram[at..at + 2].try_into().unwrap());
+        let u32_at = |at: usize| u32::from_le_bytes(datagram[at..at + 4].try_into().unwrap());
+        let f32_at = |at: usize| f32::from_le_bytes(datagram[at..at + 4].try_into().unwrap());
+        if datagram.len() < 24 || &datagram[..4] != b"FEO1" || u16_at(4) != 1 {
+            return None;
+        }
+        let length = usize::from(u16_at(6));
+        if !(72..=1472).contains(&length) || datagram.len() < length {
+            return None;
+        }
+        let eyes: [[f32; 6]; 2] = std::array::from_fn(|side| std::array::from_fn(|k| f32_at(24 + side * 24 + k * 4)));
+        let brows = (length >= BROW_PACKET_LEN).then(|| {
+            std::array::from_fn(|side| std::array::from_fn(|k| f32_at(PACKET_LEN + side * 16 + k * 4)))
+        });
+        let floats = eyes.as_flattened().iter().chain(brows.iter().flat_map(|brows: &[Brow; 2]| brows.as_flattened()));
+        if floats.copied().any(|value: f32| !value.is_finite()) {
+            return None;
+        }
+        // Records from byte 108: u16 type, u16 len, the payload, zeros to a multiple of 4. One that runs past `length`
+        // ends them (the fixed part is still used), and so do the invalid types 0 and 0xFFFF
+        let mut records = Vec::new();
+        let mut at = BROW_PACKET_LEN;
+        while at + 4 <= length {
+            let (kind, len) = (u16_at(at), usize::from(u16_at(at + 2)));
+            if kind == 0 || kind == 0xffff || at + 4 + len > length {
+                break;
+            }
+            records.push((kind, datagram[at + 4..at + 4 + len].to_vec()));
+            at += 4 + len.next_multiple_of(4);
+        }
+        Some(Received {
+            sequence: u32_at(8),
+            flags: u32_at(12) & 0x7f,
+            time_us: u64::from_le_bytes(datagram[16..24].try_into().unwrap()),
+            eyes,
+            session: if length >= PACKET_LEN { u32_at(72) } else { 0 },
+            brows,
+            records,
+        })
+    }
+
+    /// Hex without white space.
+    fn hex(text: &str) -> Vec<u8> {
+        let text: String = text.split_whitespace().collect();
+        (0..text.len()).step_by(2).map(|at| u8::from_str_radix(&text[at..at + 2], 16).unwrap()).collect()
+    }
+
+    // docs/protocol.md's test vectors
+    const VECTOR_1: &str = "46454f3101004c00070000001b00000040222018240a0600
+                            0000803e000000bf0000603f0000003f000080400000803e
+                            0000003e000000bf0000c03e00000000000060400000403f
+                            c3115f2a";
+    const VECTOR_2: &str = "46454f3101006c00070000007b00000040222018240a0600
+                            0000803e000000bf0000603f0000003f000080400000803e
+                            0000003e000000bf0000c03e00000000000060400000403f
+                            c3115f2a0000003f0000003f00000000000000000000803e
+                            0000803e0000000000000000";
+    const VECTOR_3: &str = "46454f3101008c0007000000fbffffff40222018240a0600
+                            0000803e000000bf0000603f0000003f000080400000803e
+                            0000003e000000bf0000c03e00000000000060400000403f
+                            c3115f2a0000003f0000003f00000000000000000000803e
+                            0000803e0000000000000000ff0f1c000102030405060708
+                            090a0b0c0d0e0f101112131415161718191a1b1c";
+    const VECTOR_4: &str = "46454f3101007400070000007b00000040222018240a0600
+                            0000803e000000bf0000603f0000003f000080400000803e
+                            0000003e000000bf0000c03e00000000000060400000403f
+                            c3115f2a0000003f0000003f00000000000000000000803e
+                            0000803e0000000000000000ff0f400001020304";
+
+    #[test]
+    fn the_test_vectors_are_what_this_sends_and_read_as_the_protocol_says() {
+        let left = Eye { gaze: [0.25, -0.5], lid: 0.875, squint: Some(0.5), pupil: Some((4.0, 0.25)) };
+        let right = Eye { gaze: [0.125, -0.5], lid: 0.375, squint: None, pupil: Some((3.5, 0.75)) };
+        let (session, time) = (0x2a5f_11c3, 1_700_000_000_123_456);
+        // 1 and 2 are what frameeyeosc sends, without and with brows
+        let plain = packet(session, 7, true, time, [left, right]);
+        let brows = packet_with_brows(session, 7, true, time, [left, right], [raised_brow(0.5), raised_brow(0.25)]);
+        let vectors = [VECTOR_1, VECTOR_2, VECTOR_3, VECTOR_4].map(hex);
+        assert_eq!((vectors[0].as_slice(), vectors[1].as_slice()), (&plain[..], &brows[..]));
+        assert_eq!(vectors.each_ref().map(Vec::len), [76, 108, 140, 116]);
+        let [one, two, three, four] = vectors.each_ref().map(|vector| receive(vector).unwrap());
+        assert_eq!(one.flags, 27);
+        assert_eq!((one.session, one.brows, one.records.len()), (session, None, 0));
+        assert_eq!(one.eyes, [[0.25, -0.5, 0.875, 0.5, 4.0, 0.25], [0.125, -0.5, 0.375, 0.0, 3.5, 0.75]]);
+        assert_eq!((two.flags, two.brows), (123, Some([[0.5, 0.5, 0.0, 0.0], [0.25, 0.25, 0.0, 0.0]])));
+        assert_eq!(Received { brows: None, flags: 27, ..two.clone() }, one);
+        // 3: flag bits 7-31 and a record of an unassigned type, which are ignored: it reads exactly like 2
+        assert_eq!(three.records, [(0x0fff, (1..=28).collect::<Vec<u8>>())]);
+        assert_eq!(Received { records: Vec::new(), ..three }, two);
+        // 4: a record running past `length`; the fixed part is still taken
+        assert_eq!(four, two);
+        // The module's own reading agrees: 3 and 4 like 2
+        for vector in &vectors[2..] {
+            assert_eq!(module_eyes(vector), module_eyes(&vectors[1]));
+            assert_eq!(module_brows(vector), module_brows(&vectors[1]));
+        }
+    }
+
+    #[test]
+    fn receivers_take_lengths_72_to_1472_of_version_1_only() {
+        let base = hex(VECTOR_2);
+        let with_length = |length: usize| {
+            let mut datagram = base.clone();
+            datagram.resize(length.max(datagram.len()), 0);
+            datagram[6..8].copy_from_slice(&(length as u16).to_le_bytes());
+            datagram
+        };
+        // Zeros after the brows end the records (type 0), up to the largest datagram
+        for length in [72, 75, 76, 107, 108, 112, 200, 1472] {
+            let received = receive(&with_length(length)).unwrap();
+            assert_eq!((received.brows.is_some(), received.records.len()), (length >= 108, 0), "{length}");
+            assert_eq!(received.session, if length >= 76 { 0x2a5f_11c3 } else { 0 });
+        }
+        assert!(receive(&with_length(71)).is_none());
+        assert!(receive(&with_length(1473)).is_none());
+        // Shorter than its length, or another version: dropped
+        assert!(receive(&base[..100]).is_none());
+        let mut version_2 = base.clone();
+        version_2[4] = 2;
+        assert!(receive(&version_2).is_none());
+        // Records one after another, each padded to 4 bytes; the padding is not part of the payload
+        let mut datagram = base.clone();
+        datagram.extend_from_slice(&[0x01, 0x00, 0x03, 0x00, 7, 8, 9, 0, 0x02, 0x80, 0x00, 0x00]);
+        let length = datagram.len() as u16;
+        datagram[6..8].copy_from_slice(&length.to_le_bytes());
+        let received = receive(&datagram).unwrap();
+        assert_eq!(received.records, [(0x0001, vec![7, 8, 9]), (0x8002, Vec::new())]);
+    }
+
     #[test]
     fn not_tracking_is_relaxed_open_and_straight_ahead() {
         let neutral = ModuleEye { gaze: [0.0; 2], openness: 1.0, wide: 0.0, squint: 0.0 };

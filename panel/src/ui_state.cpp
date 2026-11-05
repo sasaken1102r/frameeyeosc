@@ -23,6 +23,7 @@ namespace {
 constexpr const char* kPageKey = "advanced_page";
 constexpr const char* kLidsPageKey = "lids_page";
 constexpr const char* kGazePageKey = "gaze_page";
+constexpr const char* kOutputPageKey = "output_page";
 /** Whether the gaze scale's left / right and up / down are linked (true / false). */
 constexpr const char* kGazeScaleLinkKeys[2] = {"gaze_scale_link_x", "gaze_scale_link_y"};
 /** The up gains the last whole eye fits measured, oldest first (an array of numbers). */
@@ -237,6 +238,32 @@ GazePage readGazePage(const std::string& path) {
 
 bool writeGazePage(const std::string& path, GazePage page, std::string& error) {
     return writeMember(path, kGazePageKey, gazePageName(page), error);
+}
+
+const char* outputPageName(OutputPage page) {
+    return page == OutputPage::Apps ? "apps" : "main";
+}
+
+bool parseOutputPage(const std::string& name, OutputPage& page) {
+    for (const OutputPage p : {OutputPage::Main, OutputPage::Apps}) {
+        if (name == outputPageName(p)) {
+            page = p;
+            return true;
+        }
+    }
+    return false;
+}
+
+OutputPage readOutputPage(const std::string& path) {
+    const JsonValue root = readObject(path);
+    const JsonValue* value = root.get(kOutputPageKey);
+    OutputPage page = OutputPage::Main;
+    if (value != nullptr && value->isString()) parseOutputPage(value->text, page);
+    return page;
+}
+
+bool writeOutputPage(const std::string& path, OutputPage page, std::string& error) {
+    return writeMember(path, kOutputPageKey, outputPageName(page), error);
 }
 
 void readGazeScaleLinks(const std::string& path, bool linked[2]) {

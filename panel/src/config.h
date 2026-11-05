@@ -72,7 +72,19 @@ constexpr const char* kPupilsToVrchat = "pupils_to_vrchat";
  * avatars that take it bit-packed; 0 (the default) sends the float only.
  */
 constexpr const char* kPupilBits = "pupil_bits";
-constexpr const char* kEyeBehavior = "eye_behavior";  ///< 2 (the default) as now, 1 as up to 0.7.5
+/**
+ * Send only inside the home network (default on; frameeyeosc 0.10 on): addresses outside it are refused for the main
+ * output, the pupils and every extra output; off, they are allowed and marked PUBLIC. The Output tab's "Other apps".
+ */
+constexpr const char* kLanOnly = "lan_only";
+/**
+ * Up to three more destinations (frameeyeosc 0.10 on): a list of {name, enabled, format, host, port}. Not in the
+ * key table (it is no single value): read and written by extras.h, which keeps every entry it doesn't change, and the
+ * keys it doesn't know in the one it changes, as they are. "Reset all" leaves it alone.
+ */
+constexpr const char* kExtraOutputs = "extra_outputs";
+/** Removed in 0.10 (1 was the eyes as up to 0.7.5): taken out of config.json once (migrateRemovedSettings). */
+constexpr const char* kRemovedEyeBehavior = "eye_behavior";
 /** Eyelids (and squint) from the eye cameras where eyecam-rec reads them live and is calibrated (default on). */
 constexpr const char* kCameraLids = "camera_lids";
 constexpr const char* kRaw = "raw";
@@ -82,7 +94,7 @@ constexpr const char* kGazeDCutoff = "gaze_d_cutoff";
 constexpr const char* kGazeDeadzone = "gaze_deadzone";
 constexpr const char* kGazeHoldBelow = "gaze_hold_below";
 constexpr const char* kIndependentEyes = "independent_eyes";
-/** With independent_eyes in v2: how much of each eye's own sideways gaze is sent, 0 (the default) to 1. */
+/** With independent_eyes: how much of each eye's own sideways gaze is sent, 0 (the default) to 1. */
 constexpr const char* kOwnEyeGaze = "own_eye_gaze";
 constexpr const char* kLidMinCutoff = "lid_min_cutoff";
 constexpr const char* kLidBeta = "lid_beta";
@@ -159,7 +171,9 @@ constexpr const char* kUpdateCheck = "update_check";  ///< panel only: look for 
 
 /** Output types (the "output" key). */
 constexpr const char* kOutputVrchat = "vrchat";
-constexpr const char* kOutputEtvr = "etvr";
+/** The ETVR output, removed in 0.10: read as kOutputVrchat (SettingsView, the status file) until
+ *  migrateRemovedSettings writes that into config.json. */
+constexpr const char* kOutputRemovedEtvr = "etvr";
 constexpr const char* kOutputLivelink = "livelink";  ///< Live Link Face packets for VRCFaceTracking's LiveLink module
 constexpr const char* kOutputModule = "frameeyeosc";  ///< FEO1 packets for VRCFaceTracking's FrameEyeOSC module
 /** eye_tracking_active values: how EyeTrackingActive is sent in VRChat mode */
@@ -171,7 +185,8 @@ constexpr const char* kAutoRecenterModes[2] = {"off", "center"};
 constexpr const char* kLidWidenModes[4] = {"off", "low", "normal", "high"};
 /** Default ports of the output types (used while "port" is null). */
 constexpr int kPortVrchat = 9000;
-constexpr int kPortEtvr = 8889;
+/** The removed ETVR output's default port: set with "etvr", migrateRemovedSettings puts it back to null. */
+constexpr int kPortRemovedEtvr = 8889;
 constexpr int kPortLivelink = 11111;
 constexpr int kPortModule = 11112;
 

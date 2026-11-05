@@ -2,6 +2,7 @@
 // --contrast-report checks what is drawn.
 #pragma once
 
+#include "host_entry.h"
 #include "model.h"
 #include "ui_state.h"
 
@@ -30,8 +31,8 @@ enum class PanelAction {
     HostAuto,          ///< host = "auto"
     FixHost,           ///< host = the IP frameeyeosc sends to now
     PortDefault,       ///< port = null
-    SetOutput,         ///< output = outputOfArg(arg) (0 vrchat, 1 etvr, 2 livelink), port = null, then ask about
-                       ///< the recommendation
+    SetOutput,         ///< output = outputOfArg(arg) (0 vrchat, 2 livelink, 3 frameeyeosc), port = null, then ask
+                       ///< about the recommendation
     SetActiveType,     ///< eye_tracking_active = kActiveTypes[arg] (bool, float, off)
     Preset,            ///< gaze smoothing preset arg (0 light, 1 medium, 2 strong)
     NumberOn,          ///< key = its default, or its onNumber if that is off (for numbers where 0 means off)
@@ -75,9 +76,12 @@ enum class PanelAction {
                        ///< with takeNumberSlider and writes it (SetNumber)
     SetNumber,         ///< key = arg / 1000 (onto its step grid)
     HostEnter,         ///< open the keypad for the target PC (the caller fills in the host now)
-    HostKey,           ///< a keypad key: arg = '0'-'9', '.' or host_entry::kBackspace (handled inside the panel)
-    HostOk,            ///< use the typed host (the caller checks and writes it)
-    HostCancel,        ///< close the keypad (handled inside the panel)
+    PortEnter,         ///< the port row's value: open the keypad for the port, arg = the port now (handled inside)
+    KeypadKey,         ///< a keypad key: arg = '0'-'9', '.' (the address's only) or host_entry::kBackspace (handled
+                       ///< inside the panel)
+    KeypadOk,          ///< the keypad's OK: for the target PC, the caller checks and writes the typed host; for a
+                       ///< port, checked inside and handed on as SetInteger (key::kPort) or put in "Other apps"' draft
+    KeypadCancel,      ///< close the keypad (handled inside the panel)
     HistoryOpen,       ///< open the version history on the Advanced tab (the panel opens it; the caller reads the
                        ///< changelog)
     HistoryClose,      ///< back to the Advanced tab (handled inside the panel)
@@ -146,7 +150,40 @@ enum class PanelAction {
     DataDelete,        ///< a "Saved data" row's "Delete" (arg = stored::Kind): its confirmation (handled inside)
     DataDeleteCancel,  ///< ...closed without deleting (handled inside)
     DataDeleteConfirm, ///< ...confirmed (arg = stored::Kind): the caller deletes it, or asks eyecam-rec to
+    OutputPage,        ///< show the Output tab's sub-tab arg (OutputPage; handled inside the panel, which opens the
+                       ///< tab; the caller remembers it, see outputPage)
+    ExtraSend,         ///< "Other apps": a row's Send / Stop, arg = index * 2 + 1 to send, index * 2 to stop (the
+                       ///< caller writes extra_outputs[index].enabled)
+    ExtraAdd,          ///< ..."Add a destination": the flow's first step (handled inside)
+    ExtraEdit,         ///< ...a row's "Change", arg = its index: the flow with its values (handled inside)
+    ExtraCancel,       ///< ...the flow's "Cancel": back to the list (handled inside)
+    ExtraStep,         ///< ...the flow's "Next" / "Back": to step arg (ExtrasStep; handled inside)
+    ExtraFormat,       ///< ...step 1's cards: arg 0 feo1, 1 osc (handled inside)
+    ExtraHost,         ///< ...step 2's choices: arg = extras::HostChoice (handled inside)
+    ExtraKey,          ///< ...step 2's keypad: arg = '0'-'9', '.' or host_entry::kBackspace (handled inside)
+    ExtraPort,         ///< ...step 3's port, arg -1 / 1 (handled inside)
+    ExtraPortEnter,    ///< ...step 3's port value: the keypad for it (handled inside; its OK sets the draft's port)
+    ExtraSave,         ///< ...step 3's "Add and send" / "Save": the caller writes extrasDraft() (extras::applyDraft)
+                       ///< and closes the flow (closeExtrasFlow), or says why it couldn't (setExtrasError)
+    ExtraDelete,       ///< ...step 3's "Delete this destination" while changing: its confirmation (handled inside)
+    ExtraDeleteCancel, ///< ...closed without deleting (handled inside)
+    ExtraDeleteConfirm,  ///< ...confirmed: the caller takes the entry out (extras::removeEntry) and closes the flow
+    ExtraRowDelete,    ///< "Other apps": a row's own "Delete", arg = its index: the row turns into its confirmation
+                       ///< (handled inside; only one row at a time)
+    ExtraRowDeleteCancel,   ///< ...its "Cancel" (handled inside)
+    ExtraRowDeleteConfirm,  ///< ...its red "Delete", arg = its index: the caller takes it out (extras::removeEntry
+                            ///< with extrasRowDeleteOriginal) and closes the confirmation (closeExtrasFlow)
+    EyeRateSet,        ///< the left column's "Set 90" (eye_rate::Line::Offer): the caller writes SteamVR's
+                       ///< eyeTrackingRateMin 90 and tells eye_rate::pressed
+    EyeRateChoose,     ///< "Having trouble"'s eye camera speed: arg = eye_rate::Choice (the caller writes 90, or removes
+                       ///< the key for SteamVR's default)
 };
+
+/** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
+enum class ExtrasStep { List, Format, Host, Port };
+
+/** What the keypad types: the target PC's address, the main output's port, or "Other apps"' draft's port. */
+enum class KeypadFor { Host, Port, ExtraPort };
 
 /** A button: its action, the config key it changes and an argument. */
 struct PanelHit {
@@ -229,7 +266,7 @@ public:
 
     /**
      * Ask once whether to apply the recommended settings of an output type.
-     * @param output kOutputVrchat, kOutputEtvr or kOutputLivelink
+     * @param output kOutputVrchat, kOutputLivelink or kOutputModule
      */
     void showPrompt(const std::string& output);
 
@@ -249,6 +286,8 @@ public:
      */
     void setTab(PanelTab tab) {
         if (tab != tab_) advScroll_ = 0.0;
+        // (the Output tab's add / change flow starts over once the tab is left)
+        if (tab != PanelTab::Output) closeExtrasFlow();
         tab_ = tab;
         dataConfirm_ = -1;
     }
@@ -299,6 +338,72 @@ public:
     void setGazeScaleLinked(int pair, bool linked) {
         if (pair >= 0 && pair < 2) gazeScaleLinked_[pair] = linked;
     }
+
+    /** @return the Output tab's sub-tab (shown whenever the tab is; kept while other tabs show) */
+    OutputPage outputPage() const { return outputPage_; }
+
+    /**
+     * Choose the Output tab's sub-tab (the one remembered from before, at start; or for --output-page). Its add /
+     * change flow closes.
+     * @param page the sub-tab
+     */
+    void setOutputPage(OutputPage page) {
+        outputPage_ = page;
+        closeExtrasFlow();
+    }
+
+    /** @return the add / change flow's step on "Other apps" (List: no flow) */
+    ExtrasStep extrasStep() const { return extrasStep_; }
+
+    /** @return the flow's choices so far */
+    const extras::Draft& extrasDraft() const { return extrasDraft_; }
+
+    /** @return true while the flow's delete confirmation shows */
+    bool extrasDeleteOpen() const { return extrasStep_ == ExtrasStep::Port && extrasDeleteOpen_; }
+
+    /**
+     * Open the add / change flow at a step with these choices (for --extras-flow; the buttons do it otherwise).
+     * @param step the step (List closes it)
+     * @param draft the choices
+     * @param confirmDelete with the delete's confirmation open (changing, step 3)
+     */
+    void openExtrasFlow(ExtrasStep step, const extras::Draft& draft, bool confirmDelete = false) {
+        extrasRowDelete_ = -1;
+        extrasStep_ = step;
+        extrasDraft_ = draft;
+        extrasDeleteOpen_ = confirmDelete && draft.edit >= 0;
+        extrasError_.clear();
+    }
+
+    /** Close the flow (written, or the tab left): the list shows. */
+    void closeExtrasFlow() {
+        extrasStep_ = ExtrasStep::List;
+        extrasDeleteOpen_ = false;
+        extrasError_.clear();
+        extrasRowDelete_ = -1;
+    }
+
+    /** @return the row of the list asking whether to delete it (its index; -1 = none) */
+    int extrasRowDelete() const { return extrasStep_ == ExtrasStep::List ? extrasRowDelete_ : -1; }
+
+    /** @return that row as config.json had it when its "Delete" was pressed (extras::rawEntry) */
+    const std::string& extrasRowDeleteOriginal() const { return extrasRowDeleteOriginal_; }
+
+    /**
+     * Turn a row of the list into its delete confirmation, as its "Delete" does (for --extras-row-delete).
+     * @param index the row (its index in the list as last drawn)
+     */
+    void openExtrasRowDelete(int index) {
+        if (index < 0 || index >= static_cast<int>(extrasShown_.size())) return;
+        extrasRowDelete_ = index;
+        extrasRowDeleteOriginal_ = extrasRaw_[static_cast<size_t>(index)];
+    }
+
+    /**
+     * Say in the flow why its last write didn't go through (cleared by its next press).
+     * @param message the message
+     */
+    void setExtrasError(const std::string& message) { extrasError_ = message; }
 
     /** @return whether "Get test versions" is on (update checks use frame-updater's beta channel) */
     bool updateBeta() const { return updateBeta_; }
@@ -354,11 +459,21 @@ public:
      */
     void openHostEntry(const std::string& text);
 
-    /** Close the keypad. */
-    void closeHostEntry();
+    /**
+     * Open the keypad for a port (only its buttons work while it is open).
+     * @param kind the main output's port or "Other apps"' draft's (not KeypadFor::Host)
+     * @param port what it starts with
+     */
+    void openPortEntry(KeypadFor kind, int port);
+
+    /** Close the keypad (the address's or a port's). */
+    void closeKeypad();
 
     /** @return true while the keypad is open */
-    bool hostEntryOpen() const { return hostEntryOpen_; }
+    bool keypadOpen() const { return keypadOpen_; }
+
+    /** @return what the keypad is for (while it is open) */
+    KeypadFor keypadFor() const { return keypadFor_; }
 
     /**
      * Open the light warning on the Advanced tab, as its recording's start button does (for --fake-eyecam confirm).
@@ -619,15 +734,15 @@ public:
      */
     bool scroll(double dy);
 
-    /** @return what is typed */
-    const std::string& hostEntryText() const { return hostEntryText_; }
+    /** @return what is typed on the keypad */
+    const std::string& keypadText() const { return keypadText_; }
 
 
     /**
      * Show why the typed host can't be used (cleared by the next key).
      * @param message the message ("" for none)
      */
-    void setHostEntryError(const std::string& message) { hostEntryError_ = message; }
+    void setKeypadError(const std::string& message) { keypadError_ = message; }
 
     /**
      * The image as un-premultiplied RGBA for OpenVR.
@@ -711,9 +826,11 @@ private:
     std::string promptOutput_;  ///< the output type the prompt asks about; empty = no prompt
     std::string updatePromptVersion_;  ///< the release the update prompt asks about; empty = no prompt
     bool updatePromptBack_ = false;    ///< ...going back to it from a test version
-    bool hostEntryOpen_ = false;  ///< the keypad for the target PC is open
-    std::string hostEntryText_;   ///< what is typed in it
-    std::string hostEntryError_;  ///< why it can't be used, shown under it
+    bool keypadOpen_ = false;                 ///< the keypad (the target PC's or a port's) is open
+    KeypadFor keypadFor_ = KeypadFor::Host;   ///< ...for what
+    std::string keypadText_;                  ///< what is typed in it
+    std::string keypadError_;                 ///< why the typed host can't be used (the caller's), shown under it
+    host_entry::PortError portError_ = host_entry::PortError::None;  ///< why the typed port can't be used
     bool historyOpen_ = false;          ///< the version history is shown on the Advanced tab
     bool historyRowPending_ = false;    ///< open the installed version's row at the next draw
     bool historyScrollSet_ = false;     ///< --history-scroll gave the scroll; don't move it to the open row
@@ -731,6 +848,16 @@ private:
     AdvPage advPage_ = AdvPage::Version;  ///< the Advanced tab's sub-tab
     LidsPage lidsPage_ = LidsPage::Look;  ///< the Eyelids tab's sub-tab
     GazePage gazePage_ = GazePage::Motion;  ///< the Gaze tab's sub-tab
+    OutputPage outputPage_ = OutputPage::Main;  ///< the Output tab's sub-tab
+    ExtrasStep extrasStep_ = ExtrasStep::List;  ///< "Other apps"' add / change flow (List: none)
+    extras::Draft extrasDraft_;         ///< ...its choices so far
+    bool extrasDeleteOpen_ = false;     ///< ...with the delete's confirmation (changing, step 3)
+    std::string extrasError_;           ///< ...why its last write didn't go through ("" = none)
+    std::vector<extras::Entry> extrasShown_;  ///< the list's entries as last drawn (ExtraEdit's arg is an index)
+    std::vector<std::string> extrasRaw_;      ///< ...each as config.json had it (extras::rawEntry)
+    bool extrasLanOnly_ = true;         ///< lan_only as last drawn (the host step's "Next")
+    int extrasRowDelete_ = -1;          ///< the list's row asking whether to delete it (-1 = none)
+    std::string extrasRowDeleteOriginal_;  ///< ...as config.json had it then (the delete checks it is still so)
     bool gazeScaleLinked_[2] = {true, true};  ///< the gaze scale's locks: left / right, up / down
     bool updateBeta_ = false;             ///< "Get test versions" (panel.json's update_beta)
     SnapMark snapMark_;                   ///< mark ③ as last drawn
@@ -908,6 +1035,18 @@ private:
     void drawStatus(const Pen& pen, const UiText& t, const PanelModel& model);
 
     /**
+     * The left column's line under a low eye data rate while SteamVR runs the eye cameras slowly: what it does, right
+     * aligned before a "Set 90" pill (the whole line, and the rate's row above it, can be pressed). If the words don't
+     * fit beside the pill even small, the line is the words with a chevron instead.
+     * @param pen drawing tools
+     * @param t texts
+     * @param x0 the column's text left
+     * @param x1 ...right
+     * @param baseline the line's baseline (where the reason goes)
+     */
+    void drawEyeRateOffer(const Pen& pen, const UiText& t, double x0, double x1, double baseline);
+
+    /**
      * The tab row (the eye capture tab last, only while eyecamTab_).
      * @param pen drawing tools
      * @param t texts
@@ -978,13 +1117,94 @@ private:
 
     /**
      * The Output tab: the target PC and port, then the VRChat-only rows (parameter prefix, EyeTrackingActive type, Steam Link's names, VRChat's own eye tracking),
-     * or what to set up in VRCFT for LiveLink and ETVR.
+     * or what to set up in VRCFT for LiveLink and FrameEyeOSC.
      * @param pen drawing tools
      * @param t texts
      * @param model the model
      * @param view the settings shown
      */
     void drawOutput(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The Output tab: its two sub-tabs (the main destination, other apps) and under them the one chosen.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     */
+    void drawOutputTab(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * "Other apps": the list (a row per entry with its switch, what and where, why it sends nothing, "Change"),
+     * "Add" and lan_only; or the add / change flow in its place.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     */
+    void drawExtras(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * The add / change flow's step in place of the list.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param view the settings shown
+     */
+    void drawExtrasFlow(const Pen& pen, const UiText& t, const PanelModel& model, const SettingsView& view);
+
+    /**
+     * One row of the list: Send / Stop, the name, the format and address, a VPN / PUBLIC tag, why it sends nothing
+     * (in red), and "Change".
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model (its live state)
+     * @param entry the entry
+     * @param y top
+     * @param h height
+     * @param locked locked by the command line (greyed, nothing to press)
+     */
+    void drawExtraRow(const Pen& pen, const UiText& t, const PanelModel& model, const extras::Entry& entry, double y,
+                      double h, bool locked);
+
+    /**
+     * The flow's title, the line under it and its 1 / 2 / 3 progress at the right.
+     * @param pen drawing tools
+     * @param t texts
+     * @param sub the line under it
+     * @param step 1..3
+     * @return where what follows starts
+     */
+    double drawExtrasHeader(const Pen& pen, const UiText& t, const char* sub, int step);
+
+    /**
+     * The flow's bottom row: the left button (Cancel / Back) and the right one (Next / Add / Save), with the last
+     * write's failure above them.
+     * @param pen drawing tools
+     * @param left its label
+     * @param leftHit what it does
+     * @param right its label
+     * @param rightHit what it does
+     * @param rightUsable whether it can be pressed
+     */
+    void drawExtrasFooter(const Pen& pen, const char* left, const PanelHit& leftHit, const char* right,
+                          const PanelHit& rightHit, bool rightUsable);
+
+    /**
+     * The left column's destinations under the main one: the pupils straight to VRChat, then each extra output that
+     * is turned on (red with why while it sends nothing).
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param x0 left
+     * @param x1 right
+     * @param y the first line's baseline
+     * @param step px between lines
+     * @param draw draw them (else only count)
+     * @return how many lines
+     */
+    int drawMoreDestinations(const Pen& pen, const UiText& t, const PanelModel& model, double x0, double x1, double y,
+                             double step, bool draw = true);
 
     /**
      * The Gaze tab: its sub-tabs, and under them the one chosen.
@@ -1200,20 +1420,9 @@ private:
                             double top, double right);
 
     /**
-     * Beside a v2-only row in v1: why it is faded, and a button to the switch (Advanced > Version).
-     * @param pen drawing tools
-     * @param t texts
-     * @param note why
-     * @param x left of the note
-     * @param y row top
-     * @param h row height
-     */
-    void drawV2OnlyNote(const Pen& pen, const UiText& t, const char* note, double x, double y, double h);
-
-    /**
      * "Version": the version (large), when it was last checked and what came of it, the update button and the new
-     * release's summary, under them "Version history", the automatic check's chip and "Check now", and last how the
-     * eyes move (eye_behavior: v2 or v1) with a line on each.
+     * release's summary, under them "Version history", the automatic check's chip and "Check now", and "Get test
+     * versions".
      * @param pen drawing tools
      * @param t texts
      * @param model the model
@@ -1291,6 +1500,18 @@ private:
      * @return its height
      */
     double drawTroublePage(const Pen& pen, const UiText& t, const PanelModel& model, double top, double right);
+
+    /**
+     * "Having trouble"'s eye camera speed (SteamVR's eyeTrackingRateMin): its title and hint, "Always 90 a second" /
+     * "Let SteamVR decide", and the eye data's rate now under the hint. Only drawn when this SteamVR has the setting.
+     * @param pen drawing tools
+     * @param t texts
+     * @param model the model
+     * @param y the row's top
+     * @param right the page's right edge
+     * @return the height used (0 when not drawn)
+     */
+    double drawEyeRateRow(const Pen& pen, const UiText& t, const PanelModel& model, double y, double right);
 
     /**
      * "Debug tools": the gaze dots and their distance, the eye log, and the eye capture while eyecam-rec runs.
@@ -1675,7 +1896,7 @@ private:
      * @param pen drawing tools
      * @param t texts
      */
-    void drawHostEntry(const Pen& pen, const UiText& t);
+    void drawKeypad(const Pen& pen, const UiText& t);
 
     /**
      * A notice at the bottom of the status column while a new release is available, installing or installed.
@@ -1743,10 +1964,24 @@ private:
      * @param low extra lower bound
      * @param high extra upper bound
      * @param outline its outline while usable (nullptr: the usual border)
+     * @param tap the value's own button while usable (nullptr: none), as the port's keypad
      */
     void drawStepper(const Pen& pen, double x, double y, double w, double h, const char* name, double value,
                      const std::string& text, bool usable, bool locked, double low = -1e9, double high = 1e9,
-                     const Color* outline = nullptr);
+                     const Color* outline = nullptr, const PanelHit* tap = nullptr);
+
+    /**
+     * The value between a stepper's − and ＋ as a button (the port's keypad): a light fill while pointed at, a line
+     * under where the value goes. Drawn before the value.
+     * @param pen drawing tools
+     * @param hit what it does
+     * @param x left (after −)
+     * @param y the stepper's top
+     * @param w width (up to ＋)
+     * @param h the stepper's height
+     * @param textW the value's width as drawn
+     */
+    void drawValueTap(const Pen& pen, const PanelHit& hit, double x, double y, double w, double h, double textW);
 
     /**
      * A caption above a stepper, optionally led by a numbered circle (the lid marks).
@@ -1767,6 +2002,52 @@ private:
  * @return the line
  */
 std::string appsCountText(const UiText& t, const std::vector<frame_apps::Entry>& entries);
+
+/**
+ * Why a destination sends nothing, in the panel's language: frameeyeosc's known reasons (status.json's refused and
+ * last_error: "same as main", "public address", "could not resolve: ...") translated, any other one as it is.
+ * @param t texts
+ * @param reason frameeyeosc's words
+ * @return the text
+ */
+std::string extraReasonText(const UiText& t, const std::string& reason);
+
+/** Where the left column's rows under the destinations go (statusLayout). */
+struct StatusLayout {
+    double shift = 0;      ///< how far the rates and everything under them move down for the destination lines
+    double dy = 0;         ///< ...the eyelids, which also make room for the slow-tracker line
+    double eyeTop[2] = {0, 0};  ///< each eye's eyelid rows (their bars and the sent value end 36 px under it)
+    double divider = 0;    ///< the line above the gaze
+    double g = 0;          ///< how far the gaze part moves down
+    double box = 0;        ///< the gaze box's size (each eye's, while they move separately)
+    double legendFirst = 0;  ///< the shared box's legend: its first line's baseline...
+    double legendK = 1;    ///< ...and how close its lines are (1 = as without the destination lines)
+    double lowest = 0;     ///< the lowest baseline the gaze part draws (the legend's last line, or each eye's x / y)
+    double limit = 0;      ///< where the bottom row starts (the eye cameras' setup, or the message and preview button)
+};
+
+/**
+ * Where the left column's rows go under the destinations: down by the lines more destinations take, the eyelid rows
+ * closer together when that is a lot (both with the slow-tracker line or without), the line above the gaze never
+ * closer than 8 px under the second eye's row, and the gaze boxes smaller by what the gaze part moved down, so that
+ * it still ends above the bottom row. With no more destinations, everything is where it always was.
+ * @param more the destination lines under the main one (0 to 4)
+ * @param slow the slow-tracker line is shown (trackerRateCause isn't None)
+ * @param perEye a gaze box for each eye
+ * @param setupCard the eye cameras' setup at the bottom
+ * @return the places
+ */
+StatusLayout statusLayout(int more, bool slow, bool perEye, bool setupCard);
+
+/**
+ * The add / change flow's last button: "Add and send" while adding; while changing, "Save and send" for an entry that
+ * is stopped now (saving turns it on), else "Save changes".
+ * @param t texts
+ * @param draft the flow's choices
+ * @param list the list now
+ * @return the label
+ */
+const char* extrasSaveLabel(const UiText& t, const extras::Draft& draft, const extras::List& list);
 
 /**
  * Draw the dashboard thumbnail (an eye and "Eye"). The launcher icons in contrib/icons are the same picture.

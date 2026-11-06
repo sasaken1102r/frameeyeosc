@@ -22,7 +22,11 @@ rust_cargo() {
         "$cargo" "$@"
         return
     fi
-    podman run --rm -v "$PWD":/src:Z -v "$HOME/.cargo/registry":/usr/local/cargo/registry:Z -w /src         ${CARGO_PROFILE_RELEASE_STRIP:+-e CARGO_PROFILE_RELEASE_STRIP="$CARGO_PROFILE_RELEASE_STRIP"}         "$image" cargo "$@"
+    # As the Frame's user, not the container's root (the tests check file owners and permissions), with
+    # the Frame's cargo folder for the downloaded crates
+    podman run --rm --userns=keep-id -v "$PWD":/src:Z -v "$HOME/.cargo":/cargo -e CARGO_HOME=/cargo -w /src \
+        ${CARGO_PROFILE_RELEASE_STRIP:+-e CARGO_PROFILE_RELEASE_STRIP="$CARGO_PROFILE_RELEASE_STRIP"} \
+        "$image" cargo "$@"
 }
 
 # Stops when one of the given programs needs a glibc newer than max_glibc
@@ -30,15 +34,14 @@ check_glibc() {
     local f need
     for f in "$@"; do
         need="$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -n 1)"
-        if [ "$(printf '%s
-%s
-' "$need" "$max_glibc" | sort -V | tail -n 1)" != "$max_glibc" ]; then
+        if [ "$(printf '%s\n%s\n' "$need" "$max_glibc" | sort -V | tail -n 1)" != "$max_glibc" ]; then
             echo "$f needs glibc $need, newer than $max_glibc: it won't start on older SteamOS" >&2
             exit 1
         fi
         echo "$f: glibc $need"
     done
 }
+
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
 name="frameeyeosc-$version-steamframe-aarch64"
 
@@ -60,7 +63,8 @@ rust_cargo test --release --locked --manifest-path tools/eyecam/Cargo.toml --tar
 CARGO_PROFILE_RELEASE_STRIP=true rust_cargo build --release --locked --manifest-path tools/eyecam/Cargo.toml \
     --target-dir "$eyecam_target"
 
-check_glibc target/release/frameeyeosc panel/build/frameeyeosc-panel "$eyecam_target/release/eyecam-rec"     "$eyecam_target/release/eyecam-grab"
+check_glibc target/release/frameeyeosc panel/build/frameeyeosc-panel "$eyecam_target/release/eyecam-rec" \
+    "$eyecam_target/release/eyecam-grab"
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT

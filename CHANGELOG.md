@@ -6,8 +6,8 @@
 
 日本語: 0.10.0 は、安定版など SteamOS 0.5.7 より前の SteamOS では起動しませんでした（SteamOS 0.5.7 に入った新しい glibc に合わせてビルドしていたため）。0.10.1 は、0.10.0 をそこでも起動するようにビルドし直したものです。0.10.0 に更新してから frameeyeosc が起動しなくなっていたら、パネルの「詳細 › バージョン」から 0.10.1 に更新してね。
 
-- Fixed: frameeyeosc and eyecam-rec of 0.10.0 needed glibc 2.43 and kept restarting with "version `GLIBC_2.43' not found" on older SteamOS (#50). They now need glibc 2.35 at most, as in 0.10.0-beta.1.
-- `scripts/package.sh` builds the Rust programs in a container with an older glibc (Debian bookworm, with podman), and stops when a program it ships needs a glibc newer than 2.38.
+- Fixed: frameeyeosc and eyecam-rec of 0.10.0 needed glibc 2.43 and kept restarting with "version `GLIBC_2.43' not found" on older SteamOS (#50). They now need glibc 2.35 at most.
+- `scripts/package.sh` builds the Rust programs in a container with an older glibc (Debian bookworm, with podman), in their own target folders, and stops when a program it ships needs a newer glibc, libstdc++ or C++ ABI than the panel (glibc 2.38).
 
 ## 0.10.0 (2026-11-06)
 

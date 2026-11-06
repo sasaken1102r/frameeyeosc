@@ -59,7 +59,7 @@ body:
   - type: dropdown
     id: eyewear
     attributes:
-      label: Glasses / 眼鏡
+      label: Eyewear / 眼鏡・レンズ
       description: What you wear in the Frame. Insert lenses and glasses can change what the eye cameras see. / Frame の中で着けているもの。インサートレンズや眼鏡で、目のカメラの見え方が変わることがあります
       options:
         - Nothing / なし
@@ -80,5 +80,5 @@ body:
     attributes:
       label: Anything else / そのほか
       description: |
-        A screenshot of the panel's Advanced › Having trouble › Diagnostics page helps. For problems with the eyes, record them with Advanced › Debug tools › Eye log › Record while it happens, then zip and attach the new files in `~/.local/share/frameeyeosc/recordings/` and `~/eyecam/drift/` (numbers only, no camera pictures). Settings you changed (`~/.config/frameeyeosc/config.json`) help too.
-        パネルの「詳細 › 困ったとき › 診断」の画面のスクショがあると助かります。目の動きのことなら、起きているあいだに「詳細 › 調べる道具 › 目のログ」の「記録する」で記録して、`~/.local/share/frameeyeosc/recordings/` と `~/eyecam/drift/` にできたファイルを zip にして添付してください（数字だけで、カメラの映像は入っていません）。変えた設定（`~/.config/frameeyeosc/config.json`）もあると助かります。
+        A screenshot of the panel's Advanced › Having trouble › Diagnostics page helps. For problems with the eyes, record them with Advanced › Debug tools › Eye log › Record while it happens, then zip and attach the new files in `~/.local/share/frameeyeosc/recordings/` and, if you use the eye cameras, `~/eyecam/drift/` (numbers only, no camera pictures). Settings you changed (`~/.config/frameeyeosc/config.json`) help too.
+        パネルの「詳細 › 困ったとき › 診断」の画面のスクショがあると助かります。目の動きのことなら、起きているあいだに「詳細 › 動作確認 › 目のログ」の「記録する」で記録して、`~/.local/share/frameeyeosc/recordings/` と、目のカメラを使っているなら `~/eyecam/drift/` にできたファイルを zip にして添付してください（数字だけで、カメラの映像は入っていません）。変えた設定（`~/.config/frameeyeosc/config.json`）もあると助かります。

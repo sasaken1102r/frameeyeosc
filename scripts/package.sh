@@ -48,7 +48,9 @@ check_glibc() {
                 GLIBCXX) max="$max_glibcxx" ;;
                 CXXABI) max="$max_cxxabi" ;;
             esac
-            need="$(objdump -T "$f" | grep -o "${prefix}_[0-9.]*" | sed "s/^${prefix}_//" | sort -uV | tail -n 1)"
+            # (no such version at all, as for libstdc++ in the Rust programs: grep finds nothing)
+            need="$(objdump -T "$f" | { grep -o "${prefix}_[0-9.]*" || true; } | sed "s/^${prefix}_//" | sort -uV |
+                tail -n 1)"
             [ -n "$need" ] || continue
             if [ "$(printf '%s\n%s\n' "$need" "$max" | sort -V | tail -n 1)" != "$max" ]; then
                 echo "$f needs ${prefix}_$need, newer than $max: it won't start on older SteamOS" >&2

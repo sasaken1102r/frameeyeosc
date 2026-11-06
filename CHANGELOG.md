@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.1 (2026-11-06)
+
+0.10.0 didn't start on SteamOS before 0.5.7, such as the stable SteamOS: it was built against the newer glibc that came with SteamOS 0.5.7. 0.10.1 is 0.10.0 built again so it starts there too. If frameeyeosc stopped starting after the update to 0.10.0, update to 0.10.1 from the panel's Advanced › Version.
+
+日本語: 0.10.0 は、安定版など SteamOS 0.5.7 より前の SteamOS では起動しませんでした（SteamOS 0.5.7 に入った新しい glibc に合わせてビルドしていたため）。0.10.1 は、0.10.0 をそこでも起動するようにビルドし直したものです。0.10.0 に更新してから frameeyeosc が起動しなくなっていたら、パネルの「詳細 › バージョン」から 0.10.1 に更新してね。
+
+- Fixed: frameeyeosc and eyecam-rec of 0.10.0 needed glibc 2.43 and kept restarting with "version `GLIBC_2.43' not found" on older SteamOS (#50). They now need glibc 2.35 at most, as in 0.10.0-beta.1.
+- `scripts/package.sh` builds the Rust programs in a container with an older glibc (Debian bookworm, with podman), and stops when a program it ships needs a glibc newer than 2.38.
+
 ## 0.10.0 (2026-11-06)
 
 frameeyeosc can now send the same eye data to up to 3 more apps next to the main output: in the FrameEyeOSC format (`feo1`), or as plain OSC (`osc`) with VRChat's own eye input and VRCFaceTracking's v2 names. Set them up on the Output tab's new "Other apps" page. "Only inside my home network" (`lan_only`, on at first) keeps eye data from going to addresses outside your home network, the main output's too. The ETVR output and eye behavior v1 (the eyes as up to 0.7.5) are gone. Port numbers can now be typed on a keypad. Update the panel together with frameeyeosc: the panel's "Update" button does both (by hand: `./install.sh --with-panel`). With SteamOS 0.5.7's SteamVR, which can run the eye cameras at 15 a second, the panel offers to set them back to 90 a second.

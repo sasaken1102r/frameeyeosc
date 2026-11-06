@@ -582,7 +582,7 @@ To update again later, use the panel's update button or the usual install comman
 
 ## Development
 
-Build and test on the headset (the binary must link against the headset's glibc, and the panel against SteamVR's OpenVR library; see `scripts/package.sh`):
+Build and test on the headset (the binary must link against glibc, and the panel against SteamVR's OpenVR library; see `scripts/package.sh`). `scripts/package.sh` builds the Rust programs in a container with an older glibc (Debian bookworm, with podman), so they also start on older SteamOS:
 
 ```sh
 cargo test --release

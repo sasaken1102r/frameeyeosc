@@ -582,7 +582,7 @@ eyecam-rec は、受け取ったバッファも Valve の目のデータも読�
 
 ## 開発
 
-ビルドとテストはヘッドセット上で行います（本体はヘッドセットの glibc に、パネルは SteamVR の OpenVR ライブラリにリンクする必要があるため。`scripts/package.sh` を参照）:
+ビルドとテストはヘッドセット上で行います（本体は glibc に、パネルは SteamVR の OpenVR ライブラリにリンクする必要があるため。`scripts/package.sh` を参照）。`scripts/package.sh` は、前の SteamOS でも起動するように、Rust のプログラムを古い glibc のコンテナ（Debian bookworm、podman を使う）でビルドします:
 
 ```sh
 cargo test --release

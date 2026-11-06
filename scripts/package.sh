@@ -1,13 +1,44 @@
 #!/usr/bin/env bash
-# Build a release tarball. Run this on the Steam Frame itself: the binary has to link against the
-# headset's glibc, because the eye server's shared mutex uses glibc's layout (a static musl build
-# would lock it with an incompatible layout). The panel links against SteamVR's libopenvr_api.so,
-# which is only on the headset too.
+# Build a release tarball. Run this on the Steam Frame itself: the binary has to link against glibc,
+# because the eye server's shared mutex uses glibc's layout (a static musl build would lock it with an
+# incompatible layout). The panel links against SteamVR's libopenvr_api.so, which is only on the
+# headset too.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 cargo="${CARGO:-cargo}"
 command -v "$cargo" >/dev/null || cargo="$HOME/.cargo/bin/cargo"
+
+# The Rust programs are built in a container with an older glibc (Debian bookworm, 2.36): built against
+# the Frame's own glibc they need that SteamOS or newer (0.10.0, built on SteamOS 0.5.7 with glibc 2.43,
+# didn't start on older SteamOS). FRAMEEYEOSC_BUILD_IMAGE= (empty) builds on the Frame itself instead.
+image="${FRAMEEYEOSC_BUILD_IMAGE-docker.io/library/rust:1.98.1-slim-bookworm}"
+# The newest glibc a shipped program may need (the panel, built on the Frame, needs 2.38)
+max_glibc=2.38
+
+# Runs cargo with the given arguments, in the build container unless FRAMEEYEOSC_BUILD_IMAGE is empty
+rust_cargo() {
+    if [ -z "$image" ]; then
+        "$cargo" "$@"
+        return
+    fi
+    podman run --rm -v "$PWD":/src:Z -v "$HOME/.cargo/registry":/usr/local/cargo/registry:Z -w /src         ${CARGO_PROFILE_RELEASE_STRIP:+-e CARGO_PROFILE_RELEASE_STRIP="$CARGO_PROFILE_RELEASE_STRIP"}         "$image" cargo "$@"
+}
+
+# Stops when one of the given programs needs a glibc newer than max_glibc
+check_glibc() {
+    local f need
+    for f in "$@"; do
+        need="$(objdump -T "$f" | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -uV | tail -n 1)"
+        if [ "$(printf '%s
+%s
+' "$need" "$max_glibc" | sort -V | tail -n 1)" != "$max_glibc" ]; then
+            echo "$f needs glibc $need, newer than $max_glibc: it won't start on older SteamOS" >&2
+            exit 1
+        fi
+        echo "$f: glibc $need"
+    done
+}
 version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
 name="frameeyeosc-$version-steamframe-aarch64"
 
@@ -16,8 +47,8 @@ sh vendor/frame-updater/verify.sh
 # ...and the other Frame apps' list (built into the panel) what frame-apps' sync.sh put there
 sh vendor/frame-apps/verify.sh
 
-"$cargo" test --release --locked
-"$cargo" build --release --locked
+rust_cargo test --release --locked
+rust_cargo build --release --locked
 cmake -G Ninja -S panel -B panel/build -DCMAKE_BUILD_TYPE=Release
 ninja -C panel/build
 # Every panel test CMakeLists.txt registers (add_test), so a new one can't be left out here
@@ -25,9 +56,11 @@ ctest --test-dir panel/build --output-on-failure
 # eyecam, the eye-camera tool (tools/eyecam): its own crate and lockfile, built into its own target folder.
 # Stripped like frameeyeosc (its Cargo.toml is a vendored copy, so the profile is set here)
 eyecam_target=tools/eyecam/target
-"$cargo" test --release --locked --manifest-path tools/eyecam/Cargo.toml --target-dir "$eyecam_target"
-CARGO_PROFILE_RELEASE_STRIP=true "$cargo" build --release --locked --manifest-path tools/eyecam/Cargo.toml \
+rust_cargo test --release --locked --manifest-path tools/eyecam/Cargo.toml --target-dir "$eyecam_target"
+CARGO_PROFILE_RELEASE_STRIP=true rust_cargo build --release --locked --manifest-path tools/eyecam/Cargo.toml \
     --target-dir "$eyecam_target"
+
+check_glibc target/release/frameeyeosc panel/build/frameeyeosc-panel "$eyecam_target/release/eyecam-rec"     "$eyecam_target/release/eyecam-grab"
 
 stage="$(mktemp -d)"
 trap 'rm -rf "$stage"' EXIT

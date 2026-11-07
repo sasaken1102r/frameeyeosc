@@ -2,6 +2,8 @@
 
 [Back to the README](../README.md)
 
+The install steps are in the README's [Install](../README.md#install) section.
+
 ## Where things go
 
 No sudo is needed. Everything goes into your home directory (`~/.local/bin`, `~/.local/lib/eyecam`, `~/.config`, `~/.local/share`), so SteamOS updates don't remove it. Run the same command again to update. Without `--with-panel` an installed panel is left as it is.

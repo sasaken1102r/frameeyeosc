@@ -2,6 +2,8 @@
 
 [README に戻る](../README.ja.md)
 
+インストールの手順は、README の[インストール](../README.ja.md#インストール)にあります。
+
 ## 入る場所
 
 sudo は要りません。全部ホームフォルダ（`~/.local/bin`、`~/.local/lib/eyecam`、`~/.config`、`~/.local/share`）に入るので、SteamOS を更新しても消えません。更新するときも同じコマンドです。`--with-panel` を付けないときは、入っているパネルはそのまま残ります。

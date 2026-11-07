@@ -71,7 +71,7 @@ After that, turn off Steam Link's own OSC output on your PC (SteamVR settings > 
 
 ## Getting started
 
-1. On the dashboard, pick "frameeyeosc panel" under Launch program (+) (from then on it starts with SteamVR)
+1. On the dashboard, pick "frameeyeosc panel" under Launch program (+) (after installing it also starts by itself from the next SteamVR start; this opens it right away)
 2. On the "Basic" tab, pick where to send: VRChat directly, VRCFT (LiveLink) or VRCFT (FrameEyeOSC). For VRCFT, the "Output" tab lists what to set up on the PC
 3. If your avatar's eyes look off, press "Fit my eyes" on the "Eye fit" tab and follow the dots with your eyes (about 20 s; see [Eye fit](docs/eye-fit.md#eye-fit))
 4. To also send widened eyes and squints, set up the eye cameras once on the "Eye cameras" tab (about 2 minutes; see [Eye cameras](docs/eyecam.md))
@@ -96,7 +96,7 @@ More in [Troubleshooting](docs/troubleshooting.md).
 ## Privacy
 
 - Eye data only goes to the destinations you choose. There is no telemetry
-- The panel only goes online to check for updates (GitHub and frame.sasaken1102s.net; turn "Check for updates" off to stop it) and when you press the module's address on the "Output" tab
+- The panel only goes online to check for updates and to install one (GitHub and frame.sasaken1102s.net; turn "Check for updates" off to stop the checks). The module's address on the "Output" tab and "Install" in the list of other apps open the browser or Konsole only when you press them
 - Eye-camera video is only kept on the Frame when you record it yourself ("Eye recording", "Record for squint training") or in developer mode. It is never sent anywhere
 - What it sends is plain, unencrypted UDP, meant for your home network
 

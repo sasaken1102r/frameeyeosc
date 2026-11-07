@@ -124,6 +124,8 @@ frameeyeosc は、VRCFaceTracking の LiveLink モジュールに Live Link Face
 
 FrameEyeOSC は frameeyeosc 専用の VRCFaceTracking モジュールです（リポジトリは別の VRCFT-FrameEyeOSC）。PC に別に入れます。LiveLink モードと同じく見開きが伝わり、さらに目のカメラの細めと瞳孔の大きさも運びます。瞳孔も VRCFaceTracking がアバターごとに合った形（小数か、ビットに詰めた形か）で送るので、アバターごとに「瞳孔の受け取り方」を選ぶ必要がありません。
 
+https://github.com/user-attachments/assets/184b4d17-567d-4a71-9ff7-f5cb012de23c
+
 1. PC で、モジュールの zip（`FrameEyeOSC_<版>.zip`）を[リリースのページ](https://github.com/sasaken1102r/VRCFT-FrameEyeOSC/releases)から落とします。VRCFaceTracking の「Module Registry」で［Install from .zip］を押し、その zip を選びます（モジュールの一覧にはまだありません）。ほかの目のモジュール（LiveLink など）は止めるか外してください。UDP 11112 番で受けます（インストーラーを使わないなら、zip を開いて `FrameEyeOSC.dll` を `%APPDATA%\VRCFaceTracking\CustomLibs` に入れ、VRCFaceTracking を起動し直します）
 2. パネルの基本タブの「送り先」で「VRCFT（FrameEyeOSC）」を選ぶか、`"output": "frameeyeosc"`（または `--output frameeyeosc`）にします。左の列に「VRCFT（FrameEyeOSC）→ …」と出て、送り方タブにこの手順が出ます。送り先の PC はいつもどおり（Steam Link の相手か固定）、ポートは 11112 です
 3. Windows Defender ファイアウォールで UDP 11112 を通します。上の LiveLink と同じ注意があります（このモジュールも `VRCFaceTracking.ModuleProcess.exe` の中で動きます）:

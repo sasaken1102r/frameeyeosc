@@ -38,6 +38,8 @@ PC は要りません。Frame の Konsole（画面下のバーの ＋ →「プ�
 curl -fsSL https://frame.sasaken1102s.net | sh
 ```
 
+https://github.com/user-attachments/assets/712e7370-df43-460d-a6bd-0b18e00cca7d
+
 - 最初の 1 回だけ、Steam 設定 → システム →「開発者モードを有効化」をオンにしておきます（オフだと ＋ の一覧に Konsole が出ません）
 - ほかのアプリ（frame-jp-keyboard・frame-mic-tuner・frame-perf-overlay）も同じメニューから一緒に入れられます
 - 更新は、同じコマンドで同じ番号を選ぶだけ。アンインストールはメニューの `u` から

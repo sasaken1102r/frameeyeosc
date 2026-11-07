@@ -2,14 +2,14 @@
 
 ## 0.10.2-beta.1 (2026-11-07)
 
-With prescription inserts and a narrow IPD, the eye can sit at the ear-side edge of the lit area in the eye-camera picture, with the pupil in the dark part. The eye cameras then rarely found the pupil, read the open eye as closed, and the avatar's eyes could stall (#52). When no other search finds the pupil, eyecam now looks once more with a threshold matched to that darker part. The README is now a short entry page, and the details moved to docs/.
+With prescription inserts and a narrow IPD, the pupil can sit in a dark part of the eye-camera picture, where eyecam rarely found it, so open eyes read as closed and the avatar's eyes could stall (#52). When nothing else finds the pupil, eyecam now looks once more, matched to that darker part.
 
-日本語: 度付きレンズを入れて IPD を狭めにしていると、目のカメラの映像で、目が照らされた範囲の耳側の端に寄り、瞳が暗い部分に入ることがあります。そのとき目のカメラは瞳をほとんど見つけられず、開いた目を閉じたと読んで、アバターの目が止まることがありました（#52）。ほかの探し方で瞳が見つからないときだけ、その暗さに合わせてもう一度探すようにしました。README は短い入口にして、細かい説明は docs/ に移しました。
+日本語: 度付きレンズを入れて IPD を狭めにしていると、目のカメラの映像で、目が照らされた範囲の耳側の端に寄り、瞳が暗い部分に入ることがあります。そのとき目のカメラは瞳をほとんど見つけられず、開いた目を閉じたと読んで、アバターの目が止まることがありました（#52）。ほかの探し方で瞳が見つからないときだけ、その暗さに合わせてもう一度探すようにしました。
 
 - Fixed (#52): the eye cameras' pupil search has a dark-side pass
   - It only runs on frames where every other search found nothing, and only takes a pupil whose edge reaches past the ear-side edge of the search window. It doesn't run while Valve says the eye is closing
   - Pupils it finds don't teach the iris size, and the brightness reference for the closed-eye check is learned separately for them
-  - In the reporter's recording, the pupil is now found in open-eye steps 88 % (left, was 8 %) and 87 % (right, was 6 %) of the time. The developer's recordings come out the same or slightly better
+  - In the reporter's recording, the pupil is now found in open-eye steps 88 % (left, was 8 %) and 87 % (right, was 6 %) of the time. The developer's recordings barely change
 - `eyecam-rec --replay`: the CSV's `ext` column also gives 3 (pupil from the dark-side pass) and 4 (found by the dark-side pass but not taken)
 - The README (English and Japanese) is now a short entry page; the panel, outputs, eye fit, eye cameras, settings, troubleshooting, privacy and development details moved to `docs/`. It also has a video of how to install
 - The bug report template asks for the SteamOS version and glasses or lenses

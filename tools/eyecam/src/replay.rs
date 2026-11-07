@@ -526,13 +526,15 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 f(o.x_min),
                 f(o.search_x_min),
                 // 1: the pupil came from the extended search; 2: it found one the engine dropped; 3: the pupil came
-                // from the dim-side search
+                // from the dim-side search; 4: that search found one its check refused or the engine dropped
                 (if o.f.diag.extended && o.f.ok_pupil {
                     1
                 } else if o.f.diag.dim && o.f.ok_pupil {
                     3
                 } else if o.f.diag.extended || o.f.diag.ext_refused {
                     2
+                } else if o.f.diag.dim || o.f.diag.dim_refused {
+                    4
                 } else {
                     0
                 })

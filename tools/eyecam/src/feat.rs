@@ -231,8 +231,10 @@ pub struct Diag {
     pub extended: bool,
     /// ... or it found one `Search::ext` refused (not like the open pupil, or off its track).
     pub ext_refused: bool,
-    /// The pupil came from the dim-side search (`Search::dim`).
+    /// The pupil came from the dim-side search (`Search::dim`) ...
     pub dim: bool,
+    /// ... or it found one its check refused.
+    pub dim_refused: bool,
 }
 
 impl Default for Diag {
@@ -252,6 +254,7 @@ impl Default for Diag {
             extended: false,
             ext_refused: false,
             dim: false,
+            dim_refused: false,
         }
     }
 }
@@ -741,6 +744,7 @@ impl Extractor {
                 p = self.refine_candidates(xmax, None, Some((edge, d.check)), &mut dd);
                 self.levels = levels;
                 f.diag.dim = p.is_some();
+                f.diag.dim_refused = dd.ext_refused;
             }
             p
         };
@@ -1798,7 +1802,8 @@ mod tests {
         assert_eq!(ex.levels, Levels::AS_BUILT, "the levels go back after the pass");
         // Refused by its check, or Valve says the eye is closing: not found
         ex.search.dim = Some(DimSearch { x0: 162.0, levels: dim, check: ExtCheck { a: (30.0, 40.0), ..ExtCheck::ANY } });
-        assert!(ex.extract(&img, 347.0, None, None, None).1.is_none());
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        assert!(p.is_none() && !f.diag.dim && f.diag.dim_refused, "{:?}", f.diag);
         ex.search.dim = Some(DimSearch { x0: 162.0, levels: dim, check: ExtCheck::ANY });
         ex.search.ext.closing = true;
         let (f, p) = ex.extract(&img, 347.0, None, None, None);

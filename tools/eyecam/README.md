@@ -776,7 +776,7 @@ GaussianBlur とオープニングは OpenCV とビット単位で同じ（`visi
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_A.json --calib-block 4 --out test_A_B.csv
 # 校正なし: 1 回目で基準線を覚えてから最初から流し直す（セッションの前に 30 秒かぶっていたことにする）
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_with_history.json --prewarm --out test_auto.csv
-# 評価用のつまみ: --no-track（追従しない）、--no-gaze-drop（下を見たときの保持なし）、--no-edge-hold（枠の端で見失った瞳も閉じたにする。CSV の edge_held 列で保持したフレーム）、--no-ext-search（枠の外を探さない。CSV の search_x_min 列が広げた左端、ext 列が 1 なら広げた探索の瞳、2 なら取らなかった瞳）、--wide-curve 0.25,0.5（見開きの曲線）、--widen-sensitivity 0.8（感度で曲線を決める）、--lid-veto（まぶたの拒否権あり。既定はライブと同じでなし。--no-lid-veto は古い評価スクリプト用に残してある。CSV の veto_p 列が CNN の P(open)〔回さなかったフレームは空〕、vetoed 列が 1 なら拒否権を出したフレーム）
+# 評価用のつまみ: --no-track（追従しない）、--no-gaze-drop（下を見たときの保持なし）、--no-edge-hold（枠の端で見失った瞳も閉じたにする。CSV の edge_held 列で保持したフレーム）、--no-ext-search（枠の外を探さない。CSV の search_x_min 列が広げた左端、ext 列が 1 なら広げた探索の瞳、2 なら取らなかった瞳、3 なら暗い側の探索〔枠の耳側が暗い装着で、他の探索で瞳が見つからなかったフレームだけ、その明るさに合わせた段差でもう一度探す〕の瞳、4 ならそこで見つけたけど取らなかった瞳）、--wide-curve 0.25,0.5（見開きの曲線）、--widen-sensitivity 0.8（感度で曲線を決める）、--lid-veto（まぶたの拒否権あり。既定はライブと同じでなし。--no-lid-veto は古い評価スクリプト用に残してある。CSV の veto_p 列が CNN の P(open)〔回さなかったフレームは空〕、vetoed 列が 1 なら拒否権を出したフレーム）
 python eval_live.py DIR   # DIR の test_r*_t*.csv を xwear.py と同じ指標で集計（フレームレートは t_cam から測る）
 # 遅いカメラのふり: 15 fps の刻みにいちばん近いフレームだけを使う（90 fps の録画なら 6 枚に 1 枚。目の画像はコピーしない）
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --resample 15 --user-calib calib_A.json --calib-block 4 --out test_A_B_15.csv

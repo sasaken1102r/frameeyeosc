@@ -119,6 +119,11 @@ const EXT_TRACK_S: f64 = 1.0;
 const EXT_TRACK_PX: f64 = 40.0;
 const EXT_A_PX: (f64, f64) = (8.0, 45.0);
 const EXT_VALVE_OPEN: f64 = 0.6;
+/// A pupil from the dim-side search (`feat::DimSearch`) is checked as one from the extended search, but may be down to
+/// DIM_SIZE_MIN x the open pupil's size, as the closed-lid crease check allows (a pupil in bright light, 0.55-0.65 x):
+/// issue 52's pupils in its bright steps were 0.66 / 0.68 x (left / right, medians) the normal steps' and refused at
+/// EXT_SIZE's 0.6 in 15% / 41% of those frames.
+const DIM_SIZE_MIN: f64 = 0.45;
 /// The largest iris radius, in semi-axes of the open pupil, the iris fit is trusted with (`EyeEngine::iris_first`).
 /// The developer's 10 recorded calibrations: at most 3.3 (median 2.2); issue 38's wear calibration, the left eye 3.0 and
 /// the right eye 5.4 (R 88 px with a pupil 1.2 x the left one's).
@@ -536,6 +541,8 @@ pub struct EyeEngine {
     x_min: f64,
     /// The grey levels' scale for this wear, from the same mean image (`feat::Levels::for_profile`).
     levels: feat::Levels,
+    /// The levels of the dim side of the picture, when the pupil search needs them (`feat::Levels::dim_side`).
+    dim_levels: Option<feat::Levels>,
     /// Where x_min came from, and the time (s) of the frame it was last worked out on (the drift log).
     x_min_from: feat::XMinFrom,
     x_min_at: f64,
@@ -559,6 +566,16 @@ pub struct EyeEngine {
     /// Frames in a row the open-eye check dropped the pupil only for being large (PUPIL_GROW_S).
     grown: u32,
     box_open: LongMedian,
+    /// The open eye's iris-box level around pupils from the dim-side search, and whether the last pupil came from that
+    /// search. Such a pupil sits where the picture is dim, and so does the iris box measured around it (and around it as
+    /// the last pupil while no pupil is seen): its level is learnt apart from the box around the other pupils (60 s, as
+    /// `box_open`), and a lost pupil whose last sighting came from that search reads closed against it (once 30 samples
+    /// are in). With one level for both, a wear whose pupil moved between the lit and the dim part (the developer's
+    /// 2026-10-12 10:02 recording, lying down: the right eye's pupil found by the dim-side search on 1353 frames) read
+    /// closed on 0.929 of the frames Valve had closed (under 0.15) instead of 0.996: the closed lid in the shade is
+    /// darker than 1.3 x a level learnt mostly in the light. Learnt apart: 0.985.
+    box_open_dim: LongMedian,
+    prev_dim: bool,
     /// The open eye's pupil semi-axis (px) and dark level, for telling a real pupil from a crease on a closed lid.
     a_open: LongMedian,
     inner_open: LongMedian,
@@ -771,6 +788,7 @@ impl Default for EyeEngine {
             xmax: 346.0,
             x_min: feat::X_MIN,
             levels: feat::Levels::AS_BUILT,
+            dim_levels: None,
             x_min_from: feat::XMinFrom::Fixed,
             x_min_at: f64::NAN,
             find_x_min: feat::X_MIN,
@@ -787,6 +805,8 @@ impl Default for EyeEngine {
             last_lower: f64::NAN,
             grown: 0,
             box_open: LongMedian::new(60.0),
+            box_open_dim: LongMedian::new(60.0),
+            prev_dim: false,
             a_open: LongMedian::new(20.0),
             inner_open: LongMedian::new(20.0),
             ba_open: LongMedian::new(20.0),
@@ -861,6 +881,7 @@ impl EyeEngine {
     pub fn reset_tracking(&mut self) {
         self.prev = None;
         self.prev_p = None;
+        self.prev_dim = false;
         self.nopupil = 0;
         self.last_lower = f64::NAN;
         self.grown = 0;
@@ -975,13 +996,25 @@ impl EyeEngine {
             self.xmax = feat::glare_end(&m).map_or(lens, |g| lens.min(g));
             (self.x_min, self.x_min_from) = feat::search_x_min_from(&m);
             self.levels = feat::Levels::for_profile(&m);
+            let dim_x0 = (self.x_min - EXT_MAX_PX).max(feat::X_MIN_LO);
+            self.dim_levels = self.levels.dim_side(&m, dim_x0, self.x_min + feat::DIM_SIDE_PX);
             self.x_min_at = t;
         }
         // The extended search's edge: within EXT_MAX_PX past x_min (and not past X_MIN_LO), x_min itself when off.
         let ext_lo = if params.tune.ext_search { (self.x_min - EXT_MAX_PX).max(feat::X_MIN_LO) } else { self.x_min };
         self.find_x_min = self.find_x_min.clamp(ext_lo.min(self.x_min), self.x_min);
         let search_x_min = self.find_x_min;
-        self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, self.ext_check(t, valve_open));
+        let ext = self.ext_check(t, valve_open);
+        self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, ext);
+        // The dim-side search reaches as far as the extended one may (x_min itself with that off).
+        self.ex.search.dim = self.dim_levels.map(|levels| feat::DimSearch {
+            x0: ext_lo,
+            levels,
+            check: feat::ExtCheck {
+                a: if self.a_open.len() >= 30 { (DIM_SIZE_MIN * self.a_open.value, ext.a.1) } else { ext.a },
+                ..ext
+            },
+        });
         self.ex.levels = self.levels;
         // An iris radius over IRIS_PUPIL_MAX x the open pupil's semi-axis is no limbus: for the rest of the wear the iris
         // fit takes the first rise out of the iris, and the radius is learnt again from its fits. So is the open eye's iris
@@ -995,6 +1028,7 @@ impl EyeEngine {
             self.iris_first = true;
             self.r_est = LongMedian::new(30.0);
             self.box_open = LongMedian::new(60.0);
+            self.box_open_dim = LongMedian::new(60.0);
         }
         self.ex.iris_first = self.iris_first;
         let r_ready = self.r_est.len() >= 10;
@@ -1064,6 +1098,7 @@ impl EyeEngine {
             None => {}
         }
         if let Some(pp) = p {
+            self.prev_dim = f.diag.dim;
             self.prev = Some((pp.cx, pp.cy));
             self.prev_p = Some(pp);
             self.prev_p_t = t;
@@ -1079,7 +1114,10 @@ impl EyeEngine {
         // on the 2026-10-09 18:16 user calibration's left eye), the box is sized by it, and two edge pupils found at
         // 0.9 s flipped it half a second early, so the open eye's box level was learnt 12% brighter and the blink at
         // 3.6 s (Valve's openness 0 for 0.2 s) never read 1.3 x. Their own box and lids still use the radius in use.
-        if f.ok_pupil && !f.diag.extended && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
+        // Nor from the dim-side search: on a frame where the usual passes found nothing, its pupil can come out smaller
+        // than the pupil (a dark core of it at the dim side's lower thresholds), and the iris fit from it with it (the
+        // developer's 2026-10-09 18:16 user calibration: a box learnt 10 levels darker, and a 0.2 s close missed).
+        if f.ok_pupil && !f.diag.extended && !f.diag.dim && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
             self.r_est.push(f.iris_r, long_hz);
         }
         if !self.t_first.is_finite() {
@@ -1124,8 +1162,14 @@ impl EyeEngine {
             f.diag.prior_reset = true;
         }
         if f.ok_pupil && sampled {
-            self.box_open.push(box_f, long_hz);
+            if self.prev_dim {
+                self.box_open_dim.push(box_f, long_hz);
+            } else {
+                self.box_open.push(box_f, long_hz);
+            }
         }
+        // The open level the box is held against: the dim side's while the last pupil came from there (`box_open_dim`).
+        let open_ref = if self.prev_dim && self.box_open_dim.len() >= 30 { &self.box_open_dim } else { &self.box_open };
 
         // Closed: lid skin covers the box (brighter than the open-eye level) and no pupil for CLOSED_NO_PUPIL_S (3
         // frames at 90 fps).
@@ -1133,8 +1177,8 @@ impl EyeEngine {
         let no_pupil_long = self.nopupil >= frames_in(CLOSED_NO_PUPIL_S, fps, 2);
         let edge_gap = self.prev_p.map_or(f64::NAN, |q| q.cx - q.a - self.x_min);
         let edge_held = params.tune.edge_hold && !f.ok_pupil && edge_gap < EDGE_LOST_PX && ap >= EDGE_OPEN_AP;
-        let closed = self.box_open.len() >= 30
-            && self.levels.unlevel(box_f) > 1.3 * self.levels.unlevel(self.box_open.value)
+        let closed = open_ref.len() >= 30
+            && self.levels.unlevel(box_f) > 1.3 * self.levels.unlevel(open_ref.value)
             && no_pupil_long
             && !edge_held;
         self.since_closed = if closed { 0 } else { self.since_closed.saturating_add(1) };

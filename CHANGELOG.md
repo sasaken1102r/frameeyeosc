@@ -2,7 +2,7 @@
 
 ## 0.10.2 (2026-11-08)
 
-With prescription inserts and a narrow IPD, the eye cameras could rarely find the pupil, so open eyes read as closed and the avatar's eyes could stall (#52). eyecam now looks once more in the darker part of the picture where the pupil sits then. If you squint very hard, the user calibration could keep failing (#54); such an eye now keeps its previous squint, or the standard one, and the calibration goes through. Thanks to @fujieda1237 for the recordings and for testing the fixes.
+With prescription inserts and a narrow IPD, eyecam could miss the pupil and read open eyes as closed; it now also looks in the darker part of the picture (#52). Squinting very hard could make user calibration fail; such an eye now keeps its previous or the standard squint (#54). Thanks @fujieda1237!
 
 日本語: 度付きレンズを入れて IPD を狭めにしていると、目のカメラが瞳をほとんど見つけられず、開いた目を閉じたと読んでアバターの目が止まることがありました（#52）。映像の暗い部分でも瞳を探すようにしました。目をとても強く細めるとユーザー校正が何度やっても失敗することもあったので（#54）、そういう目は細めを前の値か標準の値にして通すようにしました。録画と確認に協力してくれた @fujieda1237 さん、ありがとう！
 

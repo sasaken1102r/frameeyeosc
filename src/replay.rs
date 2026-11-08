@@ -1076,8 +1076,10 @@ fn report(input: &Path, samples: &[EyeData], skipped: usize, settings: &Settings
 /// overrode the eye server's (the eye seen open while the eye server read it closing, seen closed, widened below the
 /// eye server's relaxed open, narrowed on the camera while the eye server's reading jumped to 1.000, or raised to the
 /// camera's where the eye server read the open eye lower), for how long its "closed" was taken as open because the eye
-/// server read the eye open and was sure of it (Sample::closed_overruled; time by the samples' own, `samples`), and how
-/// often each eye went out visibly widened (LID_WIDE) with them (`with`) and without them (`without`, camera_lids off).
+/// server read the eye open and was sure of it (Sample::closed_overruled; time by the samples' own, `samples`), how
+/// often each eye went out visibly widened (LID_WIDE) with them (`with`) and without them (`without`, camera_lids off),
+/// and how much of the recording a gaze capture could use (Sample::capture_usable), with them and without, and how
+/// often an eye counted open for it by its pupil alone, its eyelid not the camera's (Sample::pupil_open).
 fn camera_lines(cameras: &[Option<Live>], samples: &[EyeData], with: &[Sample], without: &[Sample]) -> String {
     let n = cameras.len().max(1) as f64;
     let share = |count: usize| count as f64 * 100.0 / n;
@@ -1113,6 +1115,10 @@ fn camera_lines(cameras: &[Option<Live>], samples: &[EyeData], with: &[Sample], 
         });
         format!("{left} / {right}")
     };
+    let usable = |sent: &[Sample]| share(sent.iter().filter(|sample| sample.capture_usable()).count());
+    let pupil_only = [0, 1].map(|eye| {
+        share(with.iter().filter(|sample| sample.pupil_open[eye] && sample.lid_from[eye] != LidFrom::CameraOpen).count())
+    });
     format!(
         "\nEye camera (eyecam-rec): values with {:.1}% of the samples; fresh (L / R) {:.1}% / {:.1}%; \
          with a baseline for the wear {baseline:.1}%\n  \
@@ -1121,7 +1127,9 @@ fn camera_lines(cameras: &[Option<Live>], samples: &[EyeData], with: &[Sample], 
          raised to it {}\n  \
          its closed taken as open, the eye server sure (L / R)  {:.1} s / {:.1} s\n  \
          its \"closed\" held back, not a blink or a wink yet (L / R): {held}\n  \
-         sent widened, VRCFT {LID_WIDE} or more (L / R)    {} with it, {} without it\n",
+         sent widened, VRCFT {LID_WIDE} or more (L / R)    {} with it, {} without it\n  \
+         usable for a gaze capture                  {:.1}% with it, {:.1}% without it; \
+         open by its pupil alone (L / R) {:.1}% / {:.1}%\n",
         share(read.len()),
         fresh[0],
         fresh[1],
@@ -1136,6 +1144,10 @@ fn camera_lines(cameras: &[Option<Live>], samples: &[EyeData], with: &[Sample], 
         overruled[1],
         wide(with),
         wide(without),
+        usable(with),
+        usable(without),
+        pupil_only[0],
+        pupil_only[1],
     )
 }
 
@@ -1453,6 +1465,15 @@ mod tests {
         assert!(lines.contains("its closed taken as open, the eye server sure (L / R)  0.0 s / 0.0 s"), "{lines}");
         let share = format!("{:.1}%", widened as f64 * 100.0 / 1350.0);
         assert!(lines.contains(&format!("{share} / {share} with it, 0.0% / 0.0% without it")), "{lines}");
+        // How much a gaze capture could use; none of it open by the pupil alone (the camera's confidence is 0 here)
+        let usable = |sent: &[Sample]| sent.iter().filter(|sample| sample.capture_usable()).count() as f64 * 100.0 / 1350.0;
+        let line = format!(
+            "usable for a gaze capture                  {:.1}% with it, {:.1}% without it; \
+             open by its pupil alone (L / R) 0.0% / 0.0%",
+            usable(&sent),
+            usable(&without)
+        );
+        assert!(lines.contains(&line), "{lines}");
         let path = std::env::temp_dir().join(format!("frameeyeosc-camera-processed-{}.csv", std::process::id()));
         write_processed(&path, &samples, &sent, true).unwrap();
         let text = fs::read_to_string(&path).unwrap();

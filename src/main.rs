@@ -1681,10 +1681,12 @@ impl CameraGap {
 }
 
 /// One eye seen open by its pupil alone (CAMERA_PUPIL_SEEN), for a gaze capture only (Sample::pupil_open): the camera
-/// has clearly seen the pupil for longer than a blink, the same CAMERA_DOUBT_GRACE (at least CAMERA_DOUBT_FRAMES of the
-/// camera's frames) the camera's eyelid waits for in Smoother::check_lids, and the eye server reads the eye below the
-/// capture's open floor (above it the eye counts anyway). A clearly seen pupil is an open eye whatever the eye server
-/// reads, so a reading that hovers around the floor doesn't start it over. Through a short gap in
+/// has clearly seen the pupil while the eye server read the eye below the capture's open floor for longer than a blink,
+/// the same CAMERA_DOUBT_GRACE (at least CAMERA_DOUBT_FRAMES of the camera's frames) the camera's eyelid waits for in
+/// Smoother::check_lids, so the start of a blink the camera is late to see closed doesn't count, in any eye. A reading
+/// at or above the floor for up to CAMERA_GAP_HOLD (since the last one below it) while the pupil stays clearly seen
+/// doesn't count (the eye counts anyway there) but doesn't start it over either, so a reading that hovers around the
+/// floor doesn't cost the grace each time; a longer one does. Through a short gap in
 /// the camera's values (CAMERA_GAP_HOLD) it goes on where it was, as the camera's eyelid does: single stale samples
 /// every fifth of a second (issue 46) would otherwise start it over before it got there. Once it counts, a blink the
 /// camera sees (closed, or the pupil lost) doesn't count but doesn't start it over either, up to CAMERA_AGREE_HOLD, the
@@ -1693,7 +1695,7 @@ impl CameraGap {
 /// instead of 93.9%. Nothing that is sent goes by it.
 #[derive(Clone, Copy, Debug, Default)]
 struct PupilSeen {
-    // Since when it has been seen so, and the last sample it was (sample time).
+    // Since when it has been seen so, and the last sample it was with the eye server below the floor (sample time).
     since: Option<f64>,
     last: f64,
     // The grace the last fresh values asked for.
@@ -1709,14 +1711,15 @@ impl PupilSeen {
         let within = |hold: f64| self.since.is_some() && (self.last..=self.last + hold).contains(&time);
         let open = self.since.is_some_and(|since| counted(since, self.last, self.grace));
         match seen {
-            Some(true) => {
+            Some(true) if low => {
                 if !within(CAMERA_GAP_HOLD.max(CAMERA_AGREE_HOLD)) {
                     self.since = Some(time);
                 }
                 self.last = time;
                 self.grace = grace;
-                low && self.since.is_some_and(|since| counted(since, time, grace))
+                self.since.is_some_and(|since| counted(since, time, grace))
             }
+            Some(true) if within(CAMERA_GAP_HOLD) => false,
             None if within(CAMERA_GAP_HOLD) => low && self.since.is_some_and(|since| counted(since, time, self.grace)),
             Some(false) if low && open && within(CAMERA_AGREE_HOLD) => false,
             _ => {
@@ -9439,9 +9442,23 @@ mod tests {
         assert_eq!(sent[60].camera_open(), [false; 2]);
         assert!(sent[28..].iter().all(Sample::capture_usable));
         assert!(sent[61..].iter().all(|sample| sample.camera_open() == [true, false]));
-        // Seen open while the eye server read it open counts toward the grace: from open to stuck at once
+        // Above it for longer than CAMERA_GAP_HOLD (25 samples): the grace again after it
+        let away = |i: usize| if (60..85).contains(&i) { [0.35, 0.8] } else { [0.0, 0.8] };
+        let sent = run(&settings, &away, &|_| Some(seen(0.97, false)));
+        assert!(sent[85..111].iter().all(|sample| !sample.capture_usable()));
+        assert!(sent[113..].iter().all(Sample::capture_usable));
+        // An eye the eye server reads open, then stuck: the grace from the drop, not from when the pupil was first seen
         let sent = run(&settings, &|i| if i < 60 { [0.8; 2] } else { [0.0, 0.8] }, &|_| Some(seen(0.97, false)));
-        assert!(sent.iter().all(Sample::capture_usable));
+        assert!(sent[..60].iter().all(Sample::capture_usable));
+        assert!(sent[60..86].iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]));
+        assert!(sent[88..].iter().all(Sample::capture_usable));
+        // A blink of an eye the eye server reads well: below the floor at once, the camera still sure of the pupil for
+        // 0.15 s (14 samples), then closed. It never counts
+        let blink_eye = |i: usize| if (50..75).contains(&i) { [0.1, 0.8] } else { [0.8; 2] };
+        let onset = |i: usize| Some(seen(0.97, (64..78).contains(&i)));
+        let sent = run(&settings, &blink_eye, &onset);
+        assert!(sent.iter().all(|sample| sample.camera_open() == [false; 2]));
+        assert!(sent[50..75].iter().all(|sample| !sample.capture_usable()));
         // At 15 frames a second it waits CAMERA_DOUBT_FRAMES of them (0.53 s, 48 samples)
         let slow = |_: usize| {
             let mut live = seen(0.97, false);

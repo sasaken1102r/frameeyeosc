@@ -66,6 +66,7 @@ const EYE: &[(&str, &str)] = &[
     ("の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）", "the squint was narrower than the closed eye (try again without closing it)"),
     (": 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）", "looking down didn't change the eye opening (try again and look down clearly)"),
     (": 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）", "the lower lid moved up when looking down (maybe a detection error; try again)"),
+    (": 下を見ているあいだ瞳が見えなかった（もう一度、下を見てね）", "couldn't see the pupil while looking down (try again)"),
 ];
 
 /// Prefixes followed by a name or reason that is kept as it is.
@@ -139,11 +140,13 @@ fn note_en(note: &str) -> Option<String> {
     if note == crate::live::NOTE_WIDEN {
         return Some("couldn't measure widening, using the usual width".into());
     }
-    // A user calibration with the standard look-down correction on an eye, or the previous one kept ("右目は…" /
-    // "両目とも…").
+    // A user calibration with the standard look-down correction or squint on an eye, or the previous one kept
+    // ("右目は…" / "両目とも…").
     let look_down = [
         (crate::live::NOTE_LOOK_DOWN_DEFAULT, "using the standard correction for looking down"),
         (crate::live::NOTE_LOOK_DOWN_PREVIOUS, "keeping the previous correction for looking down"),
+        (crate::live::NOTE_SQUINT_DEFAULT, "squinted too hard to tell from a closed eye, using the standard squint"),
+        (crate::live::NOTE_SQUINT_PREVIOUS, "squinted too hard to tell from a closed eye, keeping the previous squint"),
     ];
     if let Some((eyes, en)) = look_down.iter().find_map(|(j, en)| Some((note.strip_suffix(j)?, *en))) {
         let eye_en = EYES.iter().find_map(|(j, en)| (eyes == format!("{j}は") || eyes == format!("{j}とも")).then_some(*en))?;
@@ -277,6 +280,12 @@ mod tests {
             "校正できた（左目は下を見たときの補正を前の値のままにしたよ。右目は下を見たときの補正を標準の値にしたよ）",
             "校正できた（左目は下を見たときの補正を標準の値にしたよ。右目は下を見たときの補正を前の値のままにしたよ）",
             "校正できた（右目は下を見たときの補正を前の値のままにしたよ）。注意: 左右の差が大きい [細め 0.25]",
+            "校正できた（右目は細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ）",
+            "校正できた（左目は細めが強すぎて閉じた目と区別できなかったので、細めは前の値を使うよ）",
+            "校正できた（両目とも細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ）",
+            "校正できた（右目は細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ）。注意: 左右の差が大きい [下を見たとき 0.30]",
+            "校正できた（右目は細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ。左目は下を見たときの補正を標準の値にしたよ）",
+            "左目: 下を見ているあいだ瞳が見えなかった（もう一度、下を見てね）[0/378、30 必要]",
             "瞳孔の範囲を保存した",
             "瞳孔の範囲は測れなかった",
             "先に calib wear をしてね",
@@ -420,6 +429,18 @@ mod tests {
         assert_eq!(
             message_en("校正できた（ユーザー）。注意: 左右の差が大きい [下を見たとき 0.39、細め 0.08]"),
             "Calibrated (user). Note: Large left/right difference [looking down 0.39, squint 0.08]"
+        );
+        assert_eq!(
+            message_en("校正できた（右目は細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ。左目は下を見たときの補正を標準の値にしたよ）"),
+            "Calibrated (Right eye: squinted too hard to tell from a closed eye, using the standard squint. Left eye: using the standard correction for looking down)"
+        );
+        assert_eq!(
+            message_en("校正できた（左目は細めが強すぎて閉じた目と区別できなかったので、細めは前の値を使うよ）。注意: 左右の差が大きい [下を見たとき 0.30]"),
+            "Calibrated (Left eye: squinted too hard to tell from a closed eye, keeping the previous squint). Note: Large left/right difference [looking down 0.30]"
+        );
+        assert_eq!(
+            message_en("左目: 下を見ているあいだ瞳が見えなかった（もう一度、下を見てね）[0/378、30 必要]"),
+            "Left eye: couldn't see the pupil while looking down (try again) [0/378, 30 needed]"
         );
         assert_eq!(
             message_en("校正できた（見開きは取れなかったので、いつもの幅を使うよ）"),

@@ -169,11 +169,14 @@ impl OffCount {
 }
 
 /// The eyes a user calibration went through with the standard look-down correction on (`default`) or with the
-/// previous one kept (`previous`): UserOutcome's, for calib_result.json.
+/// previous one kept (`previous`), and with the standard squint (`squint_default`) or the previous one
+/// (`squint_previous`): UserOutcome's, for calib_result.json.
 #[derive(Clone, Copy, Debug, Default)]
-struct LookDown {
+struct Fallbacks {
     default: [bool; 2],
     previous: [bool; 2],
+    squint_default: [bool; 2],
+    squint_previous: [bool; 2],
 }
 
 pub enum Msg {
@@ -229,6 +232,11 @@ pub struct Shared {
     /// ...and the eyes it went through with the previous user calibration's look-down correction kept on (the same
     /// bits; an eye is in one of the two at most).
     pub user_look_down_previous: AtomicU32,
+    /// The eyes the last `calib user` of this run went through with the standard squint on (its squint was measured
+    /// deeper than the closed eye, and there was no user calibration before): the same bits.
+    pub user_squint_default: AtomicU32,
+    /// ...and those it went through with the previous user calibration's squint kept on.
+    pub user_squint_previous: AtomicU32,
     /// Average processing time per frame over the last second, in microseconds.
     pub us_per_frame: AtomicU32,
     pub frames: AtomicU64,
@@ -272,6 +280,8 @@ impl Default for Shared {
             calib_failed_eye: AtomicU32::new(0),
             user_look_down_default: AtomicU32::new(0),
             user_look_down_previous: AtomicU32::new(0),
+            user_squint_default: AtomicU32::new(0),
+            user_squint_previous: AtomicU32::new(0),
             us_per_frame: AtomicU32::new(0),
             frames: AtomicU64::new(0),
             live_on: AtomicBool::new(false),
@@ -851,7 +861,7 @@ impl Worker {
         result: &Result<String, String>,
         params: Option<String>,
         failed_eye: &str,
-        look_down: LookDown,
+        fallbacks: Fallbacks,
     ) {
         let (values, lines) = match kind {
             CollectKind::Wear => live::wear_report(samples),
@@ -874,11 +884,12 @@ impl Worker {
             CollectKind::Pupil => "pupil",
         };
         let json = format!(
-            "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"time\": {},\n  \"ok\": {ok},\n  \"failed_eye\": {},{}\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+            "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"time\": {},\n  \"ok\": {ok},\n  \"failed_eye\": {},{}{}\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
             live::JSON_EYES_ANATOMICAL,
             crate::json::string(&stamp()),
             crate::json::string(failed_eye),
-            live::look_down_json(kind == CollectKind::User, look_down.default, look_down.previous),
+            live::look_down_json(kind == CollectKind::User, fallbacks.default, fallbacks.previous),
+            live::squint_json(kind == CollectKind::User, fallbacks.squint_default, fallbacks.squint_previous),
             crate::json::string(message),
             params.unwrap_or_else(|| "null".into())
         );
@@ -941,8 +952,8 @@ impl Worker {
         let samples = std::mem::take(&mut self.samples);
         self.steps.clear();
         let mut params = None;
-        let mut look_down = LookDown::default();
-        let result = self.fit(kind, &samples, &mut params, &mut look_down);
+        let mut fallbacks = Fallbacks::default();
+        let result = self.fit(kind, &samples, &mut params, &mut fallbacks);
         if kind == CollectKind::Wear && result.is_err() {
             self.shared.last_calib_widen.store(0, Ordering::Relaxed);
         }
@@ -950,19 +961,19 @@ impl Worker {
             CollectKind::Wear => ["", "L", "R", "LR"][(self.shared.calib_failed_eye.load(Ordering::Relaxed) & 3) as usize],
             _ => "",
         };
-        self.report(dir.as_deref(), kind, &samples, &result, params, failed_eye, look_down);
+        self.report(dir.as_deref(), kind, &samples, &result, params, failed_eye, fallbacks);
         self.publish_state();
         result
     }
 
-    /// Fit and save a calibration. `look_down`: the eyes of a user calibration that went through with the standard
-    /// look-down correction or the previous one.
+    /// Fit and save a calibration. `fallbacks`: the eyes of a user calibration that went through with the standard
+    /// look-down correction or squint, or the previous one.
     fn fit(
         &mut self,
         kind: CollectKind,
         samples: &[Vec<Sample>; 2],
         params_out: &mut Option<String>,
-        look_down: &mut LookDown,
+        fallbacks: &mut Fallbacks,
     ) -> Result<String, String> {
         let samples = samples.clone();
         match kind {
@@ -1005,16 +1016,30 @@ impl Worker {
                     (Some(l), Some(r)) => [l, r],
                     _ => return Err("先に calib wear をしてね".into()),
                 };
-                self.shared.user_look_down_default.store(0, Ordering::Relaxed);
-                self.shared.user_look_down_previous.store(0, Ordering::Relaxed);
+                for a in [
+                    &self.shared.user_look_down_default,
+                    &self.shared.user_look_down_previous,
+                    &self.shared.user_squint_default,
+                    &self.shared.user_squint_previous,
+                ] {
+                    a.store(0, Ordering::Relaxed);
+                }
                 // An eye whose look-down part failed (long lashes read as the lid) still gets its squint, with the
-                // previous user calibration's look-down correction if it was measured, else the standard one.
+                // previous user calibration's look-down correction if it was measured, else the standard one; an eye
+                // whose squint was squeezed shut gets the previous squint, else the standard one.
                 let out = live::fit_user_settled(&samples, &wear, self.calib.user)?;
                 *params_out = Some(live::user_params_json(&out.user));
-                *look_down = LookDown { default: out.look_down_default, previous: out.look_down_previous };
+                *fallbacks = Fallbacks {
+                    default: out.look_down_default,
+                    previous: out.look_down_previous,
+                    squint_default: out.squint_default,
+                    squint_previous: out.squint_previous,
+                };
                 let bits = |eyes: [bool; 2]| eyes[0] as u32 | (eyes[1] as u32) << 1;
                 self.shared.user_look_down_default.store(bits(out.look_down_default), Ordering::Relaxed);
                 self.shared.user_look_down_previous.store(bits(out.look_down_previous), Ordering::Relaxed);
+                self.shared.user_squint_default.store(bits(out.squint_default), Ordering::Relaxed);
+                self.shared.user_squint_previous.store(bits(out.squint_previous), Ordering::Relaxed);
                 self.calib.user = Some(out.user);
                 self.calib.user_time = stamp();
                 self.calib.user_warnings = out.warnings.clone();
@@ -1201,7 +1226,7 @@ pub fn spawn(
                     Ok(Msg::Abort(dir)) => {
                         if let Some(kind) = w.collect.take() {
                             let samples = std::mem::take(&mut w.samples);
-                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None, "", LookDown::default());
+                            w.report(dir.as_deref(), kind, &samples, &Err("途中で止めた".into()), None, "", Fallbacks::default());
                         }
                         w.steps.clear();
                         w.samples = [Vec::new(), Vec::new()];

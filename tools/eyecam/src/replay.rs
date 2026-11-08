@@ -652,6 +652,7 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
         }
     }
     let (mut look_down_default, mut look_down_previous) = ([false; 2], [false; 2]);
+    let (mut squint_default, mut squint_previous) = ([false; 2], [false; 2]);
     let (kind_name, result, values, lines, params_json, failed_eye) = match kind {
         CalibRun::Wear => {
             let fallback = [0, 1].map(|e| hist.map_or(live::DEFAULT_WIDEN_STEP, |h| h[e].step));
@@ -671,6 +672,7 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
             let params = out.as_ref().ok().map(|o| live::user_params_json(&o.user));
             if let Ok(o) = &out {
                 (look_down_default, look_down_previous) = (o.look_down_default, o.look_down_previous);
+                (squint_default, squint_previous) = (o.squint_default, o.squint_previous);
             }
             ("user", out.map(|o| o.message()), values, lines, params, String::new())
         }
@@ -684,10 +686,11 @@ pub fn replay_calib(s: &Session, kind: CalibRun, calib: &crate::live::CalibFile,
     };
     eprintln!("calibration ({kind_name}): {}", if ok { format!("ok: {message}") } else { format!("failed: {message}") });
     Ok(format!(
-        "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"ok\": {ok},\n  \"failed_eye\": {},{}\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
+        "{{\n  \"kind\": \"{kind_name}\",\n  {},\n  \"ok\": {ok},\n  \"failed_eye\": {},{}{}\n  \"message\": {},\n  \"values\": {values},\n  \"params\": {}\n}}\n",
         crate::live::JSON_EYES_ANATOMICAL,
         crate::json::string(&failed_eye),
         live::look_down_json(kind == CalibRun::User, look_down_default, look_down_previous),
+        live::squint_json(kind == CalibRun::User, squint_default, squint_previous),
         crate::json::string(message),
         params_json.unwrap_or_else(|| "null".into())
     ))

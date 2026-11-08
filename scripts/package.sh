@@ -89,6 +89,9 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/frameeyeosc/icons"
 cp "$rust_target/release/frameeyeosc" install.sh contrib/frameeyeosc.service contrib/frameeyeosc.env.example \
     LICENSE THIRD_PARTY_LICENSES.md README.md README.ja.md CHANGELOG.md CHANGELOG.ja.md "$stage/frameeyeosc/"
+# The README links to docs/; the pages go along (not docs/images, which only GitHub shows)
+mkdir -p "$stage/frameeyeosc/docs"
+cp docs/*.md "$stage/frameeyeosc/docs/"
 cp panel/build/frameeyeosc-panel panel/contrib/frameeyeosc-panel.service panel/contrib/frameeyeosc-panel.desktop \
     "$stage/frameeyeosc/"
 "${STRIP:-strip}" "$stage/frameeyeosc/frameeyeosc-panel"

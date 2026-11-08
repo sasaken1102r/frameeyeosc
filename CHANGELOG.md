@@ -1,29 +1,24 @@
 # Changelog
 
-## 0.10.2-beta.2 (2026-11-08)
+## 0.10.2 (2026-11-08)
 
-If you squint very hard, the eye cameras could read the squint as narrower than a closed eye, and the user calibration kept failing (#54). Such an eye now keeps its previous squint, or the standard one, and the calibration goes through.
+With prescription inserts and a narrow IPD, the eye cameras could rarely find the pupil, so open eyes read as closed and the avatar's eyes could stall (#52). eyecam now looks once more in the darker part of the picture where the pupil sits then. If you squint very hard, the user calibration could keep failing (#54); such an eye now keeps its previous squint, or the standard one, and the calibration goes through. Thanks to @fujieda1237 for the recordings and for testing the fixes.
 
-日本語: 目をとても強く細めると、目のカメラが細めを閉じた目より狭く測ってしまい、ユーザー校正が何度やっても失敗することがありました（#54）。そういう目は、細めを前の値か標準の値にして校正を通すようにしました。
-
-- Fixed (#54): in the user calibration, an eye whose squint measured narrower than its closed eye (f_sq below -0.5) no longer fails. It keeps the squint measured in the previous user calibration, or else uses the standard squint, and the message says so ("squinted too hard to tell from a closed eye, keeping the previous squint / using the standard squint")
-- Fixed (#54): the user calibration's look-down step only uses frames measured where the pupil was seen after the step began. Lids measured at the pupil's position from looking up could fail it with "the lower lid moved up when looking down". When too few frames are left it says the pupil wasn't seen while looking down, and that eye uses the standard look-down correction
-- Panel: the user calibration's result card also says which eye kept its previous squint or uses the standard one
-- The eye cameras' `status.json` has `user_squint_default` / `user_squint_previous`, and `calib_result.json` has `squint_default` / `squint_previous` and `look_down_frames_stale`
-
-## 0.10.2-beta.1 (2026-11-07)
-
-With prescription inserts and a narrow IPD, the pupil can sit in a dark part of the eye-camera picture, where eyecam rarely found it, so open eyes read as closed and the avatar's eyes could stall (#52). When nothing else finds the pupil, eyecam now looks once more, matched to that darker part.
-
-日本語: 度付きレンズを入れて IPD を狭めにしていると、目のカメラの映像で、目が照らされた範囲の耳側の端に寄り、瞳が暗い部分に入ることがあります。そのとき目のカメラは瞳をほとんど見つけられず、開いた目を閉じたと読んで、アバターの目が止まることがありました（#52）。ほかの探し方で瞳が見つからないときだけ、その暗さに合わせてもう一度探すようにしました。
+日本語: 度付きレンズを入れて IPD を狭めにしていると、目のカメラが瞳をほとんど見つけられず、開いた目を閉じたと読んでアバターの目が止まることがありました（#52）。映像の暗い部分でも瞳を探すようにしました。目をとても強く細めるとユーザー校正が何度やっても失敗することもあったので（#54）、そういう目は細めを前の値か標準の値にして通すようにしました。録画と確認に協力してくれた @fujieda1237 さん、ありがとう！
 
 - Fixed (#52): the eye cameras' pupil search has a dark-side pass
   - It only runs on frames where every other search found nothing, and only takes a pupil whose edge reaches past the ear-side edge of the search window. It doesn't run while Valve says the eye is closing
   - Pupils it finds don't teach the iris size, and the brightness reference for the closed-eye check is learned separately for them
   - In the reporter's recording, the pupil is now found in open-eye steps 88 % (left, was 8 %) and 87 % (right, was 6 %) of the time. The developer's recordings barely change
+- Fixed (#54): in the user calibration, an eye whose squint measured narrower than its closed eye (f_sq below -0.5) no longer fails. It keeps the squint measured in the previous user calibration, or else uses the standard squint, and the message says so ("squinted too hard to tell from a closed eye, keeping the previous squint / using the standard squint")
+- Fixed (#54): the user calibration's look-down step only uses frames measured where the pupil was seen after the step began. Lids measured at the pupil's position from looking up could fail it with "the lower lid moved up when looking down". When too few frames are left it says the pupil wasn't seen while looking down, and that eye uses the standard look-down correction
+- Panel: the user calibration's result card also says which eye kept its previous squint or uses the standard one
+- The eye cameras' `status.json` has `user_squint_default` / `user_squint_previous`, and `calib_result.json` has `squint_default` / `squint_previous` and `look_down_frames_stale`
 - `eyecam-rec --replay`: the CSV's `ext` column also gives 3 (pupil from the dark-side pass) and 4 (found by the dark-side pass but not taken)
 - The README (English and Japanese) is now a short entry page; the panel, outputs, eye fit, eye cameras, settings, troubleshooting, privacy and development details moved to `docs/`. It also has a video of how to install
 - The bug report template asks for the SteamOS version and glasses or lenses
+- The package has the `docs/` pages too, so the README's links also work in the unpacked folder
+- Thanks to @fujieda1237 for the recordings and logs that showed both problems, and for checking the fixes (#52, #54)
 
 ## 0.10.1 (2026-11-06)
 

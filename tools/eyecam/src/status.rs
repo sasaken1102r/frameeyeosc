@@ -215,7 +215,7 @@ pub struct Status {
     /// could not be measured, and that one had a measured one). An eye is in one of the two at most.
     pub user_look_down_previous: [bool; 2],
     /// The eyes (left, right) the last `calib user` of this run went through with the standard squint on (its squint
-    /// was measured deeper than the closed eye; no user calibration before). Both false: none this run, it failed.
+    /// was measured deeper than the closed eye; no measured one before). Both false: none this run, it failed.
     pub user_squint_default: [bool; 2],
     /// ...and those it went through with the previous user calibration's squint kept on.
     pub user_squint_previous: [bool; 2],

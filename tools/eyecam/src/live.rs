@@ -284,6 +284,12 @@ impl UserParams {
         (self.pitch_c, self.pitch_lo, self.pitch_hi) != (d.pitch_c, d.pitch_lo, d.pitch_hi)
     }
 
+    /// It has a measured squint depth (`sq_depth`), not UserParams' default squint (an eye whose squint was squeezed
+    /// shut, `fit_user_settled`) nor one from a calibration before the depth was kept.
+    pub fn squint_measured(&self) -> bool {
+        self.sq_depth.is_some()
+    }
+
     /// How much narrower (iris radii) an open eye's aperture is at `pitch` than at the wearer's typical pitch `p0`,
     /// from the curve. Below `p0` it is held between LID_PITCH_PER_DEG a degree beyond LID_PITCH_FROM_DEG and
     /// LID_PITCH_CAP times that (so nothing nearer `p0`); above it, looking up, the curve may say narrower (up to
@@ -1577,7 +1583,7 @@ pub const NOTE_LOOK_DOWN_PREVIOUS: &str = "下を見たときの補正を前の�
 /// A user calibration that went through with the previous user calibration's squint on an eye whose squint was
 /// measured deeper than the closed eye (`UserEye::squint_deep`; after "左目は" / "右目は" / "両目とも").
 pub const NOTE_SQUINT_PREVIOUS: &str = "細めが強すぎて閉じた目と区別できなかったので、細めは前の値を使うよ";
-/// ...with the standard squint on it (no previous user calibration).
+/// ...with the standard squint on it (no measured squint before).
 pub const NOTE_SQUINT_DEFAULT: &str = "細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ";
 
 /// One eye's calibration problem: its text (MSG_*) and details, the eye's own value and what is needed (either may
@@ -2025,8 +2031,9 @@ pub struct UserOutcome {
     /// The eyes whose look-down part failed and that kept the previous user calibration's measured curve (never true
     /// together with `look_down_default` for an eye).
     pub look_down_previous: [bool; 2],
-    /// The eyes whose squint was measured deeper than the closed eye (`UserEye::squint_deep`) and that had no user
-    /// calibration before: they have UserParams' default squint (f_sq 0.31 of the gap in use).
+    /// The eyes whose squint was measured deeper than the closed eye (`UserEye::squint_deep`) and that had no measured
+    /// squint before (`UserParams::squint_measured`): they have UserParams' default squint (f_sq 0.31 of the gap in
+    /// use).
     pub squint_default: [bool; 2],
     /// ...and those that kept the previous user calibration's squint (never true together with `squint_default`).
     pub squint_previous: [bool; 2],
@@ -2062,7 +2069,7 @@ impl UserOutcome {
 /// look-down curve when that one was measured on the eye (`old`, as a wear calibration keeps an eye's previous
 /// levels), else with the standard look-down correction. An eye whose squint was measured deeper than the closed eye
 /// (`UserEye::squint_deep`: squeezed shut, it cannot be told from the closed eye) gets the previous user
-/// calibration's squint, else the standard one, and the rest of its calibration as measured. Anything else fails it as
+/// calibration's squint when that one was measured on the eye, else the standard one, and the rest of its calibration as measured. Anything else fails it as
 /// `fit_user` does, with the same message. A calibration that passes `fit_user` gives the same values and warnings
 /// here.
 pub fn fit_user_settled(
@@ -2081,9 +2088,10 @@ pub fn fit_user_settled(
     let previous = [0, 1].map(|e| old.map(|o| o[e]).filter(|o| failed[e] && o.curve_measured()));
     let look_down_previous = previous.map(|p| p.is_some());
     let look_down_default = [0, 1].map(|e| failed[e] && previous[e].is_none());
-    // The squint each deep eye goes on: the previous calibration's if there is one, else the default (standard) one.
-    let squint_previous = [0, 1].map(|e| deep[e] && old.is_some());
-    let squint_default = [0, 1].map(|e| deep[e] && old.is_none());
+    // The squint each deep eye goes on: the previous one if it was measured, else the default (standard) one.
+    let old_squint = [0, 1].map(|e| old.map(|o| o[e]).filter(|o| deep[e] && o.squint_measured()));
+    let squint_previous = old_squint.map(|p| p.is_some());
+    let squint_default = [0, 1].map(|e| deep[e] && old_squint[e].is_none());
     let dd = (eyes[0].delta.0 - eyes[1].delta.0).abs();
     let ds = (eyes[0].delta.1 - eyes[1].delta.1).abs();
     // Only what was measured on both eyes is compared.
@@ -2103,7 +2111,7 @@ pub fn fit_user_settled(
             (p.pitch_c, p.pitch_lo, p.pitch_hi) = (curve.pitch_c, curve.pitch_lo, curve.pitch_hi);
         }
         if deep[e] {
-            let sq = old.map(|o| o[e]).unwrap_or_default();
+            let sq = old_squint[e].unwrap_or_default();
             (p.f_sq, p.sq_depth) = (sq.f_sq, sq.sq_depth);
         }
         p
@@ -3984,6 +3992,15 @@ mod tests {
         assert_eq!((out.squint_default, out.squint_previous), ([false, false], [true, false]));
         assert_eq!((out.user[0].f_sq, out.user[0].sq_depth, out.user[0].pd_min), (0.4, Some(0.5), 0.5));
         assert_eq!(out.message(), format!("校正できた（左目は{NOTE_SQUINT_PREVIOUS}）"));
+        // A previous calibration whose squint on that eye was the standard one (it had been squeezed shut then too),
+        // or from before the depth was kept: the standard squint, said as such.
+        for f_sq in [d.f_sq, 0.4] {
+            let standard_before = [UserParams { f_sq, sq_depth: None, pd_min: 0.5, pd_max: 1.2, ..d }; 2];
+            let out = fit_user_settled(&[squeezed.clone(), good.clone()], &[w, w], Some(standard_before)).unwrap();
+            assert_eq!((out.squint_default, out.squint_previous), ([true, false], [false, false]));
+            assert_eq!((out.user[0].f_sq, out.user[0].sq_depth, out.user[0].pd_min), (d.f_sq, None, 0.5));
+            assert_eq!(out.message(), format!("校正できた（左目は{NOTE_SQUINT_DEFAULT}）"));
+        }
 
         // Both eyes: one note. With a look down that failed too: the squint's note, then the look down's.
         let out = fit_user_settled(&[squeezed.clone(), squeezed.clone()], &[w, w], None).unwrap();

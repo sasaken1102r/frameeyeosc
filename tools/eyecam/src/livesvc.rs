@@ -233,7 +233,7 @@ pub struct Shared {
     /// bits; an eye is in one of the two at most).
     pub user_look_down_previous: AtomicU32,
     /// The eyes the last `calib user` of this run went through with the standard squint on (its squint was measured
-    /// deeper than the closed eye, and there was no user calibration before): the same bits.
+    /// deeper than the closed eye, and there was no measured one before): the same bits.
     pub user_squint_default: AtomicU32,
     /// ...and those it went through with the previous user calibration's squint kept on.
     pub user_squint_previous: AtomicU32,

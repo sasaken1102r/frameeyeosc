@@ -2069,9 +2069,9 @@ impl UserOutcome {
 /// look-down curve when that one was measured on the eye (`old`, as a wear calibration keeps an eye's previous
 /// levels), else with the standard look-down correction. An eye whose squint was measured deeper than the closed eye
 /// (`UserEye::squint_deep`: squeezed shut, it cannot be told from the closed eye) gets the previous user
-/// calibration's squint when that one was measured on the eye, else the standard one, and the rest of its calibration as measured. Anything else fails it as
-/// `fit_user` does, with the same message. A calibration that passes `fit_user` gives the same values and warnings
-/// here.
+/// calibration's squint when that one was measured on the eye, else the standard one, and the rest of its
+/// calibration as measured. Anything else fails it as `fit_user` does, with the same message. A calibration that
+/// passes `fit_user` gives the same values and warnings here.
 pub fn fit_user_settled(
     samples: &[Vec<Sample>; 2],
     wear: &[WearParams; 2],

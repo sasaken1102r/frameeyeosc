@@ -294,6 +294,12 @@ struct Status {
     bool hasUserLookDownPrevious = false;  ///< "user_look_down_previous" is there (a newer eyecam-rec)
     int userLookDownPrevious = 0;  ///< ...the eyes that "calib user" went through with the previous user calibration's
                                    ///< look-down correction kept on (0: none; never an eye of userLookDownDefault)
+    bool hasUserSquintDefault = false;  ///< "user_squint_default" is there (a newer eyecam-rec)
+    int userSquintDefault = 0;     ///< ...the eyes that "calib user" went through with the standard squint on (their
+                                   ///< squint read narrower than the closed eye, squeezed shut; 0: none)
+    bool hasUserSquintPrevious = false;  ///< "user_squint_previous" is there (a newer eyecam-rec)
+    int userSquintPrevious = 0;    ///< ...the eyes it went through with the previous user calibration's squint kept on
+                                   ///< (0: none; never an eye of userSquintDefault)
     bool hasPupil = false;        ///< "pupil_l" / "pupil_r" are there (a newer eyecam-rec that says whether it finds
                                    ///< the pupils; without them "locked" is all there is)
     double pupil[2] = {0.0, 0.0};  ///< per eye (left, right), the share of the last 2 s of frames with the pupil found,
@@ -1201,6 +1207,38 @@ int lookDownDefaultEyes(const Status& status);
  * @return kLeftEyeBit | kRightEyeBit, or 0
  */
 int lookDownPreviousEyes(const Status& status);
+
+/**
+ * The eyes a "calib user" went through with the standard squint (squeezed shut, their squint read narrower than the
+ * closed eye, and there was no measured one before): status.json's "user_squint_default" (an eyecam-rec before it
+ * failed the calibration instead).
+ * @param status the status (only an idle one, right after it)
+ * @return kLeftEyeBit | kRightEyeBit, or 0
+ */
+int squintDefaultEyes(const Status& status);
+
+/**
+ * ...and those it went through with the previous user calibration's squint kept on: "user_squint_previous".
+ * @param status the status (only an idle one, right after it)
+ * @return kLeftEyeBit | kRightEyeBit, or 0
+ */
+int squintPreviousEyes(const Status& status);
+
+/** The card after a "calib user" that went through: its pill and body. */
+struct UserCalibCard {
+    const char* pill = nullptr;
+    std::string body;
+    bool fallback = false;  ///< an eye's squint or look down went on the standard or the previous values
+};
+
+/**
+ * The card after a "calib user" that went through: what it learned, or which eyes' squint or look down went on the
+ * standard or the previous values (one sentence each, the squints first; "the rest is learned" after squints alone).
+ * @param t the texts
+ * @param status the status (idle, right after it)
+ * @return the pill and the body
+ */
+UserCalibCard userCalibCard(const UiText& t, const Status& status);
 
 /**
  * Whether partialEye's eye got provisional values (there were no earlier ones): eyecam-rec's message says "仮の値".

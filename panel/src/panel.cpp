@@ -7034,9 +7034,8 @@ void EyePanel::drawPageCalib(const Pen& pen, const UiText& t, const PanelModel& 
     const double cardTop = 158;
     const double cardH = setupCard(pen, t, m, screen, cardX + padX, cardRight - padX, cardTop, false, true);
     // (green when it ended well, unless one eye went on its earlier values, or the user's on the standard look-down
-    // correction or the previous one)
-    const bool partial = user ? (eyecam::lookDownDefaultEyes(m.eyecam.status) |
-                                 eyecam::lookDownPreviousEyes(m.eyecam.status)) != 0
+    // correction or squint, or the previous one)
+    const bool partial = user ? eyecam::userCalibCard(t, m.eyecam.status).fallback
                               : eyecam::partialEye(m.eyecam.status) >= 0;
     strokeRounded(pen, cardX, cardTop, cardRight - cardX, cardH, 14,
                   screen == eyecam::SetupScreen::Calibrated && !partial ? kSuccess : kAccent, 2);
@@ -7673,18 +7672,11 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
         case SetupScreen::Calibrated: {
             // A calibration from the page ended well: a line on what it learned, and back to the page
             const bool user = calib == eyecam::Calib::User;
-            // (the user's with the standard look-down correction on an eye, or the previous one kept: its squint
-            // learned all the same)
-            const int standard = user ? eyecam::lookDownDefaultEyes(s) : 0;
-            const int previous = user ? eyecam::lookDownPreviousEyes(s) & ~standard : 0;
-            const int lookDown = standard | previous;
-            title(learnName,
-                  partial >= 0                     ? t.partialPill
-                  : standard != 0 && previous != 0 ? t.userMixedPill
-                  : previous != 0                  ? t.userPreviousPill
-                  : standard != 0                  ? t.userPartialPill
-                                                   : t.calibDonePill,
-                  partial >= 0 || lookDown != 0 ? kAccent : kSuccess);
+            // (the user's with the standard look-down correction or squint on an eye, or the previous one kept)
+            const eyecam::UserCalibCard card =
+                user ? eyecam::userCalibCard(t, s) : eyecam::UserCalibCard{t.calibDonePill, t.calibDoneBody, false};
+            title(learnName, partial >= 0 ? t.partialPill : card.pill,
+                  partial >= 0 || card.fallback ? kAccent : kSuccess);
             y += 50;
             if (partial >= 0) {
                 // This wear's without one eye: which, and the calibration again
@@ -7697,23 +7689,10 @@ double EyePanel::setupCard(const Pen& pen, const UiText& t, const PanelModel& m,
             }
             const char* big = user ? t.calibUserDoneTitle : t.calibDoneTitle;
             text(x0, y, big, fitSize(pen, big, 26, 16, w, true), kText, true);
-            if (standard != 0 && previous != 0) {
-                // (one eye each: the one on the previous correction named first)
-                const bool leftPrevious = previous == eyecam::kLeftEyeBit;
-                char body[512];
-                std::snprintf(body, sizeof(body), t.userMixedBodyFormat,
-                              leftPrevious ? t.partialEyeLeft : t.partialEyeRight,
-                              leftPrevious ? t.partialEyeRight : t.partialEyeLeft);
-                para(body, 17, kText, false, 38, 26, 3);
-            } else if (lookDown != 0) {
-                const char* eyes = lookDown == (eyecam::kLeftEyeBit | eyecam::kRightEyeBit) ? t.userPartialEyeBoth
-                                   : lookDown == eyecam::kLeftEyeBit                          ? t.partialEyeLeft
-                                                                                              : t.partialEyeRight;
-                para(formatText(previous != 0 ? t.userPreviousBodyFormat : t.userPartialBodyFormat, eyes), 17, kText,
-                     false, 38, 26, 3);
-            } else {
-                para(user ? t.calibUserDoneBody : t.calibDoneBody, 17, kText, false, 38, 26, 2);
-            }
+            // (a body of two sentences or more, when a squint went on other values, gets a fourth line)
+            const bool longer = card.body.find(t.userSentenceSep) != std::string::npos &&
+                                (eyecam::squintDefaultEyes(s) | eyecam::squintPreviousEyes(s)) != 0;
+            para(card.body, 17, kText, false, 38, 26, !card.fallback ? 2 : longer ? 4 : 3);
             const double by = y + 22;
             const double bh = 46;
             const double bw = std::max(120.0, pen.measure(t.calibDoneButton, 18, true) + 64);

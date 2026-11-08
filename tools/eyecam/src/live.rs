@@ -119,6 +119,11 @@ const EXT_TRACK_S: f64 = 1.0;
 const EXT_TRACK_PX: f64 = 40.0;
 const EXT_A_PX: (f64, f64) = (8.0, 45.0);
 const EXT_VALVE_OPEN: f64 = 0.6;
+/// A pupil from the dim-side search (`feat::DimSearch`) is checked as one from the extended search, but may be down to
+/// DIM_SIZE_MIN x the open pupil's size, as the closed-lid crease check allows (a pupil in bright light, 0.55-0.65 x):
+/// issue 52's pupils in its bright steps were 0.66 / 0.68 x (left / right, medians) the normal steps' and refused at
+/// EXT_SIZE's 0.6 in 15% / 41% of those frames.
+const DIM_SIZE_MIN: f64 = 0.45;
 /// The largest iris radius, in semi-axes of the open pupil, the iris fit is trusted with (`EyeEngine::iris_first`).
 /// The developer's 10 recorded calibrations: at most 3.3 (median 2.2); issue 38's wear calibration, the left eye 3.0 and
 /// the right eye 5.4 (R 88 px with a pupil 1.2 x the left one's).
@@ -277,6 +282,12 @@ impl UserParams {
     pub fn curve_measured(&self) -> bool {
         let d = UserParams::default();
         (self.pitch_c, self.pitch_lo, self.pitch_hi) != (d.pitch_c, d.pitch_lo, d.pitch_hi)
+    }
+
+    /// It has a measured squint depth (`sq_depth`), not UserParams' default squint (an eye whose squint was squeezed
+    /// shut, `fit_user_settled`) nor one from a calibration before the depth was kept.
+    pub fn squint_measured(&self) -> bool {
+        self.sq_depth.is_some()
     }
 
     /// How much narrower (iris radii) an open eye's aperture is at `pitch` than at the wearer's typical pitch `p0`,
@@ -536,6 +547,8 @@ pub struct EyeEngine {
     x_min: f64,
     /// The grey levels' scale for this wear, from the same mean image (`feat::Levels::for_profile`).
     levels: feat::Levels,
+    /// The levels of the dim side of the picture, when the pupil search needs them (`feat::Levels::dim_side`).
+    dim_levels: Option<feat::Levels>,
     /// Where x_min came from, and the time (s) of the frame it was last worked out on (the drift log).
     x_min_from: feat::XMinFrom,
     x_min_at: f64,
@@ -559,6 +572,16 @@ pub struct EyeEngine {
     /// Frames in a row the open-eye check dropped the pupil only for being large (PUPIL_GROW_S).
     grown: u32,
     box_open: LongMedian,
+    /// The open eye's iris-box level around pupils from the dim-side search, and whether the last pupil came from that
+    /// search. Such a pupil sits where the picture is dim, and so does the iris box measured around it (and around it as
+    /// the last pupil while no pupil is seen): its level is learnt apart from the box around the other pupils (60 s, as
+    /// `box_open`), and a lost pupil whose last sighting came from that search reads closed against it (once 30 samples
+    /// are in). With one level for both, a wear whose pupil moved between the lit and the dim part (the developer's
+    /// 2026-10-12 10:02 recording, lying down: the right eye's pupil found by the dim-side search on 1353 frames) read
+    /// closed on 0.929 of the frames Valve had closed (under 0.15) instead of 0.996: the closed lid in the shade is
+    /// darker than 1.3 x a level learnt mostly in the light. Learnt apart: 0.985.
+    box_open_dim: LongMedian,
+    prev_dim: bool,
     /// The open eye's pupil semi-axis (px) and dark level, for telling a real pupil from a crease on a closed lid.
     a_open: LongMedian,
     inner_open: LongMedian,
@@ -771,6 +794,7 @@ impl Default for EyeEngine {
             xmax: 346.0,
             x_min: feat::X_MIN,
             levels: feat::Levels::AS_BUILT,
+            dim_levels: None,
             x_min_from: feat::XMinFrom::Fixed,
             x_min_at: f64::NAN,
             find_x_min: feat::X_MIN,
@@ -787,6 +811,8 @@ impl Default for EyeEngine {
             last_lower: f64::NAN,
             grown: 0,
             box_open: LongMedian::new(60.0),
+            box_open_dim: LongMedian::new(60.0),
+            prev_dim: false,
             a_open: LongMedian::new(20.0),
             inner_open: LongMedian::new(20.0),
             ba_open: LongMedian::new(20.0),
@@ -861,6 +887,7 @@ impl EyeEngine {
     pub fn reset_tracking(&mut self) {
         self.prev = None;
         self.prev_p = None;
+        self.prev_dim = false;
         self.nopupil = 0;
         self.last_lower = f64::NAN;
         self.grown = 0;
@@ -975,13 +1002,25 @@ impl EyeEngine {
             self.xmax = feat::glare_end(&m).map_or(lens, |g| lens.min(g));
             (self.x_min, self.x_min_from) = feat::search_x_min_from(&m);
             self.levels = feat::Levels::for_profile(&m);
+            let dim_x0 = (self.x_min - EXT_MAX_PX).max(feat::X_MIN_LO);
+            self.dim_levels = self.levels.dim_side(&m, dim_x0, self.x_min + feat::DIM_SIDE_PX);
             self.x_min_at = t;
         }
         // The extended search's edge: within EXT_MAX_PX past x_min (and not past X_MIN_LO), x_min itself when off.
         let ext_lo = if params.tune.ext_search { (self.x_min - EXT_MAX_PX).max(feat::X_MIN_LO) } else { self.x_min };
         self.find_x_min = self.find_x_min.clamp(ext_lo.min(self.x_min), self.x_min);
         let search_x_min = self.find_x_min;
-        self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, self.ext_check(t, valve_open));
+        let ext = self.ext_check(t, valve_open);
+        self.ex.search = feat::Search::live_ext(self.x_min, search_x_min, ext);
+        // The dim-side search reaches as far as the extended one may (x_min itself with that off).
+        self.ex.search.dim = self.dim_levels.map(|levels| feat::DimSearch {
+            x0: ext_lo,
+            levels,
+            check: feat::ExtCheck {
+                a: if self.a_open.len() >= 30 { (DIM_SIZE_MIN * self.a_open.value, ext.a.1) } else { ext.a },
+                ..ext
+            },
+        });
         self.ex.levels = self.levels;
         // An iris radius over IRIS_PUPIL_MAX x the open pupil's semi-axis is no limbus: for the rest of the wear the iris
         // fit takes the first rise out of the iris, and the radius is learnt again from its fits. So is the open eye's iris
@@ -995,6 +1034,7 @@ impl EyeEngine {
             self.iris_first = true;
             self.r_est = LongMedian::new(30.0);
             self.box_open = LongMedian::new(60.0);
+            self.box_open_dim = LongMedian::new(60.0);
         }
         self.ex.iris_first = self.iris_first;
         let r_ready = self.r_est.len() >= 10;
@@ -1064,6 +1104,7 @@ impl EyeEngine {
             None => {}
         }
         if let Some(pp) = p {
+            self.prev_dim = f.diag.dim;
             self.prev = Some((pp.cx, pp.cy));
             self.prev_p = Some(pp);
             self.prev_p_t = t;
@@ -1079,7 +1120,10 @@ impl EyeEngine {
         // on the 2026-10-09 18:16 user calibration's left eye), the box is sized by it, and two edge pupils found at
         // 0.9 s flipped it half a second early, so the open eye's box level was learnt 12% brighter and the blink at
         // 3.6 s (Valve's openness 0 for 0.2 s) never read 1.3 x. Their own box and lids still use the radius in use.
-        if f.ok_pupil && !f.diag.extended && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
+        // Nor from the dim-side search: on a frame where the usual passes found nothing, its pupil can come out smaller
+        // than the pupil (a dark core of it at the dim side's lower thresholds), and the iris fit from it with it (the
+        // developer's 2026-10-09 18:16 user calibration: a box learnt 10 levels darker, and a 0.2 s close missed).
+        if f.ok_pupil && !f.diag.extended && !f.diag.dim && f.iris_r.is_finite() && f.iris_n >= 4 && sampled {
             self.r_est.push(f.iris_r, long_hz);
         }
         if !self.t_first.is_finite() {
@@ -1124,8 +1168,14 @@ impl EyeEngine {
             f.diag.prior_reset = true;
         }
         if f.ok_pupil && sampled {
-            self.box_open.push(box_f, long_hz);
+            if self.prev_dim {
+                self.box_open_dim.push(box_f, long_hz);
+            } else {
+                self.box_open.push(box_f, long_hz);
+            }
         }
+        // The open level the box is held against: the dim side's while the last pupil came from there (`box_open_dim`).
+        let open_ref = if self.prev_dim && self.box_open_dim.len() >= 30 { &self.box_open_dim } else { &self.box_open };
 
         // Closed: lid skin covers the box (brighter than the open-eye level) and no pupil for CLOSED_NO_PUPIL_S (3
         // frames at 90 fps).
@@ -1133,8 +1183,8 @@ impl EyeEngine {
         let no_pupil_long = self.nopupil >= frames_in(CLOSED_NO_PUPIL_S, fps, 2);
         let edge_gap = self.prev_p.map_or(f64::NAN, |q| q.cx - q.a - self.x_min);
         let edge_held = params.tune.edge_hold && !f.ok_pupil && edge_gap < EDGE_LOST_PX && ap >= EDGE_OPEN_AP;
-        let closed = self.box_open.len() >= 30
-            && self.levels.unlevel(box_f) > 1.3 * self.levels.unlevel(self.box_open.value)
+        let closed = open_ref.len() >= 30
+            && self.levels.unlevel(box_f) > 1.3 * self.levels.unlevel(open_ref.value)
             && no_pupil_long
             && !edge_held;
         self.since_closed = if closed { 0 } else { self.since_closed.saturating_add(1) };
@@ -1303,6 +1353,9 @@ impl EyeEngine {
     /// frame (only during a calibration: live never runs it).
     pub fn calib_sample(&mut self, label: Label, o: &Out, t: f64) -> Sample {
         let mut s = Sample::from_out(label, o, t);
+        if !o.f.ok_pupil && self.prev_p.is_some() {
+            s.anchor_t = self.prev_p_t;
+        }
         if matches!(label, Label::Normal | Label::Widen)
             && o.f.ok_pupil
             && let Some(p) = self.prev_p
@@ -1343,6 +1396,10 @@ pub struct Sample {
     /// did not run or found nothing.
     pub skin2: f64,
     pub frac2: f64,
+    /// When the pupil the lids were measured at was seen (camera clock, s): this frame's time when it has the pupil,
+    /// else the last frame's with it (NaN: none yet). A look down after a look up whose pupil was not caught on the way
+    /// down has its lids measured where the eye looked up (`look_down_fresh`).
+    pub anchor_t: f64,
 }
 
 /// Why a frame has no pupil.
@@ -1491,6 +1548,7 @@ impl Sample {
             edge,
             skin2: f64::NAN,
             frac2: f64::NAN,
+            anchor_t: if o.f.ok_pupil { t } else { f64::NAN },
         }
     }
 }
@@ -1511,6 +1569,8 @@ pub const MSG_SQUINT_SHALLOW: &str = "の細めが浅かった（もう一度、
 pub const MSG_SQUINT_DEEP: &str = "の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）";
 pub const MSG_LOOK_DOWN: &str = ": 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）";
 pub const MSG_LOWER_UP: &str = ": 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）";
+/// Too few look-down frames measured at a pupil seen looking down (`look_down_fresh`).
+pub const MSG_LOOK_DOWN_UNSEEN: &str = ": 下を見ているあいだ瞳が見えなかった（もう一度、下を見てね）";
 /// Valve's gaze was missing (not one eye's problem).
 pub const MSG_NO_GAZE: &str = "視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度";
 /// A wear calibration that went through without the widen on an eye.
@@ -1520,6 +1580,11 @@ pub const NOTE_WIDEN: &str = "見開きは取れなかったので、いつも�
 pub const NOTE_LOOK_DOWN_DEFAULT: &str = "下を見たときの補正を標準の値にしたよ";
 /// ...with the previous user calibration's look-down correction kept on an eye (it had a measured one).
 pub const NOTE_LOOK_DOWN_PREVIOUS: &str = "下を見たときの補正を前の値のままにしたよ";
+/// A user calibration that went through with the previous user calibration's squint on an eye whose squint was
+/// measured deeper than the closed eye (`UserEye::squint_deep`; after "左目は" / "右目は" / "両目とも").
+pub const NOTE_SQUINT_PREVIOUS: &str = "細めが強すぎて閉じた目と区別できなかったので、細めは前の値を使うよ";
+/// ...with the standard squint on it (no measured squint before).
+pub const NOTE_SQUINT_DEFAULT: &str = "細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ";
 
 /// One eye's calibration problem: its text (MSG_*) and details, the eye's own value and what is needed (either may
 /// be empty).
@@ -1763,9 +1828,16 @@ struct UserEye {
     delta: (f64, f64),
     /// Its first problem (the one fit_user names), if any.
     issue: Option<EyeIssue>,
-    /// That problem is in the look-down part only (the pitch curve: too few neutral frames with the lids, a look
-    /// down that did not narrow the eye, a lower lid that moved up), and the squint step went through.
-    look_down_only: bool,
+    /// Its look-down part (the pitch curve) failed: too few neutral frames with the lids, too few look-down frames
+    /// measured at a pupil seen looking down, a look down that did not narrow the eye, a lower lid that moved up.
+    look_down_failed: bool,
+    /// Its squint was measured deeper than the closed eye by more than half the gap (`F_SQ_MIN`): squeezed shut, the
+    /// lids' lines come out closer together than on the relaxed closed eye (issue 54: -0.63 replayed, -2.66 and
+    /// -3.12 live, the eye read closed through the step). `fit_user_settled` gives it the previous or the standard
+    /// squint.
+    squint_deep: bool,
+    /// Every problem it has is one `fit_user_settled` lets through (the look-down part's, the deep squint).
+    settles: bool,
 }
 
 /// A squint depth (`UserParams::f_sq`) at or above this is too shallow to tell from the open eye.
@@ -1810,6 +1882,7 @@ fn fit_user_eye(
     let (ap_sq, nsq) = med_of(s, |x| (x.label == Label::Squint).then_some(x.ap));
     let f_sq = (ap_sq - w.ap_cl) / (w.ap_n - w.ap_cl);
     let sq_depth = Some(w.ap_n - ap_sq).filter(|d| d.is_finite());
+    let squint_deep = nsq >= need.squint && f_sq < F_SQ_MIN;
     // Without the curve: the standard look-down correction (as with no user calibration), this squint.
     let standard = UserParams { f_sq, sq_depth, pd_min: keep.pd_min, pd_max: keep.pd_max, ..UserParams::default() };
     let pts: Vec<(f64, f64)> =
@@ -1827,8 +1900,15 @@ fn fit_user_eye(
         } else {
             (EyeIssue::new(MSG_LIDS, format!("{}/{frames}", pts.len()), &need_text), true)
         };
-        let look_down_only = lids && squint_issue(nsq, need.squint, f_sq).is_none();
-        return Ok(UserEye { params: standard, delta: (f64::NAN, ap_sq - w.ap_n), issue: Some(issue), look_down_only });
+        let settles = lids && (squint_issue(nsq, need.squint, f_sq).is_none() || squint_deep);
+        return Ok(UserEye {
+            params: standard,
+            delta: (f64::NAN, ap_sq - w.ap_n),
+            issue: Some(issue),
+            look_down_failed: lids,
+            squint_deep,
+            settles,
+        });
     }
     let xs: Vec<f64> = pts.iter().map(|p| p.0).collect();
     let ys: Vec<f64> = pts.iter().map(|p| p.1).collect();
@@ -1839,33 +1919,72 @@ fn fit_user_eye(
     let (lo, hi) = (vision::percentile(&mut sorted, 1.0), vision::percentile(&mut sorted, 99.0));
     if nsq < need.squint {
         let issue = squint_issue(nsq, need.squint, f_sq);
-        return Ok(UserEye { params: standard, delta: (0.0, 0.0), issue, look_down_only: false });
+        let settles = issue.is_none();
+        return Ok(UserEye { params: standard, delta: (0.0, 0.0), issue, look_down_failed: false, squint_deep, settles });
     }
-    let (ap_down, nd) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.ap));
-    let (lower_down, _) = med_of(s, |x| (x.label == Label::LookDown).then_some(x.lower_px));
+    // The look down from the frames whose lids were measured at a pupil seen looking down (`look_down_fresh`).
+    let fresh = look_down_fresh(s);
+    let (ap_down, nd) = med_of_picked(s, &fresh, |x| x.ap);
+    let n_down = s.iter().filter(|x| x.label == Label::LookDown).count();
+    let (lower_down, _) = med_of_picked(s, &fresh, |x| x.lower_px);
     // (the squint first: a problem after it is the look-down part's alone)
     let depth = squint_depth_issue(f_sq);
     let checks = [
         (depth.is_some(), depth.unwrap_or_else(|| EyeIssue::new(MSG_SQUINT_SHALLOW, String::new(), ""))),
-        (nd < need.look_down || ap_down > 0.95 * w.ap_n, EyeIssue::new(MSG_LOOK_DOWN, format!("{ap_down:.2} / 普段 {:.2}", w.ap_n), "")),
+        (
+            nd < need.look_down,
+            EyeIssue::new(MSG_LOOK_DOWN_UNSEEN, format!("{nd}/{n_down}"), &format!("{} 必要", need.look_down)),
+        ),
+        (
+            nd >= need.look_down && ap_down > 0.95 * w.ap_n,
+            EyeIssue::new(MSG_LOOK_DOWN, format!("{ap_down:.2} / 普段 {:.2}", w.ap_n), ""),
+        ),
         (lower_down < w.lower_px, EyeIssue::new(MSG_LOWER_UP, format!("{lower_down:.1} px / 普段 {:.1} px", w.lower_px), "")),
     ];
     let mut issue = None;
-    let mut look_down_only = false;
+    let (mut look_down_failed, mut settles) = (false, true);
     for (k, (bad, found)) in checks.into_iter().enumerate() {
         if !bad {
             continue;
         }
+        look_down_failed |= k > 0;
+        settles &= k > 0 || squint_deep;
         if !strict {
             warnings.push(found.message(e));
         } else if issue.is_none() {
             issue = Some(found);
-            look_down_only = k > 0;
         }
     }
     let params =
         UserParams { pitch_c, pitch_lo: lo, pitch_hi: hi, f_sq, pd_min: keep.pd_min, pd_max: keep.pd_max, sq_depth };
-    Ok(UserEye { params, delta: (ap_down - w.ap_n, ap_sq - w.ap_n), issue, look_down_only })
+    Ok(UserEye { params, delta: (ap_down - w.ap_n, ap_sq - w.ap_n), issue, look_down_failed, squint_deep, settles })
+}
+
+/// Which samples are look-down frames whose lids were measured at a pupil seen in that look-down step (from its first
+/// labelled frame on, STEP_DELAY into the step: in the step's first moments the eye may still be up). A frame without the pupil has its lids measured where the pupil
+/// was last seen: after a look up whose pupil was found and none caught on the way down, that is where the eye
+/// looked up, and the lines found there are no look down's (issue 54, the reporter's left eye with the look up's
+/// pupil from the dim-side search: the lower lid at 241.6 px against 249.9 px straight ahead, and the eye read
+/// closed in 67% of the step).
+fn look_down_fresh(s: &[Sample]) -> Vec<bool> {
+    let mut start = f64::NAN;
+    let mut prev = Label::Other;
+    s.iter()
+        .map(|x| {
+            if x.label != prev {
+                start = x.t;
+                prev = x.label;
+            }
+            x.label == Label::LookDown && x.anchor_t >= start
+        })
+        .collect()
+}
+
+/// `med_of` over the samples `picked` marks.
+fn med_of_picked(s: &[Sample], picked: &[bool], value: impl Fn(&Sample) -> f64) -> (f64, usize) {
+    let mut v: Vec<f64> = s.iter().zip(picked).filter(|(_, p)| **p).map(|(x, _)| value(x)).filter(|x| x.is_finite()).collect();
+    let n = v.len();
+    (vision::median(&mut v), n)
 }
 
 /// Both eyes' parts (left first; the left eye's Err returns before the right one is looked at).
@@ -1901,45 +2020,58 @@ fn fit_user_checked(
     Ok((eyes.map(|x| x.params), warnings))
 }
 
-/// A user calibration that went through, maybe with the standard look-down correction on an eye.
+/// A user calibration that went through, maybe with the standard look-down correction or squint on an eye.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UserOutcome {
     pub user: [UserParams; 2],
     pub warnings: Vec<String>,
     /// The eyes whose look-down part failed and that had no measured curve before: they have UserParams' default
-    /// pitch curve (the standard look-down correction, as with no user calibration) and their own squint depth.
+    /// pitch curve (the standard look-down correction, as with no user calibration).
     pub look_down_default: [bool; 2],
-    /// The eyes whose look-down part failed and that kept the previous user calibration's measured curve, with their
-    /// own squint depth (never true together with `look_down_default` for an eye).
+    /// The eyes whose look-down part failed and that kept the previous user calibration's measured curve (never true
+    /// together with `look_down_default` for an eye).
     pub look_down_previous: [bool; 2],
+    /// The eyes whose squint was measured deeper than the closed eye (`UserEye::squint_deep`) and that had no measured
+    /// squint before (`UserParams::squint_measured`): they have UserParams' default squint (f_sq 0.31 of the gap in
+    /// use).
+    pub squint_default: [bool; 2],
+    /// ...and those that kept the previous user calibration's squint (never true together with `squint_default`).
+    pub squint_previous: [bool; 2],
+}
+
+/// The notes for the eyes that got a fallback (`failed`): "両目とも<note>" when both got the same one, else one per eye
+/// ("左目は<note>", "右目は<note>"); `note` gives an eye's.
+fn eye_notes(failed: [bool; 2], note: impl Fn(usize) -> &'static str) -> Vec<String> {
+    match failed {
+        [false, false] => Vec::new(),
+        [true, true] if note(0) == note(1) => vec![format!("両目とも{}", note(0))],
+        _ => (0..2).filter(|&e| failed[e]).map(|e| format!("{}は{}", ["左目", "右目"][e], note(e))).collect(),
+    }
 }
 
 impl UserOutcome {
-    /// "校正できた（ユーザー）", or which eyes got the standard look-down correction or kept the previous one (one note
-    /// per eye when they differ); then the warnings.
+    /// "校正できた（ユーザー）", or which eyes got the previous or the standard squint, then which got the standard
+    /// look-down correction or kept the previous one (one note per eye when they differ); then the warnings.
     pub fn message(&self) -> String {
-        let note = |e: usize| if self.look_down_previous[e] { NOTE_LOOK_DOWN_PREVIOUS } else { NOTE_LOOK_DOWN_DEFAULT };
-        let failed = [0, 1].map(|e| self.look_down_default[e] || self.look_down_previous[e]);
-        let head = match failed {
-            [false, false] => "校正できた（ユーザー）".to_string(),
-            [true, true] if note(0) == note(1) => format!("校正できた（両目とも{}）", note(0)),
-            [true, true] => format!("校正できた（左目は{}。右目は{}）", note(0), note(1)),
-            [left, _] => {
-                let e = if left { 0 } else { 1 };
-                format!("校正できた（{}は{}）", ["左目", "右目"][e], note(e))
-            }
-        };
+        let squint = |e: usize| if self.squint_previous[e] { NOTE_SQUINT_PREVIOUS } else { NOTE_SQUINT_DEFAULT };
+        let look_down = |e: usize| if self.look_down_previous[e] { NOTE_LOOK_DOWN_PREVIOUS } else { NOTE_LOOK_DOWN_DEFAULT };
+        let mut notes = eye_notes([0, 1].map(|e| self.squint_default[e] || self.squint_previous[e]), squint);
+        notes.extend(eye_notes([0, 1].map(|e| self.look_down_default[e] || self.look_down_previous[e]), look_down));
+        let head = if notes.is_empty() { "校正できた（ユーザー）".to_string() } else { format!("校正できた（{}）", notes.join("。")) };
         if self.warnings.is_empty() { head } else { format!("{head}。注意: {}", self.warnings.join("、")) }
     }
 }
 
 /// A user calibration with the look-down part allowed to fail (like a wear calibration's widen that was not caught):
-/// an eye whose squint step went through but whose look-down part did not (too few neutral frames with the lids, a
-/// look down that did not narrow the eye, a lower lid that moved up: long lashes read as the lid) keeps this squint
-/// depth with the previous user calibration's look-down curve when that one was measured on the eye (`old`, as a
-/// wear calibration keeps an eye's previous levels), else with the standard look-down correction. Anything else
-/// fails it as `fit_user` does, with the same message. A calibration that passes `fit_user` gives the same values and
-/// warnings here.
+/// an eye whose squint step went through but whose look-down part did not (too few neutral frames with the lids, too
+/// few look-down frames measured at a pupil seen looking down, a look down that did not narrow the eye, a lower lid
+/// that moved up: long lashes read as the lid) keeps this squint depth with the previous user calibration's
+/// look-down curve when that one was measured on the eye (`old`, as a wear calibration keeps an eye's previous
+/// levels), else with the standard look-down correction. An eye whose squint was measured deeper than the closed eye
+/// (`UserEye::squint_deep`: squeezed shut, it cannot be told from the closed eye) gets the previous user
+/// calibration's squint when that one was measured on the eye, else the standard one, and the rest of its
+/// calibration as measured. Anything else fails it as `fit_user` does, with the same message. A calibration that
+/// passes `fit_user` gives the same values and warnings here.
 pub fn fit_user_settled(
     samples: &[Vec<Sample>; 2],
     wear: &[WearParams; 2],
@@ -1947,33 +2079,44 @@ pub fn fit_user_settled(
 ) -> Result<UserOutcome, String> {
     let mut warnings = Vec::new();
     let eyes = fit_user_eyes(samples, wear, old, true, &mut warnings).map_err(|m| with_rate_note(m, samples))?;
-    if eyes.iter().any(|x| x.issue.is_some() && !x.look_down_only) {
+    if eyes.iter().any(|x| x.issue.is_some() && !x.settles) {
         return Err(with_rate_note(eyes_message(&eyes.map(|x| x.issue)), samples));
     }
-    let failed = [0, 1].map(|e| eyes[e].issue.is_some());
+    let failed = [0, 1].map(|e| eyes[e].issue.is_some() && eyes[e].look_down_failed);
+    let deep = [0, 1].map(|e| eyes[e].issue.is_some() && eyes[e].squint_deep);
     // The curve each failed eye goes on: the previous one if it was measured, else the default (standard) one.
     let previous = [0, 1].map(|e| old.map(|o| o[e]).filter(|o| failed[e] && o.curve_measured()));
     let look_down_previous = previous.map(|p| p.is_some());
     let look_down_default = [0, 1].map(|e| failed[e] && previous[e].is_none());
+    // The squint each deep eye goes on: the previous one if it was measured, else the default (standard) one.
+    let old_squint = [0, 1].map(|e| old.map(|o| o[e]).filter(|o| deep[e] && o.squint_measured()));
+    let squint_previous = old_squint.map(|p| p.is_some());
+    let squint_default = [0, 1].map(|e| deep[e] && old_squint[e].is_none());
+    let dd = (eyes[0].delta.0 - eyes[1].delta.0).abs();
     let ds = (eyes[0].delta.1 - eyes[1].delta.1).abs();
-    if failed == [false, false] {
-        let dd = (eyes[0].delta.0 - eyes[1].delta.0).abs();
-        if dd >= 0.2 || ds >= 0.2 {
-            warnings.push(format!("左右の差が大きい [下を見たとき {dd:.2}、細め {ds:.2}]"));
-        }
-    } else if ds >= 0.2 {
-        // (looking down was not measured on both eyes: only the squint is compared)
-        warnings.push(format!("左右の差が大きい [細め {ds:.2}]"));
+    // Only what was measured on both eyes is compared.
+    let diff = match (failed == [false, false], deep == [false, false]) {
+        (true, true) => (dd >= 0.2 || ds >= 0.2).then(|| format!("下を見たとき {dd:.2}、細め {ds:.2}")),
+        (false, true) => (ds >= 0.2).then(|| format!("細め {ds:.2}")),
+        (true, false) => (dd >= 0.2).then(|| format!("下を見たとき {dd:.2}")),
+        (false, false) => None,
+    };
+    if let Some(d) = diff {
+        warnings.push(format!("左右の差が大きい [{d}]"));
     }
     let user = [0, 1].map(|e| {
-        let p = eyes[e].params;
-        if !failed[e] {
-            return p;
+        let mut p = eyes[e].params;
+        if failed[e] {
+            let curve = previous[e].unwrap_or_default();
+            (p.pitch_c, p.pitch_lo, p.pitch_hi) = (curve.pitch_c, curve.pitch_lo, curve.pitch_hi);
         }
-        let curve = previous[e].unwrap_or_default();
-        UserParams { pitch_c: curve.pitch_c, pitch_lo: curve.pitch_lo, pitch_hi: curve.pitch_hi, ..p }
+        if deep[e] {
+            let sq = old_squint[e].unwrap_or_default();
+            (p.f_sq, p.sq_depth) = (sq.f_sq, sq.sq_depth);
+        }
+        p
     });
-    Ok(UserOutcome { user, warnings, look_down_default, look_down_previous })
+    Ok(UserOutcome { user, warnings, look_down_default, look_down_previous, squint_default, squint_previous })
 }
 
 /// Pupil range (P5 of bright, P95 of dark, in iris units) from a recording with bright and dark steps, in units
@@ -2836,14 +2979,17 @@ pub fn user_report(samples: &[Vec<Sample>; 2], wear: &[WearParams; 2]) -> (Strin
         let need = needs[e];
         let s: Vec<Sample> = s.iter().map(|x| x.rescaled(w.r_px)).collect();
         let (ap_sq, nsq) = med_of(&s, |x| (x.label == Label::Squint).then_some(x.ap));
-        let (ap_down, nd) = med_of(&s, |x| (x.label == Label::LookDown).then_some(x.ap));
-        let (lower_down, _) = med_of(&s, |x| (x.label == Label::LookDown).then_some(x.lower_px));
+        // (the look down as the checks take it: `look_down_fresh`)
+        let fresh = look_down_fresh(&s);
+        let (ap_down, nd) = med_of_picked(&s, &fresh, |x| x.ap);
+        let (lower_down, _) = med_of_picked(&s, &fresh, |x| x.lower_px);
+        let stale = s.iter().zip(&fresh).filter(|(x, f)| x.label == Label::LookDown && !**f).count();
         let pitch_pts = s.iter().filter(|x| x.ok && x.pitch.is_finite() && x.ap.is_finite() && x.label != Label::Squint).count();
         let f_sq = (ap_sq - w.ap_cl) / (w.ap_n - w.ap_cl);
         deltas[e] = (ap_down - w.ap_n, ap_sq - w.ap_n);
         eyes.push(format!(
             "\"{}\": {{\"f_sq\": {}, \"ap_squint\": {}, \"ap_look_down\": {}, \"ap_normal\": {}, \"look_down_ratio\": {}, \
-\"lower_look_down_px\": {}, \"lower_normal_px\": {}, \"squint_frames\": {nsq}, \"look_down_frames\": {nd}, \"pitch_points\": {pitch_pts}}}",
+\"lower_look_down_px\": {}, \"lower_normal_px\": {}, \"squint_frames\": {nsq}, \"look_down_frames\": {nd}, \"look_down_frames_stale\": {stale}, \"pitch_points\": {pitch_pts}}}",
             ["L", "R"][e],
             json::num(f_sq),
             json::num(ap_sq),
@@ -2854,7 +3000,7 @@ pub fn user_report(samples: &[Vec<Sample>; 2], wear: &[WearParams; 2]) -> (Strin
             json::num(w.lower_px),
         ));
         lines.push(format!(
-            "calib user {}: squint depth {:.2} (needs < 0.85), look_down aperture {:.2} of normal (needs <= 0.95), lower lid {:.1} px vs normal {:.1} px (must not move up), pitch points {pitch_pts} (need {}), squint / look_down frames {nsq} / {nd} (need {} / {}; at {:.0} fps)",
+            "calib user {}: squint depth {:.2} (needs < 0.85), look_down aperture {:.2} of normal (needs <= 0.95), lower lid {:.1} px vs normal {:.1} px (must not move up), pitch points {pitch_pts} (need {}), squint / look_down frames {nsq} / {nd} (need {} / {}; at {:.0} fps; look_down measured where the pupil was before the step, left out: {stale})",
             ["L", "R"][e],
             f_sq,
             ap_down / w.ap_n,
@@ -2935,6 +3081,21 @@ pub fn look_down_json(user: bool, default: [bool; 2], previous: [bool; 2]) -> St
     }
     format!(
         "\n  \"look_down_default\": [{}, {}],\n  \"look_down_previous\": [{}, {}],",
+        default[0], default[1], previous[0], previous[1]
+    )
+}
+
+/// calib_result.json's `squint_default` and `squint_previous` lines (a user calibration's only, else ""): the eyes
+/// that went through with the standard squint (`UserOutcome::squint_default`), and those that kept the previous
+/// user calibration's (`UserOutcome::squint_previous`); all false when it failed.
+pub fn squint_json(user: bool, default: [bool; 2], previous: [bool; 2]) -> String {
+    if !user {
+        return String::new();
+    }
+    format!(
+        "
+  \"squint_default\": [{}, {}],
+  \"squint_previous\": [{}, {}],",
         default[0], default[1], previous[0], previous[1]
     )
 }
@@ -3023,6 +3184,7 @@ mod tests {
                 edge: false,
                 skin2: f64::NAN,
                 frac2: f64::NAN,
+                anchor_t: if ok { i as f64 / 90.0 } else { f64::NAN },
             })
             .collect()
     }
@@ -3473,6 +3635,7 @@ mod tests {
             u.extend(samples(Label::LookDown, n(4.2), 0.6, 1.1, -35.0, 256.0, true));
             for (i, x) in u.iter_mut().enumerate() {
                 x.t = i as f64 / fps;
+                x.anchor_t = x.t;
             }
             u
         };
@@ -3701,17 +3864,16 @@ mod tests {
             let before = fit_user(&pair, &[w, w], None, true).unwrap_err();
             assert_eq!(fit_user_settled(&pair, &[w, w], None).unwrap_err(), before);
         }
-        // A squint deeper than the closed eye by more than half the gap fails its step (f_sq -0.6: an aperture of
-        // 0.033), and fails a look-down partial with it; one the calibrations that passed had (-0.25) does not.
+        // A squint deeper than the closed eye by more than half the gap fails fit_user's step (f_sq -0.6: an aperture
+        // of 0.033); fit_user_settled gives that eye the standard squint (a_squint_squeezed_shut_...); one the
+        // calibrations that passed had (-0.25) is kept.
         let deep = user(1.1, 256.0, 0.033);
         assert_eq!(
             fit_user(&[good.clone(), deep.clone()], &[w, w], None, true).unwrap_err(),
             format!("右目{MSG_SQUINT_DEEP}[f_sq -0.60]")
         );
-        assert_eq!(
-            fit_user_settled(&[lashes.clone(), deep.clone()], &[w, w], None).unwrap_err(),
-            fit_user(&[lashes.clone(), deep], &[w, w], None, true).unwrap_err()
-        );
+        let out = fit_user_settled(&[lashes.clone(), deep], &[w, w], None).unwrap();
+        assert_eq!((out.look_down_default, out.squint_default), ([true, false], [false, true]));
         assert!(fit_user_settled(&[lashes.clone(), user(1.43, 256.0, 0.341)], &[w, w], None).is_ok());
         let (u, _) = fit_user(&[good.clone(), user(1.1, 256.0, 0.341)], &[w, w], None, true).unwrap();
         assert!((u[1].f_sq + 0.25).abs() < 0.01, "{:?}", u[1]);
@@ -3792,6 +3954,124 @@ mod tests {
             out.message(),
             "校正できた（左目は下を見たときの補正を前の値のままにしたよ。右目は下を見たときの補正を標準の値にしたよ）"
         );
+    }
+
+    #[test]
+    fn a_squint_squeezed_shut_gets_the_previous_or_the_standard_squint() {
+        let w = WearParams { r_px: 55.0, b_n: 0.73, b_w: 0.93, ap_n: 1.441, ap_cl: 0.561, pitch_n: -14.0, lower_px: 250.0 };
+        let user = |down_ap: f64, squint_ap: f64| {
+            let mut u = Vec::new();
+            u.extend(samples(Label::LeadIn, 200, 0.73, 1.44, -14.0, 250.0, true));
+            u.extend(samples(Label::LookUp, 200, 0.73, 1.6, 5.0, 248.0, true));
+            u.extend(samples(Label::LookDown, 200, 0.6, down_ap, -35.0, 256.0, true));
+            u.extend(samples(Label::Squint, 200, 0.6, squint_ap, -14.0, 249.0, true));
+            u
+        };
+        let good = user(1.1, 0.83);
+        // Issue 54's right eye: squeezed shut, its lines closer than on the relaxed closed eye (f_sq -0.63).
+        let squeezed = user(1.1, 0.007);
+        let (both, _) = fit_user(&[good.clone(), good.clone()], &[w, w], None, true).unwrap();
+        assert!(fit_user(&[good.clone(), squeezed.clone()], &[w, w], None, true).unwrap_err().contains(MSG_SQUINT_DEEP));
+
+        // No user calibration before: the standard squint on that eye, its look-down curve as measured, the other eye
+        // as if both had passed. The squint is not compared left/right.
+        let out = fit_user_settled(&[good.clone(), squeezed.clone()], &[w, w], None).unwrap();
+        assert_eq!((out.squint_default, out.squint_previous), ([false, true], [false, false]));
+        assert_eq!((out.look_down_default, out.look_down_previous), ([false, false], [false, false]));
+        assert_eq!(out.user[0], both[0]);
+        let d = UserParams::default();
+        assert_eq!((out.user[1].f_sq, out.user[1].sq_depth), (d.f_sq, d.sq_depth));
+        let curve = |u: &UserParams| (u.pitch_c, u.pitch_lo, u.pitch_hi);
+        assert_eq!(curve(&out.user[1]), curve(&both[1]));
+        assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+        assert_eq!(out.message(), format!("校正できた（右目は{NOTE_SQUINT_DEFAULT}）"));
+
+        // A previous user calibration: its squint on that eye (and its pupil range on both, as always).
+        let old = [UserParams { f_sq: 0.4, sq_depth: Some(0.5), pd_min: 0.5, pd_max: 1.2, ..d }; 2];
+        let out = fit_user_settled(&[squeezed.clone(), good.clone()], &[w, w], Some(old)).unwrap();
+        assert_eq!((out.squint_default, out.squint_previous), ([false, false], [true, false]));
+        assert_eq!((out.user[0].f_sq, out.user[0].sq_depth, out.user[0].pd_min), (0.4, Some(0.5), 0.5));
+        assert_eq!(out.message(), format!("校正できた（左目は{NOTE_SQUINT_PREVIOUS}）"));
+        // A previous calibration whose squint on that eye was the standard one (it had been squeezed shut then too),
+        // or from before the depth was kept: the standard squint, said as such.
+        for f_sq in [d.f_sq, 0.4] {
+            let standard_before = [UserParams { f_sq, sq_depth: None, pd_min: 0.5, pd_max: 1.2, ..d }; 2];
+            let out = fit_user_settled(&[squeezed.clone(), good.clone()], &[w, w], Some(standard_before)).unwrap();
+            assert_eq!((out.squint_default, out.squint_previous), ([true, false], [false, false]));
+            assert_eq!((out.user[0].f_sq, out.user[0].sq_depth, out.user[0].pd_min), (d.f_sq, None, 0.5));
+            assert_eq!(out.message(), format!("校正できた（左目は{NOTE_SQUINT_DEFAULT}）"));
+        }
+
+        // Both eyes: one note. With a look down that failed too: the squint's note, then the look down's.
+        let out = fit_user_settled(&[squeezed.clone(), squeezed.clone()], &[w, w], None).unwrap();
+        assert_eq!(out.squint_default, [true, true]);
+        assert_eq!(out.message(), format!("校正できた（両目とも{NOTE_SQUINT_DEFAULT}）"));
+        let both_bad = user(1.43, 0.007);
+        let out = fit_user_settled(&[good.clone(), both_bad], &[w, w], None).unwrap();
+        assert_eq!((out.squint_default, out.look_down_default), ([false, true], [false, true]));
+        assert_eq!(out.message(), format!("校正できた（右目は{NOTE_SQUINT_DEFAULT}。右目は{NOTE_LOOK_DOWN_DEFAULT}）"));
+        // ...the look down still compared left/right when only the squint fell back.
+        let out = fit_user_settled(&[user(0.8, 0.83), squeezed.clone()], &[w, w], None).unwrap();
+        assert_eq!(out.warnings, vec!["左右の差が大きい [下を見たとき 0.30]".to_string()]);
+
+        // A squint that was too shallow or not measured still fails, as before.
+        let shallow = user(1.1, 1.4);
+        assert_eq!(
+            fit_user_settled(&[squeezed.clone(), shallow.clone()], &[w, w], None).unwrap_err(),
+            fit_user(&[squeezed, shallow], &[w, w], None, true).unwrap_err()
+        );
+        // calib_result.json's lines
+        assert_eq!(
+            squint_json(true, [false, true], [true, false]),
+            "\n  \"squint_default\": [false, true],\n  \"squint_previous\": [true, false],"
+        );
+        assert_eq!(squint_json(false, [false, true], [true, false]), "");
+    }
+
+    #[test]
+    fn look_down_frames_measured_where_the_eye_looked_up_are_left_out() {
+        let w = WearParams { r_px: 55.0, b_n: 0.73, b_w: 0.93, ap_n: 1.441, ap_cl: 0.561, pitch_n: -14.0, lower_px: 250.0 };
+        // The look down's frames without the pupil: the first `stale` measured where the pupil was seen looking up
+        // (2 s before the step; their lower line 240 px, above the normal 250), the rest at a pupil seen in the step.
+        let user = |stale: usize| {
+            let mut u = Vec::new();
+            u.extend(samples(Label::LeadIn, 200, 0.73, 1.44, -14.0, 250.0, true));
+            u.extend(samples(Label::LookUp, 200, 0.73, 1.6, 5.0, 248.0, true));
+            let mut down = samples(Label::LookDown, 200, 0.6, 1.1, -35.0, 256.0, false);
+            for (i, x) in down.iter_mut().enumerate() {
+                if i < stale {
+                    (x.anchor_t, x.lower_px, x.ap) = (-2.0, 240.0, 1.43);
+                } else {
+                    x.anchor_t = x.t - 0.5;
+                }
+            }
+            u.extend(down);
+            u.extend(samples(Label::Squint, 200, 0.6, 0.83, -14.0, 249.0, true));
+            u
+        };
+        // Most of the step stale: what is left decides, and passes.
+        let (with, _) = fit_user(&[user(150), user(150)], &[w, w], None, true).unwrap();
+        let (none, _) = fit_user(&[user(0), user(0)], &[w, w], None, true).unwrap();
+        assert_eq!(with, none);
+        let (report, lines) = user_report(&[user(150), user(0)], &[w, w]);
+        assert!(report.contains("\"lower_look_down_px\": 256"), "{report}");
+        assert!(report.contains("\"look_down_frames\": 50, \"look_down_frames_stale\": 150"), "{report}");
+        assert!(lines[0].contains("left out: 150"), "{}", lines[0]);
+        // All of it stale: the look down was not measured on that eye, the standard correction.
+        let err = fit_user(&[user(200), user(0)], &[w, w], None, true).unwrap_err();
+        let need = UserNeeds::of(&user(200)).look_down;
+        assert_eq!(err, format!("左目{MSG_LOOK_DOWN_UNSEEN}[0/200、{need} 必要]"));
+        let out = fit_user_settled(&[user(200), user(0)], &[w, w], None).unwrap();
+        assert_eq!(out.look_down_default, [true, false]);
+        // A pupil seen from the first labelled frame on counts as the step's; one seen before it (the step's first
+        // moments, the eye maybe still up) does not.
+        let at = |anchor: f64| {
+            let mut u = user(0);
+            u.iter_mut().filter(|x| x.label == Label::LookDown).for_each(|x| x.anchor_t = anchor);
+            u
+        };
+        assert!(fit_user(&[at(0.0), user(0)], &[w, w], None, true).is_ok());
+        assert!(fit_user(&[at(-0.3), user(0)], &[w, w], None, true).unwrap_err().contains(MSG_LOOK_DOWN_UNSEEN));
     }
 
     /// A grey frame with the lens-edge band, and a dark disc (the pupil) if `pupil`.

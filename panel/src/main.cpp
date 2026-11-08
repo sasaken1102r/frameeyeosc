@@ -397,7 +397,10 @@ void printUsage() {
         "                        (failed=L|R: provisional values, not the previous ones), lookdown=L|R|LR (with\n"
         "                        page=user: the user's calibration went through with the standard look-down\n"
         "                        correction on that eye, or both), lookprev=L|R|LR (likewise, with the previous\n"
-        "                        one kept; with lookdown=R and lookprev=L, one eye each),\n"
+        "                        one kept; with lookdown=R and lookprev=L, one eye each), squint=L|R|LR (with\n"
+        "                        page=user: the squint went on the standard one there, squeezed shut;\n"
+        "                        user_squint_default), sqprev=L|R|LR (likewise, the previous squint kept;\n"
+        "                        user_squint_previous; with lookdown=... too, both notes, the squint's first),\n"
         "                        search=not_worn|no_video|one_eye (unlocked, and why: the proximity sensor says\n"
         "                        the headset is off, no eye video, or only one eye's; not_worn reads 12),\n"
         "                        prox=V (the proximity reading), blocks=N (changed blocks before the last look;\n"
@@ -548,6 +551,8 @@ struct FakeEyecam {
     bool provisional = false;  ///< failed=L|R: provisional values (no earlier ones)
     std::string lookDown;   ///< "L" / "R" / "LR": a user calibration on the standard look-down correction there
     std::string lookPrevious;  ///< ...on the previous one kept there (an eye in lookDown too is on the standard one)
+    std::string squint;     ///< "L" / "R" / "LR": a user calibration on the standard squint there (squeezed shut)
+    std::string squintPrevious;  ///< ...on the previous squint kept there (an eye in squint too is on the standard one)
     std::string search;     ///< search: why the video isn't found (not_worn / no_video / one_eye; "" = an older
                             ///< eyecam-rec without it, or locked)
     double prox = -1.0;     ///< prox=V: the proximity reading (-1 = as the search says)
@@ -650,6 +655,10 @@ bool parseFakeEyecam(const std::string& text, FakeEyecam& fake) {
             fake.lookDown = flag.substr(9);
         } else if (flag == "lookprev=L" || flag == "lookprev=R" || flag == "lookprev=LR") {
             fake.lookPrevious = flag.substr(9);
+        } else if (flag == "squint=L" || flag == "squint=R" || flag == "squint=LR") {
+            fake.squint = flag.substr(7);
+        } else if (flag == "sqprev=L" || flag == "sqprev=R" || flag == "sqprev=LR") {
+            fake.squintPrevious = flag.substr(7);
         } else if (flag == "prov") {
             fake.provisional = true;
         } else if (flag == "search=not_worn" || flag == "search=no_video" || flag == "search=one_eye") {
@@ -1635,9 +1644,11 @@ eyecam::View fakeEyecam(const std::string& text) {
                       (widenDefault ? ". Couldn't measure widening, using the usual width" : "") + ") [" + counts(12) +
                       needEn;
     }
-    if (!fake.lookDown.empty() || !fake.lookPrevious.empty()) {
-        // A user calibration that went through with the standard look-down correction or the previous one kept
-        // (eyecam-rec's message: one note for the eyes, or one for each when they differ)
+    if (!fake.lookDown.empty() || !fake.lookPrevious.empty() || !fake.squint.empty() ||
+        !fake.squintPrevious.empty()) {
+        // A user calibration that went through with the standard look-down correction or squint, or the previous one
+        // kept (eyecam-rec's message: the squint's notes first, then the look down's; one note for both eyes when
+        // they got the same, else one for each)
         const auto bits = [](const std::string& eyes) {
             return eyes == "LR"  ? (eyecam::kLeftEyeBit | eyecam::kRightEyeBit)
                    : eyes == "L" ? eyecam::kLeftEyeBit
@@ -1646,32 +1657,54 @@ eyecam::View fakeEyecam(const std::string& text) {
         };
         const int standard = bits(fake.lookDown);
         const int previous = bits(fake.lookPrevious) & ~standard;
-        const auto noteJa = [&](int bit) {
-            return std::string(previous & bit ? "下を見たときの補正を前の値のままにしたよ"
-                                              : "下を見たときの補正を標準の値にしたよ");
-        };
-        const auto noteEn = [&](int bit) {
-            return std::string(previous & bit ? "keeping the previous correction for looking down"
-                                              : "using the standard correction for looking down");
-        };
-        const int eyes = standard | previous;
+        const int squintStandard = bits(fake.squint);
+        const int squintPrevious = bits(fake.squintPrevious) & ~squintStandard;
         const int left = eyecam::kLeftEyeBit;
         const int right = eyecam::kRightEyeBit;
-        if (eyes == (left | right) && noteJa(left) != noteJa(right)) {
-            s.message = "校正できた（左目は" + noteJa(left) + "。右目は" + noteJa(right) + "）";
-            s.messageEn = "Calibrated (Left eye: " + noteEn(left) + ". Right eye: " + noteEn(right) + ")";
-        } else {
-            const bool both = eyes == (left | right);
-            const int bit = eyes == right ? right : left;
-            s.message = std::string("校正できた（") + (both ? "両目とも" : bit == left ? "左目は" : "右目は") +
-                        noteJa(bit) + "）";
-            s.messageEn = std::string("Calibrated (") + (both ? "Both eyes" : bit == left ? "Left eye" : "Right eye") +
-                          ": " + noteEn(bit) + ")";
+        std::vector<std::string> ja;
+        std::vector<std::string> en;
+        // (the eyes in `eyes`, the ones in `prev` on the previous values: (ja, en) for the previous and the standard)
+        const auto notes = [&](int eyes, int prev, const char* prevJa, const char* stdJa, const char* prevEn,
+                               const char* stdEn) {
+            const auto noteJa = [&](int bit) { return std::string(prev & bit ? prevJa : stdJa); };
+            const auto noteEn = [&](int bit) { return std::string(prev & bit ? prevEn : stdEn); };
+            if (eyes == 0) return;
+            if (eyes == (left | right) && noteJa(left) != noteJa(right)) {
+                ja.push_back("左目は" + noteJa(left));
+                ja.push_back("右目は" + noteJa(right));
+                en.push_back("Left eye: " + noteEn(left));
+                en.push_back("Right eye: " + noteEn(right));
+            } else {
+                const bool both = eyes == (left | right);
+                const int bit = eyes == right ? right : left;
+                ja.push_back(std::string(both ? "両目とも" : bit == left ? "左目は" : "右目は") + noteJa(bit));
+                en.push_back(std::string(both ? "Both eyes" : bit == left ? "Left eye" : "Right eye") + ": " +
+                             noteEn(bit));
+            }
+        };
+        notes(squintStandard | squintPrevious, squintPrevious,
+              "細めが強すぎて閉じた目と区別できなかったので、細めは前の値を使うよ",
+              "細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ",
+              "squinted too hard to tell from a closed eye, keeping the previous squint",
+              "squinted too hard to tell from a closed eye, using the standard squint");
+        notes(standard | previous, previous, "下を見たときの補正を前の値のままにしたよ", "下を見たときの補正を標準の値にしたよ",
+              "keeping the previous correction for looking down", "using the standard correction for looking down");
+        s.message = "校正できた（";
+        s.messageEn = "Calibrated (";
+        for (size_t k = 0; k < ja.size(); ++k) {
+            s.message += (k > 0 ? "。" : "") + ja[k];
+            s.messageEn += (k > 0 ? ". " : "") + en[k];
         }
+        s.message += "）";
+        s.messageEn += ")";
         s.hasUserLookDownDefault = true;
         s.userLookDownDefault = standard;
         s.hasUserLookDownPrevious = true;
         s.userLookDownPrevious = previous;
+        s.hasUserSquintDefault = true;
+        s.userSquintDefault = squintStandard;
+        s.hasUserSquintPrevious = true;
+        s.userSquintPrevious = squintPrevious;
     }
     if (fake.message == 2) s.messageEn.clear();
     // The diagnostics: the proximity threshold, the last look (as eyecam-rec's own --fake makes it), the last wear

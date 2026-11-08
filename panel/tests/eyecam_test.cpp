@@ -2659,6 +2659,86 @@ void testPupils() {
                                 kNow);
         CHECK(!s.hasUserLookDownPrevious && eyecam::lookDownPreviousEyes(s) == 0);
     }
+    // ...and the eyes on the standard or the previous squint (squeezed shut: issue 54; status.json only)
+    {
+        Status s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": \"校正できた（右目は細めが強すぎて閉じた目と"
+                                       "区別できなかったので、細めは標準の値にしたよ）\", "
+                                       "\"user_look_down_default\": [false, false], "
+                                       "\"user_look_down_previous\": [false, false], "
+                                       "\"user_squint_default\": [false, true], "
+                                       "\"user_squint_previous\": [true, false]}",
+                                       kNow);
+        CHECK(s.hasUserSquintDefault && eyecam::squintDefaultEyes(s) == eyecam::kRightEyeBit);
+        CHECK(s.hasUserSquintPrevious && eyecam::squintPreviousEyes(s) == eyecam::kLeftEyeBit);
+        s.state = State::Calibrating;
+        CHECK(eyecam::squintDefaultEyes(s) == 0 && eyecam::squintPreviousEyes(s) == 0);
+        s = eyecam::parseStatus("{\"state\": \"idle\", \"message\": \"校正できた（ユーザー）\", "
+                                "\"user_look_down_default\": [false, false]}",
+                                kNow);
+        CHECK(!s.hasUserSquintDefault && !s.hasUserSquintPrevious && eyecam::squintDefaultEyes(s) == 0);
+    }
+    // The card after it: the squint's eyes, the look down's, or both; as before when no squint went on other values
+    {
+        const UiText& ja = uiText(Language::Ja);
+        const UiText& en = uiText(Language::En);
+        const auto card = [](const UiText& t, const char* flags) {
+            return eyecam::userCalibCard(
+                t, eyecam::parseStatus(std::string("{\"state\": \"idle\", \"message\": \"校正できた（ユーザー）\", ") + flags +
+                                           "}",
+                                       kNow));
+        };
+        const char* none = "\"user_look_down_default\": [false, false], \"user_squint_default\": [false, false]";
+        eyecam::UserCalibCard c = card(ja, none);
+        CHECK(!c.fallback && c.pill == ja.calibDonePill);
+        SAME(c.body, ja.calibUserDoneBody);
+        // (the look down alone: the texts it had)
+        c = card(ja, "\"user_look_down_default\": [false, true]");
+        CHECK(c.fallback && c.pill == ja.userPartialPill);
+        SAME(c.body, "細めは覚えたよ。右目は、下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は"
+                     "標準の値を使うよ");
+        c = card(ja, "\"user_look_down_default\": [false, true], \"user_look_down_previous\": [true, false]");
+        CHECK(c.pill == ja.userMixedPill);
+        SAME(c.body, "細めは覚えたよ。下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は、"
+                     "左目は前の値のまま、右目は標準の値にしたよ");
+        // The squint alone: no "squinting is learned"
+        c = card(ja, "\"user_squint_default\": [false, true]");
+        CHECK(c.fallback && c.pill == ja.userSquintStandardPill);
+        SAME(c.body, "右目は、細めが強すぎて閉じた目と区別できなかったので、細めは標準の値を使うよ。ほかは覚えたよ");
+        c = card(ja, "\"user_squint_previous\": [true, true]");
+        CHECK(c.pill == ja.userSquintPreviousPill);
+        SAME(c.body, "両目は、細めが強すぎて閉じた目と区別できなかったので、細めは前の値のままにしたよ。ほかは覚えたよ");
+        c = card(ja, "\"user_squint_default\": [true, false], \"user_squint_previous\": [false, true]");
+        CHECK(c.pill == ja.userMixedPill);
+        SAME(c.body, "右目は、細めが強すぎて閉じた目と区別できなかったので、細めは前の値のままにしたよ。"
+                     "左目は、細めが強すぎて閉じた目と区別できなかったので、細めは標準の値を使うよ。ほかは覚えたよ");
+        // Both: the squint first, then the look down, and no "the rest is learned"
+        c = card(ja, "\"user_squint_default\": [false, true], \"user_look_down_default\": [true, false]");
+        CHECK(c.fallback && c.pill == ja.userPartialPill);
+        SAME(c.body, "右目は、細めが強すぎて閉じた目と区別できなかったので、細めは標準の値を使うよ。"
+                     "左目は、下を見たときの目の開きがうまく測れなかったので（まつげなど）、下を見たときの補正は標準の値を使うよ");
+        c = card(ja, "\"user_squint_default\": [false, true], \"user_look_down_previous\": [false, true]");
+        CHECK(c.pill == ja.userMixedPill);
+        c = card(en, "\"user_squint_default\": [false, true], \"user_look_down_default\": [true, false]");
+        SAME(c.body, "Right eye: the squint was too strong to tell from a closed eye, so the standard squint is used. "
+                     "Left eye: looking down couldn't be measured well (lashes, perhaps), so the standard correction is "
+                     "used");
+        c = card(en, "\"user_squint_previous\": [true, false]");
+        CHECK(c.pill == en.userSquintPreviousPill);
+        SAME(c.body, "Left eye: the squint was too strong to tell from a closed eye, so the previous squint is kept. The "
+                     "rest is learned");
+        // (all of the new texts there in both languages, the formats with one %s)
+        for (const UiText* t : {&ja, &en}) {
+            for (const char* text : {t->userSquintStandardPill, t->userSquintPreviousPill, t->userRestLearned,
+                                     t->userSentenceSep}) {
+                CHECK(text != nullptr && text[0] != '\0');
+            }
+            for (const char* f : {t->userSquintStandardFormat, t->userSquintPreviousFormat,
+                                  t->userLookDownStandardFormat, t->userLookDownPreviousFormat}) {
+                const std::string format(f);
+                CHECK(format.find("%s") != std::string::npos && format.find("%s", format.find("%s") + 2) == std::string::npos);
+            }
+        }
+    }
 }
 
 void testSearch() {

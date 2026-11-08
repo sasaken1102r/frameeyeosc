@@ -765,6 +765,19 @@ struct UiText {
     const char* userPreviousBodyFormat;  ///< ...its body: "%s" (the eyes) keep the previous correction
     const char* userMixedPill;  ///< ...one eye on the previous correction, the other on the standard one
     const char* userMixedBodyFormat;  ///< ...its body: the eye on the previous one ("%s"), then the other ("%s")
+    /// "calib user" went through with the standard squint on an eye (squeezed shut, it read narrower than the closed
+    /// eye; no measured squint before): the pill, when the look down was measured on both eyes
+    const char* userSquintStandardPill;
+    const char* userSquintPreviousPill;  ///< ...with the previous user calibration's squint kept on an eye
+    /// A sentence of the card's body when a squint or a look down went on other values, "%s" the eyes
+    /// (partialEyeLeft / partialEyeRight / userPartialEyeBoth): the standard squint, the previous one, the standard
+    /// look-down correction, the previous one
+    const char* userSquintStandardFormat;
+    const char* userSquintPreviousFormat;
+    const char* userLookDownStandardFormat;
+    const char* userLookDownPreviousFormat;
+    const char* userRestLearned;  ///< ...the last one when only squints went on other values: the rest was learned
+    const char* userSentenceSep;  ///< ...between those sentences ("。" / ". ")
     const char* nextTitle;  ///< the left column while not set up: its card
     const char* nextPass;  ///< ...what (1) is about
     const char* nextWait;  ///< ...(3) before its button

@@ -199,6 +199,9 @@ Status parseStatus(const std::string& text, double mtime) {
     };
     readEyes("user_look_down_default", status.hasUserLookDownDefault, status.userLookDownDefault);
     readEyes("user_look_down_previous", status.hasUserLookDownPrevious, status.userLookDownPrevious);
+    // ...and those on the standard or the previous squint (missing on an eyecam-rec before them, which failed instead)
+    readEyes("user_squint_default", status.hasUserSquintDefault, status.userSquintDefault);
+    readEyes("user_squint_previous", status.hasUserSquintPrevious, status.userSquintPrevious);
     // The pupils (missing on an older eyecam-rec: "locked" alone says whether the eyes are seen)
     status.hasPupil = root.get("pupil_l") != nullptr || root.get("pupil_r") != nullptr;
     const char* const pupilKeys[2] = {"pupil_l", "pupil_r"};
@@ -966,7 +969,8 @@ std::string signature(const View& view) {
            std::to_string(s.hasBuffers) + std::to_string(s.hasSetupDone) +
            std::to_string(s.setupDone) + s.lastCalibWiden + "|" + s.calibFailedEye + "|" +
            std::to_string(s.hasUserLookDownDefault) + std::to_string(s.userLookDownDefault) +
-           std::to_string(s.userLookDownPrevious) + "|" +
+           std::to_string(s.userLookDownPrevious) + std::to_string(s.userSquintDefault) +
+           std::to_string(s.userSquintPrevious) + "|" +
            std::to_string(s.hasPupil) + std::to_string(static_cast<int>(eyeSight(s, 0))) +
            std::to_string(static_cast<int>(eyeSight(s, 1))) + "|" +
            // (the setup shows the cameras' rate only while it is low, as a whole number)
@@ -1152,6 +1156,71 @@ int lookDownDefaultEyes(const Status& status) {
 
 int lookDownPreviousEyes(const Status& status) {
     return status.state == State::Idle ? status.userLookDownPrevious : 0;
+}
+
+int squintDefaultEyes(const Status& status) {
+    return status.state == State::Idle ? status.userSquintDefault : 0;
+}
+
+int squintPreviousEyes(const Status& status) {
+    return status.state == State::Idle ? status.userSquintPrevious : 0;
+}
+
+UserCalibCard userCalibCard(const UiText& t, const Status& status) {
+    const int standard = lookDownDefaultEyes(status);
+    const int previous = lookDownPreviousEyes(status) & ~standard;
+    const int lookDown = standard | previous;
+    const int squintStandard = squintDefaultEyes(status);
+    const int squintPrevious = squintPreviousEyes(status) & ~squintStandard;
+    const int squint = squintStandard | squintPrevious;
+    const auto eyes = [&](int bits) {
+        return bits == (kLeftEyeBit | kRightEyeBit) ? t.userPartialEyeBoth
+               : bits == kLeftEyeBit                ? t.partialEyeLeft
+                                                    : t.partialEyeRight;
+    };
+    const auto format = [](const char* f, const char* value) {
+        char text[512];
+        std::snprintf(text, sizeof(text), f, value);
+        return std::string(text);
+    };
+    UserCalibCard card;
+    card.fallback = (squint | lookDown) != 0;
+    if (squint == 0) {
+        // (as before the squint could go on other values)
+        card.pill = standard != 0 && previous != 0 ? t.userMixedPill
+                    : previous != 0                ? t.userPreviousPill
+                    : standard != 0                ? t.userPartialPill
+                                                   : t.calibDonePill;
+        if (standard != 0 && previous != 0) {
+            // (one eye each: the one on the previous correction named first)
+            const bool leftPrevious = previous == kLeftEyeBit;
+            char body[512];
+            std::snprintf(body, sizeof(body), t.userMixedBodyFormat, leftPrevious ? t.partialEyeLeft : t.partialEyeRight,
+                          leftPrevious ? t.partialEyeRight : t.partialEyeLeft);
+            card.body = body;
+        } else if (lookDown != 0) {
+            card.body = format(previous != 0 ? t.userPreviousBodyFormat : t.userPartialBodyFormat, eyes(lookDown));
+        } else {
+            card.body = t.calibUserDoneBody;
+        }
+        return card;
+    }
+    const bool anyStandard = (squintStandard | standard) != 0;
+    const bool anyPrevious = (squintPrevious | previous) != 0;
+    card.pill = lookDown == 0 ? (squintStandard != 0 && squintPrevious != 0 ? t.userMixedPill
+                                 : squintPrevious != 0                      ? t.userSquintPreviousPill
+                                                                            : t.userSquintStandardPill)
+                : anyStandard && anyPrevious ? t.userMixedPill
+                : anyPrevious                ? t.userPreviousPill
+                                             : t.userPartialPill;
+    std::vector<std::string> sentences;
+    if (squintPrevious != 0) sentences.push_back(format(t.userSquintPreviousFormat, eyes(squintPrevious)));
+    if (squintStandard != 0) sentences.push_back(format(t.userSquintStandardFormat, eyes(squintStandard)));
+    if (previous != 0) sentences.push_back(format(t.userLookDownPreviousFormat, eyes(previous)));
+    if (standard != 0) sentences.push_back(format(t.userLookDownStandardFormat, eyes(standard)));
+    if (lookDown == 0) sentences.push_back(t.userRestLearned);
+    for (size_t k = 0; k < sentences.size(); ++k) card.body += (k > 0 ? t.userSentenceSep : "") + sentences[k];
+    return card;
 }
 
 bool partialProvisional(const Status& status) {

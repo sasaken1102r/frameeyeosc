@@ -133,7 +133,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
  "session_dir":"/home/steamos/eyecam/rec_2026-10-04_10-00-00","protocol":"widen","prox":31.000,"search":"",
  "last_session_aborted":false,"calib_state":6,"recalib_suggested":false,"baseline":"ready","warmup_remaining_s":0.000,
  "calib_saved":true,"widen_sensitivity":0.500,"dev":false,"setup_done":true,"last_calib_widen":"measured",
- "calib_failed_eye":"","user_look_down_default":[false,false],"user_look_down_previous":[false,false],"live":true,"live_ms":1.05,"pupil_l":0.967,"pupil_r":0.978,"cam_fps":[90.012,89.987],"prox_min":20.000,
+ "calib_failed_eye":"","user_look_down_default":[false,false],"user_look_down_previous":[false,false],"user_squint_default":[false,false],"user_squint_previous":[false,false],"live":true,"live_ms":1.05,"pupil_l":0.967,"pupil_r":0.978,"cam_fps":[90.012,89.987],"prox_min":20.000,
  "search_detail":{"candidates":8,"refresh_hz":90.000,"slots":8,"both_eyes":true,"stopped_at":"","changed_blocks":128,"unix":1791099990.000},
  "last_calib":{"time":"2026-10-04 09:51:03","ok":true,"failed_eye":"","message":"校正できた（かぶり）","message_en":"Calibrated",
   "pupil_frames":[470.000,482.000],"normal_frames":[486.000,486.000],"pupil_x":[238.000,252.000],"pupil_y":[201.000,194.000],
@@ -184,6 +184,8 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `calib_failed_eye` | string | 直近の `calib wear` で失敗した目: `L` / `R`（**片目だけ失敗。校正は通っていて**、その目は前の校正の値〔その目で測れた値のときだけ。なければ、または前の校正でも同じ目が失敗していたら、もう片目の値と履歴から作った仮の値〕を使っている。`message` は「校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]」のように言う）/ `LR`（両目とも失敗。`state` は `error`）/ `""`（両目とも通った、またはまだしていない）。`L` / `R` は calib.json の `wear.failed_eye` に残るので、再起動しても変わらない。パネルは `L` / `R` のとき、その目について「かぶり直してもう一度」を案内できる。frameeyeosc はこのときも両目ともカメラの値で動かす（失敗した目だけ Valve のまぶたに戻す仕組みはまだない。瞳も閉じた目も見えないフレームは使われないので、外れるのは前の値・仮の値の分だけ） |
 | `user_look_down_default` | [bool, bool] | この起動の直近の `calib user` で、下を見たときの補正を標準の値にして通した目 `[左, 右]`（細めは測れた。`message` は「校正できた（右目は下を見たときの補正を標準の値にしたよ）」。下の「校正」）。この起動でまだしていない、失敗した、両目とも測れたときは `[false, false]`。再起動すると `[false, false]` に戻る（calib.json では、その目の `pitch_c` が `[0, 0, 0]`・`pitch_lo` / `pitch_hi` が -90 / 90 になっている）。パネルは校正の直後のカードにこれを使う |
 | `user_look_down_previous` | [bool, bool] | 同じ `calib user` で、下を見たときの補正を**前のユーザー校正の値のまま**にして通した目 `[左, 右]`（その目の下を見る段が取れず、前のユーザー校正にその目の測れた補正があったとき。`message` は「校正できた（右目は下を見たときの補正を前の値のままにしたよ）」）。ひとつの目が `user_look_down_default` とこれの両方で true になることはない。ほかは `user_look_down_default` と同じ（失敗・まだ・両目とも測れた・再起動で `[false, false]`）。パネルは校正の直後のカードにこれも使う |
+| `user_squint_default` | [bool, bool] | 同じ `calib user` で、細めが閉じた目より狭く測れた（`f_sq` が -0.5 未満。強く細めすぎて閉じた目と区別できない）ので、細めを**標準の値**（`f_sq` 0.31、`sq_depth` なし）にして通した目 `[左, 右]`（前のユーザー校正がない、またはその目の細めが測れた値でない〔`sq_depth` なし〕とき。`message` は「校正できた（右目は細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ）」）。下を見たときの補正はその目もこの校正の値（取れなければ上の `user_look_down_*` のとおり）。失敗・まだ・再起動で `[false, false]` |
+| `user_squint_previous` | [bool, bool] | 同じく、細めを**前のユーザー校正の値**（その目の `f_sq` / `sq_depth`）にして通した目 `[左, 右]`（前のユーザー校正にその目の測れた細め〔`sq_depth` あり〕があったとき。`message` は「…細めは前の値を使うよ」）。ひとつの目が `user_squint_default` とこれの両方で true になることはない |
 | `widen_sensitivity` | number | 見開きの感度 0〜1（`set widen_sensitivity`。既定 0.5）。どの state でも入っている |
 | `dev` | bool | 開発者モード（settings.json の `"dev": true`、既定 false）。true のときだけ校正のたびの目の映像（`eye_L.raw` など）も残す（下の「settings.json」）。録画（`start`）はこれに関係なく誰でも使える。settings.json を手で書き換えると、再起動しなくても次の書き直しで反映される |
 | `live` | bool | ライブ処理がオン（バッファを持っていて `live on`）|
@@ -665,9 +667,15 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   仮の値を作って「仮の値を使うよ」。見開きも取れなかったら「。見開きは取れなかったので、いつもの幅を使うよ」が続く）、
   status.json の `calib_failed_eye` が `L` / `R`
 - **`calib user` で細めは測れたのに、下を見たときの補正（視線と開きの曲線）が取れなかった目があっても、失敗にしない**。
-  取れないのは: 下を見たときの開きが普段の 0.95 倍より大きい（下を見る段のフレームが足りないときも）、下を見たら下まぶたが上に動いた、
-  普段・上・下を見る段で、瞳は見えたのにまぶたの線が取れたフレームが足りない（「150 必要」）。まつげが長いと、まぶたの線がまつげに乗って
+  取れないのは: 下を見たときの開きが普段の 0.95 倍より大きい、下を見たら下まぶたが上に動いた、下を見る段で使えるフレームが足りない
+  （「左目: 下を見ているあいだ瞳が見えなかった（もう一度、下を見てね）[0/378、30 必要]」）、
+  普段・上・下を見る段で、瞳は見えたのにまぶたの線が取れたフレームが足りない（「150 必要」）。
+  まつげが長いと、まぶたの線がまつげに乗って
   下を見ても開きがほとんど変わらず、ここで必ず落ちていた（そのあいだは `eye_squint` がずっと 0 だった）。
+  下を見たときの開きと下まぶたは、**その段の中で（ラベルの付いた最初のフレーム、段の始まりから 0.8 秒のところから）瞳が見えた位置で測ったフレームだけ**から出す。
+  瞳のないフレームのまぶたは最後に瞳が見えた位置で測るので、上を見たときに瞳が見えて、下を見る途中で一度も見えないと、上を見た位置で
+  測った線になる（#54: 左目の下まぶたが 241.6 px／普段 249.9 px で「上に動いた」になり、下を見る段の 67% が閉じた判定だった）。
+  calib_result.json の `values` の `look_down_frames` は使ったフレーム、`look_down_frames_stale` は外したフレームの数。
   その目は**細めの深さ `f_sq` はこの校正の値**、下を見たときの補正は、前のユーザー校正（calib.json の `user`）にその目の測れた補正
   （`pitch_c` / `pitch_lo` / `pitch_hi` が下の標準の値でない）があれば**前の値のまま**（かぶりの校正で片目が前の値を使うのと同じ）、
   なければ**標準の値**（ユーザー校正がないときと同じ: `pitch_c` が `[0, 0, 0]`、
@@ -677,15 +685,27 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   「Calibrated (Right eye: using the standard correction for looking down)」／「Calibrated (Right eye: keeping the previous correction
   for looking down)」）、`state` は `idle`、`calib_state` の 2 は立つ。
   左右の差の警告は、このときは細めだけ比べる（「…にしたよ）。注意: 左右の差が大きい [細め 0.27]」）。calib_result.json の
-  `look_down_default` が `[左, 右]` で、標準の値にした目を、`look_down_previous` が前の値のままにした目を言う。**細めが取れなかった目（細めのフレームが足りない、浅い、閉じたときより狭すぎる）や瞳が見えない目が
+  `look_down_default` が `[左, 右]` で、標準の値にした目を、`look_down_previous` が前の値のままにした目を言う。**細めが取れなかった目（細めのフレームが足りない、浅い）や瞳が見えない目が
   あれば、今までどおり失敗**（もう片目の下を見る段が通っていても。`message` も今までと同じ）。片目だけの細めは保存しない
   （アバターの片目だけが細まるのを避けるため。細めはやり直せば取れることが多い）
+- **`calib user` で細めが閉じたときより狭すぎた目（`f_sq` が -0.5 未満）があっても、失敗にしない**。強く細めると閉じた判定になり
+  （#54: 細めの段の 91〜100% が閉じた判定、Valve の開きは 0.02〜0.26）、下まぶたが押し上がって、力を抜いて閉じた目より線が近く測れる
+  （右目の線の間が細めで 14 px、閉じたときは 43 px。`f_sq` は流し直しで -0.63、本番の 3 回で -2.66・-3.12）。やり直しても同じになりやすい。
+  その目の細めは前のユーザー校正の値（その目の `f_sq` / `sq_depth`。`sq_depth` があるとき＝測れた細めのときだけ）、なければ
+  標準の値（`f_sq` 0.31、`sq_depth` なし）にし、
+  下を見たときの補正はこの校正の値（取れなければ上のとおり）で保存する。もう片目はふだんどおり。`message` は
+  「校正できた（右目は細めが強すぎて閉じた目と区別できなかったので、細めは標準の値にしたよ）」／「…細めは前の値を使うよ」（両目が同じなら
+  「両目とも…」。下を見たときの補正の文が続くときは「。」でつなぐ。英語「Calibrated (Right eye: squinted too hard to tell from a closed eye,
+  using the standard squint)」／「…, keeping the previous squint)」）。左右の差の警告は、細めを測れた目どうしでだけ細めを比べる
+  （「注意: 左右の差が大きい [下を見たとき 0.30]」）。calib_result.json の `squint_default` / `squint_previous`（`[左, 右]`）と
+  status.json の `user_squint_default` / `user_squint_previous` がその目を言う
 - やり直しになる場合（`state` が `error` になり、`message` に理由）: `calib wear` は両目とも失敗したとき、`calib user` は
-  どちらかの目で次のどれかが起きたとき: 瞳が見えない、細めが測れない・浅い（閉じ〜普段の 85% 以上）、細めが閉じたときより
-  狭すぎる（`f_sq` が -0.5 未満。「右目の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）[f_sq -0.78]」、英語
-  「Right eye: the squint was narrower than the closed eye (try again without closing it) [f_sq -0.78]」。このとき細めは、目が閉じたと
-  読まれるまでに 1 / (1 − f_sq) = 0.67 までしか上がらない。通ったユーザー校正 19 回の `f_sq` は -0.25〜0.71 で、0 未満は 2 回〔-0.25・-0.22。
-  かぶりの校正の閉じた開きが少し高い〕。-0.5 未満は失敗した回と録画の流し直しの -0.78・-0.88・-1.47 だけ）、Valve の視線がない
+  どちらかの目で次のどれかが起きたとき: 瞳が見えない、細めが測れない・浅い（閉じ〜普段の 85% 以上）、Valve の視線がない
+  （細めが閉じたときより狭すぎる目〔`f_sq` が -0.5 未満〕は、上のとおり失敗にしない。ほかの目の理由で失敗するときは、その目の
+  「右目の細めが閉じたときより狭かった（もう一度、目を閉じずに細めてね）[f_sq -0.78]」〔英語「Right eye: the squint was narrower than the
+  closed eye (try again without closing it) [f_sq -0.78]」〕も並ぶ。そのまま使うと細めは、目が閉じたと読まれるまでに 1 / (1 − f_sq) = 0.67
+  までしか上がらない。通ったユーザー校正 19 回の `f_sq` は -0.25〜0.71 で、0 未満は 2 回〔-0.25・-0.22。かぶりの校正の閉じた開きが少し高い〕。
+  -0.5 未満は失敗した回と録画の流し直しの -0.78・-0.88・-1.47、#54 の -0.63・-2.66・-3.12 だけ）
   （下を見たときの補正だけが取れなかった目は、上のとおり失敗にしない。ほかの目の理由で失敗するときは、`message` にその目の理由も今までどおり並ぶ）。
   **両目を調べてから言う**: 両目とも同じ理由なら「両目の…」、違えば目ごとの文を「。」でつなぐ。例:
   - 「両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]」（普段の段のフレームのうち瞳が見えた数）
@@ -706,7 +726,8 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   settings.json で `"dev": true` のときだけ、録画と同じ形式で映像も残す（約 0.5 GB / 回、meta.txt に `images=kept`）。
   中身は `calib_result.json`（`ok`・`failed_eye`〔wear のときの `calib_failed_eye`。途中で止めたら `""`。user ではいつも `""`〕・
   user のときだけ `look_down_default`〔`[左, 右]` の bool。下を見たときの補正を標準の値にして通した目。失敗・途中で止めたら `[false, false]`〕と
-  `look_down_previous`〔同じ形。下を見たときの補正を前のユーザー校正の値のままにして通した目〕・`message`・目ごとの中間値: 虹彩の半径、普段/見開きの skin_up と見開きの幅、普段/閉じの開き、
+  `look_down_previous`〔同じ形。下を見たときの補正を前のユーザー校正の値のままにして通した目〕と `squint_default` / `squint_previous`
+  〔同じ形。細めを標準の値／前の値にして通した目〕・`message`・目ごとの中間値: 虹彩の半径、普段/見開きの skin_up と見開きの幅、普段/閉じの開き、
   普段の段で瞳が見えたフレーム数 `normal_frames_with_pupil` とそのうち上まぶたの線も取れた数 `normal_frames_with_lid_line`、
   user なら細めの深さや下を見たときの開きの比、それぞれのしきい値・できた校正の値）と
   `calib_samples.csv`（当てはめに使った各フレーム: 目・時刻・段・瞳の有無・skin_up・開き・瞳孔・視線・下まぶた・R、
@@ -776,7 +797,7 @@ GaussianBlur とオープニングは OpenCV とビット単位で同じ（`visi
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_A.json --calib-block 4 --out test_A_B.csv
 # 校正なし: 1 回目で基準線を覚えてから最初から流し直す（セッションの前に 30 秒かぶっていたことにする）
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_with_history.json --prewarm --out test_auto.csv
-# 評価用のつまみ: --no-track（追従しない）、--no-gaze-drop（下を見たときの保持なし）、--no-edge-hold（枠の端で見失った瞳も閉じたにする。CSV の edge_held 列で保持したフレーム）、--no-ext-search（枠の外を探さない。CSV の search_x_min 列が広げた左端、ext 列が 1 なら広げた探索の瞳、2 なら取らなかった瞳）、--wide-curve 0.25,0.5（見開きの曲線）、--widen-sensitivity 0.8（感度で曲線を決める）、--lid-veto（まぶたの拒否権あり。既定はライブと同じでなし。--no-lid-veto は古い評価スクリプト用に残してある。CSV の veto_p 列が CNN の P(open)〔回さなかったフレームは空〕、vetoed 列が 1 なら拒否権を出したフレーム）
+# 評価用のつまみ: --no-track（追従しない）、--no-gaze-drop（下を見たときの保持なし）、--no-edge-hold（枠の端で見失った瞳も閉じたにする。CSV の edge_held 列で保持したフレーム）、--no-ext-search（枠の外を探さない。CSV の search_x_min 列が広げた左端、ext 列が 1 なら広げた探索の瞳、2 なら取らなかった瞳、3 なら暗い側の探索〔枠の耳側が暗い装着で、他の探索で瞳が見つからなかったフレームだけ、その明るさに合わせた段差でもう一度探す〕の瞳、4 ならそこで見つけたけど取らなかった瞳）、--wide-curve 0.25,0.5（見開きの曲線）、--widen-sensitivity 0.8（感度で曲線を決める）、--lid-veto（まぶたの拒否権あり。既定はライブと同じでなし。--no-lid-veto は古い評価スクリプト用に残してある。CSV の veto_p 列が CNN の P(open)〔回さなかったフレームは空〕、vetoed 列が 1 なら拒否権を出したフレーム）
 python eval_live.py DIR   # DIR の test_r*_t*.csv を xwear.py と同じ指標で集計（フレームレートは t_cam から測る）
 # 遅いカメラのふり: 15 fps の刻みにいちばん近いフレームだけを使う（90 fps の録画なら 6 枚に 1 枚。目の画像はコピーしない）
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --resample 15 --user-calib calib_A.json --calib-block 4 --out test_A_B_15.csv

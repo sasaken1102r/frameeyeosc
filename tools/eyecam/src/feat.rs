@@ -152,10 +152,35 @@ pub struct Search {
     /// The prototype's rules (`--compat`): left edge fixed at X_MIN, blobs touching it dropped, only the best blob
     /// refined, no second try without the prior.
     pub legacy: bool,
+    /// The dim-side search, for a wear whose pupil sits in the dim part of the picture (`DimSearch`); None: none.
+    pub dim: Option<DimSearch>,
+}
+
+/// The last search when nothing else found a pupil, for a wear where the part of the picture around the temporal edge
+/// is much dimmer than the eye as a whole (`Levels::dim_side`): the blobs are looked for once more from `x0`, with the
+/// grey steps (the blob thresholds and the step the pupil's rays need) scaled to how bright that part is; a pupil it
+/// finds must have its small-x edge left of `x_min` and pass `check`. Issue 52's pupils from it had that edge at x
+/// 156 / 175 (left / right, medians; 99% left of 181 / 194, with x_min 180 / 186). Allowed up to x_min + 20, it also
+/// took pupils with that edge at 195..198 on the developer's 2026-10-09 18:16 user calibration, 0.6 x the size the
+/// usual passes found for the same pupil on the frames around them.
+/// Issue 52 (prescription inserts at a low IPD, 2026-11-07): the eye sat at the small-x edge of the lit picture, the
+/// pupil at x 160..215 where the column means are 25..50 against 165..195 over the sclera. The iris on the pupil's
+/// temporal side read 18..22 against the pupil's 9..12, under the first blob threshold (the window's dark level + 14):
+/// the pupil merged with the shaded iris and the shading into one blob that touched the window's top and bottom, or, cut
+/// by the window, none of its rays pointing left found an edge (EDGE_LEFT_SHARE). The pupil was found in 8% / 6% (left /
+/// right) of the open steps' frames, the warm-up never finished in 84 s, and a closed eye did not read closed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DimSearch {
+    /// The left edge of its window (the right edge is the lens edge).
+    pub x0: f64,
+    /// The levels of the dim part of the picture.
+    pub levels: Levels,
+    /// What a pupil it finds must be like.
+    pub check: ExtCheck,
 }
 
 impl Search {
-    pub const LEGACY: Search = Search { x_min: X_MIN, find_x_min: X_MIN, ext: ExtCheck::ANY, legacy: true };
+    pub const LEGACY: Search = Search { x_min: X_MIN, find_x_min: X_MIN, ext: ExtCheck::ANY, legacy: true, dim: None };
 
     /// The live rules with this left edge.
     pub fn live(x_min: f64) -> Search {
@@ -166,7 +191,7 @@ impl Search {
     pub fn live_ext(x_min: f64, find_x_min: f64, ext: ExtCheck) -> Search {
         let x_min = x_min.clamp(X_MIN_LO, X_MIN);
         let find_x_min = if find_x_min.is_finite() { find_x_min.clamp(X_MIN_LO, x_min) } else { x_min };
-        Search { x_min, find_x_min, ext, legacy: false }
+        Search { x_min, find_x_min, ext, legacy: false, dim: None }
     }
 }
 
@@ -206,6 +231,10 @@ pub struct Diag {
     pub extended: bool,
     /// ... or it found one `Search::ext` refused (not like the open pupil, or off its track).
     pub ext_refused: bool,
+    /// The pupil came from the dim-side search (`Search::dim`) ...
+    pub dim: bool,
+    /// ... or it found one its check refused.
+    pub dim_refused: bool,
 }
 
 impl Default for Diag {
@@ -224,6 +253,8 @@ impl Default for Diag {
             ext_tried: false,
             extended: false,
             ext_refused: false,
+            dim: false,
+            dim_refused: false,
         }
     }
 }
@@ -361,6 +392,14 @@ const LEVELS_SPAN_DIM: f64 = 116.0;
 const LEVELS_DARK_LIFT: f64 = 12.0;
 /// The smallest contrast factor (a picture with almost nothing in it does not drive the steps to zero).
 const LEVELS_K_MIN: f64 = 0.2;
+/// The dim-side search (`DimSearch`) runs for a wear whose column means from the extended search's furthest edge to
+/// DIM_SIDE_PX right of `x_min` give under DIM_SIDE_SHARE of the picture's contrast factor (`Levels::dim_side`): issue
+/// 52's recording 0.27 / 0.20 (left / right, the picture's factor 1). The developer's recordings give 0.26..0.28 too
+/// (the temporal shading ends at about the same column; there the pupil sits further in, where the picture is lit), so
+/// the search runs for them as well, but only on frames where nothing else found a pupil, and only takes a pupil that
+/// reaches left of `x_min` (`DimSearch`). A picture lit evenly up to its temporal edge has no dim side.
+pub const DIM_SIDE_PX: f64 = 20.0;
+const DIM_SIDE_SHARE: f64 = 0.6;
 
 /// How the camera sees this wear against the pictures the fixed levels were set on, from the same column means as
 /// `occluder_x`: the darkest column and the brightest around the iris. A dimmer picture (a prescription lens insert
@@ -416,6 +455,21 @@ impl Levels {
             (dim + t * (1.0 - dim)).clamp(LEVELS_K_MIN, 1.0)
         };
         if k < 1.0 || dark > LEVELS_DARK_LIFT { Levels { k, dark, moved: true } } else { Levels::AS_BUILT }
+    }
+
+    /// The levels of the part of the picture from column `x0` to `x1` (`col_mean` as for `from_profile`): the darkest
+    /// column mean of the whole picture, and the brightest in that part as its bright end. Some only where that part's
+    /// contrast factor is under DIM_SIDE_SHARE of this one's (`DimSearch`).
+    pub fn dim_side(&self, col_mean: &[f64], x0: f64, x1: f64) -> Option<Levels> {
+        let n = col_mean.len();
+        let (x0, x1) = ((x0.max(0.0) as usize).min(n), (x1.max(0.0) as usize).min(n));
+        if x1 <= x0 {
+            return None;
+        }
+        let dark = col_mean.iter().copied().fold(f64::INFINITY, f64::min);
+        let bright = col_mean[x0..x1].iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let k = ((bright - dark) / LEVELS_SPAN_TYPICAL).clamp(LEVELS_K_MIN, 1.0);
+        (k < DIM_SIDE_SHARE * self.k).then_some(Levels { k, dark, moved: true })
     }
 
     /// A grey level set on the developer's pictures, in this picture.
@@ -625,6 +679,7 @@ impl Extractor {
         // The first pass's rays stop at the columns it always had (`refine_pupil`), also when the opening is worked
         // out further left for the extended search: the columns from x_min - OPEN_BEFORE + 8 on are the same either
         // way, so the search inside x_min, the lids and the box come out as without the extended search.
+        let dim = search.dim.filter(|_| !search.legacy);
         let (open_x0, opf_x0, first_opf_x0) = if search.legacy {
             (OPEN_X0, OPF_X0, OPF_X0)
         } else {
@@ -632,8 +687,12 @@ impl Extractor {
             let x0_ext = (search.find_x_min as usize).saturating_sub(OPEN_BEFORE);
             (x0_ext, x0_ext + 8, x0 + 8)
         };
-        vision::open9_cols(img, W, H, open_x0, W, &mut self.morph, &mut self.op);
-        vision::gauss_u8(&self.op, W, H, &self.k1, Rect { x0: opf_x0, y0: 0, x1: W, y1: H }, &mut self.gauss, &mut self.opf);
+        // The dim-side search's window may start left of the extended one's: the opening reaches it too (the columns
+        // the other passes use come out the same).
+        let dim_open_x0 = dim.map_or(open_x0, |d| open_x0.min((d.x0.max(0.0) as usize).saturating_sub(OPEN_BEFORE)));
+        vision::open9_cols(img, W, H, dim_open_x0, W, &mut self.morph, &mut self.op);
+        let gauss_x0 = opf_x0.min(dim_open_x0 + 8);
+        vision::gauss_u8(&self.op, W, H, &self.k1, Rect { x0: gauss_x0, y0: 0, x1: W, y1: H }, &mut self.gauss, &mut self.opf);
         self.opf_x0 = first_opf_x0;
         f.diag.x_min = search.x_min;
         let p = if search.legacy {
@@ -667,6 +726,25 @@ impl Extractor {
                 p = self.refine_candidates(xmax, None, Some((search.x_min + EXT_EDGE_PX, search.ext)), &mut d);
                 f.diag.extended = p.is_some();
                 f.diag.ext_refused = d.ext_refused;
+            }
+            if p.is_none()
+                && !search.ext.closing
+                && let Some(d) = dim
+            {
+                // Nothing anywhere: once more on the dim side, with the grey steps of that part of the picture (what
+                // this pass saw stays out of the diagnosis too).
+                // Only a pupil whose small-x edge is left of x_min is taken, and the blobs are looked for only as far
+                // right as such a pupil reaches: further in, the usual passes' levels are the ones that hold.
+                self.opf_x0 = dim_open_x0 + 8;
+                let levels = std::mem::replace(&mut self.levels, d.levels);
+                let edge = search.x_min;
+                let x_hi = (edge + 2.0 * d.check.a.1.min(EXT_MAX_A) + 4.0).min(xmax);
+                let mut dd = Diag::default();
+                self.find_pupil_blob(d.x0, x_hi, prev, &mut dd);
+                p = self.refine_candidates(xmax, None, Some((edge, d.check)), &mut dd);
+                self.levels = levels;
+                f.diag.dim = p.is_some();
+                f.diag.dim_refused = dd.ext_refused;
             }
             p
         };
@@ -1678,6 +1756,71 @@ mod tests {
         // The extended edge is never right of x_min, nor left of X_MIN_LO
         assert_eq!(Search::live_ext(186.0, 200.0, ExtCheck::ANY).find_x_min, 186.0);
         assert_eq!(Search::live_ext(110.0, 80.0, ExtCheck::ANY).find_x_min, X_MIN_LO);
+    }
+
+    /// Issue 52's picture: the eye at the small-x edge of the lit part, the pupil (9) in the dim part with its iris
+    /// there only 10 levels brighter (19), dark shading (8) further out, and the sclera and skin bright from x 230 on.
+    fn dim_side_eye(px: f64, py: f64, pr: f64) -> Vec<u8> {
+        let mut img = vec![0u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let d = (x as f64 - px).hypot(y as f64 - py);
+                let lit = x >= 230;
+                let mut v = if x < 150 { 8.0 } else if lit { 130.0 } else { 28.0 };
+                if d < 50.0 {
+                    v = if lit { 60.0 } else { 19.0 };
+                }
+                if d < pr {
+                    v = 9.0;
+                }
+                if x >= 350 {
+                    v = 4.0;
+                }
+                img[y * W + x] = v as u8;
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn the_dim_side_search_finds_a_pupil_in_the_dim_part_of_the_picture() {
+        let img = dim_side_eye(198.0, 200.0, 17.0);
+        let cm = column_means(&img);
+        let levels = Levels::for_profile(&cm);
+        let dim = levels.dim_side(&cm, 162.0, 206.0).expect("the dim side is much dimmer than the picture");
+        assert!(dim.k < 0.2 + 1e-9 && dim.moved, "{dim:?} {levels:?}");
+        // The usual passes: the pupil merges with the shaded iris and the shading
+        let mut ex = Extractor { search: Search::live_ext(186.0, 162.0, ExtCheck::ANY), ..Extractor::default() };
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        assert!(p.is_none() && f.diag.ext_tried && !f.diag.dim, "{:?}", f.diag);
+        // With the dim side's levels: found, and only by that pass; the lids and the box still from x_min
+        ex.search.dim = Some(DimSearch { x0: 162.0, levels: dim, check: ExtCheck::ANY });
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        let p = p.expect("pupil");
+        assert!((p.cx - 198.0).abs() < 1.5 && (p.cy - 200.0).abs() < 1.5 && (p.a - 17.0).abs() < 1.5, "{p:?}");
+        assert!(f.ok_pupil && f.diag.dim && !f.diag.extended && f.diag.x_min == 186.0, "{:?}", f.diag);
+        assert_eq!(ex.levels, Levels::AS_BUILT, "the levels go back after the pass");
+        // Refused by its check, or Valve says the eye is closing: not found
+        ex.search.dim = Some(DimSearch { x0: 162.0, levels: dim, check: ExtCheck { a: (30.0, 40.0), ..ExtCheck::ANY } });
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        assert!(p.is_none() && !f.diag.dim && f.diag.dim_refused, "{:?}", f.diag);
+        ex.search.dim = Some(DimSearch { x0: 162.0, levels: dim, check: ExtCheck::ANY });
+        ex.search.ext.closing = true;
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        assert!(p.is_none() && !f.diag.dim);
+        // A pupil the usual passes find comes out exactly as without the dim-side search
+        let inside = synthetic_eye(250.0, 200.0, 22.0);
+        let mut a = Extractor { search: Search::live_ext(186.0, 162.0, ExtCheck::ANY), ..Extractor::default() };
+        let mut b = Extractor { search: Search::live_ext(186.0, 162.0, ExtCheck::ANY), ..Extractor::default() };
+        b.search.dim = Some(DimSearch { x0: 162.0, levels: dim, check: ExtCheck::ANY });
+        let (fa, pa) = a.extract(&inside, 347.0, None, None, None);
+        let (fb, pb) = b.extract(&inside, 347.0, None, None, None);
+        assert!(pb.is_some() && !fb.diag.dim);
+        assert_eq!(format!("{fa:?} {pa:?}"), format!("{fb:?} {pb:?}"));
+        // The picture's own levels where the part around the edge is as bright as the rest: no dim-side search
+        let even = synthetic_eye(250.0, 200.0, 22.0);
+        let cm = column_means(&even);
+        assert_eq!(Levels::for_profile(&cm).dim_side(&cm, 162.0, 206.0), None);
     }
 
     #[test]

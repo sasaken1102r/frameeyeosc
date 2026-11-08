@@ -1960,8 +1960,8 @@ fn fit_user_eye(
     Ok(UserEye { params, delta: (ap_down - w.ap_n, ap_sq - w.ap_n), issue, look_down_failed, squint_deep, settles })
 }
 
-/// Which samples are look-down frames whose lids were measured at a pupil seen in that look-down step (from
-/// STEP_DELAY before its first labelled frame on). A frame without the pupil has its lids measured where the pupil
+/// Which samples are look-down frames whose lids were measured at a pupil seen in that look-down step (from its first
+/// labelled frame on, STEP_DELAY into the step: in the step's first moments the eye may still be up). A frame without the pupil has its lids measured where the pupil
 /// was last seen: after a look up whose pupil was found and none caught on the way down, that is where the eye
 /// looked up, and the lines found there are no look down's (issue 54, the reporter's left eye with the look up's
 /// pupil from the dim-side search: the lower lid at 241.6 px against 249.9 px straight ahead, and the eye read
@@ -1972,7 +1972,7 @@ fn look_down_fresh(s: &[Sample]) -> Vec<bool> {
     s.iter()
         .map(|x| {
             if x.label != prev {
-                start = x.t - STEP_DELAY;
+                start = x.t;
                 prev = x.label;
             }
             x.label == Label::LookDown && x.anchor_t >= start
@@ -4063,10 +4063,15 @@ mod tests {
         assert_eq!(err, format!("左目{MSG_LOOK_DOWN_UNSEEN}[0/200、{need} 必要]"));
         let out = fit_user_settled(&[user(200), user(0)], &[w, w], None).unwrap();
         assert_eq!(out.look_down_default, [true, false]);
-        // A pupil seen in the STEP_DELAY before the first labelled frame counts as the step's.
-        let mut early = user(0);
-        early.iter_mut().filter(|x| x.label == Label::LookDown).for_each(|x| x.anchor_t = -0.5);
-        assert!(fit_user(&[early, user(0)], &[w, w], None, true).is_ok());
+        // A pupil seen from the first labelled frame on counts as the step's; one seen before it (the step's first
+        // moments, the eye maybe still up) does not.
+        let at = |anchor: f64| {
+            let mut u = user(0);
+            u.iter_mut().filter(|x| x.label == Label::LookDown).for_each(|x| x.anchor_t = anchor);
+            u
+        };
+        assert!(fit_user(&[at(0.0), user(0)], &[w, w], None, true).is_ok());
+        assert!(fit_user(&[at(-0.3), user(0)], &[w, w], None, true).unwrap_err().contains(MSG_LOOK_DOWN_UNSEEN));
     }
 
     /// A grey frame with the lens-edge band, and a dark disc (the pupil) if `pupil`.

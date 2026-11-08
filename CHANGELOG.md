@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.3-beta.1 (2026-11-08)
+
+Only re-centering and eye fit change here; nothing that is sent does. Right after the headset went on, while the eye cameras were still getting ready, re-centering could fail when SteamOS read an open eye stuck closed (#43). An eye whose pupil the camera clearly sees now counts as open then.
+
+日本語: 今回変わるのは再センタリングと目を合わせるときだけで、送る値は変わりません。ヘッドセットをかぶってすぐ、目のカメラの準備ができる前に、SteamOS が開いている目を閉じたまま読んでいると、再センタリングが通らないことがありました（#43）。そのときも、カメラが瞳をはっきり見ている目は開いている扱いにします。
+
+- Fixed (#43): in a gaze capture (re-center and "Fit my eyes"), an eye SteamOS reads below 0.3 counts as open once the eye camera has clearly seen its pupil (not closed, confidence above 0.5) for longer than a blink, even before the wear has the baseline the camera's eyelid waits for (about 35 s after putting the headset on; 74 s in the reported recording). Before, such an eye only counted once the camera's eyelid was in use
+  - A reading of 0.3 or more for up to 0.2 s in between doesn't start the wait over, and a normal blink never counts
+  - In the reported recording, the share of samples a re-center could use went from 46 % to 94 %. In the developer's recordings nothing changes, and what is sent is the same byte for byte
+  - It doesn't help while the stuck eye's own camera is still in its first 30 s
+- `frameeyeosc --replay` says how much of a recording a gaze capture could use, and how much of it only by the pupil
+- Thanks to @koma-cute for the logs (#43)
+
 ## 0.10.2 (2026-11-08)
 
 With prescription inserts and a narrow IPD, eyecam could miss the pupil and read open eyes as closed; it now also looks in the darker part of the picture (#52). Squinting very hard could make user calibration fail; such an eye now keeps its previous or the standard squint (#54). Thanks @fujieda1237!

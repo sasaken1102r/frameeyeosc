@@ -1305,6 +1305,8 @@ impl EyeEngine {
         let cal_q = if ready { cal_q } else { 0.3 };
         let (b_n, b_w) = if ready { (b_px / r, (b_px + step_px) / r) } else { (f64::NAN, f64::NAN) };
 
+        // frameeyeosc's CAMERA_PUPIL_SEEN_WARMUP / CAMERA_WARMUP_CAP (src/main.rs) count an eye as open by its pupil
+        // from these values (0.3 above, the eyelid quarters, the halving): change them together.
         let lids = f.upper_skin_y.is_finite() as u8 as f64 * 0.25 + f.lower_y.is_finite() as u8 as f64 * 0.25;
         let seen = if f.ok_pupil { 0.5 * f.pupil_vis } else if closed { 0.5 } else { 0.0 };
         let confidence = clamp01((seen + lids) * cal_q * if r_ready { 1.0 } else { 0.5 });

@@ -312,8 +312,10 @@ const CAMERA_PUPIL_SEEN: f32 = 0.5;
 // (eyecam-rec's baseline needs both eyes' levels): eyecam-rec then takes 0.3 for that eye's factor for its levels, so
 // its confidence is at most 0.3 x (half the share of the pupil seen + a quarter per eyelid line found), never above
 // CAMERA_PUPIL_SEEN, and an eye stuck shut on the eye server never counted by its pupil just when it needed to (issue
-// 43: a user's recordings on 0.10.3-beta.1). Above this takes both eyelid lines and more than about two thirds of the
-// pupil seen (0.25-0.30); both lines without the pupil read 0.15, and an eye whose pupil size has not settled yet
+// 43: a user's recordings on 0.10.3-beta.1). During the eye's own warm-up, above this takes both eyelid lines and more
+// than about two thirds of the pupil seen (0.25-0.30); after it, weaker mixes with the pupil found get there too (no
+// eyelid line and half the pupil seen at a factor of 1, for one). Both lines without the pupil read 0.15 during the
+// warm-up, and an eye whose pupil size has not settled yet
 // (eyecam-rec halves its confidence for its first 10 sizes) 0.15 at most. But an eye whose own warm-up is over reads
 // uncapped while the wear still has no baseline (the other eye's warm-up goes on, or no setup was done yet, for the
 // whole wear then), so only up to CAMERA_WARMUP_CAP counts by this, and above that CAMERA_PUPIL_SEEN as with a

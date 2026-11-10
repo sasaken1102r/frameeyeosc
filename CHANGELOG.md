@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.10.3-beta.2 (2026-11-10)
+
+Again only re-centering and eye fit change; nothing that is sent does. In new logs for #43, an eye SteamOS read stuck closed still didn't count as open while its own eye camera was in its first 30 s of getting ready, as the camera is less sure of everything then. Such an eye now counts once the camera sees its pupil, even then.
+
+日本語: 今回も変わるのは再センタリングと目を合わせるときだけで、送る値は変わりません。#43 の新しいログで、SteamOS が閉じたまま読んでいる目は、その目のカメラが最初の 30 秒の準備中だと、まだ開いている扱いになっていませんでした（準備中のカメラは自信を低めに出すため）。その間も、カメラが瞳を見ていれば開いている扱いにします。
+
+- Fixed (#43): before the wear has its baseline, a gaze capture also counts an eye as open by its pupil when the camera finds the pupil while still getting ready, with the lower confidence the camera gives then. Once the baseline is there, it works as in beta.1
+  - An open eye whose pupil the camera doesn't find never counts this way
+  - In the reporter's two new recordings, the share of samples a re-center could use went from 67 % to 77 % and from 27 % to 46 %. In the second, the camera itself often reads the left eye as closed, which this doesn't change. In the developer's recordings nothing changes, and what is sent is the same byte for byte
+- Thanks to @koma-cute for the new logs (#43)
+
 ## 0.10.3-beta.1 (2026-11-08)
 
 Only re-centering and eye fit change here; nothing that is sent does. Right after the headset went on, while the eye cameras were still getting ready, re-centering could fail when SteamOS read an open eye stuck closed (#43). An eye whose pupil the camera clearly sees now counts as open then.

@@ -299,14 +299,25 @@ const CAMERA_GAP_HOLD: f64 = 0.2;
 // eyecam-rec learns that baseline about 35 s after the headset goes on, once both eyes have one; in issue 43's second
 // recording it took 74 s (the other eye's pupil was hard to find early), and all that time the eye server read the
 // open left eye 0.000 and no re-center could go through. Clearly seen is not closed and a confidence above
-// CAMERA_PUPIL_SEEN. eyecam-rec's confidence is half for the pupil (as much of it as was seen; all of it for a closed
-// eye) and a quarter for each eyelid line it found, times factors of at most 1 for how settled that eye's own levels
-// are (0.7-1 once learnt; 0.3 during its own warm-up, the first 30 s of usable frames, so never above this then): an
-// open eye whose pupil it did not find reads 0.5 at most. In the reporter's recording the frame before each "closed"
-// read exactly 0.5, the open eye otherwise 0.84-1.0. Not with eyecam-rec's eyelid veto on (off by default), though: a
-// frame whose "closed" the veto overturned keeps the confidence of a closed eye, high without a pupil, so above this
-// may not mean the pupil was found then.
+// CAMERA_PUPIL_SEEN (CAMERA_PUPIL_SEEN_WARMUP while the wear has no baseline). eyecam-rec's confidence is half for the
+// pupil (as much of it as was seen; all of it for a closed eye) and a quarter for each eyelid line it found, times
+// factors of at most 1 for how settled that eye's own levels are (0.7-1 once learnt; 0.3 during its own warm-up, the
+// first 30 s of usable frames, so never above this then): an open eye whose pupil it did not find reads 0.5 at most.
+// In the reporter's recording the frame before each "closed" read exactly 0.5, the open eye otherwise 0.84-1.0. Not
+// with eyecam-rec's eyelid veto on (off by default), though: a frame whose "closed" the veto overturned keeps the
+// confidence of a closed eye, high without a pupil, so above this may not mean the pupil was found then.
 const CAMERA_PUPIL_SEEN: f32 = 0.5;
+// CAMERA_PUPIL_SEEN while the wear has no baseline (Live::baseline), as while an eye is still in its own warm-up
+// (eyecam-rec's baseline needs both eyes' levels): eyecam-rec then takes 0.3 for that eye's factor for its levels, so
+// its confidence is at most 0.3 x (half the share of the pupil seen + a quarter per eyelid line found), never above
+// CAMERA_PUPIL_SEEN, and an eye stuck shut on the eye server never counted by its pupil just when it needed to (issue
+// 43: a user's recordings on 0.10.3-beta.1). Above this takes both eyelid lines and more than about two thirds of the
+// pupil seen (0.25-0.30); both lines without the pupil read 0.15, and an eye whose pupil size has not settled yet
+// (eyecam-rec halves its confidence for its first 10 sizes) 0.15 at most. This goes by that formula in eyecam's live.rs
+// (EyeEngine::process_open), so the two have to change together. An eye whose own warm-up is over reads uncapped while
+// the wear still has no baseline (the other eye's warm-up goes on, or no setup was done yet): both eyelid lines
+// without the pupil then read 0.35-0.5 and count here too.
+const CAMERA_PUPIL_SEEN_WARMUP: f32 = 0.25;
 const VALVE_WIDEN_FADE: f32 = 0.1;
 // An eye turned far outward (toward the ear: the left eye looking left, the right eye looking right) takes its pupil
 // into the dark temporal side of the eye camera's picture, and eyecam-rec read such an open eye as closed: over eleven
@@ -1249,7 +1260,10 @@ impl Smoother {
         let camera = camera.filter(|_| settings.camera_lids);
         std::array::from_fn(|eye| {
             let fresh = camera.filter(|live| live.fresh[eye]);
-            let seen = fresh.map(|live| !live.eyes[eye].closed && live.eyes[eye].confidence > CAMERA_PUPIL_SEEN);
+            let seen = fresh.map(|live| {
+                let threshold = if live.baseline() { CAMERA_PUPIL_SEEN } else { CAMERA_PUPIL_SEEN_WARMUP };
+                !live.eyes[eye].closed && live.eyes[eye].confidence > threshold
+            });
             let frame = fresh.map_or(0.0, |live| live.frame_ns[eye] as f64 / 1e9);
             let low = data.openness[eye] < capture::OPEN_FLOOR;
             let grace = CAMERA_DOUBT_GRACE.max(CAMERA_DOUBT_FRAMES * frame);
@@ -1680,7 +1694,8 @@ impl CameraGap {
     }
 }
 
-/// One eye seen open by its pupil alone (CAMERA_PUPIL_SEEN), for a gaze capture only (Sample::pupil_open): the camera
+/// One eye seen open by its pupil alone (CAMERA_PUPIL_SEEN; CAMERA_PUPIL_SEEN_WARMUP while the wear has no baseline),
+/// for a gaze capture only (Sample::pupil_open): the camera
 /// has clearly seen the pupil while the eye server read the eye below the capture's open floor for longer than a blink,
 /// the same CAMERA_DOUBT_GRACE (at least CAMERA_DOUBT_FRAMES of the camera's frames) the camera's eyelid waits for in
 /// Smoother::check_lids, so the start of a blink the camera is late to see closed doesn't count, in any eye. A reading
@@ -9388,8 +9403,8 @@ mod tests {
         for (with, without) in sent.iter().zip(&without) {
             assert_eq!((with.lids, with.gaze, with.gaze_held), (without.lids, without.gaze, without.gaze_held));
         }
-        // The camera's "closed", a confidence no higher than an open eye's without its pupil found (CAMERA_PUPIL_SEEN),
-        // stale values, or camera_lids off: never
+        // The camera's "closed", a confidence no higher than CAMERA_PUPIL_SEEN_WARMUP (no baseline yet), stale values,
+        // or camera_lids off: never
         let stale = |_: usize| {
             let mut live = seen(0.97, false);
             live.fresh[0] = false;
@@ -9398,17 +9413,17 @@ mod tests {
         let off = Settings { camera_lids: false, ..settings.clone() };
         let never: [Vec<Sample>; 4] = [
             run(&settings, &stuck, &|_| Some(seen(0.97, true))),
-            run(&settings, &stuck, &|_| Some(seen(CAMERA_PUPIL_SEEN, false))),
+            run(&settings, &stuck, &|_| Some(seen(CAMERA_PUPIL_SEEN_WARMUP, false))),
             run(&settings, &stuck, &stale),
             run(&off, &stuck, &|_| Some(seen(0.97, false))),
         ];
         for (case, sent) in never.iter().enumerate() {
             assert!(sent.iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]), "{case}");
         }
-        // A blink the camera sees closed (10 samples, the pupil lost the sample before) doesn't count, and it goes on
-        // right after it
+        // A blink the camera sees closed (10 samples, the pupil lost the sample before: both eyelid lines alone, 0.15
+        // without a baseline) doesn't count, and it goes on right after it
         let blink = |i: usize| (100..110).contains(&i);
-        let lost = |i: usize| Some(seen(if i == 99 { 0.5 } else { 0.97 }, blink(i)));
+        let lost = |i: usize| Some(seen(if i == 99 { 0.15 } else { 0.97 }, blink(i)));
         let sent = run(&settings, &stuck, &lost);
         assert!(sent[90..99].iter().all(Sample::capture_usable));
         assert!(sent[99..110].iter().all(|sample| !sample.capture_usable()));
@@ -9467,6 +9482,51 @@ mod tests {
         };
         let sent = run(&settings, &stuck, &slow);
         assert!(!sent[46].capture_usable() && sent[49].capture_usable());
+    }
+
+    #[test]
+    fn an_eye_stuck_shut_counts_in_a_gaze_capture_by_its_pupil_during_the_cameras_warm_up() {
+        // Issue 43, a user's recordings on 0.10.3-beta.1: before the wear's baseline the camera's confidence for an eye
+        // still in its warm-up is 0.3 at most (CAMERA_PUPIL_SEEN_WARMUP), with the pupil seen clearly 0.25-0.30
+        let settings = camera_settings();
+        let seen = |confidence: f32, calib_state: u32| {
+            let mut live = camera(0.75, 0.0);
+            live.calib_state = calib_state;
+            for eye in &mut live.eyes {
+                eye.confidence = confidence;
+            }
+            live
+        };
+        let run = |camera: Live| {
+            let mut smoother = Smoother::new(&settings);
+            camera_samples(&settings, &mut smoother, 100.0, 3.0, |_| [0.0, 0.8], |_| Some(camera))
+        };
+        // No baseline (calibrated for this user only), the pupil seen: after the grace (27 samples), all along
+        let sent = run(seen(0.3, 2));
+        assert!(sent.iter().all(|sample| sample.lid_from == [LidFrom::EyeServer; 2]));
+        assert!(sent[..26].iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]));
+        assert!(sent[28..].iter().all(|sample| sample.capture_usable() && sample.camera_open() == [true, false]));
+        // Both eyelid lines without the pupil, or the pupil's size not settled yet (0.15 at most), or right at the
+        // line: never
+        for confidence in [0.15, CAMERA_PUPIL_SEEN_WARMUP] {
+            let sent = run(seen(confidence, 2));
+            let never = sent.iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]);
+            assert!(never, "{confidence}");
+        }
+        // With a baseline (calibrated for this wear, or learnt: calib_state bit 0 or 2) CAMERA_PUPIL_SEEN as before:
+        // 0.3 is no pupil then (the camera's eyelid takes over anyway, as for any eye it sees open)
+        for calib_state in [1, 4, 6] {
+            let pupil_open = |confidence: f32| -> Vec<[bool; 2]> {
+                run(seen(confidence, calib_state)).iter().map(|sample| sample.pupil_open).collect()
+            };
+            assert!(pupil_open(0.3).iter().all(|open| *open == [false; 2]), "{calib_state}");
+            assert!(pupil_open(0.97)[28..].iter().all(|open| *open == [true, false]), "{calib_state}");
+        }
+        // Everything sent is as without the pupil, in the warm-up too
+        let (with, without) = (run(seen(0.3, 2)), run(seen(0.0, 2)));
+        for (with, without) in with.iter().zip(&without) {
+            assert_eq!((with.lids, with.gaze, with.gaze_held), (without.lids, without.gaze, without.gaze_held));
+        }
     }
 
     #[test]

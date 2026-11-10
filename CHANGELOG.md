@@ -2,7 +2,7 @@
 
 ## 0.10.3-beta.2 (2026-11-10)
 
-Again only re-centering and eye fit change; nothing that is sent does. In new logs for #43, an eye SteamOS read stuck closed still didn't count as open while its own eye camera was in its first 30 s of getting ready, as the camera is less sure of everything then. Such an eye now counts once the camera sees its pupil, even then.
+Again only re-centering and eye fit change; nothing that is sent does. In new logs for #43, an eye SteamOS read stuck closed still didn't count as open while its own eye camera was in its first 30 s of getting ready. Such an eye now counts once the camera sees its pupil, even then.
 
 日本語: 今回も変わるのは再センタリングと目を合わせるときだけで、送る値は変わりません。#43 の新しいログで、SteamOS が閉じたまま読んでいる目は、その目のカメラが最初の 30 秒の準備中だと、まだ開いている扱いになっていませんでした（準備中のカメラは自信を低めに出すため）。その間も、カメラが瞳を見ていれば開いている扱いにします。
 

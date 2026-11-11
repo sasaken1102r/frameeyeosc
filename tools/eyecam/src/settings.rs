@@ -1,5 +1,5 @@
 //! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity`, `lid_veto` and `source` are changed
-//! from the panel (`set ...` on ctl.sock; `lid_veto` and `source` by hand too), `dev` only by hand.
+//! from the panel (`set ...` on ctl.sock; `lid_veto` and `source` by hand too), `dev` and `small_pupil` only by hand.
 
 use crate::dspsrc::Source;
 use crate::json::{self, Json};
@@ -15,6 +15,9 @@ pub struct Settings {
     pub dev: bool,
     /// The eyelid veto (`veto`): off unless switched on here (`set lid_veto`, or by hand; followed while running).
     pub lid_veto: bool,
+    /// A pupil shrunk in bright light kept from reading closed (`live::Tune::small_pupil`): on unless switched off here
+    /// by hand (followed while running). Written to the file only when off.
+    pub small_pupil: bool,
     /// Where the camera buffers come from (dspsrc::Source): auto (an installed eyecam-grab, else dsp_service) unless
     /// set (`set source`, or by hand). Read when eyecam-rec starts (--source overrides it); written to the file only
     /// when it isn't the default.
@@ -23,7 +26,13 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false, lid_veto: false, source: Source::Auto }
+        Self {
+            widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY,
+            dev: false,
+            lid_veto: false,
+            small_pupil: true,
+            source: Source::Auto,
+        }
     }
 }
 
@@ -49,6 +58,9 @@ impl Settings {
                 if let Some(Json::Bool(v)) = j.get("lid_veto") {
                     s.lid_veto = *v;
                 }
+                if let Some(Json::Bool(v)) = j.get("small_pupil") {
+                    s.small_pupil = *v;
+                }
                 if let Some(v) = j.get("source") {
                     match v.str().and_then(Source::parse) {
                         Some(source) => s.source = source,
@@ -67,13 +79,15 @@ impl Settings {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let tmp = path.with_extension("json.tmp");
-        // `source` only when set, so the file stays as it was for everyone who never set it.
+        // `source` only when set and `small_pupil` only when off, so the file stays as it was for everyone who never
+        // changed them.
         let source = match self.source {
             Source::Auto => String::new(),
             s => format!(",\n  \"source\": \"{}\"", s.label()),
         };
+        let small_pupil = if self.small_pupil { "" } else { ",\n  \"small_pupil\": false" };
         let text = format!(
-            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}{source}\n}}\n",
+            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}{small_pupil}{source}\n}}\n",
             json::num(self.widen_sensitivity),
             self.dev,
             self.lid_veto
@@ -230,12 +244,39 @@ mod tests {
         // `set source dsp` / `grab`: written, the other settings kept
         for source in [Source::Dsp, Source::Grab] {
             Settings::update(&p, |s| s.source = source).unwrap();
-            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, dev: true, lid_veto: true, source });
+            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, dev: true, lid_veto: true, source, ..Settings::default() });
             assert!(std::fs::read_to_string(&p).unwrap().contains(&format!("\"source\": \"{}\"", source.label())));
         }
         // `set source auto`: the key goes, and the file is the same as before it was set
         Settings::update(&p, |s| s.source = Source::Auto).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn small_pupil_is_on_unless_switched_off_and_written_only_when_off() {
+        let dir = std::env::temp_dir().join(format!("eyecam-settings-small-pupil-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+        // On unless false (not a bool: on).
+        for (text, on) in
+            [("{}", true), ("{\"small_pupil\": true}", true), ("{\"small_pupil\": false}", false), ("{\"small_pupil\": 0}", true)]
+        {
+            std::fs::write(&p, text).unwrap();
+            assert_eq!(Settings::load(&p).small_pupil, on, "{text}");
+        }
+        // The default is not written: the file is the same as before `small_pupil` existed.
+        Settings::default().save(&p).unwrap();
+        assert!(!std::fs::read_to_string(&p).unwrap().contains("small_pupil"));
+        // Off by hand: kept by a `set ...` of another setting, and the file still parses.
+        std::fs::write(&p, "{\"small_pupil\": false, \"lid_veto\": true}").unwrap();
+        Settings::update(&p, |s| s.widen_sensitivity = 0.6).unwrap();
+        let s = Settings::load(&p);
+        assert_eq!((s.small_pupil, s.lid_veto, s.widen_sensitivity), (false, true, 0.6));
+        assert!(crate::json::parse(&std::fs::read_to_string(&p).unwrap()).is_ok());
+        Settings::update(&p, |s| s.source = Source::Dsp).unwrap();
+        assert_eq!((Settings::load(&p).small_pupil, Settings::load(&p).source), (false, Source::Dsp));
+        assert!(crate::json::parse(&std::fs::read_to_string(&p).unwrap()).is_ok());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

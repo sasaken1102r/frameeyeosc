@@ -263,6 +263,8 @@ pub struct Shared {
     pub lid_veto: AtomicBool,
     /// `glint template` asks so many times so far: each new one has the worker take new glint templates.
     pub glint_template: AtomicU32,
+    /// A pupil shrunk in bright light kept from reading closed (settings.json `small_pupil`, followed while running).
+    pub small_pupil: AtomicBool,
     pub veto_runs_per_s: AtomicU32,
     pub veto_fired: AtomicU64,
     pub veto_us_mean: AtomicU32,
@@ -297,6 +299,7 @@ impl Default for Shared {
             driftlog: Mutex::new(driftlog::Control::default()),
             lid_veto: AtomicBool::new(false),
             glint_template: AtomicU32::new(0),
+            small_pupil: AtomicBool::new(true),
             veto_runs_per_s: AtomicU32::new(0f32.to_bits()),
             veto_fired: AtomicU64::new(0),
             veto_us_mean: AtomicU32::new(0),
@@ -792,8 +795,10 @@ impl Worker {
             }
         }
         let veto_on = self.shared.lid_veto.load(Ordering::Relaxed);
+        let small_pupil = self.shared.small_pupil.load(Ordering::Relaxed);
         for p in &mut self.params {
             p.tune.lid_veto = veto_on;
+            p.tune.small_pupil = small_pupil;
         }
         let started = Instant::now();
         let mut o = self.engines[eye].process_open(img, pitch as f64, open as f64, t, &self.params[eye]);

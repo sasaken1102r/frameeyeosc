@@ -641,6 +641,7 @@ python3 ~/eyecam-src/tools/drift_report.py ~/eyecam/drift/drift_….csv      # 5
   起動中に書き換えても、status.json には次の書き直しで、校正には次の校正から効く
 - `lid_veto`: まぶたの拒否権（既定 false。下の「まぶたの拒否権」）。パネルの `set lid_veto on|off` が書く（手で書き換えてもよい）。
   書くときは `widen_sensitivity` と `dev` はそのまま残す。true で拒否権が入り、false（と true 以外の値）では古典の値だけになる。起動中に書き換えても、0.1 秒ほどで次のフレームから効く。status.json の `lid_veto.on` に出る
+- `small_pupil`: 明るいところで小さくなった瞳を、少し見失っただけで閉じたと読まない扱い（既定 true。下の「録画を通して確かめる」の `--no-small-pupil`）。**手で書き換える**（ctl のコマンドもパネルもない）。false（だけ）で前の規則になる。起動中に書き換えても、次のフレームから効く。既定のままならファイルに書かれない
 - `source`: 目のカメラのバッファをどこからもらうか（**試験中**。既定 `auto`。パネルの「映像のもらい方」カードの `set source` が書く。手で書き換えてもよい。`--source` があればそちらが勝つ）。
   `set source` はすぐに効く（上の ctl.sock の表）。手で書き換えたときは起動したときに読む（書き換えたら eyecam.service を再起動）。既定のままならファイルに書かれない
   - `grab`: eyecam-grab（今までどおり）
@@ -830,7 +831,7 @@ GaussianBlur とオープニングは OpenCV とビット単位で同じ（`visi
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_A.json --calib-block 4 --out test_A_B.csv
 # 校正なし: 1 回目で基準線を覚えてから最初から流し直す（セッションの前に 30 秒かぶっていたことにする）
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --user-calib calib_with_history.json --prewarm --out test_auto.csv
-# 評価用のつまみ: --no-track（追従しない）、--no-gaze-drop（下を見たときの保持なし）、--no-edge-hold（枠の端で見失った瞳も閉じたにする。CSV の edge_held 列で保持したフレーム）、--no-ext-search（枠の外を探さない。CSV の search_x_min 列が広げた左端、ext 列が 1 なら広げた探索の瞳、2 なら取らなかった瞳、3 なら暗い側の探索〔枠の耳側が暗い装着で、他の探索で瞳が見つからなかったフレームだけ、その明るさに合わせた段差でもう一度探す〕の瞳、4 ならそこで見つけたけど取らなかった瞳）、--wide-curve 0.25,0.5（見開きの曲線）、--widen-sensitivity 0.8（感度で曲線を決める）、--lid-veto（まぶたの拒否権あり。既定はライブと同じでなし。--no-lid-veto は古い評価スクリプト用に残してある。CSV の veto_p 列が CNN の P(open)〔回さなかったフレームは空〕、vetoed 列が 1 なら拒否権を出したフレーム）、--no-small-pupil（明るいところで小さくなった瞳の扱いをなくす。既定はライブと同じで入り: 直前 1 秒に見えた瞳が開いた目の 0.85 倍より小さい間は、閉じの線を 1.3 倍に加えて「その間の開いた目の箱 + 開いた目の箱の 0.15 倍」以上にし、0.45 倍より小さくなっていく瞳も直前の瞳から続いていれば取る。CSV の box_ratio 列が箱と開いた目の長い基準の比、box_rule_ratio 列が閉じの線を 1.3 にそろえた比、gated 列が開いた目の確かめで落とした瞳、small_kept 列が 0.45 倍より小さいのに取った瞳）、--drop-pupil N,M[,LABEL]（開発用: LABEL の段で 0.5 秒目から M 秒おきに N フレーム続けて、見つけた瞳を落とす。dropped 列が 1 のフレーム）
+# 評価用のつまみ: --no-track（追従しない）、--no-gaze-drop（下を見たときの保持なし）、--no-edge-hold（枠の端で見失った瞳も閉じたにする。CSV の edge_held 列で保持したフレーム）、--no-ext-search（枠の外を探さない。CSV の search_x_min 列が広げた左端、ext 列が 1 なら広げた探索の瞳、2 なら取らなかった瞳、3 なら暗い側の探索〔枠の耳側が暗い装着で、他の探索で瞳が見つからなかったフレームだけ、その明るさに合わせた段差でもう一度探す〕の瞳、4 ならそこで見つけたけど取らなかった瞳）、--wide-curve 0.25,0.5（見開きの曲線）、--widen-sensitivity 0.8（感度で曲線を決める）、--lid-veto（まぶたの拒否権あり。既定はライブと同じでなし。--no-lid-veto は古い評価スクリプト用に残してある。CSV の veto_p 列が CNN の P(open)〔回さなかったフレームは空〕、vetoed 列が 1 なら拒否権を出したフレーム）、--no-small-pupil（明るいところで小さくなった瞳の扱いをなくす。既定はライブと同じで入り: 直前 1 秒に丸ごと見えた瞳が開いた目の 0.85 倍より小さい間は、閉じの線を 1.3 倍に加えて「その間の開いた目の箱（開いた目の長い基準の 1.5 倍まで）+ 長い基準の 0.15 倍」以上にし、0.45 倍より小さくなっていく瞳も、丸ごと見えて直前の瞳から続いていれば 0.3 倍まで取る。settings.json の `small_pupil`。CSV の box_ratio 列が箱と開いた目の長い基準の比、box_rule_ratio 列が閉じの線を 1.3 にそろえた比、gated 列が開いた目の確かめで落とした瞳、small_kept 列が 0.45 倍より小さいのに確かめで落とさずに取った瞳〔確かめが見るフレームだけ〕）、--drop-pupil N,M[,LABEL]（開発用: LABEL の段で 0.5 秒目から M 秒おきに N フレーム続けて、見つけた瞳を落とす。dropped 列が 1 のフレーム）
 python eval_live.py DIR   # DIR の test_r*_t*.csv を xwear.py と同じ指標で集計（フレームレートは t_cam から測る）
 # 遅いカメラのふり: 15 fps の刻みにいちばん近いフレームだけを使う（90 fps の録画なら 6 枚に 1 枚。目の画像はコピーしない）
 ~/.local/lib/eyecam/eyecam-rec --replay ~/eyecam/rec_B --resample 15 --user-calib calib_A.json --calib-block 4 --out test_A_B_15.csv

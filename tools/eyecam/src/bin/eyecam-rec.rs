@@ -552,8 +552,10 @@ impl StatusFile {
             let mut watch = self.settings.lock().unwrap();
             let settings = watch.get();
             if let Some(l) = &self.live {
-                // lid_veto may be edited by hand: the worker picks it up from here, on its next frame.
+                // lid_veto (and small_pupil) may be edited by hand: the worker picks them up from here, on its next
+                // frame.
                 l.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
+                l.small_pupil.store(settings.small_pupil, Ordering::Relaxed);
             }
             drop(watch);
             s.dev = settings.dev;
@@ -897,6 +899,7 @@ fn serve(args: &Args) -> Result<()> {
         let settings = Settings::load(&settings::path());
         shared.set_widen_sensitivity(settings.widen_sensitivity);
         shared.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
+        shared.small_pupil.store(settings.small_pupil, Ordering::Relaxed);
         shared.driftlog.lock().unwrap().dir = args.out.join(driftlog::DIR_NAME);
     }
     let mut daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()), &args.out, args.fake)?;

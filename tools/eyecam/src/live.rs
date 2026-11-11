@@ -54,6 +54,27 @@ pub const PRIOR_RESET_S: f64 = 10.0 / FPS;
 const PUPIL_GROW_S: f64 = 0.3;
 const PUPIL_MAX_GROW: f64 = 1.3;
 const PUPIL_GROW_MAX: f64 = 2.5;
+/// With `Tune::small_pupil`, a pupil the open-eye check would drop only for being under 0.45 x the open pupil learnt
+/// (as dark as the open one, and seen whole: PUPIL_MIN_VIS, PUPIL_MAX_BA_DEV) is taken down to PUPIL_SMALL_MIN x it
+/// when it carries on from the pupil last taken: that one at most PUPIL_SMALL_TRACK_S ago, this one at least
+/// PUPIL_SMALL_STEP x its size and within its semi-major axis of where it was. Bright light shrinks the pupil over
+/// 0.3-1 s, both eyes together, to 0.41-0.63 x (the developer's recordings with a white screen, 2026-10-07 and 10-17); a
+/// crease or lash line on a closing lid shows up where the pupil was just lost under it, far smaller (0.23-0.42 x) than
+/// the pupil just before, and a lid cutting into the pupil leaves less of it seen and flattens its fit.
+const PUPIL_SMALL_MIN: f64 = 0.3;
+const PUPIL_SMALL_TRACK_S: f64 = 0.5;
+const PUPIL_SMALL_STEP: f64 = 0.8;
+/// With `Tune::small_pupil`, while the pupils of the last SMALL_BOX_S seen whole were under SMALL_BOX_SIZE x the open
+/// pupil learnt, the closed-eye rule also wants the iris box SMALL_BOX_MARGIN x the long-run open level above the open
+/// eye's box on those frames (its median, at most SMALL_BOX_MAX x the long-run level), not only 1.3 x that level. The
+/// box takes in the dark pupil, and in IR the iris around it is nearly as bright as lid skin: a pupil shrunk in bright
+/// light leaves the open eye's box as bright as the rule's line (the developer's 2026-10-07 23:37 recording, white
+/// screen: median 1.39 x the long-run level at 0.56 x the pupil's usual size, 95% under 1.47 x), so any 3 frames
+/// without the pupil read closed there. A blink in that light lifts the box 0.2-0.8 x the long-run level above it.
+const SMALL_BOX_S: f64 = 1.0;
+const SMALL_BOX_SIZE: f64 = 0.85;
+const SMALL_BOX_MARGIN: f64 = 0.15;
+const SMALL_BOX_MAX: f64 = 1.5;
 /// Closed needs no pupil for this long (3 frames at 90 fps; at least 2 frames).
 const CLOSED_NO_PUPIL_S: f64 = 3.0 / FPS;
 /// A pupil lost while the last one seen had its small-x edge within this many px of the search window's left edge ran
@@ -331,12 +352,25 @@ pub struct Tune {
     /// The eyelid veto (`veto`): the CNN may cancel a low EyeLid it is sure is an open eye (settings.json `lid_veto`,
     /// off by default: trained on one wearer's recordings only).
     pub lid_veto: bool,
+    /// A pupil shrunk in bright light kept from reading closed: the closed-eye rule holds the iris box against the open
+    /// eye's recent box while the pupil is small (SMALL_BOX_S), and the open-eye check takes a pupil shrinking below
+    /// 0.45 x its usual size (PUPIL_SMALL_MIN).
+    pub small_pupil: bool,
 }
 
 impl Default for Tune {
     fn default() -> Self {
         let (wide_start, wide_width) = wide_curve(DEFAULT_WIDEN_SENSITIVITY);
-        Self { wide_start, wide_width, track: true, gaze_drop: true, edge_hold: true, ext_search: true, lid_veto: false }
+        Self {
+            wide_start,
+            wide_width,
+            track: true,
+            gaze_drop: true,
+            edge_hold: true,
+            ext_search: true,
+            lid_veto: false,
+            small_pupil: true,
+        }
     }
 }
 
@@ -385,6 +419,14 @@ pub struct Out {
     /// The levels in use for this frame (calibrated, or the automatic baseline + stored step).
     pub b_n: f64,
     pub b_w: f64,
+    /// `box_f` against the open eye's long-run box level, and that scaled so that the closed-eye rule's line is 1.3
+    /// here too (SMALL_BOX_S; the same as the first without `Tune::small_pupil`), on the levels as at full brightness.
+    pub box_ratio: f64,
+    pub box_rule_ratio: f64,
+    /// The pupil was taken below the open-eye check's usual size limit (PUPIL_SMALL_MIN), or dropped by
+    /// `drop_next_pupil`.
+    pub small_kept: bool,
+    pub dropped: bool,
     /// What the eyelid veto did (`closed`, `eye_lid` and `eye_squint` above are after it).
     pub veto: crate::veto::Step,
 }
@@ -560,6 +602,11 @@ pub struct EyeEngine {
     ap: Win,
     lo: Win,
     bx: Win,
+    /// The iris box (`bx`'s median) and the pupil's semi-major axis on the frames of the last SMALL_BOX_S with the
+    /// pupil seen whole, and their times (`Tune::small_pupil`).
+    small_box: VecDeque<(f64, f64, f64)>,
+    /// Drop the pupil the next frame finds (`drop_next_pupil`).
+    drop_next: bool,
     pd: Win,
     nopupil: u32,
     /// This wear's iris radius was found implausibly large for its pupil (IRIS_PUPIL_MAX): the iris fit takes the first
@@ -805,6 +852,8 @@ impl Default for EyeEngine {
             ap: Win::new(),
             lo: Win::new(),
             bx: Win::new(),
+            small_box: VecDeque::new(),
+            drop_next: false,
             pd: Win::new(),
             nopupil: 0,
             iris_first: false,
@@ -892,6 +941,7 @@ impl EyeEngine {
         self.last_lower = f64::NAN;
         self.grown = 0;
         self.find_x_min = self.x_min;
+        self.small_box.clear();
     }
 
     /// What a pupil from the extended search (`feat::Search::find_x_min`) must be like on a frame at `t` (see
@@ -1041,10 +1091,18 @@ impl EyeEngine {
             self.box_open_dim = LongMedian::new(60.0);
         }
         self.ex.iris_first = self.iris_first;
+        let small_pupil = params.tune.small_pupil;
         let r_ready = self.r_est.len() >= 10;
         let r_ref = r_ready.then_some(self.r_est.value);
         let no_prior = self.prev.is_none();
         let (mut f, mut p) = self.ex.extract(img, self.xmax, self.prev, r_ref, self.prev_p.as_ref());
+        let dropped = std::mem::take(&mut self.drop_next) && p.is_some();
+        if dropped {
+            p = None;
+            f.ok_pupil = false;
+            (f.pupil_cx, f.pupil_cy, f.pupil_a, f.pupil_b, f.pupil_vis) = (f64::NAN, f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+            (f.iris_r, f.iris_n) = (f64::NAN, 0);
+        }
         // A "pupil" found while the iris box is as bright as lid skin must look like the open eye's pupil (as dark, mostly
         // visible, 0.45-1.3 x its size); otherwise it is a dark crease or lash line on the closed lid. Bright light also
         // lights the box this much, and the pupil then shrinks to 0.55-0.65 x its usual size but stays as dark and whole
@@ -1080,9 +1138,26 @@ impl EyeEngine {
             }
             self.grown = 0;
         }
+        // Shrunk in bright light (PUPIL_SMALL_MIN): small, but as dark as the open pupil, seen whole (most rays reach
+        // its edge, its roundness the usual one: a lid cutting into a pupil shrinks and flattens its fit), and carrying
+        // on from the last pupil taken.
+        let small_kept = p.is_some_and(|pp| {
+            small_pupil
+                && self.a_open.len() >= 30
+                && (PUPIL_SMALL_MIN..0.45).contains(&(pp.a / self.a_open.value))
+                && pp.inner <= self.inner_open.value + self.levels.step(15.0)
+                && pp.vis >= PUPIL_MIN_VIS
+                && (self.ba_open.len() < 30 || (pp.b / pp.a - self.ba_open.value).abs() <= PUPIL_MAX_BA_DEV)
+                && self.prev_p.is_some_and(|q| {
+                    t - self.prev_p_t <= PUPIL_SMALL_TRACK_S
+                        && pp.a >= PUPIL_SMALL_STEP * q.a
+                        && (pp.cx - q.cx).hypot(pp.cy - q.cy) <= q.a
+                })
+        });
         if let Some(pp) = p
             && (box_bright || unanchored)
             && self.a_open.len() >= 30
+            && !small_kept
             && (!(0.45..=PUPIL_MAX_GROW).contains(&(pp.a / self.a_open.value))
                 || pp.inner > self.inner_open.value + self.levels.step(15.0)
                 || pp.vis < 0.5)
@@ -1180,6 +1255,26 @@ impl EyeEngine {
         }
         // The open level the box is held against: the dim side's while the last pupil came from there (`box_open_dim`).
         let open_ref = if self.prev_dim && self.box_open_dim.len() >= 30 { &self.box_open_dim } else { &self.box_open };
+        let open_level = self.levels.unlevel(open_ref.value);
+        // With `small_pupil`, the open eye's recent box while its pupil is small (SMALL_BOX_S; only frames without the
+        // pupil can read closed, the others show what the line is).
+        if small_pupil {
+            while self.small_box.front().is_some_and(|x| t - x.0 > SMALL_BOX_S) {
+                self.small_box.pop_front();
+            }
+            if pupil_whole && box_f.is_finite() {
+                self.small_box.push_back((t, box_f, f.pupil_a));
+            }
+        }
+        let mut rule_line = 1.3 * open_level;
+        if small_pupil && !self.small_box.is_empty() && self.a_open.len() >= 30 {
+            let a = vision::median(&mut self.small_box.iter().map(|x| x.2).collect::<Vec<_>>());
+            if a < SMALL_BOX_SIZE * self.a_open.value {
+                let recent = vision::median(&mut self.small_box.iter().map(|x| x.1).collect::<Vec<_>>());
+                let recent = self.levels.unlevel(recent);
+                rule_line = rule_line.max(recent.min(SMALL_BOX_MAX * open_level) + SMALL_BOX_MARGIN * open_level);
+            }
+        }
 
         // Closed: lid skin covers the box (brighter than the open-eye level) and no pupil for CLOSED_NO_PUPIL_S (3
         // frames at 90 fps).
@@ -1188,7 +1283,7 @@ impl EyeEngine {
         let edge_gap = self.prev_p.map_or(f64::NAN, |q| q.cx - q.a - self.x_min);
         let edge_held = params.tune.edge_hold && !f.ok_pupil && edge_gap < EDGE_LOST_PX && ap >= EDGE_OPEN_AP;
         let closed = open_ref.len() >= 30
-            && self.levels.unlevel(box_f) > 1.3 * self.levels.unlevel(open_ref.value)
+            && self.levels.unlevel(box_f) > rule_line
             && no_pupil_long
             && !edge_held;
         self.since_closed = if closed { 0 } else { self.since_closed.saturating_add(1) };
@@ -1348,8 +1443,17 @@ impl EyeEngine {
             edge_held,
             b_n,
             b_w,
+            box_ratio: self.levels.unlevel(box_f) / open_level,
+            box_rule_ratio: 1.3 * self.levels.unlevel(box_f) / rule_line,
+            small_kept,
+            dropped,
             veto,
         }
+    }
+
+    /// Development only (`--replay`'s `--drop-pupil`): drop the pupil the next frame finds, as if none was seen.
+    pub fn drop_next_pupil(&mut self) {
+        self.drop_next = true;
     }
 }
 
@@ -4436,6 +4540,122 @@ mod tests {
         let (mut e, p, t) = seen_at(edge, Tune { edge_hold: false, ..Tune::default() });
         let (closed, o) = closes(&mut e, &p, t, &lost);
         assert!(closed && !o.edge_held, "{o:?}");
+    }
+
+    /// `lid_frame` with a pupil of radius `r` (its iris still 55) at (250, 200); None: the closed eye.
+    fn pupil_frame(r: Option<f64>) -> Vec<u8> {
+        let mut img = lid_frame(r.map(|_| (250.0, 200.0)), r.is_some());
+        if let Some(r) = r {
+            for y in 130..270 {
+                for x in 150..350 {
+                    let d = (x as f64 - 250.0).hypot(y as f64 - 200.0);
+                    if d < 55.0 {
+                        img[y * vision::W + x] = if d < r { 12 } else { 70 };
+                    }
+                }
+            }
+        }
+        img
+    }
+
+    /// An engine that has seen the open eye with a pupil of radius 25 for 4 s, then the pupil shrink to `r_small` over
+    /// 1 s and stay so for 1.5 s (bright light); the time of the last frame.
+    fn constricted(r_small: f64, p: &Params) -> (EyeEngine, f64) {
+        let mut e = EyeEngine::default();
+        let mut t = 0.0;
+        for k in 0..585 {
+            let r = match k {
+                0..360 => 25.0,
+                360..450 => 25.0 + (r_small - 25.0) * (k - 360) as f64 / 90.0,
+                _ => r_small,
+            };
+            t = k as f64 / FPS;
+            let o = e.process(&pupil_frame(Some(r)), f64::NAN, t, p);
+            assert!(o.f.ok_pupil && !o.closed, "frame {k}, radius {r}: {:?}", o.f.diag);
+        }
+        (e, t)
+    }
+
+    #[test]
+    fn a_pupil_shrunk_in_bright_light_and_missed_for_a_few_frames_is_not_closed() {
+        // A pupil of radius 13 (0.52 x) leaves the iris box 1.36 x as bright as the open eye's: over the closed-eye
+        // rule's line, so 5 frames without it read closed. With `small_pupil` the line follows that box, and they do
+        // not.
+        for small_pupil in [false, true] {
+            let p = Params { tune: Tune { small_pupil, ..Tune::default() }, ..Params::default() };
+            let (mut e, t) = constricted(13.0, &p);
+            let img = pupil_frame(Some(13.0));
+            let mut any = false;
+            for k in 1..=5 {
+                e.drop_next_pupil();
+                let o = e.process(&img, f64::NAN, t + k as f64 / FPS, &p);
+                assert!(!o.f.ok_pupil && o.dropped);
+                assert!(o.box_ratio > 1.3, "{}", o.box_ratio);
+                any |= o.closed;
+            }
+            assert_eq!(any, !small_pupil, "small_pupil {small_pupil}");
+            // Back the next frame, open.
+            let o = e.process(&img, f64::NAN, t + 6.0 / FPS, &p);
+            assert!(o.f.ok_pupil && !o.closed && !o.dropped);
+        }
+    }
+
+    #[test]
+    fn a_blink_with_a_pupil_shrunk_in_bright_light_still_closes() {
+        let shut = pupil_frame(None);
+        for small_pupil in [false, true] {
+            let p = Params { tune: Tune { small_pupil, ..Tune::default() }, ..Params::default() };
+            // Shrunk to 0.52 x: the lid skin over the box is far brighter than the line, even as it follows the box.
+            let (mut e, t) = constricted(13.0, &p);
+            let (closed, o) = closes(&mut e, &p, t, &shut);
+            assert!(closed && o.eye_lid == 0.0, "small_pupil {small_pupil}: {o:?}");
+            // At the usual size the line is the long-run one.
+            let (mut e, t) = constricted(25.0, &p);
+            let (closed, o) = closes(&mut e, &p, t, &shut);
+            assert!(closed && (o.box_rule_ratio - o.box_ratio).abs() < 1e-9, "small_pupil {small_pupil}: {o:?}");
+        }
+    }
+
+    #[test]
+    fn a_pupil_shrinking_below_the_size_check_stays_taken_but_a_small_blob_on_a_closed_lid_does_not() {
+        // Shrunk to radius 10 (0.4 x the open pupil learnt; the box then as bright as lid skin to the open-eye check):
+        // the check drops it below 0.45 x unless `small_pupil`, where it carries on from the pupils just before.
+        let (shut, crease) = (pupil_frame(None), {
+            let mut img = pupil_frame(None);
+            for y in 190..210 {
+                for x in 240..260 {
+                    if (x as f64 - 250.0).hypot(y as f64 - 200.0) < 9.0 {
+                        img[y * vision::W + x] = 12;
+                    }
+                }
+            }
+            img
+        });
+        for small_pupil in [false, true] {
+            let p = Params { tune: Tune { small_pupil, ..Tune::default() }, ..Params::default() };
+            let mut e = EyeEngine::default();
+            let mut seen = Vec::new();
+            for k in 0..450 {
+                let r = if k < 180 { 25.0 } else if k < 270 { 25.0 - 15.0 * (k - 180) as f64 / 90.0 } else { 10.0 };
+                let o = e.process(&pupil_frame(Some(r)), f64::NAN, k as f64 / FPS, &p);
+                if k >= 300 {
+                    seen.push((o.f.ok_pupil, o.f.diag.gated, o.small_kept, o.closed));
+                }
+            }
+            if small_pupil {
+                assert!(seen.iter().all(|&(ok, gated, kept, closed)| ok && !gated && kept && !closed), "{seen:?}");
+            } else {
+                assert!(seen.iter().any(|&(ok, gated, _, _)| !ok && gated), "{seen:?}");
+            }
+            // The eye closes for half a second, then a small dark blob on the lid: not taken for the pupil either way
+            // (the last pupil taken is too long ago).
+            let t = 450.0 / FPS;
+            for k in 0..45 {
+                e.process(&shut, f64::NAN, t + k as f64 / FPS, &p);
+            }
+            let o = e.process(&crease, f64::NAN, t + 0.51, &p);
+            assert!(!o.f.ok_pupil && !o.small_kept, "small_pupil {small_pupil}: {:?}", o.f.diag);
+        }
     }
 
     #[test]

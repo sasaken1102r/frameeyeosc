@@ -371,10 +371,54 @@ pub struct LiveOpts {
     pub preview: Option<PathBuf>,
     /// Also write the drift log (`driftlog`, as `driftlog on` does live) to this file; `wall_unix` stays empty.
     pub driftlog: Option<PathBuf>,
+    /// Development only: drop the pupil found on some frames, as if none was seen (`DropPupil`).
+    pub drop_pupil: Option<DropPupil>,
+}
+
+/// Pupil misses put into a replay (`--drop-pupil N,M[,LABEL]`): on `frames` frames in a row every `every_s` seconds,
+/// from 0.5 s into each step labelled `label` (every step when None), each eye's pupil is dropped (`EyeEngine::
+/// drop_next_pupil`), to see what a short miss does there.
+#[derive(Clone, Debug)]
+pub struct DropPupil {
+    pub frames: u32,
+    pub every_s: f64,
+    pub label: Option<String>,
+}
+
+impl DropPupil {
+    /// Parse `N,M[,LABEL]`.
+    pub fn parse(v: &str) -> Option<DropPupil> {
+        let mut it = v.split(',');
+        let frames = it.next()?.trim().parse().ok().filter(|&n| n > 0)?;
+        let every_s = it.next()?.trim().parse().ok().filter(|&m: &f64| m.is_finite() && m > 0.0)?;
+        let label = it.next().map(|l| l.trim().to_string());
+        it.next().is_none().then_some(DropPupil { frames, every_s, label })
+    }
+
+    /// The pupil is to be dropped on a frame at `t` (s), `left` frames still to drop from the last start (updated).
+    fn due(&self, s: &Session, t: f64, left: &mut u32, next_t: &mut f64) -> bool {
+        let step = s.cues.iter().take_while(|c| c.0 != "end").find(|c| t >= c.1 && t < c.1 + c.2);
+        let Some((_, t0, _)) = step.filter(|c| self.label.as_ref().is_none_or(|l| *l == c.0)) else {
+            *left = 0;
+            *next_t = f64::NAN;
+            return false;
+        };
+        if !next_t.is_finite() || *next_t < *t0 {
+            *next_t = t0 + 0.5;
+        }
+        if t >= *next_t {
+            *left = self.frames;
+            *next_t += self.every_s;
+        }
+        let due = *left > 0;
+        *left = left.saturating_sub(1);
+        due
+    }
 }
 
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
 closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held,pupil_cx,pupil_cy,pupil_a,pupil_b,x_min,search_x_min,ext,veto_p,vetoed,\
+box_ratio,box_rule_ratio,gated,small_kept,dropped,\
 glints,slip_x,slip_y,slip_tracked,slip_matches,slip_since,template_id";
 
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
@@ -448,6 +492,8 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
     let mut glint_times: Vec<f64> = Vec::new();
     let mut template_frames: Vec<(usize, f64, f64)> = Vec::new();
     let mut last_t = [f64::NEG_INFINITY; 2];
+    // (per eye: frames still to drop, and the time of the next drop's start)
+    let mut drop_state = [(0u32, f64::NAN); 2];
     let f = |v: f64| if v.is_finite() { format!("{v:.4}") } else { String::new() };
     let mut preview = opts.preview.as_ref().map(|dir| crate::preview::Preview::new(dir.join(crate::preview::FILE_NAME)));
     // (the wall clock and the camera time the paced replay started at)
@@ -476,6 +522,11 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             let j = s.valve.nearest(t);
             let pitch = j.map_or(f64::NAN, |j| s.valve.pitch[e][j]);
             let v_open = j.map_or(f64::NAN, |j| s.valve.open[e][j]);
+            if let Some(d) = &opts.drop_pupil
+                && d.due(s, t, &mut drop_state[e].0, &mut drop_state[e].1)
+            {
+                engines[e].drop_next_pupil();
+            }
             let t0 = std::time::Instant::now();
             let o = engines[e].process_open(&img, pitch, v_open, t, &params[e]);
             busy += t0.elapsed();
@@ -569,6 +620,11 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 // The eyelid veto: the CNN's P(open) (empty when it did not run), and whether the frame was vetoed
                 f(o.veto.p_open),
                 (o.veto.on as u8).to_string(),
+                f(o.box_ratio),
+                f(o.box_rule_ratio),
+                (o.f.diag.gated as u8).to_string(),
+                (o.small_kept as u8).to_string(),
+                (o.dropped as u8).to_string(),
                 slip.glints.to_string(),
                 if slip.template_id > 0 { format!("{:.3}", slip.offset[0]) } else { String::new() },
                 if slip.template_id > 0 { format!("{:.3}", slip.offset[1]) } else { String::new() },

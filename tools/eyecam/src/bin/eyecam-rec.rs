@@ -99,6 +99,7 @@ struct Args {
     fit_user: Option<PathBuf>,
     use_wear: bool,
     prewarm: bool,
+    drop_pupil: Option<eyecam::replay::DropPupil>,
     /// --resample: replay as if the cameras had run at this frame rate.
     resample: Option<f64>,
     /// --calib: replay the session as this calibration and write its calib_result.json to --out.
@@ -150,6 +151,10 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --no-ext-search    with --replay: no pupil search past the window's (temporal) edge (the old rule; evaluation)
   --lid-veto         with --replay: the eyelid veto on (as settings.json's lid_veto true; off by default, as live)
   --no-lid-veto      with --replay: no eyelid veto (the default; kept for older evaluation scripts)
+  --small-pupil      with --replay: a pupil shrunk in bright light kept from reading closed (the default, as live)
+  --no-small-pupil   with --replay: without it (the old rules; evaluation)
+  --drop-pupil N,M[,LABEL]  with --replay: drop the pupil found on N frames in a row every M seconds, from 0.5 s into
+                     each LABEL step (every step without LABEL; development)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
   --preview DIR      with --replay: also write the panel's eye preview (DIR/preview, as `preview on` does live), the
@@ -196,6 +201,7 @@ fn parse_args() -> Result<Args> {
         fit_user: None,
         use_wear: false,
         prewarm: false,
+        drop_pupil: None,
         resample: None,
         calib_replay: None,
         preview: None,
@@ -252,6 +258,13 @@ fn parse_args() -> Result<Args> {
             "--no-ext-search" => args.tune.ext_search = false,
             "--lid-veto" => args.tune.lid_veto = true,
             "--no-lid-veto" => args.tune.lid_veto = false,
+            "--small-pupil" => args.tune.small_pupil = true,
+            "--no-small-pupil" => args.tune.small_pupil = false,
+            "--drop-pupil" => {
+                args.drop_pupil = Some(
+                    eyecam::replay::DropPupil::parse(&value("--drop-pupil")?).ok_or("--drop-pupil needs N,M[,LABEL]")?,
+                )
+            }
             "--widen-sensitivity" => {
                 let v = number(value("--widen-sensitivity")?, "--widen-sensitivity")?;
                 (args.tune.wide_start, args.tune.wide_width) = eyecam::live::wide_curve(v);
@@ -366,6 +379,7 @@ fn run() -> Result<()> {
             limit: args.limit,
             preview: args.preview.clone(),
             driftlog: args.driftlog.clone(),
+            drop_pupil: args.drop_pupil.clone(),
         };
         let ms = eyecam::replay::write_live(&session, &args.out, &opts)?;
         eprintln!("live replay: {ms:.3} ms per frame (one eye) on this core");
@@ -3680,6 +3694,7 @@ mod tests {
             fit_user: None,
             use_wear: false,
             prewarm: false,
+            drop_pupil: None,
             resample: None,
             calib_replay: None,
             preview: None,

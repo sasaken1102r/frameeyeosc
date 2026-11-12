@@ -192,6 +192,93 @@ gaze_fit::Values withPupilMap(gaze_fit::Values values) {
     return values;
 }
 
+/**
+ * Whatever pupil map or centres the fits can write passes frameeyeosc's config check: made-up captures with pupil pairs
+ * anywhere (also far off and nearly still), each fit's values written to config.json text and read back, and every
+ * pupil key within the core's ranges (src/config.rs: constants 360, slopes 10000, centres 45; written out here as the
+ * core has them, not taken from gaze_fit.h).
+ */
+void testPupilWritesPassTheCore() {
+    unsigned state = 12345;
+    // A made-up number in [low, high)
+    const auto next = [&state](double low, double high) {
+        state = state * 1103515245u + 12345u;
+        return low + (high - low) * ((state >> 8) & 0xffff) / 65536.0;
+    };
+    int maps = 0;
+    int centers = 0;
+    int refused = 0;
+    for (int run = 0; run < 4000; ++run) {
+        // Each eye's pupil pair where a made-up eye puts it for its direction to each dot: moving a random amount per
+        // degree (some hardly, some hugely), about a random place (some far off), half a degree of noise, now and then
+        // a wild pair; the re-center capture with the headset shifted up to 30 degrees
+        const double size = std::pow(10.0, next(-4.5, -0.5));
+        const double base[2] = {next(-3, 3), next(-3, 3)};
+        const double shift[2] = {next(-30, 30), next(-30, 30)};
+        gaze_fit::Measured points[gaze_fit::kPointCount];
+        gaze_fit::Measured recenter;
+        const auto pupils = [&](gaze_fit::Measured& m, gaze_fit::Point point, const double by[2]) {
+            for (int eye = 0; eye < 2; ++eye) {
+                double direction[2];
+                gaze_fit::eyeDirection(gaze_fit::target(point), eye, 0.064, direction);
+                m.hasPupil[eye] = true;
+                m.pupilFresh[eye] = 140;
+                for (int k = 0; k < 2; ++k) {
+                    const double wild = next(0, 1) < 0.02 ? next(-50, 50) : 0.0;
+                    m.pupil[eye][k] = base[k] + size * (direction[k] - by[k] + next(-0.5, 0.5)) + wild;
+                }
+            }
+        };
+        const double none[2] = {0.0, 0.0};
+        for (gaze_fit::Point point : {gaze_fit::Point::Center, gaze_fit::Point::Up, gaze_fit::Point::Down,
+                                      gaze_fit::Point::Left, gaze_fit::Point::Right}) {
+            pupils(points[static_cast<int>(point)], point, none);
+        }
+        pupils(recenter, gaze_fit::Point::Center, shift);
+        gaze_fit::Values values;
+        double rms[2];
+        std::string why;
+        if (gaze_fit::fitPupilMaps(points, 0.064, values.pupilMap, rms, why)) {
+            values.hasPupilMap = true;
+            ++maps;
+        } else {
+            ++refused;
+            // A map as an old one might be, for the centre alone
+            for (int eye = 0; eye < 2; ++eye) {
+                values.pupilMap[eye] = {{next(-360, 360), next(-1e4, 1e4), next(-1e4, 1e4)},
+                                        {next(-360, 360), next(-1e4, 1e4), next(-1e4, 1e4)}};
+            }
+        }
+        if (gaze_fit::pupilCenters(recenter, values.pupilMap, 0.064,
+                                   values.pupilCenter, why)) {
+            values.hasPupilCenter = true;
+            ++centers;
+        }
+        JsonValue root;
+        root.type = JsonValue::Type::Object;
+        applyFitValues(root, values, gaze_fit::Mode::Full);
+        JsonValue back;
+        std::string error;
+        CHECK(parseJson(writeJson(root), back, error));
+        for (const auto& eye : kPupilMapKeys) {
+            for (int i = 0; i < 6; ++i) {
+                const JsonValue* value = back.get(eye[i]);
+                if (value == nullptr) continue;
+                CHECK(value->isNumber() && std::isfinite(value->number));
+                CHECK(std::fabs(value->number) <= (i % 3 == 0 ? 360.0 : 10000.0));
+            }
+        }
+        for (const auto& eye : kPupilCenterKeys) {
+            for (const char* name : eye) {
+                const JsonValue* value = back.get(name);
+                if (value != nullptr) CHECK(value->isNumber() && std::fabs(value->number) <= 45.0);
+            }
+        }
+    }
+    // Both kinds of run happened, so the test means something (seen: 1161 maps, 2839 refused, 454 centres)
+    CHECK(maps > 100 && refused > 100 && centers > 100 && centers < 4000);
+}
+
 /** What the pupil map and centres do in config.json: written by the fits, read back, taken out by Reset / Clear. */
 void testPupilKeys() {
     // Every key is in the settings table (Reset all and the checks know it), the map's as nullable numbers
@@ -202,6 +289,18 @@ void testPupilKeys() {
     }
     for (const auto& eye : kPupilCenterKeys) {
         for (const char* name : eye) CHECK(findSetting(name) != nullptr && findSetting(name)->type == SettingType::NullableNumber);
+    }
+    // ...with the limits frameeyeosc's config check has (gaze_fit.h's, which a core test compares with config.rs)
+    for (const auto& eye : kPupilMapKeys) {
+        for (int i = 0; i < 6; ++i) {
+            const double limit = i % 3 == 0 ? gaze_fit::kPupilMapBaseLimit : gaze_fit::kPupilMapSlopeLimit;
+            CHECK(findSetting(eye[i])->min == -limit && findSetting(eye[i])->max == limit);
+        }
+    }
+    for (const auto& eye : kPupilCenterKeys) {
+        for (const char* name : eye) {
+            CHECK(findSetting(name)->min == -gaze_fit::kPupilCenterLimit && findSetting(name)->max == gaze_fit::kPupilCenterLimit);
+        }
     }
     // A whole fit writes the map and the centres; a re-center only the centres; a fit without them neither
     JsonValue root;
@@ -2071,6 +2170,7 @@ int main() {
     testResetClearsScales();
     testCenterReset();
     testPupilKeys();
+    testPupilWritesPassTheCore();
     testRecenterDefault();
     testOutputArgs();
     testWidenState();

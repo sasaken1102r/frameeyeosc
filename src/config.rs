@@ -1329,6 +1329,27 @@ mod tests {
     }
 
     #[test]
+    fn the_panels_pupil_limits_are_the_cores() {
+        // The panel writes the pupil map and centres only within these (panel/src/gaze_fit.h); one value outside and
+        // validate refuses the whole config.json, so the two must not drift apart
+        let header = include_str!("../panel/src/gaze_fit.h");
+        let limit = |name: &str| -> f32 {
+            let line = header
+                .lines()
+                .find(|line| line.starts_with(&format!("constexpr double {name} = ")))
+                .unwrap_or_else(|| panic!("{name} not in gaze_fit.h"));
+            line.split('=').nth(1).unwrap().trim().trim_end_matches(';').parse().unwrap()
+        };
+        let symmetric = |range: &std::ops::RangeInclusive<f32>| {
+            assert_eq!(*range.start(), -*range.end());
+            *range.end()
+        };
+        assert_eq!(limit("kPupilMapBaseLimit"), symmetric(&PUPIL_MAP_BASE_RANGE));
+        assert_eq!(limit("kPupilMapSlopeLimit"), symmetric(&PUPIL_MAP_SLOPE_RANGE));
+        assert_eq!(limit("kPupilCenterLimit"), symmetric(&PUPIL_CENTER_RANGE));
+    }
+
+    #[test]
     fn gaze_source_and_the_pupil_map_are_read_and_checked() {
         let (settings, _) = merged("{}", &[]).unwrap();
         assert_eq!(settings.gaze_source, GazeSource::Valve);

@@ -131,6 +131,18 @@ constexpr double kMaxPupilRmsDeg = 4.0;
 /** ...nor one whose pupil hardly moves between the dots: the smaller spread of the five pupil pairs (the square root
  *  of the smaller eigenvalue of their covariance) must be at least this (the eye server's units; about 0.04 seen). */
 constexpr double kMinPupilSpread = 0.01;
+/** What frameeyeosc's config check takes for the pupil keys (src/config.rs PUPIL_MAP_BASE_RANGE, PUPIL_MAP_SLOPE_RANGE,
+ *  PUPIL_CENTER_RANGE): one value outside and it refuses the whole config.json, so nothing outside is written. A core
+ *  test (config.rs, the_panels_pupil_limits_are_the_cores) reads these three lines and fails when they differ; the
+ *  panel's table (config.cpp) is checked against them in model_test. */
+constexpr double kPupilMapBaseLimit = 360.0;
+constexpr double kPupilMapSlopeLimit = 10000.0;
+constexpr double kPupilCenterLimit = 45.0;
+/** A pupil centre further than this from zero (degrees, yaw or pitch) is not written (pupilCenters): putting the
+ *  headset on again moved the centre by about 9-11 degrees in the wears measured (17 at worst), so a larger one is
+ *  more likely a pupil pair that is not on the pupil than the headset sitting that differently. */
+constexpr double kMaxPupilCenterDeg = 20.0;
+static_assert(kMaxPupilCenterDeg <= kPupilCenterLimit, "a centre the panel writes must pass frameeyeosc's check");
 
 /** One eye's pupil map (frameeyeosc's pupil_* keys, src/pupil.rs): from its pupil pair (u, v) to the direction it
  *  looks, in degrees: yaw = yaw[0] + yaw[1] * u + yaw[2] * v, pitch likewise (yaw + right, pitch + up). */
@@ -270,6 +282,14 @@ void eyeDirection(const Target& target, int eye, double ipd, double out[2]);
  * @param out yaw and pitch, degrees
  */
 void applyPupilMap(const PupilMap& map, const double pupil[2], double out[2]);
+
+/**
+ * Whether frameeyeosc takes a pupil map: all six values finite, the constants within kPupilMapBaseLimit and the
+ * slopes within kPupilMapSlopeLimit.
+ * @param map the map
+ * @return true if it may be written
+ */
+bool pupilMapInRange(const PupilMap& map);
 
 /**
  * Both eyes' pupil maps from the five gaze captures (center, up, down, left, right): per eye the affine map (least

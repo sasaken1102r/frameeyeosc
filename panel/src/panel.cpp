@@ -4182,7 +4182,8 @@ void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsVie
         const double h = 50;
         const double controlH = 42;
         const bool mapped = pupilMapInConfig(v);
-        const int selected = v.text(key::kGazeSource) == kGazeSources[1] ? 1 : 0;
+        // "pupil" without a map sends the eye server's gaze (frameeyeosc needs both): shown as what it does
+        const int selected = mapped && v.text(key::kGazeSource) == kGazeSources[1] ? 1 : 0;
         drawRowLabel(pen, t, y, h, t.rowGazeSource, "", false);
         std::vector<Option> options = {{t.gazeSourceStandard, {PanelAction::SetGazeSource, key::kGazeSource, 0}},
                                        {t.gazeSourcePupil, {PanelAction::SetGazeSource, key::kGazeSource, 1}}};

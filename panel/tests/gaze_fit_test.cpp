@@ -570,6 +570,40 @@ void testPupilMap() {
     fivePoints(noPupil);
     CHECK(!pupilCenters(noPupil[static_cast<int>(Point::Center)], maps, ipd, centers, why));
     CHECK(why == "the left eye's pupil at the center dot: 0 fresh samples (needs 30)");
+    // Nothing frameeyeosc's config check would refuse (it refuses the whole config.json): a map whose constant or
+    // slope is too large, a centre further than kMaxPupilCenterDeg (a pupil pair that is not on the pupil)
+    CHECK(pupilMapInRange(madeUpMap(0)));
+    for (int i = 0; i < 6; ++i) {
+        PupilMap big = madeUpMap(0);
+        double* c = i < 3 ? big.yaw : big.pitch;
+        c[i % 3] = i % 3 == 0 ? kPupilMapBaseLimit : kPupilMapSlopeLimit;
+        CHECK(pupilMapInRange(big));
+        c[i % 3] = -c[i % 3] * 1.001;
+        CHECK(!pupilMapInRange(big));
+        c[i % 3] = NAN;
+        CHECK(!pupilMapInRange(big));
+    }
+    Measured farOff[kPointCount];
+    fivePoints(farOff);
+    withPupils(farOff, ipd, none);
+    for (auto& m : farOff) {
+        for (int eye = 0; eye < 2; ++eye) m.pupil[eye][0] += 5.0;  // fits as exactly, but its constant is -1242
+    }
+    maps[0].yaw[0] = 99;
+    CHECK(!fitPupilMaps(farOff, ipd, maps, rms, why) && near(maps[0].yaw[0], 99));
+    CHECK(why == "the left eye's map is outside what frameeyeosc takes (constants within 360, slopes within 10000)");
+    CHECK(fitPupilMaps(points, ipd, maps, rms, why));
+    for (double yaw : {19.5, -19.5, 20.5, -20.5}) {
+        Measured sat[kPointCount];
+        fivePoints(sat);
+        double by[2] = {yaw, -yaw / 2};
+        withPupils(sat, ipd, by);
+        centers[0][0] = 7.0;
+        const bool ok = pupilCenters(sat[static_cast<int>(Point::Center)], maps, ipd, centers, why);
+        CHECK(ok == (std::fabs(yaw) < kMaxPupilCenterDeg));
+        CHECK(ok ? std::fabs(centers[1][0] - yaw) < 1e-6 : near(centers[0][0], 7.0));
+        if (!ok) CHECK(why.rfind("the left eye's center ", 0) == 0 && why.find("is further than 20 deg") != std::string::npos);
+    }
 
     // The whole fit's session: the map and its centre are in what it writes, and in the log
     Session s;
@@ -588,8 +622,20 @@ void testPupilMap() {
     s.start(Mode::Full, current, 0.0, {}, ipd);
     a = runFull(s, few);
     CHECK(a.writeValues && a.values.hasPupilMap && near(a.values.pupilMap[0].yaw[0], -42.0));
-    CHECK(near(a.values.pupilCenter[0][0], 1.25));
     CHECK(a.log.find("\npupil map kept as it was: the right eye's pupil at the down dot") != std::string::npos);
+    // ...and still gets this wear's centre from its center dot with the map it had (here none needed: 0)
+    CHECK(a.values.hasPupilCenter && std::fabs(a.values.pupilCenter[0][0]) < 1e-6);
+    CHECK(a.log.find("\npupil center: L ") != std::string::npos);
+    // ...unless that centre can't be had either: the old one stays
+    Measured fewNoCenter[kPointCount];
+    fivePoints(fewNoCenter);
+    withPupils(fewNoCenter, ipd, none);
+    fewNoCenter[static_cast<int>(Point::Down)].pupilFresh[1] = kMinPupilFresh - 1;
+    fewNoCenter[static_cast<int>(Point::Center)].pupilFresh[0] = 0;
+    s.start(Mode::Full, current, 0.0, {}, ipd);
+    a = runFull(s, fewNoCenter);
+    CHECK(a.writeValues && near(a.values.pupilCenter[0][0], 1.25));
+    CHECK(a.log.find("\npupil center kept as it was: the left eye's pupil at the center dot") != std::string::npos);
     // A re-center with the map: the centre for this wear, after the try's line; without pupils it stays
     s.start(Mode::Center, current, 0.0, {}, ipd);
     double t = 0.0;

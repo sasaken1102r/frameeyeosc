@@ -220,6 +220,15 @@ void applyPupilMap(const PupilMap& map, const double pupil[2], double out[2]) {
     out[1] = map.pitch[0] + map.pitch[1] * pupil[0] + map.pitch[2] * pupil[1];
 }
 
+bool pupilMapInRange(const PupilMap& map) {
+    for (const double* c : {map.yaw, map.pitch}) {
+        // (written as "not within" so that NaN fails too)
+        if (!(std::fabs(c[0]) <= kPupilMapBaseLimit)) return false;
+        if (!(std::fabs(c[1]) <= kPupilMapSlopeLimit) || !(std::fabs(c[2]) <= kPupilMapSlopeLimit)) return false;
+    }
+    return true;
+}
+
 namespace {
 
 /**
@@ -340,6 +349,13 @@ bool fitPupilMaps(const Measured points[kPointCount], double ipd, PupilMap out[2
             why = text;
             return false;
         }
+        if (!pupilMapInRange(maps[eye])) {
+            std::snprintf(text, sizeof(text),
+                          "the %s eye's map is outside what frameeyeosc takes (constants within %.0f, slopes within %.0f)",
+                          eyeName(eye), kPupilMapBaseLimit, kPupilMapSlopeLimit);
+            why = text;
+            return false;
+        }
     }
     for (int eye = 0; eye < 2; ++eye) {
         out[eye] = maps[eye];
@@ -364,6 +380,13 @@ bool pupilCenters(const Measured& center, const PupilMap maps[2], double ipd, do
         applyPupilMap(maps[eye], center.pupil[eye], mapped);
         centers[eye][0] = wanted[0] - mapped[0];
         centers[eye][1] = wanted[1] - mapped[1];
+        if (!(std::fabs(centers[eye][0]) <= kMaxPupilCenterDeg) || !(std::fabs(centers[eye][1]) <= kMaxPupilCenterDeg)) {
+            char text[160];
+            std::snprintf(text, sizeof(text), "the %s eye's center %+.1f %+.1f deg is further than %.0f deg", eyeName(eye),
+                          centers[eye][0], centers[eye][1], kMaxPupilCenterDeg);
+            why = text;
+            return false;
+        }
     }
     for (int eye = 0; eye < 2; ++eye) {
         out[eye][0] = centers[eye][0];
@@ -598,6 +621,19 @@ void Session::finish(Actions& actions) {
             result_.hasPupilMap = current_.hasPupilMap;
             result_.hasPupilCenter = current_.hasPupilCenter;
             actions.log += std::string(current_.hasPupilMap ? "pupil map kept as it was: " : "pupil map not made: ") + why;
+            // The map as it was still gets this wear's centre from the fit's center dot (as a re-center would)
+            if (current_.hasPupilMap) {
+                if (pupilCenters(measured_[static_cast<int>(Point::Center)], current_.pupilMap, ipd_, result_.pupilCenter,
+                                 why)) {
+                    result_.hasPupilCenter = true;
+                    std::snprintf(text, sizeof(text), "\npupil center: L %+.2f %+.2f, R %+.2f %+.2f deg",
+                                  result_.pupilCenter[0][0], result_.pupilCenter[0][1], result_.pupilCenter[1][0],
+                                  result_.pupilCenter[1][1]);
+                    actions.log += text;
+                } else {
+                    actions.log += "\npupil center kept as it was: " + why;
+                }
+            }
         }
     }
     phase_ = Phase::Done;

@@ -4124,6 +4124,16 @@ void testGazeSourceRow(const FontSet& fonts) {
         if (pngDir != nullptr) {
             panel.writePng(std::string(pngDir) + "/eyefit_finetune_nomap_" + lang + "_2026-11-13_02-00-00.png");
         }
+        // "pupil" written but no map: frameeyeosc sends the eye server's gaze, so "Standard" shows as chosen (the
+        // config left as it is)
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetGazeSource, key::kGazeSource).size() == 1);
+        CHECK(m.config.text(key::kGazeSource) == kGazeSources[1]);
+        if (pngDir != nullptr) {
+            panel.writePng(std::string(pngDir) + "/eyefit_finetune_pupil_nomap_" + lang + "_2026-11-13_11-55-00.png");
+        }
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[0]));
         // With one (synthetic numbers): both, chosen or not; the page still inside the card
         for (const auto& eye : kPupilMapKeys) {
             for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));

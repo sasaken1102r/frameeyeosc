@@ -3983,6 +3983,17 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             };
             break;
         }
+        case PanelAction::FitCenterClear: {
+            // What a re-center wrote, back to the defaults (locked ones and ones at their defaults left out); the
+            // gains, the tilt, the lid fit, the lid scales and the up gains in panel.json stay
+            const std::vector<std::string> names = centerCorrection(view);
+            if (names.empty()) return;
+            std::string list;
+            for (const std::string& name : names) list += (list.empty() ? "" : ", ") + name;
+            std::fprintf(stderr, "[fit] center correction cleared (%s back to 0)\n", list.c_str());
+            change = [names](JsonValue& root) { applyDefaults(root, names); };
+            break;
+        }
     }
 
     std::string error;
@@ -3999,6 +4010,8 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         model.panelError.clear();
         model.panelErrorBroken = false;
         if (!openPrompt.empty()) panel.showPrompt(openPrompt);
+        // The Eye fit tab's card says what "Clear center correction" did
+        if (hit.action == PanelAction::FitCenterClear) panel.noteCenterCleared();
         // "Other apps": written, back to the list
         if (hit.action == PanelAction::ExtraSave || hit.action == PanelAction::ExtraDeleteConfirm ||
             hit.action == PanelAction::ExtraRowDeleteConfirm) {

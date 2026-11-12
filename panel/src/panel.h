@@ -61,6 +61,8 @@ enum class PanelAction {
     SetAutoRecenter,   ///< auto_recenter = kAutoRecenterModes[arg]
     RecordToggle,      ///< start the eye log, or stop it (the caller runs the recorder)
     FitReset,          ///< the fit back to the defaults (fitResetKeys: the gaze fit, lid_fit_*, lid_scale_*)
+    FitCenterClear,    ///< "Clear center correction": what a re-center writes back to the defaults (centerResetKeys,
+                       ///< those in centerCorrection; the caller writes them and tells the panel, noteCenterCleared)
     FitDetails,        ///< open / close "Fine-tune" (handled inside the panel)
     FitDetailsPage,    ///< show arg (0 gaze, 1 eyelids) under "Fine-tune" (handled inside the panel)
     LidsPage,          ///< show the Eyelids tab's sub-tab arg (LidsPage; handled inside the panel, which opens the tab;
@@ -276,6 +278,15 @@ public:
      * @param back true to go back from a test version to it (an older regular version)
      */
     void showUpdatePrompt(const std::string& version, bool back = false);
+
+    /**
+     * "Clear center correction" was written: the Eye fit tab's card says so (until a fit starts, "Reset" is pressed
+     * or the gaze has a zero point again).
+     */
+    void noteCenterCleared() { centerCleared_ = true; }
+
+    /** @return true while the card would say the centre correction was cleared (if the zero point is still 0) */
+    bool centerCleared() const { return centerCleared_; }
 
     /** @return true while the recommendation or update prompt is open */
     bool promptOpen() const { return !promptOutput_.empty() || !updatePromptVersion_.empty(); }
@@ -817,6 +828,7 @@ private:
     PanelHit pressed_;
     PanelTab tab_ = PanelTab::Basic;
     bool fitDetails_ = false;  ///< "Fine-tune" is open on the Eye fit tab
+    bool centerCleared_ = false;  ///< "Clear center correction" was the last thing done on the Eye fit tab
     bool setupBegun_ = false;  ///< "Get started" pressed: the eye cameras tab shows the setup checklist, not the intro
     int fitDetailsPage_ = 0;   ///< what "Fine-tune" shows: 0 = gaze, 1 = eyelids
     bool quitArmed_ = false;

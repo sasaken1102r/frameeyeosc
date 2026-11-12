@@ -1075,6 +1075,11 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
                            hit.action == PanelAction::ExtraRowDeleteConfirm;
     if (hit.action != PanelAction::None && !rowDelete) extrasRowDelete_ = -1;
     if (hit.action != PanelAction::None && extrasStep_ == ExtrasStep::List) extrasError_.clear();
+    // A fit (or re-center) started, or "Reset": the card no longer tells of the cleared centre correction
+    if (hit.action == PanelAction::FitStart || hit.action == PanelAction::FitCenter ||
+        hit.action == PanelAction::FitReset) {
+        centerCleared_ = false;
+    }
     switch (hit.action) {
         case PanelAction::PreviewOpen:
             // (pressed again while it is open: it closes)
@@ -3859,6 +3864,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
     const bool busy = fitRunning(fit);
     // While it runs, only "look at the dot" and "Stop": the dots show in front of this panel
     if (busy) {
+        centerCleared_ = false;
         drawEyeFitRunning(pen, t, fit);
         return;
     }
@@ -3869,17 +3875,25 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
 
     // The one button to press: fit (again); and the re-wear fit (the middle dot), the one auto_recenter runs by itself
     // when the headset is put on (see auto_recenter.h)
+    // Under "Re-center only", as wide, its counterpart: what the re-center wrote taken out again (the headset's own
+    // gaze centre passed on as it is), only while there is one
+    const std::vector<std::string> centerKeys = centerCorrection(v);
     {
         drawRowLabel(pen, t, y, kRowH, t.rowFit, t.hintFit, false);
         const double gap = 12;
-        const double smallW = std::max(190.0, pen.measure(t.fitCenterOnly, 19, true) + 32);
+        const double smallW = std::max({190.0, pen.measure(t.fitCenterOnly, 19, true) + 32,
+                                        pen.measure(t.fitCenterClear, 17, true) + 32});
         const double bigW = kControlW - smallW - gap;
         drawButton(pen, kControlX, y + cy, bigW, kControlH, anyFitted ? t.fitAgain : t.fitStart,
                    {PanelAction::FitStart, nullptr, 0}, canRun, true);
         drawButton(pen, kControlX + bigW + gap, y + cy, smallW, kControlH, t.fitCenterOnly,
                    {PanelAction::FitCenter, nullptr, 0}, canRun, false);
+        y += kRowH + kRowGap;
+        const double clearH = 42;
+        drawButton(pen, kControlX + bigW + gap, y, smallW, clearH, t.fitCenterClear,
+                   {PanelAction::FitCenterClear, nullptr, 0}, !centerKeys.empty(), false, 17);
+        y += clearH + 8;
     }
-    y += kRowH + kRowGap;
     // What runs by itself when the headset is put on again (auto_recenter): a setting, so a row of its own that
     // stays put whether "Fine-tune" is open or not
     {
@@ -3930,7 +3944,25 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                 break;
             case Phase::Idle:
             case Phase::Done:
-                if (anyFitted) {
+                if (centerCleared_ && std::fabs(saved.values.offsetX) < 1e-9 && std::fabs(saved.values.offsetY) < 1e-9) {
+                    // "Clear center correction" was the last thing done: what it did, and (re-centering when put on,
+                    // which needs a gaze fit to go on) that it comes back then; the fit's lines after it
+                    check = true;
+                    reset = anyFitted;
+                    title = t.fitCenterCleared;
+                    if (rewear == AutoRecenter::Center && saved.gazeFitted) paragraphs.push_back(t.fitCenterClearedRewear);
+                    if (anyFitted && saved.gazeFitted) {
+                        std::snprintf(text, sizeof(text), t.fitGazeRangeFormat, twoDecimals(saved.values.gainX).c_str(),
+                                      twoDecimals(saved.values.gainUp).c_str(),
+                                      twoDecimals(saved.values.gainDown).c_str());
+                        paragraphs.push_back(text);
+                    }
+                    if (anyFitted) {
+                        for (const std::string& line : lidFitLines(t, saved.values, saved.lidsFitted)) {
+                            paragraphs.push_back(line);
+                        }
+                    }
+                } else if (anyFitted) {
                     check = true;
                     reset = true;
                     title = fit.phase != Phase::Done ? t.fitFitted
@@ -4162,7 +4194,9 @@ void EyePanel::drawEyeFitInfo(const Pen& pen, const UiText& t, double y) {
         baseline += 32;
         pen.text(textX, baseline, line, fitSize(pen, line, 16, 12, textW, false), kText);
     }
+    // (the last, muted line only where it fits: "Clear center correction" above takes some of the room)
     baseline += 32;
+    if (baseline + 14 > y + h) return;
     pen.text(textX, baseline, t.fitInfoNoTilt, fitSize(pen, t.fitInfoNoTilt, 15, 11, textW, false), kTextMuted);
 }
 

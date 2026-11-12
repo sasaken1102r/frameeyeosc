@@ -462,6 +462,28 @@ std::vector<std::string> fitResetKeys() {
     return names;
 }
 
+std::vector<std::string> centerResetKeys() {
+    return {key::kGazeOffsetX, key::kGazeOffsetY};
+}
+
+std::vector<std::string> centerCorrection(const SettingsView& view) {
+    std::vector<std::string> names;
+    for (const std::string& name : centerResetKeys()) {
+        const SettingSpec* spec = findSetting(name);
+        if (spec == nullptr || view.locked(name)) continue;
+        const double value = view.number(name);
+        if (std::isfinite(value) && std::fabs(value - spec->defaultNumber) > 1e-9) names.push_back(name);
+    }
+    return names;
+}
+
+void applyDefaults(JsonValue& root, const std::vector<std::string>& names) {
+    for (const std::string& name : names) {
+        const SettingSpec* spec = findSetting(name);
+        if (spec != nullptr) root.set(name, defaultValue(*spec));
+    }
+}
+
 FitInConfig fitInConfig(const SettingsView& view) {
     FitInConfig fit;
     gaze_fit::Values& v = fit.values;

@@ -277,6 +277,29 @@ void applyFitValues(JsonValue& root, const gaze_fit::Values& values, gaze_fit::M
  */
 std::vector<std::string> fitResetKeys();
 
+/**
+ * What a re-center ("Re-center only", and the automatic one when the headset is put on) writes, and so what "Clear
+ * center correction" puts back to the defaults: the gaze's zero point, gaze_offset_x and gaze_offset_y (applyFitValues
+ * with gaze_fit::Mode::Center). Not the gains, the tilt, each eye's own sideways values, the lid fit or the lid scales.
+ * @return the keys
+ */
+std::vector<std::string> centerResetKeys();
+
+/**
+ * The centre correction "Clear center correction" can take out now: the centerResetKeys that are not locked (set on
+ * frameeyeosc's command line) and not at their defaults already.
+ * @param view the settings
+ * @return those keys (empty: nothing to clear, the button is grey)
+ */
+std::vector<std::string> centerCorrection(const SettingsView& view);
+
+/**
+ * Put keys back to their defaults in config.json (the keys "Reset" or "Clear center correction" take out).
+ * @param root the config's root object
+ * @param names the keys (each in the settings table)
+ */
+void applyDefaults(JsonValue& root, const std::vector<std::string>& names);
+
 /** A gaze smoothing preset (the three One Euro values). */
 struct GazePreset {
     double minCutoff;

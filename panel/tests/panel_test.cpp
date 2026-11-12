@@ -4092,6 +4092,84 @@ void testPortKeypad(const FontSet& fonts) {
     }
 }
 
+/**
+ * "Clear center correction" on the Eye fit tab: under "Re-center only" and as wide; pressable only while the gaze has
+ * a zero point that isn't locked and no fit runs; the press goes to the caller (which writes it); the card's "cleared"
+ * from noteCenterCleared until a fit, a re-center or "Reset" is pressed. The page's buttons stay in the card and apart,
+ * with "Fine-tune" folded and open. In both languages.
+ */
+void testCenterClear(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        PanelModel m = modelWith(Lids::Both, true);
+        m.language = language;
+        m.config.root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.04));
+        m.config.root.set(key::kGazeOffsetY, JsonValue::makeNumber(-0.02));
+        m.config.root.set(key::kGazeGainUp, JsonValue::makeNumber(0.9));
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::EyeFit);
+        for (const int details : {-1, 0, 1}) {
+            panel.setFitDetails(details >= 0);
+            panel.setFitDetailsPage(std::max(0, details));
+            panel.render(m);
+            const std::vector<EyePanel::HitArea> clear = hits(panel, PanelAction::FitCenterClear);
+            const std::vector<EyePanel::HitArea> center = hits(panel, PanelAction::FitCenter);
+            CHECK(clear.size() == 1 && center.size() == 1);
+            if (clear.size() == 1 && center.size() == 1) {
+                // Right under "Re-center only", as wide
+                CHECK(std::fabs(clear[0].x - center[0].x) < 0.5 && std::fabs(clear[0].w - center[0].w) < 0.5);
+                CHECK(clear[0].y >= center[0].y + center[0].h && clear[0].y - (center[0].y + center[0].h) < 30);
+                CHECK(clear[0].h >= 40);
+            }
+            // The card's own buttons: above its bottom edge and apart
+            std::vector<EyePanel::HitArea> own;
+            for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                if (area.x >= 400 && area.y >= 100) own.push_back(area);
+            }
+            for (size_t i = 0; i < own.size(); ++i) {
+                CHECK(own[i].y + own[i].h <= 676 && own[i].x + own[i].w <= 1178);
+                for (size_t j = i + 1; j < own.size(); ++j) CHECK(!overlaps(own[i], own[j]));
+            }
+        }
+        panel.setFitDetails(false);
+        panel.render(m);
+        // Pressed: to the caller
+        CHECK(press(panel, PanelAction::FitCenterClear).action == PanelAction::FitCenterClear);
+        CHECK(!panel.centerCleared());
+        // ...which writes it and tells the panel; then nothing left to clear: grey
+        m.config.root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.0));
+        m.config.root.set(key::kGazeOffsetY, JsonValue::makeNumber(0.0));
+        panel.noteCenterCleared();
+        panel.render(m);
+        CHECK(panel.centerCleared() && hits(panel, PanelAction::FitCenterClear).empty());
+        CHECK(hits(panel, PanelAction::FitCenter).size() == 1 && hits(panel, PanelAction::FitReset).size() == 1);
+        // A re-center pressed: the card's "cleared" goes
+        press(panel, PanelAction::FitCenter);
+        CHECK(!panel.centerCleared());
+        // ...as with "Reset"
+        panel.noteCenterCleared();
+        panel.render(m);
+        press(panel, PanelAction::FitReset);
+        CHECK(!panel.centerCleared());
+        // ...and a fit running (also one started from outside the panel)
+        panel.noteCenterCleared();
+        PanelModel fitting = m;
+        fitting.fit.phase = gaze_fit::Phase::Settling;
+        panel.render(fitting);
+        CHECK(!panel.centerCleared() && hits(panel, PanelAction::FitCenterClear).empty());
+        // One axis only: still pressable
+        m.config.root.set(key::kGazeOffsetY, JsonValue::makeNumber(0.03));
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::FitCenterClear).size() == 1);
+        // Locked on frameeyeosc's command line: grey
+        PanelModel locked = m;
+        locked.status.locked = {key::kGazeOffsetY};
+        locked.status.effective.type = JsonValue::Type::Object;
+        locked.status.effective.set(key::kGazeOffsetY, JsonValue::makeNumber(0.03));
+        panel.render(locked);
+        CHECK(hits(panel, PanelAction::FitCenterClear).empty());
+    }
+}
+
 /** frameeyeosc's reasons, translated where known, as they are where not. */
 void testExtraReasons() {
     const UiText& ja = uiText(Language::Ja);
@@ -4512,6 +4590,7 @@ int main() {
     testExtrasSaveLabel(fonts);
     testExtrasRowDelete(fonts);
     testPortKeypad(fonts);
+    testCenterClear(fonts);
     testStatusLayout(fonts);
     testEyeRate(fonts);
     if (gFailures > 0) {

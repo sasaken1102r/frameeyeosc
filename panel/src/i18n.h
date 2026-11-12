@@ -140,6 +140,9 @@ struct UiText {
     const char* camBriefWarming;     ///< ...learning the relaxed eyes...
     const char* camBriefWaiting;     ///< ...or not on the cameras for another reason (the headset off, ...)
     const char* cameraBadge;         ///< the small green badge after a row that only works with the eye cameras
+    const char* fitCenterClear;      ///< the Eye fit tab's button under "Re-center only": its zero point taken out
+    const char* fitCenterCleared;    ///< ...the card's line after it
+    const char* fitCenterClearedRewear;  ///< ...and, with re-centering when put on, that it comes back then
     // Where a row only for the eye cameras would be while they aren't in use: one dashed line (to their tab)
     const char* cameraLineWiden;     ///< Eyelids, Look
     const char* cameraLineFloor;     ///< Eyelids, Blinks and narrowing

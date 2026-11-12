@@ -170,6 +170,88 @@ void testResetClearsScales() {
 }
 
 /**
+ * "Clear center correction": exactly the keys a re-center writes (the zero point), back to 0; ones at 0 and locked
+ * ones left out; the gains, the tilt, each eye's own values, the lid fit and the lid scales untouched.
+ */
+void testCenterReset() {
+    const std::vector<std::string> keys = centerResetKeys();
+    CHECK(keys == std::vector<std::string>({key::kGazeOffsetX, key::kGazeOffsetY}));
+    // The same keys a re-center writes, no more
+    JsonValue written;
+    written.type = JsonValue::Type::Object;
+    applyFitValues(written, measured(true), gaze_fit::Mode::Center);
+    std::vector<std::string> names;
+    for (const auto& member : written.members) names.push_back(member.first);
+    std::sort(names.begin(), names.end());
+    std::vector<std::string> sorted = keys;
+    std::sort(sorted.begin(), sorted.end());
+    CHECK(names == sorted);
+
+    // A config after a whole fit, a re-center and some hand-set values
+    JsonValue fitted = tweakedRoot();
+    applyFitValues(fitted, measured(true), gaze_fit::Mode::Full);
+    applyFitValues(fitted, measured(false), gaze_fit::Mode::Center);
+    fitted.set(key::kGazeRollDeg, JsonValue::makeNumber(2.5));
+    fitted.set(key::kGazeGainX, JsonValue::makeNumber(0.9));
+    fitted.set(key::kGazeOffsetXLeft, JsonValue::makeNumber(0.03));
+    fitted.set(key::kLidScaleLeft, JsonValue::makeNumber(1.2));
+    PanelModel model;
+    model.config.exists = true;
+    model.config.root = fitted;
+    CHECK(centerCorrection(SettingsView(model)) == keys);
+    JsonValue cleared = fitted;
+    applyDefaults(cleared, centerCorrection(SettingsView(model)));
+    CHECK(numberIn(cleared, key::kGazeOffsetX) == 0.0 && numberIn(cleared, key::kGazeOffsetY) == 0.0);
+    // ...everything else as it was, in the same order
+    CHECK(cleared.members.size() == fitted.members.size());
+    for (size_t i = 0; i < fitted.members.size() && i < cleared.members.size(); ++i) {
+        const std::string& name = fitted.members[i].first;
+        CHECK(cleared.members[i].first == name);
+        if (name == key::kGazeOffsetX || name == key::kGazeOffsetY) continue;
+        const JsonValue& before = fitted.members[i].second;
+        const JsonValue& after = cleared.members[i].second;
+        CHECK(before.type == after.type && (!before.isNumber() || before.number == after.number));
+    }
+    CHECK(numberIn(cleared, key::kGazeGainUp) == 0.88 && numberIn(cleared, key::kGazeRollDeg) == 2.5);
+    CHECK(numberIn(cleared, key::kGazeGainX) == 0.9 && numberIn(cleared, key::kGazeOffsetXLeft) == 0.03);
+    CHECK(numberIn(cleared, key::kLidScaleLeft) == 1.2 && numberIn(cleared, key::kLidFitOpenLeft) == 0.85);
+    // The fit is still a gaze fit (so re-centering when put on goes on), only without its zero point
+    model.config.root = cleared;
+    const FitInConfig after = fitInConfig(SettingsView(model));
+    CHECK(after.gazeFitted && after.values.offsetX == 0.0 && after.values.offsetY == 0.0 && after.values.hasLids);
+    // Nothing more to clear
+    CHECK(centerCorrection(SettingsView(model)).empty());
+
+    // Only the one that isn't 0
+    PanelModel oneAxis;
+    oneAxis.config.exists = true;
+    oneAxis.config.root.type = JsonValue::Type::Object;
+    oneAxis.config.root.set(key::kGazeOffsetY, JsonValue::makeNumber(-0.04));
+    CHECK(centerCorrection(SettingsView(oneAxis)) == std::vector<std::string>({key::kGazeOffsetY}));
+    // Nothing set: nothing to clear
+    PanelModel none;
+    none.config.exists = true;
+    none.config.root.type = JsonValue::Type::Object;
+    CHECK(centerCorrection(SettingsView(none)).empty());
+    // Locked on frameeyeosc's command line: left out (both locked: nothing to clear)
+    PanelModel locked = model;
+    locked.config.root = fitted;
+    locked.status.running = true;  // (a lock counts only while frameeyeosc runs)
+    locked.status.locked = {key::kGazeOffsetX};
+    locked.status.effective.type = JsonValue::Type::Object;
+    locked.status.effective.set(key::kGazeOffsetX, JsonValue::makeNumber(0.2));
+    CHECK(centerCorrection(SettingsView(locked)) == std::vector<std::string>({key::kGazeOffsetY}));
+    locked.status.locked = {key::kGazeOffsetX, key::kGazeOffsetY};
+    locked.status.effective.set(key::kGazeOffsetY, JsonValue::makeNumber(0.1));
+    CHECK(centerCorrection(SettingsView(locked)).empty());
+    // A key outside the settings table is skipped
+    JsonValue unknown;
+    unknown.type = JsonValue::Type::Object;
+    applyDefaults(unknown, {"no_such_key"});
+    CHECK(unknown.members.empty());
+}
+
+/**
  * auto_recenter as written in a config.
  * @param value the value, or null for none
  * @return the kind
@@ -1894,6 +1976,7 @@ int main() {
     testFitResetsScales();
     testFitWritesPolicy();
     testResetClearsScales();
+    testCenterReset();
     testRecenterDefault();
     testOutputArgs();
     testWidenState();

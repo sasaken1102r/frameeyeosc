@@ -131,6 +131,9 @@ UiText makeJapanese() {
     t.camBriefWarming = "目を覚えてる途中";
     t.camBriefWaiting = "待機中";
     t.cameraBadge = "カメラ";
+    t.fitCenterClear = "真ん中のズレ補正を消す";
+    t.fitCenterCleared = "真ん中のズレ補正を消したよ";
+    t.fitCenterClearedRewear = "次に被ったときは、また自動で合わせ直すよ";
     t.cameraLineWiden = "目のカメラを使うと「見開きの出やすさ」が増えるよ";
     t.cameraLineFloor = "目のカメラを使うと「細めたときのまぶたの下限」も使えるよ";
     t.cameraLinePupils = "目のカメラを使うと、瞳孔の大きさも送れるよ";
@@ -1334,6 +1337,9 @@ UiText makeEnglish() {
     t.camBriefWarming = "Learning your eyes";
     t.camBriefWaiting = "Waiting";
     t.cameraBadge = "Camera";
+    t.fitCenterClear = "Clear center correction";
+    t.fitCenterCleared = "Center correction cleared";
+    t.fitCenterClearedRewear = "It will re-center by itself the next time you put the headset on";
     t.cameraLineWiden = "With the eye cameras you also get \"How easily widening shows\"";
     t.cameraLineFloor = "With the eye cameras you also get \"Lowest eyelid when narrowed\"";
     t.cameraLinePupils = "With the eye cameras, pupil size goes out too";

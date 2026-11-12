@@ -6,8 +6,9 @@
 //!
 //! The gaze sent is the combined one: the mean of both eyes' mapped directions. Each eye's direction is used while its
 //! pair is fresh (FRESH_S), the eye is not shut (the core's own decision, which goes by the eye camera too where the
-//! eye server's openness is stuck at 0), and it is inside the fit's range (RANGE_MARGIN_DEG). One eye missing: the
-//! other plus the last known difference between them. Both missing: the last gaze held for HOLD_S, then the eye
+//! eye server's openness is stuck at 0), and it is inside the fit's range (RANGE_MARGIN_DEG); two eyes further apart
+//! than EYES_APART_DEG are both left out (one of them is wrong). One eye missing: the other plus the last known
+//! difference between them. Both missing: the last gaze held for HOLD_S, then the eye
 //! server's gaze shifted by the last known difference between it and the pupil gaze. Every change of where it comes
 //! from eases over BLEND_S from the gaze as it was, so nothing jumps.
 
@@ -21,6 +22,11 @@ const FIT_YAW_DEG: f32 = 20.0;
 const FIT_PITCH_DEG: f32 = 15.0;
 /// ...and a mapped eye more than this beyond them is not used (degrees): the map is a straight line fitted there.
 pub const RANGE_MARGIN_DEG: f32 = 15.0;
+/// Both eyes' directions further apart than this (degrees) are not used: the eyes look about the same way (4° apart
+/// for a dot 0.9 m away, up to about 17° with each eye's straight-line map at the side dots), so one of the two is
+/// wrong (the pairs while the headset is being put on read 40° and more apart). Intentional cross-eye gets the eye
+/// server's gaze then.
+pub const EYES_APART_DEG: f32 = 20.0;
 /// Both eyes missing: the last combined gaze is held this long (s), then the eye server's gaze takes over.
 pub const HOLD_S: f64 = 0.3;
 /// A change of where the gaze comes from eases over this long (s) from the gaze as it was.
@@ -189,10 +195,18 @@ impl PupilGaze {
         self.last_time = Some(time);
         let by = (1.0 - (-dt / DIFF_TAU_S).exp()) as f32;
         let pairs = self.fresh.update(time, extra);
-        let eyes: [Option<[f32; 2]>; 2] = [0, 1].map(|eye| {
+        let mut eyes: [Option<[f32; 2]>; 2] = [0, 1].map(|eye| {
             let pair = pairs[eye].filter(|_| open[eye])?;
             Some(maps[eye].apply(pair)).filter(|mapped| in_range(*mapped))
         });
+        // Two eyes far apart: one of them is wrong (a pupil lost at the lens edge, the headset being put on), and which
+        // can't be told, so neither is used
+        if let [Some(left), Some(right)] = eyes {
+            let apart = sub(left, right);
+            if (apart[0] * apart[0] + apart[1] * apart[1]).sqrt() > EYES_APART_DEG {
+                eyes = [None, None];
+            }
+        }
         let half_diff = scaled(self.diff.unwrap_or([0.0; 2]), 0.5);
         let (target, in_use) = match eyes {
             [Some(left), Some(right)] => {
@@ -495,6 +509,12 @@ mod tests {
         let mut gaze = PupilGaze::default();
         let edge = pair(FIT_YAW_DEG + RANGE_MARGIN_DEG - 1.0, FIT_PITCH_DEG + RANGE_MARGIN_DEG - 1.0);
         assert_eq!(gaze.step(0.0, &maps, &extra(edge, edge), [true; 2], [0.0; 2]).in_use, InUse::Pupil);
+        // Both in range but far apart: neither (one of them is wrong)
+        let mut gaze = PupilGaze::default();
+        let apart = extra(pair(-EYES_APART_DEG / 2.0 - 0.5, 0.0), pair(EYES_APART_DEG / 2.0 + 0.5, 0.0));
+        assert_eq!(gaze.step(0.0, &maps, &apart, [true; 2], [0.0; 2]).in_use, InUse::Valve);
+        let close = extra(pair(-EYES_APART_DEG / 2.0 + 0.5, 0.0), pair(EYES_APART_DEG / 2.0 - 0.5, 0.0));
+        assert_eq!(gaze.step(DT, &maps, &close, [true; 2], [0.0; 2]).in_use, InUse::Pupil);
     }
 
     #[test]

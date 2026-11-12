@@ -3937,19 +3937,26 @@ fn process(
         // gaze_source "pupil" with a map for both eyes: the combined gaze from the pupils (pupil.rs), each eye keeping its
         // own difference from the combined gaze as the eye server reads it; after this everything goes on as usual.
         // Otherwise (and in --raw) the gaze is exactly as before
-        let corrected = match pupil::maps(settings) {
+        let valve = [corrected[4] * 45.0, corrected[5] * 45.0];
+        let to_scale = |degrees: [f32; 2]| degrees.map(|degrees| (degrees / 45.0).clamp(-1.0, 1.0));
+        let (corrected, pupil_used) = match pupil::maps(settings) {
             Some(maps) => {
-                let open = eyes_open_for_gaze(data.openness, doubted, seen_open, settings);
-                let valve = [corrected[4] * 45.0, corrected[5] * 45.0];
+                let open = eyes_open_for_pupil(data.openness, seen_open, settings);
                 let step = smoother.pupil.step(data.sample_time, &maps, &data.extra, open, valve);
                 gaze_in_use = Some(step.in_use);
-                with_combined(corrected, step.gaze.map(|degrees| (degrees / 45.0).clamp(-1.0, 1.0)))
+                let used = matches!(step.in_use, pupil::InUse::Pupil | pupil::InUse::Left | pupil::InUse::Right);
+                (with_combined(corrected, to_scale(step.gaze)), used)
             }
-            None => {
-                smoother.pupil.reset();
-                corrected
-            }
+            // Just switched back from the pupil source: eased back to the eye server's gaze; otherwise as it is
+            None => match smoother.pupil.fade(data.sample_time, valve) {
+                Some(gaze) => (with_combined(corrected, to_scale(gaze)), false),
+                None => (corrected, false),
+            },
         };
+        // While a pupil gives the gaze, both eyes count as usable from here on: choose_gaze would otherwise put one
+        // eye's own eye-server gaze in place of the pupils' combined one, and both unusable would hold it while the
+        // pupils are seen. (Shut eyes still hold it through shut_for_gaze, below.)
+        let usable_gaze = if pupil_used { [true; 2] } else { usable_gaze };
         let readings: [f32; 8] =
             std::array::from_fn(|i| if i < 6 { corrected[i] } else { data.openness[i - 6] });
         // Fed even while off, so turning it on does not start from an empty history.
@@ -4099,10 +4106,12 @@ fn process(
     }
 }
 
-/// Per eye: not shut for the gaze, by shut_for_gaze's rule (which holds the gaze while either eye is): its Frame openness
-/// at least --gaze-hold-below, or its reading doubted, or the eye camera seeing it open.
-fn eyes_open_for_gaze(openness: [f32; 2], doubted: [bool; 2], seen_open: [bool; 2], settings: &Settings) -> [bool; 2] {
-    [0, 1].map(|eye| !(openness[eye] < settings.gaze_hold_below && !doubted[eye] && !seen_open[eye]))
+/// Per eye: open for the pupil source: its Frame openness at least --gaze-hold-below, or the eye camera seeing it open
+/// (Smoother::seen_open: the eye server's openness can stay stuck at 0 for a whole wear). Unlike shut_for_gaze, an eye
+/// read low alone for longer than a wink (doubted) does not count as open: it may be a long wink, and its pupil pair
+/// then is not where it looks; the other eye carries on (pupil.rs).
+fn eyes_open_for_pupil(openness: [f32; 2], seen_open: [bool; 2], settings: &Settings) -> [bool; 2] {
+    [0, 1].map(|eye| openness[eye] >= settings.gaze_hold_below || seen_open[eye])
 }
 
 /// The gaze (left x/y, right x/y, combined x/y on the -1..1 scale) with the combined pair set to `combined` and each

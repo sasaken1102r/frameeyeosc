@@ -1301,6 +1301,51 @@ mod tests {
     }
 
     #[test]
+    fn a_long_wink_goes_on_with_the_open_eyes_pupil_and_not_the_eye_servers_eye() {
+        use crate::config::GazeSource;
+        use crate::pupil::InUse;
+        // Made up: 5 s looking 3 deg right (the eye server says straight ahead), the pupils moving a hair; the right eye
+        // winked shut from 1 s to 4 s; meanwhile the eye server reads each eye 10 deg apart from the combined gaze, and the
+        // shut eye's pair still moves a little, mapping to 5 deg left
+        let template = synthetic()[0];
+        let samples: Vec<EyeData> = (0..450)
+            .map(|i| {
+                let mut data = template;
+                data.sample_time = 2000.0 + f64::from(i) / 90.0;
+                data.fixation_point = [0.0, 0.0, -0.7];
+                data.gaze = [[0.0, 0.0, -1.0]; 2];
+                data.pre_fusion_gaze = data.gaze;
+                data.gaze_covariance = [[0.0005; 3]; 2];
+                data.pre_fusion_covariance = data.gaze_covariance;
+                let shut = (90..360).contains(&i);
+                data.openness = [0.95, if shut { 0.05 } else { 0.95 }];
+                if shut {
+                    data.gaze[0] = [0.1736, 0.0, -0.9848];
+                    data.gaze[1] = [-0.1736, 0.0, -0.9848];
+                }
+                let jitter = (i % 2) as f32 * 1e-5;
+                let (u, v) = ((3.0 + 40.0) / 200.0 + jitter, 20.0 / 200.0);
+                // The shut eye's pair: in range and moving, but not where the open eye looks
+                let (ur, vr) = if shut { ((-5.0 + 40.0) / 200.0 + jitter, 20.0 / 200.0) } else { (u, v) };
+                data.extra[..4].copy_from_slice(&[u, v, ur, vr]);
+                data
+            })
+            .collect();
+        let settings = Settings { gaze_source: GazeSource::Pupil, ..with_pupil_map(&all_stages()) };
+        let sent = replay_alone(&samples, &settings, calibration());
+        // Once the wink outlasts the one-eye hold (the gaze held before, as always), the left eye's pupil alone, and the
+        // gaze sent where it looks: 3 deg right, not the eye server's 0, either eye's own +-10, or the mean with the shut
+        // eye's pair (-1)
+        let start = 90 + ((crate::ONE_EYE_HOLD_MAX_S + 0.3) * 90.0) as usize;
+        let wink = &sent[start..355];
+        assert!(wink.iter().all(|sample| sample.gaze_in_use == Some(InUse::Left)), "{:?}", wink[0].gaze_in_use);
+        assert!(wink.iter().all(|sample| (sample.gaze[4] * 45.0 - 3.0).abs() < 0.3), "{}", wink[0].gaze[4] * 45.0);
+        assert!(wink.iter().all(|sample| !sample.gaze_held));
+        // Both open again: both pupils
+        assert!(sent[420..].iter().all(|sample| sample.gaze_in_use == Some(InUse::Pupil)));
+    }
+
+    #[test]
     fn the_pupil_gaze_follows_the_pupils_through_the_whole_pipeline() {
         use crate::config::GazeSource;
         // The synthetic recording with each eye's pupil pair moving as if looking 5 deg right and 4 deg up of where the

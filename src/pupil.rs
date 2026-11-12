@@ -81,26 +81,48 @@ fn in_range([yaw, pitch]: [f32; 2]) -> bool {
     yaw.abs() <= FIT_YAW_DEG + RANGE_MARGIN_DEG && pitch.abs() <= FIT_PITCH_DEG + RANGE_MARGIN_DEG
 }
 
-/// Each eye's pupil pair from the eye server's estimate_extra, and whether it is fresh (see FRESH_S).
-#[derive(Clone, Debug, Default)]
+/// Each eye's pupil pair from the eye server's estimate_extra, and whether it is fresh (see FRESH_S): a pair counts
+/// once it has been seen to change, so a still pair at the start (or after a gap) is not taken for a new one.
+#[derive(Clone, Debug)]
 pub struct Fresh {
     last: [Option<[f32; 2]>; 2],
+    // When each eye's pair last changed (-infinity: not seen changing yet).
     changed: [f64; 2],
+    last_time: Option<f64>,
+}
+
+impl Default for Fresh {
+    fn default() -> Self {
+        Self {
+            last: [None; 2],
+            changed: [f64::NEG_INFINITY; 2],
+            last_time: None,
+        }
+    }
 }
 
 impl Fresh {
-    /// Take a sample's estimate_extra at `time`; each eye's pair while fresh, None otherwise (or not finite).
+    /// Take a sample's estimate_extra at `time`; each eye's pair while fresh, None otherwise (or not finite). Time
+    /// going back starts it over.
     pub fn update(&mut self, time: f64, extra: &[f32; 8]) -> [Option<[f32; 2]>; 2] {
+        if self.last_time.is_some_and(|last| time < last) {
+            *self = Self::default();
+        }
+        self.last_time = Some(time);
         [0, 1].map(|eye| {
             let pair = [extra[2 * eye], extra[2 * eye + 1]];
             if !pair.iter().all(|value| value.is_finite()) {
                 self.last[eye] = None;
+                self.changed[eye] = f64::NEG_INFINITY;
                 return None;
             }
-            if self.last[eye] != Some(pair) {
-                self.last[eye] = Some(pair);
-                self.changed[eye] = time;
+            match self.last[eye] {
+                Some(last) if last != pair => self.changed[eye] = time,
+                Some(_) => {}
+                // The first pair seen: not known to be new until it changes
+                None => self.changed[eye] = f64::NEG_INFINITY,
             }
+            self.last[eye] = Some(pair);
             (time - self.changed[eye] <= FRESH_S).then_some(pair)
         })
     }
@@ -180,6 +202,11 @@ pub struct PupilGaze {
     in_use: Option<InUse>,
     // Since when a change of source eases, and the difference it eases away.
     blend: Option<(f64, [f32; 2])>,
+    // The maps of the last sample: a new map or centre (a re-center, "Clear center correction") eases in like a change
+    // of source.
+    maps: Option<[EyeMap; 2]>,
+    // Easing back to the eye server's gaze after the pupil source was left (fade).
+    fading: bool,
 }
 
 impl PupilGaze {
@@ -191,6 +218,11 @@ impl PupilGaze {
     /// One sample: its time, both eyes' maps, the eye server's estimate_extra, which eyes are open (not shut for the
     /// gaze), and the eye server's combined gaze as it would go out (degrees).
     pub fn step(&mut self, time: f64, maps: &[EyeMap; 2], extra: &[f32; 8], open: [bool; 2], valve: [f32; 2]) -> Step {
+        // Time going back (the eye server restarted its clock): start over, as after a gap. So does coming back to the
+        // pupil source while still easing away from it
+        if self.fading || self.last_time.is_some_and(|last| time < last) {
+            self.reset();
+        }
         let dt = self.last_time.map_or(0.0, |last| (time - last).max(0.0));
         self.last_time = Some(time);
         let by = (1.0 - (-dt / DIFF_TAU_S).exp()) as f32;
@@ -230,7 +262,9 @@ impl PupilGaze {
             (Some(before), Some(out)) => (before, out),
             _ => (InUse::Valve, valve),
         };
-        if before != in_use {
+        let new_maps = self.maps.is_some_and(|old| old != *maps);
+        self.maps = Some(*maps);
+        if before != in_use || new_maps {
             self.blend = Some((time, sub(out, target)));
         }
         let gaze = match self.blend {
@@ -248,6 +282,30 @@ impl PupilGaze {
         self.out = Some(gaze);
         self.in_use = Some(in_use);
         Step { gaze, in_use }
+    }
+
+    /// The pupil source left (gaze_source "valve", or the map gone): the gaze as last given eases to the eye server's
+    /// gaze (`valve`, degrees) over BLEND_S, then None (and everything starts over). None at once if nothing went out.
+    pub fn fade(&mut self, time: f64, valve: [f32; 2]) -> Option<[f32; 2]> {
+        let out = self.out?;
+        if self.last_time.is_some_and(|last| time < last) {
+            self.reset();
+            return None;
+        }
+        if !self.fading {
+            self.fading = true;
+            self.blend = Some((time, sub(out, valve)));
+        }
+        self.last_time = Some(time);
+        let (since, offset) = self.blend?;
+        let left = 1.0 - ((time - since) / BLEND_S) as f32;
+        if left <= 0.0 {
+            self.reset();
+            return None;
+        }
+        let gaze = add(valve, scaled(offset, left));
+        self.out = Some(gaze);
+        Some(gaze)
     }
 }
 
@@ -383,7 +441,9 @@ mod tests {
         let mut time = 0.0;
         for i in 0..10 {
             let value = 0.2 + i as f32 * 0.001;
-            assert!(fresh.update(time, &extra([value, 0.1], [value, 0.1])).iter().all(Option::is_some));
+            // The first pair is not known to be new until it changes
+            let pairs = fresh.update(time, &extra([value, 0.1], [value, 0.1]));
+            assert!(pairs.iter().all(|pair| pair.is_some() == (i > 0)), "{i}");
             time += DT;
         }
         // Repeated: fresh for FRESH_S after it last changed, then not
@@ -396,6 +456,19 @@ mod tests {
         assert!(seen.iter().all(|(age, ok)| *ok == (*age <= FRESH_S)));
         // Not finite: not fresh
         assert_eq!(fresh.update(time, &extra([f32::NAN, 0.1], [0.3, 0.1]))[0], None);
+        // Time going back starts over: a still pair is not fresh, however recently it changed before
+        let mut fresh = Fresh::default();
+        fresh.update(10.0, &extra([0.2, 0.1], [0.2, 0.1]));
+        assert!(fresh.update(10.0 + DT, &extra([0.3, 0.1], [0.3, 0.1]))[0].is_some());
+        assert!(fresh.update(5.0, &extra([0.3, 0.1], [0.3, 0.1])).iter().all(Option::is_none));
+        assert!(fresh.update(5.0 + DT, &extra([0.31, 0.1], [0.31, 0.1])).iter().all(Option::is_some));
+    }
+
+    // Two samples of the same eyes (the first a hair off, so the second is seen changing), the second's step.
+    fn second(gaze: &mut PupilGaze, maps: &[EyeMap; 2], left: [f32; 2], right: [f32; 2], open: [bool; 2]) -> Step {
+        let off = |p: [f32; 2]| [p[0] + 1e-4, p[1]];
+        gaze.step(0.0, maps, &extra(off(left), off(right)), open, [0.0; 2]);
+        gaze.step(DT, maps, &extra(left, right), open, [0.0; 2])
     }
 
     // Runs a stream of (left, right) eye directions (None: the pair stops changing, as when the eye server loses the
@@ -432,7 +505,7 @@ mod tests {
     #[test]
     fn both_eyes_give_their_mean() {
         let steps = run(&[(Some([4.0, 2.0]), Some([2.0, 1.0])); 30], [9.0, 9.0]);
-        assert!(steps.iter().all(|step| step.in_use == InUse::Pupil));
+        assert!(steps.iter().skip(1).all(|step| step.in_use == InUse::Pupil));
         let last = steps.last().unwrap().gaze;
         assert!((last[0] - 3.0).abs() < 1e-3 && (last[1] - 1.5).abs() < 1e-3, "{last:?}");
     }
@@ -500,21 +573,89 @@ mod tests {
     fn a_shut_eye_or_one_out_of_range_is_not_used() {
         let maps = [map(), map()];
         let mut gaze = PupilGaze::default();
-        let open = gaze.step(0.0, &maps, &extra(pair(2.0, 0.0), pair(2.0, 0.0)), [true, false], [0.0; 2]);
+        let open = second(&mut gaze, &maps, pair(2.0, 0.0), pair(2.0, 0.0), [true, false]);
         assert_eq!(open.in_use, InUse::Left);
         let mut gaze = PupilGaze::default();
         let far = pair(FIT_YAW_DEG + RANGE_MARGIN_DEG + 1.0, 0.0);
-        let step = gaze.step(0.0, &maps, &extra(far, pair(2.0, 0.0)), [true; 2], [0.0; 2]);
-        assert_eq!(step.in_use, InUse::Right);
+        assert_eq!(second(&mut gaze, &maps, far, pair(2.0, 0.0), [true; 2]).in_use, InUse::Right);
         let mut gaze = PupilGaze::default();
         let edge = pair(FIT_YAW_DEG + RANGE_MARGIN_DEG - 1.0, FIT_PITCH_DEG + RANGE_MARGIN_DEG - 1.0);
-        assert_eq!(gaze.step(0.0, &maps, &extra(edge, edge), [true; 2], [0.0; 2]).in_use, InUse::Pupil);
+        assert_eq!(second(&mut gaze, &maps, edge, edge, [true; 2]).in_use, InUse::Pupil);
         // Both in range but far apart: neither (one of them is wrong)
         let mut gaze = PupilGaze::default();
-        let apart = extra(pair(-EYES_APART_DEG / 2.0 - 0.5, 0.0), pair(EYES_APART_DEG / 2.0 + 0.5, 0.0));
-        assert_eq!(gaze.step(0.0, &maps, &apart, [true; 2], [0.0; 2]).in_use, InUse::Valve);
-        let close = extra(pair(-EYES_APART_DEG / 2.0 + 0.5, 0.0), pair(EYES_APART_DEG / 2.0 - 0.5, 0.0));
-        assert_eq!(gaze.step(DT, &maps, &close, [true; 2], [0.0; 2]).in_use, InUse::Pupil);
+        let (a, b) = (pair(-EYES_APART_DEG / 2.0 - 0.5, 0.0), pair(EYES_APART_DEG / 2.0 + 0.5, 0.0));
+        assert_eq!(second(&mut gaze, &maps, a, b, [true; 2]).in_use, InUse::Valve);
+        let mut gaze = PupilGaze::default();
+        let (a, b) = (pair(-EYES_APART_DEG / 2.0 + 0.5, 0.0), pair(EYES_APART_DEG / 2.0 - 0.5, 0.0));
+        assert_eq!(second(&mut gaze, &maps, a, b, [true; 2]).in_use, InUse::Pupil);
+        // A still pair at the start is not used: it is not known to be a new one
+        let mut gaze = PupilGaze::default();
+        let still = extra(pair(2.0, 0.0), pair(2.0, 0.0));
+        assert_eq!(gaze.step(0.0, &maps, &still, [true; 2], [0.0; 2]).in_use, InUse::Valve);
+        assert_eq!(gaze.step(DT, &maps, &still, [true; 2], [0.0; 2]).in_use, InUse::Valve);
+    }
+
+    #[test]
+    fn time_going_back_starts_over_without_a_blend_out_of_bounds() {
+        // Pupils at 6 deg, then the clock goes back while easing away from a switch: the gaze stays between the two
+        // and the pupils come back as soon as they are seen moving
+        let maps = [map(), map()];
+        let mut gaze = PupilGaze::default();
+        let mut outs = Vec::new();
+        for i in 0..40 {
+            let p = add(pair(6.0, 0.0), [(i % 2) as f32 * 1e-5, 0.0]);
+            outs.push(gaze.step(100.0 + i as f64 * DT, &maps, &extra(p, p), [true; 2], [0.0; 2]));
+        }
+        assert!(outs.iter().all(|step| step.gaze[0] >= -0.01 && step.gaze[0] <= 6.01));
+        let back = gaze.step(50.0, &maps, &extra(pair(6.0, 0.0), pair(6.0, 0.0)), [true; 2], [0.0; 2]);
+        // Started over: no pupil yet (the pair not seen changing), the eye server's gaze, nothing held from before
+        assert_eq!(back.in_use, InUse::Valve);
+        assert!(back.gaze[0].abs() < 1e-6, "{back:?}");
+        let p = add(pair(6.0, 0.0), [1e-5, 0.0]);
+        let again = gaze.step(50.0 + DT, &maps, &extra(p, p), [true; 2], [0.0; 2]);
+        assert_eq!(again.in_use, InUse::Pupil);
+        assert!(again.gaze[0] >= 0.0 && again.gaze[0] <= 6.0, "{again:?}");
+    }
+
+    #[test]
+    fn a_new_map_or_centre_and_leaving_the_pupil_source_ease_in() {
+        let maps = [map(), map()];
+        let mut gaze = PupilGaze::default();
+        let mut time = 0.0;
+        let mut last = None;
+        let mut steps = Vec::new();
+        for i in 0..80 {
+            // A re-center moves both centres by 4 deg at sample 40
+            let mut now = maps;
+            if i >= 40 {
+                now[0].center = [4.0, 0.0];
+                now[1].center = [4.0, 0.0];
+            }
+            let p = add(pair(2.0, 0.0), [(i % 2) as f32 * 1e-6, 0.0]);
+            let step = gaze.step(time, &now, &extra(p, p), [true; 2], [2.0, 0.0]);
+            steps.push(step);
+            last = Some(step.gaze);
+            time += DT;
+        }
+        assert!((steps[39].gaze[0] - 2.0).abs() < 1e-3 && (steps[79].gaze[0] - 6.0).abs() < 1e-3);
+        assert!(largest_step(&steps[30..]) < 4.0 / 20.0, "{}", largest_step(&steps[30..]));
+        // Leaving the pupil source (gaze_source "valve"): from the gaze as it was to the eye server's (-3 deg) over
+        // BLEND_S, then nothing (the eye server's as it is)
+        let mut faded = Vec::new();
+        for _ in 0..40 {
+            faded.push(gaze.fade(time, [-3.0, 0.0]));
+            time += DT;
+        }
+        let first = faded[0].unwrap();
+        assert!((first[0] - last.unwrap()[0]).abs() < 1e-3, "{first:?}");
+        let n = faded.iter().take_while(|gaze| gaze.is_some()).count();
+        assert!((20..=24).contains(&n), "{n}");
+        let values: Vec<f32> = faded[..n].iter().map(|gaze| gaze.unwrap()[0]).collect();
+        assert!(values.windows(2).all(|pair| pair[0] - pair[1] < 9.0 / 20.0 && pair[1] <= pair[0]));
+        assert!(faded[n..].iter().all(Option::is_none));
+        // Nothing went out (the eye server's from the start): None at once, every time
+        let mut idle = PupilGaze::default();
+        assert!((0..5).all(|i| idle.fade(i as f64 * DT, [1.0, 1.0]).is_none()));
     }
 
     #[test]

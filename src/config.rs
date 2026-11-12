@@ -22,6 +22,11 @@ const GAZE_GAIN_RANGE: std::ops::RangeInclusive<f32> = 0.5..=2.0;
 const GAZE_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.05..=2.0;
 // Allowed headset tilt (degrees).
 const GAZE_ROLL_RANGE: std::ops::RangeInclusive<f32> = -20.0..=20.0;
+// The pupil map's values (pupil_yaw_left ...): its constant terms and the centre in degrees, its slopes in degrees per
+// unit of the eye server's pupil pair (fitted maps have about 200-300). Wide, as only a broken file goes past them.
+const PUPIL_MAP_BASE_RANGE: std::ops::RangeInclusive<f32> = -360.0..=360.0;
+const PUPIL_MAP_SLOPE_RANGE: std::ops::RangeInclusive<f32> = -10000.0..=10000.0;
+const PUPIL_CENTER_RANGE: std::ops::RangeInclusive<f32> = -45.0..=45.0;
 // camera_lid_floor, in VRCFT units: up to relaxed open.
 const CAMERA_LID_FLOOR_RANGE: std::ops::RangeInclusive<f32> = 0.0..=0.75;
 // lid_open_snap, in VRCFT units: relaxed open (0.75) is off.
@@ -117,6 +122,18 @@ pub enum Widen {
     Normal,
     /// a small rise widens
     High,
+}
+
+/// Where the sent gaze comes from (gaze_source): the eye server's gaze, or (a test) each eye's pupil position in the
+/// eye camera's picture, mapped by the panel's eye fit (see pupil.rs). Not a command-line option.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GazeSource {
+    /// the eye server's gaze, as always
+    #[default]
+    Valve,
+    /// the pupil map (pupil_*_left/right); without a whole map for both eyes, the same as valve
+    Pupil,
 }
 
 /// What an extra output sends (its `format`; both names are permanent: a variant gets a new name).
@@ -456,6 +473,34 @@ pub struct Settings {
     pub lid_fit_open_right: Option<f32>,
     pub lid_fit_down_left: Option<f32>,
     pub lid_fit_down_right: Option<f32>,
+    /// Where the sent gaze comes from: "valve" (the default) or "pupil" (a test; see GazeSource and pupil.rs).
+    pub gaze_source: GazeSource,
+    /// Each eye's pupil map, written by the panel's eye fit: from the eye's pupil pair (u, v) as the eye server gives
+    /// it (estimate_extra 0 and 1 for the left eye, 2 and 3 for the right: the pupil centre in the eye camera's picture,
+    /// in the eye server's own units, which its self-calibration does not move) to the direction that eye looks, in
+    /// degrees (yaw: right +, pitch: up +, both from straight ahead like the gaze angles):
+    /// yaw = pupil_yaw + pupil_yaw_u * u + pupil_yaw_v * v, and pitch the same with the pupil_pitch* values.
+    /// pupil_yaw / pupil_pitch are degrees, the _u / _v slopes degrees per unit. An eye's six are all set or all null
+    /// (null: not fitted). Not command-line options.
+    pub pupil_yaw_left: Option<f32>,
+    pub pupil_yaw_u_left: Option<f32>,
+    pub pupil_yaw_v_left: Option<f32>,
+    pub pupil_pitch_left: Option<f32>,
+    pub pupil_pitch_u_left: Option<f32>,
+    pub pupil_pitch_v_left: Option<f32>,
+    pub pupil_yaw_right: Option<f32>,
+    pub pupil_yaw_u_right: Option<f32>,
+    pub pupil_yaw_v_right: Option<f32>,
+    pub pupil_pitch_right: Option<f32>,
+    pub pupil_pitch_u_right: Option<f32>,
+    pub pupil_pitch_v_right: Option<f32>,
+    /// Each eye's centre for this wear: degrees added to its mapped yaw and pitch. The eye fit writes it from its own
+    /// centre dot, and each re-center from its dot (the headset sits a little differently each time it is put on).
+    /// null = 0. Not command-line options.
+    pub pupil_center_yaw_left: Option<f32>,
+    pub pupil_center_pitch_left: Option<f32>,
+    pub pupil_center_yaw_right: Option<f32>,
+    pub pupil_center_pitch_right: Option<f32>,
 }
 
 /// One eye's fitted openness readings (Frame openness, before any scale).
@@ -541,6 +586,23 @@ impl Default for Settings {
             lid_fit_open_right: None,
             lid_fit_down_left: None,
             lid_fit_down_right: None,
+            gaze_source: GazeSource::Valve,
+            pupil_yaw_left: None,
+            pupil_yaw_u_left: None,
+            pupil_yaw_v_left: None,
+            pupil_pitch_left: None,
+            pupil_pitch_u_left: None,
+            pupil_pitch_v_left: None,
+            pupil_yaw_right: None,
+            pupil_yaw_u_right: None,
+            pupil_yaw_v_right: None,
+            pupil_pitch_right: None,
+            pupil_pitch_u_right: None,
+            pupil_pitch_v_right: None,
+            pupil_center_yaw_left: None,
+            pupil_center_pitch_left: None,
+            pupil_center_yaw_right: None,
+            pupil_center_pitch_right: None,
         }
     }
 }
@@ -604,6 +666,37 @@ impl Settings {
         ]
     }
 
+    /// Each eye's six pupil map values as written (left, then right): the yaw constant, yaw per u, yaw per v, then the
+    /// same for pitch.
+    pub fn pupil_map_values(&self) -> [[Option<f32>; 6]; 2] {
+        [
+            [
+                self.pupil_yaw_left,
+                self.pupil_yaw_u_left,
+                self.pupil_yaw_v_left,
+                self.pupil_pitch_left,
+                self.pupil_pitch_u_left,
+                self.pupil_pitch_v_left,
+            ],
+            [
+                self.pupil_yaw_right,
+                self.pupil_yaw_u_right,
+                self.pupil_yaw_v_right,
+                self.pupil_pitch_right,
+                self.pupil_pitch_u_right,
+                self.pupil_pitch_v_right,
+            ],
+        ]
+    }
+
+    /// Each eye's pupil centre as written (yaw, pitch; None counts as 0).
+    pub fn pupil_centers(&self) -> [[Option<f32>; 2]; 2] {
+        [
+            [self.pupil_center_yaw_left, self.pupil_center_pitch_left],
+            [self.pupil_center_yaw_right, self.pupil_center_pitch_right],
+        ]
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let numbers = [
             self.gaze_min_cutoff,
@@ -643,11 +736,15 @@ impl Settings {
         let eye_gains = [self.gaze_gain_x_left, self.gaze_gain_x_right];
         let lid_fit = self.lid_fit_readings();
         let fitted = lid_fit.iter().flatten().flatten();
+        let pupil_map = self.pupil_map_values();
+        let pupil_centers = self.pupil_centers();
         if !numbers
             .iter()
             .chain(scales.iter().flatten())
             .chain(eye_offsets.iter().chain(&eye_gains).flatten())
             .chain(fitted.clone())
+            .chain(pupil_map.iter().flatten().flatten())
+            .chain(pupil_centers.iter().flatten().flatten())
             .all(|value| value.is_finite())
         {
             return Err("settings must be finite numbers".into());
@@ -736,6 +833,23 @@ impl Settings {
         let apart = |fit: &LidFit| [fit.up, fit.open, fit.down].iter().all(|open| *open >= fit.closed + LID_FIT_MIN_RANGE);
         if !self.lid_fit().iter().flatten().all(apart) {
             return Err("lid_fit_closed must be at least 0.1 below the open lid_fit_* values".into());
+        }
+        if !pupil_map.iter().all(|eye| eye.iter().all(Option::is_some) || eye.iter().all(Option::is_none)) {
+            return Err("an eye's pupil_yaw* and pupil_pitch* values must all be set, or all null".into());
+        }
+        let in_range = |eye: &[Option<f32>; 6]| {
+            eye.iter().enumerate().all(|(index, value)| {
+                let range = if index % 3 == 0 { &PUPIL_MAP_BASE_RANGE } else { &PUPIL_MAP_SLOPE_RANGE };
+                value.is_none_or(|value| range.contains(&value))
+            })
+        };
+        if !pupil_map.iter().all(in_range) {
+            return Err(
+                "pupil_yaw and pupil_pitch must be between -360 and 360, their _u and _v between -10000 and 10000".into(),
+            );
+        }
+        if !pupil_centers.iter().flatten().flatten().all(|center| PUPIL_CENTER_RANGE.contains(center)) {
+            return Err("pupil_center_* must be between -45 and 45".into());
         }
         Ok(())
     }
@@ -1212,6 +1326,28 @@ mod tests {
         let locked = apply_args(&mut settings, &args, &given);
         settings.validate()?;
         Ok((settings, locked))
+    }
+
+    #[test]
+    fn gaze_source_and_the_pupil_map_are_read_and_checked() {
+        let (settings, _) = merged("{}", &[]).unwrap();
+        assert_eq!(settings.gaze_source, GazeSource::Valve);
+        assert_eq!((settings.pupil_map_values(), settings.pupil_centers()), ([[None; 6]; 2], [[None; 2]; 2]));
+        let map = r#""pupil_yaw_left": -40, "pupil_yaw_u_left": 200, "pupil_yaw_v_left": 0, "pupil_pitch_left": 20,
+            "pupil_pitch_u_left": 0, "pupil_pitch_v_left": -200"#;
+        let file = format!(r#"{{"gaze_source": "pupil", {map}, "pupil_center_yaw_left": 1.5}}"#);
+        let (settings, locked) = merged(&file, &[]).unwrap();
+        assert!(settings.gaze_source == GazeSource::Pupil && locked.is_empty());
+        let left = [Some(-40.0), Some(200.0), Some(0.0), Some(20.0), Some(0.0), Some(-200.0)];
+        assert_eq!(settings.pupil_map_values(), [left, [None; 6]]);
+        assert_eq!(settings.pupil_centers(), [[Some(1.5), None], [None, None]]);
+        assert!(merged(r#"{"gaze_source": "valve", "pupil_center_pitch_right": null}"#, &[]).is_ok());
+        // An unknown source, an eye's map half written, values out of range
+        assert!(merged(r#"{"gaze_source": "camera"}"#, &[]).is_err());
+        assert!(merged(r#"{"pupil_yaw_left": 1}"#, &[]).is_err());
+        assert!(merged(&format!("{{{}}}", map.replace("200", "20000")), &[]).is_err());
+        assert!(merged(&format!("{{{}}}", map.replace("-40", "-400")), &[]).is_err());
+        assert!(merged(r#"{"pupil_center_pitch_right": 50}"#, &[]).is_err());
     }
 
     #[test]

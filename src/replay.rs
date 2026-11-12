@@ -1168,6 +1168,11 @@ fn write_processed(path: &Path, samples: &[EyeData], sent: &[Sample], camera: bo
              pupil_mm_left,pupil_mm_right"
         )?;
     }
+    // Where the gaze came from (gaze_source "pupil" with a map), only then
+    let in_use = sent.iter().any(|sample| sample.gaze_in_use.is_some());
+    if in_use {
+        write!(out, ",gaze_in_use")?;
+    }
     writeln!(out)?;
     let optional = |value: Option<f32>| value.map_or_else(String::new, |value| value.to_string());
     for (data, sample) in samples.iter().zip(sent) {
@@ -1179,6 +1184,9 @@ fn write_processed(path: &Path, samples: &[EyeData], sent: &[Sample], camera: bo
             fields.extend(values.squint.map(|squint| u8::from(squint.is_some()).to_string()));
             let optionals = [values.squint, values.pupil_dilation, values.pupil_diameter];
             fields.extend(optionals.iter().flatten().map(|value| optional(*value)));
+        }
+        if in_use {
+            fields.push(sample.gaze_in_use.map_or("", |in_use| in_use.name()).to_owned());
         }
         writeln!(out, "{}", fields.join(","))?;
     }
@@ -1248,6 +1256,81 @@ mod tests {
 
     fn calibration() -> LidCalibration {
         LidCalibration::load(None, Settings::default().lid_open)
+    }
+
+    // A made-up pupil map for both eyes (synthetic numbers): 200 degrees per unit around the pair (0.2, 0.1).
+    fn with_pupil_map(settings: &Settings) -> Settings {
+        Settings {
+            pupil_yaw_left: Some(-40.0),
+            pupil_yaw_u_left: Some(200.0),
+            pupil_yaw_v_left: Some(0.0),
+            pupil_pitch_left: Some(20.0),
+            pupil_pitch_u_left: Some(0.0),
+            pupil_pitch_v_left: Some(-200.0),
+            pupil_yaw_right: Some(-40.0),
+            pupil_yaw_u_right: Some(200.0),
+            pupil_yaw_v_right: Some(0.0),
+            pupil_pitch_right: Some(20.0),
+            pupil_pitch_u_right: Some(0.0),
+            pupil_pitch_v_right: Some(-200.0),
+            ..settings.clone()
+        }
+    }
+
+    #[test]
+    fn gaze_source_valve_or_no_map_sends_every_sample_exactly_as_before() {
+        use crate::config::GazeSource;
+        let samples = synthetic();
+        let base = all_stages();
+        let before = replay_alone(&samples, &base, calibration());
+        let unmapped = Settings { gaze_source: GazeSource::Pupil, ..base.clone() };
+        let mapped_but_valve = with_pupil_map(&base);
+        for settings in [unmapped, mapped_but_valve] {
+            let after = replay_alone(&samples, &settings, calibration());
+            assert_eq!(after.len(), before.len());
+            for (a, b) in before.iter().zip(&after) {
+                assert_eq!(a.gaze.map(f32::to_bits), b.gaze.map(f32::to_bits));
+                assert_eq!(a.lids.map(f32::to_bits), b.lids.map(f32::to_bits));
+                assert!(a.gaze_in_use.is_none() && b.gaze_in_use.is_none());
+            }
+        }
+        // With the map and "pupil" the gaze goes the pupils' way (here the eye server's shifted, the made-up pairs
+        // being still), and says where it came from
+        let pupil = replay_alone(&samples, &Settings { gaze_source: GazeSource::Pupil, ..with_pupil_map(&base) }, calibration());
+        assert!(pupil.iter().all(|sample| sample.gaze_in_use.is_some()));
+    }
+
+    #[test]
+    fn the_pupil_gaze_follows_the_pupils_through_the_whole_pipeline() {
+        use crate::config::GazeSource;
+        // The synthetic recording with each eye's pupil pair moving as if looking 5 deg right and 4 deg up of where the
+        // eye server says, plus a hair of noise: the combined gaze sent goes there
+        let mut samples = synthetic();
+        for (i, data) in samples.iter_mut().enumerate() {
+            let [x, y] = gaze_angles(data.fixation_point).map(|value| value * 45.0);
+            let jitter = (i % 2) as f32 * 1e-5;
+            let (u, v) = ((x + 5.0 + 40.0) / 200.0 + jitter, (20.0 - (y + 4.0)) / 200.0);
+            data.extra[..4].copy_from_slice(&[u, v, u, v]);
+        }
+        let base = all_stages();
+        let valve = replay_alone(&samples, &base, calibration());
+        let settings = Settings { gaze_source: GazeSource::Pupil, ..with_pupil_map(&base) };
+        let pupil = replay_alone(&samples, &settings, calibration());
+        // Away from the start, the blinks and the wild stretch: about 5 and 4 deg off the eye server's gaze
+        let moved: Vec<[f32; 2]> = valve
+            .iter()
+            .zip(&pupil)
+            .skip(90)
+            .filter(|(_, p)| p.gaze_in_use == Some(crate::pupil::InUse::Pupil) && !p.gaze_held)
+            .map(|(v, p)| [(p.gaze[4] - v.gaze[4]) * 45.0, (p.gaze[5] - v.gaze[5]) * 45.0])
+            .collect();
+        assert!(moved.len() > 200, "{}", moved.len());
+        let mut dx: Vec<f32> = moved.iter().map(|m| m[0]).collect();
+        let mut dy: Vec<f32> = moved.iter().map(|m| m[1]).collect();
+        dx.sort_by(f32::total_cmp);
+        dy.sort_by(f32::total_cmp);
+        let (mx, my) = (dx[dx.len() / 2], dy[dy.len() / 2]);
+        assert!((mx - 5.0).abs() < 0.3 && (my - 4.0).abs() < 0.3, "{mx} {my}");
     }
 
     /// The defaults with the optional quality check turned on too, so every stage is exercised.

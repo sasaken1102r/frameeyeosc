@@ -66,6 +66,13 @@ pub struct CaptureResult {
     pub received: u32,
     /// The tracker's rate over the capture (samples a second); None before two samples.
     pub rate: Option<f32>,
+    /// Each eye's pupil pair (the eye server's estimate_extra 0/1 and 2/3, see pupil.rs): the median of each of the two
+    /// over the samples averaged whose pair was fresh (pupil::FRESH_S), for the panel's pupil map. None without such
+    /// samples, and for the eyes-shut capture.
+    pub pupil_left: Option<[f32; 2]>,
+    pub pupil_right: Option<[f32; 2]>,
+    /// How many of the samples averaged had each eye's pair fresh (0 for the eyes-shut capture).
+    pub pupil_fresh: [u32; 2],
 }
 
 /// One capture in progress.
@@ -85,6 +92,8 @@ pub struct Capture {
     // Of the samples averaged, those with each eye camera-open.
     camera_open: [u32; 2],
     samples: u32,
+    // Each eye's fresh pupil pairs among the samples averaged.
+    pupils: [Vec<[f32; 2]>; 2],
 }
 
 impl Capture {
@@ -103,12 +112,14 @@ impl Capture {
             openness: [0.0; 2],
             camera_open: [0; 2],
             samples: 0,
+            pupils: [Vec::new(), Vec::new()],
         }
     }
 
     /// Take one sample's combined raw gaze, each eye's raw x and openness, and which eyes are camera-open (see
     /// usable); `usable` is false while the eyes are shut or the gaze is held (ignored by the eyes-shut capture).
     /// Returns true once the capture is over.
+    #[cfg(test)]
     pub fn add(
         &mut self,
         time: f64,
@@ -117,6 +128,21 @@ impl Capture {
         openness: [f32; 2],
         camera_open: [bool; 2],
         usable: bool,
+    ) -> bool {
+        self.add_with_pupils(time, gaze, eye_x, openness, camera_open, usable, [None; 2])
+    }
+
+    /// The same, with each eye's pupil pair while it is fresh (None while not; see pupil::Fresh).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_with_pupils(
+        &mut self,
+        time: f64,
+        gaze: [f32; 2],
+        eye_x: [f32; 2],
+        openness: [f32; 2],
+        camera_open: [bool; 2],
+        usable: bool,
+        pupils: [Option<[f32; 2]>; 2],
     ) -> bool {
         let elapsed = time - *self.first_time.get_or_insert(time);
         if elapsed >= self.request.seconds {
@@ -142,6 +168,11 @@ impl Capture {
             }
             for (count, camera_open) in self.camera_open.iter_mut().zip(camera_open) {
                 *count += u32::from(camera_open);
+            }
+            if !self.closed {
+                for (pairs, pupil) in self.pupils.iter_mut().zip(pupils) {
+                    pairs.extend(pupil);
+                }
             }
             self.samples += 1;
         }
@@ -175,6 +206,9 @@ impl Capture {
             samples: if state == CaptureState::Done { self.samples } else { 0 },
             received: if state == CaptureState::Done { self.received } else { 0 },
             rate: self.rate(),
+            pupil_left: gaze.then(|| median_pair(&self.pupils[0])).flatten(),
+            pupil_right: gaze.then(|| median_pair(&self.pupils[1])).flatten(),
+            pupil_fresh: if gaze { self.pupils.each_ref().map(|pairs| pairs.len() as u32) } else { [0; 2] },
         }
     }
 
@@ -183,6 +217,20 @@ impl Capture {
         let span = self.last_time - self.first_time?;
         (self.all > 1 && span > 0.0).then(|| (f64::from(self.all - 1) / span) as f32)
     }
+}
+
+/// Each of the two values' median over the pairs (the mean of the middle two for an even count); None without pairs.
+fn median_pair(pairs: &[[f32; 2]]) -> Option<[f32; 2]> {
+    if pairs.is_empty() {
+        return None;
+    }
+    let median = |axis: usize| {
+        let mut values: Vec<f32> = pairs.iter().map(|pair| pair[axis]).collect();
+        values.sort_by(f32::total_cmp);
+        let middle = values.len() / 2;
+        if values.len() % 2 == 1 { values[middle] } else { (values[middle - 1] + values[middle]) / 2.0 }
+    };
+    Some([median(0), median(1)])
 }
 
 impl CaptureResult {
@@ -208,9 +256,22 @@ impl CaptureResult {
             [false, true] => " (R open on the eye camera)",
             [false, false] => "",
         };
+        // Each eye's pupil pair, where there was one (for reading a fit back)
+        let pupil = |name: &str, pair: Option<[f32; 2]>, fresh: u32| {
+            pair.map(|[u, v]| format!("{name} {u:+.4} {v:+.4} ({fresh} fresh)"))
+        };
+        let pupils: Vec<String> = [
+            pupil("L", self.pupil_left, self.pupil_fresh[0]),
+            pupil("R", self.pupil_right, self.pupil_fresh[1]),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let pupils = if pupils.is_empty() { String::new() } else { format!("; pupil {}", pupils.join(", ")) };
+        let (id, target, samples, received) = (self.id, &self.target, self.samples, self.received);
         format!(
-            "Gaze capture {} ({}): {gaze}openness L {left:.3} R {right:.3}{camera_open} from {} of {} samples{rate}",
-            self.id, self.target, self.samples, self.received
+            "Gaze capture {id} ({target}): {gaze}openness L {left:.3} R {right:.3}{camera_open} from {samples} of \
+             {received} samples{rate}{pupils}"
         )
     }
 }
@@ -269,6 +330,57 @@ mod tests {
         let line = result.log_line();
         let expected = format!("from {} of {} samples at 90 Hz", result.samples, result.received);
         assert!(line.starts_with("Gaze capture 7 (up): x +0.") && line.ends_with(&expected), "{line}");
+    }
+
+    #[test]
+    fn each_eyes_fresh_pupil_pairs_give_a_median_for_the_pupil_map() {
+        let mut taken = capture();
+        for i in 0..=180 {
+            let time = f64::from(i) / 90.0;
+            // The left pair around (0.20, 0.10) with one wild value, the right one fresh only in every other sample,
+            // and a blink (not usable) in between whose pairs don't count
+            let wild = i == 60;
+            let left = if wild { [0.9, 0.9] } else { [0.20 + (i % 3) as f32 * 0.001, 0.10] };
+            let right = (i % 2 == 0).then_some([0.15, -0.07]);
+            let blinking = (90..100).contains(&i);
+            let pupils = if blinking { [Some([0.0, 0.0]); 2] } else { [Some(left), right] };
+            if taken.add_with_pupils(time, [0.0, 0.0], [0.0, 0.0], [0.9, 0.9], [false; 2], !blinking, pupils) {
+                break;
+            }
+        }
+        let result = taken.result(CaptureState::Done);
+        assert_eq!(result.pupil_fresh[0], result.samples);
+        assert!((result.pupil_fresh[1] as i64 - i64::from(result.samples) / 2).abs() <= 1, "{:?}", result.pupil_fresh);
+        let [u, v] = result.pupil_left.unwrap();
+        assert!((u - 0.201).abs() < 1e-6 && (v - 0.10).abs() < 1e-6, "{u} {v}");
+        assert_eq!(result.pupil_right, Some([0.15, -0.07]));
+        let line = result.log_line();
+        let expected = format!(
+            "; pupil L +0.2010 +0.1000 ({} fresh), R +0.1500 -0.0700 ({} fresh)",
+            result.pupil_fresh[0], result.pupil_fresh[1]
+        );
+        assert!(line.ends_with(&expected), "{line}");
+        // Without pupils: none, and the line as before
+        let mut plain = capture();
+        for i in 0..=180 {
+            if plain.add(f64::from(i) / 90.0, [0.0, 0.0], [0.0, 0.0], [0.9, 0.9], [false; 2], true) {
+                break;
+            }
+        }
+        let plain = plain.result(CaptureState::Done);
+        assert_eq!((plain.pupil_left, plain.pupil_right, plain.pupil_fresh), (None, None, [0, 0]));
+        assert!(plain.log_line().ends_with("samples at 90 Hz"));
+        // The eyes-shut capture takes none
+        let mut shut = Capture::new(GazeCapture { id: 4, target: CLOSED_TARGET.into(), seconds: 3.0, skip: 0.5 });
+        for i in 0..400 {
+            let pupils = [Some([0.2, 0.1]); 2];
+            if shut.add_with_pupils(f64::from(i) / 90.0, [0.0; 2], [0.0; 2], [0.1; 2], [false; 2], false, pupils) {
+                break;
+            }
+        }
+        let shut = shut.result(CaptureState::Done);
+        assert_eq!((shut.pupil_left, shut.pupil_fresh), (None, [0, 0]));
+        assert!(median_pair(&[[1.0, 4.0], [3.0, 2.0]]) == Some([2.0, 3.0]) && median_pair(&[]).is_none());
     }
 
     #[test]

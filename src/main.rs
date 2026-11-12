@@ -10,6 +10,7 @@ mod extras;
 mod feo;
 mod livelink;
 mod osc;
+mod pupil;
 mod replay;
 mod status;
 mod vrc_face;
@@ -1092,6 +1093,8 @@ struct Smoother {
     brows: BrowRaise,
     // Per eye: seen open by its pupil alone, for a gaze capture (see PupilSeen).
     pupil_seen: [PupilSeen; 2],
+    // The gaze from the pupils (gaze_source "pupil" with a map; see pupil.rs).
+    pupil: pupil::PupilGaze,
 }
 
 impl Smoother {
@@ -1121,6 +1124,7 @@ impl Smoother {
             close_gate: CloseGate::default(),
             brows: BrowRaise::default(),
             pupil_seen: [PupilSeen::default(); 2],
+            pupil: pupil::PupilGaze::default(),
         }
     }
 
@@ -1234,6 +1238,7 @@ impl Smoother {
         self.close_gate = CloseGate::default();
         self.brows = BrowRaise::default();
         self.pupil_seen = [PupilSeen::default(); 2];
+        self.pupil.reset();
     }
 
     /// The camera's eyelids with a "closed" in one eye that is not yet a blink or a wink held back (see CloseGate), and
@@ -3729,6 +3734,8 @@ struct Sample {
     brows: Option<[f32; 2]>,
     // Per eye: open for a gaze capture by its pupil alone (Smoother::pupil_open, PupilSeen). Nothing sent goes by it.
     pupil_open: [bool; 2],
+    // Where the gaze came from with gaze_source "pupil" and a map; None otherwise (the eye server's, as always).
+    gaze_in_use: Option<pupil::InUse>,
 }
 
 impl Sample {
@@ -3845,6 +3852,8 @@ fn process(
     // after a gap)
     let pupil_open;
     let mut cross_eye = false;
+    // Where the gaze came from with gaze_source "pupil" and a map (None: the eye server's gaze as always)
+    let mut gaze_in_use = None;
     let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows) = if settings.raw {
         pupil_open = smoother.pupil_open(settings, data, camera);
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
@@ -3925,6 +3934,22 @@ fn process(
         let open = !shut_for_gaze(data.openness, doubted, seen_open, settings);
         let trusted = usable_gaze.map(|usable| usable && open);
         let corrected = correct_gaze(smoother.hold_down_x(raw_gaze, trusted, settings), settings);
+        // gaze_source "pupil" with a map for both eyes: the combined gaze from the pupils (pupil.rs), each eye keeping its
+        // own difference from the combined gaze as the eye server reads it; after this everything goes on as usual.
+        // Otherwise (and in --raw) the gaze is exactly as before
+        let corrected = match pupil::maps(settings) {
+            Some(maps) => {
+                let open = eyes_open_for_gaze(data.openness, doubted, seen_open, settings);
+                let valve = [corrected[4] * 45.0, corrected[5] * 45.0];
+                let step = smoother.pupil.step(data.sample_time, &maps, &data.extra, open, valve);
+                gaze_in_use = Some(step.in_use);
+                with_combined(corrected, step.gaze.map(|degrees| (degrees / 45.0).clamp(-1.0, 1.0)))
+            }
+            None => {
+                smoother.pupil.reset();
+                corrected
+            }
+        };
         let readings: [f32; 8] =
             std::array::from_fn(|i| if i < 6 { corrected[i] } else { data.openness[i - 6] });
         // Fed even while off, so turning it on does not start from an empty history.
@@ -4070,7 +4095,28 @@ fn process(
         close_held,
         brows,
         pupil_open,
+        gaze_in_use,
     }
+}
+
+/// Per eye: not shut for the gaze, by shut_for_gaze's rule (which holds the gaze while either eye is): its Frame openness
+/// at least --gaze-hold-below, or its reading doubted, or the eye camera seeing it open.
+fn eyes_open_for_gaze(openness: [f32; 2], doubted: [bool; 2], seen_open: [bool; 2], settings: &Settings) -> [bool; 2] {
+    [0, 1].map(|eye| !(openness[eye] < settings.gaze_hold_below && !doubted[eye] && !seen_open[eye]))
+}
+
+/// The gaze (left x/y, right x/y, combined x/y on the -1..1 scale) with the combined pair set to `combined` and each
+/// eye moved with it, so each keeps its own difference from the combined gaze.
+fn with_combined(gaze: [f32; 6], combined: [f32; 2]) -> [f32; 6] {
+    let mut out = gaze;
+    for pair in 0..2 {
+        for axis in 0..2 {
+            out[pair * 2 + axis] = (combined[axis] + gaze[pair * 2 + axis] - gaze[4 + axis]).clamp(-1.0, 1.0);
+        }
+    }
+    out[4] = combined[0];
+    out[5] = combined[1];
+    out
 }
 
 /// The camera's eyelids with a "closed" while looking to the side, or while the eye server reads the eye open and is
@@ -4682,6 +4728,10 @@ struct Bridge {
     // The gaze capture the panel asked for, while it runs, and the latest one's result.
     capture: Option<Capture>,
     capture_result: Option<CaptureResult>,
+    // Each eye's pupil pair while fresh, for the captures (whatever gaze_source says, so the panel's eye fit has them).
+    capture_pupils: pupil::Fresh,
+    // The journal's lines about where the gaze comes from (gaze_source "pupil").
+    source_log: pupil::SourceLog,
     // The panel's debug gaze dots and eye preview (only while gaze_debug_dots is on or the panel listens).
     dots: dots::DotStream,
     // When the last neutral Live Link packet went out.
@@ -4863,13 +4913,18 @@ impl Bridge {
         if self.dots.wanted(self.settings.gaze_debug_dots, now) {
             self.dots.send(&dot_sample(&self.settings, &data, &sample, self.camera_live.as_ref()));
         }
+        let pupils = self.capture_pupils.update(data.sample_time, &data.extra);
         if let Some(capture) = &mut self.capture {
             let gaze = [sample.raw_gaze[4], sample.raw_gaze[5]];
             let eye_x = [sample.raw_gaze[0], sample.raw_gaze[2]];
             let usable = sample.capture_usable();
-            if capture.add(data.sample_time, gaze, eye_x, data.openness, sample.camera_open(), usable) {
+            let open = sample.camera_open();
+            if capture.add_with_pupils(data.sample_time, gaze, eye_x, data.openness, open, usable, pupils) {
                 self.finish_capture();
             }
+        }
+        for line in self.source_log.note(data.sample_time, sample.gaze_in_use) {
+            eprintln!("{line}");
         }
         self.latest = Some(sample);
         Ok(())
@@ -5122,6 +5177,7 @@ impl Bridge {
             locked: &self.config.locked,
             effective: settings,
             gaze_capture: self.capture_result.as_ref(),
+            gaze_in_use: self.latest.as_ref().and_then(|sample| sample.gaze_in_use).map(pupil::InUse::name),
             last_error: status::ERRORS.last(),
         }
     }
@@ -5248,6 +5304,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         received: VecDeque::new(),
         capture: None,
         capture_result: None,
+        capture_pupils: pupil::Fresh::default(),
+        source_log: pupil::SourceLog::default(),
         dots: dots::DotStream::new(status::status_path().parent().unwrap_or(Path::new("/tmp"))),
         livelink_neutral: None,
         livelink_throttle: Throttle::default(),
@@ -7206,6 +7264,7 @@ mod tests {
             close_held: [false; 2],
             brows: None,
             pupil_open: [false; 2],
+            gaze_in_use: None,
         }
     }
 
@@ -7330,6 +7389,8 @@ mod tests {
             received: VecDeque::new(),
             capture: None,
             capture_result: None,
+            capture_pupils: pupil::Fresh::default(),
+            source_log: pupil::SourceLog::default(),
             dots: dots::DotStream::new(Path::new("/nonexistent")),
             livelink_neutral: None,
             livelink_throttle: Throttle::default(),

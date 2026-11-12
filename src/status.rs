@@ -72,6 +72,9 @@ pub struct Status<'a> {
     pub effective: &'a Settings,
     /// The latest gaze capture the panel asked for.
     pub gaze_capture: Option<&'a CaptureResult>,
+    /// Where the sent gaze comes from with gaze_source "pupil" and a pupil map (pupil.rs InUse: "pupil", "left", "right",
+    /// "hold" or "valve"); None otherwise (the eye server's gaze, as always).
+    pub gaze_in_use: Option<&'static str>,
     /// The last problem frameeyeosc logged (see `log_error`), kept after it clears; None if there was none yet.
     pub last_error: Option<LastError>,
 }

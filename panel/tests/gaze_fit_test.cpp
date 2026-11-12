@@ -107,8 +107,60 @@ EyeStatus runningWith(long long id, bool done, const Measured& m, bool gaze = tr
         c.openness[1] = m.openness[1];
         c.cameraOpen[0] = done && m.cameraOpen[0];
         c.cameraOpen[1] = done && m.cameraOpen[1];
+        for (int eye = 0; eye < 2; ++eye) {
+            c.hasPupil[eye] = done && m.hasPupil[eye];
+            c.pupil[eye][0] = m.pupil[eye][0];
+            c.pupil[eye][1] = m.pupil[eye][1];
+            c.pupilFresh[eye] = done ? m.pupilFresh[eye] : 0;
+        }
     }
     return status;
+}
+
+/** A made-up pupil map for both eyes (synthetic numbers, like the ones seen: about 240 degrees per unit, the pupil's
+ *  v going down as the eye looks up, a little cross-talk). */
+PupilMap madeUpMap(int eye) {
+    PupilMap map;
+    map.yaw[0] = eye == 0 ? -42.0 : -38.0;
+    map.yaw[1] = 240.0;
+    map.yaw[2] = 15.0;
+    map.pitch[0] = eye == 0 ? 25.0 : 23.0;
+    map.pitch[1] = -10.0;
+    map.pitch[2] = -230.0;
+    return map;
+}
+
+/**
+ * The pupil pair that a map sends to a direction (the map's inverse).
+ * @param map the map
+ * @param yaw the direction's yaw (degrees)
+ * @param pitch ...and pitch
+ * @param out u, v
+ */
+void pairFor(const PupilMap& map, double yaw, double pitch, double out[2]) {
+    const double a = map.yaw[1], b = map.yaw[2], c = map.pitch[1], d = map.pitch[2];
+    const double ry = yaw - map.yaw[0], rp = pitch - map.pitch[0];
+    const double det = a * d - b * c;
+    out[0] = (d * ry - b * rp) / det;
+    out[1] = (a * rp - c * ry) / det;
+}
+
+/**
+ * Give the five gaze captures each eye's pupil pair for its direction to its target, as if the eye looked exactly
+ * there, shifted by `shift` degrees (the headset sitting differently), with `fresh` fresh samples.
+ */
+void withPupils(Measured points[kPointCount], double ipd, double shift[2], int fresh = 140) {
+    const Point gaze[5] = {Point::Center, Point::Up, Point::Down, Point::Left, Point::Right};
+    for (Point point : gaze) {
+        Measured& m = points[static_cast<int>(point)];
+        for (int eye = 0; eye < 2; ++eye) {
+            double direction[2];
+            eyeDirection(target(point), eye, ipd, direction);
+            pairFor(madeUpMap(eye), direction[0] - shift[0], direction[1] - shift[1], m.pupil[eye]);
+            m.hasPupil[eye] = true;
+            m.pupilFresh[eye] = fresh;
+        }
+    }
 }
 
 /** The five gaze captures of a user whose tracker reads 10% short sideways, like the live run. */
@@ -388,7 +440,9 @@ void testFullSession() {
     CHECK(id == 7);
     // The gains the dots gave, and what was written
     CHECK(a.log == "gains measured: sideways 0.93, up 0.90, down 0.88; written: up 0.90 (mean of 1 fit), "
-                   "sideways and down 1, no tilt");
+                   "sideways and down 1, no tilt\npupil map not made: the left eye's pupil at the center dot: 0 fresh "
+                   "samples (needs 30)");
+    CHECK(!a.values.hasPupilMap && !a.values.hasPupilCenter);
     CHECK(near(s.view().notes.gainUp, 0.9) && s.view().notes.upGainFits == 1);
     // Done stays done
     a = s.tick(now + 1, kClosed, runningWith(id, true, points[5], false));
@@ -444,6 +498,111 @@ void testCenterSession() {
     CHECK(a.values.hasLids && near(a.values.rollDeg, 2.0));
     CHECK(a.log.rfind("center try 1: ", 0) == 0 && a.log.find('\n') == std::string::npos);
     CHECK(pointCount(Mode::Center) == 1 && pointAt(Mode::Center, 3) == Point::Center);
+}
+
+void testPupilMap() {
+    const double ipd = 0.064;
+    // Each eye's direction to a target from its own place: sideways as eyeAngle, up / down from the eye
+    for (int eye = 0; eye < 2; ++eye) {
+        double direction[2];
+        eyeDirection(target(Point::Right), eye, ipd, direction);
+        CHECK(near(direction[0], eyeAngle(kSideDeg, eye, ipd) * kFullScaleDeg) && near(direction[1], 0.0));
+        eyeDirection(target(Point::Up), eye, ipd, direction);
+        // (sideways over the forward distance, as frameeyeosc's gaze angles are: shorter looking up)
+        const double side = std::atan2(eye == 0 ? ipd / 2 : -ipd / 2, kTargetDistanceM * std::cos(kUpDownDeg * M_PI / 180));
+        CHECK(near(direction[1], kUpDownDeg) && near(direction[0], side * 180 / M_PI));
+    }
+    // Five dots seen exactly through a made-up map: the map comes back, and points at each eye's targets
+    Measured points[kPointCount];
+    fivePoints(points);
+    double none[2] = {0.0, 0.0};
+    withPupils(points, ipd, none);
+    PupilMap maps[2];
+    double rms[2] = {-1, -1};
+    std::string why;
+    CHECK(fitPupilMaps(points, ipd, maps, rms, why) && why.empty());
+    for (int eye = 0; eye < 2; ++eye) {
+        const PupilMap want = madeUpMap(eye);
+        for (int i = 0; i < 3; ++i) {
+            CHECK(std::fabs(maps[eye].yaw[i] - want.yaw[i]) < 1e-6 && std::fabs(maps[eye].pitch[i] - want.pitch[i]) < 1e-6);
+        }
+        CHECK(rms[eye] < 1e-9);
+    }
+    // Its centres from the center dot: 0 here; a re-center after the headset moved 3 deg right and 2 down brings the
+    // mapped centre back onto the target
+    double centers[2][2];
+    CHECK(pupilCenters(points[static_cast<int>(Point::Center)], maps, ipd, centers, why));
+    CHECK(std::fabs(centers[0][0]) < 1e-9 && std::fabs(centers[1][1]) < 1e-9);
+    Measured moved[kPointCount];
+    fivePoints(moved);
+    double shift[2] = {3.0, -2.0};
+    withPupils(moved, ipd, shift);
+    CHECK(pupilCenters(moved[static_cast<int>(Point::Center)], maps, ipd, centers, why));
+    for (int eye = 0; eye < 2; ++eye) {
+        CHECK(std::fabs(centers[eye][0] - 3.0) < 1e-9 && std::fabs(centers[eye][1] + 2.0) < 1e-9);
+        // ...and then every dot of that wear lands on its target
+        double wanted[2], mapped[2];
+        eyeDirection(target(Point::Left), eye, ipd, wanted);
+        applyPupilMap(maps[eye], moved[static_cast<int>(Point::Left)].pupil[eye], mapped);
+        CHECK(std::fabs(mapped[0] + centers[eye][0] - wanted[0]) < 1e-9);
+    }
+    // Not used: too few fresh samples at a dot, a pupil that hardly moves, a map that misses its dots
+    Measured few[kPointCount];
+    fivePoints(few);
+    withPupils(few, ipd, none);
+    few[static_cast<int>(Point::Down)].pupilFresh[1] = kMinPupilFresh - 1;
+    maps[0].yaw[0] = 99;
+    CHECK(!fitPupilMaps(few, ipd, maps, rms, why) && near(maps[0].yaw[0], 99));
+    CHECK(why == "the right eye's pupil at the down dot: 29 fresh samples (needs 30)");
+    Measured still[kPointCount];
+    fivePoints(still);
+    withPupils(still, ipd, none);
+    for (Point point : {Point::Up, Point::Down, Point::Left, Point::Right}) {
+        for (int k = 0; k < 2; ++k) still[static_cast<int>(point)].pupil[0][k] = still[static_cast<int>(Point::Center)].pupil[0][k];
+    }
+    CHECK(!fitPupilMaps(still, ipd, maps, rms, why) && why.find("hardly moved") != std::string::npos);
+    Measured off[kPointCount];
+    fivePoints(off);
+    withPupils(off, ipd, none);
+    off[static_cast<int>(Point::Center)].pupil[1][1] += 0.08;  // about 18 deg off at one dot
+    CHECK(!fitPupilMaps(off, ipd, maps, rms, why) && why.find("misses its dots") != std::string::npos);
+    Measured noPupil[kPointCount];
+    fivePoints(noPupil);
+    CHECK(!pupilCenters(noPupil[static_cast<int>(Point::Center)], maps, ipd, centers, why));
+    CHECK(why == "the left eye's pupil at the center dot: 0 fresh samples (needs 30)");
+
+    // The whole fit's session: the map and its centre are in what it writes, and in the log
+    Session s;
+    s.start(Mode::Full, Values(), 0.0, {}, ipd);
+    Actions a = runFull(s, points);
+    CHECK(a.writeValues && a.values.hasPupilMap && a.values.hasPupilCenter);
+    CHECK(std::fabs(a.values.pupilMap[1].pitch[2] - madeUpMap(1).pitch[2]) < 1e-6);
+    CHECK(a.log.find("\npupil map: fits its dots within 0.00° (L) and 0.00° (R) rms; center L ") != std::string::npos);
+    // ...a whole fit whose pupils can't be used keeps the map it had
+    Values current;
+    current.hasPupilMap = true;
+    current.pupilMap[0] = madeUpMap(0);
+    current.pupilMap[1] = madeUpMap(1);
+    current.hasPupilCenter = true;
+    current.pupilCenter[0][0] = 1.25;
+    s.start(Mode::Full, current, 0.0, {}, ipd);
+    a = runFull(s, few);
+    CHECK(a.writeValues && a.values.hasPupilMap && near(a.values.pupilMap[0].yaw[0], -42.0));
+    CHECK(near(a.values.pupilCenter[0][0], 1.25));
+    CHECK(a.log.find("\npupil map kept as it was: the right eye's pupil at the down dot") != std::string::npos);
+    // A re-center with the map: the centre for this wear, after the try's line; without pupils it stays
+    s.start(Mode::Center, current, 0.0, {}, ipd);
+    double t = 0.0;
+    long long id = 0;
+    a = runStep(s, t, id, moved[static_cast<int>(Point::Center)]);
+    CHECK(a.writeValues && a.values.hasPupilCenter && std::fabs(a.values.pupilCenter[1][0] - 3.0) < 1e-6);
+    CHECK(a.log.rfind("center try 1: ", 0) == 0 && a.log.find("\npupil center: L +3.00 -2.00, R +3.00 -2.00 deg") !=
+          std::string::npos);
+    t = 0.0;
+    s.start(Mode::Center, current, 0.0, {}, ipd);
+    a = runStep(s, t, id, noPupil[static_cast<int>(Point::Center)]);
+    CHECK(a.writeValues && near(a.values.pupilCenter[0][0], 1.25));
+    CHECK(a.log.find("\npupil center kept as it was: the left eye's pupil at the center dot") != std::string::npos);
 }
 
 void testFailures() {
@@ -764,6 +923,7 @@ int main() {
     testFullSession();
     testFullSessionUpGains();
     testCenterSession();
+    testPupilMap();
     testFailures();
     if (gFailures == 0) std::printf("gaze-fit-test: all passed\n");
     return gFailures == 0 ? 0 : 1;

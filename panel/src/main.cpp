@@ -3396,7 +3396,7 @@ void startFit(gaze_fit::Session& fit, gaze_fit::Mode mode, const SettingsView& v
     // The whole fit writes the mean up gain of the last few whole fits (panel.json keeps them)
     const std::vector<double> upGains =
         mode == gaze_fit::Mode::Full ? ui_state::readUpGains(ui_state::defaultPath()) : std::vector<double>();
-    fit.start(mode, fitInConfig(view).values, nowSeconds(), upGains);
+    fit.start(mode, fitInConfig(view).values, nowSeconds(), upGains, ipd);
 }
 
 /**
@@ -3516,6 +3516,15 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             if (hit.arg < 0 || hit.arg > 3) return;
             const std::string mode = kLidWidenModes[hit.arg];
             change = [mode](JsonValue& root) { root.set(key::kLidWiden, JsonValue::makeString(mode)); };
+            break;
+        }
+        case PanelAction::SetGazeSource: {
+            if (hit.arg < 0 || hit.arg > 1) return;
+            // "Pupil position" only with a pupil map (the row greys it out otherwise)
+            if (hit.arg == 1 && !pupilMapInConfig(view)) return;
+            const std::string source = kGazeSources[hit.arg];
+            std::fprintf(stderr, "[fit] gaze source: %s\n", source.c_str());
+            change = [source](JsonValue& root) { root.set(key::kGazeSource, JsonValue::makeString(source)); };
             break;
         }
         case PanelAction::SetAutoRecenter: {

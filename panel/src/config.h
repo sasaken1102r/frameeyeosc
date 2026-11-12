@@ -162,6 +162,30 @@ constexpr const char* kLidFitOpenLeft = "lid_fit_open_left";
 constexpr const char* kLidFitOpenRight = "lid_fit_open_right";
 constexpr const char* kLidFitDownLeft = "lid_fit_down_left";
 constexpr const char* kLidFitDownRight = "lid_fit_down_right";
+/** Where frameeyeosc's gaze comes from: kGazeSources ("valve", or "pupil": a test, from each eye's pupil position with
+ *  the pupil map below; "Gaze source" under "Fine-tune" on the Eye fit tab). */
+constexpr const char* kGazeSource = "gaze_source";
+/** Each eye's pupil map (frameeyeosc's src/pupil.rs): yaw = pupil_yaw + pupil_yaw_u * u + pupil_yaw_v * v in degrees,
+ *  pitch likewise, from the eye's pupil pair (u, v) as the eye server gives it. The whole eye fit writes them
+ *  (gaze_fit::fitPupilMaps); an eye's six are all set or all null. */
+constexpr const char* kPupilYawLeft = "pupil_yaw_left";
+constexpr const char* kPupilYawULeft = "pupil_yaw_u_left";
+constexpr const char* kPupilYawVLeft = "pupil_yaw_v_left";
+constexpr const char* kPupilPitchLeft = "pupil_pitch_left";
+constexpr const char* kPupilPitchULeft = "pupil_pitch_u_left";
+constexpr const char* kPupilPitchVLeft = "pupil_pitch_v_left";
+constexpr const char* kPupilYawRight = "pupil_yaw_right";
+constexpr const char* kPupilYawURight = "pupil_yaw_u_right";
+constexpr const char* kPupilYawVRight = "pupil_yaw_v_right";
+constexpr const char* kPupilPitchRight = "pupil_pitch_right";
+constexpr const char* kPupilPitchURight = "pupil_pitch_u_right";
+constexpr const char* kPupilPitchVRight = "pupil_pitch_v_right";
+/** Each eye's pupil centre for this wear, degrees added after the map (yaw, pitch; null = 0): the whole fit and each
+ *  re-center write it (gaze_fit::pupilCenters). */
+constexpr const char* kPupilCenterYawLeft = "pupil_center_yaw_left";
+constexpr const char* kPupilCenterPitchLeft = "pupil_center_pitch_left";
+constexpr const char* kPupilCenterYawRight = "pupil_center_yaw_right";
+constexpr const char* kPupilCenterPitchRight = "pupil_center_pitch_right";
 /** A request, not a setting: {"id": N, "target": "center"} asks frameeyeosc to average the gaze (eye fit). */
 constexpr const char* kGazeCapture = "gaze_capture";
 constexpr const char* kCalibrationReset = "calibration_reset";
@@ -183,6 +207,9 @@ constexpr const char* kActiveTypes[3] = {"bool", "float", "off"};
 constexpr const char* kAutoRecenterModes[2] = {"off", "center"};
 /** lid_widen values, in the order the Eyelids tab shows them: never, less, normal (the default), more */
 constexpr const char* kLidWidenModes[4] = {"off", "low", "normal", "high"};
+/** gaze_source values, in the order the Eye fit tab's "Gaze source" row shows them: the eye server's gaze (the
+ *  default), or the pupil map's */
+constexpr const char* kGazeSources[2] = {"valve", "pupil"};
 /** Default ports of the output types (used while "port" is null). */
 constexpr int kPortVrchat = 9000;
 /** The removed ETVR output's default port: set with "etvr", migrateRemovedSettings puts it back to null. */

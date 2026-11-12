@@ -4175,6 +4175,23 @@ void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsVie
                                            : std::string(t.off);
         drawStepper(pen, kControlX, y + (h - 42) / 2, 200, 42, key::kGazeDownHoldXDeg, value, text, !busy, locked);
     }
+    y += 50 + kRowGap;
+    // Where the gaze comes from (a test): the eye server's, or each eye's pupil position through the pupil map the
+    // whole eye fit makes ("Pupil position" grey until there is one). Its hint on a line of its own under the choices
+    {
+        const double h = 50;
+        const double controlH = 42;
+        const bool mapped = pupilMapInConfig(v);
+        const int selected = v.text(key::kGazeSource) == kGazeSources[1] ? 1 : 0;
+        drawRowLabel(pen, t, y, h, t.rowGazeSource, "", false);
+        std::vector<Option> options = {{t.gazeSourceStandard, {PanelAction::SetGazeSource, key::kGazeSource, 0}},
+                                       {t.gazeSourcePupil, {PanelAction::SetGazeSource, key::kGazeSource, 1}}};
+        options[0].usable = !busy;
+        options[1].usable = !busy && mapped;
+        drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH, options, selected, 18);
+        const double size = fitSize(pen, t.hintGazeSource, 15, 11, kControlW - 8, false);
+        pen.text(kControlX + 4, y + h + 16, t.hintGazeSource, size, kTextMuted);
+    }
 }
 
 void EyePanel::drawEyeFitInfo(const Pen& pen, const UiText& t, double y) {

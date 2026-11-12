@@ -141,6 +141,10 @@ struct FitInConfig {
 
 /** The lid fit keys, [eye][closed, up, open, down]. */
 extern const char* const kLidFitKeys[2][4];
+/** The pupil map keys, [eye][yaw, yaw per u, yaw per v, pitch, pitch per u, pitch per v]. */
+extern const char* const kPupilMapKeys[2][6];
+/** The pupil centre keys, [eye][yaw, pitch]. */
+extern const char* const kPupilCenterKeys[2][2];
 
 /**
  * The eye fit in the settings.
@@ -148,6 +152,13 @@ extern const char* const kLidFitKeys[2][4];
  * @return what is fitted, and the values
  */
 FitInConfig fitInConfig(const SettingsView& view);
+
+/**
+ * Whether config.json holds a pupil map for both eyes (the "Gaze source" row's "Pupil position" can be chosen).
+ * @param view the settings
+ * @return true if both eyes' six values are set
+ */
+bool pupilMapInConfig(const SettingsView& view);
 
 /**
  * Whether a key the eye fit writes is set on frameeyeosc's command line (then the fit can't run).
@@ -263,7 +274,8 @@ AutoRecenter autoRecenter(const ConfigFile& config);
  * Write an eye fit's result into config.json: the gaze zero point; for the whole fit also the gains (sideways and
  * down 1), the tilt (0), each eye's own sideways values taken out (null), each eye's lid readings, and
  * lid_scale_left/right back to null when it measured the eyelids (an old tweak must not sit on a new fit); an eye in
- * lidsKept keeps both its lid readings and its scale.
+ * lidsKept keeps both its lid readings and its scale. The pupil map (whole fit, hasPupilMap) and the pupil centres
+ * (both modes, hasPupilCenter) too, whatever gaze_source says, so they are there when it is switched.
  * @param root the config's root object
  * @param values the result
  * @param mode the mode
@@ -272,15 +284,17 @@ void applyFitValues(JsonValue& root, const gaze_fit::Values& values, gaze_fit::M
 
 /**
  * What "Reset" on the Eye fit tab puts back to the defaults: the gaze fit, each eye's sideways values, the lid
- * readings and the per-eye lid scales (fine-tunes of the lid fit).
+ * readings, the per-eye lid scales (fine-tunes of the lid fit), and the pupil map and centres (gaze_source stays: it
+ * is a choice, not a fit; without a map it acts as "valve").
  * @return the keys
  */
 std::vector<std::string> fitResetKeys();
 
 /**
  * What a re-center ("Re-center only", and the automatic one when the headset is put on) writes, and so what "Clear
- * center correction" puts back to the defaults: the gaze's zero point, gaze_offset_x and gaze_offset_y (applyFitValues
- * with gaze_fit::Mode::Center). Not the gains, the tilt, each eye's own sideways values, the lid fit or the lid scales.
+ * center correction" puts back to the defaults: the gaze's zero point, gaze_offset_x and gaze_offset_y, and each eye's
+ * pupil centre (applyFitValues with gaze_fit::Mode::Center; null: the pupil map as the whole fit made it). Not the
+ * gains, the tilt, each eye's own sideways values, the lid fit, the lid scales or the pupil map.
  * @return the keys
  */
 std::vector<std::string> centerResetKeys();

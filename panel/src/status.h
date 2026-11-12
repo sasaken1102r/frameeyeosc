@@ -40,6 +40,12 @@ struct GazeCaptureStatus {
     int samples = 0;
     int received = 0;          ///< samples that came in after the skipped start (0 from frameeyeosc before 0.5.3)
     double rate = NAN;         ///< the tracker's rate over the capture (samples a second)
+    /** Each eye's pupil pair (the eye server's, for the pupil map): the median over the samples averaged whose pair
+     *  was fresh ("pupil_left" / "pupil_right"), and how many those were ("pupil_fresh"). Not from an older
+     *  frameeyeosc. */
+    bool hasPupil[2] = {false, false};
+    double pupil[2][2] = {{0.0, 0.0}, {0.0, 0.0}};
+    int pupilFresh[2] = {0, 0};
 };
 
 /** The eye cameras as frameeyeosc uses them ("camera"; from eyecam-rec, only while it runs). */

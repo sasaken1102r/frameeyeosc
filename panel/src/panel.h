@@ -179,6 +179,7 @@ enum class PanelAction {
                        ///< eyeTrackingRateMin 90 and tells eye_rate::pressed
     EyeRateChoose,     ///< "Having trouble"'s eye camera speed: arg = eye_rate::Choice (the caller writes 90, or removes
                        ///< the key for SteamVR's default)
+    SetGazeSource,     ///< gaze_source = kGazeSources[arg] (the Eye fit tab's "Gaze source", under "Fine-tune")
 };
 
 /** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */

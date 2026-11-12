@@ -167,6 +167,87 @@ void testResetClearsScales() {
     for (const auto& eye : kLidFitKeys) {
         for (const char* name : eye) CHECK(has(name));
     }
+    // The pupil map and centres too; gaze_source stays (a choice, not a fit)
+    for (const auto& eye : kPupilMapKeys) {
+        for (const char* name : eye) CHECK(has(name));
+    }
+    for (const auto& eye : kPupilCenterKeys) {
+        for (const char* name : eye) CHECK(has(name));
+    }
+    CHECK(!has(key::kGazeSource));
+}
+
+/** A made-up result with a pupil map and centres (synthetic numbers). */
+gaze_fit::Values withPupilMap(gaze_fit::Values values) {
+    values.hasPupilMap = true;
+    values.hasPupilCenter = true;
+    for (int eye = 0; eye < 2; ++eye) {
+        for (int i = 0; i < 3; ++i) {
+            values.pupilMap[eye].yaw[i] = 100.0 * eye + 10.0 * i + 1.0;
+            values.pupilMap[eye].pitch[i] = -(100.0 * eye + 10.0 * i + 2.0);
+        }
+        values.pupilCenter[eye][0] = 0.5 + eye;
+        values.pupilCenter[eye][1] = -0.25 - eye;
+    }
+    return values;
+}
+
+/** What the pupil map and centres do in config.json: written by the fits, read back, taken out by Reset / Clear. */
+void testPupilKeys() {
+    // Every key is in the settings table (Reset all and the checks know it), the map's as nullable numbers
+    CHECK(findSetting(key::kGazeSource) != nullptr && findSetting(key::kGazeSource)->type == SettingType::String);
+    CHECK(std::string(findSetting(key::kGazeSource)->defaultText) == kGazeSources[0]);
+    for (const auto& eye : kPupilMapKeys) {
+        for (const char* name : eye) CHECK(findSetting(name) != nullptr && findSetting(name)->type == SettingType::NullableNumber);
+    }
+    for (const auto& eye : kPupilCenterKeys) {
+        for (const char* name : eye) CHECK(findSetting(name) != nullptr && findSetting(name)->type == SettingType::NullableNumber);
+    }
+    // A whole fit writes the map and the centres; a re-center only the centres; a fit without them neither
+    JsonValue root;
+    root.type = JsonValue::Type::Object;
+    applyFitValues(root, withPupilMap(measured(true)), gaze_fit::Mode::Full);
+    CHECK(numberIn(root, key::kPupilYawLeft) == 1.0 && numberIn(root, key::kPupilPitchVRight) == -122.0);
+    CHECK(numberIn(root, key::kPupilYawURight) == 111.0 && numberIn(root, key::kPupilCenterPitchRight) == -1.25);
+    PanelModel model;
+    model.config.exists = true;
+    model.config.root = root;
+    CHECK(pupilMapInConfig(SettingsView(model)));
+    const FitInConfig fit = fitInConfig(SettingsView(model));
+    CHECK(fit.values.hasPupilMap && fit.values.pupilMap[1].pitch[2] == -122.0 && fit.values.hasPupilCenter);
+    CHECK(fit.values.pupilCenter[0][0] == 0.5 && fit.values.pupilCenter[1][1] == -1.25);
+    gaze_fit::Values recentered = withPupilMap(measured(false));
+    recentered.hasPupilMap = false;
+    recentered.pupilCenter[0][0] = 3.0;
+    JsonValue rewear = root;
+    applyFitValues(rewear, recentered, gaze_fit::Mode::Center);
+    CHECK(numberIn(rewear, key::kPupilCenterYawLeft) == 3.0 && numberIn(rewear, key::kPupilYawLeft) == 1.0);
+    // Even with a map in its values, a re-center leaves the map alone
+    JsonValue other = root;
+    gaze_fit::Values changed = withPupilMap(measured(false));
+    changed.pupilMap[0].yaw[0] = 77.0;
+    applyFitValues(other, changed, gaze_fit::Mode::Center);
+    CHECK(numberIn(other, key::kPupilYawLeft) == 1.0);
+    JsonValue plain;
+    plain.type = JsonValue::Type::Object;
+    applyFitValues(plain, measured(true), gaze_fit::Mode::Full);
+    CHECK(plain.get(key::kPupilYawLeft) == nullptr && plain.get(key::kPupilCenterYawLeft) == nullptr);
+    // Half a map is no map
+    model.config.root.set(key::kPupilPitchULeft, JsonValue::makeNull());
+    CHECK(!pupilMapInConfig(SettingsView(model)) && !fitInConfig(SettingsView(model)).values.hasPupilMap);
+    // "Clear center correction": the pupil centres back to null with the zero point, the map stays
+    model.config.root = rewear;
+    const std::vector<std::string> clear = centerCorrection(SettingsView(model));
+    CHECK(std::find(clear.begin(), clear.end(), key::kPupilCenterYawLeft) != clear.end());
+    JsonValue cleared = rewear;
+    applyDefaults(cleared, clear);
+    CHECK(cleared.get(key::kPupilCenterYawLeft)->isNull() && cleared.get(key::kPupilCenterPitchRight)->isNull());
+    CHECK(numberIn(cleared, key::kPupilYawLeft) == 1.0);
+    // "Reset": all of them back to null, gaze_source as it was
+    cleared.set(key::kGazeSource, JsonValue::makeString("pupil"));
+    applyDefaults(cleared, fitResetKeys());
+    CHECK(cleared.get(key::kPupilYawLeft)->isNull() && cleared.get(key::kPupilPitchVRight)->isNull());
+    CHECK(cleared.get(key::kPupilCenterYawLeft)->isNull() && cleared.get(key::kGazeSource)->text == "pupil");
 }
 
 /**
@@ -174,9 +255,21 @@ void testResetClearsScales() {
  * ones left out; the gains, the tilt, each eye's own values, the lid fit and the lid scales untouched.
  */
 void testCenterReset() {
-    const std::vector<std::string> keys = centerResetKeys();
-    CHECK(keys == std::vector<std::string>({key::kGazeOffsetX, key::kGazeOffsetY}));
-    // The same keys a re-center writes, no more
+    const std::vector<std::string> all = centerResetKeys();
+    CHECK(all == std::vector<std::string>({key::kGazeOffsetX, key::kGazeOffsetY, key::kPupilCenterYawLeft,
+                                           key::kPupilCenterPitchLeft, key::kPupilCenterYawRight,
+                                           key::kPupilCenterPitchRight}));
+    // The same keys a re-center with a pupil map writes, no more; without one, only the zero point
+    const std::vector<std::string> keys = {key::kGazeOffsetX, key::kGazeOffsetY};
+    JsonValue withPupil;
+    withPupil.type = JsonValue::Type::Object;
+    applyFitValues(withPupil, withPupilMap(measured(true)), gaze_fit::Mode::Center);
+    std::vector<std::string> pupilNames;
+    for (const auto& member : withPupil.members) pupilNames.push_back(member.first);
+    std::sort(pupilNames.begin(), pupilNames.end());
+    std::vector<std::string> allSorted = all;
+    std::sort(allSorted.begin(), allSorted.end());
+    CHECK(pupilNames == allSorted);
     JsonValue written;
     written.type = JsonValue::Type::Object;
     applyFitValues(written, measured(true), gaze_fit::Mode::Center);
@@ -1977,6 +2070,7 @@ int main() {
     testFitWritesPolicy();
     testResetClearsScales();
     testCenterReset();
+    testPupilKeys();
     testRecenterDefault();
     testOutputArgs();
     testWidenState();

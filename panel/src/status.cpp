@@ -258,6 +258,20 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
                     c.cameraOpen[eye] = open->items[eye].isBool() && open->items[eye].boolean;
                 }
             }
+            const char* pupilNames[2] = {"pupil_left", "pupil_right"};
+            for (int eye = 0; eye < 2; ++eye) {
+                const Pair pupil = readPair(capture->get(pupilNames[eye]));
+                c.hasPupil[eye] = pupil.valid();
+                if (c.hasPupil[eye]) {
+                    c.pupil[eye][0] = pupil.v[0];
+                    c.pupil[eye][1] = pupil.v[1];
+                }
+            }
+            if (const JsonValue* fresh = capture->get("pupil_fresh"); fresh != nullptr && fresh->isArray()) {
+                for (size_t eye = 0; eye < 2 && eye < fresh->items.size(); ++eye) {
+                    if (fresh->items[eye].isNumber()) c.pupilFresh[eye] = static_cast<int>(fresh->items[eye].number);
+                }
+            }
         }
     }
 

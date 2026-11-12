@@ -124,6 +124,21 @@ int pointCount(Mode mode);
  */
 Point pointAt(Mode mode, int index);
 
+/** Fewest fresh pupil samples each eye needs at each dot for the pupil map (a capture takes about 150 at 90 Hz). */
+constexpr int kMinPupilFresh = 30;
+/** A pupil map whose five dots it fits worse than this (degrees, root mean square of each eye's) is not written. */
+constexpr double kMaxPupilRmsDeg = 4.0;
+/** ...nor one whose pupil hardly moves between the dots: the smaller spread of the five pupil pairs (the square root
+ *  of the smaller eigenvalue of their covariance) must be at least this (the eye server's units; about 0.04 seen). */
+constexpr double kMinPupilSpread = 0.01;
+
+/** One eye's pupil map (frameeyeosc's pupil_* keys, src/pupil.rs): from its pupil pair (u, v) to the direction it
+ *  looks, in degrees: yaw = yaw[0] + yaw[1] * u + yaw[2] * v, pitch likewise (yaw + right, pitch + up). */
+struct PupilMap {
+    double yaw[3] = {0.0, 0.0, 0.0};
+    double pitch[3] = {0.0, 0.0, 0.0};
+};
+
 /** One capture's result (the raw combined gaze and openness, before any correction or scale). */
 struct Measured {
     double x = 0.0;
@@ -137,6 +152,10 @@ struct Measured {
     int samples = 0;    ///< usable samples averaged...
     int received = 0;   ///< ...of these that came in (0 = not reported)
     double rateHz = NAN;  ///< the tracker's rate over the capture
+    /** Each eye's pupil pair (the median of its fresh pairs) and how many samples had it fresh: for the pupil map. */
+    bool hasPupil[2] = {false, false};
+    double pupil[2][2] = {{0.0, 0.0}, {0.0, 0.0}};
+    int pupilFresh[2] = {0, 0};
 };
 
 /**
@@ -224,7 +243,60 @@ struct Values {
     double lidUp[2] = {0.0, 0.0};
     double lidOpen[2] = {0.0, 0.0};
     double lidDown[2] = {0.0, 0.0};
+    /** Both eyes' pupil maps are set (from the config before a fit; a whole fit replaces them when its pupils could be
+     *  used, see fitPupilMaps, and keeps them otherwise). */
+    bool hasPupilMap = false;
+    PupilMap pupilMap[2];
+    /** Both eyes' pupil centres are set (yaw, pitch in degrees; see pupilCenters): written with the map, or alone by a
+     *  re-center. */
+    bool hasPupilCenter = false;
+    double pupilCenter[2][2] = {{0.0, 0.0}, {0.0, 0.0}};
 };
+
+/**
+ * Where an eye looks to see a target at kTargetDistanceM: its direction from that eye, not from between the eyes.
+ * The same as eyeAngle sideways (the left eye sits ipd/2 to the left), and up / down from the eye's own straight ahead.
+ * @param target the target
+ * @param eye 0 = left, 1 = right
+ * @param ipd the distance between the eyes (m)
+ * @param out yaw (+ right) and pitch (+ up), degrees
+ */
+void eyeDirection(const Target& target, int eye, double ipd, double out[2]);
+
+/**
+ * Where a pupil map points for a pupil pair.
+ * @param map the eye's map
+ * @param pupil its pupil pair (u, v)
+ * @param out yaw and pitch, degrees
+ */
+void applyPupilMap(const PupilMap& map, const double pupil[2], double out[2]);
+
+/**
+ * Both eyes' pupil maps from the five gaze captures (center, up, down, left, right): per eye the affine map (least
+ * squares) from its pupil pairs to its directions to the five targets (eyeDirection). Nothing is set unless both eyes
+ * can be used: every dot has the eye's pupil from at least kMinPupilFresh fresh samples, the pairs spread at least
+ * kMinPupilSpread, and the map fits its dots within kMaxPupilRmsDeg.
+ * @param points the captures, indexed by Point
+ * @param ipd the distance between the eyes (m)
+ * @param out the maps (set only on success)
+ * @param rmsDeg each eye's fit over its five dots, degrees (set only on success)
+ * @param why on failure, the first reason, in English for the log
+ * @return true if both maps were fitted
+ */
+bool fitPupilMaps(const Measured points[kPointCount], double ipd, PupilMap out[2], double rmsDeg[2], std::string& why);
+
+/**
+ * Both eyes' pupil centres from a straight-ahead capture: what makes each eye's map point at its direction to the
+ * center target (target minus map). Nothing is set unless both eyes have their pupil from at least kMinPupilFresh
+ * fresh samples.
+ * @param center the center capture
+ * @param maps both eyes' maps
+ * @param ipd the distance between the eyes (m)
+ * @param out each eye's centre, yaw and pitch in degrees (set only on success)
+ * @param why on failure, why, in English for the log
+ * @return true if both were set
+ */
+bool pupilCenters(const Measured& center, const PupilMap maps[2], double ipd, double out[2][2], std::string& why);
 
 /**
  * Where an eye really looks, on the -1..1 scale, to see a target that is `yawDeg` right of straight ahead at
@@ -374,8 +446,10 @@ public:
      * @param current the settings now (kept where the mode does not change them)
      * @param now monotonic seconds
      * @param upGains the previous whole fits' up gains, oldest first (the whole fit writes their mean with its own)
+     * @param ipd the distance between the eyes (m), for each eye's direction to the targets (the pupil map)
      */
-    void start(Mode mode, const Values& current, double now, const std::vector<double>& upGains = {});
+    void start(Mode mode, const Values& current, double now, const std::vector<double>& upGains = {},
+               double ipd = kDefaultIpdM);
 
     /**
      * Stop.
@@ -415,6 +489,7 @@ private:
     Values current_;
     Values result_;
     std::vector<double> upGains_;
+    double ipd_ = kDefaultIpdM;
     Measured measured_[kPointCount];
     int index_ = 0;
     int attempt_ = 1;

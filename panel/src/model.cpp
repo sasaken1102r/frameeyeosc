@@ -183,6 +183,27 @@ const char* const kLidFitKeys[2][4] = {
     {key::kLidFitClosedRight, key::kLidFitUpRight, key::kLidFitOpenRight, key::kLidFitDownRight},
 };
 
+const char* const kPupilMapKeys[2][6] = {
+    {key::kPupilYawLeft, key::kPupilYawULeft, key::kPupilYawVLeft, key::kPupilPitchLeft, key::kPupilPitchULeft,
+     key::kPupilPitchVLeft},
+    {key::kPupilYawRight, key::kPupilYawURight, key::kPupilYawVRight, key::kPupilPitchRight, key::kPupilPitchURight,
+     key::kPupilPitchVRight},
+};
+
+const char* const kPupilCenterKeys[2][2] = {
+    {key::kPupilCenterYawLeft, key::kPupilCenterPitchLeft},
+    {key::kPupilCenterYawRight, key::kPupilCenterPitchRight},
+};
+
+bool pupilMapInConfig(const SettingsView& view) {
+    for (const auto& eye : kPupilMapKeys) {
+        for (const char* name : eye) {
+            if (!std::isfinite(view.number(name))) return false;
+        }
+    }
+    return true;
+}
+
 bool fitKeysLocked(const SettingsView& view) {
     for (const char* name : {key::kGazeOffsetX, key::kGazeOffsetY, key::kGazeGainX, key::kGazeGainUp, key::kGazeGainDown,
                              key::kGazeRollDeg, key::kGazeOffsetXLeft, key::kGazeOffsetXRight, key::kGazeGainXLeft,
@@ -431,7 +452,22 @@ AutoRecenter autoRecenter(const ConfigFile& config) {
 void applyFitValues(JsonValue& root, const gaze_fit::Values& values, gaze_fit::Mode mode) {
     root.set(key::kGazeOffsetX, JsonValue::makeNumber(values.offsetX));
     root.set(key::kGazeOffsetY, JsonValue::makeNumber(values.offsetY));
+    // Each eye's pupil centre (both modes), and the whole fit's pupil map (written whatever gaze_source says)
+    if (values.hasPupilCenter) {
+        for (int eye = 0; eye < 2; ++eye) {
+            for (int axis = 0; axis < 2; ++axis) {
+                root.set(kPupilCenterKeys[eye][axis], JsonValue::makeNumber(values.pupilCenter[eye][axis]));
+            }
+        }
+    }
     if (mode != gaze_fit::Mode::Full) return;
+    if (values.hasPupilMap) {
+        for (int eye = 0; eye < 2; ++eye) {
+            const gaze_fit::PupilMap& map = values.pupilMap[eye];
+            const double numbers[6] = {map.yaw[0], map.yaw[1], map.yaw[2], map.pitch[0], map.pitch[1], map.pitch[2]};
+            for (int i = 0; i < 6; ++i) root.set(kPupilMapKeys[eye][i], JsonValue::makeNumber(numbers[i]));
+        }
+    }
     root.set(key::kGazeRollDeg, JsonValue::makeNumber(values.rollDeg));
     // Each eye's own sideways values aren't fitted any more: the shared ones count for both
     for (const char* name : {key::kGazeOffsetXLeft, key::kGazeOffsetXRight, key::kGazeGainXLeft, key::kGazeGainXRight}) {
@@ -459,11 +495,15 @@ std::vector<std::string> fitResetKeys() {
                                       key::kGazeOffsetXLeft, key::kGazeOffsetXRight, key::kGazeGainXLeft,
                                       key::kGazeGainXRight,  key::kLidScaleLeft,     key::kLidScaleRight};
     for (const auto& eye : kLidFitKeys) names.insert(names.end(), std::begin(eye), std::end(eye));
+    for (const auto& eye : kPupilMapKeys) names.insert(names.end(), std::begin(eye), std::end(eye));
+    for (const auto& eye : kPupilCenterKeys) names.insert(names.end(), std::begin(eye), std::end(eye));
     return names;
 }
 
 std::vector<std::string> centerResetKeys() {
-    return {key::kGazeOffsetX, key::kGazeOffsetY};
+    std::vector<std::string> names = {key::kGazeOffsetX, key::kGazeOffsetY};
+    for (const auto& eye : kPupilCenterKeys) names.insert(names.end(), std::begin(eye), std::end(eye));
+    return names;
 }
 
 std::vector<std::string> centerCorrection(const SettingsView& view) {
@@ -495,6 +535,23 @@ FitInConfig fitInConfig(const SettingsView& view) {
     v.rollDeg = view.number(key::kGazeRollDeg);
     fit.gazeFitted = std::fabs(v.offsetX) > 1e-9 || std::fabs(v.offsetY) > 1e-9 || std::fabs(v.gainX - 1) > 1e-9 ||
                      std::fabs(v.gainUp - 1) > 1e-9 || std::fabs(v.gainDown - 1) > 1e-9 || std::fabs(v.rollDeg) > 1e-9;
+    // The pupil map and centres as written (a re-center needs the map; the whole fit keeps them when it can't make new)
+    v.hasPupilMap = pupilMapInConfig(view);
+    if (v.hasPupilMap) {
+        for (int eye = 0; eye < 2; ++eye) {
+            for (int i = 0; i < 3; ++i) {
+                v.pupilMap[eye].yaw[i] = view.number(kPupilMapKeys[eye][i]);
+                v.pupilMap[eye].pitch[i] = view.number(kPupilMapKeys[eye][i + 3]);
+            }
+        }
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        for (int axis = 0; axis < 2; ++axis) {
+            const double center = view.number(kPupilCenterKeys[eye][axis]);
+            v.pupilCenter[eye][axis] = std::isfinite(center) ? center : 0.0;
+            v.hasPupilCenter = v.hasPupilCenter || std::isfinite(center);
+        }
+    }
     for (int eye = 0; eye < 2; ++eye) {
         double readings[4];
         bool all = true;

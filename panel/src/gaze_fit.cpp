@@ -203,6 +203,175 @@ double eyeAngle(double yawDeg, int eye, double ipd) {
     return std::atan2(side, kTargetDistanceM * std::cos(yaw)) * 180.0 / M_PI / kFullScaleDeg;
 }
 
+void eyeDirection(const Target& target, int eye, double ipd, double out[2]) {
+    const double yaw = target.yawDeg * M_PI / 180.0;
+    const double pitch = target.pitchDeg * M_PI / 180.0;
+    // The target from between the eyes, then from the eye (the left one at -ipd/2); angles from straight ahead as the
+    // gaze angles are (frameeyeosc's gaze_angles: atan2 of each side over the forward distance)
+    const double side = kTargetDistanceM * std::sin(yaw) * std::cos(pitch) + (eye == 0 ? ipd / 2 : -ipd / 2);
+    const double up = kTargetDistanceM * std::sin(pitch);
+    const double ahead = kTargetDistanceM * std::cos(yaw) * std::cos(pitch);
+    out[0] = std::atan2(side, ahead) * 180.0 / M_PI;
+    out[1] = std::atan2(up, ahead) * 180.0 / M_PI;
+}
+
+void applyPupilMap(const PupilMap& map, const double pupil[2], double out[2]) {
+    out[0] = map.yaw[0] + map.yaw[1] * pupil[0] + map.yaw[2] * pupil[1];
+    out[1] = map.pitch[0] + map.pitch[1] * pupil[0] + map.pitch[2] * pupil[1];
+}
+
+namespace {
+
+/**
+ * Solve a 3x3 linear system (Gaussian elimination with partial pivoting).
+ * @param a the matrix (changed)
+ * @param b the right side (changed; the solution on success)
+ * @return false if it is (nearly) singular
+ */
+bool solve3(double a[3][3], double b[3]) {
+    for (int col = 0; col < 3; ++col) {
+        int pivot = col;
+        for (int row = col + 1; row < 3; ++row) {
+            if (std::fabs(a[row][col]) > std::fabs(a[pivot][col])) pivot = row;
+        }
+        if (std::fabs(a[pivot][col]) < 1e-15) return false;
+        if (pivot != col) {
+            for (int k = 0; k < 3; ++k) std::swap(a[col][k], a[pivot][k]);
+            std::swap(b[col], b[pivot]);
+        }
+        for (int row = col + 1; row < 3; ++row) {
+            const double f = a[row][col] / a[col][col];
+            for (int k = col; k < 3; ++k) a[row][k] -= f * a[col][k];
+            b[row] -= f * b[col];
+        }
+    }
+    for (int row = 2; row >= 0; --row) {
+        for (int k = row + 1; k < 3; ++k) b[row] -= a[row][k] * b[k];
+        b[row] /= a[row][row];
+    }
+    return true;
+}
+
+/** The five gaze points, in the order their captures are taken. */
+constexpr Point kGazePoints[5] = {Point::Center, Point::Up, Point::Down, Point::Left, Point::Right};
+
+const char* eyeName(int eye) { return eye == 0 ? "left" : "right"; }
+
+}  // namespace
+
+bool fitPupilMaps(const Measured points[kPointCount], double ipd, PupilMap out[2], double rmsDeg[2], std::string& why) {
+    PupilMap maps[2];
+    double rms[2] = {0.0, 0.0};
+    char text[200];
+    for (int eye = 0; eye < 2; ++eye) {
+        double u[5];
+        double v[5];
+        double t[5][2];
+        for (int i = 0; i < 5; ++i) {
+            const Measured& m = points[static_cast<int>(kGazePoints[i])];
+            if (!m.hasPupil[eye] || m.pupilFresh[eye] < kMinPupilFresh) {
+                std::snprintf(text, sizeof(text), "the %s eye's pupil at the %s dot: %d fresh samples (needs %d)",
+                              eyeName(eye), target(kGazePoints[i]).name, m.hasPupil[eye] ? m.pupilFresh[eye] : 0,
+                              kMinPupilFresh);
+                why = text;
+                return false;
+            }
+            u[i] = m.pupil[eye][0];
+            v[i] = m.pupil[eye][1];
+            eyeDirection(target(kGazePoints[i]), eye, ipd, t[i]);
+        }
+        // How far the pupil moved between the dots: the smaller spread of the five pairs
+        double mu = 0.0;
+        double mv = 0.0;
+        for (int i = 0; i < 5; ++i) {
+            mu += u[i] / 5;
+            mv += v[i] / 5;
+        }
+        double suu = 0.0;
+        double svv = 0.0;
+        double suv = 0.0;
+        for (int i = 0; i < 5; ++i) {
+            suu += (u[i] - mu) * (u[i] - mu) / 5;
+            svv += (v[i] - mv) * (v[i] - mv) / 5;
+            suv += (u[i] - mu) * (v[i] - mv) / 5;
+        }
+        const double half = (suu + svv) / 2;
+        const double smaller = half - std::sqrt(std::max(0.0, half * half - (suu * svv - suv * suv)));
+        if (!(std::sqrt(std::max(0.0, smaller)) >= kMinPupilSpread)) {
+            std::snprintf(text, sizeof(text), "the %s eye's pupil hardly moved between the dots (spread %.4f, needs %.2f)",
+                          eyeName(eye), std::sqrt(std::max(0.0, smaller)), kMinPupilSpread);
+            why = text;
+            return false;
+        }
+        // Least squares, centred on the mean pair for a well-conditioned system: angle = c0 + c1 (u - mu) + c2 (v - mv)
+        for (int axis = 0; axis < 2; ++axis) {
+            double a[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+            double b[3] = {0, 0, 0};
+            for (int i = 0; i < 5; ++i) {
+                const double row[3] = {1.0, u[i] - mu, v[i] - mv};
+                for (int j = 0; j < 3; ++j) {
+                    for (int k = 0; k < 3; ++k) a[j][k] += row[j] * row[k];
+                    b[j] += row[j] * t[i][axis];
+                }
+            }
+            if (!solve3(a, b)) {
+                std::snprintf(text, sizeof(text), "the %s eye's pupil pairs don't give a map", eyeName(eye));
+                why = text;
+                return false;
+            }
+            double* c = axis == 0 ? maps[eye].yaw : maps[eye].pitch;
+            c[0] = b[0] - b[1] * mu - b[2] * mv;
+            c[1] = b[1];
+            c[2] = b[2];
+        }
+        double sum = 0.0;
+        for (int i = 0; i < 5; ++i) {
+            const double pupil[2] = {u[i], v[i]};
+            double mapped[2];
+            applyPupilMap(maps[eye], pupil, mapped);
+            sum += (mapped[0] - t[i][0]) * (mapped[0] - t[i][0]) + (mapped[1] - t[i][1]) * (mapped[1] - t[i][1]);
+        }
+        rms[eye] = std::sqrt(sum / 5);
+        const bool finite = std::isfinite(rms[eye]) && std::isfinite(maps[eye].yaw[0]) &&
+                            std::isfinite(maps[eye].pitch[0]);
+        if (!finite || rms[eye] > kMaxPupilRmsDeg) {
+            std::snprintf(text, sizeof(text), "the %s eye's map misses its dots by %.1f° (at most %.1f°)", eyeName(eye),
+                          rms[eye], kMaxPupilRmsDeg);
+            why = text;
+            return false;
+        }
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        out[eye] = maps[eye];
+        rmsDeg[eye] = rms[eye];
+    }
+    return true;
+}
+
+bool pupilCenters(const Measured& center, const PupilMap maps[2], double ipd, double out[2][2], std::string& why) {
+    double centers[2][2];
+    for (int eye = 0; eye < 2; ++eye) {
+        if (!center.hasPupil[eye] || center.pupilFresh[eye] < kMinPupilFresh) {
+            char text[160];
+            std::snprintf(text, sizeof(text), "the %s eye's pupil at the center dot: %d fresh samples (needs %d)",
+                          eyeName(eye), center.hasPupil[eye] ? center.pupilFresh[eye] : 0, kMinPupilFresh);
+            why = text;
+            return false;
+        }
+        double wanted[2];
+        eyeDirection(target(Point::Center), eye, ipd, wanted);
+        double mapped[2];
+        applyPupilMap(maps[eye], center.pupil[eye], mapped);
+        centers[eye][0] = wanted[0] - mapped[0];
+        centers[eye][1] = wanted[1] - mapped[1];
+    }
+    for (int eye = 0; eye < 2; ++eye) {
+        out[eye][0] = centers[eye][0];
+        out[eye][1] = centers[eye][1];
+    }
+    return true;
+}
+
 double meanUpGain(double measured, const std::vector<double>& previous, int* fits) {
     double sum = measured;
     int count = 1;
@@ -294,8 +463,9 @@ bool fitLids(const Measured points[kPointCount], Values& out, FailureDetail* det
     return true;
 }
 
-void Session::start(Mode mode, const Values& current, double now, const std::vector<double>& upGains) {
+void Session::start(Mode mode, const Values& current, double now, const std::vector<double>& upGains, double ipd) {
     *this = Session();
+    ipd_ = ipd;
     // No waiting for the dashboard: the first dot shows right away (nearer than the dashboard, so over it)
     phase_ = Phase::Settling;
     phaseAt_ = now;
@@ -371,6 +541,24 @@ void Session::finish(Actions& actions) {
         const Measured& center = measured_[static_cast<int>(Point::Center)];
         result_ = fitCenter(center, current_);
         for (int eye = 0; eye < 2; ++eye) notes_.standIn[eye] = center.cameraOpen[eye];
+        // The pupil centre for this wear, from the same dot (only with a pupil map from a whole fit; nothing said
+        // without one)
+        if (current_.hasPupilMap) {
+            std::string why;
+            std::string line;
+            if (pupilCenters(center, current_.pupilMap, ipd_, result_.pupilCenter, why)) {
+                result_.hasPupilCenter = true;
+                char text[160];
+                std::snprintf(text, sizeof(text), "pupil center: L %+.2f %+.2f, R %+.2f %+.2f deg",
+                              result_.pupilCenter[0][0], result_.pupilCenter[0][1], result_.pupilCenter[1][0],
+                              result_.pupilCenter[1][1]);
+                line = text;
+            } else {
+                line = "pupil center kept as it was: " + why;
+            }
+            if (!actions.log.empty()) actions.log += '\n';
+            actions.log += line;
+        }
     } else {
         standIns(measured_, notes_.standIn);
         result_ = current_;
@@ -391,6 +579,26 @@ void Session::finish(Actions& actions) {
                       notes_.upGainFits == 1 ? "" : "s");
         if (!actions.log.empty()) actions.log += '\n';
         actions.log += text;
+        // Each eye's pupil map from the same five dots, and its centre from the center dot; kept as it was (or none)
+        // when the pupils can't be used
+        std::string why;
+        double rms[2];
+        PupilMap maps[2];
+        actions.log += '\n';
+        if (fitPupilMaps(measured_, ipd_, maps, rms, why) &&
+            pupilCenters(measured_[static_cast<int>(Point::Center)], maps, ipd_, result_.pupilCenter, why)) {
+            result_.hasPupilMap = true;
+            result_.hasPupilCenter = true;
+            for (int eye = 0; eye < 2; ++eye) result_.pupilMap[eye] = maps[eye];
+            std::snprintf(text, sizeof(text), "pupil map: fits its dots within %.2f° (L) and %.2f° (R) rms; center L %+.2f "
+                          "%+.2f, R %+.2f %+.2f deg", rms[0], rms[1], result_.pupilCenter[0][0], result_.pupilCenter[0][1],
+                          result_.pupilCenter[1][0], result_.pupilCenter[1][1]);
+            actions.log += text;
+        } else {
+            result_.hasPupilMap = current_.hasPupilMap;
+            result_.hasPupilCenter = current_.hasPupilCenter;
+            actions.log += std::string(current_.hasPupilMap ? "pupil map kept as it was: " : "pupil map not made: ") + why;
+        }
     }
     phase_ = Phase::Done;
     actions.writeValues = true;
@@ -445,6 +653,12 @@ Actions Session::tick(double now, const Dashboard& dashboard, const EyeStatus& s
             measured.openness[1] = capture.openness[1];
             measured.cameraOpen[0] = capture.cameraOpen[0];
             measured.cameraOpen[1] = capture.cameraOpen[1];
+            for (int eye = 0; eye < 2; ++eye) {
+                measured.hasPupil[eye] = capture.hasPupil[eye];
+                measured.pupil[eye][0] = capture.pupil[eye][0];
+                measured.pupil[eye][1] = capture.pupil[eye][1];
+                measured.pupilFresh[eye] = capture.pupilFresh[eye];
+            }
             const bool closedStep = point() == Point::Closed;
             // The full fit needs each gaze point's openness too, for the lid fit
             const Measured& center = measured_[static_cast<int>(Point::Center)];

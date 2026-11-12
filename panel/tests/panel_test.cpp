@@ -4098,6 +4098,52 @@ void testPortKeypad(const FontSet& fonts) {
  * from noteCenterCleared until a fit, a re-center or "Reset" is pressed. The page's buttons stay in the card and apart,
  * with "Fine-tune" folded and open. In both languages.
  */
+/**
+ * The Eye fit tab's "Gaze source" (under "Fine-tune"): "Pupil position (test)" only with a pupil map, the row and its
+ * hint inside the card, in both languages. With PANEL_TEST_PNG_DIR set, the tab is drawn to PNGs there too.
+ */
+void testGazeSourceRow(const FontSet& fonts) {
+    const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
+    for (const Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::EyeFit);
+        PanelModel m = modelWith(Lids::Valve, false);
+        m.language = language;
+        m.config.root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.067));
+        m.config.root.set(key::kGazeGainUp, JsonValue::makeNumber(0.78));
+        const std::string lang = language == Language::Ja ? "ja" : "en";
+        // Folded: not on the tab's first page
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetGazeSource).empty());
+        if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/eyefit_" + lang + "_2026-11-13_02-00-00.png");
+        // Under "Fine-tune": without a pupil map only "Standard" can be pressed
+        panel.setFitDetails(true);
+        panel.render(m);
+        std::vector<EyePanel::HitArea> rows = hits(panel, PanelAction::SetGazeSource, key::kGazeSource);
+        CHECK(rows.size() == 1 && rows[0].hit.arg == 0);
+        if (pngDir != nullptr) {
+            panel.writePng(std::string(pngDir) + "/eyefit_finetune_nomap_" + lang + "_2026-11-13_02-00-00.png");
+        }
+        // With one (synthetic numbers): both, chosen or not; the page still inside the card
+        for (const auto& eye : kPupilMapKeys) {
+            for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
+        }
+        panel.render(m);
+        rows = hits(panel, PanelAction::SetGazeSource, key::kGazeSource);
+        CHECK(rows.size() == 2 && rows[0].hit.arg == 0 && rows[1].hit.arg == 1);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+        // Below the far-down hold, its own row
+        const std::vector<EyePanel::HitArea> hold = hits(panel, PanelAction::Step, key::kGazeDownHoldXDeg);
+        CHECK(!hold.empty() && !rows.empty() && rows[0].y > hold[0].y + hold[0].h);
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetGazeSource, key::kGazeSource).size() == 2);
+        if (pngDir != nullptr) {
+            panel.writePng(std::string(pngDir) + "/eyefit_finetune_pupil_" + lang + "_2026-11-13_02-00-00.png");
+        }
+    }
+}
+
 void testCenterClear(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         PanelModel m = modelWith(Lids::Both, true);
@@ -4591,6 +4637,7 @@ int main() {
     testExtrasRowDelete(fonts);
     testPortKeypad(fonts);
     testCenterClear(fonts);
+    testGazeSourceRow(fonts);
     testStatusLayout(fonts);
     testEyeRate(fonts);
     if (gFailures > 0) {

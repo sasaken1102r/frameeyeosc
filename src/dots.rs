@@ -31,6 +31,15 @@
 //! bit 0 is clear). A datagram of its own, so the sample's datagram stays as it was: a panel from before reads its
 //! magic and size as not its own and ignores it, and this panel shows no other dot with a frameeyeosc from before (none
 //! comes). Without the switch nothing of it is sent.
+//!
+//! The panel's gaze error check ("Measure gaze error") binds a second socket, MEASURE_SOCKET_NAME, while it runs; while
+//! that is there (looked at as above), each sample also goes to it as MEASURE_SIZE bytes, little-endian: b"FEOM",
+//! version 1, flags (bit 0: both eyes have a pupil map; bit 1: the sample counts, both eyes open enough as the eye
+//! fit's captures count them; bit 2: Valve's gaze is held), the pupils' state (0 none without a map, then pupil.rs's
+//! InUse: 1 both pupils, 2 the left only, 3 the right only, 4 held, 5 Valve's standing in), a zero byte, the sample
+//! time (f64), Valve's combined x and y as gaze_source "valve" sends them, the pupils' as "pupil" sends them (f32, 1.0 =
+//! 45°, both before the user's gaze scale; the pupils' 0 without a map), each eye's openness as read (f32). Only the
+//! panel's check reads it; nothing sent elsewhere changes.
 
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
@@ -39,6 +48,13 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub const SOCKET_NAME: &str = "gaze-dots.sock";
+pub const MEASURE_SOCKET_NAME: &str = "gaze-measure.sock";
+const MEASURE_MAGIC: &[u8; 4] = b"FEOM";
+const MEASURE_VERSION: u8 = 1;
+pub const MEASURE_SIZE: usize = 40;
+const MEASURE_MAPPED: u8 = 1;
+const MEASURE_USABLE: u8 = 2;
+const MEASURE_VALVE_HELD: u8 = 4;
 const MAGIC: &[u8; 4] = b"FEOD";
 const VERSION: u8 = 3;
 const EYES: usize = 64;
@@ -121,6 +137,55 @@ pub fn decode_other(packet: &[u8]) -> Option<OtherSample> {
         time: f64::from_le_bytes(packet[8..16].try_into().ok()?),
         gaze: (packet[5] & OTHER_HAS != 0).then(|| [f32_at(16), f32_at(20)]),
         valve: packet[5] & OTHER_VALVE != 0,
+    })
+}
+
+/// One sample for the panel's gaze error check: Valve's and the pupils' combined gaze, each as its gaze_source sends it
+/// (before the user's gaze scale).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeasureSample {
+    pub time: f64,
+    pub mapped: bool,
+    pub usable: bool,
+    pub valve_held: bool,
+    // 0 without a map; else 1 + pupil.rs's InUse in its order (Pupil, Left, Right, Hold, Valve).
+    pub pupil_state: u8,
+    pub valve: [f32; 2],
+    pub pupil: [f32; 2],
+    pub openness: [f32; 2],
+}
+
+pub fn encode_measure(sample: &MeasureSample) -> [u8; MEASURE_SIZE] {
+    let mut packet = [0u8; MEASURE_SIZE];
+    packet[..4].copy_from_slice(MEASURE_MAGIC);
+    packet[4] = MEASURE_VERSION;
+    packet[5] = [(sample.mapped, MEASURE_MAPPED), (sample.usable, MEASURE_USABLE), (sample.valve_held, MEASURE_VALVE_HELD)]
+        .iter()
+        .filter(|(on, _)| *on)
+        .fold(0, |flags, (_, bit)| flags | bit);
+    packet[6] = sample.pupil_state;
+    packet[8..16].copy_from_slice(&sample.time.to_le_bytes());
+    for (i, value) in sample.valve.iter().chain(&sample.pupil).chain(&sample.openness).enumerate() {
+        packet[16 + i * 4..20 + i * 4].copy_from_slice(&value.to_le_bytes());
+    }
+    packet
+}
+
+#[cfg(test)]
+pub fn decode_measure(packet: &[u8]) -> Option<MeasureSample> {
+    if packet.len() != MEASURE_SIZE || &packet[..4] != MEASURE_MAGIC || packet[4] != MEASURE_VERSION {
+        return None;
+    }
+    let f32_at = |at: usize| f32::from_le_bytes(packet[at..at + 4].try_into().unwrap());
+    Some(MeasureSample {
+        time: f64::from_le_bytes(packet[8..16].try_into().ok()?),
+        mapped: packet[5] & MEASURE_MAPPED != 0,
+        usable: packet[5] & MEASURE_USABLE != 0,
+        valve_held: packet[5] & MEASURE_VALVE_HELD != 0,
+        pupil_state: packet[6],
+        valve: [f32_at(16), f32_at(20)],
+        pupil: [f32_at(24), f32_at(28)],
+        openness: [f32_at(32), f32_at(36)],
     })
 }
 
@@ -218,8 +283,13 @@ pub struct DotStream {
 impl DotStream {
     /// `dir` is the status folder ($XDG_RUNTIME_DIR/frameeyeosc), where the panel binds the socket.
     pub fn new(dir: &Path) -> Self {
+        Self::named(dir, SOCKET_NAME)
+    }
+
+    /// The same for another of the panel's sockets (MEASURE_SOCKET_NAME).
+    pub fn named(dir: &Path, name: &str) -> Self {
         Self {
-            path: dir.join(SOCKET_NAME),
+            path: dir.join(name),
             socket: None,
             listening: false,
             looked: None,
@@ -247,6 +317,11 @@ impl DotStream {
     /// The other gaze source's value for the next sample (gaze_debug_dots_compare): sent just before it.
     pub fn send_other(&mut self, other: &OtherSample) {
         self.send_bytes(&encode_other(other));
+    }
+
+    /// A sample for the panel's gaze error check (on its own socket: a DotStream::named(MEASURE_SOCKET_NAME)).
+    pub fn send_measure(&mut self, sample: &MeasureSample) {
+        self.send_bytes(&encode_measure(sample));
     }
 
     fn send_bytes(&mut self, bytes: &[u8]) {
@@ -406,6 +481,41 @@ mod tests {
         wrong[4] = 2;
         assert_eq!(decode_other(&wrong), None);
         assert_eq!(decode_other(&packet[..23]), None);
+    }
+
+    #[test]
+    fn the_measure_datagram_reads_back_and_is_no_other() {
+        let sample = MeasureSample {
+            time: 19892.729813125,
+            mapped: true,
+            usable: true,
+            valve_held: false,
+            pupil_state: 1,
+            valve: [0.125, -0.25],
+            pupil: [0.5, 0.0625],
+            openness: [0.75, 0.5],
+        };
+        let packet = encode_measure(&sample);
+        assert_eq!(packet.len(), MEASURE_SIZE);
+        assert_eq!(&packet[..8], b"FEOM\x01\x03\x01\x00");
+        assert_eq!(decode_measure(&packet), Some(sample));
+        assert_eq!(f32::from_le_bytes(packet[24..28].try_into().unwrap()), 0.5);
+        assert_eq!(f32::from_le_bytes(packet[36..40].try_into().unwrap()), 0.5);
+        let held = MeasureSample { mapped: false, usable: false, valve_held: true, pupil_state: 0, ..sample };
+        assert_eq!(&encode_measure(&held)[..8], b"FEOM\x01\x04\x00\x00");
+        assert_eq!(decode_measure(&encode_measure(&held)), Some(held));
+        // None of the other datagrams, nor they this one
+        assert_eq!(decode(&packet), None);
+        assert_eq!(decode_other(&packet[..OTHER_SIZE]), None);
+        assert_eq!(decode_measure(&encode(&sample_for_measure())[..MEASURE_SIZE]), None);
+        let mut wrong = packet;
+        wrong[4] = 2;
+        assert_eq!(decode_measure(&wrong), None);
+        assert_eq!(decode_measure(&packet[..39]), None);
+    }
+
+    fn sample_for_measure() -> DotSample {
+        sample()
     }
 
     #[test]

@@ -1346,6 +1346,43 @@ mod tests {
     }
 
     #[test]
+    fn with_smoothing_off_the_pupil_gaze_still_runs() {
+        use crate::config::GazeSource;
+        use crate::pupil::InUse;
+        // As below, with smoothing off (raw): the pupils give the gaze (not the eye server's), unsmoothed, the same
+        // sources as with it on
+        let mut samples = synthetic();
+        for (i, data) in samples.iter_mut().enumerate() {
+            let [x, y] = gaze_angles(data.fixation_point).map(|value| value * 45.0);
+            let jitter = (i % 2) as f32 * 1e-5;
+            let (u, v) = ((x + 5.0 + 40.0) / 200.0 + jitter, (20.0 - (y + 4.0)) / 200.0);
+            data.extra[..4].copy_from_slice(&[u, v, u, v]);
+        }
+        let base = all_stages();
+        let smooth = replay_alone(&samples, &Settings { gaze_source: GazeSource::Pupil, ..with_pupil_map(&base) }, calibration());
+        let raw_settings = Settings { gaze_source: GazeSource::Pupil, raw: true, ..with_pupil_map(&base) };
+        let raw = replay_alone(&samples, &raw_settings, calibration());
+        let valve = replay_alone(&samples, &Settings { raw: true, ..base.clone() }, calibration());
+        let used = |sent: &[Sample]| sent.iter().filter(|sample| sample.gaze_in_use == Some(InUse::Pupil)).count();
+        assert!(used(&raw) > 200 && used(&raw).abs_diff(used(&smooth)) <= used(&smooth) / 20, "{} {}", used(&raw), used(&smooth));
+        // About 5 and 4 deg off the eye server's gaze where both pupils give it
+        let moved: Vec<[f32; 2]> = valve
+            .iter()
+            .zip(&raw)
+            .skip(90)
+            .filter(|(_, p)| p.gaze_in_use == Some(InUse::Pupil) && !p.gaze_held && !p.gaze_blending)
+            .map(|(v, p)| [(p.gaze[4] - v.gaze[4]) * 45.0, (p.gaze[5] - v.gaze[5]) * 45.0])
+            .collect();
+        assert!(moved.len() > 200, "{}", moved.len());
+        let mut dx: Vec<f32> = moved.iter().map(|m| m[0]).collect();
+        let mut dy: Vec<f32> = moved.iter().map(|m| m[1]).collect();
+        dx.sort_by(f32::total_cmp);
+        dy.sort_by(f32::total_cmp);
+        let (mx, my) = (dx[dx.len() / 2], dy[dy.len() / 2]);
+        assert!((mx - 5.0).abs() < 0.3 && (my - 4.0).abs() < 0.3, "{mx} {my}");
+    }
+
+    #[test]
     fn the_pupil_gaze_follows_the_pupils_through_the_whole_pipeline() {
         use crate::config::GazeSource;
         // The synthetic recording with each eye's pupil pair moving as if looking 5 deg right and 4 deg up of where the

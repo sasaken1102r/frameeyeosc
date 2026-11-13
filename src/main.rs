@@ -3736,6 +3736,8 @@ struct Sample {
     pupil_open: [bool; 2],
     // Where the gaze came from with gaze_source "pupil" and a map; None otherwise (the eye server's, as always).
     gaze_in_use: Option<pupil::InUse>,
+    // ...still easing from the source before (pupil.rs's blend), not yet that source's own.
+    gaze_blending: bool,
 }
 
 impl Sample {
@@ -3828,6 +3830,7 @@ fn measure_sample(settings: &Settings, data: &EyeData, sample: &Sample, other: O
         mapped: pupil.is_some(),
         usable: sample.capture_usable(),
         valve_held: valve.gaze_held,
+        pupil_blending: pupil.is_some_and(|run| run.gaze_blending),
         pupil_state: state,
         valve: combined(valve),
         pupil: pupil.map_or([0.0; 2], combined),
@@ -3900,6 +3903,7 @@ fn process(
     let mut cross_eye = false;
     // Where the gaze came from with gaze_source "pupil" and a map (None: the eye server's gaze as always)
     let mut gaze_in_use = None;
+    let mut gaze_blending = false;
     let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows) = if settings.raw {
         pupil_open = smoother.pupil_open(settings, data, camera);
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
@@ -3990,6 +3994,7 @@ fn process(
                 let open = eyes_open_for_pupil(data.openness, seen_open, settings);
                 let step = smoother.pupil.step(data.sample_time, &maps, &data.extra, open, valve);
                 gaze_in_use = Some(step.in_use);
+                gaze_blending = step.blending;
                 let used = matches!(step.in_use, pupil::InUse::Pupil | pupil::InUse::Left | pupil::InUse::Right);
                 (with_combined(corrected, to_scale(step.gaze)), used)
             }
@@ -4149,6 +4154,7 @@ fn process(
         brows,
         pupil_open,
         gaze_in_use,
+        gaze_blending,
     }
 }
 
@@ -4973,7 +4979,10 @@ impl Bridge {
             }
         }
         // The other gaze source, worked out again (other_run) for the compare dot and for the panel's gaze error
-        // check; never for what is sent
+        // check; never for what is sent. It starts cold when it is first wanted (a smoother of its own, from this
+        // sample): for the check that is when the panel's socket is first seen, within LOOK_INTERVAL (1 s) of the
+        // check's start, and the check counts nothing before 1 s after its first place, 4 s after its start (its
+        // 3 s countdown), so the smoothing has had about 3 s to settle
         let dots = self.dots.wanted(self.settings.gaze_debug_dots, now);
         let measuring = self.measure.wanted(false, now);
         let compare_dot = dots && self.settings.gaze_debug_dots && self.settings.gaze_debug_dots_compare;
@@ -7368,6 +7377,7 @@ mod tests {
             brows: None,
             pupil_open: [false; 2],
             gaze_in_use: None,
+            gaze_blending: false,
         }
     }
 
@@ -7583,7 +7593,7 @@ mod tests {
         struct Run {
             sent: Vec<Vec<u8>>,
             seen: Vec<String>,
-            unscaled: Vec<([u32; 2], u8, bool)>,
+            unscaled: Vec<([u32; 2], u8, bool, bool)>,
             measured: Vec<dots::MeasureSample>,
         }
         let run = |settings: Settings, dir: &Path| {
@@ -7614,6 +7624,7 @@ mod tests {
                     [latest.unscaled_gaze[4].to_bits(), latest.unscaled_gaze[5].to_bits()],
                     state_of(latest.gaze_in_use),
                     latest.gaze_held,
+                    latest.gaze_blending,
                 ));
             }
             out
@@ -7645,9 +7656,9 @@ mod tests {
                     assert_eq!(bits(m.valve), v.0, "{i}");
                     assert_eq!(m.valve_held, v.2, "{i}");
                     if mapped {
-                        assert_eq!((bits(m.pupil), m.pupil_state), (p.0, p.1), "{i}");
+                        assert_eq!((bits(m.pupil), m.pupil_state, m.pupil_blending), (p.0, p.1, p.3), "{i}");
                     } else {
-                        assert_eq!((m.pupil, m.pupil_state), ([0.0; 2], 0), "{i}");
+                        assert_eq!((m.pupil, m.pupil_state, m.pupil_blending), ([0.0; 2], 0, false), "{i}");
                     }
                 }
                 assert_eq!(from_valve.usable, from_pupil.usable);
@@ -7657,6 +7668,10 @@ mod tests {
             if mapped {
                 assert_eq!(valve_on.measured[120].pupil_state, 1);
                 assert!(valve_on.measured[170..195].iter().all(|m| m.pupil_state == 2));
+                // Easing after each change of source (to the left eye alone, back to both): flagged, then not
+                assert!(valve_on.measured[160].pupil_blending || valve_on.measured[161].pupil_blending);
+                assert!(!valve_on.measured[190].pupil_blending && !valve_on.measured[240].pupil_blending);
+                assert!(valve_on.measured[200..215].iter().any(|m| m.pupil_blending));
             }
         }
         drop(panel);

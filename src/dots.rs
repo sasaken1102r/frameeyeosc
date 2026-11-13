@@ -35,7 +35,9 @@
 //! The panel's gaze error check ("Measure gaze error") binds a second socket, MEASURE_SOCKET_NAME, while it runs; while
 //! that is there (looked at as above), each sample also goes to it as MEASURE_SIZE bytes, little-endian: b"FEOM",
 //! version 1, flags (bit 0: both eyes have a pupil map; bit 1: the sample counts, both eyes open enough as the eye
-//! fit's captures count them; bit 2: Valve's gaze is held), the pupils' state (0 none without a map, then pupil.rs's
+//! fit's captures count them; bit 2: Valve's gaze is held; bit 3: the pupils' gaze is still easing from the source
+//! before, pupil.rs's blend, so not yet its own; a later bit in what was 0, read as clear by a panel from before),
+//! the pupils' state (0 none without a map, then pupil.rs's
 //! InUse: 1 both pupils, 2 the left only, 3 the right only, 4 held, 5 Valve's standing in), a zero byte, the sample
 //! time (f64), Valve's combined x and y as gaze_source "valve" sends them, the pupils' as "pupil" sends them (f32, 1.0 =
 //! 45°, both before the user's gaze scale; the pupils' 0 without a map), each eye's openness as read (f32). Only the
@@ -55,6 +57,7 @@ pub const MEASURE_SIZE: usize = 40;
 const MEASURE_MAPPED: u8 = 1;
 const MEASURE_USABLE: u8 = 2;
 const MEASURE_VALVE_HELD: u8 = 4;
+const MEASURE_PUPIL_BLENDING: u8 = 8;
 const MAGIC: &[u8; 4] = b"FEOD";
 const VERSION: u8 = 3;
 const EYES: usize = 64;
@@ -148,6 +151,7 @@ pub struct MeasureSample {
     pub mapped: bool,
     pub usable: bool,
     pub valve_held: bool,
+    pub pupil_blending: bool,
     // 0 without a map; else 1 + pupil.rs's InUse in its order (Pupil, Left, Right, Hold, Valve).
     pub pupil_state: u8,
     pub valve: [f32; 2],
@@ -159,8 +163,13 @@ pub fn encode_measure(sample: &MeasureSample) -> [u8; MEASURE_SIZE] {
     let mut packet = [0u8; MEASURE_SIZE];
     packet[..4].copy_from_slice(MEASURE_MAGIC);
     packet[4] = MEASURE_VERSION;
-    packet[5] = [(sample.mapped, MEASURE_MAPPED), (sample.usable, MEASURE_USABLE), (sample.valve_held, MEASURE_VALVE_HELD)]
-        .iter()
+    packet[5] = [
+        (sample.mapped, MEASURE_MAPPED),
+        (sample.usable, MEASURE_USABLE),
+        (sample.valve_held, MEASURE_VALVE_HELD),
+        (sample.pupil_blending, MEASURE_PUPIL_BLENDING),
+    ]
+    .iter()
         .filter(|(on, _)| *on)
         .fold(0, |flags, (_, bit)| flags | bit);
     packet[6] = sample.pupil_state;
@@ -182,6 +191,7 @@ pub fn decode_measure(packet: &[u8]) -> Option<MeasureSample> {
         mapped: packet[5] & MEASURE_MAPPED != 0,
         usable: packet[5] & MEASURE_USABLE != 0,
         valve_held: packet[5] & MEASURE_VALVE_HELD != 0,
+        pupil_blending: packet[5] & MEASURE_PUPIL_BLENDING != 0,
         pupil_state: packet[6],
         valve: [f32_at(16), f32_at(20)],
         pupil: [f32_at(24), f32_at(28)],
@@ -490,6 +500,7 @@ mod tests {
             mapped: true,
             usable: true,
             valve_held: false,
+            pupil_blending: false,
             pupil_state: 1,
             valve: [0.125, -0.25],
             pupil: [0.5, 0.0625],
@@ -504,6 +515,12 @@ mod tests {
         let held = MeasureSample { mapped: false, usable: false, valve_held: true, pupil_state: 0, ..sample };
         assert_eq!(&encode_measure(&held)[..8], b"FEOM\x01\x04\x00\x00");
         assert_eq!(decode_measure(&encode_measure(&held)), Some(held));
+        // Still easing: bit 3, nothing else moves
+        let easing = MeasureSample { pupil_blending: true, ..sample };
+        let eased = encode_measure(&easing);
+        assert_eq!(&eased[..8], b"FEOM\x01\x0b\x01\x00");
+        assert_eq!((0..MEASURE_SIZE).filter(|&i| eased[i] != packet[i]).collect::<Vec<_>>(), [5]);
+        assert_eq!(decode_measure(&eased), Some(easing));
         // None of the other datagrams, nor they this one
         assert_eq!(decode(&packet), None);
         assert_eq!(decode_other(&packet[..OTHER_SIZE]), None);

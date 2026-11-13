@@ -189,6 +189,8 @@ pub struct Step {
     /// The combined gaze (yaw, pitch in degrees).
     pub gaze: [f32; 2],
     pub in_use: InUse,
+    /// Still easing from the gaze before (BLEND_S after a change of source, map or centre): not yet `in_use`'s own.
+    pub blending: bool,
 }
 
 /// The pupil gaze between samples.
@@ -272,21 +274,21 @@ impl PupilGaze {
         if before != in_use || new_maps {
             self.blend = Some((time, sub(out, target)));
         }
-        let gaze = match self.blend {
+        let (gaze, blending) = match self.blend {
             Some((since, offset)) => {
                 let left = 1.0 - ((time - since) / BLEND_S) as f32;
                 if left > 0.0 {
-                    add(target, scaled(offset, left))
+                    (add(target, scaled(offset, left)), true)
                 } else {
                     self.blend = None;
-                    target
+                    (target, false)
                 }
             }
-            None => target,
+            None => (target, false),
         };
         self.out = Some(gaze);
         self.in_use = Some(in_use);
-        Step { gaze, in_use }
+        Step { gaze, in_use, blending }
     }
 
     /// The pupil source left (gaze_source "valve", or the map gone): the gaze as last given eases to the eye server's
@@ -598,6 +600,26 @@ mod tests {
         let still = extra(pair(2.0, 0.0), pair(2.0, 0.0));
         assert_eq!(gaze.step(0.0, &maps, &still, [true; 2], [0.0; 2]).in_use, InUse::Valve);
         assert_eq!(gaze.step(DT, &maps, &still, [true; 2], [0.0; 2]).in_use, InUse::Valve);
+    }
+
+    #[test]
+    fn a_step_says_while_it_is_still_easing() {
+        // Both pupils from the start (Valve before them): easing for BLEND_S, then the pupils' own; one eye shut for a
+        // moment: easing again, both ways
+        let maps = [map(), map()];
+        let mut gaze = PupilGaze::default();
+        let mut steps = Vec::new();
+        for i in 0..90 {
+            let p = add(pair(4.0, 0.0), [(i % 2) as f32 * 1e-5, 0.0]);
+            let open = if (40..60).contains(&i) { [true, false] } else { [true; 2] };
+            steps.push(gaze.step(f64::from(i) * DT, &maps, &extra(p, p), open, [0.0; 2]));
+        }
+        let easing = |range: std::ops::Range<usize>| steps[range].iter().map(|step| step.blending).collect::<Vec<_>>();
+        let blend = (BLEND_S / DT).round() as usize;
+        assert!(steps[1].in_use == InUse::Pupil && steps[1].blending);
+        assert!(easing(1..blend - 1).iter().all(|b| *b) && easing(blend + 2..40).iter().all(|b| !*b));
+        assert!(steps[40].in_use == InUse::Left && steps[40].blending && steps[58].blending);
+        assert!(steps[60].in_use == InUse::Pupil && steps[60].blending && !steps[60 + blend + 2].blending);
     }
 
     #[test]

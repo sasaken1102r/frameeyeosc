@@ -311,7 +311,7 @@ UiText makeJapanese() {
     t.rowDownHold = "真下で左右を止める";
     t.hintDownHold = "0 = オフ";
     t.rowGazeSource = "視線のもと";
-    t.hintGazeSource = "瞳の位置から視線を作る試験。先に「目を合わせる」が必要";
+    t.hintGazeSource = "瞳の位置は先に目合わせが必要";
     t.gazeSourceStandard = "ふつう";
     t.gazeSourcePupil = "瞳の位置（試験）";
     t.rowEyeLog = "目のログ";
@@ -1522,7 +1522,7 @@ UiText makeEnglish() {
     t.rowDownHold = "Hold sideways far down";
     t.hintDownHold = "0 = off";
     t.rowGazeSource = "Gaze source";
-    t.hintGazeSource = "Experimental: gaze from the pupil position. Needs an eye fit first";
+    t.hintGazeSource = "Pupil needs an eye fit first";
     t.gazeSourceStandard = "Standard";
     t.gazeSourcePupil = "Pupil position (test)";
     t.rowEyeLog = "Eye log";

@@ -4099,58 +4099,85 @@ void testPortKeypad(const FontSet& fonts) {
  * with "Fine-tune" folded and open. In both languages.
  */
 /**
- * The Eye fit tab's "Gaze source" (under "Fine-tune"): "Pupil position (test)" only with a pupil map, the row and its
- * hint inside the card, in both languages. With PANEL_TEST_PNG_DIR set, the tab is drawn to PNGs there too.
+ * The Eye fit tab's "Gaze source": a row of its own under "When put on", in the same place whether "Fine-tune" is open
+ * or not; "Pupil position (test)" only with a pupil map, "Standard" shown as chosen without one; everything inside the
+ * card, in both languages. With PANEL_TEST_PNG_DIR set, the tab is drawn to PNGs there too: folded with a map (pupil
+ * chosen), folded without one, folded after a failed fit (the status card's longest text), open on each page.
  */
 void testGazeSourceRow(const FontSet& fonts) {
     const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
     for (const Language language : {Language::Ja, Language::En}) {
+        const std::string lang = language == Language::Ja ? "ja" : "en";
+        const auto png = [&](const EyePanel& panel, const std::string& name) {
+            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/eyefit_" + name + "_" + lang + "_2026-11-13_14-10-00.png");
+        };
+        // Everything inside the card, the row under "When put on" and above "Fine-tune"; its place
+        const auto rowY = [&](const EyePanel& panel, size_t count) {
+            const std::vector<EyePanel::HitArea> rows = hits(panel, PanelAction::SetGazeSource, key::kGazeSource);
+            const std::vector<EyePanel::HitArea> above = hits(panel, PanelAction::SetAutoRecenter);
+            const std::vector<EyePanel::HitArea> below = hits(panel, PanelAction::FitDetails);
+            CHECK(rows.size() == count && !above.empty() && below.size() == 1);
+            for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+            if (rows.empty() || above.empty() || below.empty()) return -1.0;
+            CHECK(rows[0].hit.arg == 0 && (count < 2 || rows[1].hit.arg == 1));
+            CHECK(rows[0].y >= above[0].y + above[0].h && rows[0].y + rows[0].h <= below[0].y);
+            return rows[0].y;
+        };
         EyePanel panel(fonts);
         panel.setTab(PanelTab::EyeFit);
         PanelModel m = modelWith(Lids::Valve, false);
         m.language = language;
         m.config.root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.067));
         m.config.root.set(key::kGazeGainUp, JsonValue::makeNumber(0.78));
-        const std::string lang = language == Language::Ja ? "ja" : "en";
-        // Folded: not on the tab's first page
+        // Folded, no pupil map: only "Standard" can be pressed
         panel.render(m);
-        CHECK(hits(panel, PanelAction::SetGazeSource).empty());
-        if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/eyefit_" + lang + "_2026-11-13_02-00-00.png");
-        // Under "Fine-tune": without a pupil map only "Standard" can be pressed
-        panel.setFitDetails(true);
-        panel.render(m);
-        std::vector<EyePanel::HitArea> rows = hits(panel, PanelAction::SetGazeSource, key::kGazeSource);
-        CHECK(rows.size() == 1 && rows[0].hit.arg == 0);
-        if (pngDir != nullptr) {
-            panel.writePng(std::string(pngDir) + "/eyefit_finetune_nomap_" + lang + "_2026-11-13_02-00-00.png");
-        }
+        const double folded = rowY(panel, 1);
+        png(panel, "folded_nomap");
         // "pupil" written but no map: frameeyeosc sends the eye server's gaze, so "Standard" shows as chosen (the
         // config left as it is)
         m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
         panel.render(m);
-        CHECK(hits(panel, PanelAction::SetGazeSource, key::kGazeSource).size() == 1);
+        CHECK(rowY(panel, 1) == folded);
         CHECK(m.config.text(key::kGazeSource) == kGazeSources[1]);
-        if (pngDir != nullptr) {
-            panel.writePng(std::string(pngDir) + "/eyefit_finetune_pupil_nomap_" + lang + "_2026-11-13_11-55-00.png");
-        }
-        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[0]));
-        // With one (synthetic numbers): both, chosen or not; the page still inside the card
+        // With a map (synthetic numbers) and "pupil" chosen: both
         for (const auto& eye : kPupilMapKeys) {
             for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
         }
         panel.render(m);
-        rows = hits(panel, PanelAction::SetGazeSource, key::kGazeSource);
-        CHECK(rows.size() == 2 && rows[0].hit.arg == 0 && rows[1].hit.arg == 1);
-        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
-        // Below the far-down hold, its own row
-        const std::vector<EyePanel::HitArea> hold = hits(panel, PanelAction::Step, key::kGazeDownHoldXDeg);
-        CHECK(!hold.empty() && !rows.empty() && rows[0].y > hold[0].y + hold[0].h);
-        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
-        panel.render(m);
-        CHECK(hits(panel, PanelAction::SetGazeSource, key::kGazeSource).size() == 2);
-        if (pngDir != nullptr) {
-            panel.writePng(std::string(pngDir) + "/eyefit_finetune_pupil_" + lang + "_2026-11-13_02-00-00.png");
+        CHECK(rowY(panel, 2) == folded);
+        png(panel, "folded_pupil");
+        // ...after a fit that wrote the eyelids too (two more lines in the status card)
+        for (const auto& eye : kLidFitKeys) {
+            const double readings[4] = {0.05, 0.9, 0.85, 0.7};
+            for (int i = 0; i < 4; ++i) m.config.root.set(eye[i], JsonValue::makeNumber(readings[i]));
         }
+        panel.render(m);
+        CHECK(rowY(panel, 2) == folded);
+        png(panel, "folded_pupil_lids");
+        // Open, on either page: the same row in the same place
+        panel.setFitDetails(true);
+        for (const int page : {0, 1}) {
+            panel.setFitDetailsPage(page);
+            panel.render(m);
+            CHECK(rowY(panel, 2) == folded);
+            png(panel, page == 0 ? "open_gaze" : "open_lids");
+        }
+        // The gaze page's steppers and the far-down hold still there
+        panel.setFitDetailsPage(0);
+        panel.render(m);
+        CHECK(!hits(panel, PanelAction::Step, key::kGazeDownHoldXDeg).empty());
+        // A failed fit with its numbers (the status card at its tallest), folded: the row stays, "Fine-tune" below it
+        panel.setFitDetails(false);
+        m.fit.phase = gaze_fit::Phase::Failed;
+        m.fit.failure = gaze_fit::Failure::NoMovement;
+        m.fit.detail.eye = -1;
+        m.fit.detail.movedDeg = 3.2;
+        m.fit.detail.neededDeg = 6.0;
+        m.records.lastFit = "fit_2026-11-13_14-10-00";
+        panel.render(m);
+        CHECK(rowY(panel, 2) == folded);
+        CHECK(hits(panel, PanelAction::RecordOpen).size() == 1);
+        png(panel, "folded_failed");
     }
 }
 

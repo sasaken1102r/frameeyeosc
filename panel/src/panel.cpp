@@ -54,6 +54,10 @@ constexpr double kRowH = 64;
 constexpr double kRowGap = 2;
 constexpr double kCaptionRowH = 84;
 constexpr double kControlH = 52;
+/** The Eye fit tab's status card at its tallest (the title and six lines of a failure's text). */
+constexpr double kFitCardMaxH = 184;
+/** ...and folded to one line while "Fine-tune" is open. */
+constexpr double kFitCardCompactH = 50;
 /** The raw openness range drawn in the lid mark bars. */
 constexpr double kLidScaleMax = 1.2;
 // The version history (in place of the Advanced tab): a title row, then the rows, scrolled within the card
@@ -3906,13 +3910,27 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                       static_cast<int>(rewear), 18);
         y += h + 6;
     }
-    // What is going on: how it works, the run, the result (with "Reset"), or why it stopped
+    // Where the gaze comes from (a test): the eye server's, or each eye's pupil position through the pupil map the
+    // whole eye fit makes ("Pupil position" grey until there is one). A setting too, so it stays put like the row above
+    {
+        const double h = 50;
+        const double controlH = 42;
+        const bool mapped = pupilMapInConfig(v);
+        // "pupil" without a map sends the eye server's gaze (frameeyeosc needs both): shown as what it does
+        const int selected = mapped && v.text(key::kGazeSource) == kGazeSources[1] ? 1 : 0;
+        drawRowLabel(pen, t, y, h, t.rowGazeSource, t.hintGazeSource, false);
+        std::vector<Option> options = {{t.gazeSourceStandard, {PanelAction::SetGazeSource, key::kGazeSource, 0}},
+                                       {t.gazeSourcePupil, {PanelAction::SetGazeSource, key::kGazeSource, 1}}};
+        options[1].usable = mapped;
+        drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH, options, selected, 18);
+        y += h + 6;
+    }
+    // What is going on: how it works, the run, the result (with "Reset"), or why it stopped. As tall as its lines need
+    // (up to kFitCardMaxH, for a failure's longer text), so the "how it works" box under "Fine-tune" keeps its room
     {
         const bool compact = fitDetails_;
-        const double h = compact ? 50 : 184;
         const double x0 = kInnerX;
         const double x1 = kInnerRight;
-        strokeRounded(pen, x0, y, x1 - x0, h, 14, kDivider, 1.5);
         std::string title;
         std::vector<std::string> paragraphs;
         bool error = false;
@@ -4023,7 +4041,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         const bool button = reset;
         double textX = x0 + 20;
         if (check) {
-            drawCheck(pen.cr, x0 + 32, compact ? y + h / 2 : y + 32, 24, kSuccess);
+            drawCheck(pen.cr, x0 + 32, compact ? y + kFitCardCompactH / 2 : y + 32, 24, kSuccess);
             textX = x0 + 56;
         }
         const double textW = (button ? x1 - 20 - buttonW - 16 : x1 - 20) - textX;
@@ -4038,6 +4056,10 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
             }
         }
         const double lineCount = titleLines.size() * 26.0 + detailLines.size() * 22.0;
+        // Folded to one line while "Fine-tune" is open; otherwise its lines with 16 px above and below, at least as
+        // tall as "Reset" with the same room around it
+        const double h = compact ? kFitCardCompactH : std::min(kFitCardMaxH, std::max(lineCount, kControlH) + 32);
+        strokeRounded(pen, x0, y, x1 - x0, h, 14, kDivider, 1.5);
         double baseline = y + (h - lineCount) / 2;
         for (const std::string& line : titleLines) {
             baseline += 26;
@@ -4175,24 +4197,6 @@ void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsVie
                                            : std::string(t.off);
         drawStepper(pen, kControlX, y + (h - 42) / 2, 200, 42, key::kGazeDownHoldXDeg, value, text, !busy, locked);
     }
-    y += 50 + kRowGap;
-    // Where the gaze comes from (a test): the eye server's, or each eye's pupil position through the pupil map the
-    // whole eye fit makes ("Pupil position" grey until there is one). Its hint on a line of its own under the choices
-    {
-        const double h = 50;
-        const double controlH = 42;
-        const bool mapped = pupilMapInConfig(v);
-        // "pupil" without a map sends the eye server's gaze (frameeyeosc needs both): shown as what it does
-        const int selected = mapped && v.text(key::kGazeSource) == kGazeSources[1] ? 1 : 0;
-        drawRowLabel(pen, t, y, h, t.rowGazeSource, "", false);
-        std::vector<Option> options = {{t.gazeSourceStandard, {PanelAction::SetGazeSource, key::kGazeSource, 0}},
-                                       {t.gazeSourcePupil, {PanelAction::SetGazeSource, key::kGazeSource, 1}}};
-        options[0].usable = !busy;
-        options[1].usable = !busy && mapped;
-        drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH, options, selected, 18);
-        const double size = fitSize(pen, t.hintGazeSource, 15, 11, kControlW - 8, false);
-        pen.text(kControlX + 4, y + h + 16, t.hintGazeSource, size, kTextMuted);
-    }
 }
 
 void EyePanel::drawEyeFitInfo(const Pen& pen, const UiText& t, double y) {
@@ -4201,19 +4205,23 @@ void EyePanel::drawEyeFitInfo(const Pen& pen, const UiText& t, double y) {
     const double x0 = kInnerX;
     const double x1 = kInnerRight;
     const double bottom = kContentY + kContentH - 20;
-    if (bottom - y < 120) return;
+    // Its title and first two lines need 96 px set close (after a fit that wrote the eyelids too, the status card
+    // above has two more lines), 120 as usual
+    if (bottom - y < 96) return;
     const double h = std::min(bottom - y, 170.0);
+    const bool tight = h < 120;
     strokeRounded(pen, x0, y, x1 - x0, h, 14, kDivider, 1.5);
     const double textX = x0 + 20;
     const double textW = x1 - 20 - textX;
-    double baseline = y + 34;
+    const double step = tight ? 26 : 32;
+    double baseline = y + (tight ? 28 : 34);
     pen.text(textX, baseline, t.fitInfoTitle, fitSize(pen, t.fitInfoTitle, 18, 14, textW, true), kText, true);
     for (const char* line : {t.fitInfoRewear, t.fitInfoFull}) {
-        baseline += 32;
+        baseline += step;
         pen.text(textX, baseline, line, fitSize(pen, line, 16, 12, textW, false), kText);
     }
     // (the last, muted line only where it fits: "Clear center correction" above takes some of the room)
-    baseline += 32;
+    baseline += step;
     if (baseline + 14 > y + h) return;
     pen.text(textX, baseline, t.fitInfoNoTilt, fitSize(pen, t.fitInfoNoTilt, 15, 11, textW, false), kTextMuted);
 }

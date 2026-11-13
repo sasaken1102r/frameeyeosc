@@ -1062,6 +1062,11 @@ struct UiText {
     const char* rowGazeRings;        ///< the rings switch under the dots ("Ring: before the scale")
     const char* hintGazeRings;
     const char* gazeRingsNote;       ///< right of its switch: when the rings show
+    const char* rowGazeCompare;      ///< the other gaze source's dot (gaze_debug_dots_compare), under the rings
+    const char* hintGazeCompare;
+    const char* gazeCompareSent;     ///< its legend: the dot of the gaze being sent...
+    const char* gazeCompareValve;    ///< ...and the extra dot: Valve's gaze (gaze_source "pupil")...
+    const char* gazeComparePupil;    ///< ...or the pupils' (gaze_source "valve")
     const char* rowUpdateCheck;
     const char* hintUpdateCheck;
     const char* updateUpToDateFormat;   ///< "Up to date (%s)"

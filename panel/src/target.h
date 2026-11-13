@@ -84,12 +84,12 @@ void renderFill(const FontSet& fonts, bool bright, const std::string& label, std
 /** The debug gaze dot image's edge length (px). */
 constexpr int kDotImageSize = 64;
 
-/** Which debug gaze dot. */
-enum class DotKind { Both, Left, Right };
+/** Which debug gaze dot (Other: the gaze source not in use, gaze_debug_dots_compare; a dot only, no ring). */
+enum class DotKind { Both, Left, Right, Other };
 
 /**
  * Draw a debug gaze dot: a filled circle with a dark edge (combined: light gray, left eye: light cyan, right eye:
- * darker orange).
+ * darker orange); the other gaze source's a violet diamond with a dark edge, told apart by its shape too.
  * @param kind which dot
  * @param rgba where to write un-premultiplied RGBA (kDotImageSize squared)
  * @param pngPath also save a PNG here if not empty

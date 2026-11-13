@@ -45,7 +45,8 @@ constexpr float kTargetWidthM = static_cast<float>(0.15 * kTargetDistanceM);
 // dashboard flags: with those, the dashboard hid them even at 1 m); their width and distance: gaze_dots.h
 // (dot0/1 the gaze as sent, dot2/3 the rings: the gaze before the user's gaze scale)
 constexpr const char* kDotKeys[VrOverlay::kDots] = {"sasaken.frameeyeosc-panel.dot0", "sasaken.frameeyeosc-panel.dot1",
-                                                    "sasaken.frameeyeosc-panel.dot2", "sasaken.frameeyeosc-panel.dot3"};
+                                                    "sasaken.frameeyeosc-panel.dot2", "sasaken.frameeyeosc-panel.dot3",
+                                                    "sasaken.frameeyeosc-panel.dot4"};
 // The eye capture's full-view overlay: a plain overlay like the dots (no sort order, no flags), fixed to the headset
 // 0.9 m ahead, closer than the dashboard (about 1.35 m) so it shows over that too, and 4 m wide (square): about 131
 // degrees across and as much up and down, more than the headset shows

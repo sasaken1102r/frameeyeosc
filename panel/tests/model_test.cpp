@@ -290,6 +290,10 @@ void testPupilKeys() {
     for (const auto& eye : kPupilCenterKeys) {
         for (const char* name : eye) CHECK(findSetting(name) != nullptr && findSetting(name)->type == SettingType::NullableNumber);
     }
+    // The extra debug dot's switch: off by default, as in frameeyeosc
+    CHECK(findSetting(key::kGazeDebugDotsCompare) != nullptr &&
+          findSetting(key::kGazeDebugDotsCompare)->type == SettingType::Bool &&
+          findSetting(key::kGazeDebugDotsCompare)->defaultNumber == 0);
     // ...with the limits frameeyeosc's config check has (gaze_fit.h's, which a core test compares with config.rs)
     for (const auto& eye : kPupilMapKeys) {
         for (int i = 0; i < 6; ++i) {

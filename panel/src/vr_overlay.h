@@ -33,8 +33,9 @@ struct VrEvents {
  */
 class VrOverlay {
 public:
-    /** How many debug gaze dot overlays: two dots (the gaze as sent) and two rings (before the user's gaze scale). */
-    static constexpr int kDots = 4;
+    /** How many debug gaze dot overlays: two dots (the gaze as sent), two rings (before the user's gaze scale) and
+     *  the other gaze source's dot (gaze_debug_dots_compare). */
+    static constexpr int kDots = 5;
 
     /** Result of connect(). */
     enum class ConnectResult {
@@ -158,7 +159,8 @@ public:
     void hideTarget();
 
     /**
-     * Show debug gaze dot `index` (0 or 1 the dots, 2 or 3 the rings; below kDots): an overlay of its own, fixed to the
+     * Show debug gaze dot `index` (0 or 1 the dots, 2 or 3 the rings, 4 the other gaze's dot; below kDots): an overlay
+     * of its own, fixed to the
      * headset at a pose (head space, m and degrees). Created the first time it is needed. Only the transform changes
      * from frame to frame; the image is sent when `newImage` is true (or the dot is new).
      * @param index 0..kDots-1
@@ -249,10 +251,10 @@ private:
     double targetYaw_ = 0.0;
     double targetPitch_ = 0.0;
     bool targetFailed_ = false;     ///< creating it failed; not tried again
-    uint64_t dotHandles_[kDots] = {0, 0, 0, 0};  ///< the debug gaze dots and rings (0 until first needed)
-    bool dotShown_[kDots] = {false, false, false, false};
-    double dotWidth_[kDots] = {0.0, 0.0, 0.0, 0.0};  ///< the width last set (m)
-    bool dotFailed_[kDots] = {false, false, false, false};  ///< creating it failed; not tried again
+    uint64_t dotHandles_[kDots] = {};  ///< the debug gaze dots and rings (0 until first needed)
+    bool dotShown_[kDots] = {};
+    double dotWidth_[kDots] = {};      ///< the width last set (m)
+    bool dotFailed_[kDots] = {};       ///< creating it failed; not tried again
     uint64_t fillHandle_ = 0;         ///< the eye capture's full-view overlay (0 until first needed)
     bool fillShown_ = false;
     bool fillFailed_ = false;         ///< creating it failed; not tried again

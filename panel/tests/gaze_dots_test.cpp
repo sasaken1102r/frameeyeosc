@@ -229,6 +229,34 @@ void testGeometry() {
     CHECK(near(dotWidth(1.0), 0.0175));
 }
 
+/** The extra dot: on the ray from between the eyes like the combined dot, whatever each eye sends; none without one. */
+void testOtherGeometry() {
+    Packet packet;
+    packet.other[0] = 0.3f;
+    packet.other[1] = -0.2f;
+    Pose pose;
+    CHECK(!otherDotPose(packet, 0.063, 1.0, pose));
+    packet.hasOther = true;
+    for (const bool independent : {false, true}) {
+        packet.independent = independent;
+        CHECK(otherDotPose(packet, 0.063, 1.0, pose));
+        const Pose combined = dotPose(packet.other[0], packet.other[1], 0, 0.063, 1.0);
+        CHECK(near(pose.position.x, combined.position.x) && near(pose.position.y, combined.position.y) &&
+              near(pose.position.z, combined.position.z) && near(pose.yawDeg, combined.yawDeg) &&
+              near(pose.pitchDeg, combined.pitchDeg));
+    }
+    // 1 m along that ray: 0.3 (13.5°) right and 0.2 (9°) down
+    const double rx = std::tan(0.3f * M_PI / 4);
+    const double ry = std::tan(-0.2f * M_PI / 4);
+    const double length = std::sqrt(rx * rx + ry * ry + 1);
+    CHECK(near(pose.position.x, rx / length) && near(pose.position.y, ry / length) && near(pose.position.z, -1 / length));
+    // The same gaze as the sent dot: the two dots on top of each other
+    packet.gaze[4] = 0.3f;
+    packet.gaze[5] = -0.2f;
+    const Pose sent = dotPose(packet.gaze[4], packet.gaze[5], 0, 0.063, 1.0);
+    CHECK(near(sent.position.x, pose.position.x) && near(sent.position.y, pose.position.y));
+}
+
 void testSocket() {
     const std::string path = "/tmp/frameeyeosc-gaze-dots-test-" + std::to_string(::getpid()) + ".sock";
     Receiver receiver;
@@ -259,6 +287,110 @@ void testSocket() {
     receiver.close();
 }
 
+/**
+ * The other gaze's datagram (gaze_debug_dots_compare): its bytes, kept apart from the sample's datagram both ways, put
+ * into the sample with the same time only, and every mix of an old or new frameeyeosc and panel.
+ */
+void testOther() {
+    Other other;
+    other.time = 19892.729813125;
+    other.has = true;
+    other.valve = true;
+    other.gaze[0] = 0.125f;
+    other.gaze[1] = -0.25f;
+    const std::vector<uint8_t> bytes = encodeOther(other);
+    CHECK(kOtherSize == 24 && bytes.size() == kOtherSize);
+    CHECK(std::memcmp(bytes.data(), "FEOC\x01\x03\x00\x00", 8) == 0);
+    Other read;
+    CHECK(decodeOther(bytes.data(), bytes.size(), read) && read.time == other.time && read.has && read.valve);
+    CHECK(read.gaze[0] == 0.125f && read.gaze[1] == -0.25f);
+    // The bytes frameeyeosc writes (src/dots.rs): no value for this sample (the pupils' gaze, not both pupils), time 1.0
+    std::vector<uint8_t> fromRust(kOtherSize, 0);
+    const uint8_t head[16] = {'F', 'E', 'O', 'C', 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f};
+    std::memcpy(fromRust.data(), head, sizeof(head));
+    CHECK(decodeOther(fromRust.data(), fromRust.size(), read) && read.time == 1.0 && !read.has && !read.valve);
+    // Each reader keeps to its own: the sample reader (the same as a panel from before) ignores this one, and the
+    // other way round; another version or size, or a value that isn't a number, is ignored
+    Packet packet;
+    CHECK(!decode(bytes.data(), bytes.size(), packet));
+    const std::vector<uint8_t> sample = encode(Packet());
+    CHECK(!decodeOther(sample.data(), sample.size(), read));
+    std::vector<uint8_t> wrong = bytes;
+    wrong[4] = 2;
+    CHECK(!decodeOther(wrong.data(), wrong.size(), read));
+    CHECK(!decodeOther(bytes.data(), bytes.size() - 1, read));
+    wrong = bytes;
+    const uint8_t nan[4] = {0, 0, 0xc0, 0x7f};
+    std::memcpy(wrong.data() + 20, nan, 4);
+    CHECK(!decodeOther(wrong.data(), wrong.size(), read));
+    wrong[5] = 0;  // (no value: what is in its place isn't read)
+    CHECK(decodeOther(wrong.data(), wrong.size(), read) && !read.has);
+
+    // Put into the sample with its time only
+    Packet at;
+    at.time = other.time;
+    attachOther(at, &other);
+    CHECK(at.hasOther && at.otherValve && at.other[0] == 0.125f && at.other[1] == -0.25f);
+    Packet later;
+    later.time = other.time + 1.0 / 90;
+    attachOther(later, &other);
+    CHECK(!later.hasOther && later.other[0] == 0.0f);
+    attachOther(at, nullptr);
+    CHECK(!at.hasOther);
+    Other none = other;
+    none.has = false;
+    attachOther(at, &none);
+    CHECK(!at.hasOther);
+
+    // Through the socket, each mix
+    const std::string path = "/tmp/frameeyeosc-gaze-dots-other-" + std::to_string(::getpid()) + ".sock";
+    Receiver receiver;
+    std::string error;
+    CHECK(receiver.open(path, error));
+    const int sender = ::socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    sockaddr_un address {};
+    address.sun_family = AF_UNIX;
+    std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
+    const auto send = [&](const std::vector<uint8_t>& data) {
+        ::sendto(sender, data.data(), data.size(), 0, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+    };
+    const auto sampleAt = [](double time) {
+        Packet p;
+        p.time = time;
+        p.gaze[4] = 0.1f;
+        return encode(p);
+    };
+    const auto otherAt = [&](double time, bool has) {
+        Other o = other;
+        o.time = time;
+        o.has = has;
+        return encodeOther(o);
+    };
+    Packet latest;
+    // A new frameeyeosc with the switch on: the other gaze, then the sample, each sample
+    send(otherAt(1.0, true));
+    send(sampleAt(1.0));
+    CHECK(receiver.poll(latest) && latest.time == 1.0 && latest.hasOther && latest.other[0] == 0.125f);
+    // ...several waiting: the newest sample with its own
+    send(otherAt(2.0, true));
+    send(sampleAt(2.0));
+    send(otherAt(3.0, false));
+    send(sampleAt(3.0));
+    CHECK(receiver.poll(latest) && latest.time == 3.0 && !latest.hasOther);
+    // ...the other gaze read in one pass, its sample in the next: still put together
+    send(otherAt(4.0, true));
+    CHECK(!receiver.poll(latest) && latest.time == 3.0);
+    send(sampleAt(4.0));
+    CHECK(receiver.poll(latest) && latest.time == 4.0 && latest.hasOther);
+    // A frameeyeosc from before, or the switch off: samples only, no other dot (not the last one held over)
+    send(sampleAt(5.0));
+    CHECK(receiver.poll(latest) && latest.time == 5.0 && !latest.hasOther && latest.gaze[4] == 0.1f);
+    // A panel from before with a new frameeyeosc: its reader (decode, unchanged) takes the samples as they were and
+    // passes over the other datagrams (shown above: decode refuses them)
+    ::close(sender);
+    receiver.close();
+}
+
 }  // namespace
 
 /**
@@ -270,6 +402,8 @@ int main() {
     testBrows();
     testGeometry();
     testSocket();
+    testOther();
+    testOtherGeometry();
     if (gFailures == 0) std::printf("gaze-dots-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

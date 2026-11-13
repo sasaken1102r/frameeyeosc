@@ -5725,6 +5725,54 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
             pen.text(noteX, baseline, line, 14, on ? kTextMuted : kTextDisabled);
             baseline += 18;
         }
+        y += h + 2;
+        // Under them: one more dot for the gaze source not in use (gaze_debug_dots_compare), to compare Valve's gaze
+        // with the pupils' by eye; beside its switch, which dot is which. Only with a pupil map (the whole eye fit
+        // makes it): without one, why it can't be pressed instead
+        const bool mapped = pupilMapInConfig(v);
+        const bool compare = v.flag(key::kGazeDebugDotsCompare);
+        const bool usable = on && mapped;
+        drawRowLabel(pen, t, y, h, t.rowGazeCompare, t.hintGazeCompare, false);
+        drawSegmented(pen, kControlX, y + (h - kControlH) / 2, segW, kControlH,
+                      {{t.on, {PanelAction::SetBool, key::kGazeDebugDotsCompare, 1}, usable},
+                       {t.off, {PanelAction::SetBool, key::kGazeDebugDotsCompare, 0}, usable}},
+                      compare && mapped ? 0 : 1, 20, !usable);
+        const Color legendText = usable ? kTextMuted : kTextDisabled;
+        if (!mapped) {
+            const std::vector<std::string> why = wrapText(pen, t.hintGazeSource, 14, false, right - noteX, 2);
+            double line = y + h / 2 - (why.size() - 1) * 9 + 5;
+            for (const std::string& text : why) {
+                pen.text(noteX, line, text, 14, legendText);
+                line += 18;
+            }
+        } else {
+            // The dot(s) of the gaze being sent (each eye's colours while each eye's own gaze is sent), then the
+            // extra one: a diamond, Valve's while the pupils' is sent, the pupils' otherwise
+            const bool pupilSent = v.text(key::kGazeSource) == kGazeSources[1];
+            const double size = std::min(fitSize(pen, t.gazeCompareSent, 14, 11, right - noteX - 34, false),
+                                         fitSize(pen, pupilSent ? t.gazeCompareValve : t.gazeComparePupil, 14, 11,
+                                                 right - noteX - 34, false));
+            const double top = y + h / 2 - 9 + 5;
+            double x = noteX + 6;
+            if (v.flag(key::kIndependentEyes)) {
+                drawDot(pen.cr, x, top - 5, 5, kDotLeft);
+                x += 12;
+                drawDot(pen.cr, x, top - 5, 5, kDotRight);
+            } else {
+                drawDot(pen.cr, x, top - 5, 5, kDotBoth);
+            }
+            pen.text(x + 12, top, t.gazeCompareSent, size, legendText);
+            const double cy = top + 18 - 5;
+            const double cx = noteX + 6;
+            cairo_move_to(pen.cr, cx, cy - 6);
+            cairo_line_to(pen.cr, cx + 6, cy);
+            cairo_line_to(pen.cr, cx, cy + 6);
+            cairo_line_to(pen.cr, cx - 6, cy);
+            cairo_close_path(pen.cr);
+            cairo_set_source_rgb(pen.cr, kDotOther.r, kDotOther.g, kDotOther.b);
+            cairo_fill(pen.cr);
+            pen.text(cx + 12, top + 18, pupilSent ? t.gazeCompareValve : t.gazeComparePupil, size, legendText);
+        }
         y += h + 14;
     }
     // The eye log: record the raw eye data to a file, from now until "Stop" (or 60 minutes)

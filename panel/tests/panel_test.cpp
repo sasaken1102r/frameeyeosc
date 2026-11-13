@@ -1302,6 +1302,55 @@ void testGazeRingsRow(const FontSet& fonts) {
     }
 }
 
+/**
+ * Advanced > Debug tools: "Other gaze too" (gaze_debug_dots_compare) under the rings, lined up with them; pressable only
+ * with the dots on and a pupil map; beside it which dot is which (Valve's or the pupils' by gaze_source), or why it
+ * can't be pressed. With PANEL_TEST_PNG_DIR set, the page is drawn to PNGs there too.
+ */
+void testGazeCompareRow(const FontSet& fonts) {
+    const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
+    for (const Language language : {Language::Ja, Language::En}) {
+        const std::string lang = language == Language::Ja ? "ja" : "en";
+        for (const int setup : {0, 1, 2, 3}) {
+            // 0: no map; 1: a map, "valve"; 2: a map, "pupil", each eye's own gaze; 3: the dots off
+            EyePanel panel(fonts);
+            PanelModel m = modelWith(Lids::Both, true);
+            m.language = language;
+            m.config.root.set(key::kGazeDebugDots, JsonValue::makeBool(setup != 3));
+            m.config.root.set(key::kGazeDebugDotsCompare, JsonValue::makeBool(true));
+            if (setup != 0) {
+                for (const auto& eye : kPupilMapKeys) {
+                    for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
+                }
+            }
+            if (setup == 2) {
+                m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
+                m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(true));
+            }
+            panel.setTab(PanelTab::Advanced);
+            panel.setAdvPage(AdvPage::Tools);
+            panel.render(m);
+            const std::vector<EyePanel::HitArea> compare = hits(panel, PanelAction::SetBool, key::kGazeDebugDotsCompare);
+            const std::vector<EyePanel::HitArea> rings = hits(panel, PanelAction::SetBool, key::kGazeDebugRings);
+            const bool usable = setup == 1 || setup == 2;
+            CHECK(compare.size() == (usable ? 2u : 0u));
+            if (usable && compare.size() == 2 && rings.size() == 2) {
+                CHECK(compare[0].hit.arg == 1 && compare[1].hit.arg == 0);
+                for (size_t i = 0; i < 2; ++i) {
+                    CHECK(std::fabs(compare[i].x - rings[i].x) < 0.5 && std::fabs(compare[i].w - rings[i].w) < 0.5);
+                    CHECK(compare[i].y >= rings[i].y + rings[i].h);
+                }
+            }
+            for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+            const char* names[4] = {"nomap", "valve", "pupil_eyes", "dotsoff"};
+            if (pngDir != nullptr) {
+                panel.writePng(std::string(pngDir) + "/tools_compare_" + names[setup] + "_" + lang +
+                               "_2026-11-13_16-00-00.png");
+            }
+        }
+    }
+}
+
 void testSubTabs(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         EyePanel panel(fonts);
@@ -4654,6 +4703,7 @@ int main() {
     testSubTabs(fonts);
     testSavedData(fonts);
     testGazeRingsRow(fonts);
+    testGazeCompareRow(fonts);
     testUpdateNotice(fonts);
     testUpdateBeta(fonts);
     testDiagFromEyecam(fonts);

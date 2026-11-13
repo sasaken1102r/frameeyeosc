@@ -183,6 +183,7 @@ const std::vector<SettingSpec>& settingSpecs() {
         {key::kGazeDebugDots, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kGazeDebugDotsDistanceM, SettingType::Number, 1.0, "", 0.3, 2.0, 0.1, 1},
         {key::kGazeDebugRings, SettingType::Bool, 1, "", 0, 1, 1, 0},
+        {key::kGazeDebugDotsCompare, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kFitSounds, SettingType::Bool, 1, "", 0, 1, 1, 0},
         {key::kAutoRecenter, SettingType::String, 0, "center", 0, 0, 0, 0},
         {key::kLidWiden, SettingType::String, 0, "normal", 0, 0, 0, 0},

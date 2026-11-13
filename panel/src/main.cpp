@@ -255,7 +255,7 @@ void printUsage() {
         "      --thumbnail-size N  Its edge length (default 256)\n"
         "  --play-sound NAME     Play one eye fit cue (pop, pip, buzz, tick, open, done, fail) and exit\n"
         "  --dot-png PATH        Draw a debug gaze dot to a PNG\n"
-        "      --dot-kind both|left|right  Which one (default both)\n"
+        "      --dot-kind both|left|right|other  Which one (default both)\n"
         "      --dot-ring        The ring (the gaze before the gaze scale) instead of the dot\n"
         "  --target-png PATH     Draw the eye fit's target (the head-locked dot) to a PNG\n"
         "      --target-style dot|close|keep|open  The dot, or the eyes-shut step (words from --language)\n"
@@ -833,8 +833,9 @@ bool parseOptions(int argc, char** argv, Options& options) {
             options.dotRing = true;
         } else if (arg == "--dot-kind" && hasNext) {
             options.dotKind = argv[++i];
-            if (options.dotKind != "both" && options.dotKind != "left" && options.dotKind != "right") {
-                std::fprintf(stderr, "--dot-kind must be both, left or right: %s\n", options.dotKind.c_str());
+            if (options.dotKind != "both" && options.dotKind != "left" && options.dotKind != "right" &&
+                options.dotKind != "other") {
+                std::fprintf(stderr, "--dot-kind must be both, left, right or other: %s\n", options.dotKind.c_str());
                 return false;
             }
         } else if (arg == "--target-style" && hasNext) {
@@ -2996,6 +2997,7 @@ int runDumpPng(const Options& options) {
     if (!options.dotPngPath.empty()) {
         const DotKind kind = options.dotKind == "left"    ? DotKind::Left
                              : options.dotKind == "right" ? DotKind::Right
+                             : options.dotKind == "other" ? DotKind::Other
                                                           : DotKind::Both;
         std::vector<uint8_t> rgba;
         if (options.dotRing) {
@@ -4479,17 +4481,21 @@ int runOverlay(const Options& options) {
         std::fprintf(stderr, "[contrib] %s: %d recording(s)\n", recorder::shortPath(model.contrib.dir).c_str(),
                      static_cast<int>(model.contrib.info.recordings.size()));
     }
-    // The debug gaze dots: their socket, the three dot images and the three ring images after them (drawn once), which
-    // image each overlay has (0 and 1 the dots, 2 and 3 the rings: the gaze before the user's gaze scale)
+    // The debug gaze dots: their socket, the three dot images and the three ring images after them, then the other
+    // gaze source's dot (drawn once), which image each overlay has (0 and 1 the dots, 2 and 3 the rings: the gaze
+    // before the user's gaze scale, 4 the other gaze source's dot: gaze_debug_dots_compare)
     gaze_dots::Receiver dots;
-    std::vector<uint8_t> dotImages[6];
+    std::vector<uint8_t> dotImages[7];
     for (int kind = 0; kind < 3; ++kind) {
         renderGazeDot(static_cast<DotKind>(kind), dotImages[kind]);
         renderGazeRing(static_cast<DotKind>(kind), dotImages[3 + kind]);
     }
+    constexpr int kOtherImage = 6;
+    constexpr int kOtherOverlay = 4;
+    renderGazeDot(DotKind::Other, dotImages[kOtherImage]);
     constexpr int kDotOverlays = VrOverlay::kDots;
-    int dotImageShown[kDotOverlays] = {-1, -1, -1, -1};
-    bool dotsVisible[kDotOverlays] = {false, false, false, false};
+    int dotImageShown[kDotOverlays] = {-1, -1, -1, -1, -1};
+    bool dotsVisible[kDotOverlays] = {};
     bool dotsOpenFailed = false;
     bool dotsWanted = false;        // the dots are on (their overlays shown); the socket may be open for the preview too
     // The eye preview: frameeyeosc's samples come on the dots' socket (bound while its sheet shows), eyecam-rec's
@@ -5075,9 +5081,9 @@ int runOverlay(const Options& options) {
                 lastDotAt = nowSeconds();
                 // A ring (index 2 or 3) is the same eye's dot, kRingWidthScale times as wide, with a clear middle
                 const auto place = [&](int index, int eye, DotKind kind, float x, float y) {
-                    const bool ring = index >= 2;
+                    const bool ring = index == 2 || index == 3;
                     const gaze_dots::Pose pose = gaze_dots::dotPose(x, y, eye, dotIpd, dotDistance);
-                    const int image = static_cast<int>(kind) + (ring ? 3 : 0);
+                    const int image = kind == DotKind::Other ? kOtherImage : static_cast<int>(kind) + (ring ? 3 : 0);
                     const double width = gaze_dots::dotWidth(dotDistance) * (ring ? gaze_dots::kRingWidthScale : 1.0);
                     dotsVisible[index] = vr.showDot(index, pose.position.x, pose.position.y, pose.position.z,
                                                     pose.yawDeg, pose.pitchDeg, dotImages[image].data(),
@@ -5101,6 +5107,15 @@ int runOverlay(const Options& options) {
                         place(at, 0, DotKind::Both, gaze[4], gaze[5]);
                         hideDot(at + 1);
                     }
+                }
+                // The other gaze source's dot (gaze_debug_dots_compare): its combined gaze from between the eyes, as
+                // the combined dot, whatever independent_eyes says; none for a sample it has no value for
+                gaze_dots::Pose otherPose;
+                if (model.config.flag(key::kGazeDebugDotsCompare) &&
+                    gaze_dots::otherDotPose(packet, dotIpd, dotDistance, otherPose)) {
+                    place(kOtherOverlay, 0, DotKind::Other, packet.other[0], packet.other[1]);
+                } else {
+                    hideDot(kOtherOverlay);
                 }
             } else if (anyDot() && nowSeconds() - lastDotAt > gaze_dots::kStaleSec) {
                 // No samples (frameeyeosc stopped, or the eyes aren't tracked): no stale dots

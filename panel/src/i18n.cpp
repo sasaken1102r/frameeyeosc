@@ -1069,6 +1069,11 @@ UiText makeJapanese() {
     t.rowGazeRings = "倍率の前の向き（輪）";
     t.hintGazeRings = "目が見ている向き";
     t.gazeRingsNote = "視線の倍率が 100 % でないときだけ、点のまわりに輪で出ます";
+    t.rowGazeCompare = "もう一方の視線も出す";
+    t.hintGazeCompare = "Valve と瞳の位置を比べる";
+    t.gazeCompareSent = "送っている視線";
+    t.gazeCompareValve = "Valve の視線";
+    t.gazeComparePupil = "瞳の位置の視線";
     t.rowUpdateCheck = "新しい版の確認";
     t.hintUpdateCheck = "起動時と 1 時間に 1 回、GitHub に新しい版がないか見に行きます";
     t.updateUpToDateFormat = "最新版です（%s）";
@@ -2287,6 +2292,11 @@ UiText makeEnglish() {
     t.rowGazeRings = "Ring: before the scale";
     t.hintGazeRings = "Where your eyes look";
     t.gazeRingsNote = "Shown around the dot only while a gaze scale isn't 100 %";
+    t.rowGazeCompare = "Other gaze too";
+    t.hintGazeCompare = "Compare Valve and pupil";
+    t.gazeCompareSent = "Gaze being sent";
+    t.gazeCompareValve = "Valve's gaze";
+    t.gazeComparePupil = "Pupil-position gaze";
     t.rowUpdateCheck = "Check for updates";
     t.hintUpdateCheck = "Looks on GitHub for a new version at start and every hour";
     t.updateUpToDateFormat = "Up to date (%s)";

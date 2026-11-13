@@ -31,6 +31,14 @@ constexpr size_t kPacketSize = 160;
 constexpr size_t kPacketSizeV2 = 136;
 /** One eye's part of it. */
 constexpr size_t kEyeSize = 36;
+/**
+ * The other gaze's datagram (gaze_debug_dots_compare; src/dots.rs), sent just before its sample's own while that switch
+ * is on and both eyes have a pupil map: b"FEOC", 1, flags (bit 0 a value for this sample, bit 1 it is Valve's gaze, the
+ * pupils' while clear), 2 zero bytes, the sample's time (f64), x and y (f32, 1.0 = 45°). A datagram of its own, so the
+ * sample's stays as it was: a panel from before ignores this one (not its magic or size), and with a frameeyeosc from
+ * before none comes (no other dot).
+ */
+constexpr size_t kOtherSize = 24;
 /** How far along each ray the dots are shown (m; gaze_debug_dots_distance_m), the same with the dashboard open or
  *  closed so they never jump. Plain overlays show over the dashboard (about 1.35 m away) up to about 1 m: at 1.2 m
  *  it hid them, depending on where the head was. Up to 2 m is allowed for use with the dashboard closed... */
@@ -71,6 +79,18 @@ struct Packet {
     bool scaled = false;                   ///< the user's gaze scale is in use (not 1 on all sides): rings too
     bool brows = false;                    ///< brows are sent (brow_from_widen, to an output that takes them)
     PacketEye eyes[2];                     ///< the left eye, the right eye (anatomical)
+    // Not in the sample's own datagram: from the other gaze's (Other) with the same time, put here by Receiver::poll
+    bool hasOther = false;                 ///< the other gaze source gives a value for this sample
+    bool otherValve = false;               ///< ...Valve's gaze (gaze_source "pupil"), the pupils' otherwise
+    float other[2] = {0, 0};               ///< ...its combined x/y as that source would send it; 1.0 = 45°
+};
+
+/** The other gaze's datagram: the gaze source not in use, for the extra dot (gaze_debug_dots_compare). */
+struct Other {
+    double time = 0.0;      ///< the sample it belongs to
+    bool has = false;       ///< a value for this sample (the pupils' gaze has none while both pupils don't give it)
+    bool valve = false;     ///< Valve's gaze (the pupils' otherwise)
+    float gaze[2] = {0, 0};  ///< combined x/y; 1.0 = 45°
 };
 
 /**
@@ -88,6 +108,29 @@ bool decode(const uint8_t* data, size_t size, Packet& out);
  * @return the bytes
  */
 std::vector<uint8_t> encode(const Packet& packet);
+
+/**
+ * Read the other gaze's datagram.
+ * @param data the bytes
+ * @param size how many
+ * @param out the value
+ * @return false if it is not one (of version 1), or its value isn't finite
+ */
+bool decodeOther(const uint8_t* data, size_t size, Other& out);
+
+/**
+ * Write the other gaze's datagram (for tests).
+ * @param other the value
+ * @return the bytes
+ */
+std::vector<uint8_t> encodeOther(const Other& other);
+
+/**
+ * Put the other gaze into a sample when it belongs to it (the same time), or take it out.
+ * @param packet the sample
+ * @param other the last other gaze read (nullptr: none)
+ */
+void attachOther(Packet& packet, const Other* other);
 
 /** A point in head space: +x right, +y up, -z ahead (m). */
 struct Vec3 {
@@ -130,6 +173,17 @@ double dotDistance(double setting);
  */
 double dotWidth(double distance);
 
+/**
+ * Where the extra dot goes (the other gaze source's combined gaze): along the ray from between the eyes, as the
+ * combined dot, whether or not each eye's own gaze is sent.
+ * @param packet the sample
+ * @param ipd the distance between the eyes (m)
+ * @param distance how far along the ray (m)
+ * @param out the pose
+ * @return false if the sample has no other gaze
+ */
+bool otherDotPose(const Packet& packet, double ipd, double distance, Pose& out);
+
 /** The panel's end of the socket: bound while the dots are on or the eye preview is open, non-blocking. */
 class Receiver {
 public:
@@ -153,7 +207,7 @@ public:
     bool isOpen() const { return fd_ >= 0; }
 
     /**
-     * Read everything waiting and keep the newest.
+     * Read everything waiting and keep the newest sample, with the other gaze when one with its time came (attachOther).
      * @param latest the newest sample (unchanged if none)
      * @return true if there was one
      */
@@ -162,6 +216,8 @@ public:
 private:
     int fd_ = -1;
     std::string path_;
+    Other other_;            ///< the last other gaze read...
+    bool hasOther_ = false;  ///< ...if any since the socket opened
 };
 
 }  // namespace gaze_dots

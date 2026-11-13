@@ -157,13 +157,30 @@ void renderGazeDot(DotKind kind, std::vector<uint8_t>& rgba, const std::string& 
     cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, size, size);
     cairo_t* cr = cairo_create(surface);
     const double c = size / 2.0;
-    const Color fill = kind == DotKind::Left ? kDotLeft : (kind == DotKind::Right ? kDotRight : kDotBoth);
-    cairo_set_source_rgb(cr, kBg.r, kBg.g, kBg.b);
-    cairo_arc(cr, c, c, size * 0.46, 0, 2 * M_PI);
-    cairo_fill(cr);
-    cairo_set_source_rgb(cr, fill.r, fill.g, fill.b);
-    cairo_arc(cr, c, c, size * 0.34, 0, 2 * M_PI);
-    cairo_fill(cr);
+    if (kind == DotKind::Other) {
+        // A diamond (a square on its corner), dark edge first
+        const auto diamond = [&](double r) {
+            cairo_move_to(cr, c, c - r);
+            cairo_line_to(cr, c + r, c);
+            cairo_line_to(cr, c, c + r);
+            cairo_line_to(cr, c - r, c);
+            cairo_close_path(cr);
+        };
+        cairo_set_source_rgb(cr, kBg.r, kBg.g, kBg.b);
+        diamond(size * 0.49);
+        cairo_fill(cr);
+        cairo_set_source_rgb(cr, kDotOther.r, kDotOther.g, kDotOther.b);
+        diamond(size * 0.36);
+        cairo_fill(cr);
+    } else {
+        const Color fill = kind == DotKind::Left ? kDotLeft : (kind == DotKind::Right ? kDotRight : kDotBoth);
+        cairo_set_source_rgb(cr, kBg.r, kBg.g, kBg.b);
+        cairo_arc(cr, c, c, size * 0.46, 0, 2 * M_PI);
+        cairo_fill(cr);
+        cairo_set_source_rgb(cr, fill.r, fill.g, fill.b);
+        cairo_arc(cr, c, c, size * 0.34, 0, 2 * M_PI);
+        cairo_fill(cr);
+    }
     cairo_surface_flush(surface);
     surfaceToRgba(surface, rgba);
     if (!pngPath.empty()) cairo_surface_write_to_png(surface, pngPath.c_str());

@@ -57,6 +57,8 @@ constexpr Color kVpnTint = blendColor(kSnap, kCard, 0.15);
 constexpr Color kDotBoth = hexColor(0xe6edf3);
 constexpr Color kDotLeft = hexColor(0x6ee2ff);
 constexpr Color kDotRight = hexColor(0xd9701c);
+/** The extra debug dot (gaze_debug_dots_compare: the gaze source not in use): violet, and a diamond, not a circle */
+constexpr Color kDotOther = hexColor(0xc58cff);
 constexpr Color kSuccess = hexColor(0x3fb950);    ///< sending
 constexpr Color kSuccessTint = blendColor(kSuccess, kCard, 0.15);
 /** The camera floor's line on the sent eyelid bars while no eye is on the cameras */

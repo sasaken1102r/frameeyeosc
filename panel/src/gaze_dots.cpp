@@ -24,6 +24,11 @@ constexpr uint8_t kBrowsFlag = 4;
 /** Where the gaze before the scale starts (version 3: right after the eyes). */
 constexpr size_t kUnscaledAt = kEyesAt + 2 * kEyeSize;
 static_assert(kUnscaledAt == kPacketSizeV2 && kUnscaledAt + 24 == kPacketSize, "version 3 is version 2 and 24 bytes");
+/** The other gaze's datagram (Other). */
+constexpr uint8_t kOtherMagic[4] = {'F', 'E', 'O', 'C'};
+constexpr uint8_t kOtherVersion = 1;
+constexpr uint8_t kOtherHas = 1;
+constexpr uint8_t kOtherValve = 2;
 
 // The Frame is little-endian (aarch64), like every machine this is built for; the packet is read with memcpy
 static_assert(sizeof(float) == 4 && sizeof(double) == 8, "the packet has 4-byte floats and an 8-byte double");
@@ -98,6 +103,42 @@ std::vector<uint8_t> encode(const Packet& packet) {
     return data;
 }
 
+bool decodeOther(const uint8_t* data, size_t size, Other& out) {
+    if (size != kOtherSize || std::memcmp(data, kOtherMagic, 4) != 0 || data[4] != kOtherVersion) return false;
+    Other other;
+    other.has = (data[5] & kOtherHas) != 0;
+    other.valve = (data[5] & kOtherValve) != 0;
+    std::memcpy(&other.time, data + 8, 8);
+    std::memcpy(other.gaze, data + 16, 8);
+    if (other.has && !(std::isfinite(other.gaze[0]) && std::isfinite(other.gaze[1]))) return false;
+    out = other;
+    return true;
+}
+
+std::vector<uint8_t> encodeOther(const Other& other) {
+    std::vector<uint8_t> data(kOtherSize, 0);
+    std::memcpy(data.data(), kOtherMagic, 4);
+    data[4] = kOtherVersion;
+    data[5] = static_cast<uint8_t>((other.has ? kOtherHas : 0) | (other.valve ? kOtherValve : 0));
+    std::memcpy(data.data() + 8, &other.time, 8);
+    if (other.has) std::memcpy(data.data() + 16, other.gaze, 8);
+    return data;
+}
+
+void attachOther(Packet& packet, const Other* other) {
+    // Only the value sent for this very sample (it comes just before the sample's own datagram)
+    packet.hasOther = other != nullptr && other->has && other->time == packet.time;
+    packet.otherValve = other != nullptr && other->valve;
+    packet.other[0] = packet.hasOther ? other->gaze[0] : 0.0f;
+    packet.other[1] = packet.hasOther ? other->gaze[1] : 0.0f;
+}
+
+bool otherDotPose(const Packet& packet, double ipd, double distance, Pose& out) {
+    if (!packet.hasOther) return false;
+    out = dotPose(packet.other[0], packet.other[1], 0, ipd, distance);
+    return true;
+}
+
 Pose dotPose(double x, double y, int eye, double ipd, double distance) {
     const double scale = 45.0 * M_PI / 180.0;
     // The ray the tracker's angles describe, from the eye
@@ -154,6 +195,7 @@ bool Receiver::open(const std::string& path, std::string& error) {
 }
 
 void Receiver::close() {
+    hasOther_ = false;
     if (fd_ < 0) return;
     ::close(fd_);
     ::unlink(path_.c_str());
@@ -168,11 +210,16 @@ bool Receiver::poll(Packet& latest) {
         const ssize_t n = ::recv(fd_, buffer, sizeof(buffer), 0);
         if (n < 0) break;  // EAGAIN: nothing more waiting
         Packet packet;
+        Other other;
         if (decode(buffer, static_cast<size_t>(n), packet)) {
             latest = packet;
             got = true;
+        } else if (decodeOther(buffer, static_cast<size_t>(n), other)) {
+            other_ = other;
+            hasOther_ = true;
         }
     }
+    if (got) attachOther(latest, hasOther_ ? &other_ : nullptr);
     return got;
 }
 

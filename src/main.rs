@@ -3242,6 +3242,10 @@ struct Output {
     // Said after the address in the log lines of a sender other than the main output ("" for the main one, whose lines
     // stay as they were).
     label: String,
+    // Tests: every datagram handed to the socket, in order, while Some (what was sent, whatever the loopback later
+    // drops under load).
+    #[cfg(test)]
+    log: Option<Vec<Vec<u8>>>,
 }
 
 impl Output {
@@ -3260,6 +3264,8 @@ impl Output {
             lan_only: true,
             refused: None,
             warned: None,
+            #[cfg(test)]
+            log: None,
             label: String::new(),
         }
     }
@@ -3493,6 +3499,10 @@ impl Output {
         let Some((socket, target)) = &self.socket else {
             return;
         };
+        #[cfg(test)]
+        if let Some(log) = &mut self.log {
+            log.push(datagram.to_vec());
+        }
         let (target, result) = (*target, socket.send(datagram));
         if let Some(line) = self.note(Instant::now(), target, &result) {
             // A failure to send is kept for the panel; its end, and dropped datagrams, are only logged
@@ -7727,13 +7737,12 @@ mod tests {
                 ..settings
             });
             bridge.measure = dots::DotStream::named(dir, dots::MEASURE_SOCKET_NAME);
+            // What the bridge sends, as it hands it to the socket (the loopback itself may drop some under load)
+            bridge.output.log = Some(Vec::new());
             let mut out = Run { sent: Vec::new(), seen: Vec::new(), unscaled: Vec::new(), measured: Vec::new() };
             let mut buffer = [0u8; 2048];
             for data in &readings {
                 bridge.on_sample(*data).unwrap();
-                while let Ok(size) = listener.recv(&mut buffer) {
-                    out.sent.push(buffer[..size].to_vec());
-                }
                 while let Ok(size) = panel.recv(&mut buffer) {
                     out.measured.push(dots::decode_measure(&buffer[..size]).unwrap());
                 }
@@ -7748,8 +7757,8 @@ mod tests {
                     latest.gaze_blending,
                 ));
             }
-            // (a datagram still on its way after the last sample: read until the line is quiet)
-            drain_udp_late(&listener, &mut out.sent);
+            out.sent = bridge.output.log.take().unwrap();
+            drop(listener);
             out
         };
         let bits = |gaze: [f32; 2]| gaze.map(f32::to_bits);
@@ -7838,12 +7847,6 @@ mod tests {
             pupil_pitch_v_right: Some(-200.0),
             ..settings
         };
-        let drain_udp = |listener: &UdpSocket, into: &mut Vec<Vec<u8>>| {
-            let mut buffer = [0u8; 2048];
-            while let Ok(size) = listener.recv(&mut buffer) {
-                into.push(buffer[..size].to_vec());
-            }
-        };
         let drain_panel = |others: &mut Vec<dots::OtherSample>, samples: &mut usize| {
             let mut buffer = [0u8; 512];
             while let Ok(size) = panel.recv(&mut buffer) {
@@ -7872,11 +7875,12 @@ mod tests {
                 });
                 let mut bridge = test_bridge(settings);
                 bridge.dots = dots::DotStream::new(&dir);
-                let (mut sent, mut seen, mut others, mut samples) = (Vec::new(), Vec::new(), Vec::new(), 0);
+                // What the bridge sends, as it hands it to the socket (the loopback itself may drop some under load)
+                bridge.output.log = Some(Vec::new());
+                let (mut seen, mut others, mut samples) = (Vec::new(), Vec::new(), 0);
                 let mut gazes = Vec::new();
                 for data in &readings {
                     bridge.on_sample(*data).unwrap();
-                    drain_udp(&listener, &mut sent);
                     drain_panel(&mut others, &mut samples);
                     // What the status file says the bridge sent and read (not its settings, which differ by the key)
                     let status = serde_json::to_value(bridge.status(None, None)).unwrap();
@@ -7888,8 +7892,8 @@ mod tests {
                         latest.gaze_in_use, latest.gaze_held, status["sent"], status["raw"], status["gaze_in_use"]
                     ));
                 }
-                // (a datagram still on its way after the last sample: read until the line is quiet)
-                drain_udp_late(&listener, &mut sent);
+                let sent = bridge.output.log.take().unwrap();
+                drop(listener);
                 assert_eq!(samples, readings.len());
                 if !compare {
                     combined.push(gazes);
@@ -11629,16 +11633,6 @@ mod tests {
             let received = osc_received(&vrchat_listener);
             assert!(param(&received, "/avatar/parameters/FT/v2/PupilDilation").is_some(), "{output:?}");
             assert!(!received.iter().any(|(addr, _)| is_bit(addr)), "{output:?}");
-        }
-    }
-
-    /// Every datagram still arriving on a loopback `listener` (switched to blocking reads): until none came for 300 ms.
-    fn drain_udp_late(listener: &UdpSocket, into: &mut Vec<Vec<u8>>) {
-        listener.set_nonblocking(false).unwrap();
-        listener.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
-        let mut buffer = [0u8; 2048];
-        while let Ok(size) = listener.recv(&mut buffer) {
-            into.push(buffer[..size].to_vec());
         }
     }
 

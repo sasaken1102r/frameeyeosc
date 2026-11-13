@@ -626,6 +626,58 @@ void testRecord() {
     }
 }
 
+/** Gaze error checks are kept on their own: many checks push out no fit or calibration, and many of those no check. */
+void testMeasureQuota() {
+    const std::string dir = kRoot + "/quota";
+    ::mkdir(dir.c_str(), 0700);
+    const std::string records = dir + "/reports";
+    report::Sources sources = fakeSources(dir);
+    sources.journal = nullptr;
+    sources.valveLog.clear();
+    const auto writeAt = [&](Kind kind, double start) {
+        report::Pending pending;
+        pending.summary = fitSummary();
+        pending.summary.kind = kind;
+        pending.summary.start = start;
+        pending.summary.end = start + 5;
+        pending.files.emplace_back("measure.json", "{}\n");
+        pending.files.emplace_back("samples.csv", "panel_s\n");
+        pending.files.emplace_back("other.txt", "never written");
+        std::string folder;
+        std::string error;
+        CHECK(report::writeRecord(records, pending, sources, folder, error));
+        return folder;
+    };
+    const auto count = [&](const char* prefix) {
+        size_t n = 0;
+        for (const std::string& name : report::folders(records)) n += name.rfind(prefix, 0) == 0 ? 1 : 0;
+        return n;
+    };
+    // Three fits, then twelve checks: the three fits stay, the newest ten checks
+    for (int i = 0; i < 3; ++i) writeAt(i == 1 ? Kind::CalibWear : Kind::Fit, jst(2026, 10, 5, 8 + i, 0, 0));
+    std::string first;
+    for (int i = 0; i < 12; ++i) {
+        const std::string folder = writeAt(Kind::Measure, jst(2026, 10, 6, 8 + i, 0, 0));
+        if (i == 0) first = folder;
+    }
+    CHECK(first == "measure_2026-10-06_08-00-00");
+    CHECK(count("measure_") == static_cast<size_t>(report::kKeep) && report::folders(records).size() == 13);
+    CHECK(!exists(records + "/measure_2026-10-06_09-00-00") && exists(records + "/measure_2026-10-06_19-00-00"));
+    CHECK(exists(records + "/fit_2026-10-05_08-00-00/summary.json"));
+    // A check's own files written (only by the names a record may have), and deleted with it
+    CHECK(exists(records + "/measure_2026-10-06_19-00-00/measure.json"));
+    CHECK(exists(records + "/measure_2026-10-06_19-00-00/samples.csv"));
+    CHECK(!exists(records + "/measure_2026-10-06_19-00-00/other.txt"));
+    CHECK(!exists(records + "/measure_2026-10-06_08-00-00"));
+    // Twelve more fits: the newest ten fits and calibrations, and the ten checks as they were
+    for (int i = 0; i < 12; ++i) writeAt(Kind::Fit, jst(2026, 10, 7, 8 + i, 0, 0));
+    CHECK(count("measure_") == static_cast<size_t>(report::kKeep));
+    CHECK(report::folders(records).size() == static_cast<size_t>(2 * report::kKeep));
+    CHECK(!exists(records + "/fit_2026-10-05_08-00-00") && !exists(records + "/calib-wear_2026-10-05_09-00-00"));
+    CHECK(report::prune(records, 0) == 2 * report::kKeep);
+    removeAll(dir);
+}
+
 void testRetention() {
     const std::string dir = kRoot + "/keep";
     ::mkdir(dir.c_str(), 0700);
@@ -1083,6 +1135,7 @@ int main() {
     testSummary();
     testRecord();
     testRetention();
+    testMeasureQuota();
     testRun();
     testCalibWatch();
     testWriterAndCli();

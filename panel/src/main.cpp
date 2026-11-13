@@ -28,6 +28,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -4237,8 +4238,8 @@ void fillMeasureResult(report::Summary& s, const gaze_measure::View& view) {
             break;
         case Phase::Failed:
             s.result = report::Result::Failed;
-            s.reason = ja.measureNoData;
-            s.reasonEn = en.measureNoData;
+            s.reason = view.samples == 0 ? ja.measureNoDataEver : ja.measureNoData;
+            s.reasonEn = view.samples == 0 ? en.measureNoDataEver : en.measureNoData;
             s.brief = ja.measureFailedTitle;
             s.briefEn = en.measureFailedTitle;
             break;
@@ -4472,6 +4473,18 @@ int runOverlay(const Options& options) {
     // and the pupils' gaze each sample) and its record
     gaze_measure::Session measure;
     gaze_measure::Receiver measureSocket;
+    // A check's socket left by a panel that crashed: removed now, or frameeyeosc would go on sending to it (and working
+    // out the other source) until it next looks
+    {
+        const size_t slash = model.statusPath.find_last_of('/');
+        const std::string stale =
+            (slash == std::string::npos ? std::string(".") : model.statusPath.substr(0, slash)) + "/" +
+            gaze_measure::kSocketName;
+        struct stat st {};
+        if (::lstat(stale.c_str(), &st) == 0 && S_ISSOCK(st.st_mode) && ::unlink(stale.c_str()) == 0) {
+            std::fprintf(stderr, "[measure] removed a stale %s\n", stale.c_str());
+        }
+    }
     report::Run measureRun;
     std::string drawnMeasure;  // the check's phase and place as last drawn
     std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself, "command" for --action
@@ -4615,7 +4628,8 @@ int runOverlay(const Options& options) {
     };
     const auto finishMeasure = [&]() {
         measureSocket.close();
-        targetPainter.reset();
+        // (an eye fit that took over draws its own target on the painter: left alone)
+        if (!fit.active()) targetPainter.reset();
         if (!measureRun.active()) return;
         const gaze_measure::View& done = measure.view();
         report::Pending pending = measureRun.finish(unixNow());
@@ -5111,7 +5125,8 @@ int runOverlay(const Options& options) {
                 }
             }
             if (tick.ended) {
-                vr.hideTarget();
+                // (an eye fit that took over shows its dot this same frame: not hidden)
+                if (!fit.active()) vr.hideTarget();
                 const gaze_measure::Phase phase = measure.view().phase;
                 if (soundsOn && phase == gaze_measure::Phase::Done) player.play(sounds::Cue::Done);
                 if (soundsOn && phase == gaze_measure::Phase::Failed) player.play(sounds::Cue::Fail);

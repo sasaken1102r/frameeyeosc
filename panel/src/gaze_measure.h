@@ -3,10 +3,14 @@
 // gaze as gaze_source "valve" sends it, and the pupils' as "pupil" sends it (only while both pupils give it), both
 // before the user's gaze scale. Nothing is written to config.json and nothing frameeyeosc sends changes: while this
 // panel binds kSocketName in the status folder, frameeyeosc passes each sample's two gazes to it (src/dots.rs, "FEOM"),
-// worked out a second time for the source not in use, as for the debug dots' compare dot. Each sample is put to the
+// worked out a second time for the source not in use, as for the debug dots' compare dot (it starts cold when this
+// panel's socket is first seen, within a second of the start; nothing counts before 1 s after the first place, 4 s
+// after the start, so its smoothing has settled by then). Each sample is put to the
 // place shown when it arrived, by the panel's own clock: the panel shows each place and receives the samples, so one
 // clock times both. Only the samples from kSettleSec after a hop to the next hop count (the eyes have arrived), and
-// only while both eyes are open enough. Nothing here talks to OpenVR or cairo (measure-test).
+// only while both eyes are open enough. Valve is scored twice: on exactly the samples the pupils were scored on (both
+// pupils, not easing from another source), its main number while a map is there so the two compare like with like,
+// and on every counted sample. Nothing here talks to OpenVR or cairo (measure-test).
 #pragma once
 
 #include "i18n.h"
@@ -23,7 +27,8 @@ namespace gaze_measure {
 constexpr const char* kSocketName = "gaze-measure.sock";
 /**
  * One sample (version 1), little-endian: b"FEOM", 1, flags (bit 0 both eyes have a pupil map, bit 1 the sample counts:
- * both eyes open enough, as the eye fit's captures count them, bit 2 Valve's gaze is held), the pupils' state (0 none
+ * both eyes open enough, as the eye fit's captures count them, bit 2 Valve's gaze is held, bit 3 the pupils' gaze is
+ * still easing from the source before: pupil.rs's blend; clear from a frameeyeosc before it), the pupils' state (0 none
  * without a map, 1 both pupils, 2 the left pupil only, 3 the right only, 4 held, 5 Valve's standing in), a zero byte,
  * the sample time (f64), Valve's combined x and y as "valve" sends them, the pupils' as "pupil" sends them (f32; 1.0 =
  * 45°; both before the user's gaze scale), each eye's Valve openness (f32).
@@ -64,6 +69,7 @@ struct Sample {
     bool mapped = false;        ///< both eyes have a pupil map (else no pupil gaze)
     bool usable = false;        ///< both eyes open enough (the eye fit's rule)
     bool valveHeld = false;     ///< Valve's gaze was held (eyes shut, a blink)
+    bool pupilBlending = false; ///< the pupils' gaze was still easing from the source before (not scored)
     PupilState pupilState = PupilState::None;
     float valve[2] = {0, 0};    ///< x, y; 1.0 = 45°
     float pupil[2] = {0, 0};    ///< x, y; meaningful while pupilState is Pupil
@@ -124,7 +130,8 @@ struct SourceScore {
 struct PositionScore {
     Position target;
     double gaze[2] = {0, 0};          ///< the dot's gaze angles (targetGaze)
-    SourceScore valve;
+    SourceScore valve;                ///< Valve on every counted sample
+    SourceScore valveSame;            ///< Valve on the samples the pupils were scored on
     SourceScore pupil;
     int window = 0;                   ///< samples in its window (from kSettleSec on)
     int states[kStateCount] = {};     ///< ...by the pupils' state
@@ -145,7 +152,8 @@ struct Overall {
 struct Result {
     bool mapped = false;              ///< a pupil map was there (pupil scored)
     PositionScore positions[kPositionCount];
-    Overall valve;
+    Overall valve;                    ///< Valve on every counted sample
+    Overall valveSame;                ///< Valve on the pupils' samples (its main number while there is a map)
     Overall pupil;
     int window = 0;                   ///< samples in the windows
     int states[kStateCount] = {};

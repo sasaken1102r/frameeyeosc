@@ -71,6 +71,15 @@ void testDatagram() {
     const std::vector<uint8_t> heldBytes = encode(held);
     CHECK(std::memcmp(heldBytes.data(), "FEOM\x01\x04\x00\x00", 8) == 0);
     CHECK(decode(heldBytes.data(), heldBytes.size(), read) && read.valveHeld && !read.mapped && !read.usable);
+    // Still easing: bit 3 (as frameeyeosc writes it), nothing else moves; a frameeyeosc before it: clear
+    Sample easing = sample;
+    easing.pupilBlending = true;
+    const std::vector<uint8_t> eased = encode(easing);
+    CHECK(std::memcmp(eased.data(), "FEOM\x01\x0b\x01\x00", 8) == 0);
+    int differ = 0;
+    for (size_t i = 0; i < kSampleSize; ++i) differ += eased[i] != bytes[i] ? 1 : 0;
+    CHECK(differ == 1 && decode(eased.data(), eased.size(), read) && read.pupilBlending);
+    CHECK(decode(bytes.data(), bytes.size(), read) && !read.pupilBlending);
     // Another version or size, Valve's gaze not a number, the pupils' not a number while they count: ignored; the
     // pupils' not a number while another state is in use: read
     std::vector<uint8_t> wrong = bytes;
@@ -157,7 +166,8 @@ struct Simulation {
         const double since = index >= 0 ? at - session.shownAt()[index] : 0;
         const bool travelling = index >= 0 && since < 0.5;
         const bool blink = index == 5 && since > 2.0 && since < 2.2;
-        const double vx = travelling ? 30 : g[0] - 7.6;
+        // Where only the left pupil is seen (place 3), Valve is worse: off by 15° there
+        const double vx = travelling ? 30 : g[0] - (index == 3 ? 15.0 : 7.6);
         const double vy = travelling ? -25 : g[1] + 2.4;
         s.valve[0] = static_cast<float>(vx / 45);
         s.valve[1] = static_cast<float>(vy / 45);
@@ -169,6 +179,11 @@ struct Simulation {
             s.pupilState = index == 3 ? PupilState::Left : PupilState::Pupil;
             s.pupil[0] = static_cast<float>((travelling ? -30 : g[0] + 0.5) / 45);
             s.pupil[1] = static_cast<float>((travelling ? 20 : g[1] - 0.3) / 45);
+            // At place 7 the pupils come back from a moment of one eye half-way through: easing, and wild
+            if (index == 7 && since >= 2.0 && since < 2.25) {
+                s.pupilBlending = true;
+                s.pupil[0] = static_cast<float>((g[0] + 9) / 45);
+            }
         }
         return s;
     }
@@ -194,20 +209,29 @@ void testRun() {
     for (int i = 0; i < kPositionCount; ++i) {
         const PositionScore& p = r.positions[i];
         CHECK(p.window >= 223 && p.window <= 227);
-        CHECK(near(p.valve.dx, -7.6, 1e-4) && near(p.valve.dy, 2.4, 1e-4));
+        CHECK(near(p.valve.dx, i == 3 ? -15.0 : -7.6, 1e-4) && near(p.valve.dy, 2.4, 1e-4));
         CHECK(i != 5 ? p.valve.n == p.window : (p.valve.n >= p.window - 19 && p.valve.n <= p.window - 17));
         if (i == 3) {
             CHECK(p.pupil.n == 0 && !p.pupil.counts() && p.states[static_cast<int>(PupilState::Left)] == p.window);
+            CHECK(p.valveSame.n == 0 && !p.valveSame.counts() && p.valve.counts());
         } else {
             CHECK(near(p.pupil.dx, 0.5, 1e-4) && near(p.pupil.dy, -0.3, 1e-4) && p.pupil.counts());
+            // Valve on the same samples as the pupils: exactly as many
+            CHECK(p.valveSame.n == p.pupil.n && near(p.valveSame.dx, -7.6, 1e-4));
         }
+        // The easing samples left out of the pupils (and so of Valve on the same samples), not of Valve's own
+        if (i == 7) CHECK(p.pupil.n >= p.window - 23 && p.pupil.n <= p.window - 21 && p.valve.n == p.window);
     }
-    // Overall: the mean offset; the error about the offsets' length (a little more at the corners)
-    CHECK(r.valve.positions == kPositionCount && near(r.valve.dx, -7.6, 1e-4) && near(r.valve.dy, 2.4, 1e-4));
-    CHECK(r.valve.error > 7.8 && r.valve.error < 8.5 && r.valve.meanError > 7.8 && r.valve.meanError < 8.6);
+    // Overall: the mean offset; the error about the offsets' length (a little more at the corners). Valve on every
+    // sample has place 3 (15° off) in it; on the pupils' samples not, like the pupils
+    CHECK(r.valve.positions == kPositionCount && near(r.valve.dx, (-7.6 * 14 - 15.0) / 15, 1e-4));
+    CHECK(near(r.valve.dy, 2.4, 1e-4) && r.valve.meanError > r.valveSame.meanError + 0.4);
+    CHECK(r.valveSame.positions == kPositionCount - 1 && near(r.valveSame.dx, -7.6, 1e-4));
+    CHECK(r.valveSame.error > 7.8 && r.valveSame.error < 8.5 && r.valveSame.meanError > 7.8 && r.valveSame.meanError < 8.6);
+    CHECK(r.valve.worst == 3 && r.valveSame.worst != 3);
     CHECK(r.pupil.positions == kPositionCount - 1 && near(r.pupil.dx, 0.5, 1e-4) && near(r.pupil.dy, -0.3, 1e-4));
     CHECK(r.pupil.error > 0.55 && r.pupil.error < 0.65);
-    CHECK(r.valve.worst >= 0 && near(r.valve.worstError, r.positions[r.valve.worst].valve.error));
+    CHECK(near(r.valve.worstError, r.positions[3].valve.error));
     CHECK(r.states[static_cast<int>(PupilState::Left)] == r.positions[3].window);
     // The record's files: JSON with every place, a CSV row a sample
     const std::string json = recordJson(v, sim.session.shownAt(), sim.session.startedAt(), r);
@@ -222,8 +246,13 @@ void testRun() {
     if (positions != nullptr && positions->items.size() == kPositionCount) {
         const JsonValue* valve = positions->items[3].get("valve");
         const JsonValue* pupil = positions->items[3].get("pupil");
-        CHECK(valve != nullptr && valve->get("dx_deg") != nullptr && near(valve->get("dx_deg")->number, -7.6, 1e-3));
+        CHECK(valve != nullptr && valve->get("dx_deg") != nullptr && near(valve->get("dx_deg")->number, -15.0, 1e-3));
         CHECK(pupil != nullptr && pupil->get("dx_deg") != nullptr && pupil->get("dx_deg")->isNull());
+        const JsonValue* same = positions->items[3].get("valve_same");
+        CHECK(same != nullptr && same->get("n") != nullptr && same->get("n")->number == 0);
+        const JsonValue* sameAll = root.get("valve_same");
+        CHECK(sameAll != nullptr && sameAll->get("positions") != nullptr && sameAll->get("positions")->number == 14);
+        CHECK(root.get("valve") != nullptr && root.get("valve")->get("positions")->number == 15);
         const JsonValue* shown = positions->items[1].get("shown_s");
         CHECK(shown != nullptr && near(shown->number, kCountdownSec + kHoldSec, 0.02));
     }
@@ -231,6 +260,7 @@ void testRun() {
     size_t lines = 0;
     for (char ch : csv) lines += ch == '\n' ? 1 : 0;
     CHECK(lines == sim.session.rows().size() + 1 && csv.rfind("panel_s,unix,position,scored,sample_time", 0) == 0);
+    CHECK(csv.find(",pupil_state,pupil_blending,valve_x,") != std::string::npos);
     CHECK(sim.session.rows().size() >= 4990 && sim.session.rows().size() <= 5010);
     // Closing the result: back to nothing
     sim.session.dismiss();
@@ -245,6 +275,7 @@ void testWithoutMap() {
     const Result& r = sim.session.view().result;
     CHECK(sim.session.view().phase == Phase::Done && !r.mapped && !sim.session.view().mapped);
     CHECK(r.valve.positions == kPositionCount && r.pupil.positions == 0 && std::isnan(r.pupil.error));
+    CHECK(r.valveSame.positions == 0 && briefText(uiText(Language::En), r).rfind("Valve ", 0) == 0);
     CHECK(r.states[0] == r.window);
 }
 
@@ -298,10 +329,15 @@ void testTexts() {
     r.valve.positions = 15;
     r.valve.error = 7.94;
     CHECK(briefText(ja, r) == "Valve 7.9°");
+    // With a map, Valve's number on the pupils' samples
+    r.mapped = true;
+    r.valveSame.positions = 14;
+    r.valveSame.error = 7.46;
+    CHECK(briefText(ja, r) == "Valve 7.5°");
     r.pupil.positions = 14;
     r.pupil.error = 1.25;
-    CHECK(briefText(ja, r) == "Valve 7.9°・瞳 1.2°" || briefText(ja, r) == "Valve 7.9°・瞳 1.3°");
-    CHECK(briefText(en, r).rfind("Valve 7.9°, pupil 1.", 0) == 0);
+    CHECK(briefText(ja, r) == "Valve 7.5°・瞳 1.2°" || briefText(ja, r) == "Valve 7.5°・瞳 1.3°");
+    CHECK(briefText(en, r).rfind("Valve 7.5°, pupil 1.", 0) == 0);
 }
 
 void testSocket() {

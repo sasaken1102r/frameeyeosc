@@ -1374,7 +1374,8 @@ gaze_measure::View madeUpMeasure(bool mapped, int stopAfter = -1) {
         double g[2] = {0, 0};
         if (index >= 0) targetGaze(kPositions[index], g);
         const double right = std::max(0.0, g[0]) * 0.15;
-        sample.valve[0] = static_cast<float>((g[0] - 7.6 + right) / 45);
+        // (worse where only the left pupil is seen, so Valve on the pupils' samples and on all of them differ)
+        sample.valve[0] = static_cast<float>((g[0] - 7.6 + right - (index == 4 ? 9.0 : 0.0)) / 45);
         sample.valve[1] = static_cast<float>((g[1] + 2.4 - 0.05 * g[1]) / 45);
         if (mapped) {
             sample.pupilState = index == 4 ? PupilState::Left : PupilState::Pupil;
@@ -1398,7 +1399,7 @@ void testMeasure(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         const std::string lang = language == Language::Ja ? "ja" : "en";
         const auto png = [&](const EyePanel& panel, const std::string& name) {
-            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/measure_" + name + "_" + lang + "_2026-11-13_19-00-00.png");
+            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/measure_" + name + "_" + lang + "_2026-11-13_20-40-00.png");
         };
         PanelModel m = modelWith(Lids::Both, true);
         m.language = language;
@@ -1434,6 +1435,8 @@ void testMeasure(const FontSet& fonts) {
         // Done with both sources: "Again" and "Close"
         m.measure = madeUpMeasure(true);
         CHECK(m.measure.phase == gaze_measure::Phase::Done && m.measure.result.pupil.positions == 14);
+        CHECK(m.measure.result.valve.positions == 15 && m.measure.result.valveSame.positions == 14);
+        CHECK(m.measure.result.valve.meanError > m.measure.result.valveSame.meanError + 0.3);
         panel.render(m);
         CHECK(hits(panel, PanelAction::MeasureClose).size() == 1 && hits(panel, PanelAction::MeasureStart).size() == 1);
         for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);

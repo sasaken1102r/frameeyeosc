@@ -988,8 +988,12 @@ std::string shortPathOf(const std::string& path) {
 int prune(const std::string& dir, int keep, const std::string& written) {
     const std::vector<std::string> names = folders(dir);
     int deleted = 0;
-    for (size_t i = static_cast<size_t>(std::max(0, keep)); i < names.size(); ++i) {
-        if (names[i] == written) continue;
+    // The gaze error checks counted on their own, everything else together (newest first in each)
+    const std::string measure = std::string(kindName(Kind::Measure)) + "_";
+    int seen[2] = {0, 0};
+    for (size_t i = 0; i < names.size(); ++i) {
+        const int group = names[i].rfind(measure, 0) == 0 ? 1 : 0;
+        if (seen[group]++ < keep || names[i] == written) continue;
         const std::string path = dir + "/" + names[i];
         // The folder itself, never through a link (opened without following one, and the files deleted in what was
         // opened)

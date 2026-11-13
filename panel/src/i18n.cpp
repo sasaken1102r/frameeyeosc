@@ -1085,7 +1085,7 @@ UiText makeJapanese() {
     t.measureResultTitle = "視線のズレ";
     t.measureValve = "Valve";
     t.measurePupil = "瞳の位置";
-    t.measureErrorFormat = "中央 %s°・平均 %s°";
+    t.measureErrorFormat = "中央 %s°・平均 %s°（%s か所）";
     t.measureShiftFormat = "平均で%sずれてた";
     t.measureWorstFormat = "いちばんズレたのは%s（%s°）";
     t.measureShareFormat = "瞳で測れたのは %s%%（片目 %s%%・止め %s%%・Valve %s%%）";
@@ -1096,6 +1096,8 @@ UiText makeJapanese() {
     t.measureStoppedFormat = "途中で止めたので結果はないよ（%s / 15 か所）";
     t.measureFailedTitle = "測れなかった";
     t.measureNoData = "目のデータが来なかった。かぶったまま、もう一度試してね";
+    t.measureNoDataEver = "データが 1 つも来なかった。frameeyeosc が止まっているか、古い版かも";
+    t.measureValveAllFormat = "全部のサンプルでは 中央 %s°・平均 %s°（%s か所）";
     t.measureAgain = "もう一度";
     t.measureClose = "閉じる";
     t.measureLegendDot = "点";
@@ -2349,7 +2351,7 @@ UiText makeEnglish() {
     t.measureResultTitle = "Gaze error";
     t.measureValve = "Valve";
     t.measurePupil = "Pupil position";
-    t.measureErrorFormat = "median %s° · mean %s°";
+    t.measureErrorFormat = "median %s° · mean %s° (%s places)";
     t.measureShiftFormat = "On average %s";
     t.measureWorstFormat = "Worst: %s (%s°)";
     t.measureShareFormat = "Both pupils %s%% (one eye %s%%, held %s%%, Valve %s%%)";
@@ -2360,6 +2362,8 @@ UiText makeEnglish() {
     t.measureStoppedFormat = "Stopped partway, so no result (%s of 15 places)";
     t.measureFailedTitle = "Couldn't measure";
     t.measureNoData = "No eye data came. Try again with the headset on";
+    t.measureNoDataEver = "No data came at all: frameeyeosc isn't running, or is too old";
+    t.measureValveAllFormat = "All samples: median %s° · mean %s° (%s places)";
     t.measureAgain = "Again";
     t.measureClose = "Close";
     t.measureLegendDot = "Dots";

@@ -1089,6 +1089,8 @@ struct UiText {
     const char* measureStoppedFormat;///< (%s places done)
     const char* measureFailedTitle;
     const char* measureNoData;
+    const char* measureNoDataEver;   ///< ...none ever came (frameeyeosc not running, or one before the check)
+    const char* measureValveAllFormat;  ///< Valve on every counted sample (median, mean, places)
     const char* measureAgain;
     const char* measureClose;
     const char* measureLegendDot;    ///< the picture's legend: the dots

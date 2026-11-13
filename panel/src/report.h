@@ -15,8 +15,9 @@
 //                  calib_samples.csv)
 //   measure.json, samples.csv  a gaze error check's scores and its samples (gaze_measure::recordJson, samplesCsv)
 //   report.txt     the same as summary.json, for reading (frameeyeosc-panel --report latest prints it)
-// Only the newest kKeep are kept (by summary.json's start, not the folders' local-time names), and only those files
-// are ever deleted. Nothing is sent anywhere. The logs are read after the run, on a worker thread
+// Only the newest kKeep are kept (by summary.json's start, not the folders' local-time names), the gaze error checks
+// counted on their own (so checks never push out the calibrations' and fits' records), and only those files are ever
+// deleted. Nothing is sent anywhere. The logs are read after the run, on a worker thread
 // (Writer), with read-only `journalctl --user` calls; the sources can be swapped for tests (Sources). Nothing here
 // talks to OpenVR or cairo (report-test).
 #pragma once
@@ -367,7 +368,8 @@ struct Pending {
 
 /**
  * Write a record (reads the logs: blocking, so off the panel's thread): its folder (a new name if it is there),
- * summary.json, status.jsonl, logs.txt, calib_result.json and report.txt; then keep only the newest kKeep.
+ * summary.json, status.jsonl, logs.txt, calib_result.json, measure.json, samples.csv and report.txt (those it has);
+ * then keep only the newest kKeep (prune).
  * @param dir the records' folder (made if missing)
  * @param pending the run
  * @param sources the logs
@@ -379,8 +381,9 @@ bool writeRecord(const std::string& dir, Pending pending, const Sources& sources
                  std::string& error);
 
 /**
- * Delete all but the newest records (in the order of folders()). Only real folders named as records (not a link to
- * one), only the record's own files in them (kFileNames; anything else is left, and then the folder too).
+ * Delete all but the newest records (in the order of folders()): `keep` gaze error checks ("measure_...") and `keep`
+ * of all the others. Only real folders named as records (not a link to one), only the record's own files in them
+ * (kFileNames; anything else is left, and then the folder too).
  * @param dir the records' folder
  * @param keep how many to keep
  * @param written a folder never deleted (the record just written; "" = none)
@@ -409,7 +412,7 @@ std::vector<Summary> list(const std::string& dir);
  * @param folder its folder name
  * @param summary where to write its summary
  * @param files where to write its files with their sizes (report.txt, logs.txt, status.jsonl, calib_result.json,
- *              summary.json; those there)
+ *              measure.json, samples.csv, summary.json; those there)
  * @return true if its summary.json was read
  */
 bool load(const std::string& dir, const std::string& folder, Summary& summary, std::vector<FileInfo>* files = nullptr);

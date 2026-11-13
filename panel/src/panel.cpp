@@ -4206,7 +4206,9 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
             std::snprintf(text, sizeof(text), t.measureStoppedFormat, std::to_string(view.positionsDone).c_str());
             paragraph(baseline, text, 17, kText, false, x0, x1 - x0, 3);
         } else {
-            paragraph(baseline, t.measureNoData, 17, kText, false, x0, x1 - x0, 3);
+            // None ever came: frameeyeosc isn't running, or is one from before the check (no socket it looks for)
+            paragraph(baseline, view.samples == 0 ? t.measureNoDataEver : t.measureNoData, 17, kText, false, x0, x1 - x0,
+                      3);
         }
         return;
     }
@@ -4247,7 +4249,7 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
             cairo_stroke(cr);
             drawDot(cr, ex, ey, 3, c);
         };
-        offset(r.positions[i].valve, kDotOther);
+        offset(r.mapped ? r.positions[i].valveSame : r.positions[i].valve, kDotOther);
         offset(r.positions[i].pupil, kMeasurePupil);
         drawRing(cr, tx, ty, 4.5, 1.5, kText);
     }
@@ -4277,7 +4279,8 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
         std::snprintf(text, sizeof(text), "%.1f", value);
         return std::string(text);
     };
-    const auto source = [&](const char* name, Color color, const gaze_measure::Overall& o, bool pupil) {
+    const auto source = [&](const char* name, Color color, const gaze_measure::Overall& o, bool pupil,
+                            const gaze_measure::Overall* all) {
         drawDot(cr, textX + 6, baseline - 6, 5, color);
         pen.text(textX + 18, baseline, name, 18, kText, true);
         baseline += 26;
@@ -4290,8 +4293,15 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
             return;
         }
         char text[256];
-        std::snprintf(text, sizeof(text), t.measureErrorFormat, one(o.error).c_str(), one(o.meanError).c_str());
+        std::snprintf(text, sizeof(text), t.measureErrorFormat, one(o.error).c_str(), one(o.meanError).c_str(),
+                      std::to_string(o.positions).c_str());
         paragraph(baseline, text, 16, kText, false, textX, textW, 1);
+        // Valve with a map: the line above is on the pupils' own samples; on every counted one, muted
+        if (all != nullptr && all->positions > 0) {
+            std::snprintf(text, sizeof(text), t.measureValveAllFormat, one(all->error).c_str(),
+                          one(all->meanError).c_str(), std::to_string(all->positions).c_str());
+            paragraph(baseline, text, 14, kTextMuted, false, textX, textW, 1);
+        }
         std::snprintf(text, sizeof(text), t.measureShiftFormat, gaze_measure::shiftText(t, o.dx, o.dy).c_str());
         paragraph(baseline, text, 15, kTextMuted, false, textX, textW, 2);
         const std::string place = gaze_measure::positionText(t, r.positions[o.worst].target);
@@ -4305,9 +4315,10 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
             paragraph(baseline, text, 14, kTextMuted, false, textX, textW, 2);
         }
     };
-    source(t.measureValve, kDotOther, r.valve, false);
+    // Valve's main number like with like: on the samples the pupils were scored on (with a map)
+    source(t.measureValve, kDotOther, r.mapped ? r.valveSame : r.valve, false, r.mapped ? &r.valve : nullptr);
     baseline += 10;
-    source(t.measurePupil, kMeasurePupil, r.pupil, true);
+    source(t.measurePupil, kMeasurePupil, r.pupil, true, nullptr);
     // Under it all: Valve's self-calibration may have used the dot
     double noteBaseline = picY + picH + 26;
     paragraph(noteBaseline, t.measureNote, 14, kTextMuted, false, x0, x1 - x0 - closeW - againW - 40, 2);

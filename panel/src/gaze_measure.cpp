@@ -21,6 +21,7 @@ constexpr uint8_t kVersion = 1;
 constexpr uint8_t kMapped = 1;
 constexpr uint8_t kUsable = 2;
 constexpr uint8_t kValveHeld = 4;
+constexpr uint8_t kPupilBlending = 8;
 constexpr double kDeg = M_PI / 180.0;
 
 /**
@@ -66,16 +67,16 @@ SourceScore scoreOf(std::vector<double>& dx, std::vector<double>& dy, std::vecto
 /**
  * One source over the run.
  * @param result the places
- * @param pupil the pupils' (else Valve's)
+ * @param which the source's score in each place
  * @return the overall numbers
  */
-Overall overallOf(const Result& result, bool pupil) {
+Overall overallOf(const Result& result, SourceScore PositionScore::*which) {
     Overall o;
     std::vector<double> errors;
     double dx = 0.0;
     double dy = 0.0;
     for (int i = 0; i < kPositionCount; ++i) {
-        const SourceScore& s = pupil ? result.positions[i].pupil : result.positions[i].valve;
+        const SourceScore& s = result.positions[i].*which;
         if (!s.counts()) continue;
         errors.push_back(s.error);
         dx += s.dx;
@@ -144,6 +145,7 @@ bool decode(const uint8_t* data, size_t size, Sample& out) {
     s.mapped = (data[5] & kMapped) != 0;
     s.usable = (data[5] & kUsable) != 0;
     s.valveHeld = (data[5] & kValveHeld) != 0;
+    s.pupilBlending = (data[5] & kPupilBlending) != 0;
     s.pupilState = data[6] < kStateCount ? static_cast<PupilState>(data[6]) : PupilState::None;
     std::memcpy(&s.time, data + 8, 8);
     std::memcpy(s.valve, data + 16, 8);
@@ -160,7 +162,7 @@ std::vector<uint8_t> encode(const Sample& sample) {
     std::memcpy(data.data(), kMagic, 4);
     data[4] = kVersion;
     data[5] = static_cast<uint8_t>((sample.mapped ? kMapped : 0) | (sample.usable ? kUsable : 0) |
-                                   (sample.valveHeld ? kValveHeld : 0));
+                                   (sample.valveHeld ? kValveHeld : 0) | (sample.pupilBlending ? kPupilBlending : 0));
     data[6] = static_cast<uint8_t>(sample.pupilState);
     std::memcpy(data.data() + 8, &sample.time, 8);
     std::memcpy(data.data() + 16, sample.valve, 8);
@@ -194,6 +196,7 @@ Result score(const std::vector<Row>& rows) {
     Result result;
     std::vector<double> vdx[kPositionCount], vdy[kPositionCount], verr[kPositionCount];
     std::vector<double> pdx[kPositionCount], pdy[kPositionCount], perr[kPositionCount];
+    std::vector<double> sdx[kPositionCount], sdy[kPositionCount], serr[kPositionCount];
     for (int i = 0; i < kPositionCount; ++i) {
         result.positions[i].target = kPositions[i];
         targetGaze(kPositions[i], result.positions[i].gaze);
@@ -213,19 +216,25 @@ Result score(const std::vector<Row>& rows) {
         vdx[row.position].push_back(valve[0] - p.gaze[0]);
         vdy[row.position].push_back(valve[1] - p.gaze[1]);
         verr[row.position].push_back(angleBetween(valve, p.gaze));
-        if (row.sample.pupilState == PupilState::Pupil) {
+        // The pupils only from both pupils and not while easing from another source; Valve again on exactly those
+        if (row.sample.pupilState == PupilState::Pupil && !row.sample.pupilBlending) {
             const double pupil[2] = {row.sample.pupil[0] * 45.0, row.sample.pupil[1] * 45.0};
             pdx[row.position].push_back(pupil[0] - p.gaze[0]);
             pdy[row.position].push_back(pupil[1] - p.gaze[1]);
             perr[row.position].push_back(angleBetween(pupil, p.gaze));
+            sdx[row.position].push_back(vdx[row.position].back());
+            sdy[row.position].push_back(vdy[row.position].back());
+            serr[row.position].push_back(verr[row.position].back());
         }
     }
     for (int i = 0; i < kPositionCount; ++i) {
         result.positions[i].valve = scoreOf(vdx[i], vdy[i], verr[i]);
+        result.positions[i].valveSame = scoreOf(sdx[i], sdy[i], serr[i]);
         result.positions[i].pupil = scoreOf(pdx[i], pdy[i], perr[i]);
     }
-    result.valve = overallOf(result, false);
-    result.pupil = overallOf(result, true);
+    result.valve = overallOf(result, &PositionScore::valve);
+    result.valveSame = overallOf(result, &PositionScore::valveSame);
+    result.pupil = overallOf(result, &PositionScore::pupil);
     return result;
 }
 
@@ -357,6 +366,8 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
     plan.set("pupil", JsonValue::makeString("combined gaze as gaze_source pupil sends it, before the gaze scale, "
                                             "only while both pupils give it"));
     plan.set("counted", JsonValue::makeString("samples with both eyes open enough, from settle_s after the hop"));
+    plan.set("valve_same", JsonValue::makeString("Valve on exactly the samples the pupils were scored on (both pupils, "
+                                                 "not easing from another source)"));
     root.set("plan", plan);
     const auto source = [](const SourceScore& s) {
         JsonValue v;
@@ -388,6 +399,7 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
         for (int s = 0; s < kStateCount; ++s) states.set(stateNames[s], JsonValue::makeNumber(p.states[s], true));
         v.set("pupil_states", states);
         v.set("valve", source(p.valve));
+        v.set("valve_same", source(p.valveSame));
         v.set("pupil", source(p.pupil));
         positions.items.push_back(v);
     }
@@ -405,6 +417,7 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
         return v;
     };
     root.set("valve", overall(result.valve));
+    root.set("valve_same", overall(result.valveSame));
     root.set("pupil", overall(result.pupil));
     JsonValue states;
     states.type = JsonValue::Type::Object;
@@ -417,14 +430,15 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
 
 std::string samplesCsv(const std::vector<Row>& rows) {
     std::string out =
-        "panel_s,unix,position,scored,sample_time,mapped,usable,valve_held,pupil_state,valve_x,valve_y,pupil_x,pupil_y,"
-        "openness_left,openness_right\n";
+        "panel_s,unix,position,scored,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,valve_x,valve_y,"
+        "pupil_x,pupil_y,openness_left,openness_right\n";
     char line[320];
     for (const Row& r : rows) {
         const Sample& s = r.sample;
-        std::snprintf(line, sizeof(line), "%.4f,%.3f,%d,%d,%.6f,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n", r.at,
+        std::snprintf(line, sizeof(line), "%.4f,%.3f,%d,%d,%.6f,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n", r.at,
                       r.wall, r.position, r.scored ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
-                      s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.valve[0], s.valve[1], s.pupil[0],
+                      s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.pupilBlending ? 1 : 0, s.valve[0],
+                      s.valve[1], s.pupil[0],
                       s.pupil[1], s.openness[0], s.openness[1]);
         out += line;
     }
@@ -458,7 +472,8 @@ std::string positionText(const UiText& t, const Position& position) {
 
 std::string briefText(const UiText& t, const Result& result) {
     std::string out;
-    if (result.valve.positions > 0) out = fill(t.measureBriefValve, oneDecimal(result.valve.error));
+    const Overall& valve = result.mapped ? result.valveSame : result.valve;
+    if (valve.positions > 0) out = fill(t.measureBriefValve, oneDecimal(valve.error));
     if (result.pupil.positions > 0) {
         if (!out.empty()) out += t.measureBriefAnd;
         out += fill(t.measureBriefPupil, oneDecimal(result.pupil.error));

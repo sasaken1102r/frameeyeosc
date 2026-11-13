@@ -7748,6 +7748,8 @@ mod tests {
                     latest.gaze_blending,
                 ));
             }
+            // (a datagram still on its way after the last sample: read until the line is quiet)
+            drain_udp_late(&listener, &mut out.sent);
             out
         };
         let bits = |gaze: [f32; 2]| gaze.map(f32::to_bits);
@@ -7886,6 +7888,8 @@ mod tests {
                         latest.gaze_in_use, latest.gaze_held, status["sent"], status["raw"], status["gaze_in_use"]
                     ));
                 }
+                // (a datagram still on its way after the last sample: read until the line is quiet)
+                drain_udp_late(&listener, &mut sent);
                 assert_eq!(samples, readings.len());
                 if !compare {
                     combined.push(gazes);
@@ -11625,6 +11629,16 @@ mod tests {
             let received = osc_received(&vrchat_listener);
             assert!(param(&received, "/avatar/parameters/FT/v2/PupilDilation").is_some(), "{output:?}");
             assert!(!received.iter().any(|(addr, _)| is_bit(addr)), "{output:?}");
+        }
+    }
+
+    /// Every datagram still arriving on a loopback `listener` (switched to blocking reads): until none came for 300 ms.
+    fn drain_udp_late(listener: &UdpSocket, into: &mut Vec<Vec<u8>>) {
+        listener.set_nonblocking(false).unwrap();
+        listener.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
+        let mut buffer = [0u8; 2048];
+        while let Ok(size) = listener.recv(&mut buffer) {
+            into.push(buffer[..size].to_vec());
         }
     }
 

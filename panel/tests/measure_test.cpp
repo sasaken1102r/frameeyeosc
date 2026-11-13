@@ -138,6 +138,7 @@ struct Simulation {
     Session session;
     int hops = 0;
     int ends = 0;
+    int easingPlaces = 0;   // the pupils easing all through the first this many places
     std::vector<int> countdown;
     double now = 100.0;
     bool mapped = true;
@@ -179,6 +180,7 @@ struct Simulation {
             s.pupilState = index == 3 ? PupilState::Left : PupilState::Pupil;
             s.pupil[0] = static_cast<float>((travelling ? -30 : g[0] + 0.5) / 45);
             s.pupil[1] = static_cast<float>((travelling ? 20 : g[1] - 0.3) / 45);
+            if (index >= 0 && index < easingPlaces) s.pupilBlending = true;
             // At place 7 the pupils come back from a moment of one eye half-way through: easing, and wild
             if (index == 7 && since >= 2.0 && since < 2.25) {
                 s.pupilBlending = true;
@@ -267,6 +269,34 @@ void testRun() {
     CHECK(sim.session.view().phase == Phase::Idle && sim.session.rows().empty());
 }
 
+/** The pupils easing everywhere (a change of source every few samples), or at some places: Valve falls back. */
+void testValveFallback() {
+    for (const int easingPlaces : {kPositionCount, 7}) {
+        Simulation sim;
+        sim.easingPlaces = easingPlaces;
+        sim.session.start(sim.now, 0);
+        sim.run(100.0 + kRunSec + 1.0);
+        const Result& r = sim.session.view().result;
+        CHECK(r.mapped && r.valve.positions == kPositionCount);
+        if (easingPlaces == kPositionCount) {
+            // No place: Valve's main number on every sample, the pupils too few
+            CHECK(r.valveSame.positions == 0 && r.pupil.positions == 0 && !valveSameMain(r));
+            CHECK(&valveMain(r) == &r.valve && briefText(uiText(Language::En), r).rfind("Valve ", 0) == 0);
+            const std::string json = recordJson(sim.session.view(), sim.session.shownAt(), sim.session.startedAt(), r);
+            JsonValue root;
+            std::string error;
+            CHECK(parseJson(json, root, error) && root.get("valve_main") != nullptr && root.get("valve_main")->text == "valve");
+        } else {
+            // Some places: on those (place 3 has one pupil only), and still the main number
+            CHECK(r.valveSame.positions == kPositionCount - easingPlaces && valveSameMain(r));
+            for (int i = 0; i < kPositionCount; ++i) {
+                CHECK(r.positions[i].valveSame.counts() == (i >= easingPlaces && i != 3));
+                CHECK(r.positions[i].valve.counts());
+            }
+        }
+    }
+}
+
 void testWithoutMap() {
     Simulation sim;
     sim.mapped = false;
@@ -329,10 +359,12 @@ void testTexts() {
     r.valve.positions = 15;
     r.valve.error = 7.94;
     CHECK(briefText(ja, r) == "Valve 7.9°");
-    // With a map, Valve's number on the pupils' samples
+    // With a map, Valve's number on the pupils' samples; where those count nowhere, on every sample again
     r.mapped = true;
+    CHECK(!valveSameMain(r) && &valveMain(r) == &r.valve && briefText(ja, r) == "Valve 7.9°");
     r.valveSame.positions = 14;
     r.valveSame.error = 7.46;
+    CHECK(valveSameMain(r) && &valveMain(r) == &r.valveSame);
     CHECK(briefText(ja, r) == "Valve 7.5°");
     r.pupil.positions = 14;
     r.pupil.error = 1.25;
@@ -378,6 +410,7 @@ int main() {
     testGeometry();
     testRun();
     testWithoutMap();
+    testValveFallback();
     testStopAndNoData();
     testTexts();
     testSocket();

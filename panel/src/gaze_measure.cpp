@@ -192,6 +192,14 @@ double angleBetween(const double a[2], const double b[2]) {
     return std::acos(std::clamp(dot / (la * lb), -1.0, 1.0)) / kDeg;
 }
 
+bool valveSameMain(const Result& result) {
+    return result.mapped && result.valveSame.positions > 0;
+}
+
+const Overall& valveMain(const Result& result) {
+    return valveSameMain(result) ? result.valveSame : result.valve;
+}
+
 Result score(const std::vector<Row>& rows) {
     Result result;
     std::vector<double> vdx[kPositionCount], vdy[kPositionCount], verr[kPositionCount];
@@ -418,6 +426,7 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
     };
     root.set("valve", overall(result.valve));
     root.set("valve_same", overall(result.valveSame));
+    root.set("valve_main", JsonValue::makeString(valveSameMain(result) ? "valve_same" : "valve"));
     root.set("pupil", overall(result.pupil));
     JsonValue states;
     states.type = JsonValue::Type::Object;
@@ -472,7 +481,7 @@ std::string positionText(const UiText& t, const Position& position) {
 
 std::string briefText(const UiText& t, const Result& result) {
     std::string out;
-    const Overall& valve = result.mapped ? result.valveSame : result.valve;
+    const Overall& valve = valveMain(result);
     if (valve.positions > 0) out = fill(t.measureBriefValve, oneDecimal(valve.error));
     if (result.pupil.positions > 0) {
         if (!out.empty()) out += t.measureBriefAnd;

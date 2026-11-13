@@ -1091,6 +1091,7 @@ struct UiText {
     const char* measureNoData;
     const char* measureNoDataEver;   ///< ...none ever came (frameeyeosc not running, or one before the check)
     const char* measureValveAllFormat;  ///< Valve on every counted sample (median, mean, places)
+    const char* measureValveAllUsed;    ///< ...used as its main number: too few samples shared with the pupils
     const char* measureAgain;
     const char* measureClose;
     const char* measureLegendDot;    ///< the picture's legend: the dots

@@ -4238,19 +4238,26 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
         const gaze_measure::PositionScore& p = r.positions[i];
         const double tx = px(p.gaze[0]);
         const double ty = py(p.gaze[1]);
-        const auto offset = [&](const gaze_measure::SourceScore& s, Color c) {
+        const auto offset = [&](const gaze_measure::SourceScore& s, Color c, bool dashed) {
             if (!s.counts()) return;
             const double ex = px(p.gaze[0] + s.dx);
             const double ey = py(p.gaze[1] + s.dy);
             cairo_set_source_rgb(cr, c.r, c.g, c.b);
             cairo_set_line_width(cr, 2);
+            const double dash[2] = {4.0, 3.0};
+            cairo_set_dash(cr, dash, dashed ? 2 : 0, 0);
             cairo_move_to(cr, tx, ty);
             cairo_line_to(cr, ex, ey);
             cairo_stroke(cr);
+            cairo_set_dash(cr, nullptr, 0, 0);
             drawDot(cr, ex, ey, 3, c);
         };
-        offset(r.mapped ? r.positions[i].valveSame : r.positions[i].valve, kDotOther);
-        offset(r.positions[i].pupil, kMeasurePupil);
+        // Valve on the pupils' own samples; where those don't count at a place (with a map), on every sample there,
+        // dashed
+        const gaze_measure::PositionScore& at = r.positions[i];
+        const bool same = r.mapped && at.valveSame.counts();
+        offset(same ? at.valveSame : at.valve, kDotOther, r.mapped && !same);
+        offset(at.pupil, kMeasurePupil, false);
         drawRing(cr, tx, ty, 4.5, 1.5, kText);
     }
     // Its legend under it
@@ -4280,7 +4287,7 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
         return std::string(text);
     };
     const auto source = [&](const char* name, Color color, const gaze_measure::Overall& o, bool pupil,
-                            const gaze_measure::Overall* all) {
+                            const gaze_measure::Overall* all, bool allUsed) {
         drawDot(cr, textX + 6, baseline - 6, 5, color);
         pen.text(textX + 18, baseline, name, 18, kText, true);
         baseline += 26;
@@ -4296,7 +4303,9 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
         std::snprintf(text, sizeof(text), t.measureErrorFormat, one(o.error).c_str(), one(o.meanError).c_str(),
                       std::to_string(o.positions).c_str());
         paragraph(baseline, text, 16, kText, false, textX, textW, 1);
-        // Valve with a map: the line above is on the pupils' own samples; on every counted one, muted
+        // Valve with a map: the line above is on the pupils' own samples, and on every counted one under it, muted;
+        // or, with too few of those, on every counted one, said so
+        if (allUsed) paragraph(baseline, t.measureValveAllUsed, 14, kTextMuted, false, textX, textW, 1);
         if (all != nullptr && all->positions > 0) {
             std::snprintf(text, sizeof(text), t.measureValveAllFormat, one(all->error).c_str(),
                           one(all->meanError).c_str(), std::to_string(all->positions).c_str());
@@ -4315,10 +4324,13 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
             paragraph(baseline, text, 14, kTextMuted, false, textX, textW, 2);
         }
     };
-    // Valve's main number like with like: on the samples the pupils were scored on (with a map)
-    source(t.measureValve, kDotOther, r.mapped ? r.valveSame : r.valve, false, r.mapped ? &r.valve : nullptr);
+    // Valve's main number like with like: on the samples the pupils were scored on (with a map, where those count);
+    // on every counted sample otherwise
+    const bool sameMain = gaze_measure::valveSameMain(r);
+    source(t.measureValve, kDotOther, gaze_measure::valveMain(r), false, sameMain ? &r.valve : nullptr,
+           r.mapped && !sameMain);
     baseline += 10;
-    source(t.measurePupil, kMeasurePupil, r.pupil, true, nullptr);
+    source(t.measurePupil, kMeasurePupil, r.pupil, true, nullptr, false);
     // Under it all: Valve's self-calibration may have used the dot
     double noteBaseline = picY + picH + 26;
     paragraph(noteBaseline, t.measureNote, 14, kTextMuted, false, x0, x1 - x0 - closeW - againW - 40, 2);

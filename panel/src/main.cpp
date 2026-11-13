@@ -4474,8 +4474,10 @@ int runOverlay(const Options& options) {
     gaze_measure::Session measure;
     gaze_measure::Receiver measureSocket;
     // A check's socket left by a panel that crashed: removed now, or frameeyeosc would go on sending to it (and working
-    // out the other source) until it next looks
-    {
+    // out the other source) until it next looks. Only while this panel holds the single-instance lock (taken at the top
+    // of runOverlay; a second panel exits before here): without the lock (the lock file couldn't be opened) another
+    // panel might be running a check on it
+    if (lockFd >= 0) {
         const size_t slash = model.statusPath.find_last_of('/');
         const std::string stale =
             (slash == std::string::npos ? std::string(".") : model.statusPath.substr(0, slash)) + "/" +

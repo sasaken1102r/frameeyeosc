@@ -1356,9 +1356,10 @@ void testGazeCompareRow(const FontSet& fonts) {
  * +2.4) and more at the right, the pupils by about (+0.5, -0.3), one place where only the left pupil was seen.
  * @param mapped with a pupil map
  * @param stopAfter stop after this many places (-1: the whole run)
+ * @param easingPlaces the pupils easing all through the first this many places (their samples not scored)
  * @return the check's view
  */
-gaze_measure::View madeUpMeasure(bool mapped, int stopAfter = -1) {
+gaze_measure::View madeUpMeasure(bool mapped, int stopAfter = -1, int easingPlaces = 0) {
     using namespace gaze_measure;
     Session session;
     double now = 10.0;
@@ -1379,6 +1380,7 @@ gaze_measure::View madeUpMeasure(bool mapped, int stopAfter = -1) {
         sample.valve[1] = static_cast<float>((g[1] + 2.4 - 0.05 * g[1]) / 45);
         if (mapped) {
             sample.pupilState = index == 4 ? PupilState::Left : PupilState::Pupil;
+            sample.pupilBlending = index >= 0 && index < easingPlaces;
             sample.pupil[0] = static_cast<float>((g[0] + 0.5 + 0.03 * g[1]) / 45);
             sample.pupil[1] = static_cast<float>((g[1] - 0.3 - 0.04 * g[0]) / 45);
         }
@@ -1399,7 +1401,7 @@ void testMeasure(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         const std::string lang = language == Language::Ja ? "ja" : "en";
         const auto png = [&](const EyePanel& panel, const std::string& name) {
-            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/measure_" + name + "_" + lang + "_2026-11-13_20-40-00.png");
+            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/measure_" + name + "_" + lang + "_2026-11-13_21-00-00.png");
         };
         PanelModel m = modelWith(Lids::Both, true);
         m.language = language;
@@ -1441,6 +1443,18 @@ void testMeasure(const FontSet& fonts) {
         CHECK(hits(panel, PanelAction::MeasureClose).size() == 1 && hits(panel, PanelAction::MeasureStart).size() == 1);
         for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
         png(panel, "result");
+        // With a map but the pupils' samples too few at some places (dashed there), then everywhere (Valve on every
+        // sample, said so)
+        m.measure = madeUpMeasure(true, -1, 6);
+        CHECK(m.measure.result.valveSame.positions == 9 && gaze_measure::valveSameMain(m.measure.result));
+        panel.render(m);
+        png(panel, "result_some_places");
+        m.measure = madeUpMeasure(true, -1, gaze_measure::kPositionCount);
+        CHECK(m.measure.result.valveSame.positions == 0 && !gaze_measure::valveSameMain(m.measure.result));
+        CHECK(m.measure.result.valve.positions == gaze_measure::kPositionCount);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::MeasureClose).size() == 1);
+        png(panel, "result_fallback");
         // Without a pupil map: Valve only, and why
         m.measure = madeUpMeasure(false);
         CHECK(!m.measure.result.mapped && m.measure.result.valve.positions == 15);
@@ -1458,6 +1472,48 @@ void testMeasure(const FontSet& fonts) {
         panel.render(m);
         CHECK(hits(panel, PanelAction::MeasureClose).size() == 1);
         png(panel, "failed");
+    }
+}
+
+/**
+ * Up to 20 records now (10 gaze error checks kept apart from 10 of the rest): "Having trouble" still shows the newest
+ * three and the count, and "All records" scrolls down to the oldest, each row inside the view. With PANEL_TEST_PNG_DIR
+ * set, the list to a PNG there.
+ */
+void testTwentyRecords(const FontSet& fonts) {
+    const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
+    for (const Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        PanelModel m = modelWith(Lids::Both, true);
+        m.language = language;
+        m.records.list = records(20);
+        for (size_t i = 0; i < m.records.list.size(); i += 2) {
+            report::Summary& s = m.records.list[i];
+            s.kind = report::Kind::Measure;
+            s.brief = i % 4 == 0 ? "Valve 7.5°・瞳 0.8°" : "";
+            s.folder = report::folderName(s.kind, s.start);
+        }
+        panel.setAdvPage(AdvPage::Trouble);
+        panel.setTab(PanelTab::Advanced);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::RecordOpen).size() == 3 && hits(panel, PanelAction::RecordsAll).size() == 1);
+        CHECK(press(panel, PanelAction::RecordsAll).action == PanelAction::RecordsAll && panel.recordsAllOpen());
+        panel.render(m);
+        CHECK(panel.wantsScroll() && panel.recordsMaxScroll() > 0);
+        if (pngDir != nullptr) {
+            panel.writePng(std::string(pngDir) + "/records_all_20_" + (language == Language::Ja ? "ja" : "en") +
+                           "_2026-11-13_21-00-00.png");
+        }
+        CHECK(panel.scroll(1e6));
+        panel.render(m);
+        const std::vector<EyePanel::HitArea> shown = hits(panel, PanelAction::RecordOpen);
+        CHECK(!shown.empty());
+        if (shown.empty()) continue;
+        for (const EyePanel::HitArea& area : shown) CHECK(area.y + area.h <= 680);
+        const EyePanel::HitArea last = shown.back();
+        CHECK(panel.pointerDown(last.x + last.w / 2, last.y + last.h / 2, 0.0).action == PanelAction::RecordOpen);
+        panel.pointerUp();
+        CHECK(panel.recordShown() == m.records.list.back().folder);
     }
 }
 
@@ -4815,6 +4871,7 @@ int main() {
     testGazeRingsRow(fonts);
     testGazeCompareRow(fonts);
     testMeasure(fonts);
+    testTwentyRecords(fonts);
     testUpdateNotice(fonts);
     testUpdateBeta(fonts);
     testDiagFromEyecam(fonts);

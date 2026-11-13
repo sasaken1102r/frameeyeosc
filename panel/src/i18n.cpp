@@ -417,7 +417,7 @@ UiText makeJapanese() {
     t.recordView = "見る";
     t.recordsAllFormat = "すべての記録（%s）" ICON_CHEVRON_RIGHT;
     t.recordsAllTitleFormat = "すべての記録（%s）";
-    t.recordsKept = "新しい 10 件を残すよ";
+    t.recordsKept = "ズレ測定とそれ以外で、新しい 10 件ずつ残すよ";
     t.recordsSsh = "SSH なら .local/bin/frameeyeosc-panel --report latest";
     t.recordBack = ICON_CHEVRON_LEFT " 戻る";
     t.recordReason = "理由：";
@@ -1098,6 +1098,7 @@ UiText makeJapanese() {
     t.measureNoData = "目のデータが来なかった。かぶったまま、もう一度試してね";
     t.measureNoDataEver = "データが 1 つも来なかった。frameeyeosc が止まっているか、古い版かも";
     t.measureValveAllFormat = "全部のサンプルでは 中央 %s°・平均 %s°（%s か所）";
+    t.measureValveAllUsed = "瞳と同じサンプルが足りないので、全部のサンプルで";
     t.measureAgain = "もう一度";
     t.measureClose = "閉じる";
     t.measureLegendDot = "点";
@@ -1675,7 +1676,7 @@ UiText makeEnglish() {
     t.recordView = "View";
     t.recordsAllFormat = "All records (%s) " ICON_CHEVRON_RIGHT;
     t.recordsAllTitleFormat = "All records (%s)";
-    t.recordsKept = "The newest 10 are kept";
+    t.recordsKept = "The newest 10 kept, checks apart from the rest";
     t.recordsSsh = "Over SSH: .local/bin/frameeyeosc-panel --report latest";
     t.recordBack = ICON_CHEVRON_LEFT " Back";
     t.recordReason = "Why: ";
@@ -2364,6 +2365,7 @@ UiText makeEnglish() {
     t.measureNoData = "No eye data came. Try again with the headset on";
     t.measureNoDataEver = "No data came at all: frameeyeosc isn't running, or is too old";
     t.measureValveAllFormat = "All samples: median %s° · mean %s° (%s places)";
+    t.measureValveAllUsed = "Too few samples shared with the pupils: all samples";
     t.measureAgain = "Again";
     t.measureClose = "Close";
     t.measureLegendDot = "Dots";

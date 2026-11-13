@@ -160,6 +160,21 @@ struct Result {
 };
 
 /**
+ * Valve's main number: on the pupils' own samples (valveSame) while there is a map and it counts somewhere; on every
+ * counted sample otherwise (no map, or no place where the pupils' samples were enough: many changes of source, each
+ * eased for a quarter of a second).
+ * @param result the scores
+ * @return true if it is valveSame
+ */
+bool valveSameMain(const Result& result);
+
+/**
+ * @param result the scores
+ * @return Valve's main number (valveSameMain)
+ */
+const Overall& valveMain(const Result& result);
+
+/**
  * Score the samples.
  * @param rows the samples
  * @return the result

@@ -1517,6 +1517,28 @@ void testTwentyRecords(const FontSet& fonts) {
     }
 }
 
+/**
+ * The Gaze tab's smoothing row with smoothing off: its hint says only the smoothing is off. With PANEL_TEST_PNG_DIR
+ * set, drawn to PNGs there.
+ */
+void testSmoothingOffHint(const FontSet& fonts) {
+    const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
+    for (const Language language : {Language::Ja, Language::En}) {
+        PanelModel m = modelWith(Lids::Valve, false);
+        m.language = language;
+        m.config.root.set(key::kRaw, JsonValue::makeBool(true));
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Gaze);
+        panel.setGazePage(GazePage::Motion);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetBool, key::kRaw).size() == 2);
+        if (pngDir != nullptr) {
+            panel.writePng(std::string(pngDir) + "/gaze_smoothing_off_" + (language == Language::Ja ? "ja" : "en") +
+                           "_2026-11-14_02-00-00.png");
+        }
+    }
+}
+
 void testSubTabs(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         EyePanel panel(fonts);
@@ -4866,6 +4888,7 @@ int main() {
     testPupilSetup(fonts);
     testSearchSetup(fonts);
     testDiagPage(fonts);
+    testSmoothingOffHint(fonts);
     testSubTabs(fonts);
     testSavedData(fonts);
     testGazeRingsRow(fonts);

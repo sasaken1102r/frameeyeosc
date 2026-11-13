@@ -979,11 +979,12 @@ impl Default for BrowRaise {
 
 impl BrowRaise {
     /// The brows for one sample at `time`, from the eyelids before the `widen` cap (`lids`), with the eyes that are
-    /// closing or closed (`closed`). `dt` is the time since the last sample; None with --raw, which neither sustains
-    /// the widening, delays the fall nor smooths (each brow is its eyelid's at once). Always finite and within 0..1.
-    fn step(&mut self, time: f64, dt: Option<f32>, lids: [f32; 2], closed: [bool; 2], settings: &Settings) -> [f32; 2] {
+    /// closing or closed (`closed`). `dt` is the time since the last sample; with `smooth` false (--raw) each brow goes
+    /// to where it is heading at once, without the one-pole filter (the widen sustain and the fall delay, which read the
+    /// eyes, stay). Always finite and within 0..1.
+    fn step(&mut self, time: f64, dt: f32, smooth: bool, lids: [f32; 2], closed: [bool; 2], settings: &Settings) -> [f32; 2] {
         let lids = sync_lids(lids, settings.lid_sync);
-        let sustained = if dt.is_some() { self.sustain.step(time, lids) } else { lids };
+        let sustained = self.sustain.step(time, lids);
         let mut value = self.value;
         for eye in 0..2 {
             let lid = lids[eye];
@@ -998,7 +999,7 @@ impl BrowRaise {
                 if sustained[eye] <= LID_RELAXED {
                     continue;
                 }
-            } else if dt.is_some() {
+            } else {
                 let since = *self.below_since[eye].get_or_insert(time);
                 if time - since < BROW_FALL_DELAY {
                     continue;
@@ -1007,9 +1008,10 @@ impl BrowRaise {
             let last = value[eye];
             let target = brow_raise(sustained[eye], settings.brow_strength);
             let target = if target.is_finite() { target } else { last };
-            value[eye] = match dt {
-                Some(dt) => last + (target - last) * (1.0 - (-dt.max(0.0) / BROW_SMOOTH_S).exp()),
-                None => target,
+            value[eye] = if smooth {
+                last + (target - last) * (1.0 - (-dt.max(0.0) / BROW_SMOOTH_S).exp())
+            } else {
+                target
             };
         }
         // A wink: the closed eye's brow is the open eye's
@@ -1031,7 +1033,8 @@ fn brows_for(
     settings: &Settings,
     smoother: &mut Smoother,
     time: f64,
-    dt: Option<f32>,
+    dt: f32,
+    smooth: bool,
     before_cap: [f32; 2],
     sent: [f32; 2],
     mapped: [f32; 2],
@@ -1042,7 +1045,7 @@ fn brows_for(
     }
     let line = doubt_line(settings);
     let closed = [0, 1].map(|eye| sent[eye] <= 0.0 || mapped[eye] < line);
-    Some(smoother.brows.step(time, dt, before_cap, closed, settings))
+    Some(smoother.brows.step(time, dt, smooth, before_cap, closed, settings))
 }
 
 /// Filters for the six gaze values and two eyelids, clocked by the eye server's sample time.
@@ -1147,6 +1150,15 @@ impl Smoother {
         for deadzone in &mut self.deadzones {
             deadzone.width = settings.gaze_deadzone;
         }
+    }
+
+    /// Smoothing turned back on (--raw off): the gaze and eyelid filters, the deadzones and despike start over from the
+    /// next sample, instead of from where they were left when it went off (the eyelid filter's last value can be one
+    /// the blink hold wrote meanwhile). Everything that reads the eyes ran all along and goes on as it is.
+    fn restart_smoothing(&mut self) {
+        self.gaze.iter_mut().chain(&mut self.lids).for_each(OneEuro::reset);
+        self.deadzones.iter_mut().for_each(Deadzone::reset);
+        self.recent = [None; 2];
     }
 
     /// Move the clock to `time` and return the time since the previous sample; a gap starts the filters over.
@@ -4120,7 +4132,7 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let openness_scaled = lid_inputs_with(data.openness, vertical, scales, settings, fits);
-        let brows = brows_for(settings, smoother, data.sample_time, smooth.then_some(dt), before_cap, lids, mapped);
+        let brows = brows_for(settings, smoother, data.sample_time, dt, smooth, before_cap, lids, mapped);
         (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from, close_held, brows, measure_gaze, measure_held)
     };
     Sample {
@@ -4875,6 +4887,9 @@ impl Bridge {
         self.pupil_output.set_lan_only(settings.lan_only);
         // All the bits again with the next sample, wherever they go now and however many
         self.pupil_bits.reset();
+        if self.settings.raw && !settings.raw {
+            self.smoother.restart_smoothing();
+        }
         self.smoother.configure(&settings);
         // The extra dot's pipeline starts over with the new settings
         self.compare = None;
@@ -6281,6 +6296,39 @@ mod tests {
         assert!(lag > 0.005, "{lag}");
         // Smoothing off: they are the same where nothing is held (no despike, no filter)
         assert!(runs[1][20..90].iter().all(|s| s.unscaled_gaze[4] == s.measure_gaze[0]));
+    }
+
+    #[test]
+    fn turning_smoothing_back_on_starts_from_the_eyes_as_they_are() {
+        // Smoothing on looking left, off (a blink held shut meanwhile) looking right, on again: the first smoothed
+        // sample is where the eyes look now and the eyelid relaxed open, not a glide from the left or from shut
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let on = Settings {
+            host: "127.0.0.1".into(),
+            port: Some(listener.local_addr().unwrap().port()),
+            lid_calibration: false,
+            ..settings()
+        };
+        let off = Settings { raw: true, ..on.clone() };
+        let mut bridge = test_bridge(on.clone());
+        let mut index = 0;
+        let mut feed = |bridge: &mut Bridge, n: usize, x: f32, openness: [f32; 2]| {
+            for _ in 0..n {
+                bridge.on_sample(reading(index, [x, 0.0], openness)).unwrap();
+                index += 1;
+            }
+        };
+        feed(&mut bridge, 90, -0.4, [0.8; 2]);
+        bridge.apply(reload(&off)).unwrap();
+        feed(&mut bridge, 45, 0.4, [0.8; 2]);
+        feed(&mut bridge, 3, 0.4, [0.05; 2]);
+        feed(&mut bridge, 45, 0.4, [0.8; 2]);
+        bridge.apply(reload(&on)).unwrap();
+        feed(&mut bridge, 1, 0.4, [0.8; 2]);
+        let first = bridge.latest.as_ref().unwrap();
+        let x = (0.4f32).atan() / std::f32::consts::FRAC_PI_4;
+        assert!((first.gaze[4] - x).abs() < 1e-4, "{} {x}", first.gaze[4]);
+        assert!((first.lids[0] - LID_RELAXED).abs() < 1e-4 && (first.lids[1] - LID_RELAXED).abs() < 1e-4, "{:?}", first.lids);
     }
 
     #[test]
@@ -11816,7 +11864,7 @@ mod tests {
         (0..n)
             .map(|_| {
                 *time += f64::from(NOMINAL_DT);
-                brows.step(*time, Some(NOMINAL_DT), lids, closed, settings)
+                brows.step(*time, NOMINAL_DT, true, lids, closed, settings)
             })
             .collect()
     }
@@ -11843,9 +11891,24 @@ mod tests {
         assert!(down[..8].iter().all(|brow| *brow == [left, right]), "{:?}", &down[..10]);
         assert!(down[12][0] < left && down[12][0] > 0.4);
         assert!(down.last().unwrap().iter().all(|brow| *brow < 0.001));
-        // --raw (no dt): the eyelid's brows at once
+        // Smoothing off: the same wait for the widening to last and the same delay before coming down, but each brow
+        // goes where it is heading at once (no filter)
         let mut raw = BrowRaise::default();
-        assert_eq!(raw.step(1.0, None, [1.0, LID_RELAXED], open, &settings), [0.8, 0.0]);
+        let mut time = 100.0;
+        let mut steps = |raw: &mut BrowRaise, n: usize, lids: [f32; 2]| {
+            (0..n)
+                .map(|_| {
+                    time += f64::from(NOMINAL_DT);
+                    raw.step(time, NOMINAL_DT, false, lids, open, &settings)
+                })
+                .collect::<Vec<_>>()
+        };
+        let up = steps(&mut raw, 40, [1.0, LID_RELAXED]);
+        assert!(up[..22].iter().all(|brow| *brow == [0.0; 2]), "{:?}", &up[..23]);
+        assert!(up[24..].iter().all(|brow| *brow == [0.8, 0.0]), "{:?}", &up[23..26]);
+        let down = steps(&mut raw, 40, [LID_RELAXED; 2]);
+        assert!(down[..8].iter().all(|brow| *brow == [0.8, 0.0]), "{:?}", &down[..10]);
+        assert!(down[30..].iter().all(|brow| *brow == [0.0; 2]), "{:?}", &down[28..32]);
     }
 
     #[test]
@@ -11919,11 +11982,12 @@ mod tests {
         // A NaN eyelid keeps that brow where it was
         let after = brow_steps(&mut brows, &settings, &mut time, 5, [f32::NAN, 1.0], [false; 2]);
         assert!((after[4][0] - up[0]).abs() < 0.01, "{after:?}");
-        // --raw too, from the start
+        // With smoothing off too, from the start: finite and within 0..1
         let mut raw = BrowRaise::default();
-        assert_eq!(raw.step(1.0, None, [f32::NAN, 1.0], [false; 2], &settings), [0.0, 0.8]);
+        let first = raw.step(1.0, NOMINAL_DT, false, [f32::NAN, 1.0], [false; 2], &settings);
+        assert!(first.iter().all(|value| value.is_finite() && (0.0..=1.0).contains(value)), "{first:?}");
         // ...and so are the packets made from them
-        let sample = Sample { brows: Some(raw.step(2.0, None, [f32::NAN; 2], [false; 2], &settings)), ..sample() };
+        let sample = Sample { brows: Some(raw.step(2.0, NOMINAL_DT, false, [f32::NAN; 2], [false; 2], &settings)), ..sample() };
         let packet = feo_packet(&sample, 1, 0, 0);
         assert!(feo::tests::module_eyes(&packet).is_some());
         assert!(feo::tests::module_brows(&packet).iter().all(Option::is_some));

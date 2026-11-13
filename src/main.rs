@@ -294,6 +294,41 @@ const CAMERA_WIDEN_FADE: f32 = 0.05;
 // the eye server reads low between the camera's raise and the eased eyelid at every such gap. The same length as
 // CAMERA_AGREE_HOLD, for the same reason: the camera's values come and go for 100-150 ms at a time.
 const CAMERA_GAP_HOLD: f64 = 0.2;
+// An eye whose camera clearly sees its pupil is open, whatever the eye server reads, and for a gaze capture that is
+// enough (see PupilSeen): it needs no baseline for the wear, which the camera's eyelid waits for (Live::lids_usable).
+// eyecam-rec learns that baseline about 35 s after the headset goes on, once both eyes have one; in issue 43's second
+// recording it took 74 s (the other eye's pupil was hard to find early), and all that time the eye server read the
+// open left eye 0.000 and no re-center could go through. Clearly seen is not closed and a confidence above
+// CAMERA_PUPIL_SEEN (or above CAMERA_PUPIL_SEEN_WARMUP up to CAMERA_WARMUP_CAP while the wear has no baseline).
+// eyecam-rec's confidence is half for the pupil (as much of it as was seen; all of it for a closed eye) and a quarter
+// for each eyelid line it found, times factors of at most 1 for how settled that eye's own levels are (0.7-1 once
+// learnt; 0.3 during its own warm-up, the first 30 s of usable frames, so never above this then): an open eye whose
+// pupil it did not find reads 0.5 at most. In the reporter's recording the frame before each "closed" read exactly
+// 0.5, the open eye otherwise 0.84-1.0. Not with eyecam-rec's eyelid veto on (off by default), though: a frame whose
+// "closed" the veto overturned keeps the confidence of a closed eye, high without a pupil, so above this may not mean
+// the pupil was found then.
+const CAMERA_PUPIL_SEEN: f32 = 0.5;
+// CAMERA_PUPIL_SEEN while the wear has no baseline (Live::baseline), as while an eye is still in its own warm-up
+// (eyecam-rec's baseline needs both eyes' levels): eyecam-rec then takes 0.3 for that eye's factor for its levels, so
+// its confidence is at most 0.3 x (half the share of the pupil seen + a quarter per eyelid line found), never above
+// CAMERA_PUPIL_SEEN, and an eye stuck shut on the eye server never counted by its pupil just when it needed to (issue
+// 43: a user's recordings on 0.10.3-beta.1). During the eye's own warm-up, above this takes both eyelid lines and more
+// than about two thirds of the pupil seen (0.25-0.30); after it, weaker mixes with the pupil found get there too (no
+// eyelid line and half the pupil seen at a factor of 1, for one). Both lines without the pupil read 0.15 during the
+// warm-up, and an eye whose pupil size has not settled yet
+// (eyecam-rec halves its confidence for its first 10 sizes) 0.15 at most. But an eye whose own warm-up is over reads
+// uncapped while the wear still has no baseline (the other eye's warm-up goes on, or no setup was done yet, for the
+// whole wear then), so only up to CAMERA_WARMUP_CAP counts by this, and above that CAMERA_PUPIL_SEEN as with a
+// baseline. In that window every value takes the pupil found: the factor for the levels is 0.3 during the eye's own
+// warm-up and 0.7 (no calibration history) or 1 after it, the eyelid lines give 0, 0.25 or 0.5, halved until the
+// pupil size settles, so without the pupil an open eye reads 0.3 x (0-0.5) = 0.15 at most, 0.7 x (0-0.5) =
+// 0.0875-0.175 or 0.35, or 1 x (0-0.5) = 0.125-0.25 or 0.5: never above 0.25 and at most 0.3, nor above 0.5. This goes
+// by that formula in eyecam's live.rs (EyeEngine::process_open and levels), so the two have to change together.
+const CAMERA_PUPIL_SEEN_WARMUP: f32 = 0.25;
+// The highest confidence eyecam-rec gives an eye during its own warm-up: 0.3 for the factor for its levels (cal_q in
+// EyeEngine::process_open) times at most 1 (see CAMERA_PUPIL_SEEN_WARMUP). Worked out in f64 and sent as f32, it never
+// comes out above this.
+const CAMERA_WARMUP_CAP: f32 = 0.3;
 const VALVE_WIDEN_FADE: f32 = 0.1;
 // An eye turned far outward (toward the ear: the left eye looking left, the right eye looking right) takes its pupil
 // into the dark temporal side of the eye camera's picture, and eyecam-rec read such an open eye as closed: over eleven
@@ -1055,6 +1090,8 @@ struct Smoother {
     close_gate: CloseGate,
     // The brows raised with widening (brow_from_widen).
     brows: BrowRaise,
+    // Per eye: seen open by its pupil alone, for a gaze capture (see PupilSeen).
+    pupil_seen: [PupilSeen; 2],
 }
 
 impl Smoother {
@@ -1083,6 +1120,7 @@ impl Smoother {
             raise_peak: RaisePeak::default(),
             close_gate: CloseGate::default(),
             brows: BrowRaise::default(),
+            pupil_seen: [PupilSeen::default(); 2],
         }
     }
 
@@ -1195,6 +1233,7 @@ impl Smoother {
         self.raise_peak = RaisePeak::default();
         self.close_gate = CloseGate::default();
         self.brows = BrowRaise::default();
+        self.pupil_seen = [PupilSeen::default(); 2];
     }
 
     /// The camera's eyelids with a "closed" in one eye that is not yet a blink or a wink held back (see CloseGate), and
@@ -1223,6 +1262,26 @@ impl Smoother {
         let steady: [(Option<CameraLid>, Option<CameraLid>); 2] =
             std::array::from_fn(|eye| self.camera_gap[eye].steady(time, read[eye]));
         (steady.map(|(lid, _)| lid), steady.map(|(_, held)| held))
+    }
+
+    /// Which eyes count as open for a gaze capture because the eye camera clearly sees their pupils while the eye server
+    /// reads them below the capture's open floor (see PupilSeen), from the camera's values as read for `data` (`camera`,
+    /// while `camera_lids` is on; none without them).
+    fn pupil_open(&mut self, settings: &Settings, data: &EyeData, camera: Option<&Live>) -> [bool; 2] {
+        let camera = camera.filter(|_| settings.camera_lids);
+        std::array::from_fn(|eye| {
+            let fresh = camera.filter(|live| live.fresh[eye]);
+            let seen = fresh.map(|live| {
+                let confidence = live.eyes[eye].confidence;
+                let warm_up =
+                    !live.baseline() && CAMERA_PUPIL_SEEN_WARMUP < confidence && confidence <= CAMERA_WARMUP_CAP;
+                !live.eyes[eye].closed && (confidence > CAMERA_PUPIL_SEEN || warm_up)
+            });
+            let frame = fresh.map_or(0.0, |live| live.frame_ns[eye] as f64 / 1e9);
+            let low = data.openness[eye] < capture::OPEN_FLOOR;
+            let grace = CAMERA_DOUBT_GRACE.max(CAMERA_DOUBT_FRAMES * frame);
+            self.pupil_seen[eye].step(data.sample_time, seen, low, grace)
+        })
     }
 
     /// The eye server's VRCFT eyelids (`mapped`) corrected by the eye camera's (`camera`, per eye while it may be used),
@@ -1643,6 +1702,57 @@ impl CameraGap {
             (Some(false), None) => {
                 self.back_since = None;
                 (None, None)
+            }
+        }
+    }
+}
+
+/// One eye seen open by its pupil alone (CAMERA_PUPIL_SEEN; or above CAMERA_PUPIL_SEEN_WARMUP up to CAMERA_WARMUP_CAP
+/// while the wear has no baseline), for a gaze capture only (Sample::pupil_open): the camera
+/// has clearly seen the pupil while the eye server read the eye below the capture's open floor for longer than a blink,
+/// the same CAMERA_DOUBT_GRACE (at least CAMERA_DOUBT_FRAMES of the camera's frames) the camera's eyelid waits for in
+/// Smoother::check_lids, so the start of a blink the camera is late to see closed doesn't count, in any eye. A reading
+/// at or above the floor for up to CAMERA_GAP_HOLD (since the last one below it) while the pupil stays clearly seen
+/// doesn't count (the eye counts anyway there) but doesn't start it over either, so a reading that hovers around the
+/// floor doesn't cost the grace each time; a longer one does. Through a short gap in
+/// the camera's values (CAMERA_GAP_HOLD) it goes on where it was, as the camera's eyelid does: single stale samples
+/// every fifth of a second (issue 46) would otherwise start it over before it got there. Once it counts, a blink the
+/// camera sees (closed, or the pupil lost) doesn't count but doesn't start it over either, up to CAMERA_AGREE_HOLD, the
+/// blink the camera's eyelid stays on through: the eye server can't tell it reopened, the camera can. Without that, each
+/// blink cost the grace again, and with a blink every 1-4 s a capture could use 85.5% of the reporter's recording
+/// instead of 93.9%. Nothing that is sent goes by it.
+#[derive(Clone, Copy, Debug, Default)]
+struct PupilSeen {
+    // Since when it has been seen so, and the last sample it was with the eye server below the floor (sample time).
+    since: Option<f64>,
+    last: f64,
+    // The grace the last fresh values asked for.
+    grace: f64,
+}
+
+impl PupilSeen {
+    /// At `time`: whether the eye counts as open for a gaze capture. `seen` is whether the camera clearly sees the pupil
+    /// (None without fresh values), `low` whether the eye server reads the eye below the capture's open floor, and
+    /// `grace` how long that has to last.
+    fn step(&mut self, time: f64, seen: Option<bool>, low: bool, grace: f64) -> bool {
+        let counted = |since: f64, time: f64, grace: f64| time - since >= grace;
+        let within = |hold: f64| self.since.is_some() && (self.last..=self.last + hold).contains(&time);
+        let open = self.since.is_some_and(|since| counted(since, self.last, self.grace));
+        match seen {
+            Some(true) if low => {
+                if !within(CAMERA_GAP_HOLD.max(CAMERA_AGREE_HOLD)) {
+                    self.since = Some(time);
+                }
+                self.last = time;
+                self.grace = grace;
+                self.since.is_some_and(|since| counted(since, time, grace))
+            }
+            Some(true) if within(CAMERA_GAP_HOLD) => false,
+            None if within(CAMERA_GAP_HOLD) => low && self.since.is_some_and(|since| counted(since, time, self.grace)),
+            Some(false) if low && open && within(CAMERA_AGREE_HOLD) => false,
+            _ => {
+                self.since = None;
+                false
             }
         }
     }
@@ -3617,19 +3727,24 @@ struct Sample {
     // Each brow raised with widening, 0..1 (brow_from_widen; None while it is off, and then nothing about brows goes
     // out).
     brows: Option<[f32; 2]>,
+    // Per eye: open for a gaze capture by its pupil alone (Smoother::pupil_open, PupilSeen). Nothing sent goes by it.
+    pupil_open: [bool; 2],
 }
 
 impl Sample {
     /// Whether its gaze counts in a gaze capture (capture::usable). An eye whose eyelid is the camera's because the eye
     /// server reads it closing while the camera has seen it open for longer than a blink (LidFrom::CameraOpen, see
-    /// Smoother::check_lids) counts as open: the eye server's openness may be stuck at 0 for the whole wear.
+    /// Smoother::check_lids) counts as open: the eye server's openness may be stuck at 0 for the whole wear. So does one
+    /// whose pupil the camera has clearly seen for as long while the eye server read it below the capture's open floor
+    /// (`pupil_open`), before the wear has the baseline the camera's eyelid waits for.
     fn capture_usable(&self) -> bool {
         capture::usable(self.openness, self.camera_open(), self.reliable)
     }
 
-    /// Which eyes' eyelids are the camera's because it sees them open while the eye server reads them closing.
+    /// Which eyes the camera sees open while the eye server reads them closing: their eyelids are the camera's
+    /// (LidFrom::CameraOpen), or the camera clearly sees their pupils (`pupil_open`).
     fn camera_open(&self) -> [bool; 2] {
-        self.lid_from.map(|from| from == LidFrom::CameraOpen)
+        std::array::from_fn(|eye| self.lid_from[eye] == LidFrom::CameraOpen || self.pupil_open[eye])
     }
 }
 
@@ -3726,8 +3841,12 @@ fn process(
     let raw_gaze = [left[0], left[1], right[0], right[1], x, y];
     let reliable = gaze_quality(data, settings.gaze_quality_limit);
     let blink_stages = settings.blink_hold_ms > 0.0 || settings.blink_sync_below > 0.0;
+    // Only for a gaze capture; in --raw too, which has gaze captures all the same (after advance(), which starts it over
+    // after a gap)
+    let pupil_open;
     let mut cross_eye = false;
     let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows) = if settings.raw {
+        pupil_open = smoother.pupil_open(settings, data, camera);
         let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
         let camera_lids = side_checked(smoother, data, camera_lids, settings.camera_closed_doubt);
         let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
@@ -3787,6 +3906,7 @@ fn process(
         (gaze, unscaled_gaze, lids, shut_eyes, openness_scaled, camera, lid_from, close_held, brows)
     } else {
         let dt = smoother.advance(data.sample_time);
+        pupil_open = smoother.pupil_open(settings, data, camera);
         // After advance(), which starts the smoothing over after a gap
         let (camera_lids, camera) = smoother.camera.take(settings, camera, true);
         let camera_lids = side_checked(smoother, data, camera_lids, settings.camera_closed_doubt);
@@ -3949,6 +4069,7 @@ fn process(
         cross_eye,
         close_held,
         brows,
+        pupil_open,
     }
 }
 
@@ -7084,6 +7205,7 @@ mod tests {
             cross_eye: false,
             close_held: [false; 2],
             brows: None,
+            pupil_open: [false; 2],
         }
     }
 
@@ -9262,6 +9384,179 @@ mod tests {
         let mut smoother = Smoother::new(&settings);
         let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, |_| [0.8, 0.0], |_| None);
         assert!(sent.iter().all(|sample| !sample.capture_usable()));
+    }
+
+    #[test]
+    fn an_eye_stuck_shut_counts_in_a_gaze_capture_by_its_pupil_before_the_wear_has_a_baseline() {
+        // Issue 43's second recording: the eye server read the open left eye 0.000, the camera saw its pupil clearly
+        // (confidence about 0.97) for the 74 s before the wear had a baseline (calib_state 2: calibrated for this user
+        // only), so its eyelid was never the camera's
+        let settings = camera_settings();
+        let seen = |confidence: f32, closed: bool| {
+            let mut live = camera_eyes([(0.75, 0.0, closed), (0.75, 0.0, false)]);
+            live.calib_state = 2;
+            for eye in &mut live.eyes {
+                eye.confidence = confidence;
+            }
+            live
+        };
+        let stuck = |_: usize| [0.0, 0.8];
+        let run = |settings: &Settings, openness: &dyn Fn(usize) -> [f32; 2], camera: &dyn Fn(usize) -> Option<Live>| {
+            let mut smoother = Smoother::new(settings);
+            camera_samples(settings, &mut smoother, 100.0, 3.0, openness, camera)
+        };
+        let sent = run(&settings, &stuck, &|_| Some(seen(0.97, false)));
+        assert!(sent.iter().all(|sample| sample.lid_from == [LidFrom::EyeServer; 2]));
+        // Not before it has lasted longer than a blink (CAMERA_DOUBT_GRACE, 27 samples); from then on, all along
+        assert!(sent[..26].iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]));
+        assert!(sent[28..].iter().all(|sample| sample.capture_usable() && sample.camera_open() == [true, false]));
+        // Only for the capture: everything sent is as without the pupil
+        let without = run(&settings, &stuck, &|_| Some(seen(0.0, false)));
+        assert!(without.iter().all(|sample| !sample.capture_usable()));
+        for (with, without) in sent.iter().zip(&without) {
+            assert_eq!((with.lids, with.gaze, with.gaze_held), (without.lids, without.gaze, without.gaze_held));
+        }
+        // The camera's "closed", a confidence no higher than CAMERA_PUPIL_SEEN_WARMUP (no baseline yet), stale values,
+        // or camera_lids off: never
+        let stale = |_: usize| {
+            let mut live = seen(0.97, false);
+            live.fresh[0] = false;
+            Some(live)
+        };
+        let off = Settings { camera_lids: false, ..settings.clone() };
+        let never: [Vec<Sample>; 4] = [
+            run(&settings, &stuck, &|_| Some(seen(0.97, true))),
+            run(&settings, &stuck, &|_| Some(seen(CAMERA_PUPIL_SEEN_WARMUP, false))),
+            run(&settings, &stuck, &stale),
+            run(&off, &stuck, &|_| Some(seen(0.97, false))),
+        ];
+        for (case, sent) in never.iter().enumerate() {
+            assert!(sent.iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]), "{case}");
+        }
+        // A blink the camera sees closed (10 samples, the pupil lost the sample before: both eyelid lines alone, 0.15
+        // without a baseline) doesn't count, and it goes on right after it
+        let blink = |i: usize| (100..110).contains(&i);
+        let lost = |i: usize| Some(seen(if i == 99 { 0.15 } else { 0.97 }, blink(i)));
+        let sent = run(&settings, &stuck, &lost);
+        assert!(sent[90..99].iter().all(Sample::capture_usable));
+        assert!(sent[99..110].iter().all(|sample| !sample.capture_usable()));
+        assert!(sent[110..].iter().all(Sample::capture_usable));
+        // Longer than CAMERA_AGREE_HOLD (30 samples): the blink time again after it
+        let long = |i: usize| (100..130).contains(&i);
+        let sent = run(&settings, &stuck, &|i| Some(seen(0.97, long(i))));
+        assert!(sent[100..156].iter().all(|sample| !sample.capture_usable()));
+        assert!(sent[158..].iter().all(Sample::capture_usable));
+        // So is one before it counted (at 10 samples in): it starts over
+        let early = |i: usize| (10..20).contains(&i);
+        let sent = run(&settings, &stuck, &|i| Some(seen(0.97, early(i))));
+        assert!(sent[..46].iter().all(|sample| !sample.capture_usable()));
+        assert!(sent[48..].iter().all(Sample::capture_usable));
+        // A single stale sample every 20 (issue 46) doesn't
+        let gaps = |i: usize| {
+            let mut live = seen(0.97, false);
+            live.fresh[0] = i % 20 != 19;
+            Some(live)
+        };
+        assert!(run(&settings, &stuck, &gaps)[28..].iter().all(Sample::capture_usable));
+        // An eye the eye server reads open is not camera-open (the panel fits its eyelid as usual), and counts anyway
+        let sent = run(&settings, &|_| [0.8; 2], &|_| Some(seen(0.97, false)));
+        assert!(sent.iter().all(|sample| sample.capture_usable() && sample.camera_open() == [false; 2]));
+        // Not through a stale sample either
+        let sent = run(&settings, &|_| [0.8; 2], &gaps);
+        assert!(sent.iter().all(|sample| sample.camera_open() == [false; 2]));
+        // A reading that dips above the floor for a sample mid-stretch counts as open there, and no new grace after it
+        let hover = |i: usize| if i == 60 { [0.35, 0.8] } else { [0.0, 0.8] };
+        let sent = run(&settings, &hover, &|_| Some(seen(0.97, false)));
+        assert_eq!(sent[60].camera_open(), [false; 2]);
+        assert!(sent[28..].iter().all(Sample::capture_usable));
+        assert!(sent[61..].iter().all(|sample| sample.camera_open() == [true, false]));
+        // Above it for longer than CAMERA_GAP_HOLD (25 samples): the grace again after it
+        let away = |i: usize| if (60..85).contains(&i) { [0.35, 0.8] } else { [0.0, 0.8] };
+        let sent = run(&settings, &away, &|_| Some(seen(0.97, false)));
+        assert!(sent[85..111].iter().all(|sample| !sample.capture_usable()));
+        assert!(sent[113..].iter().all(Sample::capture_usable));
+        // An eye the eye server reads open, then stuck: the grace from the drop, not from when the pupil was first seen
+        let sent = run(&settings, &|i| if i < 60 { [0.8; 2] } else { [0.0, 0.8] }, &|_| Some(seen(0.97, false)));
+        assert!(sent[..60].iter().all(Sample::capture_usable));
+        assert!(sent[60..86].iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]));
+        assert!(sent[88..].iter().all(Sample::capture_usable));
+        // A blink of an eye the eye server reads well: below the floor at once, the camera still sure of the pupil for
+        // 0.15 s (14 samples), then closed. It never counts
+        let blink_eye = |i: usize| if (50..75).contains(&i) { [0.1, 0.8] } else { [0.8; 2] };
+        let onset = |i: usize| Some(seen(0.97, (64..78).contains(&i)));
+        let sent = run(&settings, &blink_eye, &onset);
+        assert!(sent.iter().all(|sample| sample.camera_open() == [false; 2]));
+        assert!(sent[50..75].iter().all(|sample| !sample.capture_usable()));
+        // At 15 frames a second it waits CAMERA_DOUBT_FRAMES of them (0.53 s, 48 samples)
+        let slow = |_: usize| {
+            let mut live = seen(0.97, false);
+            live.frame_ns = [66_666_667; 2];
+            Some(live)
+        };
+        let sent = run(&settings, &stuck, &slow);
+        assert!(!sent[46].capture_usable() && sent[49].capture_usable());
+    }
+
+    #[test]
+    fn an_eye_stuck_shut_counts_in_a_gaze_capture_by_its_pupil_during_the_cameras_warm_up() {
+        // Issue 43, a user's recordings on 0.10.3-beta.1: before the wear's baseline the camera's confidence for an eye
+        // still in its warm-up is 0.3 at most (CAMERA_PUPIL_SEEN_WARMUP), with the pupil seen clearly 0.25-0.30
+        let settings = camera_settings();
+        let seen = |confidence: f32, calib_state: u32| {
+            let mut live = camera(0.75, 0.0);
+            live.calib_state = calib_state;
+            for eye in &mut live.eyes {
+                eye.confidence = confidence;
+            }
+            live
+        };
+        let run = |camera: Live| {
+            let mut smoother = Smoother::new(&settings);
+            camera_samples(&settings, &mut smoother, 100.0, 3.0, |_| [0.0, 0.8], |_| Some(camera))
+        };
+        // No baseline (calibrated for this user only), the pupil seen: after the grace (27 samples), all along
+        let sent = run(seen(0.3, 2));
+        assert!(sent.iter().all(|sample| sample.lid_from == [LidFrom::EyeServer; 2]));
+        assert!(sent[..26].iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]));
+        assert!(sent[28..].iter().all(|sample| sample.capture_usable() && sample.camera_open() == [true, false]));
+        // Both eyelid lines without the pupil, or the pupil's size not settled yet (0.15 at most), or right at the
+        // line; or an eye whose own warm-up is over while the wear has no baseline yet, both eyelid lines without the
+        // pupil (0.35 with no calibration history, 0.5 with one), or anything above the cap up to CAMERA_PUPIL_SEEN:
+        // never
+        let above = |line: f32| f32::from_bits(line.to_bits() + 1);
+        let lids_only = [((0.25 + 0.25) * 0.7f64) as f32, ((0.25 + 0.25) * 1.0f64) as f32];
+        for confidence in [0.15, CAMERA_PUPIL_SEEN_WARMUP, above(CAMERA_WARMUP_CAP), 0.30001, 0.4]
+            .into_iter()
+            .chain(lids_only)
+        {
+            let sent = run(seen(confidence, 2));
+            let never = sent.iter().all(|sample| !sample.capture_usable() && sample.camera_open() == [false; 2]);
+            assert!(never, "{confidence}");
+        }
+        // The edges that count: just above CAMERA_PUPIL_SEEN_WARMUP, the cap itself (an eye in its warm-up with all
+        // of its pupil and both eyelid lines: 0.3 x 1, worked out in f64 and sent as f32 as eyecam-rec does), and
+        // just above CAMERA_PUPIL_SEEN
+        let full = ((0.5 + 0.25 + 0.25) * 0.3f64) as f32;
+        let edges = [above(CAMERA_PUPIL_SEEN_WARMUP), CAMERA_WARMUP_CAP, full, above(CAMERA_PUPIL_SEEN)];
+        for confidence in edges {
+            let sent = run(seen(confidence, 2));
+            let counts = sent[28..].iter().all(|sample| sample.capture_usable() && sample.camera_open() == [true, false]);
+            assert!(counts, "{confidence}");
+        }
+        // With a baseline (calibrated for this wear, or learnt: calib_state bit 0 or 2) CAMERA_PUPIL_SEEN as before:
+        // 0.3 is no pupil then (the camera's eyelid takes over anyway, as for any eye it sees open)
+        for calib_state in [1, 4, 6] {
+            let pupil_open = |confidence: f32| -> Vec<[bool; 2]> {
+                run(seen(confidence, calib_state)).iter().map(|sample| sample.pupil_open).collect()
+            };
+            assert!(pupil_open(0.3).iter().all(|open| *open == [false; 2]), "{calib_state}");
+            assert!(pupil_open(0.97)[28..].iter().all(|open| *open == [true, false]), "{calib_state}");
+        }
+        // Everything sent is as without the pupil, in the warm-up too
+        let (with, without) = (run(seen(0.3, 2)), run(seen(0.0, 2)));
+        for (with, without) in with.iter().zip(&without) {
+            assert_eq!((with.lids, with.gaze, with.gaze_held), (without.lids, without.gaze, without.gaze_held));
+        }
     }
 
     #[test]

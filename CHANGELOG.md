@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.3 (2026-11-13)
+
+Only re-centering and eye fit change; nothing that is sent does. Right after the headset went on, re-centering could fail when SteamOS read an open eye stuck closed (#43). An eye whose pupil the eye camera sees now counts as open then, even while that camera is still getting ready.
+
+日本語: 今回変わるのは再センタリングと目を合わせるときだけで、送る値は変わりません。ヘッドセットをかぶってすぐ、SteamOS が開いている目を閉じたまま読んでいると、再センタリングが通らないことがありました（#43）。そのときも、目のカメラが瞳を見ている目は、カメラがまだ準備中でも開いている扱いにします。
+
+- Fixed (#43): in a gaze capture (re-center and "Fit my eyes"), an eye SteamOS reads below 0.3 counts as open once the eye camera has clearly seen its pupil (not closed, confidence above 0.5) for longer than a blink, even before the wear has the baseline the camera's eyelid waits for (about 35 s after putting the headset on; 74 s in the first reported recording). Before, such an eye only counted once the camera's eyelid was in use
+  - Before that baseline, it also counts while the eye's own camera is still getting ready, with the lower confidence the camera gives then. An open eye whose pupil the camera doesn't find never counts this way
+  - A reading of 0.3 or more for up to 0.2 s in between doesn't start the wait over, and a normal blink never counts
+  - In the reporter's first recording, the share of samples a re-center could use went from 46 % to 94 %. In two later ones, counting during the camera's getting ready took it from 67 % to 77 % and from 27 % to 46 %; in the second, the camera itself often reads the left eye as closed, which this doesn't change. In the developer's recordings nothing changes, and what is sent is the same byte for byte
+- `frameeyeosc --replay` says how much of a recording a gaze capture could use, and how much of it only by the pupil
+- Thanks to @koma-cute for the logs and for checking the fix (#43)
+
 ## 0.10.2 (2026-11-08)
 
 With prescription inserts and a narrow IPD, eyecam could miss the pupil and read open eyes as closed; it now also looks in the darker part of the picture (#52). Squinting very hard could make user calibration fail; such an eye now keeps its previous or the standard squint (#54). Thanks @fujieda1237!

@@ -17,15 +17,16 @@ pub const CLOSED_TARGET: &str = "closed";
 // A gaze sample counts when both eyes read at least this open (clearly open; a shut eye reads about
 // 0.15-0.26), whatever gaze_hold_below is: an eye that reads less open looking down (0.45 for a face
 // that reads 0.65 straight ahead) must still be measured there.
-const OPEN_FLOOR: f32 = 0.3;
+pub const OPEN_FLOOR: f32 = 0.3;
 
 /// Whether a sample's gaze counts in a capture: both eyes open enough and at least one eye's gaze reliable. An eye the
 /// eye server reads closing while the eye camera has seen it open for longer than a blink (`camera_open`: its eyelid
-/// is the camera's, LidFrom::CameraOpen) counts as open enough. The eye server can get stuck reading one eye at 0.000
-/// for a whole wear while that eye is open (2026-10-11: the right eye, the camera's eyelid about 0.75), its combined
-/// gaze (the one measured) as steady as ever, and then every sample failed the floor and so did every eye fit; after a
-/// night in VR it read both eyes 0.000 (issue 43), and every re-center timed out. Without such an eye, the same as
-/// before.
+/// is the camera's, LidFrom::CameraOpen, or before the wear has a baseline for that, the camera has clearly seen its
+/// pupil; see Sample::camera_open in main.rs) counts as open enough. The eye server can get stuck reading one eye at
+/// 0.000 for a whole wear while that eye is open (2026-10-11: the right eye, the camera's eyelid about 0.75), its
+/// combined gaze (the one measured) as steady as ever, and then every sample failed the floor and so did every eye fit;
+/// after a night in VR it read both eyes 0.000 (issue 43), and every re-center timed out. Without such an eye, the
+/// same as before.
 pub fn usable(openness: [f32; 2], camera_open: [bool; 2], reliable: [bool; 2]) -> bool {
     let open = openness.map(|openness| openness >= OPEN_FLOOR);
     (0..2).all(|eye| open[eye] || camera_open[eye]) && reliable.contains(&true)

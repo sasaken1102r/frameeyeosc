@@ -80,6 +80,13 @@ void testDatagram() {
     for (size_t i = 0; i < kSampleSize; ++i) differ += eased[i] != bytes[i] ? 1 : 0;
     CHECK(differ == 1 && decode(eased.data(), eased.size(), read) && read.pupilBlending);
     CHECK(decode(bytes.data(), bytes.size(), read) && !read.pupilBlending);
+    // Before smoothing: bit 4 (as frameeyeosc writes it); clear from a frameeyeosc before it
+    Sample before = sample;
+    before.beforeSmoothing = true;
+    const std::vector<uint8_t> beforeBytes = encode(before);
+    CHECK(std::memcmp(beforeBytes.data(), "FEOM\x01\x13\x01\x00", 8) == 0);
+    CHECK(decode(beforeBytes.data(), beforeBytes.size(), read) && read.beforeSmoothing);
+    CHECK(decode(bytes.data(), bytes.size(), read) && !read.beforeSmoothing);
     // Another version or size, Valve's gaze not a number, the pupils' not a number while they count: ignored; the
     // pupils' not a number while another state is in use: read
     std::vector<uint8_t> wrong = bytes;
@@ -262,7 +269,9 @@ void testRun() {
     size_t lines = 0;
     for (char ch : csv) lines += ch == '\n' ? 1 : 0;
     CHECK(lines == sim.session.rows().size() + 1 && csv.rfind("panel_s,unix,position,scored,sample_time", 0) == 0);
-    CHECK(csv.find(",pupil_state,pupil_blending,valve_x,") != std::string::npos);
+    CHECK(csv.find(",pupil_state,pupil_blending,before_smoothing,valve_x,") != std::string::npos);
+    // The simulation's samples came without bit 4 (as from an older frameeyeosc): said so
+    CHECK(root.get("values") != nullptr && root.get("values")->text == "as sent (smoothed)" && !v.beforeSmoothing);
     CHECK(sim.session.rows().size() >= 4990 && sim.session.rows().size() <= 5010);
     // Closing the result: back to nothing
     sim.session.dismiss();

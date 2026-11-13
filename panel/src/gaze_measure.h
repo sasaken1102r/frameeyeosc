@@ -28,7 +28,9 @@ constexpr const char* kSocketName = "gaze-measure.sock";
 /**
  * One sample (version 1), little-endian: b"FEOM", 1, flags (bit 0 both eyes have a pupil map, bit 1 the sample counts:
  * both eyes open enough, as the eye fit's captures count them, bit 2 Valve's gaze is held, bit 3 the pupils' gaze is
- * still easing from the source before: pupil.rs's blend; clear from a frameeyeosc before it), the pupils' state (0 none
+ * still easing from the source before: pupil.rs's blend; clear from a frameeyeosc before it; bit 4 the gazes are
+ * before any smoothing, the same with smoothing on or off; from a frameeyeosc before it they are the gazes as sent,
+ * smoothed), the pupils' state (0 none
  * without a map, 1 both pupils, 2 the left pupil only, 3 the right only, 4 held, 5 Valve's standing in), a zero byte,
  * the sample time (f64), Valve's combined x and y as "valve" sends them, the pupils' as "pupil" sends them (f32; 1.0 =
  * 45°; both before the user's gaze scale), each eye's Valve openness (f32).
@@ -70,6 +72,7 @@ struct Sample {
     bool usable = false;        ///< both eyes open enough (the eye fit's rule)
     bool valveHeld = false;     ///< Valve's gaze was held (eyes shut, a blink)
     bool pupilBlending = false; ///< the pupils' gaze was still easing from the source before (not scored)
+    bool beforeSmoothing = false;  ///< the gazes are before any smoothing (else as sent: an older frameeyeosc)
     PupilState pupilState = PupilState::None;
     float valve[2] = {0, 0};    ///< x, y; 1.0 = 45°
     float pupil[2] = {0, 0};    ///< x, y; meaningful while pupilState is Pupil
@@ -191,6 +194,7 @@ struct View {
     double endUnix = 0.0;      ///< ...and at the end
     int positionsDone = 0;     ///< places fully shown
     bool mapped = false;       ///< samples said a pupil map is there
+    bool beforeSmoothing = true;  ///< every sample's gazes were before smoothing (false if one came as sent)
     int samples = 0;           ///< samples received
     Result result;             ///< (Done)
 };

@@ -22,6 +22,7 @@ constexpr uint8_t kMapped = 1;
 constexpr uint8_t kUsable = 2;
 constexpr uint8_t kValveHeld = 4;
 constexpr uint8_t kPupilBlending = 8;
+constexpr uint8_t kBeforeSmoothing = 16;
 constexpr double kDeg = M_PI / 180.0;
 
 /**
@@ -146,6 +147,7 @@ bool decode(const uint8_t* data, size_t size, Sample& out) {
     s.usable = (data[5] & kUsable) != 0;
     s.valveHeld = (data[5] & kValveHeld) != 0;
     s.pupilBlending = (data[5] & kPupilBlending) != 0;
+    s.beforeSmoothing = (data[5] & kBeforeSmoothing) != 0;
     s.pupilState = data[6] < kStateCount ? static_cast<PupilState>(data[6]) : PupilState::None;
     std::memcpy(&s.time, data + 8, 8);
     std::memcpy(s.valve, data + 16, 8);
@@ -162,7 +164,8 @@ std::vector<uint8_t> encode(const Sample& sample) {
     std::memcpy(data.data(), kMagic, 4);
     data[4] = kVersion;
     data[5] = static_cast<uint8_t>((sample.mapped ? kMapped : 0) | (sample.usable ? kUsable : 0) |
-                                   (sample.valveHeld ? kValveHeld : 0) | (sample.pupilBlending ? kPupilBlending : 0));
+                                   (sample.valveHeld ? kValveHeld : 0) | (sample.pupilBlending ? kPupilBlending : 0) |
+                                   (sample.beforeSmoothing ? kBeforeSmoothing : 0));
     data[6] = static_cast<uint8_t>(sample.pupilState);
     std::memcpy(data.data() + 8, &sample.time, 8);
     std::memcpy(data.data() + 16, sample.valve, 8);
@@ -329,6 +332,7 @@ void Session::add(double now, double unixNow, const Sample& sample) {
     lastSample_ = now;
     ++view_.samples;
     if (sample.mapped) view_.mapped = true;
+    if (!sample.beforeSmoothing) view_.beforeSmoothing = false;
     if (rows_.size() >= kMaxRows) return;
     Row row;
     row.at = now;
@@ -363,6 +367,8 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
     root.set("end_ms", JsonValue::makeNumber(std::llround(view.endUnix * 1000), true));
     root.set("samples", JsonValue::makeNumber(view.samples, true));
     root.set("mapped", JsonValue::makeBool(result.mapped));
+    // Before smoothing (and so the same with smoothing on or off), or as sent by a frameeyeosc from before that
+    root.set("values", JsonValue::makeString(view.beforeSmoothing ? "before smoothing" : "as sent (smoothed)"));
     JsonValue plan;
     plan.type = JsonValue::Type::Object;
     plan.set("countdown_s", JsonValue::makeNumber(kCountdownSec));
@@ -370,9 +376,10 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
     plan.set("settle_s", JsonValue::makeNumber(kSettleSec));
     plan.set("min_samples", JsonValue::makeNumber(kMinSamples, true));
     plan.set("distance_m", JsonValue::makeNumber(0.9));
-    plan.set("valve", JsonValue::makeString("combined gaze as gaze_source valve sends it, before the gaze scale"));
-    plan.set("pupil", JsonValue::makeString("combined gaze as gaze_source pupil sends it, before the gaze scale, "
-                                            "only while both pupils give it"));
+    plan.set("valve", JsonValue::makeString("combined gaze as gaze_source valve works it out, before smoothing and "
+                                            "the gaze scale"));
+    plan.set("pupil", JsonValue::makeString("combined gaze as gaze_source pupil works it out, before smoothing and the "
+                                            "gaze scale, only while both pupils give it"));
     plan.set("counted", JsonValue::makeString("samples with both eyes open enough, from settle_s after the hop"));
     plan.set("valve_same", JsonValue::makeString("Valve on exactly the samples the pupils were scored on (both pupils, "
                                                  "not easing from another source)"));
@@ -439,14 +446,15 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
 
 std::string samplesCsv(const std::vector<Row>& rows) {
     std::string out =
-        "panel_s,unix,position,scored,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,valve_x,valve_y,"
-        "pupil_x,pupil_y,openness_left,openness_right\n";
+        "panel_s,unix,position,scored,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,before_smoothing,"
+        "valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right\n";
     char line[320];
     for (const Row& r : rows) {
         const Sample& s = r.sample;
-        std::snprintf(line, sizeof(line), "%.4f,%.3f,%d,%d,%.6f,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n", r.at,
+        std::snprintf(line, sizeof(line), "%.4f,%.3f,%d,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n", r.at,
                       r.wall, r.position, r.scored ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
-                      s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.pupilBlending ? 1 : 0, s.valve[0],
+                      s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.pupilBlending ? 1 : 0,
+                      s.beforeSmoothing ? 1 : 0, s.valve[0],
                       s.valve[1], s.pupil[0],
                       s.pupil[1], s.openness[0], s.openness[1]);
         out += line;

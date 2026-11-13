@@ -63,6 +63,11 @@ pub fn maps(settings: &Settings) -> Option<[EyeMap; 2]> {
     if settings.gaze_source != GazeSource::Pupil {
         return None;
     }
+    mapped(settings)
+}
+
+/// Both eyes' maps whatever gaze_source says (None unless both are complete).
+pub fn mapped(settings: &Settings) -> Option<[EyeMap; 2]> {
     let values = settings.pupil_map_values();
     let centers = settings.pupil_centers();
     let eye = |index: usize| -> Option<EyeMap> {

@@ -463,6 +463,9 @@ pub struct Settings {
     pub gaze_scale_down: f32,
     /// Stream each sample's sent gaze to the panel, which shows it as dots (debug). Not a command-line option.
     pub gaze_debug_dots: bool,
+    /// With the dots on and a pupil map: one more dot for the gaze of the source not in use (Valve's while
+    /// gaze_source is "pupil", the pupils' while it is "valve"), for the panel only; nothing sent changes (dots.rs).
+    pub gaze_debug_dots_compare: bool,
     /// Each eye's Frame openness measured by the panel's eye fit: eyes shut, and open while looking
     /// up, straight ahead and down. None until fitted; see `lid_fit`. Not command-line options.
     pub lid_fit_closed_left: Option<f32>,
@@ -578,6 +581,7 @@ impl Default for Settings {
             gaze_scale_up: 1.0,
             gaze_scale_down: 1.0,
             gaze_debug_dots: false,
+            gaze_debug_dots_compare: false,
             lid_fit_closed_left: None,
             lid_fit_closed_right: None,
             lid_fit_up_left: None,
@@ -1326,6 +1330,15 @@ mod tests {
         let locked = apply_args(&mut settings, &args, &given);
         settings.validate()?;
         Ok((settings, locked))
+    }
+
+    #[test]
+    fn the_compare_dot_switch_is_off_unless_written() {
+        let (settings, _) = merged("{}", &[]).unwrap();
+        assert!(!settings.gaze_debug_dots_compare);
+        let (settings, _) = merged(r#"{"gaze_debug_dots": true, "gaze_debug_dots_compare": true}"#, &[]).unwrap();
+        assert!(settings.gaze_debug_dots && settings.gaze_debug_dots_compare);
+        assert!(merged(r#"{"gaze_debug_dots_compare": 1}"#, &[]).is_err());
     }
 
     #[test]

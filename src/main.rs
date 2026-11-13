@@ -4743,6 +4743,9 @@ struct Bridge {
     source_log: pupil::SourceLog,
     // The panel's debug gaze dots and eye preview (only while gaze_debug_dots is on or the panel listens).
     dots: dots::DotStream,
+    // gaze_debug_dots_compare: the settings with the other gaze_source, and a smoother of its own, for the extra dot
+    // only (compare_dot); None while it is off.
+    compare: Option<(Settings, Box<Smoother>)>,
     // When the last neutral Live Link packet went out.
     livelink_neutral: Option<Instant>,
     // Keeps the Live Link samples at or below LIVELINK_MAX_HZ.
@@ -4831,6 +4834,8 @@ impl Bridge {
         // All the bits again with the next sample, wherever they go now and however many
         self.pupil_bits.reset();
         self.smoother.configure(&settings);
+        // The extra dot's pipeline starts over with the new settings
+        self.compare = None;
         if reset_calibration {
             eprintln!("Starting eyelid calibration over");
             self.calibration.reset(settings.lid_open);
@@ -4920,7 +4925,13 @@ impl Bridge {
             }
         }
         if self.dots.wanted(self.settings.gaze_debug_dots, now) {
+            // The other gaze source's dot first, so the panel has it when this sample's own datagram comes
+            if let Some(other) = self.compare_dot(&data) {
+                self.dots.send_other(&other);
+            }
             self.dots.send(&dot_sample(&self.settings, &data, &sample, self.camera_live.as_ref()));
+        } else {
+            self.compare = None;
         }
         let pupils = self.capture_pupils.update(data.sample_time, &data.extra);
         if let Some(capture) = &mut self.capture {
@@ -4937,6 +4948,37 @@ impl Bridge {
         }
         self.latest = Some(sample);
         Ok(())
+    }
+
+    /// The extra debug dot (gaze_debug_dots_compare, with the dots on and both eyes' pupil maps): the sample worked
+    /// through a second time with the other gaze_source and a smoother of its own, so it is what that source would have
+    /// sent (correction, smoothing, hold and gaze scale included): Valve's while gaze_source is "pupil"; the pupils'
+    /// while it is "valve", only for a sample where both pupils give it (no other source stands in). Nothing of it is
+    /// sent anywhere but to the panel's dots: the bridge's own smoother, sample and status are not touched.
+    fn compare_dot(&mut self, data: &EyeData) -> Option<dots::OtherSample> {
+        if !(self.settings.gaze_debug_dots && self.settings.gaze_debug_dots_compare)
+            || pupil::mapped(&self.settings).is_none()
+        {
+            self.compare = None;
+            return None;
+        }
+        let valve = self.settings.gaze_source == config::GazeSource::Pupil;
+        let (other, smoother) = self.compare.get_or_insert_with(|| {
+            let source = if valve { config::GazeSource::Valve } else { config::GazeSource::Pupil };
+            let other = Settings {
+                gaze_source: source,
+                ..self.settings.clone()
+            };
+            let smoother = Box::new(Smoother::new(&other));
+            (other, smoother)
+        });
+        let sample = process(other, smoother, lid_scales(other, &self.calibration), data, self.camera_live.as_ref());
+        let given = valve || sample.gaze_in_use == Some(pupil::InUse::Pupil);
+        Some(dots::OtherSample {
+            time: data.sample_time,
+            gaze: given.then_some([sample.gaze[4], sample.gaze[5]]),
+            valve,
+        })
     }
 
     /// End the running gaze capture, if it has waited too long for samples.
@@ -4985,6 +5027,7 @@ impl Bridge {
         }
         self.extras.send_lost(idle.as_ref().map(|packet| &packet[..]));
         self.smoother.reset();
+        self.compare = None;
         // The next wear may read differently; reset keeps what this one reads only over short gaps
         self.smoother.cross_eye.level = CrossEyeLevel::default();
         self.active_since = None;
@@ -5316,6 +5359,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         capture_pupils: pupil::Fresh::default(),
         source_log: pupil::SourceLog::default(),
         dots: dots::DotStream::new(status::status_path().parent().unwrap_or(Path::new("/tmp"))),
+        compare: None,
         livelink_neutral: None,
         livelink_throttle: Throttle::default(),
         feo_session: feo::new_session(),
@@ -7401,6 +7445,7 @@ mod tests {
             capture_pupils: pupil::Fresh::default(),
             source_log: pupil::SourceLog::default(),
             dots: dots::DotStream::new(Path::new("/nonexistent")),
+            compare: None,
             livelink_neutral: None,
             livelink_throttle: Throttle::default(),
             feo_session: 7,
@@ -7433,6 +7478,149 @@ mod tests {
         let mut buffer = [0u8; 1024];
         listener.set_read_timeout(Some(Duration::from_millis(300))).unwrap();
         listener.recv(&mut buffer).ok().map(|size| buffer[..size].to_vec())
+    }
+
+    #[test]
+    fn the_compare_dot_changes_nothing_that_is_sent() {
+        use config::GazeSource;
+        use std::os::unix::net::UnixDatagram;
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-compare-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let panel = UnixDatagram::bind(dir.join(dots::SOCKET_NAME)).unwrap();
+        panel.set_nonblocking(true).unwrap();
+        // Made up: the eye server says 2.9° right (tan 0.05), the pupils (map: yaw = -40 + 200 u, pitch = 20 - 200 v)
+        // 6° right and a hair moving; the right pupil still for 0.55 s in the middle (not fresh: one eye only)
+        let readings: Vec<EyeData> = (0..300)
+            .map(|i| {
+                let mut data = reading(i, [0.05, 0.0], [0.9, 0.9]);
+                let u = (6.0 + 40.0) / 200.0 + (i % 2) as f32 * 1e-5;
+                let v = 20.0 / 200.0;
+                let right = if (150..200).contains(&i) { 0.2 } else { u };
+                data.extra[..4].copy_from_slice(&[u, v, right, v]);
+                data
+            })
+            .collect();
+        let map = |settings: Settings| Settings {
+            pupil_yaw_left: Some(-40.0),
+            pupil_yaw_u_left: Some(200.0),
+            pupil_yaw_v_left: Some(0.0),
+            pupil_pitch_left: Some(20.0),
+            pupil_pitch_u_left: Some(0.0),
+            pupil_pitch_v_left: Some(-200.0),
+            pupil_yaw_right: Some(-40.0),
+            pupil_yaw_u_right: Some(200.0),
+            pupil_yaw_v_right: Some(0.0),
+            pupil_pitch_right: Some(20.0),
+            pupil_pitch_u_right: Some(0.0),
+            pupil_pitch_v_right: Some(-200.0),
+            ..settings
+        };
+        let drain_udp = |listener: &UdpSocket, into: &mut Vec<Vec<u8>>| {
+            let mut buffer = [0u8; 2048];
+            while let Ok(size) = listener.recv(&mut buffer) {
+                into.push(buffer[..size].to_vec());
+            }
+        };
+        let drain_panel = |others: &mut Vec<dots::OtherSample>, samples: &mut usize| {
+            let mut buffer = [0u8; 512];
+            while let Ok(size) = panel.recv(&mut buffer) {
+                match dots::decode_other(&buffer[..size]) {
+                    Some(other) => others.push(other),
+                    None => *samples += usize::from(dots::decode(&buffer[..size]).is_some()),
+                }
+            }
+        };
+        // Per source, with the switch off: each sample's combined gaze as sent and where it came from
+        let mut combined: Vec<Vec<([f32; 2], Option<pupil::InUse>)>> = Vec::new();
+        let mut extras: Vec<Vec<dots::OtherSample>> = Vec::new();
+        for source in [GazeSource::Valve, GazeSource::Pupil] {
+            let mut runs = Vec::new();
+            for compare in [false, true] {
+                let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let settings = map(Settings {
+                    host: "127.0.0.1".into(),
+                    port: Some(listener.local_addr().unwrap().port()),
+                    lid_calibration: false,
+                    gaze_debug_dots: true,
+                    gaze_debug_dots_compare: compare,
+                    gaze_source: source,
+                    ..settings()
+                });
+                let mut bridge = test_bridge(settings);
+                bridge.dots = dots::DotStream::new(&dir);
+                let (mut sent, mut seen, mut others, mut samples) = (Vec::new(), Vec::new(), Vec::new(), 0);
+                let mut gazes = Vec::new();
+                for data in &readings {
+                    bridge.on_sample(*data).unwrap();
+                    drain_udp(&listener, &mut sent);
+                    drain_panel(&mut others, &mut samples);
+                    // What the status file says the bridge sent and read (not its settings, which differ by the key)
+                    let status = serde_json::to_value(bridge.status(None, None)).unwrap();
+                    let latest = bridge.latest.as_ref().unwrap();
+                    gazes.push(([latest.gaze[4], latest.gaze[5]], latest.gaze_in_use));
+                    let bits: Vec<u32> = latest.gaze.iter().chain(&latest.raw_gaze).chain(&latest.unscaled_gaze).chain(&latest.lids).map(|v| v.to_bits()).collect();
+                    seen.push(format!(
+                        "{bits:?} {:?} {} {} {} {}",
+                        latest.gaze_in_use, latest.gaze_held, status["sent"], status["raw"], status["gaze_in_use"]
+                    ));
+                }
+                assert_eq!(samples, readings.len());
+                if !compare {
+                    combined.push(gazes);
+                }
+                runs.push((sent, seen, others));
+            }
+            let [(sent_off, seen_off, others_off), (sent_on, seen_on, others_on)] = <[_; 2]>::try_from(runs).ok().unwrap();
+            // Byte for byte the same OSC, the same samples and status values, with the switch off and on
+            assert!(sent_off.len() >= readings.len(), "{}", sent_off.len());
+            assert!(sent_off == sent_on, "{source:?}");
+            assert_eq!(seen_off, seen_on, "{source:?}");
+            // Off: no other datagram; on: one before each sample's
+            assert!(others_off.is_empty());
+            assert_eq!(others_on.len(), readings.len());
+            assert!(others_on.iter().all(|other| other.valve == (source == GazeSource::Pupil)));
+            extras.push(others_on);
+            // Each the time of the sample it belongs to
+            assert!(extras.last().unwrap().iter().zip(&readings).all(|(other, data)| other.time == data.sample_time));
+        }
+        // The extra dot is, sample for sample and to the bit, the combined gaze the other source sends: with "valve"
+        // the pupils' ("pupil" mode's) while both pupils give it, none otherwise; with "pupil" Valve's ("valve" mode's)
+        let (valve_mode, pupil_mode) = (&combined[0], &combined[1]);
+        for (i, (other, (gaze, in_use))) in extras[0].iter().zip(pupil_mode).enumerate() {
+            let want = (*in_use == Some(pupil::InUse::Pupil)).then_some(*gaze);
+            assert_eq!(other.gaze.map(|g| g.map(f32::to_bits)), want.map(|g| g.map(f32::to_bits)), "{i}");
+        }
+        for (i, (other, (gaze, _))) in extras[1].iter().zip(valve_mode).enumerate() {
+            assert_eq!(other.gaze.map(|g| g.map(f32::to_bits)), Some(gaze.map(f32::to_bits)), "{i}");
+        }
+        // ...which here means: the pupils' 6° once settled (5.8: coming from Valve's 2.9°, the backlash deadzone
+        // stops it a little short, as it does for the gaze sent), none while only the left pupil is fresh; Valve's 2.9°
+        // all along
+        let x = |other: &dots::OtherSample| other.gaze.map(|gaze| gaze[0] * 45.0);
+        assert!(extras[0][100..140].iter().all(|other| x(other).is_some_and(|x| (x - 6.0).abs() < 0.5)));
+        assert!(extras[0][170..195].iter().all(|other| other.gaze.is_none()));
+        let valve = 0.05f32.atan().to_degrees();
+        assert!(extras[1][100..300].iter().all(|other| x(other).is_some_and(|x| (x - valve).abs() < 0.5)));
+        // No pupil map: no other dot even with the switch on
+        let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let mut bridge = test_bridge(Settings {
+            port: Some(listener.local_addr().unwrap().port()),
+            host: "127.0.0.1".into(),
+            gaze_debug_dots: true,
+            gaze_debug_dots_compare: true,
+            ..settings()
+        });
+        bridge.dots = dots::DotStream::new(&dir);
+        let (mut others, mut samples) = (Vec::new(), 0);
+        for data in &readings[..20] {
+            bridge.on_sample(*data).unwrap();
+            drain_panel(&mut others, &mut samples);
+        }
+        assert!(others.is_empty() && samples == 20 && bridge.compare.is_none());
+        drop(panel);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

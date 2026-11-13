@@ -23,6 +23,14 @@
 //! reads such a datagram as it did, and this panel reads an older frameeyeosc's (bit 2 clear) as without brows. The
 //! panel also reads version 2 (taking the gaze as sent for the gaze before the scale); other versions it ignores (and
 //! frameeyeosc never reads any).
+//!
+//! While gaze_debug_dots_compare is on too (and both eyes have a pupil map), each sample's datagram above is preceded by
+//! a second, smaller one with the other gaze source's combined gaze (OTHER_SIZE bytes, little-endian): b"FEOC", version
+//! 1, flags (bit 0: there is a value for this sample; bit 1: it is Valve's gaze, the pupils' while clear), 2 reserved
+//! zero bytes, the sample time (f64, the same as in the sample's own datagram), then x and y (f32, 1.0 = 45°; 0 while
+//! bit 0 is clear). A datagram of its own, so the sample's datagram stays as it was: a panel from before reads its
+//! magic and size as not its own and ignores it, and this panel shows no other dot with a frameeyeosc from before (none
+//! comes). Without the switch nothing of it is sent.
 
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
@@ -40,6 +48,12 @@ const BROW_AT: usize = 34;
 const BROWS_FLAG: u8 = 4;
 const UNSCALED_AT: usize = EYES + 2 * EYE_SIZE;
 pub const PACKET_SIZE: usize = UNSCALED_AT + 24;
+// The other gaze's datagram (gaze_debug_dots_compare).
+const OTHER_MAGIC: &[u8; 4] = b"FEOC";
+const OTHER_VERSION: u8 = 1;
+pub const OTHER_SIZE: usize = 24;
+const OTHER_HAS: u8 = 1;
+const OTHER_VALVE: u8 = 2;
 // While gaze_debug_dots is off, whether the panel listens is looked at this often (one stat).
 const LOOK_INTERVAL: Duration = Duration::from_secs(1);
 
@@ -72,6 +86,42 @@ pub struct DotSample {
     pub eyes: [DotEye; 2],
     // Each brow as sent (left, right; 0..1), or None while no brows go out.
     pub brows: Option<[f32; 2]>,
+}
+
+/// The gaze source not in use, for the extra debug dot (gaze_debug_dots_compare): its combined gaze as that source
+/// would have sent it (None for a sample where it gives none), and whether it is Valve's (the pupils' otherwise).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OtherSample {
+    pub time: f64,
+    pub gaze: Option<[f32; 2]>,
+    pub valve: bool,
+}
+
+pub fn encode_other(other: &OtherSample) -> [u8; OTHER_SIZE] {
+    let mut packet = [0u8; OTHER_SIZE];
+    packet[..4].copy_from_slice(OTHER_MAGIC);
+    packet[4] = OTHER_VERSION;
+    packet[5] = if other.valve { OTHER_VALVE } else { 0 };
+    packet[8..16].copy_from_slice(&other.time.to_le_bytes());
+    if let Some([x, y]) = other.gaze {
+        packet[5] |= OTHER_HAS;
+        packet[16..20].copy_from_slice(&x.to_le_bytes());
+        packet[20..24].copy_from_slice(&y.to_le_bytes());
+    }
+    packet
+}
+
+#[cfg(test)]
+pub fn decode_other(packet: &[u8]) -> Option<OtherSample> {
+    if packet.len() != OTHER_SIZE || &packet[..4] != OTHER_MAGIC || packet[4] != OTHER_VERSION {
+        return None;
+    }
+    let f32_at = |at: usize| f32::from_le_bytes(packet[at..at + 4].try_into().unwrap());
+    Some(OtherSample {
+        time: f64::from_le_bytes(packet[8..16].try_into().ok()?),
+        gaze: (packet[5] & OTHER_HAS != 0).then(|| [f32_at(16), f32_at(20)]),
+        valve: packet[5] & OTHER_VALVE != 0,
+    })
 }
 
 /// A brow (0..1) as its u16: 0..=65535, rounded; NaN as 0.
@@ -191,6 +241,15 @@ impl DotStream {
     }
 
     pub fn send(&mut self, sample: &DotSample) {
+        self.send_bytes(&encode(sample));
+    }
+
+    /// The other gaze source's value for the next sample (gaze_debug_dots_compare): sent just before it.
+    pub fn send_other(&mut self, other: &OtherSample) {
+        self.send_bytes(&encode_other(other));
+    }
+
+    fn send_bytes(&mut self, bytes: &[u8]) {
         if self.socket.is_none() {
             self.socket = UnixDatagram::unbound()
                 .and_then(|socket| socket.set_nonblocking(true).map(|()| socket))
@@ -199,7 +258,7 @@ impl DotStream {
         // No panel listening (or it is busy) is normal: the sample is simply dropped. A socket file gone or left by a
         // panel that crashed waits for the next look
         if let Some(socket) = &self.socket
-            && let Err(error) = socket.send_to(&encode(sample), &self.path)
+            && let Err(error) = socket.send_to(bytes, &self.path)
             && matches!(error.kind(), ErrorKind::NotFound | ErrorKind::ConnectionRefused)
         {
             self.listening = false;
@@ -320,6 +379,33 @@ mod tests {
         let rest = decode(&encode(&DotSample { brows: Some([0.0, -0.3]), ..plain })).unwrap();
         assert_eq!(rest.brows, Some([0.0, 0.0]));
         assert_eq!(packet[5] & BROWS_FLAG, BROWS_FLAG);
+    }
+
+    #[test]
+    fn the_other_gaze_goes_in_a_datagram_of_its_own() {
+        let other = OtherSample {
+            time: 19892.729813125,
+            gaze: Some([0.125, -0.25]),
+            valve: true,
+        };
+        let packet = encode_other(&other);
+        assert_eq!(packet.len(), OTHER_SIZE);
+        assert_eq!(&packet[..8], b"FEOC\x01\x03\x00\x00");
+        assert_eq!(decode_other(&packet), Some(other));
+        assert_eq!(f32::from_le_bytes(packet[16..20].try_into().unwrap()), 0.125);
+        // None for this sample (the pupils' gaze, both pupils not there): no value, zeros
+        let none = OtherSample { gaze: None, valve: false, ..other };
+        let empty = encode_other(&none);
+        assert_eq!(&empty[..8], b"FEOC\x01\x00\x00\x00");
+        assert_eq!(empty[16..], [0; 8]);
+        assert_eq!(decode_other(&empty), Some(none));
+        // Not a sample's datagram, nor the other way round: each reader keeps to its own
+        assert_eq!(decode(&packet), None);
+        assert_eq!(decode_other(&encode(&sample())), None);
+        let mut wrong = packet;
+        wrong[4] = 2;
+        assert_eq!(decode_other(&wrong), None);
+        assert_eq!(decode_other(&packet[..23]), None);
     }
 
     #[test]

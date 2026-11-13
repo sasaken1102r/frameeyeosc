@@ -36,11 +36,13 @@
 //! that is there (looked at as above), each sample also goes to it as MEASURE_SIZE bytes, little-endian: b"FEOM",
 //! version 1, flags (bit 0: both eyes have a pupil map; bit 1: the sample counts, both eyes open enough as the eye
 //! fit's captures count them; bit 2: Valve's gaze is held; bit 3: the pupils' gaze is still easing from the source
-//! before, pupil.rs's blend, so not yet its own; a later bit in what was 0, read as clear by a panel from before),
+//! before, pupil.rs's blend, so not yet its own; a later bit in what was 0, read as clear by a panel from before;
+//! bit 4: the gazes are before any smoothing, as below, where a frameeyeosc before it sent them as sent, smoothed),
 //! the pupils' state (0 none without a map, then pupil.rs's
 //! InUse: 1 both pupils, 2 the left only, 3 the right only, 4 held, 5 Valve's standing in), a zero byte, the sample
-//! time (f64), Valve's combined x and y as gaze_source "valve" sends them, the pupils' as "pupil" sends them (f32, 1.0 =
-//! 45°, both before the user's gaze scale; the pupils' 0 without a map), each eye's openness as read (f32). Only the
+//! time (f64), Valve's combined x and y as gaze_source "valve" works it out, the pupils' as "pupil" does (f32, 1.0 =
+//! 45°, both before any smoothing and the user's gaze scale, held while the eyes are shut; the pupils' 0 without a
+//! map), each eye's openness as read (f32). Only the
 //! panel's check reads it; nothing sent elsewhere changes.
 
 use std::io::ErrorKind;
@@ -58,6 +60,7 @@ const MEASURE_MAPPED: u8 = 1;
 const MEASURE_USABLE: u8 = 2;
 const MEASURE_VALVE_HELD: u8 = 4;
 const MEASURE_PUPIL_BLENDING: u8 = 8;
+const MEASURE_BEFORE_SMOOTHING: u8 = 16;
 const MAGIC: &[u8; 4] = b"FEOD";
 const VERSION: u8 = 3;
 const EYES: usize = 64;
@@ -152,6 +155,7 @@ pub struct MeasureSample {
     pub usable: bool,
     pub valve_held: bool,
     pub pupil_blending: bool,
+    pub before_smoothing: bool,
     // 0 without a map; else 1 + pupil.rs's InUse in its order (Pupil, Left, Right, Hold, Valve).
     pub pupil_state: u8,
     pub valve: [f32; 2],
@@ -168,6 +172,7 @@ pub fn encode_measure(sample: &MeasureSample) -> [u8; MEASURE_SIZE] {
         (sample.usable, MEASURE_USABLE),
         (sample.valve_held, MEASURE_VALVE_HELD),
         (sample.pupil_blending, MEASURE_PUPIL_BLENDING),
+        (sample.before_smoothing, MEASURE_BEFORE_SMOOTHING),
     ]
     .iter()
         .filter(|(on, _)| *on)
@@ -192,6 +197,7 @@ pub fn decode_measure(packet: &[u8]) -> Option<MeasureSample> {
         usable: packet[5] & MEASURE_USABLE != 0,
         valve_held: packet[5] & MEASURE_VALVE_HELD != 0,
         pupil_blending: packet[5] & MEASURE_PUPIL_BLENDING != 0,
+        before_smoothing: packet[5] & MEASURE_BEFORE_SMOOTHING != 0,
         pupil_state: packet[6],
         valve: [f32_at(16), f32_at(20)],
         pupil: [f32_at(24), f32_at(28)],
@@ -501,6 +507,7 @@ mod tests {
             usable: true,
             valve_held: false,
             pupil_blending: false,
+            before_smoothing: false,
             pupil_state: 1,
             valve: [0.125, -0.25],
             pupil: [0.5, 0.0625],
@@ -521,6 +528,10 @@ mod tests {
         assert_eq!(&eased[..8], b"FEOM\x01\x0b\x01\x00");
         assert_eq!((0..MEASURE_SIZE).filter(|&i| eased[i] != packet[i]).collect::<Vec<_>>(), [5]);
         assert_eq!(decode_measure(&eased), Some(easing));
+        // Before smoothing: bit 4
+        let before = MeasureSample { before_smoothing: true, ..sample };
+        assert_eq!(&encode_measure(&before)[..8], b"FEOM\x01\x13\x01\x00");
+        assert_eq!(decode_measure(&encode_measure(&before)), Some(before));
         // None of the other datagrams, nor they this one
         assert_eq!(decode(&packet), None);
         assert_eq!(decode_other(&packet[..OTHER_SIZE]), None);

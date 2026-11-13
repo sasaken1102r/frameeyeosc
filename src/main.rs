@@ -1058,6 +1058,9 @@ struct Smoother {
     last_time: Option<f64>,
     // Left, right and combined gaze as last sent, to hold while the gaze is unreliable.
     last_gaze: [Option<[f32; 2]>; 3],
+    // The last combined gaze before smoothing that was not held (Sample::measure_gaze), the same with smoothing on or
+    // off.
+    measure_held: Option<[f32; 2]>,
     // The up/down gaze the eyelid fit last used, kept while the gaze is held.
     lid_vertical: Option<f32>,
     // How long each eye has been read alone below --gaze-hold-below (see ONE_EYE_HOLD_MAX_S).
@@ -1109,6 +1112,7 @@ impl Smoother {
             was_shut: [false; 2],
             last_time: None,
             last_gaze: [None; 3],
+            measure_held: None,
             lid_vertical: None,
             one_eye_low: OneEyeLow::default(),
             seen_open: [false; 2],
@@ -1235,6 +1239,7 @@ impl Smoother {
         self.was_shut = [false; 2];
         self.last_time = None;
         self.last_gaze = [None; 3];
+        self.measure_held = None;
         self.lid_vertical = None;
         self.one_eye_low = OneEyeLow::default();
         self.seen_open = [false; 2];
@@ -3750,6 +3755,12 @@ struct Sample {
     gaze_in_use: Option<pupil::InUse>,
     // ...still easing from the source before (pupil.rs's blend), not yet that source's own.
     gaze_blending: bool,
+    // For the panel's gaze error check: the combined gaze after every step that reads the eyes (the correction, the
+    // pupils, the doubt about one low eye and the hold while the eyes are shut, ...) but before any smoothing (despike
+    // and the filters) and before the user's gaze scale; the same with smoothing on or off. Nothing sent goes by it.
+    measure_gaze: [f32; 2],
+    // ...held there (the eyes shut, or both unreliable).
+    measure_held: bool,
 }
 
 impl Sample {
@@ -3816,8 +3827,9 @@ fn compare_dot_of(settings: &Settings, data: &EyeData, other: &Sample) -> dots::
     }
 }
 
-/// The panel's gaze error check's sample: Valve's and the pupils' combined gaze, each as its own gaze_source sends it
-/// but before the user's gaze scale, one from the sample sent (`sample`) and the other from the other source's run
+/// The panel's gaze error check's sample: Valve's and the pupils' combined gaze, each as its own gaze_source works it
+/// out but before any smoothing and the user's gaze scale (Sample::measure_gaze: the same with smoothing on or off),
+/// one from the sample sent (`sample`) and the other from the other source's run
 /// (`other`, None without pupil maps: then only Valve's, which the sample sent is), with whether the sample counts
 /// (both eyes open enough, as the eye fit's captures count them).
 fn measure_sample(settings: &Settings, data: &EyeData, sample: &Sample, other: Option<&Sample>) -> dots::MeasureSample {
@@ -3827,7 +3839,7 @@ fn measure_sample(settings: &Settings, data: &EyeData, sample: &Sample, other: O
         Some(other) => (sample, Some(other)),
         None => (sample, None),
     };
-    let combined = |run: &Sample| [run.unscaled_gaze[4], run.unscaled_gaze[5]];
+    let combined = |run: &Sample| run.measure_gaze;
     // (InUse's order, from 1; 0 without a map)
     let state = pupil.map_or(0, |run| match run.gaze_in_use {
         Some(pupil::InUse::Pupil) => 1,
@@ -3841,7 +3853,8 @@ fn measure_sample(settings: &Settings, data: &EyeData, sample: &Sample, other: O
         time: data.sample_time,
         mapped: pupil.is_some(),
         usable: sample.capture_usable(),
-        valve_held: valve.gaze_held,
+        valve_held: valve.measure_held,
+        before_smoothing: true,
         pupil_blending: pupil.is_some_and(|run| run.gaze_blending),
         pupil_state: state,
         valve: combined(valve),
@@ -3916,7 +3929,7 @@ fn process(
     // Where the gaze came from with gaze_source "pupil" and a map (None: the eye server's gaze as always)
     let mut gaze_in_use = None;
     let mut gaze_blending = false;
-    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows) = {
+    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows, measure_gaze, measure_held) = {
         // Smoothing off (--raw) leaves out only the smoothing: the One-Euro filters and the gaze deadzone (the gaze is
         // still held while the eyes are shut), despike, the camera's squint and pupil smoothing and the brows' time
         // steps. Everything that reads the eyes (the camera taking over an eye the eye server keeps reading closed, the
@@ -3966,6 +3979,17 @@ fn process(
         // eye's own eye-server gaze in place of the pupils' combined one, and both unusable would hold it while the
         // pupils are seen. (Shut eyes still hold it through shut_for_gaze, below.)
         let usable_gaze = if pupil_used { [true; 2] } else { usable_gaze };
+        // The gaze error check's value: as below, but before despike and the filters, so smoothing on or off gives the
+        // same (the eyes' own openness, not despiked, for the hold)
+        let measure_held = shut_for_gaze(data.openness, doubted, seen_open, settings) || usable_gaze == [false; 2];
+        let chosen = choose_gaze(corrected, usable_gaze, settings.independent_eyes);
+        let measure_gaze = match smoother.measure_held {
+            Some(last) if measure_held => last,
+            _ => {
+                smoother.measure_held = Some([chosen[4], chosen[5]]);
+                [chosen[4], chosen[5]]
+            }
+        };
         let readings: [f32; 8] =
             std::array::from_fn(|i| if i < 6 { corrected[i] } else { data.openness[i - 6] });
         // Fed even while off, so turning it on does not start from an empty history.
@@ -4097,7 +4121,7 @@ fn process(
         }
         let openness_scaled = lid_inputs_with(data.openness, vertical, scales, settings, fits);
         let brows = brows_for(settings, smoother, data.sample_time, smooth.then_some(dt), before_cap, lids, mapped);
-        (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from, close_held, brows)
+        (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from, close_held, brows, measure_gaze, measure_held)
     };
     Sample {
         openness: data.openness,
@@ -4117,6 +4141,8 @@ fn process(
         pupil_open,
         gaze_in_use,
         gaze_blending,
+        measure_gaze,
+        measure_held,
     }
 }
 
@@ -6222,6 +6248,42 @@ mod tests {
     }
 
     #[test]
+    fn the_gaze_error_checks_value_is_the_same_with_smoothing_on_or_off() {
+        // Moving gaze, blinks, one eye read low for a while, a sample dropping out: the value before smoothing is the
+        // same bit for bit with smoothing on and off; the gaze sent is not (the filter lags), and it is held while
+        // the eyes are shut
+        let readings: Vec<EyeData> = (0..400)
+            .map(|i| {
+                let x = ((i as f32) / 25.0).sin() * 0.3;
+                let openness = if (100..108).contains(&i) {
+                    [0.05; 2]
+                } else if (200..300).contains(&i) {
+                    [0.8, 0.2]
+                } else if i == 350 {
+                    [0.8, 0.79]
+                } else {
+                    [0.8; 2]
+                };
+                reading(i, [x, 0.1], openness)
+            })
+            .collect();
+        let runs: Vec<Vec<Sample>> = [false, true]
+            .into_iter()
+            .map(|raw| run(&Settings { raw, despike: true, ..settings() }, &readings))
+            .collect();
+        let bits = |sent: &[Sample]| sent.iter().map(|sample| sample.measure_gaze.map(f32::to_bits)).collect::<Vec<_>>();
+        assert_eq!(bits(&runs[0]), bits(&runs[1]));
+        assert_eq!(runs[0].iter().map(|s| s.measure_held).collect::<Vec<_>>(), runs[1].iter().map(|s| s.measure_held).collect::<Vec<_>>());
+        // Held through the blink, at the value before it
+        assert!(runs[0][101..107].iter().all(|sample| sample.measure_held && sample.measure_gaze == runs[0][99].measure_gaze));
+        // Smoothing on: the gaze sent lags the value before smoothing while the gaze moves
+        let lag = runs[0][20..90].iter().map(|s| (s.unscaled_gaze[4] - s.measure_gaze[0]).abs()).fold(0.0f32, f32::max);
+        assert!(lag > 0.005, "{lag}");
+        // Smoothing off: they are the same where nothing is held (no despike, no filter)
+        assert!(runs[1][20..90].iter().all(|s| s.unscaled_gaze[4] == s.measure_gaze[0]));
+    }
+
+    #[test]
     fn with_smoothing_off_the_camera_still_takes_over_an_eye_the_eye_server_keeps_reading_closed() {
         // The eye server reads the right eye about 0.1 for seconds while the camera sees it open (a headset on which
         // Valve reads one eye low all the time): sent open as with smoothing on, from the same moment; a blink still
@@ -7387,6 +7449,8 @@ mod tests {
             pupil_open: [false; 2],
             gaze_in_use: None,
             gaze_blending: false,
+            measure_gaze: [0.0; 2],
+            measure_held: false,
         }
     }
 
@@ -7630,9 +7694,9 @@ mod tests {
                 let bits: Vec<u32> = latest.gaze.iter().chain(&latest.raw_gaze).chain(&latest.unscaled_gaze).chain(&latest.lids).map(|v| v.to_bits()).collect();
                 out.seen.push(format!("{bits:?} {:?} {} {} {} {}", latest.gaze_in_use, latest.gaze_held, status["sent"], status["raw"], status["gaze_in_use"]));
                 out.unscaled.push((
-                    [latest.unscaled_gaze[4].to_bits(), latest.unscaled_gaze[5].to_bits()],
+                    latest.measure_gaze.map(f32::to_bits),
                     state_of(latest.gaze_in_use),
-                    latest.gaze_held,
+                    latest.measure_held,
                     latest.gaze_blending,
                 ));
             }
@@ -7659,8 +7723,8 @@ mod tests {
             for (i, ((v, p), (from_valve, from_pupil))) in
                 valve_off.unscaled.iter().zip(&pupil_off.unscaled).zip(valve_on.measured.iter().zip(&pupil_on.measured)).enumerate()
             {
-                // Whichever source is sent, the check gets the same two gazes: Valve's as "valve" sends it, the
-                // pupils' as "pupil" does (with where they came from), both before the scale
+                // Whichever source is sent, the check gets the same two gazes: Valve's as "valve" works it out, the
+                // pupils' as "pupil" does (with where they came from), both before smoothing and the scale
                 for m in [from_valve, from_pupil] {
                     assert_eq!(bits(m.valve), v.0, "{i}");
                     assert_eq!(m.valve_held, v.2, "{i}");
@@ -7671,6 +7735,7 @@ mod tests {
                     }
                 }
                 assert_eq!(from_valve.usable, from_pupil.usable);
+                assert!(from_valve.before_smoothing && from_pupil.before_smoothing);
             }
             // Counted while both eyes are open; not while they are shut; the pupils' state as it was
             assert!(valve_on.measured[100].usable && !valve_on.measured[255].usable);

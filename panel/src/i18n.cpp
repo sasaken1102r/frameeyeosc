@@ -198,7 +198,7 @@ UiText makeJapanese() {
     t.footer = "押すとすぐ本体に反映され、再起動しても残ります。パネルを終了しても送信は続きます";
 
     t.rowSmoothing = "スムージング";
-    t.hintSmoothing = "オフ = なめらかさだけ切る";
+    t.hintSmoothing = "オフ = なめらかにしない";
     t.rowStrength = "なめらかさ";
     t.strengthLight = "弱";
     t.strengthMedium = "中";
@@ -1457,7 +1457,7 @@ UiText makeEnglish() {
     t.footer = "Changes apply at once and survive restarts. Sending goes on after you quit the panel";
 
     t.rowSmoothing = "Smoothing";
-    t.hintSmoothing = "Off = no smoothing, same tracking";
+    t.hintSmoothing = "Off = no smoothing";
     t.rowStrength = "Smoothness";
     t.strengthLight = "Light";
     t.strengthMedium = "Medium";

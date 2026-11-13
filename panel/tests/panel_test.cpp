@@ -1351,6 +1351,113 @@ void testGazeCompareRow(const FontSet& fonts) {
     }
 }
 
+/**
+ * A made-up gaze error check, run through gaze_measure::Session at 90 samples a second: Valve off by about (-7.6,
+ * +2.4) and more at the right, the pupils by about (+0.5, -0.3), one place where only the left pupil was seen.
+ * @param mapped with a pupil map
+ * @param stopAfter stop after this many places (-1: the whole run)
+ * @return the check's view
+ */
+gaze_measure::View madeUpMeasure(bool mapped, int stopAfter = -1) {
+    using namespace gaze_measure;
+    Session session;
+    double now = 10.0;
+    session.start(now, 1.79e9);
+    const double dt = 1.0 / 90;
+    const double until = stopAfter < 0 ? now + kRunSec + 0.5 : now + kCountdownSec + stopAfter * kHoldSec + 0.5;
+    for (; now < until && (session.active() || now < 10.1); now += dt) {
+        session.tick(now, 1.79e9 + now);
+        const int index = session.view().index;
+        Sample sample;
+        sample.mapped = mapped;
+        sample.usable = true;
+        double g[2] = {0, 0};
+        if (index >= 0) targetGaze(kPositions[index], g);
+        const double right = std::max(0.0, g[0]) * 0.15;
+        sample.valve[0] = static_cast<float>((g[0] - 7.6 + right) / 45);
+        sample.valve[1] = static_cast<float>((g[1] + 2.4 - 0.05 * g[1]) / 45);
+        if (mapped) {
+            sample.pupilState = index == 4 ? PupilState::Left : PupilState::Pupil;
+            sample.pupil[0] = static_cast<float>((g[0] + 0.5 + 0.03 * g[1]) / 45);
+            sample.pupil[1] = static_cast<float>((g[1] - 0.3 - 0.04 * g[0]) / 45);
+        }
+        session.add(now + 0.002, 1.79e9 + now, sample);
+    }
+    if (stopAfter >= 0) session.stop(now, 1.79e9 + now);
+    return session.view();
+}
+
+/**
+ * Advanced > Debug tools: "Measure gaze error" under the compare row (pressable while frameeyeosc runs, and no eye fit
+ * does; its note says whether the pupils are measured too); while it runs its screen in the tab's place with only
+ * "Stop" (and the tabs); its result with both sources, without a map, stopped. With PANEL_TEST_PNG_DIR set, each to a
+ * PNG there.
+ */
+void testMeasure(const FontSet& fonts) {
+    const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
+    for (const Language language : {Language::Ja, Language::En}) {
+        const std::string lang = language == Language::Ja ? "ja" : "en";
+        const auto png = [&](const EyePanel& panel, const std::string& name) {
+            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/measure_" + name + "_" + lang + "_2026-11-13_19-00-00.png");
+        };
+        PanelModel m = modelWith(Lids::Both, true);
+        m.language = language;
+        m.config.root.set(key::kGazeDebugDots, JsonValue::makeBool(true));
+        for (const auto& eye : kPupilMapKeys) {
+            for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
+        }
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Tools);
+        // The row: its button, under the compare row
+        panel.render(m);
+        std::vector<EyePanel::HitArea> start = hits(panel, PanelAction::MeasureStart);
+        const std::vector<EyePanel::HitArea> compare = hits(panel, PanelAction::SetBool, key::kGazeDebugDotsCompare);
+        CHECK(start.size() == 1 && compare.size() == 2);
+        if (start.size() == 1 && compare.size() == 2) CHECK(start[0].y >= compare[0].y + compare[0].h);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+        png(panel, "row");
+        // ...not without frameeyeosc running, nor while an eye fit runs
+        PanelModel stopped = m;
+        stopped.status.running = false;
+        panel.render(stopped);
+        CHECK(hits(panel, PanelAction::MeasureStart).empty());
+        // Running: its screen, only "Stop" and the tabs can be pressed
+        m.measure.phase = gaze_measure::Phase::Running;
+        m.measure.index = 6;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::MeasureStop).size() == 1 && hits(panel, PanelAction::MeasureStart).empty());
+        for (const EyePanel::HitArea& area : panel.hitAreas()) {
+            CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::MeasureStop);
+        }
+        png(panel, "running");
+        // Done with both sources: "Again" and "Close"
+        m.measure = madeUpMeasure(true);
+        CHECK(m.measure.phase == gaze_measure::Phase::Done && m.measure.result.pupil.positions == 14);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::MeasureClose).size() == 1 && hits(panel, PanelAction::MeasureStart).size() == 1);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+        png(panel, "result");
+        // Without a pupil map: Valve only, and why
+        m.measure = madeUpMeasure(false);
+        CHECK(!m.measure.result.mapped && m.measure.result.valve.positions == 15);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::MeasureClose).size() == 1);
+        png(panel, "result_nomap");
+        // Stopped partway, and failed
+        m.measure = madeUpMeasure(true, 4);
+        CHECK(m.measure.phase == gaze_measure::Phase::Stopped && m.measure.positionsDone == 4);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::MeasureClose).size() == 1);
+        png(panel, "stopped");
+        m.measure = gaze_measure::View();
+        m.measure.phase = gaze_measure::Phase::Failed;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::MeasureClose).size() == 1);
+        png(panel, "failed");
+    }
+}
+
 void testSubTabs(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         EyePanel panel(fonts);
@@ -4704,6 +4811,7 @@ int main() {
     testSavedData(fonts);
     testGazeRingsRow(fonts);
     testGazeCompareRow(fonts);
+    testMeasure(fonts);
     testUpdateNotice(fonts);
     testUpdateBeta(fonts);
     testDiagFromEyecam(fonts);

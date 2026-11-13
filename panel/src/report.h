@@ -1,6 +1,7 @@
 // Records of calibrations and eye fits ("Recent records" on the Advanced tab's "Having trouble" page, and
-// `frameeyeosc-panel --report`). Each eye-camera calibration started from the panel and each eye fit (from the panel,
-// or the re-wear fit run by itself when the headset is put on) leaves a folder
+// `frameeyeosc-panel --report`). Each eye-camera calibration started from the panel, each eye fit (from the panel,
+// or the re-wear fit run by itself when the headset is put on) and each gaze error check (gaze_measure.h) leaves a
+// folder
 // ~/.local/state/frameeyeosc/reports/<kind>_YYYY-MM-DD_HH-MM-SS/ with:
 //   summary.json   what ran, how it ended and why (Japanese and English), the versions, the diagnostic code at the
 //                  end, the conditions (dashboard, camera and tracker rates, time since the headset was put on) and
@@ -12,6 +13,7 @@
 //                  kMaxLogBytes)
 //   calib_result.json  a calibration's numbers, copied from eyecam's calibration folder (never images, never
 //                  calib_samples.csv)
+//   measure.json, samples.csv  a gaze error check's scores and its samples (gaze_measure::recordJson, samplesCsv)
 //   report.txt     the same as summary.json, for reading (frameeyeosc-panel --report latest prints it)
 // Only the newest kKeep are kept (by summary.json's start, not the folders' local-time names), and only those files
 // are ever deleted. Nothing is sent anywhere. The logs are read after the run, on a worker thread
@@ -28,6 +30,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace report {
@@ -59,7 +62,7 @@ constexpr size_t kMaxValveBytes = 4 * 1024 * 1024;
 constexpr size_t kMaxJournalBytes = 4 * 1024 * 1024;
 
 /** What ran. */
-enum class Kind { CalibWear, CalibUser, Fit, Recenter };
+enum class Kind { CalibWear, CalibUser, Fit, Recenter, Measure };
 
 /** How it ended: Stopped is stopped before the end without anything having gone wrong ("Stop", another tab, the
  *  panel closing), not a failure. */
@@ -70,7 +73,7 @@ enum class Source { Core, Panel, Eyecam, Valve };
 
 /**
  * @param kind the kind
- * @return its name in folder names and summary.json ("calib-wear", "calib-user", "fit", "recenter")
+ * @return its name in folder names and summary.json ("calib-wear", "calib-user", "fit", "recenter", "measure")
  */
 const char* kindName(Kind kind);
 
@@ -357,6 +360,8 @@ struct Pending {
     Summary summary;
     std::string statusLines;  ///< status.jsonl
     std::string calibDir;     ///< eyecam's folder for this calibration ("" = look for it under eyecamHome)
+    /** Files of the run's own, by name (only the names a record may have: measure.json and samples.csv). */
+    std::vector<std::pair<std::string, std::string>> files;
     Language language = Language::Ja;  ///< report.txt's
 };
 

@@ -26,7 +26,8 @@ namespace report {
 namespace {
 
 /** The files of a record, in the order the record view lists them. */
-constexpr const char* kFileNames[] = {"report.txt", "logs.txt", "status.jsonl", "calib_result.json", "summary.json"};
+constexpr const char* kFileNames[] = {"report.txt",   "logs.txt",     "status.jsonl", "calib_result.json",
+                                     "measure.json", "samples.csv", "summary.json"};
 
 /**
  * printf into a string.
@@ -329,12 +330,13 @@ const char* kindName(Kind kind) {
         case Kind::CalibUser: return "calib-user";
         case Kind::Fit: return "fit";
         case Kind::Recenter: return "recenter";
+        case Kind::Measure: return "measure";
     }
     return "fit";
 }
 
 bool parseKind(const std::string& name, Kind& kind) {
-    for (const Kind k : {Kind::CalibWear, Kind::CalibUser, Kind::Fit, Kind::Recenter}) {
+    for (const Kind k : {Kind::CalibWear, Kind::CalibUser, Kind::Fit, Kind::Recenter, Kind::Measure}) {
         if (name == kindName(k)) {
             kind = k;
             return true;
@@ -661,6 +663,7 @@ std::string kindLabel(const UiText& t, const Summary& summary) {
         case Kind::Recenter: return summary.mode == "tilt" ? t.kindRecenterTilt : t.kindRecenter;
         case Kind::CalibWear: return t.kindCalibWear;
         case Kind::CalibUser: return t.kindCalibUser;
+        case Kind::Measure: return t.kindMeasure;
     }
     return t.kindFit;
 }
@@ -963,6 +966,10 @@ bool writeRecord(const std::string& dir, Pending pending, const Sources& sources
             text.size() <= kMaxCalibResultBytes && plainJson(text)) {
             ok &= writeFile(path + "/calib_result.json", text);
         }
+    }
+    // The run's own files (a gaze error check's scores and samples), only by a name a record may have
+    for (const auto& [name, text] : pending.files) {
+        if (name == "measure.json" || name == "samples.csv") ok &= writeFile(path + "/" + name, text);
     }
     ok &= writeFile(path + "/report.txt",
                     reportText(uiText(pending.language), s, shortPathOf(path) + "/"));

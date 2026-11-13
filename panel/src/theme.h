@@ -59,6 +59,8 @@ constexpr Color kDotLeft = hexColor(0x6ee2ff);
 constexpr Color kDotRight = hexColor(0xd9701c);
 /** The extra debug dot (gaze_debug_dots_compare: the gaze source not in use): violet, and a diamond, not a circle */
 constexpr Color kDotOther = hexColor(0xc58cff);
+/** The gaze error check's picture: Valve's offsets in the compare dot's violet (kDotOther), the pupils' in amber */
+constexpr Color kMeasurePupil = hexColor(0xf0b429);
 constexpr Color kSuccess = hexColor(0x3fb950);    ///< sending
 constexpr Color kSuccessTint = blendColor(kSuccess, kCard, 0.15);
 /** The camera floor's line on the sent eyelid bars while no eye is on the cameras */

@@ -4150,6 +4150,169 @@ void EyePanel::drawEyeFitRunning(const Pen& pen, const UiText& t, const gaze_fit
                {PanelAction::FitStop, nullptr, 0}, true, false, 32);
 }
 
+void EyePanel::drawMeasureRun(const Pen& pen, const UiText& t) {
+    // Calm and still like the eye fit's: one line to say what to do, how under it, and a big "Stop" at the bottom
+    const double cx = (kRightX + kRight) / 2;
+    const double width = kInnerRight - kInnerX - 40;
+    double baseline = kContentY + 64;
+    textCentered(pen, cx, baseline, t.measureRunTitle, fitSize(pen, t.measureRunTitle, 26, 18, width, true), kText, true);
+    baseline += 12;
+    size_t lines = 0;
+    for (const std::string& sentence : sentences(t.measureRunHow)) {
+        if (lines >= 4) break;
+        for (const std::string& line : wrapText(pen, sentence, 17, false, width, 4 - lines)) {
+            baseline += 26;
+            textCentered(pen, cx, baseline, line, 17, kTextMuted, false);
+            ++lines;
+        }
+    }
+    const double stopW = 360;
+    const double stopH = 84;
+    drawButton(pen, cx - stopW / 2, kContentY + kContentH - 36 - stopH, stopW, stopH, t.measureStop,
+               {PanelAction::MeasureStop, nullptr, 0}, true, false, 32);
+}
+
+void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelModel& m) {
+    using gaze_measure::Phase;
+    const gaze_measure::View& view = m.measure;
+    const gaze_measure::Result& r = view.result;
+    const double x0 = kInnerX;
+    const double x1 = kInnerRight;
+    double y = kRowTop - 6;
+    const char* title = view.phase == Phase::Done      ? t.measureResultTitle
+                        : view.phase == Phase::Stopped ? t.measureStoppedTitle
+                                                       : t.measureFailedTitle;
+    y += drawSectionTitle(pen, y, title);
+    // "Again" and "Close" at the bottom right
+    const double buttonH = 48;
+    const double buttonY = kContentY + kContentH - 22 - buttonH;
+    const double closeW = std::max(130.0, pen.measure(t.measureClose, 18, true) + 40);
+    const double againW = std::max(150.0, pen.measure(t.measureAgain, 18, true) + 40);
+    drawButton(pen, x1 - closeW, buttonY, closeW, buttonH, t.measureClose, {PanelAction::MeasureClose, nullptr, 0}, true,
+               false, 18);
+    drawButton(pen, x1 - closeW - 12 - againW, buttonY, againW, buttonH, t.measureAgain,
+               {PanelAction::MeasureStart, nullptr, 0}, m.status.running && !fitRunning(m.fit), false, 18);
+    const auto paragraph = [&](double& baseline, const std::string& text, double size, Color color, bool bold,
+                               double left, double width, size_t maxLines) {
+        for (const std::string& line : wrapText(pen, text, size, bold, width, maxLines)) {
+            pen.text(left, baseline, line, size, color, bold);
+            baseline += size * 1.45;
+        }
+    };
+    if (view.phase != Phase::Done) {
+        double baseline = y + 30;
+        if (view.phase == Phase::Stopped) {
+            char text[200];
+            std::snprintf(text, sizeof(text), t.measureStoppedFormat, std::to_string(view.positionsDone).c_str());
+            paragraph(baseline, text, 17, kText, false, x0, x1 - x0, 3);
+        } else {
+            paragraph(baseline, t.measureNoData, 17, kText, false, x0, x1 - x0, 3);
+        }
+        return;
+    }
+    // The picture: the places (rings) inside the eye fit's range, a line from each to each source's median there
+    const double picW = 300;
+    const double picH = 236;
+    const double picY = y + 4;
+    fillRounded(pen, x0, picY, picW, picH, 14, kBg);
+    strokeRounded(pen, x0, picY, picW, picH, 14, kDivider, 1.5);
+    const double rangeX = 26.0;  // degrees across half the picture
+    const double rangeY = 20.0;
+    const double pcx = x0 + picW / 2;
+    const double pcy = picY + (picH - 26) / 2;
+    const double sx = (picW / 2 - 14) / rangeX;
+    const double sy = ((picH - 26) / 2 - 12) / rangeY;
+    const auto px = [&](double deg) { return pcx + std::clamp(deg, -rangeX, rangeX) * sx; };
+    const auto py = [&](double deg) { return pcy - std::clamp(deg, -rangeY, rangeY) * sy; };
+    cairo_t* cr = pen.cr;
+    pen.color(kDivider);
+    cairo_set_line_width(cr, 1);
+    cairo_move_to(cr, x0 + 10, pcy);
+    cairo_line_to(cr, x0 + picW - 10, pcy);
+    cairo_move_to(cr, pcx, picY + 10);
+    cairo_line_to(cr, pcx, picY + picH - 34);
+    cairo_stroke(cr);
+    for (int i = 0; i < gaze_measure::kPositionCount; ++i) {
+        const gaze_measure::PositionScore& p = r.positions[i];
+        const double tx = px(p.gaze[0]);
+        const double ty = py(p.gaze[1]);
+        const auto offset = [&](const gaze_measure::SourceScore& s, Color c) {
+            if (!s.counts()) return;
+            const double ex = px(p.gaze[0] + s.dx);
+            const double ey = py(p.gaze[1] + s.dy);
+            cairo_set_source_rgb(cr, c.r, c.g, c.b);
+            cairo_set_line_width(cr, 2);
+            cairo_move_to(cr, tx, ty);
+            cairo_line_to(cr, ex, ey);
+            cairo_stroke(cr);
+            drawDot(cr, ex, ey, 3, c);
+        };
+        offset(r.positions[i].valve, kDotOther);
+        offset(r.positions[i].pupil, kMeasurePupil);
+        drawRing(cr, tx, ty, 4.5, 1.5, kText);
+    }
+    // Its legend under it
+    {
+        double lx = x0 + 16;
+        const double ly = picY + picH - 12;
+        const double size = 13;
+        drawRing(cr, lx, ly - 4, 4.5, 1.5, kText);
+        lx += 10;
+        lx += pen.text(lx, ly, t.measureLegendDot, size, kTextMuted) + 14;
+        drawDot(cr, lx, ly - 4, 4, kDotOther);
+        lx += 9;
+        lx += pen.text(lx, ly, t.measureValve, size, kTextMuted) + 14;
+        if (r.mapped) {
+            drawDot(cr, lx, ly - 4, 4, kMeasurePupil);
+            lx += 9;
+            pen.text(lx, ly, t.measurePupil, size, kTextMuted);
+        }
+    }
+    // Per source: its errors, its mean offset, its worst place
+    const double textX = x0 + picW + 22;
+    const double textW = x1 - textX;
+    double baseline = y + 20;
+    const auto one = [&](double value) {
+        char text[32];
+        std::snprintf(text, sizeof(text), "%.1f", value);
+        return std::string(text);
+    };
+    const auto source = [&](const char* name, Color color, const gaze_measure::Overall& o, bool pupil) {
+        drawDot(cr, textX + 6, baseline - 6, 5, color);
+        pen.text(textX + 18, baseline, name, 18, kText, true);
+        baseline += 26;
+        if (pupil && !r.mapped) {
+            paragraph(baseline, t.measureNoPupilMap, 15, kTextMuted, false, textX, textW, 2);
+            return;
+        }
+        if (o.positions == 0) {
+            paragraph(baseline, t.measureTooFew, 15, kTextMuted, false, textX, textW, 2);
+            return;
+        }
+        char text[256];
+        std::snprintf(text, sizeof(text), t.measureErrorFormat, one(o.error).c_str(), one(o.meanError).c_str());
+        paragraph(baseline, text, 16, kText, false, textX, textW, 1);
+        std::snprintf(text, sizeof(text), t.measureShiftFormat, gaze_measure::shiftText(t, o.dx, o.dy).c_str());
+        paragraph(baseline, text, 15, kTextMuted, false, textX, textW, 2);
+        const std::string place = gaze_measure::positionText(t, r.positions[o.worst].target);
+        std::snprintf(text, sizeof(text), t.measureWorstFormat, place.c_str(), one(o.worstError).c_str());
+        paragraph(baseline, text, 15, kTextMuted, false, textX, textW, 2);
+        if (pupil && r.window > 0) {
+            const auto percent = [&](int count) { return std::to_string(std::lround(100.0 * count / r.window)); };
+            std::snprintf(text, sizeof(text), t.measureShareFormat, percent(r.states[1]).c_str(),
+                          percent(r.states[2] + r.states[3]).c_str(), percent(r.states[4]).c_str(),
+                          percent(r.states[5]).c_str());
+            paragraph(baseline, text, 14, kTextMuted, false, textX, textW, 2);
+        }
+    };
+    source(t.measureValve, kDotOther, r.valve, false);
+    baseline += 10;
+    source(t.measurePupil, kMeasurePupil, r.pupil, true);
+    // Under it all: Valve's self-calibration may have used the dot
+    double noteBaseline = picY + picH + 26;
+    paragraph(noteBaseline, t.measureNote, 14, kTextMuted, false, x0, x1 - x0 - closeW - againW - 40, 2);
+}
+
 void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& v, bool busy, double y) {
     const char* offsetKeys[2] = {key::kGazeOffsetX, key::kGazeOffsetY};
     const char* gainKeys[3] = {key::kGazeGainX, key::kGazeGainUp, key::kGazeGainDown};
@@ -4909,6 +5072,15 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
     // "Record for squint training": its sheet in the tab's place (its recording runs in it)
     if (contribOpen_) {
         drawContrib(pen, t, m);
+        return;
+    }
+    // The gaze error check while it runs, and its result until it is closed, in the tab's place
+    if (m.measure.phase == gaze_measure::Phase::Countdown || m.measure.phase == gaze_measure::Phase::Running) {
+        drawMeasureRun(pen, t);
+        return;
+    }
+    if (m.measure.phase != gaze_measure::Phase::Idle) {
+        drawMeasureResult(pen, t, m);
         return;
     }
     // The developer recording: its light warning, and its steps while it runs, in the tab's place (one for squint
@@ -5773,7 +5945,29 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
             cairo_fill(pen.cr);
             pen.text(cx + 12, top + 18, pupilSent ? t.gazeCompareValve : t.gazeComparePupil, size, legendText);
         }
-        y += h + 14;
+        y += h + 10;
+    }
+    // The gaze error check (gaze_measure.h): about a minute of a dot hopping, Valve's and the pupils' gaze scored;
+    // nothing is written. Only while frameeyeosc runs and no eye fit does; without a pupil map only Valve's
+    {
+        // (a little lower than the rows above, so the page still fits with the developer rows under it)
+        const double h = 52;
+        const bool canRun = m.status.running && !fitRunning(m.fit);
+        drawRowLabel(pen, t, y, h, t.rowMeasure, t.hintMeasure, false);
+        const double buttonW = std::max(200.0, pen.measure(t.measureStart, 18, true) + 40);
+        drawButton(pen, kControlX, y + (h - 46) / 2, buttonW, 46, t.measureStart,
+                   {PanelAction::MeasureStart, nullptr, 0}, canRun, false, 18);
+        const double noteX = kControlX + buttonW + 14;
+        const char* note = !m.status.running ? t.fitNeedsRunning
+                           : pupilMapInConfig(v) ? t.measureBoth
+                                                 : t.measureOnlyValve;
+        const std::vector<std::string> lines = wrapText(pen, note, 14, false, right - noteX, 2);
+        double baseline = y + h / 2 - (lines.size() - 1) * 9 + 5;
+        for (const std::string& line : lines) {
+            pen.text(noteX, baseline, line, 14, kTextMuted);
+            baseline += 18;
+        }
+        y += h + 6;
     }
     // The eye log: record the raw eye data to a file, from now until "Stop" (or 60 minutes)
     {
@@ -9276,6 +9470,17 @@ void EyePanel::render(const PanelModel& model) {
             if (a != PanelAction::Tab && a != PanelAction::FitStop && !(previewOpen_ && previewSheetAction(a))) {
                 b.usable = false;
             }
+        }
+    }
+    // While the gaze error check runs (its screen on the Advanced tab), only the tabs (leaving stops it) and "Stop"
+    const bool measuring =
+        model.measure.phase == gaze_measure::Phase::Countdown || model.measure.phase == gaze_measure::Phase::Running;
+    if (tab_ == PanelTab::Advanced && measuring) {
+        pen.color(kBg, 0.72);
+        cairo_rectangle(pen.cr, kStatusX, kStatusY, kStatusW, kStatusH);
+        cairo_fill(pen.cr);
+        for (Button& b : buttons_) {
+            if (b.hit.action != PanelAction::Tab && b.hit.action != PanelAction::MeasureStop) b.usable = false;
         }
     }
     if (promptOpen()) drawPrompt(pen, t);

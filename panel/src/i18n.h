@@ -1067,6 +1067,47 @@ struct UiText {
     const char* gazeCompareSent;     ///< its legend: the dot of the gaze being sent...
     const char* gazeCompareValve;    ///< ...and the extra dot: Valve's gaze (gaze_source "pupil")...
     const char* gazeComparePupil;    ///< ...or the pupils' (gaze_source "valve")
+    const char* rowMeasure;          ///< the gaze error check (gaze_measure.h), on Debug tools
+    const char* hintMeasure;
+    const char* measureStart;        ///< its button
+    const char* measureOnlyValve;    ///< beside it without a pupil map
+    const char* measureBoth;         ///< ...with one
+    const char* measureRunTitle;     ///< while it runs
+    const char* measureRunHow;
+    const char* measureStop;
+    const char* measureResultTitle;  ///< the result
+    const char* measureValve;
+    const char* measurePupil;
+    const char* measureErrorFormat;  ///< median and mean error (two %s)
+    const char* measureShiftFormat;  ///< the mean offset (%s: shiftText)
+    const char* measureWorstFormat;  ///< the worst place (%s place, %s degrees)
+    const char* measureShareFormat;  ///< the pupils' share (%s percent each: both, one eye, held, Valve)
+    const char* measureNoPupilMap;
+    const char* measureTooFew;       ///< a source with no place counted
+    const char* measureNote;         ///< under the result
+    const char* measureStoppedTitle;
+    const char* measureStoppedFormat;///< (%s places done)
+    const char* measureFailedTitle;
+    const char* measureNoData;
+    const char* measureAgain;
+    const char* measureClose;
+    const char* measureLegendDot;    ///< the picture's legend: the dots
+    const char* measureLeftFormat;   ///< shiftText's parts
+    const char* measureRightFormat;
+    const char* measureUpFormat;
+    const char* measureDownFormat;
+    const char* measureAnd;
+    const char* measureNoShift;
+    const char* measurePlaceLeft;    ///< positionText's parts
+    const char* measurePlaceRight;
+    const char* measurePlaceUp;
+    const char* measurePlaceDown;
+    const char* measurePlaceAnd;
+    const char* measurePlaceCenter;
+    const char* measureBriefValve;   ///< the record list's line
+    const char* measureBriefPupil;
+    const char* measureBriefAnd;
+    const char* kindMeasure;         ///< the record's kind
     const char* rowUpdateCheck;
     const char* hintUpdateCheck;
     const char* updateUpToDateFormat;   ///< "Up to date (%s)"

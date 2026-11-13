@@ -104,7 +104,7 @@ double angleBetween(const double a[2], const double b[2]);
 /** A sample as received: when (the panel's clock), the place then shown (-1 in the countdown), whether it counts. */
 struct Row {
     double at = 0.0;
-    double unix = 0.0;
+    double wall = 0.0;   ///< wall clock (Unix seconds)
     int position = -1;
     bool scored = false;
     Sample sample;

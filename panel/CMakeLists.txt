@@ -52,6 +52,7 @@ add_executable(frameeyeosc-panel
   src/eye_rate.cpp
   src/gaze_dots.cpp
   src/gaze_fit.cpp
+  src/gaze_measure.cpp
   src/fit_text.cpp
   src/host_entry.cpp
   src/i18n.cpp
@@ -104,6 +105,12 @@ add_executable(gaze-dots-test tests/gaze_dots_test.cpp src/gaze_dots.cpp src/gaz
 target_include_directories(gaze-dots-test PRIVATE src)
 target_compile_options(gaze-dots-test PRIVATE -Wall -Wextra)
 add_test(NAME gaze-dots COMMAND gaze-dots-test)
+
+# The gaze error check's datagram, timing, scores and record files, tested without OpenVR: panel/build/measure-test
+add_executable(measure-test tests/measure_test.cpp src/gaze_measure.cpp src/json.cpp src/i18n.cpp src/icons.cpp)
+target_include_directories(measure-test PRIVATE src)
+target_compile_options(measure-test PRIVATE -Wall -Wextra)
+add_test(NAME measure COMMAND measure-test)
 
 # The eye preview without cairo or OpenVR: which values drive the drawn eyes, the lids' and pupil's geometry, eyecam-rec's
 # preview file (made-up pictures in a folder under /tmp: its checks, the seqlock, a replaced or removed file), when the
@@ -175,6 +182,7 @@ add_executable(panel-test tests/panel_test.cpp
   src/eye_rate.cpp
   src/fit_text.cpp
   src/gaze_fit.cpp
+  src/gaze_measure.cpp
   src/host_entry.cpp
   src/i18n.cpp
   src/icons.cpp

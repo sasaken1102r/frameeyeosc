@@ -3679,6 +3679,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::NumberSlider:                // the loop writes the slider's value (SetNumber)
         case PanelAction::EyecamSensitivity: return;  // the loop sends the slider's value
         case PanelAction::SetupBegin: return;  // handled inside the panel
+        case PanelAction::MeasureStart:
+        case PanelAction::MeasureStop:
+        case PanelAction::MeasureClose: return;  // the loop runs the gaze error check
         case PanelAction::SetupProceed:
             std::fprintf(stderr, "[setup] on to the eye cameras' page\n");
             model.eyecam.flow.proceed();
@@ -4214,6 +4217,43 @@ std::string briefOf(const std::string& message) {
  * A run still going when the panel closes, for its record: stopped, "パネルを閉じた".
  * @param s the record's summary
  */
+/**
+ * A gaze error check's record: how it ended, and its numbers in both languages (gaze_measure::briefText).
+ * @param s the summary
+ * @param view the check
+ */
+void fillMeasureResult(report::Summary& s, const gaze_measure::View& view) {
+    using gaze_measure::Phase;
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    char text[200];
+    switch (view.phase) {
+        case Phase::Done:
+            s.result = report::Result::Ok;
+            s.brief = gaze_measure::briefText(ja, view.result);
+            s.briefEn = gaze_measure::briefText(en, view.result);
+            s.reason = s.brief.empty() ? ja.measureTooFew : s.brief;
+            s.reasonEn = s.briefEn.empty() ? en.measureTooFew : s.briefEn;
+            break;
+        case Phase::Failed:
+            s.result = report::Result::Failed;
+            s.reason = ja.measureNoData;
+            s.reasonEn = en.measureNoData;
+            s.brief = ja.measureFailedTitle;
+            s.briefEn = en.measureFailedTitle;
+            break;
+        default:
+            s.result = report::Result::Stopped;
+            std::snprintf(text, sizeof(text), ja.measureStoppedFormat, std::to_string(view.positionsDone).c_str());
+            s.reason = text;
+            std::snprintf(text, sizeof(text), en.measureStoppedFormat, std::to_string(view.positionsDone).c_str());
+            s.reasonEn = text;
+            s.brief = ja.measureStoppedTitle;
+            s.briefEn = en.measureStoppedTitle;
+            break;
+    }
+}
+
 void fillClosedResult(report::Summary& s) {
     s.result = report::Result::Stopped;
     s.reason = s.brief = uiText(Language::Ja).recordPanelClosed;
@@ -4428,6 +4468,12 @@ int runOverlay(const Options& options) {
     report::Writer writer(model.records.dir, report::systemSources());
     report::Run fitRun;
     report::Run calibRun;
+    // The gaze error check (gaze_measure.h): its run, its socket (bound while it runs: frameeyeosc then passes Valve's
+    // and the pupils' gaze each sample) and its record
+    gaze_measure::Session measure;
+    gaze_measure::Receiver measureSocket;
+    report::Run measureRun;
+    std::string drawnMeasure;  // the check's phase and place as last drawn
     std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself, "command" for --action
     bool fitRetryShown = false;        // the last fit was a re-wear fit the dashboard stopped, to be tried again
     std::string calibCommand;          // the calibration's command, to know its reply
@@ -4546,6 +4592,47 @@ int runOverlay(const Options& options) {
         calibWatch.end();
         submitRecord(std::move(pending));
     };
+    // The gaze error check: started from its button (not while an eye fit runs, nor without frameeyeosc), its record
+    // written when it ends (done, stopped or failed), with its scores and samples as the record's own files
+    const auto startMeasure = [&]() {
+        if (measure.active() || fit.active() || !model.status.running) return;
+        const size_t slash = model.statusPath.find_last_of('/');
+        const std::string dir = slash == std::string::npos ? "." : model.statusPath.substr(0, slash);
+        std::string error;
+        if (!measureSocket.open(dir + "/" + gaze_measure::kSocketName, error)) {
+            std::fprintf(stderr, "[measure] %s\n", error.c_str());
+            return;
+        }
+        measure.start(nowSeconds(), unixNow());
+        measureRun.begin(report::Kind::Measure, unixNow());
+        report::Summary& s = measureRun.summary();
+        s.trigger = "panel";
+        s.conditions = runConditions(model, vr, recenter);
+        s.conditions.ipdMm = vr.userIpdMeters() * 1000;
+        std::fprintf(stderr, "[measure] started: %d places, %.1f s each (counted from %.1f s), %.0f s in all\n",
+                     gaze_measure::kPositionCount, gaze_measure::kHoldSec, gaze_measure::kSettleSec,
+                     gaze_measure::kRunSec);
+    };
+    const auto finishMeasure = [&]() {
+        measureSocket.close();
+        targetPainter.reset();
+        if (!measureRun.active()) return;
+        const gaze_measure::View& done = measure.view();
+        report::Pending pending = measureRun.finish(unixNow());
+        fillMeasureResult(pending.summary, done);
+        pending.files.emplace_back("measure.json", gaze_measure::recordJson(done, measure.shownAt(), measure.startedAt(), done.result));
+        pending.files.emplace_back("samples.csv", gaze_measure::samplesCsv(measure.rows()));
+        const gaze_measure::Result& r = done.result;
+        std::fprintf(stderr,
+                     "[measure] %s after %d places, %d samples: Valve median %.2f deg (%d places), pupil median %.2f "
+                     "deg (%d places)\n",
+                     done.phase == gaze_measure::Phase::Done      ? "done"
+                     : done.phase == gaze_measure::Phase::Stopped ? "stopped"
+                                                                  : "failed",
+                     done.positionsDone, done.samples, r.valve.error, r.valve.positions, r.pupil.error,
+                     r.pupil.positions);
+        submitRecord(std::move(pending));
+    };
     while (!gStopRequested && !userQuit) {
         if (gShowRequested) {
             gShowRequested = 0;
@@ -4643,6 +4730,17 @@ int runOverlay(const Options& options) {
                         std::fprintf(stderr, "[fit] stopped: another tab chosen\n");
                         fit.cancel(gaze_fit::Failure::Left);
                     }
+                    // ...and the gaze error check
+                    if (panel.tab() != tabBefore && measure.active()) {
+                        std::fprintf(stderr, "[measure] stopped: another tab chosen\n");
+                        measure.stop(nowSeconds(), unixNow());
+                    }
+                    if (hit.action == PanelAction::MeasureStart) startMeasure();
+                    if (hit.action == PanelAction::MeasureStop && measure.active()) {
+                        std::fprintf(stderr, "[measure] stopped\n");
+                        measure.stop(nowSeconds(), unixNow());
+                    }
+                    if (hit.action == PanelAction::MeasureClose) measure.dismiss();
                     if (hit.action == PanelAction::Quit) {
                         std::fprintf(stderr, "[VR] quitting from the panel's \"Quit\"\n");
                         userQuit = true;
@@ -4962,7 +5060,7 @@ int runOverlay(const Options& options) {
                     loggedYaw = actions.yawDeg;
                     loggedPitch = actions.pitchDeg;
                 }
-            } else {
+            } else if (!measure.active()) {
                 vr.hideTarget();
                 if (targetFrames > 0) {
                     const double seconds = nowSeconds() - targetShownAt;
@@ -4983,6 +5081,47 @@ int runOverlay(const Options& options) {
                 if (!lastFitState.empty() || view.phase != gaze_fit::Phase::Idle) std::fprintf(stderr, "[fit] %s\n", state);
                 lastFitState = state;
                 model.fit = view;
+                dirty = true;
+            }
+        }
+        // The gaze error check: the samples waiting (each put to the place shown when it came), then the dot, on the
+        // eye fit's target overlay (an eye fit starting, the re-wear one by itself, takes over and stops it)
+        {
+            if (measure.active() && fit.active()) {
+                std::fprintf(stderr, "[measure] stopped: an eye fit started\n");
+                measure.stop(nowSeconds(), unixNow());
+            }
+            if (measureSocket.isOpen()) {
+                std::vector<gaze_measure::Sample> got;
+                measureSocket.poll(got);
+                for (const gaze_measure::Sample& sample : got) measure.add(nowSeconds(), unixNow(), sample);
+            }
+            const gaze_measure::Tick tick = measure.tick(nowSeconds(), unixNow());
+            const bool soundsOn = model.config.flag(key::kFitSounds);
+            if (tick.showTarget) {
+                const bool drawn =
+                    targetPainter.paint(fonts, gaze_fit::TargetStyle::Dot, "", tick.seconds, tick.progress);
+                targetUp = vr.showTarget(tick.yawDeg, tick.pitchDeg, drawn ? targetPainter.rgba().data() : nullptr,
+                                         kTargetImageSize);
+                if (drawn && !targetUp) targetPainter.reset();
+                if (tick.hopped) {
+                    if (soundsOn) player.play(sounds::Cue::Pop);
+                    std::fprintf(stderr, "[measure] place %d: %.1f deg right, %.1f deg up\n", measure.view().index + 1,
+                                 tick.yawDeg, tick.pitchDeg);
+                }
+            }
+            if (tick.ended) {
+                vr.hideTarget();
+                const gaze_measure::Phase phase = measure.view().phase;
+                if (soundsOn && phase == gaze_measure::Phase::Done) player.play(sounds::Cue::Done);
+                if (soundsOn && phase == gaze_measure::Phase::Failed) player.play(sounds::Cue::Fail);
+                finishMeasure();
+            }
+            const std::string shown = std::to_string(static_cast<int>(measure.view().phase)) + "/" +
+                                      std::to_string(measure.view().index);
+            if (shown != drawnMeasure) {
+                drawnMeasure = shown;
+                model.measure = measure.view();
                 dirty = true;
             }
         }
@@ -5399,12 +5538,13 @@ int runOverlay(const Options& options) {
         }
 
         // A run's status a second (status.jsonl)
-        if ((fitRun.active() || calibRun.active()) && unixNow() >= lastRunSample + 1.0) {
+        if ((fitRun.active() || calibRun.active() || measureRun.active()) && unixNow() >= lastRunSample + 1.0) {
             lastRunSample = unixNow();
             const std::string core = readSmallFile(model.statusPath);
             const std::string eyecamText = readSmallFile(model.eyecamDir + "/status.json");
             fitRun.sample(lastRunSample, core, eyecamText);
             calibRun.sample(lastRunSample, core, eyecamText);
+            measureRun.sample(lastRunSample, core, eyecamText);
         }
         // A record written: the failure screens' bar links to it, the lists show it
         {
@@ -5412,7 +5552,7 @@ int runOverlay(const Options& options) {
             report::Kind kind = report::Kind::Fit;
             while (writer.poll(folder, kind)) {
                 const bool calib = kind == report::Kind::CalibWear || kind == report::Kind::CalibUser;
-                (calib ? model.records.lastCalib : model.records.lastFit) = folder;
+                if (kind != report::Kind::Measure) (calib ? model.records.lastCalib : model.records.lastFit) = folder;
                 loadRecords(model);
                 if (panel.recordShown() == folder) openRecordView(model, folder);
                 dirty = true;
@@ -5529,7 +5669,7 @@ int runOverlay(const Options& options) {
         // (the dots only while packets arrive: with none for kStaleSec, the usual slow poll)
         const bool dotsLive = dots.isOpen() && dotsWanted && nowSeconds() - lastDotAt <= gaze_dots::kStaleSec;
         // (and while the eye capture's light fades, so its alpha steps are small)
-        const bool everyFrame = fit.active() || dotsLive || lightMoving;
+        const bool everyFrame = fit.active() || measure.active() || dotsLive || lightMoving;
         // While eyecam-rec runs, as often as with the panel open, so the light follows its steps closely
         const bool eyecamLive = model.eyecam.visible || vr.fillShown() || eyecamControl.busy();
         if (!(targetUp && vr.waitFrameSync(kFrameSyncTimeoutMs))) {
@@ -5578,6 +5718,8 @@ int runOverlay(const Options& options) {
         calibWatch.end();
         submitRecord(std::move(pending));
     }
+    if (measure.active()) measure.stop(nowSeconds(), unixNow());
+    finishMeasure();
     writer.finish();
     std::fprintf(stderr, "[VR] done\n");
     if (lockFd >= 0) ::close(lockFd);

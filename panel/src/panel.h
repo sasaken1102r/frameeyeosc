@@ -180,6 +180,9 @@ enum class PanelAction {
     EyeRateChoose,     ///< "Having trouble"'s eye camera speed: arg = eye_rate::Choice (the caller writes 90, or removes
                        ///< the key for SteamVR's default)
     SetGazeSource,     ///< gaze_source = kGazeSources[arg] (the Eye fit tab's "Gaze source" row, under "When put on")
+    MeasureStart,      ///< the gaze error check: start (or "Again" on its result)
+    MeasureStop,       ///< ...stop it while it runs
+    MeasureClose,      ///< ...close its result
 };
 
 /** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
@@ -1699,6 +1702,23 @@ private:
      * @param title the section's title instead of the recording's ("" = its own; "Record for squint training")
      */
     void drawRun(const Pen& pen, const UiText& t, const PanelModel& model, const std::string& title = "");
+
+    /**
+     * The gaze error check while it runs, in the Advanced tab's place: what to do, and a big "Stop" (the dot shows in
+     * front of the panel).
+     * @param pen the pen
+     * @param t texts
+     */
+    void drawMeasureRun(const Pen& pen, const UiText& t);
+
+    /**
+     * The gaze error check's result (or why there is none), in the Advanced tab's place until it is closed: per
+     * source its errors, its mean offset and its worst place, a picture of the places with each source's offsets.
+     * @param pen the pen
+     * @param t texts
+     * @param m the model
+     */
+    void drawMeasureResult(const Pen& pen, const UiText& t, const PanelModel& m);
 
     /**
      * "Record for squint training" (contrib::screen): the consent, the question about glasses, the start with what to

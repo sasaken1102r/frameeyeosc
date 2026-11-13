@@ -13,6 +13,7 @@
 #include "eye_preview.h"
 #include "frame_apps.h"
 #include "gaze_fit.h"
+#include "gaze_measure.h"
 #include "i18n.h"
 #include "recorder.h"
 #include "report.h"
@@ -52,6 +53,7 @@ struct PanelModel {
     Language language = Language::Ja;
     frame_updater::UpdateStatus update;  ///< new-release check and install (see frame-updater)
     gaze_fit::View fit;          ///< the eye fit session (Eye fit tab)
+    gaze_measure::View measure;  ///< the gaze error check (Advanced > Debug tools)
     bool fitRetry = false;       ///< ...stopped by the dashboard opening while re-centering by itself, which tries
                                  ///< again once the dashboard is closed (auto_recenter::Watcher::fitEnded)
     recorder::View recording;    ///< the eye log (Advanced tab, and a mark in the left column while it records)

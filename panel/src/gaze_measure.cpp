@@ -315,7 +315,7 @@ void Session::add(double now, double unixNow, const Sample& sample) {
     if (rows_.size() >= kMaxRows) return;
     Row row;
     row.at = now;
-    row.unix = unixNow;
+    row.wall = unixNow;
     row.sample = sample;
     // The place shown when it arrived (the newest shown at or before it), counted from kSettleSec after it was shown
     // until the next one
@@ -423,7 +423,7 @@ std::string samplesCsv(const std::vector<Row>& rows) {
     for (const Row& r : rows) {
         const Sample& s = r.sample;
         std::snprintf(line, sizeof(line), "%.4f,%.3f,%d,%d,%.6f,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n", r.at,
-                      r.unix, r.position, r.scored ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
+                      r.wall, r.position, r.scored ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
                       s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.valve[0], s.valve[1], s.pupil[0],
                       s.pupil[1], s.openness[0], s.openness[1]);
         out += line;

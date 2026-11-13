@@ -61,6 +61,39 @@ struct Position {
 /** The places in order: the centre, the four sides, the four corners (crossing over), then four in between. */
 extern const Position kPositions[kPositionCount];
 
+/** Which way a run goes through kPositions: as listed, or the other way round (the countdown at the centre first
+ *  either way). Runs alternate, so a drift over the minute and a place's own offset can be told apart. */
+enum class Order { Forward, Reverse };
+
+/**
+ * @param order the order
+ * @return "forward" or "reverse" (measure.json, samples.csv)
+ */
+const char* orderName(Order order);
+
+/**
+ * The order after a run that went `last` way.
+ * @param last the last run's order
+ * @return the other one
+ */
+inline Order nextOrder(Order last) { return last == Order::Forward ? Order::Reverse : Order::Forward; }
+
+/**
+ * The last run's order from its measure.json: its "order" (a record from before the alternation went forward).
+ * @param json the file's text ("" if there is none)
+ * @param found where to write whether there was a run at all
+ * @return its order (Forward when none)
+ */
+Order orderInRecord(const std::string& json, bool& found);
+
+/**
+ * Which place a run shows at a step.
+ * @param order the run's order
+ * @param step 0.. kPositionCount-1
+ * @return the place (index into kPositions)
+ */
+inline int placeAt(Order order, int step) { return order == Order::Forward ? step : kPositionCount - 1 - step; }
+
 /** Where the pupils' gaze came from in a sample (pupil.rs's InUse, with None when there is no map). */
 enum class PupilState : uint8_t { None = 0, Pupil, Left, Right, Hold, Valve };
 constexpr int kStateCount = 6;
@@ -189,7 +222,9 @@ enum class Phase { Idle, Countdown, Running, Done, Stopped, Failed };
 /** What the panel shows. */
 struct View {
     Phase phase = Phase::Idle;
+    Order order = Order::Forward;  ///< which way this run goes
     int index = -1;            ///< the place shown (-1 in the countdown)
+    int step = -1;             ///< ...as the how-many-th of the run (0-based; -1 in the countdown)
     double startUnix = 0.0;    ///< wall clock at the start (Valve's log can be matched to it)...
     double endUnix = 0.0;      ///< ...and at the end
     int positionsDone = 0;     ///< places fully shown
@@ -217,8 +252,9 @@ public:
      * Start (a run already going starts over).
      * @param now the panel's monotonic seconds
      * @param unixNow wall clock
+     * @param order which way through the places
      */
-    void start(double now, double unixNow);
+    void start(double now, double unixNow, Order order = Order::Forward);
 
     /**
      * Stop before the end ("Stop", leaving the page, the panel closing).
@@ -285,12 +321,13 @@ private:
 std::string recordJson(const View& view, const double* shownAt, double startedAt, const Result& result);
 
 /**
- * samples.csv: a row per sample received (the panel's time, the wall clock, the place, whether it counts, then the
- * sample's fields).
+ * samples.csv: a row per sample received (the panel's time, the wall clock, the run's order, the place and its step in
+ * the run, whether it counts, then the sample's fields).
  * @param rows the samples
+ * @param order the run's order
  * @return the text
  */
-std::string samplesCsv(const std::vector<Row>& rows);
+std::string samplesCsv(const std::vector<Row>& rows, Order order = Order::Forward);
 
 /**
  * An offset in words: "左に 7.6°、上に 2.4°" / "7.6° left, 2.4° up" (a part under 0.05° left out).

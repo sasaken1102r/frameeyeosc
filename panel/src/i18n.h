@@ -1110,7 +1110,9 @@ struct UiText {
     const char* measureBriefValve;   ///< the record list's line
     const char* measureBriefPupil;
     const char* measureBriefAnd;
-    const char* kindMeasure;         ///< the record's kind
+    const char* kindMeasure;
+    const char* measureOrderForward;  ///< the check's result: which way it went through the places
+    const char* measureOrderReverse;         ///< the record's kind
     const char* rowUpdateCheck;
     const char* hintUpdateCheck;
     const char* updateUpToDateFormat;   ///< "Up to date (%s)"

@@ -4489,6 +4489,20 @@ int runOverlay(const Options& options) {
     }
     report::Run measureRun;
     std::string drawnMeasure;  // the check's phase and place as last drawn
+    // Which way the next check goes (they alternate): the other way from the newest check's record, read once now (a
+    // record from before the alternation went forward), then flipped at each start
+    gaze_measure::Order nextMeasureOrder = gaze_measure::Order::Forward;
+    for (const report::Summary& record : report::list(model.records.dir)) {
+        if (record.kind != report::Kind::Measure) continue;
+        bool found = false;
+        const gaze_measure::Order last = gaze_measure::orderInRecord(
+            readSmallFile(model.records.dir + "/" + record.folder + "/measure.json"), found);
+        if (found) nextMeasureOrder = gaze_measure::nextOrder(last);
+        std::fprintf(stderr, "[measure] next check %s (the last one, %s, went %s)\n",
+                     gaze_measure::orderName(nextMeasureOrder), record.folder.c_str(),
+                     found ? gaze_measure::orderName(last) : "?");
+        break;
+    }
     std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself, "command" for --action
     bool fitRetryShown = false;        // the last fit was a re-wear fit the dashboard stopped, to be tried again
     std::string calibCommand;          // the calibration's command, to know its reply
@@ -4618,15 +4632,16 @@ int runOverlay(const Options& options) {
             std::fprintf(stderr, "[measure] %s\n", error.c_str());
             return;
         }
-        measure.start(nowSeconds(), unixNow());
+        measure.start(nowSeconds(), unixNow(), nextMeasureOrder);
+        nextMeasureOrder = gaze_measure::nextOrder(nextMeasureOrder);
         measureRun.begin(report::Kind::Measure, unixNow());
         report::Summary& s = measureRun.summary();
         s.trigger = "panel";
         s.conditions = runConditions(model, vr, recenter);
         s.conditions.ipdMm = vr.userIpdMeters() * 1000;
-        std::fprintf(stderr, "[measure] started: %d places, %.1f s each (counted from %.1f s), %.0f s in all\n",
-                     gaze_measure::kPositionCount, gaze_measure::kHoldSec, gaze_measure::kSettleSec,
-                     gaze_measure::kRunSec);
+        std::fprintf(stderr, "[measure] started: %d places %s, %.1f s each (counted from %.1f s), %.0f s in all\n",
+                     gaze_measure::kPositionCount, gaze_measure::orderName(measure.view().order), gaze_measure::kHoldSec,
+                     gaze_measure::kSettleSec, gaze_measure::kRunSec);
     };
     const auto finishMeasure = [&]() {
         measureSocket.close();
@@ -4637,7 +4652,7 @@ int runOverlay(const Options& options) {
         report::Pending pending = measureRun.finish(unixNow());
         fillMeasureResult(pending.summary, done);
         pending.files.emplace_back("measure.json", gaze_measure::recordJson(done, measure.shownAt(), measure.startedAt(), done.result));
-        pending.files.emplace_back("samples.csv", gaze_measure::samplesCsv(measure.rows()));
+        pending.files.emplace_back("samples.csv", gaze_measure::samplesCsv(measure.rows(), done.order));
         const gaze_measure::Result& r = done.result;
         std::fprintf(stderr,
                      "[measure] %s after %d places, %d samples: Valve median %.2f deg (%d places), pupil median %.2f "

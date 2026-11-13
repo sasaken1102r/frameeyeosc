@@ -268,7 +268,9 @@ void testRun() {
     const std::string csv = samplesCsv(sim.session.rows());
     size_t lines = 0;
     for (char ch : csv) lines += ch == '\n' ? 1 : 0;
-    CHECK(lines == sim.session.rows().size() + 1 && csv.rfind("panel_s,unix,position,scored,sample_time", 0) == 0);
+    CHECK(lines == sim.session.rows().size() + 1 && csv.rfind("panel_s,unix,order,run_index,position,scored,sample_time", 0) == 0);
+    CHECK(csv.find(",forward,") != std::string::npos && csv.find(",reverse,") == std::string::npos);
+    CHECK(root.get("order") != nullptr && root.get("order")->text == "forward");
     CHECK(csv.find(",pupil_state,pupil_blending,before_smoothing,valve_x,") != std::string::npos);
     // The simulation's samples came without bit 4 (as from an older frameeyeosc): said so
     CHECK(root.get("values") != nullptr && root.get("values")->text == "as sent (smoothed)" && !v.beforeSmoothing);
@@ -304,6 +306,64 @@ void testValveFallback() {
             }
         }
     }
+}
+
+/** Runs alternate: forward, then the places the other way round (the countdown at the centre first either way). */
+void testOrder() {
+    CHECK(std::string(orderName(Order::Forward)) == "forward" && std::string(orderName(Order::Reverse)) == "reverse");
+    CHECK(nextOrder(Order::Forward) == Order::Reverse && nextOrder(Order::Reverse) == Order::Forward);
+    CHECK(placeAt(Order::Forward, 0) == 0 && placeAt(Order::Reverse, 0) == kPositionCount - 1);
+    CHECK(placeAt(Order::Reverse, kPositionCount - 1) == 0);
+    // The last run's order from its record: none, one from before the alternation (forward), forward, reverse
+    bool found = true;
+    CHECK(orderInRecord("", found) == Order::Forward && !found);
+    CHECK(orderInRecord("not json", found) == Order::Forward && !found);
+    CHECK(orderInRecord("{\"result\": \"done\"}", found) == Order::Forward && found);
+    CHECK(orderInRecord("{\"order\": \"forward\"}", found) == Order::Forward && found);
+    CHECK(orderInRecord("{\"order\": \"reverse\"}", found) == Order::Reverse && found);
+    // A reversed run: the countdown at the centre, then the last place first and the centre last
+    Simulation sim;
+    sim.session.start(sim.now, 0, Order::Reverse);
+    CHECK(sim.session.view().order == Order::Reverse);
+    std::vector<int> shown;
+    const double dt = 1.0 / 90;
+    bool centreFirst = false;
+    while (sim.now < 100.0 + kRunSec + 1.0) {
+        const Tick tick = sim.session.tick(sim.now, sim.now);
+        if (sim.session.view().phase == Phase::Countdown && tick.showTarget) {
+            centreFirst = tick.yawDeg == kPositions[0].yawDeg && tick.pitchDeg == kPositions[0].pitchDeg;
+        }
+        if (tick.hopped && sim.session.view().index >= 0) shown.push_back(sim.session.view().index);
+        if (sim.session.active()) sim.session.add(sim.now + 0.002, sim.now, sim.sampleAt(sim.now));
+        sim.now += dt;
+    }
+    CHECK(centreFirst && shown.size() == static_cast<size_t>(kPositionCount));
+    for (size_t i = 0; i < shown.size(); ++i) CHECK(shown[i] == kPositionCount - 1 - static_cast<int>(i));
+    const View& v = sim.session.view();
+    CHECK(v.phase == Phase::Done && v.positionsDone == kPositionCount);
+    // Each place shown in its turn, and scored as itself (the same offsets as forward)
+    const double* at = sim.session.shownAt();
+    for (int i = 1; i < kPositionCount; ++i) CHECK(at[i] < at[i - 1]);
+    for (int i = 0; i < kPositionCount; ++i) {
+        CHECK(near(v.result.positions[i].valve.dx, i == 3 ? -15.0 : -7.6, 1e-4));
+        CHECK(v.result.positions[i].window >= 223 && v.result.positions[i].window <= 227);
+    }
+    // The record: its order, each place's step in the run, and the order on every sample's row
+    JsonValue root;
+    std::string error;
+    CHECK(parseJson(recordJson(v, at, sim.session.startedAt(), v.result), root, error));
+    CHECK(root.get("order") != nullptr && root.get("order")->text == "reverse");
+    const JsonValue* positions = root.get("positions");
+    CHECK(positions != nullptr && positions->items.size() == static_cast<size_t>(kPositionCount));
+    if (positions != nullptr && positions->items.size() == static_cast<size_t>(kPositionCount)) {
+        CHECK(positions->items[0].get("run_index")->number == kPositionCount - 1);
+        CHECK(positions->items[kPositionCount - 1].get("run_index")->number == 0);
+        CHECK(positions->items[0].get("shown_s")->number > positions->items[1].get("shown_s")->number);
+    }
+    const std::string csv = samplesCsv(sim.session.rows(), v.order);
+    CHECK(csv.find(",reverse,") != std::string::npos && csv.find(",forward,") == std::string::npos);
+    // (a row of the first place shown: place 14, its step 0)
+    CHECK(csv.find(",reverse,0,14,") != std::string::npos);
 }
 
 void testWithoutMap() {
@@ -419,6 +479,7 @@ int main() {
     testGeometry();
     testRun();
     testWithoutMap();
+    testOrder();
     testValveFallback();
     testStopAndNoData();
     testTexts();

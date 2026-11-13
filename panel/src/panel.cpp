@@ -4331,8 +4331,10 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
            r.mapped && !sameMain);
     baseline += 10;
     source(t.measurePupil, kMeasurePupil, r.pupil, true, nullptr, false);
-    // Under it all: Valve's self-calibration may have used the dot
+    // Under it all: which way the dot went this time, and that Valve's self-calibration may have used the dot
     double noteBaseline = picY + picH + 26;
+    paragraph(noteBaseline, view.order == gaze_measure::Order::Reverse ? t.measureOrderReverse : t.measureOrderForward,
+              14, kTextMuted, false, x0, x1 - x0, 1);
     paragraph(noteBaseline, t.measureNote, 14, kTextMuted, false, x0, x1 - x0 - closeW - againW - 40, 2);
 }
 

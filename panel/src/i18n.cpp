@@ -1118,6 +1118,8 @@ UiText makeJapanese() {
     t.measureBriefPupil = "瞳 %s°";
     t.measureBriefAnd = "・";
     t.kindMeasure = "視線のズレ測定";
+    t.measureOrderForward = "順番: ふつう";
+    t.measureOrderReverse = "順番: 逆";
     t.rowUpdateCheck = "新しい版の確認";
     t.hintUpdateCheck = "起動時と 1 時間に 1 回、GitHub に新しい版がないか見に行きます";
     t.updateUpToDateFormat = "最新版です（%s）";
@@ -2385,6 +2387,8 @@ UiText makeEnglish() {
     t.measureBriefPupil = "pupil %s°";
     t.measureBriefAnd = ", ";
     t.kindMeasure = "Gaze error check";
+    t.measureOrderForward = "Order: forward";
+    t.measureOrderReverse = "Order: reversed";
     t.rowUpdateCheck = "Check for updates";
     t.hintUpdateCheck = "Looks on GitHub for a new version at start and every hour";
     t.updateUpToDateFormat = "Up to date (%s)";

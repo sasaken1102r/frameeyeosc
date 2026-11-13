@@ -140,6 +140,21 @@ const Position kPositions[kPositionCount] = {
     {-20, -15}, {-10, 0},  {10, 0},    {-10, 7.5}, {10, -7.5}, {10, 7.5}, {-10, -7.5},
 };
 
+const char* orderName(Order order) {
+    return order == Order::Forward ? "forward" : "reverse";
+}
+
+Order orderInRecord(const std::string& json, bool& found) {
+    found = false;
+    JsonValue root;
+    std::string error;
+    if (json.empty() || !parseJson(json, root, error) || !root.isObject()) return Order::Forward;
+    found = true;
+    const JsonValue* order = root.get("order");
+    return order != nullptr && order->isString() && order->text == orderName(Order::Reverse) ? Order::Reverse
+                                                                                              : Order::Forward;
+}
+
 bool decode(const uint8_t* data, size_t size, Sample& out) {
     if (size != kSampleSize || std::memcmp(data, kMagic, 4) != 0 || data[4] != kVersion) return false;
     Sample s;
@@ -249,9 +264,10 @@ Result score(const std::vector<Row>& rows) {
     return result;
 }
 
-void Session::start(double now, double unixNow) {
+void Session::start(double now, double unixNow, Order order) {
     view_ = View();
     view_.phase = Phase::Countdown;
+    view_.order = order;
     view_.startUnix = unixNow;
     rows_.clear();
     rows_.reserve(6000);
@@ -304,8 +320,8 @@ Tick Session::tick(double now, double unixNow) {
         appeared_ = true;
         return tick;
     }
-    const int index = static_cast<int>(std::floor((now - runFrom) / kHoldSec));
-    if (index >= kPositionCount) {
+    const int step = static_cast<int>(std::floor((now - runFrom) / kHoldSec));
+    if (step >= kPositionCount) {
         view_.positionsDone = kPositionCount;
         end(Phase::Done, unixNow);
         ended_ = false;
@@ -313,9 +329,11 @@ Tick Session::tick(double now, double unixNow) {
         return tick;
     }
     view_.phase = Phase::Running;
-    if (index != view_.index) {
+    const int index = placeAt(view_.order, step);
+    if (step != view_.step) {
         // The dot moves now: its window is timed from when it is shown
-        view_.positionsDone = std::max(0, index);
+        view_.positionsDone = std::max(0, step);
+        view_.step = step;
         view_.index = index;
         shownAt_[index] = now;
         tick.hopped = true;
@@ -338,14 +356,15 @@ void Session::add(double now, double unixNow, const Sample& sample) {
     row.at = now;
     row.wall = unixNow;
     row.sample = sample;
-    // The place shown when it arrived (the newest shown at or before it), counted from kSettleSec after it was shown
-    // until the next one
-    for (int i = kPositionCount - 1; i >= 0; --i) {
-        if (std::isfinite(shownAt_[i]) && shownAt_[i] <= now) {
-            row.position = i;
-            row.scored = now >= shownAt_[i] + kSettleSec && now < shownAt_[i] + kHoldSec;
-            break;
-        }
+    // The place shown when it arrived (the one shown last at or before it, whichever way the run goes), counted from
+    // kSettleSec after it was shown until the next one
+    for (int i = 0; i < kPositionCount; ++i) {
+        if (!std::isfinite(shownAt_[i]) || shownAt_[i] > now) continue;
+        if (row.position < 0 || shownAt_[i] > shownAt_[row.position]) row.position = i;
+    }
+    if (row.position >= 0) {
+        const double shown = shownAt_[row.position];
+        row.scored = now >= shown + kSettleSec && now < shown + kHoldSec;
     }
     rows_.push_back(row);
 }
@@ -366,6 +385,8 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
     root.set("start_ms", JsonValue::makeNumber(std::llround(view.startUnix * 1000), true));
     root.set("end_ms", JsonValue::makeNumber(std::llround(view.endUnix * 1000), true));
     root.set("samples", JsonValue::makeNumber(view.samples, true));
+    // Which way the run went through the places (they alternate run by run); each place's step is its "run_index"
+    root.set("order", JsonValue::makeString(orderName(view.order)));
     root.set("mapped", JsonValue::makeBool(result.mapped));
     // Before smoothing (and so the same with smoothing on or off), or as sent by a frameeyeosc from before that
     root.set("values", JsonValue::makeString(view.beforeSmoothing ? "before smoothing" : "as sent (smoothed)"));
@@ -403,6 +424,7 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
         JsonValue v;
         v.type = JsonValue::Type::Object;
         v.set("index", JsonValue::makeNumber(i, true));
+        v.set("run_index", JsonValue::makeNumber(placeAt(view.order, i), true));
         v.set("yaw_deg", JsonValue::makeNumber(p.target.yawDeg));
         v.set("pitch_deg", JsonValue::makeNumber(p.target.pitchDeg));
         v.set("target_gaze_x_deg", JsonValue::makeNumber(p.gaze[0]));
@@ -444,15 +466,15 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
     return writeJson(root) + "\n";
 }
 
-std::string samplesCsv(const std::vector<Row>& rows) {
+std::string samplesCsv(const std::vector<Row>& rows, Order order) {
     std::string out =
-        "panel_s,unix,position,scored,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,before_smoothing,"
+        "panel_s,unix,order,run_index,position,scored,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,before_smoothing,"
         "valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right\n";
     char line[320];
     for (const Row& r : rows) {
         const Sample& s = r.sample;
-        std::snprintf(line, sizeof(line), "%.4f,%.3f,%d,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n", r.at,
-                      r.wall, r.position, r.scored ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
+        std::snprintf(line, sizeof(line), "%.4f,%.3f,%s,%d,%d,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n",
+                      r.at, r.wall, orderName(order), r.position < 0 ? -1 : placeAt(order, r.position), r.position, r.scored ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
                       s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.pupilBlending ? 1 : 0,
                       s.beforeSmoothing ? 1 : 0, s.valve[0],
                       s.valve[1], s.pupil[0],

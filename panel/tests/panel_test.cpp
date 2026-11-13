@@ -1401,7 +1401,7 @@ void testMeasure(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         const std::string lang = language == Language::Ja ? "ja" : "en";
         const auto png = [&](const EyePanel& panel, const std::string& name) {
-            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/measure_" + name + "_" + lang + "_2026-11-13_21-00-00.png");
+            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/measure_" + name + "_" + lang + "_2026-11-14_10-10-00.png");
         };
         PanelModel m = modelWith(Lids::Both, true);
         m.language = language;
@@ -1455,6 +1455,12 @@ void testMeasure(const FontSet& fonts) {
         panel.render(m);
         CHECK(hits(panel, PanelAction::MeasureClose).size() == 1);
         png(panel, "result_fallback");
+        // A reversed run: the same card, and which way it went said under the picture
+        m.measure = madeUpMeasure(true);
+        m.measure.order = gaze_measure::Order::Reverse;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::MeasureClose).size() == 1);
+        png(panel, "result_reverse");
         // Without a pupil map: Valve only, and why
         m.measure = madeUpMeasure(false);
         CHECK(!m.measure.result.mapped && m.measure.result.valve.positions == 15);

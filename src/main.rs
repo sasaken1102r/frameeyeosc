@@ -673,7 +673,8 @@ struct Args {
     /// Send to no other app, whatever config.json's extra_outputs says
     #[arg(long)]
     no_extras: bool,
-    /// Send unsmoothed values (eyelid remapping still applies)
+    /// Send unsmoothed values (everything else, the eyelid remapping and the eye camera's stand-in included, still
+    /// applies)
     #[arg(long)]
     raw: bool,
     /// One Euro minimum cutoff in Hz for gaze; lower is steadier at rest
@@ -1177,6 +1178,17 @@ impl Smoother {
 
     /// `hold` keeps the left, right and combined gaze as last sent while it is unreliable: when the eyes
     /// are mostly shut, where the Frame's gaze jumps around, or when its covariance says so.
+    /// --raw's part of filter: the gaze held where `hold` says (the last gaze sent), and nothing else.
+    fn hold_gaze(&mut self, gaze: &mut [f32; 6], hold: [bool; 3]) {
+        for (pair, held) in hold.into_iter().enumerate() {
+            let values = &mut gaze[2 * pair..2 * pair + 2];
+            match self.last_gaze[pair] {
+                Some(last) if held => values.copy_from_slice(&last),
+                _ => self.last_gaze[pair] = Some([values[0], values[1]]),
+            }
+        }
+    }
+
     fn filter(&mut self, dt: f32, gaze: &mut [f32; 6], lids: &mut [f32; 2], hold: [bool; 3]) {
         for (pair, held) in hold.into_iter().enumerate() {
             let values = &mut gaze[2 * pair..2 * pair + 2];
@@ -3889,7 +3901,7 @@ fn process(
     data: &EyeData,
     camera: Option<&Live>,
 ) -> Sample {
-    // Judged in --raw too (for the status file), though raw eyelids are never capped
+    // Judged in --raw too, as everything but the smoothing
     smoother.saturation.add(data);
     let saturated = smoother.saturation.on;
     let [x, y] = gaze_angles(data.fixation_point);
@@ -3904,70 +3916,16 @@ fn process(
     // Where the gaze came from with gaze_source "pupil" and a map (None: the eye server's gaze as always)
     let mut gaze_in_use = None;
     let mut gaze_blending = false;
-    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows) = if settings.raw {
-        pupil_open = smoother.pupil_open(settings, data, camera);
-        let (camera_lids, camera) = smoother.camera.take(settings, camera, false);
-        let camera_lids = side_checked(smoother, data, camera_lids, settings.camera_closed_doubt);
-        let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
-        let corrected = correct_gaze(raw_gaze, settings);
-        let unscaled_gaze = choose_gaze(corrected, [true; 2], settings.independent_eyes);
-        let unscaled_gaze = if settings.independent_eyes {
-            own_eye_gaze(unscaled_gaze, corrected, [true; 2], settings.own_eye_gaze)
-        } else {
-            unscaled_gaze
-        };
-        let gaze = scale_gaze(unscaled_gaze, settings);
-        let zoned = camera_lids.map(|camera| camera.is_none());
-        let fits = fits_at(settings, corrected[5], zoned);
-        let openness_scaled = lid_inputs_with(data.openness, corrected[5], scales, settings, fits);
-        let mapped = snapped_lids(data.openness, corrected[5], scales, settings, fits, zoned);
-        let valve = mapped;
-        // Without the timed stages, the camera's eyelid does not take over from a closing eye server's (that waits
-        // longer than a blink); an eye it sees closed still closes, and one it sees open while the eye server does
-        // not read it closing is raised to it and keeps the floor
-        let mut lid_from = [LidFrom::EyeServer; 2];
-        let floor = settings.camera_lid_floor;
-        let line = doubt_line(settings);
-        let floored = [0, 1].map(|eye| {
-            floor > 0.0 && camera_lids[eye].is_some_and(|camera| !camera.closed && mapped[eye] >= line)
-        });
-        let mapped = [0, 1].map(|eye| match camera_lids[eye] {
-            Some(camera) if camera.closed => {
-                if mapped[eye] > 0.0 {
-                    lid_from[eye] = LidFrom::CameraClosed;
-                }
-                0.0
-            }
-            Some(camera) => {
-                let (lid, raised) = raised_to_camera(mapped[eye], camera.lid, line);
-                if raised {
-                    lid_from[eye] = LidFrom::CameraRaised;
-                }
-                if floored[eye] { lid.max(floor) } else { lid }
-            }
-            None => mapped[eye],
-        });
-        let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
-        let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from);
-        let shut = sync_blinks(mapped.map(|lid| lid <= 0.0), mapped, settings.blink_sync_below);
-        // The brows go by the eyelids before the cap below (brow_from_widen)
-        let before_cap = mixed;
-        // With widening off nothing goes above relaxed open (`widen`); below it nothing changes
-        let mixed = if settings.widen { mixed } else { mixed.map(|lid| lid.min(LID_RELAXED)) };
-        let mut lids = sync_lids(mixed, settings.lid_sync);
-        keep_floor(&mut lids, mixed, floored, floor);
-        if blink_stages {
-            shut_lids(&mut lids, shut);
-        }
-        let doubted = smoother.doubt_one_low_eye(data.sample_time, data.openness, settings.gaze_hold_below);
-        let shut_eyes = shut_for_gaze(data.openness, doubted, [false; 2], settings);
-        let brows = brows_for(settings, smoother, data.sample_time, None, before_cap, lids, mapped);
-        (gaze, unscaled_gaze, lids, shut_eyes, openness_scaled, camera, lid_from, close_held, brows)
-    } else {
+    let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows) = {
+        // Smoothing off (--raw) leaves out only the smoothing: the One-Euro filters and the gaze deadzone (the gaze is
+        // still held while the eyes are shut), despike, the camera's squint and pupil smoothing and the brows' time
+        // steps. Everything that reads the eyes (the camera taking over an eye the eye server keeps reading closed, the
+        // doubt about one low eye, the blink hold, the far-down hold, ...) runs as with it on
+        let smooth = !settings.raw;
         let dt = smoother.advance(data.sample_time);
         pupil_open = smoother.pupil_open(settings, data, camera);
         // After advance(), which starts the smoothing over after a gap
-        let (camera_lids, camera) = smoother.camera.take(settings, camera, true);
+        let (camera_lids, camera) = smoother.camera.take(settings, camera, smooth);
         let camera_lids = side_checked(smoother, data, camera_lids, settings.camera_closed_doubt);
         // A "closed" in one eye that is not a blink or a wink yet: the camera's last open eyelid (see CloseGate)
         let (camera_lids, close_held) = smoother.gate_closed(settings, data, camera_lids);
@@ -3985,8 +3943,8 @@ fn process(
         let trusted = usable_gaze.map(|usable| usable && open);
         let corrected = correct_gaze(smoother.hold_down_x(raw_gaze, trusted, settings), settings);
         // gaze_source "pupil" with a map for both eyes: the combined gaze from the pupils (pupil.rs), each eye keeping its
-        // own difference from the combined gaze as the eye server reads it; after this everything goes on as usual.
-        // Otherwise (and in --raw) the gaze is exactly as before
+        // own difference from the combined gaze as the eye server reads it; after this everything goes on as usual
+        // (with smoothing off too, as every step that reads the eyes). Otherwise the gaze is exactly as before
         let valve = [corrected[4] * 45.0, corrected[5] * 45.0];
         let to_scale = |degrees: [f32; 2]| degrees.map(|degrees| (degrees / 45.0).clamp(-1.0, 1.0));
         let (corrected, pupil_used) = match pupil::maps(settings) {
@@ -4012,7 +3970,7 @@ fn process(
             std::array::from_fn(|i| if i < 6 { corrected[i] } else { data.openness[i - 6] });
         // Fed even while off, so turning it on does not start from an empty history.
         let despiked = smoother.despike(readings);
-        let readings = if settings.despike { despiked } else { readings };
+        let readings = if settings.despike && smooth { despiked } else { readings };
         let angles: [f32; 6] = std::array::from_fn(|i| readings[i]);
         let openness = [readings[6], readings[7]];
         let mut gaze = choose_gaze(angles, usable_gaze, settings.independent_eyes);
@@ -4090,7 +4048,11 @@ fn process(
         let before_cap = [0, 1].map(|eye| if saturation_capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
         let mut lids = [0, 1].map(|eye| if capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
         lids = smoother.sustain_widen(data.sample_time, lids);
-        smoother.filter(dt, &mut gaze, &mut lids, hold);
+        if smooth {
+            smoother.filter(dt, &mut gaze, &mut lids, hold);
+        } else {
+            smoother.hold_gaze(&mut gaze, hold);
+        }
         // Intentional cross-eye: Valve's own left - right, split evenly around the combined gaze, after the gaze filter
         // (which would only slow it down). Only on the share that isn't each eye's own (--own-eye-gaze), which has
         // Valve's left - right already: at 1 nothing is added
@@ -4134,7 +4096,7 @@ fn process(
             shut_lids(&mut lids, shut);
         }
         let openness_scaled = lid_inputs_with(data.openness, vertical, scales, settings, fits);
-        let brows = brows_for(settings, smoother, data.sample_time, Some(dt), before_cap, lids, mapped);
+        let brows = brows_for(settings, smoother, data.sample_time, smooth.then_some(dt), before_cap, lids, mapped);
         (gaze, unscaled_gaze, lids, hold[2], openness_scaled, camera, lid_from, close_held, brows)
     };
     Sample {
@@ -6235,14 +6197,59 @@ mod tests {
     }
 
     #[test]
-    fn raw_mode_skips_the_timed_stages() {
+    fn raw_mode_leaves_out_only_the_smoothing() {
         let raw = Settings {
             raw: true,
             ..settings()
         };
-        let sent = run(&raw, &openness_track(20, &[(10, [0.2; 2])]));
+        // A one-sample blink: closed at once (no despike), and held closed for blink_hold_ms as with smoothing on
+        let held = (f64::from(raw.blink_hold_ms) / 1000.0 / f64::from(NOMINAL_DT)).floor() as usize;
+        let sent = run(&raw, &openness_track(40, &[(10, [0.2; 2])]));
         assert_eq!(sent[10].lids, [0.0; 2]);
-        assert_eq!(sent[11].lids, [0.75; 2]);
+        assert!(sent[10..10 + held].iter().all(|sample| sample.lids == [0.0; 2]), "{held}");
+        assert_eq!(sent[12 + held].lids, [0.75; 2]);
+        // A step in the openness: there at once, where the filter only gets there over time
+        let steps: Vec<(usize, [f32; 2])> = (10..40).map(|i| (i, [0.4; 2])).collect();
+        let half = run(&raw, &openness_track(40, &steps));
+        let smoothed = run(&settings(), &openness_track(40, &steps));
+        let settled = half[39].lids;
+        assert!(settled != [LID_RELAXED; 2] && half[10..].iter().all(|sample| sample.lids == settled), "{:?}", half[10].lids);
+        assert!((smoothed[12].lids[0] - smoothed[39].lids[0]).abs() > 0.01, "{:?} {:?}", smoothed[12].lids, smoothed[39].lids);
+        // The gaze: the eye server's as it is (no filter, no deadzone)
+        let samples = openness_track(40, &[]);
+        let gaze = run(&raw, &samples);
+        assert!(gaze.iter().all(|sample| sample.gaze[4..] == sample.raw_gaze[4..]));
+    }
+
+    #[test]
+    fn with_smoothing_off_the_camera_still_takes_over_an_eye_the_eye_server_keeps_reading_closed() {
+        // The eye server reads the right eye about 0.1 for seconds while the camera sees it open (a headset on which
+        // Valve reads one eye low all the time): sent open as with smoothing on, from the same moment; a blink still
+        // closes both
+        let blink = |i: usize| (300..306).contains(&i);
+        let openness = move |i: usize| if blink(i) { [0.05, 0.05] } else { [0.8, 0.1] };
+        let cameras = move |i: usize| {
+            Some(camera_eyes(if blink(i) { [(0.0, 0.0, true); 2] } else { [(0.75, 0.0, false), (0.75, 0.0, false)] }))
+        };
+        let mut sent = Vec::new();
+        for raw in [false, true] {
+            let settings = Settings { raw, ..camera_settings() };
+            let mut smoother = Smoother::new(&settings);
+            sent.push(camera_samples(&settings, &mut smoother, 100.0, 4.0, openness, cameras));
+        }
+        let [smooth, raw] = <[Vec<Sample>; 2]>::try_from(sent).ok().unwrap();
+        // Taken over at the same sample, open from then on
+        let taken = |sent: &[Sample]| sent.iter().position(|sample| sample.lid_from[1] == LidFrom::CameraOpen);
+        assert!(taken(&raw).is_some() && taken(&raw) == taken(&smooth), "{:?} {:?}", taken(&raw), taken(&smooth));
+        let from = taken(&raw).unwrap();
+        assert!(from < 40, "{from}");
+        assert!(raw[from + 20..300].iter().all(|sample| (sample.lids[1] - LID_RELAXED).abs() < 0.02), "{:?}", raw[from + 20].lids);
+        assert!(raw[from + 20..300].iter().all(|sample| sample.lid_from[1] == LidFrom::CameraOpen));
+        // The blink closes both, and the right eye is open again after it
+        assert!(raw[301..305].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", raw[302].lids);
+        assert!(raw[340..].iter().all(|sample| sample.lids[1] > 0.5), "{:?}", raw[340].lids);
+        // The gaze isn't held all along for the low right eye (it is the camera's, seen open)
+        assert!(!raw[100].gaze_held && !smooth[100].gaze_held);
     }
 
     #[test]
@@ -7034,8 +7041,10 @@ mod tests {
         let sent = sent_lid_track(false, 150, &again);
         assert!(sent[90].iter().all(|lid| *lid > 0.95), "{:?}", sent[90]);
         assert!(sent[110..].iter().all(relaxed), "{:?}", &sent[110..]);
-        // Unsmoothed output has no timed stages: wide at once
-        assert_eq!(sent_lid_track(true, 20, &wide(5, 6))[5], [1.0; 2]);
+        // With smoothing off, the same: once it has lasted (no despike: a sample earlier), then wide at once (no filter)
+        let raw = sent_lid_track(true, 60, &wide(5, 60));
+        assert!(raw[..5 + sustain - 1].iter().all(relaxed), "{:?}", &raw[..5 + sustain]);
+        assert_eq!(raw[5 + sustain + 1], [1.0; 2]);
     }
 
     #[test]
@@ -9168,11 +9177,11 @@ mod tests {
         assert!((blink.last().unwrap().0[0] - half).abs() < 0.01, "{:?} {half}", blink.last());
         assert!(blink.iter().all(|(_, saturated)| *saturated));
 
-        // --raw is left raw
+        // With smoothing off too: a saturated reading is no widening there either
         let raw = Settings { raw: true, ..settings.clone() };
         let mut smoother = Smoother::new(&raw);
         let sent = lids_over(&raw, &mut smoother, 100.0, 8.0, |_| [1.0, 1.0]);
-        assert!(sent.last().unwrap().1 && sent.last().unwrap().0 == [1.0; 2], "{:?}", sent.last());
+        assert!(sent.last().unwrap().1 && sent.last().unwrap().0 == [LID_RELAXED; 2], "{:?}", sent.last());
     }
 
     #[test]
@@ -9372,16 +9381,18 @@ mod tests {
         assert_eq!(sent[91].lids, [0.0; 2]);
         let half = lid_to_vrcft(0.55, &settings);
         assert!((sent.last().unwrap().lids[0] - half).abs() < 0.01, "{:?} {half}", sent.last().unwrap().lids);
-        // --raw: the same mix, unsmoothed
+        // With smoothing off: the same mix, unsmoothed (the widening once it has lasted, as with smoothing on)
         let raw = Settings { raw: true, ..settings.clone() };
         let mut smoother = Smoother::new(&raw);
-        let openness = |i: usize| if i < 4 { [1.0; 2] } else { [0.55, 1.0] };
-        let cameras = |i: usize| Some(if i < 4 { camera(0.9, 0.0) } else { camera_eyes([(0.3, 0.0, false), (0.9, 0.0, false)]) });
-        let sent = camera_samples(&raw, &mut smoother, 100.0, 0.1, openness, cameras);
-        assert_eq!(sent[0].lids, [0.9; 2]);
+        let openness = |i: usize| if i < 30 { [1.0; 2] } else { [0.55, 1.0] };
+        let cameras = |i: usize| Some(if i < 30 { camera(0.9, 0.0) } else { camera_eyes([(0.3, 0.0, false), (0.9, 0.0, false)]) });
+        let sent = camera_samples(&raw, &mut smoother, 100.0, 1.5, openness, cameras);
+        assert_eq!(sent[0].lids, [LID_RELAXED; 2]);
+        assert_eq!(sent[28].lids, [0.9; 2]);
         // A wink-sized difference, so lid_sync leaves both as they are (the right's widening halved, the left's camera
-        // seeing none; see share_widening)
-        assert_eq!(sent[5].lids, [half, 0.825]);
+        // seeing none; see share_widening); once the raise to the camera's recent peak has run out, as with smoothing on
+        let last = sent.last().unwrap().lids;
+        assert!((last[0] - half).abs() < 1e-4 && (last[1] - 0.825).abs() < 1e-4, "{last:?}");
     }
 
     /// An eye fit on SteamOS 0.4.3, where an open eye reads 1.000 (a little less looking down).
@@ -10807,8 +10818,8 @@ mod tests {
         let raw = Settings { raw: true, ..settings.clone() };
         let mut smoother = Smoother::new(&raw);
         let cameras = |_| Some(camera_eyes([(1.0, 0.0, false), (LID_RELAXED, 0.0, false)]));
-        let sent = camera_samples(&raw, &mut smoother, 100.0, 0.1, |_| [0.8; 2], cameras);
-        assert_eq!(sent[0].lids, [0.875, LID_RELAXED]);
+        let sent = camera_samples(&raw, &mut smoother, 100.0, 0.5, |_| [0.8; 2], cameras);
+        assert_eq!(sent[30].lids, [0.875, LID_RELAXED]);
     }
 
     #[test]

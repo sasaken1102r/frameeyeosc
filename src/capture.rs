@@ -94,6 +94,8 @@ pub struct Capture {
     samples: u32,
     // Each eye's fresh pupil pairs among the samples averaged.
     pupils: [Vec<[f32; 2]>; 2],
+    // ...and each eye's eyeball filter directions (gaze_source "eyeball").
+    eyeball: [Vec<[f32; 2]>; 2],
 }
 
 impl Capture {
@@ -113,7 +115,18 @@ impl Capture {
             camera_open: [0; 2],
             samples: 0,
             pupils: [Vec::new(), Vec::new()],
+            eyeball: [Vec::new(), Vec::new()],
         }
+    }
+
+    /// The capture's target.
+    pub fn target(&self) -> &str {
+        &self.request.target
+    }
+
+    /// Each eye's eyeball filter directions over the samples averaged: their median and how many (None without any).
+    pub fn eyeball_medians(&self) -> [Option<([f32; 2], u32)>; 2] {
+        self.eyeball.each_ref().map(|angles| median_pair(angles).map(|median| (median, angles.len() as u32)))
     }
 
     /// Take one sample's combined raw gaze, each eye's raw x and openness, and which eyes are camera-open (see
@@ -133,6 +146,7 @@ impl Capture {
     }
 
     /// The same, with each eye's pupil pair while it is fresh (None while not; see pupil::Fresh).
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn add_with_pupils(
         &mut self,
@@ -143,6 +157,23 @@ impl Capture {
         camera_open: [bool; 2],
         usable: bool,
         pupils: [Option<[f32; 2]>; 2],
+    ) -> bool {
+        self.add_with_eyes(time, gaze, eye_x, openness, camera_open, usable, pupils, [None; 2])
+    }
+
+    /// The same, with each eye's direction from its eyeball filter too (gaze_source "eyeball"; None while it has none),
+    /// kept over the same samples as the pupil pairs for the eyeball map (eyeball_map.rs).
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_with_eyes(
+        &mut self,
+        time: f64,
+        gaze: [f32; 2],
+        eye_x: [f32; 2],
+        openness: [f32; 2],
+        camera_open: [bool; 2],
+        usable: bool,
+        pupils: [Option<[f32; 2]>; 2],
+        eyeball: [Option<[f32; 2]>; 2],
     ) -> bool {
         let elapsed = time - *self.first_time.get_or_insert(time);
         if elapsed >= self.request.seconds {
@@ -172,6 +203,9 @@ impl Capture {
             if !self.closed {
                 for (pairs, pupil) in self.pupils.iter_mut().zip(pupils) {
                     pairs.extend(pupil);
+                }
+                for (angles, eye) in self.eyeball.iter_mut().zip(eyeball) {
+                    angles.extend(eye);
                 }
             }
             self.samples += 1;
@@ -381,6 +415,41 @@ mod tests {
         let shut = shut.result(CaptureState::Done);
         assert_eq!((shut.pupil_left, shut.pupil_fresh), (None, [0, 0]));
         assert!(median_pair(&[[1.0, 4.0], [3.0, 2.0]]) == Some([2.0, 3.0]) && median_pair(&[]).is_none());
+    }
+
+    #[test]
+    fn each_eyes_eyeball_directions_give_a_median_over_the_samples_averaged() {
+        let mut taken = capture();
+        for i in 0..=180 {
+            let time = f64::from(i) / 90.0;
+            // The left eye's filter around (5, -3) with one wild value, the right one with none while blinking (not usable
+            // anyway) and none for a while after
+            let left = if i == 50 { [40.0, 40.0] } else { [5.0 + (i % 3) as f32 * 0.1, -3.0] };
+            let right = (i > 120).then_some([1.0, 2.0]);
+            let blinking = (90..100).contains(&i);
+            let eyeball = if blinking { [Some([0.0, 0.0]); 2] } else { [Some(left), right] };
+            if taken.add_with_eyes(time, [0.0; 2], [0.0; 2], [0.9; 2], [false; 2], !blinking, [None; 2], eyeball) {
+                break;
+            }
+        }
+        let [left, right] = taken.eyeball_medians();
+        let result = taken.result(CaptureState::Done);
+        assert_eq!(taken.target(), "up");
+        let (median, count) = left.unwrap();
+        assert!((median[0] - 5.1).abs() < 1e-5 && median[1] == -3.0 && count == result.samples, "{left:?}");
+        assert_eq!(right.map(|(m, _)| m), Some([1.0, 2.0]));
+        assert!(right.unwrap().1 < 60);
+        // Nothing of it in the status file's result
+        let mut plain = capture();
+        for i in 0..=180 {
+            let blinking = (90..100).contains(&i);
+            if plain.add(f64::from(i) / 90.0, [0.0; 2], [0.0; 2], [0.9; 2], [false; 2], !blinking) {
+                break;
+            }
+        }
+        assert_eq!(result, plain.result(CaptureState::Done));
+        // Without the filter: none
+        assert_eq!(capture().eyeball_medians(), [None, None]);
     }
 
     #[test]

@@ -125,7 +125,8 @@ pub enum Widen {
 }
 
 /// Where the sent gaze comes from (gaze_source): the eye server's gaze, or (a test) each eye's pupil position in the
-/// eye camera's picture, mapped by the panel's eye fit (see pupil.rs). Not a command-line option.
+/// eye camera's picture, mapped by the panel's eye fit (see pupil.rs), or (a test) each eye's direction from eyecam-rec's
+/// pupil ellipse with the eye's centre followed (eyeball.rs). Not a command-line option.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GazeSource {
@@ -134,6 +135,9 @@ pub enum GazeSource {
     Valve,
     /// the pupil map (pupil_*_left/right); without a whole map for both eyes, the same as valve
     Pupil,
+    /// the eyeball filter (eyeball.rs) and its own maps (eyeball_map.rs); without the factory eye-camera calibration,
+    /// eyecam-rec's shape part or the maps, the same as valve
+    Eyeball,
 }
 
 /// What an extra output sends (its `format`; both names are permanent: a variant gets a new name).
@@ -1393,6 +1397,7 @@ mod tests {
         assert_eq!(settings.pupil_map_values(), [left, [None; 6]]);
         assert_eq!(settings.pupil_centers(), [[Some(1.5), None], [None, None]]);
         assert!(merged(r#"{"gaze_source": "valve", "pupil_center_pitch_right": null}"#, &[]).is_ok());
+        assert_eq!(merged(r#"{"gaze_source": "eyeball"}"#, &[]).unwrap().0.gaze_source, GazeSource::Eyeball);
         // An unknown source, an eye's map half written, values out of range
         assert!(merged(r#"{"gaze_source": "camera"}"#, &[]).is_err());
         assert!(merged(r#"{"pupil_yaw_left": 1}"#, &[]).is_err());

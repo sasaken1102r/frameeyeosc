@@ -1,0 +1,1363 @@
+//! Gaze from the eye cameras' pupil ellipse, with each eye's centre of rotation kept as part of the state (gaze_source
+//! "eyeball"; a test). The pupil gaze (pupil.rs) maps where the pupil is in a camera's picture, so a headset pushed up
+//! or down a few millimetres moves it as if the eye had turned. Here each eye is a ball turning about its centre: the
+//! pupil sits R_PUPIL in front of the centre along the gaze, and its outline is a circle, which the camera sees as an
+//! ellipse whose flattening and long axis tell how the circle is tilted against the camera's ray to it. A turn moves
+//! the pupil and tilts the ellipse; a shift of the headset moves the pupil but leaves the tilt, so the two can be told
+//! apart and the centre follows the shift. Per eye an extended Kalman filter follows
+//!   x = [yaw, pitch, yaw rate, pitch rate, cx, cy, cz]
+//! yaw / pitch: the eye's direction in the head frame (+x right, +y up, -z forward); c: its centre in that eye
+//! camera's frame (metres). Each frame of eyecam-rec (the live file's glint and shape parts) gives the pupil centre
+//! (undistorted to the camera's normalised coordinates) and the ellipse as (1 - b/a)(cos 2phi, sin 2phi), phi its long
+//! axis. The ellipse is used only while it can be trusted (the lids well clear of the pupil, nearly all of its rim
+//! seen, and close to what the state expects); without it a pupil move is read as a turn and the centre is held. The
+//! angles go through each eye's affine map from the eye fit (eyeball_map.rs), and both eyes are combined as the pupil
+//! gaze combines them (pupil.rs: one eye, held, the eye server's; every change eased).
+//!
+//! The cameras' geometry comes from the headset's factory eye-camera calibration (/persist/eyetracking.json, only
+//! read): each camera's focal lengths, centre and lens distortion, and how it is turned in the head. It is required:
+//! the rays to the pupil, the ellipse's tilt against them and the head-frame angles all go by it, and a made-up
+//! geometry would read part of every shift as a turn. Without it the source acts as "valve" (and says why).
+//!
+//! Model values are population anatomy (R_PUPIL) or were chosen offline on the developer's own recordings (2026-11-14
+//! slip test 3: the noise levels, gates and the first pupil distance D0; tests 1, 2 and 4 and the re-seat tests were
+//! not used for any choice).
+
+use crate::eyecam_live::{CamShape, CamSlip, Live};
+use crate::pupil::EyeMap;
+use std::f64::consts::PI;
+use std::path::Path;
+
+/// The factory calibration file.
+pub const CALIBRATION_PATH: &str = "/persist/eyetracking.json";
+
+/// From the eye's centre of rotation to the (apparent) pupil centre, metres (anatomy: about 10.5 mm).
+pub const R_PUPIL: f64 = 0.0105;
+/// The first guess of the camera-to-pupil distance, metres (an effective value: the fitted geometry is not the
+/// physical one, as the ratio of R_PUPIL to the depth acts as a gain that the eye fit's map takes up).
+const D0: f64 = 0.012;
+/// Noise of the pupil centre (normalised units, about 1.6 px) and of the ellipse's two numbers.
+const SIG_POS: f64 = 0.006;
+const SIG_ELL: f64 = 0.05;
+/// The angles' acceleration noise (rad^2/s^3).
+const Q_ACC: f64 = 1.0;
+/// The centre's random walk across the camera's axis and along it (m/sqrt(s)): the headset slipping.
+const SIG_C: f64 = 0.0015;
+const SIG_CZ: f64 = 0.0003;
+/// A frame further than this (squared Mahalanobis distance) from what the state expects is refused.
+const REJECT: f64 = 400.0;
+/// The ellipse is left out of a frame beyond this (its own squared Mahalanobis distance)...
+const ELL_GATE: f64 = 9.0;
+/// ...and once it has been left out this many frames in a row it is believed: the angles are taken from it again.
+const ELL_REACQ: u32 = 20;
+/// Refused this many frames in a row: the angles are taken afresh from the next ellipse (the centre kept).
+const REACQUIRE: u32 = 30;
+/// Plausible camera-to-centre distances (m), angles (degrees), and the pupil must face the camera at least this much
+/// (the cosine between the gaze and the ray to the pupil).
+const DEPTH_MIN: f64 = 0.012;
+const DEPTH_MAX: f64 = 0.060;
+const ANG_MAX_DEG: f64 = 50.0;
+const FACING: f64 = -0.3;
+/// The angle rates fade over this long without measurements (s).
+const RATE_TAU: f64 = 0.15;
+/// Time steps are taken as at most this long (s).
+const DT_MAX: f64 = 0.1;
+/// The ellipse is used only with the lids at least this far apart at the pupil (eyecam-rec's aperture, iris radii: a
+/// lid near the pupil cuts its outline) and with at least this share of its rim seen.
+const APERTURE_MIN: f64 = 1.3;
+const VIS_MIN: f64 = 0.98;
+/// An eye's direction is given while its pupil was seen at most this long ago (s, the eye server's time).
+pub const EYE_FRESH_S: f64 = 0.15;
+/// The pictures are this many rows high when the calibration does not say.
+const DEFAULT_ROWS: f64 = 400.0;
+
+type V3 = [f64; 3];
+const N: usize = 7;
+type V7 = [f64; N];
+type M7 = [[f64; N]; N];
+
+fn dot(a: V3, b: V3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn norm(a: V3) -> f64 {
+    dot(a, a).sqrt()
+}
+
+fn scale(a: V3, by: f64) -> V3 {
+    [a[0] * by, a[1] * by, a[2] * by]
+}
+
+fn add(a: V3, b: V3) -> V3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn sub(a: V3, b: V3) -> V3 {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn unit(a: V3) -> V3 {
+    scale(a, 1.0 / norm(a))
+}
+
+fn cross(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+/// The unit ray through a point in normalised camera coordinates.
+fn ray(pos: [f64; 2]) -> V3 {
+    unit([pos[0], pos[1], 1.0])
+}
+
+/// The direction of a gaze (yaw, pitch in radians) in the head frame: +x right, +y up, -z forward.
+fn gaze_head(yaw: f64, pitch: f64) -> V3 {
+    [yaw.sin() * pitch.cos(), pitch.sin(), -yaw.cos() * pitch.cos()]
+}
+
+/// One eye camera from the factory calibration.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Camera {
+    pub fx: f64,
+    pub fy: f64,
+    pub cx: f64,
+    pub cy: f64,
+    /// Lens distortion k1, k2, p1, p2, k3 (radial and tangential).
+    pub dist: [f64; 5],
+    /// The camera's x, y and z axes in the head frame (the columns of the head-from-camera rotation).
+    pub axes: [V3; 3],
+    /// The picture's height in rows (for turning a picture that was turned upright back to the sensor's).
+    pub rows: f64,
+}
+
+impl Camera {
+    /// A head-frame direction in the camera's frame.
+    fn to_camera(&self, v: V3) -> V3 {
+        [dot(self.axes[0], v), dot(self.axes[1], v), dot(self.axes[2], v)]
+    }
+
+    /// A camera-frame direction in the head frame.
+    fn to_head(&self, v: V3) -> V3 {
+        let [x, y, z] = self.axes;
+        add(add(scale(x, v[0]), scale(y, v[1])), scale(z, v[2]))
+    }
+
+    /// A pixel of the sensor's picture in undistorted normalised coordinates: the distortion model inverted by
+    /// fixed-point iteration (five steps; a pixel's error is then far below the pupil's own noise).
+    pub fn undistort(&self, u: f64, v: f64) -> [f64; 2] {
+        let [k1, k2, p1, p2, k3] = self.dist;
+        let (x0, y0) = ((u - self.cx) / self.fx, (v - self.cy) / self.fy);
+        let (mut x, mut y) = (x0, y0);
+        for _ in 0..5 {
+            let r2 = x * x + y * y;
+            let radial = 1.0 + ((k3 * r2 + k2) * r2 + k1) * r2;
+            if radial <= 0.0 {
+                return [x0, y0];
+            }
+            let dx = 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x);
+            let dy = p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y;
+            x = (x0 - dx) / radial;
+            y = (y0 - dy) / radial;
+        }
+        [x, y]
+    }
+
+    /// The head's forward direction in the camera's frame.
+    fn forward(&self) -> V3 {
+        self.to_camera([0.0, 0.0, -1.0])
+    }
+
+    /// The gaze direction (yaw, pitch) of a camera-frame direction.
+    fn angles_of(&self, g: V3) -> (f64, f64) {
+        let h = self.to_head(g);
+        (h[0].atan2(-h[2]), h[1].clamp(-1.0, 1.0).asin())
+    }
+}
+
+/// Both eye cameras (0 = left eye, 1 = right, anatomical).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Calibration {
+    pub eyes: [Camera; 2],
+}
+
+/// The factory calibration from its JSON (`etCamCalib.left` / `.right`: fx, fy, cx, cy, dist[5], ny, headFromCamera
+/// plus_x / plus_z). Nothing else in the file is read or kept.
+pub fn parse_calibration(text: &str) -> Result<Calibration, String> {
+    let root: serde_json::Value = serde_json::from_str(text).map_err(|e| format!("not JSON: {e}"))?;
+    let cal = root.get("etCamCalib").ok_or("no etCamCalib")?;
+    let camera = |side: &str| -> Result<Camera, String> {
+        let c = cal.get(side).ok_or_else(|| format!("no etCamCalib.{side}"))?;
+        let number = |key: &str| {
+            c.get(key)
+                .and_then(serde_json::Value::as_f64)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| format!("etCamCalib.{side}.{key} missing or not a number"))
+        };
+        let vector = |value: Option<&serde_json::Value>, name: &str, len: usize| -> Result<Vec<f64>, String> {
+            let list = value.and_then(serde_json::Value::as_array).ok_or_else(|| format!("etCamCalib.{side}.{name} missing"))?;
+            let numbers: Option<Vec<f64>> = list.iter().map(|v| v.as_f64().filter(|v| v.is_finite())).collect();
+            numbers.filter(|n| n.len() == len).ok_or_else(|| format!("etCamCalib.{side}.{name}: not {len} numbers"))
+        };
+        let (fx, fy) = (number("fx")?, number("fy")?);
+        if fx <= 0.0 || fy <= 0.0 {
+            return Err(format!("etCamCalib.{side}: focal lengths must be positive"));
+        }
+        let dist = vector(c.get("dist"), "dist", 5)?;
+        let pose = c.get("headFromCamera");
+        let plus_x = vector(pose.and_then(|p| p.get("plus_x")), "headFromCamera.plus_x", 3)?;
+        let plus_z = vector(pose.and_then(|p| p.get("plus_z")), "headFromCamera.plus_z", 3)?;
+        let x: V3 = [plus_x[0], plus_x[1], plus_x[2]];
+        let z: V3 = [plus_z[0], plus_z[1], plus_z[2]];
+        if norm(x) < 1e-6 || norm(cross(x, z)) < 1e-6 {
+            return Err(format!("etCamCalib.{side}.headFromCamera: not a rotation"));
+        }
+        // The axes made exactly orthonormal: x as given, z made square to it, y = z x x
+        let x = unit(x);
+        let z = unit(sub(z, scale(x, dot(x, z))));
+        let y = cross(z, x);
+        let rows = c.get("ny").and_then(serde_json::Value::as_f64).filter(|v| *v > 1.0).unwrap_or(DEFAULT_ROWS);
+        Ok(Camera {
+            fx,
+            fy,
+            cx: number("cx")?,
+            cy: number("cy")?,
+            dist: [dist[0], dist[1], dist[2], dist[3], dist[4]],
+            axes: [x, y, z],
+            rows,
+        })
+    };
+    Ok(Calibration { eyes: [camera("left")?, camera("right")?] })
+}
+
+/// The factory calibration from its file.
+pub fn load_calibration(path: &Path) -> Result<Calibration, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    parse_calibration(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// One eye frame as eyecam-rec gives it: the pupil centre (px, in its picture; None without a pupil), the ellipse's
+/// semi-axes, long axis (degrees) and rim share seen, the lids' aperture (iris radii), and whether the picture was
+/// turned upright from the sensor's. NaN for what it lacks.
+#[derive(Clone, Copy, Debug)]
+pub struct RawFrame {
+    /// The frame's time (s, the camera's clock).
+    pub time: f64,
+    pub pupil: Option<[f64; 2]>,
+    pub a: f64,
+    pub b: f64,
+    pub angle_deg: f64,
+    pub vis: f64,
+    pub aperture: f64,
+    pub flipped: bool,
+}
+
+/// What the filter takes from a frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Obs {
+    pub time: f64,
+    /// The pupil centre, undistorted normalised camera coordinates.
+    pub pos: Option<[f64; 2]>,
+    /// The ellipse as (1 - b/a)(cos 2phi, sin 2phi), while it can be trusted.
+    pub ell: Option<[f64; 2]>,
+}
+
+/// A frame in the sensor's picture, undistorted, with the ellipse kept only where the lids are clear of the pupil and
+/// its rim is seen (an unknown aperture or rim share does not stop it).
+pub fn observe(camera: &Camera, frame: &RawFrame) -> Obs {
+    let Some([px, py]) = frame.pupil.filter(|p| p.iter().all(|v| v.is_finite())) else {
+        return Obs { time: frame.time, pos: None, ell: None };
+    };
+    // A picture turned upright is flipped top to bottom back to the sensor's (and so is the ellipse's axis)
+    let (py, angle) = if frame.flipped { (camera.rows - 1.0 - py, -frame.angle_deg) } else { (py, frame.angle_deg) };
+    let pos = camera.undistort(px, py);
+    let (a, b) = (frame.a.max(frame.b), frame.a.min(frame.b));
+    let lids_clear = !frame.aperture.is_finite() || frame.aperture >= APERTURE_MIN;
+    let rim_seen = !frame.vis.is_finite() || frame.vis >= VIS_MIN;
+    let ell = (angle.is_finite() && a > 0.0 && b.is_finite() && lids_clear && rim_seen).then(|| {
+        let t = angle.to_radians();
+        let flat = 1.0 - b / a;
+        [flat * (2.0 * t).cos(), flat * (2.0 * t).sin()]
+    });
+    Obs { time: frame.time, pos: Some(pos), ell }
+}
+
+/// What the state expects to see: the pupil centre, and with `ell` the ellipse; the count of numbers.
+fn predict(x: &V7, camera: &Camera, ell: bool) -> ([f64; 4], usize) {
+    let g = camera.to_camera(gaze_head(x[0], x[1]));
+    let mut p = add([x[4], x[5], x[6]], scale(g, R_PUPIL));
+    p[2] = p[2].max(1e-4);
+    let z = [p[0] / p[2], p[1] / p[2]];
+    if !ell {
+        return ([z[0], z[1], 0.0, 0.0], 2);
+    }
+    // The circle is tilted against the ray to it by the angle between them; the image's short axis runs along the
+    // gaze's own image direction at the pupil, the long axis square to it
+    let cos_t = dot(g, unit(p)).abs();
+    let along = [g[0] - z[0] * g[2], g[1] - z[1] * g[2]];
+    let phi = along[1].atan2(along[0]) + PI / 2.0;
+    let flat = 1.0 - cos_t;
+    ([z[0], z[1], flat * (2.0 * phi).cos(), flat * (2.0 * phi).sin()], 4)
+}
+
+/// The prediction and its Jacobian (forward differences; the rates do not enter the observation).
+fn jacobian(x: &V7, camera: &Camera, ell: bool) -> ([f64; 4], [[f64; N]; 4], usize) {
+    let (z0, n) = predict(x, camera, ell);
+    let mut j = [[0.0; N]; 4];
+    for i in [0, 1, 4, 5, 6] {
+        let step = if i < 4 { 1e-5 } else { 1e-6 };
+        let mut x2 = *x;
+        x2[i] += step;
+        let (z, _) = predict(&x2, camera, ell);
+        for (r, row) in j.iter_mut().enumerate().take(n) {
+            row[i] = (z[r] - z0[r]) / step;
+        }
+    }
+    (z0, j, n)
+}
+
+/// The two circle normals an ellipse allows at a pupil seen at `pos` (both facing the camera).
+fn normals(pos: [f64; 2], e: [f64; 2]) -> [V3; 2] {
+    let tilt = (1.0 - e[0].hypot(e[1])).clamp(-1.0, 1.0).acos();
+    let short = 0.5 * e[1].atan2(e[0]) - PI / 2.0;
+    let d = ray(pos);
+    [1.0, -1.0].map(|s| {
+        let m = scale([short.cos(), short.sin(), 0.0], s);
+        let m = unit(sub(m, scale(d, dot(m, d))));
+        add(scale(d, -tilt.cos()), scale(m, tilt.sin()))
+    })
+}
+
+/// Of the two normals, the one nearer the head's forward direction.
+fn normal_ahead(pos: [f64; 2], e: [f64; 2], camera: &Camera) -> V3 {
+    let [a, b] = normals(pos, e);
+    let forward = camera.forward();
+    if dot(b, forward) > dot(a, forward) { b } else { a }
+}
+
+/// Of the two normals, the one that puts the pupil nearest the sphere about `centre` along its seen ray.
+fn normal_on_sphere(pos: [f64; 2], e: [f64; 2], centre: V3) -> V3 {
+    let d = ray(pos);
+    let miss = |g: V3| {
+        let pupil = add(centre, scale(g, R_PUPIL));
+        norm(sub(scale(d, dot(pupil, d)), pupil))
+    };
+    let [a, b] = normals(pos, e);
+    if miss(b) < miss(a) { b } else { a }
+}
+
+/// The depth, angles and facing in range.
+fn plausible(x: &V7, camera: &Camera) -> bool {
+    let centre = [x[4], x[5], x[6]];
+    let depth = norm(centre);
+    let limit = ANG_MAX_DEG.to_radians();
+    if !(DEPTH_MIN..=DEPTH_MAX).contains(&depth) || x[0].abs() > limit || x[1].abs() > limit {
+        return false;
+    }
+    let g = camera.to_camera(gaze_head(x[0], x[1]));
+    let pupil = add(centre, scale(g, R_PUPIL));
+    dot(g, unit(pupil)) < FACING
+}
+
+fn diagonal(values: V7) -> M7 {
+    let mut m = [[0.0; N]; N];
+    for i in 0..N {
+        m[i][i] = values[i];
+    }
+    m
+}
+
+fn mul(a: &M7, b: &M7) -> M7 {
+    let mut m = [[0.0; N]; N];
+    for i in 0..N {
+        for k in 0..N {
+            if a[i][k] != 0.0 {
+                for j in 0..N {
+                    m[i][j] += a[i][k] * b[k][j];
+                }
+            }
+        }
+    }
+    m
+}
+
+fn transpose(a: &M7) -> M7 {
+    let mut m = [[0.0; N]; N];
+    for i in 0..N {
+        for j in 0..N {
+            m[i][j] = a[j][i];
+        }
+    }
+    m
+}
+
+/// The inverse of the top-left n x n of `a` (Gauss-Jordan with partial pivoting); None when it is singular.
+fn inverse(a: &[[f64; 4]; 4], n: usize) -> Option<[[f64; 4]; 4]> {
+    let mut m = *a;
+    let mut inv = [[0.0; 4]; 4];
+    for (i, row) in inv.iter_mut().enumerate().take(n) {
+        row[i] = 1.0;
+    }
+    for col in 0..n {
+        let pivot = (col..n).max_by(|&p, &q| m[p][col].abs().total_cmp(&m[q][col].abs()))?;
+        if m[pivot][col].abs() < 1e-300 {
+            return None;
+        }
+        m.swap(col, pivot);
+        inv.swap(col, pivot);
+        let f = 1.0 / m[col][col];
+        for k in 0..n {
+            m[col][k] *= f;
+            inv[col][k] *= f;
+        }
+        for row in 0..n {
+            if row != col {
+                let g = m[row][col];
+                if g != 0.0 {
+                    for k in 0..n {
+                        m[row][k] -= g * m[col][k];
+                        inv[row][k] -= g * inv[col][k];
+                    }
+                }
+            }
+        }
+    }
+    Some(inv)
+}
+
+/// The rows `rows` of J times P times their transpose, plus `noise` on the diagonal.
+fn innovation(j: &[[f64; N]; 4], rows: std::ops::Range<usize>, p: &M7, noise: &[f64; 4]) -> [[f64; 4]; 4] {
+    let mut s = [[0.0; 4]; 4];
+    let base = rows.start;
+    for r in rows.clone() {
+        let mut jp = [0.0; N];
+        for (k, value) in jp.iter_mut().enumerate() {
+            *value = (0..N).map(|i| j[r][i] * p[i][k]).sum();
+        }
+        for c in rows.clone() {
+            s[r - base][c - base] = (0..N).map(|k| jp[k] * j[c][k]).sum::<f64>();
+        }
+        s[r - base][r - base] += noise[r];
+    }
+    s
+}
+
+/// y' S^-1 y over the first n numbers.
+fn distance(y: &[f64; 4], s_inv: &[[f64; 4]; 4], n: usize) -> f64 {
+    (0..n).map(|r| y[r] * (0..n).map(|c| s_inv[r][c] * y[c]).sum::<f64>()).sum()
+}
+
+/// What a frame did to the filter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Update {
+    /// The filter started from this frame.
+    Start,
+    /// No pupil: the prediction.
+    NoPupil,
+    /// Too far from what was expected: the prediction.
+    Rejected,
+    /// The update would leave the plausible range: the prediction.
+    Implausible,
+    /// Updated with the pupil and its ellipse...
+    Ellipse,
+    /// ...or with the pupil only (the centre held).
+    PupilOnly,
+}
+
+impl Update {
+    pub fn name(self) -> &'static str {
+        match self {
+            Update::Start => "start",
+            Update::NoPupil => "nopupil",
+            Update::Rejected => "rejected",
+            Update::Implausible => "implausible",
+            Update::Ellipse => "ellipse",
+            Update::PupilOnly => "pupil",
+        }
+    }
+}
+
+/// The filter's state after a frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Estimate {
+    /// The eye's direction in the head frame (radians; yaw + right, pitch + up).
+    pub yaw: f64,
+    pub pitch: f64,
+    /// Its centre of rotation in the camera's frame (m).
+    pub centre: V3,
+    pub update: Update,
+}
+
+/// One eye's filter.
+#[derive(Clone, Debug, Default)]
+pub struct EyeFilter {
+    x: Option<V7>,
+    p: M7,
+    last: f64,
+    // Frames refused in a row, and frames whose ellipse was left out in a row
+    misses: u32,
+    ell_off: u32,
+    /// How often the angles were taken afresh from the ellipse.
+    pub retakes: u32,
+}
+
+impl EyeFilter {
+    /// Start over.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Whether it has started.
+    #[cfg(test)]
+    pub fn started(&self) -> bool {
+        self.x.is_some()
+    }
+
+    fn estimate(&self, update: Update) -> Option<Estimate> {
+        let x = self.x?;
+        Some(Estimate { yaw: x[0], pitch: x[1], centre: [x[4], x[5], x[6]], update })
+    }
+
+    /// Take one frame; the state after it (None until a frame with a pupil and its ellipse starts it).
+    pub fn step(&mut self, camera: &Camera, o: &Obs) -> Option<Estimate> {
+        let deg = |d: f64| d.to_radians();
+        let Some(mut x) = self.x else {
+            // Started from the first frame with an ellipse: the gaze from its normal nearer straight ahead, the pupil
+            // D0 along its ray
+            let (Some(pos), Some(ell)) = (o.pos, o.ell) else {
+                return None;
+            };
+            let g = normal_ahead(pos, ell, camera);
+            let (yaw, pitch) = camera.angles_of(g);
+            let c = sub(scale(ray(pos), D0), scale(g, R_PUPIL));
+            self.x = Some([yaw, pitch, 0.0, 0.0, c[0], c[1], c[2]]);
+            self.p = diagonal([deg(10.0).powi(2), deg(10.0).powi(2), 1.0, 1.0, 0.005f64.powi(2), 0.005f64.powi(2), 0.008f64.powi(2)]);
+            self.last = o.time;
+            self.misses = 0;
+            return self.estimate(Update::Start);
+        };
+        let dt = (o.time - self.last).clamp(0.0, DT_MAX);
+        self.last = o.time;
+        let fade = (-dt / RATE_TAU).exp();
+        let mut f = diagonal([1.0; N]);
+        f[0][2] = RATE_TAU * (1.0 - fade);
+        f[1][3] = RATE_TAU * (1.0 - fade);
+        f[2][2] = fade;
+        f[3][3] = fade;
+        // Refused for a while: the angles taken afresh from this frame's ellipse (the normal that puts the pupil on
+        // the sphere about the centre kept), their uncertainty reset
+        if let (Some(pos), Some(ell)) = (o.pos, o.ell)
+            && self.misses >= REACQUIRE
+        {
+            let g = normal_on_sphere(pos, ell, [x[4], x[5], x[6]]);
+            (x[0], x[1]) = camera.angles_of(g);
+            x[2] = 0.0;
+            x[3] = 0.0;
+            for i in 0..4 {
+                for k in 0..N {
+                    self.p[i][k] = 0.0;
+                    self.p[k][i] = 0.0;
+                }
+            }
+            self.p[0][0] = deg(10.0).powi(2);
+            self.p[1][1] = deg(10.0).powi(2);
+            self.p[2][2] = 1.0;
+            self.p[3][3] = 1.0;
+            self.misses = 0;
+            self.retakes += 1;
+        }
+        // The prediction
+        let mut xp = [0.0; N];
+        for (i, value) in xp.iter_mut().enumerate() {
+            *value = (0..N).map(|k| f[i][k] * x[k]).sum();
+        }
+        let limit = ANG_MAX_DEG.to_radians();
+        xp[0] = xp[0].clamp(-limit, limit);
+        xp[1] = xp[1].clamp(-limit, limit);
+        let mut q = [[0.0; N]; N];
+        for i in 0..2 {
+            q[i][i] = Q_ACC * dt.powi(3) / 3.0;
+            q[i][i + 2] = Q_ACC * dt.powi(2) / 2.0;
+            q[i + 2][i] = Q_ACC * dt.powi(2) / 2.0;
+            q[i + 2][i + 2] = Q_ACC * dt;
+        }
+        q[4][4] = SIG_C * SIG_C * dt;
+        q[5][5] = SIG_C * SIG_C * dt;
+        q[6][6] = SIG_CZ * SIG_CZ * dt;
+        let mut pp = mul(&mul(&f, &self.p), &transpose(&f));
+        for i in 0..N {
+            for k in 0..N {
+                pp[i][k] += q[i][k];
+            }
+        }
+        let Some(pos) = o.pos else {
+            self.x = Some(xp);
+            self.p = pp;
+            return self.estimate(Update::NoPupil);
+        };
+        let noise = [SIG_POS * SIG_POS, SIG_POS * SIG_POS, SIG_ELL * SIG_ELL, SIG_ELL * SIG_ELL];
+        let mut with_ell = o.ell.is_some();
+        let (mut zp, mut j, _) = jacobian(&xp, camera, with_ell);
+        if let Some(ell) = o.ell {
+            // The ellipse on its own against what is expected: left out when it disagrees, believed after it has
+            // disagreed for ELL_REACQ frames (the angles from its normal nearer straight ahead, the pupil kept on its
+            // seen ray at the distance it was)
+            let se = innovation(&j, 2..4, &pp, &noise);
+            let ye = [ell[0] - zp[2], ell[1] - zp[3], 0.0, 0.0];
+            let far = inverse(&se, 2).is_none_or(|inv| distance(&ye, &inv, 2) > ELL_GATE);
+            if far {
+                self.ell_off += 1;
+                if self.ell_off >= ELL_REACQ {
+                    let g_old = camera.to_camera(gaze_head(xp[0], xp[1]));
+                    let pupil_old = add([xp[4], xp[5], xp[6]], scale(g_old, R_PUPIL));
+                    let g = normal_ahead(pos, ell, camera);
+                    (xp[0], xp[1]) = camera.angles_of(g);
+                    xp[2] = 0.0;
+                    xp[3] = 0.0;
+                    let c = sub(scale(ray(pos), norm(pupil_old)), scale(g, R_PUPIL));
+                    (xp[4], xp[5], xp[6]) = (c[0], c[1], c[2]);
+                    pp = diagonal([deg(5.0).powi(2), deg(5.0).powi(2), 1.0, 1.0, 0.003f64.powi(2), 0.003f64.powi(2), 0.004f64.powi(2)]);
+                    (zp, j, _) = jacobian(&xp, camera, true);
+                    self.ell_off = 0;
+                    self.retakes += 1;
+                } else {
+                    with_ell = false;
+                }
+            } else {
+                self.ell_off = 0;
+            }
+        }
+        let n = if with_ell { 4 } else { 2 };
+        let mut y = [0.0; 4];
+        y[0] = pos[0] - zp[0];
+        y[1] = pos[1] - zp[1];
+        if let (true, Some(ell)) = (with_ell, o.ell) {
+            y[2] = ell[0] - zp[2];
+            y[3] = ell[1] - zp[3];
+        }
+        let s = innovation(&j, 0..n, &pp, &noise);
+        let Some(s_inv) = inverse(&s, n) else {
+            self.x = Some(xp);
+            self.p = pp;
+            self.misses += 1;
+            return self.estimate(Update::Rejected);
+        };
+        if distance(&y, &s_inv, n) > REJECT {
+            self.x = Some(xp);
+            self.p = pp;
+            self.misses += 1;
+            return self.estimate(Update::Rejected);
+        }
+        // The gain K = P J' S^-1; without the ellipse the centre is held (its rows zero)
+        let mut pjt = [[0.0; 4]; N];
+        for i in 0..N {
+            for r in 0..n {
+                pjt[i][r] = (0..N).map(|k| pp[i][k] * j[r][k]).sum();
+            }
+        }
+        let mut gain = [[0.0; 4]; N];
+        for i in 0..N {
+            if !with_ell && i >= 4 {
+                continue;
+            }
+            for c in 0..n {
+                gain[i][c] = (0..n).map(|r| pjt[i][r] * s_inv[r][c]).sum();
+            }
+        }
+        let mut xn = xp;
+        for (i, value) in xn.iter_mut().enumerate() {
+            *value += (0..n).map(|r| gain[i][r] * y[r]).sum::<f64>();
+        }
+        if !plausible(&xn, camera) {
+            self.x = Some(xp);
+            self.p = pp;
+            self.misses += 1;
+            return self.estimate(Update::Implausible);
+        }
+        // P = (I - K J) P (I - K J)' + K R K' (the Joseph form), kept symmetric
+        let mut ikj = diagonal([1.0; N]);
+        for i in 0..N {
+            for k in 0..N {
+                ikj[i][k] -= (0..n).map(|r| gain[i][r] * j[r][k]).sum::<f64>();
+            }
+        }
+        let mut p = mul(&mul(&ikj, &pp), &transpose(&ikj));
+        for i in 0..N {
+            for k in 0..N {
+                p[i][k] += (0..n).map(|r| gain[i][r] * noise[r] * gain[k][r]).sum::<f64>();
+            }
+        }
+        for i in 0..N {
+            for k in 0..i {
+                let mean = (p[i][k] + p[k][i]) / 2.0;
+                p[i][k] = mean;
+                p[k][i] = mean;
+            }
+        }
+        self.x = Some(xn);
+        self.p = p;
+        self.misses = 0;
+        self.estimate(if with_ell { Update::Ellipse } else { Update::PupilOnly })
+    }
+}
+
+/// One eye's frame from the live file's glint part (the pupil centre and the frame's time) and shape part.
+pub fn raw_frame(slip: &CamSlip, shape: &CamShape) -> RawFrame {
+    RawFrame {
+        time: slip.time_ns as f64 / 1e9,
+        pupil: slip.pupil.map(|p| p.map(f64::from)),
+        a: f64::from(shape.a),
+        b: f64::from(shape.b),
+        angle_deg: f64::from(shape.angle_deg),
+        vis: f64::from(shape.vis),
+        aperture: f64::from(shape.aperture),
+        flipped: shape.flipped,
+    }
+}
+
+/// Both eyes' filters between samples, fed from eyecam-rec's live values (each new frame once).
+#[derive(Clone, Debug, Default)]
+pub struct EyeballGaze {
+    calibration: Option<Calibration>,
+    /// Each eye's map from the eye fit (eyeball_map.rs); None until it has one.
+    pub maps: Option<[EyeMap; 2]>,
+    filters: [EyeFilter; 2],
+    // The frame last taken per eye (its time, ns), and when the pupil was last seen (the eye server's time)
+    frame_ns: [Option<u64>; 2],
+    seen: [Option<f64>; 2],
+    last_time: Option<f64>,
+    used: bool,
+    /// Frames taken per eye, how they went (Update order), and the time they took (ns), for the journal.
+    pub frames: [u64; 2],
+    pub updates: [[u64; 6]; 2],
+    pub busy_ns: u64,
+}
+
+impl EyeballGaze {
+    /// Set the cameras' calibration (None: the source can't run).
+    pub fn set_calibration(&mut self, calibration: Option<Calibration>) {
+        self.calibration = calibration;
+        self.restart();
+    }
+
+    pub fn has_calibration(&self) -> bool {
+        self.calibration.is_some()
+    }
+
+    /// The filters start over (a gap in the samples, the source turned off).
+    pub fn restart(&mut self) {
+        for filter in &mut self.filters {
+            filter.reset();
+        }
+        self.frame_ns = [None; 2];
+        self.seen = [None; 2];
+        self.last_time = None;
+        self.used = false;
+    }
+
+    /// Not in use: start over if it was.
+    pub fn idle(&mut self) {
+        if self.used {
+            self.restart();
+        }
+    }
+
+    /// Take a sample at `time` (the eye server's, s) with eyecam-rec's values as read for it: each eye's new frame
+    /// into its filter. Each eye's direction (yaw, pitch in degrees, the filter's own before the map) while its pupil
+    /// was seen within EYE_FRESH_S; None for both without the calibration.
+    pub fn step(&mut self, time: f64, live: Option<&Live>) -> [Option<[f32; 2]>; 2] {
+        if self.calibration.is_none() {
+            return [None; 2];
+        }
+        if self.last_time.is_some_and(|last| time < last) {
+            self.restart();
+        }
+        let Some(calibration) = &self.calibration else {
+            return [None; 2];
+        };
+        self.last_time = Some(time);
+        self.used = true;
+        let started = std::time::Instant::now();
+        let mut out = [None; 2];
+        for eye in 0..2 {
+            let camera = &calibration.eyes[eye];
+            if let Some((slip, shape)) = live.and_then(|live| live.slip[eye].zip(live.shape[eye]))
+                && self.frame_ns[eye] != Some(slip.time_ns)
+            {
+                self.frame_ns[eye] = Some(slip.time_ns);
+                let o = observe(camera, &raw_frame(&slip, &shape));
+                let estimate = self.filters[eye].step(camera, &o);
+                self.frames[eye] += 1;
+                if let Some(estimate) = estimate {
+                    self.updates[eye][estimate.update as usize] += 1;
+                }
+                if o.pos.is_some() {
+                    self.seen[eye] = Some(time);
+                }
+            }
+            let fresh = self.seen[eye].is_some_and(|seen| time - seen <= EYE_FRESH_S);
+            if fresh && let Some(x) = self.filters[eye].x {
+                out[eye] = Some([x[0].to_degrees() as f32, x[1].to_degrees() as f32]);
+            }
+        }
+        self.busy_ns += started.elapsed().as_nanos() as u64;
+        out
+    }
+
+    /// Each filter's re-takes (for the journal).
+    pub fn retakes(&self) -> [u32; 2] {
+        self.filters.each_ref().map(|filter| filter.retakes)
+    }
+}
+
+/// Whether a file is eyecam-rec's replay output (`eyecam-rec --replay ... --out`): by its header.
+pub fn is_eyecam_replay(header: &str) -> bool {
+    header.starts_with("eye,eye_index,t_cam,")
+}
+
+/// The filter over an eyecam-rec replay output (its live CSV: eye, eye_index, t_cam, ok_pupil, aperture, pupil_vis,
+/// pupil_cx / _cy / _a / _b and pupil_angle), each eye on its own in camera-time order, the left eye's picture taken
+/// as turned upright (as eyecam-rec turns it on the Frame). Writes one row per frame to `out` (eye, eye_index, t_cam,
+/// update, yaw_deg, pitch_deg, centre_x_mm / _y_mm / _z_mm; empty before the filter starts) and returns the report.
+pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) -> Result<String, String> {
+    let mut lines = text.lines();
+    let header: Vec<&str> = lines.next().ok_or("the file is empty")?.split(',').collect();
+    let column = |name: &str| header.iter().position(|c| *c == name).ok_or_else(|| format!("column {name} is missing"));
+    let [eye_c, index_c, t_c, ok_c, ap_c, vis_c, cx_c, cy_c, a_c, b_c, ang_c] = [
+        "eye", "eye_index", "t_cam", "ok_pupil", "aperture", "pupil_vis", "pupil_cx", "pupil_cy", "pupil_a", "pupil_b",
+        "pupil_angle",
+    ]
+    .map(column);
+    let (eye_c, index_c, t_c, ok_c, ap_c, vis_c) = (eye_c?, index_c?, t_c?, ok_c?, ap_c?, vis_c?);
+    let (cx_c, cy_c, a_c, b_c, ang_c) = (cx_c?, cy_c?, a_c?, b_c?, ang_c?);
+    // Per eye: (t_cam, eye_index text, the frame)
+    let mut frames: [Vec<(f64, String, RawFrame)>; 2] = [Vec::new(), Vec::new()];
+    for (number, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let cells: Vec<&str> = line.split(',').collect();
+        let cell = |i: usize| cells.get(i).copied().unwrap_or("");
+        let num = |i: usize| cell(i).parse::<f64>().unwrap_or(f64::NAN);
+        let eye = match cell(eye_c) {
+            "L" => 0,
+            "R" => 1,
+            other => return Err(format!("line {}: eye {other:?}", number + 2)),
+        };
+        let t = num(t_c);
+        if !t.is_finite() {
+            continue;
+        }
+        let ok = cell(ok_c) == "1";
+        let centre = [num(cx_c), num(cy_c)];
+        let frame = RawFrame {
+            time: t,
+            pupil: (ok && centre.iter().all(|v| v.is_finite())).then_some(centre),
+            a: num(a_c),
+            b: num(b_c),
+            angle_deg: num(ang_c),
+            vis: num(vis_c),
+            aperture: num(ap_c),
+            flipped: eye == 0,
+        };
+        frames[eye].push((t, cell(index_c).to_owned(), frame));
+    }
+    let mut writer = match out {
+        Some(path) => Some(std::io::BufWriter::new(
+            std::fs::File::create(path).map_err(|e| format!("{}: {e}", path.display()))?,
+        )),
+        None => None,
+    };
+    use std::io::Write as _;
+    if let Some(w) = writer.as_mut() {
+        writeln!(w, "eye,eye_index,t_cam,update,yaw_deg,pitch_deg,centre_x_mm,centre_y_mm,centre_z_mm").map_err(|e| e.to_string())?;
+    }
+    let mut report = String::new();
+    let mut total_ns = 0u128;
+    let mut total = 0usize;
+    for eye in 0..2 {
+        let camera = &calibration.eyes[eye];
+        frames[eye].sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut filter = EyeFilter::default();
+        let mut counts = [0usize; 6];
+        let mut waiting = 0usize;
+        let started = std::time::Instant::now();
+        let mut rows = Vec::with_capacity(frames[eye].len());
+        for (t, index, frame) in &frames[eye] {
+            let estimate = filter.step(camera, &observe(camera, frame));
+            match estimate {
+                Some(e) => counts[e.update as usize] += 1,
+                None => waiting += 1,
+            }
+            rows.push((*t, index, estimate));
+        }
+        total_ns += started.elapsed().as_nanos();
+        total += frames[eye].len();
+        if let Some(w) = writer.as_mut() {
+            for (t, index, estimate) in rows {
+                let name = ["L", "R"][eye];
+                match estimate {
+                    Some(e) => writeln!(
+                        w,
+                        "{name},{index},{t:.6},{},{:.6},{:.6},{:.4},{:.4},{:.4}",
+                        e.update.name(),
+                        e.yaw.to_degrees(),
+                        e.pitch.to_degrees(),
+                        e.centre[0] * 1e3,
+                        e.centre[1] * 1e3,
+                        e.centre[2] * 1e3
+                    ),
+                    None => writeln!(w, "{name},{index},{t:.6},,,,,,"),
+                }
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        let names = [Update::Start, Update::NoPupil, Update::Rejected, Update::Implausible, Update::Ellipse, Update::PupilOnly];
+        let counted: Vec<String> = names.iter().map(|u| format!("{} {}", u.name(), counts[*u as usize])).collect();
+        report += &format!(
+            "eyeball {}: {} frames ({} before the start): {}; {} re-takes\n",
+            ["left", "right"][eye],
+            frames[eye].len(),
+            waiting,
+            counted.join(", "),
+            filter.retakes
+        );
+    }
+    if total > 0 {
+        report += &format!("eyeball filter: {:.1} us per frame\n", total_ns as f64 / 1e3 / total as f64);
+    }
+    if let Some(mut w) = writer {
+        w.flush().map_err(|e| e.to_string())?;
+    }
+    Ok(report)
+}
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+
+    /// A made-up camera (not any headset's numbers): 270 px focal length, centred, slight barrel distortion, looking
+    /// back at the eye from in front, below and to the nose's side (its z axis towards the eye: head +z, turned up 40
+    /// degrees and 15 to the side), its picture's x about along the head's +x.
+    pub fn camera() -> Camera {
+        let (up, side) = (40f64.to_radians(), 15f64.to_radians());
+        let z = unit([-side.sin() * up.cos(), up.sin(), side.cos() * up.cos()]);
+        let x = unit(sub([1.0, 0.0, 0.0], scale(z, z[0])));
+        Camera { fx: 270.0, fy: 270.0, cx: 200.0, cy: 200.0, dist: [-0.05, 0.01, 0.0005, -0.0003, 0.0], axes: [x, cross(z, x), z], rows: 400.0 }
+    }
+
+    /// A made-up calibration JSON with two such cameras (and fields the loader leaves alone).
+    pub fn calibration_json() -> String {
+        json_of(&camera())
+    }
+
+    /// The calibration JSON of two cameras like `c` (its x and z axes as plus_x / plus_z).
+    fn json_of(c: &Camera) -> String {
+        let side = |c: &Camera| {
+            format!(
+                r#"{{"fx": {}, "fy": {}, "cx": {}, "cy": {}, "nx": 400, "ny": 400, "dist": [{}, {}, {}, {}, {}],
+                "headFromCamera": {{"plus_x": [{}, {}, {}], "plus_z": [{}, {}, {}], "position": [0.03, -0.01, -0.02]}}}}"#,
+                c.fx, c.fy, c.cx, c.cy, c.dist[0], c.dist[1], c.dist[2], c.dist[3], c.dist[4], c.axes[0][0], c.axes[0][1],
+                c.axes[0][2], c.axes[2][0], c.axes[2][1], c.axes[2][2]
+            )
+        };
+        format!(
+            r#"{{"etCamCalib": {{"left": {}, "right": {}, "ipdSensor": {{"x": 0, "y": 0, "z": 0, "temp": 30}}}}, "ipdData": [{{}}, {{}}]}}"#,
+            side(c),
+            side(c)
+        )
+    }
+
+    /// The sensor pixel where a camera-frame point is seen (the distortion applied).
+    fn project(c: &Camera, p: V3) -> [f64; 2] {
+        let (x, y) = (p[0] / p[2], p[1] / p[2]);
+        let [k1, k2, p1, p2, k3] = c.dist;
+        let r2 = x * x + y * y;
+        let radial = 1.0 + ((k3 * r2 + k2) * r2 + k1) * r2;
+        let xd = x * radial + 2.0 * p1 * x * y + p2 * (r2 + 2.0 * x * x);
+        let yd = y * radial + p1 * (r2 + 2.0 * y * y) + 2.0 * p2 * x * y;
+        [c.fx * xd + c.cx, c.fy * yd + c.cy]
+    }
+
+    /// The frame the model expects of an eye whose centre is at `centre` (camera frame, m) looking at (yaw, pitch)
+    /// (degrees), as eyecam-rec would give it: the pupil centre in the sensor's picture (distorted) and an ellipse whose
+    /// flattening and long axis are the model's. The filter's own behaviour is tested on these; `outline` gives what
+    /// a camera sees.
+    pub fn seen(c: &Camera, centre: V3, yaw: f64, pitch: f64, time: f64) -> RawFrame {
+        let x = [yaw.to_radians(), pitch.to_radians(), 0.0, 0.0, centre[0], centre[1], centre[2]];
+        let (z, _) = predict(&x, c, true);
+        let pixel = project(c, [z[0], z[1], 1.0]);
+        let flat = z[2].hypot(z[3]);
+        let angle = 0.5 * z[3].atan2(z[2]);
+        RawFrame {
+            time,
+            pupil: Some(pixel),
+            a: 20.0,
+            b: 20.0 * (1.0 - flat),
+            angle_deg: angle.to_degrees().rem_euclid(180.0),
+            vis: 1.0,
+            aperture: 2.0,
+            flipped: false,
+        }
+    }
+
+    /// The frame a camera sees of such an eye: the pupil (a 1 mm circle) projected point by point through the lens and
+    /// its ellipse fitted from the outline's moments, in the sensor's picture (not flipped). (A small pupil: at the
+    /// filter's short distances a larger one's perspective makes its outline differ more from a tilted circle.)
+    pub fn outline(c: &Camera, centre: V3, yaw: f64, pitch: f64, time: f64) -> RawFrame {
+        let g = c.to_camera(gaze_head(yaw.to_radians(), pitch.to_radians()));
+        let pupil = add(centre, scale(g, R_PUPIL));
+        // Two directions in the pupil's plane
+        let u = unit(cross(g, [0.0, 1.0, 0.0]));
+        let v = cross(g, u);
+        let n = 360;
+        let points: Vec<[f64; 2]> = (0..n)
+            .map(|k| {
+                let t = 2.0 * PI * k as f64 / n as f64;
+                project(c, add(pupil, add(scale(u, 0.001 * t.cos()), scale(v, 0.001 * t.sin()))))
+            })
+            .collect();
+        // The ellipse of the outline: centre and second moments of the boundary (a closed curve sampled evenly in its
+        // parameter: for a projected circle, close to the ellipse's own)
+        let mean = [0, 1].map(|i| points.iter().map(|p| p[i]).sum::<f64>() / n as f64);
+        let cov = |i: usize, j: usize| points.iter().map(|p| (p[i] - mean[i]) * (p[j] - mean[j])).sum::<f64>() / n as f64;
+        let (sxx, syy, sxy) = (cov(0, 0), cov(1, 1), cov(0, 1));
+        let half = (sxx + syy) / 2.0;
+        let root = (half * half - (sxx * syy - sxy * sxy)).max(0.0).sqrt();
+        let (l1, l2) = (half + root, half - root);
+        let angle = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+        let centre_px = project(c, pupil);
+        RawFrame {
+            time,
+            pupil: Some(centre_px),
+            a: (2.0 * l1).sqrt(),
+            b: (2.0 * l2.max(0.0)).sqrt(),
+            angle_deg: angle.to_degrees().rem_euclid(180.0),
+            vis: 1.0,
+            aperture: 2.0,
+            flipped: false,
+        }
+    }
+
+    /// The eye's centre (camera frame) that puts its pupil D0 away on the camera's axis while it looks straight ahead
+    /// (the distance the filter starts from: its geometry is an effective one, see D0).
+    fn eye_at(c: &Camera) -> V3 {
+        sub([0.0, 0.0, D0], scale(c.forward(), R_PUPIL))
+    }
+
+    /// What makes the frames: `seen` (the model's own) or `outline` (a camera's).
+    type Frames = fn(&Camera, V3, f64, f64, f64) -> RawFrame;
+
+    /// Runs `seconds` at 90 frames a second from `start` of an eye whose centre and direction are given per time;
+    /// returns the last estimate (degrees, and the centre in mm).
+    fn run(filter: &mut EyeFilter, c: &Camera, frames: Frames, from: f64, seconds: f64, at: impl Fn(f64) -> (V3, f64, f64)) -> (f64, f64, V3) {
+        let mut last = None;
+        let n = (seconds * 90.0).round() as usize;
+        for k in 0..n {
+            let t = from + k as f64 / 90.0;
+            let (centre, yaw, pitch) = at(t);
+            let o = observe(c, &frames(c, centre, yaw, pitch, t));
+            if let Some(e) = filter.step(c, &o) {
+                last = Some(e);
+            }
+        }
+        let e = last.unwrap();
+        (e.yaw.to_degrees(), e.pitch.to_degrees(), scale(e.centre, 1e3))
+    }
+
+    /// Looks around for a while so the centre is learnt: the eye fit's five dots (as the left eye sees them), two
+    /// seconds each, three times; then the map from the last round, as the eye fit makes it (eyeball_map.rs).
+    fn learn(filter: &mut EyeFilter, c: &Camera, frames: Frames) -> (f64, EyeMap) {
+        let mut t = 0.0;
+        let mut medians = [[0.0f32; 2]; 5];
+        for _ in 0..3 {
+            for (i, (_, yaw, pitch)) in crate::eyeball_map::DOTS.iter().enumerate() {
+                let [yaw, pitch] = crate::eyeball_map::eye_direction(*yaw, *pitch, 0);
+                run(filter, c, frames, t, 1.0, |_| (eye_at(c), yaw, pitch));
+                let (y, p, _) = run(filter, c, frames, t + 1.0, 1.0, |_| (eye_at(c), yaw, pitch));
+                medians[i] = [y as f32, p as f32];
+                t += 2.0;
+            }
+        }
+        let (map, _) = crate::eyeball_map::fit_eye(&medians, 0).unwrap();
+        (t, map)
+    }
+
+    /// After learning: how far the mapped gaze strays (degrees) while the eye looks at each of `places` in turn (one
+    /// second each, the last half counted), the worst.
+    fn turned(frames: Frames, places: &[(f64, f64)]) -> f64 {
+        let c = camera();
+        let mut filter = EyeFilter::default();
+        let (mut t, map) = learn(&mut filter, &c, frames);
+        let mut worst = 0.0f64;
+        for &(yaw, pitch) in places {
+            run(&mut filter, &c, frames, t, 0.5, |_| (eye_at(&c), yaw, pitch));
+            let (y, p, _) = run(&mut filter, &c, frames, t + 0.5, 0.5, |_| (eye_at(&c), yaw, pitch));
+            let [y, p] = mapped(&map, y, p);
+            worst = worst.max((y - yaw).hypot(p - pitch));
+            t += 1.0;
+        }
+        worst
+    }
+
+    /// After learning, the eye looking straight ahead: the headset pushed by `shift` (mm) over half a second and left
+    /// there for 2.5 s. How far the mapped gaze moved (degrees, at most and at the end), and the centre's move (mm).
+    fn shifted(frames: Frames, shift: V3, lids_clear: bool) -> (f64, f64, V3) {
+        let c = camera();
+        let mut filter = EyeFilter::default();
+        let (t, map) = learn(&mut filter, &c, frames);
+        let (y0, p0, c0) = run(&mut filter, &c, frames, t, 1.0, |_| (eye_at(&c), 0.0, 0.0));
+        let [y0, p0] = mapped(&map, y0, p0);
+        let mut worst = 0.0f64;
+        let mut last = (0.0, [0.0; 3]);
+        for k in 0..270 {
+            let time = t + 1.0 + k as f64 / 90.0;
+            let share = (k as f64 / 45.0).min(1.0);
+            let mut frame = frames(&c, add(eye_at(&c), scale(shift, 1e-3 * share)), 0.0, 0.0, time);
+            if !lids_clear {
+                frame.aperture = 1.0;
+            }
+            let e = filter.step(&c, &observe(&c, &frame)).unwrap();
+            let [y, p] = mapped(&map, e.yaw.to_degrees(), e.pitch.to_degrees());
+            worst = worst.max((y - y0).hypot(p - p0));
+            last = ((y - y0).hypot(p - p0), sub(scale(e.centre, 1e3), c0));
+        }
+        (worst, last.0, last.1)
+    }
+
+    /// Places between and beyond the eye fit's dots.
+    const PLACES: [(f64, f64); 6] = [(0.0, 0.0), (12.0, 8.0), (-15.0, -6.0), (5.0, 12.0), (25.0, -10.0), (-10.0, 18.0)];
+    /// Pushes of the headset (mm, camera frame): up, sideways, a mix.
+    const SHIFTS: [V3; 3] = [[0.0, 3.0, 0.0], [3.0, 0.0, 0.0], [2.0, -2.0, 1.0]];
+
+    /// The map's direction for an estimate (degrees).
+    fn mapped(map: &EyeMap, yaw: f64, pitch: f64) -> [f64; 2] {
+        map.apply([yaw as f32, pitch as f32]).map(f64::from)
+    }
+
+    #[test]
+    fn the_distortion_is_undone() {
+        let c = camera();
+        for p in [[0.0, 0.0, 1.0], [0.3, -0.2, 1.0], [-0.5, 0.4, 1.0]] {
+            let [u, v] = project(&c, p);
+            let [x, y] = c.undistort(u, v);
+            assert!((x - p[0]).abs() < 1e-4 && (y - p[1]).abs() < 1e-4, "{p:?} -> {x} {y}");
+        }
+    }
+
+    #[test]
+    fn the_calibration_is_read_and_checked() {
+        let cal = parse_calibration(&calibration_json()).unwrap();
+        let c = camera();
+        let got = &cal.eyes[0];
+        assert_eq!((got.fx, got.cy, got.dist, got.rows), (c.fx, c.cy, c.dist, 400.0));
+        for (a, b) in got.axes.iter().zip(&c.axes) {
+            assert!(norm(sub(*a, *b)) < 1e-12, "{a:?} {b:?}");
+        }
+        // Axes given a little off square come out orthonormal, x kept
+        let mut skew = camera();
+        skew.axes[2] = add(skew.axes[2], [0.05, 0.0, 0.0]);
+        let axes = parse_calibration(&json_of(&skew)).unwrap().eyes[0].axes;
+        assert!(norm(sub(axes[0], c.axes[0])) < 1e-12);
+        for i in 0..3 {
+            assert!((norm(axes[i]) - 1.0).abs() < 1e-12);
+            assert!(dot(axes[i], axes[(i + 1) % 3]).abs() < 1e-12);
+        }
+        // Without ny the picture is 400 rows
+        assert_eq!(parse_calibration(&calibration_json().replace("\"ny\": 400, ", "")).unwrap().eyes[1].rows, 400.0);
+        // What is missing or wrong is said
+        let broken = [
+            ("{}", "no etCamCalib"),
+            ("not json", "not JSON"),
+            (r#"{"etCamCalib": {"left": {}}}"#, "etCamCalib.left.fx"),
+        ];
+        for (text, why) in broken {
+            let err = parse_calibration(text).unwrap_err();
+            assert!(err.contains(why), "{err}");
+        }
+        let short = calibration_json().replacen("\"dist\": [-0.05, ", "\"dist\": [", 1);
+        assert!(parse_calibration(&short).unwrap_err().contains("dist: not 5 numbers"));
+        let flat = Camera { fx: 0.0, ..camera() };
+        assert!(parse_calibration(&json_of(&flat)).unwrap_err().contains("positive"));
+        let mut parallel = camera();
+        parallel.axes[2] = scale(parallel.axes[0], 2.0);
+        assert!(parse_calibration(&json_of(&parallel)).unwrap_err().contains("not a rotation"));
+        // From a file, and a file that isn't there
+        let path = std::env::temp_dir().join(format!("frameeyeosc-eyecal-{}.json", std::process::id()));
+        std::fs::write(&path, calibration_json()).unwrap();
+        assert_eq!(load_calibration(&path).unwrap(), cal);
+        std::fs::remove_file(&path).unwrap();
+        assert!(load_calibration(&path).unwrap_err().contains("frameeyeosc-eyecal"));
+    }
+
+    #[test]
+    fn a_flipped_picture_is_turned_back_and_the_ellipse_needs_clear_lids_and_its_rim() {
+        let c = camera();
+        let frame = seen(&c, eye_at(&c), 10.0, 5.0, 0.0);
+        let plain = observe(&c, &frame);
+        assert!(plain.pos.is_some() && plain.ell.is_some());
+        // The same frame in a picture turned upright: the same observation
+        let [x, y] = frame.pupil.unwrap();
+        let upright = RawFrame { pupil: Some([x, 399.0 - y]), angle_deg: (180.0 - frame.angle_deg) % 180.0, flipped: true, ..frame };
+        let turned = observe(&c, &upright);
+        for i in 0..2 {
+            assert!((turned.pos.unwrap()[i] - plain.pos.unwrap()[i]).abs() < 1e-12);
+            assert!((turned.ell.unwrap()[i] - plain.ell.unwrap()[i]).abs() < 1e-9);
+        }
+        // A lid near the pupil or part of the rim hidden: the pupil only; unknown values don't stop it
+        assert!(observe(&c, &RawFrame { aperture: 1.2, ..frame }).ell.is_none());
+        assert!(observe(&c, &RawFrame { vis: 0.9, ..frame }).ell.is_none());
+        assert!(observe(&c, &RawFrame { aperture: f64::NAN, vis: f64::NAN, ..frame }).ell.is_some());
+        assert!(observe(&c, &RawFrame { angle_deg: f64::NAN, ..frame }).ell.is_none());
+        // No pupil: nothing
+        assert_eq!(observe(&c, &RawFrame { pupil: None, ..frame }).pos, None);
+    }
+
+    #[test]
+    fn the_prediction_matches_what_the_camera_sees() {
+        let c = camera();
+        for (yaw, pitch) in [(0.0, 0.0), (15.0, -10.0), (-20.0, 12.0)] {
+            let o = observe(&c, &outline(&c, eye_at(&c), yaw, pitch, 0.0));
+            let x = [yaw.to_radians(), pitch.to_radians(), 0.0, 0.0, eye_at(&c)[0], eye_at(&c)[1], eye_at(&c)[2]];
+            let (z, n) = predict(&x, &c, true);
+            assert_eq!(n, 4);
+            let pos = o.pos.unwrap();
+            let ell = o.ell.unwrap();
+            assert!((z[0] - pos[0]).abs() < 1e-3 && (z[1] - pos[1]).abs() < 1e-3, "{yaw} {pitch}: {z:?} {pos:?}");
+            assert!((z[2] - ell[0]).abs() < 0.03 && (z[3] - ell[1]).abs() < 0.03, "{yaw} {pitch}: {z:?} {ell:?}");
+            // One of the ellipse's two normals is the gaze
+            let g = c.to_camera(gaze_head(x[0], x[1]));
+            let best = normals(pos, ell).iter().map(|n| dot(*n, g)).fold(-1.0, f64::max);
+            assert!(best > 0.99, "{yaw} {pitch}: {best}");
+        }
+    }
+
+    #[test]
+    fn a_turn_of_the_eye_is_followed() {
+        // Frames as the model expects them: each place within half a degree once mapped
+        let worst = turned(seen, &PLACES);
+        eprintln!("turns, model's frames: at most {worst:.2} deg off");
+        assert!(worst < 0.5, "{worst}");
+        // A camera's picture of the pupil (perspective, the lens: the model's tilted circle is only near it): the turns
+        // of 10-27 degrees, out to beyond the dots, followed within 6 degrees (between the dots within 3)
+        let worst = turned(outline, &PLACES);
+        eprintln!("turns, a camera's frames: at most {worst:.2} deg off");
+        assert!(worst < 6.0, "{worst}");
+        let worst = turned(outline, &PLACES[..3]);
+        eprintln!("turns between the dots, a camera's frames: at most {worst:.2} deg off");
+        assert!(worst < 3.0, "{worst}");
+    }
+
+    #[test]
+    fn a_headset_shift_with_the_eye_still_moves_the_gaze_less_than_a_degree() {
+        for shift in SHIFTS {
+            // The headset pushed 3 mm (the camera against the eye), the eye still looking straight ahead
+            let (worst, after, centre) = shifted(seen, shift, true);
+            eprintln!("shift {shift:?} mm, model's frames: gaze moved at most {worst:.2} deg ({after:.2} after), centre {centre:.2?} mm");
+            assert!(worst < 1.0, "shift {shift:?}: {worst:.2} deg");
+            // ...the centre followed (the model's geometry is not the physical one, so not by the same millimetres)
+            assert!(norm(centre) > 1.0, "shift {shift:?}: centre moved {centre:?} mm");
+            // A camera's picture of the pupil, 2 mm: under 1.5 degrees (the pupil's place alone would read about 11)
+            let (worst, after, _) = shifted(outline, scale(shift, 2.0 / 3.0), true);
+            eprintln!("shift {:?} mm, a camera's frames: gaze moved at most {worst:.2} deg ({after:.2} after)", scale(shift, 2.0 / 3.0));
+            assert!(worst < 1.5, "shift {shift:?} x 2/3, outline: {worst:.2} deg");
+            // Without the ellipse (a lid near the pupil) the same push is read as a turn: the ellipse is what tells
+            let (_, blind, _) = shifted(seen, shift, false);
+            assert!(blind > 5.0, "shift {shift:?} without the ellipse: {blind:.2} deg");
+        }
+    }
+
+    #[test]
+    fn it_waits_for_an_ellipse_holds_through_lost_frames_and_restarts() {
+        let c = camera();
+        let mut filter = EyeFilter::default();
+        // No ellipse yet: not started
+        let frame = RawFrame { aperture: 1.0, ..seen(&c, eye_at(&c), 0.0, 0.0, 0.0) };
+        assert!(filter.step(&c, &observe(&c, &frame)).is_none() && !filter.started());
+        let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 0.0, 0.0, 0.01))).unwrap();
+        assert_eq!(e.update, Update::Start);
+        // No pupil: the prediction
+        let none = Obs { time: 0.02, pos: None, ell: None };
+        assert_eq!(filter.step(&c, &none).unwrap().update, Update::NoPupil);
+        filter.reset();
+        assert!(!filter.started());
+    }
+
+    /// A live file's values for one eye frame (glint and shape parts).
+    fn live_frame(c: &Camera, time_ns: u64, yaw: f64) -> (CamSlip, CamShape) {
+        let f = seen(c, eye_at(c), yaw, 0.0, time_ns as f64 / 1e9);
+        let slip = CamSlip { time_ns, pupil: f.pupil.map(|p| p.map(|v| v as f32)), ..CamSlip::default() };
+        let shape = CamShape {
+            a: f.a as f32,
+            b: f.b as f32,
+            angle_deg: f.angle_deg as f32,
+            vis: 1.0,
+            aperture: 2.0,
+            flipped: false,
+        };
+        (slip, shape)
+    }
+
+    #[test]
+    fn the_live_glue_takes_each_frame_once_and_gives_an_eye_while_its_pupil_is_fresh() {
+        let c = camera();
+        let mut gaze = EyeballGaze::default();
+        // Without the calibration: nothing
+        assert_eq!(gaze.step(0.0, None), [None, None]);
+        gaze.set_calibration(Some(Calibration { eyes: [c.clone(), c.clone()] }));
+        let mut live = crate::tests::camera(0.75, 0.0);
+        let mut out = [None; 2];
+        for k in 0..200u64 {
+            let time = k as f64 / 90.0;
+            let (slip, shape) = live_frame(&c, 1_000_000_000 + k * 11_111_111, 10.0);
+            live.slip = [Some(slip), None];
+            live.shape = [Some(shape), None];
+            // Two samples per frame: the frame taken once
+            gaze.step(time, Some(&live));
+            out = gaze.step(time + 0.001, Some(&live));
+        }
+        assert_eq!(gaze.frames, [200, 0]);
+        assert!(out[1].is_none());
+        let [yaw, _] = out[0].unwrap();
+        assert!(yaw > 5.0, "{yaw}");
+        // The pupil gone for longer than EYE_FRESH_S: no direction
+        let mut time = 200.0 / 90.0;
+        live.slip = [None; 2];
+        while time < 200.0 / 90.0 + EYE_FRESH_S + 0.05 {
+            out = gaze.step(time, Some(&live));
+            time += 1.0 / 90.0;
+        }
+        assert_eq!(out, [None, None]);
+        // Time going back starts over
+        gaze.step(0.0, Some(&live));
+        assert!(!gaze.filters[0].started());
+    }
+
+    #[test]
+    fn an_eyecam_replay_csv_runs_through_the_filter() {
+        let c = camera();
+        let cal = Calibration { eyes: [c.clone(), c.clone()] };
+        let mut text = String::from("eye,eye_index,t_cam,ok_pupil,aperture,pupil_vis,pupil_cx,pupil_cy,pupil_a,pupil_b,pupil_angle\n");
+        for k in 0..90 {
+            let t = 100.0 + k as f64 / 90.0;
+            for (eye, name) in ["L", "R"].iter().enumerate() {
+                let f = seen(&c, eye_at(&c), 8.0, -4.0, t);
+                let [x, y] = f.pupil.unwrap();
+                // The left eye's picture is turned upright, as eyecam-rec gives it
+                let (y, angle) = if eye == 0 { (399.0 - y, (180.0 - f.angle_deg) % 180.0) } else { (y, f.angle_deg) };
+                text += &format!("{name},{k},{t:.6},1,2.0,1.0,{x:.4},{y:.4},{:.4},{:.4},{angle:.4}\n", f.a, f.b);
+            }
+        }
+        assert!(is_eyecam_replay(&text));
+        let out = std::env::temp_dir().join(format!("frameeyeosc-eyeball-replay-{}.csv", std::process::id()));
+        let report = replay_eyecam(&text, &cal, Some(&out)).unwrap();
+        assert!(report.contains("eyeball left: 90 frames (0 before the start): start 1, nopupil 0"), "{report}");
+        let rows = std::fs::read_to_string(&out).unwrap();
+        std::fs::remove_file(&out).unwrap();
+        let last: Vec<&str> = rows.lines().filter(|l| l.starts_with("L,")).last().unwrap().split(',').collect();
+        let (yaw, pitch) = (last[4].parse::<f64>().unwrap(), last[5].parse::<f64>().unwrap());
+        assert!((yaw - 8.0).abs() < 1.5 && (pitch + 4.0).abs() < 1.5, "{last:?}");
+        // Both eyes the same: their outputs the same
+        let right: Vec<&str> = rows.lines().filter(|l| l.starts_with("R,")).last().unwrap().split(',').collect();
+        assert_eq!(last[3..], right[3..]);
+        assert!(replay_eyecam("eye,eye_index,t_cam\n", &cal, None).unwrap_err().contains("ok_pupil"));
+    }
+}

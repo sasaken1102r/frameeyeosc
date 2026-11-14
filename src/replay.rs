@@ -2,10 +2,10 @@
 //! recording back through the same processing (--replay) to compare settings by a few numbers.
 
 use crate::config::{LidFit, Settings};
-use crate::eyecam_live::{CamSlip, Eye, FrameGaps, Live};
+use crate::eyecam_live::{CamShape, CamSlip, Eye, FrameGaps, Live};
 use crate::{
-    CAL_SETTLE, EyeData, LidCalibration, LidFrom, MAX_GAP, NOMINAL_DT, Sample, Saturation, Smoother, TIMEOUT,
-    gaze_angles, step,
+    CAL_SETTLE, EyeData, EyeballSetup, LidCalibration, LidFrom, MAX_GAP, NOMINAL_DT, Sample, Saturation, Smoother,
+    TIMEOUT, eyeball, gaze_angles, step,
 };
 use std::error::Error;
 use std::fs::{self, File};
@@ -187,6 +187,52 @@ fn glint_fields(camera: Option<&Live>) -> Vec<String> {
     fields
 }
 
+// Each eye's pupil shape columns (cam_l_shape_*, cam_r_shape_*), after the glint columns: eyecam-rec's shape part as
+// read with the sample (eyecam_live.rs CamShape; what gaze_source "eyeball" follows, with the glint part's pupil
+// centre and frame time), empty while there is none. Recordings from before have none, and replay without it.
+const SHAPE_FIELDS: [&str; 6] = ["a", "b", "angle", "vis", "aperture", "flipped"];
+
+/// Names of the shape columns, after the glint columns.
+fn shape_columns() -> Vec<String> {
+    ["l", "r"].iter().flat_map(|eye| SHAPE_FIELDS.map(|field| format!("cam_{eye}_shape_{field}"))).collect()
+}
+
+/// The shape cells of one row (in shape_columns order): each eye's shape part as read, empty without one.
+fn shape_fields(camera: Option<&Live>) -> Vec<String> {
+    let mut fields = Vec::new();
+    for eye in 0..2 {
+        match camera.and_then(|live| live.shape[eye]) {
+            Some(shape) => {
+                let float = |value: f32| if value.is_finite() { value.to_string() } else { String::new() };
+                fields.extend([
+                    float(shape.a),
+                    float(shape.b),
+                    float(shape.angle_deg),
+                    float(shape.vis),
+                    float(shape.aperture),
+                    u8::from(shape.flipped).to_string(),
+                ]);
+            }
+            None => fields.extend(std::iter::repeat_n(String::new(), SHAPE_FIELDS.len())),
+        }
+    }
+    fields
+}
+
+/// One eye's shape part from its cells (in SHAPE_FIELDS order): None when `flipped` is empty (no shape part read);
+/// an empty number is NaN, as eyecam-rec writes it without a pupil.
+fn shape_from(cells: &[&str]) -> Option<CamShape> {
+    let float = |i: usize| if cells[i].is_empty() { Some(f32::NAN) } else { cells[i].parse::<f32>().ok() };
+    Some(CamShape {
+        a: float(0)?,
+        b: float(1)?,
+        angle_deg: float(2)?,
+        vis: float(3)?,
+        aperture: float(4)?,
+        flipped: cells[5].parse::<u8>().ok()? != 0,
+    })
+}
+
 /// One eye's glint part from its cells (in GLINT_FIELDS order): None when they are empty or not numbers.
 fn glint_from(cells: &[&str]) -> Option<CamSlip> {
     let int = |i: usize| cells[i].parse::<u64>().ok();
@@ -243,8 +289,9 @@ fn camera_from(cells: &[&str]) -> Result<Option<(Live, [f64; 2])>, ()> {
         eyes: [left, right],
         fresh: [fresh_left, fresh_right],
         frame_ns: [0; 2],
-        // (recordings don't keep the glint slip)
+        // (the glint and shape parts come from their own columns, see parse)
         slip: [None; 2],
+        shape: [None; 2],
     };
     Ok(Some((live, [values[per_eye - 1], values[2 * per_eye - 1]])))
 }
@@ -369,10 +416,11 @@ impl Recorder {
         let mut out = BufWriter::new(File::create(path)?);
         writeln!(
             out,
-            "{},{},{CAMERA_ANATOMICAL},{}",
+            "{},{},{CAMERA_ANATOMICAL},{},{}",
             columns().join(","),
             camera_columns().join(","),
-            glint_columns().join(",")
+            glint_columns().join(","),
+            shape_columns().join(",")
         )?;
         Ok(Self {
             out,
@@ -392,6 +440,7 @@ impl Recorder {
         fields.extend(camera_fields(camera));
         fields.push(if camera.is_some() { "1" } else { "" }.to_owned());
         fields.extend(glint_fields(camera.map(|(live, _)| live)));
+        fields.extend(shape_fields(camera.map(|(live, _)| live)));
         writeln!(self.out, "{}", fields.join(","))?;
         self.count += 1;
         self.camera_count += u64::from(camera.is_some());
@@ -433,6 +482,7 @@ fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
         .collect::<Result<Vec<_>, _>>()?;
     let camera_positions = camera_columns().iter().map(position).collect::<Option<Vec<_>>>();
     let glint_positions = glint_columns().iter().map(position).collect::<Option<Vec<_>>>();
+    let shape_positions = shape_columns().iter().map(position).collect::<Option<Vec<_>>>();
     let mut gaps = RecordedGaps::default();
     let mut resampler = Resampler::from_env();
     let rows = lines
@@ -456,7 +506,14 @@ fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
                             let per_eye = GLINT_FIELDS.len();
                             live.slip = [0, 1].map(|eye| glint_from(&cells[eye * per_eye..(eye + 1) * per_eye]));
                         }
+                        if let Some(positions) = &shape_positions {
+                            let cells: Vec<&str> =
+                                positions.iter().map(|position| fields.get(*position).copied().unwrap_or("")).collect();
+                            let per_eye = SHAPE_FIELDS.len();
+                            live.shape = [0, 1].map(|eye| shape_from(&cells[eye * per_eye..(eye + 1) * per_eye]));
+                        }
                         if swapped {
+                            live.shape.swap(0, 1);
                             live.slip.swap(0, 1);
                             live.eyes.swap(0, 1);
                             live.fresh.swap(0, 1);
@@ -479,8 +536,22 @@ fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
 
 /// Everything sent for each sample, as the live loop would have sent it, with the eye camera's values recorded with
 /// it. The calibration settles and restarts on sample time the way the live loop does on the clock.
-fn replay(samples: &[EyeData], cameras: &[Option<Live>], settings: &Settings, mut calibration: LidCalibration) -> Vec<Sample> {
+fn replay(samples: &[EyeData], cameras: &[Option<Live>], settings: &Settings, calibration: LidCalibration) -> Vec<Sample> {
+    replay_with(samples, cameras, settings, calibration, None)
+}
+
+/// The same, with gaze_source "eyeball"'s calibration and maps taken from `eyeball` as a live run takes them up.
+fn replay_with(
+    samples: &[EyeData],
+    cameras: &[Option<Live>],
+    settings: &Settings,
+    mut calibration: LidCalibration,
+    eyeball: Option<&EyeballSetup>,
+) -> Vec<Sample> {
     let mut smoother = Smoother::new(settings);
+    if let Some(eyeball) = eyeball {
+        eyeball.clone().prepare(settings, &mut smoother);
+    }
     let mut since = None;
     let mut last: Option<f64> = None;
     samples
@@ -1331,15 +1402,34 @@ fn guard_line(sent: &[Sample]) -> String {
     )
 }
 
-/// Replay a recording with the new stages off and with `settings`, and print the comparison.
-pub fn run(input: &Path, output: Option<&Path>, settings: &Settings, calibration: &LidCalibration) -> Result<(), Box<dyn Error>> {
+/// Replay a recording with the new stages off and with `settings`, and print the comparison. An eyecam-rec replay
+/// output (its live CSV) instead goes through the eyeball filter alone (eyeball.rs replay_eyecam), with the factory
+/// eye-camera calibration `eyeball` names.
+pub fn run(
+    input: &Path,
+    output: Option<&Path>,
+    settings: &Settings,
+    calibration: &LidCalibration,
+    eyeball: EyeballSetup,
+) -> Result<(), Box<dyn Error>> {
     let text = fs::read_to_string(input).map_err(|error| format!("{}: {error}", input.display()))?;
+    if eyeball::is_eyecam_replay(text.lines().next().unwrap_or("")) {
+        let cameras = eyeball::load_calibration(&eyeball.calibration_path)?;
+        let report = eyeball::replay_eyecam(&text, &cameras, output).map_err(|error| format!("{}: {error}", input.display()))?;
+        println!("{}: eyecam-rec's replay output, through the eyeball filter", input.display());
+        print!("{report}");
+        return Ok(());
+    }
     let (all, camera) = parse(&text).map_err(|error| format!("{}: {error}", input.display()))?;
     let rows: Vec<Row> = all.iter().copied().filter(|row| row.data.is_finite()).collect();
     let samples: Vec<EyeData> = rows.iter().map(|row| row.data).collect();
     let cameras: Vec<Option<Live>> = rows.iter().map(|row| row.camera).collect();
-    let before = replay(&samples, &cameras, &without_new_stages(settings), calibration.clone());
-    let after = replay(&samples, &cameras, settings, calibration.clone());
+    // gaze_source "eyeball": what it takes up, said once (nothing otherwise)
+    for line in eyeball.clone().prepare(settings, &mut Smoother::new(settings)) {
+        println!("  {line}");
+    }
+    let before = replay_with(&samples, &cameras, &without_new_stages(settings), calibration.clone(), Some(&eyeball));
+    let after = replay_with(&samples, &cameras, settings, calibration.clone(), Some(&eyeball));
     if let Some(output) = output {
         write_processed(output, &samples, &after, camera).map_err(|error| format!("{}: {error}", output.display()))?;
     }
@@ -1348,7 +1438,7 @@ pub fn run(input: &Path, output: Option<&Path>, settings: &Settings, calibration
             camera_lids: false,
             ..settings.clone()
         };
-        camera_lines(&cameras, &samples, &after, &replay(&samples, &cameras, &off, calibration.clone()))
+        camera_lines(&cameras, &samples, &after, &replay_with(&samples, &cameras, &off, calibration.clone(), Some(&eyeball)))
     });
     let guard_text = guard_line(&after);
     let (before, after) = (metrics(&samples, &before), metrics(&samples, &after));
@@ -1606,6 +1696,15 @@ mod tests {
             since_good: 0,
             glints: 6,
         });
+        // ...and its shape part (a pupil, its picture turned upright, no lids found)
+        camera.shape[0] = Some(CamShape {
+            a: 21.5,
+            b: 19.25,
+            angle_deg: 133.5,
+            vis: 0.96,
+            aperture: f32::NAN,
+            flipped: true,
+        });
         recorder.write(&EyeData { sample_time: 19892.74, ..data }, Some((&camera, 1_012_345_678))).unwrap();
         recorder.flush().unwrap();
         assert_eq!((recorder.count, recorder.camera_count), (2, 1));
@@ -1625,14 +1724,27 @@ mod tests {
                 }),
             },
         ];
-        assert_eq!(read, expected);
+        // (NaN is not equal to itself: the aperture compared on its own)
+        let shape_of = |row: &Row| row.camera.unwrap().shape;
+        assert!(shape_of(&read[1])[0].unwrap().aperture.is_nan());
+        let without_nan = |mut rows: Vec<Row>| {
+            for row in &mut rows {
+                if let Some(Some(shape)) = row.camera.as_mut().map(|live| &mut live.shape[0]) {
+                    shape.aperture = 0.0;
+                }
+            }
+            rows
+        };
+        assert_eq!(without_nan(read.clone()), without_nan(expected.to_vec()));
         // The camera's columns come after the eye server's as before: empty without a live file; then the mark that
-        // they name the eyes anatomically ("1" with them); then each eye's glint part, empty without one
+        // they name the eyes anatomically ("1" with them); then each eye's glint part, empty without one; then each
+        // eye's shape part, likewise
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines[0].starts_with(&(columns().join(",") + ",cam_l_fresh,cam_l_valid,cam_l_closed,cam_l_lid,")));
         assert!(lines[0].contains(",cam_r_confidence,cam_r_age_ms,cam_calib_state,cam_live,cam_eyes_anatomical,cam_l_glint_frame_ns,"));
-        assert!(lines[0].ends_with(",cam_r_glint_matches,cam_r_glint_since_good,cam_r_glint_count"));
-        assert!(lines[1].ends_with(&",".repeat(23 + 22)), "{}", lines[1]);
+        assert!(lines[0].contains(",cam_r_glint_matches,cam_r_glint_since_good,cam_r_glint_count,cam_l_shape_a,"));
+        assert!(lines[0].ends_with(",cam_r_shape_vis,cam_r_shape_aperture,cam_r_shape_flipped"));
+        assert!(lines[1].ends_with(&",".repeat(23 + 22 + 12)), "{}", lines[1]);
         let cells: Vec<&str> = lines[2].split(',').skip(columns().len()).collect();
         let mut want = vec![
             "1", "1", "0", "0.93", "0", "0.25", "4", "0.5", "0", "1012.3",
@@ -1641,6 +1753,8 @@ mod tests {
             "1011111111", "201.5", "148.25", "1", "3", "987654321", "-2.5", "0.125", "4", "0", "6",
         ];
         want.extend([""; 11]);
+        want.extend(["21.5", "19.25", "133.5", "0.96", "", "1"]);
+        want.extend([""; 6]);
         assert_eq!(cells, want);
         // A recording from before the glint columns reads as it did: no glint part
         let header_end = lines[0].find(",cam_l_glint_frame_ns").unwrap();
@@ -1651,6 +1765,16 @@ mod tests {
         let old = format!("{}\n{}\n", &lines[0][..header_end], old_rows.join("\n"));
         let (read_old, _) = parse(&old).unwrap();
         assert_eq!(read_old[1].camera.unwrap().slip, [None; 2]);
+        assert_eq!(read_old[1].camera.unwrap().shape, [None; 2]);
+        // ...and one with the glint columns but from before the shape columns: its glints, no shape part
+        let header_end = lines[0].find(",cam_l_shape_a").unwrap();
+        let glint_rows: Vec<String> = lines[1..].iter().map(|line| {
+            let keep = columns().len() + camera_columns().len() + 1 + glint_columns().len();
+            line.split(',').take(keep).collect::<Vec<_>>().join(",")
+        }).collect();
+        let glint_only = format!("{}\n{}\n", &lines[0][..header_end], glint_rows.join("\n"));
+        let (read_glint, _) = parse(&glint_only).unwrap();
+        assert_eq!((read_glint[1].camera.unwrap().slip, read_glint[1].camera.unwrap().shape), (camera.slip, [None; 2]));
     }
 
     #[test]

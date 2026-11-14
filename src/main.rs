@@ -7,6 +7,8 @@ mod dots;
 mod eyecam_ctl;
 mod eyecam_live;
 mod extras;
+mod eyeball;
+mod eyeball_map;
 mod feo;
 mod gaze_guard;
 mod livelink;
@@ -771,6 +773,14 @@ struct Args {
     /// Where eyecam-rec's eye-camera values are read from [default: $XDG_RUNTIME_DIR/eyecam/live]
     #[arg(long, value_name = "PATH")]
     eyecam_live: Option<PathBuf>,
+    /// The headset's factory eye-camera calibration, for gaze_source "eyeball"; only read [default:
+    /// /persist/eyetracking.json]
+    #[arg(long, value_name = "FILE")]
+    eye_camera_calibration: Option<PathBuf>,
+    /// Where gaze_source "eyeball" keeps the maps frameeyeosc fits from the eye fit (a replay only reads it) [default:
+    /// ~/.config/frameeyeosc/eyeball_map]
+    #[arg(long, value_name = "FILE")]
+    eyeball_map: Option<PathBuf>,
     /// Close both eyes when one is closed and the other is below this (VRCFT units); winks pass. 0 disables
     #[arg(long, default_value_t = 0.35)]
     blink_sync_below: f32,
@@ -1111,6 +1121,10 @@ struct Smoother {
     guard: gaze_guard::GazeGuard,
     // Valve's combined gaze without the guard's offset, held like measure_held (the panel's checks score it as Valve's)
     guard_measure_held: Option<[f32; 2]>,
+    // The eyeball filters and their maps (gaze_source "eyeball"; see eyeball.rs). Not reset with the filters over a
+    // gap: the eyes' centres are what they follow, through a gap in the eye server's samples too (each frame's time
+    // step is capped); started over when the source is left or the clock goes back.
+    eyeball: eyeball::EyeballGaze,
 }
 
 impl Smoother {
@@ -1145,6 +1159,7 @@ impl Smoother {
             slip: pupil_slip::SlipCorrection::default(),
             guard: gaze_guard::GazeGuard::default(),
             guard_measure_held: None,
+            eyeball: eyeball::EyeballGaze::default(),
         }
     }
 
@@ -3790,6 +3805,9 @@ struct Sample {
     gaze_in_use: Option<pupil::InUse>,
     // ...still easing from the source before (pupil.rs's blend), not yet that source's own.
     gaze_blending: bool,
+    // With gaze_source "eyeball" (and the cameras' calibration): each eye's own direction from its filter (degrees,
+    // before its map; None while it has none fresh), for the gaze captures that fit its map (eyeball_map.rs).
+    eyeball_eyes: [Option<[f32; 2]>; 2],
     // For the panel's gaze error check: the combined gaze after every step that reads the eyes (the correction, the
     // pupils, the doubt about one low eye and the hold while the eyes are shut, ...) but before any smoothing (despike
     // and the filters) and before the user's gaze scale; the same with smoothing on or off. Nothing sent goes by it.
@@ -3869,7 +3887,8 @@ fn dot_sample(settings: &Settings, data: &EyeData, sample: &Sample, camera: Opti
 /// gaze_source is "pupil"; the pupils' while it is "valve", only for a sample where both pupils give it (no other source
 /// stands in); combined, as that source would send it.
 fn compare_dot_of(settings: &Settings, data: &EyeData, other: &Sample) -> dots::OtherSample {
-    let valve = settings.gaze_source == config::GazeSource::Pupil;
+    // (with gaze_source "eyeball" the other run is Valve's, as with "pupil")
+    let valve = settings.gaze_source != config::GazeSource::Valve;
     let given = valve || other.gaze_in_use == Some(pupil::InUse::Pupil);
     dots::OtherSample {
         time: data.sample_time,
@@ -3891,7 +3910,8 @@ fn measure_sample(
     sample: &Sample,
     other: Option<&Sample>,
 ) -> (dots::MeasureSample, Option<dots::GuardMeasure>) {
-    let pupil_sent = other.is_some() && settings.gaze_source == config::GazeSource::Pupil;
+    // (gaze_source "eyeball" takes the pupils' place: its gaze is scored as theirs, against Valve's from the other run)
+    let pupil_sent = other.is_some() && settings.gaze_source != config::GazeSource::Valve;
     let (valve, pupil) = match other {
         Some(other) if pupil_sent => (other, Some(sample)),
         Some(other) => (sample, Some(other)),
@@ -3996,6 +4016,7 @@ fn process(
     // Where the gaze came from with gaze_source "pupil" and a map (None: the eye server's gaze as always)
     let mut gaze_in_use = None;
     let mut gaze_blending = false;
+    let mut eyeball_eyes = [None; 2];
     let guard;
     let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows, measure_gaze, measure_held) = {
         // Smoothing off (--raw) leaves out only the smoothing: the One-Euro filters and the gaze deadzone (the gaze is
@@ -4036,8 +4057,27 @@ fn process(
         // (with smoothing off too, as every step that reads the eyes). Otherwise the gaze is exactly as before
         let valve = [corrected[4] * 45.0, corrected[5] * 45.0];
         let to_scale = |degrees: [f32; 2]| degrees.map(|degrees| (degrees / 45.0).clamp(-1.0, 1.0));
-        let (corrected, pupil_used) = match pupil::maps(settings) {
-            Some(maps) => {
+        // gaze_source "eyeball": each eye's direction from its filter (eyeball.rs), mapped by its own map and combined as
+        // the pupils are (pupil.rs step_eyes); without the cameras' calibration or a map, as "valve". Any other source:
+        // the filters don't run (and start over the next time)
+        if settings.gaze_source == config::GazeSource::Eyeball {
+            eyeball_eyes = smoother.eyeball.step(data.sample_time, live);
+        } else {
+            smoother.eyeball.idle();
+        }
+        let eyeball_maps = smoother.eyeball.maps.filter(|_| {
+            settings.gaze_source == config::GazeSource::Eyeball && smoother.eyeball.has_calibration()
+        });
+        let (corrected, pupil_used) = match (eyeball_maps, pupil::maps(settings)) {
+            (Some(maps), _) => {
+                let open = eyes_open_for_pupil(data.openness, seen_open, settings);
+                let step = smoother.pupil.step_eyes(data.sample_time, &maps, eyeball_eyes, open, valve);
+                gaze_in_use = Some(step.in_use);
+                gaze_blending = step.blending;
+                let used = matches!(step.in_use, pupil::InUse::Pupil | pupil::InUse::Left | pupil::InUse::Right);
+                (with_combined(corrected, to_scale(step.gaze)), used)
+            }
+            (None, Some(maps)) => {
                 let open = eyes_open_for_pupil(data.openness, seen_open, settings);
                 // pupil_slip_correction: the headset's slip, as eyecam-rec sees it in the glints, taken out of the
                 // pupil pairs first; off, the pairs exactly as the eye server gives them
@@ -4056,7 +4096,7 @@ fn process(
                 (with_combined(corrected, to_scale(step.gaze)), used)
             }
             // Just switched back from the pupil source: eased back to the eye server's gaze; otherwise as it is
-            None => match smoother.pupil.fade(data.sample_time, valve) {
+            (None, None) => match smoother.pupil.fade(data.sample_time, valve) {
                 Some(gaze) => (with_combined(corrected, to_scale(gaze)), false),
                 None => (corrected, false),
             },
@@ -4239,6 +4279,7 @@ fn process(
         pupil_open,
         gaze_in_use,
         gaze_blending,
+        eyeball_eyes,
         measure_gaze,
         measure_held,
         guard,
@@ -4924,6 +4965,112 @@ impl Pace {
     }
 }
 
+/// gaze_source "eyeball"'s files: the factory eye-camera calibration (read once, the first time the source is chosen)
+/// and the store of its maps (eyeball_map.rs), handed to the smoother's eyeball filters; and the journal's line about
+/// how the filters do.
+#[derive(Clone, Debug)]
+struct EyeballSetup {
+    calibration_path: PathBuf,
+    map_path: Option<PathBuf>,
+    // A replay: the maps' file is only read
+    read_only: bool,
+    // Taken up (None until the source is first chosen)
+    store: Option<eyeball_map::MapStore>,
+    // The journal line: when it was last written, and the counts then
+    last_log: Option<f64>,
+    logged: ([u64; 2], [[u64; 6]; 2], u64),
+}
+
+impl EyeballSetup {
+    /// The journal's line about the filters comes once per this long (s).
+    const LOG_S: f64 = 60.0;
+
+    fn new(calibration_path: PathBuf, map_path: Option<PathBuf>) -> Self {
+        Self { calibration_path, map_path, read_only: false, store: None, last_log: None, logged: Default::default() }
+    }
+
+    /// For a replay: the maps' file is never written.
+    fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
+    }
+
+    /// With gaze_source "eyeball", the first time: the calibration and the maps read and handed to `smoother`. The
+    /// lines to log (none otherwise).
+    fn prepare(&mut self, settings: &Settings, smoother: &mut Smoother) -> Vec<String> {
+        if settings.gaze_source != config::GazeSource::Eyeball || self.store.is_some() {
+            return Vec::new();
+        }
+        let path = self.calibration_path.display();
+        let (calibration, mut lines) = match eyeball::load_calibration(&self.calibration_path) {
+            Ok(calibration) => (Some(calibration), vec![format!("Eyeball source: eye-camera calibration read from {path}")]),
+            Err(error) => (
+                None,
+                vec![format!("Eyeball source: no eye-camera calibration ({error}); gaze_source \"eyeball\" acts as \"valve\"")],
+            ),
+        };
+        smoother.eyeball.set_calibration(calibration);
+        let (store, line) = eyeball_map::MapStore::load(self.map_path.clone());
+        let store = if self.read_only { store.read_only() } else { store };
+        lines.push(line);
+        smoother.eyeball.maps = store.maps;
+        self.store = Some(store);
+        lines
+    }
+
+    /// A gaze capture finished (with gaze_source "eyeball"): its eyeball medians to the store, its maps to `smoother`.
+    fn capture_done(&mut self, target: &str, medians: [Option<([f32; 2], u32)>; 2], smoother: &mut Smoother) -> Vec<String> {
+        let Some(store) = &mut self.store else {
+            return Vec::new();
+        };
+        let lines = store.capture_done(target, medians);
+        smoother.eyeball.maps = store.maps;
+        lines
+    }
+
+    /// Once per LOG_S while the source runs: each eye's frames and how they went, the re-takes, the time per frame.
+    fn log_line(&mut self, time: f64, settings: &Settings, smoother: &Smoother) -> Option<String> {
+        let gaze = &smoother.eyeball;
+        if settings.gaze_source != config::GazeSource::Eyeball || !gaze.has_calibration() {
+            self.last_log = None;
+            return None;
+        }
+        let since = *self.last_log.get_or_insert(time);
+        if time - since < Self::LOG_S && time >= since {
+            return None;
+        }
+        self.last_log = Some(time);
+        let (frames, updates, busy) = self.logged;
+        self.logged = (gaze.frames, gaze.updates, gaze.busy_ns);
+        let eye = |e: usize| {
+            let n = gaze.frames[e].saturating_sub(frames[e]);
+            let share = |u: eyeball::Update| {
+                100.0 * gaze.updates[e][u as usize].saturating_sub(updates[e][u as usize]) as f64 / n.max(1) as f64
+            };
+            format!(
+                "{} {n} frames (ellipse {:.0}%, pupil only {:.0}%, no pupil {:.0}%, refused {:.0}%)",
+                ["L", "R"][e],
+                share(eyeball::Update::Ellipse),
+                share(eyeball::Update::PupilOnly),
+                share(eyeball::Update::NoPupil),
+                share(eyeball::Update::Rejected) + share(eyeball::Update::Implausible)
+            )
+        };
+        let n = gaze.frames.iter().sum::<u64>().saturating_sub(frames.iter().sum::<u64>());
+        let us = gaze.busy_ns.saturating_sub(busy) as f64 / 1e3 / n.max(1) as f64;
+        let retakes = gaze.retakes();
+        Some(format!(
+            "Eyeball source over the last {:.0} s: {}, {}; re-takes so far L {} R {}; {us:.1} us per sample and frame; map {}",
+            Self::LOG_S,
+            eye(0),
+            eye(1),
+            retakes[0],
+            retakes[1],
+            if gaze.maps.is_some() { "fitted" } else { "none yet (a whole eye fit makes one)" }
+        ))
+    }
+}
+
 /// Everything the main loop keeps between samples.
 struct Bridge {
     config: Config,
@@ -4945,6 +5092,8 @@ struct Bridge {
     capture_pupils: pupil::Fresh,
     // The journal's lines about where the gaze comes from (gaze_source "pupil").
     source_log: pupil::SourceLog,
+    // gaze_source "eyeball": the cameras' calibration and the maps, taken up the first time it is chosen.
+    eyeball: EyeballSetup,
     // The panel's debug gaze dots and eye preview (only while gaze_debug_dots is on or the panel listens).
     dots: dots::DotStream,
     // gaze_debug_dots_compare and the panel's gaze error check: the settings with the other gaze_source, and a
@@ -5068,8 +5217,14 @@ impl Bridge {
         let since = *self.active_since.get_or_insert(now);
         let settled = since.elapsed() >= CAL_SETTLE;
         self.read_camera();
+        for line in self.eyeball.prepare(&self.settings, &mut self.smoother) {
+            eprintln!("{line}");
+        }
         let camera = self.camera_live.as_ref();
         let sample = step(&self.settings, &mut self.smoother, &mut self.calibration, &data, settled, camera);
+        if let Some(line) = self.eyeball.log_line(data.sample_time, &self.settings, &self.smoother) {
+            eprintln!("{line}");
+        }
         if self.settings.pupil_slip_correction
             && let Some(line) = self.smoother.slip.log_line(data.sample_time)
         {
@@ -5178,12 +5333,18 @@ impl Bridge {
             let eye_x = [sample.raw_gaze[0], sample.raw_gaze[2]];
             let usable = sample.capture_usable();
             let open = sample.camera_open();
-            if capture.add_with_pupils(data.sample_time, gaze, eye_x, data.openness, open, usable, pupils) {
+            let eyes = sample.eyeball_eyes;
+            if capture.add_with_eyes(data.sample_time, gaze, eye_x, data.openness, open, usable, pupils, eyes) {
                 self.finish_capture();
             }
         }
+        let eyeball = self.settings.gaze_source == config::GazeSource::Eyeball;
         for line in self.source_log.note(data.sample_time, sample.gaze_in_use) {
-            eprintln!("{line}");
+            if eyeball {
+                eprintln!("{}", line.replacen("Gaze source", "Gaze source (eyeball)", 1));
+            } else {
+                eprintln!("{line}");
+            }
         }
         self.latest = Some(sample);
         Ok(())
@@ -5194,8 +5355,13 @@ impl Bridge {
     /// smoothing, hold and gaze scale included). For the compare dot and the panel's gaze error check only: the
     /// bridge's own smoother, sample and status are not touched.
     fn other_run(&mut self, data: &EyeData) -> Option<Sample> {
-        pupil::mapped(&self.settings)?;
-        let valve = self.settings.gaze_source == config::GazeSource::Pupil;
+        // gaze_source "eyeball": the other is Valve's, while the eyeball source has its maps
+        if self.settings.gaze_source == config::GazeSource::Eyeball {
+            self.smoother.eyeball.maps.filter(|_| self.smoother.eyeball.has_calibration())?;
+        } else {
+            pupil::mapped(&self.settings)?;
+        }
+        let valve = self.settings.gaze_source != config::GazeSource::Valve;
         let (other, smoother) = self.compare.get_or_insert_with(|| {
             let source = if valve { config::GazeSource::Valve } else { config::GazeSource::Pupil };
             let other = Settings {
@@ -5219,6 +5385,12 @@ impl Bridge {
         if let Some(capture) = self.capture.take() {
             let result = capture.result(CaptureState::Done);
             eprintln!("{}", result.log_line());
+            // gaze_source "eyeball": the eyes' filter medians for its own map (a re-center, or a whole fit's dots)
+            if self.settings.gaze_source == config::GazeSource::Eyeball {
+                for line in self.eyeball.capture_done(capture.target(), capture.eyeball_medians(), &mut self.smoother) {
+                    eprintln!("{line}");
+                }
+            }
             self.capture_result = Some(result);
         }
     }
@@ -5549,16 +5721,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config_path = args.config.clone().or_else(|| in_config_dir("config.json"));
     let replay = args.replay.clone().map(|input| (input, args.replay_out.clone()));
     let camera_path = args.eyecam_live.clone().unwrap_or_else(eyecam_live::live_path);
+    let eyeball = EyeballSetup::new(
+        args.eye_camera_calibration.clone().unwrap_or_else(|| PathBuf::from(eyeball::CALIBRATION_PATH)),
+        args.eyeball_map.clone().or_else(|| in_config_dir(eyeball_map::FILE_NAME)),
+    );
     let removed = config::removed_options(&args, &matches);
     let mut config = Config::new(config_path, args, config::given_options(&matches));
     // What the command line still asks for that was removed, before the file's, each line once
     config.log_removed(&removed);
     let settings = config.load()?;
     if let Some((input, output)) = replay {
-        // Starts from the saved calibration like a real run, but never writes it back.
+        // Starts from the saved calibration like a real run, but never writes it back (nor the eyeball maps).
         let mut calibration = LidCalibration::load(calibration_path, settings.lid_open);
         calibration.path = None;
-        return replay::run(&input, output.as_deref(), &settings, &calibration);
+        return replay::run(&input, output.as_deref(), &settings, &calibration, eyeball.read_only());
     }
     // camera_lids for eyecam-rec too ("live off" / "live on" on its control socket, next to its live file), on a
     // thread of its own
@@ -5587,6 +5763,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         capture_result: None,
         capture_pupils: pupil::Fresh::default(),
         source_log: pupil::SourceLog::default(),
+        eyeball,
         dots: dots::DotStream::new(status::status_path().parent().unwrap_or(Path::new("/tmp"))),
         compare: None,
         measure: dots::DotStream::named(
@@ -7668,6 +7845,7 @@ mod tests {
             pupil_open: [false; 2],
             gaze_in_use: None,
             gaze_blending: false,
+            eyeball_eyes: [None; 2],
             measure_gaze: [0.0; 2],
             measure_held: false,
             guard: None,
@@ -7797,6 +7975,7 @@ mod tests {
             capture_result: None,
             capture_pupils: pupil::Fresh::default(),
             source_log: pupil::SourceLog::default(),
+            eyeball: EyeballSetup::new(PathBuf::from("/nonexistent"), None),
             dots: dots::DotStream::new(Path::new("/nonexistent")),
             compare: None,
             measure: dots::DotStream::named(Path::new("/nonexistent"), dots::MEASURE_SOCKET_NAME),
@@ -9728,6 +9907,7 @@ mod tests {
             fresh: [true; 2],
             frame_ns: [0; 2],
             slip: [None; 2],
+            shape: [None; 2],
         }
     }
 

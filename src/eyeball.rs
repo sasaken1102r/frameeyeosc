@@ -41,6 +41,14 @@ const SIG_POS: f64 = 0.006;
 const SIG_ELL: f64 = 0.05;
 /// The angles' acceleration noise (rad^2/s^3).
 const Q_ACC: f64 = 1.0;
+/// A frame whose pupil centre moved more than this since the last frame with a pupil (normalised units, about 5 px or a
+/// degree of turn) is a saccade: its acceleration noise is SACCADE_GAIN times Q_ACC, so the filter follows the jump
+/// instead of easing into it. Chosen on the replays for the hop latency (the eyeball's lag behind the raw pupil to 90%
+/// of a hop: a median 0.16 s without it, 0.07 s with it; p90 0.32 / 0.26 s), with the error kept: the slip tests' medians
+/// within 0.1 degree, the re-seat tests' better (2026-11-15; a higher gain or a lower step is faster still but jumps more).
+/// The ellipse's own gate sees the larger uncertainty too, so a turn's new ellipse is taken at once.
+pub const SACCADE_STEP: f64 = 0.02;
+pub const SACCADE_GAIN: f64 = 100.0;
 /// The centre's random walk across the camera's axis and along it (m/sqrt(s)): the headset slipping.
 const SIG_C: f64 = 0.0015;
 const SIG_CZ: f64 = 0.0003;
@@ -523,6 +531,8 @@ pub struct EyeFilter {
     pub retakes: u32,
     /// Updates with the ellipse since the start or the last re-take.
     ellipse_frames: u32,
+    // The pupil centre of the last frame that had one (normalised), for the saccade boost
+    last_pos: Option<[f64; 2]>,
 }
 
 /// The centre's uncertainty while the ellipse is not used: no standard deviation above the larger of CENTRE_SD_CAP and
@@ -652,12 +662,19 @@ impl EyeFilter {
         let limit = ANG_MAX_DEG.to_radians();
         xp[0] = xp[0].clamp(-limit, limit);
         xp[1] = xp[1].clamp(-limit, limit);
+        // A frame whose pupil moved more than SACCADE_STEP since the last one with a pupil is a saccade: the angles'
+        // acceleration noise is SACCADE_GAIN times higher for it, so the filter follows the jump instead of easing in
+        let saccade = o.pos.zip(self.last_pos).is_some_and(|(p, q)| (p[0] - q[0]).hypot(p[1] - q[1]) > SACCADE_STEP);
+        if o.pos.is_some() {
+            self.last_pos = o.pos;
+        }
+        let q_acc = if saccade { Q_ACC * SACCADE_GAIN } else { Q_ACC };
         let mut q = [[0.0; N]; N];
         for i in 0..2 {
-            q[i][i] = Q_ACC * dt.powi(3) / 3.0;
-            q[i][i + 2] = Q_ACC * dt.powi(2) / 2.0;
-            q[i + 2][i] = Q_ACC * dt.powi(2) / 2.0;
-            q[i + 2][i + 2] = Q_ACC * dt;
+            q[i][i] = q_acc * dt.powi(3) / 3.0;
+            q[i][i + 2] = q_acc * dt.powi(2) / 2.0;
+            q[i + 2][i] = q_acc * dt.powi(2) / 2.0;
+            q[i + 2][i + 2] = q_acc * dt;
         }
         q[4][4] = SIG_C * SIG_C * dt;
         q[5][5] = SIG_C * SIG_C * dt;
@@ -1393,6 +1410,28 @@ pub mod tests {
         let worst = turned(outline, &PLACES[..3]);
         eprintln!("turns between the dots, a camera's frames: at most {worst:.2} deg off");
         assert!(worst < 3.0, "{worst}");
+    }
+
+    #[test]
+    fn a_saccade_is_followed_within_a_few_frames() {
+        // After the fit, the eye jumps from straight ahead to (15, 8) and to (-18, -10) from one frame to the next:
+        // within 2 degrees of where it landed after a few frames (the saccade's acceleration noise, SACCADE_GAIN)
+        let c = camera();
+        let mut filter = EyeFilter::default();
+        let (mut t, map) = learn(&mut filter, &c, seen);
+        for (yaw, pitch) in [(15.0, 8.0), (-18.0, -10.0), (0.0, 0.0)] {
+            let mut within = None;
+            for k in 0..45 {
+                let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), yaw, pitch, t))).unwrap();
+                let [y, p] = mapped(&map, e.yaw.to_degrees(), e.pitch.to_degrees());
+                if within.is_none() && (y - yaw).hypot(p - pitch) <= 2.0 {
+                    within = Some(k);
+                }
+                t += 1.0 / 90.0;
+            }
+            eprintln!("saccade to ({yaw}, {pitch}): within 2 deg after {within:?} frames");
+            assert!(within.is_some_and(|k| k <= 8), "({yaw}, {pitch}): {within:?}");
+        }
     }
 
     #[test]

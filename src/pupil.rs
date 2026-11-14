@@ -257,12 +257,15 @@ impl PupilGaze {
             let pair = pairs[eye].filter(|_| open[eye])?;
             Some(maps[eye].apply(pair)).filter(|mapped| in_range(*mapped))
         });
-        self.combine(time, by, maps, eyes, valve)
+        self.combine(time, by, maps, eyes, valve, true)
     }
 
     /// The same for gaze_source "eyeball" (eyeball.rs): each eye's own direction from its filter (degrees, before its
     /// map; None while the filter has none fresh), mapped, used while the eye is open and inside the fit's range, then
-    /// combined with the same fallbacks and easing.
+    /// combined with the same fallbacks and easing, but for one: two eyes too far apart go to the eye server's gaze at
+    /// once, not through the hold. Both filters are there then (they disagree; at a hop one may lag the other, at a
+    /// corner one may be wrong), so the hold would only keep the gaze where it was before the hop: what was seen as the
+    /// eyeball gaze "catching up a beat late" (2026-11-15).
     pub fn step_eyes(&mut self, time: f64, maps: &[EyeMap; 2], own: [Option<[f32; 2]>; 2], open: [bool; 2], valve: [f32; 2]) -> Step {
         if self.fading || self.last_time.is_some_and(|last| time < last) {
             self.reset();
@@ -274,18 +277,29 @@ impl PupilGaze {
             let own = own[eye].filter(|_| open[eye])?;
             Some(maps[eye].apply(own)).filter(|mapped| in_range(*mapped))
         });
-        self.combine(time, by, maps, eyes, valve)
+        self.combine(time, by, maps, eyes, valve, false)
     }
 
     /// Each eye's mapped direction (None: not used) to the combined gaze: their mean, one eye plus the last difference,
-    /// held, or the eye server's shifted, each change eased.
-    fn combine(&mut self, time: f64, by: f32, maps: &[EyeMap; 2], mut eyes: [Option<[f32; 2]>; 2], valve: [f32; 2]) -> Step {
+    /// held, or the eye server's shifted, each change eased. hold_apart: two eyes too far apart are held like two
+    /// missing ones (the pupil source); else they go to the eye server's at once (the eyeball source).
+    fn combine(
+        &mut self,
+        time: f64,
+        by: f32,
+        maps: &[EyeMap; 2],
+        mut eyes: [Option<[f32; 2]>; 2],
+        valve: [f32; 2],
+        hold_apart: bool,
+    ) -> Step {
+        let mut apart_now = false;
         // Two eyes far apart: one of them is wrong (a pupil lost at the lens edge, the headset being put on), and which
         // can't be told, so neither is used
         if let [Some(left), Some(right)] = eyes {
             let apart = sub(left, right);
             if (apart[0] * apart[0] + apart[1] * apart[1]).sqrt() > EYES_APART_DEG {
                 eyes = [None, None];
+                apart_now = true;
             }
         }
         let half_diff = scaled(self.diff.unwrap_or([0.0; 2]), 0.5);
@@ -297,7 +311,7 @@ impl PupilGaze {
             [Some(left), None] => (sub(left, half_diff), InUse::Left),
             [None, Some(right)] => (add(right, half_diff), InUse::Right),
             [None, None] => match self.last_good {
-                Some((at, gaze)) if time - at <= HOLD_S => (gaze, InUse::Hold),
+                Some((at, gaze)) if time - at <= HOLD_S && (hold_apart || !apart_now) => (gaze, InUse::Hold),
                 _ => (sub(valve, self.valve_minus.unwrap_or([0.0; 2])), InUse::Valve),
             },
         };
@@ -778,6 +792,27 @@ mod tests {
         assert!((steps[299].gaze[0] - 4.0).abs() < 0.05, "{:?}", steps[299]);
         assert!(names[300..].iter().all(|n| *n == InUse::Pupil));
         assert!(largest_step(&steps[50..]) < 0.05, "{}", largest_step(&steps[50..]));
+        // Two eyes too far apart go to the eye server's gaze at once (no hold at where the gaze was before), while two
+        // missing ones are still held; the pupil source holds both
+        let mut gaze = PupilGaze::default();
+        for i in 0..50 {
+            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0]);
+        }
+        let apart = gaze.step_eyes(50.0 * DT, &maps, [Some([25.0, 1.0]), Some([-5.0, 1.0])], [true; 2], [-6.0, 0.0]);
+        assert_eq!(apart.in_use, InUse::Valve);
+        let mut gaze = PupilGaze::default();
+        for i in 0..50 {
+            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0]);
+        }
+        assert_eq!(gaze.step_eyes(50.0 * DT, &maps, [None, None], [true; 2], [-6.0, 0.0]).in_use, InUse::Hold);
+        let mut pupils = PupilGaze::default();
+        let pmaps = [map(), map()];
+        for i in 0..50 {
+            let p = add(pair(2.0, 0.0), [(i % 2) as f32 * 1e-5, 0.0]);
+            pupils.step(i as f64 * DT, &pmaps, &extra(p, p), [true; 2], [0.0; 2]);
+        }
+        let (a, b) = (pair(-EYES_APART_DEG / 2.0 - 0.5, 0.0), pair(EYES_APART_DEG / 2.0 + 0.5, 0.0));
+        assert_eq!(pupils.step(50.0 * DT, &pmaps, &extra(a, b), [true; 2], [0.0; 2]).in_use, InUse::Hold);
         // A shut eye, or one outside the fit's range, is not used
         let mut gaze = PupilGaze::default();
         assert_eq!(gaze.step_eyes(0.0, &maps, [Some([1.0, 0.0]), Some([2.0, 0.0])], [false, true], [0.0; 2]).in_use, InUse::Right);

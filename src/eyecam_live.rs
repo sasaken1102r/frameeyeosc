@@ -18,6 +18,12 @@
 //!   52  f32  pupil dilation (0..1)    56  f32  confidence    60  f32, 64  f32  debug    68  u32  reserved
 //! The values are per frame (a 5-frame median, no smoothing). On a clean exit eyecam-rec writes live 0 and valid 0; a
 //! crash writes nothing, so only the capture time tells the values are old.
+//! Since 2026-11 eyecam-rec writes a glint part after these 200 bytes (struct size EXT_SIZE, still version 1, so a
+//! reader of only the 200 bytes goes on working): 200 u32 its version (GLINT_VERSION), 208 the left eye's, 256 the
+//! right's (48 bytes each): 0 u32 flags (bit 0 a pupil, bit 1 the slip worked out from this frame, bit 2 a template)
+//! 4 u32 template id   8 u64 template time (CLOCK_MONOTONIC ns)   16 f32 x 2 pupil centre (px)
+//! 24 f32 x 2 slip (px: the glints' offset from the template)   32 u32 matched   36 u32 frames since worked out
+//! 40 u32 glints found. Read only for pupil_slip_correction (pupil_slip.rs).
 
 use memmap2::{Mmap, MmapOptions};
 use std::fs::{self, OpenOptions};
@@ -33,6 +39,11 @@ const VERSION: u32 = 1;
 // mapped page past the end would crash the reader with SIGBUS); to replace it, eyecam-rec writes a new file and renames
 // it over this one, which the reader notices by its inode (LiveReader::check). It is a regular file of this user's.
 const STRUCT_SIZE: usize = 200;
+// With the glint part after it, and where that is.
+const EXT_SIZE: usize = 304;
+const GLINT_VERSION_AT: usize = 200;
+const GLINT_VERSION: u32 = 1;
+const GLINTS: [usize; 2] = [208, 256];
 const SEQ: usize = 24;
 const EYES: [usize; 2] = [56, 128];
 // The calibration bits that give this wear a baseline: calibrated (`calib wear`), or learned by itself.
@@ -79,6 +90,24 @@ pub struct Eye {
     pub confidence: f32,
 }
 
+/// One eye's glint slip as eyecam-rec published it with that eye's frame (the live file's glint part).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CamSlip {
+    /// The frame's capture time (CLOCK_MONOTONIC ns): a new value comes with a new time.
+    pub time_ns: u64,
+    /// The pupil centre in the picture (px; None without a pupil in this frame).
+    pub pupil: Option<[f32; 2]>,
+    /// The slip was worked out from this frame (else the last one, held).
+    pub tracked: bool,
+    /// The template (its id, counting up from 1, and when it was taken); None before the first.
+    pub template: Option<(u32, u64)>,
+    /// The glints' offset from the template (px).
+    pub offset: [f32; 2],
+    pub matches: u32,
+    pub since_good: u32,
+    pub glints: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Record {
     // pid and start time
@@ -87,6 +116,8 @@ struct Record {
     recalib_suggested: bool,
     live: bool,
     eyes: [Eye; 2],
+    // The glint part, when the struct has one
+    slip: [Option<CamSlip>; 2],
 }
 
 fn u32_at(bytes: &[u8; STRUCT_SIZE], offset: usize) -> u32 {
@@ -120,6 +151,7 @@ fn parse(bytes: &[u8; STRUCT_SIZE]) -> Result<Record, String> {
         calib_state: u32_at(bytes, 28),
         recalib_suggested: u32_at(bytes, 48) != 0,
         live: u32_at(bytes, 52) == 1,
+        slip: [None; 2],
         eyes: EYES.map(|eye| Eye {
             time_ns: u64_at(bytes, eye),
             valid: u32_at(bytes, eye + 24) == 1,
@@ -131,6 +163,36 @@ fn parse(bytes: &[u8; STRUCT_SIZE]) -> Result<Record, String> {
             pupil_dilation: f32_at(bytes, eye + 52),
             confidence: f32_at(bytes, eye + 56),
         }),
+    })
+}
+
+/// The glint part of a copy of the file's first EXT_SIZE bytes (nothing in it when the struct is shorter or the part
+/// isn't written), with each eye's capture time.
+fn parse_slip(bytes: &[u8; EXT_SIZE], eyes: &[Eye; 2]) -> [Option<CamSlip>; 2] {
+    let head: &[u8; STRUCT_SIZE] = bytes[..STRUCT_SIZE].try_into().unwrap();
+    if (u32_at(head, 8) as usize) < EXT_SIZE {
+        return [None; 2];
+    }
+    let u32_ext = |offset: usize| u32::from_le_bytes(std::array::from_fn(|i| bytes[offset + i]));
+    let u64_ext = |offset: usize| u64::from_le_bytes(std::array::from_fn(|i| bytes[offset + i]));
+    let f32_ext = |offset: usize| f32::from_bits(u32_ext(offset));
+    if u32_ext(GLINT_VERSION_AT) < GLINT_VERSION {
+        return [None; 2];
+    }
+    [0, 1].map(|eye| {
+        let at = GLINTS[eye];
+        let flags = u32_ext(at);
+        let pupil = [f32_ext(at + 16), f32_ext(at + 20)];
+        Some(CamSlip {
+            time_ns: eyes[eye].time_ns,
+            pupil: (flags & 1 != 0 && pupil.iter().all(|v| v.is_finite())).then_some(pupil),
+            tracked: flags & 2 != 0,
+            template: (flags & 4 != 0).then(|| (u32_ext(at + 4), u64_ext(at + 8))),
+            offset: [f32_ext(at + 24), f32_ext(at + 28)],
+            matches: u32_ext(at + 32),
+            since_good: u32_ext(at + 36),
+            glints: u32_ext(at + 40),
+        })
     })
 }
 
@@ -166,6 +228,8 @@ pub struct Live {
     pub fresh: [bool; 2],
     /// Each eye camera's frame interval as measured (FrameGaps), in ns; 0 while it is not known yet.
     pub frame_ns: [u64; 2],
+    /// Each eye's glint slip (pupil_slip.rs), while its values are fresh and eyecam-rec writes the glint part.
+    pub slip: [Option<CamSlip>; 2],
 }
 
 impl Live {
@@ -185,6 +249,7 @@ impl Live {
             eyes: record.eyes,
             fresh,
             frame_ns: [0; 2],
+            slip: [0, 1].map(|e| record.slip[e].filter(|_| fresh[e])),
         }
     }
 
@@ -257,19 +322,32 @@ impl FrameGaps {
 
 struct Mapped {
     map: Mmap,
+    // How much of the file is mapped: EXT_SIZE (the glint part too), or STRUCT_SIZE of a shorter file
+    len: usize,
     inode: u64,
     // The writer it was opened with (pid and start time)
     writer: (u32, u64),
 }
 
 impl Mapped {
-    fn read(&self) -> Option<[u8; STRUCT_SIZE]> {
+    fn read(&self) -> Option<[u8; EXT_SIZE]> {
         let base = self.map.as_ptr();
-        // The mapping is page-aligned and STRUCT_SIZE long, so seq is aligned and inside it; it is only ever loaded
+        // The mapping is page-aligned and at least STRUCT_SIZE long, so seq is aligned and inside it; it is only ever
+        // loaded
         let seq = unsafe { &*base.add(SEQ).cast::<AtomicU32>() };
+        let len = self.len;
         read_consistent(
             || seq.load(Ordering::Acquire),
-            || unsafe { ptr::read_volatile(base.cast::<[u8; STRUCT_SIZE]>()) },
+            || {
+                let mut bytes = [0u8; EXT_SIZE];
+                if len >= EXT_SIZE {
+                    bytes = unsafe { ptr::read_volatile(base.cast::<[u8; EXT_SIZE]>()) };
+                } else {
+                    let head = unsafe { ptr::read_volatile(base.cast::<[u8; STRUCT_SIZE]>()) };
+                    bytes[..STRUCT_SIZE].copy_from_slice(&head);
+                }
+                bytes
+            },
         )
     }
 }
@@ -295,14 +373,16 @@ fn open(path: &Path) -> Result<(Mapped, Record), (bool, String)> {
     if metadata.len() < STRUCT_SIZE as u64 {
         return Err((true, format!("too small ({} bytes)", metadata.len())));
     }
-    let map = unsafe { MmapOptions::new().len(STRUCT_SIZE).map(&file) }.map_err(|error| (true, error.to_string()))?;
+    let len = if metadata.len() >= EXT_SIZE as u64 { EXT_SIZE } else { STRUCT_SIZE };
+    let map = unsafe { MmapOptions::new().len(len).map(&file) }.map_err(|error| (true, error.to_string()))?;
     let mut mapped = Mapped {
         map,
+        len,
         inode: metadata.ino(),
         writer: (0, 0),
     };
     let bytes = mapped.read().ok_or((true, "always being written".to_owned()))?;
-    let record = parse(&bytes).map_err(|error| (true, error))?;
+    let record = parse(bytes[..STRUCT_SIZE].try_into().unwrap()).map_err(|error| (true, error))?;
     mapped.writer = record.writer;
     Ok((mapped, record))
 }
@@ -398,8 +478,9 @@ impl LiveReader {
     pub fn read(&mut self, now_ns: u64) -> Option<Live> {
         let mapped = self.mapped.as_ref()?;
         let bytes = mapped.read()?;
-        match parse(&bytes) {
-            Ok(record) => {
+        match parse(bytes[..STRUCT_SIZE].try_into().unwrap()) {
+            Ok(mut record) => {
+                record.slip = parse_slip(&bytes, &record.eyes);
                 if record.writer != mapped.writer {
                     // The same file, so the values still hold
                     self.reopen = true;
@@ -513,6 +594,64 @@ pub mod tests {
 
     fn eyes(lid: f32) -> [TestEye; 2] {
         [TestEye::at(NOW, lid, 0.2), TestEye::at(NOW - 20_000_000, lid, 0.4)]
+    }
+
+    #[test]
+    fn the_glint_part_is_read_where_eyecam_rec_writes_it_and_only_from_a_struct_that_has_it() {
+        let dir = TempDir::new("glint");
+        let path = dir.0.join("live");
+        // A version 1 struct of 200 bytes (an older eyecam-rec): its values, no slip
+        write_live(&path, &live_bytes(7, 1, true, eyes(0.8)));
+        let mut reader = LiveReader::new(path.clone(), Instant::now());
+        assert!(reader.check(Instant::now()).is_some());
+        let live = reader.read(NOW).unwrap();
+        assert_eq!((live.eyes[0].lid, live.slip), (0.8, [None, None]));
+        // The same with the glint part after it (struct size 304, still version 1)
+        let mut ext = [0u8; EXT_SIZE];
+        ext[..STRUCT_SIZE].copy_from_slice(&live_bytes(7, 1, true, eyes(0.8)));
+        let mut put = |offset: usize, value: &[u8]| ext[offset..offset + value.len()].copy_from_slice(value);
+        put(8, &(EXT_SIZE as u32).to_le_bytes());
+        put(200, &GLINT_VERSION.to_le_bytes());
+        // Left: a pupil, tracked, template 3 taken at 123 ns, slip (1.5, -2.25), 4 of 5 glints matched
+        put(208, &7u32.to_le_bytes());
+        put(212, &3u32.to_le_bytes());
+        put(216, &123u64.to_le_bytes());
+        put(224, &201.5f32.to_le_bytes());
+        put(228, &150.25f32.to_le_bytes());
+        put(232, &1.5f32.to_le_bytes());
+        put(236, &(-2.25f32).to_le_bytes());
+        put(240, &4u32.to_le_bytes());
+        put(244, &0u32.to_le_bytes());
+        put(248, &5u32.to_le_bytes());
+        // Right: no pupil, not tracked, no template yet
+        put(256, &0u32.to_le_bytes());
+        put(256 + 16, &f32::NAN.to_le_bytes());
+        put(256 + 36, &9u32.to_le_bytes());
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all_at(&ext, 0).unwrap();
+        let live = reader.read(NOW).unwrap();
+        assert_eq!(
+            live.slip[0],
+            Some(CamSlip {
+                time_ns: NOW,
+                pupil: Some([201.5, 150.25]),
+                tracked: true,
+                template: Some((3, 123)),
+                offset: [1.5, -2.25],
+                matches: 4,
+                since_good: 0,
+                glints: 5,
+            })
+        );
+        let right = live.slip[1].unwrap();
+        assert_eq!((right.pupil, right.tracked, right.template, right.since_good), (None, false, None, 9));
+        // A stale eye has no slip either
+        let live = reader.read(NOW + 2 * FRESH_NS).unwrap();
+        assert_eq!(live.slip, [None, None]);
+        // Version 0 in the glint part (not written): none
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all_at(&0u32.to_le_bytes(), 200).unwrap();
+        assert_eq!(reader.read(NOW).unwrap().slip, [None, None]);
     }
 
     #[test]

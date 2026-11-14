@@ -167,6 +167,8 @@ fn camera_from(cells: &[&str]) -> Result<Option<(Live, [f64; 2])>, ()> {
         eyes: [left, right],
         fresh: [fresh_left, fresh_right],
         frame_ns: [0; 2],
+        // (recordings don't keep the glint slip)
+        slip: [None; 2],
     };
     Ok(Some((live, [values[per_eye - 1], values[2 * per_eye - 1]])))
 }

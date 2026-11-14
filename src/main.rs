@@ -11,6 +11,7 @@ mod feo;
 mod livelink;
 mod osc;
 mod pupil;
+mod pupil_slip;
 mod replay;
 mod status;
 mod vrc_face;
@@ -1102,6 +1103,8 @@ struct Smoother {
     pupil_seen: [PupilSeen; 2],
     // The gaze from the pupils (gaze_source "pupil" with a map; see pupil.rs).
     pupil: pupil::PupilGaze,
+    // The headset's slip taken out of the pupil pairs first (pupil_slip_correction)
+    slip: pupil_slip::SlipCorrection,
 }
 
 impl Smoother {
@@ -1133,6 +1136,7 @@ impl Smoother {
             brows: BrowRaise::default(),
             pupil_seen: [PupilSeen::default(); 2],
             pupil: pupil::PupilGaze::default(),
+            slip: pupil_slip::SlipCorrection::default(),
         }
     }
 
@@ -3959,6 +3963,8 @@ fn process(
         let smooth = !settings.raw;
         let dt = smoother.advance(data.sample_time);
         pupil_open = smoother.pupil_open(settings, data, camera);
+        // (eyecam-rec's values as read, for the pupil slip below: `camera` is its eyelid and pupil values from here on)
+        let live = camera;
         // After advance(), which starts the smoothing over after a gap
         let (camera_lids, camera) = smoother.camera.take(settings, camera, smooth);
         let camera_lids = side_checked(smoother, data, camera_lids, settings.camera_closed_doubt);
@@ -3985,7 +3991,14 @@ fn process(
         let (corrected, pupil_used) = match pupil::maps(settings) {
             Some(maps) => {
                 let open = eyes_open_for_pupil(data.openness, seen_open, settings);
-                let step = smoother.pupil.step(data.sample_time, &maps, &data.extra, open, valve);
+                // pupil_slip_correction: the headset's slip, as eyecam-rec sees it in the glints, taken out of the
+                // pupil pairs first; off, the pairs exactly as the eye server gives them
+                let extra = if settings.pupil_slip_correction {
+                    smoother.slip.correct(data.sample_time, &maps, &data.extra, live)
+                } else {
+                    data.extra
+                };
+                let step = smoother.pupil.step(data.sample_time, &maps, &extra, open, valve);
                 gaze_in_use = Some(step.in_use);
                 gaze_blending = step.blending;
                 let used = matches!(step.in_use, pupil::InUse::Pupil | pupil::InUse::Left | pupil::InUse::Right);
@@ -4928,6 +4941,11 @@ impl Bridge {
         self.read_camera();
         let camera = self.camera_live.as_ref();
         let sample = step(&self.settings, &mut self.smoother, &mut self.calibration, &data, settled, camera);
+        if self.settings.pupil_slip_correction
+            && let Some(line) = self.smoother.slip.log_line(data.sample_time)
+        {
+            eprintln!("{line}");
+        }
         if self.settings.lid_calibration && settled {
             self.calibration.save_if_due();
         }
@@ -9394,6 +9412,7 @@ mod tests {
             eyes: [eye; 2],
             fresh: [true; 2],
             frame_ns: [0; 2],
+            slip: [None; 2],
         }
     }
 

@@ -466,6 +466,9 @@ pub struct Settings {
     /// With the dots on and a pupil map: one more dot for the gaze of the source not in use (Valve's while
     /// gaze_source is "pupil", the pupils' while it is "valve"), for the panel only; nothing sent changes (dots.rs).
     pub gaze_debug_dots_compare: bool,
+    /// Take the headset's slip, as eyecam-rec sees it in the glints, out of the pupil gaze (pupil_slip.rs; a test).
+    /// Off: the pupil gaze exactly as before. Not a command-line option.
+    pub pupil_slip_correction: bool,
     /// Each eye's Frame openness measured by the panel's eye fit: eyes shut, and open while looking
     /// up, straight ahead and down. None until fitted; see `lid_fit`. Not command-line options.
     pub lid_fit_closed_left: Option<f32>,
@@ -582,6 +585,7 @@ impl Default for Settings {
             gaze_scale_down: 1.0,
             gaze_debug_dots: false,
             gaze_debug_dots_compare: false,
+            pupil_slip_correction: false,
             lid_fit_closed_left: None,
             lid_fit_closed_right: None,
             lid_fit_up_left: None,
@@ -1339,6 +1343,10 @@ mod tests {
         let (settings, _) = merged(r#"{"gaze_debug_dots": true, "gaze_debug_dots_compare": true}"#, &[]).unwrap();
         assert!(settings.gaze_debug_dots && settings.gaze_debug_dots_compare);
         assert!(merged(r#"{"gaze_debug_dots_compare": 1}"#, &[]).is_err());
+        // The glint slip correction: off unless set, a bool
+        assert!(!merged("{}", &[]).unwrap().0.pupil_slip_correction);
+        assert!(merged(r#"{"pupil_slip_correction": true}"#, &[]).unwrap().0.pupil_slip_correction);
+        assert!(merged(r#"{"pupil_slip_correction": "on"}"#, &[]).is_err());
     }
 
     #[test]

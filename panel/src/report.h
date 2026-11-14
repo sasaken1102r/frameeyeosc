@@ -15,10 +15,12 @@
 //                  calib_samples.csv)
 //   measure.json, samples.csv  a gaze error check's scores and its samples (gaze_measure::recordJson, samplesCsv)
 //   slip.json, samples.csv  a headset slip test's steps, scores and eye video, and its samples (slip_check)
+//   reseat.json, samples.csv  a headset re-seat test's steps, rounds, scores and eye video, and its samples
+//                  (reseat_check)
 //   report.txt     the same as summary.json, for reading (frameeyeosc-panel --report latest prints it)
-// Only the newest kKeep are kept (by summary.json's start, not the folders' local-time names), the gaze error checks
-// and the slip tests each counted on their own (so they never push out the calibrations' and fits' records, nor each
-// other's), and only those files are ever
+// Only the newest kKeep are kept (by summary.json's start, not the folders' local-time names), the gaze error checks,
+// the slip tests and the re-seat tests each counted on their own (so they never push out the calibrations' and fits'
+// records, nor each other's), and only those files are ever
 // deleted. Nothing is sent anywhere. The logs are read after the run, on a worker thread
 // (Writer), with read-only `journalctl --user` calls; the sources can be swapped for tests (Sources). Nothing here
 // talks to OpenVR or cairo (report-test).
@@ -65,7 +67,7 @@ constexpr size_t kMaxValveBytes = 4 * 1024 * 1024;
 constexpr size_t kMaxJournalBytes = 4 * 1024 * 1024;
 
 /** What ran. */
-enum class Kind { CalibWear, CalibUser, Fit, Recenter, Measure, Slip };
+enum class Kind { CalibWear, CalibUser, Fit, Recenter, Measure, Slip, Reseat };
 
 /** How it ended: Stopped is stopped before the end without anything having gone wrong ("Stop", another tab, the
  *  panel closing), not a failure. */
@@ -77,7 +79,7 @@ enum class Source { Core, Panel, Eyecam, Valve };
 /**
  * @param kind the kind
  * @return its name in folder names and summary.json ("calib-wear", "calib-user", "fit", "recenter", "measure",
- *         "slip")
+ *         "slip", "reseat")
  */
 const char* kindName(Kind kind);
 
@@ -364,14 +366,15 @@ struct Pending {
     Summary summary;
     std::string statusLines;  ///< status.jsonl
     std::string calibDir;     ///< eyecam's folder for this calibration ("" = look for it under eyecamHome)
-    /** Files of the run's own, by name (only the names a record may have: measure.json, slip.json and samples.csv). */
+    /** Files of the run's own, by name (only the names a record may have: measure.json, slip.json,
+     *  reseat.json and samples.csv). */
     std::vector<std::pair<std::string, std::string>> files;
     Language language = Language::Ja;  ///< report.txt's
 };
 
 /**
  * Write a record (reads the logs: blocking, so off the panel's thread): its folder (a new name if it is there),
- * summary.json, status.jsonl, logs.txt, calib_result.json, measure.json, slip.json, samples.csv and report.txt (those it
+ * summary.json, status.jsonl, logs.txt, calib_result.json, measure.json, slip.json, reseat.json, samples.csv and report.txt (those it
  * has);
  * then keep only the newest kKeep (prune).
  * @param dir the records' folder (made if missing)
@@ -386,7 +389,7 @@ bool writeRecord(const std::string& dir, Pending pending, const Sources& sources
 
 /**
  * Delete all but the newest records (in the order of folders()): `keep` gaze error checks ("measure_..."), `keep`
- * slip tests ("slip_...") and `keep` of all the others. Only real folders named as records (not a link to one), only the record's own files in them
+ * slip tests ("slip_..."), `keep` re-seat tests ("reseat_...") and `keep` of all the others. Only real folders named as records (not a link to one), only the record's own files in them
  * (kFileNames; anything else is left, and then the folder too).
  * @param dir the records' folder
  * @param keep how many to keep
@@ -416,7 +419,7 @@ std::vector<Summary> list(const std::string& dir);
  * @param folder its folder name
  * @param summary where to write its summary
  * @param files where to write its files with their sizes (report.txt, logs.txt, status.jsonl, calib_result.json,
- *              measure.json, slip.json, samples.csv, summary.json; those there)
+ *              measure.json, slip.json, reseat.json, samples.csv, summary.json; those there)
  * @return true if its summary.json was read
  */
 bool load(const std::string& dir, const std::string& folder, Summary& summary, std::vector<FileInfo>* files = nullptr);

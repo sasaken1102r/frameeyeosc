@@ -277,7 +277,8 @@ report::Sources fakeSources(const std::string& dir, bool huge = false) {
 }
 
 void testNames() {
-    for (const Kind kind : {Kind::CalibWear, Kind::CalibUser, Kind::Fit, Kind::Recenter, Kind::Measure, Kind::Slip}) {
+    for (const Kind kind :
+         {Kind::CalibWear, Kind::CalibUser, Kind::Fit, Kind::Recenter, Kind::Measure, Kind::Slip, Kind::Reseat}) {
         Kind back = Kind::Fit;
         CHECK(report::parseKind(report::kindName(kind), back) && back == kind);
     }
@@ -298,6 +299,7 @@ void testNames() {
     CHECK(report::isFolderName("fit_2026-10-06_20-45-09"));
     CHECK(report::isFolderName("recenter_2026-10-06_20-45-09_2"));
     CHECK(report::isFolderName("slip_2026-11-14_13-00-00") && report::folderName(Kind::Slip, start) == "slip_2026-10-06_20-45-09");
+    CHECK(report::isFolderName("reseat_2026-11-14_19-00-00") && report::folderName(Kind::Reseat, start) == "reseat_2026-10-06_20-45-09");
     CHECK(!report::isFolderName("fit_2026-10-06_20-45-0"));
     CHECK(!report::isFolderName("rec_2026-10-06_20-45-09"));
     CHECK(!report::isFolderName("fit_2026-10-06_20-45-09_"));
@@ -693,7 +695,10 @@ void testSlipQuota() {
         pending.summary.kind = kind;
         pending.summary.start = start;
         pending.summary.end = start + 5;
-        pending.files.emplace_back(kind == Kind::Slip ? "slip.json" : "measure.json", "{}\n");
+        pending.files.emplace_back(kind == Kind::Slip     ? "slip.json"
+                                   : kind == Kind::Reseat ? "reseat.json"
+                                                          : "measure.json",
+                                   "{}\n");
         pending.files.emplace_back("samples.csv", "panel_s\n");
         std::string folder;
         std::string error;
@@ -712,7 +717,12 @@ void testSlipQuota() {
     CHECK(count("slip_") == static_cast<size_t>(report::kKeep) && count("measure_") == 3 && count("fit_") == 2);
     CHECK(!exists(records + "/slip_2026-11-14_09-00-00") && exists(records + "/slip_2026-11-14_19-00-00/slip.json"));
     CHECK(exists(records + "/slip_2026-11-14_19-00-00/samples.csv"));
-    CHECK(report::prune(records, 0) == 15);
+    // ...and the re-seat tests on their own again: eleven of them push out only their oldest
+    for (int i = 0; i < 11; ++i) writeAt(Kind::Reseat, jst(2026, 11, 15, 8 + i, 0, 0));
+    CHECK(count("reseat_") == static_cast<size_t>(report::kKeep) && count("slip_") == static_cast<size_t>(report::kKeep));
+    CHECK(count("measure_") == 3 && count("fit_") == 2);
+    CHECK(!exists(records + "/reseat_2026-11-15_08-00-00") && exists(records + "/reseat_2026-11-15_18-00-00/reseat.json"));
+    CHECK(report::prune(records, 0) == 25);
     removeAll(dir);
 }
 

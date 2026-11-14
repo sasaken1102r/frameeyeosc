@@ -1144,6 +1144,20 @@ struct UiText {
     const char* slipNote;            ///< under the result
     const char* slipStoppedFormat;   ///< (%s steps done, %s steps)
     const char* kindSlip;            ///< the record's kind
+    const char* reseatStart;         ///< the headset re-seat test's button (reseat_check.h), beside the slip test's
+    const char* reseatOff;           ///< its re-seat step's line: take the headset off and put it back on
+    const char* reseatBack;          ///< ...once the wearer's time is up and the eyes aren't back yet
+    const char* reseatRoundFormat;   ///< its run screen: which re-seat (%s of %s)
+    const char* reseatRunHow;        ///< ...how it goes
+    const char* reseatResultTitle;   ///< its result
+    const char* reseatSummary;       ///< ...what the large numbers are
+    const char* reseatRoundLabel;    ///< ...the rounds' column
+    const char* reseatRoundNumberFormat;  ///< ...a round (%s)
+    const char* reseatSpread;        ///< ...how much the gaze moved from one re-seat to the next (its label)
+    const char* reseatNote;          ///< under the result
+    const char* reseatStoppedFormat; ///< (%s re-seats done, %s re-seats)
+    const char* reseatTimedOutFormat;  ///< the eyes didn't come back after a re-seat (%s: seconds waited)
+    const char* kindReseat;          ///< the record's kind
     const char* rowUpdateCheck;
     const char* hintUpdateCheck;
     const char* updateUpToDateFormat;   ///< "Up to date (%s)"

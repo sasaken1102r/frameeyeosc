@@ -19,6 +19,7 @@
 #include "report.h"
 #include "setup_tools.h"
 #include "slip_check.h"
+#include "reseat_check.h"
 #include "sounds.h"
 #include "status.h"
 #include "target.h"
@@ -3687,6 +3688,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::SlipStart:
         case PanelAction::SlipStop:
         case PanelAction::SlipClose: return;  // ...and the headset slip test
+        case PanelAction::ReseatStart:
+        case PanelAction::ReseatStop:
+        case PanelAction::ReseatClose: return;  // ...and the headset re-seat test
         case PanelAction::SetupProceed:
             std::fprintf(stderr, "[setup] on to the eye cameras' page\n");
             model.eyecam.flow.proceed();
@@ -4299,6 +4303,55 @@ void fillSlipResult(report::Summary& s, const slip_check::View& view) {
     }
 }
 
+/**
+ * A headset re-seat test's record: how it ended, and its mean errors in both languages (reseat_check::briefText).
+ * @param s the summary
+ * @param view the test
+ */
+void fillReseatResult(report::Summary& s, const reseat_check::View& view) {
+    using reseat_check::Phase;
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    char text[200];
+    switch (view.phase) {
+        case Phase::Done:
+            s.result = report::Result::Ok;
+            s.brief = reseat_check::briefText(ja, view.result);
+            s.briefEn = reseat_check::briefText(en, view.result);
+            s.reason = s.brief.empty() ? ja.measureTooFew : s.brief;
+            s.reasonEn = s.briefEn.empty() ? en.measureTooFew : s.briefEn;
+            break;
+        case Phase::Failed: {
+            s.result = report::Result::Failed;
+            if (view.timedOut) {
+                const std::string waited = std::to_string(static_cast<int>(reseat_check::kReseatMaxSec));
+                std::snprintf(text, sizeof(text), ja.reseatTimedOutFormat, waited.c_str());
+                s.reason = text;
+                std::snprintf(text, sizeof(text), en.reseatTimedOutFormat, waited.c_str());
+                s.reasonEn = text;
+            } else {
+                s.reason = view.samples == 0 ? ja.measureNoDataEver : ja.measureNoData;
+                s.reasonEn = view.samples == 0 ? en.measureNoDataEver : en.measureNoData;
+            }
+            s.brief = ja.measureFailedTitle;
+            s.briefEn = en.measureFailedTitle;
+            break;
+        }
+        default: {
+            s.result = report::Result::Stopped;
+            const std::string done = std::to_string(view.roundsDone);
+            const std::string all = std::to_string(reseat_check::kRounds);
+            std::snprintf(text, sizeof(text), ja.reseatStoppedFormat, done.c_str(), all.c_str());
+            s.reason = text;
+            std::snprintf(text, sizeof(text), en.reseatStoppedFormat, done.c_str(), all.c_str());
+            s.reasonEn = text;
+            s.brief = ja.measureStoppedTitle;
+            s.briefEn = en.measureStoppedTitle;
+            break;
+        }
+    }
+}
+
 void fillClosedResult(report::Summary& s) {
     s.result = report::Result::Stopped;
     s.reason = s.brief = uiText(Language::Ja).recordPanelClosed;
@@ -4560,6 +4613,14 @@ int runOverlay(const Options& options) {
     CaptionPainter captionPainter;
     std::string slipVideoCommand;
     bool slipVideoStop = false;
+    // The headset re-seat test (reseat_check.h): the same again (the same socket and caption: never with the slip test
+    // or the gaze error check), its eye video "start reseat"
+    reseat_check::Session reseat;
+    gaze_measure::Receiver reseatSocket;
+    report::Run reseatRun;
+    std::string drawnReseat;
+    std::string reseatVideoCommand;
+    bool reseatVideoStop = false;
     std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself, "command" for --action
     bool fitRetryShown = false;        // the last fit was a re-wear fit the dashboard stopped, to be tried again
     std::string calibCommand;          // the calibration's command, to know its reply
@@ -4681,7 +4742,7 @@ int runOverlay(const Options& options) {
     // The gaze error check: started from its button (not while an eye fit runs, nor without frameeyeosc), its record
     // written when it ends (done, stopped or failed), with its scores and samples as the record's own files
     const auto startMeasure = [&]() {
-        if (measure.active() || slip.active() || fit.active() || !model.status.running) return;
+        if (measure.active() || slip.active() || reseat.active() || fit.active() || !model.status.running) return;
         const size_t slash = model.statusPath.find_last_of('/');
         const std::string dir = slash == std::string::npos ? "." : model.statusPath.substr(0, slash);
         std::string error;
@@ -4724,7 +4785,7 @@ int runOverlay(const Options& options) {
     // The headset slip test: started from its button (not while an eye fit or a gaze error check runs, nor without
     // frameeyeosc), with the eye video when eyecam-rec is there and idle; its record written when it ends
     const auto startSlip = [&]() {
-        if (slip.active() || measure.active() || fit.active() || !model.status.running) return;
+        if (slip.active() || measure.active() || reseat.active() || fit.active() || !model.status.running) return;
         const size_t slash = model.statusPath.find_last_of('/');
         const std::string dir = slash == std::string::npos ? "." : model.statusPath.substr(0, slash);
         std::string error;
@@ -4786,6 +4847,79 @@ int runOverlay(const Options& options) {
                      : done.phase == slip_check::Phase::Stopped ? "stopped"
                                                                 : "failed",
                      done.stepsDone, done.samples, r.valveMean, r.valveDirs, r.pupilMean, r.pupilDirs);
+        submitRecord(std::move(pending));
+    };
+    // The headset re-seat test: started from its button as the slip test is (not while an eye fit, a gaze error check
+    // or the slip test runs, nor without frameeyeosc), with the eye video when eyecam-rec is there and idle; its record
+    // written when it ends
+    const auto startReseat = [&]() {
+        if (reseat.active() || slip.active() || measure.active() || fit.active() || !model.status.running) return;
+        const size_t slash = model.statusPath.find_last_of('/');
+        const std::string dir = slash == std::string::npos ? "." : model.statusPath.substr(0, slash);
+        std::string error;
+        if (!reseatSocket.open(dir + "/" + gaze_measure::kSocketName, error)) {
+            std::fprintf(stderr, "[reseat] %s\n", error.c_str());
+            return;
+        }
+        reseat.start(nowSeconds(), unixNow());
+        reseatRun.begin(report::Kind::Reseat, unixNow());
+        report::Summary& s = reseatRun.summary();
+        s.trigger = "panel";
+        s.conditions = runConditions(model, vr, recenter);
+        s.conditions.ipdMm = vr.userIpdMeters() * 1000;
+        // The eye video: eyecam-rec's own recording with a protocol of one long step (protocol_reseat.txt: no light,
+        // no prompts of its own, longer than the test can take; its glints.csv has every glint per frame); stopped when
+        // the test ends
+        const eyecam::Status& es = model.eyecam.status;
+        if (!model.eyecam.visible || es.state != eyecam::State::Idle) {
+            reseat.setVideo(reseat_check::VideoState::Off,
+                            !model.eyecam.visible ? std::string("eyecam-rec not running") : "eyecam-rec " + es.stateText);
+        } else if (eyecamControl.busy()) {
+            reseat.setVideo(reseat_check::VideoState::Off, "eyecam-rec busy with \"" + eyecamControl.command() + "\"");
+        } else {
+            const std::string command = std::string(eyecam::kStartCommand) + " " + reseat_check::kVideoProtocol;
+            const std::string socket = model.eyecamDir + "/ctl.sock";
+            std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
+            if (eyecamControl.send(socket, command, nowSeconds())) {
+                reseatVideoCommand = command;
+                reseat.setVideo(reseat_check::VideoState::Asked);
+            } else if (!eyecamControl.busy()) {
+                reseat.setVideo(reseat_check::VideoState::Refused, eyecamControl.reply().error);
+            }
+            syncEyecamControl(model.eyecam, eyecamControl);
+        }
+        std::fprintf(stderr, "[reseat] started: %d re-seats, %d steps, at least %.0f s; eye video %s%s%s\n",
+                     reseat_check::kRounds, reseat_check::kStepCount, reseat_check::kMinRunSec,
+                     reseat.view().video == reseat_check::VideoState::Asked ? "asked for" : "none",
+                     reseat.view().videoReason.empty() ? "" : ": ", reseat.view().videoReason.c_str());
+    };
+    const auto finishReseat = [&]() {
+        reseatSocket.close();
+        vr.hideCaption();
+        captionPainter.reset();
+        // (an eye fit that took over draws its own target on the painter: left alone)
+        if (!fit.active()) targetPainter.reset();
+        // The eye video ends with it (once eyecam-rec has answered its start, if it hasn't yet)
+        const reseat_check::VideoState video = reseat.view().video;
+        if (video == reseat_check::VideoState::Asked || video == reseat_check::VideoState::On) reseatVideoStop = true;
+        if (!reseatRun.active()) return;
+        const reseat_check::View& done = reseat.view();
+        report::Pending pending = reseatRun.finish(unixNow());
+        fillReseatResult(pending.summary, done);
+        pending.files.emplace_back("reseat.json", reseat_check::recordJson(done, reseat.rows(), reseat.shownAt(),
+                                                                          reseat.shownUnix(), reseat.startedAt(),
+                                                                          done.result));
+        pending.files.emplace_back("samples.csv", reseat_check::samplesCsv(reseat.rows(), reseat.shownAt()));
+        const reseat_check::Result& r = done.result;
+        std::fprintf(stderr,
+                     "[reseat] %s after %d of %d re-seats, %d samples%s: Valve %.2f deg off the dots (%d rounds, %.2f "
+                     "deg from one re-seat to the next), pupil %.2f deg (%d rounds, %.2f deg)\n",
+                     done.phase == reseat_check::Phase::Done      ? "done"
+                     : done.phase == reseat_check::Phase::Stopped ? "stopped"
+                     : done.timedOut                              ? "failed (the eyes didn't come back)"
+                                                                  : "failed",
+                     done.roundsDone, reseat_check::kRounds, done.samples, done.raw ? " with raw values" : "",
+                     r.valve.error, r.valve.rounds, r.valve.spread, r.pupil.error, r.pupil.rounds, r.pupil.spread);
         submitRecord(std::move(pending));
     };
     while (!gStopRequested && !userQuit) {
@@ -4901,6 +5035,17 @@ int runOverlay(const Options& options) {
                         slip.stop(unixNow());
                     }
                     if (hit.action == PanelAction::SlipClose) slip.dismiss();
+                    // ...and the headset re-seat test
+                    if (panel.tab() != tabBefore && reseat.active()) {
+                        std::fprintf(stderr, "[reseat] stopped: another tab chosen\n");
+                        reseat.stop(unixNow());
+                    }
+                    if (hit.action == PanelAction::ReseatStart) startReseat();
+                    if (hit.action == PanelAction::ReseatStop && reseat.active()) {
+                        std::fprintf(stderr, "[reseat] stopped\n");
+                        reseat.stop(unixNow());
+                    }
+                    if (hit.action == PanelAction::ReseatClose) reseat.dismiss();
                     if (hit.action == PanelAction::MeasureStart) startMeasure();
                     if (hit.action == PanelAction::MeasureStop && measure.active()) {
                         std::fprintf(stderr, "[measure] stopped\n");
@@ -5043,7 +5188,9 @@ int runOverlay(const Options& options) {
             in.tracking = model.status.tracking;
             in.vrConnected = vr.connected();
             in.dashboardOpen = dashboardOpen;
-            in.fitActive = fit.active();
+            // (the re-seat test takes the headset off and puts it back on ten times: none of those wearings re-centers,
+            // which would stop the test and move the pupil map's centre under it)
+            in.fitActive = fit.active() || reseat.active();
             // An eye Valve's eye server reads shut (stuck at 0 for a whole wear at times) counts only with the eye
             // camera's eyelid, which waits for eyecam-rec's warm-up after the headset is put on (and never comes with
             // the cameras switched off)
@@ -5231,7 +5378,7 @@ int runOverlay(const Options& options) {
                     loggedYaw = actions.yawDeg;
                     loggedPitch = actions.pitchDeg;
                 }
-            } else if (!measure.active() && !slip.active()) {
+            } else if (!measure.active() && !slip.active() && !reseat.active()) {
                 vr.hideTarget();
                 if (targetFrames > 0) {
                     const double seconds = nowSeconds() - targetShownAt;
@@ -5353,6 +5500,67 @@ int runOverlay(const Options& options) {
             if (shown != drawnSlip) {
                 drawnSlip = shown;
                 model.slip = sv;
+                dirty = true;
+            }
+        }
+        // The headset re-seat test, the same way: its samples (each put to the step shown when it came), then the dot
+        // with the step's line; a re-seat step's line changes once the wearer's time is up and the eyes aren't back
+        {
+            if (reseat.active() && fit.active()) {
+                std::fprintf(stderr, "[reseat] stopped: an eye fit started\n");
+                reseat.stop(unixNow());
+            }
+            if (reseatSocket.isOpen()) {
+                std::vector<gaze_measure::Sample> got;
+                reseatSocket.poll(got);
+                for (const gaze_measure::Sample& sample : got) reseat.add(nowSeconds(), unixNow(), sample);
+            }
+            // (eyecam-rec's recording folder, once it records)
+            if (reseat.active() && reseat.view().video == reseat_check::VideoState::On &&
+                model.eyecam.status.state == eyecam::State::Recording) {
+                reseat.setVideoDir(model.eyecam.status.sessionDir);
+            }
+            const reseat_check::Tick tick = reseat.tick(nowSeconds(), unixNow());
+            const bool soundsOn = model.config.flag(key::kFitSounds);
+            if (tick.showTarget) {
+                const bool drawn = targetPainter.paint(fonts, gaze_fit::TargetStyle::Dot, "", 0, tick.progress);
+                targetUp = vr.showTarget(tick.yawDeg, tick.pitchDeg, drawn ? targetPainter.rgba().data() : nullptr,
+                                         kTargetImageSize);
+                if (drawn && !targetUp) targetPainter.reset();
+                const reseat_check::Step& step = reseat_check::steps()[tick.step];
+                const std::string line = reseat_check::instruction(uiText(model.language), step, tick.waiting);
+                const bool lineDrawn = captionPainter.paint(fonts, line, tick.progress, tick.seconds);
+                const double pitch = tick.pitchDeg < 0 ? 11.0 : -11.0;
+                if (!vr.showCaption(pitch, lineDrawn ? captionPainter.rgba().data() : nullptr, kCaptionImageW,
+                                    kCaptionImageH) &&
+                    lineDrawn) {
+                    captionPainter.reset();
+                }
+                if (tick.changed) {
+                    // (each step a cue: the re-seat's tells the wearer to take the headset off, the first dot's after
+                    // it that the eyes were seen back)
+                    if (soundsOn) player.play(sounds::Cue::Pop);
+                    std::fprintf(stderr, "[reseat] step %d/%d: %s\n", tick.step + 1, reseat_check::kStepCount,
+                                 reseat_check::stepName(step).c_str());
+                }
+            }
+            if (tick.ended) {
+                // (an eye fit that took over shows its dot this same frame: not hidden)
+                if (!fit.active()) vr.hideTarget();
+                const reseat_check::Phase phase = reseat.view().phase;
+                if (soundsOn && phase == reseat_check::Phase::Done) player.play(sounds::Cue::Done);
+                if (soundsOn && phase == reseat_check::Phase::Failed) player.play(sounds::Cue::Fail);
+                finishReseat();
+            }
+            // (drawn again for each step, each second of it, the waiting line and the eye video's state)
+            const reseat_check::View& rv = reseat.view();
+            const std::string shown = std::to_string(static_cast<int>(rv.phase)) + "/" + std::to_string(rv.step) + "/" +
+                                      std::to_string(static_cast<int>(std::ceil(rv.stepLeft))) + "/" +
+                                      (rv.waiting ? "w" : "") + "/" + std::to_string(static_cast<int>(rv.video)) +
+                                      "/" + rv.videoDir;
+            if (shown != drawnReseat) {
+                drawnReseat = shown;
+                model.reseat = rv;
                 dirty = true;
             }
         }
@@ -5639,6 +5847,15 @@ int runOverlay(const Options& options) {
                     }
                     std::fprintf(stderr, "[slip] eye video %s%s\n", r.ok ? "recording" : "refused: ", r.error.c_str());
                 }
+                // ...and the re-seat test's
+                if (!reseatVideoCommand.empty() && r.command == reseatVideoCommand) {
+                    reseatVideoCommand.clear();
+                    if (reseat.view().phase != reseat_check::Phase::Idle) {
+                        reseat.setVideo(r.ok ? reseat_check::VideoState::On : reseat_check::VideoState::Refused,
+                                        r.ok ? std::string() : r.error);
+                    }
+                    std::fprintf(stderr, "[reseat] eye video %s%s\n", r.ok ? "recording" : "refused: ", r.error.c_str());
+                }
                 // A sensitivity it refused: the slider shows the file's value again (the reply shows like others)
                 if (!r.ok && eyecam::isSensitivityCommand(r.command)) {
                     panel.dropSensitivityHold();
@@ -5650,6 +5867,16 @@ int runOverlay(const Options& options) {
                 slipVideoStop = false;
                 const std::string socket = model.eyecamDir + "/ctl.sock";
                 std::fprintf(stderr, "[eyecam] sending \"stop\" to %s (the slip test ended)\n", socket.c_str());
+                if (!eyecamControl.send(socket, "stop", nowSeconds()) && !eyecamControl.busy()) {
+                    std::fprintf(stderr, "[eyecam] stop failed: %s\n", eyecamControl.reply().error.c_str());
+                }
+                syncEyecamControl(model.eyecam, eyecamControl);
+            }
+            // ...and the re-seat test's
+            if (reseatVideoStop && !eyecamControl.busy()) {
+                reseatVideoStop = false;
+                const std::string socket = model.eyecamDir + "/ctl.sock";
+                std::fprintf(stderr, "[eyecam] sending \"stop\" to %s (the re-seat test ended)\n", socket.c_str());
                 if (!eyecamControl.send(socket, "stop", nowSeconds()) && !eyecamControl.busy()) {
                     std::fprintf(stderr, "[eyecam] stop failed: %s\n", eyecamControl.reply().error.c_str());
                 }
@@ -5806,7 +6033,7 @@ int runOverlay(const Options& options) {
         }
 
         // A run's status a second (status.jsonl)
-        if ((fitRun.active() || calibRun.active() || measureRun.active() || slipRun.active()) &&
+        if ((fitRun.active() || calibRun.active() || measureRun.active() || slipRun.active() || reseatRun.active()) &&
             unixNow() >= lastRunSample + 1.0) {
             lastRunSample = unixNow();
             const std::string core = readSmallFile(model.statusPath);
@@ -5815,6 +6042,7 @@ int runOverlay(const Options& options) {
             calibRun.sample(lastRunSample, core, eyecamText);
             measureRun.sample(lastRunSample, core, eyecamText);
             slipRun.sample(lastRunSample, core, eyecamText);
+            reseatRun.sample(lastRunSample, core, eyecamText);
         }
         // A record written: the failure screens' bar links to it, the lists show it
         {
@@ -5822,7 +6050,7 @@ int runOverlay(const Options& options) {
             report::Kind kind = report::Kind::Fit;
             while (writer.poll(folder, kind)) {
                 const bool calib = kind == report::Kind::CalibWear || kind == report::Kind::CalibUser;
-                if (kind != report::Kind::Measure && kind != report::Kind::Slip) {
+                if (kind != report::Kind::Measure && kind != report::Kind::Slip && kind != report::Kind::Reseat) {
                     (calib ? model.records.lastCalib : model.records.lastFit) = folder;
                 }
                 loadRecords(model);
@@ -5941,7 +6169,8 @@ int runOverlay(const Options& options) {
         // (the dots only while packets arrive: with none for kStaleSec, the usual slow poll)
         const bool dotsLive = dots.isOpen() && dotsWanted && nowSeconds() - lastDotAt <= gaze_dots::kStaleSec;
         // (and while the eye capture's light fades, so its alpha steps are small)
-        const bool everyFrame = fit.active() || measure.active() || slip.active() || dotsLive || lightMoving;
+        const bool everyFrame =
+            fit.active() || measure.active() || slip.active() || reseat.active() || dotsLive || lightMoving;
         // While eyecam-rec runs, as often as with the panel open, so the light follows its steps closely
         const bool eyecamLive = model.eyecam.visible || vr.fillShown() || eyecamControl.busy();
         if (!(targetUp && vr.waitFrameSync(kFrameSyncTimeoutMs))) {
@@ -5997,6 +6226,12 @@ int runOverlay(const Options& options) {
     // (its eye video: "stop" sent if eyecam-rec can take it now; the reply isn't waited for)
     if (slipVideoStop && !eyecamControl.busy()) {
         std::fprintf(stderr, "[eyecam] sending \"stop\" (the slip test ended with the panel)\n");
+        eyecamControl.send(model.eyecamDir + "/ctl.sock", "stop", nowSeconds());
+    }
+    if (reseat.active()) reseat.stop(unixNow());
+    finishReseat();
+    if (reseatVideoStop && !eyecamControl.busy()) {
+        std::fprintf(stderr, "[eyecam] sending \"stop\" (the re-seat test ended with the panel)\n");
         eyecamControl.send(model.eyecamDir + "/ctl.sock", "stop", nowSeconds());
     }
     writer.finish();

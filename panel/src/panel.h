@@ -186,6 +186,9 @@ enum class PanelAction {
     SlipStart,         ///< the headset slip test: start (or "Again" on its result)
     SlipStop,          ///< ...stop it while it runs
     SlipClose,         ///< ...close its result
+    ReseatStart,       ///< the headset re-seat test: start (or "Again" on its result)
+    ReseatStop,        ///< ...stop it while it runs
+    ReseatClose,       ///< ...close its result
 };
 
 /** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
@@ -1741,6 +1744,26 @@ private:
      * @param m the model
      */
     void drawSlipResult(const Pen& pen, const UiText& t, const PanelModel& m);
+
+    /**
+     * The headset re-seat test while it runs, in the Advanced tab's place: the step's line large with its time left as
+     * a bar (a re-seat: the wearer's time), which re-seat of how many, how it goes, and a big "Stop" (the dot and the
+     * same line show in front of the panel).
+     * @param pen the pen
+     * @param t texts
+     * @param m the model
+     */
+    void drawReseatRun(const Pen& pen, const UiText& t, const PanelModel& m);
+
+    /**
+     * The headset re-seat test's result (or why there is none), in the Advanced tab's place until it is closed: the
+     * mean error on the dots, a row per re-seat with Valve's and the pupils', how much a re-seat changed them, and the
+     * eye video.
+     * @param pen the pen
+     * @param t texts
+     * @param m the model
+     */
+    void drawReseatResult(const Pen& pen, const UiText& t, const PanelModel& m);
 
     /**
      * "Record for squint training" (contrib::screen): the consent, the question about glasses, the start with what to

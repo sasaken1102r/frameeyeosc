@@ -64,6 +64,7 @@ add_executable(frameeyeosc-panel
   src/report.cpp
   src/setup_tools.cpp
   src/slip_check.cpp
+  src/reseat_check.cpp
   src/sounds.cpp
   src/status.cpp
   src/stored.cpp
@@ -120,6 +121,14 @@ add_executable(slip-test tests/slip_check_test.cpp src/slip_check.cpp src/gaze_m
 target_include_directories(slip-test PRIVATE src)
 target_compile_options(slip-test PRIVATE -Wall -Wextra)
 add_test(NAME slip COMMAND slip-test)
+
+# The headset re-seat test's steps, waiting for the eyes after each re-seat, per-round scores and record files, tested
+# without OpenVR: panel/build/reseat-test
+add_executable(reseat-test tests/reseat_check_test.cpp src/reseat_check.cpp src/gaze_measure.cpp src/json.cpp
+  src/i18n.cpp src/icons.cpp)
+target_include_directories(reseat-test PRIVATE src)
+target_compile_options(reseat-test PRIVATE -Wall -Wextra)
+add_test(NAME reseat COMMAND reseat-test)
 
 # The eye preview without cairo or OpenVR: which values drive the drawn eyes, the lids' and pupil's geometry, eyecam-rec's
 # preview file (made-up pictures in a folder under /tmp: its checks, the seqlock, a replaced or removed file), when the
@@ -202,6 +211,7 @@ add_executable(panel-test tests/panel_test.cpp
   src/report.cpp
   src/setup_tools.cpp
   src/slip_check.cpp
+  src/reseat_check.cpp
   src/status.cpp
   src/target.cpp
   src/text_layout.cpp

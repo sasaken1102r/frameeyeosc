@@ -5032,6 +5032,8 @@ impl Bridge {
             self.dots.send(&dot_sample(&self.settings, &data, &sample, self.camera_live.as_ref()));
         }
         if measuring {
+            // (the raw values first: the pupil pair and the eye camera's, so a record can redo the pupil gaze)
+            self.measure.send_raw(&dots::RawSample::of(data.sample_time, &data.extra, self.camera_live.as_ref()));
             self.measure.send_measure(&measure_sample(&self.settings, &data, &sample, other.as_ref()));
         }
         let pupils = self.capture_pupils.update(data.sample_time, &data.extra);
@@ -7765,7 +7767,13 @@ mod tests {
             for data in &readings {
                 bridge.on_sample(*data).unwrap();
                 while let Ok(size) = panel.recv(&mut buffer) {
-                    out.measured.push(dots::decode_measure(&buffer[..size]).unwrap());
+                    // Each sample's raw values just before it: the pupil pair as read (no eye camera here)
+                    let raw = dots::decode_raw(&buffer[..size]).unwrap();
+                    assert_eq!((raw.pair, raw.cam), ([data.extra[0], data.extra[1], data.extra[2], data.extra[3]], [None; 2]));
+                    let size = panel.recv(&mut buffer).unwrap();
+                    let measured = dots::decode_measure(&buffer[..size]).unwrap();
+                    assert_eq!(measured.time.to_bits(), raw.time.to_bits());
+                    out.measured.push(measured);
                 }
                 let status = serde_json::to_value(bridge.status(None, None)).unwrap();
                 let latest = bridge.latest.as_ref().unwrap();

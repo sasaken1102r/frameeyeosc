@@ -5366,6 +5366,21 @@ int runOverlay(const Options& options) {
                 std::fprintf(stderr, "[fit] %s\n", line.c_str());
             }
             fitRetryShown = retry;
+            // With pupil_slip_correction on, a fit or re-center that wrote its centre has eyecam-rec take new glint
+            // templates at the next still moment (the eyes are likely on the centre dot now); the slip it carries on
+            // from them (frameeyeosc's pupil_slip.rs). Skipped while another command waits for its reply
+            if (ended.phase == gaze_fit::Phase::Done && model.config.flag(key::kPupilSlipCorrection) &&
+                model.eyecam.visible) {
+                const std::string socket = model.eyecamDir + "/ctl.sock";
+                if (eyecamControl.busy()) {
+                    std::fprintf(stderr, "[eyecam] no new glint templates after the fit: another command is out\n");
+                } else {
+                    std::fprintf(stderr, "[eyecam] sending \"glint template\" to %s (the fit wrote its centre)\n",
+                                 socket.c_str());
+                    eyecamControl.send(socket, "glint template", nowSeconds());
+                    syncEyecamControl(model.eyecam, eyecamControl);
+                }
+            }
         }
         // The Eye fit tab says it is tried again while it still will be (not once the wearing's re-center is off)
         if (const bool retryShown = fitRetryShown && recenter.armed(); retryShown != model.fitRetry) {

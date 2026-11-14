@@ -229,9 +229,23 @@ impl MapStore {
         }
         let usable = medians.map(|m| m.filter(|(_, n)| *n >= MIN_SAMPLES).map(|(angles, _)| angles));
         let [Some(left), Some(right)] = usable else {
+            // Said plainly: which eye did not count, and what that means for the centre or the whole fit
             let counts = medians.map(|m| m.map_or(0, |(_, n)| n));
+            let eyes = match usable {
+                [None, None] => "neither eye counted",
+                [None, Some(_)] => "the left eye not counted",
+                _ => "the right eye not counted",
+            };
+            let outcome = if dot == 0 && self.maps.is_some() {
+                "the centre is kept as it was".to_owned()
+            } else if dot == 0 {
+                "a whole fit started here makes no eyeball map".to_owned()
+            } else {
+                format!("this fit makes no eyeball map ({})", if self.maps.is_some() { "the old one stays" } else { "there is none yet" })
+            };
             lines.push(format!(
-                "Eyeball map: the {target} dot had too few samples with both eyes' filters (L {}, R {}; needs {MIN_SAMPLES})",
+                "Eyeball map: {eyes} at the {target} dot: {} and {} samples of a settled filter (L, R; needs \
+                 {MIN_SAMPLES}); {outcome}. Fit again once the journal's centre line says both eyes have settled",
                 counts[0], counts[1]
             ));
             self.dots[dot] = None;
@@ -283,6 +297,16 @@ impl MapStore {
                 )),
             }
             self.dots = [None; 5];
+        } else if dot == DOTS.len() - 1 {
+            // The whole fit's last dot, with some of its dots missing: said, so a fit that made no map is not taken for
+            // one that did
+            let missing: Vec<&str> = (0..DOTS.len()).filter(|&i| self.dots[i].is_none()).map(|i| DOTS[i].0).collect();
+            lines.push(format!(
+                "Eyeball map {}: no settled eyes at the {} dot{} of this fit",
+                if self.maps.is_some() { "kept as it was" } else { "not made" },
+                missing.join(", "),
+                if missing.len() == 1 { "" } else { "s" }
+            ));
         }
         if let Some(maps) = changed {
             self.maps = Some(maps);
@@ -369,12 +393,31 @@ mod tests {
             let want = eye_direction(0.0, 0.0, eye);
             assert!((f64::from(got[0]) - want[0]).abs() < 0.01, "{got:?} {want:?}");
         }
-        // Too few samples at a dot: said, nothing changed; a set without one of its dots fits nothing
-        let lines = store.capture_done("up", medians(reading, 1, 10));
-        assert!(lines[0].contains("too few samples") && store.maps == Some(recentred), "{lines:?}");
-        for dot in [2, 3, 4] {
+        // Too few samples of a settled filter at a dot: said plainly, nothing changed; a set without one of its dots
+        // fits nothing, and its last dot says so
+        let mut one = medians(reading, 1, 120);
+        one[1] = Some((one[1].unwrap().0, 10));
+        let lines = store.capture_done("up", one);
+        assert_eq!(
+            lines,
+            vec![
+                "Eyeball map: the right eye not counted at the up dot: 120 and 10 samples of a settled filter (L, R; needs \
+                 30); this fit makes no eyeball map (the old one stays). Fit again once the journal's centre line says \
+                 both eyes have settled"
+                    .to_owned()
+            ]
+        );
+        assert_eq!(store.maps, Some(recentred));
+        for dot in [2, 3] {
             assert!(store.capture_done(DOTS[dot].0, medians(reading, dot, 120)).is_empty());
         }
+        let lines = store.capture_done("right", medians(reading, 4, 120));
+        assert_eq!(lines, vec!["Eyeball map kept as it was: no settled eyes at the up dot of this fit".to_owned()]);
+        assert_eq!(store.maps, Some(recentred));
+        // A centre dot without settled eyes keeps the centre
+        let lines = store.capture_done("center", [None; 2]);
+        assert!(lines[0].starts_with("Eyeball map: neither eye counted at the center dot"), "{lines:?}");
+        assert!(lines[0].contains("0 and 0 samples") && lines[0].contains("the centre is kept as it was"), "{lines:?}");
         assert_eq!(store.maps, Some(recentred));
         // A read-only store (the replay) never writes
         std::fs::remove_file(&path).unwrap();

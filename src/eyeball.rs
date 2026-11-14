@@ -74,8 +74,14 @@ pub const EYE_FRESH_S: f64 = 0.15;
 pub const ACCEPTED_FRESH_S: f64 = 0.2;
 /// An eye's directions count for the eye fit's captures (the map and the centre, eyeball_map.rs) once its filter has
 /// updated with the ellipse this many frames since it started or last re-took its angles (about a second at 90 frames
-/// a second): before that the centre is still settling, and a map fitted then would hold its error.
+/// a second)...
 pub const SETTLED_ELLIPSE_FRAMES: u32 = 90;
+/// ...and its centre is this sure across the camera's axis (m, the larger standard deviation of the two): before that
+/// the centre is still settling, and a map fitted then holds its error (on the headset at 23:55 on 2026-11-14 an eye fit
+/// 30 s after a start took eyes at the 2 mm cap with 2399 ellipse frames, and their centre moved 3 mm in depth by the
+/// next re-center). Over the slip and re-seat replays a settled eye's sd is 0.3-0.45 mm (median), below 0.5 mm 1-15 s
+/// after a start and a median 0.1-0.3 s after a re-seat (p90 about 1 s).
+pub const SETTLED_CENTRE_SD: f64 = 0.0005;
 /// While the ellipse is not used, the centre is held, and its uncertainty would grow without end: it is kept at most
 /// this (m, each axis) or what it was before, if more, so the next ellipse cannot throw the centre millimetres in one
 /// frame.
@@ -560,9 +566,11 @@ impl Freshness {
 }
 
 impl EyeFilter {
-    /// Whether its centre has settled enough for the eye fit (SETTLED_ELLIPSE_FRAMES).
+    /// Whether its centre has settled enough for the eye fit (SETTLED_ELLIPSE_FRAMES and SETTLED_CENTRE_SD).
     pub fn settled(&self) -> bool {
-        self.x.is_some() && self.ellipse_frames >= SETTLED_ELLIPSE_FRAMES
+        self.x.is_some()
+            && self.ellipse_frames >= SETTLED_ELLIPSE_FRAMES
+            && self.p[4][4].max(self.p[5][5]) < SETTLED_CENTRE_SD * SETTLED_CENTRE_SD
     }
 
     /// The centre (mm) and its standard deviations (mm), once started.
@@ -912,7 +920,14 @@ impl EyeballGaze {
                     sd[1],
                     sd[2],
                     filter.ellipse_frames,
-                    if filter.settled() { "" } else { " (not settled yet)" }
+                    if filter.settled() {
+                        String::new()
+                    } else {
+                        format!(
+                            " (not settled: needs {SETTLED_ELLIPSE_FRAMES} ellipse frames and sd across below {:.2} mm)",
+                            SETTLED_CENTRE_SD * 1e3
+                        )
+                    }
                 ),
                 None => format!("{} not started", ["L", "R"][e]),
             }
@@ -930,8 +945,8 @@ pub fn is_eyecam_replay(header: &str) -> bool {
 /// pupil_cx / _cy / _a / _b and pupil_angle), each eye on its own in camera-time order, the left eye's picture taken
 /// as turned upright (as eyecam-rec turns it on the Frame). Writes one row per frame to `out` (eye, eye_index, t_cam,
 /// update, yaw_deg, pitch_deg, centre_x_mm / _y_mm / _z_mm, empty before the filter starts; fresh as the live source
-/// would use the eye (Freshness, on the camera's clock), settled for the eye fit, the centre's largest standard
-/// deviation in mm) and returns the report.
+/// would use the eye (Freshness, on the camera's clock), settled for the eye fit, the centre's larger standard
+/// deviation across the camera's axis and the one along it, in mm) and returns the report.
 pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) -> Result<String, String> {
     let mut lines = text.lines();
     let header: Vec<&str> = lines.next().ok_or("the file is empty")?.split(',').collect();
@@ -983,7 +998,7 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
     };
     use std::io::Write as _;
     if let Some(w) = writer.as_mut() {
-        writeln!(w, "eye,eye_index,t_cam,update,yaw_deg,pitch_deg,centre_x_mm,centre_y_mm,centre_z_mm,fresh,settled,centre_sd_mm").map_err(|e| e.to_string())?;
+        writeln!(w, "eye,eye_index,t_cam,update,yaw_deg,pitch_deg,centre_x_mm,centre_y_mm,centre_z_mm,fresh,settled,centre_sd_mm,centre_sd_z_mm").map_err(|e| e.to_string())?;
     }
     let mut report = String::new();
     let mut total_ns = 0u128;
@@ -1009,7 +1024,7 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
             fresh.note(*t, &o, estimate.as_ref());
             let now_fresh = fresh.fresh(*t);
             not_fresh += usize::from(estimate.is_some() && !now_fresh);
-            let sd = filter.centre_mm().map_or(f64::NAN, |(_, sd)| sd[0].max(sd[1]).max(sd[2]));
+            let sd = filter.centre_mm().map_or([f64::NAN; 2], |(_, sd)| [sd[0].max(sd[1]), sd[2]]);
             rows.push((*t, index, estimate, now_fresh, filter.settled(), sd));
         }
         total_ns += started.elapsed().as_nanos();
@@ -1020,7 +1035,7 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
                 match estimate {
                     Some(e) => writeln!(
                         w,
-                        "{name},{index},{t:.6},{},{:.6},{:.6},{:.4},{:.4},{:.4},{},{},{sd:.3}",
+                        "{name},{index},{t:.6},{},{:.6},{:.6},{:.4},{:.4},{:.4},{},{},{:.3},{:.3}",
                         e.update.name(),
                         e.yaw.to_degrees(),
                         e.pitch.to_degrees(),
@@ -1028,9 +1043,11 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
                         e.centre[1] * 1e3,
                         e.centre[2] * 1e3,
                         u8::from(now_fresh),
-                        u8::from(settled)
+                        u8::from(settled),
+                        sd[0],
+                        sd[1]
                     ),
-                    None => writeln!(w, "{name},{index},{t:.6},,,,,,,0,0,"),
+                    None => writeln!(w, "{name},{index},{t:.6},,,,,,,0,0,,"),
                 }
                 .map_err(|e| e.to_string())?;
             }
@@ -1192,7 +1209,12 @@ pub mod tests {
     /// Looks around for a while so the centre is learnt: the eye fit's five dots (as the left eye sees them), two
     /// seconds each, three times; then the map from the last round, as the eye fit makes it (eyeball_map.rs).
     fn learn(filter: &mut EyeFilter, c: &Camera, frames: Frames) -> (f64, EyeMap) {
-        let mut t = 0.0;
+        learn_from(filter, c, frames, 0.0)
+    }
+
+    /// The same from start (s).
+    fn learn_from(filter: &mut EyeFilter, c: &Camera, frames: Frames, start: f64) -> (f64, EyeMap) {
+        let mut t = start;
         let mut medians = [[0.0f32; 2]; 5];
         for _ in 0..3 {
             for (i, (_, yaw, pitch)) in crate::eyeball_map::DOTS.iter().enumerate() {
@@ -1474,15 +1496,24 @@ pub mod tests {
     fn the_centre_settles_for_the_eye_fit_and_its_uncertainty_stays_capped_without_the_ellipse() {
         let c = camera();
         let mut filter = EyeFilter::default();
-        // Not settled until SETTLED_ELLIPSE_FRAMES ellipse updates
+        // Not settled before SETTLED_ELLIPSE_FRAMES ellipse updates...
         run(&mut filter, &c, seen, 0.0, 0.5, |_| (eye_at(&c), 0.0, 0.0));
         assert!(!filter.settled());
-        run(&mut filter, &c, seen, 0.5, 1.0, |_| (eye_at(&c), 0.0, 0.0));
-        assert!(filter.settled());
+        // ...nor while the centre is unsure across the camera's axis, however many there were
+        let mut unsure = filter.clone();
+        unsure.ellipse_frames = 10 * SETTLED_ELLIPSE_FRAMES;
+        unsure.p[4][4] = (2.0 * SETTLED_CENTRE_SD).powi(2);
+        assert!(!unsure.settled());
+        // Looking about (the eye fit's dots): settled, the centre within SETTLED_CENTRE_SD
+        let (_, _) = learn(&mut filter, &c, seen);
+        let (_, sd) = filter.centre_mm().unwrap();
+        assert!(filter.settled(), "{sd:?}");
+        let t = 30.0;
+        run(&mut filter, &c, seen, t, 0.5, |_| (eye_at(&c), 0.0, 0.0));
         let (_, before) = filter.centre_mm().unwrap();
         // Ten seconds with a lid near the pupil (no ellipse): the centre held, its uncertainty no larger than the cap
         // (or what it was); without the cap it would grow by SIG_C a second's root to about 4.7 mm
-        let mut t = 1.5;
+        let mut t = 30.5;
         for _ in 0..900 {
             let frame = RawFrame { aperture: 1.0, ..seen(&c, eye_at(&c), 3.0, 2.0, t) };
             let e = filter.step(&c, &observe(&c, &frame)).unwrap();
@@ -1493,9 +1524,11 @@ pub mod tests {
         for i in 0..3 {
             assert!(after[i] <= before[i].max(CENTRE_SD_CAP * 1e3) + 1e-9, "{before:?} -> {after:?}");
         }
-        // Still settled (the centre kept), and the ellipse taken again afterwards
-        assert!(filter.settled());
-        let (_, _, _) = run(&mut filter, &c, seen, t, 1.0, |_| (eye_at(&c), 3.0, 2.0));
+        // Unsure again by then (above SETTLED_CENTRE_SD): such an eye does not count for the eye fit until the ellipse
+        // has made it sure again, looking about
+        assert!(!filter.settled(), "{after:?}");
+        learn_from(&mut filter, &c, seen, t);
+        assert!(filter.settled(), "{:?}", filter.centre_mm());
         // A re-take starts the count over: a filter started anew is not settled
         filter.reset();
         assert!(!filter.settled() && filter.centre_mm().is_none());

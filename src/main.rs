@@ -7865,7 +7865,7 @@ mod tests {
         // A capture says where each eye's centre stood
         let lines = setup.capture_done("center", [None; 2], &mut smoother);
         assert_eq!(lines[0], "Eyeball centre: L not started; R not started");
-        assert!(lines[1].contains("too few samples"), "{lines:?}");
+        assert!(lines[1].starts_with("Eyeball map: neither eye counted at the center dot"), "{lines:?}");
         fs::remove_dir_all(&dir).unwrap();
     }
 

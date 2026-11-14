@@ -299,7 +299,8 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
 
 /**
  * samples.csv: a row per sample received (the panel's time, the wall clock, the step, its name and the time into it,
- * whether it counts, then the sample's fields as the gaze error check's samples.csv has them).
+ * whether it counts, then the sample's fields as the gaze error check's samples.csv has them, its raw values last:
+ * gaze_measure::rawCsvHeader).
  * @param rows the samples
  * @param shownAt when each step was shown (monotonic)
  * @return the text

@@ -552,7 +552,9 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
 std::string samplesCsv(const std::vector<Row>& rows, const double* shownAt) {
     std::string out =
         "panel_s,unix,step,step_name,step_s,counted,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,"
-        "before_smoothing,valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right\n";
+        "before_smoothing,valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right";
+    out += gaze_measure::rawCsvHeader();
+    out += '\n';
     char line[360];
     for (const Row& r : rows) {
         const gaze_measure::Sample& s = r.sample;
@@ -560,12 +562,14 @@ std::string samplesCsv(const std::vector<Row>& rows, const double* shownAt) {
         const std::string name = known ? stepName(kSteps[r.step]) : "";
         const double into = known && shownAt != nullptr ? r.at - shownAt[r.step] : NAN;
         std::snprintf(line, sizeof(line),
-                      "%.4f,%.3f,%d,%s,%.3f,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n", r.at, r.wall,
+                      "%.4f,%.3f,%d,%s,%.3f,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f", r.at, r.wall,
                       r.step, name.c_str(), into, r.counted ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
                       s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.pupilBlending ? 1 : 0,
                       s.beforeSmoothing ? 1 : 0, s.valve[0], s.valve[1], s.pupil[0], s.pupil[1], s.openness[0],
                       s.openness[1]);
         out += line;
+        gaze_measure::appendRawCsv(out, s.raw);
+        out += '\n';
     }
     return out;
 }

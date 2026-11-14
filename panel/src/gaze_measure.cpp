@@ -23,6 +23,12 @@ constexpr uint8_t kUsable = 2;
 constexpr uint8_t kValveHeld = 4;
 constexpr uint8_t kPupilBlending = 8;
 constexpr uint8_t kBeforeSmoothing = 16;
+constexpr uint8_t kRawMagic[4] = {'F', 'E', 'O', 'R'};
+constexpr uint8_t kRawVersion = 1;
+constexpr uint32_t kRawPresent = 1;
+constexpr uint32_t kRawPupil = 2;
+constexpr uint32_t kRawTracked = 4;
+constexpr uint32_t kRawTemplate = 8;
 constexpr double kDeg = M_PI / 180.0;
 
 /**
@@ -187,6 +193,109 @@ std::vector<uint8_t> encode(const Sample& sample) {
     std::memcpy(data.data() + 24, sample.pupil, 8);
     std::memcpy(data.data() + 32, sample.openness, 8);
     return data;
+}
+
+bool decodeRaw(const uint8_t* data, size_t size, double& time, Raw& out) {
+    if (size != kRawSize || std::memcmp(data, kRawMagic, 4) != 0 || data[4] != kRawVersion) return false;
+    Raw r;
+    r.has = true;
+    std::memcpy(&time, data + 8, 8);
+    std::memcpy(r.pair, data + 16, 16);
+    for (int e = 0; e < 2; ++e) {
+        const uint8_t* at = data + 32 + e * kRawEyeSize;
+        RawEye& eye = r.eye[e];
+        uint32_t flags = 0;
+        std::memcpy(&flags, at, 4);
+        eye.present = (flags & kRawPresent) != 0;
+        if (!eye.present) continue;
+        eye.pupil = (flags & kRawPupil) != 0;
+        eye.tracked = (flags & kRawTracked) != 0;
+        eye.templated = (flags & kRawTemplate) != 0;
+        std::memcpy(&eye.templateId, at + 4, 4);
+        std::memcpy(&eye.templateNs, at + 8, 8);
+        std::memcpy(&eye.frameNs, at + 16, 8);
+        std::memcpy(&eye.pupilX, at + 24, 4);
+        std::memcpy(&eye.pupilY, at + 28, 4);
+        std::memcpy(&eye.slipX, at + 32, 4);
+        std::memcpy(&eye.slipY, at + 36, 4);
+        std::memcpy(&eye.matches, at + 40, 4);
+        std::memcpy(&eye.sinceGood, at + 44, 4);
+        std::memcpy(&eye.glints, at + 48, 4);
+    }
+    out = r;
+    return true;
+}
+
+std::vector<uint8_t> encodeRaw(double time, const Raw& raw) {
+    std::vector<uint8_t> data(kRawSize, 0);
+    std::memcpy(data.data(), kRawMagic, 4);
+    data[4] = kRawVersion;
+    std::memcpy(data.data() + 8, &time, 8);
+    std::memcpy(data.data() + 16, raw.pair, 16);
+    for (int e = 0; e < 2; ++e) {
+        const RawEye& eye = raw.eye[e];
+        if (!eye.present) continue;
+        uint8_t* at = data.data() + 32 + e * kRawEyeSize;
+        const uint32_t flags = kRawPresent | (eye.pupil ? kRawPupil : 0) | (eye.tracked ? kRawTracked : 0) |
+                               (eye.templated ? kRawTemplate : 0);
+        std::memcpy(at, &flags, 4);
+        std::memcpy(at + 4, &eye.templateId, 4);
+        std::memcpy(at + 8, &eye.templateNs, 8);
+        std::memcpy(at + 16, &eye.frameNs, 8);
+        std::memcpy(at + 24, &eye.pupilX, 4);
+        std::memcpy(at + 28, &eye.pupilY, 4);
+        std::memcpy(at + 32, &eye.slipX, 4);
+        std::memcpy(at + 36, &eye.slipY, 4);
+        std::memcpy(at + 40, &eye.matches, 4);
+        std::memcpy(at + 44, &eye.sinceGood, 4);
+        std::memcpy(at + 48, &eye.glints, 4);
+    }
+    return data;
+}
+
+const char* rawCsvHeader() {
+    return ",raw,pair_lx,pair_ly,pair_rx,pair_ry,"
+           "cam_l_fresh,cam_l_frame_ns,cam_l_pupil_x,cam_l_pupil_y,cam_l_tracked,cam_l_template,cam_l_template_ns,"
+           "cam_l_slip_x,cam_l_slip_y,cam_l_matches,cam_l_since_good,cam_l_glints,"
+           "cam_r_fresh,cam_r_frame_ns,cam_r_pupil_x,cam_r_pupil_y,cam_r_tracked,cam_r_template,cam_r_template_ns,"
+           "cam_r_slip_x,cam_r_slip_y,cam_r_matches,cam_r_since_good,cam_r_glints";
+}
+
+void appendRawCsv(std::string& out, const Raw& raw) {
+    if (!raw.has) {
+        // (raw 0 and every other cell empty: 4 for the pair, 12 per eye)
+        out += ",0";
+        out.append(4 + 2 * 12, ',');
+        return;
+    }
+    char text[96];
+    std::snprintf(text, sizeof(text), ",1,%.6f,%.6f,%.6f,%.6f", raw.pair[0], raw.pair[1], raw.pair[2], raw.pair[3]);
+    out += text;
+    for (const RawEye& e : raw.eye) {
+        if (!e.present) {
+            out += ",0";
+            out.append(11, ',');
+            continue;
+        }
+        std::snprintf(text, sizeof(text), ",1,%llu", static_cast<unsigned long long>(e.frameNs));
+        out += text;
+        if (e.pupil) {
+            std::snprintf(text, sizeof(text), ",%.3f,%.3f", e.pupilX, e.pupilY);
+            out += text;
+        } else {
+            out += ",,";
+        }
+        std::snprintf(text, sizeof(text), ",%d", e.tracked ? 1 : 0);
+        out += text;
+        if (e.templated) {
+            std::snprintf(text, sizeof(text), ",%u,%llu", e.templateId, static_cast<unsigned long long>(e.templateNs));
+            out += text;
+        } else {
+            out += ",0,";
+        }
+        std::snprintf(text, sizeof(text), ",%.3f,%.3f,%u,%u,%u", e.slipX, e.slipY, e.matches, e.sinceGood, e.glints);
+        out += text;
+    }
 }
 
 void targetGaze(const Position& position, double out[2]) {
@@ -469,17 +578,21 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
 std::string samplesCsv(const std::vector<Row>& rows, Order order) {
     std::string out =
         "panel_s,unix,order,run_index,position,scored,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,before_smoothing,"
-        "valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right\n";
+        "valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right";
+    out += rawCsvHeader();
+    out += '\n';
     char line[320];
     for (const Row& r : rows) {
         const Sample& s = r.sample;
-        std::snprintf(line, sizeof(line), "%.4f,%.3f,%s,%d,%d,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n",
+        std::snprintf(line, sizeof(line), "%.4f,%.3f,%s,%d,%d,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f",
                       r.at, r.wall, orderName(order), r.position < 0 ? -1 : placeAt(order, r.position), r.position, r.scored ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
                       s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.pupilBlending ? 1 : 0,
                       s.beforeSmoothing ? 1 : 0, s.valve[0],
                       s.valve[1], s.pupil[0],
                       s.pupil[1], s.openness[0], s.openness[1]);
         out += line;
+        appendRawCsv(out, s.raw);
+        out += '\n';
     }
     return out;
 }
@@ -551,6 +664,7 @@ bool Receiver::open(const std::string& path, std::string& error) {
 }
 
 void Receiver::close() {
+    rawWaiting_ = false;
     if (fd_ < 0) return;
     ::close(fd_);
     ::unlink(path_.c_str());
@@ -560,12 +674,21 @@ void Receiver::close() {
 size_t Receiver::poll(std::vector<Sample>& out) {
     if (fd_ < 0) return 0;
     size_t added = 0;
-    uint8_t buffer[kSampleSize + 8];
+    uint8_t buffer[kRawSize + 8];
     for (;;) {
         const ssize_t n = ::recv(fd_, buffer, sizeof(buffer), 0);
         if (n < 0) break;  // EAGAIN: nothing more waiting
+        // A sample's raw values come just before it: kept for the sample of the same time
+        double time = 0.0;
+        if (decodeRaw(buffer, static_cast<size_t>(n), time, raw_)) {
+            rawWaiting_ = true;
+            rawTime_ = time;
+            continue;
+        }
         Sample sample;
         if (decode(buffer, static_cast<size_t>(n), sample)) {
+            if (rawWaiting_ && rawTime_ == sample.time) sample.raw = raw_;
+            rawWaiting_ = false;
             out.push_back(sample);
             ++added;
         }

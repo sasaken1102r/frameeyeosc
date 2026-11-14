@@ -1109,6 +1109,7 @@ struct UiText {
     const char* measurePlaceCenter;
     const char* measureBriefValve;   ///< the record list's line
     const char* measureBriefPupil;
+    const char* measureBriefGuarded;  ///< the guarded gaze (frameeyeosc's gaze_guard), only while it was there
     const char* measureBriefAnd;
     const char* kindMeasure;
     const char* measureOrderForward;  ///< the check's result: which way it went through the places

@@ -239,16 +239,21 @@ int dirIndex(Dir dir) {
 
 Result score(const std::vector<Row>& rows) {
     Result result;
-    std::vector<double> vx[kStepCount], vy[kStepCount], px[kStepCount], py[kStepCount];
+    std::vector<double> vx[kStepCount], vy[kStepCount], px[kStepCount], py[kStepCount], gx[kStepCount], gy[kStepCount];
     for (const Row& row : rows) {
         if (row.sample.mapped) result.mapped = true;
+        if (row.sample.guarded) result.guardSeen = true;
         if (!row.counted || row.step < 0 || row.step >= kStepCount) continue;
-        // Valve with both eyes open enough and not held (blinks left out); the pupils also only from both pupils and
-        // not while easing from another source
+        // Valve with both eyes open enough and not held (blinks left out), the guarded gaze on the same samples; the
+        // pupils also only from both pupils and not while easing from another source
         const gaze_measure::Sample& s = row.sample;
         if (!s.usable || s.valveHeld) continue;
         vx[row.step].push_back(s.valve[0] * 45.0);
         vy[row.step].push_back(s.valve[1] * 45.0);
+        if (s.guarded) {
+            gx[row.step].push_back(s.guard[0] * 45.0);
+            gy[row.step].push_back(s.guard[1] * 45.0);
+        }
         if (s.pupilState == gaze_measure::PupilState::Pupil && !s.pupilBlending) {
             px[row.step].push_back(s.pupil[0] * 45.0);
             py[row.step].push_back(s.pupil[1] * 45.0);
@@ -262,6 +267,9 @@ Result score(const std::vector<Row>& rows) {
         st.pupil.n = static_cast<int>(px[i].size());
         st.pupil.x = median(px[i]);
         st.pupil.y = median(py[i]);
+        st.guarded.n = static_cast<int>(gx[i].size());
+        st.guarded.x = median(gx[i]);
+        st.guarded.y = median(gy[i]);
     }
     // Each hold against the first still step (version 2), and against the steps right before and after it (version 1)
     const StepScore& still = result.steps[0];
@@ -294,12 +302,16 @@ Result score(const std::vector<Row>& rows) {
         if (moveOf(hold.pupil, still.pupil, none, dx, dy)) addRound(into->pupil, dx, dy);
         if (moveOf(hold.valve, before.valve, after.valve, dx, dy)) addRound(around->valve, dx, dy);
         if (moveOf(hold.pupil, before.pupil, after.pupil, dx, dy)) addRound(around->pupil, dx, dy);
+        if (moveOf(hold.guarded, still.guarded, none, dx, dy)) addRound(into->guarded, dx, dy);
+        if (moveOf(hold.guarded, before.guarded, after.guarded, dx, dy)) addRound(around->guarded, dx, dy);
     }
     double valveSum = 0.0;
     double pupilSum = 0.0;
+    double guardedSum = 0.0;
     for (MoveScore& m : result.pushes) {
         finishMove(m.valve);
         finishMove(m.pupil);
+        finishMove(m.guarded);
         if (m.valve.counts()) {
             valveSum += m.valve.size();
             ++result.valveDirs;
@@ -308,17 +320,24 @@ Result score(const std::vector<Row>& rows) {
             pupilSum += m.pupil.size();
             ++result.pupilDirs;
         }
+        if (m.guarded.counts()) {
+            guardedSum += m.guarded.size();
+            ++result.guardedDirs;
+        }
     }
     for (MoveScore& m : result.pushesAround) {
         finishMove(m.valve);
         finishMove(m.pupil);
+        finishMove(m.guarded);
     }
     for (MoveScore* m : {&result.widen, &result.squint, &result.widenAround, &result.squintAround}) {
         finishMove(m->valve);
         finishMove(m->pupil);
+        finishMove(m->guarded);
     }
     if (result.valveDirs > 0) result.valveMean = valveSum / result.valveDirs;
     if (result.pupilDirs > 0) result.pupilMean = pupilSum / result.pupilDirs;
+    if (result.guardedDirs > 0) result.guardedMean = guardedSum / result.guardedDirs;
     return result;
 }
 
@@ -459,6 +478,11 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
                                            "each straight-ahead step's off_still the same"));
     plan.set("move_around", JsonValue::makeString("(version 1's) a hold's median minus the mean of the medians of the "
                                                   "steps right before and after it (those that count)"));
+    if (result.guardSeen) {
+        plan.set("guarded", JsonValue::makeString("combined gaze as gaze_guard sends it (Valve's with the guard's "
+                                                  "offset), before smoothing and the gaze scale, on Valve's samples; "
+                                                  "valve is then Valve's own, without the guard"));
+    }
     root.set("plan", plan);
     JsonValue steps;
     steps.type = JsonValue::Type::Array;
@@ -488,6 +512,7 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
         v.set("pitch_deg", JsonValue::makeNumber(step.pitchDeg));
         v.set("valve", sourceJson(result.steps[i].valve));
         v.set("pupil", sourceJson(result.steps[i].pupil));
+        if (result.guardSeen) v.set("guarded", sourceJson(result.steps[i].guarded));
         // A straight-ahead step against the first still step (the same true gaze)
         if (straightAhead(step) && i > 0) {
             const auto offStill = [&](const SourceStep& hold, const SourceStep& still) {
@@ -501,6 +526,7 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
             off.type = JsonValue::Type::Object;
             off.set("valve", offStill(result.steps[i].valve, result.steps[0].valve));
             off.set("pupil", offStill(result.steps[i].pupil, result.steps[0].pupil));
+            if (result.guardSeen) off.set("guarded", offStill(result.steps[i].guarded, result.steps[0].guarded));
             v.set("off_still", off);
         }
         steps.items.push_back(v);
@@ -509,11 +535,12 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
     JsonValue moves;
     moves.type = JsonValue::Type::Object;
     const char* dirs[kDirCount] = {"push_up", "push_down", "push_left", "push_right"};
-    const auto both = [](const MoveScore& m) {
+    const auto both = [&result](const MoveScore& m) {
         JsonValue v;
         v.type = JsonValue::Type::Object;
         v.set("valve", moveJson(m.valve));
         v.set("pupil", moveJson(m.pupil));
+        if (result.guardSeen) v.set("guarded", moveJson(m.guarded));
         return v;
     };
     for (int d = 0; d < kDirCount; ++d) moves.set(dirs[d], both(result.pushes[d]));
@@ -532,6 +559,10 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
     summary.set("valve_directions", JsonValue::makeNumber(result.valveDirs, true));
     summary.set("pupil_mean_deg", number(result.pupilMean));
     summary.set("pupil_directions", JsonValue::makeNumber(result.pupilDirs, true));
+    if (result.guardSeen) {
+        summary.set("guarded_mean_deg", number(result.guardedMean));
+        summary.set("guarded_directions", JsonValue::makeNumber(result.guardedDirs, true));
+    }
     root.set("summary", summary);
     JsonValue video;
     video.type = JsonValue::Type::Object;
@@ -552,7 +583,8 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
 std::string samplesCsv(const std::vector<Row>& rows, const double* shownAt) {
     std::string out =
         "panel_s,unix,step,step_name,step_s,counted,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,"
-        "before_smoothing,valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right\n";
+        "before_smoothing,valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right," +
+        std::string(gaze_measure::kGuardColumns) + "\n";
     char line[360];
     for (const Row& r : rows) {
         const gaze_measure::Sample& s = r.sample;
@@ -560,12 +592,13 @@ std::string samplesCsv(const std::vector<Row>& rows, const double* shownAt) {
         const std::string name = known ? stepName(kSteps[r.step]) : "";
         const double into = known && shownAt != nullptr ? r.at - shownAt[r.step] : NAN;
         std::snprintf(line, sizeof(line),
-                      "%.4f,%.3f,%d,%s,%.3f,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n", r.at, r.wall,
+                      "%.4f,%.3f,%d,%s,%.3f,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,", r.at, r.wall,
                       r.step, name.c_str(), into, r.counted ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
                       s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.pupilBlending ? 1 : 0,
                       s.beforeSmoothing ? 1 : 0, s.valve[0], s.valve[1], s.pupil[0], s.pupil[1], s.openness[0],
                       s.openness[1]);
         out += line;
+        out += gaze_measure::guardCells(s) + "\n";
     }
     return out;
 }
@@ -576,6 +609,10 @@ std::string briefText(const UiText& t, const Result& result) {
     if (result.pupilDirs > 0) {
         if (!out.empty()) out += t.measureBriefAnd;
         out += fill(t.measureBriefPupil, oneDecimal(result.pupilMean));
+    }
+    if (result.guardedDirs > 0) {
+        if (!out.empty()) out += t.measureBriefAnd;
+        out += fill(t.measureBriefGuarded, oneDecimal(result.guardedMean));
     }
     return out;
 }

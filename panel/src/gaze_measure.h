@@ -10,7 +10,10 @@
 // clock times both. Only the samples from kSettleSec after a hop to the next hop count (the eyes have arrived), and
 // only while both eyes are open enough. Valve is scored twice: on exactly the samples the pupils were scored on (both
 // pupils, not easing from another source), its main number while a map is there so the two compare like with like,
-// and on every counted sample. Nothing here talks to OpenVR or cairo (measure-test).
+// and on every counted sample. With frameeyeosc's gaze guard on (gaze_guard), Valve's gaze is its own, without the
+// guard, and the guarded gaze (what gaze_guard sends) comes with each sample in a datagram of its own just before it
+// ("FEOG"); it is scored on the same samples as Valve's, as a third source. Nothing here talks to OpenVR or cairo
+// (measure-test).
 #pragma once
 
 #include "i18n.h"
@@ -36,6 +39,15 @@ constexpr const char* kSocketName = "gaze-measure.sock";
  * 45°; both before the user's gaze scale), each eye's Valve openness (f32).
  */
 constexpr size_t kSampleSize = 40;
+/**
+ * The gaze guard's values for the next sample (version 1; frameeyeosc's gaze_guard, src/dots.rs "FEOG"), sent just
+ * before that sample's own datagram, little-endian: b"FEOG", 1, flags (bit 0 the witness was trusted, bit 1 both pupils
+ * gave the witness's gaze), 2 zero bytes, the sample time (f64, the same as its sample's), the guarded combined gaze x
+ * and y, the offset added to the left eye's gaze x and y and to the right eye's, the witness's gaze x and y (f32; 1.0 =
+ * 45°). A panel from before ignores it (another magic and size); a frameeyeosc from before, or one without the guard,
+ * sends none.
+ */
+constexpr size_t kGuardSize = 48;
 /** How many places the dot goes to. */
 constexpr int kPositionCount = 15;
 /** The countdown at the centre before the first place. */
@@ -110,6 +122,20 @@ struct Sample {
     float valve[2] = {0, 0};    ///< x, y; 1.0 = 45°
     float pupil[2] = {0, 0};    ///< x, y; meaningful while pupilState is Pupil
     float openness[2] = {NAN, NAN};
+    bool guarded = false;       ///< the gaze guard's values came with it (frameeyeosc's gaze_guard)
+    bool guardTrusted = false;  ///< ...its witness, the pupils, was trusted
+    float guard[2] = {0, 0};    ///< the guarded gaze, x, y; 1.0 = 45°
+    float guardOffset[4] = {0, 0, 0, 0};  ///< the offset added: the left eye's x, y, the right eye's x, y
+};
+
+/** The gaze guard's values for a sample (kGuardSize). */
+struct Guard {
+    double time = 0.0;          ///< the sample's time
+    bool trusted = false;
+    float gaze[2] = {0, 0};     ///< the guarded gaze
+    float offset[4] = {0, 0, 0, 0};
+    bool hasWitness = false;    ///< both pupils gave the witness's gaze
+    float witness[2] = {0, 0};
 };
 
 /**
@@ -120,6 +146,30 @@ struct Sample {
  * @return false if it is not one (of version 1) or its gaze isn't finite
  */
 bool decode(const uint8_t* data, size_t size, Sample& out);
+
+/**
+ * Read the gaze guard's values.
+ * @param data the bytes
+ * @param size how many
+ * @param out the values
+ * @return false if they are not that (of version 1) or the guarded gaze isn't finite
+ */
+bool decodeGuard(const uint8_t* data, size_t size, Guard& out);
+
+/**
+ * Write the gaze guard's values (for tests).
+ * @param guard the values
+ * @return the bytes
+ */
+std::vector<uint8_t> encodeGuard(const Guard& guard);
+
+/**
+ * Put the gaze guard's values on their sample: only when the times are the same (it came just before it).
+ * @param guard the values
+ * @param sample the sample
+ * @return true if they were put on it
+ */
+bool attachGuard(const Guard& guard, Sample& sample);
 
 /**
  * Write a sample (for tests).
@@ -169,6 +219,7 @@ struct PositionScore {
     SourceScore valve;                ///< Valve on every counted sample
     SourceScore valveSame;            ///< Valve on the samples the pupils were scored on
     SourceScore pupil;
+    SourceScore guarded;              ///< the guarded gaze (gaze_guard) on every counted sample that has it
     int window = 0;                   ///< samples in its window (from kSettleSec on)
     int states[kStateCount] = {};     ///< ...by the pupils' state
 };
@@ -191,6 +242,8 @@ struct Result {
     Overall valve;                    ///< Valve on every counted sample
     Overall valveSame;                ///< Valve on the pupils' samples (its main number while there is a map)
     Overall pupil;
+    bool guardSeen = false;           ///< samples came with the gaze guard's values (gaze_guard on)
+    Overall guarded;
     int window = 0;                   ///< samples in the windows
     int states[kStateCount] = {};
 };
@@ -329,6 +382,17 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
  */
 std::string samplesCsv(const std::vector<Row>& rows, Order order = Order::Forward);
 
+/** samples.csv's last columns, the gaze guard's (the slip test's samples.csv has them too): whether the sample had its
+ *  values, whether the witness was trusted, the guarded gaze x and y, the offset (left x, y, right x, y; 1.0 = 45°). */
+extern const char* const kGuardColumns;
+
+/**
+ * A sample's cells for kGuardColumns ("0" and empty ones without the guard's values).
+ * @param sample the sample
+ * @return the cells, without a line end
+ */
+std::string guardCells(const Sample& sample);
+
 /**
  * An offset in words: "左に 7.6°、上に 2.4°" / "7.6° left, 2.4° up" (a part under 0.05° left out).
  * @param t texts
@@ -347,10 +411,11 @@ std::string shiftText(const UiText& t, double dx, double dy);
 std::string positionText(const UiText& t, const Position& position);
 
 /**
- * A short line for the record list: "Valve 7.9°・瞳 1.3°" / "Valve 7.9°, pupil 1.3°".
+ * A short line for the record list: "Valve 7.9°・瞳 1.3°" / "Valve 7.9°, pupil 1.3°", and the guarded gaze's after
+ * them while it was there ("・見張り付き 1.5°" / ", guarded 1.5°").
  * @param t texts
  * @param result the scores
- * @return the line ("" if neither source counts)
+ * @return the line ("" if no source counts)
  */
 std::string briefText(const UiText& t, const Result& result);
 
@@ -386,6 +451,8 @@ public:
 private:
     int fd_ = -1;
     std::string path_;
+    Guard pending_;               ///< the gaze guard's values read last, for the sample after them
+    bool hasPending_ = false;
 };
 
 }  // namespace gaze_measure

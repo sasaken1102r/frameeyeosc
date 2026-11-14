@@ -1116,6 +1116,7 @@ UiText makeJapanese() {
     t.measurePlaceCenter = "真ん中";
     t.measureBriefValve = "Valve %s°";
     t.measureBriefPupil = "瞳 %s°";
+    t.measureBriefGuarded = "見張り付き %s°";
     t.measureBriefAnd = "・";
     t.kindMeasure = "視線のズレ測定";
     t.measureOrderForward = "順番: ふつう";
@@ -2416,6 +2417,7 @@ UiText makeEnglish() {
     t.measurePlaceCenter = "center";
     t.measureBriefValve = "Valve %s°";
     t.measureBriefPupil = "pupil %s°";
+    t.measureBriefGuarded = "guarded %s°";
     t.measureBriefAnd = ", ";
     t.kindMeasure = "Gaze error check";
     t.measureOrderForward = "Order: forward";

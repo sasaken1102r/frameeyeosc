@@ -55,6 +55,7 @@ struct Simulation {
     double stopAt = -1.0;   ///< stop this many seconds in (-1: run to the end)
     double silentFrom = -1.0;  ///< no samples from this many seconds in
     double stays = 0.0;     ///< how much of a push's slip stays through its let-go step (the headset not pushed back)
+    bool guarded = false;   ///< frameeyeosc's gaze guard on: Valve's gaze with its 2° to the left taken out
 
     /**
      * The sample for the step shown now.
@@ -101,6 +102,15 @@ struct Simulation {
             s.pupilState = gaze_measure::PupilState::Pupil;
             s.pupil[0] = static_cast<float>(p[0] / 45);
             s.pupil[1] = static_cast<float>(p[1] / 45);
+        }
+        if (guarded) {
+            gaze_measure::Guard g;
+            g.time = s.time;
+            g.trusted = true;
+            g.gaze[0] = static_cast<float>((v[0] + 2.0) / 45);
+            g.gaze[1] = s.valve[1];
+            g.offset[0] = g.offset[2] = static_cast<float>(2.0 / 45);
+            gaze_measure::attachGuard(g, s);
         }
         return s;
     }
@@ -308,6 +318,46 @@ void testStays() {
     CHECK(near(r.pupilMean, (3.0 + 2.5 + 2.0 + 3.3) / 4, 1e-4));
 }
 
+/** frameeyeosc's gaze guard on: the guarded gaze scored as a third source, on Valve's samples. */
+void testGuarded() {
+    Simulation sim;
+    sim.guarded = true;
+    sim.run();
+    const Result& r = sim.session.view().result;
+    CHECK(r.guardSeen && r.guardedDirs == kDirCount && r.steps[0].guarded.n == r.steps[0].valve.n);
+    // Valve's 2° to the left taken out; while pushed it moves as Valve's does
+    CHECK(near(r.steps[0].guarded.x, 0.0, 1e-4) && near(r.steps[0].valve.x, -2.0, 1e-4));
+    for (int d = 0; d < kDirCount; ++d) {
+        CHECK(near(r.pushes[d].guarded.dx, kValveSlip[d][0], 1e-4) && near(r.pushes[d].guarded.dy, kValveSlip[d][1], 1e-4));
+    }
+    CHECK(near(r.guardedMean, r.valveMean, 1e-6));
+    CHECK(briefText(uiText(Language::Ja), r) == "Valve 0.4°・瞳 2.7°・見張り付き 0.4°");
+    CHECK(briefText(uiText(Language::En), r) == "Valve 0.4°, pupil 2.7°, guarded 0.4°");
+    JsonValue root;
+    std::string error;
+    CHECK(parseJson(recordJson(sim.session.view(), sim.session.rows(), sim.session.shownAt(), sim.session.shownUnix(),
+                               sim.session.startedAt(), r),
+                    root, error));
+    const JsonValue* summary = root.get("summary");
+    CHECK(summary != nullptr && summary->get("guarded_mean_deg") != nullptr &&
+          near(summary->get("guarded_directions")->number, kDirCount));
+    const JsonValue* up = root.get("moves") != nullptr ? root.get("moves")->get("push_up") : nullptr;
+    CHECK(up != nullptr && up->get("guarded") != nullptr && near(up->get("guarded")->get("dy_deg")->number, 0.3, 1e-3));
+    CHECK(root.get("steps")->items[10].get("off_still")->get("guarded") != nullptr);
+    const std::string csv = samplesCsv(sim.session.rows(), sim.session.shownAt());
+    CHECK(csv.find(",openness_right,guarded,guard_trusted,guarded_x,") != std::string::npos);
+    // Without it: none of it in the record
+    Simulation plain;
+    plain.run();
+    const Result& p = plain.session.view().result;
+    CHECK(!p.guardSeen && p.guardedDirs == 0 && !std::isfinite(p.guardedMean));
+    CHECK(parseJson(recordJson(plain.session.view(), plain.session.rows(), plain.session.shownAt(),
+                               plain.session.shownUnix(), plain.session.startedAt(), p),
+                    root, error));
+    CHECK(root.get("summary")->get("guarded_mean_deg") == nullptr && root.get("plan")->get("guarded") == nullptr);
+    CHECK(root.get("moves")->get("push_up")->get("guarded") == nullptr);
+}
+
 void testWithoutMap() {
     Simulation sim;
     sim.mapped = false;
@@ -357,6 +407,7 @@ int main() {
     testTicks();
     testWholeRun();
     testStays();
+    testGuarded();
     testWithoutMap();
     testStopAndNoData();
     if (gFailures == 0) std::printf("slip-test: all passed\n");

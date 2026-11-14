@@ -463,9 +463,108 @@ void testSocket() {
     send(std::vector<uint8_t> {1, 2, 3});
     // Every sample waiting, in order, the junk left out
     CHECK(receiver.poll(got) == 3 && got.size() == 3 && got[0].time == 1 && got[2].time == 3);
+    CHECK(!got[0].guarded && !got[2].guarded);
+    // The gaze guard's values come just before their sample: put on it; on another one's (another time), not; and
+    // they don't count as a sample themselves
+    Guard guard;
+    guard.time = 4;
+    guard.trusted = true;
+    guard.gaze[0] = 0.25f;
+    guard.offset[2] = -0.125f;
+    send(encodeGuard(guard));
+    Sample s;
+    s.time = 4;
+    send(encode(s));
+    guard.time = 9;
+    send(encodeGuard(guard));
+    s.time = 5;
+    send(encode(s));
+    send(encode(s));
+    got.clear();
+    CHECK(receiver.poll(got) == 3 && got.size() == 3);
+    CHECK(got[0].guarded && got[0].guardTrusted && got[0].guard[0] == 0.25f && got[0].guardOffset[2] == -0.125f);
+    CHECK(!got[1].guarded && !got[2].guarded);
     ::close(sender);
     receiver.close();
     CHECK(::access(path.c_str(), F_OK) != 0);
+}
+
+void testGuard() {
+    // The datagram: the same bytes frameeyeosc writes (src/dots.rs, the_guard_datagram_reads_back_and_is_no_other)
+    Guard guard;
+    guard.time = 19892.729813125;
+    guard.trusted = true;
+    guard.gaze[0] = 0.125f;
+    guard.gaze[1] = -0.25f;
+    guard.offset[0] = -0.375f;
+    guard.offset[1] = 0.0625f;
+    guard.offset[2] = -0.3125f;
+    guard.hasWitness = true;
+    guard.witness[0] = 0.1f;
+    guard.witness[1] = -0.2f;
+    const std::vector<uint8_t> bytes = encodeGuard(guard);
+    CHECK(bytes.size() == kGuardSize && kGuardSize == 48);
+    CHECK(std::memcmp(bytes.data(), "FEOG\x01\x03\x00\x00", 8) == 0);
+    Guard read;
+    CHECK(decodeGuard(bytes.data(), bytes.size(), read));
+    CHECK(read.time == guard.time && read.trusted && read.hasWitness && read.gaze[1] == -0.25f);
+    CHECK(read.offset[2] == -0.3125f && read.witness[1] == -0.2f);
+    // Not a sample, nor a sample this; another version or size, or the guarded gaze not a number: ignored
+    Sample sample;
+    CHECK(!decode(bytes.data(), bytes.size(), sample) && !decode(bytes.data(), kSampleSize, sample));
+    CHECK(!decodeGuard(encode(sample).data(), kSampleSize, read));
+    std::vector<uint8_t> wrong = bytes;
+    wrong[4] = 2;
+    CHECK(!decodeGuard(wrong.data(), wrong.size(), read) && !decodeGuard(bytes.data(), bytes.size() - 1, read));
+    const uint8_t nan[4] = {0, 0, 0xc0, 0x7f};
+    wrong = bytes;
+    std::memcpy(wrong.data() + 16, nan, 4);
+    CHECK(!decodeGuard(wrong.data(), wrong.size(), read));
+    // Scored as a third source on Valve's samples: here the guard has taken Valve's 7.6° sideways out
+    Simulation sim;
+    sim.session.start(sim.now, 0);
+    const double dt = 1.0 / 90;
+    while (sim.now < 100.0 + kRunSec + 1.0) {
+        sim.session.tick(sim.now, sim.now);
+        if (sim.session.active()) {
+            Sample s = sim.sampleAt(sim.now);
+            Guard g;
+            g.time = s.time;
+            g.gaze[0] = static_cast<float>(s.valve[0] + 7.6 / 45);
+            g.gaze[1] = s.valve[1];
+            g.offset[0] = g.offset[2] = static_cast<float>(7.6 / 45);
+            attachGuard(g, s);
+            sim.session.add(sim.now + 0.002, sim.now, s);
+        }
+        sim.now += dt;
+    }
+    const Result& r = sim.session.view().result;
+    CHECK(r.guardSeen && r.guarded.positions == kPositionCount);
+    // (place 3, where Valve is 15° off, stays 7.4° off)
+    CHECK(near(r.positions[0].guarded.dx, 0.0, 0.05) && near(r.positions[0].valve.dx, -7.6, 0.05));
+    CHECK(r.positions[0].guarded.n == r.positions[0].valve.n);
+    CHECK(near(r.positions[3].guarded.dx, -7.4, 0.05));
+    JsonValue root;
+    std::string error;
+    CHECK(parseJson(recordJson(sim.session.view(), sim.session.shownAt(), sim.session.startedAt(), r), root, error));
+    CHECK(root.get("guarded") != nullptr && root.get("plan")->get("guarded") != nullptr);
+    CHECK(root.get("positions")->items[0].get("guarded")->get("n")->number == r.positions[0].guarded.n);
+    const std::string csv = samplesCsv(sim.session.rows());
+    CHECK(csv.find(",openness_right,guarded,guard_trusted,guarded_x,guarded_y,guard_offset_left_x,") != std::string::npos);
+    CHECK(csv.find(",1,0,") != std::string::npos);
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    CHECK(briefText(ja, r).find("・見張り付き ") != std::string::npos && briefText(en, r).find(", guarded ") != std::string::npos);
+    // Without the guard: none of it in the record, and empty cells
+    Simulation plain;
+    plain.session.start(plain.now, 0);
+    plain.run(100.0 + kRunSec + 1.0);
+    const Result& p = plain.session.view().result;
+    CHECK(!p.guardSeen && p.guarded.positions == 0);
+    CHECK(parseJson(recordJson(plain.session.view(), plain.session.shownAt(), plain.session.startedAt(), p), root, error));
+    CHECK(root.get("guarded") == nullptr && root.get("plan")->get("guarded") == nullptr);
+    CHECK(samplesCsv(plain.session.rows()).find(",0,,,,,,,\n") != std::string::npos);
+    CHECK(briefText(en, p).find("guarded") == std::string::npos);
 }
 
 }  // namespace
@@ -484,6 +583,7 @@ int main() {
     testStopAndNoData();
     testTexts();
     testSocket();
+    testGuard();
     if (gFailures == 0) std::printf("measure-test: all passed\n");
     return gFailures == 0 ? 0 : 1;
 }

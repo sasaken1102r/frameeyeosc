@@ -23,6 +23,10 @@ constexpr uint8_t kUsable = 2;
 constexpr uint8_t kValveHeld = 4;
 constexpr uint8_t kPupilBlending = 8;
 constexpr uint8_t kBeforeSmoothing = 16;
+constexpr uint8_t kGuardMagic[4] = {'F', 'E', 'O', 'G'};
+constexpr uint8_t kGuardVersion = 1;
+constexpr uint8_t kGuardTrusted = 1;
+constexpr uint8_t kGuardWitness = 2;
 constexpr double kDeg = M_PI / 180.0;
 
 /**
@@ -189,6 +193,41 @@ std::vector<uint8_t> encode(const Sample& sample) {
     return data;
 }
 
+bool decodeGuard(const uint8_t* data, size_t size, Guard& out) {
+    if (size != kGuardSize || std::memcmp(data, kGuardMagic, 4) != 0 || data[4] != kGuardVersion) return false;
+    Guard g;
+    g.trusted = (data[5] & kGuardTrusted) != 0;
+    g.hasWitness = (data[5] & kGuardWitness) != 0;
+    std::memcpy(&g.time, data + 8, 8);
+    std::memcpy(g.gaze, data + 16, 8);
+    std::memcpy(g.offset, data + 24, 16);
+    std::memcpy(g.witness, data + 40, 8);
+    if (!std::isfinite(g.gaze[0]) || !std::isfinite(g.gaze[1])) return false;
+    out = g;
+    return true;
+}
+
+std::vector<uint8_t> encodeGuard(const Guard& guard) {
+    std::vector<uint8_t> data(kGuardSize, 0);
+    std::memcpy(data.data(), kGuardMagic, 4);
+    data[4] = kGuardVersion;
+    data[5] = static_cast<uint8_t>((guard.trusted ? kGuardTrusted : 0) | (guard.hasWitness ? kGuardWitness : 0));
+    std::memcpy(data.data() + 8, &guard.time, 8);
+    std::memcpy(data.data() + 16, guard.gaze, 8);
+    std::memcpy(data.data() + 24, guard.offset, 16);
+    if (guard.hasWitness) std::memcpy(data.data() + 40, guard.witness, 8);
+    return data;
+}
+
+bool attachGuard(const Guard& guard, Sample& sample) {
+    if (guard.time != sample.time) return false;
+    sample.guarded = true;
+    sample.guardTrusted = guard.trusted;
+    std::memcpy(sample.guard, guard.gaze, sizeof(sample.guard));
+    std::memcpy(sample.guardOffset, guard.offset, sizeof(sample.guardOffset));
+    return true;
+}
+
 void targetGaze(const Position& position, double out[2]) {
     // The place as the eye fit's target is put (VrOverlay::showTarget): along (sin yaw cos pitch, sin pitch,
     // -cos yaw cos pitch) from between the eyes; its gaze angles are sideways and up over the forward distance
@@ -223,12 +262,14 @@ Result score(const std::vector<Row>& rows) {
     std::vector<double> vdx[kPositionCount], vdy[kPositionCount], verr[kPositionCount];
     std::vector<double> pdx[kPositionCount], pdy[kPositionCount], perr[kPositionCount];
     std::vector<double> sdx[kPositionCount], sdy[kPositionCount], serr[kPositionCount];
+    std::vector<double> gdx[kPositionCount], gdy[kPositionCount], gerr[kPositionCount];
     for (int i = 0; i < kPositionCount; ++i) {
         result.positions[i].target = kPositions[i];
         targetGaze(kPositions[i], result.positions[i].gaze);
     }
     for (const Row& row : rows) {
         if (row.sample.mapped) result.mapped = true;
+        if (row.sample.guarded) result.guardSeen = true;
         if (!row.scored || row.position < 0 || row.position >= kPositionCount) continue;
         PositionScore& p = result.positions[row.position];
         const int state = static_cast<int>(row.sample.pupilState);
@@ -242,6 +283,13 @@ Result score(const std::vector<Row>& rows) {
         vdx[row.position].push_back(valve[0] - p.gaze[0]);
         vdy[row.position].push_back(valve[1] - p.gaze[1]);
         verr[row.position].push_back(angleBetween(valve, p.gaze));
+        // The guarded gaze (gaze_guard) on the same samples as Valve's
+        if (row.sample.guarded) {
+            const double guarded[2] = {row.sample.guard[0] * 45.0, row.sample.guard[1] * 45.0};
+            gdx[row.position].push_back(guarded[0] - p.gaze[0]);
+            gdy[row.position].push_back(guarded[1] - p.gaze[1]);
+            gerr[row.position].push_back(angleBetween(guarded, p.gaze));
+        }
         // The pupils only from both pupils and not while easing from another source; Valve again on exactly those
         if (row.sample.pupilState == PupilState::Pupil && !row.sample.pupilBlending) {
             const double pupil[2] = {row.sample.pupil[0] * 45.0, row.sample.pupil[1] * 45.0};
@@ -257,10 +305,12 @@ Result score(const std::vector<Row>& rows) {
         result.positions[i].valve = scoreOf(vdx[i], vdy[i], verr[i]);
         result.positions[i].valveSame = scoreOf(sdx[i], sdy[i], serr[i]);
         result.positions[i].pupil = scoreOf(pdx[i], pdy[i], perr[i]);
+        result.positions[i].guarded = scoreOf(gdx[i], gdy[i], gerr[i]);
     }
     result.valve = overallOf(result, &PositionScore::valve);
     result.valveSame = overallOf(result, &PositionScore::valveSame);
     result.pupil = overallOf(result, &PositionScore::pupil);
+    result.guarded = overallOf(result, &PositionScore::guarded);
     return result;
 }
 
@@ -404,6 +454,11 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
     plan.set("counted", JsonValue::makeString("samples with both eyes open enough, from settle_s after the hop"));
     plan.set("valve_same", JsonValue::makeString("Valve on exactly the samples the pupils were scored on (both pupils, "
                                                  "not easing from another source)"));
+    if (result.guardSeen) {
+        plan.set("guarded", JsonValue::makeString("combined gaze as gaze_guard sends it (Valve's with the guard's "
+                                                  "offset), before smoothing and the gaze scale, on Valve's samples; "
+                                                  "valve is then Valve's own, without the guard"));
+    }
     root.set("plan", plan);
     const auto source = [](const SourceScore& s) {
         JsonValue v;
@@ -438,6 +493,7 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
         v.set("valve", source(p.valve));
         v.set("valve_same", source(p.valveSame));
         v.set("pupil", source(p.pupil));
+        if (result.guardSeen) v.set("guarded", source(p.guarded));
         positions.items.push_back(v);
     }
     root.set("positions", positions);
@@ -457,6 +513,7 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
     root.set("valve_same", overall(result.valveSame));
     root.set("valve_main", JsonValue::makeString(valveSameMain(result) ? "valve_same" : "valve"));
     root.set("pupil", overall(result.pupil));
+    if (result.guardSeen) root.set("guarded", overall(result.guarded));
     JsonValue states;
     states.type = JsonValue::Type::Object;
     for (int s = 0; s < kStateCount; ++s) states.set(stateNames[s], JsonValue::makeNumber(result.states[s], true));
@@ -469,19 +526,33 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
 std::string samplesCsv(const std::vector<Row>& rows, Order order) {
     std::string out =
         "panel_s,unix,order,run_index,position,scored,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,before_smoothing,"
-        "valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right\n";
+        "valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right," + std::string(kGuardColumns) + "\n";
     char line[320];
     for (const Row& r : rows) {
         const Sample& s = r.sample;
-        std::snprintf(line, sizeof(line), "%.4f,%.3f,%s,%d,%d,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f\n",
+        std::snprintf(line, sizeof(line), "%.4f,%.3f,%s,%d,%d,%d,%.6f,%d,%d,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.4f,%.4f,",
                       r.at, r.wall, orderName(order), r.position < 0 ? -1 : placeAt(order, r.position), r.position, r.scored ? 1 : 0, s.time, s.mapped ? 1 : 0, s.usable ? 1 : 0,
                       s.valveHeld ? 1 : 0, static_cast<int>(s.pupilState), s.pupilBlending ? 1 : 0,
                       s.beforeSmoothing ? 1 : 0, s.valve[0],
                       s.valve[1], s.pupil[0],
                       s.pupil[1], s.openness[0], s.openness[1]);
         out += line;
+        out += guardCells(s) + "\n";
     }
     return out;
+}
+
+const char* const kGuardColumns =
+    "guarded,guard_trusted,guarded_x,guarded_y,guard_offset_left_x,guard_offset_left_y,guard_offset_right_x,"
+    "guard_offset_right_y";
+
+std::string guardCells(const Sample& sample) {
+    if (!sample.guarded) return "0,,,,,,,";
+    char cells[160];
+    std::snprintf(cells, sizeof(cells), "1,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f", sample.guardTrusted ? 1 : 0,
+                  sample.guard[0], sample.guard[1], sample.guardOffset[0], sample.guardOffset[1], sample.guardOffset[2],
+                  sample.guardOffset[3]);
+    return cells;
 }
 
 std::string shiftText(const UiText& t, double dx, double dy) {
@@ -516,6 +587,10 @@ std::string briefText(const UiText& t, const Result& result) {
     if (result.pupil.positions > 0) {
         if (!out.empty()) out += t.measureBriefAnd;
         out += fill(t.measureBriefPupil, oneDecimal(result.pupil.error));
+    }
+    if (result.guarded.positions > 0) {
+        if (!out.empty()) out += t.measureBriefAnd;
+        out += fill(t.measureBriefGuarded, oneDecimal(result.guarded.error));
     }
     return out;
 }
@@ -560,12 +635,21 @@ void Receiver::close() {
 size_t Receiver::poll(std::vector<Sample>& out) {
     if (fd_ < 0) return 0;
     size_t added = 0;
-    uint8_t buffer[kSampleSize + 8];
+    uint8_t buffer[std::max(kSampleSize, kGuardSize) + 8];
     for (;;) {
         const ssize_t n = ::recv(fd_, buffer, sizeof(buffer), 0);
         if (n < 0) break;  // EAGAIN: nothing more waiting
+        // The gaze guard's values come just before their sample's datagram: kept for it
+        Guard guard;
+        if (decodeGuard(buffer, static_cast<size_t>(n), guard)) {
+            pending_ = guard;
+            hasPending_ = true;
+            continue;
+        }
         Sample sample;
         if (decode(buffer, static_cast<size_t>(n), sample)) {
+            if (hasPending_) attachGuard(pending_, sample);
+            hasPending_ = false;
             out.push_back(sample);
             ++added;
         }

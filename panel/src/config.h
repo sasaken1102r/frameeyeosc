@@ -139,6 +139,8 @@ constexpr const char* kGazeDebugRings = "gaze_debug_rings";
 constexpr const char* kGazeDebugDotsCompare = "gaze_debug_dots_compare";
 /** The headset's slip taken out of the pupil gaze (frameeyeosc's pupil_slip.rs; a test, edited by hand only). */
 constexpr const char* kPupilSlipCorrection = "pupil_slip_correction";
+/** Valve's gaze guarded by the pupils (frameeyeosc's gaze_guard.rs; a test, edited by hand only). */
+constexpr const char* kGazeGuard = "gaze_guard";
 /** The panel's own: play sound cues during the eye fit (frameeyeosc ignores it). */
 constexpr const char* kFitSounds = "fit_sounds";
 /** The panel's own: the fit run by itself when the headset is put on, "center" (the default) or "off" (see

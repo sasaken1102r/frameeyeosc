@@ -8,7 +8,8 @@
 // pushed, so its neighbours are no reference); for each push direction the result says how far each gaze was off
 // while held, the rounds averaged. The record also keeps the version 1 number (the hold minus the steps around it). Nothing is written to config.json and nothing frameeyeosc sends changes: the samples come on the gaze
 // error check's socket (gaze_measure.h: "FEOM", both gazes before smoothing and the gaze scale), bound only while the
-// test runs. Each sample is put to the step shown when it arrived, by the panel's own clock. The eye cameras'
+// test runs. With frameeyeosc's gaze guard on, the guarded gaze comes with them and is scored as a third source, on
+// Valve's samples. Each sample is put to the step shown when it arrived, by the panel's own clock. The eye cameras'
 // recording (eyecam-rec's "start free") is started and stopped by the panel's loop, not here; this only keeps what
 // the loop tells it about it. Nothing here talks to OpenVR or cairo (slip-test).
 #pragma once
@@ -125,6 +126,7 @@ struct SourceStep {
 struct StepScore {
     SourceStep valve;  ///< Valve's gaze: both eyes open enough, not held
     SourceStep pupil;  ///< the pupils' gaze: also both pupils, not easing from another source
+    SourceStep guarded;  ///< the guarded gaze (frameeyeosc's gaze_guard) on Valve's samples that have it
 };
 
 /** How far a source was off during a kind of hold (a push direction, widening, narrowing), its rounds averaged. */
@@ -140,6 +142,7 @@ struct Move {
 struct MoveScore {
     Move valve;
     Move pupil;
+    Move guarded;
 };
 
 /** The test's result. */
@@ -156,6 +159,9 @@ struct Result {
     double pupilMean = NAN;
     int valveDirs = 0;                 ///< ...how many
     int pupilDirs = 0;
+    bool guardSeen = false;            ///< samples came with the gaze guard's values (gaze_guard on)
+    double guardedMean = NAN;          ///< the guarded gaze's, as valveMean
+    int guardedDirs = 0;
 };
 
 /**

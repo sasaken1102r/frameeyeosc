@@ -5374,12 +5374,14 @@ int runOverlay(const Options& options) {
                 std::fprintf(stderr, "[fit] %s\n", line.c_str());
             }
             fitRetryShown = retry;
-            // With pupil_slip_correction on, a fit or re-center that wrote its centre has eyecam-rec take new glint
+            // With pupil_slip_correction or gaze_guard on (the guard's witness takes the slip out the same way), a fit
+            // or re-center that wrote its centre has eyecam-rec take new glint
             // templates at the next still moment (the eyes are likely on the centre dot now); the slip it carries on
             // from them (frameeyeosc's pupil_slip.rs). On a connection of its own, so its reply (an older eyecam-rec
             // doesn't know the command) is only logged, never shown on the Eye cameras tab; skipped while the one
             // before waits for its reply
-            if (ended.phase == gaze_fit::Phase::Done && model.config.flag(key::kPupilSlipCorrection) &&
+            if (ended.phase == gaze_fit::Phase::Done &&
+                (model.config.flag(key::kPupilSlipCorrection) || model.config.flag(key::kGazeGuard)) &&
                 model.eyecam.visible) {
                 const std::string socket = model.eyecamDir + "/ctl.sock";
                 if (glintControl.busy()) {

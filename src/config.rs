@@ -469,6 +469,10 @@ pub struct Settings {
     /// Take the headset's slip, as eyecam-rec sees it in the glints, out of the pupil gaze (pupil_slip.rs; a test).
     /// Off: the pupil gaze exactly as before. Not a command-line option.
     pub pupil_slip_correction: bool,
+    /// With gaze_source "valve" and a pupil map for both eyes: Valve's gaze with a guard from the pupils (gaze_guard.rs;
+    /// a test): a step Valve's gaze makes by itself, while the pupils and the glints say neither the eyes nor the
+    /// headset moved, is taken back out. Off: Valve's gaze exactly as before. Not a command-line option.
+    pub gaze_guard: bool,
     /// Each eye's Frame openness measured by the panel's eye fit: eyes shut, and open while looking
     /// up, straight ahead and down. None until fitted; see `lid_fit`. Not command-line options.
     pub lid_fit_closed_left: Option<f32>,
@@ -586,6 +590,7 @@ impl Default for Settings {
             gaze_debug_dots: false,
             gaze_debug_dots_compare: false,
             pupil_slip_correction: false,
+            gaze_guard: false,
             lid_fit_closed_left: None,
             lid_fit_closed_right: None,
             lid_fit_up_left: None,
@@ -1347,6 +1352,10 @@ mod tests {
         assert!(!merged("{}", &[]).unwrap().0.pupil_slip_correction);
         assert!(merged(r#"{"pupil_slip_correction": true}"#, &[]).unwrap().0.pupil_slip_correction);
         assert!(merged(r#"{"pupil_slip_correction": "on"}"#, &[]).is_err());
+        // The gaze guard: off unless set, a bool
+        assert!(!merged("{}", &[]).unwrap().0.gaze_guard);
+        assert!(merged(r#"{"gaze_guard": true}"#, &[]).unwrap().0.gaze_guard);
+        assert!(merged(r#"{"gaze_guard": 1}"#, &[]).is_err());
     }
 
     #[test]

@@ -8,6 +8,7 @@ mod eyecam_ctl;
 mod eyecam_live;
 mod extras;
 mod feo;
+mod gaze_guard;
 mod livelink;
 mod osc;
 mod pupil;
@@ -1103,8 +1104,13 @@ struct Smoother {
     pupil_seen: [PupilSeen; 2],
     // The gaze from the pupils (gaze_source "pupil" with a map; see pupil.rs).
     pupil: pupil::PupilGaze,
-    // The headset's slip taken out of the pupil pairs first (pupil_slip_correction)
+    // The headset's slip taken out of the pupil pairs first (pupil_slip_correction; and for the gaze guard's witness)
     slip: pupil_slip::SlipCorrection,
+    // Valve's gaze guarded by the pupils (gaze_guard; see gaze_guard.rs). Not reset with the filters: what it absorbed
+    // belongs to Valve's self-calibration, not to one stretch of tracking.
+    guard: gaze_guard::GazeGuard,
+    // Valve's combined gaze without the guard's offset, held like measure_held (the panel's checks score it as Valve's)
+    guard_measure_held: Option<[f32; 2]>,
 }
 
 impl Smoother {
@@ -1137,6 +1143,8 @@ impl Smoother {
             pupil_seen: [PupilSeen::default(); 2],
             pupil: pupil::PupilGaze::default(),
             slip: pupil_slip::SlipCorrection::default(),
+            guard: gaze_guard::GazeGuard::default(),
+            guard_measure_held: None,
         }
     }
 
@@ -1256,6 +1264,7 @@ impl Smoother {
         self.last_time = None;
         self.last_gaze = [None; 3];
         self.measure_held = None;
+        self.guard_measure_held = None;
         self.lid_vertical = None;
         self.one_eye_low = OneEyeLow::default();
         self.seen_open = [false; 2];
@@ -3787,6 +3796,22 @@ struct Sample {
     measure_gaze: [f32; 2],
     // ...held there (the eyes shut, or both unreliable).
     measure_held: bool,
+    // What the gaze guard did (gaze_guard on, gaze_source "valve", a pupil map for both eyes); None otherwise.
+    guard: Option<GuardSample>,
+}
+
+/// What the gaze guard did for a sample (see gaze_guard.rs).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GuardSample {
+    // The offset added to each eye's gaze (degrees; their mean to the combined gaze).
+    offset: [[f32; 2]; 2],
+    // The witness was trusted.
+    trusted: bool,
+    // The pupils' combined gaze it saw (degrees), when both were there.
+    witness: Option<[f32; 2]>,
+    // Valve's combined gaze without the offset, as measure_gaze has the gaze sent (-1..1, before smoothing, held while
+    // the eyes are shut): what the panel's checks score as Valve's.
+    valve_measure: [f32; 2],
 }
 
 impl Sample {
@@ -3857,15 +3882,30 @@ fn compare_dot_of(settings: &Settings, data: &EyeData, other: &Sample) -> dots::
 /// out but before any smoothing and the user's gaze scale (Sample::measure_gaze: the same with smoothing on or off),
 /// one from the sample sent (`sample`) and the other from the other source's run
 /// (`other`, None without pupil maps: then only Valve's, which the sample sent is), with whether the sample counts
-/// (both eyes open enough, as the eye fit's captures count them).
-fn measure_sample(settings: &Settings, data: &EyeData, sample: &Sample, other: Option<&Sample>) -> dots::MeasureSample {
+/// (both eyes open enough, as the eye fit's captures count them). With the gaze guard on the Valve run (gaze_guard.rs),
+/// Valve's is its own gaze without the guard's offset, and the guard's values come with it (the guarded gaze, each eye's
+/// offset, the witness; dots.rs "FEOG").
+fn measure_sample(
+    settings: &Settings,
+    data: &EyeData,
+    sample: &Sample,
+    other: Option<&Sample>,
+) -> (dots::MeasureSample, Option<dots::GuardMeasure>) {
     let pupil_sent = other.is_some() && settings.gaze_source == config::GazeSource::Pupil;
     let (valve, pupil) = match other {
         Some(other) if pupil_sent => (other, Some(sample)),
         Some(other) => (sample, Some(other)),
         None => (sample, None),
     };
-    let combined = |run: &Sample| run.measure_gaze;
+    let to_scale = |degrees: [f32; 2]| degrees.map(|degrees| degrees / 45.0);
+    let guard = valve.guard.map(|guard| dots::GuardMeasure {
+        time: data.sample_time,
+        trusted: guard.trusted,
+        guarded: valve.measure_gaze,
+        offset: guard.offset.map(to_scale),
+        witness: guard.witness.map(to_scale),
+    });
+    let combined = |run: &Sample| run.guard.map_or(run.measure_gaze, |guard| guard.valve_measure);
     // (InUse's order, from 1; 0 without a map)
     let state = pupil.map_or(0, |run| match run.gaze_in_use {
         Some(pupil::InUse::Pupil) => 1,
@@ -3875,7 +3915,7 @@ fn measure_sample(settings: &Settings, data: &EyeData, sample: &Sample, other: O
         Some(pupil::InUse::Valve) => 5,
         None => 0,
     });
-    dots::MeasureSample {
+    let measure = dots::MeasureSample {
         time: data.sample_time,
         mapped: pupil.is_some(),
         usable: sample.capture_usable(),
@@ -3886,7 +3926,8 @@ fn measure_sample(settings: &Settings, data: &EyeData, sample: &Sample, other: O
         valve: combined(valve),
         pupil: pupil.map_or([0.0; 2], combined),
         openness: data.openness,
-    }
+    };
+    (measure, guard)
 }
 
 /// Per-eye multipliers as lid_inputs applies them. An unfitted eye: the fixed one, else the learned one, else 1.
@@ -3955,6 +3996,7 @@ fn process(
     // Where the gaze came from with gaze_source "pupil" and a map (None: the eye server's gaze as always)
     let mut gaze_in_use = None;
     let mut gaze_blending = false;
+    let guard;
     let (gaze, unscaled_gaze, lids, gaze_held, openness_scaled, camera, lid_from, close_held, brows, measure_gaze, measure_held) = {
         // Smoothing off (--raw) leaves out only the smoothing: the One-Euro filters and the gaze deadzone (the gaze is
         // still held while the eyes are shut), despike, the camera's squint and pupil smoothing and the brows' time
@@ -3983,6 +4025,12 @@ fn process(
         let open = !shut_for_gaze(data.openness, doubted, seen_open, settings);
         let trusted = usable_gaze.map(|usable| usable && open);
         let corrected = correct_gaze(smoother.hold_down_x(raw_gaze, trusted, settings), settings);
+        // gaze_guard (gaze_source "valve" with a pupil map for both eyes): Valve's gaze with the guard's offset added
+        // (gaze_guard.rs), the pupils with the headset's slip taken out as its witness. Off, exactly as before. Valve's
+        // gaze is of use to the witness only while it is not held: eyes open, both usable, not looking far down
+        let unguarded = corrected;
+        let valve_ok = open && usable_gaze == [true; 2] && !down_x_held(raw_gaze, settings);
+        let (corrected, guard_step) = guard_gaze(settings, smoother, data, corrected, valve_ok, live);
         // gaze_source "pupil" with a map for both eyes: the combined gaze from the pupils (pupil.rs), each eye keeping its
         // own difference from the combined gaze as the eye server reads it; after this everything goes on as usual
         // (with smoothing off too, as every step that reads the eyes). Otherwise the gaze is exactly as before
@@ -4028,6 +4076,18 @@ fn process(
                 [chosen[4], chosen[5]]
             }
         };
+        // ...and Valve's own the same way, without the guard's offset
+        guard = guard_step.map(|step| {
+            let chosen = choose_gaze(unguarded, usable_gaze, settings.independent_eyes);
+            let valve_measure = match smoother.guard_measure_held {
+                Some(last) if measure_held => last,
+                _ => {
+                    smoother.guard_measure_held = Some([chosen[4], chosen[5]]);
+                    [chosen[4], chosen[5]]
+                }
+            };
+            GuardSample { offset: step.offset, trusted: step.trusted, witness: step.witness, valve_measure }
+        });
         let readings: [f32; 8] =
             std::array::from_fn(|i| if i < 6 { corrected[i] } else { data.openness[i - 6] });
         // Fed even while off, so turning it on does not start from an empty history.
@@ -4181,7 +4241,73 @@ fn process(
         gaze_blending,
         measure_gaze,
         measure_held,
+        guard,
     }
+}
+
+/// Whether the sideways gaze is (partly) held because the eyes look far down (Smoother::hold_down_x).
+fn down_x_held(raw_gaze: [f32; 6], settings: &Settings) -> bool {
+    settings.gaze_down_hold_x_deg > 0.0 && -raw_gaze[5] * 45.0 > settings.gaze_down_hold_x_deg
+}
+
+/// What the eye fit and re-center set for Valve's gaze (correct_gaze's values), for the gaze guard: a change zeroes its
+/// offset (gaze_guard.rs Fit).
+fn valve_fit(settings: &Settings) -> [Option<f32>; 10] {
+    [
+        Some(settings.gaze_offset_x),
+        Some(settings.gaze_offset_y),
+        Some(settings.gaze_gain_x),
+        Some(settings.gaze_gain_up),
+        Some(settings.gaze_gain_down),
+        Some(settings.gaze_roll_deg),
+        settings.gaze_offset_x_left,
+        settings.gaze_offset_x_right,
+        settings.gaze_gain_x_left,
+        settings.gaze_gain_x_right,
+    ]
+}
+
+/// gaze_guard: Valve's gaze (`corrected`: left x/y, right x/y, combined x/y after the eye fit's correction) with the
+/// guard's offset added (gaze_guard.rs), and the guard's step. `valve_ok`: Valve's gaze is not held. The witness is the
+/// pupils' mapped directions, with the headset's slip taken out as pupil_slip.rs does (whatever pupil_slip_correction
+/// says: the guard needs the glints anyway), and the glints say whether the headset moved. With the key off,
+/// gaze_source "pupil" or without a pupil map for both eyes: the gaze exactly as it is and None, and the guard (with
+/// the slip correction it used, for "valve") starts over.
+fn guard_gaze(
+    settings: &Settings,
+    smoother: &mut Smoother,
+    data: &EyeData,
+    corrected: [f32; 6],
+    valve_ok: bool,
+    live: Option<&Live>,
+) -> ([f32; 6], Option<gaze_guard::GuardStep>) {
+    let valve_source = settings.gaze_source == config::GazeSource::Valve;
+    let Some(maps) = pupil::mapped(settings).filter(|_| settings.gaze_guard && valve_source) else {
+        if smoother.guard.reset_if_used() && valve_source {
+            smoother.slip.reset_if_used();
+        }
+        return (corrected, None);
+    };
+    let time = data.sample_time;
+    let open = eyes_open_for_pupil(data.openness, smoother.seen_open, settings);
+    let mapped = smoother.slip.correct(time, &maps, &data.extra, live);
+    let glints = smoother.slip.glints(time);
+    let pupils = smoother.guard.witness(time, &maps, &data.extra, &mapped, open);
+    let fit = gaze_guard::Fit { maps, valve: valve_fit(settings) };
+    let valve = [corrected[4] * 45.0, corrected[5] * 45.0];
+    let step = smoother.guard.step(time, valve, valve_ok, pupils, glints, &fit);
+    (with_guard(corrected, step.offset), Some(step))
+}
+
+/// The gaze (left x/y, right x/y, combined x/y on the -1..1 scale) with each eye's guard offset (degrees) added to its
+/// own and their mean to the combined; exactly as it is while both are zero.
+fn with_guard(gaze: [f32; 6], offset: [[f32; 2]; 2]) -> [f32; 6] {
+    if offset == [[0.0; 2]; 2] {
+        return gaze;
+    }
+    let combined = [(offset[0][0] + offset[1][0]) / 2.0, (offset[0][1] + offset[1][1]) / 2.0];
+    let by = [offset[0], offset[1], combined];
+    std::array::from_fn(|i| (gaze[i] + by[i / 2][i % 2] / 45.0).clamp(-1.0, 1.0))
 }
 
 /// Per eye: open for the pupil source: its Frame openness at least --gaze-hold-below, or the eye camera seeing it open
@@ -4949,6 +5075,11 @@ impl Bridge {
         {
             eprintln!("{line}");
         }
+        if self.settings.gaze_guard
+            && let Some(line) = self.smoother.guard.log_line(data.sample_time, sample.guard.is_some())
+        {
+            eprintln!("{line}");
+        }
         if self.settings.lid_calibration && settled {
             self.calibration.save_if_due();
         }
@@ -5032,7 +5163,12 @@ impl Bridge {
             self.dots.send(&dot_sample(&self.settings, &data, &sample, self.camera_live.as_ref()));
         }
         if measuring {
-            self.measure.send_measure(&measure_sample(&self.settings, &data, &sample, other.as_ref()));
+            // The gaze guard's values first (gaze_guard), so the panel has them when this sample's own datagram comes
+            let (measure, guard) = measure_sample(&self.settings, &data, &sample, other.as_ref());
+            if let Some(guard) = &guard {
+                self.measure.send_guard(guard);
+            }
+            self.measure.send_measure(&measure);
         }
         let pupils = self.capture_pupils.update(data.sample_time, &data.extra);
         if let Some(capture) = &mut self.capture {
@@ -7530,6 +7666,7 @@ mod tests {
             gaze_blending: false,
             measure_gaze: [0.0; 2],
             measure_held: false,
+            guard: None,
         }
     }
 
@@ -7968,6 +8105,159 @@ mod tests {
             drain_panel(&mut others, &mut samples);
         }
         assert!(others.is_empty() && samples == 20 && bridge.compare.is_none());
+        drop(panel);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A made-up pupil map for both eyes (yaw = -40 + 200 u, pitch = 20 - 200 v) on `settings`.
+    fn with_pupil_map(settings: Settings) -> Settings {
+        Settings {
+            pupil_yaw_left: Some(-40.0),
+            pupil_yaw_u_left: Some(200.0),
+            pupil_yaw_v_left: Some(0.0),
+            pupil_pitch_left: Some(20.0),
+            pupil_pitch_u_left: Some(0.0),
+            pupil_pitch_v_left: Some(-200.0),
+            pupil_yaw_right: Some(-40.0),
+            pupil_yaw_u_right: Some(200.0),
+            pupil_yaw_v_right: Some(0.0),
+            pupil_pitch_right: Some(20.0),
+            pupil_pitch_u_right: Some(0.0),
+            pupil_pitch_v_right: Some(-200.0),
+            ..settings
+        }
+    }
+
+    /// 30 s of samples: the eyes 2° right, both pupils saying so (and moving a hair, so they are fresh); Valve's gaze
+    /// there too until 15 s, then 16° further right (a self-calibration's step), the eyes open.
+    fn ratchet_readings() -> Vec<EyeData> {
+        (0..2700)
+            .map(|i| {
+                let yaw = if i < 1350 { 2.0f32 } else { 18.0 };
+                let mut data = reading(i, [yaw.to_radians().tan(), 0.0], [0.9, 0.9]);
+                let u = (2.0 + 40.0) / 200.0 + (i % 2) as f32 * 1e-5;
+                data.extra[..4].copy_from_slice(&[u, 0.1, u, 0.1]);
+                data
+            })
+            .collect()
+    }
+
+    /// eyecam-rec's values for sample `i` with both eyes' glints followed and still.
+    fn still_glints(i: usize) -> Live {
+        let slip = eyecam_live::CamSlip {
+            time_ns: 1_000_000_000 + i as u64 * 11_111_111,
+            pupil: Some([200.0, 150.0]),
+            tracked: true,
+            template: Some((1, 1)),
+            offset: [0.5, -0.5],
+            matches: 4,
+            since_good: 0,
+            glints: 6,
+        };
+        Live { slip: [Some(slip); 2], ..camera(0.75, 0.0) }
+    }
+
+    #[test]
+    fn the_gaze_guard_takes_a_valve_step_out_and_changes_nothing_while_off() {
+        let readings = ratchet_readings();
+        let base = with_pupil_map(Settings { lid_calibration: false, ..settings() });
+        let guarded = Settings { gaze_guard: true, ..base.clone() };
+        let run_with = |settings: &Settings, glints: bool| -> Vec<Sample> {
+            let mut smoother = Smoother::new(settings);
+            readings
+                .iter()
+                .enumerate()
+                .map(|(i, data)| {
+                    let live = glints.then(|| still_glints(i));
+                    process(settings, &mut smoother, [1.0; 2], data, live.as_ref())
+                })
+                .collect()
+        };
+        let bits = |samples: &[Sample]| -> Vec<Vec<u32>> {
+            samples
+                .iter()
+                .map(|s| s.gaze.iter().chain(&s.raw_gaze).chain(&s.measure_gaze).chain(&s.lids).map(|v| v.to_bits()).collect())
+                .collect()
+        };
+        let off = run_with(&base, true);
+        assert!(off.iter().all(|s| s.guard.is_none()));
+        // Key on, but no glints (no eyecam-rec): never trusted, nothing added, every value as with it off
+        let blind = run_with(&guarded, false);
+        assert_eq!(bits(&blind), bits(&off));
+        assert!(blind.iter().all(|s| s.guard.is_some_and(|g| !g.trusted && g.offset == [[0.0; 2]; 2])));
+        // gaze_source "pupil": the key does nothing
+        let pupil = Settings { gaze_source: config::GazeSource::Pupil, ..base.clone() };
+        let pupil_guarded = Settings { gaze_guard: true, ..pupil.clone() };
+        assert_eq!(bits(&run_with(&pupil_guarded, true)), bits(&run_with(&pupil, true)));
+        // With the glints: the same until the step, then the step taken out within about 3 s, eased in
+        let on = run_with(&guarded, true);
+        assert_eq!(bits(&on[..1350]), bits(&off[..1350]));
+        let degrees = |value: [f32; 2]| value.map(|v| v * 45.0);
+        let after = &on[1350 + 270..];
+        assert!(after.iter().all(|s| (degrees(s.measure_gaze)[0] - 2.0).abs() < 1.0), "{:?}", degrees(after[0].measure_gaze));
+        // ...where Valve's own (what the panel's checks score as Valve's) stays 18°, and the gaze sent follows the
+        // guarded one
+        assert!(after.iter().all(|s| (degrees(s.guard.unwrap().valve_measure)[0] - 18.0).abs() < 0.01));
+        assert!(after[200..].iter().all(|s| (s.gaze[4] * 45.0 - 2.0).abs() < 1.0), "{}", after[200].gaze[4] * 45.0);
+        let offsets: Vec<f32> = on.iter().map(|s| s.guard.unwrap().offset[0][0]).collect();
+        assert!(offsets.windows(2).all(|pair| (pair[1] - pair[0]).abs() < 1.0));
+        assert!((offsets.last().unwrap() + 16.0).abs() < 0.5, "{:?}", offsets.last());
+        assert!(on.last().unwrap().guard.unwrap().witness.is_some_and(|w| (w[0] - 2.0).abs() < 0.01));
+    }
+
+    #[test]
+    fn the_gaze_guard_goes_to_the_panels_checks_in_a_datagram_of_its_own() {
+        use std::os::unix::net::UnixDatagram;
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-guard-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let panel = UnixDatagram::bind(dir.join(dots::MEASURE_SOCKET_NAME)).unwrap();
+        panel.set_nonblocking(true).unwrap();
+        let readings = &ratchet_readings()[..200];
+        for source in [config::GazeSource::Valve, config::GazeSource::Pupil] {
+            let mut sent = Vec::new();
+            let mut received: Vec<Vec<Vec<u8>>> = Vec::new();
+            for key in [false, true] {
+                let listener = UdpSocket::bind("127.0.0.1:0").unwrap();
+                let mut bridge = test_bridge(with_pupil_map(Settings {
+                    host: "127.0.0.1".into(),
+                    port: Some(listener.local_addr().unwrap().port()),
+                    lid_calibration: false,
+                    gaze_source: source,
+                    gaze_guard: key,
+                    ..settings()
+                }));
+                bridge.measure = dots::DotStream::named(&dir, dots::MEASURE_SOCKET_NAME);
+                bridge.output.log = Some(Vec::new());
+                let mut datagrams = Vec::new();
+                let mut buffer = [0u8; 256];
+                for data in readings {
+                    bridge.on_sample(*data).unwrap();
+                    while let Ok(size) = panel.recv(&mut buffer) {
+                        datagrams.push(buffer[..size].to_vec());
+                    }
+                }
+                sent.push(bridge.output.log.take().unwrap());
+                received.push(datagrams);
+            }
+            // What is sent doesn't change (no glints here, so nothing is added)
+            assert!(sent[0] == sent[1], "{source:?}");
+            // Off: only the measure datagrams; on: each preceded by the guard's, of the same time
+            assert!(received[0].iter().all(|d| dots::decode_measure(d).is_some()));
+            assert_eq!(received[1].len(), 2 * readings.len());
+            for (pair, data) in received[1].chunks(2).zip(readings) {
+                let guard = dots::decode_guard(&pair[0]).expect("the guard's first");
+                let measure = dots::decode_measure(&pair[1]).expect("then the sample's");
+                assert!(guard.time == data.sample_time && measure.time == data.sample_time);
+                // Valve's as it was; the guarded one the same, with nothing added
+                assert_eq!(guard.guarded, measure.valve);
+                assert_eq!(guard.offset, [[0.0; 2]; 2]);
+                assert!(!guard.trusted);
+            }
+            let unchanged: Vec<_> = received[0].iter().map(|d| dots::decode_measure(d).unwrap()).collect();
+            let with: Vec<_> = received[1].chunks(2).map(|pair| dots::decode_measure(&pair[1]).unwrap()).collect();
+            assert_eq!(unchanged, with, "{source:?}");
+        }
         drop(panel);
         fs::remove_dir_all(&dir).unwrap();
     }

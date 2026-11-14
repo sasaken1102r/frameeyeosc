@@ -44,6 +44,16 @@
 //! 45°, both before any smoothing and the user's gaze scale, held while the eyes are shut; the pupils' 0 without a
 //! map), each eye's openness as read (f32). Only the
 //! panel's check reads it; nothing sent elsewhere changes.
+//!
+//! With the gaze guard on for the Valve gaze worked out (gaze_guard.rs: gaze_source "valve" with gaze_guard, or the
+//! other source's run while gaze_source is "pupil"), Valve's x and y above are Valve's own gaze without the guard, and
+//! each such sample's datagram is preceded by one more on the same socket, GUARD_SIZE bytes, little-endian: b"FEOG",
+//! version 1, flags (bit 0: the witness was trusted for this sample; bit 1: both pupils gave the witness's gaze), 2
+//! reserved zero bytes, the sample time (f64, the same as in the sample's datagram), the guarded gaze (Valve's with
+//! the offset: what gaze_guard sends) as x and y the same way as Valve's, the offset added to the left eye's and to the
+//! right eye's gaze (x, y each) and the witness's gaze (the pupils' combined gaze; 0 while bit 1 is clear), all f32
+//! with 1.0 = 45°. A datagram of its own, so the sample's datagram stays as it was: a panel from before reads its magic
+//! and size as not its own and ignores it. Without the guard nothing of it is sent.
 
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
@@ -61,6 +71,12 @@ const MEASURE_USABLE: u8 = 2;
 const MEASURE_VALVE_HELD: u8 = 4;
 const MEASURE_PUPIL_BLENDING: u8 = 8;
 const MEASURE_BEFORE_SMOOTHING: u8 = 16;
+// The gaze guard's datagram on the measure socket.
+const GUARD_MAGIC: &[u8; 4] = b"FEOG";
+const GUARD_VERSION: u8 = 1;
+pub const GUARD_SIZE: usize = 48;
+const GUARD_TRUSTED: u8 = 1;
+const GUARD_WITNESS: u8 = 2;
 const MAGIC: &[u8; 4] = b"FEOD";
 const VERSION: u8 = 3;
 const EYES: usize = 64;
@@ -205,6 +221,46 @@ pub fn decode_measure(packet: &[u8]) -> Option<MeasureSample> {
     })
 }
 
+/// The gaze guard's values for a sample of the panel's checks (see the module comment): the guarded combined gaze,
+/// each eye's offset and the witness's gaze (all 1.0 = 45°), and whether the witness was trusted.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GuardMeasure {
+    pub time: f64,
+    pub trusted: bool,
+    pub guarded: [f32; 2],
+    pub offset: [[f32; 2]; 2],
+    pub witness: Option<[f32; 2]>,
+}
+
+pub fn encode_guard(guard: &GuardMeasure) -> [u8; GUARD_SIZE] {
+    let mut packet = [0u8; GUARD_SIZE];
+    packet[..4].copy_from_slice(GUARD_MAGIC);
+    packet[4] = GUARD_VERSION;
+    packet[5] = u8::from(guard.trusted) * GUARD_TRUSTED | u8::from(guard.witness.is_some()) * GUARD_WITNESS;
+    packet[8..16].copy_from_slice(&guard.time.to_le_bytes());
+    let witness = guard.witness.unwrap_or([0.0; 2]);
+    let values = guard.guarded.iter().chain(guard.offset.as_flattened()).chain(&witness);
+    for (i, value) in values.enumerate() {
+        packet[16 + i * 4..20 + i * 4].copy_from_slice(&value.to_le_bytes());
+    }
+    packet
+}
+
+#[cfg(test)]
+pub fn decode_guard(packet: &[u8]) -> Option<GuardMeasure> {
+    if packet.len() != GUARD_SIZE || &packet[..4] != GUARD_MAGIC || packet[4] != GUARD_VERSION {
+        return None;
+    }
+    let f32_at = |at: usize| f32::from_le_bytes(packet[at..at + 4].try_into().unwrap());
+    Some(GuardMeasure {
+        time: f64::from_le_bytes(packet[8..16].try_into().ok()?),
+        trusted: packet[5] & GUARD_TRUSTED != 0,
+        guarded: [f32_at(16), f32_at(20)],
+        offset: [[f32_at(24), f32_at(28)], [f32_at(32), f32_at(36)]],
+        witness: (packet[5] & GUARD_WITNESS != 0).then(|| [f32_at(40), f32_at(44)]),
+    })
+}
+
 /// A brow (0..1) as its u16: 0..=65535, rounded; NaN as 0.
 fn brow_bits(brow: f32) -> u16 {
     if brow.is_finite() { (brow.clamp(0.0, 1.0) * 65535.0).round() as u16 } else { 0 }
@@ -338,6 +394,11 @@ impl DotStream {
     /// A sample for the panel's gaze error check (on its own socket: a DotStream::named(MEASURE_SOCKET_NAME)).
     pub fn send_measure(&mut self, sample: &MeasureSample) {
         self.send_bytes(&encode_measure(sample));
+    }
+
+    /// The gaze guard's values for the next sample of the panel's checks (on their socket): sent just before it.
+    pub fn send_guard(&mut self, guard: &GuardMeasure) {
+        self.send_bytes(&encode_guard(guard));
     }
 
     fn send_bytes(&mut self, bytes: &[u8]) {
@@ -540,6 +601,52 @@ mod tests {
         wrong[4] = 2;
         assert_eq!(decode_measure(&wrong), None);
         assert_eq!(decode_measure(&packet[..39]), None);
+    }
+
+    #[test]
+    fn the_guard_datagram_reads_back_and_is_no_other() {
+        let guard = GuardMeasure {
+            time: 19892.729813125,
+            trusted: true,
+            guarded: [0.125, -0.25],
+            offset: [[-0.375, 0.0625], [-0.3125, 0.0]],
+            witness: Some([0.1, -0.2]),
+        };
+        let packet = encode_guard(&guard);
+        assert_eq!(packet.len(), GUARD_SIZE);
+        assert_eq!(&packet[..8], b"FEOG\x01\x03\x00\x00");
+        assert_eq!(decode_guard(&packet), Some(guard));
+        // The time where the measure datagram has it, the right eye's offset x at 32, the witness last
+        assert_eq!(f64::from_le_bytes(packet[8..16].try_into().unwrap()), guard.time);
+        assert_eq!(f32::from_le_bytes(packet[32..36].try_into().unwrap()), -0.3125);
+        assert_eq!(f32::from_le_bytes(packet[44..48].try_into().unwrap()), -0.2);
+        // Not trusted, no witness: the flags clear, zeros for the witness
+        let none = GuardMeasure { trusted: false, witness: None, ..guard };
+        let empty = encode_guard(&none);
+        assert_eq!(&empty[..8], b"FEOG\x01\x00\x00\x00");
+        assert_eq!(empty[40..], [0; 8]);
+        assert_eq!(decode_guard(&empty), Some(none));
+        // None of the other datagrams, nor they this one: a panel from before reads FEOM only at its 40 bytes
+        assert_eq!(decode_measure(&packet), None);
+        assert_eq!(decode_measure(&packet[..MEASURE_SIZE]), None);
+        assert_eq!(decode_other(&packet[..OTHER_SIZE]), None);
+        assert_eq!(decode(&packet), None);
+        let measure = encode_measure(&MeasureSample {
+            time: 1.0,
+            mapped: true,
+            usable: true,
+            valve_held: false,
+            pupil_blending: false,
+            before_smoothing: true,
+            pupil_state: 1,
+            valve: [0.0; 2],
+            pupil: [0.0; 2],
+            openness: [1.0; 2],
+        });
+        assert_eq!(decode_guard(&measure), None);
+        let mut wrong = packet;
+        wrong[4] = 2;
+        assert_eq!(decode_guard(&wrong), None);
     }
 
     fn sample_for_measure() -> DotSample {

@@ -2,7 +2,7 @@
 //! recording back through the same processing (--replay) to compare settings by a few numbers.
 
 use crate::config::{LidFit, Settings};
-use crate::eyecam_live::{Eye, FrameGaps, Live};
+use crate::eyecam_live::{CamSlip, Eye, FrameGaps, Live};
 use crate::{
     CAL_SETTLE, EyeData, LidCalibration, LidFrom, MAX_GAP, NOMINAL_DT, Sample, Saturation, Smoother, TIMEOUT,
     gaze_angles, step,
@@ -133,6 +133,82 @@ fn camera_fields(camera: Option<(&Live, u64)>) -> Vec<String> {
     }
     fields.extend([live.calib_state.to_string(), flag(live.live)]);
     fields
+}
+
+// Each eye's glint columns (cam_l_glint_*, cam_r_glint_*), after CAMERA_ANATOMICAL: eyecam-rec's glint part as read
+// with the sample (eyecam_live.rs CamSlip; what pupil_slip.rs and the gaze guard follow), empty while there is none.
+// The frame's time and the template's are CLOCK_MONOTONIC ns as eyecam-rec wrote them (only compared with each other).
+// Recordings from before have none, and replay without glints as before.
+const GLINT_FIELDS: [&str; 11] = [
+    "frame_ns",
+    "pupil_x",
+    "pupil_y",
+    "tracked",
+    "template",
+    "template_ns",
+    "x",
+    "y",
+    "matches",
+    "since_good",
+    "count",
+];
+
+/// Names of the glint columns, after CAMERA_ANATOMICAL.
+fn glint_columns() -> Vec<String> {
+    ["l", "r"].iter().flat_map(|eye| GLINT_FIELDS.map(|field| format!("cam_{eye}_glint_{field}"))).collect()
+}
+
+/// The glint cells of one row (in glint_columns order): each eye's glint part as read, empty without one.
+fn glint_fields(camera: Option<&Live>) -> Vec<String> {
+    let mut fields = Vec::new();
+    for eye in 0..2 {
+        match camera.and_then(|live| live.slip[eye]) {
+            Some(slip) => {
+                let pupil = |axis: usize| slip.pupil.map_or_else(String::new, |pupil| pupil[axis].to_string());
+                let (template, template_ns) =
+                    slip.template.map_or((String::new(), String::new()), |(id, at)| (id.to_string(), at.to_string()));
+                fields.extend([
+                    slip.time_ns.to_string(),
+                    pupil(0),
+                    pupil(1),
+                    u8::from(slip.tracked).to_string(),
+                    template,
+                    template_ns,
+                    slip.offset[0].to_string(),
+                    slip.offset[1].to_string(),
+                    slip.matches.to_string(),
+                    slip.since_good.to_string(),
+                    slip.glints.to_string(),
+                ]);
+            }
+            None => fields.extend(std::iter::repeat_n(String::new(), GLINT_FIELDS.len())),
+        }
+    }
+    fields
+}
+
+/// One eye's glint part from its cells (in GLINT_FIELDS order): None when they are empty or not numbers.
+fn glint_from(cells: &[&str]) -> Option<CamSlip> {
+    let int = |i: usize| cells[i].parse::<u64>().ok();
+    let float = |i: usize| cells[i].parse::<f32>().ok();
+    let pupil = match (float(1), float(2)) {
+        (Some(x), Some(y)) => Some([x, y]),
+        _ => None,
+    };
+    let template = match (int(4), int(5)) {
+        (Some(id), Some(at)) => Some((u32::try_from(id).ok()?, at)),
+        _ => None,
+    };
+    Some(CamSlip {
+        time_ns: int(0)?,
+        pupil,
+        tracked: int(3)? != 0,
+        template,
+        offset: [float(6)?, float(7)?],
+        matches: u32::try_from(int(8)?).ok()?,
+        since_good: u32::try_from(int(9)?).ok()?,
+        glints: u32::try_from(int(10)?).ok()?,
+    })
 }
 
 /// The eye camera's values from a row's cells (in camera_columns order), as they were read for that sample, and each
@@ -291,7 +367,13 @@ pub struct Recorder {
 impl Recorder {
     pub fn create(path: &Path) -> io::Result<Self> {
         let mut out = BufWriter::new(File::create(path)?);
-        writeln!(out, "{},{},{CAMERA_ANATOMICAL}", columns().join(","), camera_columns().join(","))?;
+        writeln!(
+            out,
+            "{},{},{CAMERA_ANATOMICAL},{}",
+            columns().join(","),
+            camera_columns().join(","),
+            glint_columns().join(",")
+        )?;
         Ok(Self {
             out,
             count: 0,
@@ -309,6 +391,7 @@ impl Recorder {
             .collect();
         fields.extend(camera_fields(camera));
         fields.push(if camera.is_some() { "1" } else { "" }.to_owned());
+        fields.extend(glint_fields(camera.map(|(live, _)| live)));
         writeln!(self.out, "{}", fields.join(","))?;
         self.count += 1;
         self.camera_count += u64::from(camera.is_some());
@@ -349,6 +432,7 @@ fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
         .map(|name| position(name).ok_or_else(|| format!("column {name} is missing")))
         .collect::<Result<Vec<_>, _>>()?;
     let camera_positions = camera_columns().iter().map(position).collect::<Option<Vec<_>>>();
+    let glint_positions = glint_columns().iter().map(position).collect::<Option<Vec<_>>>();
     let mut gaps = RecordedGaps::default();
     let mut resampler = Resampler::from_env();
     let rows = lines
@@ -366,7 +450,14 @@ fn parse(text: &str) -> Result<(Vec<Row>, bool), String> {
                     let cells: Vec<&str> =
                         positions.iter().map(|position| fields.get(*position).copied().unwrap_or("")).collect();
                     camera_from(&cells).map_err(|_| not_numbers())?.map(|(mut live, mut ages)| {
+                        if let Some(positions) = &glint_positions {
+                            let cells: Vec<&str> =
+                                positions.iter().map(|position| fields.get(*position).copied().unwrap_or("")).collect();
+                            let per_eye = GLINT_FIELDS.len();
+                            live.slip = [0, 1].map(|eye| glint_from(&cells[eye * per_eye..(eye + 1) * per_eye]));
+                        }
                         if swapped {
+                            live.slip.swap(0, 1);
                             live.eyes.swap(0, 1);
                             live.fresh.swap(0, 1);
                             ages.swap(0, 1);
@@ -1175,6 +1266,18 @@ fn write_processed(path: &Path, samples: &[EyeData], sent: &[Sample], camera: bo
     if in_use {
         write!(out, ",gaze_in_use")?;
     }
+    // The gaze guard (gaze_guard), only with it: side by side, before smoothing and the gaze scale (as the panel's
+    // checks score them; -1..1), Valve's own combined gaze, the guarded one and the witness's (the pupils', empty
+    // while not both are there); then each eye's offset (degrees) and whether the witness was trusted
+    let guarded = sent.iter().any(|sample| sample.guard.is_some());
+    if guarded {
+        write!(
+            out,
+            ",guard_valve_x,guard_valve_y,guard_gaze_x,guard_gaze_y,guard_pupil_x,guard_pupil_y,\
+             guard_offset_left_x_deg,guard_offset_left_y_deg,guard_offset_right_x_deg,guard_offset_right_y_deg,\
+             guard_trusted"
+        )?;
+    }
     writeln!(out)?;
     let optional = |value: Option<f32>| value.map_or_else(String::new, |value| value.to_string());
     for (data, sample) in samples.iter().zip(sent) {
@@ -1190,9 +1293,42 @@ fn write_processed(path: &Path, samples: &[EyeData], sent: &[Sample], camera: bo
         if in_use {
             fields.push(sample.gaze_in_use.map_or("", |in_use| in_use.name()).to_owned());
         }
+        if guarded {
+            match sample.guard {
+                Some(guard) => {
+                    fields.extend(guard.valve_measure.iter().chain(&sample.measure_gaze).map(f32::to_string));
+                    let witness = guard.witness.map(|witness| witness.map(|degrees| degrees / GAZE_DEGREES));
+                    fields.extend([0, 1].map(|axis| optional(witness.map(|witness| witness[axis]))));
+                    fields.extend(guard.offset.as_flattened().iter().map(f32::to_string));
+                    fields.push(u8::from(guard.trusted).to_string());
+                }
+                None => fields.extend(std::iter::repeat_n(String::new(), 11)),
+            }
+        }
         writeln!(out, "{}", fields.join(","))?;
     }
     out.flush()
+}
+
+/// The gaze guard over a replay (gaze_guard), as a report line: how often the witness was trusted, the largest offset
+/// and the one at the end (degrees, each eye). Empty without it.
+fn guard_line(sent: &[Sample]) -> String {
+    let guards: Vec<_> = sent.iter().filter_map(|sample| sample.guard).collect();
+    let Some(last) = guards.last() else {
+        return String::new();
+    };
+    let trusted = 100.0 * guards.iter().filter(|guard| guard.trusted).count() as f64 / guards.len() as f64;
+    let largest = guards.iter().flat_map(|guard| guard.offset).map(|offset| offset[0].hypot(offset[1])).fold(0.0, f32::max);
+    let [left, right] = last.offset;
+    format!(
+        "\nGaze guard: witness trusted {trusted:.1}% of {} samples, largest offset {largest:.1}°, at the end L ({:+.1}, \
+         {:+.1})° R ({:+.1}, {:+.1})°\n",
+        guards.len(),
+        left[0],
+        left[1],
+        right[0],
+        right[1]
+    )
 }
 
 /// Replay a recording with the new stages off and with `settings`, and print the comparison.
@@ -1214,9 +1350,11 @@ pub fn run(input: &Path, output: Option<&Path>, settings: &Settings, calibration
         };
         camera_lines(&cameras, &samples, &after, &replay(&samples, &cameras, &off, calibration.clone()))
     });
+    let guard_text = guard_line(&after);
     let (before, after) = (metrics(&samples, &before), metrics(&samples, &after));
     print!("{}", report(input, &samples, all.len() - samples.len(), settings, &before, &after));
     print!("{}", camera_text.unwrap_or_default());
+    print!("{guard_text}");
     if camera && std::env::var_os("FEO_DOUBT_DIAG").is_some() {
         print!("{}", doubt_diag(&samples, &cameras, settings, calibration));
     }
@@ -1457,6 +1595,17 @@ mod tests {
         };
         camera.fresh = [true, false];
         camera.calib_state = 5;
+        // The left eye's glint part (the right one has none)
+        camera.slip[0] = Some(CamSlip {
+            time_ns: 1_011_111_111,
+            pupil: Some([201.5, 148.25]),
+            tracked: true,
+            template: Some((3, 987_654_321)),
+            offset: [-2.5, 0.125],
+            matches: 4,
+            since_good: 0,
+            glints: 6,
+        });
         recorder.write(&EyeData { sample_time: 19892.74, ..data }, Some((&camera, 1_012_345_678))).unwrap();
         recorder.flush().unwrap();
         assert_eq!((recorder.count, recorder.camera_count), (2, 1));
@@ -1477,21 +1626,31 @@ mod tests {
             },
         ];
         assert_eq!(read, expected);
-        // The camera's columns come last, after the eye server's as before: empty without a live file; then the
-        // mark that they name the eyes anatomically ("1" with them)
+        // The camera's columns come after the eye server's as before: empty without a live file; then the mark that
+        // they name the eyes anatomically ("1" with them); then each eye's glint part, empty without one
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines[0].starts_with(&(columns().join(",") + ",cam_l_fresh,cam_l_valid,cam_l_closed,cam_l_lid,")));
-        assert!(lines[0].ends_with(",cam_r_confidence,cam_r_age_ms,cam_calib_state,cam_live,cam_eyes_anatomical"));
-        assert!(lines[1].ends_with(&",".repeat(23)), "{}", lines[1]);
+        assert!(lines[0].contains(",cam_r_confidence,cam_r_age_ms,cam_calib_state,cam_live,cam_eyes_anatomical,cam_l_glint_frame_ns,"));
+        assert!(lines[0].ends_with(",cam_r_glint_matches,cam_r_glint_since_good,cam_r_glint_count"));
+        assert!(lines[1].ends_with(&",".repeat(23 + 22)), "{}", lines[1]);
         let cells: Vec<&str> = lines[2].split(',').skip(columns().len()).collect();
-        assert_eq!(
-            cells,
-            [
-                "1", "1", "0", "0.93", "0", "0.25", "4", "0.5", "0", "1012.3",
-                "0", "1", "1", "0.93", "0.72", "0.25", "3.75", "0.4", "0.8", "12.3",
-                "5", "1", "1",
-            ]
-        );
+        let mut want = vec![
+            "1", "1", "0", "0.93", "0", "0.25", "4", "0.5", "0", "1012.3",
+            "0", "1", "1", "0.93", "0.72", "0.25", "3.75", "0.4", "0.8", "12.3",
+            "5", "1", "1",
+            "1011111111", "201.5", "148.25", "1", "3", "987654321", "-2.5", "0.125", "4", "0", "6",
+        ];
+        want.extend([""; 11]);
+        assert_eq!(cells, want);
+        // A recording from before the glint columns reads as it did: no glint part
+        let header_end = lines[0].find(",cam_l_glint_frame_ns").unwrap();
+        let old_rows: Vec<String> = lines[1..].iter().map(|line| {
+            let keep = columns().len() + camera_columns().len() + 1;
+            line.split(',').take(keep).collect::<Vec<_>>().join(",")
+        }).collect();
+        let old = format!("{}\n{}\n", &lines[0][..header_end], old_rows.join("\n"));
+        let (read_old, _) = parse(&old).unwrap();
+        assert_eq!(read_old[1].camera.unwrap().slip, [None; 2]);
     }
 
     #[test]

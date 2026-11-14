@@ -82,7 +82,7 @@ pub fn mapped(settings: &Settings) -> Option<[EyeMap; 2]> {
 }
 
 /// Whether a mapped direction is inside the fit's range plus the margin.
-fn in_range([yaw, pitch]: [f32; 2]) -> bool {
+pub(crate) fn in_range([yaw, pitch]: [f32; 2]) -> bool {
     yaw.abs() <= FIT_YAW_DEG + RANGE_MARGIN_DEG && pitch.abs() <= FIT_PITCH_DEG + RANGE_MARGIN_DEG
 }
 

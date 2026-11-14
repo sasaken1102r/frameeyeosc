@@ -51,6 +51,9 @@ pub const LOG_S: f64 = 60.0;
 pub const TEMPLATE_SAME_NS: u64 = 500_000_000;
 /// A new template this soon (s) after a map or centre change starts the slip from 0 (see the module comment).
 pub const REZERO_S: f64 = 30.0;
+/// For the gaze guard (gaze_guard.rs, `slip_px`): an eye's slip counts as followed while its glints were last tracked
+/// at most this long ago (s; a few camera frames, which come at 90 a second).
+pub const TRACKED_FRESH_S: f64 = 0.25;
 
 /// The eye server's pupil pair (`extra`) from eyecam-rec's pupil centre (px): pair = a + k * px, least squares with
 /// exponential forgetting (weights: each frame 1, decaying over FIT_TAU_S).
@@ -148,6 +151,8 @@ struct EyeSlip {
     /// Until when a new template is the slip's zero (REZERO_S after a map or centre change), and that one came.
     rezero_until: Option<f64>,
     rezero_now: bool,
+    /// When the glints were last tracked (the eye server's time; for the gaze guard).
+    last_tracked: Option<f64>,
 }
 
 impl EyeSlip {
@@ -210,6 +215,7 @@ impl EyeSlip {
                 // (never a NaN kept)
                 if smooth.iter().all(|v| v.is_finite()) {
                     self.smooth = Some(smooth);
+                    self.last_tracked = Some(time);
                     if std::mem::take(&mut self.rezero_now) {
                         self.reference = Some(smooth);
                     }
@@ -226,6 +232,14 @@ impl EyeSlip {
     fn slip(&self) -> Option<[f32; 2]> {
         let (s, r) = (self.smooth?, self.reference?);
         Some([s[0] - r[0], s[1] - r[1]])
+    }
+
+    /// The glints' offset as followed and smoothed (px; across templates, and not moved by a re-zero: only its changes
+    /// mean anything) while they were tracked within TRACKED_FRESH_S before `time` and the slip is within MAX_SLIP_PX.
+    fn glints(&self, time: f64) -> Option<[f32; 2]> {
+        let tracked = self.last_tracked.is_some_and(|at| time >= at && time - at <= TRACKED_FRESH_S);
+        let slip = self.slip()?;
+        (tracked && slip[0].hypot(slip[1]) <= MAX_SLIP_PX).then_some(self.smooth?)
     }
 
     /// The pair with the slip taken off, as much of it as `weight` says (unchanged without a slip or a fit, or with a
@@ -276,6 +290,13 @@ impl SlipCorrection {
             out[2 * i + 1] = fixed[1];
         }
         out
+    }
+
+    /// Each eye's glints as followed (px) for the gaze guard, after `correct` for the sample at `time`: None while they
+    /// are not tracked or the slip is taken for a wrong lock (see EyeSlip::glints). Only their changes mean anything:
+    /// they go on across templates and re-zeros.
+    pub fn glints(&self, time: f64) -> [Option<[f32; 2]>; 2] {
+        [0, 1].map(|eye| self.eyes[eye].glints(time))
     }
 
     /// The journal line, once per LOG_S: per eye the share of camera frames tracked, the slip now (px) and whether the
@@ -562,6 +583,26 @@ mod tests {
         }
         let slip = corr.eyes[0].slip().unwrap();
         assert!((slip[1] - 5.0).abs() < 1e-3, "{slip:?}");
+    }
+
+    #[test]
+    fn the_glints_for_the_gaze_guard_go_on_across_templates_and_only_while_tracked() {
+        let mut corr = SlipCorrection::default();
+        assert_eq!(corr.glints(0.0), [None; 2]);
+        // Tracked: the smoothed offset, still 10 px down after a new template (carried on)
+        run(&mut corr, 0, 900, true, |_| [0.0, 10.0], |_| true, |_| 1, |_| [0.0; 2]);
+        let t = 899.0 / 90.0;
+        let [left, right] = corr.glints(t);
+        assert!(left.is_some_and(|g| (g[1] - 10.0).abs() < 1e-3) && right.is_some(), "{left:?}");
+        run(&mut corr, 900, 90, true, |_| [0.0, 10.0], |_| true, |_| 2, |_| [0.0, 10.0]);
+        let left = corr.glints(989.0 / 90.0)[0].unwrap();
+        assert!((left[1] - 10.0).abs() < 1e-3, "{left:?}");
+        // Not tracked for longer than TRACKED_FRESH_S: none
+        run(&mut corr, 990, 30, true, |_| [0.0, 10.0], |_| false, |_| 2, |_| [0.0, 10.0]);
+        assert_eq!(corr.glints(1019.0 / 90.0), [None; 2]);
+        // A wrong lock beyond MAX_SLIP_PX: none
+        run(&mut corr, 1020, 300, true, |_| [0.0, 80.0], |_| true, |_| 2, |_| [0.0, 10.0]);
+        assert_eq!(corr.glints(1319.0 / 90.0), [None; 2]);
     }
 
     #[test]

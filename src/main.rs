@@ -3806,7 +3806,8 @@ struct Sample {
     // ...still easing from the source before (pupil.rs's blend), not yet that source's own.
     gaze_blending: bool,
     // With gaze_source "eyeball" (and the cameras' calibration): each eye's own direction from its filter (degrees,
-    // before its map; None while it has none fresh), for the gaze captures that fit its map (eyeball_map.rs).
+    // before its map; None while it has none fresh, or its filter has not settled yet: eyeball::SETTLED_ELLIPSE_FRAMES),
+    // for the gaze captures that fit its map (eyeball_map.rs).
     eyeball_eyes: [Option<[f32; 2]>; 2],
     // For the panel's gaze error check: the combined gaze after every step that reads the eyes (the correction, the
     // pupils, the doubt about one low eye and the hold while the eyes are shut, ...) but before any smoothing (despike
@@ -4060,8 +4061,11 @@ fn process(
         // gaze_source "eyeball": each eye's direction from its filter (eyeball.rs), mapped by its own map and combined as
         // the pupils are (pupil.rs step_eyes); without the cameras' calibration or a map, as "valve". Any other source:
         // the filters don't run (and start over the next time)
+        let mut eyeball_own = [None; 2];
         if settings.gaze_source == config::GazeSource::Eyeball {
-            eyeball_eyes = smoother.eyeball.step(data.sample_time, live);
+            eyeball_own = smoother.eyeball.step(data.sample_time, live);
+            // (the captures count an eye only once its filter has settled)
+            eyeball_eyes = smoother.eyeball.settled_only(eyeball_own);
         } else {
             smoother.eyeball.idle();
         }
@@ -4071,7 +4075,7 @@ fn process(
         let (corrected, pupil_used) = match (eyeball_maps, pupil::maps(settings)) {
             (Some(maps), _) => {
                 let open = eyes_open_for_pupil(data.openness, seen_open, settings);
-                let step = smoother.pupil.step_eyes(data.sample_time, &maps, eyeball_eyes, open, valve);
+                let step = smoother.pupil.step_eyes(data.sample_time, &maps, eyeball_own, open, valve);
                 gaze_in_use = Some(step.in_use);
                 gaze_blending = step.blending;
                 let used = matches!(step.in_use, pupil::InUse::Pupil | pupil::InUse::Left | pupil::InUse::Right);
@@ -4976,6 +4980,10 @@ struct EyeballSetup {
     read_only: bool,
     // Taken up (None until the source is first chosen)
     store: Option<eyeball_map::MapStore>,
+    // When the calibration was last tried (while it can't be read, again every CALIBRATION_RETRY), and whether the
+    // failure was said
+    calibration_tried: Option<Instant>,
+    calibration_failure_said: bool,
     // The journal line: when it was last written, and the counts then
     last_log: Option<f64>,
     logged: ([u64; 2], [[u64; 6]; 2], u64),
@@ -4984,9 +4992,20 @@ struct EyeballSetup {
 impl EyeballSetup {
     /// The journal's line about the filters comes once per this long (s).
     const LOG_S: f64 = 60.0;
+    /// A calibration that could not be read is tried again this often while the source is chosen.
+    const CALIBRATION_RETRY: Duration = Duration::from_secs(60);
 
     fn new(calibration_path: PathBuf, map_path: Option<PathBuf>) -> Self {
-        Self { calibration_path, map_path, read_only: false, store: None, last_log: None, logged: Default::default() }
+        Self {
+            calibration_path,
+            map_path,
+            read_only: false,
+            store: None,
+            calibration_tried: None,
+            calibration_failure_said: false,
+            last_log: None,
+            logged: Default::default(),
+        }
     }
 
     /// For a replay: the maps' file is never written.
@@ -4995,26 +5014,41 @@ impl EyeballSetup {
         self
     }
 
-    /// With gaze_source "eyeball", the first time: the calibration and the maps read and handed to `smoother`. The
-    /// lines to log (none otherwise).
+    /// With gaze_source "eyeball": the calibration read and handed to `smoother` (the first time, and while it can't be
+    /// read again every CALIBRATION_RETRY: /persist may come up late), and the maps the first time. The lines to log
+    /// (none otherwise; a failure is said once, and the success when it comes).
     fn prepare(&mut self, settings: &Settings, smoother: &mut Smoother) -> Vec<String> {
-        if settings.gaze_source != config::GazeSource::Eyeball || self.store.is_some() {
+        if settings.gaze_source != config::GazeSource::Eyeball {
             return Vec::new();
         }
-        let path = self.calibration_path.display();
-        let (calibration, mut lines) = match eyeball::load_calibration(&self.calibration_path) {
-            Ok(calibration) => (Some(calibration), vec![format!("Eyeball source: eye-camera calibration read from {path}")]),
-            Err(error) => (
-                None,
-                vec![format!("Eyeball source: no eye-camera calibration ({error}); gaze_source \"eyeball\" acts as \"valve\"")],
-            ),
-        };
-        smoother.eyeball.set_calibration(calibration);
-        let (store, line) = eyeball_map::MapStore::load(self.map_path.clone());
-        let store = if self.read_only { store.read_only() } else { store };
-        lines.push(line);
-        smoother.eyeball.maps = store.maps;
-        self.store = Some(store);
+        let mut lines = Vec::new();
+        let due = self.calibration_tried.is_none_or(|at| at.elapsed() >= Self::CALIBRATION_RETRY);
+        if !smoother.eyeball.has_calibration() && due {
+            self.calibration_tried = Some(Instant::now());
+            let path = self.calibration_path.display();
+            match eyeball::load_calibration(&self.calibration_path) {
+                Ok(calibration) => {
+                    smoother.eyeball.set_calibration(Some(calibration));
+                    lines.push(format!("Eyeball source: eye-camera calibration read from {path}"));
+                }
+                Err(error) if !self.calibration_failure_said => {
+                    self.calibration_failure_said = true;
+                    lines.push(format!(
+                        "Eyeball source: no eye-camera calibration ({error}); gaze_source \"eyeball\" acts as \"valve\" \
+                         (tried again every {} s)",
+                        Self::CALIBRATION_RETRY.as_secs()
+                    ));
+                }
+                Err(_) => {}
+            }
+        }
+        if self.store.is_none() {
+            let (store, line) = eyeball_map::MapStore::load(self.map_path.clone());
+            let store = if self.read_only { store.read_only() } else { store };
+            lines.push(line);
+            smoother.eyeball.maps = store.maps;
+            self.store = Some(store);
+        }
         lines
     }
 
@@ -5023,7 +5057,9 @@ impl EyeballSetup {
         let Some(store) = &mut self.store else {
             return Vec::new();
         };
-        let lines = store.capture_done(target, medians);
+        // Where each eye's centre stood (and whether it counted), then what the capture did to the map
+        let mut lines = vec![smoother.eyeball.centre_line()];
+        lines.extend(store.capture_done(target, medians));
         smoother.eyeball.maps = store.maps;
         lines
     }
@@ -7796,6 +7832,41 @@ mod tests {
             calibration.observe([spread[i % spread.len()]; 2]);
         }
         assert!((calibration.relaxed[0] - 0.82).abs() < 0.01, "{}", calibration.relaxed[0]);
+    }
+
+    #[test]
+    fn the_eyeball_source_tries_its_calibration_again_while_it_cannot_be_read() {
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-eyeball-setup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("eyetracking.json");
+        let eyeball = Settings { gaze_source: config::GazeSource::Eyeball, ..settings() };
+        let mut setup = EyeballSetup::new(path.clone(), Some(dir.join("eyeball_map"))).read_only();
+        let mut smoother = Smoother::new(&eyeball);
+        // Not chosen: nothing read, nothing said
+        assert!(setup.prepare(&settings(), &mut smoother).is_empty());
+        // Chosen, the file not there (yet): said once, with the maps' line; not tried again within the minute
+        let lines = setup.prepare(&eyeball, &mut smoother);
+        assert!(lines[0].contains("no eye-camera calibration") && lines[0].contains("tried again every 60 s"), "{lines:?}");
+        assert!(lines[1].starts_with("Eyeball map: none yet"), "{lines:?}");
+        assert!(!smoother.eyeball.has_calibration());
+        fs::write(&path, eyeball::tests::calibration_json()).unwrap();
+        assert!(setup.prepare(&eyeball, &mut smoother).is_empty());
+        assert!(!smoother.eyeball.has_calibration());
+        // A minute later: read, and said
+        setup.calibration_tried = Some(Instant::now() - EyeballSetup::CALIBRATION_RETRY);
+        let lines = setup.prepare(&eyeball, &mut smoother);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].starts_with("Eyeball source: eye-camera calibration read from"), "{lines:?}");
+        assert!(smoother.eyeball.has_calibration());
+        // Then never again
+        setup.calibration_tried = Some(Instant::now() - EyeballSetup::CALIBRATION_RETRY);
+        assert!(setup.prepare(&eyeball, &mut smoother).is_empty());
+        // A capture says where each eye's centre stood
+        let lines = setup.capture_done("center", [None; 2], &mut smoother);
+        assert_eq!(lines[0], "Eyeball centre: L not started; R not started");
+        assert!(lines[1].contains("too few samples"), "{lines:?}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

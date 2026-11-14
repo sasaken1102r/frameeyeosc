@@ -66,8 +66,20 @@ const DT_MAX: f64 = 0.1;
 /// lid near the pupil cuts its outline) and with at least this share of its rim seen.
 const APERTURE_MIN: f64 = 1.3;
 const VIS_MIN: f64 = 0.98;
-/// An eye's direction is given while its pupil was seen at most this long ago (s, the eye server's time).
+/// An eye's direction is given while its pupil was seen at most this long ago (s, the eye server's time)...
 pub const EYE_FRESH_S: f64 = 0.15;
+/// ...and the filter took a frame (an update with the pupil, with or without its ellipse) at most this long ago: one
+/// that keeps refusing its frames (lids over the rim at a corner, a squint) stands still at its last direction, which
+/// is not where the eye looks; the other eye, the hold and the eye server's gaze take over then (pupil.rs).
+pub const ACCEPTED_FRESH_S: f64 = 0.2;
+/// An eye's directions count for the eye fit's captures (the map and the centre, eyeball_map.rs) once its filter has
+/// updated with the ellipse this many frames since it started or last re-took its angles (about a second at 90 frames
+/// a second): before that the centre is still settling, and a map fitted then would hold its error.
+pub const SETTLED_ELLIPSE_FRAMES: u32 = 90;
+/// While the ellipse is not used, the centre is held, and its uncertainty would grow without end: it is kept at most
+/// this (m, each axis) or what it was before, if more, so the next ellipse cannot throw the centre millimetres in one
+/// frame.
+pub const CENTRE_SD_CAP: f64 = 0.002;
 /// The pictures are this many rows high when the calibration does not say.
 const DEFAULT_ROWS: f64 = 400.0;
 
@@ -125,8 +137,9 @@ pub struct Camera {
     pub dist: [f64; 5],
     /// The camera's x, y and z axes in the head frame (the columns of the head-from-camera rotation).
     pub axes: [V3; 3],
-    /// The picture's height in rows (for turning a picture that was turned upright back to the sensor's).
+    /// The picture's height in rows (for turning a picture that was turned upright back to the sensor's), and its width.
     pub rows: f64,
+    pub cols: f64,
 }
 
 impl Camera {
@@ -215,6 +228,7 @@ pub fn parse_calibration(text: &str) -> Result<Calibration, String> {
         let z = unit(sub(z, scale(x, dot(x, z))));
         let y = cross(z, x);
         let rows = c.get("ny").and_then(serde_json::Value::as_f64).filter(|v| *v > 1.0).unwrap_or(DEFAULT_ROWS);
+        let cols = c.get("nx").and_then(serde_json::Value::as_f64).filter(|v| *v > 1.0).unwrap_or(DEFAULT_ROWS);
         Ok(Camera {
             fx,
             fy,
@@ -223,6 +237,7 @@ pub fn parse_calibration(text: &str) -> Result<Calibration, String> {
             dist: [dist[0], dist[1], dist[2], dist[3], dist[4]],
             axes: [x, y, z],
             rows,
+            cols,
         })
     };
     Ok(Calibration { eyes: [camera("left")?, camera("right")?] })
@@ -263,7 +278,10 @@ pub struct Obs {
 /// A frame in the sensor's picture, undistorted, with the ellipse kept only where the lids are clear of the pupil and
 /// its rim is seen (an unknown aperture or rim share does not stop it).
 pub fn observe(camera: &Camera, frame: &RawFrame) -> Obs {
-    let Some([px, py]) = frame.pupil.filter(|p| p.iter().all(|v| v.is_finite())) else {
+    // (a centre outside the picture is no pupil: the distortion can't be undone there, and the iteration would fold it
+    // back to some point inside)
+    let inside = |p: &[f64; 2]| (0.0..=camera.cols).contains(&p[0]) && (0.0..=camera.rows).contains(&p[1]);
+    let Some([px, py]) = frame.pupil.filter(|p| p.iter().all(|v| v.is_finite()) && inside(p)) else {
         return Obs { time: frame.time, pos: None, ell: None };
     };
     // A picture turned upright is flipped top to bottom back to the sensor's (and so is the ellipse's axis)
@@ -497,9 +515,61 @@ pub struct EyeFilter {
     ell_off: u32,
     /// How often the angles were taken afresh from the ellipse.
     pub retakes: u32,
+    /// Updates with the ellipse since the start or the last re-take.
+    ellipse_frames: u32,
+}
+
+/// The centre's uncertainty while the ellipse is not used: no standard deviation above the larger of CENTRE_SD_CAP and
+/// what it was before (`before`, variances), the covariances scaled with it.
+fn cap_centre(p: &mut M7, before: [f64; 3]) {
+    for (k, i) in (4..7).enumerate() {
+        let limit = before[k].max(CENTRE_SD_CAP * CENTRE_SD_CAP);
+        if p[i][i] > limit {
+            let f = (limit / p[i][i]).sqrt();
+            for j in 0..N {
+                p[i][j] *= f;
+                p[j][i] *= f;
+            }
+        }
+    }
+}
+
+/// Whether an eye's filter gives its direction: the pupil seen within EYE_FRESH_S and a frame taken within
+/// ACCEPTED_FRESH_S (times in whatever clock the caller uses).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Freshness {
+    seen: Option<f64>,
+    accepted: Option<f64>,
+}
+
+impl Freshness {
+    /// A frame at `time`, and what the filter made of it.
+    pub fn note(&mut self, time: f64, o: &Obs, estimate: Option<&Estimate>) {
+        if o.pos.is_some() {
+            self.seen = Some(time);
+        }
+        if estimate.is_some_and(|e| matches!(e.update, Update::Start | Update::Ellipse | Update::PupilOnly)) {
+            self.accepted = Some(time);
+        }
+    }
+
+    pub fn fresh(&self, time: f64) -> bool {
+        self.seen.is_some_and(|seen| time - seen <= EYE_FRESH_S)
+            && self.accepted.is_some_and(|accepted| time - accepted <= ACCEPTED_FRESH_S)
+    }
 }
 
 impl EyeFilter {
+    /// Whether its centre has settled enough for the eye fit (SETTLED_ELLIPSE_FRAMES).
+    pub fn settled(&self) -> bool {
+        self.x.is_some() && self.ellipse_frames >= SETTLED_ELLIPSE_FRAMES
+    }
+
+    /// The centre (mm) and its standard deviations (mm), once started.
+    pub fn centre_mm(&self) -> Option<(V3, V3)> {
+        let x = self.x?;
+        Some((scale([x[4], x[5], x[6]], 1e3), [4, 5, 6].map(|i| self.p[i][i].max(0.0).sqrt() * 1e3)))
+    }
     /// Start over.
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -532,6 +602,7 @@ impl EyeFilter {
             self.p = diagonal([deg(10.0).powi(2), deg(10.0).powi(2), 1.0, 1.0, 0.005f64.powi(2), 0.005f64.powi(2), 0.008f64.powi(2)]);
             self.last = o.time;
             self.misses = 0;
+            self.ellipse_frames = 0;
             return self.estimate(Update::Start);
         };
         let dt = (o.time - self.last).clamp(0.0, DT_MAX);
@@ -563,6 +634,7 @@ impl EyeFilter {
             self.p[3][3] = 1.0;
             self.misses = 0;
             self.retakes += 1;
+            self.ellipse_frames = 0;
         }
         // The prediction
         let mut xp = [0.0; N];
@@ -582,6 +654,8 @@ impl EyeFilter {
         q[4][4] = SIG_C * SIG_C * dt;
         q[5][5] = SIG_C * SIG_C * dt;
         q[6][6] = SIG_CZ * SIG_CZ * dt;
+        // (the centre's uncertainty before this frame, for the cap while the ellipse is not used)
+        let before = [self.p[4][4], self.p[5][5], self.p[6][6]];
         let mut pp = mul(&mul(&f, &self.p), &transpose(&f));
         for i in 0..N {
             for k in 0..N {
@@ -591,6 +665,7 @@ impl EyeFilter {
         let Some(pos) = o.pos else {
             self.x = Some(xp);
             self.p = pp;
+            cap_centre(&mut self.p, before);
             return self.estimate(Update::NoPupil);
         };
         let noise = [SIG_POS * SIG_POS, SIG_POS * SIG_POS, SIG_ELL * SIG_ELL, SIG_ELL * SIG_ELL];
@@ -618,6 +693,7 @@ impl EyeFilter {
                     (zp, j, _) = jacobian(&xp, camera, true);
                     self.ell_off = 0;
                     self.retakes += 1;
+                    self.ellipse_frames = 0;
                 } else {
                     with_ell = false;
                 }
@@ -638,12 +714,14 @@ impl EyeFilter {
             self.x = Some(xp);
             self.p = pp;
             self.misses += 1;
+            cap_centre(&mut self.p, before);
             return self.estimate(Update::Rejected);
         };
         if distance(&y, &s_inv, n) > REJECT {
             self.x = Some(xp);
             self.p = pp;
             self.misses += 1;
+            cap_centre(&mut self.p, before);
             return self.estimate(Update::Rejected);
         }
         // The gain K = P J' S^-1; without the ellipse the centre is held (its rows zero)
@@ -670,6 +748,7 @@ impl EyeFilter {
             self.x = Some(xp);
             self.p = pp;
             self.misses += 1;
+            cap_centre(&mut self.p, before);
             return self.estimate(Update::Implausible);
         }
         // P = (I - K J) P (I - K J)' + K R K' (the Joseph form), kept symmetric
@@ -695,6 +774,11 @@ impl EyeFilter {
         self.x = Some(xn);
         self.p = p;
         self.misses = 0;
+        if with_ell {
+            self.ellipse_frames += 1;
+        } else {
+            cap_centre(&mut self.p, before);
+        }
         self.estimate(if with_ell { Update::Ellipse } else { Update::PupilOnly })
     }
 }
@@ -720,9 +804,10 @@ pub struct EyeballGaze {
     /// Each eye's map from the eye fit (eyeball_map.rs); None until it has one.
     pub maps: Option<[EyeMap; 2]>,
     filters: [EyeFilter; 2],
-    // The frame last taken per eye (its time, ns), and when the pupil was last seen (the eye server's time)
+    // The frame last taken per eye (its time, ns), and when its pupil was last seen and a frame last taken (the eye
+    // server's time)
     frame_ns: [Option<u64>; 2],
-    seen: [Option<f64>; 2],
+    fresh: [Freshness; 2],
     last_time: Option<f64>,
     used: bool,
     /// Frames taken per eye, how they went (Update order), and the time they took (ns), for the journal.
@@ -748,7 +833,7 @@ impl EyeballGaze {
             filter.reset();
         }
         self.frame_ns = [None; 2];
-        self.seen = [None; 2];
+        self.fresh = [Freshness::default(); 2];
         self.last_time = None;
         self.used = false;
     }
@@ -761,8 +846,9 @@ impl EyeballGaze {
     }
 
     /// Take a sample at `time` (the eye server's, s) with eyecam-rec's values as read for it: each eye's new frame
-    /// into its filter. Each eye's direction (yaw, pitch in degrees, the filter's own before the map) while its pupil
-    /// was seen within EYE_FRESH_S; None for both without the calibration.
+    /// into its filter. Each eye's direction (yaw, pitch in degrees, the filter's own before the map) while it is fresh
+    /// (Freshness: its pupil seen within EYE_FRESH_S and a frame taken within ACCEPTED_FRESH_S); None for both without
+    /// the calibration.
     pub fn step(&mut self, time: f64, live: Option<&Live>) -> [Option<[f32; 2]>; 2] {
         if self.calibration.is_none() {
             return [None; 2];
@@ -789,12 +875,9 @@ impl EyeballGaze {
                 if let Some(estimate) = estimate {
                     self.updates[eye][estimate.update as usize] += 1;
                 }
-                if o.pos.is_some() {
-                    self.seen[eye] = Some(time);
-                }
+                self.fresh[eye].note(time, &o, estimate.as_ref());
             }
-            let fresh = self.seen[eye].is_some_and(|seen| time - seen <= EYE_FRESH_S);
-            if fresh && let Some(x) = self.filters[eye].x {
+            if self.fresh[eye].fresh(time) && let Some(x) = self.filters[eye].x {
                 out[eye] = Some([x[0].to_degrees() as f32, x[1].to_degrees() as f32]);
             }
         }
@@ -806,6 +889,36 @@ impl EyeballGaze {
     pub fn retakes(&self) -> [u32; 2] {
         self.filters.each_ref().map(|filter| filter.retakes)
     }
+
+    /// The directions step gave, kept only for eyes whose filter has settled (EyeFilter::settled): what the eye
+    /// fit's captures may count.
+    pub fn settled_only(&self, eyes: [Option<[f32; 2]>; 2]) -> [Option<[f32; 2]>; 2] {
+        [0, 1].map(|eye| eyes[eye].filter(|_| self.filters[eye].settled()))
+    }
+
+    /// Each eye's centre now, for the journal: where it is (mm, camera frame), how sure (standard deviations, mm),
+    /// how many ellipse updates since the start or last re-take, and whether it counts for the eye fit.
+    pub fn centre_line(&self) -> String {
+        let eye = |e: usize| {
+            let filter = &self.filters[e];
+            match filter.centre_mm() {
+                Some((c, sd)) => format!(
+                    "{} ({:.1}, {:.1}, {:.1}) mm, sd ({:.2}, {:.2}, {:.2}), {} ellipse frames{}",
+                    ["L", "R"][e],
+                    c[0],
+                    c[1],
+                    c[2],
+                    sd[0],
+                    sd[1],
+                    sd[2],
+                    filter.ellipse_frames,
+                    if filter.settled() { "" } else { " (not settled yet)" }
+                ),
+                None => format!("{} not started", ["L", "R"][e]),
+            }
+        };
+        format!("Eyeball centre: {}; {}", eye(0), eye(1))
+    }
 }
 
 /// Whether a file is eyecam-rec's replay output (`eyecam-rec --replay ... --out`): by its header.
@@ -816,7 +929,9 @@ pub fn is_eyecam_replay(header: &str) -> bool {
 /// The filter over an eyecam-rec replay output (its live CSV: eye, eye_index, t_cam, ok_pupil, aperture, pupil_vis,
 /// pupil_cx / _cy / _a / _b and pupil_angle), each eye on its own in camera-time order, the left eye's picture taken
 /// as turned upright (as eyecam-rec turns it on the Frame). Writes one row per frame to `out` (eye, eye_index, t_cam,
-/// update, yaw_deg, pitch_deg, centre_x_mm / _y_mm / _z_mm; empty before the filter starts) and returns the report.
+/// update, yaw_deg, pitch_deg, centre_x_mm / _y_mm / _z_mm, empty before the filter starts; fresh as the live source
+/// would use the eye (Freshness, on the camera's clock), settled for the eye fit, the centre's largest standard
+/// deviation in mm) and returns the report.
 pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) -> Result<String, String> {
     let mut lines = text.lines();
     let header: Vec<&str> = lines.next().ok_or("the file is empty")?.split(',').collect();
@@ -868,7 +983,7 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
     };
     use std::io::Write as _;
     if let Some(w) = writer.as_mut() {
-        writeln!(w, "eye,eye_index,t_cam,update,yaw_deg,pitch_deg,centre_x_mm,centre_y_mm,centre_z_mm").map_err(|e| e.to_string())?;
+        writeln!(w, "eye,eye_index,t_cam,update,yaw_deg,pitch_deg,centre_x_mm,centre_y_mm,centre_z_mm,fresh,settled,centre_sd_mm").map_err(|e| e.to_string())?;
     }
     let mut report = String::new();
     let mut total_ns = 0u128;
@@ -877,35 +992,45 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
         let camera = &calibration.eyes[eye];
         frames[eye].sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut filter = EyeFilter::default();
+        let mut fresh = Freshness::default();
+        let mut not_fresh = 0usize;
         let mut counts = [0usize; 6];
         let mut waiting = 0usize;
         let started = std::time::Instant::now();
         let mut rows = Vec::with_capacity(frames[eye].len());
         for (t, index, frame) in &frames[eye] {
-            let estimate = filter.step(camera, &observe(camera, frame));
+            let o = observe(camera, frame);
+            let estimate = filter.step(camera, &o);
             match estimate {
                 Some(e) => counts[e.update as usize] += 1,
                 None => waiting += 1,
             }
-            rows.push((*t, index, estimate));
+            // (fresh as the live glue judges it, on the camera's clock)
+            fresh.note(*t, &o, estimate.as_ref());
+            let now_fresh = fresh.fresh(*t);
+            not_fresh += usize::from(estimate.is_some() && !now_fresh);
+            let sd = filter.centre_mm().map_or(f64::NAN, |(_, sd)| sd[0].max(sd[1]).max(sd[2]));
+            rows.push((*t, index, estimate, now_fresh, filter.settled(), sd));
         }
         total_ns += started.elapsed().as_nanos();
         total += frames[eye].len();
         if let Some(w) = writer.as_mut() {
-            for (t, index, estimate) in rows {
+            for (t, index, estimate, now_fresh, settled, sd) in rows {
                 let name = ["L", "R"][eye];
                 match estimate {
                     Some(e) => writeln!(
                         w,
-                        "{name},{index},{t:.6},{},{:.6},{:.6},{:.4},{:.4},{:.4}",
+                        "{name},{index},{t:.6},{},{:.6},{:.6},{:.4},{:.4},{:.4},{},{},{sd:.3}",
                         e.update.name(),
                         e.yaw.to_degrees(),
                         e.pitch.to_degrees(),
                         e.centre[0] * 1e3,
                         e.centre[1] * 1e3,
-                        e.centre[2] * 1e3
+                        e.centre[2] * 1e3,
+                        u8::from(now_fresh),
+                        u8::from(settled)
                     ),
-                    None => writeln!(w, "{name},{index},{t:.6},,,,,,"),
+                    None => writeln!(w, "{name},{index},{t:.6},,,,,,,0,0,"),
                 }
                 .map_err(|e| e.to_string())?;
             }
@@ -913,12 +1038,13 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
         let names = [Update::Start, Update::NoPupil, Update::Rejected, Update::Implausible, Update::Ellipse, Update::PupilOnly];
         let counted: Vec<String> = names.iter().map(|u| format!("{} {}", u.name(), counts[*u as usize])).collect();
         report += &format!(
-            "eyeball {}: {} frames ({} before the start): {}; {} re-takes\n",
+            "eyeball {}: {} frames ({} before the start): {}; {} re-takes; {} frames not given (no pupil seen, or no frame taken, lately)\n",
             ["left", "right"][eye],
             frames[eye].len(),
             waiting,
             counted.join(", "),
-            filter.retakes
+            filter.retakes,
+            not_fresh
         );
     }
     if total > 0 {
@@ -941,7 +1067,7 @@ pub mod tests {
         let (up, side) = (40f64.to_radians(), 15f64.to_radians());
         let z = unit([-side.sin() * up.cos(), up.sin(), side.cos() * up.cos()]);
         let x = unit(sub([1.0, 0.0, 0.0], scale(z, z[0])));
-        Camera { fx: 270.0, fy: 270.0, cx: 200.0, cy: 200.0, dist: [-0.05, 0.01, 0.0005, -0.0003, 0.0], axes: [x, cross(z, x), z], rows: 400.0 }
+        Camera { fx: 270.0, fy: 270.0, cx: 200.0, cy: 200.0, dist: [-0.05, 0.01, 0.0005, -0.0003, 0.0], axes: [x, cross(z, x), z], rows: 400.0, cols: 400.0 }
     }
 
     /// A made-up calibration JSON with two such cameras (and fields the loader leaves alone).
@@ -1207,8 +1333,9 @@ pub mod tests {
         assert!(observe(&c, &RawFrame { vis: 0.9, ..frame }).ell.is_none());
         assert!(observe(&c, &RawFrame { aperture: f64::NAN, vis: f64::NAN, ..frame }).ell.is_some());
         assert!(observe(&c, &RawFrame { angle_deg: f64::NAN, ..frame }).ell.is_none());
-        // No pupil: nothing
+        // No pupil, or one outside the picture: nothing
         assert_eq!(observe(&c, &RawFrame { pupil: None, ..frame }).pos, None);
+        assert_eq!(observe(&c, &RawFrame { pupil: Some([2200.0, -1300.0]), ..frame }).pos, None);
     }
 
     #[test]
@@ -1279,6 +1406,99 @@ pub mod tests {
         assert_eq!(filter.step(&c, &none).unwrap().update, Update::NoPupil);
         filter.reset();
         assert!(!filter.started());
+    }
+
+    #[test]
+    fn an_eye_is_fresh_only_while_its_pupil_is_seen_and_its_filter_takes_frames() {
+        let o = |pos: bool| Obs { time: 0.0, pos: pos.then_some([0.0, 0.0]), ell: None };
+        let e = |update: Update| Estimate { yaw: 0.0, pitch: 0.0, centre: [0.0; 3], update };
+        let mut fresh = Freshness::default();
+        assert!(!fresh.fresh(0.0));
+        fresh.note(1.0, &o(true), Some(&e(Update::Ellipse)));
+        assert!(fresh.fresh(1.0) && fresh.fresh(1.0 + EYE_FRESH_S));
+        // The pupil seen but every frame refused: given until ACCEPTED_FRESH_S after the last one taken, then not
+        for k in 1..40 {
+            let t = 1.0 + f64::from(k) / 90.0;
+            fresh.note(t, &o(true), Some(&e(if k % 2 == 0 { Update::Rejected } else { Update::Implausible })));
+            assert_eq!(fresh.fresh(t), t - 1.0 <= ACCEPTED_FRESH_S, "{t}");
+        }
+        // Taken again (the pupil only): fresh at once
+        fresh.note(2.0, &o(true), Some(&e(Update::PupilOnly)));
+        assert!(fresh.fresh(2.0));
+        // No pupil: the prediction is not a frame taken, and the pupil is not seen
+        fresh.note(2.1, &o(false), Some(&e(Update::NoPupil)));
+        assert!(fresh.fresh(2.1) && !fresh.fresh(2.0 + EYE_FRESH_S + 0.01));
+    }
+
+    #[test]
+    fn a_filter_that_keeps_refusing_its_frames_gives_no_direction() {
+        let c = camera();
+        let mut gaze = EyeballGaze::default();
+        gaze.set_calibration(Some(Calibration { eyes: [c.clone(), c.clone()] }));
+        let mut live = crate::tests::camera(0.75, 0.0);
+        let mut out = Vec::new();
+        let mut accepted = 0.0;
+        for k in 0..400u64 {
+            let time = k as f64 / 90.0;
+            // From frame 200 the "pupil" jumps about the picture from frame to frame (something else taken for it at a
+            // corner, the lids over the real one): the filter refuses nearly all of these frames
+            let (mut slip, shape) = live_frame(&c, 1_000_000_000 + k * 11_111_111, 5.0);
+            if k >= 200 {
+                let r = (k.wrapping_mul(2_654_435_761) >> 7) % 10_000;
+                slip.pupil = Some([20.0 + (r % 100) as f32 * 3.6, 20.0 + (r / 100) as f32 * 3.6]);
+            }
+            live.slip = [Some(slip), Some(slip)];
+            live.shape = [Some(shape), Some(shape)];
+            let before = gaze.updates[0];
+            let eyes = gaze.step(time, Some(&live));
+            let took = [Update::Start, Update::Ellipse, Update::PupilOnly]
+                .iter()
+                .any(|u| gaze.updates[0][*u as usize] != before[*u as usize]);
+            if took {
+                accepted = time;
+            }
+            // Given only while a frame was taken within ACCEPTED_FRESH_S (the pupil is seen in every frame)
+            assert_eq!(eyes[0].is_some(), time - accepted <= ACCEPTED_FRESH_S, "frame {k}");
+            out.push(eyes);
+        }
+        assert!(out[199][0].is_some());
+        let refused = gaze.updates[0][Update::Rejected as usize] + gaze.updates[0][Update::Implausible as usize];
+        assert!(refused > 100, "{:?}", gaze.updates[0]);
+        // ...so for stretches of it no direction: the one-eye / hold / eye server fallbacks take over in pupil.rs
+        let none = out[200..].iter().filter(|eyes| eyes[0].is_none()).count();
+        eprintln!("a jumping pupil: {refused} frames refused, no direction for {none} of 200 samples");
+        assert!(none > 20, "{none}");
+    }
+
+    #[test]
+    fn the_centre_settles_for_the_eye_fit_and_its_uncertainty_stays_capped_without_the_ellipse() {
+        let c = camera();
+        let mut filter = EyeFilter::default();
+        // Not settled until SETTLED_ELLIPSE_FRAMES ellipse updates
+        run(&mut filter, &c, seen, 0.0, 0.5, |_| (eye_at(&c), 0.0, 0.0));
+        assert!(!filter.settled());
+        run(&mut filter, &c, seen, 0.5, 1.0, |_| (eye_at(&c), 0.0, 0.0));
+        assert!(filter.settled());
+        let (_, before) = filter.centre_mm().unwrap();
+        // Ten seconds with a lid near the pupil (no ellipse): the centre held, its uncertainty no larger than the cap
+        // (or what it was); without the cap it would grow by SIG_C a second's root to about 4.7 mm
+        let mut t = 1.5;
+        for _ in 0..900 {
+            let frame = RawFrame { aperture: 1.0, ..seen(&c, eye_at(&c), 3.0, 2.0, t) };
+            let e = filter.step(&c, &observe(&c, &frame)).unwrap();
+            assert_eq!(e.update, Update::PupilOnly);
+            t += 1.0 / 90.0;
+        }
+        let (_, after) = filter.centre_mm().unwrap();
+        for i in 0..3 {
+            assert!(after[i] <= before[i].max(CENTRE_SD_CAP * 1e3) + 1e-9, "{before:?} -> {after:?}");
+        }
+        // Still settled (the centre kept), and the ellipse taken again afterwards
+        assert!(filter.settled());
+        let (_, _, _) = run(&mut filter, &c, seen, t, 1.0, |_| (eye_at(&c), 3.0, 2.0));
+        // A re-take starts the count over: a filter started anew is not settled
+        filter.reset();
+        assert!(!filter.settled() && filter.centre_mm().is_none());
     }
 
     /// A live file's values for one eye frame (glint and shape parts).

@@ -10,6 +10,7 @@ use eyecam::autograb;
 use eyecam::cues::{self, Player, Step};
 use eyecam::driftlog::{self, DriftLog};
 use eyecam::dspsrc::{self, Source};
+use eyecam::glintlog;
 use eyecam::mem::Arena;
 use eyecam::ring::{self, Clock, FRAME_BYTES, HEADER_BYTES, HEIGHT, Ring, STRIDE, WIDTH};
 use eyecam::shm::{self, Sample, Shm};
@@ -108,6 +109,8 @@ struct Args {
     preview: Option<PathBuf>,
     /// --driftlog: with --replay, also write the drift log (as `driftlog on` does live) to this file.
     driftlog: Option<PathBuf>,
+    /// --glintlog: with --replay, also write the glint log (as a recording does live) to this file.
+    glintlog: Option<PathBuf>,
     tune: eyecam::live::Tune,
     wait_grab: f64,
     wait_lock: f64,
@@ -162,7 +165,9 @@ const USAGE: &str = "usage: eyecam-rec [options]
                      must be on tmpfs, as live)
   --driftlog FILE    with --replay: also write the drift log (one row per eye per second, as `driftlog on` does
                      live) to FILE
-  --seconds N        how long to record once frames are found (default 120, or the cue protocol's length)
+  --glintlog FILE    with --replay: also write the glint log (one row per eye per frame: the pupil, lids, every glint
+                     and the template's offset, as a recording's glints.csv live) to FILE
+  --seconds N       how long to record once frames are found (default 120, or the cue protocol's length)
   --out DIR          where session directories go (default ~/eyecam)
   --cues FILE        play a beep cue protocol (lines `seconds label`, see protocol_widen.txt) and log cues.csv
   --swap             swap which camera is labelled L and R
@@ -206,6 +211,7 @@ fn parse_args() -> Result<Args> {
         calib_replay: None,
         preview: None,
         driftlog: None,
+        glintlog: None,
         tune: eyecam::live::Tune::default(),
         wait_grab: 600.0,
         wait_lock: 300.0,
@@ -252,6 +258,7 @@ fn parse_args() -> Result<Args> {
             }
             "--preview" => args.preview = Some(PathBuf::from(value("--preview")?)),
             "--driftlog" => args.driftlog = Some(PathBuf::from(value("--driftlog")?)),
+            "--glintlog" => args.glintlog = Some(PathBuf::from(value("--glintlog")?)),
             "--no-track" => args.tune.track = false,
             "--no-gaze-drop" => args.tune.gaze_drop = false,
             "--no-edge-hold" => args.tune.edge_hold = false,
@@ -379,6 +386,7 @@ fn run() -> Result<()> {
             limit: args.limit,
             preview: args.preview.clone(),
             driftlog: args.driftlog.clone(),
+            glintlog: args.glintlog.clone(),
             drop_pupil: args.drop_pupil.clone(),
         };
         let ms = eyecam::replay::write_live(&session, &args.out, &opts)?;
@@ -2816,6 +2824,21 @@ fn record(
         dump_ring(&d.join("lock_dump.bin"), &b.arenas[ring.arena], &ring, &mut m)?;
     }
     eprintln!("{} into {}", if recording { "recording" } else { "calibrating" }, d.display());
+    // A recording's glint log (glints.csv beside its other files: a row per eye per frame from the live worker), on
+    // for as long as the recording runs; closed however it ends (GlintLogOn's drop)
+    let mut glint_log = None;
+    if recording && let Some(l) = live.as_deref() {
+        match glintlog::GlintLog::create(&d).and_then(glintlog::GlintLog::start) {
+            Ok(log) => {
+                // (a log left on is closed first, once the lock is let go)
+                let closing = l.shared.glintlog.lock().unwrap().on(log);
+                closing.wait();
+                glint_log = Some(GlintLogOn(l.shared.clone()));
+                writeln!(m, "glint_log={}", glintlog::FILE_NAME)?;
+            }
+            Err(e) => eprintln!("glintlog: {e}"),
+        }
+    }
     let mut meta = Some(m);
     let dir = Some(d);
     let dir_text = dir.as_ref().map_or(String::new(), |d| d.display().to_string());
@@ -3067,6 +3090,13 @@ fn record(
             s.count[1]
         )?;
     }
+    // The glint log closed with the recording (its last rows written), and what it holds noted
+    if let Some(on) = glint_log.take() {
+        let st = on.finish();
+        if let Some(m) = meta.as_mut() {
+            writeln!(m, "glint_rows={}\nglint_bytes={}\nglint_full={}", st.rows, st.bytes, st.full as u8)?;
+        }
+    }
     eprintln!(
         "{reason}: {:.1} s, {} L + {} R frames{}",
         t_end - t_start,
@@ -3112,6 +3142,26 @@ fn record(
 }
 
 // ------------------------------------------------------------------------------------------------- recording
+
+/// A recording's glint log while it is on (eyecam::glintlog): turned off when the recording ends (`finish`), or when
+/// this is dropped, as when the recording ends early on an error.
+struct GlintLogOn(Arc<livesvc::Shared>);
+
+impl GlintLogOn {
+    /// Turn it off and wait for its file to be closed: what it holds.
+    fn finish(self) -> glintlog::GlintStatus {
+        let closing = self.0.glintlog.lock().unwrap().off();
+        closing.wait();
+        self.0.glintlog.lock().unwrap().status()
+    }
+}
+
+impl Drop for GlintLogOn {
+    fn drop(&mut self) {
+        let closing = self.0.glintlog.lock().unwrap().off();
+        closing.wait();
+    }
+}
 
 enum SlotEvent {
     None,
@@ -3702,6 +3752,7 @@ mod tests {
             calib_replay: None,
             preview: None,
             driftlog: None,
+            glintlog: None,
             tune: eyecam::live::Tune::default(),
             wait_grab: 0.0,
             wait_lock: 300.0,

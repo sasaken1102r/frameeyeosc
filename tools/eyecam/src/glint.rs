@@ -168,6 +168,8 @@ pub struct Slip {
     pub glints: u32,
     /// The offset was worked out from this frame (else it is the last one, held).
     pub tracked: bool,
+    /// ...by matching the whole pattern anywhere (not tracked for LOST_S before), not at the predicted offset.
+    pub relocked: bool,
     /// Glints matched to the template in this frame (0 when not tracked).
     pub matches: u32,
     /// Frames since the offset was last worked out (0 when tracked).
@@ -288,6 +290,7 @@ impl Tracker {
             let mut got = self.matched(&points, predicted);
             if got.is_none() && t - self.last_good > LOST_S && points.len() >= 3 {
                 got = self.found_again(&points, predicted);
+                out.relocked = got.is_some();
             }
             match got {
                 Some((offset, n)) => {
@@ -572,6 +575,32 @@ mod tests {
         // The eye turns: the pupil 20 px right, the glints 4 px: the prediction (K_PRED) keeps them matched
         let s = tr.frame(t + 0.011, Some([80.0, 50.0]), &pattern([4.0, 0.0]));
         assert!(s.tracked && (s.offset[0] - 4.0).abs() < 0.01, "{s:?}");
+    }
+
+    #[test]
+    fn a_whole_pattern_match_after_a_loss_says_relocked() {
+        let mut tr = Tracker::default();
+        let mut t = 0.0;
+        for _ in 0..600 {
+            tr.frame(t, Some([60.0, 50.0]), &pattern([0.0, 0.0]));
+            t += 0.011;
+        }
+        assert_eq!(tr.template().len(), 4);
+        // Followed at the predicted offset: tracked, not relocked
+        let s = tr.frame(t, Some([60.0, 50.0]), &pattern([0.0, 0.0]));
+        assert!(s.tracked && !s.relocked, "{s:?}");
+        // Half a second without glints (the headset off, say), then the pattern 8 px over: too far for the prediction,
+        // found by matching it anywhere
+        for _ in 0..45 {
+            t += 0.011;
+            assert!(!tr.frame(t, None, &[]).relocked);
+        }
+        t += 0.011;
+        let s = tr.frame(t, Some([60.0, 58.0]), &pattern([0.0, 8.0]));
+        assert!(s.tracked && s.relocked && (s.offset[1] - 8.0).abs() < 0.01, "{s:?}");
+        // ...and from there on followed as usual
+        let s = tr.frame(t + 0.011, Some([60.0, 58.0]), &pattern([0.0, 8.0]));
+        assert!(s.tracked && !s.relocked, "{s:?}");
     }
 
     #[test]

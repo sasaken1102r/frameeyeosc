@@ -5163,7 +5163,9 @@ impl Bridge {
             self.dots.send(&dot_sample(&self.settings, &data, &sample, self.camera_live.as_ref()));
         }
         if measuring {
-            // The gaze guard's values first (gaze_guard), so the panel has them when this sample's own datagram comes
+            // The raw values first (the pupil pair and the eye camera's, so a record can redo the pupil gaze), then the
+            // gaze guard's (gaze_guard), so the panel has both when this sample's own datagram comes
+            self.measure.send_raw(&dots::RawSample::of(data.sample_time, &data.extra, self.camera_live.as_ref()));
             let (measure, guard) = measure_sample(&self.settings, &data, &sample, other.as_ref());
             if let Some(guard) = &guard {
                 self.measure.send_guard(guard);
@@ -7902,7 +7904,13 @@ mod tests {
             for data in &readings {
                 bridge.on_sample(*data).unwrap();
                 while let Ok(size) = panel.recv(&mut buffer) {
-                    out.measured.push(dots::decode_measure(&buffer[..size]).unwrap());
+                    // Each sample's raw values just before it: the pupil pair as read (no eye camera here)
+                    let raw = dots::decode_raw(&buffer[..size]).unwrap();
+                    assert_eq!((raw.pair, raw.cam), ([data.extra[0], data.extra[1], data.extra[2], data.extra[3]], [None; 2]));
+                    let size = panel.recv(&mut buffer).unwrap();
+                    let measured = dots::decode_measure(&buffer[..size]).unwrap();
+                    assert_eq!(measured.time.to_bits(), raw.time.to_bits());
+                    out.measured.push(measured);
                 }
                 let status = serde_json::to_value(bridge.status(None, None)).unwrap();
                 let latest = bridge.latest.as_ref().unwrap();
@@ -8242,20 +8250,32 @@ mod tests {
             }
             // What is sent doesn't change (no glints here, so nothing is added)
             assert!(sent[0] == sent[1], "{source:?}");
-            // Off: only the measure datagrams; on: each preceded by the guard's, of the same time
-            assert!(received[0].iter().all(|d| dots::decode_measure(d).is_some()));
-            assert_eq!(received[1].len(), 2 * readings.len());
-            for (pair, data) in received[1].chunks(2).zip(readings) {
-                let guard = dots::decode_guard(&pair[0]).expect("the guard's first");
+            // Off: each measure datagram preceded only by its raw values (FEOR); on: the raw values, then the guard's,
+            // then the sample's, all of the same time
+            assert_eq!(received[0].len(), 2 * readings.len());
+            for (pair, data) in received[0].chunks(2).zip(readings) {
+                let raw = dots::decode_raw(&pair[0]).expect("the raw values first");
                 let measure = dots::decode_measure(&pair[1]).expect("then the sample's");
-                assert!(guard.time == data.sample_time && measure.time == data.sample_time);
+                assert!(raw.time == data.sample_time && measure.time == data.sample_time);
+            }
+            assert_eq!(received[1].len(), 3 * readings.len());
+            for (three, data) in received[1].chunks(3).zip(readings) {
+                let raw = dots::decode_raw(&three[0]).expect("the raw values first");
+                let guard = dots::decode_guard(&three[1]).expect("then the guard's");
+                let measure = dots::decode_measure(&three[2]).expect("then the sample's");
+                assert!(raw.time == data.sample_time && guard.time == data.sample_time && measure.time == data.sample_time);
                 // Valve's as it was; the guarded one the same, with nothing added
                 assert_eq!(guard.guarded, measure.valve);
                 assert_eq!(guard.offset, [[0.0; 2]; 2]);
                 assert!(!guard.trusted);
             }
-            let unchanged: Vec<_> = received[0].iter().map(|d| dots::decode_measure(d).unwrap()).collect();
-            let with: Vec<_> = received[1].chunks(2).map(|pair| dots::decode_measure(&pair[1]).unwrap()).collect();
+            // The raw values don't depend on the guard
+            let raws = |datagrams: &[Vec<u8>], every: usize| -> Vec<Vec<u8>> {
+                datagrams.chunks(every).map(|group| group[0].clone()).collect()
+            };
+            assert_eq!(raws(&received[0], 2), raws(&received[1], 3), "{source:?}");
+            let unchanged: Vec<_> = received[0].chunks(2).map(|pair| dots::decode_measure(&pair[1]).unwrap()).collect();
+            let with: Vec<_> = received[1].chunks(3).map(|three| dots::decode_measure(&three[2]).unwrap()).collect();
             assert_eq!(unchanged, with, "{source:?}");
         }
         drop(panel);

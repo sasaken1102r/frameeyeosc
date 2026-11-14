@@ -1646,6 +1646,155 @@ void testSlip(const FontSet& fonts) {
 }
 
 /**
+ * A made-up headset re-seat test through reseat_check::Session: samples at 90 a second, none from 2 s to 6 s into each
+ * re-seat (the headset off), each round's seat moving the pupils' gaze its own way.
+ * @param mapped samples with a pupil map
+ * @param stopAt stop this many seconds in (-1: to the end)
+ * @return the test's view
+ */
+reseat_check::View madeUpReseat(bool mapped, double stopAt = -1.0) {
+    using namespace reseat_check;
+    Session session;
+    double now = 10.0;
+    session.start(now, 1.79e9);
+    for (int guard = 0; guard < 200000 && session.active(); ++guard, now += 1.0 / 90) {
+        if (stopAt >= 0 && now - 10.0 >= stopAt) {
+            session.stop(1.79e9 + now);
+            break;
+        }
+        const Tick tick = session.tick(now, 1.79e9 + now);
+        if (!session.active() || tick.step < 0) break;
+        const Step& step = steps()[tick.step];
+        const double into = now - session.shownAt()[tick.step];
+        if (step.kind == StepKind::Reseat && into >= 2.0 && into < 6.0) continue;
+        double g[2] = {0, 0};
+        gaze_measure::targetGaze({step.yawDeg, step.pitchDeg}, g);
+        const double seat[2] = {(step.round % 3 - 1) * 1.8, (step.round % 2) * 1.2};
+        gaze_measure::Sample sample;
+        sample.mapped = mapped;
+        sample.usable = true;
+        sample.beforeSmoothing = true;
+        sample.valve[0] = static_cast<float>((g[0] - 2.5 + 0.1 * seat[0]) / 45);
+        sample.valve[1] = static_cast<float>((g[1] + 1.0 + 0.1 * seat[1]) / 45);
+        if (mapped) {
+            sample.pupilState = gaze_measure::PupilState::Pupil;
+            sample.pupil[0] = static_cast<float>((g[0] + 0.4 + seat[0]) / 45);
+            sample.pupil[1] = static_cast<float>((g[1] - 0.2 + seat[1]) / 45);
+        }
+        session.add(now + 0.002, 1.79e9 + now, sample);
+    }
+    return session.view();
+}
+
+/**
+ * Advanced > Debug tools: "Headset re-seat test" in its own row under "Measure gaze error" (pressable while frameeyeosc
+ * runs and no eye fit, gaze error check or slip test does); while it runs its screen in the tab's place with only
+ * "Stop" (and the tabs); its result with both sources (a row per re-seat inside the card), without a map, stopped,
+ * timed out; the captions under the dot. With PANEL_TEST_PNG_DIR set, each to a PNG there.
+ */
+void testReseat(const FontSet& fonts) {
+    const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
+    for (const Language language : {Language::Ja, Language::En}) {
+        const std::string lang = language == Language::Ja ? "ja" : "en";
+        const auto png = [&](const EyePanel& panel, const std::string& name) {
+            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/reseat_" + name + "_" + lang + "_2026-11-14_19-30-00.png");
+        };
+        PanelModel m = modelWith(Lids::Both, true);
+        m.language = language;
+        for (const auto& eye : kPupilMapKeys) {
+            for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
+        }
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Tools);
+        // The button: beside the slip test's, in the gaze error check's row, inside the card
+        panel.render(m);
+        const std::vector<EyePanel::HitArea> start = hits(panel, PanelAction::ReseatStart);
+        const std::vector<EyePanel::HitArea> slip = hits(panel, PanelAction::SlipStart);
+        const std::vector<EyePanel::HitArea> measure = hits(panel, PanelAction::MeasureStart);
+        CHECK(start.size() == 1 && slip.size() == 1 && measure.size() == 1);
+        if (start.size() == 1 && slip.size() == 1 && measure.size() == 1) {
+            CHECK(start[0].y == slip[0].y && slip[0].y == measure[0].y);
+            CHECK(slip[0].x >= measure[0].x + measure[0].w && start[0].x >= slip[0].x + slip[0].w);
+            CHECK(start[0].x + start[0].w <= 1154);
+        }
+        png(panel, "row");
+        // ...not without frameeyeosc, nor while the slip test runs
+        PanelModel stopped = m;
+        stopped.status.running = false;
+        panel.render(stopped);
+        CHECK(hits(panel, PanelAction::ReseatStart).empty());
+        PanelModel slipping = m;
+        slipping.slip.phase = slip_check::Phase::Running;
+        slipping.slip.step = 0;
+        panel.render(slipping);
+        CHECK(hits(panel, PanelAction::ReseatStart).empty());
+        // Running: its screen (a re-seat, then a dot), only "Stop" and the tabs can be pressed
+        m.reseat.phase = reseat_check::Phase::Running;
+        m.reseat.step = 11;
+        m.reseat.round = 2;
+        m.reseat.stepLeft = 5.2;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ReseatStop).size() == 1 && hits(panel, PanelAction::ReseatStart).empty());
+        for (const EyePanel::HitArea& area : panel.hitAreas()) {
+            CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::ReseatStop);
+        }
+        png(panel, "running_reseat");
+        m.reseat.stepLeft = 0.0;
+        m.reseat.waiting = true;
+        panel.render(m);
+        png(panel, "running_waiting");
+        m.reseat.waiting = false;
+        m.reseat.step = 15;
+        m.reseat.stepLeft = 1.4;
+        m.reseat.video = reseat_check::VideoState::On;
+        panel.render(m);
+        png(panel, "running_dot");
+        // Done with both sources: "Again" and "Close", every row inside the card
+        m.reseat = madeUpReseat(true);
+        CHECK(m.reseat.phase == reseat_check::Phase::Done && m.reseat.result.pupil.rounds == reseat_check::kRounds);
+        CHECK(m.reseat.result.valve.rounds == reseat_check::kRounds && m.reseat.roundsDone == reseat_check::kRounds);
+        m.reseat.video = reseat_check::VideoState::On;
+        m.reseat.videoDir = "/home/steamos/eyecam/rec_2026-11-14_19-30-00";
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ReseatClose).size() == 1 && hits(panel, PanelAction::ReseatStart).size() == 1);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+        png(panel, "result");
+        // Without a pupil map: Valve only
+        m.reseat = madeUpReseat(false);
+        CHECK(!m.reseat.result.mapped && m.reseat.result.pupil.rounds == 0);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ReseatClose).size() == 1);
+        png(panel, "result_nomap");
+        // Stopped partway, and timed out after a re-seat
+        m.reseat = madeUpReseat(true, 75.0);
+        CHECK(m.reseat.phase == reseat_check::Phase::Stopped && m.reseat.roundsDone == 2);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ReseatClose).size() == 1);
+        png(panel, "stopped");
+        m.reseat = reseat_check::View();
+        m.reseat.phase = reseat_check::Phase::Failed;
+        m.reseat.timedOut = true;
+        m.reseat.video = reseat_check::VideoState::Refused;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::ReseatClose).size() == 1);
+        png(panel, "timed_out");
+        // The captions under the dot: the re-seat, its waiting line, a dot
+        const UiText& t = uiText(language);
+        std::vector<uint8_t> rgba;
+        const std::string dir = pngDir != nullptr ? std::string(pngDir) + "/" : std::string();
+        const auto caption = [&](int step, bool waiting, double progress, int seconds, const std::string& name) {
+            renderCaption(fonts, reseat_check::instruction(t, reseat_check::steps()[step], waiting), progress, seconds,
+                          rgba, pngDir != nullptr ? dir + "reseat_caption_" + name + "_" + lang + "_2026-11-14_19-30-00.png" : "");
+            CHECK(rgba.size() == static_cast<size_t>(kCaptionImageW) * kCaptionImageH * 4);
+        };
+        caption(1, false, 0.7, 6, "reseat");
+        caption(1, true, 0.0, 0, "waiting");
+        caption(5, false, 1.0, 2, "dot");
+    }
+}
+
+/**
  * Up to 20 records now (10 gaze error checks kept apart from 10 of the rest): "Having trouble" still shows the newest
  * three and the count, and "All records" scrolls down to the oldest, each row inside the view. With PANEL_TEST_PNG_DIR
  * set, the list to a PNG there.
@@ -5065,6 +5214,7 @@ int main() {
     testGazeCompareRow(fonts);
     testMeasure(fonts);
     testSlip(fonts);
+    testReseat(fonts);
     testTwentyRecords(fonts);
     testUpdateNotice(fonts);
     testUpdateBeta(fonts);

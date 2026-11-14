@@ -111,6 +111,64 @@ void testDatagram() {
     CHECK(!decode(dots.data(), dots.size(), read));
 }
 
+/** The raw values' datagram (FEOR) as frameeyeosc writes it (src/dots.rs, the_raw_datagram_reads_back_and_is_no_other). */
+void testRawDatagram() {
+    Raw raw;
+    raw.has = true;
+    const float pair[4] = {0.077017f, 0.019944f, 0.105099f, 0.034945f};
+    std::memcpy(raw.pair, pair, sizeof(pair));
+    RawEye& left = raw.eye[0];
+    left.present = left.pupil = left.tracked = left.templated = true;
+    left.templateId = 3;
+    left.templateNs = 1200000000000ULL;
+    left.frameNs = 1234567890123ULL;
+    left.pupilX = 240.5f;
+    left.pupilY = 190.25f;
+    left.slipX = 1.5f;
+    left.slipY = -2.25f;
+    left.matches = 4;
+    left.glints = 6;
+    const std::vector<uint8_t> bytes = encodeRaw(19892.729813125, raw);
+    CHECK(bytes.size() == kRawSize && kRawSize == 144);
+    CHECK(std::memcmp(bytes.data(), "FEOR\x01\x00\x00\x00", 8) == 0);
+    uint32_t flags = 0;
+    std::memcpy(&flags, bytes.data() + 32, 4);
+    uint64_t frame = 0;
+    std::memcpy(&frame, bytes.data() + 48, 8);
+    CHECK(flags == 15 && frame == 1234567890123ULL);
+    bool rightZero = true;
+    for (size_t i = 88; i < kRawSize; ++i) rightZero = rightZero && bytes[i] == 0;
+    CHECK(rightZero);
+    double time = 0;
+    Raw read;
+    CHECK(decodeRaw(bytes.data(), bytes.size(), time, read) && time == 19892.729813125 && read.has);
+    CHECK(read.pair[2] == 0.105099f && read.eye[0].present && read.eye[0].templateId == 3 && read.eye[0].glints == 6);
+    CHECK(read.eye[0].pupilY == 190.25f && read.eye[0].slipY == -2.25f && !read.eye[1].present);
+    // Not a sample, nor a sample this; another version or size: not this either
+    Sample sample;
+    CHECK(!decode(bytes.data(), bytes.size(), sample) && !decode(bytes.data(), kSampleSize, sample));
+    CHECK(!decodeRaw(encode(sample).data(), kSampleSize, time, read));
+    std::vector<uint8_t> wrong = bytes;
+    wrong[4] = 2;
+    CHECK(!decodeRaw(wrong.data(), wrong.size(), time, read) && !decodeRaw(bytes.data(), kRawSize - 1, time, read));
+    // As samples.csv columns: the pair, then each eye (an eye without values: 0 and empty cells)
+    std::string line;
+    CHECK(decodeRaw(bytes.data(), bytes.size(), time, read));
+    appendRawCsv(line, read);
+    CHECK(line == ",1,0.077017,0.019944,0.105099,0.034945,1,1234567890123,240.500,190.250,1,3,1200000000000,1.500,-2.250,4,0,6,"
+                  "0,,,,,,,,,,,");
+    size_t header = 0;
+    for (const char* c = rawCsvHeader(); *c; ++c) header += *c == ',' ? 1 : 0;
+    size_t cells = 0;
+    for (char c : line) cells += c == ',' ? 1 : 0;
+    CHECK(header == 29 && cells == header);
+    std::string none;
+    appendRawCsv(none, Raw());
+    cells = 0;
+    for (char c : none) cells += c == ',' ? 1 : 0;
+    CHECK(none.rfind(",0,,", 0) == 0 && cells == header);
+}
+
 void testGeometry() {
     double g[2];
     targetGaze({0, 0}, g);
@@ -464,6 +522,7 @@ void testSocket() {
     // Every sample waiting, in order, the junk left out
     CHECK(receiver.poll(got) == 3 && got.size() == 3 && got[0].time == 1 && got[2].time == 3);
     CHECK(!got[0].guarded && !got[2].guarded);
+    CHECK(!got[0].raw.has && !got[2].raw.has);
     // The gaze guard's values come just before their sample: put on it; on another one's (another time), not; and
     // they don't count as a sample themselves
     Guard guard;
@@ -484,6 +543,57 @@ void testSocket() {
     CHECK(receiver.poll(got) == 3 && got.size() == 3);
     CHECK(got[0].guarded && got[0].guardTrusted && got[0].guard[0] == 0.25f && got[0].guardOffset[2] == -0.125f);
     CHECK(!got[1].guarded && !got[2].guarded);
+    // Raw values just before a sample of the same time go with it; ones for another time, or with nothing after them
+    // in this poll, go with none (a later sample doesn't take them)
+    got.clear();
+    Raw raw;
+    raw.pair[0] = 0.25f;
+    s.time = 7;
+    send(encodeRaw(7, raw));
+    send(encode(s));
+    s.time = 8;
+    send(encodeRaw(99, raw));
+    send(encode(s));
+    send(encodeRaw(9, raw));
+    CHECK(receiver.poll(got) == 2 && got[0].raw.has && got[0].raw.pair[0] == 0.25f && !got[1].raw.has);
+    s.time = 10;
+    send(encode(s));
+    got.clear();
+    CHECK(receiver.poll(got) == 1 && !got[0].raw.has);
+    // Both before one sample, in either order (frameeyeosc sends FEOR, FEOG, FEOM): both put on it, neither on the
+    // sample after it; each only as the sample's own (a guard of another time doesn't stop the raw values, nor they it)
+    guard.time = 11;
+    raw.pair[1] = -0.5f;
+    s.time = 11;
+    send(encodeRaw(11, raw));
+    send(encodeGuard(guard));
+    send(encode(s));
+    s.time = 12;
+    guard.time = 12;
+    send(encodeGuard(guard));
+    send(encodeRaw(12, raw));
+    send(encode(s));
+    s.time = 13;
+    send(encode(s));
+    guard.time = 99;
+    s.time = 14;
+    send(encodeGuard(guard));
+    send(encodeRaw(14, raw));
+    send(encode(s));
+    got.clear();
+    CHECK(receiver.poll(got) == 4 && got.size() == 4);
+    CHECK(got[0].guarded && got[0].raw.has && got[0].raw.pair[1] == -0.5f && got[0].guard[0] == 0.25f);
+    CHECK(got[1].guarded && got[1].raw.has && got[1].raw.pair[0] == 0.25f);
+    CHECK(!got[2].guarded && !got[2].raw.has);
+    CHECK(!got[3].guarded && got[3].raw.has);
+    // A datagram bigger than any known (a later frameeyeosc's) is read cut to the buffer's size: ignored, and it
+    // doesn't take the values waiting for the next sample
+    send(encodeRaw(15, raw));
+    send(std::vector<uint8_t>(4096, 0x46));
+    s.time = 15;
+    send(encode(s));
+    got.clear();
+    CHECK(receiver.poll(got) == 1 && got[0].raw.has);
     ::close(sender);
     receiver.close();
     CHECK(::access(path.c_str(), F_OK) != 0);
@@ -552,6 +662,21 @@ void testGuard() {
     const std::string csv = samplesCsv(sim.session.rows());
     CHECK(csv.find(",openness_right,guarded,guard_trusted,guarded_x,guarded_y,guard_offset_left_x,") != std::string::npos);
     CHECK(csv.find(",1,0,") != std::string::npos);
+    // The guard's columns, then the raw values' last; every row as many cells as the header
+    CHECK(csv.find(",guard_offset_right_y,raw,pair_lx,") != std::string::npos);
+    {
+        size_t header = std::string::npos;
+        bool same = true;
+        for (size_t start = 0; start < csv.size();) {
+            const size_t end = csv.find('\n', start);
+            size_t commas = 0;
+            for (size_t i = start; i < end; ++i) commas += csv[i] == ',' ? 1 : 0;
+            if (header == std::string::npos) header = commas;
+            same = same && commas == header;
+            start = end + 1;
+        }
+        CHECK(same && header == 18 + 8 + 29);
+    }
     const UiText& ja = uiText(Language::Ja);
     const UiText& en = uiText(Language::En);
     CHECK(briefText(ja, r).find("・見張り付き ") != std::string::npos && briefText(en, r).find(", guarded ") != std::string::npos);
@@ -563,7 +688,8 @@ void testGuard() {
     CHECK(!p.guardSeen && p.guarded.positions == 0);
     CHECK(parseJson(recordJson(plain.session.view(), plain.session.shownAt(), plain.session.startedAt(), p), root, error));
     CHECK(root.get("guarded") == nullptr && root.get("plan")->get("guarded") == nullptr);
-    CHECK(samplesCsv(plain.session.rows()).find(",0,,,,,,,\n") != std::string::npos);
+    // (the guard's 0 and 7 empty cells, then the raw values' columns: none came here either)
+    CHECK(samplesCsv(plain.session.rows()).find(",0,,,,,,,,0,") != std::string::npos);
     CHECK(briefText(en, p).find("guarded") == std::string::npos);
 }
 
@@ -575,6 +701,7 @@ void testGuard() {
  */
 int main() {
     testDatagram();
+    testRawDatagram();
     testGeometry();
     testRun();
     testWithoutMap();

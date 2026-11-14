@@ -584,7 +584,9 @@ std::string samplesCsv(const std::vector<Row>& rows, const double* shownAt) {
     std::string out =
         "panel_s,unix,step,step_name,step_s,counted,sample_time,mapped,usable,valve_held,pupil_state,pupil_blending,"
         "before_smoothing,valve_x,valve_y,pupil_x,pupil_y,openness_left,openness_right," +
-        std::string(gaze_measure::kGuardColumns) + "\n";
+        std::string(gaze_measure::kGuardColumns);
+    out += gaze_measure::rawCsvHeader();
+    out += '\n';
     char line[360];
     for (const Row& r : rows) {
         const gaze_measure::Sample& s = r.sample;
@@ -598,7 +600,9 @@ std::string samplesCsv(const std::vector<Row>& rows, const double* shownAt) {
                       s.beforeSmoothing ? 1 : 0, s.valve[0], s.valve[1], s.pupil[0], s.pupil[1], s.openness[0],
                       s.openness[1]);
         out += line;
-        out += gaze_measure::guardCells(s) + "\n";
+        out += gaze_measure::guardCells(s);
+        gaze_measure::appendRawCsv(out, s.raw);
+        out += '\n';
     }
     return out;
 }

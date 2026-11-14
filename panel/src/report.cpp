@@ -26,8 +26,8 @@ namespace report {
 namespace {
 
 /** The files of a record, in the order the record view lists them. */
-constexpr const char* kFileNames[] = {"report.txt",   "logs.txt",  "status.jsonl", "calib_result.json",
-                                     "measure.json", "slip.json", "samples.csv",  "summary.json"};
+constexpr const char* kFileNames[] = {"report.txt",  "logs.txt",    "status.jsonl", "calib_result.json",
+                                     "measure.json", "slip.json", "reseat.json", "samples.csv",  "summary.json"};
 
 /**
  * printf into a string.
@@ -332,12 +332,14 @@ const char* kindName(Kind kind) {
         case Kind::Recenter: return "recenter";
         case Kind::Measure: return "measure";
         case Kind::Slip: return "slip";
+        case Kind::Reseat: return "reseat";
     }
     return "fit";
 }
 
 bool parseKind(const std::string& name, Kind& kind) {
-    for (const Kind k : {Kind::CalibWear, Kind::CalibUser, Kind::Fit, Kind::Recenter, Kind::Measure, Kind::Slip}) {
+    for (const Kind k :
+         {Kind::CalibWear, Kind::CalibUser, Kind::Fit, Kind::Recenter, Kind::Measure, Kind::Slip, Kind::Reseat}) {
         if (name == kindName(k)) {
             kind = k;
             return true;
@@ -666,6 +668,7 @@ std::string kindLabel(const UiText& t, const Summary& summary) {
         case Kind::CalibUser: return t.kindCalibUser;
         case Kind::Measure: return t.kindMeasure;
         case Kind::Slip: return t.kindSlip;
+        case Kind::Reseat: return t.kindReseat;
     }
     return t.kindFit;
 }
@@ -969,9 +972,10 @@ bool writeRecord(const std::string& dir, Pending pending, const Sources& sources
             ok &= writeFile(path + "/calib_result.json", text);
         }
     }
-    // The run's own files (a gaze error check's or a slip test's scores and samples), only by a name a record may have
+    // The run's own files (a gaze error check's, a slip test's or a re-seat test's scores and samples), only by a name
+    // a record may have
     for (const auto& [name, text] : pending.files) {
-        if (name == "measure.json" || name == "slip.json" || name == "samples.csv") {
+        if (name == "measure.json" || name == "slip.json" || name == "reseat.json" || name == "samples.csv") {
             ok &= writeFile(path + "/" + name, text);
         }
     }
@@ -992,13 +996,17 @@ std::string shortPathOf(const std::string& path) {
 int prune(const std::string& dir, int keep, const std::string& written) {
     const std::vector<std::string> names = folders(dir);
     int deleted = 0;
-    // The gaze error checks and the slip tests each counted on their own, everything else together (newest first in
-    // each)
+    // The gaze error checks, the slip tests and the re-seat tests each counted on their own, everything else together
+    // (newest first in each)
     const std::string measure = std::string(kindName(Kind::Measure)) + "_";
     const std::string slip = std::string(kindName(Kind::Slip)) + "_";
-    int seen[3] = {0, 0, 0};
+    const std::string reseat = std::string(kindName(Kind::Reseat)) + "_";
+    int seen[4] = {0, 0, 0, 0};
     for (size_t i = 0; i < names.size(); ++i) {
-        const int group = names[i].rfind(measure, 0) == 0 ? 1 : names[i].rfind(slip, 0) == 0 ? 2 : 0;
+        const int group = names[i].rfind(measure, 0) == 0  ? 1
+                          : names[i].rfind(slip, 0) == 0   ? 2
+                          : names[i].rfind(reseat, 0) == 0 ? 3
+                                                           : 0;
         if (seen[group]++ < keep || names[i] == written) continue;
         const std::string path = dir + "/" + names[i];
         // The folder itself, never through a link (opened without following one, and the files deleted in what was

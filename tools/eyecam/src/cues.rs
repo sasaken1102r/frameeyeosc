@@ -179,6 +179,14 @@ mod tests {
         assert_eq!(parse("2 look up # x").unwrap()[0].label, "look_up");
     }
 
+    /// The panel's re-seat test records with it: one long step, no light, longer than the test can take (its ten
+    /// re-seats wait at most 60 s each: about 13 minutes at the most).
+    #[test]
+    fn the_reseat_protocol_is_one_long_step() {
+        let steps = parse(include_str!("../protocol_reseat.txt")).unwrap();
+        assert_eq!(steps, vec![Step { seconds: 900.0, label: "normal".into() }]);
+    }
+
     #[test]
     fn the_contribution_protocol_has_a_sound_for_each_step() {
         let steps = parse(include_str!("../protocol_contrib.txt")).unwrap();

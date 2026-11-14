@@ -54,6 +54,18 @@
 //! right eye's gaze (x, y each) and the witness's gaze (the pupils' combined gaze; 0 while bit 1 is clear), all f32
 //! with 1.0 = 45°. A datagram of its own, so the sample's datagram stays as it was: a panel from before reads its magic
 //! and size as not its own and ignores it. Without the guard nothing of it is sent.
+//!
+//! Just before each such sample (before the guard's datagram too, when there is one), another datagram on the same socket carries what the pupil gaze is worked out from,
+//! so a record can redo it later (with or without pupil_slip_correction): RAW_SIZE bytes, little-endian: b"FEOR",
+//! version 1, 3 zero bytes, the sample time (f64, the same as in the sample's own datagram), the eye server's pupil
+//! pair as read (`extra` 0..3: the left eye's two values, then the right's; f32), then each eye's eye-camera values as
+//! this sample read them (RAW_EYE_SIZE bytes, the left eye first; zero without them): 0 u32 flags (bit 0 there are
+//! fresh values with eyecam-rec's glint part, bit 1 a pupil, bit 2 the slip was worked out from that frame, bit 3 a
+//! template), 4 u32 the template's id, 8 u64 its time (CLOCK_MONOTONIC ns), 16 u64 the frame's capture time
+//! (CLOCK_MONOTONIC ns: eyecam-rec's glints.csv's t_mono_ns), 24 f32 x 2 the pupil centre (px), 32 f32 x 2 the slip
+//! (px), 40 u32 glints matched, 44 u32 frames since worked out, 48 u32 glints found, 52 u32 zero. A datagram of its
+//! own, so the sample's stays as it was: a panel from before reads its size as not a sample's and ignores it. The
+//! panel reads the three by magic and size, in any order, each kept until the next FEOM with the same time.
 
 use std::io::ErrorKind;
 use std::os::unix::fs::FileTypeExt;
@@ -77,6 +89,16 @@ const GUARD_VERSION: u8 = 1;
 pub const GUARD_SIZE: usize = 48;
 const GUARD_TRUSTED: u8 = 1;
 const GUARD_WITNESS: u8 = 2;
+// The raw values before each measure sample.
+const RAW_MAGIC: &[u8; 4] = b"FEOR";
+const RAW_VERSION: u8 = 1;
+const RAW_EYES: usize = 32;
+const RAW_EYE_SIZE: usize = 56;
+pub const RAW_SIZE: usize = RAW_EYES + 2 * RAW_EYE_SIZE;
+const RAW_PRESENT: u32 = 1;
+const RAW_PUPIL: u32 = 2;
+const RAW_TRACKED: u32 = 4;
+const RAW_TEMPLATE: u32 = 8;
 const MAGIC: &[u8; 4] = b"FEOD";
 const VERSION: u8 = 3;
 const EYES: usize = 64;
@@ -261,6 +283,87 @@ pub fn decode_guard(packet: &[u8]) -> Option<GuardMeasure> {
     })
 }
 
+/// What a measure sample's pupil gaze is worked out from: the eye server's pupil pair and each eye's eye-camera glint
+/// values (eyecam_live::CamSlip, None without fresh ones), as that sample read them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RawSample {
+    pub time: f64,
+    pub pair: [f32; 4],
+    pub cam: [Option<crate::eyecam_live::CamSlip>; 2],
+}
+
+impl RawSample {
+    /// The sample's raw values: `extra` as the eye server gave it, and the eye camera's as read for this sample.
+    pub fn of(time: f64, extra: &[f32; 8], camera: Option<&crate::eyecam_live::Live>) -> Self {
+        Self {
+            time,
+            pair: [extra[0], extra[1], extra[2], extra[3]],
+            cam: camera.map_or([None; 2], |live| live.slip),
+        }
+    }
+}
+
+pub fn encode_raw(raw: &RawSample) -> [u8; RAW_SIZE] {
+    let mut packet = [0u8; RAW_SIZE];
+    packet[..4].copy_from_slice(RAW_MAGIC);
+    packet[4] = RAW_VERSION;
+    packet[8..16].copy_from_slice(&raw.time.to_le_bytes());
+    for (i, value) in raw.pair.iter().enumerate() {
+        packet[16 + i * 4..20 + i * 4].copy_from_slice(&value.to_le_bytes());
+    }
+    for (e, cam) in raw.cam.iter().enumerate() {
+        let Some(c) = cam else { continue };
+        let at = RAW_EYES + e * RAW_EYE_SIZE;
+        let mut put = |offset: usize, bytes: &[u8]| packet[at + offset..at + offset + bytes.len()].copy_from_slice(bytes);
+        let flags = RAW_PRESENT
+            | if c.pupil.is_some() { RAW_PUPIL } else { 0 }
+            | if c.tracked { RAW_TRACKED } else { 0 }
+            | if c.template.is_some() { RAW_TEMPLATE } else { 0 };
+        put(0, &flags.to_le_bytes());
+        let (id, time) = c.template.unwrap_or((0, 0));
+        put(4, &id.to_le_bytes());
+        put(8, &time.to_le_bytes());
+        put(16, &c.time_ns.to_le_bytes());
+        let pupil = c.pupil.unwrap_or([f32::NAN; 2]);
+        put(24, &pupil[0].to_le_bytes());
+        put(28, &pupil[1].to_le_bytes());
+        put(32, &c.offset[0].to_le_bytes());
+        put(36, &c.offset[1].to_le_bytes());
+        put(40, &c.matches.to_le_bytes());
+        put(44, &c.since_good.to_le_bytes());
+        put(48, &c.glints.to_le_bytes());
+    }
+    packet
+}
+
+#[cfg(test)]
+pub fn decode_raw(packet: &[u8]) -> Option<RawSample> {
+    if packet.len() != RAW_SIZE || &packet[..4] != RAW_MAGIC || packet[4] != RAW_VERSION {
+        return None;
+    }
+    let u32_at = |at: usize| u32::from_le_bytes(packet[at..at + 4].try_into().unwrap());
+    let u64_at = |at: usize| u64::from_le_bytes(packet[at..at + 8].try_into().unwrap());
+    let f32_at = |at: usize| f32::from_le_bytes(packet[at..at + 4].try_into().unwrap());
+    Some(RawSample {
+        time: f64::from_le_bytes(packet[8..16].try_into().ok()?),
+        pair: std::array::from_fn(|i| f32_at(16 + i * 4)),
+        cam: std::array::from_fn(|e| {
+            let at = RAW_EYES + e * RAW_EYE_SIZE;
+            let flags = u32_at(at);
+            (flags & RAW_PRESENT != 0).then(|| crate::eyecam_live::CamSlip {
+                time_ns: u64_at(at + 16),
+                pupil: (flags & RAW_PUPIL != 0).then(|| [f32_at(at + 24), f32_at(at + 28)]),
+                tracked: flags & RAW_TRACKED != 0,
+                template: (flags & RAW_TEMPLATE != 0).then(|| (u32_at(at + 4), u64_at(at + 8))),
+                offset: [f32_at(at + 32), f32_at(at + 36)],
+                matches: u32_at(at + 40),
+                since_good: u32_at(at + 44),
+                glints: u32_at(at + 48),
+            })
+        }),
+    })
+}
+
 /// A brow (0..1) as its u16: 0..=65535, rounded; NaN as 0.
 fn brow_bits(brow: f32) -> u16 {
     if brow.is_finite() { (brow.clamp(0.0, 1.0) * 65535.0).round() as u16 } else { 0 }
@@ -399,6 +502,11 @@ impl DotStream {
     /// The gaze guard's values for the next sample of the panel's checks (on their socket): sent just before it.
     pub fn send_guard(&mut self, guard: &GuardMeasure) {
         self.send_bytes(&encode_guard(guard));
+    }
+
+    /// The next measure sample's raw values (RawSample): sent just before it, on the same socket.
+    pub fn send_raw(&mut self, raw: &RawSample) {
+        self.send_bytes(&encode_raw(raw));
     }
 
     fn send_bytes(&mut self, bytes: &[u8]) {
@@ -651,6 +759,66 @@ mod tests {
 
     fn sample_for_measure() -> DotSample {
         sample()
+    }
+
+    #[test]
+    fn the_raw_datagram_reads_back_and_is_no_other() {
+        use crate::eyecam_live::CamSlip;
+        let left = CamSlip {
+            time_ns: 1_234_567_890_123,
+            pupil: Some([240.5, 190.25]),
+            tracked: true,
+            template: Some((3, 1_200_000_000_000)),
+            offset: [1.5, -2.25],
+            matches: 4,
+            since_good: 0,
+            glints: 6,
+        };
+        let raw = RawSample { time: 19892.729813125, pair: [0.077017, 0.019944, 0.105099, 0.034945], cam: [Some(left), None] };
+        let packet = encode_raw(&raw);
+        assert_eq!(packet.len(), 144);
+        assert_eq!(&packet[..8], b"FEOR\x01\x00\x00\x00");
+        assert_eq!(decode_raw(&packet), Some(raw));
+        // The pair right after the time; the left eye's flags (fresh, pupil, tracked, template) and capture time; the
+        // right eye without values all zero
+        assert_eq!(f32::from_le_bytes(packet[16..20].try_into().unwrap()), 0.077017);
+        assert_eq!(u32::from_le_bytes(packet[32..36].try_into().unwrap()), 15);
+        assert_eq!(u64::from_le_bytes(packet[48..56].try_into().unwrap()), 1_234_567_890_123);
+        assert_eq!(packet[88..], [0u8; 56]);
+        // No pupil, not tracked, before the first template: those bits clear, the centre NaN
+        let lost = CamSlip { pupil: None, tracked: false, template: None, ..left };
+        let both = RawSample { cam: [Some(lost), Some(left)], ..raw };
+        let read = decode_raw(&encode_raw(&both)).unwrap();
+        assert_eq!(u32::from_le_bytes(encode_raw(&both)[32..36].try_into().unwrap()), 1);
+        assert_eq!((read.cam[0].unwrap().pupil, read.cam[0].unwrap().template, read.cam[1]), (None, None, Some(left)));
+        // From the live values: the pair is extra 0..3, the eye camera's as read (none without it)
+        let extra = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8];
+        let none = RawSample::of(5.0, &extra, None);
+        assert_eq!((none.pair, none.cam), ([0.1, 0.2, 0.3, 0.4], [None, None]));
+        assert_eq!(encode_raw(&none)[32..], [0u8; 112]);
+        // Not a measure sample (a panel from before reads its size as not one), nor any other datagram
+        assert_eq!(decode_measure(&packet), None);
+        assert_eq!(decode_measure(&packet[..MEASURE_SIZE]), None);
+        assert_eq!(decode(&packet), None);
+        assert_eq!(decode_other(&packet[..OTHER_SIZE]), None);
+        assert_eq!(decode_raw(&encode_measure(&MeasureSample {
+            time: 1.0,
+            mapped: true,
+            usable: true,
+            valve_held: false,
+            pupil_blending: false,
+            before_smoothing: true,
+            pupil_state: 1,
+            valve: [0.0; 2],
+            pupil: [0.0; 2],
+            openness: [1.0; 2],
+        })), None);
+        assert_eq!(decode_raw(&packet[..143]), None);
+        // ...nor the guard's, nor it this one (both come before the sample's on the same socket)
+        assert_eq!(decode_guard(&packet), None);
+        assert_eq!(decode_guard(&packet[..GUARD_SIZE]), None);
+        let guard = encode_guard(&GuardMeasure { time: 1.0, trusted: true, guarded: [0.0; 2], offset: [[0.0; 2]; 2], witness: None });
+        assert_eq!(decode_raw(&guard), None);
     }
 
     #[test]

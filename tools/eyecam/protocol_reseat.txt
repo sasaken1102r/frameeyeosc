@@ -1,0 +1,4 @@
+# The panel's headset re-seat test (かぶり直しテスト): the eye video while the headset is taken off and put back on ten
+# times, with dots to look at in between. No prompts of its own (the panel shows them); one long step, longer than the
+# test can take, stopped by the panel when the test ends. One beep at the start and two long at the end.
+900 normal

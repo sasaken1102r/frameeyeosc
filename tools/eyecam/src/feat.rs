@@ -328,6 +328,9 @@ pub struct Features {
     pub pupil_cy: f64,
     pub pupil_a: f64,
     pub pupil_b: f64,
+    /// The direction of the pupil ellipse's long axis (`pupil_a`), degrees from +x towards +y (the upright picture: x
+    /// right, y down). Only recorded (the glint log, glintlog.rs); nothing is worked out from it.
+    pub pupil_angle_deg: f64,
     pub pupil_vis: f64,
     pub iris_r: f64,
     pub iris_n: u32,
@@ -361,6 +364,7 @@ impl Default for Features {
             pupil_cy: n,
             pupil_a: n,
             pupil_b: n,
+            pupil_angle_deg: n,
             pupil_vis: n,
             iris_r: n,
             iris_n: 0,
@@ -783,6 +787,8 @@ impl Extractor {
         f.pupil_cy = p.cy;
         f.pupil_a = p.a;
         f.pupil_b = p.b;
+        // (the fitted ellipse's `a` is its long axis along angle_deg; turned a quarter when it is the shorter one)
+        f.pupil_angle_deg = if p.ell.a >= p.ell.b { p.ell.angle_deg } else { p.ell.angle_deg + 90.0 };
         f.pupil_vis = p.vis;
         let (r, n) = self.iris_fit(&p, xmax);
         f.iris_r = r;

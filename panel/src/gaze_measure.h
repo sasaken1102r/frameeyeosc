@@ -110,6 +110,44 @@ inline int placeAt(Order order, int step) { return order == Order::Forward ? ste
 enum class PupilState : uint8_t { None = 0, Pupil, Left, Right, Hold, Valve };
 constexpr int kStateCount = 6;
 
+/**
+ * What a sample's pupil gaze is worked out from, in a datagram of its own just before it (frameeyeosc's FEOR, version
+ * 1, src/dots.rs), little-endian: b"FEOR", 1, 3 zero bytes, the sample time (f64), the eye server's pupil pair as read
+ * (extra 0..3, f32: left x, y, right x, y), then each eye's eye-camera values as that sample read them (kRawEyeSize
+ * bytes, the left eye first; zero without them): u32 flags (bit 0 fresh values with eyecam-rec's glint part, 1 a pupil,
+ * 2 the slip worked out from that frame, 3 a template), u32 the template's id, u64 its time (CLOCK_MONOTONIC ns), u64
+ * the frame's capture time (CLOCK_MONOTONIC ns: eyecam-rec's glints.csv's t_mono_ns), f32 x 2 the pupil centre (px),
+ * f32 x 2 the slip (px), u32 glints matched, u32 frames since worked out, u32 glints found, u32 zero. A frameeyeosc
+ * before it sends none: the samples then have no raw values (Raw::has false).
+ */
+constexpr size_t kRawSize = 144;
+constexpr size_t kRawEyeSize = 56;
+
+/** One eye's eye-camera values with a sample (frameeyeosc's eyecam_live::CamSlip). */
+struct RawEye {
+    bool present = false;    ///< fresh values with eyecam-rec's glint part
+    bool pupil = false;      ///< a pupil in that frame (pupilX / pupilY)
+    bool tracked = false;    ///< the slip was worked out from that frame
+    bool templated = false;  ///< a template (templateId / templateNs)
+    uint32_t templateId = 0;
+    uint64_t templateNs = 0;
+    uint64_t frameNs = 0;    ///< the frame's capture time (CLOCK_MONOTONIC ns)
+    float pupilX = NAN;
+    float pupilY = NAN;
+    float slipX = 0;
+    float slipY = 0;
+    uint32_t matches = 0;
+    uint32_t sinceGood = 0;
+    uint32_t glints = 0;
+};
+
+/** A sample's raw values. */
+struct Raw {
+    bool has = false;                    ///< they came with the sample
+    float pair[4] = {NAN, NAN, NAN, NAN};  ///< the eye server's pupil pair (extra 0..3)
+    RawEye eye[2];                       ///< left, right
+};
+
 /** One sample from frameeyeosc. */
 struct Sample {
     double time = 0.0;          ///< the eye server's sample time
@@ -126,6 +164,7 @@ struct Sample {
     bool guardTrusted = false;  ///< ...its witness, the pupils, was trusted
     float guard[2] = {0, 0};    ///< the guarded gaze, x, y; 1.0 = 45°
     float guardOffset[4] = {0, 0, 0, 0};  ///< the offset added: the left eye's x, y, the right eye's x, y
+    Raw raw;                    ///< what the pupil gaze is worked out from (the FEOR before it, if one came)
 };
 
 /** The gaze guard's values for a sample (kGuardSize). */
@@ -177,6 +216,39 @@ bool attachGuard(const Guard& guard, Sample& sample);
  * @return the bytes
  */
 std::vector<uint8_t> encode(const Sample& sample);
+
+/**
+ * Read a sample's raw values (FEOR).
+ * @param data the bytes
+ * @param size how many
+ * @param time where to write the sample time they go with
+ * @param out the values (has set)
+ * @return false if it is not that datagram (of version 1)
+ */
+bool decodeRaw(const uint8_t* data, size_t size, double& time, Raw& out);
+
+/**
+ * Write a sample's raw values (for tests).
+ * @param time the sample time
+ * @param raw the values
+ * @return the bytes
+ */
+std::vector<uint8_t> encodeRaw(double time, const Raw& raw);
+
+/**
+ * The raw values' columns in a record's samples.csv, after a sample's own: a comma first, then raw (whether they came),
+ * pair_lx, pair_ly, pair_rx, pair_ry, and per eye (cam_l_*, then cam_r_*) fresh, frame_ns, pupil_x, pupil_y, tracked,
+ * template, template_ns, slip_x, slip_y, matches, since_good, glints.
+ * @return the text
+ */
+const char* rawCsvHeader();
+
+/**
+ * A sample's raw values as those columns (a comma first; empty cells without them).
+ * @param out the line they are added to
+ * @param raw the values
+ */
+void appendRawCsv(std::string& out, const Raw& raw);
 
 /**
  * A place's direction as the gaze angles of a ray from between the eyes (degrees: atan2(x, -z), atan2(y, -z)).
@@ -375,14 +447,15 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
 
 /**
  * samples.csv: a row per sample received (the panel's time, the wall clock, the run's order, the place and its step in
- * the run, whether it counts, then the sample's fields).
+ * the run, whether it counts, then the sample's fields, the gaze guard's (kGuardColumns), its raw values last:
+ * rawCsvHeader). The same order in the slip test's and the reseat test's samples.csv.
  * @param rows the samples
  * @param order the run's order
  * @return the text
  */
 std::string samplesCsv(const std::vector<Row>& rows, Order order = Order::Forward);
 
-/** samples.csv's last columns, the gaze guard's (the slip test's samples.csv has them too): whether the sample had its
+/** samples.csv's gaze guard columns, just before the raw values' (the slip and reseat tests' have them too): whether the sample had its
  *  values, whether the witness was trusted, the guarded gaze x and y, the offset (left x, y, right x, y; 1.0 = 45°). */
 extern const char* const kGuardColumns;
 
@@ -451,8 +524,13 @@ public:
 private:
     int fd_ = -1;
     std::string path_;
+    // The FEOG and FEOR before a sample come in either order; each is kept for the next sample (attached only when
+    // its time is the same) and dropped once a sample has come
     Guard pending_;               ///< the gaze guard's values read last, for the sample after them
     bool hasPending_ = false;
+    bool rawWaiting_ = false;   ///< a sample's raw values came: they go with the next sample of the same time
+    double rawTime_ = 0.0;
+    Raw raw_;
 };
 
 }  // namespace gaze_measure

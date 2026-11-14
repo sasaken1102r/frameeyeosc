@@ -1185,6 +1185,7 @@ dark の合図で暗い画面（暗いシーン、ダッシュボードを閉じ
 | `meta.txt` | ロック時の状態（バッファ、スロット位置、どのスロットがどの目か、スロットごとの枠合わせ、プロトコル、Valve の shm 版など）と終了時の集計。最後まで録れなかったとき（stop、Ctrl-C、映像が戻らない、ディスク不足、トラッカー終了）は `aborted=1`、最後まで録れたら `aborted=0` |
 | `lock_dump.bin` | ロックした瞬間のリング周辺の生メモリ（約 2 MB）。枠合わせやヘッダの形をあとで検証する用 |
 | `calib_result.json`, `calib_samples.csv` | 校正のときだけ（`calib_YYYY-MM-DD_HH-MM-SS/`）。「ライブ処理 › 校正」参照 |
+| `glints.csv` | `--serve` の録画のときだけ（ライブ処理がフレームを見ているあいだ）。1 眼 1 フレーム 1 行で、ライブ処理とグリントの追跡がそのフレームに出した値: 瞳の楕円（中心・半径 2 つ・長軸の向き）、瞳の大きさ、虹彩の半径、まぶた、見つけたグリント全部（最大 10 個、明るい順に x・y・面積・最大の明るさ）、使っている型とそのずれ、追えたか・パターン全体で探し直したか（列は下）。数字だけで、画は入らない。`--replay … --glintlog FILE` で、録画からも同じものを作れる |
 
 **プライバシー**: 目の映像（`eye_L.raw`, `eye_R.raw`）とそれを含みうる生データ（`headers.bin`, `lock_dump.bin`）が残るのは、自分で始めた録画（`start`）だけ。
 校正は settings.json で `"dev": true` にしていない限り映像を書かず、小さなテキスト（結果の値・フレームの時刻・Valve の推定値）だけを残す。
@@ -1194,6 +1195,19 @@ dark の合図で暗い画面（暗いシーン、ダッシュボードを閉じ
 時刻はぜんぶ CLOCK_MONOTONIC_RAW の秒。Valve の `sample_time` も、カメラの `t_cam` も同じ時計なので、そのまま突き合わせられる
 （`t_cam` はスロットが書き換わり始めてから約 6.5 ms 後の値。読み終えるのはその約 4 ms 後）。
 `frames.csv` の `valve_seq` は、そのフレームを書いた時点で最後に見た Valve サンプル。
+
+`glints.csv` の列（`eyecam::glintlog::header()`、値のないところは空）: `t_cam`（カメラの時刻。frames.csv の `t_cam`、
+Valve の `sample_time` と同じ時計）、`t_mono_ns`（同じフレームの CLOCK_MONOTONIC の ns。ライブの値のその目の時刻と同じで、
+frameeyeosc が自分のサンプルと一緒に読む値。`--replay` では空）、`wall_unix`、`eye`（L / R）、`frame`（その目のフレームの数。
+ライブの値の `frame_count`）、`valid`、`ok_pupil`、`pupil_cx`・`pupil_cy`・`pupil_a`・`pupil_b`・`pupil_angle_deg`（瞳の楕円。
+正立の画の px、a ≥ b は半径、向きは長軸の +x から +y への角度）、`pupil_vis`、`pupil_ratio`・`pupil_mm`・`pupil_dilation`、
+`iris_r`・`iris_n`（このフレームで測った虹彩の半径とその点の数）、`r_used`（使っている半径）、`closed`・`lid`・`wide`・`squint`・
+`confidence`、`upper_skin_y`・`upper_y`・`lower_y`（瞳の列でのまぶたの線、px）、`skin_up`・`aperture`、`valve_open`・
+`valve_pitch`、`wear_t0`（このかぶりの最初のフレームの時刻）、`template_id`・`template_t`・`template_mono_ns`（グリントの型）、
+`tracked`・`relocked`・`matches`・`since_good`・`offset_x`・`offset_y`（型からのずれ）、`glints`、`g0_x`・`g0_y`・`g0_area`・
+`g0_peak` … `g9_*`。虹彩の中心は持っていない（虹彩の半径は瞳の中心のまわりで測る）。書くのは専用のスレッドで（ライブ処理は
+その行を渡すだけ）、録画が終わると閉じる。1 GB で書くのをやめる。1 時間でおよそ 250 MB。meta.txt の終わりに
+`glint_rows`・`glint_bytes`・`glint_full`。
 
 `protocol_widen.txt` 1 回（約 85 秒）で約 2.5 GB、2 分の録画で約 3.3 GB（90 fps × 2 眼の見積もり）。空きが 1 GB を切ったら止める。
 

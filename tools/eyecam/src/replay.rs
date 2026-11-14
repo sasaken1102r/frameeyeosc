@@ -371,6 +371,9 @@ pub struct LiveOpts {
     pub preview: Option<PathBuf>,
     /// Also write the drift log (`driftlog`, as `driftlog on` does live) to this file; `wall_unix` stays empty.
     pub driftlog: Option<PathBuf>,
+    /// Also write the glint log (glintlog.rs, as a recording does live) to this file; `t_mono_ns`, `wall_unix` and
+    /// `template_mono_ns` stay empty.
+    pub glintlog: Option<PathBuf>,
     /// Development only: drop the pupil found on some frames, as if none was seen (`DropPupil`).
     pub drop_pupil: Option<DropPupil>,
 }
@@ -505,6 +508,13 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
         }
         None => None,
     };
+    let mut glint_log = match &opts.glintlog {
+        Some(path) => {
+            let file = File::create(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            Some(crate::glintlog::GlintLog::new(path.clone(), BufWriter::new(file), crate::glintlog::CAP_BYTES))
+        }
+        None => None,
+    };
     for k in 0..n {
         for e in 0..2 {
             if k >= s.frames(e) {
@@ -554,6 +564,10 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             }
             if let Some(d) = drift.as_mut() {
                 d.push(e, &crate::driftlog::Probe::of(&engines[e], &o, &params[e], t, v_open), f64::NAN);
+            }
+            if let Some(g) = glint_log.as_mut() {
+                let wear_t0 = engines[e].wear_state().t_first;
+                g.push(&crate::glintlog::Row::of(e, k as u64 + 1, t, None, f64::NAN, &o, v_open, wear_t0, &slip, None, &glints));
             }
             let (label, step) = s.label_at(t, live::STEP_DELAY);
             if let Some(l) = label {
@@ -661,6 +675,14 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             return Err(format!("{}: {}", st.path, st.error));
         }
         eprintln!("drift log: {} rows in {}", st.rows, st.path);
+    }
+    if let Some(mut g) = glint_log {
+        g.finish();
+        let st = g.status(false);
+        if !st.error.is_empty() {
+            return Err(format!("{}: {}", st.path, st.error));
+        }
+        eprintln!("glint log: {} rows in {}", st.rows, st.path);
     }
     if let Some(p) = &preview {
         eprintln!("preview: {} pictures, {:.0} us each (halving and writing)", p.pictures, p.us_per_picture());

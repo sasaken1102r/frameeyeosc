@@ -3,6 +3,7 @@
 
 use crate::driftlog;
 use crate::glint;
+use crate::glintlog;
 use crate::live::{self, CalibFile, EyeEngine, Label, Params, Sample, UserParams};
 use crate::liveshm::{self, LiveWriter};
 use crate::preview::{self, Preview};
@@ -257,6 +258,8 @@ pub struct Shared {
     pub preview_on: AtomicBool,
     /// The drift log (`driftlog on` / `off` from ctl.sock), written by the worker as frames come.
     pub driftlog: Mutex<driftlog::Control>,
+    /// The glint log (glintlog.rs): on while a recording runs (eyecam-rec's `record`), a row per frame from the worker.
+    pub glintlog: Mutex<glintlog::Control>,
     /// The eyelid veto is on (settings.json `lid_veto`, followed while running), and what it did: CNN runs a second
     /// (both eyes) over the last second (f32 bits), vetoes fired, and the CNN's time per run (mean and max,
     /// microseconds), since the worker started.
@@ -297,6 +300,7 @@ impl Default for Shared {
             preview_until: AtomicU64::new(0),
             preview_on: AtomicBool::new(false),
             driftlog: Mutex::new(driftlog::Control::default()),
+            glintlog: Mutex::new(glintlog::Control::default()),
             lid_veto: AtomicBool::new(false),
             glint_template: AtomicU32::new(0),
             small_pupil: AtomicBool::new(true),
@@ -899,6 +903,27 @@ impl Worker {
         }
         let template_mono = self.glint_template_mono[eye];
         let frames = self.frames[eye];
+        {
+            // The glint log, while a recording runs: this frame's row handed to its thread (formatted and written
+            // there; nothing at all while it is off)
+            let mut log = self.shared.glintlog.lock().unwrap();
+            if log.is_on() {
+                let wear_t0 = self.engines[eye].wear_state().t_first;
+                log.push(glintlog::Row::of(
+                    eye,
+                    frames,
+                    t,
+                    Some(t_mono),
+                    unix_now(),
+                    &o,
+                    open as f64,
+                    wear_t0,
+                    &slip,
+                    Some(template_mono),
+                    &self.glints,
+                ));
+            }
+        }
         let state = self.calib_state();
         let recalib = self.engines.iter().any(|e| e.recalib_suggested);
         self.writer.update(|s| {
@@ -1367,6 +1392,9 @@ pub fn spawn(
             // The drift log's last part written and its file closed (waited for once the lock is let go)
             let closing = w.shared.driftlog.lock().unwrap().off(unix_now());
             closing.wait();
+            // ...and the glint log's, if a recording was still on
+            let closing = w.shared.glintlog.lock().unwrap().off();
+            closing.wait();
         })
         .map_err(|e| e.to_string())?;
     Ok((tx, handle))
@@ -1582,6 +1610,65 @@ mod tests {
             assert_eq!((col(r, "valve_open").as_str(), col(r, "valve_pitch").as_str()), (open, "-10.0"), "{r}");
             assert_eq!(col(r, "pupil_share"), "0.000", "{r}");
             assert!(col(r, "wall_unix").parse::<f64>().unwrap() > 1.7e9, "{r}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The glint log through the worker: nothing while it is off, a row per frame of each eye while it is on (both
+    /// clocks, Valve's openness), the file closed when the worker stops.
+    #[test]
+    fn the_worker_writes_a_glint_row_per_frame_while_on() {
+        let dir = std::env::temp_dir().join(format!("eyecam-worker-glints-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shared = Arc::new(Shared::default());
+        let (tx, handle) = spawn(&dir, dir.join("calib.json"), None, shared.clone()).unwrap();
+        tx.send(Msg::Buffers(true)).unwrap();
+        let frame: Vec<u8> = (0..W * H).map(|i| (40 + (i % W) / 4) as u8).collect();
+        let send = |k: u64| {
+            for eye in 0..2 {
+                let open = [0.8, 0.6][eye];
+                let t_cam_ns = 70_000_000_000 + k * 1_000_000_000 / 90;
+                tx.send(Msg::Frame { eye, upside_down: false, t_cam_ns, pitch: -10.0, open, data: frame.clone() }).unwrap();
+            }
+        };
+        // Off: frames, no file
+        for k in 0..20 {
+            send(k);
+        }
+        let path = dir.join(glintlog::FILE_NAME);
+        let sync = || {
+            // (the worker has taken every frame sent once a relearn is answered)
+            let (rtx, rrx) = mpsc::channel();
+            tx.send(Msg::Relearn(rtx)).unwrap();
+            let _ = rrx.recv();
+        };
+        sync();
+        assert!(!path.exists());
+        shared.glintlog.lock().unwrap().on(glintlog::GlintLog::create(&dir).unwrap().start().unwrap()).wait();
+        for k in 20..110 {
+            send(k);
+        }
+        sync();
+        tx.send(Msg::Shutdown).unwrap();
+        handle.join().unwrap();
+        let st = shared.glintlog.lock().unwrap().status();
+        assert!(!st.on && st.rows == 180, "{st:?}");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        let head = glintlog::header();
+        assert_eq!(lines[0], head);
+        assert_eq!(lines.len(), 1 + 180);
+        let head: Vec<&str> = head.split(',').collect();
+        let col = |row: &str, name: &str| row.split(',').nth(head.iter().position(|h| *h == name).unwrap()).unwrap().to_string();
+        let first = lines[1];
+        assert_eq!((col(first, "t_cam").as_str(), col(first, "eye").as_str(), col(first, "frame").as_str()), ("70.222222222", "L", "21"));
+        let mono: u64 = col(first, "t_mono_ns").parse().unwrap();
+        assert!(mono > 0, "{first}");
+        for r in &lines[1..] {
+            let open = if col(r, "eye") == "L" { "0.800" } else { "0.600" };
+            assert_eq!(col(r, "valve_open"), open, "{r}");
+            assert_eq!((col(r, "ok_pupil").as_str(), col(r, "glints").as_str()), ("0", "0"), "{r}");
         }
         std::fs::remove_dir_all(&dir).unwrap();
     }

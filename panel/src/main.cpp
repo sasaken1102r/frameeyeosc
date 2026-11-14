@@ -3524,8 +3524,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             break;
         }
         case PanelAction::SetGazeSource: {
-            if (hit.arg < 0 || hit.arg > 1) return;
-            // "Pupil position" only with a pupil map (the row greys it out otherwise)
+            if (hit.arg < 0 || hit.arg > 2) return;
+            // "Pupil position" only with a pupil map (the row greys it out otherwise); "Eyeball" always (frameeyeosc
+            // fits its own map at the next whole fit)
             if (hit.arg == 1 && !pupilMapInConfig(view)) return;
             const std::string source = kGazeSources[hit.arg];
             std::fprintf(stderr, "[fit] gaze source: %s\n", source.c_str());

@@ -314,6 +314,7 @@ UiText makeJapanese() {
     t.hintGazeSource = "瞳の位置は先に目合わせが必要";
     t.gazeSourceStandard = "ふつう";
     t.gazeSourcePupil = "瞳の位置（試験）";
+    t.gazeSourceEyeball = "眼球（試験）";
     t.rowEyeLog = "目のログ";
     t.eyeLogRecord = "記録する";
     t.eyeLogStopFormat = "止める %s";
@@ -1622,6 +1623,7 @@ UiText makeEnglish() {
     t.hintGazeSource = "Pupil needs an eye fit first";
     t.gazeSourceStandard = "Standard";
     t.gazeSourcePupil = "Pupil position (test)";
+    t.gazeSourceEyeball = "Eyeball (test)";
     t.rowEyeLog = "Eye log";
     t.eyeLogRecord = "Record";
     t.eyeLogStopFormat = "Stop %s";

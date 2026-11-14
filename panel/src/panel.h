@@ -179,7 +179,7 @@ enum class PanelAction {
                        ///< eyeTrackingRateMin 90 and tells eye_rate::pressed
     EyeRateChoose,     ///< "Having trouble"'s eye camera speed: arg = eye_rate::Choice (the caller writes 90, or removes
                        ///< the key for SteamVR's default)
-    SetGazeSource,     ///< gaze_source = kGazeSources[arg] (the Eye fit tab's "Gaze source" row, under "When put on")
+    SetGazeSource,     ///< gaze_source = kGazeSources[arg] (the Eye fit tab's "Gaze source" row, under "When put on"; 0-2)
     MeasureStart,      ///< the gaze error check: start (or "Again" on its result)
     MeasureStop,       ///< ...stop it while it runs
     MeasureClose,      ///< ...close its result

@@ -3910,17 +3910,20 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                       static_cast<int>(rewear), 18);
         y += h + 6;
     }
-    // Where the gaze comes from (a test): the eye server's, or each eye's pupil position through the pupil map the
-    // whole eye fit makes ("Pupil position" grey until there is one). A setting too, so it stays put like the row above
+    // Where the gaze comes from (a test): the eye server's, each eye's pupil position through the pupil map the whole
+    // eye fit makes ("Pupil position" grey until there is one), or frameeyeosc's eyeball filter (always there: its map
+    // is frameeyeosc's own, made at the next whole fit). A setting too, so it stays put like the row above
     {
         const double h = 50;
         const double controlH = 42;
         const bool mapped = pupilMapInConfig(v);
         // "pupil" without a map sends the eye server's gaze (frameeyeosc needs both): shown as what it does
-        const int selected = mapped && v.text(key::kGazeSource) == kGazeSources[1] ? 1 : 0;
+        const std::string source = v.text(key::kGazeSource);
+        const int selected = source == kGazeSources[2] ? 2 : mapped && source == kGazeSources[1] ? 1 : 0;
         drawRowLabel(pen, t, y, h, t.rowGazeSource, t.hintGazeSource, false);
         std::vector<Option> options = {{t.gazeSourceStandard, {PanelAction::SetGazeSource, key::kGazeSource, 0}},
-                                       {t.gazeSourcePupil, {PanelAction::SetGazeSource, key::kGazeSource, 1}}};
+                                       {t.gazeSourcePupil, {PanelAction::SetGazeSource, key::kGazeSource, 1}},
+                                       {t.gazeSourceEyeball, {PanelAction::SetGazeSource, key::kGazeSource, 2}}};
         options[1].usable = mapped;
         drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH, options, selected, 18);
         y += h + 6;
@@ -6295,7 +6298,8 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
         } else {
             // The dot(s) of the gaze being sent (each eye's colours while each eye's own gaze is sent), then the
             // extra one: a diamond, Valve's while the pupils' is sent, the pupils' otherwise
-            const bool pupilSent = v.text(key::kGazeSource) == kGazeSources[1];
+            // (with "eyeball" too the extra dot is Valve's: frameeyeosc's other run is the eye server's then)
+            const bool pupilSent = v.text(key::kGazeSource) != kGazeSources[0];
             const double size = std::min(fitSize(pen, t.gazeCompareSent, 14, 11, right - noteX - 34, false),
                                          fitSize(pen, pupilSent ? t.gazeCompareValve : t.gazeComparePupil, 14, 11,
                                                  right - noteX - 34, false));

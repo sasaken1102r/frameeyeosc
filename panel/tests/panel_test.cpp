@@ -4675,7 +4675,8 @@ void testGazeSourceRow(const FontSet& fonts) {
             CHECK(rows.size() == count && !above.empty() && below.size() == 1);
             for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
             if (rows.empty() || above.empty() || below.empty()) return -1.0;
-            CHECK(rows[0].hit.arg == 0 && (count < 2 || rows[1].hit.arg == 1));
+            // "Standard" first, "Eyeball" last (always there), "Pupil position" between them only with a map
+            CHECK(rows[0].hit.arg == 0 && rows.back().hit.arg == 2 && (count < 3 || rows[1].hit.arg == 1));
             CHECK(rows[0].y >= above[0].y + above[0].h && rows[0].y + rows[0].h <= below[0].y);
             return rows[0].y;
         };
@@ -4685,22 +4686,28 @@ void testGazeSourceRow(const FontSet& fonts) {
         m.language = language;
         m.config.root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.067));
         m.config.root.set(key::kGazeGainUp, JsonValue::makeNumber(0.78));
-        // Folded, no pupil map: only "Standard" can be pressed
+        // Folded, no pupil map: "Standard" and "Eyeball" can be pressed
         panel.render(m);
-        const double folded = rowY(panel, 1);
+        const double folded = rowY(panel, 2);
         png(panel, "folded_nomap");
         // "pupil" written but no map: frameeyeosc sends the eye server's gaze, so "Standard" shows as chosen (the
         // config left as it is)
         m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
         panel.render(m);
-        CHECK(rowY(panel, 1) == folded);
+        CHECK(rowY(panel, 2) == folded);
         CHECK(m.config.text(key::kGazeSource) == kGazeSources[1]);
-        // With a map (synthetic numbers) and "pupil" chosen: both
+        // "eyeball" chosen, no pupil map (its map is frameeyeosc's own): the same row
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[2]));
+        panel.render(m);
+        CHECK(rowY(panel, 2) == folded);
+        png(panel, "folded_eyeball");
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
+        // With a map (synthetic numbers) and "pupil" chosen: all three
         for (const auto& eye : kPupilMapKeys) {
             for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
         }
         panel.render(m);
-        CHECK(rowY(panel, 2) == folded);
+        CHECK(rowY(panel, 3) == folded);
         png(panel, "folded_pupil");
         // ...after a fit that wrote the eyelids too (two more lines in the status card)
         for (const auto& eye : kLidFitKeys) {
@@ -4708,14 +4715,14 @@ void testGazeSourceRow(const FontSet& fonts) {
             for (int i = 0; i < 4; ++i) m.config.root.set(eye[i], JsonValue::makeNumber(readings[i]));
         }
         panel.render(m);
-        CHECK(rowY(panel, 2) == folded);
+        CHECK(rowY(panel, 3) == folded);
         png(panel, "folded_pupil_lids");
         // Open, on either page: the same row in the same place
         panel.setFitDetails(true);
         for (const int page : {0, 1}) {
             panel.setFitDetailsPage(page);
             panel.render(m);
-            CHECK(rowY(panel, 2) == folded);
+            CHECK(rowY(panel, 3) == folded);
             png(panel, page == 0 ? "open_gaze" : "open_lids");
         }
         // The gaze page's steppers and the far-down hold still there
@@ -4731,7 +4738,7 @@ void testGazeSourceRow(const FontSet& fonts) {
         m.fit.detail.neededDeg = 6.0;
         m.records.lastFit = "fit_2026-11-13_14-10-00";
         panel.render(m);
-        CHECK(rowY(panel, 2) == folded);
+        CHECK(rowY(panel, 3) == folded);
         CHECK(hits(panel, PanelAction::RecordOpen).size() == 1);
         png(panel, "folded_failed");
     }

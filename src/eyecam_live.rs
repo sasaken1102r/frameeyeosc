@@ -183,12 +183,15 @@ fn parse_slip(bytes: &[u8; EXT_SIZE], eyes: &[Eye; 2]) -> [Option<CamSlip>; 2] {
         let at = GLINTS[eye];
         let flags = u32_ext(at);
         let pupil = [f32_ext(at + 16), f32_ext(at + 20)];
+        let offset = [f32_ext(at + 24), f32_ext(at + 28)];
+        // (an offset that isn't a number is not one worked out)
+        let finite = offset.iter().all(|v| v.is_finite());
         Some(CamSlip {
             time_ns: eyes[eye].time_ns,
             pupil: (flags & 1 != 0 && pupil.iter().all(|v| v.is_finite())).then_some(pupil),
-            tracked: flags & 2 != 0,
+            tracked: flags & 2 != 0 && finite,
             template: (flags & 4 != 0).then(|| (u32_ext(at + 4), u64_ext(at + 8))),
-            offset: [f32_ext(at + 24), f32_ext(at + 28)],
+            offset: if finite { offset } else { [0.0; 2] },
             matches: u32_ext(at + 32),
             since_good: u32_ext(at + 36),
             glints: u32_ext(at + 40),
@@ -645,6 +648,11 @@ pub mod tests {
         );
         let right = live.slip[1].unwrap();
         assert_eq!((right.pupil, right.tracked, right.template, right.since_good), (None, false, None, 9));
+        // An offset that isn't a number: not worked out
+        file.write_all_at(&f32::NAN.to_le_bytes(), 232).unwrap();
+        let left = reader.read(NOW).unwrap().slip[0].unwrap();
+        assert_eq!((left.tracked, left.offset), (false, [0.0, 0.0]));
+        file.write_all_at(&1.5f32.to_le_bytes(), 232).unwrap();
         // A stale eye has no slip either
         let live = reader.read(NOW + 2 * FRESH_NS).unwrap();
         assert_eq!(live.slip, [None, None]);

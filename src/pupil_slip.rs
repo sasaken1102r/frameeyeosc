@@ -10,8 +10,10 @@
 //!   - it is converted into the eye server's pupil pair units by a linear fit of that pair against eyecam-rec's pupil
 //!     centre in the same picture (both see the same pupil), learnt as the eyes move (FIT_TAU_S; used once it has seen
 //!     the pupil move FIT_MIN_SD_PX each way and fits with at least FIT_MIN_R2), and taken off the pair before the map.
-//! Without eyecam-rec's glint part (an older eyecam-rec, none, its values stale) for SLIP_LOST_S the eye gets no
-//! correction and starts over when it comes back (the fit is kept). On the 2026-11-14 slip tests replayed this way
+//! Without eyecam-rec's glint part (an older eyecam-rec, none, its values stale) for SLIP_LOST_S the eye's
+//! correction eases out over EASE_S, and back in when it comes back (its slip going on from where it was: a new
+//! template is carried like any other). A slip further than MAX_SLIP_PX (a wrong lock) gives no correction. Whether a
+//! pair is fresh still goes by the eye server's own pairs (pupil.rs step_with); turned off, it all starts over. On the 2026-11-14 slip tests replayed this way
 //! (eyecam-rec's live path, then this) the pupil gaze's median error per step went from 9.0° / 8.3° to 5.1° / 4.0°.
 
 use crate::eyecam_live::{CamSlip, Live};
@@ -19,8 +21,13 @@ use crate::pupil::EyeMap;
 
 /// The slip is smoothed over this long (s), as replayed.
 pub const SLIP_TAU_S: f64 = 0.3;
-/// Without eyecam-rec's slip for this long (s), the eye starts over (no correction until it is back).
+/// Without eyecam-rec's slip for this long (s), the eye's correction eases out...
 pub const SLIP_LOST_S: f64 = 2.0;
+/// ...over this long (s), and back in as long when it is back.
+pub const EASE_S: f64 = 1.0;
+/// A slip further than this (px) is taken for a wrong lock, not a slip: no correction while it is (the pushes in the
+/// 2026-11-14 slip tests reached about 55 px).
+pub const MAX_SLIP_PX: f32 = 60.0;
 /// The px-to-pair fit forgets over this long (s)...
 pub const FIT_TAU_S: f64 = 120.0;
 /// ...and is used once it has this many frames' weight...
@@ -111,8 +118,9 @@ struct EyeSlip {
     frame_ns: Option<u64>,
     pupil: Option<[f32; 2]>,
     pair: Option<[f32; 2]>,
-    /// The template followed, the offsets of the ones before it carried, and its own last offset (px).
-    template: Option<u32>,
+    /// The template followed (its id and when it was taken: a restarted eyecam-rec counts from 1 again), the offsets of
+    /// the ones before it carried, and its own last offset (px).
+    template: Option<(u32, u64)>,
     carried: [f32; 2],
     offset: [f32; 2],
     /// The slip smoothed (px), and when the last camera frame was (the eye server's time).
@@ -123,21 +131,22 @@ struct EyeSlip {
     /// For the log: frames taken, frames tracked.
     frames: u64,
     tracked: u64,
+    /// How much of the correction is applied (0..1): eased out while eyecam-rec's slip is lost, back in once it is back.
+    weight: f32,
+    /// The sample time last stepped (for the easing).
+    last_step: Option<f64>,
 }
 
 impl EyeSlip {
-    fn reset_tracking(&mut self) {
-        let fit = std::mem::take(&mut self.fit);
-        let k = self.k;
-        *self = Self { fit, k, ..Self::default() };
-    }
-
     /// A sample: the eye server's time and pupil pair, eyecam-rec's slip for this eye if fresh.
     fn step(&mut self, time: f64, pair: [f32; 2], cam: Option<&CamSlip>) {
+        // The correction eased out while eyecam-rec's slip is lost, back in while it is there
+        let dt = self.last_step.map_or(0.0, |last| (time - last).max(0.0));
+        self.last_step = Some(time);
+        let lost = self.last_frame.is_none_or(|last| time - last > SLIP_LOST_S);
+        let by = (dt / EASE_S) as f32;
+        self.weight = if lost && cam.is_none() { (self.weight - by).max(0.0) } else { (self.weight + by).min(1.0) };
         let Some(cam) = cam else {
-            if self.last_frame.is_some_and(|last| time - last > SLIP_LOST_S) {
-                self.reset_tracking();
-            }
             return;
         };
         if self.frame_ns == Some(cam.time_ns) {
@@ -158,26 +167,30 @@ impl EyeSlip {
         }
         self.pupil = cam.pupil;
         self.pair = pair_ok.then_some(pair);
-        // A new template: the one before's last offset is carried
-        if let Some((id, _)) = cam.template {
-            if self.template != Some(id) {
+        // A new template (also one from a restarted eyecam-rec, after a loss): the one before's last offset is carried
+        if let Some(template) = cam.template {
+            if self.template != Some(template) {
                 if self.template.is_some() {
                     self.carried = [self.carried[0] + self.offset[0], self.carried[1] + self.offset[1]];
                 }
-                self.template = Some(id);
+                self.template = Some(template);
                 self.offset = [0.0; 2];
             }
-            if cam.tracked {
+            if cam.tracked && cam.offset.iter().all(|v| v.is_finite()) {
                 self.tracked += 1;
                 self.offset = cam.offset;
                 let total = [self.carried[0] + self.offset[0], self.carried[1] + self.offset[1]];
-                self.smooth = Some(match (self.smooth, self.last_frame) {
+                let smooth = match (self.smooth, self.last_frame) {
                     (Some(s), Some(last)) => {
                         let a = (1.0 - (-(time - last).max(0.0) / SLIP_TAU_S).exp()) as f32;
                         [s[0] + a * (total[0] - s[0]), s[1] + a * (total[1] - s[1])]
                     }
                     _ => total,
-                });
+                };
+                // (never a NaN kept)
+                if smooth.iter().all(|v| v.is_finite()) {
+                    self.smooth = Some(smooth);
+                }
             }
         }
         self.last_frame = Some(time);
@@ -192,11 +205,12 @@ impl EyeSlip {
         Some([s[0] - r[0], s[1] - r[1]])
     }
 
-    /// The pair with the slip taken off (unchanged without a slip or a fit).
+    /// The pair with the slip taken off, as much of it as `weight` says (unchanged without a slip or a fit, or with a
+    /// slip beyond MAX_SLIP_PX).
     fn corrected(&self, pair: [f32; 2]) -> [f32; 2] {
         match (self.slip(), self.k) {
-            (Some(s), Some(k)) => [0, 1].map(|out| {
-                pair[out] - (k[out][0] * f64::from(s[0]) + k[out][1] * f64::from(s[1])) as f32
+            (Some(s), Some(k)) if s[0].hypot(s[1]) <= MAX_SLIP_PX => [0, 1].map(|out| {
+                pair[out] - self.weight * (k[out][0] * f64::from(s[0]) + k[out][1] * f64::from(s[1])) as f32
             }),
             _ => pair,
         }
@@ -212,6 +226,13 @@ pub struct SlipCorrection {
 }
 
 impl SlipCorrection {
+    /// Start over (pupil_slip_correction turned off), if it has been used.
+    pub fn reset_if_used(&mut self) {
+        if self.maps.is_some() {
+            *self = Self::default();
+        }
+    }
+
     /// One sample: the eye server's estimate_extra with each eye's pupil pair corrected for the slip (0/1 left, 2/3
     /// right; the rest as it is). A new map or centre (a re-center, the eye fit) makes the slip now its zero.
     pub fn correct(&mut self, time: f64, maps: &[EyeMap; 2], extra: &[f32; 8], camera: Option<&Live>) -> [f32; 8] {
@@ -275,7 +296,7 @@ mod tests {
             time_ns,
             pupil: Some(pupil),
             tracked,
-            template: Some((template, 0)),
+            template: Some((template, u64::from(template))),
             offset,
             matches: if tracked { 4 } else { 0 },
             since_good: 0,
@@ -391,17 +412,58 @@ mod tests {
         let out = run(&mut corr, 0, 300, true, |i| [0.0, if i > 100 { 10.0 } else { 0.0 }], |_| true, |_| 1, |_| [0.0; 2]);
         let p = pair_of([200.0, 160.0]);
         assert!((out.last().unwrap()[0] - p[0]).abs() < 1e-6);
-        // Learnt, then eyecam-rec gone for longer than SLIP_LOST_S: no correction until its slip is back
+        // Learnt, then eyecam-rec gone for longer than SLIP_LOST_S: the correction eases out over EASE_S (the fit and
+        // the reference kept), and back in once it is back, a new template carried on from where it was
         let mut corr = SlipCorrection::default();
         run(&mut corr, 0, 900, false, |_| [0.0; 2], |_| true, |_| 1, |_| [0.0; 2]);
         run(&mut corr, 900, 90, true, |_| [0.0, 10.0], |_| true, |_| 1, |_| [0.0; 2]);
         let p = pair_of([200.0, 160.0]);
+        let full = pair_of([200.0, 150.0]);
         let input = [p[0], p[1], p[0], p[1], 0.0, 0.0, 0.0, 0.0];
-        let held = corr.correct(990.0 / 90.0 + 1.0, &maps, &input, None);
-        assert!((held[0] - p[0]).abs() > 0.05, "held through a short gap: {held:?}");
-        let gone = corr.correct(990.0 / 90.0 + SLIP_LOST_S + 0.1, &maps, &input, None);
-        assert_eq!(&gone[..2], &p[..], "started over");
-        assert!(corr.eyes[0].k.is_some(), "the fit is kept");
+        let t0 = 989.0 / 90.0;
+        let held = corr.correct(t0 + 1.0, &maps, &input, None);
+        assert!((held[0] - full[0]).abs() < 0.01, "held through a short gap: {held:?}");
+        let mut out = Vec::new();
+        let mut t = t0 + 1.0;
+        while t < t0 + SLIP_LOST_S + EASE_S + 0.5 {
+            t += 1.0 / 90.0;
+            out.push(corr.correct(t, &maps, &input, None)[0]);
+        }
+        // (no step bigger than the easing's)
+        assert!(out.windows(2).all(|w| (w[1] - w[0]).abs() < 0.1 / 90.0 * 1.5), "eased");
+        assert!((out.last().unwrap() - p[0]).abs() < 1e-6, "out: {:?}", out.last());
+        assert!(corr.eyes[0].k.is_some() && corr.eyes[0].reference.is_some(), "the fit and the reference kept");
+        // Back with a restarted eyecam-rec (template 1 again, another time), the headset where it was: eased back in
+        let mut back = Vec::new();
+        for i in 0..200 {
+            let c = CamSlip { template: Some((1, 99)), ..cam(9_000_000_000_000 + i * 11_111_111, [200.0, 160.0], [0.0; 2], true, 1) };
+            let live = Live { slip: [Some(c), Some(c)], ..crate::tests::camera(0.75, 0.0) };
+            back.push(corr.correct(t + (i + 1) as f64 / 90.0, &maps, &input, Some(&live))[0]);
+        }
+        assert!(back.windows(2).all(|w| (w[1] - w[0]).abs() < 0.1 / 90.0 * 1.5), "eased back");
+        assert!((back.last().unwrap() - full[0]).abs() < 1e-3, "back: {:?}", back.last());
+    }
+
+    #[test]
+    fn a_slip_beyond_the_limit_or_not_a_number_gives_no_correction() {
+        let maps = maps(0.0);
+        let mut corr = SlipCorrection::default();
+        run(&mut corr, 0, 900, false, |_| [0.0; 2], |_| true, |_| 1, |_| [0.0; 2]);
+        // A wrong lock 70 px away: nothing taken off
+        let out = run(&mut corr, 900, 180, true, |_| [0.0, 70.0], |_| true, |_| 1, |_| [0.0; 2]);
+        let p = pair_of([200.0, 220.0]);
+        assert!((out.last().unwrap()[0] - p[0]).abs() < 1e-6);
+        // An offset that isn't a number: not taken, the smoothing stays a number
+        let mut corr = SlipCorrection::default();
+        run(&mut corr, 0, 900, false, |_| [0.0; 2], |_| true, |_| 1, |_| [0.0; 2]);
+        let c = CamSlip { offset: [f32::NAN, 1.0], ..cam(99_000_000_000, [200.0, 150.0], [0.0; 2], true, 1) };
+        let live = Live { slip: [Some(c), Some(c)], ..crate::tests::camera(0.75, 0.0) };
+        let q = pair_of([200.0, 150.0]);
+        let out = corr.correct(11.0, &maps, &[q[0], q[1], q[0], q[1], 0.0, 0.0, 0.0, 0.0], Some(&live));
+        assert!(out.iter().all(|v| v.is_finite()) && corr.eyes[0].smooth.unwrap().iter().all(|v| v.is_finite()));
+        // Turned off: starts over
+        corr.reset_if_used();
+        assert!(corr.eyes[0].k.is_none() && corr.maps.is_none());
     }
 
     #[test]

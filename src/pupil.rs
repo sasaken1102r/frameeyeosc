@@ -225,6 +225,21 @@ impl PupilGaze {
     /// One sample: its time, both eyes' maps, the eye server's estimate_extra, which eyes are open (not shut for the
     /// gaze), and the eye server's combined gaze as it would go out (degrees).
     pub fn step(&mut self, time: f64, maps: &[EyeMap; 2], extra: &[f32; 8], open: [bool; 2], valve: [f32; 2]) -> Step {
+        self.step_with(time, maps, extra, extra, open, valve)
+    }
+
+    /// The same, with each eye's pair mapped from `mapped` (pupil_slip.rs's pairs with the headset's slip taken out)
+    /// while whether it is fresh still goes by the eye server's own `extra`: a pair the eye server repeats stays stale
+    /// however the slip moves.
+    pub fn step_with(
+        &mut self,
+        time: f64,
+        maps: &[EyeMap; 2],
+        extra: &[f32; 8],
+        mapped: &[f32; 8],
+        open: [bool; 2],
+        valve: [f32; 2],
+    ) -> Step {
         // Time going back (the eye server restarted its clock): start over, as after a gap. So does coming back to the
         // pupil source while still easing away from it
         if self.fading || self.last_time.is_some_and(|last| time < last) {
@@ -233,7 +248,11 @@ impl PupilGaze {
         let dt = self.last_time.map_or(0.0, |last| (time - last).max(0.0));
         self.last_time = Some(time);
         let by = (1.0 - (-dt / DIFF_TAU_S).exp()) as f32;
-        let pairs = self.fresh.update(time, extra);
+        let fresh = self.fresh.update(time, extra);
+        let pairs: [Option<[f32; 2]>; 2] = [0, 1].map(|eye| {
+            let pair = [mapped[2 * eye], mapped[2 * eye + 1]];
+            fresh[eye].and(Some(pair)).filter(|pair| pair.iter().all(|value| value.is_finite()))
+        });
         let mut eyes: [Option<[f32; 2]>; 2] = [0, 1].map(|eye| {
             let pair = pairs[eye].filter(|_| open[eye])?;
             Some(maps[eye].apply(pair)).filter(|mapped| in_range(*mapped))
@@ -469,6 +488,32 @@ mod tests {
         assert!(fresh.update(10.0 + DT, &extra([0.3, 0.1], [0.3, 0.1]))[0].is_some());
         assert!(fresh.update(5.0, &extra([0.3, 0.1], [0.3, 0.1])).iter().all(Option::is_none));
         assert!(fresh.update(5.0 + DT, &extra([0.31, 0.1], [0.31, 0.1])).iter().all(Option::is_some));
+    }
+
+    #[test]
+    fn freshness_goes_by_the_eye_servers_own_pairs_however_the_mapped_ones_move() {
+        // The eye server's pairs change for a while, then freeze (it lost both eyes); the pairs mapped (the headset's
+        // slip taken out) keep moving: the eyes are left out once the raw pairs are stale, as without the correction
+        let maps = [map(), map()];
+        let mut gaze = PupilGaze::default();
+        let mut steps = Vec::new();
+        for i in 0..60 {
+            let raw = if i < 30 { pair(i as f32 * 0.01, 0.0) } else { pair(0.29, 0.0) };
+            let mapped = pair(i as f32 * 0.01 + 1.0, i as f32 * 0.02);
+            steps.push(gaze.step_with(i as f64 * DT, &maps, &extra(raw, raw), &extra(mapped, mapped), [true; 2], [5.0, 5.0]));
+        }
+        // While the raw pairs change: the mapped ones are what is mapped
+        assert_eq!(steps[20].in_use, InUse::Pupil);
+        assert!((steps[29].gaze[0] - 1.29).abs() < 1e-3 && (steps[29].gaze[1] - 0.58).abs() < 1e-3, "{:?}", steps[29]);
+        // Frozen raw pairs: stale after FRESH_S, then held and handed back, never the moving mapped pairs
+        let stale = 29 + (FRESH_S / DT).ceil() as usize + 1;
+        assert!(steps[stale..].iter().all(|s| s.in_use != InUse::Pupil), "{:?}", steps[stale]);
+        // step is step_with with the same pairs
+        let (mut a, mut b) = (PupilGaze::default(), PupilGaze::default());
+        for i in 0..20 {
+            let e = extra(pair(i as f32 * 0.1, 0.0), pair(i as f32 * 0.1, 1.0));
+            assert_eq!(a.step(i as f64 * DT, &maps, &e, [true; 2], [0.0; 2]), b.step_with(i as f64 * DT, &maps, &e, &e, [true; 2], [0.0; 2]));
+        }
     }
 
     // Two samples of the same eyes (the first a hair off, so the second is seen changing), the second's step.

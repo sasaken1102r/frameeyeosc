@@ -3993,12 +3993,15 @@ fn process(
                 let open = eyes_open_for_pupil(data.openness, seen_open, settings);
                 // pupil_slip_correction: the headset's slip, as eyecam-rec sees it in the glints, taken out of the
                 // pupil pairs first; off, the pairs exactly as the eye server gives them
-                let extra = if settings.pupil_slip_correction {
-                    smoother.slip.correct(data.sample_time, &maps, &data.extra, live)
+                // (whether a pair is fresh still goes by the eye server's own pairs: pupil.rs step_with). Turned off,
+                // the correction starts over when it is next turned on
+                let step = if settings.pupil_slip_correction {
+                    let mapped = smoother.slip.correct(data.sample_time, &maps, &data.extra, live);
+                    smoother.pupil.step_with(data.sample_time, &maps, &data.extra, &mapped, open, valve)
                 } else {
-                    data.extra
+                    smoother.slip.reset_if_used();
+                    smoother.pupil.step(data.sample_time, &maps, &data.extra, open, valve)
                 };
-                let step = smoother.pupil.step(data.sample_time, &maps, &extra, open, valve);
                 gaze_in_use = Some(step.in_use);
                 gaze_blending = step.blending;
                 let used = matches!(step.in_use, pupil::InUse::Pupil | pupil::InUse::Left | pupil::InUse::Right);

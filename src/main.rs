@@ -1106,8 +1106,8 @@ struct Smoother {
     pupil: pupil::PupilGaze,
     // The headset's slip taken out of the pupil pairs first (pupil_slip_correction; and for the gaze guard's witness)
     slip: pupil_slip::SlipCorrection,
-    // Valve's gaze guarded by the pupils (gaze_guard; see gaze_guard.rs). Not reset with the filters: what it absorbed
-    // belongs to Valve's self-calibration, not to one stretch of tracking.
+    // Valve's gaze guarded by the pupils (gaze_guard; see gaze_guard.rs). Not reset with the filters over a short gap:
+    // what it absorbed belongs to Valve's self-calibration of this wear; zeroed when the eye tracking stops (on_lost).
     guard: gaze_guard::GazeGuard,
     // Valve's combined gaze without the guard's offset, held like measure_held (the panel's checks score it as Valve's)
     guard_measure_held: Option<[f32; 2]>,
@@ -5255,6 +5255,8 @@ impl Bridge {
         self.extras.send_lost(idle.as_ref().map(|packet| &packet[..]));
         self.smoother.reset();
         self.compare = None;
+        // The gaze guard's offset is Valve's self-calibration of this wear: the next one starts from zero
+        self.smoother.guard.wear_ended();
         // The next wear may read differently; reset keeps what this one reads only over short gaps
         self.smoother.cross_eye.level = CrossEyeLevel::default();
         self.active_since = None;

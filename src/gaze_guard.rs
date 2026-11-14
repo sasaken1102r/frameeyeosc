@@ -15,13 +15,17 @@
 //!   - fast (FAST_TAU_S, on every steady sample with both pupils) and slow (the baseline, BASE_TAU_S, learnt only from
 //!     trusted samples near it);
 //!   - when both eyes' fast d stand on average more than STEP_DEG off the baseline for STEP_HOLD_S of trusted samples:
-//!     with the glints where they were while the baseline was learnt (SLIP_MOVED_PX), Valve moved by itself, and the
-//!     step goes into an offset added to Valve's gaze, eased in at EASE_DEG_S (never a jump); with the glints moved,
-//!     the headset moved, and Valve is trusted (it follows a slip far better than the pupils do): the baseline takes the
-//!     new difference and the offset stays as it is.
+//!     with the glints where they were while the baseline was learnt (SLIP_MOVED_PX) and the eyes looking where they
+//!     looked while it was learnt (GAZE_SAME_DEG: the pupil map's own error changes with the gaze, alike in both eyes,
+//!     so a look to the side would read as a step), Valve moved by itself, and the step goes into an offset added to
+//!     Valve's gaze, eased in at EASE_DEG_S (never a jump); with the glints moved (wherever the eyes look), the headset
+//!     moved, and Valve is trusted (it follows a slip far better than the pupils do, and it usually solves its
+//!     self-calibration again after a re-seat): the offset is let go (eased out at EASE_DEG_S) and the baseline takes the
+//!     new difference.
 //! The offset is at most MAX_OFFSET_DEG, eases out at EASE_OUT_DEG_S once the witness has been lost for WITNESS_LOST_S,
 //! and is zero again at every eye fit and re-center (a new pupil map or centre, or a new correction of Valve's gaze:
-//! the fit measures Valve's own gaze, so it takes the step in itself) and when the key is turned off.
+//! the fit measures Valve's own gaze, so it takes the step in itself), when the eye tracking stops (the headset taken
+//! off; main.rs on_lost) and when the key is turned off.
 //!
 //! d is taken from Valve's combined gaze, not from each eye's own reading: the Frame's per-eye sideways gaze swings by
 //! several degrees on its own (main.rs VERGENCE_DEG), which would look like steps, and the combined gaze is what goes
@@ -44,6 +48,13 @@ pub const STEP_DEG: f32 = 3.0;
 /// ...and it has to stay for this many seconds of trusted samples before anything is done (blinks and short losses in
 /// between pause it: about 2 s of wall time).
 pub const STEP_HOLD_S: f64 = 1.5;
+/// A step is taken for Valve's only while the pupils' combined gaze is at most this far (degrees) from where it was,
+/// on average, while the baseline was learnt: the corrected pupil gaze errs differently at different gazes (in the
+/// 2026-11-14 slip tests up to about 12° at the side dots, 20° out), alike in both eyes, so d away from there differs
+/// without Valve moving. Within it the map's error changes by less than STEP_DEG. Away from it such a step is neither
+/// tested nor learnt; one that is Valve's is still there when the eyes come back. (A step with the glints moved is the
+/// headset's wherever the eyes look.)
+pub const GAZE_SAME_DEG: f32 = 5.0;
 /// A step being tested is dropped when no sample has been trusted for this long (s): a blink pauses it, a longer
 /// loss starts it over.
 pub const CANDIDATE_GAP_S: f64 = 0.5;
@@ -184,7 +195,7 @@ pub struct GuardStep {
 pub enum Event {
     /// Valve moved by itself: this much went into the offset (each eye).
     Absorbed([[f32; 2]; 2]),
-    /// The headset moved: Valve kept, the baseline took the new difference.
+    /// The headset moved: Valve kept (the offset let go), the baseline took the new difference.
     KeptValve,
 }
 
@@ -197,6 +208,8 @@ pub struct GazeGuard {
     fit: Option<Fit>,
     valve_steady: Steady,
     eyes: [EyeTrack; 2],
+    /// The pupils' combined gaze while the baseline was learnt, smoothed like it (see GAZE_SAME_DEG).
+    base_gaze: Option<[f32; 2]>,
     candidate: Option<Candidate>,
     /// The offset as applied, and where it is going (each eye, degrees).
     offset: [[f32; 2]; 2],
@@ -219,11 +232,19 @@ impl GazeGuard {
         used
     }
 
+    /// The eye tracking stopped (main.rs on_lost: the headset taken off, or the eye server gone): the next wear starts
+    /// from zero, as after a re-center. After a re-seat Valve solves its self-calibration again, so what was absorbed
+    /// may be gone.
+    pub fn wear_ended(&mut self) {
+        self.rezero();
+    }
+
     /// The offset back to zero and everything learnt with it forgotten (an eye fit or re-center); the journal's counts
     /// go on.
     fn rezero(&mut self) {
         self.valve_steady = Steady::default();
         self.eyes = [EyeTrack::default(); 2];
+        self.base_gaze = None;
         self.candidate = None;
         self.offset = [[0.0; 2]; 2];
         self.target = [[0.0; 2]; 2];
@@ -319,11 +340,15 @@ impl GazeGuard {
             (Some(_), None) => true,
             _ => false,
         };
+        let witness = match pupils {
+            [Some(left), Some(right)] => Some([(left[0] + right[0]) / 2.0, (left[1] + right[1]) / 2.0]),
+            _ => None,
+        };
         let trusted = d.is_some() && steady && quiet && agree;
-        if trusted {
+        if let (true, Some(gaze)) = (trusted, witness) {
             self.trusted += 1;
             self.last_trusted = Some(time);
-            self.trusted_step(time, dt.min(MAX_DT_S), slip);
+            self.trusted_step(time, dt.min(MAX_DT_S), slip, gaze);
         } else if self.candidate.is_some_and(|candidate| time - candidate.last_trusted > CANDIDATE_GAP_S) {
             self.candidate = None;
         }
@@ -335,15 +360,12 @@ impl GazeGuard {
         for eye in 0..2 {
             self.offset[eye] = toward(self.offset[eye], self.target[eye], EASE_DEG_S * dt_ease);
         }
-        let witness = match pupils {
-            [Some(left), Some(right)] => Some([(left[0] + right[0]) / 2.0, (left[1] + right[1]) / 2.0]),
-            _ => None,
-        };
         GuardStep { offset: self.offset, trusted, witness }
     }
 
-    /// A trusted sample (`dt` its interval, capped): the baseline learnt, or a step tested and decided.
-    fn trusted_step(&mut self, time: f64, dt: f64, slip: [Option<[f32; 2]>; 2]) {
+    /// A trusted sample (`dt` its interval, capped; `gaze` the pupils' combined gaze): the baseline learnt, or a step
+    /// tested and decided.
+    fn trusted_step(&mut self, time: f64, dt: f64, slip: [Option<[f32; 2]>; 2], gaze: [f32; 2]) {
         let (Some(fast_left), Some(fast_right), Some(slip_left), Some(slip_right)) =
             (self.eyes[0].fast, self.eyes[1].fast, slip[0], slip[1])
         else {
@@ -356,12 +378,27 @@ impl GazeGuard {
         if !ready || length(step) <= STEP_DEG {
             // Near the baseline (or still learning it): learnt, the glints with it
             self.candidate = None;
+            let mut by = 0.0;
             for (eye, (fast, slip)) in self.eyes.iter_mut().zip(fast.iter().zip(&slip)) {
                 eye.base_s += dt;
                 // The plain mean until it has BASE_TAU_S of samples, then smoothed over BASE_TAU_S
-                let by = (dt / eye.base_s.min(BASE_TAU_S).max(f64::EPSILON)).min(1.0) as f32;
+                by = (dt / eye.base_s.min(BASE_TAU_S).max(f64::EPSILON)).min(1.0) as f32;
                 ease(&mut eye.base, *fast, by);
                 ease(&mut eye.slip_base, *slip, by);
+            }
+            ease(&mut self.base_gaze, gaze, by);
+            return;
+        }
+        // Off the baseline: tested only with the glints away from where they were (the headset's, wherever the eyes
+        // look) or with the eyes where they looked while it was learnt (see GAZE_SAME_DEG); otherwise left alone, and a
+        // step being tested is dropped once none has counted for CANDIDATE_GAP_S
+        let moved = self.eyes.iter().zip(&slip).any(|(eye, slip)| {
+            eye.slip_base.is_none_or(|base| length(sub(*slip, base)) > SLIP_MOVED_PX)
+        });
+        let same_gaze = self.base_gaze.is_some_and(|base| length(sub(gaze, base)) <= GAZE_SAME_DEG);
+        if !moved && !same_gaze {
+            if self.candidate.is_some_and(|candidate| time - candidate.last_trusted > CANDIDATE_GAP_S) {
+                self.candidate = None;
             }
             return;
         }
@@ -372,15 +409,19 @@ impl GazeGuard {
             return;
         }
         self.candidate = None;
-        let moved = self.eyes.iter().zip(&slip).any(|(eye, slip)| {
-            eye.slip_base.is_none_or(|base| length(sub(*slip, base)) > SLIP_MOVED_PX)
-        });
         if moved {
-            // The headset moved: Valve follows that, the pupils don't quite; the new difference is the baseline
-            for (eye, (fast, slip)) in self.eyes.iter_mut().zip(fast.iter().zip(&slip)) {
-                eye.base = Some(*fast);
-                eye.slip_base = Some(*slip);
+            // The headset moved: Valve follows that, the pupils don't quite, and after a re-seat Valve usually solves
+            // its self-calibration again, so what was absorbed may be gone: the offset is let go (eased out) and the
+            // new difference, without it, is the baseline, at the gaze the pupils read now
+            for eye in 0..2 {
+                let back = sub([0.0; 2], self.target[eye]);
+                self.target[eye] = [0.0; 2];
+                let track = &mut self.eyes[eye];
+                track.fast = Some(add(fast[eye], back));
+                track.base = track.fast;
+                track.slip_base = Some(slip[eye]);
             }
+            self.base_gaze = Some(gaze);
             self.events.push((time, Event::KeptValve));
             return;
         }
@@ -428,7 +469,7 @@ impl GazeGuard {
             n => format!("{n} step{} absorbed ({})", if n == 1 { "" } else { "s" }, absorbed.join("; ")),
         };
         let line = format!(
-            "Gaze guard: offset L {} R {}, {steps}, {kept} kept Valve's (the headset moved), witness trusted {share:.1}% of {} samples",
+            "Gaze guard: offset L {} R {}, {steps}, {kept} kept Valve's (the headset moved; offset let go), witness trusted {share:.1}% of {} samples",
             degrees(self.offset[0]),
             degrees(self.offset[1]),
             self.samples
@@ -666,6 +707,67 @@ mod tests {
         run(&mut guard, &mut wear, 120.0, 10.0, [0.0; 2], error, pupils_right, still_slip, 0.0);
         let last = guard.offset[0];
         assert!((last[0] + 10.0).abs() < 0.5, "{last:?}");
+    }
+
+    #[test]
+    fn looking_aside_and_back_with_valve_and_the_glints_steady_gives_no_offset() {
+        // 20 s straight ahead (the baseline), then a look 20° to the side where the corrected pupil map reads 4° (or
+        // 8°) further out in both eyes alike (its own error there), held for 3 s (or 10 s), then back; Valve right all
+        // along, the glints still
+        for (aside_s, error) in [(3.0, 4.0), (3.0, 8.0), (10.0, 4.0), (10.0, -6.0)] {
+            let mut guard = GazeGuard::default();
+            let mut wear = Wear { noise: 19 };
+            let mut steps = run(&mut guard, &mut wear, 0.0, 20.0, [0.0; 2], no_error, pupils_right, still_slip, 0.0).steps;
+            let map_error = move |_: usize, _: f64| [error, 0.0];
+            steps.extend(run(&mut guard, &mut wear, 20.0, aside_s, [20.0, 0.0], no_error, map_error, still_slip, 0.0).steps);
+            let back = 20.0 + aside_s;
+            steps.extend(run(&mut guard, &mut wear, back, 10.0, [0.0; 2], no_error, pupils_right, still_slip, 0.0).steps);
+            assert!(steps.iter().all(|s| s.offset == [[0.0; 2]; 2]), "{aside_s} {error}: {:?}", guard.events());
+            assert!(guard.events().is_empty(), "{:?}", guard.events());
+            // (the witness trusted aside too: it is the gaze, not the trust, that keeps the step out)
+            let aside = &steps[(20.0 / DT) as usize + 60..((20.0 + aside_s) / DT) as usize];
+            assert!(aside.iter().filter(|s| s.trusted).count() > aside.len() / 2);
+        }
+        // Valve's step while the eyes look aside is taken out once they are back where the baseline was learnt
+        let mut guard = GazeGuard::default();
+        let mut wear = Wear { noise: 23 };
+        run(&mut guard, &mut wear, 0.0, 20.0, [0.0; 2], no_error, pupils_right, still_slip, 0.0);
+        let ratchet = |_: f64| [10.0, 0.0];
+        let map_error = |_: usize, _: f64| [4.0, 0.0];
+        let aside = run(&mut guard, &mut wear, 20.0, 5.0, [20.0, 0.0], ratchet, map_error, still_slip, 0.0);
+        assert!(aside.steps.iter().all(|s| s.offset == [[0.0; 2]; 2]));
+        let out = run(&mut guard, &mut wear, 25.0, 5.0, [0.0; 2], ratchet, pupils_right, still_slip, 0.0);
+        assert!(out.sent.last().is_some_and(|g| length(*g) < 1.0), "{:?}", out.sent.last());
+    }
+
+    #[test]
+    fn a_reseat_lets_the_offset_go_and_it_does_not_come_back() {
+        // Valve's 16° step taken out, then at 30 s the headset re-seated: the glints 10 px away, the pupils 6° off
+        // (what the slip correction leaves), and Valve, solving its self-calibration again, right once more
+        let mut guard = GazeGuard::default();
+        let mut wear = Wear { noise: 29 };
+        let valve = |t: f64| [if (20.0..30.0).contains(&t) { 16.0 } else { 0.0 }, 0.0];
+        let reseat = |t: f64| Some([3.0 + if t >= 30.0 { 10.0 } else { 0.0 }, -2.0]);
+        let pupils = |_: usize, t: f64| [if t >= 30.0 { 6.0 } else { 0.0 }, 0.0];
+        let out = run(&mut guard, &mut wear, 0.0, 70.0, [0.0; 2], valve, pupils, reseat, 0.0);
+        let index = |t: f64| (t / DT).round() as usize;
+        assert!((out.steps[index(29.9)].offset[0][0] + 16.0).abs() < 0.5, "{:?}", out.steps[index(29.9)]);
+        // Let go within about 5 s of the re-seat (the glints settle, the step stands for STEP_HOLD_S), eased, and
+        // not taken in again
+        assert!(out.steps[index(36.0)..].iter().all(|s| s.offset == [[0.0; 2]; 2]), "{:?}", out.steps[index(36.0)]);
+        assert!(out.sent[index(36.0)..].iter().all(|g| length(*g) < 1e-6));
+        let added: Vec<[f32; 2]> = out.steps.iter().map(|s| s.offset[0]).collect();
+        assert!(largest_step(&added) < 1.0, "{}", largest_step(&added));
+        let events: Vec<bool> = guard.events().iter().map(|(_, e)| matches!(e, Event::Absorbed(_))).collect();
+        assert_eq!(events, [true, false], "{:?}", guard.events());
+        // The eye tracking stopping (the headset taken off) zeroes it at once too
+        let mut guard = GazeGuard::default();
+        let valve = |t: f64| [if t >= 20.0 { 16.0 } else { 0.0 }, 0.0];
+        run(&mut guard, &mut wear, 0.0, 30.0, [0.0; 2], valve, pupils_right, still_slip, 0.0);
+        assert!((guard.offset[0][0] + 16.0).abs() < 0.5);
+        guard.wear_ended();
+        let step = guard.step(40.0, [16.0, 0.0], true, [Some([0.5, 0.0]), Some([-0.5, 0.0])], [Some([3.0, -2.0]); 2], &fit(0.0));
+        assert_eq!(step.offset, [[0.0; 2]; 2]);
     }
 
     #[test]

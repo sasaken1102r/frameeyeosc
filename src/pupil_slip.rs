@@ -6,7 +6,10 @@
 //! (the live file's glint part, eyecam_live.rs). Here, per eye:
 //!   - the offset is followed across templates (a new template starts from 0 again: the one before's last offset is
 //!     carried, so the slip goes on where it was) and smoothed over SLIP_TAU_S, held while not tracked;
-//!   - its change since the eye's map and centre were last set (the re-center; also this start) is the slip;
+//!   - its change since the eye's map and centre were last set (the re-center; also this start) is the slip; a new
+//!     template within REZERO_S after that (the panel asks for one after each fit and re-center) is the zero instead:
+//!     carried over, the old template's offset at that moment holds how the glints sit at the eye's gaze then
+//!     against the old template's gaze, not a slip;
 //!   - it is converted into the eye server's pupil pair units by a linear fit of that pair against eyecam-rec's pupil
 //!     centre in the same picture (both see the same pupil), learnt as the eyes move (FIT_TAU_S; used once it has seen
 //!     the pupil move FIT_MIN_SD_PX each way and fits with at least FIT_MIN_R2), and taken off the pair before the map.
@@ -46,6 +49,8 @@ pub const LOG_S: f64 = 60.0;
 /// published a time that drifted by about 22 us every second, and each change carried the offset again: 2026-11-14
 /// slip test 3).
 pub const TEMPLATE_SAME_NS: u64 = 500_000_000;
+/// A new template this soon (s) after a map or centre change starts the slip from 0 (see the module comment).
+pub const REZERO_S: f64 = 30.0;
 
 /// The eye server's pupil pair (`extra`) from eyecam-rec's pupil centre (px): pair = a + k * px, least squares with
 /// exponential forgetting (weights: each frame 1, decaying over FIT_TAU_S).
@@ -140,6 +145,9 @@ struct EyeSlip {
     weight: f32,
     /// The sample time last stepped (for the easing).
     last_step: Option<f64>,
+    /// Until when a new template is the slip's zero (REZERO_S after a map or centre change), and that one came.
+    rezero_until: Option<f64>,
+    rezero_now: bool,
 }
 
 impl EyeSlip {
@@ -180,6 +188,10 @@ impl EyeSlip {
             if !same {
                 if self.template.is_some() {
                     self.carried = [self.carried[0] + self.offset[0], self.carried[1] + self.offset[1]];
+                    // (just after a map or centre change: this template is the zero)
+                    if self.rezero_until.take().is_some_and(|until| time <= until) {
+                        self.rezero_now = true;
+                    }
                 }
                 self.template = Some(template);
                 self.offset = [0.0; 2];
@@ -198,6 +210,9 @@ impl EyeSlip {
                 // (never a NaN kept)
                 if smooth.iter().all(|v| v.is_finite()) {
                     self.smooth = Some(smooth);
+                    if std::mem::take(&mut self.rezero_now) {
+                        self.reference = Some(smooth);
+                    }
                 }
             }
         }
@@ -247,6 +262,7 @@ impl SlipCorrection {
         if self.maps.is_some_and(|old| old != *maps) {
             for eye in &mut self.eyes {
                 eye.reference = eye.smooth;
+                eye.rezero_until = Some(time + REZERO_S);
             }
         }
         self.maps = Some(*maps);
@@ -505,6 +521,47 @@ mod tests {
         }
         let slip = corr.eyes[0].slip().unwrap();
         assert!((slip[1] - 10.0).abs() < 1e-3, "{slip:?}");
+    }
+
+    #[test]
+    fn a_new_template_right_after_a_recenter_is_the_zero() {
+        // A re-center, then (as the panel asks) a new template 10 s later, taken while the old template's offset reads
+        // 12 px (the glints at this gaze against the old template's gaze, no slip): the slip stays 0, nothing taken off
+        let mut corr = SlipCorrection::default();
+        run(&mut corr, 0, 900, false, |_| [0.0; 2], |_| true, |_| 1, |_| [0.0; 2]);
+        let maps2 = maps(1.0);
+        let mut last = [0.0f32; 8];
+        for i in 900..900 + 90 * 20 {
+            let (template, offset) = if i < 900 + 900 { (1, [12.0, 0.0]) } else { (2, [0.0, 0.0]) };
+            let c = cam(i as u64 * 11_111_111, [200.0, 150.0], offset, true, template);
+            let live = Live { slip: [Some(c), Some(c)], ..crate::tests::camera(0.75, 0.0) };
+            let p = pair_of([200.0, 150.0]);
+            last = corr.correct(i as f64 / 90.0, &maps2, &[p[0], p[1], p[0], p[1], 0.0, 0.0, 0.0, 0.0], Some(&live));
+            if i == 900 {
+                // (the re-center: the 12 px reading so far is the zero)
+                assert!(corr.eyes[0].slip().unwrap().iter().all(|v| v.abs() < 12.0));
+            }
+        }
+        let slip = corr.eyes[0].slip().unwrap();
+        assert!(slip.iter().all(|v| v.abs() < 1e-3), "{slip:?}");
+        let p = pair_of([200.0, 150.0]);
+        assert!((last[0] - p[0]).abs() < 1e-5 && (last[1] - p[1]).abs() < 1e-5, "{last:?}");
+        // Later than REZERO_S after the re-center, a new template carries on as before (a new wear, a restarted
+        // eyecam-rec)
+        for i in 900 + 90 * 20..900 + 90 * 60 {
+            let c = cam(i as u64 * 11_111_111, [200.0, 155.0], [0.0, 5.0], true, 2);
+            let live = Live { slip: [Some(c), Some(c)], ..crate::tests::camera(0.75, 0.0) };
+            let p = pair_of([200.0, 155.0]);
+            corr.correct(i as f64 / 90.0, &maps2, &[p[0], p[1], p[0], p[1], 0.0, 0.0, 0.0, 0.0], Some(&live));
+        }
+        for i in 900 + 90 * 60..900 + 90 * 62 {
+            let c = cam(i as u64 * 11_111_111, [200.0, 155.0], [0.0, 0.0], true, 3);
+            let live = Live { slip: [Some(c), Some(c)], ..crate::tests::camera(0.75, 0.0) };
+            let p = pair_of([200.0, 155.0]);
+            corr.correct(i as f64 / 90.0, &maps2, &[p[0], p[1], p[0], p[1], 0.0, 0.0, 0.0, 0.0], Some(&live));
+        }
+        let slip = corr.eyes[0].slip().unwrap();
+        assert!((slip[1] - 5.0).abs() < 1e-3, "{slip:?}");
     }
 
     #[test]

@@ -553,6 +553,10 @@ struct Worker {
     glint_tracked: [u64; 2],
     /// The longest frame's glint time since the last log line (us).
     glint_max_us: u64,
+    /// Each eye's template's time (CLOCK_MONOTONIC ns), worked out once when it is taken: mono_minus_raw is measured
+    /// again every second and drifts (about 22 us a second on the Frame), and a time worked out again every frame
+    /// changed every second, which a reader takes for a new template (2026-11-14 slip test 3).
+    glint_template_mono: [u64; 2],
 }
 
 impl Worker {
@@ -604,6 +608,7 @@ impl Worker {
             glint_n: 0,
             glint_tracked: [0; 2],
             glint_max_us: 0,
+            glint_template_mono: [0; 2],
         }
     }
 
@@ -889,7 +894,10 @@ impl Worker {
         self.glint_max_us = self.glint_max_us.max(glint_time.as_micros() as u64);
         self.glint_n += 1;
         self.glint_tracked[eye] += slip.tracked as u64;
-        let template_mono = (slip.template_t * 1e9) as i64 + self.mono_minus_raw;
+        if slip.template_id != before {
+            self.glint_template_mono[eye] = ((slip.template_t * 1e9) as i64 + self.mono_minus_raw).max(0) as u64;
+        }
+        let template_mono = self.glint_template_mono[eye];
         let frames = self.frames[eye];
         let state = self.calib_state();
         let recalib = self.engines.iter().any(|e| e.recalib_suggested);
@@ -917,7 +925,7 @@ impl Worker {
             let g = &mut s.glint[eye];
             g.flags = pupil.is_some() as u32 | (slip.tracked as u32) << 1 | ((slip.template_id > 0) as u32) << 2;
             g.template_id = slip.template_id;
-            g.template_mono_ns = if slip.template_id > 0 { template_mono.max(0) as u64 } else { 0 };
+            g.template_mono_ns = if slip.template_id > 0 { template_mono } else { 0 };
             (g.pupil_x, g.pupil_y) = pupil.map_or((f32::NAN, f32::NAN), |p| (p[0], p[1]));
             (g.slip_x, g.slip_y) = (slip.offset[0], slip.offset[1]);
             g.matches = slip.matches;

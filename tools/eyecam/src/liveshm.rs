@@ -2,7 +2,9 @@
 //! eyecam-rec with a seqlock, read by frameeyeosc (same uid, O_RDONLY + mmap, never writes). The README's
 //! "live shared memory" section is the contract; bump VERSION on any change to the layout or meaning of what is there.
 //! Additions go after it, found by `struct_size` (a reader of version 1 reads the first 200 bytes and checks only that
-//! struct_size is at least that): the glint part (`glint_version`, GLINT_VERSION) since 2026-11.
+//! struct_size is at least that): the glint part (`glint_version`, GLINT_VERSION) since 2026-11, then the pupil shape
+//! part (`shape_version`, SHAPE_VERSION; a reader of the glint part reads 304 bytes and checks only that struct_size is
+//! at least that).
 
 use std::fs::{File, OpenOptions};
 use std::mem::{offset_of, size_of};
@@ -16,6 +18,8 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"EYCM");
 pub const VERSION: u32 = 1;
 /// The glint part's version (`glint_version`; 0 = not written).
 pub const GLINT_VERSION: u32 = 1;
+/// The pupil shape part's version (`shape_version`; 0 = not written).
+pub const SHAPE_VERSION: u32 = 1;
 /// The file is one page; struct_size says how much of it is the struct.
 const FILE_SIZE: usize = 4096;
 
@@ -74,6 +78,21 @@ pub struct LiveGlint {
     pub _pad: u32,
 }
 
+/// Per eye, the pupil shape part (index 0 = left, 1 = right): the pupil ellipse of the same frame as the eye's values
+/// and glint part above (written with them), in the same picture as `LiveGlint::pupil_x` / `pupil_y`. Meaningful only
+/// with a pupil in this frame (glint flags bit 0); NaN without one (0 before the eye's first frame).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LiveShape {
+    /// The ellipse's semi-axes (px), a >= b.
+    pub a: f32,
+    pub b: f32,
+    /// The direction of its long axis in the picture, degrees from +x towards +y, in [0, 180).
+    pub angle_deg: f32,
+    /// The share of its rim that was seen (0..1; lids and lashes hide the rest).
+    pub vis: f32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LiveShm {
@@ -98,6 +117,12 @@ pub struct LiveShm {
     pub glint_version: u32,
     pub _pad: u32,
     pub glint: [LiveGlint; 2],
+    /// SHAPE_VERSION once the pupil shape part is written.
+    pub shape_version: u32,
+    /// Bit e (0 = left, 1 = right): that eye's latest picture was turned upright (flipped top to bottom from the
+    /// sensor's) before it was processed, so its pupil and ellipse are in the flipped picture.
+    pub flipped: u32,
+    pub shape: [LiveShape; 2],
 }
 
 const _: () = {
@@ -120,7 +145,11 @@ const _: () = {
     assert!(offset_of!(LiveGlint, pupil_x) == 16);
     assert!(offset_of!(LiveGlint, slip_x) == 24);
     assert!(offset_of!(LiveGlint, matches) == 32);
-    assert!(size_of::<LiveShm>() == 304);
+    assert!(offset_of!(LiveShm, shape_version) == 304);
+    assert!(offset_of!(LiveShm, shape) == 312);
+    assert!(size_of::<LiveShape>() == 16);
+    assert!(offset_of!(LiveShape, angle_deg) == 8);
+    assert!(size_of::<LiveShm>() == 344);
 };
 
 pub struct LiveWriter {
@@ -172,6 +201,7 @@ impl LiveWriter {
             s.version = VERSION;
             s.struct_size = size_of::<LiveShm>() as u32;
             s.glint_version = GLINT_VERSION;
+            s.shape_version = SHAPE_VERSION;
             s.writer_pid = std::process::id();
             s.writer_start_ns = start;
             s.magic = MAGIC;
@@ -224,8 +254,9 @@ mod tests {
                 s.eyes[1].eye_wide = 0.5;
             });
             let r = w.read();
-            assert_eq!((r.magic, r.version, r.struct_size, r.live), (MAGIC, 1, 304, 1));
+            assert_eq!((r.magic, r.version, r.struct_size, r.live), (MAGIC, 1, 344, 1));
             assert_eq!(r.glint_version, GLINT_VERSION);
+            assert_eq!(r.shape_version, SHAPE_VERSION);
             assert_eq!(r.seq % 2, 0);
             assert_eq!(r.eyes[1].eye_wide, 0.5);
         }
@@ -233,13 +264,122 @@ mod tests {
         assert_eq!(&bytes[0..4], b"EYCM");
         assert_eq!(u32::from_le_bytes(bytes[52..56].try_into().unwrap()), 0, "live cleared on drop");
         assert_eq!(f32::from_le_bytes(bytes[128 + 36..128 + 40].try_into().unwrap()), 0.5);
-        // The version 1 struct is unchanged in its 200 bytes; the glint part comes after it
+        // The version 1 struct is unchanged in its 200 bytes; the glint part comes after it, then the shape part
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
-        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 304);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 344);
         assert_eq!(u32::from_le_bytes(bytes[200..204].try_into().unwrap()), GLINT_VERSION);
+        assert_eq!(u32::from_le_bytes(bytes[304..308].try_into().unwrap()), SHAPE_VERSION);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o644);
         std::fs::remove_file(&path).unwrap();
+    }
+
+    /// The struct as it was before the shape part (version 1 with the glint part, 304 bytes).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct ShmBefore {
+        magic: u32,
+        version: u32,
+        struct_size: u32,
+        writer_pid: u32,
+        writer_start_ns: u64,
+        seq: u32,
+        calib_state: u32,
+        t_mono_ns: u64,
+        t_cam_raw_ns: u64,
+        recalib_suggested: u32,
+        live: u32,
+        eyes: [LiveEye; 2],
+        glint_version: u32,
+        _pad: u32,
+        glint: [LiveGlint; 2],
+    }
+
+    fn bytes_of<T: Copy>(value: &T) -> Vec<u8> {
+        let p = (value as *const T).cast::<u8>();
+        (0..size_of::<T>()).map(|i| unsafe { *p.add(i) }).collect()
+    }
+
+    #[test]
+    fn the_shape_part_leaves_every_byte_before_it_as_it_was() {
+        assert_eq!(size_of::<ShmBefore>(), 304);
+        let eye = |k: f32| LiveEye {
+            t_mono_ns: 11 + k as u64,
+            t_cam_raw_ns: 22 + k as u64,
+            frame_count: 33,
+            valid: 1,
+            closed: 0,
+            eye_lid: 0.75 + k,
+            eye_wide: 0.1,
+            eye_squint: 0.2,
+            pupil_ratio: 0.8,
+            pupil_mm: 4.7,
+            pupil_dilation: 0.4,
+            confidence: 0.9,
+            skin_up: 0.6,
+            aperture: 1.4 + k,
+            _pad: 0,
+        };
+        let glint = |k: u32| LiveGlint {
+            flags: 7,
+            template_id: 3 + k,
+            template_mono_ns: 1234,
+            pupil_x: 201.5,
+            pupil_y: 150.25,
+            slip_x: 1.5,
+            slip_y: -2.25,
+            matches: 4,
+            since_good: k,
+            glints: 5,
+            _pad: 0,
+        };
+        let before = ShmBefore {
+            magic: MAGIC,
+            version: VERSION,
+            struct_size: 304,
+            writer_pid: 42,
+            writer_start_ns: 99,
+            seq: 6,
+            calib_state: 5,
+            t_mono_ns: 77,
+            t_cam_raw_ns: 88,
+            recalib_suggested: 0,
+            live: 1,
+            eyes: [eye(0.0), eye(0.1)],
+            glint_version: GLINT_VERSION,
+            _pad: 0,
+            glint: [glint(0), glint(1)],
+        };
+        let now = LiveShm {
+            magic: MAGIC,
+            version: VERSION,
+            struct_size: size_of::<LiveShm>() as u32,
+            writer_pid: 42,
+            writer_start_ns: 99,
+            seq: 6,
+            calib_state: 5,
+            t_mono_ns: 77,
+            t_cam_raw_ns: 88,
+            recalib_suggested: 0,
+            live: 1,
+            eyes: [eye(0.0), eye(0.1)],
+            glint_version: GLINT_VERSION,
+            _pad: 0,
+            glint: [glint(0), glint(1)],
+            shape_version: SHAPE_VERSION,
+            flipped: 1,
+            shape: [LiveShape { a: 21.0, b: 19.5, angle_deg: 33.0, vis: 1.0 }; 2],
+        };
+        let (old, new) = (bytes_of(&before), bytes_of(&now));
+        // Only struct_size differs in the first 304 bytes
+        assert_eq!(old[..8], new[..8]);
+        assert_eq!(old[12..304], new[12..304]);
+        assert_eq!(u32::from_le_bytes(new[8..12].try_into().unwrap()), 344);
+        // The shape part: its version, then each eye's a, b, angle and rim share
+        assert_eq!(u32::from_le_bytes(new[304..308].try_into().unwrap()), SHAPE_VERSION);
+        assert_eq!(u32::from_le_bytes(new[308..312].try_into().unwrap()), 1);
+        assert_eq!(f32::from_le_bytes(new[312..316].try_into().unwrap()), 21.0);
+        assert_eq!(f32::from_le_bytes(new[328 + 8..328 + 12].try_into().unwrap()), 33.0);
     }
 
     #[test]

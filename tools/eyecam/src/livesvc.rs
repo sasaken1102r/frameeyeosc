@@ -956,6 +956,19 @@ impl Worker {
             g.matches = slip.matches;
             g.since_good = slip.since_good;
             g.glints = slip.glints;
+            // The pupil's ellipse of the same frame (NaN without a pupil)
+            s.shape_version = liveshm::SHAPE_VERSION;
+            s.flipped = (s.flipped & !(1 << eye)) | (u32::from(upside_down) << eye);
+            let nan = f32::NAN;
+            s.shape[eye] = match pupil {
+                Some(_) => liveshm::LiveShape {
+                    a: o.f.pupil_a as f32,
+                    b: o.f.pupil_b as f32,
+                    angle_deg: o.f.pupil_angle_deg.rem_euclid(180.0) as f32,
+                    vis: o.f.pupil_vis as f32,
+                },
+                None => liveshm::LiveShape { a: nan, b: nan, angle_deg: nan, vis: nan },
+            };
         });
         self.shared.frames.fetch_add(1, Ordering::Relaxed);
         self.shared.calib_state.store(state, Ordering::Relaxed);
@@ -1537,6 +1550,12 @@ mod tests {
         }
         std::thread::sleep(Duration::from_millis(200));
         assert!(!path.exists());
+        // The live file's shape part comes with every frame: the left eye's picture marked as turned upright, and no
+        // ellipse without a pupil (there is no eye in these frames)
+        let live = std::fs::read(dir.join("live")).unwrap();
+        let word = |at: usize| u32::from_le_bytes(live[at..at + 4].try_into().unwrap());
+        assert_eq!((word(8), word(304), word(308)), (344, liveshm::SHAPE_VERSION, 1));
+        assert!((0..8).all(|i| f32::from_bits(word(312 + 4 * i)).is_nan()));
         // Asked (as `preview on` does): both eyes' pictures, the left one turned upright like the engine's frame
         shared.set_preview(true, liveshm::clock_ns(libc::CLOCK_MONOTONIC));
         for k in 30..120 {

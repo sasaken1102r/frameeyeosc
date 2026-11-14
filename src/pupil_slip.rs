@@ -41,6 +41,11 @@ pub const FIT_MIN_R2: f64 = 0.8;
 pub const FIT_STEADY_PX: f32 = 2.0;
 /// The log line comes once per this long (s).
 pub const LOG_S: f64 = 60.0;
+/// A template with the same id is the same one while its time is within this of the one seen (ns): a restarted
+/// eyecam-rec numbers from 1 again, seconds later; small changes are not a new template (eyecam-rec's 3f836aa
+/// published a time that drifted by about 22 us every second, and each change carried the offset again: 2026-11-14
+/// slip test 3).
+pub const TEMPLATE_SAME_NS: u64 = 500_000_000;
 
 /// The eye server's pupil pair (`extra`) from eyecam-rec's pupil centre (px): pair = a + k * px, least squares with
 /// exponential forgetting (weights: each frame 1, decaying over FIT_TAU_S).
@@ -169,7 +174,10 @@ impl EyeSlip {
         self.pair = pair_ok.then_some(pair);
         // A new template (also one from a restarted eyecam-rec, after a loss): the one before's last offset is carried
         if let Some(template) = cam.template {
-            if self.template != Some(template) {
+            let same = self
+                .template
+                .is_some_and(|(id, at)| id == template.0 && at.abs_diff(template.1) <= TEMPLATE_SAME_NS);
+            if !same {
                 if self.template.is_some() {
                     self.carried = [self.carried[0] + self.offset[0], self.carried[1] + self.offset[1]];
                 }
@@ -433,10 +441,10 @@ mod tests {
         assert!(out.windows(2).all(|w| (w[1] - w[0]).abs() < 0.1 / 90.0 * 1.5), "eased");
         assert!((out.last().unwrap() - p[0]).abs() < 1e-6, "out: {:?}", out.last());
         assert!(corr.eyes[0].k.is_some() && corr.eyes[0].reference.is_some(), "the fit and the reference kept");
-        // Back with a restarted eyecam-rec (template 1 again, another time), the headset where it was: eased back in
+        // Back with a restarted eyecam-rec (template 1 again, taken seconds later), where it was: eased back in
         let mut back = Vec::new();
         for i in 0..200 {
-            let c = CamSlip { template: Some((1, 99)), ..cam(9_000_000_000_000 + i * 11_111_111, [200.0, 160.0], [0.0; 2], true, 1) };
+            let c = CamSlip { template: Some((1, 5_000_000_000)), ..cam(9_000_000_000_000 + i * 11_111_111, [200.0, 160.0], [0.0; 2], true, 1) };
             let live = Live { slip: [Some(c), Some(c)], ..crate::tests::camera(0.75, 0.0) };
             back.push(corr.correct(t + (i + 1) as f64 / 90.0, &maps, &input, Some(&live))[0]);
         }
@@ -464,6 +472,39 @@ mod tests {
         // Turned off: starts over
         corr.reset_if_used();
         assert!(corr.eyes[0].k.is_none() && corr.maps.is_none());
+    }
+
+    #[test]
+    fn a_template_time_drifting_a_little_is_the_same_template() {
+        // eyecam-rec 3f836aa: the template's time drifted by 22 us every second; each change was taken for a new
+        // template and the offset carried again, the slip growing by the offset every second (hundreds of px a
+        // minute). The same template, the headset 10 px down and still, for 3 minutes: the slip stays 10 px
+        let mut corr = SlipCorrection::default();
+        run(&mut corr, 0, 900, false, |_| [0.0; 2], |_| true, |_| 1, |_| [0.0; 2]);
+        let maps = maps(0.0);
+        let mut out = [0.0f32; 8];
+        for i in 900..900 + 90 * 180 {
+            let drift = (i / 90) as u64 * 22_000;
+            let c = CamSlip { template: Some((1, 1 + drift)), ..cam(i as u64 * 11_111_111, [200.0, 160.0], [0.0, 10.0], true, 1) };
+            let live = Live { slip: [Some(c), Some(c)], ..crate::tests::camera(0.75, 0.0) };
+            let p = pair_of([200.0, 160.0]);
+            out = corr.correct(i as f64 / 90.0, &maps, &[p[0], p[1], p[0], p[1], 0.0, 0.0, 0.0, 0.0], Some(&live));
+        }
+        let slip = corr.eyes[0].slip().unwrap();
+        assert!(slip[0].abs() < 1e-3 && (slip[1] - 10.0).abs() < 1e-3, "{slip:?}");
+        let full = pair_of([200.0, 150.0]);
+        assert!((out[0] - full[0]).abs() < 1e-3, "{out:?}");
+        // A restarted eyecam-rec (template 1 again, its time seconds away, offset from 0): carried on, still 10 px
+        let mut i = 900 + 90 * 180;
+        for _ in 0..90 {
+            let c = CamSlip { template: Some((1, 9_000_000_000_000)), ..cam(i as u64 * 11_111_111, [200.0, 160.0], [0.0, 0.0], true, 1) };
+            let live = Live { slip: [Some(c), Some(c)], ..crate::tests::camera(0.75, 0.0) };
+            let p = pair_of([200.0, 160.0]);
+            corr.correct(i as f64 / 90.0, &maps, &[p[0], p[1], p[0], p[1], 0.0, 0.0, 0.0, 0.0], Some(&live));
+            i += 1;
+        }
+        let slip = corr.eyes[0].slip().unwrap();
+        assert!((slip[1] - 10.0).abs() < 1e-3, "{slip:?}");
     }
 
     #[test]

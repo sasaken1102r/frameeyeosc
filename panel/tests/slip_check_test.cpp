@@ -54,6 +54,7 @@ struct Simulation {
     bool spikes = true;     ///< a large jump in the first second of each hold (the hands still moving): not counted
     double stopAt = -1.0;   ///< stop this many seconds in (-1: run to the end)
     double silentFrom = -1.0;  ///< no samples from this many seconds in
+    double stays = 0.0;     ///< how much of a push's slip stays through its let-go step (the headset not pushed back)
 
     /**
      * The sample for the step shown now.
@@ -77,6 +78,14 @@ struct Simulation {
             for (int i = 0; i < 2; ++i) {
                 v[i] += kValveSlip[d][i];
                 p[i] += kPupilSlip[d][i];
+            }
+        }
+        if (st.kind == StepKind::Release) {
+            // (the push before it)
+            const int pd = dirIndex(kSteps[step - 1].dir);
+            for (int i = 0; i < 2; ++i) {
+                v[i] += stays * kValveSlip[pd][i];
+                p[i] += stays * kPupilSlip[pd][i];
             }
         }
         if (st.kind == StepKind::Widen) {
@@ -121,44 +130,55 @@ struct Simulation {
 void testTimeline() {
     double sum = 0.0;
     for (const Step& s : kSteps) sum += s.seconds;
-    CHECK(near(sum, kRunSec) && near(kRunSec, 132.0));
-    CHECK(near(stepStart(0), 0.0) && near(stepStart(1), 10.0) && near(stepStart(kStepCount), kRunSec));
-    // Still 10 s, then up, down, left, right twice, each pushed 5 s and let go of 5 s
+    CHECK(near(sum, kRunSec) && near(kRunSec, 178.5) && kStepCount == 43 && kRecordVersion == 2);
+    CHECK(near(stepStart(0), 0.0) && near(stepStart(1), 10.0) && near(stepStart(10), 32.5));
+    CHECK(near(stepStart(kStepCount), kRunSec));
+    // Still 10 s; the gaze error check's first nine places, 2.5 s each
     CHECK(kSteps[0].kind == StepKind::Still && near(kSteps[0].seconds, 10.0));
-    const Dir order[kDirCount] = {Dir::Up, Dir::Down, Dir::Left, Dir::Right};
-    for (int i = 0; i < 16; ++i) {
+    for (int i = 0; i < 9; ++i) {
         const Step& s = kSteps[1 + i];
-        if (i % 2 == 0) {
-            CHECK(s.kind == StepKind::Push && s.dir == order[(i / 2) % kDirCount] && near(s.seconds, 5.0));
-        } else {
-            CHECK(s.kind == StepKind::Release && near(s.seconds, 5.0));
-        }
+        CHECK(s.kind == StepKind::Template && near(s.seconds, 2.5) && !straightAhead(s));
+        CHECK(s.yawDeg == gaze_measure::kPositions[i].yawDeg && s.pitchDeg == gaze_measure::kPositions[i].pitchDeg);
+    }
+    // Then up, down, left, right twice: pushed 5 s, let go of and pushed back 5 s, re-seated 3 s
+    const Dir order[kDirCount] = {Dir::Up, Dir::Down, Dir::Left, Dir::Right};
+    for (int i = 0; i < 24; ++i) {
+        const Step& s = kSteps[10 + i];
+        const StepKind kinds[3] = {StepKind::Push, StepKind::Release, StepKind::Reseat};
+        const double seconds[3] = {5.0, 5.0, 3.0};
+        CHECK(s.kind == kinds[i % 3] && near(s.seconds, seconds[i % 3]) && straightAhead(s));
+        if (i % 3 == 0) CHECK(s.dir == order[(i / 3) % kDirCount]);
         CHECK(s.yawDeg == 0.0 && s.pitchDeg == 0.0);
     }
     // Wide, normal, narrow, normal; the dot at the gaze error check's four sides, 3 s each; still 10 s
-    CHECK(kSteps[17].kind == StepKind::Widen && kSteps[18].kind == StepKind::Normal);
-    CHECK(kSteps[19].kind == StepKind::Squint && kSteps[20].kind == StepKind::Normal);
+    CHECK(kSteps[34].kind == StepKind::Widen && kSteps[35].kind == StepKind::Normal);
+    CHECK(kSteps[36].kind == StepKind::Squint && kSteps[37].kind == StepKind::Normal && straightAhead(kSteps[36]));
     const int places[4] = {3, 4, 1, 2};
     for (int i = 0; i < 4; ++i) {
-        const Step& s = kSteps[21 + i];
-        CHECK(s.kind == StepKind::Look && near(s.seconds, 3.0));
+        const Step& s = kSteps[38 + i];
+        CHECK(s.kind == StepKind::Look && near(s.seconds, 3.0) && !straightAhead(s));
         CHECK(s.yawDeg == gaze_measure::kPositions[places[i]].yawDeg &&
               s.pitchDeg == gaze_measure::kPositions[places[i]].pitchDeg);
     }
-    CHECK(kSteps[25].kind == StepKind::Still && near(kSteps[25].seconds, 10.0));
+    CHECK(kSteps[42].kind == StepKind::Still && near(kSteps[42].seconds, 10.0));
     // From when they count
-    CHECK(near(settleSec(kSteps[0]), 2.0) && near(settleSec(kSteps[1]), 1.5) && near(settleSec(kSteps[21]), 1.0));
+    CHECK(near(settleSec(kSteps[0]), 2.0) && near(settleSec(kSteps[1]), 1.0) && near(settleSec(kSteps[10]), 1.5));
+    CHECK(near(settleSec(kSteps[12]), 1.0) && near(settleSec(kSteps[38]), 1.0));
     // Names and lines
-    CHECK(stepName(kSteps[0]) == "still" && stepName(kSteps[1]) == "push_up" && stepName(kSteps[2]) == "release");
-    CHECK(stepName(kSteps[7]) == "push_right" && stepName(kSteps[17]) == "widen" && stepName(kSteps[19]) == "squint");
-    CHECK(stepName(kSteps[23]) == "look_left" && stepName(kSteps[24]) == "look_right");
+    CHECK(stepName(kSteps[0]) == "still" && stepName(kSteps[1]) == "dot_0_0" && stepName(kSteps[6]) == "dot_-20_15");
+    CHECK(stepName(kSteps[9]) == "dot_-20_-15" && stepName(kSteps[10]) == "push_up" && stepName(kSteps[11]) == "release");
+    CHECK(stepName(kSteps[12]) == "reseat" && stepName(kSteps[19]) == "push_right" && stepName(kSteps[34]) == "widen");
+    CHECK(stepName(kSteps[36]) == "squint" && stepName(kSteps[40]) == "look_left" && stepName(kSteps[41]) == "look_right");
     const UiText& ja = uiText(Language::Ja);
     const UiText& en = uiText(Language::En);
-    CHECK(instruction(ja, kSteps[1]) == "ヘッドセットを上に 3〜5 mm ずらして持ってて");
-    CHECK(instruction(ja, kSteps[5]) == "ヘッドセットを左に 3〜5 mm ずらして持ってて");
-    CHECK(instruction(en, kSteps[3]) == "Push the headset down 3-5 mm and hold it");
-    CHECK(instruction(ja, kSteps[0]) == "じっと見ててね" && instruction(ja, kSteps[2]) == "はなしてね");
-    CHECK(instruction(ja, kSteps[21]) == "点を見てね" && instruction(en, kSteps[19]) == "Narrow your eyes");
+    CHECK(instruction(ja, kSteps[10]) == "ヘッドセットを上に 3〜5 mm ずらして持ってて");
+    CHECK(instruction(ja, kSteps[16]) == "ヘッドセットを左に 3〜5 mm ずらして持ってて");
+    CHECK(instruction(en, kSteps[13]) == "Push the headset down 3-5 mm and hold it");
+    CHECK(instruction(ja, kSteps[0]) == "じっと見ててね" && instruction(ja, kSteps[11]) == "はなして、押し戻してね");
+    CHECK(instruction(ja, kSteps[12]) == "いつもの位置にかぶり直してね");
+    CHECK(instruction(en, kSteps[11]) == "Let go and push it back");
+    CHECK(instruction(ja, kSteps[1]) == "点を見てね" && instruction(ja, kSteps[38]) == "点を見てね");
+    CHECK(instruction(en, kSteps[36]) == "Narrow your eyes");
 }
 
 void testTicks() {
@@ -172,9 +192,9 @@ void testTicks() {
     for (int i = 0; i < 10; ++i) session.add(100.01 + i, 0, gaze_measure::Sample());
     t = session.tick(104.0, 0);
     CHECK(t.step == 0 && !t.changed && near(t.progress, 0.6) && t.seconds == 6);
-    // The first push at 10 s, the dot still straight ahead; a sample in its first 1.5 s doesn't count
+    // The first template dot at 10 s (the centre, 2.5 s); a sample in its first 1 s doesn't count
     t = session.tick(110.0, 0);
-    CHECK(t.step == 1 && t.changed && t.seconds == 5 && t.yawDeg == 0.0);
+    CHECK(t.step == 1 && t.changed && t.seconds == 3 && t.yawDeg == 0.0 && t.pitchDeg == 0.0);
     session.add(110.5, 0, gaze_measure::Sample());
     session.add(111.6, 0, gaze_measure::Sample());
     const std::vector<Row>& rows = session.rows();
@@ -187,7 +207,7 @@ void testWholeRun() {
     sim.run();
     const View& view = sim.session.view();
     CHECK(view.phase == Phase::Done && view.stepsDone == kStepCount && view.mapped && view.beforeSmoothing);
-    CHECK(view.samples > 11800 && view.samples < 11950);
+    CHECK(view.samples > 16000 && view.samples < 16120);
     const Result& r = view.result;
     CHECK(r.mapped && r.valveDirs == kDirCount && r.pupilDirs == kDirCount);
     // Each direction's move, the spikes in the first second of each hold and let-go left out
@@ -204,7 +224,12 @@ void testWholeRun() {
     CHECK(near(r.steps[0].valve.x, -2.0, 1e-4) && near(r.steps[0].pupil.y, -0.3, 1e-4));
     double g[2];
     gaze_measure::targetGaze({0, 15}, g);
-    CHECK(near(r.steps[21].valve.y, g[1] + 1.0, 1e-4) && r.steps[21].valve.counts());
+    CHECK(near(r.steps[38].valve.y, g[1] + 1.0, 1e-4) && r.steps[38].valve.counts());
+    CHECK(near(r.steps[4].pupil.y, g[1] - 0.3, 1e-4) && r.steps[4].pupil.counts());
+    // Pushed back each time: against the steps around it, the same
+    for (int d = 0; d < kDirCount; ++d) {
+        CHECK(near(r.pushesAround[d].pupil.dx, kPupilSlip[d][0], 1e-4) && near(r.pushesAround[d].pupil.dy, kPupilSlip[d][1], 1e-4));
+    }
     CHECK(briefText(uiText(Language::Ja), r) == "Valve 0.4°・瞳 2.7°");
     CHECK(briefText(uiText(Language::En), r) == "Valve 0.4°, pupil 2.7°");
     // The spikes (in the first second of each hold and let-go) all fell in the settling part, so none counted
@@ -229,13 +254,21 @@ void testWholeRun() {
     const JsonValue* steps = root.get("steps");
     CHECK(steps != nullptr && steps->isArray() && steps->items.size() == static_cast<size_t>(kStepCount));
     if (steps != nullptr && steps->items.size() == static_cast<size_t>(kStepCount)) {
-        const JsonValue& first = steps->items[1];
+        const JsonValue& first = steps->items[10];
         CHECK(first.get("name") != nullptr && first.get("name")->text == "push_up");
-        CHECK(first.get("planned_s") != nullptr && near(first.get("planned_s")->number, 10.0));
-        CHECK(first.get("shown_s") != nullptr && near(first.get("shown_s")->number, 10.0, 0.02));
+        CHECK(first.get("planned_s") != nullptr && near(first.get("planned_s")->number, 32.5));
+        CHECK(first.get("shown_s") != nullptr && near(first.get("shown_s")->number, 32.5, 0.02));
         const JsonValue* sampleTime = first.get("first_sample_time");
-        CHECK(sampleTime != nullptr && sampleTime->isNumber() && near(sampleTime->number, 5020.0, 0.02));
+        CHECK(sampleTime != nullptr && sampleTime->isNumber() && near(sampleTime->number, 5042.5, 0.02));
         CHECK(first.get("shown_ms") != nullptr && first.get("shown_ms")->isNumber());
+        // Each straight-ahead step against the first still; the template dots have their own start, no off_still
+        const JsonValue* off = first.get("off_still");
+        const JsonValue* offPupil = off != nullptr ? off->get("pupil") : nullptr;
+        CHECK(offPupil != nullptr && near(offPupil->get("dy_deg")->number, 3.0, 1e-3));
+        const JsonValue& dot = steps->items[6];
+        CHECK(dot.get("name")->text == "dot_-20_15" && dot.get("off_still") == nullptr);
+        CHECK(dot.get("first_sample_time") != nullptr && near(dot.get("first_sample_time")->number, 5000 + 10 + 22.5, 0.02));
+        CHECK(steps->items[0].get("off_still") == nullptr && steps->items[12].get("off_still") != nullptr);
     }
     const JsonValue* moves = root.get("moves");
     const JsonValue* up = moves != nullptr ? moves->get("push_up") : nullptr;
@@ -247,12 +280,32 @@ void testWholeRun() {
     CHECK(video != nullptr && video->get("session_dir")->text == "/home/steamos/eyecam/rec_2026-11-14_12-00-00");
     CHECK(video != nullptr && video->get("protocol")->text == "free");
     CHECK(root.get("result") != nullptr && root.get("result")->text == "done");
+    CHECK(root.get("version") != nullptr && near(root.get("version")->number, 2));
+    const JsonValue* around = root.get("moves_around");
+    CHECK(around != nullptr && around->get("push_left") != nullptr && around->get("squint") != nullptr);
     const std::string csv = samplesCsv(sim.session.rows(), sim.session.shownAt());
     CHECK(csv.rfind("panel_s,unix,step,step_name,step_s,counted,sample_time,", 0) == 0);
-    CHECK(csv.find(",1,push_up,0.0") != std::string::npos && csv.find(",25,still,") != std::string::npos);
+    CHECK(csv.find(",10,push_up,0.0") != std::string::npos && csv.find(",42,still,") != std::string::npos);
+    CHECK(csv.find(",1,dot_0_0,0.0") != std::string::npos && csv.find(",12,reseat,") != std::string::npos);
     size_t lines = 0;
     for (char c : csv) lines += c == '\n' ? 1 : 0;
     CHECK(lines == sim.session.rows().size() + 1);
+}
+
+/** The headset not pushed back: against the first still the whole push counts, against the steps around it less. */
+void testStays() {
+    Simulation sim;
+    sim.stays = 0.6;
+    sim.run();
+    const Result& r = sim.session.view().result;
+    for (int d = 0; d < kDirCount; ++d) {
+        CHECK(near(r.pushes[d].pupil.dx, kPupilSlip[d][0], 1e-4) && near(r.pushes[d].pupil.dy, kPupilSlip[d][1], 1e-4));
+    }
+    // The first push up has only its let-go step around it (the template dot before it doesn't count): 1 - 0.6; the
+    // second the re-seat before and the let-go after: 1 - 0.6 / 2
+    CHECK(near(r.pushesAround[0].pupil.dy, 3.0 * (0.4 + 0.7) / 2, 1e-4));
+    CHECK(near(r.pushesAround[1].pupil.dy, -2.5 * 0.7, 1e-4) && near(r.pushesAround[3].valve.dx, 0.6 * 0.7, 1e-4));
+    CHECK(near(r.pupilMean, (3.0 + 2.5 + 2.0 + 3.3) / 4, 1e-4));
 }
 
 void testWithoutMap() {
@@ -265,14 +318,14 @@ void testWithoutMap() {
 }
 
 void testStopAndNoData() {
-    // Stopped while letting go after the second push: stopped, four steps done, the two pushes scored
+    // Stopped as the second push's counted part was to begin: stopped, 13 steps done, only the first push scored
     Simulation sim;
-    sim.stopAt = 27.0;
+    sim.stopAt = 47.0;
     sim.run();
     const View& view = sim.session.view();
-    CHECK(view.phase == Phase::Stopped && view.stepsDone == 4 && !sim.session.active());
-    CHECK(view.result.pushes[0].pupil.rounds == 1 && view.result.pushes[1].pupil.rounds == 1);
-    CHECK(view.result.pushes[2].pupil.rounds == 0 && view.result.pupilDirs == 2);
+    CHECK(view.phase == Phase::Stopped && view.stepsDone == 13 && !sim.session.active());
+    CHECK(view.result.pushes[0].pupil.rounds == 1 && view.result.pushes[1].pupil.rounds == 0);
+    CHECK(view.result.pupilDirs == 1);
     // Its one end
     Tick t = sim.session.tick(sim.now, 0);
     CHECK(t.ended && !t.showTarget);
@@ -303,6 +356,7 @@ int main() {
     testTimeline();
     testTicks();
     testWholeRun();
+    testStays();
     testWithoutMap();
     testStopAndNoData();
     if (gFailures == 0) std::printf("slip-test: all passed\n");

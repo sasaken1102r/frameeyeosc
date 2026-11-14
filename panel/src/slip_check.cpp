@@ -60,8 +60,18 @@ std::string oneDecimal(double value) {
  * @return the step
  */
 constexpr Step push(Dir dir) { return {StepKind::Push, dir, 5.0, 0.0, 0.0}; }
-/** The let-go step after each push. */
+/** The let-go-and-push-back step after each push... */
 constexpr Step kRelease = {StepKind::Release, Dir::None, 5.0, 0.0, 0.0};
+/** ...and the re-seat step after that. */
+constexpr Step kReseat = {StepKind::Reseat, Dir::None, 3.0, 0.0, 0.0};
+
+/**
+ * A template dot (2.5 s): a place of known gaze for the eye video's per-gaze glint templates.
+ * @param yaw degrees right
+ * @param pitch degrees up
+ * @return the step
+ */
+constexpr Step dot(double yaw, double pitch) { return {StepKind::Template, Dir::None, 2.5, yaw, pitch}; }
 
 /**
  * One source's move during a hold: its median minus the mean of the still parts' medians around it (those that
@@ -144,12 +154,16 @@ JsonValue sourceJson(const SourceStep& s) {
 
 }  // namespace
 
-// Still; the four pushes twice, each let go of; wide, normal, narrow, normal; the dot up, down, left, right (the gaze
-// error check's places); still
+// Still; the nine template dots (the gaze error check's first nine places: centre, sides, corners); the four pushes
+// twice, each let go of and pushed back, then re-seated; wide, normal, narrow, normal; the dot up, down, left, right
+// (the gaze error check's places); still
 const Step kSteps[kStepCount] = {
     {StepKind::Still, Dir::None, 10.0, 0.0, 0.0},
-    push(Dir::Up), kRelease, push(Dir::Down), kRelease, push(Dir::Left), kRelease, push(Dir::Right), kRelease,
-    push(Dir::Up), kRelease, push(Dir::Down), kRelease, push(Dir::Left), kRelease, push(Dir::Right), kRelease,
+    dot(0, 0), dot(-20, 0), dot(20, 0), dot(0, 15), dot(0, -15), dot(-20, 15), dot(20, -15), dot(20, 15), dot(-20, -15),
+    push(Dir::Up), kRelease, kReseat, push(Dir::Down), kRelease, kReseat,
+    push(Dir::Left), kRelease, kReseat, push(Dir::Right), kRelease, kReseat,
+    push(Dir::Up), kRelease, kReseat, push(Dir::Down), kRelease, kReseat,
+    push(Dir::Left), kRelease, kReseat, push(Dir::Right), kRelease, kReseat,
     {StepKind::Widen, Dir::None, 5.0, 0.0, 0.0},
     {StepKind::Normal, Dir::None, 5.0, 0.0, 0.0},
     {StepKind::Squint, Dir::None, 5.0, 0.0, 0.0},
@@ -171,13 +185,23 @@ double settleSec(const Step& step) {
     return std::clamp(0.3 * step.seconds, 1.0, 2.0);
 }
 
+bool straightAhead(const Step& step) {
+    return step.kind != StepKind::Template && step.kind != StepKind::Look;
+}
+
 std::string stepName(const Step& step) {
     const char* dirs[] = {"", "up", "down", "left", "right"};
     const std::string dir = dirs[static_cast<int>(step.dir)];
     switch (step.kind) {
         case StepKind::Still: return "still";
+        case StepKind::Template: {
+            char name[32];
+            std::snprintf(name, sizeof(name), "dot_%.0f_%.0f", step.yawDeg, step.pitchDeg);
+            return name;
+        }
         case StepKind::Push: return "push_" + dir;
         case StepKind::Release: return "release";
+        case StepKind::Reseat: return "reseat";
         case StepKind::Widen: return "widen";
         case StepKind::Normal: return "normal";
         case StepKind::Squint: return "squint";
@@ -192,6 +216,8 @@ std::string instruction(const UiText& t, const Step& step) {
         case StepKind::Still: return t.slipStill;
         case StepKind::Push: return fill(t.slipPushFormat, dirs[static_cast<int>(step.dir)]);
         case StepKind::Release: return t.slipRelease;
+        case StepKind::Reseat: return t.slipReseat;
+        case StepKind::Template: return t.slipLook;
         case StepKind::Widen: return t.slipWiden;
         case StepKind::Normal: return t.slipNormal;
         case StepKind::Squint: return t.slipSquint;
@@ -237,21 +263,37 @@ Result score(const std::vector<Row>& rows) {
         st.pupil.x = median(px[i]);
         st.pupil.y = median(py[i]);
     }
-    // Each hold against the still parts on both sides of it
+    // Each hold against the first still step (version 2), and against the steps right before and after it (version 1)
+    const StepScore& still = result.steps[0];
+    const SourceStep none;
     for (int i = 1; i + 1 < kStepCount; ++i) {
         const Step& step = kSteps[i];
         MoveScore* into = nullptr;
-        if (step.kind == StepKind::Push) into = &result.pushes[dirIndex(step.dir)];
-        if (step.kind == StepKind::Widen) into = &result.widen;
-        if (step.kind == StepKind::Squint) into = &result.squint;
+        MoveScore* around = nullptr;
+        if (step.kind == StepKind::Push) {
+            into = &result.pushes[dirIndex(step.dir)];
+            around = &result.pushesAround[dirIndex(step.dir)];
+        }
+        if (step.kind == StepKind::Widen) {
+            into = &result.widen;
+            around = &result.widenAround;
+        }
+        if (step.kind == StepKind::Squint) {
+            into = &result.squint;
+            around = &result.squintAround;
+        }
         if (into == nullptr) continue;
-        const StepScore& before = result.steps[i - 1];
+        // (only neighbours with the dot straight ahead: the first push follows a template dot)
+        const StepScore blank;
+        const StepScore& before = straightAhead(kSteps[i - 1]) ? result.steps[i - 1] : blank;
         const StepScore& hold = result.steps[i];
-        const StepScore& after = result.steps[i + 1];
+        const StepScore& after = straightAhead(kSteps[i + 1]) ? result.steps[i + 1] : blank;
         double dx = 0.0;
         double dy = 0.0;
-        if (moveOf(hold.valve, before.valve, after.valve, dx, dy)) addRound(into->valve, dx, dy);
-        if (moveOf(hold.pupil, before.pupil, after.pupil, dx, dy)) addRound(into->pupil, dx, dy);
+        if (moveOf(hold.valve, still.valve, none, dx, dy)) addRound(into->valve, dx, dy);
+        if (moveOf(hold.pupil, still.pupil, none, dx, dy)) addRound(into->pupil, dx, dy);
+        if (moveOf(hold.valve, before.valve, after.valve, dx, dy)) addRound(around->valve, dx, dy);
+        if (moveOf(hold.pupil, before.pupil, after.pupil, dx, dy)) addRound(around->pupil, dx, dy);
     }
     double valveSum = 0.0;
     double pupilSum = 0.0;
@@ -267,7 +309,11 @@ Result score(const std::vector<Row>& rows) {
             ++result.pupilDirs;
         }
     }
-    for (MoveScore* m : {&result.widen, &result.squint}) {
+    for (MoveScore& m : result.pushesAround) {
+        finishMove(m.valve);
+        finishMove(m.pupil);
+    }
+    for (MoveScore* m : {&result.widen, &result.squint, &result.widenAround, &result.squintAround}) {
         finishMove(m->valve);
         finishMove(m->pupil);
     }
@@ -390,6 +436,7 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
     JsonValue root;
     root.type = JsonValue::Type::Object;
     const char* phases[] = {"idle", "running", "done", "stopped", "failed"};
+    root.set("version", JsonValue::makeNumber(kRecordVersion, true));
     root.set("result", JsonValue::makeString(phases[static_cast<int>(view.phase)]));
     // (whole milliseconds: the JSON writer keeps 6 digits of other numbers)
     root.set("start_ms", JsonValue::makeNumber(std::llround(view.startUnix * 1000), true));
@@ -408,8 +455,10 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
                                             "the gaze scale; samples with both eyes open enough, not held"));
     plan.set("pupil", JsonValue::makeString("combined gaze as gaze_source pupil works it out, before smoothing and the "
                                             "gaze scale; also only from both pupils, not easing from another source"));
-    plan.set("move", JsonValue::makeString("a hold's median minus the mean of the medians of the steps right before "
-                                           "and after it (those that count), averaged over its rounds"));
+    plan.set("move", JsonValue::makeString("a hold's median minus the first still step's, averaged over its rounds; "
+                                           "each straight-ahead step's off_still the same"));
+    plan.set("move_around", JsonValue::makeString("(version 1's) a hold's median minus the mean of the medians of the "
+                                                  "steps right before and after it (those that count)"));
     root.set("plan", plan);
     JsonValue steps;
     steps.type = JsonValue::Type::Array;
@@ -439,6 +488,21 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
         v.set("pitch_deg", JsonValue::makeNumber(step.pitchDeg));
         v.set("valve", sourceJson(result.steps[i].valve));
         v.set("pupil", sourceJson(result.steps[i].pupil));
+        // A straight-ahead step against the first still step (the same true gaze)
+        if (straightAhead(step) && i > 0) {
+            const auto offStill = [&](const SourceStep& hold, const SourceStep& still) {
+                Move m;
+                double dx = 0.0;
+                double dy = 0.0;
+                if (moveOf(hold, still, SourceStep(), dx, dy)) addRound(m, dx, dy);
+                return moveJson(m);
+            };
+            JsonValue off;
+            off.type = JsonValue::Type::Object;
+            off.set("valve", offStill(result.steps[i].valve, result.steps[0].valve));
+            off.set("pupil", offStill(result.steps[i].pupil, result.steps[0].pupil));
+            v.set("off_still", off);
+        }
         steps.items.push_back(v);
     }
     root.set("steps", steps);
@@ -456,6 +520,12 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
     moves.set("widen", both(result.widen));
     moves.set("squint", both(result.squint));
     root.set("moves", moves);
+    JsonValue around;
+    around.type = JsonValue::Type::Object;
+    for (int d = 0; d < kDirCount; ++d) around.set(dirs[d], both(result.pushesAround[d]));
+    around.set("widen", both(result.widenAround));
+    around.set("squint", both(result.squintAround));
+    root.set("moves_around", around);
     JsonValue summary;
     summary.type = JsonValue::Type::Object;
     summary.set("valve_mean_deg", number(result.valveMean));

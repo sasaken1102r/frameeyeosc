@@ -1122,7 +1122,8 @@ struct UiText {
     const char* slipDirDown;
     const char* slipDirLeft;
     const char* slipDirRight;
-    const char* slipRelease;
+    const char* slipRelease;         ///< ...let go and push it back
+    const char* slipReseat;          ///< ...re-seat it where it usually sits
     const char* slipWiden;
     const char* slipNormal;
     const char* slipSquint;

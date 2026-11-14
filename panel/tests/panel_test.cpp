@@ -1569,7 +1569,7 @@ void testSlip(const FontSet& fonts) {
         CHECK(hits(panel, PanelAction::SlipStart).empty());
         // Running: its screen (a push step), only "Stop" and the tabs can be pressed
         m.slip.phase = slip_check::Phase::Running;
-        m.slip.step = 1;
+        m.slip.step = 10;
         m.slip.stepLeft = 3.2;
         panel.render(m);
         CHECK(hits(panel, PanelAction::SlipStop).size() == 1 && hits(panel, PanelAction::SlipStart).empty());
@@ -1577,10 +1577,22 @@ void testSlip(const FontSet& fonts) {
             CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::SlipStop);
         }
         png(panel, "running");
-        m.slip.step = 17;
+        m.slip.step = 34;
         m.slip.stepLeft = 4.6;
         panel.render(m);
         png(panel, "running_widen");
+        m.slip.step = 11;
+        m.slip.stepLeft = 4.1;
+        panel.render(m);
+        png(panel, "running_release");
+        m.slip.step = 12;
+        m.slip.stepLeft = 2.4;
+        panel.render(m);
+        png(panel, "running_reseat");
+        m.slip.step = 6;
+        m.slip.stepLeft = 1.7;
+        panel.render(m);
+        png(panel, "running_dot");
         m.slip.video = slip_check::VideoState::On;
         panel.render(m);
         png(panel, "running_video");
@@ -1604,8 +1616,8 @@ void testSlip(const FontSet& fonts) {
         CHECK(hits(panel, PanelAction::SlipClose).size() == 1);
         png(panel, "result_nomap");
         // Stopped partway, and failed
-        m.slip = madeUpSlip(true, 27.0);
-        CHECK(m.slip.phase == slip_check::Phase::Stopped && m.slip.stepsDone == 4);
+        m.slip = madeUpSlip(true, 47.0);
+        CHECK(m.slip.phase == slip_check::Phase::Stopped && m.slip.stepsDone == 13);
         panel.render(m);
         CHECK(hits(panel, PanelAction::SlipClose).size() == 1);
         png(panel, "stopped");
@@ -1624,9 +1636,12 @@ void testSlip(const FontSet& fonts) {
                           pngDir != nullptr ? dir + "slip_caption_" + name + "_" + lang + "_2026-11-14_15-00-00.png" : "");
             CHECK(rgba.size() == static_cast<size_t>(kCaptionImageW) * kCaptionImageH * 4);
         };
-        caption(1, 0.64, 4, "push");
+        caption(10, 0.64, 4, "push");
+        caption(11, 0.5, 3, "release");
+        caption(12, 0.8, 3, "reseat");
         caption(0, 0.3, 3, "still");
-        caption(21, 1.0, 3, "look");
+        caption(6, 1.0, 3, "dot");
+        caption(38, 1.0, 3, "look");
     }
 }
 

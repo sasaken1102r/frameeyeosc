@@ -6139,7 +6139,7 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
         y += h + 10;
     }
     // The gaze error check (gaze_measure.h): about a minute of a dot hopping, Valve's and the pupils' gaze scored (only
-    // Valve's without a pupil map); beside it the headset slip test (slip_check.h): about two minutes of a still dot
+    // Valve's without a pupil map); beside it the headset slip test (slip_check.h): about three minutes of a still dot
     // while the headset is pushed by hand, with the eye video when eyecam-rec is idle. Nothing is written by either.
     // Only while frameeyeosc runs and no eye fit or the other one does (one row: the page has no room for two with
     // the developer rows under it)

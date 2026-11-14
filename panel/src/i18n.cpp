@@ -1121,7 +1121,7 @@ UiText makeJapanese() {
     t.measureOrderForward = "順番: ふつう";
     t.measureOrderReverse = "順番: 逆";
     t.measureNeedsRunning = "frameeyeosc が動いているときだけ";
-    t.slipStart = "ずらしテスト（約 2 分）";
+    t.slipStart = "ずらしテスト（約 3 分）";
     t.slipRunVideo = "目の撮影もしてるよ";
     t.slipStill = "じっと見ててね";
     t.slipPushFormat = "ヘッドセットを%sに 3〜5 mm ずらして持ってて";
@@ -1129,7 +1129,8 @@ UiText makeJapanese() {
     t.slipDirDown = "下";
     t.slipDirLeft = "左";
     t.slipDirRight = "右";
-    t.slipRelease = "はなしてね";
+    t.slipRelease = "はなして、押し戻してね";
+    t.slipReseat = "いつもの位置にかぶり直してね";
     t.slipWiden = "目を大きく開けて";
     t.slipNormal = "ふつうの目に";
     t.slipSquint = "目を細めて";
@@ -1141,7 +1142,7 @@ UiText makeJapanese() {
     t.slipPushedDown = "下にずらした";
     t.slipPushedLeft = "左にずらした";
     t.slipPushedRight = "右にずらした";
-    t.slipSummary = "ずらしている間に視線が動いた量（4 方向の平均）";
+    t.slipSummary = "ずらしている間の視線のずれ（最初のじっとしていた間と比べて、4 方向の平均）";
     t.slipTooFew = "測れなかった";
     t.slipVideoOnFormat = "目の撮影: いっしょに撮ったよ（%s）";
     t.slipVideoOn = "目の撮影: いっしょに撮ったよ";
@@ -2420,7 +2421,7 @@ UiText makeEnglish() {
     t.measureOrderForward = "Order: forward";
     t.measureOrderReverse = "Order: reversed";
     t.measureNeedsRunning = "Only while frameeyeosc runs";
-    t.slipStart = "Slip test (2 min)";
+    t.slipStart = "Slip test (3 min)";
     t.slipRunVideo = "Recording the eye video too";
     t.slipStill = "Keep looking at the dot";
     t.slipPushFormat = "Push the headset %s 3-5 mm and hold it";
@@ -2428,7 +2429,8 @@ UiText makeEnglish() {
     t.slipDirDown = "down";
     t.slipDirLeft = "left";
     t.slipDirRight = "right";
-    t.slipRelease = "Let go";
+    t.slipRelease = "Let go and push it back";
+    t.slipReseat = "Re-seat the headset where it usually sits";
     t.slipWiden = "Open your eyes wide";
     t.slipNormal = "Relax your eyes";
     t.slipSquint = "Narrow your eyes";
@@ -2440,7 +2442,7 @@ UiText makeEnglish() {
     t.slipPushedDown = "Pushed down";
     t.slipPushedLeft = "Pushed left";
     t.slipPushedRight = "Pushed right";
-    t.slipSummary = "How far the gaze moved while pushed (mean of 4 directions)";
+    t.slipSummary = "How far off the gaze was while pushed (against the first still part, mean of 4 directions)";
     t.slipTooFew = "not enough";
     t.slipVideoOnFormat = "Eye video: recorded too (%s)";
     t.slipVideoOn = "Eye video: recorded too";

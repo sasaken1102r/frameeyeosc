@@ -8,8 +8,9 @@
 // its glints.csv has every glint per frame), and each sample keeps its raw values (gaze_measure::Raw: the eye
 // server's pupil pair and the eye camera's glint offset) so the pupil gaze can be worked out again later. Nothing is
 // written to config.json and nothing frameeyeosc sends changes: the samples come on the gaze error check's socket
-// (gaze_measure.h), bound only while the test runs. Each sample is put to the step shown when it arrived, by the
-// panel's own clock. Nothing here talks to OpenVR or cairo (reseat-test).
+// (gaze_measure.h), bound only while the test runs. With frameeyeosc's gaze guard on, the guarded gaze comes with them
+// and is scored as a third source, on Valve's samples (as the slip test does). Each sample is put to the step shown
+// when it arrived, by the panel's own clock. Nothing here talks to OpenVR or cairo (reseat-test).
 #pragma once
 
 #include "gaze_measure.h"
@@ -120,6 +121,7 @@ struct SourceStep {
 struct StepScore {
     SourceStep valve;  ///< Valve's gaze: both eyes open enough, not held
     SourceStep pupil;  ///< the pupils' gaze: also both pupils, not easing from another source
+    SourceStep guarded;  ///< the guarded gaze (frameeyeosc's gaze_guard) on Valve's samples that have it
 };
 
 /** One source in one round. */
@@ -137,6 +139,7 @@ struct RoundSource {
 struct RoundScore {
     RoundSource valve;
     RoundSource pupil;
+    RoundSource guarded;
     double reseatSec = NAN;  ///< how long its re-seat step took (s)
     double offSec = NAN;     ///< the longest time without a usable sample in it (s): about how long the eyes were away
 };
@@ -157,6 +160,8 @@ struct Result {
     RoundScore rounds[kRounds];
     Overall valve;
     Overall pupil;
+    bool guardSeen = false;      ///< samples came with the gaze guard's values (gaze_guard on)
+    Overall guarded;
 };
 
 /**
@@ -320,8 +325,8 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
 
 /**
  * samples.csv: a row per sample received (the panel's time, the wall clock, the step, its name, its round and the time
- * into it, whether it counts, then the sample's fields as the gaze error check's samples.csv has them, its raw values
- * last: gaze_measure::rawCsvHeader).
+ * into it, whether it counts, then the sample's fields as the gaze error check's samples.csv has them, the gaze guard's
+ * (gaze_measure::kGuardColumns), its raw values last: gaze_measure::rawCsvHeader).
  * @param rows the samples
  * @param shownAt when each step was shown (monotonic)
  * @return the text
@@ -330,10 +335,10 @@ std::string samplesCsv(const std::vector<Row>& rows, const double* shownAt);
 
 /**
  * A short line for the record list and the result: "Valve 1.2°・瞳 3.4°" / "Valve 1.2°, pupil 3.4°" (the mean of the
- * rounds' errors).
+ * rounds' errors), and the guarded gaze's after them while it was there ("・見張り付き 1.5°" / ", guarded 1.5°").
  * @param t texts
  * @param result the scores
- * @return the line ("" if neither source counts)
+ * @return the line ("" if no source counts)
  */
 std::string briefText(const UiText& t, const Result& result);
 
@@ -341,7 +346,7 @@ std::string briefText(const UiText& t, const Result& result);
  * The same for the change from one re-seat to the next (Overall::spread).
  * @param t texts
  * @param result the scores
- * @return the line ("" if neither source counts)
+ * @return the line ("" if no source counts)
  */
 std::string spreadText(const UiText& t, const Result& result);
 

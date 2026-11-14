@@ -67,6 +67,7 @@ struct Simulation {
     double stopAt = -1.0;     ///< stop this many seconds in (-1: run to the end)
     double silentFrom = -1.0; ///< no samples from this many seconds in
     bool raw = true;          ///< the samples come with their raw values
+    bool guarded = false;     ///< frameeyeosc's gaze guard on: Valve's gaze with its own offset (kValveOffset) taken out
 
     /**
      * The sample for the step shown now.
@@ -98,6 +99,16 @@ struct Simulation {
         if (raw) {
             s.raw.has = true;
             s.raw.pair[0] = 0.2f + 0.001f * st.round;
+        }
+        if (guarded) {
+            gaze_measure::Guard gd;
+            gd.time = s.time;
+            gd.trusted = true;
+            gd.gaze[0] = static_cast<float>((v[0] - kValveOffset[0]) / 45);
+            gd.gaze[1] = static_cast<float>((v[1] - kValveOffset[1]) / 45);
+            gd.offset[0] = gd.offset[2] = static_cast<float>(-kValveOffset[0] / 45);
+            gd.offset[1] = gd.offset[3] = static_cast<float>(-kValveOffset[1] / 45);
+            gaze_measure::attachGuard(gd, s);
         }
         return s;
     }
@@ -325,6 +336,68 @@ void testWaiting() {
     }
 }
 
+/** frameeyeosc's gaze guard on: the guarded gaze scored as a third source, on Valve's samples (as the slip test). */
+void testGuarded() {
+    Simulation sim;
+    sim.guarded = true;
+    sim.run();
+    const Result& r = sim.session.view().result;
+    CHECK(sim.session.view().phase == Phase::Done && r.guardSeen && r.guarded.rounds == kRounds);
+    // On Valve's samples; Valve's own offset taken out, so only the seat's tenth stays
+    CHECK(r.steps[0].guarded.n == r.steps[0].valve.n && near(r.steps[0].guarded.x, 0.0, 1e-4));
+    for (int round = 1; round <= kRounds; ++round) {
+        const RoundScore& rs = r.rounds[round - 1];
+        CHECK(rs.guarded.dots == kPlaces && near(rs.guarded.dx, 0.1 * seatShift(round, 0), 1e-3));
+        CHECK(near(rs.guarded.dy, 0.1 * seatShift(round, 1), 1e-3));
+        CHECK(near(rs.guarded.centreDx, rs.valve.centreDx, 1e-4));
+    }
+    CHECK(near(r.guarded.spread, r.valve.spread, 1e-4) && r.guarded.error < r.valve.error);
+    char brief[96];
+    std::snprintf(brief, sizeof(brief), "Valve %.1f°・瞳 %.1f°・見張り付き %.1f°", r.valve.error, r.pupil.error,
+                  r.guarded.error);
+    CHECK(briefText(uiText(Language::Ja), r) == brief);
+    std::snprintf(brief, sizeof(brief), "Valve %.1f°, pupil %.1f°, guarded %.1f°", r.valve.spread, r.pupil.spread,
+                  r.guarded.spread);
+    CHECK(spreadText(uiText(Language::En), r) == brief);
+    JsonValue root;
+    std::string error;
+    CHECK(parseJson(recordJson(sim.session.view(), sim.session.rows(), sim.session.shownAt(), sim.session.shownUnix(),
+                               sim.session.startedAt(), r),
+                    root, error));
+    CHECK(root.get("plan")->get("guarded") != nullptr);
+    CHECK(near(root.get("summary")->get("guarded")->get("rounds")->number, kRounds));
+    CHECK(near(root.get("rounds")->items[2].get("guarded")->get("dx_deg")->number, 0.1 * seatShift(3, 0), 1e-3));
+    CHECK(root.get("steps")->items[2].get("guarded") != nullptr && root.get("steps")->items[1].get("guarded") == nullptr);
+    // samples.csv: the guard's columns after the sample's own, then the raw values', every row as many cells as the
+    // header
+    const std::string csv = samplesCsv(sim.session.rows(), sim.session.shownAt());
+    CHECK(csv.find(",openness_right,guarded,guard_trusted,guarded_x,guarded_y,guard_offset_left_x,guard_offset_left_y,"
+                   "guard_offset_right_x,guard_offset_right_y,raw,pair_lx,") != std::string::npos);
+    size_t header = std::string::npos;
+    bool same = true;
+    size_t start = 0;
+    while (start < csv.size()) {
+        const size_t end = csv.find('\n', start);
+        size_t commas = 0;
+        for (size_t i = start; i < end; ++i) commas += csv[i] == ',' ? 1 : 0;
+        if (header == std::string::npos) header = commas;
+        same = same && commas == header;
+        start = end + 1;
+    }
+    CHECK(same && header == 19 + 8 + 29);
+    // Without it: none of it in the record, the guard's cells empty
+    Simulation plain;
+    plain.run();
+    const Result& p = plain.session.view().result;
+    CHECK(!p.guardSeen && p.guarded.rounds == 0 && briefText(uiText(Language::En), p).find("guarded") == std::string::npos);
+    CHECK(parseJson(recordJson(plain.session.view(), plain.session.rows(), plain.session.shownAt(),
+                               plain.session.shownUnix(), plain.session.startedAt(), p),
+                    root, error));
+    CHECK(root.get("plan")->get("guarded") == nullptr && root.get("summary")->get("guarded") == nullptr);
+    CHECK(root.get("rounds")->items[0].get("guarded") == nullptr);
+    CHECK(samplesCsv(plain.session.rows(), plain.session.shownAt()).find(",0,,,,,,,,1,") != std::string::npos);
+}
+
 void testWithoutMap() {
     Simulation sim;
     sim.mapped = false;
@@ -375,6 +448,7 @@ int main() {
     testPlan();
     testWholeRun();
     testWaiting();
+    testGuarded();
     testWithoutMap();
     testStopAndNoData();
     if (gFailures == 0) std::printf("reseat-test: all passed\n");

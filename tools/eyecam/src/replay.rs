@@ -444,6 +444,9 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
     let mut glint_track = [crate::glint::Tracker::default(), crate::glint::Tracker::default()];
     let mut glints = Vec::new();
     let mut glint_busy = std::time::Duration::ZERO;
+    // (the longest frames, and each new template's frame: its time and how long that frame took)
+    let mut glint_times: Vec<f64> = Vec::new();
+    let mut template_frames: Vec<(usize, f64, f64)> = Vec::new();
     let mut last_t = [f64::NEG_INFINITY; 2];
     let f = |v: f64| if v.is_finite() { format!("{v:.4}") } else { String::new() };
     let mut preview = opts.preview.as_ref().map(|dir| crate::preview::Preview::new(dir.join(crate::preview::FILE_NAME)));
@@ -485,8 +488,14 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 }
                 None => glints.clear(),
             }
+            let before = glint_track[e].template_id_now();
             let slip = glint_track[e].frame(t, pupil, &glints);
-            glint_busy += t1.elapsed();
+            let took = t1.elapsed();
+            glint_busy += took;
+            glint_times.push(took.as_secs_f64() * 1e6);
+            if slip.template_id != before {
+                template_frames.push((e, t, took.as_secs_f64() * 1e6));
+            }
             processed += 1;
             last_t[e] = t;
             if let Some(p) = preview.as_mut() {
@@ -630,11 +639,17 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
         fs::write(path, file.to_json()).map_err(|e| format!("{}: {e}", path.display()))?;
         eprintln!("user calibration written to {}", path.display());
     }
+    glint_times.sort_by(f64::total_cmp);
+    let at = |q: f64| glint_times.get(((glint_times.len() as f64 - 1.0) * q).round() as usize).copied().unwrap_or(0.0);
     eprintln!(
-        "glints: {:.0} us a frame on top; templates {} / {} (left / right)",
+        "glints: {:.0} us a frame on top (99th percentile {:.0}, at most {:.0}); templates {} / {} (left / right), taken \
+         in frames of {}",
         glint_busy.as_secs_f64() * 1e6 / processed.max(1) as f64,
+        at(0.99),
+        at(1.0),
         glint_track[0].template_id_now(),
-        glint_track[1].template_id_now()
+        glint_track[1].template_id_now(),
+        template_frames.iter().map(|(e, _, us)| format!("{} {us:.0} us", ["L", "R"][*e])).collect::<Vec<_>>().join(", ")
     );
     Ok(busy.as_secs_f64() * 1e3 / processed.max(1) as f64)
 }

@@ -54,6 +54,9 @@ pub const HISTORY_S: f64 = 20.0;
 pub const HISTORY_MIN_S: f64 = 5.0;
 /// Glints closer than this are one place in the template (px).
 const CLUSTER_PX: f32 = 3.0;
+/// At most this many of the points are tried as the densest place's seed (evenly spread over them): a template of a
+/// second's frames has up to about 900 points, and every point against every point in the frame path took too long.
+const CLUSTER_SEEDS: usize = 100;
 
 /// One glint.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -211,15 +214,17 @@ fn dist(a: [f32; 2], b: [f32; 2]) -> f32 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
-/// Places seen close together in many frames: the densest point's neighbourhood, its mean refined, taken out, and again
-/// while a place has at least `min_count` points.
+/// Places seen close together in many frames: the densest point's neighbourhood (of at most CLUSTER_SEEDS seeds), its
+/// mean refined, taken out, and again while a place has at least `min_count` points.
 fn cluster(points: &[[f32; 2]], min_count: usize) -> Vec<[f32; 2]> {
     let mut left: Vec<[f32; 2]> = points.to_vec();
     let mut out = Vec::new();
     while !left.is_empty() {
+        let stride = left.len().div_ceil(CLUSTER_SEEDS);
         let (best, _) = left
             .iter()
             .enumerate()
+            .step_by(stride)
             .map(|(i, p)| (i, left.iter().filter(|q| dist(*p, **q) < CLUSTER_PX).count()))
             .max_by_key(|(_, n)| *n)
             .unwrap();

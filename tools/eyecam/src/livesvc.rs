@@ -548,6 +548,8 @@ struct Worker {
     glint_us: u64,
     glint_n: u64,
     glint_tracked: [u64; 2],
+    /// The longest frame's glint time since the last log line (us).
+    glint_max_us: u64,
 }
 
 impl Worker {
@@ -598,6 +600,7 @@ impl Worker {
             glint_us: 0,
             glint_n: 0,
             glint_tracked: [0; 2],
+            glint_max_us: 0,
         }
     }
 
@@ -878,6 +881,7 @@ impl Worker {
         let glint_time = started.elapsed();
         self.busy += glint_time;
         self.glint_us += glint_time.as_micros() as u64;
+        self.glint_max_us = self.glint_max_us.max(glint_time.as_micros() as u64);
         self.glint_n += 1;
         self.glint_tracked[eye] += slip.tracked as u64;
         let template_mono = (slip.template_t * 1e9) as i64 + self.mono_minus_raw;
@@ -1184,9 +1188,10 @@ impl Worker {
                     );
                     if self.glint_n > 0 {
                         eprintln!(
-                            "live: glints {:.0} us a frame; slip tracked in {:.0}% / {:.0}% of the frames (left / right), \
-                             templates {} / {}",
+                            "live: glints {:.0} us a frame (at most {} us); slip tracked in {:.0}% / {:.0}% of the frames \
+                             (left / right), templates {} / {}",
                             self.glint_us as f64 / self.glint_n as f64,
+                            self.glint_max_us,
                             self.glint_tracked[0] as f64 * 200.0 / self.glint_n as f64,
                             self.glint_tracked[1] as f64 * 200.0 / self.glint_n as f64,
                             self.glint_track[0].template_id_now(),
@@ -1206,6 +1211,7 @@ impl Worker {
                 self.glint_us = 0;
                 self.glint_n = 0;
                 self.glint_tracked = [0; 2];
+                self.glint_max_us = 0;
                 self.log_since = Instant::now();
             }
             self.busy = Duration::ZERO;

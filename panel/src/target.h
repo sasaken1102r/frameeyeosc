@@ -81,6 +81,55 @@ constexpr int kFillImageSize = 1024;
 void renderFill(const FontSet& fonts, bool bright, const std::string& label, std::vector<uint8_t>& rgba,
                 const std::string& pngPath = "");
 
+/** The slip test's caption image (px): about 40 px a degree as it is shown (VrOverlay::showCaption). */
+constexpr int kCaptionImageW = 1024;
+constexpr int kCaptionImageH = 160;
+/** Its bar is drawn in this many steps, so an unchanged picture is not drawn again. */
+constexpr int kCaptionBarSteps = 200;
+
+/**
+ * Draw the slip test's caption under the dot: what to do now in large type on a dark band, and a bar under it that
+ * runs down with the step's time, the seconds left at its end.
+ * @param fonts the fonts
+ * @param text what to do
+ * @param progress how much of the step is left (0..1)
+ * @param seconds whole seconds left
+ * @param rgba where to write un-premultiplied RGBA (kCaptionImageW x kCaptionImageH)
+ * @param pngPath also save a PNG here if not empty
+ */
+void renderCaption(const FontSet& fonts, const std::string& text, double progress, int seconds,
+                   std::vector<uint8_t>& rgba, const std::string& pngPath = "");
+
+/** Draws the caption for the VR loop: only when the picture changes (the bar in kCaptionBarSteps steps). */
+class CaptionPainter {
+public:
+    CaptionPainter() = default;
+    ~CaptionPainter();
+    CaptionPainter(const CaptionPainter&) = delete;
+    CaptionPainter& operator=(const CaptionPainter&) = delete;
+
+    /**
+     * Draw the caption if it looks different from last time.
+     * @param fonts the fonts
+     * @param text as renderCaption
+     * @param progress as renderCaption
+     * @param seconds as renderCaption
+     * @return true if it was drawn (then rgba() holds the new picture)
+     */
+    bool paint(const FontSet& fonts, const std::string& text, double progress, int seconds);
+
+    /** @return the picture, non-premultiplied RGBA */
+    const std::vector<uint8_t>& rgba() const { return rgba_; }
+
+    /** Forget the last picture, so the next paint draws. */
+    void reset() { key_.clear(); }
+
+private:
+    cairo_surface_t* surface_ = nullptr;
+    std::string key_;
+    std::vector<uint8_t> rgba_;
+};
+
 /** The debug gaze dot image's edge length (px). */
 constexpr int kDotImageSize = 64;
 

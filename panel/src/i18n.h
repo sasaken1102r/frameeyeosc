@@ -1113,6 +1113,36 @@ struct UiText {
     const char* kindMeasure;
     const char* measureOrderForward;  ///< the check's result: which way it went through the places
     const char* measureOrderReverse;         ///< the record's kind
+    const char* measureNeedsRunning; ///< the gaze error check's row without frameeyeosc running (its hint)
+    const char* slipStart;           ///< the headset slip test's button (slip_check.h), beside the gaze error check's
+    const char* slipRunVideo;        ///< its run screen: the eye video is recorded too
+    const char* slipStill;           ///< the steps' lines (under the dot and on the panel)
+    const char* slipPushFormat;      ///< (%s: slipDirUp...)
+    const char* slipDirUp;
+    const char* slipDirDown;
+    const char* slipDirLeft;
+    const char* slipDirRight;
+    const char* slipRelease;
+    const char* slipWiden;
+    const char* slipNormal;
+    const char* slipSquint;
+    const char* slipLook;
+    const char* slipStepFormat;      ///< the run screen: which step (%s of %s)
+    const char* slipRunHow;          ///< ...under it
+    const char* slipResultTitle;
+    const char* slipPushedUp;        ///< the result's rows
+    const char* slipPushedDown;
+    const char* slipPushedLeft;
+    const char* slipPushedRight;
+    const char* slipSummary;         ///< over the mean moves
+    const char* slipTooFew;          ///< a cell without enough samples
+    const char* slipVideoOnFormat;   ///< the eye video: recorded (%s its folder)...
+    const char* slipVideoOn;         ///< ...recorded, the folder not known
+    const char* slipVideoOff;        ///< ...not (the eye cameras weren't idle)
+    const char* slipVideoRefused;    ///< ...eyecam-rec didn't start it
+    const char* slipNote;            ///< under the result
+    const char* slipStoppedFormat;   ///< (%s steps done, %s steps)
+    const char* kindSlip;            ///< the record's kind
     const char* rowUpdateCheck;
     const char* hintUpdateCheck;
     const char* updateUpToDateFormat;   ///< "Up to date (%s)"

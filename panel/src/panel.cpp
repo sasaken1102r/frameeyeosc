@@ -4338,6 +4338,163 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
     paragraph(noteBaseline, t.measureNote, 14, kTextMuted, false, x0, x1 - x0 - closeW - againW - 40, 2);
 }
 
+void EyePanel::drawSlipRun(const Pen& pen, const UiText& t, const PanelModel& m) {
+    // The step's line large, its time left as a bar under it, which step it is, how to do it, and a big "Stop"
+    const slip_check::View& view = m.slip;
+    const double cx = (kRightX + kRight) / 2;
+    const double width = kInnerRight - kInnerX - 40;
+    const int step = std::clamp(view.step, 0, slip_check::kStepCount - 1);
+    const std::string line = slip_check::instruction(t, slip_check::kSteps[step]);
+    double baseline = kContentY + 92;
+    textCentered(pen, cx, baseline, line, fitSize(pen, line, 34, 20, width, true), kText, true);
+    // The bar: the step's time left, with the seconds after it
+    const double barW = std::min(520.0, width - 60);
+    const double barX = cx - barW / 2 - 24;
+    const double barY = baseline + 26;
+    const double barH = 12;
+    fillRounded(pen, barX, barY, barW, barH, barH / 2, kDivider);
+    const double left = std::clamp(view.stepLeft / slip_check::kSteps[step].seconds, 0.0, 1.0);
+    if (left > 0.001) fillRounded(pen, barX, barY, std::max(barH, barW * left), barH, barH / 2, kAccent);
+    pen.text(barX + barW + 14, barY + barH, std::to_string(static_cast<int>(std::ceil(view.stepLeft - 1e-9))), 18,
+             kTextMuted, true);
+    baseline = barY + barH + 42;
+    char text[96];
+    std::snprintf(text, sizeof(text), t.slipStepFormat, std::to_string(step + 1).c_str(),
+                  std::to_string(slip_check::kStepCount).c_str());
+    textCentered(pen, cx, baseline, text, 17, kTextMuted, false);
+    // ...and whether the eye video is recorded too (asked for, or eyecam-rec took it)
+    const bool video = view.video == slip_check::VideoState::Asked || view.video == slip_check::VideoState::On;
+    const char* videoText = video                                         ? t.slipRunVideo
+                            : view.video == slip_check::VideoState::Off ? t.slipVideoOff
+                                                                          : t.slipVideoRefused;
+    baseline += 24;
+    textCentered(pen, cx, baseline, videoText, 15, video ? kText : kTextMuted, false);
+    size_t lines = 0;
+    baseline += 8;
+    for (const std::string& sentence : sentences(t.slipRunHow)) {
+        if (lines >= 3) break;
+        for (const std::string& l : wrapText(pen, sentence, 17, false, width, 3 - lines)) {
+            baseline += 26;
+            textCentered(pen, cx, baseline, l, 17, kTextMuted, false);
+            ++lines;
+        }
+    }
+    const double stopW = 360;
+    const double stopH = 84;
+    drawButton(pen, cx - stopW / 2, kContentY + kContentH - 36 - stopH, stopW, stopH, t.measureStop,
+               {PanelAction::SlipStop, nullptr, 0}, true, false, 32);
+}
+
+void EyePanel::drawSlipResult(const Pen& pen, const UiText& t, const PanelModel& m) {
+    using slip_check::Phase;
+    const slip_check::View& view = m.slip;
+    const slip_check::Result& r = view.result;
+    const double x0 = kInnerX;
+    const double x1 = kInnerRight;
+    double y = kRowTop - 6;
+    const char* title = view.phase == Phase::Done      ? t.slipResultTitle
+                        : view.phase == Phase::Stopped ? t.measureStoppedTitle
+                                                       : t.measureFailedTitle;
+    y += drawSectionTitle(pen, y, title);
+    // "Again" and "Close" at the bottom right
+    const double buttonH = 48;
+    const double buttonY = kContentY + kContentH - 22 - buttonH;
+    const double closeW = std::max(130.0, pen.measure(t.measureClose, 18, true) + 40);
+    const double againW = std::max(150.0, pen.measure(t.measureAgain, 18, true) + 40);
+    drawButton(pen, x1 - closeW, buttonY, closeW, buttonH, t.measureClose, {PanelAction::SlipClose, nullptr, 0}, true,
+               false, 18);
+    drawButton(pen, x1 - closeW - 12 - againW, buttonY, againW, buttonH, t.measureAgain,
+               {PanelAction::SlipStart, nullptr, 0}, m.status.running && !fitRunning(m.fit), false, 18);
+    const auto paragraph = [&](double& baseline, const std::string& text, double size, Color color, bool bold,
+                               double left, double width, size_t maxLines) {
+        for (const std::string& line : wrapText(pen, text, size, bold, width, maxLines)) {
+            pen.text(left, baseline, line, size, color, bold);
+            baseline += size * 1.45;
+        }
+    };
+    // The eye video, on every result (also a stopped one: what was recorded is kept)
+    const auto videoLine = [&]() -> std::string {
+        if (view.video == slip_check::VideoState::On) {
+            return view.videoDir.empty() ? std::string(t.slipVideoOn)
+                                         : formatText(t.slipVideoOnFormat, recorder::shortPath(view.videoDir));
+        }
+        return view.video == slip_check::VideoState::Off ? t.slipVideoOff : t.slipVideoRefused;
+    };
+    if (view.phase != Phase::Done) {
+        double baseline = y + 30;
+        if (view.phase == Phase::Stopped) {
+            char text[200];
+            std::snprintf(text, sizeof(text), t.slipStoppedFormat, std::to_string(view.stepsDone).c_str(),
+                          std::to_string(slip_check::kStepCount).c_str());
+            paragraph(baseline, text, 17, kText, false, x0, x1 - x0, 3);
+        } else {
+            paragraph(baseline, view.samples == 0 ? t.measureNoDataEver : t.measureNoData, 17, kText, false, x0,
+                      x1 - x0, 3);
+        }
+        baseline += 8;
+        paragraph(baseline, videoLine(), 15, kTextMuted, false, x0, x1 - x0, 2);
+        return;
+    }
+    // The mean moves, large: "Valve 0.4°・瞳 3.1°"
+    double baseline = y + 26;
+    paragraph(baseline, t.slipSummary, 15, kTextMuted, false, x0, x1 - x0, 1);
+    baseline += 22;
+    {
+        double x = x0;
+        const double size = 30;
+        if (r.valveDirs > 0) {
+            drawDot(pen.cr, x + 7, baseline - 10, 7, kDotOther);
+            x += 22;
+            char v[32];
+            std::snprintf(v, sizeof(v), "%.1f°", r.valveMean);
+            x += pen.text(x, baseline, std::string(t.measureValve) + " " + v, size, kText, true) + 36;
+        }
+        if (r.mapped && r.pupilDirs > 0) {
+            drawDot(pen.cr, x + 7, baseline - 10, 7, kMeasurePupil);
+            x += 22;
+            char v[32];
+            std::snprintf(v, sizeof(v), "%.1f°", r.pupilMean);
+            pen.text(x, baseline, std::string(t.measurePupil) + " " + v, size, kText, true);
+        }
+        if (r.valveDirs == 0 && !(r.mapped && r.pupilDirs > 0)) pen.text(x0, baseline, t.measureTooFew, 20, kTextMuted);
+        baseline += 20;
+    }
+    // A row per push direction: how far each gaze moved, in words (left/right, up/down)
+    const double labelW = 190;
+    const double colW = (x1 - x0 - labelW) / 2;
+    baseline += 18;
+    pen.text(x0 + labelW, baseline, t.measureValve, 15, kTextMuted, true);
+    pen.text(x0 + labelW + colW, baseline, t.measurePupil, 15, kTextMuted, true);
+    baseline += 8;
+    const char* labels[slip_check::kDirCount] = {t.slipPushedUp, t.slipPushedDown, t.slipPushedLeft, t.slipPushedRight};
+    const auto cell = [&](const slip_check::Move& move, bool pupil) -> std::string {
+        if (pupil && !r.mapped) return t.measureNoPupilMap;
+        if (!move.counts()) return t.slipTooFew;
+        return gaze_measure::shiftText(t, move.dx, move.dy);
+    };
+    for (int d = 0; d < slip_check::kDirCount; ++d) {
+        baseline += 8;
+        cairo_set_source_rgb(pen.cr, kDivider.r, kDivider.g, kDivider.b);
+        cairo_set_line_width(pen.cr, 1);
+        cairo_move_to(pen.cr, x0, baseline);
+        cairo_line_to(pen.cr, x1, baseline);
+        cairo_stroke(pen.cr);
+        baseline += 28;
+        const slip_check::MoveScore& ms = r.pushes[d];
+        pen.text(x0, baseline, labels[d], 17, kText, true);
+        const std::string valve = cell(ms.valve, false);
+        const std::string pupil = cell(ms.pupil, true);
+        pen.text(x0 + labelW, baseline, valve, fitSize(pen, valve, 17, 12, colW - 12, false),
+                 ms.valve.counts() ? kText : kTextMuted, false);
+        pen.text(x0 + labelW + colW, baseline, pupil, fitSize(pen, pupil, 17, 12, colW - 12, false),
+                 ms.pupil.counts() && r.mapped ? kText : kTextMuted, false);
+    }
+    // Under the rows (above the buttons): the eye video, and why a move while pushed is the error
+    baseline += 40;
+    paragraph(baseline, videoLine(), 15, kTextMuted, false, x0, x1 - x0, 2);
+    paragraph(baseline, t.slipNote, 14, kTextMuted, false, x0, x1 - x0, 2);
+}
+
 void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& v, bool busy, double y) {
     const char* offsetKeys[2] = {key::kGazeOffsetX, key::kGazeOffsetY};
     const char* gainKeys[3] = {key::kGazeGainX, key::kGazeGainUp, key::kGazeGainDown};
@@ -5106,6 +5263,15 @@ void EyePanel::drawAdvanced(const Pen& pen, const UiText& t, const PanelModel& m
     }
     if (m.measure.phase != gaze_measure::Phase::Idle) {
         drawMeasureResult(pen, t, m);
+        return;
+    }
+    // ...and the headset slip test's
+    if (m.slip.phase == slip_check::Phase::Running) {
+        drawSlipRun(pen, t, m);
+        return;
+    }
+    if (m.slip.phase != slip_check::Phase::Idle) {
+        drawSlipResult(pen, t, m);
         return;
     }
     // The developer recording: its light warning, and its steps while it runs, in the tab's place (one for squint
@@ -5972,26 +6138,31 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
         }
         y += h + 10;
     }
-    // The gaze error check (gaze_measure.h): about a minute of a dot hopping, Valve's and the pupils' gaze scored;
-    // nothing is written. Only while frameeyeosc runs and no eye fit does; without a pupil map only Valve's
+    // The gaze error check (gaze_measure.h): about a minute of a dot hopping, Valve's and the pupils' gaze scored (only
+    // Valve's without a pupil map); beside it the headset slip test (slip_check.h): about two minutes of a still dot
+    // while the headset is pushed by hand, with the eye video when eyecam-rec is idle. Nothing is written by either.
+    // Only while frameeyeosc runs and no eye fit or the other one does (one row: the page has no room for two with
+    // the developer rows under it)
     {
         // (a little lower than the rows above, so the page still fits with the developer rows under it)
         const double h = 52;
-        const bool canRun = m.status.running && !fitRunning(m.fit);
-        drawRowLabel(pen, t, y, h, t.rowMeasure, t.hintMeasure, false);
-        const double buttonW = std::max(200.0, pen.measure(t.measureStart, 18, true) + 40);
-        drawButton(pen, kControlX, y + (h - 46) / 2, buttonW, 46, t.measureStart,
-                   {PanelAction::MeasureStart, nullptr, 0}, canRun, false, 18);
-        const double noteX = kControlX + buttonW + 14;
-        const char* note = !m.status.running ? t.fitNeedsRunning
-                           : pupilMapInConfig(v) ? t.measureBoth
-                                                 : t.measureOnlyValve;
-        const std::vector<std::string> lines = wrapText(pen, note, 14, false, right - noteX, 2);
-        double baseline = y + h / 2 - (lines.size() - 1) * 9 + 5;
-        for (const std::string& line : lines) {
-            pen.text(noteX, baseline, line, 14, kTextMuted);
-            baseline += 18;
+        const bool measuring = m.measure.phase == gaze_measure::Phase::Countdown ||
+                               m.measure.phase == gaze_measure::Phase::Running;
+        const bool slipping = m.slip.phase == slip_check::Phase::Running;
+        const bool canRun = m.status.running && !fitRunning(m.fit) && !measuring && !slipping;
+        drawRowLabel(pen, t, y, h, t.rowMeasure, m.status.running ? t.hintMeasure : t.measureNeedsRunning, false);
+        // Both buttons in the room there, their text a little smaller if they need it
+        const double room = right - kControlX - 12;
+        double size = 18;
+        while (size > 14 && pen.measure(t.measureStart, size, true) + pen.measure(t.slipStart, size, true) + 72 > room) {
+            size -= 1;
         }
+        const double firstW = std::max(150.0, pen.measure(t.measureStart, size, true) + 36);
+        const double slipW = std::max(150.0, pen.measure(t.slipStart, size, true) + 36);
+        drawButton(pen, kControlX, y + (h - 46) / 2, firstW, 46, t.measureStart, {PanelAction::MeasureStart, nullptr, 0},
+                   canRun, false, size);
+        drawButton(pen, kControlX + firstW + 12, y + (h - 46) / 2, slipW, 46, t.slipStart,
+                   {PanelAction::SlipStart, nullptr, 0}, canRun, false, size);
         y += h + 6;
     }
     // The eye log: record the raw eye data to a file, from now until "Stop" (or 60 minutes)
@@ -9506,6 +9677,15 @@ void EyePanel::render(const PanelModel& model) {
         cairo_fill(pen.cr);
         for (Button& b : buttons_) {
             if (b.hit.action != PanelAction::Tab && b.hit.action != PanelAction::MeasureStop) b.usable = false;
+        }
+    }
+    // ...and while the headset slip test runs
+    if (tab_ == PanelTab::Advanced && model.slip.phase == slip_check::Phase::Running) {
+        pen.color(kBg, 0.72);
+        cairo_rectangle(pen.cr, kStatusX, kStatusY, kStatusW, kStatusH);
+        cairo_fill(pen.cr);
+        for (Button& b : buttons_) {
+            if (b.hit.action != PanelAction::Tab && b.hit.action != PanelAction::SlipStop) b.usable = false;
         }
     }
     if (promptOpen()) drawPrompt(pen, t);

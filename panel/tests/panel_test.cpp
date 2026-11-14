@@ -25,6 +25,7 @@
 #include "model.h"
 #include "panel.h"
 #include "setup_tools.h"
+#include "target.h"
 #include "text_layout.h"
 
 #include <cairo.h>
@@ -1478,6 +1479,154 @@ void testMeasure(const FontSet& fonts) {
         panel.render(m);
         CHECK(hits(panel, PanelAction::MeasureClose).size() == 1);
         png(panel, "failed");
+    }
+}
+
+/**
+ * A made-up headset slip test, run through slip_check::Session at 90 samples a second: Valve moves a few tenths of a
+ * degree while pushed, the pupils a few degrees (up 3.1, down 2.4, left 1.8 to the right, right 2.9 to the left).
+ * @param mapped with a pupil map
+ * @param stopAt stop this many seconds in (-1: the whole test)
+ * @return the test's view
+ */
+slip_check::View madeUpSlip(bool mapped, double stopAt = -1.0) {
+    using namespace slip_check;
+    const double valveSlip[kDirCount][2] = {{0.1, 0.4}, {0.0, -0.3}, {-0.5, 0.1}, {0.3, 0.0}};
+    const double pupilSlip[kDirCount][2] = {{0.2, 3.1}, {-0.1, -2.4}, {1.8, 0.0}, {-2.9, 0.3}};
+    Session session;
+    double now = 10.0;
+    session.start(now, 1.79e9);
+    for (int guard = 0; guard < 20000 && session.active(); ++guard, now += 1.0 / 90) {
+        if (stopAt >= 0 && now - 10.0 >= stopAt) {
+            session.stop(1.79e9 + now);
+            break;
+        }
+        const Tick tick = session.tick(now, 1.79e9 + now);
+        if (!session.active() || tick.step < 0) break;
+        const Step& step = kSteps[tick.step];
+        double g[2] = {0, 0};
+        gaze_measure::targetGaze({step.yawDeg, step.pitchDeg}, g);
+        double v[2] = {g[0] - 3.0, g[1] + 1.2};
+        double p[2] = {g[0] + 0.4, g[1] - 0.2};
+        if (step.kind == StepKind::Push) {
+            const int d = dirIndex(step.dir);
+            for (int i = 0; i < 2; ++i) {
+                v[i] += valveSlip[d][i];
+                p[i] += pupilSlip[d][i];
+            }
+        }
+        gaze_measure::Sample sample;
+        sample.mapped = mapped;
+        sample.usable = true;
+        sample.beforeSmoothing = true;
+        sample.valve[0] = static_cast<float>(v[0] / 45);
+        sample.valve[1] = static_cast<float>(v[1] / 45);
+        if (mapped) {
+            sample.pupilState = gaze_measure::PupilState::Pupil;
+            sample.pupil[0] = static_cast<float>(p[0] / 45);
+            sample.pupil[1] = static_cast<float>(p[1] / 45);
+        }
+        session.add(now + 0.002, 1.79e9 + now, sample);
+    }
+    return session.view();
+}
+
+/**
+ * Advanced > Debug tools: "Headset slip test" under "Measure gaze error" (pressable while frameeyeosc runs and no eye
+ * fit or gaze error check does; its note says whether the eye video is recorded too); while it runs its screen in the
+ * tab's place with only "Stop" (and the tabs); its result with both sources, without a map, stopped, failed; the
+ * caption under the dot. With PANEL_TEST_PNG_DIR set, each to a PNG there.
+ */
+void testSlip(const FontSet& fonts) {
+    const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
+    for (const Language language : {Language::Ja, Language::En}) {
+        const std::string lang = language == Language::Ja ? "ja" : "en";
+        const auto png = [&](const EyePanel& panel, const std::string& name) {
+            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/slip_" + name + "_" + lang + "_2026-11-14_15-00-00.png");
+        };
+        PanelModel m = modelWith(Lids::Both, true);
+        m.language = language;
+        for (const auto& eye : kPupilMapKeys) {
+            for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
+        }
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::Advanced);
+        panel.setAdvPage(AdvPage::Tools);
+        // The button: beside the gaze error check's, in its row, inside the card
+        panel.render(m);
+        const std::vector<EyePanel::HitArea> start = hits(panel, PanelAction::SlipStart);
+        const std::vector<EyePanel::HitArea> measure = hits(panel, PanelAction::MeasureStart);
+        CHECK(start.size() == 1 && measure.size() == 1);
+        if (start.size() == 1 && measure.size() == 1) {
+            CHECK(start[0].y == measure[0].y && start[0].x >= measure[0].x + measure[0].w);
+            CHECK(start[0].x + start[0].w <= 1154);
+        }
+        png(panel, "row");
+        // ...not without frameeyeosc
+        PanelModel stopped = m;
+        stopped.status.running = false;
+        panel.render(stopped);
+        CHECK(hits(panel, PanelAction::SlipStart).empty());
+        // Running: its screen (a push step), only "Stop" and the tabs can be pressed
+        m.slip.phase = slip_check::Phase::Running;
+        m.slip.step = 1;
+        m.slip.stepLeft = 3.2;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SlipStop).size() == 1 && hits(panel, PanelAction::SlipStart).empty());
+        for (const EyePanel::HitArea& area : panel.hitAreas()) {
+            CHECK(area.hit.action == PanelAction::Tab || area.hit.action == PanelAction::SlipStop);
+        }
+        png(panel, "running");
+        m.slip.step = 17;
+        m.slip.stepLeft = 4.6;
+        panel.render(m);
+        png(panel, "running_widen");
+        m.slip.video = slip_check::VideoState::On;
+        panel.render(m);
+        png(panel, "running_video");
+        // Done with both sources: "Again" and "Close"; the eye video recorded, then none
+        m.slip = madeUpSlip(true);
+        CHECK(m.slip.phase == slip_check::Phase::Done && m.slip.result.pupilDirs == 4 && m.slip.result.valveDirs == 4);
+        CHECK(std::fabs(m.slip.result.pushes[0].pupil.dy - 3.1) < 1e-3 && std::fabs(m.slip.result.pushes[3].valve.dx - 0.3) < 1e-3);
+        m.slip.video = slip_check::VideoState::On;
+        m.slip.videoDir = "/home/steamos/eyecam/rec_2026-11-14_15-00-00";
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SlipClose).size() == 1 && hits(panel, PanelAction::SlipStart).size() == 1);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+        png(panel, "result");
+        m.slip.video = slip_check::VideoState::Off;
+        panel.render(m);
+        png(panel, "result_novideo");
+        // Without a pupil map: Valve only
+        m.slip = madeUpSlip(false);
+        CHECK(!m.slip.result.mapped && m.slip.result.pupilDirs == 0);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SlipClose).size() == 1);
+        png(panel, "result_nomap");
+        // Stopped partway, and failed
+        m.slip = madeUpSlip(true, 27.0);
+        CHECK(m.slip.phase == slip_check::Phase::Stopped && m.slip.stepsDone == 4);
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SlipClose).size() == 1);
+        png(panel, "stopped");
+        m.slip = slip_check::View();
+        m.slip.phase = slip_check::Phase::Failed;
+        m.slip.video = slip_check::VideoState::Refused;
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SlipClose).size() == 1);
+        png(panel, "failed");
+        // The caption under the dot: a push step, the still one, the longest line
+        const UiText& t = uiText(language);
+        std::vector<uint8_t> rgba;
+        const std::string dir = pngDir != nullptr ? std::string(pngDir) + "/" : std::string();
+        const auto caption = [&](int step, double progress, int seconds, const std::string& name) {
+            renderCaption(fonts, slip_check::instruction(t, slip_check::kSteps[step]), progress, seconds, rgba,
+                          pngDir != nullptr ? dir + "slip_caption_" + name + "_" + lang + "_2026-11-14_15-00-00.png" : "");
+            CHECK(rgba.size() == static_cast<size_t>(kCaptionImageW) * kCaptionImageH * 4);
+        };
+        caption(1, 0.64, 4, "push");
+        caption(0, 0.3, 3, "still");
+        caption(21, 1.0, 3, "look");
     }
 }
 
@@ -4900,6 +5049,7 @@ int main() {
     testGazeRingsRow(fonts);
     testGazeCompareRow(fonts);
     testMeasure(fonts);
+    testSlip(fonts);
     testTwentyRecords(fonts);
     testUpdateNotice(fonts);
     testUpdateBeta(fonts);

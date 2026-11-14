@@ -50,6 +50,10 @@ constexpr const char* kDotKeys[VrOverlay::kDots] = {"sasaken.frameeyeosc-panel.d
 // The eye capture's full-view overlay: a plain overlay like the dots (no sort order, no flags), fixed to the headset
 // 0.9 m ahead, closer than the dashboard (about 1.35 m) so it shows over that too, and 4 m wide (square): about 131
 // degrees across and as much up and down, more than the headset shows
+constexpr const char* kCaptionKey = "sasaken.frameeyeosc-panel.slip-caption";
+constexpr const char* kCaptionName = "Slip test caption";
+// As far as the target (the eyes need not refocus), about 26 degrees wide
+constexpr float kCaptionWidthM = static_cast<float>(0.46 * kTargetDistanceM);
 constexpr const char* kFillKey = "sasaken.frameeyeosc-panel.eyecam-fill";
 constexpr const char* kFillName = "Eye capture light";
 constexpr double kFillDistanceM = 0.9;
@@ -259,6 +263,10 @@ void VrOverlay::shutdown() {
         logShutdownStep("HideOverlay(dot)", overlay->HideOverlay(handle));
         logShutdownStep("ClearOverlayTexture(dot)", overlay->ClearOverlayTexture(handle));
     }
+    if (captionHandle_ != 0) {
+        logShutdownStep("HideOverlay(caption)", overlay->HideOverlay(captionHandle_));
+        logShutdownStep("ClearOverlayTexture(caption)", overlay->ClearOverlayTexture(captionHandle_));
+    }
     if (fillHandle_ != 0) {
         logShutdownStep("HideOverlay(fill)", overlay->HideOverlay(fillHandle_));
         logShutdownStep("ClearOverlayTexture(fill)", overlay->ClearOverlayTexture(fillHandle_));
@@ -271,6 +279,9 @@ void VrOverlay::shutdown() {
         handle = 0;
     }
     for (bool& shown : dotShown_) shown = false;
+    if (captionHandle_ != 0) logShutdownStep("DestroyOverlay(caption)", overlay->DestroyOverlay(captionHandle_));
+    captionHandle_ = 0;
+    captionShown_ = false;
     if (fillHandle_ != 0) logShutdownStep("DestroyOverlay(fill)", overlay->DestroyOverlay(fillHandle_));
     fillHandle_ = 0;
     fillShown_ = false;
@@ -292,6 +303,7 @@ void VrOverlay::shutdown() {
     // 5) Destroy the Vulkan images and device
     for (OverlayTexture& texture : dotTextures_) texture.destroy();
     fillTexture_.destroy();
+    captionTexture_.destroy();
     targetTexture_.destroy();
     thumbnailTexture_.destroy();
     panelTexture_.destroy();
@@ -480,6 +492,49 @@ void VrOverlay::hideTarget() {
     if (!connected_ || targetHandle_ == 0 || !targetShown_) return;
     checkOverlay("HideOverlay(target)", vr::VROverlay()->HideOverlay(targetHandle_));
     targetShown_ = false;
+}
+
+bool VrOverlay::showCaption(double pitchDeg, const uint8_t* rgba, int width, int height) {
+    if (!connected_ || captionFailed_) return false;
+    vr::IVROverlay* overlay = vr::VROverlay();
+    std::string message;
+    if (captionHandle_ == 0) {
+        vr::VROverlayHandle_t handle = vr::k_ulOverlayHandleInvalid;
+        const vr::EVROverlayError error = overlay->CreateOverlay(kCaptionKey, kCaptionName, &handle);
+        std::fprintf(stderr, "[VR] CreateOverlay(%s) -> %s\n", kCaptionKey, overlayErrorName(error));
+        if (error != vr::VROverlayError_None || !captionTexture_.create(vulkan_, width, height, message)) {
+            if (!message.empty()) std::fprintf(stderr, "[Vulkan] can't create the caption texture: %s\n", message.c_str());
+            if (error == vr::VROverlayError_None) overlay->DestroyOverlay(handle);
+            captionFailed_ = true;
+            return false;
+        }
+        captionHandle_ = handle;
+        captionPitch_ = NAN;
+        checkOverlay("SetOverlayWidthInMeters(caption)", overlay->SetOverlayWidthInMeters(handle, kCaptionWidthM));
+        std::fprintf(stderr, "[VR] caption %.2f m ahead, %.3f m wide\n", kTargetDistanceM, kCaptionWidthM);
+    }
+    if (rgba != nullptr && !captionTexture_.update(captionHandle_, rgba, message)) {
+        std::fprintf(stderr, "[VR] can't send the caption: %s\n", message.c_str());
+        return false;
+    }
+    if (captionPitch_ != pitchDeg) {
+        const vr::HmdMatrix34_t transform = headRelativeTransform(0.0, pitchDeg, kTargetDistanceM);
+        const vr::EVROverlayError error =
+            overlay->SetOverlayTransformTrackedDeviceRelative(captionHandle_, vr::k_unTrackedDeviceIndex_Hmd, &transform);
+        if (!checkOverlay("SetOverlayTransformTrackedDeviceRelative(caption)", error)) return false;
+        captionPitch_ = pitchDeg;
+    }
+    if (!captionShown_) {
+        if (!checkOverlay("ShowOverlay(caption)", overlay->ShowOverlay(captionHandle_))) return false;
+        captionShown_ = true;
+    }
+    return true;
+}
+
+void VrOverlay::hideCaption() {
+    if (!connected_ || captionHandle_ == 0 || !captionShown_) return;
+    checkOverlay("HideOverlay(caption)", vr::VROverlay()->HideOverlay(captionHandle_));
+    captionShown_ = false;
 }
 
 bool VrOverlay::showDot(int index, double x, double y, double z, double yawDeg, double pitchDeg, const uint8_t* rgba,

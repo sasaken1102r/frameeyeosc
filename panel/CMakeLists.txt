@@ -63,6 +63,7 @@ add_executable(frameeyeosc-panel
   src/recorder.cpp
   src/report.cpp
   src/setup_tools.cpp
+  src/slip_check.cpp
   src/sounds.cpp
   src/status.cpp
   src/stored.cpp
@@ -111,6 +112,14 @@ add_executable(measure-test tests/measure_test.cpp src/gaze_measure.cpp src/json
 target_include_directories(measure-test PRIVATE src)
 target_compile_options(measure-test PRIVATE -Wall -Wextra)
 add_test(NAME measure COMMAND measure-test)
+
+# The headset slip test's steps, timing, per-direction scores and record files, tested without OpenVR:
+# panel/build/slip-test
+add_executable(slip-test tests/slip_check_test.cpp src/slip_check.cpp src/gaze_measure.cpp src/json.cpp src/i18n.cpp
+  src/icons.cpp)
+target_include_directories(slip-test PRIVATE src)
+target_compile_options(slip-test PRIVATE -Wall -Wextra)
+add_test(NAME slip COMMAND slip-test)
 
 # The eye preview without cairo or OpenVR: which values drive the drawn eyes, the lids' and pupil's geometry, eyecam-rec's
 # preview file (made-up pictures in a folder under /tmp: its checks, the seqlock, a replaced or removed file), when the
@@ -192,7 +201,9 @@ add_executable(panel-test tests/panel_test.cpp
   src/recorder.cpp
   src/report.cpp
   src/setup_tools.cpp
+  src/slip_check.cpp
   src/status.cpp
+  src/target.cpp
   src/text_layout.cpp
   src/theme.cpp
   src/ui_state.cpp

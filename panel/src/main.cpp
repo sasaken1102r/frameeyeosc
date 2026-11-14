@@ -18,6 +18,7 @@
 #include "recorder.h"
 #include "report.h"
 #include "setup_tools.h"
+#include "slip_check.h"
 #include "sounds.h"
 #include "status.h"
 #include "target.h"
@@ -3683,6 +3684,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         case PanelAction::MeasureStart:
         case PanelAction::MeasureStop:
         case PanelAction::MeasureClose: return;  // the loop runs the gaze error check
+        case PanelAction::SlipStart:
+        case PanelAction::SlipStop:
+        case PanelAction::SlipClose: return;  // ...and the headset slip test
         case PanelAction::SetupProceed:
             std::fprintf(stderr, "[setup] on to the eye cameras' page\n");
             model.eyecam.flow.proceed();
@@ -4255,6 +4259,46 @@ void fillMeasureResult(report::Summary& s, const gaze_measure::View& view) {
     }
 }
 
+/**
+ * A headset slip test's record: how it ended, and its mean moves in both languages (slip_check::briefText).
+ * @param s the summary
+ * @param view the test
+ */
+void fillSlipResult(report::Summary& s, const slip_check::View& view) {
+    using slip_check::Phase;
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    char text[200];
+    switch (view.phase) {
+        case Phase::Done:
+            s.result = report::Result::Ok;
+            s.brief = slip_check::briefText(ja, view.result);
+            s.briefEn = slip_check::briefText(en, view.result);
+            s.reason = s.brief.empty() ? ja.measureTooFew : s.brief;
+            s.reasonEn = s.briefEn.empty() ? en.measureTooFew : s.briefEn;
+            break;
+        case Phase::Failed:
+            s.result = report::Result::Failed;
+            s.reason = view.samples == 0 ? ja.measureNoDataEver : ja.measureNoData;
+            s.reasonEn = view.samples == 0 ? en.measureNoDataEver : en.measureNoData;
+            s.brief = ja.measureFailedTitle;
+            s.briefEn = en.measureFailedTitle;
+            break;
+        default: {
+            s.result = report::Result::Stopped;
+            const std::string done = std::to_string(view.stepsDone);
+            const std::string all = std::to_string(slip_check::kStepCount);
+            std::snprintf(text, sizeof(text), ja.slipStoppedFormat, done.c_str(), all.c_str());
+            s.reason = text;
+            std::snprintf(text, sizeof(text), en.slipStoppedFormat, done.c_str(), all.c_str());
+            s.reasonEn = text;
+            s.brief = ja.measureStoppedTitle;
+            s.briefEn = en.measureStoppedTitle;
+            break;
+        }
+    }
+}
+
 void fillClosedResult(report::Summary& s) {
     s.result = report::Result::Stopped;
     s.reason = s.brief = uiText(Language::Ja).recordPanelClosed;
@@ -4503,6 +4547,16 @@ int runOverlay(const Options& options) {
                      found ? gaze_measure::orderName(last) : "?");
         break;
     }
+    // The headset slip test (slip_check.h): its run, its socket (the gaze error check's own: never both at once), its
+    // record, the line under its dot, and the eye video it asks eyecam-rec for ("start free" while its reply is
+    // waited for; "stop" waiting to go once eyecam-rec can take a command)
+    slip_check::Session slip;
+    gaze_measure::Receiver slipSocket;
+    report::Run slipRun;
+    std::string drawnSlip;
+    CaptionPainter captionPainter;
+    std::string slipVideoCommand;
+    bool slipVideoStop = false;
     std::string fitTrigger = "panel";  // "auto" for the re-wear fit started by itself, "command" for --action
     bool fitRetryShown = false;        // the last fit was a re-wear fit the dashboard stopped, to be tried again
     std::string calibCommand;          // the calibration's command, to know its reply
@@ -4624,7 +4678,7 @@ int runOverlay(const Options& options) {
     // The gaze error check: started from its button (not while an eye fit runs, nor without frameeyeosc), its record
     // written when it ends (done, stopped or failed), with its scores and samples as the record's own files
     const auto startMeasure = [&]() {
-        if (measure.active() || fit.active() || !model.status.running) return;
+        if (measure.active() || slip.active() || fit.active() || !model.status.running) return;
         const size_t slash = model.statusPath.find_last_of('/');
         const std::string dir = slash == std::string::npos ? "." : model.statusPath.substr(0, slash);
         std::string error;
@@ -4662,6 +4716,73 @@ int runOverlay(const Options& options) {
                                                                   : "failed",
                      done.positionsDone, done.samples, r.valve.error, r.valve.positions, r.pupil.error,
                      r.pupil.positions);
+        submitRecord(std::move(pending));
+    };
+    // The headset slip test: started from its button (not while an eye fit or a gaze error check runs, nor without
+    // frameeyeosc), with the eye video when eyecam-rec is there and idle; its record written when it ends
+    const auto startSlip = [&]() {
+        if (slip.active() || measure.active() || fit.active() || !model.status.running) return;
+        const size_t slash = model.statusPath.find_last_of('/');
+        const std::string dir = slash == std::string::npos ? "." : model.statusPath.substr(0, slash);
+        std::string error;
+        if (!slipSocket.open(dir + "/" + gaze_measure::kSocketName, error)) {
+            std::fprintf(stderr, "[slip] %s\n", error.c_str());
+            return;
+        }
+        slip.start(nowSeconds(), unixNow());
+        slipRun.begin(report::Kind::Slip, unixNow());
+        report::Summary& s = slipRun.summary();
+        s.trigger = "panel";
+        s.conditions = runConditions(model, vr, recenter);
+        s.conditions.ipdMm = vr.userIpdMeters() * 1000;
+        // The eye video: eyecam-rec's own recording, the way the developer recording starts one, with a protocol of
+        // one long step (no light, no prompts of its own); stopped when the test ends
+        const eyecam::Status& es = model.eyecam.status;
+        if (!model.eyecam.visible || es.state != eyecam::State::Idle) {
+            slip.setVideo(slip_check::VideoState::Off,
+                          !model.eyecam.visible ? std::string("eyecam-rec not running") : "eyecam-rec " + es.stateText);
+        } else if (eyecamControl.busy()) {
+            slip.setVideo(slip_check::VideoState::Off, "eyecam-rec busy with \"" + eyecamControl.command() + "\"");
+        } else {
+            const std::string command = std::string(eyecam::kStartCommand) + " " + slip_check::kVideoProtocol;
+            const std::string socket = model.eyecamDir + "/ctl.sock";
+            std::fprintf(stderr, "[eyecam] sending \"%s\" to %s\n", command.c_str(), socket.c_str());
+            if (eyecamControl.send(socket, command, nowSeconds())) {
+                slipVideoCommand = command;
+                slip.setVideo(slip_check::VideoState::Asked);
+            } else if (!eyecamControl.busy()) {
+                slip.setVideo(slip_check::VideoState::Refused, eyecamControl.reply().error);
+            }
+            syncEyecamControl(model.eyecam, eyecamControl);
+        }
+        std::fprintf(stderr, "[slip] started: %d steps, %.0f s in all; eye video %s%s%s\n", slip_check::kStepCount,
+                     slip_check::kRunSec, slip.view().video == slip_check::VideoState::Asked ? "asked for" : "none",
+                     slip.view().videoReason.empty() ? "" : ": ", slip.view().videoReason.c_str());
+    };
+    const auto finishSlip = [&]() {
+        slipSocket.close();
+        vr.hideCaption();
+        captionPainter.reset();
+        // (an eye fit that took over draws its own target on the painter: left alone)
+        if (!fit.active()) targetPainter.reset();
+        // The eye video ends with it (once eyecam-rec has answered its start, if it hasn't yet)
+        const slip_check::VideoState video = slip.view().video;
+        if (video == slip_check::VideoState::Asked || video == slip_check::VideoState::On) slipVideoStop = true;
+        if (!slipRun.active()) return;
+        const slip_check::View& done = slip.view();
+        report::Pending pending = slipRun.finish(unixNow());
+        fillSlipResult(pending.summary, done);
+        pending.files.emplace_back("slip.json", slip_check::recordJson(done, slip.rows(), slip.shownAt(),
+                                                                      slip.shownUnix(), slip.startedAt(), done.result));
+        pending.files.emplace_back("samples.csv", slip_check::samplesCsv(slip.rows(), slip.shownAt()));
+        const slip_check::Result& r = done.result;
+        std::fprintf(stderr,
+                     "[slip] %s after %d steps, %d samples: Valve moved %.2f deg (%d directions), pupil %.2f deg (%d "
+                     "directions)\n",
+                     done.phase == slip_check::Phase::Done      ? "done"
+                     : done.phase == slip_check::Phase::Stopped ? "stopped"
+                                                                : "failed",
+                     done.stepsDone, done.samples, r.valveMean, r.valveDirs, r.pupilMean, r.pupilDirs);
         submitRecord(std::move(pending));
     };
     while (!gStopRequested && !userQuit) {
@@ -4766,6 +4887,17 @@ int runOverlay(const Options& options) {
                         std::fprintf(stderr, "[measure] stopped: another tab chosen\n");
                         measure.stop(nowSeconds(), unixNow());
                     }
+                    // ...and the headset slip test
+                    if (panel.tab() != tabBefore && slip.active()) {
+                        std::fprintf(stderr, "[slip] stopped: another tab chosen\n");
+                        slip.stop(unixNow());
+                    }
+                    if (hit.action == PanelAction::SlipStart) startSlip();
+                    if (hit.action == PanelAction::SlipStop && slip.active()) {
+                        std::fprintf(stderr, "[slip] stopped\n");
+                        slip.stop(unixNow());
+                    }
+                    if (hit.action == PanelAction::SlipClose) slip.dismiss();
                     if (hit.action == PanelAction::MeasureStart) startMeasure();
                     if (hit.action == PanelAction::MeasureStop && measure.active()) {
                         std::fprintf(stderr, "[measure] stopped\n");
@@ -5091,7 +5223,7 @@ int runOverlay(const Options& options) {
                     loggedYaw = actions.yawDeg;
                     loggedPitch = actions.pitchDeg;
                 }
-            } else if (!measure.active()) {
+            } else if (!measure.active() && !slip.active()) {
                 vr.hideTarget();
                 if (targetFrames > 0) {
                     const double seconds = nowSeconds() - targetShownAt;
@@ -5154,6 +5286,65 @@ int runOverlay(const Options& options) {
             if (shown != drawnMeasure) {
                 drawnMeasure = shown;
                 model.measure = measure.view();
+                dirty = true;
+            }
+        }
+        // The headset slip test: the samples waiting (each put to the step shown when it came), then the dot, on the
+        // eye fit's target overlay, with the step's line under it (above it while the dot is low); an eye fit starting
+        // takes over and stops it
+        {
+            if (slip.active() && fit.active()) {
+                std::fprintf(stderr, "[slip] stopped: an eye fit started\n");
+                slip.stop(unixNow());
+            }
+            if (slipSocket.isOpen()) {
+                std::vector<gaze_measure::Sample> got;
+                slipSocket.poll(got);
+                for (const gaze_measure::Sample& sample : got) slip.add(nowSeconds(), unixNow(), sample);
+            }
+            // (eyecam-rec's recording folder, once it records)
+            if (slip.active() && slip.view().video == slip_check::VideoState::On &&
+                model.eyecam.status.state == eyecam::State::Recording) {
+                slip.setVideoDir(model.eyecam.status.sessionDir);
+            }
+            const slip_check::Tick tick = slip.tick(nowSeconds(), unixNow());
+            const bool soundsOn = model.config.flag(key::kFitSounds);
+            if (tick.showTarget) {
+                const bool drawn = targetPainter.paint(fonts, gaze_fit::TargetStyle::Dot, "", 0, tick.progress);
+                targetUp = vr.showTarget(tick.yawDeg, tick.pitchDeg, drawn ? targetPainter.rgba().data() : nullptr,
+                                         kTargetImageSize);
+                if (drawn && !targetUp) targetPainter.reset();
+                const slip_check::Step& step = slip_check::kSteps[tick.step];
+                const std::string line = slip_check::instruction(uiText(model.language), step);
+                const bool lineDrawn = captionPainter.paint(fonts, line, tick.progress, tick.seconds);
+                const double pitch = tick.pitchDeg < 0 ? 11.0 : -11.0;
+                if (!vr.showCaption(pitch, lineDrawn ? captionPainter.rgba().data() : nullptr, kCaptionImageW,
+                                    kCaptionImageH) &&
+                    lineDrawn) {
+                    captionPainter.reset();
+                }
+                if (tick.changed) {
+                    if (soundsOn) player.play(sounds::Cue::Pop);
+                    std::fprintf(stderr, "[slip] step %d/%d: %s (%.0f s)\n", tick.step + 1, slip_check::kStepCount,
+                                 slip_check::stepName(step).c_str(), step.seconds);
+                }
+            }
+            if (tick.ended) {
+                // (an eye fit that took over shows its dot this same frame: not hidden)
+                if (!fit.active()) vr.hideTarget();
+                const slip_check::Phase phase = slip.view().phase;
+                if (soundsOn && phase == slip_check::Phase::Done) player.play(sounds::Cue::Done);
+                if (soundsOn && phase == slip_check::Phase::Failed) player.play(sounds::Cue::Fail);
+                finishSlip();
+            }
+            // (drawn again for each step, each second of it and the eye video's state)
+            const slip_check::View& sv = slip.view();
+            const std::string shown = std::to_string(static_cast<int>(sv.phase)) + "/" + std::to_string(sv.step) + "/" +
+                                      std::to_string(static_cast<int>(std::ceil(sv.stepLeft))) + "/" +
+                                      std::to_string(static_cast<int>(sv.video)) + "/" + sv.videoDir;
+            if (shown != drawnSlip) {
+                drawnSlip = shown;
+                model.slip = sv;
                 dirty = true;
             }
         }
@@ -5413,11 +5604,30 @@ int runOverlay(const Options& options) {
                     std::fprintf(stderr, "[contrib] start refused: %s\n", r.error.c_str());
                     dirty = true;
                 }
+                // The slip test's eye video: started, or why not
+                if (!slipVideoCommand.empty() && r.command == slipVideoCommand) {
+                    slipVideoCommand.clear();
+                    if (slip.view().phase != slip_check::Phase::Idle) {
+                        slip.setVideo(r.ok ? slip_check::VideoState::On : slip_check::VideoState::Refused,
+                                      r.ok ? std::string() : r.error);
+                    }
+                    std::fprintf(stderr, "[slip] eye video %s%s\n", r.ok ? "recording" : "refused: ", r.error.c_str());
+                }
                 // A sensitivity it refused: the slider shows the file's value again (the reply shows like others)
                 if (!r.ok && eyecam::isSensitivityCommand(r.command)) {
                     panel.dropSensitivityHold();
                     dirty = true;
                 }
+            }
+            // The slip test over: its eye video stopped, once eyecam-rec can take a command
+            if (slipVideoStop && !eyecamControl.busy()) {
+                slipVideoStop = false;
+                const std::string socket = model.eyecamDir + "/ctl.sock";
+                std::fprintf(stderr, "[eyecam] sending \"stop\" to %s (the slip test ended)\n", socket.c_str());
+                if (!eyecamControl.send(socket, "stop", nowSeconds()) && !eyecamControl.busy()) {
+                    std::fprintf(stderr, "[eyecam] stop failed: %s\n", eyecamControl.reply().error.c_str());
+                }
+                syncEyecamControl(model.eyecam, eyecamControl);
             }
             // A setting's slider let go of: written like a press (and the widening slider's Valve eye, below)
             takeSliders(panel, [&](const PanelHit& slid) {
@@ -5570,13 +5780,15 @@ int runOverlay(const Options& options) {
         }
 
         // A run's status a second (status.jsonl)
-        if ((fitRun.active() || calibRun.active() || measureRun.active()) && unixNow() >= lastRunSample + 1.0) {
+        if ((fitRun.active() || calibRun.active() || measureRun.active() || slipRun.active()) &&
+            unixNow() >= lastRunSample + 1.0) {
             lastRunSample = unixNow();
             const std::string core = readSmallFile(model.statusPath);
             const std::string eyecamText = readSmallFile(model.eyecamDir + "/status.json");
             fitRun.sample(lastRunSample, core, eyecamText);
             calibRun.sample(lastRunSample, core, eyecamText);
             measureRun.sample(lastRunSample, core, eyecamText);
+            slipRun.sample(lastRunSample, core, eyecamText);
         }
         // A record written: the failure screens' bar links to it, the lists show it
         {
@@ -5584,7 +5796,9 @@ int runOverlay(const Options& options) {
             report::Kind kind = report::Kind::Fit;
             while (writer.poll(folder, kind)) {
                 const bool calib = kind == report::Kind::CalibWear || kind == report::Kind::CalibUser;
-                if (kind != report::Kind::Measure) (calib ? model.records.lastCalib : model.records.lastFit) = folder;
+                if (kind != report::Kind::Measure && kind != report::Kind::Slip) {
+                    (calib ? model.records.lastCalib : model.records.lastFit) = folder;
+                }
                 loadRecords(model);
                 if (panel.recordShown() == folder) openRecordView(model, folder);
                 dirty = true;
@@ -5701,7 +5915,7 @@ int runOverlay(const Options& options) {
         // (the dots only while packets arrive: with none for kStaleSec, the usual slow poll)
         const bool dotsLive = dots.isOpen() && dotsWanted && nowSeconds() - lastDotAt <= gaze_dots::kStaleSec;
         // (and while the eye capture's light fades, so its alpha steps are small)
-        const bool everyFrame = fit.active() || measure.active() || dotsLive || lightMoving;
+        const bool everyFrame = fit.active() || measure.active() || slip.active() || dotsLive || lightMoving;
         // While eyecam-rec runs, as often as with the panel open, so the light follows its steps closely
         const bool eyecamLive = model.eyecam.visible || vr.fillShown() || eyecamControl.busy();
         if (!(targetUp && vr.waitFrameSync(kFrameSyncTimeoutMs))) {
@@ -5752,6 +5966,13 @@ int runOverlay(const Options& options) {
     }
     if (measure.active()) measure.stop(nowSeconds(), unixNow());
     finishMeasure();
+    if (slip.active()) slip.stop(unixNow());
+    finishSlip();
+    // (its eye video: "stop" sent if eyecam-rec can take it now; the reply isn't waited for)
+    if (slipVideoStop && !eyecamControl.busy()) {
+        std::fprintf(stderr, "[eyecam] sending \"stop\" (the slip test ended with the panel)\n");
+        eyecamControl.send(model.eyecamDir + "/ctl.sock", "stop", nowSeconds());
+    }
     writer.finish();
     std::fprintf(stderr, "[VR] done\n");
     if (lockFd >= 0) ::close(lockFd);

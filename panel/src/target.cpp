@@ -135,6 +135,78 @@ bool TargetPainter::paint(const FontSet& fonts, gaze_fit::TargetStyle style, con
     return true;
 }
 
+namespace {
+
+/**
+ * Draw the slip test's caption on a clear image of kCaptionImageW x kCaptionImageH.
+ * @param surface the image
+ * @param fonts the fonts
+ * @param text as renderCaption
+ * @param progress as renderCaption
+ * @param seconds as renderCaption
+ */
+void drawCaption(cairo_surface_t* surface, const FontSet& fonts, const std::string& text, double progress,
+                 int seconds) {
+    const double w = kCaptionImageW;
+    const double h = kCaptionImageH;
+    cairo_t* cr = cairo_create(surface);
+    cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR);
+    cairo_paint(cr);
+    cairo_set_operator(cr, CAIRO_OPERATOR_OVER);
+    const Pen pen {cr, &fonts};
+    // A dark band behind it, readable over bright scenes
+    pen.color(kBg, 0.82);
+    pen.roundedRect(8, 8, w - 16, h - 16, 28);
+    cairo_fill(cr);
+    // What to do, large (shrunk to fit one line)
+    centeredText(pen, w / 2, 86, text, 60, w - 80, kText);
+    // The bar: the step's time left, running down from the right; the seconds at its end
+    const double barX = 70;
+    const double barW = w - 2 * barX - 70;
+    const double barY = 114;
+    const double barH = 14;
+    pen.color(kBorder, 0.55);
+    pen.roundedRect(barX, barY, barW, barH, barH / 2);
+    cairo_fill(cr);
+    const double left = std::clamp(progress, 0.0, 1.0);
+    if (left > 0.001) {
+        pen.color(kAccent);
+        pen.roundedRect(barX, barY, std::max(barH, barW * left), barH, barH / 2);
+        cairo_fill(cr);
+    }
+    if (seconds > 0) pen.text(barX + barW + 18, barY + barH, std::to_string(seconds), 30, kTextMuted, true);
+    cairo_surface_flush(surface);
+    cairo_destroy(cr);
+}
+
+}  // namespace
+
+void renderCaption(const FontSet& fonts, const std::string& text, double progress, int seconds,
+                   std::vector<uint8_t>& rgba, const std::string& pngPath) {
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, kCaptionImageW, kCaptionImageH);
+    drawCaption(surface, fonts, text, progress, seconds);
+    surfaceToRgba(surface, rgba);
+    if (!pngPath.empty()) cairo_surface_write_to_png(surface, pngPath.c_str());
+    cairo_surface_destroy(surface);
+}
+
+CaptionPainter::~CaptionPainter() {
+    if (surface_ != nullptr) cairo_surface_destroy(surface_);
+}
+
+bool CaptionPainter::paint(const FontSet& fonts, const std::string& text, double progress, int seconds) {
+    const long bar = std::lround(std::clamp(progress, 0.0, 1.0) * kCaptionBarSteps);
+    const std::string key = std::to_string(seconds) + "|" + std::to_string(bar) + "|" + text;
+    if (key == key_) return false;
+    if (surface_ == nullptr) {
+        surface_ = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, kCaptionImageW, kCaptionImageH);
+    }
+    drawCaption(surface_, fonts, text, static_cast<double>(bar) / kCaptionBarSteps, seconds);
+    surfaceToRgba(surface_, rgba_);
+    key_ = key;
+    return true;
+}
+
 void renderFill(const FontSet& fonts, bool bright, const std::string& label, std::vector<uint8_t>& rgba,
                 const std::string& pngPath) {
     const int size = kFillImageSize;

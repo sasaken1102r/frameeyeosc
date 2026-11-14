@@ -277,7 +277,7 @@ report::Sources fakeSources(const std::string& dir, bool huge = false) {
 }
 
 void testNames() {
-    for (const Kind kind : {Kind::CalibWear, Kind::CalibUser, Kind::Fit, Kind::Recenter}) {
+    for (const Kind kind : {Kind::CalibWear, Kind::CalibUser, Kind::Fit, Kind::Recenter, Kind::Measure, Kind::Slip}) {
         Kind back = Kind::Fit;
         CHECK(report::parseKind(report::kindName(kind), back) && back == kind);
     }
@@ -297,6 +297,7 @@ void testNames() {
     CHECK(report::folderName(Kind::CalibWear, start) == "calib-wear_2026-10-06_20-45-09");
     CHECK(report::isFolderName("fit_2026-10-06_20-45-09"));
     CHECK(report::isFolderName("recenter_2026-10-06_20-45-09_2"));
+    CHECK(report::isFolderName("slip_2026-11-14_13-00-00") && report::folderName(Kind::Slip, start) == "slip_2026-10-06_20-45-09");
     CHECK(!report::isFolderName("fit_2026-10-06_20-45-0"));
     CHECK(!report::isFolderName("rec_2026-10-06_20-45-09"));
     CHECK(!report::isFolderName("fit_2026-10-06_20-45-09_"));
@@ -675,6 +676,43 @@ void testMeasureQuota() {
     CHECK(report::folders(records).size() == static_cast<size_t>(2 * report::kKeep));
     CHECK(!exists(records + "/fit_2026-10-05_08-00-00") && !exists(records + "/calib-wear_2026-10-05_09-00-00"));
     CHECK(report::prune(records, 0) == 2 * report::kKeep);
+    removeAll(dir);
+}
+
+/** Slip tests are kept on their own too: many push out no gaze error check, fit or calibration, nor the other way. */
+void testSlipQuota() {
+    const std::string dir = kRoot + "/slipquota";
+    ::mkdir(dir.c_str(), 0700);
+    const std::string records = dir + "/reports";
+    report::Sources sources = fakeSources(dir);
+    sources.journal = nullptr;
+    sources.valveLog.clear();
+    const auto writeAt = [&](Kind kind, double start) {
+        report::Pending pending;
+        pending.summary = fitSummary();
+        pending.summary.kind = kind;
+        pending.summary.start = start;
+        pending.summary.end = start + 5;
+        pending.files.emplace_back(kind == Kind::Slip ? "slip.json" : "measure.json", "{}\n");
+        pending.files.emplace_back("samples.csv", "panel_s\n");
+        std::string folder;
+        std::string error;
+        CHECK(report::writeRecord(records, pending, sources, folder, error));
+        return folder;
+    };
+    const auto count = [&](const char* prefix) {
+        size_t n = 0;
+        for (const std::string& name : report::folders(records)) n += name.rfind(prefix, 0) == 0 ? 1 : 0;
+        return n;
+    };
+    // Two fits and three checks, then twelve slip tests: those five stay, the newest ten slip tests
+    for (int i = 0; i < 2; ++i) writeAt(Kind::Fit, jst(2026, 11, 13, 8 + i, 0, 0));
+    for (int i = 0; i < 3; ++i) writeAt(Kind::Measure, jst(2026, 11, 13, 10 + i, 0, 0));
+    for (int i = 0; i < 12; ++i) writeAt(Kind::Slip, jst(2026, 11, 14, 8 + i, 0, 0));
+    CHECK(count("slip_") == static_cast<size_t>(report::kKeep) && count("measure_") == 3 && count("fit_") == 2);
+    CHECK(!exists(records + "/slip_2026-11-14_09-00-00") && exists(records + "/slip_2026-11-14_19-00-00/slip.json"));
+    CHECK(exists(records + "/slip_2026-11-14_19-00-00/samples.csv"));
+    CHECK(report::prune(records, 0) == 15);
     removeAll(dir);
 }
 
@@ -1136,6 +1174,7 @@ int main() {
     testRecord();
     testRetention();
     testMeasureQuota();
+    testSlipQuota();
     testRun();
     testCalibWatch();
     testWriterAndCli();

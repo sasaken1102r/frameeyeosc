@@ -3,6 +3,7 @@
 
 #include "vk_texture.h"
 
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -159,6 +160,21 @@ public:
     void hideTarget();
 
     /**
+     * Show the slip test's caption: an overlay of its own, fixed to the headset kTargetDistanceM ahead (as the target)
+     * straight ahead at a pitch, kCaptionWidthM wide. Created the first time it is needed and kept, hidden, until
+     * shutdown.
+     * @param pitchDeg degrees up (below the dot: negative)
+     * @param rgba a new image, non-premultiplied RGBA; nullptr keeps the last one
+     * @param width its width (px; the same every time)
+     * @param height its height (px)
+     * @return true if it is shown
+     */
+    bool showCaption(double pitchDeg, const uint8_t* rgba, int width, int height);
+
+    /** Hide the caption (nothing happens if it was never created). */
+    void hideCaption();
+
+    /**
      * Show debug gaze dot `index` (0 or 1 the dots, 2 or 3 the rings, 4 the other gaze's dot; below kDots): an overlay
      * of its own, fixed to the
      * headset at a pose (head space, m and degrees). Created the first time it is needed. Only the transform changes
@@ -255,6 +271,10 @@ private:
     bool dotShown_[kDots] = {};
     double dotWidth_[kDots] = {};      ///< the width last set (m)
     bool dotFailed_[kDots] = {};       ///< creating it failed; not tried again
+    uint64_t captionHandle_ = 0;      ///< the slip test's caption (0 until first needed)
+    bool captionShown_ = false;
+    bool captionFailed_ = false;      ///< creating it failed; not tried again
+    double captionPitch_ = NAN;       ///< the pitch its transform was set to
     uint64_t fillHandle_ = 0;         ///< the eye capture's full-view overlay (0 until first needed)
     bool fillShown_ = false;
     bool fillFailed_ = false;         ///< creating it failed; not tried again
@@ -271,6 +291,7 @@ private:
     OverlayTexture targetTexture_;
     OverlayTexture dotTextures_[kDots];
     OverlayTexture fillTexture_;
+    OverlayTexture captionTexture_;
 
     /**
      * Scan /proc once to find the vrserver PID.

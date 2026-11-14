@@ -14,6 +14,7 @@
 #include "frame_apps.h"
 #include "gaze_fit.h"
 #include "gaze_measure.h"
+#include "slip_check.h"
 #include "i18n.h"
 #include "recorder.h"
 #include "report.h"
@@ -54,6 +55,7 @@ struct PanelModel {
     frame_updater::UpdateStatus update;  ///< new-release check and install (see frame-updater)
     gaze_fit::View fit;          ///< the eye fit session (Eye fit tab)
     gaze_measure::View measure;  ///< the gaze error check (Advanced > Debug tools)
+    slip_check::View slip;       ///< the headset slip test (under it)
     bool fitRetry = false;       ///< ...stopped by the dashboard opening while re-centering by itself, which tries
                                  ///< again once the dashboard is closed (auto_recenter::Watcher::fitEnded)
     recorder::View recording;    ///< the eye log (Advanced tab, and a mark in the left column while it records)

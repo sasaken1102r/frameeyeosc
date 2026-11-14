@@ -183,6 +183,9 @@ enum class PanelAction {
     MeasureStart,      ///< the gaze error check: start (or "Again" on its result)
     MeasureStop,       ///< ...stop it while it runs
     MeasureClose,      ///< ...close its result
+    SlipStart,         ///< the headset slip test: start (or "Again" on its result)
+    SlipStop,          ///< ...stop it while it runs
+    SlipClose,         ///< ...close its result
 };
 
 /** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
@@ -1719,6 +1722,25 @@ private:
      * @param m the model
      */
     void drawMeasureResult(const Pen& pen, const UiText& t, const PanelModel& m);
+
+    /**
+     * The headset slip test while it runs, in the Advanced tab's place: the step's line large with its time left as a
+     * bar, which step of how many, how to do it, and a big "Stop" (the dot and the same line show in front of the
+     * panel).
+     * @param pen the pen
+     * @param t texts
+     * @param m the model
+     */
+    void drawSlipRun(const Pen& pen, const UiText& t, const PanelModel& m);
+
+    /**
+     * The headset slip test's result (or why there is none), in the Advanced tab's place until it is closed: the mean
+     * moves, then per push direction how far Valve's and the pupils' gaze moved, and the eye video.
+     * @param pen the pen
+     * @param t texts
+     * @param m the model
+     */
+    void drawSlipResult(const Pen& pen, const UiText& t, const PanelModel& m);
 
     /**
      * "Record for squint training" (contrib::screen): the consent, the question about glasses, the start with what to

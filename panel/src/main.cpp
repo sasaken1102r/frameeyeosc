@@ -4497,6 +4497,9 @@ int runOverlay(const Options& options) {
     // replies stay its own), answered once eyecam-rec has
     eyecam::Control relearnControl;
     int relearnRequest = 0;  // the request waiting for it (0: none)
+    // "glint template" after an eye fit with pupil_slip_correction on (a connection of its own too: its reply is only
+    // logged)
+    eyecam::Control glintControl;
     {
         std::string error;
         const std::string path = action_socket::defaultSocketPath();
@@ -5127,6 +5130,11 @@ int runOverlay(const Options& options) {
             }
             actionServer.answer(request.id, decision.code, decision.text);
         }
+        // ...the glint template's (logged only)
+        if (glintControl.poll(nowSeconds())) {
+            const eyecam::Reply& r = glintControl.reply();
+            std::fprintf(stderr, "[eyecam] %s -> %s%s\n", r.command.c_str(), r.ok ? "ok" : "err ", r.error.c_str());
+        }
         // ...and the relearn's, once eyecam-rec has answered (or kEyecamReplySec has gone by)
         if (relearnControl.poll(nowSeconds()) && relearnRequest != 0) {
             const eyecam::Reply& r = relearnControl.reply();
@@ -5368,17 +5376,20 @@ int runOverlay(const Options& options) {
             fitRetryShown = retry;
             // With pupil_slip_correction on, a fit or re-center that wrote its centre has eyecam-rec take new glint
             // templates at the next still moment (the eyes are likely on the centre dot now); the slip it carries on
-            // from them (frameeyeosc's pupil_slip.rs). Skipped while another command waits for its reply
+            // from them (frameeyeosc's pupil_slip.rs). On a connection of its own, so its reply (an older eyecam-rec
+            // doesn't know the command) is only logged, never shown on the Eye cameras tab; skipped while the one
+            // before waits for its reply
             if (ended.phase == gaze_fit::Phase::Done && model.config.flag(key::kPupilSlipCorrection) &&
                 model.eyecam.visible) {
                 const std::string socket = model.eyecamDir + "/ctl.sock";
-                if (eyecamControl.busy()) {
-                    std::fprintf(stderr, "[eyecam] no new glint templates after the fit: another command is out\n");
+                if (glintControl.busy()) {
+                    std::fprintf(stderr, "[eyecam] no new glint templates after the fit: the last ask is still out\n");
                 } else {
                     std::fprintf(stderr, "[eyecam] sending \"glint template\" to %s (the fit wrote its centre)\n",
                                  socket.c_str());
-                    eyecamControl.send(socket, "glint template", nowSeconds());
-                    syncEyecamControl(model.eyecam, eyecamControl);
+                    if (!glintControl.send(socket, "glint template", nowSeconds()) && !glintControl.busy()) {
+                        std::fprintf(stderr, "[eyecam] glint template failed: %s\n", glintControl.reply().error.c_str());
+                    }
                 }
             }
         }

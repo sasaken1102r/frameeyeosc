@@ -855,6 +855,13 @@ fn ctl_reply(
         Ok(Command::SetWidenSensitivity(v)) => set_widen_sensitivity(v, status, file),
         Ok(Command::SetLidVeto(on)) => set_lid_veto(on, status, file),
         Ok(Command::Preview(on)) => set_preview(on, file),
+        // (counted: the live worker takes new templates when it sees the count change; the fake daemon says ok)
+        Ok(Command::GlintTemplate) => {
+            if let Some(l) = &file.live {
+                l.glint_template.fetch_add(1, Ordering::Relaxed);
+            }
+            "ok".into()
+        }
         Ok(Command::DriftLogOn(stem)) => set_driftlog(true, stem.as_deref(), file),
         Ok(Command::DriftLogOff) => set_driftlog(false, None, file),
         // (in every state, as the ones above; refused while a recording or a calibration runs)
@@ -1254,6 +1261,7 @@ fn idle(
                 Command::SetWidenSensitivity(_)
                 | Command::SetLidVeto(_)
                 | Command::Preview(_)
+                | Command::GlintTemplate
                 | Command::DriftLogOn(_)
                 | Command::DriftLogOff
                 | Command::Delete(_) => {

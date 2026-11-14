@@ -2,6 +2,7 @@
 //! per-eye engines, publishes the shared memory, collects calibration samples and fits/stores calibrations.
 
 use crate::driftlog;
+use crate::glint;
 use crate::live::{self, CalibFile, EyeEngine, Label, Params, Sample, UserParams};
 use crate::liveshm::{self, LiveWriter};
 use crate::preview::{self, Preview};
@@ -260,6 +261,8 @@ pub struct Shared {
     /// (both eyes) over the last second (f32 bits), vetoes fired, and the CNN's time per run (mean and max,
     /// microseconds), since the worker started.
     pub lid_veto: AtomicBool,
+    /// `glint template` asks so many times so far: each new one has the worker take new glint templates.
+    pub glint_template: AtomicU32,
     pub veto_runs_per_s: AtomicU32,
     pub veto_fired: AtomicU64,
     pub veto_us_mean: AtomicU32,
@@ -293,6 +296,7 @@ impl Default for Shared {
             preview_on: AtomicBool::new(false),
             driftlog: Mutex::new(driftlog::Control::default()),
             lid_veto: AtomicBool::new(false),
+            glint_template: AtomicU32::new(0),
             veto_runs_per_s: AtomicU32::new(0f32.to_bits()),
             veto_fired: AtomicU64::new(0),
             veto_us_mean: AtomicU32::new(0),
@@ -535,6 +539,15 @@ struct Worker {
     veto_fired: u64,
     veto_us: f64,
     veto_us_max: f64,
+    /// The glints near each eye's pupil and the headset's slip from them (glint.rs), the `glint template` requests
+    /// already taken, and the time spent on them since the last log line (us, frames, frames tracked).
+    glint_find: glint::FindGlints,
+    glint_track: [glint::Tracker; 2],
+    glints: Vec<glint::Glint>,
+    glint_asked: u32,
+    glint_us: u64,
+    glint_n: u64,
+    glint_tracked: [u64; 2],
 }
 
 impl Worker {
@@ -578,6 +591,13 @@ impl Worker {
             veto_fired: 0,
             veto_us: 0.0,
             veto_us_max: 0.0,
+            glint_find: glint::FindGlints::default(),
+            glint_track: [glint::Tracker::default(), glint::Tracker::default()],
+            glints: Vec::new(),
+            glint_asked: 0,
+            glint_us: 0,
+            glint_n: 0,
+            glint_tracked: [0; 2],
         }
     }
 
@@ -671,6 +691,10 @@ impl Worker {
     fn new_wear(&mut self) {
         for e in &mut self.engines {
             e.reset();
+        }
+        // (the headset sits differently now)
+        for t in &mut self.glint_track {
+            t.want_template();
         }
         for p in &mut self.params {
             p.wear = None;
@@ -821,6 +845,42 @@ impl Worker {
             self.offset_at = Instant::now();
         }
         let t_mono = (t_cam_ns as i64 + self.mono_minus_raw).max(0) as u64;
+        // The glints near the pupil and the headset's slip from them (only with a pupil: the opening is this frame's
+        // then); a `glint template` asked for meanwhile has both eyes take a new template
+        let asked = self.shared.glint_template.load(Ordering::Relaxed);
+        if asked != self.glint_asked {
+            self.glint_asked = asked;
+            eprintln!("live: new glint templates asked for");
+            for t in &mut self.glint_track {
+                t.want_template();
+            }
+        }
+        let started = Instant::now();
+        let pupil = (o.f.ok_pupil && o.f.pupil_cx.is_finite()).then_some([o.f.pupil_cx as f32, o.f.pupil_cy as f32]);
+        let img: &[u8] = if upside_down { &self.flipped } else { data };
+        match pupil {
+            Some(p) => {
+                let (open, open_x0) = self.engines[eye].opening();
+                self.glint_find.find(img, open, open_x0, W, H, p, o.f.iris_r as f32, &mut self.glints);
+            }
+            None => self.glints.clear(),
+        }
+        let before = self.glint_track[eye].template_id_now();
+        let slip = self.glint_track[eye].frame(t, pupil, &self.glints);
+        if slip.template_id != before {
+            eprintln!(
+                "live: {} eye glint template {} ({} places)",
+                ["left", "right"][eye],
+                slip.template_id,
+                self.glint_track[eye].template().len()
+            );
+        }
+        let glint_time = started.elapsed();
+        self.busy += glint_time;
+        self.glint_us += glint_time.as_micros() as u64;
+        self.glint_n += 1;
+        self.glint_tracked[eye] += slip.tracked as u64;
+        let template_mono = (slip.template_t * 1e9) as i64 + self.mono_minus_raw;
         let frames = self.frames[eye];
         let state = self.calib_state();
         let recalib = self.engines.iter().any(|e| e.recalib_suggested);
@@ -844,6 +904,16 @@ impl Worker {
             v.confidence = o.confidence as f32;
             v.skin_up = o.skin_up as f32;
             v.aperture = o.aperture as f32;
+            s.glint_version = liveshm::GLINT_VERSION;
+            let g = &mut s.glint[eye];
+            g.flags = pupil.is_some() as u32 | (slip.tracked as u32) << 1 | ((slip.template_id > 0) as u32) << 2;
+            g.template_id = slip.template_id;
+            g.template_mono_ns = if slip.template_id > 0 { template_mono.max(0) as u64 } else { 0 };
+            (g.pupil_x, g.pupil_y) = pupil.map_or((f32::NAN, f32::NAN), |p| (p[0], p[1]));
+            (g.slip_x, g.slip_y) = (slip.offset[0], slip.offset[1]);
+            g.matches = slip.matches;
+            g.since_good = slip.since_good;
+            g.glints = slip.glints;
         });
         self.shared.frames.fetch_add(1, Ordering::Relaxed);
         self.shared.calib_state.store(state, Ordering::Relaxed);
@@ -1112,6 +1182,17 @@ impl Worker {
                         self.veto_us_max / 1000.0,
                         self.veto_fired
                     );
+                    if self.glint_n > 0 {
+                        eprintln!(
+                            "live: glints {:.0} us a frame; slip tracked in {:.0}% / {:.0}% of the frames (left / right), \
+                             templates {} / {}",
+                            self.glint_us as f64 / self.glint_n as f64,
+                            self.glint_tracked[0] as f64 * 200.0 / self.glint_n as f64,
+                            self.glint_tracked[1] as f64 * 200.0 / self.glint_n as f64,
+                            self.glint_track[0].template_id_now(),
+                            self.glint_track[1].template_id_now()
+                        );
+                    }
                     if self.preview.is_on() {
                         eprintln!(
                             "live: preview on, {} pictures so far, {:.0} us each",
@@ -1122,6 +1203,9 @@ impl Worker {
                 }
                 self.log_n = 0;
                 self.log_us = 0;
+                self.glint_us = 0;
+                self.glint_n = 0;
+                self.glint_tracked = [0; 2];
                 self.log_since = Instant::now();
             }
             self.busy = Duration::ZERO;

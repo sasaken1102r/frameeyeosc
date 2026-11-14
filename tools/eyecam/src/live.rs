@@ -943,6 +943,10 @@ impl EyeEngine {
 
     /// The open-eye levels are known (warm-up over, or seeded by a calibration; also while a relearn's warm-up runs
     /// with the old ones in use).
+    pub fn opening(&self) -> (&[u8], usize) {
+        self.ex.opening()
+    }
+
     pub fn baseline_ready(&self) -> bool {
         self.base.ready
     }

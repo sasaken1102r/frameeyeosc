@@ -1,6 +1,8 @@
 //! The live output shared memory, `/run/user/1000/eyecam/live`: one fixed little-endian struct, written by
 //! eyecam-rec with a seqlock, read by frameeyeosc (same uid, O_RDONLY + mmap, never writes). The README's
-//! "live shared memory" section is the contract; bump VERSION on any change to the layout or meaning.
+//! "live shared memory" section is the contract; bump VERSION on any change to the layout or meaning of what is there.
+//! Additions go after it, found by `struct_size` (a reader of version 1 reads the first 200 bytes and checks only that
+//! struct_size is at least that): the glint part (`glint_version`, GLINT_VERSION) since 2026-11.
 
 use std::fs::{File, OpenOptions};
 use std::mem::{offset_of, size_of};
@@ -12,6 +14,8 @@ use std::sync::atomic::{AtomicU32, Ordering, fence};
 /// "EYCM" as little-endian bytes.
 pub const MAGIC: u32 = u32::from_le_bytes(*b"EYCM");
 pub const VERSION: u32 = 1;
+/// The glint part's version (`glint_version`; 0 = not written).
+pub const GLINT_VERSION: u32 = 1;
 /// The file is one page; struct_size says how much of it is the struct.
 const FILE_SIZE: usize = 4096;
 
@@ -46,6 +50,30 @@ pub struct LiveEye {
     pub _pad: u32,
 }
 
+/// Per eye, the glint part (index 0 = left, 1 = right): the same frame as the eye's values above (written with them).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LiveGlint {
+    /// Bit 0: a pupil in this frame (pupil_* are its centre); bit 1: the slip was worked out from this frame (else held);
+    /// bit 2: there is a template (slip_* mean something).
+    pub flags: u32,
+    /// The template in use: 0 before the first, counting up (each new one starts from slip 0).
+    pub template_id: u32,
+    /// When it was taken (CLOCK_MONOTONIC ns).
+    pub template_mono_ns: u64,
+    /// The pupil centre (px, the upright 400x400 picture: x right, y down; NaN without a pupil).
+    pub pupil_x: f32,
+    pub pupil_y: f32,
+    /// The glints' offset from the template (px, the same axes): the headset's slip since it was taken.
+    pub slip_x: f32,
+    pub slip_y: f32,
+    /// Glints matched to the template in this frame, frames since the slip was last worked out, glints found.
+    pub matches: u32,
+    pub since_good: u32,
+    pub glints: u32,
+    pub _pad: u32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LiveShm {
@@ -66,6 +94,10 @@ pub struct LiveShm {
     /// 1 while live processing is on (fds held, `live on`); 0 when off or eyecam-rec stopped.
     pub live: u32,
     pub eyes: [LiveEye; 2],
+    /// GLINT_VERSION once the glint part is written (eyecam-rec since 2026-11).
+    pub glint_version: u32,
+    pub _pad: u32,
+    pub glint: [LiveGlint; 2],
 }
 
 const _: () = {
@@ -81,7 +113,14 @@ const _: () = {
     assert!(offset_of!(LiveEye, valid) == 24);
     assert!(offset_of!(LiveEye, eye_lid) == 32);
     assert!(offset_of!(LiveEye, aperture) == 64);
-    assert!(size_of::<LiveShm>() == 200);
+    assert!(offset_of!(LiveShm, glint_version) == 200);
+    assert!(offset_of!(LiveShm, glint) == 208);
+    assert!(size_of::<LiveGlint>() == 48);
+    assert!(offset_of!(LiveGlint, template_mono_ns) == 8);
+    assert!(offset_of!(LiveGlint, pupil_x) == 16);
+    assert!(offset_of!(LiveGlint, slip_x) == 24);
+    assert!(offset_of!(LiveGlint, matches) == 32);
+    assert!(size_of::<LiveShm>() == 304);
 };
 
 pub struct LiveWriter {
@@ -132,6 +171,7 @@ impl LiveWriter {
             s.seq = seq;
             s.version = VERSION;
             s.struct_size = size_of::<LiveShm>() as u32;
+            s.glint_version = GLINT_VERSION;
             s.writer_pid = std::process::id();
             s.writer_start_ns = start;
             s.magic = MAGIC;
@@ -184,7 +224,8 @@ mod tests {
                 s.eyes[1].eye_wide = 0.5;
             });
             let r = w.read();
-            assert_eq!((r.magic, r.version, r.struct_size, r.live), (MAGIC, 1, 200, 1));
+            assert_eq!((r.magic, r.version, r.struct_size, r.live), (MAGIC, 1, 304, 1));
+            assert_eq!(r.glint_version, GLINT_VERSION);
             assert_eq!(r.seq % 2, 0);
             assert_eq!(r.eyes[1].eye_wide, 0.5);
         }
@@ -192,6 +233,10 @@ mod tests {
         assert_eq!(&bytes[0..4], b"EYCM");
         assert_eq!(u32::from_le_bytes(bytes[52..56].try_into().unwrap()), 0, "live cleared on drop");
         assert_eq!(f32::from_le_bytes(bytes[128 + 36..128 + 40].try_into().unwrap()), 0.5);
+        // The version 1 struct is unchanged in its 200 bytes; the glint part comes after it
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 304);
+        assert_eq!(u32::from_le_bytes(bytes[200..204].try_into().unwrap()), GLINT_VERSION);
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o644);
         std::fs::remove_file(&path).unwrap();

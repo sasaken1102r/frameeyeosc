@@ -5,6 +5,7 @@ pub mod cues;
 pub mod driftlog;
 pub mod dspsrc;
 pub mod feat;
+pub mod glint;
 pub mod json;
 pub mod live;
 pub mod liveshm;

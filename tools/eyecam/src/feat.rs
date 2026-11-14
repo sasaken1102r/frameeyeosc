@@ -628,6 +628,8 @@ pub struct Extractor {
     pub search: Search,
     /// First column of `opf` computed for the current frame (left of it: zeros, or an earlier frame's pixels).
     opf_x0: usize,
+    /// First column of `op` (the 9x9 opening) that is the full frame's opening for the current frame.
+    op_x0: usize,
     /// The iris radius the current frame's lids were searched with (`upper_high` uses the same).
     lid_r: f64,
     /// The grey steps' scale for this wear (live sets it from the column means; as built by default).
@@ -643,6 +645,7 @@ impl Default for Extractor {
             cands: Vec::new(),
             search: Search::LEGACY,
             opf_x0: OPF_X0,
+            op_x0: W,
             lid_r: f64::NAN,
             iris_first: false,
             levels: Levels::AS_BUILT,
@@ -662,6 +665,12 @@ impl Default for Extractor {
 }
 
 impl Extractor {
+    /// The last frame's 9x9 opening (bright details such as glints removed), and the first column from which it is the
+    /// whole frame's (left of it: an earlier frame's, or nothing).
+    pub fn opening(&self) -> (&[u8], usize) {
+        (&self.op, self.op_x0)
+    }
+
     /// feat2.extract. `img`: upright 400x400. `prev`: last pupil centre (search prior). `r_ref`: iris radius for the
     /// search windows (else this frame's own). `prev_p`: last good pupil, used to still measure lids and the box when
     /// no pupil is found (closed, or lashes over it). Returns the features and the pupil if found.
@@ -691,6 +700,7 @@ impl Extractor {
         // the other passes use come out the same).
         let dim_open_x0 = dim.map_or(open_x0, |d| open_x0.min((d.x0.max(0.0) as usize).saturating_sub(OPEN_BEFORE)));
         vision::open9_cols(img, W, H, dim_open_x0, W, &mut self.morph, &mut self.op);
+        self.op_x0 = (dim_open_x0 + 8).min(W);
         let gauss_x0 = opf_x0.min(dim_open_x0 + 8);
         vision::gauss_u8(&self.op, W, H, &self.k1, Rect { x0: gauss_x0, y0: 0, x1: W, y1: H }, &mut self.gauss, &mut self.opf);
         self.opf_x0 = first_opf_x0;

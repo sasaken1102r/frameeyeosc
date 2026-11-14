@@ -374,7 +374,8 @@ pub struct LiveOpts {
 }
 
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
-closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held,pupil_cx,pupil_cy,pupil_a,pupil_b,x_min,search_x_min,ext,veto_p,vetoed";
+closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held,pupil_cx,pupil_cy,pupil_a,pupil_b,x_min,search_x_min,ext,veto_p,vetoed,\
+glints,slip_x,slip_y,slip_tracked,slip_matches,slip_since,template_id";
 
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
 pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, String> {
@@ -438,6 +439,11 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
     let mut all: [Vec<Sample>; 2] = [Vec::new(), Vec::new()];
     let mut busy = std::time::Duration::ZERO;
     let mut processed = 0usize;
+    // The glints and the headset's slip, as the live worker works them out (livesvc.rs)
+    let mut glint_find = crate::glint::FindGlints::default();
+    let mut glint_track = [crate::glint::Tracker::default(), crate::glint::Tracker::default()];
+    let mut glints = Vec::new();
+    let mut glint_busy = std::time::Duration::ZERO;
     let mut last_t = [f64::NEG_INFINITY; 2];
     let f = |v: f64| if v.is_finite() { format!("{v:.4}") } else { String::new() };
     let mut preview = opts.preview.as_ref().map(|dir| crate::preview::Preview::new(dir.join(crate::preview::FILE_NAME)));
@@ -470,6 +476,17 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
             let t0 = std::time::Instant::now();
             let o = engines[e].process_open(&img, pitch, v_open, t, &params[e]);
             busy += t0.elapsed();
+            let t1 = std::time::Instant::now();
+            let pupil = (o.f.ok_pupil && o.f.pupil_cx.is_finite()).then_some([o.f.pupil_cx as f32, o.f.pupil_cy as f32]);
+            match pupil {
+                Some(p) => {
+                    let (open, open_x0) = engines[e].opening();
+                    glint_find.find(&img, open, open_x0, W, H, p, o.f.iris_r as f32, &mut glints);
+                }
+                None => glints.clear(),
+            }
+            let slip = glint_track[e].frame(t, pupil, &glints);
+            glint_busy += t1.elapsed();
             processed += 1;
             last_t[e] = t;
             if let Some(p) = preview.as_mut() {
@@ -543,6 +560,13 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 // The eyelid veto: the CNN's P(open) (empty when it did not run), and whether the frame was vetoed
                 f(o.veto.p_open),
                 (o.veto.on as u8).to_string(),
+                slip.glints.to_string(),
+                if slip.template_id > 0 { format!("{:.3}", slip.offset[0]) } else { String::new() },
+                if slip.template_id > 0 { format!("{:.3}", slip.offset[1]) } else { String::new() },
+                (slip.tracked as u8).to_string(),
+                slip.matches.to_string(),
+                slip.since_good.to_string(),
+                slip.template_id.to_string(),
             ];
             writeln!(w, "{}", row.join(",")).map_err(|e| e.to_string())?;
         }
@@ -606,6 +630,12 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
         fs::write(path, file.to_json()).map_err(|e| format!("{}: {e}", path.display()))?;
         eprintln!("user calibration written to {}", path.display());
     }
+    eprintln!(
+        "glints: {:.0} us a frame on top; templates {} / {} (left / right)",
+        glint_busy.as_secs_f64() * 1e6 / processed.max(1) as f64,
+        glint_track[0].template_id_now(),
+        glint_track[1].template_id_now()
+    );
     Ok(busy.as_secs_f64() * 1e3 / processed.max(1) as f64)
 }
 

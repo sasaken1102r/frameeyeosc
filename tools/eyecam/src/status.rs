@@ -483,6 +483,9 @@ pub enum Command {
     DriftLogOn(Option<String>),
     /// `driftlog off`: stop it (the same).
     DriftLogOff,
+    /// `glint template`: take new glint templates for the headset's slip (glint.rs) at the next still moment, answered
+    /// by the control thread itself in every state (the panel asks after an eye fit's centre or a re-center).
+    GlintTemplate,
     /// `relearn`: learn the relaxed eyes again (a new warm-up of the auto baseline; levels already known stay in use
     /// until it is over), keeping this wear's calibration. Only while idle with the eye video coming in.
     Relearn,
@@ -516,6 +519,7 @@ pub fn parse_command(line: &str) -> Result<Command, String> {
         (Some("stop"), None) => Command::Stop,
         (Some("status"), None) => Command::Status,
         (Some("relearn"), None) => Command::Relearn,
+        (Some("glint"), Some("template")) => Command::GlintTemplate,
         (Some("calib"), Some("wear")) => Command::Calib(CalibKind::Wear),
         (Some("calib"), Some("user")) => Command::Calib(CalibKind::User),
         (Some("live"), Some("on")) => Command::Live(true),
@@ -564,6 +568,8 @@ mod tests {
         assert_eq!(parse_command("calib wear"), Ok(Command::Calib(CalibKind::Wear)));
         assert_eq!(parse_command("calib user"), Ok(Command::Calib(CalibKind::User)));
         assert_eq!(parse_command("relearn\n"), Ok(Command::Relearn));
+        assert_eq!(parse_command("glint template\n"), Ok(Command::GlintTemplate));
+        assert!(parse_command("glint").is_err());
         assert!(parse_command("relearn now").is_err() && parse_command("relearn_").is_err());
         assert_eq!(parse_command("live off"), Ok(Command::Live(false)));
         assert!(parse_command("calib").is_err() && parse_command("live maybe").is_err());

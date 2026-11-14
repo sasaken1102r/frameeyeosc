@@ -420,6 +420,7 @@ Result score(const std::vector<Row>& rows) {
     result.valveSame = overallOf(result, &PositionScore::valveSame);
     result.pupil = overallOf(result, &PositionScore::pupil);
     result.guarded = overallOf(result, &PositionScore::guarded);
+    result.missing = missingOf(rows);
     return result;
 }
 
@@ -627,6 +628,8 @@ std::string recordJson(const View& view, const double* shownAt, double startedAt
     states.type = JsonValue::Type::Object;
     for (int s = 0; s < kStateCount; ++s) states.set(stateNames[s], JsonValue::makeNumber(result.states[s], true));
     root.set("pupil_states", states);
+    // Samples that came without their raw values or the gaze guard's (dropped on the way; null: none came at all)
+    root.set("missing_datagrams", missingJson(result.missing));
     root.set("note", JsonValue::makeString("Valve's self-calibration may use what is on screen; compare start_ms and "
                                            "end_ms with Valve's eye tracker log (logs.txt)"));
     return writeJson(root) + "\n";
@@ -667,6 +670,15 @@ std::string guardCells(const Sample& sample) {
                   sample.guard[0], sample.guard[1], sample.guardOffset[0], sample.guardOffset[1], sample.guardOffset[2],
                   sample.guardOffset[3]);
     return cells;
+}
+
+JsonValue missingJson(const Missing& missing) {
+    JsonValue v;
+    v.type = JsonValue::Type::Object;
+    const auto count = [](int n) { return n >= 0 ? JsonValue::makeNumber(n, true) : JsonValue::makeNull(); };
+    v.set("without_raw", count(missing.raw));
+    v.set("without_guard", count(missing.guard));
+    return v;
 }
 
 std::string shiftText(const UiText& t, double dx, double dy) {

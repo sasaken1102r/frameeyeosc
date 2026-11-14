@@ -17,6 +17,7 @@
 #pragma once
 
 #include "i18n.h"
+#include "json.h"
 
 #include <cmath>
 #include <cstddef>
@@ -265,6 +266,40 @@ void targetGaze(const Position& position, double out[2]);
  */
 double angleBetween(const double a[2], const double b[2]);
 
+/**
+ * How many samples came without the datagram that goes with them (FEOR's raw values, FEOG's guard values): dropped
+ * on the way, as the socket is never waited on. A kind is counted only when some sample of the run came with it (-1:
+ * none did: a frameeyeosc without it, or the guard off), so with the guard turned on or off during a run its count
+ * also has the samples from before or after. Only the samples kept (kMaxRows) are counted.
+ */
+struct Missing {
+    int raw = -1;
+    int guard = -1;
+};
+
+/**
+ * Count them.
+ * @param rows a record's rows (anything with a `sample`)
+ * @return the counts
+ */
+template <class RowT>
+Missing missingOf(const std::vector<RowT>& rows) {
+    Missing m;
+    int noRaw = 0;
+    int noGuard = 0;
+    bool anyRaw = false;
+    bool anyGuard = false;
+    for (const RowT& row : rows) {
+        anyRaw = anyRaw || row.sample.raw.has;
+        anyGuard = anyGuard || row.sample.guarded;
+        noRaw += row.sample.raw.has ? 0 : 1;
+        noGuard += row.sample.guarded ? 0 : 1;
+    }
+    if (anyRaw) m.raw = noRaw;
+    if (anyGuard) m.guard = noGuard;
+    return m;
+}
+
 /** A sample as received: when (the panel's clock), the place then shown (-1 in the countdown), whether it counts. */
 struct Row {
     double at = 0.0;
@@ -318,6 +353,7 @@ struct Result {
     Overall guarded;
     int window = 0;                   ///< samples in the windows
     int states[kStateCount] = {};
+    Missing missing;                  ///< samples without their FEOR / FEOG (measure.json "missing_datagrams")
 };
 
 /**
@@ -465,6 +501,14 @@ extern const char* const kGuardColumns;
  * @return the cells, without a line end
  */
 std::string guardCells(const Sample& sample);
+
+/**
+ * The counts as the records have them ("missing_datagrams"): {"without_raw": n, "without_guard": n}, null for a kind
+ * not counted.
+ * @param missing the counts
+ * @return the object
+ */
+JsonValue missingJson(const Missing& missing);
 
 /**
  * An offset in words: "左に 7.6°、上に 2.4°" / "7.6° left, 2.4° up" (a part under 0.05° left out).

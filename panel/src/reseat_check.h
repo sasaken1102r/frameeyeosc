@@ -162,6 +162,7 @@ struct Result {
     Overall pupil;
     bool guardSeen = false;      ///< samples came with the gaze guard's values (gaze_guard on)
     Overall guarded;
+    gaze_measure::Missing missing;  ///< samples without their FEOR / FEOG (summary "missing_datagrams")
 };
 
 /**

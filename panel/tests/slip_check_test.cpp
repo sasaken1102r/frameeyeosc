@@ -341,6 +341,9 @@ void testGuarded() {
     const JsonValue* summary = root.get("summary");
     CHECK(summary != nullptr && summary->get("guarded_mean_deg") != nullptr &&
           near(summary->get("guarded_directions")->number, kDirCount));
+    // Every sample came with the guard's values: none missing
+    const JsonValue* missing = summary != nullptr ? summary->get("missing_datagrams") : nullptr;
+    CHECK(missing != nullptr && missing->get("without_guard")->number == 0);
     const JsonValue* up = root.get("moves") != nullptr ? root.get("moves")->get("push_up") : nullptr;
     CHECK(up != nullptr && up->get("guarded") != nullptr && near(up->get("guarded")->get("dy_deg")->number, 0.3, 1e-3));
     CHECK(root.get("steps")->items[10].get("off_still")->get("guarded") != nullptr);

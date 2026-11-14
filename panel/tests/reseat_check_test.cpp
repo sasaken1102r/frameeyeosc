@@ -395,6 +395,11 @@ void testGuarded() {
                     root, error));
     CHECK(root.get("plan")->get("guarded") == nullptr && root.get("summary")->get("guarded") == nullptr);
     CHECK(root.get("rounds")->items[0].get("guarded") == nullptr);
+    // Every sample came with its raw values, none with the guard's: none missing, the guard's not counted
+    const JsonValue* missing = root.get("summary")->get("missing_datagrams");
+    CHECK(missing != nullptr && missing->get("without_raw")->number == 0 &&
+          missing->get("without_guard")->type == JsonValue::Type::Null);
+    CHECK(p.missing.raw == 0 && p.missing.guard == -1);
     CHECK(samplesCsv(plain.session.rows(), plain.session.shownAt()).find(",0,,,,,,,,1,") != std::string::npos);
 }
 

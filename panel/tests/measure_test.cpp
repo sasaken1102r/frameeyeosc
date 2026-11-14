@@ -691,6 +691,20 @@ void testGuard() {
     // (the guard's 0 and 7 empty cells, then the raw values' columns: none came here either)
     CHECK(samplesCsv(plain.session.rows()).find(",0,,,,,,,,0,") != std::string::npos);
     CHECK(briefText(en, p).find("guarded") == std::string::npos);
+    // Samples that came without their datagrams: counted for a kind only once one came with some sample
+    CHECK(r.missing.guard == 0 && p.missing.guard == -1);
+    CHECK(parseJson(recordJson(sim.session.view(), sim.session.shownAt(), sim.session.startedAt(), r), root, error));
+    const JsonValue* missing = root.get("missing_datagrams");
+    CHECK(missing != nullptr && missing->get("without_guard") != nullptr && missing->get("without_guard")->number == 0);
+    std::vector<Row> rows(4);
+    rows[0].sample.guarded = true;
+    rows[1].sample.guarded = true;
+    rows[2].sample.raw.has = true;
+    const Missing m = missingOf(rows);
+    CHECK(m.guard == 2 && m.raw == 3);
+    CHECK(missingOf(std::vector<Row>()).raw == -1);
+    const JsonValue counted = missingJson(m);
+    CHECK(counted.get("without_raw")->number == 3 && missingJson(Missing()).get("without_guard")->type == JsonValue::Type::Null);
 }
 
 }  // namespace

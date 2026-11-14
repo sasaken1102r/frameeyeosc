@@ -293,6 +293,7 @@ Result score(const std::vector<Row>& rows, const double* reseatSec, const double
     result.valve = overallOf(result, &RoundScore::valve);
     result.pupil = overallOf(result, &RoundScore::pupil);
     result.guarded = overallOf(result, &RoundScore::guarded);
+    result.missing = gaze_measure::missingOf(rows);
     return result;
 }
 
@@ -566,6 +567,8 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
     summary.set("valve", overallJson(result.valve));
     summary.set("pupil", overallJson(result.pupil));
     if (result.guardSeen) summary.set("guarded", overallJson(result.guarded));
+    // Samples that came without their raw values or the gaze guard's (dropped on the way; null: none came at all)
+    summary.set("missing_datagrams", gaze_measure::missingJson(result.missing));
     root.set("summary", summary);
     JsonValue video;
     video.type = JsonValue::Type::Object;

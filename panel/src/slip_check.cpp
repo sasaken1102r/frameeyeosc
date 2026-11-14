@@ -338,6 +338,7 @@ Result score(const std::vector<Row>& rows) {
     if (result.valveDirs > 0) result.valveMean = valveSum / result.valveDirs;
     if (result.pupilDirs > 0) result.pupilMean = pupilSum / result.pupilDirs;
     if (result.guardedDirs > 0) result.guardedMean = guardedSum / result.guardedDirs;
+    result.missing = gaze_measure::missingOf(rows);
     return result;
 }
 
@@ -563,6 +564,8 @@ std::string recordJson(const View& view, const std::vector<Row>& rows, const dou
         summary.set("guarded_mean_deg", number(result.guardedMean));
         summary.set("guarded_directions", JsonValue::makeNumber(result.guardedDirs, true));
     }
+    // Samples that came without their raw values or the gaze guard's (dropped on the way; null: none came at all)
+    summary.set("missing_datagrams", gaze_measure::missingJson(result.missing));
     root.set("summary", summary);
     JsonValue video;
     video.type = JsonValue::Type::Object;

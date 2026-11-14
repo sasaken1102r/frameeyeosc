@@ -162,6 +162,7 @@ struct Result {
     bool guardSeen = false;            ///< samples came with the gaze guard's values (gaze_guard on)
     double guardedMean = NAN;          ///< the guarded gaze's, as valveMean
     int guardedDirs = 0;
+    gaze_measure::Missing missing;     ///< samples without their FEOR / FEOG (summary "missing_datagrams")
 };
 
 /**

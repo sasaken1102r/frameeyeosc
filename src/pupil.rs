@@ -37,6 +37,15 @@ pub const DIFF_TAU_S: f64 = 1.0;
 pub const LOG_CHANGE_S: f64 = 5.0;
 /// ...and the shares of the time come once per this long (s).
 pub const LOG_SHARES_S: f64 = 60.0;
+/// The eyeball source: two eyes too far apart leave the hold for the eye server's gaze only once they have been apart
+/// for this many samples in a row (a one-sample blip of one eye stays in the hold).
+pub const APART_SAMPLES: u32 = 3;
+/// ...and its (eye server - gaze) difference is not learnt while an eye moves fast (a saccade: the eye server leads the
+/// eyeball gaze by a fraction of a second there, and learning that would pull the shifted eye server back towards
+/// where the eye was), nor while the two differ by more than this beyond the difference learnt (degrees), for up to
+/// VALVE_MINUS_FREEZE_S (s; longer, it is a real change of the eye server's and is learnt).
+pub const VALVE_MINUS_FREEZE_DEG: f32 = 3.0;
+pub const VALVE_MINUS_FREEZE_S: f64 = 0.5;
 
 /// One eye's map from its pupil pair to its direction (degrees), and its centre for this wear.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -214,6 +223,10 @@ pub struct PupilGaze {
     maps: Option<[EyeMap; 2]>,
     // Easing back to the eye server's gaze after the pupil source was left (fade).
     fading: bool,
+    // The eyeball source only: samples in a row with the two eyes too far apart, and since when the eye server's gaze has
+    // differed from the eyeball gaze by more than VALVE_MINUS_FREEZE_DEG beyond the difference learnt
+    apart_run: u32,
+    valve_doubt_since: Option<f64>,
 }
 
 impl PupilGaze {
@@ -257,7 +270,7 @@ impl PupilGaze {
             let pair = pairs[eye].filter(|_| open[eye])?;
             Some(maps[eye].apply(pair)).filter(|mapped| in_range(*mapped))
         });
-        self.combine(time, by, maps, eyes, valve, true)
+        self.combine(time, by, maps, eyes, valve, None)
     }
 
     /// The same for gaze_source "eyeball" (eyeball.rs): each eye's own direction from its filter (degrees, before its
@@ -265,8 +278,17 @@ impl PupilGaze {
     /// combined with the same fallbacks and easing, but for one: two eyes too far apart go to the eye server's gaze at
     /// once, not through the hold. Both filters are there then (they disagree; at a hop one may lag the other, at a
     /// corner one may be wrong), so the hold would only keep the gaze where it was before the hop: what was seen as the
-    /// eyeball gaze "catching up a beat late" (2026-11-15).
-    pub fn step_eyes(&mut self, time: f64, maps: &[EyeMap; 2], own: [Option<[f32; 2]>; 2], open: [bool; 2], valve: [f32; 2]) -> Step {
+    /// eyeball gaze "catching up a beat late" (2026-11-15); after APART_SAMPLES of them, so one eye's blip stays held.
+    /// `moving`: an eye moves fast (eyeball.rs saccade): the eye server's difference is not learnt then.
+    pub fn step_eyes(
+        &mut self,
+        time: f64,
+        maps: &[EyeMap; 2],
+        own: [Option<[f32; 2]>; 2],
+        open: [bool; 2],
+        valve: [f32; 2],
+        moving: bool,
+    ) -> Step {
         if self.fading || self.last_time.is_some_and(|last| time < last) {
             self.reset();
         }
@@ -277,12 +299,13 @@ impl PupilGaze {
             let own = own[eye].filter(|_| open[eye])?;
             Some(maps[eye].apply(own)).filter(|mapped| in_range(*mapped))
         });
-        self.combine(time, by, maps, eyes, valve, false)
+        self.combine(time, by, maps, eyes, valve, Some(moving))
     }
 
     /// Each eye's mapped direction (None: not used) to the combined gaze: their mean, one eye plus the last difference,
-    /// held, or the eye server's shifted, each change eased. hold_apart: two eyes too far apart are held like two
-    /// missing ones (the pupil source); else they go to the eye server's at once (the eyeball source).
+    /// held, or the eye server's shifted, each change eased. `eyeball`: None for the pupil source (two eyes too far apart
+    /// are held like two missing ones, the eye server's difference learnt whenever a pupil gives the gaze); Some(moving)
+    /// for the eyeball source (see step_eyes).
     fn combine(
         &mut self,
         time: f64,
@@ -290,7 +313,7 @@ impl PupilGaze {
         maps: &[EyeMap; 2],
         mut eyes: [Option<[f32; 2]>; 2],
         valve: [f32; 2],
-        hold_apart: bool,
+        eyeball: Option<bool>,
     ) -> Step {
         let mut apart_now = false;
         // Two eyes far apart: one of them is wrong (a pupil lost at the lens edge, the headset being put on), and which
@@ -302,6 +325,8 @@ impl PupilGaze {
                 apart_now = true;
             }
         }
+        self.apart_run = if apart_now { self.apart_run.saturating_add(1) } else { 0 };
+        let hold_apart = eyeball.is_none() || self.apart_run < APART_SAMPLES;
         let half_diff = scaled(self.diff.unwrap_or([0.0; 2]), 0.5);
         let (target, in_use) = match eyes {
             [Some(left), Some(right)] => {
@@ -317,7 +342,23 @@ impl PupilGaze {
         };
         if matches!(in_use, InUse::Pupil | InUse::Left | InUse::Right) {
             self.last_good = Some((time, target));
-            ease(&mut self.valve_minus, sub(valve, target), by);
+            // (the eyeball source: not while an eye moves fast, nor for a while when the two differ much)
+            let learn = match (eyeball, self.valve_minus) {
+                (Some(moving), Some(learnt)) => {
+                    let off = sub(sub(valve, target), learnt);
+                    if (off[0] * off[0] + off[1] * off[1]).sqrt() > VALVE_MINUS_FREEZE_DEG {
+                        let since = *self.valve_doubt_since.get_or_insert(time);
+                        !moving && time - since > VALVE_MINUS_FREEZE_S
+                    } else {
+                        self.valve_doubt_since = None;
+                        !moving
+                    }
+                }
+                _ => true,
+            };
+            if learn {
+                ease(&mut self.valve_minus, sub(valve, target), by);
+            }
         }
         // A change of source eases from the gaze as it was; the first sample (gaze_source just set to "pupil", or after
         // a gap) from the eye server's gaze, which went out until now
@@ -779,7 +820,7 @@ mod tests {
         for i in 0..400 {
             let left = (!(200..300).contains(&i)).then_some([5.0, 1.0]);
             let right = (!(100..300).contains(&i)).then_some([1.0, 1.0]);
-            steps.push(gaze.step_eyes(i as f64 * DT, &maps, [left, right], [true; 2], [-6.0, 0.0]));
+            steps.push(gaze.step_eyes(i as f64 * DT, &maps, [left, right], [true; 2], [-6.0, 0.0], false));
         }
         let names: Vec<InUse> = steps.iter().map(|s| s.in_use).collect();
         assert!(names[..100].iter().all(|n| *n == InUse::Pupil));
@@ -792,19 +833,30 @@ mod tests {
         assert!((steps[299].gaze[0] - 4.0).abs() < 0.05, "{:?}", steps[299]);
         assert!(names[300..].iter().all(|n| *n == InUse::Pupil));
         assert!(largest_step(&steps[50..]) < 0.05, "{}", largest_step(&steps[50..]));
-        // Two eyes too far apart go to the eye server's gaze at once (no hold at where the gaze was before), while two
-        // missing ones are still held; the pupil source holds both
+        // Two eyes too far apart go to the eye server's gaze once they have been for APART_SAMPLES (no hold at where the
+        // gaze was before; a one-sample blip of one eye stays held), while two missing ones are still held; the pupil
+        // source holds both
         let mut gaze = PupilGaze::default();
         for i in 0..50 {
-            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0]);
+            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0], false);
         }
-        let apart = gaze.step_eyes(50.0 * DT, &maps, [Some([25.0, 1.0]), Some([-5.0, 1.0])], [true; 2], [-6.0, 0.0]);
-        assert_eq!(apart.in_use, InUse::Valve);
+        let apart: Vec<InUse> = (0..4)
+            .map(|k| {
+                let time = (50 + k) as f64 * DT;
+                gaze.step_eyes(time, &maps, [Some([25.0, 1.0]), Some([-5.0, 1.0])], [true; 2], [-6.0, 0.0], false).in_use
+            })
+            .collect();
+        assert_eq!(apart, [InUse::Hold, InUse::Hold, InUse::Valve, InUse::Valve]);
+        // ...and one sample apart, then together again: held, then both, the eye server's never used
+        let blip = gaze.step_eyes(54.0 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0], false);
+        assert_eq!(blip.in_use, InUse::Pupil);
+        let held = gaze.step_eyes(55.0 * DT, &maps, [Some([25.0, 1.0]), Some([-5.0, 1.0])], [true; 2], [-6.0, 0.0], false);
+        assert_eq!(held.in_use, InUse::Hold);
         let mut gaze = PupilGaze::default();
         for i in 0..50 {
-            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0]);
+            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0], false);
         }
-        assert_eq!(gaze.step_eyes(50.0 * DT, &maps, [None, None], [true; 2], [-6.0, 0.0]).in_use, InUse::Hold);
+        assert_eq!(gaze.step_eyes(50.0 * DT, &maps, [None, None], [true; 2], [-6.0, 0.0], false).in_use, InUse::Hold);
         let mut pupils = PupilGaze::default();
         let pmaps = [map(), map()];
         for i in 0..50 {
@@ -813,12 +865,51 @@ mod tests {
         }
         let (a, b) = (pair(-EYES_APART_DEG / 2.0 - 0.5, 0.0), pair(EYES_APART_DEG / 2.0 + 0.5, 0.0));
         assert_eq!(pupils.step(50.0 * DT, &pmaps, &extra(a, b), [true; 2], [0.0; 2]).in_use, InUse::Hold);
-        // A shut eye, or one outside the fit's range, is not used
+        // The eye server's difference is not learnt while an eye moves fast, nor for VALVE_MINUS_FREEZE_S while it
+        // differs by more than VALVE_MINUS_FREEZE_DEG from the one learnt (the eye server leading a hop); after that it is
         let mut gaze = PupilGaze::default();
-        assert_eq!(gaze.step_eyes(0.0, &maps, [Some([1.0, 0.0]), Some([2.0, 0.0])], [false, true], [0.0; 2]).in_use, InUse::Right);
+        let shifted = |gaze: &mut PupilGaze, time: f64, valve: [f32; 2]| {
+            let mut out = InUse::Pupil;
+            let mut last = [0.0; 2];
+            // (through the easing: APART_SAMPLES, then BLEND_S)
+            for k in 0..30 {
+                let s = gaze.step_eyes(time + k as f64 * DT, &maps, [Some([25.0, 1.0]), Some([-5.0, 1.0])], [true; 2], valve, false);
+                (out, last) = (s.in_use, s.gaze);
+            }
+            assert_eq!(out, InUse::Valve);
+            last
+        };
+        for i in 0..100 {
+            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0], false);
+        }
+        // The eye server jumps 10 degrees ahead of the eyes for 0.3 s while they move fast: nothing learnt
+        for i in 100..127 {
+            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [4.0, 0.0], true);
+        }
+        let mut probe = gaze.clone();
+        let out = shifted(&mut probe, 127.0 * DT, [4.0, 0.0]);
+        assert!((out[0] - 14.0).abs() < 1e-3, "{out:?}");
+        // The same without the saccade: not learnt for the first VALVE_MINUS_FREEZE_S either...
+        let mut quiet = PupilGaze::default();
+        for i in 0..100 {
+            quiet.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0], false);
+        }
+        for i in 100..127 {
+            quiet.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [4.0, 0.0], false);
+        }
+        let out = shifted(&mut quiet.clone(), 127.0 * DT, [4.0, 0.0]);
+        assert!((out[0] - 14.0).abs() < 1e-3, "{out:?}");
+        // ...then learnt (a lasting change of the eye server's): the shifted eye server moves back toward the eyes
+        for i in 127..400 {
+            quiet.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [4.0, 0.0], false);
+        }
+        let out = shifted(&mut quiet, 400.0 * DT, [4.0, 0.0]);
+        assert!(out[0] < 8.0, "{out:?}");        // A shut eye, or one outside the fit's range, is not used
+        let mut gaze = PupilGaze::default();
+        assert_eq!(gaze.step_eyes(0.0, &maps, [Some([1.0, 0.0]), Some([2.0, 0.0])], [false, true], [0.0; 2], false).in_use, InUse::Right);
         let mut gaze = PupilGaze::default();
         let far = [FIT_YAW_DEG + RANGE_MARGIN_DEG + 1.0, 0.0];
-        assert_eq!(gaze.step_eyes(0.0, &maps, [Some(far), Some([2.0, 0.0])], [true; 2], [0.0; 2]).in_use, InUse::Right);
+        assert_eq!(gaze.step_eyes(0.0, &maps, [Some(far), Some([2.0, 0.0])], [true; 2], [0.0; 2], false).in_use, InUse::Right);
     }
 
     #[test]

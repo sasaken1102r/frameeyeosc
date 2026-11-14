@@ -41,14 +41,18 @@ const SIG_POS: f64 = 0.006;
 const SIG_ELL: f64 = 0.05;
 /// The angles' acceleration noise (rad^2/s^3).
 const Q_ACC: f64 = 1.0;
-/// A frame whose pupil centre moved more than this since the last frame with a pupil (normalised units, about 5 px or a
-/// degree of turn) is a saccade: its acceleration noise is SACCADE_GAIN times Q_ACC, so the filter follows the jump
-/// instead of easing into it. Chosen on the replays for the hop latency (the eyeball's lag behind the raw pupil to 90%
+/// A frame whose pupil centre moved faster than this since the last frame with a pupil (normalised units a second: at 90
+/// frames a second 0.02 a frame, about 5 px or a degree of turn; a speed, so slower cameras, as low as 15 frames a
+/// second, need the same speed and not the same step) is a saccade: its acceleration noise is SACCADE_GAIN times Q_ACC,
+/// so the filter follows the jump instead of easing into it. Chosen on the replays for the hop latency (the eyeball's lag behind the raw pupil to 90%
 /// of a hop: a median 0.16 s without it, 0.07 s with it; p90 0.32 / 0.26 s), with the error kept: the slip tests' medians
 /// within 0.1 degree, the re-seat tests' better (2026-11-15; a higher gain or a lower step is faster still but jumps more).
 /// The ellipse's own gate sees the larger uncertainty too, so a turn's new ellipse is taken at once.
-pub const SACCADE_STEP: f64 = 0.02;
+pub const SACCADE_SPEED: f64 = 1.8;
 pub const SACCADE_GAIN: f64 = 100.0;
+/// After a saccade frame, the eye counts as moving fast this long (s; pupil.rs leaves the eye server's difference alone
+/// meanwhile).
+pub const SACCADE_HOLD_S: f64 = 0.2;
 /// The centre's random walk across the camera's axis and along it (m/sqrt(s)): the headset slipping.
 const SIG_C: f64 = 0.0015;
 const SIG_CZ: f64 = 0.0003;
@@ -532,7 +536,9 @@ pub struct EyeFilter {
     /// Updates with the ellipse since the start or the last re-take.
     ellipse_frames: u32,
     // The pupil centre of the last frame that had one (normalised), for the saccade boost
-    last_pos: Option<[f64; 2]>,
+    last_pos: Option<([f64; 2], f64)>,
+    /// The last frame taken was a saccade (its acceleration noise raised).
+    pub saccade: bool,
 }
 
 /// The centre's uncertainty while the ellipse is not used: no standard deviation above the larger of CENTRE_SD_CAP and
@@ -662,11 +668,17 @@ impl EyeFilter {
         let limit = ANG_MAX_DEG.to_radians();
         xp[0] = xp[0].clamp(-limit, limit);
         xp[1] = xp[1].clamp(-limit, limit);
-        // A frame whose pupil moved more than SACCADE_STEP since the last one with a pupil is a saccade: the angles'
+        // A frame whose pupil moved faster than SACCADE_SPEED since the last one with a pupil is a saccade: the angles'
         // acceleration noise is SACCADE_GAIN times higher for it, so the filter follows the jump instead of easing in
-        let saccade = o.pos.zip(self.last_pos).is_some_and(|(p, q)| (p[0] - q[0]).hypot(p[1] - q[1]) > SACCADE_STEP);
-        if o.pos.is_some() {
-            self.last_pos = o.pos;
+        // (confirming it with the next frame cut the jumps by a third but lost half the latency gain: not done)
+        let fast = o.pos.zip(self.last_pos).is_some_and(|(p, (q, at))| {
+            let interval = (o.time - at).clamp(1.0 / 120.0, DT_MAX);
+            (p[0] - q[0]).hypot(p[1] - q[1]) > SACCADE_SPEED * interval
+        });
+        let saccade = fast;
+        self.saccade = saccade;
+        if let Some(p) = o.pos {
+            self.last_pos = Some((p, o.time));
         }
         let q_acc = if saccade { Q_ACC * SACCADE_GAIN } else { Q_ACC };
         let mut q = [[0.0; N]; N];
@@ -833,6 +845,8 @@ pub struct EyeballGaze {
     // server's time)
     frame_ns: [Option<u64>; 2],
     fresh: [Freshness; 2],
+    // When an eye's frame was last a saccade (the eye server's time)
+    saccade_at: Option<f64>,
     last_time: Option<f64>,
     used: bool,
     /// Frames taken per eye, how they went (Update order), and the time they took (ns), for the journal.
@@ -859,6 +873,7 @@ impl EyeballGaze {
         }
         self.frame_ns = [None; 2];
         self.fresh = [Freshness::default(); 2];
+        self.saccade_at = None;
         self.last_time = None;
         self.used = false;
     }
@@ -901,6 +916,9 @@ impl EyeballGaze {
                     self.updates[eye][estimate.update as usize] += 1;
                 }
                 self.fresh[eye].note(time, &o, estimate.as_ref());
+                if self.filters[eye].saccade {
+                    self.saccade_at = Some(time);
+                }
             }
             if self.fresh[eye].fresh(time) && let Some(x) = self.filters[eye].x {
                 out[eye] = Some([x[0].to_degrees() as f32, x[1].to_degrees() as f32]);
@@ -910,12 +928,18 @@ impl EyeballGaze {
         out
     }
 
+    /// Whether an eye moved fast (a saccade, EyeFilter::saccade) within SACCADE_HOLD_S of `time` (the eye server's):
+    /// the eye server's difference is not learnt then (pupil.rs step_eyes).
+    pub fn moving(&self, time: f64) -> bool {
+        self.saccade_at.is_some_and(|at| time - at <= SACCADE_HOLD_S)
+    }
+
     /// Each filter's re-takes (for the journal).
     pub fn retakes(&self) -> [u32; 2] {
         self.filters.each_ref().map(|filter| filter.retakes)
     }
 
-    /// The directions step gave, kept only for eyes whose filter has settled (EyeFilter::settled): what the eye
+    /// The directions `step` gave, kept only for eyes whose filter has settled (EyeFilter::settled): what the eye
     /// fit's captures may count.
     pub fn settled_only(&self, eyes: [Option<[f32; 2]>; 2]) -> [Option<[f32; 2]>; 2] {
         [0, 1].map(|eye| eyes[eye].filter(|_| self.filters[eye].settled()))
@@ -1431,6 +1455,32 @@ pub mod tests {
             }
             eprintln!("saccade to ({yaw}, {pitch}): within 2 deg after {within:?} frames");
             assert!(within.is_some_and(|k| k <= 8), "({yaw}, {pitch}): {within:?}");
+        }
+    }
+
+    #[test]
+    fn a_saccade_goes_by_the_pupils_speed_whatever_the_cameras_frame_rate() {
+        let c = camera();
+        // A smooth pursuit at 30 degrees a second: no saccade at 90 frames a second, nor at 15 (where it moves 2 degrees
+        // a frame, more than a 90-frame step); a 300 degree a second jump is one at either rate
+        for fps in [90.0, 15.0] {
+            for (speed, saccade) in [(30.0, false), (300.0, true)] {
+                let mut filter = EyeFilter::default();
+                let mut t = 0.0;
+                learn_from(&mut filter, &c, seen, t);
+                t += 30.0;
+                let mut seen_saccade = false;
+                for k in 0..((0.1 * fps) as usize).max(2) {
+                    let yaw = -10.0 + speed * k as f64 / fps;
+                    filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), yaw.min(20.0), 0.0, t)));
+                    // (the first frame after learning comes from where the learning ended)
+                    if k > 0 {
+                        seen_saccade |= filter.saccade;
+                    }
+                    t += 1.0 / fps;
+                }
+                assert_eq!(seen_saccade, saccade, "{fps} fps, {speed} deg/s");
+            }
         }
     }
 

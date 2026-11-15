@@ -87,6 +87,18 @@ const UPPER_WHOLE_VIS: f64 = 0.75;
 /// floor the corners came within a few degrees (0.2 and 0.5 flickered more from frame to frame). The pupil itself (its
 /// size, centre and the lids found from it) keeps the plain fit.
 const OUTLINE_FLOOR: f64 = 0.3;
+/// An outline point is also taken past such a plateau when the ray's own level finds it first: the crossing after the
+/// ray's last dip back below its level within its reach (the pupil's own 1.9 r0, or the floor's end of the ray), if
+/// all the ray had above that level before the dip stayed below OUTLINE_DIP_TOP of the step from the pupil to the rays'
+/// usual level (lighter than the pupil, darker than the iris: not past the iris to a lid's or the lashes' shadow). The
+/// blob the rays start from leaves the plateau out, so it is small and off to the other side, its rays' outer band then
+/// straddles the rim on the plateau's side and the level found there is low enough for the plateau to pass it. On the
+/// re-seat recordings the right eye's outline at the lower left flipped from frame to frame between the round pupil
+/// (1-b/a 0.02-0.06) and the part left of two glints (0.31-0.36, the centre 4-5 px off), 22% of its frames there, and
+/// turned the eyeball filter the mirror way; after this 1.2% (2026-11-16). Without the iris check (0.5: 9%) the
+/// re-seat runs came out worse (2.81 against 2.64 degrees). A ray whose point would then be past its reach keeps the
+/// first one (without that, whole rims there read as cut: rim 0.98 or more in 16% of those frames, against 34%).
+const OUTLINE_DIP_TOP: f64 = 0.75;
 /// The outline's share (its `vis`) counts the rays that found the edge as the pupil's does, but a ray measured
 /// against the floor only where its point lies on the fitted outline: within OUTLINE_ON_RIM_SD robust standard
 /// deviations of the points' radial distances from it, and at least OUTLINE_ON_RIM_PX px. A floor point the robust fit
@@ -1053,6 +1065,29 @@ impl Extractor {
             let ang = k as f64 * (std::f64::consts::TAU / NRAY as f64);
             Some((cx + ang.cos() * r, cy + ang.sin() * r))
         };
+        // The crossing on ray k past its last dip back below the middle level to `outer` within `r_max` (OUTLINE_FLOOR)
+        let past_dip = |k: usize, outer: f64, r_max: f64| -> Option<(f64, f64)> {
+            let first = crossing(k, outer, r_max)?;
+            let row = &prof[k * nr..(k + 1) * nr];
+            let th = inner + 0.5 * (outer - inner);
+            let reach = rs.iter().position(|&r| r > r_max).unwrap_or(nr);
+            let Some(dip) = (0..reach).rev().find(|&j| row[j] as f64 <= th) else { return Some(first) };
+            // (only past a patch lighter than the pupil but darker than the iris: not past the iris to a shadow)
+            let top = inner + OUTLINE_DIP_TOP * (usual - inner);
+            let start = row.iter().position(|&v| v as f64 > th)?;
+            if dip < start || row[start..dip].iter().any(|&v| v as f64 >= top) {
+                return Some(first);
+            }
+            let j = (dip + 1..nr).find(|&j| row[j] as f64 > th)?;
+            let (p0, p1) = (row[j - 1] as f64, row[j] as f64);
+            let fr = (th - p0) / (p1 - p0).max(1e-3);
+            let r = rs[j - 1] + fr * (rs[j] - rs[j - 1]);
+            if r < 0.5 * r0 || r > r_max {
+                return None;
+            }
+            let ang = k as f64 * (std::f64::consts::TAU / NRAY as f64);
+            Some((cx + ang.cos() * r, cy + ang.sin() * r))
+        };
         let mut pts: Vec<(f64, f64)> = Vec::with_capacity(NRAY);
         let mut outline_pts: Vec<(f64, f64)> = Vec::with_capacity(NRAY);
         let mut floor_pts: Vec<(f64, f64)> = Vec::new();
@@ -1072,7 +1107,7 @@ impl Extractor {
             // (only a ray that found an edge against its own band: one whose band is as dark as the pupil, lashes or
             // a lid over the rim, has no rim to find further out)
             let low = point.is_some() && floor.is_finite() && outers[k] < floor;
-            let outline_point = if low { crossing(k, floor, stop) } else { point };
+            let outline_point = if low { past_dip(k, floor, stop) } else { point.and_then(|p| past_dip(k, outers[k], 1.9 * r0).or(Some(p))) };
             raised |= outline_point != point;
             if let Some(p) = outline_point {
                 outline_pts.push(p);
@@ -1090,7 +1125,7 @@ impl Extractor {
         if !(5.0 < b && a < 60.0 && b / a > 0.35) {
             return None;
         }
-        // (with no ray changed by the floor the outline is the pupil's own fit)
+        // (with no ray changed by the floor or a dip the outline is the pupil's own fit)
         let outline = if !raised {
             Some((e, vis))
         } else if outline_pts.len() < 10 {
@@ -1865,6 +1900,30 @@ mod tests {
         assert!(p.vis < 0.9, "{}", p.vis);
         assert_eq!((o.cx, o.cy, o.a, o.b), (p.ell.cx, p.ell.cy, p.ell.a, p.ell.b));
         assert!(share < 0.9 && share <= p.vis, "{share} {}", p.vis);
+    }
+
+    #[test]
+    fn a_lighter_patch_inside_the_pupil_is_passed_over_by_its_outline() {
+        // The pupil a disc of radius 20 at (206, 200) (12), the iris 100; inside it near the right rim a lighter patch
+        // (55, where the 9x9 opening leaves two glints), dark pupil again between it and the rim. The blob left the
+        // patch out: the rays start from (202, 200) with r0 15, so the outer bands on the right straddle the rim and
+        // their level (and the floor's) is low enough for the patch to pass it. The outline goes past the patch to the
+        // rim.
+        let mut ex = Extractor { opf: vec![100; W * H], ..Extractor::default() };
+        for y in 0..H {
+            for x in 0..W {
+                let (fx, fy) = (x as f64 - 206.0, y as f64 - 200.0);
+                if fx.hypot(fy) < 20.0 {
+                    ex.opf[y * W + x] = if (5.0..14.0).contains(&fx) && fy.abs() < 14.0 { 55 } else { 12 };
+                }
+            }
+        }
+        let (p, _) = ex.refine_pupil((202.0, 200.0), 15.0, 347.0).expect("pupil");
+        let (o, _) = p.outline.expect("outline");
+        let (oa, ob) = (o.a.max(o.b) / 2.0, o.a.min(o.b) / 2.0);
+        assert!(p.cx < 204.5 && p.a - p.b > 1.5, "the plain fit is cut on the right: {p:?}");
+        assert!((o.cx - 206.0).abs() < 1.0 && (o.cy - 200.0).abs() < 1.0, "{o:?}");
+        assert!((oa - 20.0).abs() < 1.5 && ob / oa > 0.93, "{o:?}");
     }
 
     #[test]

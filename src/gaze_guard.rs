@@ -494,7 +494,7 @@ mod tests {
 
     fn fit(center: f32) -> Fit {
         Fit {
-            maps: [EyeMap { yaw: [0.0, 100.0, 0.0], pitch: [0.0, 0.0, 100.0], center: [center, 0.0] }; 2],
+            maps: [EyeMap { yaw: [0.0, 100.0, 0.0], pitch: [0.0, 0.0, 100.0], center: [center, 0.0], quad: [[0.0; 3]; 2] }; 2],
             valve: [Some(0.0); 10],
         }
     }

@@ -84,7 +84,8 @@ const DT_MAX: f64 = 0.1;
 /// The ellipse is used only with the lids at least this far apart at the pupil (eyecam-rec's aperture, iris radii: a
 /// lid near the pupil cuts its outline) and with at least PARTIAL_VIS_MIN of its rim seen. Below VIS_MIN its rim is
 /// partly hidden (lashes, the eye's corner, at the far corners of the view): such an ellipse updates the state like any
-/// other but never makes the filter take its angles from it (the re-takes), as a cut one can point the wrong way. Up to
+/// other but never makes the filter take its angles from it (the re-takes), nor counts towards one (a run of them
+/// must not let the next whole rim re-take at once), as a cut one can point the wrong way. Up to
 /// 2026-11-15 the ellipse needed VIS_MIN: at the corners one eye then went by the pupil only for whole dots and stayed
 /// near where it was (the re-seat replays: the left eye 17-21 degrees off at (-20, +15), on the headset the eyes then
 /// "apart" and the eye server's gaze for the whole dot). With 0.88 (0.85-0.9 tried) both re-seat runs' corners improved.
@@ -745,6 +746,14 @@ impl EyeFilter {
         Some(Estimate { yaw: x[0], pitch: x[1], centre: [x[4], x[5], x[6]], update })
     }
 
+    /// A frame refused: counted towards REACQUIRE only with a whole rim (or no rim share known), so a run of partly
+    /// hidden ones cannot make the first whole-rim frame re-take at once.
+    fn miss(&mut self, partial: bool) {
+        if !partial {
+            self.misses += 1;
+        }
+    }
+
     /// The filter's own step: one frame; its state after it (None until a frame with a pupil and its ellipse starts it).
     fn filter(&mut self, camera: &Camera, o: &Obs) -> Option<Estimate> {
         let deg = |d: f64| d.to_radians();
@@ -849,15 +858,20 @@ impl EyeFilter {
         let (mut zp, mut j, _) = jacobian(&xp, camera, with_ell);
         if let Some(ell) = o.ell {
             // The ellipse on its own against what is expected: left out when it disagrees, believed after it has
-            // disagreed for ELL_REACQ frames (ELL_REACQ_MOVING just after a saccade; never a partly hidden one; the
-            // angles from its normal nearer straight ahead, the pupil kept on its seen ray at the distance it was)
+            // disagreed for ELL_REACQ whole-rim frames (ELL_REACQ_MOVING just after a saccade; a partly hidden one never
+            // counts; the angles from its normal nearer straight ahead, the pupil kept on its seen ray at the distance
+            // it was)
             let se = innovation(&j, 2..4, &pp, &noise);
             let ye = [ell[0] - zp[2], ell[1] - zp[3], 0.0, 0.0];
             let far = inverse(&se, 2).is_none_or(|inv| distance(&ye, &inv, 2) > ELL_GATE);
             if far {
-                self.ell_off += 1;
                 let moving = self.saccade_at.is_some_and(|at| o.time - at <= SACCADE_REACQ_S);
-                if self.ell_off >= if moving { ELL_REACQ_MOVING } else { ELL_REACQ } && !o.partial {
+                let need = if moving { ELL_REACQ_MOVING } else { ELL_REACQ };
+                // (only whole rims count towards believing it: a partly hidden one neither adds nor clears)
+                if !o.partial {
+                    self.ell_off += 1;
+                }
+                if self.ell_off >= need {
                     let g_old = camera.to_camera(gaze_head(xp[0], xp[1]));
                     let pupil_old = add([xp[4], xp[5], xp[6]], scale(g_old, R_PUPIL));
                     let g = normal_ahead(pos, ell, camera);
@@ -890,14 +904,14 @@ impl EyeFilter {
         let Some(s_inv) = inverse(&s, n) else {
             self.x = Some(xp);
             self.p = pp;
-            self.misses += 1;
+            self.miss(o.partial);
             cap_centre(&mut self.p, before);
             return self.estimate(Update::Rejected);
         };
         if distance(&y, &s_inv, n) > REJECT {
             self.x = Some(xp);
             self.p = pp;
-            self.misses += 1;
+            self.miss(o.partial);
             cap_centre(&mut self.p, before);
             return self.estimate(Update::Rejected);
         }
@@ -924,7 +938,7 @@ impl EyeFilter {
         if !plausible(&xn, camera) {
             self.x = Some(xp);
             self.p = pp;
-            self.misses += 1;
+            self.miss(o.partial);
             cap_centre(&mut self.p, before);
             return self.estimate(Update::Implausible);
         }
@@ -2050,10 +2064,8 @@ pub mod tests {
         assert_eq!(filter.retakes, retakes);
         let (yaw, pitch) = own(&filter);
         assert!((yaw - 8.0).abs() < 2.0 && (pitch - 4.0).abs() < 2.0, "{yaw} {pitch}");
-        // ...while a whole rim that disagrees is believed after ELL_REACQ frames (counted afresh after the ellipse
-        // agreed again)
-        run(&mut filter, &c, seen, t, 0.2, |_| (eye_at(&c), 8.0, 4.0));
-        t += 0.2;
+        // ...nor counts towards it: right after them a whole rim that disagrees is believed only after ELL_REACQ frames
+        // of its own (not at once)
         for k in 0..ELL_REACQ {
             filter.step(&c, &observe(&c, &cut(&c, 8.0, 4.0, t, 1.0)));
             t += 1.0 / 90.0;

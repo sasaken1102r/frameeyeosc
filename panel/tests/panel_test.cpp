@@ -4731,7 +4731,9 @@ void testGazeSourceRow(const FontSet& fonts) {
         const double folded = rowY(panel);
         order(panel, true);
         png(panel, "folded_valve");
-        // "pupil" written (with or without a pupil map): the same row, its gaze page grey as with "eyeball"
+        // "pupil" written (with or without a pupil map): the same row (frameeyeosc runs it as "eyeball" and says the
+        // eyeball is in use)
+        m.status.eyeball = "in_use";
         m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
         for (const auto& eye : kPupilMapKeys) {
             for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
@@ -4739,12 +4741,30 @@ void testGazeSourceRow(const FontSet& fonts) {
         panel.render(m);
         CHECK(rowY(panel) == folded);
         CHECK(m.config.text(key::kGazeSource) == kGazeSources[1]);
-        // "eyeball" chosen
+        // "eyeball" chosen and in use
         m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[2]));
         panel.render(m);
         CHECK(rowY(panel) == folded);
         order(panel, true);
         png(panel, "folded_eyeball");
+        // ...waiting (no eyeball map until the next whole fit, or no eye cameras): its one line under the row, which
+        // pushes the rest down; everything still inside the card, the help button and the "Why fit?" box there
+        const double belowInUse = hits(panel, PanelAction::FitDetails)[0].y;
+        for (const char* waiting : {"no_map", "no_camera", "no_calibration"}) {
+            m.status.eyeball = waiting;
+            panel.render(m);
+            CHECK(rowY(panel) == folded);
+            const std::vector<EyePanel::HitArea> details = hits(panel, PanelAction::FitDetails);
+            CHECK(details.size() == 1 && details[0].y >= belowInUse + 20);
+            order(panel, true);
+            for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 676);
+            if (std::string(waiting) != "no_calibration") png(panel, std::string("folded_eyeball_") + waiting);
+        }
+        // An older frameeyeosc (no "eyeball" in its status) or one not running: no line, as in use
+        m.status.eyeball.clear();
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::FitDetails)[0].y == belowInUse);
+        m.status.eyeball = "in_use";
         // Open, on either page (the card folded to one line): the row in the same place on both; with the eyeball the
         // gaze page can't be changed
         panel.setFitDetails(true);
@@ -4766,6 +4786,23 @@ void testGazeSourceRow(const FontSet& fonts) {
         m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
         panel.render(m);
         CHECK(hits(panel, PanelAction::Step, key::kGazeOffsetX).empty());
+        // "Eyeball" chosen but Valve's gaze sent (waiting for a fit, no eye cameras, an older frameeyeosc, or it not
+        // running): the page works, since its values shape what is sent; everything inside the card
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[2]));
+        for (const char* waiting : {"no_map", "no_camera", ""}) {
+            m.status.eyeball = waiting;
+            panel.render(m);
+            CHECK(!hits(panel, PanelAction::Step, key::kGazeDownHoldXDeg).empty());
+            CHECK(!hits(panel, PanelAction::Step, key::kGazeOffsetX).empty());
+            CHECK(!hits(panel, PanelAction::Step, key::kGazeGainUp).empty());
+            for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 676);
+            if (std::string(waiting) == "no_map") png(panel, "open_gaze_eyeball_no_map");
+        }
+        m.status.eyeball = "in_use";
+        m.status.running = false;
+        panel.render(m);
+        CHECK(!hits(panel, PanelAction::Step, key::kGazeOffsetX).empty());
+        m.status.running = true;
         // With Valve: the gaze page's steppers and the far-down hold there to press
         m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[0]));
         panel.render(m);

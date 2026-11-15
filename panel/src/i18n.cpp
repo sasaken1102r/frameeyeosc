@@ -344,6 +344,8 @@ UiText makeJapanese() {
     t.hintGazeSource = "眼球は先に目合わせが必要";
     t.gazeSourceStandard = "Valve";
     t.gazeSourceEyeball = "眼球（試験）";
+    t.gazeSourceWaitFit = "目合わせのあとで眼球になるよ";
+    t.gazeSourceNoCamera = "目のカメラがないので Valve の視線を送っているよ";
     t.fitGazeEyeballUnused = "眼球のときは使わないよ（眼球は目合わせで作った写し方を使うよ）";
     t.rowEyeLog = "目のログ";
     t.eyeLogRecord = "記録する";
@@ -1693,6 +1695,8 @@ UiText makeEnglish() {
     t.hintGazeSource = "Eyeball needs an eye fit first";
     t.gazeSourceStandard = "Valve";
     t.gazeSourceEyeball = "Eyeball (test)";
+    t.gazeSourceWaitFit = "Eyeball starts after an eye fit";
+    t.gazeSourceNoCamera = "No eye cameras, so Valve's gaze is sent";
     t.fitGazeEyeballUnused = "Not used with Eyeball (it uses the mapping made by the eye fit)";
     t.rowEyeLog = "Eye log";
     t.eyeLogRecord = "Record";

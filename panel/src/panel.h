@@ -1308,10 +1308,11 @@ private:
      * @param pen drawing tools
      * @param t texts
      * @param view the settings shown
+     * @param eyeball the eyeball's gaze is sent (eyeballNow InUse): the page is grey, its values unused
      * @param busy a fit is running (nothing can be changed)
      * @param y top
      */
-    void drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& view, bool busy, double y);
+    void drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& view, bool eyeball, bool busy, double y);
 
     /**
      * The Eye fit tab's box under "Fine-tune" while that is folded: why fit (it works without; fitting makes the gaze

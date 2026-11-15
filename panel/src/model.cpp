@@ -200,6 +200,14 @@ bool eyeballGazeInConfig(const SettingsView& view) {
     return source == kGazeSources[2] || source == kGazeSources[1];
 }
 
+EyeballNow eyeballNow(const SettingsView& view, const EyeStatus& status) {
+    if (!eyeballGazeInConfig(view) || !status.running) return EyeballNow::NotChosen;
+    if (status.eyeball == "in_use") return EyeballNow::InUse;
+    if (status.eyeball == "no_map") return EyeballNow::NoMap;
+    if (status.eyeball == "no_calibration" || status.eyeball == "no_camera") return EyeballNow::NoCamera;
+    return EyeballNow::NotChosen;
+}
+
 bool pupilMapInConfig(const SettingsView& view) {
     for (const auto& eye : kPupilMapKeys) {
         for (const char* name : eye) {

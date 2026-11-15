@@ -4065,6 +4065,13 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                        {t.gazeSourceEyeball, {PanelAction::SetGazeSource, key::kGazeSource, 2}}},
                       selected, 18);
         y += h + 6;
+        // "Eyeball" chosen while frameeyeosc still sends Valve's gaze: why, in one muted line under the choices
+        const EyeballNow now = eyeballNow(v, m.status);
+        if (now == EyeballNow::NoMap || now == EyeballNow::NoCamera) {
+            const char* why = now == EyeballNow::NoMap ? t.gazeSourceWaitFit : t.gazeSourceNoCamera;
+            pen.text(kControlX + 4, y + 12, why, fitSize(pen, why, 15, 12, kControlW - 8, false), kTextMuted);
+            y += 22;
+        }
     }
     // "Fine-tune": the values by hand, folded away by default. Next to it the sounds switch, as wide as its longer
     // wording, and once it is open the page switch on the right
@@ -4118,7 +4125,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         return;
     }
     if (fitDetailsPage_ == 0) {
-        drawEyeFitGaze(pen, t, v, busy, y);
+        drawEyeFitGaze(pen, t, v, eyeballNow(v, m.status) == EyeballNow::InUse, busy, y);
     } else {
         drawEyeFitLids(pen, t, v, saved, busy, y);
     }
@@ -4676,13 +4683,15 @@ void EyePanel::drawReseatResult(const Pen& pen, const UiText& t, const PanelMode
     paragraph(baseline, t.reseatNote, 14, kTextMuted, false, x0, x1 - x0, 2);
 }
 
-void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& v, bool busy, double y) {
+void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& v, bool eyeball, bool busy,
+                               double y) {
     const char* offsetKeys[2] = {key::kGazeOffsetX, key::kGazeOffsetY};
     const char* gainKeys[3] = {key::kGazeGainX, key::kGazeGainUp, key::kGazeGainDown};
-    // With the eyeball source, nothing on this page moves the gaze sent: the eye server's gaze is corrected and held
-    // here (correct_gaze, the far-down hold) before the eyeball's direction, through its own map from the eye fit,
-    // takes the combined gaze's place. So the page is grey, with one line saying why (the gaze scale still works)
-    const bool eyeball = eyeballGazeInConfig(v);
+    // While the eyeball's gaze is sent (frameeyeosc says so, not only the setting), nothing on this page moves it: the
+    // eye server's gaze is corrected and held here (correct_gaze, the far-down hold) before the eyeball's direction,
+    // through its own map from the eye fit, takes the combined gaze's place. So the page is grey, with one line saying
+    // why (the gaze scale still works). While "Eyeball" waits (no map, no eye camera) Valve's gaze is sent, shaped by
+    // these values: the page works as with Valve
     const bool usable = !busy && !eyeball;
     // A little tighter than the other tabs' caption rows, so the page fits under the Eye fit tab's rows
     const double rowH = 72;
@@ -4749,16 +4758,16 @@ void EyePanel::drawEyeFitInfo(const Pen& pen, const UiText& t, double y, double 
     const double textX = x0 + 20;
     const double textW = x1 - 20 - textX;
     const std::vector<std::string> lines = wrapText(pen, t.fitInfoWhy, 15, false, textW, 3);
-    const double need = 30 + 8 + lines.size() * 22 + 14;
+    const double need = 28 + 6 + lines.size() * 21 + 12;
     // Its title and its lines, or nothing (a failure's tall card above takes the room)
     if (bottom - y < need) return;
     const double h = need;
     strokeRounded(pen, x0, y, x1 - x0, h, 14, kDivider, 1.5);
-    double baseline = y + 30;
+    double baseline = y + 28;
     pen.text(textX, baseline, t.fitInfoTitle, fitSize(pen, t.fitInfoTitle, 18, 14, textW, true), kText, true);
-    baseline += 8;
+    baseline += 6;
     for (const std::string& line : lines) {
-        baseline += 22;
+        baseline += 21;
         pen.text(textX, baseline, line, 15, kTextMuted);
     }
 }

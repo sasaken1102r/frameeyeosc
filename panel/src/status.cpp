@@ -181,6 +181,7 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
         status.lastErrorTime = readNumber(*last, "time", 0.0);
     }
     status.dominantEye = readText(root, "dominant_eye");
+    status.eyeball = readText(root, "eyeball");
     status.pupilTarget = readText(root, "pupil_target");
     // Sending to other apps and lan_only (0.10 on; an older frameeyeosc has neither)
     if (const JsonValue* list = root.get("extras"); list != nullptr && list->isArray()) {

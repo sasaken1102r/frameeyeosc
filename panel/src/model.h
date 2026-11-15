@@ -177,6 +177,23 @@ bool pupilMapInConfig(const SettingsView& view);
  */
 bool eyeballGazeInConfig(const SettingsView& view);
 
+/** What the eyeball source does now, as frameeyeosc says (status.json "eyeball"). */
+enum class EyeballNow {
+    NotChosen,  ///< another source (or frameeyeosc not running, or one too old to say)
+    InUse,      ///< the eyeball's gaze is sent
+    NoMap,      ///< the eye server's gaze is sent until the next whole eye fit makes the eyeball's map
+    NoCamera,   ///< the eye server's gaze is sent: no factory eye-camera calibration, or no pupil shape from eyecam-rec
+};
+
+/**
+ * What the eyeball source does now: chosen (eyeballGazeInConfig) and frameeyeosc running and saying so. Only InUse
+ * makes "Fine-tune"'s gaze page grey: otherwise the eye server's gaze is sent, and its values shape it.
+ * @param view the settings
+ * @param status frameeyeosc's status
+ * @return what it does
+ */
+EyeballNow eyeballNow(const SettingsView& view, const EyeStatus& status);
+
 /**
  * Whether a key the eye fit writes is set on frameeyeosc's command line (then the fit can't run).
  * @param view the settings

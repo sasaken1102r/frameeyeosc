@@ -984,6 +984,11 @@ void testDominantEyeAndSaturation() {
     // From frameeyeosc before 0.7.0, or a value this doesn't know
     CHECK(parseStatus("{\"pid\": 1}", 0, false).dominantEye.empty());
     CHECK(parseStatus("{\"pid\": 1, \"dominant_eye\": \"both\"}", 0, false).dominantEye.empty());
+    // "eyeball" (gaze_source "eyeball": in use or why not), as written; null or missing (another source, an older
+    // frameeyeosc) = empty
+    CHECK(parseStatus("{\"pid\": 1, \"eyeball\": \"no_map\"}", 0, false).eyeball == "no_map");
+    CHECK(parseStatus("{\"pid\": 1, \"eyeball\": null}", 0, false).eyeball.empty());
+    CHECK(parseStatus("{\"pid\": 1}", 0, false).eyeball.empty());
 }
 
 /** status.json's missed_rate, max_processing_ms and dropped_rate, and who was slow while the eye data rate is low. */
@@ -2160,7 +2165,37 @@ void testExtrasStatus() {
     CHECK(findSetting(key::kExtraOutputs) == nullptr);
 }
 
+/** What the eyeball source does now: from the setting and frameeyeosc's status together. */
+void testEyeballNow() {
+    PanelModel m;
+    m.config.exists = true;
+    m.config.root.type = JsonValue::Type::Object;
+    m.status.running = true;
+    m.status.eyeball = "in_use";
+    // Valve chosen (the default): not chosen, whatever the status says
+    CHECK(eyeballNow(SettingsView(m), m.status) == EyeballNow::NotChosen);
+    for (const char* source : {"eyeball", "pupil"}) {
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(source));
+        m.status.eyeball = "in_use";
+        CHECK(eyeballNow(SettingsView(m), m.status) == EyeballNow::InUse);
+        m.status.eyeball = "no_map";
+        CHECK(eyeballNow(SettingsView(m), m.status) == EyeballNow::NoMap);
+        m.status.eyeball = "no_camera";
+        CHECK(eyeballNow(SettingsView(m), m.status) == EyeballNow::NoCamera);
+        m.status.eyeball = "no_calibration";
+        CHECK(eyeballNow(SettingsView(m), m.status) == EyeballNow::NoCamera);
+        // An older frameeyeosc, or one not running: not known, so treated as not chosen
+        m.status.eyeball.clear();
+        CHECK(eyeballNow(SettingsView(m), m.status) == EyeballNow::NotChosen);
+        m.status.eyeball = "in_use";
+        m.status.running = false;
+        CHECK(eyeballNow(SettingsView(m), m.status) == EyeballNow::NotChosen);
+        m.status.running = true;
+    }
+}
+
 int main() {
+    testEyeballNow();
     testExtrasRead();
     testExtrasCoreEdges();
     testExtrasAddresses();

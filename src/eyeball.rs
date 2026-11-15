@@ -84,6 +84,9 @@ pub const EYE_FRESH_S: f64 = 0.15;
 /// that keeps refusing its frames (lids over the rim at a corner, a squint) stands still at its last direction, which
 /// is not where the eye looks; the other eye, the hold and the eye server's gaze take over then (pupil.rs).
 pub const ACCEPTED_FRESH_S: f64 = 0.2;
+/// Without a pupil shape from eyecam-rec (either eye) for this long, the eyeball source counts as having no eye camera
+/// (EyeballGaze::state).
+pub const CAMERA_GONE_S: f64 = 2.0;
 /// An eye's directions count for the eye fit's captures (the map and the centre, eyeball_map.rs) once its filter has
 /// updated with the ellipse this many frames since it started or last re-took its angles (about a second at 90 frames
 /// a second)...
@@ -957,6 +960,10 @@ pub struct EyeballGaze {
     saccade_at: Option<f64>,
     last_time: Option<f64>,
     used: bool,
+    // When eyecam-rec last gave either eye's pupil shape, and the last sample's time (the eye server's); kept over a
+    // restart, for `state`
+    shape_at: Option<f64>,
+    now: Option<f64>,
     /// Frames taken per eye, how they went (Update order), and the time they took (ns), for the journal.
     pub frames: [u64; 2],
     pub updates: [[u64; 6]; 2],
@@ -1008,7 +1015,11 @@ impl EyeballGaze {
             return [None; 2];
         };
         self.last_time = Some(time);
+        self.now = Some(time);
         self.used = true;
+        if live.is_some_and(|live| live.slip.iter().zip(&live.shape).any(|(slip, shape)| slip.is_some() && shape.is_some())) {
+            self.shape_at = Some(time);
+        }
         let started = std::time::Instant::now();
         let mut out = [None; 2];
         for eye in 0..2 {
@@ -1034,6 +1045,22 @@ impl EyeballGaze {
         }
         self.busy_ns += started.elapsed().as_nanos() as u64;
         out
+    }
+
+    /// What the eyeball source does now, for status.json's "eyeball" (with gaze_source "eyeball"): "in_use", or why it
+    /// sends the eye server's gaze as "valve" does: "no_calibration" (the factory eye-camera calibration couldn't be
+    /// read), "no_camera" (no pupil shape from eyecam-rec within CAMERA_GONE_S of the last sample: not running, too
+    /// old, or no sample yet) or "no_map" (no eyeball map until the next whole eye fit).
+    pub fn state(&self) -> &'static str {
+        if self.calibration.is_none() {
+            "no_calibration"
+        } else if !self.shape_at.zip(self.now).is_some_and(|(at, now)| now - at <= CAMERA_GONE_S) {
+            "no_camera"
+        } else if self.maps.is_none() {
+            "no_map"
+        } else {
+            "in_use"
+        }
     }
 
     /// Whether an eye moved fast (a saccade, EyeFilter::saccade) within SACCADE_HOLD_S of `time` (the eye server's):
@@ -1842,6 +1869,38 @@ pub mod tests {
             flipped: false,
         };
         (slip, shape)
+    }
+
+    #[test]
+    fn the_state_says_whether_the_eyeball_is_sent_or_why_not() {
+        let c = camera();
+        let mut gaze = EyeballGaze::default();
+        // No calibration (also before any sample)
+        assert_eq!(gaze.state(), "no_calibration");
+        gaze.set_calibration(Some(Calibration { eyes: [c.clone(), c.clone()] }));
+        // No sample yet, or samples without eyecam-rec: no camera
+        assert_eq!(gaze.state(), "no_camera");
+        gaze.step(0.0, None);
+        assert_eq!(gaze.state(), "no_camera");
+        // eyecam-rec's frames with the shape part: no map yet, then with one in use
+        let mut live = crate::tests::camera(0.75, 0.0);
+        let (slip, shape) = live_frame(&c, 1_000_000_000, 5.0);
+        live.slip = [Some(slip), None];
+        live.shape = [Some(shape), None];
+        gaze.step(0.1, Some(&live));
+        assert_eq!(gaze.state(), "no_map");
+        let map = EyeMap { yaw: [0.0, 1.0, 0.0], pitch: [0.0, 0.0, 1.0], center: [0.0; 2] };
+        gaze.maps = Some([map, map]);
+        assert_eq!(gaze.state(), "in_use");
+        // The shape gone (eyecam-rec stopped, or one without the shape part): in use for CAMERA_GONE_S, then no camera
+        live.shape = [None, None];
+        gaze.step(0.1 + CAMERA_GONE_S - 0.01, Some(&live));
+        assert_eq!(gaze.state(), "in_use");
+        gaze.step(0.1 + CAMERA_GONE_S + 0.01, Some(&live));
+        assert_eq!(gaze.state(), "no_camera");
+        // A restart (a gap in the samples) keeps it
+        gaze.restart();
+        assert_eq!(gaze.state(), "no_camera");
     }
 
     #[test]

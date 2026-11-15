@@ -5668,6 +5668,7 @@ impl Bridge {
             effective: settings,
             gaze_capture: self.capture_result.as_ref(),
             gaze_in_use: self.latest.as_ref().and_then(|sample| sample.gaze_in_use).map(pupil::InUse::name),
+            eyeball: (settings.gaze_source == config::GazeSource::Eyeball).then(|| self.smoother.eyeball.state()),
             last_error: status::ERRORS.last(),
         }
     }

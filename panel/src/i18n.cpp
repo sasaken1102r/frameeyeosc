@@ -236,24 +236,54 @@ UiText makeJapanese() {
     t.fitHowToCenter = "点は真ん中に出ます。頭は動かさず見てください";
     t.fitDone = "合わせました";
     t.fitDoneCenter = "真ん中で合わせ直しました";
-    t.fitFitted = "合わせてあります";
+    t.fitDoneAtFormat = "合わせました（%s）";
+    t.fitCardBoth = "視線もまぶたも、あなたの目に合わせてあるよ";
+    t.fitCardGazeOnly = "視線はあなたの目に合わせてあるよ（まぶたは自動で覚えてるよ）";
+    t.fitCardGazeLeftLid = "視線と左目のまぶたは、あなたの目に合わせてあるよ";
+    t.fitCardGazeRightLid = "視線と右目のまぶたは、あなたの目に合わせてあるよ";
+    t.fitCardLidsOnly = "まぶたはあなたの目に合わせてあるよ（視線は合わせてないよ）";
+    t.fitCardLeftLidOnly = "左目のまぶたはあなたの目に合わせてあるよ（視線は合わせてないよ）";
+    t.fitCardRightLidOnly = "右目のまぶたはあなたの目に合わせてあるよ（視線は合わせてないよ）";
     t.fitNotYet = "まだ合わせていません";
     t.fitGazeCenterFormat = "視線の正面: 左右 %s・上下 %s";
-    t.fitGazeRangeFormat = "視線の幅: 左右 %s・上 %s・下 %s";
-    t.fitGazeNone = "視線: 合わせていません";
-    t.fitLidFormat = "まぶた %s: 開 %s・閉 %s・下を見ると %s";
-    t.fitLidsNone = "まぶた: 合わせていません（自動で覚えています）";
-    t.fitLidNoneFormat = "まぶた %s: 合わせていません（自動で覚えています）";
     t.fitStandInLeft = "Valve の左目が 0 のまま止まってたので、左目はカメラで確かめたよ。まぶたは前の値のまま。"
                        "再起動で直りやすいよ";
     t.fitStandInRight = "Valve の右目が 0 のまま止まってたので、右目はカメラで確かめたよ。まぶたは前の値のまま。"
                         "再起動で直りやすいよ";
     t.fitStandInCenterLeft = "Valve の左目が 0 のまま止まってたので、左目はカメラで確かめたよ。再起動で直りやすいよ";
     t.fitStandInCenterRight = "Valve の右目が 0 のまま止まってたので、右目はカメラで確かめたよ。再起動で直りやすいよ";
-    t.fitInfoTitle = "合わせ方";
-    t.fitInfoRewear = "・被るたびは真ん中の点を 1 つ見るだけ（自動）";
-    t.fitInfoFull = "・「目を合わせる」は最初と、気になったときだけ";
-    t.fitInfoNoTilt = "傾きは使わなくなりました";
+    t.fitInfoTitle = "なぜ合わせるの？";
+    t.fitInfoWhy = "合わせなくても使えるけど、合わせると、あなたの目に合わせて視線とまぶたが正確になるよ。"
+                   "被るたびは真ん中の点を 1 つ見るだけ（自動）。";
+    t.fitHelpButton = "それぞれのボタンの説明";
+    t.fitHelpTitle = "それぞれのボタンの説明";
+    t.fitHelpBack = ICON_CHEVRON_LEFT " もどる";
+    t.fitHelpNames[0] = "目を合わせる／もう一度合わせる";
+    t.fitHelpTexts[0] = "いくつかの点を目で追って、最後に 3 秒目を閉じる（約 20 秒）。視線の正面と幅、まぶたの開き・閉じを"
+                        "あなたの目に合わせるよ。";
+    t.fitHelpUses[0] = "使うとき：最初の 1 回。視線やまぶたがなんだか合わないとき。ほかの人に貸すとき。";
+    t.fitHelpNames[1] = "真ん中だけ合わせ直す";
+    t.fitHelpTexts[1] = "真ん中の点を 1 つ見るだけで、視線の正面だけ合わせ直すよ。幅とまぶたはそのまま。";
+    t.fitHelpUses[1] = "使うとき：かぶり直したあと、正面がずれた気がするとき。";
+    t.fitHelpNames[2] = "真ん中のズレ補正を消す";
+    t.fitHelpTexts[2] = "真ん中で合わせた分をなくして、Valve が出した正面をそのまま使うよ。幅とまぶたはそのまま。";
+    t.fitHelpUses[2] = "使うとき：Valve そのままの正面のほうが合っていると感じるとき。「被ったとき」が「真ん中だけ」だと、"
+                       "次にかぶったときにまた合わせ直すよ。";
+    t.fitHelpNames[3] = "元に戻す";
+    t.fitHelpTexts[3] = "合わせた値（正面・幅・まぶた）を全部消して、合わせる前に戻すよ。";
+    t.fitHelpUses[3] = "使うとき：合わせてから、かえって変になったとき。";
+    t.fitHelpNames[4] = "被ったとき";
+    t.fitHelpTexts[4] = "「真ん中だけ」にすると、かぶったときに真ん中に点が出て、正面だけ自動で合わせ直すよ。";
+    t.fitHelpUses[4] = "使うとき：点が出るのがじゃまなら「何もしない」。そのときは、ずれたら「真ん中だけ合わせ直す」を"
+                       "押してね。";
+    t.fitHelpNames[5] = "視線のもと";
+    t.fitHelpTexts[5] = "Valve：Valve のアイトラッカーの視線。合わせなくても使える。眼球（試験）：目のカメラで眼球の向きを"
+                        "追う視線。ヘッドセットが少しずれても視線がずれにくい。合わせるまでは Valve の視線を送るよ。";
+    t.fitHelpUses[5] = "使うとき：眼球で変だと感じたら Valve に戻してね。";
+    t.fitHelpNames[6] = "細かく直す";
+    t.fitHelpTexts[6] = "視線の正面・幅、まぶたの値を手で動かせるよ。眼球のときは、視線のページは使わないよ"
+                        "（まぶたと視線の倍率は効くよ）。";
+    t.fitHelpUses[6] = "使うとき：合わせたあと、もう少しだけ動きを変えたいとき。";
     t.fitFailed = "合わせられませんでした";
     t.failCancelled = "止めました";
     t.fitUnchanged = "設定は変わっていません";
@@ -311,10 +341,10 @@ UiText makeJapanese() {
     t.rowDownHold = "真下で左右を止める";
     t.hintDownHold = "0 = オフ";
     t.rowGazeSource = "視線のもと";
-    t.hintGazeSource = "瞳の位置は先に目合わせが必要";
-    t.gazeSourceStandard = "ふつう";
-    t.gazeSourcePupil = "瞳の位置（試験）";
+    t.hintGazeSource = "眼球は先に目合わせが必要";
+    t.gazeSourceStandard = "Valve";
     t.gazeSourceEyeball = "眼球（試験）";
+    t.fitGazeEyeballUnused = "眼球のときは使わないよ（眼球は目合わせで作った写し方を使うよ）";
     t.rowEyeLog = "目のログ";
     t.eyeLogRecord = "記録する";
     t.eyeLogStopFormat = "止める %s";
@@ -1072,6 +1102,7 @@ UiText makeJapanese() {
     t.gazeRingsNote = "視線の倍率が 100 % でないときだけ、点のまわりに輪で出ます";
     t.rowGazeCompare = "もう一方の視線も出す";
     t.hintGazeCompare = "Valve と瞳の位置を比べる";
+    t.gazeCompareNeedsMap = "瞳の位置は先に目合わせが必要";
     t.gazeCompareSent = "送っている視線";
     t.gazeCompareValve = "Valve の視線";
     t.gazeComparePupil = "瞳の位置の視線";
@@ -1086,11 +1117,14 @@ UiText makeJapanese() {
     t.measureResultTitle = "視線のズレ";
     t.measureValve = "Valve";
     t.measurePupil = "瞳の位置";
+    t.measureEyeball = "眼球";
     t.measureErrorFormat = "中央 %s°・平均 %s°（%s か所）";
     t.measureShiftFormat = "平均で%sずれてた";
     t.measureWorstFormat = "いちばんズレたのは%s（%s°）";
     t.measureShareFormat = "瞳で測れたのは %s%%（片目 %s%%・止め %s%%・Valve %s%%）";
+    t.measureShareEyeballFormat = "眼球で測れたのは %s%%（片目 %s%%・止め %s%%・Valve %s%%）";
     t.measureNoPupilMap = "瞳の位置の写し方がないので、Valve だけ測ったよ";
+    t.measureNoEyeballMap = "眼球の写し方がないので、Valve だけ測ったよ";
     t.measureTooFew = "測れたところが足りなかった";
     t.measureNote = "Valve の自動調整は画面の点も使うことがあるので、測るとずれ方が変わるかも";
     t.measureStoppedTitle = "止めたよ";
@@ -1100,6 +1134,7 @@ UiText makeJapanese() {
     t.measureNoDataEver = "データが 1 つも来なかった。frameeyeosc が止まっているか、古い版かも";
     t.measureValveAllFormat = "全部のサンプルでは 中央 %s°・平均 %s°（%s か所）";
     t.measureValveAllUsed = "瞳と同じサンプルが足りないので、全部のサンプルで";
+    t.measureValveAllUsedEyeball = "眼球と同じサンプルが足りないので、全部のサンプルで";
     t.measureAgain = "もう一度";
     t.measureClose = "閉じる";
     t.measureLegendDot = "点";
@@ -1117,6 +1152,7 @@ UiText makeJapanese() {
     t.measurePlaceCenter = "真ん中";
     t.measureBriefValve = "Valve %s°";
     t.measureBriefPupil = "瞳 %s°";
+    t.measureBriefEyeball = "眼球 %s°";
     t.measureBriefGuarded = "見張り付き %s°";
     t.measureBriefAnd = "・";
     t.kindMeasure = "視線のズレ測定";
@@ -1545,24 +1581,58 @@ UiText makeEnglish() {
     t.fitHowToCenter = "The dot is in the middle. Keep your head still and look at it.";
     t.fitDone = "Fitted";
     t.fitDoneCenter = "Re-centered";
-    t.fitFitted = "Fitted";
+    t.fitDoneAtFormat = "Fitted (%s)";
+    t.fitCardBoth = "Your gaze and eyelids are fitted to your eyes";
+    t.fitCardGazeOnly = "Your gaze is fitted to your eyes (the eyelids are learned automatically)";
+    t.fitCardGazeLeftLid = "Your gaze and left eyelid are fitted to your eyes";
+    t.fitCardGazeRightLid = "Your gaze and right eyelid are fitted to your eyes";
+    t.fitCardLidsOnly = "Your eyelids are fitted to your eyes (the gaze isn't)";
+    t.fitCardLeftLidOnly = "Your left eyelid is fitted to your eye (the gaze isn't)";
+    t.fitCardRightLidOnly = "Your right eyelid is fitted to your eye (the gaze isn't)";
     t.fitNotYet = "Not fitted yet";
     t.fitGazeCenterFormat = "Gaze center: L-R %s, U-D %s";
-    t.fitGazeRangeFormat = "Gaze range: L-R %s, up %s, down %s";
-    t.fitGazeNone = "Gaze: not fitted";
-    t.fitLidFormat = "Eyelid %s: open %s, closed %s, looking down %s";
-    t.fitLidsNone = "Eyelids: not fitted (learned automatically)";
-    t.fitLidNoneFormat = "Eyelid %s: not fitted (learned automatically)";
     t.fitStandInLeft = "Valve's left eye was stuck at 0; the eye camera checked it instead (eyelid kept). A restart "
                        "usually fixes it.";
     t.fitStandInRight = "Valve's right eye was stuck at 0; the eye camera checked it instead (eyelid kept). A restart "
                         "usually fixes it.";
     t.fitStandInCenterLeft = "Valve's left eye was stuck at 0; the eye camera checked it instead. A restart usually fixes it.";
     t.fitStandInCenterRight = "Valve's right eye was stuck at 0; the eye camera checked it instead. A restart usually fixes it.";
-    t.fitInfoTitle = "How fitting works";
-    t.fitInfoRewear = "• Each time you put it on: one dot in the middle (automatic)";
-    t.fitInfoFull = "• \"Fit my eyes\": the first time, and when something feels off";
-    t.fitInfoNoTilt = "The headset's tilt isn't used any more";
+    t.fitInfoTitle = "Why fit?";
+    t.fitInfoWhy = "It works without fitting, but fitting makes the gaze and eyelids follow your own eyes more exactly. "
+                   "Each time you put it on, you just look at one dot in the middle (automatic).";
+    t.fitHelpButton = "What each button does";
+    t.fitHelpTitle = "What each button does";
+    t.fitHelpBack = ICON_CHEVRON_LEFT " Back";
+    t.fitHelpNames[0] = "Fit my eyes / Fit again";
+    t.fitHelpTexts[0] = "Follow a few dots with your eyes, then close them for 3 seconds (about 20 s). Fits the gaze "
+                        "center and range and the eyelids' open and closed readings to your eyes.";
+    t.fitHelpUses[0] = "When: the first time; when the gaze or eyelids feel off; when lending the headset to someone.";
+    t.fitHelpNames[1] = "Re-center only";
+    t.fitHelpTexts[1] = "Look at one dot in the middle to fit only the gaze center again. Range and eyelids stay as "
+                        "they are.";
+    t.fitHelpUses[1] = "When: after putting the headset back on, if straight ahead seems off.";
+    t.fitHelpNames[2] = "Clear center correction";
+    t.fitHelpTexts[2] = "Takes out what re-centering added and uses Valve's own center as it is. Range and eyelids stay "
+                        "as they are.";
+    t.fitHelpUses[2] = "When: Valve's own center feels closer. With \"When put on\" at \"Re-center\", it re-centers "
+                       "again the next time you put the headset on.";
+    t.fitHelpNames[3] = "Reset";
+    t.fitHelpTexts[3] = "Clears all fitted values (center, range, eyelids): back to before the fit.";
+    t.fitHelpUses[3] = "When: things got worse after fitting.";
+    t.fitHelpNames[4] = "When put on";
+    t.fitHelpTexts[4] = "With \"Re-center\", a dot shows in the middle when you put the headset on, and only the center "
+                        "is fitted again by itself.";
+    t.fitHelpUses[4] = "When: choose \"Nothing\" if the dot gets in the way; then press \"Re-center only\" when it "
+                       "drifts.";
+    t.fitHelpNames[5] = "Gaze source";
+    t.fitHelpTexts[5] = "Valve: Valve's eye tracker gaze, works without fitting. Eyeball (test): the eyeball's direction "
+                        "from the eye cameras, drifts less when the headset shifts a little. Until you fit, Valve's "
+                        "gaze is sent.";
+    t.fitHelpUses[5] = "When: if Eyeball feels off, switch back to Valve.";
+    t.fitHelpNames[6] = "Fine-tune";
+    t.fitHelpTexts[6] = "Move the gaze center and range and the eyelid values by hand. With Eyeball, the gaze page isn't "
+                        "used (the eyelids and the gaze scale still work).";
+    t.fitHelpUses[6] = "When: after fitting, to change the movement just a little.";
     t.fitFailed = "Could not fit";
     t.failCancelled = "Stopped";
     t.fitUnchanged = "Nothing was changed";
@@ -1620,10 +1690,10 @@ UiText makeEnglish() {
     t.rowDownHold = "Hold sideways far down";
     t.hintDownHold = "0 = off";
     t.rowGazeSource = "Gaze source";
-    t.hintGazeSource = "Pupil needs an eye fit first";
-    t.gazeSourceStandard = "Standard";
-    t.gazeSourcePupil = "Pupil position (test)";
+    t.hintGazeSource = "Eyeball needs an eye fit first";
+    t.gazeSourceStandard = "Valve";
     t.gazeSourceEyeball = "Eyeball (test)";
+    t.fitGazeEyeballUnused = "Not used with Eyeball (it uses the mapping made by the eye fit)";
     t.rowEyeLog = "Eye log";
     t.eyeLogRecord = "Record";
     t.eyeLogStopFormat = "Stop %s";
@@ -2388,6 +2458,7 @@ UiText makeEnglish() {
     t.gazeRingsNote = "Shown around the dot only while a gaze scale isn't 100 %";
     t.rowGazeCompare = "Other gaze too";
     t.hintGazeCompare = "Compare Valve and pupil";
+    t.gazeCompareNeedsMap = "Pupil needs an eye fit first";
     t.gazeCompareSent = "Gaze being sent";
     t.gazeCompareValve = "Valve's gaze";
     t.gazeComparePupil = "Pupil-position gaze";
@@ -2402,11 +2473,14 @@ UiText makeEnglish() {
     t.measureResultTitle = "Gaze error";
     t.measureValve = "Valve";
     t.measurePupil = "Pupil position";
+    t.measureEyeball = "Eyeball";
     t.measureErrorFormat = "median %s° · mean %s° (%s places)";
     t.measureShiftFormat = "On average %s";
     t.measureWorstFormat = "Worst: %s (%s°)";
     t.measureShareFormat = "Both pupils %s%% (one eye %s%%, held %s%%, Valve %s%%)";
+    t.measureShareEyeballFormat = "Eyeball %s%% (one eye %s%%, held %s%%, Valve %s%%)";
     t.measureNoPupilMap = "No pupil map yet, so only Valve was measured";
+    t.measureNoEyeballMap = "No eyeball map yet, so only Valve was measured";
     t.measureTooFew = "Too few places measured";
     t.measureNote = "Valve's self-calibration may use what's on screen, so a run can change it";
     t.measureStoppedTitle = "Stopped";
@@ -2416,6 +2490,7 @@ UiText makeEnglish() {
     t.measureNoDataEver = "No data came at all: frameeyeosc isn't running, or is too old";
     t.measureValveAllFormat = "All samples: median %s° · mean %s° (%s places)";
     t.measureValveAllUsed = "Too few samples shared with the pupils: all samples";
+    t.measureValveAllUsedEyeball = "Too few samples shared with the eyeball: all samples";
     t.measureAgain = "Again";
     t.measureClose = "Close";
     t.measureLegendDot = "Dots";
@@ -2433,6 +2508,7 @@ UiText makeEnglish() {
     t.measurePlaceCenter = "center";
     t.measureBriefValve = "Valve %s°";
     t.measureBriefPupil = "pupil %s°";
+    t.measureBriefEyeball = "eyeball %s°";
     t.measureBriefGuarded = "guarded %s°";
     t.measureBriefAnd = ", ";
     t.kindMeasure = "Gaze error check";

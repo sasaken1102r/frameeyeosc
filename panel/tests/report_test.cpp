@@ -1172,6 +1172,29 @@ void testUiState() {
 
 }  // namespace
 
+/** The Eye fit tab's card time: the newest whole eye fit that worked (not a re-center, a failed or a stopped one). */
+void testLastWholeFit() {
+    using namespace report;
+    std::vector<Summary> list;
+    CHECK(lastWholeFit(list) == 0.0);
+    const auto add = [&](Kind kind, Result result, double start) {
+        Summary s;
+        s.kind = kind;
+        s.result = result;
+        s.start = start;
+        list.push_back(s);
+    };
+    // Newest first, as list() gives them
+    add(Kind::Recenter, Result::Ok, 500);
+    add(Kind::Fit, Result::Failed, 400);
+    add(Kind::Fit, Result::Stopped, 300);
+    add(Kind::Measure, Result::Ok, 250);
+    CHECK(lastWholeFit(list) == 0.0);
+    add(Kind::Fit, Result::Ok, 200);
+    add(Kind::Fit, Result::Ok, 100);
+    CHECK(lastWholeFit(list) == 200.0);
+}
+
 int main() {
     ::setenv("TZ", "JST-9", 1);
     ::tzset();
@@ -1189,6 +1212,7 @@ int main() {
     testCalibWatch();
     testWriterAndCli();
     testUiState();
+    testLastWholeFit();
     removeAll(kRoot);
     if (gFailures > 0) {
         std::fprintf(stderr, "%d check(s) failed\n", gFailures);

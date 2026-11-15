@@ -497,6 +497,21 @@ void testTexts() {
     r.pupil.error = 1.25;
     CHECK(briefText(ja, r) == "Valve 7.5°・瞳 1.2°" || briefText(ja, r) == "Valve 7.5°・瞳 1.3°");
     CHECK(briefText(en, r).rfind("Valve 7.5°, pupil 1.", 0) == 0);
+    // The eyeball source measured in the pupils' place: called the eyeball's
+    r.eyeball = true;
+    CHECK(briefText(ja, r).rfind("Valve 7.5°・眼球 1.", 0) == 0);
+    CHECK(briefText(en, r).rfind("Valve 7.5°, eyeball 1.", 0) == 0);
+    CHECK(std::string(cameraWords(ja, true).name) == "眼球" && std::string(cameraWords(ja, false).name) == "瞳の位置");
+    CHECK(std::string(cameraWords(en, true).noMap).find("eyeball") != std::string::npos);
+    CHECK(std::string(cameraWords(ja, true).share).find("眼球") == 0 && std::string(cameraWords(ja, true).valveAllUsed).find("眼球") == 0);
+    // A session started with the eyeball source keeps it in its result
+    Session session;
+    session.start(0, 0, Order::Forward, true);
+    CHECK(session.view().result.eyeball);
+    session.stop(1, 1);
+    CHECK(session.view().result.eyeball);
+    session.start(0, 0);
+    CHECK(!session.view().result.eyeball);
 }
 
 void testSocket() {

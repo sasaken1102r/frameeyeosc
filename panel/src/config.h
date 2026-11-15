@@ -168,9 +168,9 @@ constexpr const char* kLidFitOpenLeft = "lid_fit_open_left";
 constexpr const char* kLidFitOpenRight = "lid_fit_open_right";
 constexpr const char* kLidFitDownLeft = "lid_fit_down_left";
 constexpr const char* kLidFitDownRight = "lid_fit_down_right";
-/** Where frameeyeosc's gaze comes from: kGazeSources ("valve", or "pupil": a test, from each eye's pupil position with
- *  the pupil map below, or "eyeball": a test, frameeyeosc's eyeball filter with a map it fits itself at the next whole
- *  eye fit; "Gaze source" under "Fine-tune" on the Eye fit tab). */
+/** Where frameeyeosc's gaze comes from: kGazeSources ("valve", or "eyeball": a test, frameeyeosc's eyeball filter with
+ *  a map it fits itself at the next whole eye fit; "Gaze source" on the Eye fit tab). "pupil" (each eye's pupil position
+ *  with the pupil map below) is no longer offered: frameeyeosc runs it as "eyeball" (eyeballGazeInConfig). */
 constexpr const char* kGazeSource = "gaze_source";
 /** Each eye's pupil map (frameeyeosc's src/pupil.rs): yaw = pupil_yaw + pupil_yaw_u * u + pupil_yaw_v * v in degrees,
  *  pitch likewise, from the eye's pupil pair (u, v) as the eye server gives it. The whole eye fit writes them
@@ -214,8 +214,9 @@ constexpr const char* kActiveTypes[3] = {"bool", "float", "off"};
 constexpr const char* kAutoRecenterModes[2] = {"off", "center"};
 /** lid_widen values, in the order the Eyelids tab shows them: never, less, normal (the default), more */
 constexpr const char* kLidWidenModes[4] = {"off", "low", "normal", "high"};
-/** gaze_source values, in the order the Eye fit tab's "Gaze source" row shows them: the eye server's gaze (the
- *  default), the pupil map's, or the eyeball filter's (its map is frameeyeosc's own, not in config.json) */
+/** gaze_source values: the eye server's gaze (the default), the pupil map's (no longer offered; run as "eyeball"), or
+ *  the eyeball filter's (its map is frameeyeosc's own, not in config.json). The Eye fit tab's "Gaze source" row shows
+ *  the first and the last */
 constexpr const char* kGazeSources[3] = {"valve", "pupil", "eyeball"};
 /** Default ports of the output types (used while "port" is null). */
 constexpr int kPortVrchat = 9000;

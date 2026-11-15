@@ -145,21 +145,17 @@ std::string standInText(const UiText& t, const gaze_fit::View& fit) {
     return out;
 }
 
-std::vector<std::string> lidFitLines(const UiText& t, const gaze_fit::Values& values, const bool fitted[2]) {
-    if (!fitted[0] && !fitted[1]) return {t.fitLidsNone};
-    std::vector<std::string> lines;
-    for (int eye = 0; eye < 2; ++eye) {
-        const char* side = eye == 0 ? t.left : t.right;
-        if (!fitted[eye]) {
-            lines.push_back(format(t.fitLidNoneFormat, side));
-            continue;
-        }
-        const std::string open = format("%.2f", values.lidOpen[eye]);
-        const std::string closed = format("%.2f", values.lidClosed[eye]);
-        const std::string drop = format("%+.0f%%", (values.lidDown[eye] / values.lidOpen[eye] - 1) * 100);
-        lines.push_back(format(t.fitLidFormat, side, open.c_str(), closed.c_str(), drop.c_str()));
+const char* fitCardLine(const UiText& t, bool gaze, const bool lids[2]) {
+    if (gaze) {
+        if (lids[0] && lids[1]) return t.fitCardBoth;
+        if (lids[0]) return t.fitCardGazeLeftLid;
+        if (lids[1]) return t.fitCardGazeRightLid;
+        return t.fitCardGazeOnly;
     }
-    return lines;
+    if (lids[0] && lids[1]) return t.fitCardLidsOnly;
+    if (lids[0]) return t.fitCardLeftLidOnly;
+    if (lids[1]) return t.fitCardRightLidOnly;
+    return nullptr;
 }
 
 bool fitStopped(const gaze_fit::View& fit) {

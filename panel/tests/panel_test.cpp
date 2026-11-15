@@ -1444,6 +1444,11 @@ void testMeasure(const FontSet& fonts) {
         CHECK(hits(panel, PanelAction::MeasureClose).size() == 1 && hits(panel, PanelAction::MeasureStart).size() == 1);
         for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
         png(panel, "result");
+        // Measured with the eyeball source: the same screen, its camera gaze called the eyeball's
+        m.measure.result.eyeball = true;
+        panel.render(m);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+        png(panel, "result_eyeball");
         // With a map but the pupils' samples too few at some places (dashed there), then everywhere (Valve on every
         // sample, said so)
         m.measure = madeUpMeasure(true, -1, 6);
@@ -4656,80 +4661,126 @@ void testPortKeypad(const FontSet& fonts) {
  */
 /**
  * The Eye fit tab's "Gaze source": a row of its own under "When put on", in the same place whether "Fine-tune" is open
- * or not; "Pupil position (test)" only with a pupil map, "Standard" shown as chosen without one; everything inside the
- * card, in both languages. With PANEL_TEST_PNG_DIR set, the tab is drawn to PNGs there too: folded with a map (pupil
- * chosen), folded without one, folded after a failed fit (the status card's longest text), open on each page.
+ * or not; two choices, "Valve" and "Eyeball (test)" ("pupil", no longer offered, shows as "Eyeball": frameeyeosc runs
+ * it as that); everything inside the card, in both languages. With the eyeball, "Fine-tune"'s gaze page is grey (its
+ * values don't move the eyeball's gaze). With PANEL_TEST_PNG_DIR set, the tab is drawn to PNGs there too: folded
+ * before a fit, folded after one (Valve, eyeball), open on each page (Valve, eyeball), folded after a failed fit (the
+ * status card's longest text).
  */
 void testGazeSourceRow(const FontSet& fonts) {
     const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
     for (const Language language : {Language::Ja, Language::En}) {
         const std::string lang = language == Language::Ja ? "ja" : "en";
         const auto png = [&](const EyePanel& panel, const std::string& name) {
-            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/eyefit_" + name + "_" + lang + "_2026-11-13_14-10-00.png");
+            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/eyefit_" + name + "_" + lang + "_2026-11-15_12-50-00.png");
         };
         // Everything inside the card, the row under "When put on" and above "Fine-tune"; its place
-        const auto rowY = [&](const EyePanel& panel, size_t count) {
+        const auto rowY = [&](const EyePanel& panel) {
             const std::vector<EyePanel::HitArea> rows = hits(panel, PanelAction::SetGazeSource, key::kGazeSource);
             const std::vector<EyePanel::HitArea> above = hits(panel, PanelAction::SetAutoRecenter);
             const std::vector<EyePanel::HitArea> below = hits(panel, PanelAction::FitDetails);
-            CHECK(rows.size() == count && !above.empty() && below.size() == 1);
+            CHECK(rows.size() == 2 && !above.empty() && below.size() == 1);
             for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
-            if (rows.empty() || above.empty() || below.empty()) return -1.0;
-            // "Standard" first, "Eyeball" last (always there), "Pupil position" between them only with a map
-            CHECK(rows[0].hit.arg == 0 && rows.back().hit.arg == 2 && (count < 3 || rows[1].hit.arg == 1));
+            if (rows.size() != 2 || above.empty() || below.empty()) return -1.0;
+            // "Valve" first, "Eyeball" second (kGazeSources' first and last)
+            CHECK(rows[0].hit.arg == 0 && rows[1].hit.arg == 2);
             CHECK(rows[0].y >= above[0].y + above[0].h && rows[0].y + rows[0].h <= below[0].y);
             return rows[0].y;
+        };
+        // The order: the fit buttons, "Clear center correction", the card ("Reset" in it), "When put on", "Gaze
+        // source", "Fine-tune" with the sounds, then the help button (folded)
+        const auto order = [&](const EyePanel& panel, bool folded) {
+            const std::vector<EyePanel::HitArea> start = hits(panel, PanelAction::FitStart);
+            const std::vector<EyePanel::HitArea> clear = hits(panel, PanelAction::FitCenterClear);
+            const std::vector<EyePanel::HitArea> reset = hits(panel, PanelAction::FitReset);
+            const std::vector<EyePanel::HitArea> rewear = hits(panel, PanelAction::SetAutoRecenter);
+            const std::vector<EyePanel::HitArea> details = hits(panel, PanelAction::FitDetails);
+            const std::vector<EyePanel::HitArea> help = hits(panel, PanelAction::FitHelp);
+            CHECK(start.size() == 1 && clear.size() == 1 && reset.size() == 1 && !rewear.empty());
+            CHECK(details.size() == 1 && help.size() == (folded ? 1u : 0u));
+            if (start.size() != 1 || clear.size() != 1 || reset.size() != 1 || rewear.empty() || details.size() != 1) {
+                return;
+            }
+            CHECK(clear[0].y >= start[0].y + start[0].h && reset[0].y >= clear[0].y + clear[0].h);
+            CHECK(rewear[0].y >= reset[0].y + reset[0].h);
+            if (folded && help.size() == 1) {
+                CHECK(help[0].y >= details[0].y + details[0].h + 40 && help[0].y + help[0].h <= 676);
+                CHECK(help[0].hit.arg == 1 && help[0].x <= 440);
+            }
         };
         EyePanel panel(fonts);
         panel.setTab(PanelTab::EyeFit);
         PanelModel m = modelWith(Lids::Valve, false);
         m.language = language;
+        // Before any fit: the two choices, the help button under the box
+        panel.render(m);
+        CHECK(rowY(panel) > 0);
+        CHECK(hits(panel, PanelAction::FitHelp).size() == 1);
+        png(panel, "notyet");
+        // A whole fit in config.json (gaze and both eyelids), its time known from the records: the card with its one
+        // line and "Reset"
         m.config.root.set(key::kGazeOffsetX, JsonValue::makeNumber(0.067));
         m.config.root.set(key::kGazeGainUp, JsonValue::makeNumber(0.78));
-        // Folded, no pupil map: "Standard" and "Eyeball" can be pressed
-        panel.render(m);
-        const double folded = rowY(panel, 2);
-        png(panel, "folded_nomap");
-        // "pupil" written but no map: frameeyeosc sends the eye server's gaze, so "Standard" shows as chosen (the
-        // config left as it is)
-        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
-        panel.render(m);
-        CHECK(rowY(panel, 2) == folded);
-        CHECK(m.config.text(key::kGazeSource) == kGazeSources[1]);
-        // "eyeball" chosen, no pupil map (its map is frameeyeosc's own): the same row
-        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[2]));
-        panel.render(m);
-        CHECK(rowY(panel, 2) == folded);
-        png(panel, "folded_eyeball");
-        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
-        // With a map (synthetic numbers) and "pupil" chosen: all three
-        for (const auto& eye : kPupilMapKeys) {
-            for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
-        }
-        panel.render(m);
-        CHECK(rowY(panel, 3) == folded);
-        png(panel, "folded_pupil");
-        // ...after a fit that wrote the eyelids too (two more lines in the status card)
         for (const auto& eye : kLidFitKeys) {
             const double readings[4] = {0.05, 0.9, 0.85, 0.7};
             for (int i = 0; i < 4; ++i) m.config.root.set(eye[i], JsonValue::makeNumber(readings[i]));
         }
+        m.records.lastWholeFit = 1794706680.0;  // 2026-11-15 (the time as the local clock shows it)
         panel.render(m);
-        CHECK(rowY(panel, 3) == folded);
-        png(panel, "folded_pupil_lids");
-        // Open, on either page: the same row in the same place
+        // (from here on the card is the fitted one: the row stays put while the source changes)
+        const double folded = rowY(panel);
+        order(panel, true);
+        png(panel, "folded_valve");
+        // "pupil" written (with or without a pupil map): the same row, its gaze page grey as with "eyeball"
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
+        for (const auto& eye : kPupilMapKeys) {
+            for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
+        }
+        panel.render(m);
+        CHECK(rowY(panel) == folded);
+        CHECK(m.config.text(key::kGazeSource) == kGazeSources[1]);
+        // "eyeball" chosen
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[2]));
+        panel.render(m);
+        CHECK(rowY(panel) == folded);
+        order(panel, true);
+        png(panel, "folded_eyeball");
+        // Open, on either page (the card folded to one line): the row in the same place on both; with the eyeball the
+        // gaze page can't be changed
         panel.setFitDetails(true);
+        double open = -1;
         for (const int page : {0, 1}) {
             panel.setFitDetailsPage(page);
             panel.render(m);
-            CHECK(rowY(panel, 3) == folded);
-            png(panel, page == 0 ? "open_gaze" : "open_lids");
+            if (page == 0) open = rowY(panel);
+            CHECK(rowY(panel) == open && open < folded);
+            order(panel, false);
+            png(panel, page == 0 ? "open_gaze_eyeball" : "open_lids_eyeball");
         }
-        // The gaze page's steppers and the far-down hold still there
         panel.setFitDetailsPage(0);
         panel.render(m);
+        CHECK(hits(panel, PanelAction::Step, key::kGazeDownHoldXDeg).empty());
+        CHECK(hits(panel, PanelAction::Step, key::kGazeOffsetX).empty());
+        CHECK(hits(panel, PanelAction::Step, key::kGazeGainUp).empty());
+        // ...and with "pupil" written too (it runs as the eyeball)
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::Step, key::kGazeOffsetX).empty());
+        // With Valve: the gaze page's steppers and the far-down hold there to press
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[0]));
+        panel.render(m);
         CHECK(!hits(panel, PanelAction::Step, key::kGazeDownHoldXDeg).empty());
-        // A failed fit with its numbers (the status card at its tallest), folded: the row stays, "Fine-tune" below it
+        CHECK(!hits(panel, PanelAction::Step, key::kGazeOffsetX).empty());
+        png(panel, "open_gaze_valve");
+        // The eyelid page with an eye that can't widen by itself: its line under the readings, inside the card
+        m.config.root.set(kLidFitKeys[1][2], JsonValue::makeNumber(0.99));
+        panel.setFitDetailsPage(1);
+        panel.render(m);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 676);
+        png(panel, "open_lids_widen");
+        m.config.root.set(kLidFitKeys[1][2], JsonValue::makeNumber(0.85));
+        // A failed fit with its numbers (the status card at its tallest), folded: the row stays, "Fine-tune" below it,
+        // the help button still there
         panel.setFitDetails(false);
         m.fit.phase = gaze_fit::Phase::Failed;
         m.fit.failure = gaze_fit::Failure::NoMovement;
@@ -4738,9 +4789,51 @@ void testGazeSourceRow(const FontSet& fonts) {
         m.fit.detail.neededDeg = 6.0;
         m.records.lastFit = "fit_2026-11-13_14-10-00";
         panel.render(m);
-        CHECK(rowY(panel, 3) == folded);
         CHECK(hits(panel, PanelAction::RecordOpen).size() == 1);
+        CHECK(hits(panel, PanelAction::FitHelp).size() == 1);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 676);
         png(panel, "folded_failed");
+    }
+}
+
+/**
+ * The Eye fit tab's help page: "? What each button does" opens it in place of the tab's content, "Back" (top left)
+ * and another tab go back; its seven boxes fit the card at the largest sizes that fit (each language). With
+ * PANEL_TEST_PNG_DIR set, it is drawn to a PNG there.
+ */
+void testFitHelpPage(const FontSet& fonts) {
+    const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
+    for (const Language language : {Language::Ja, Language::En}) {
+        const std::string lang = language == Language::Ja ? "ja" : "en";
+        EyePanel panel(fonts);
+        panel.setTab(PanelTab::EyeFit);
+        PanelModel m = modelWith(Lids::Valve, false);
+        m.language = language;
+        panel.render(m);
+        CHECK(!panel.fitHelp());
+        CHECK(pressArg(panel, PanelAction::FitHelp, 1).action == PanelAction::None);
+        CHECK(panel.fitHelp());
+        panel.render(m);
+        // Only "Back" (and the tabs): none of the tab's own buttons
+        const std::vector<EyePanel::HitArea> back = hits(panel, PanelAction::FitHelp);
+        CHECK(back.size() == 1 && hits(panel, PanelAction::FitStart).empty() &&
+              hits(panel, PanelAction::FitDetails).empty());
+        if (back.size() == 1) CHECK(back[0].hit.arg == 0 && back[0].x <= 440 && back[0].y <= 120);
+        // Everything inside the card
+        CHECK(panel.fitHelpBottom() > 300 && panel.fitHelpBottom() <= 96 + 580 - 14);
+        std::printf("fit help page (%s): size step %d, bottom %.0f\n", lang.c_str(), panel.fitHelpSizeStep(),
+                    panel.fitHelpBottom());
+        if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/fithelp_" + lang + "_2026-11-15_12-50-00.png");
+        // Back: the tab again
+        CHECK(pressArg(panel, PanelAction::FitHelp, 0).action == PanelAction::None);
+        CHECK(!panel.fitHelp());
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::FitStart).size() == 1);
+        // Another tab closes it too
+        panel.setFitHelp(true);
+        panel.render(m);
+        CHECK(pressArg(panel, PanelAction::Tab, static_cast<int>(PanelTab::Gaze)).action == PanelAction::None);
+        CHECK(!panel.fitHelp());
     }
 }
 
@@ -5244,6 +5337,7 @@ int main() {
     testPortKeypad(fonts);
     testCenterClear(fonts);
     testGazeSourceRow(fonts);
+    testFitHelpPage(fonts);
     testStatusLayout(fonts);
     testEyeRate(fonts);
     if (gFailures > 0) {

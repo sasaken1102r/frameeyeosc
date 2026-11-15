@@ -65,6 +65,7 @@ enum class PanelAction {
                        ///< those in centerCorrection; the caller writes them and tells the panel, noteCenterCleared)
     FitDetails,        ///< open / close "Fine-tune" (handled inside the panel)
     FitDetailsPage,    ///< show arg (0 gaze, 1 eyelids) under "Fine-tune" (handled inside the panel)
+    FitHelp,           ///< the Eye fit tab's help page: arg 1 open ("What each button does"), 0 back (inside the panel)
     LidsPage,          ///< show the Eyelids tab's sub-tab arg (LidsPage; handled inside the panel, which opens the tab;
                        ///< the caller remembers it, see lidsPage)
     GazePage,          ///< show the Gaze tab's sub-tab arg (GazePage; handled inside the panel, which opens the tab;
@@ -179,7 +180,8 @@ enum class PanelAction {
                        ///< eyeTrackingRateMin 90 and tells eye_rate::pressed
     EyeRateChoose,     ///< "Having trouble"'s eye camera speed: arg = eye_rate::Choice (the caller writes 90, or removes
                        ///< the key for SteamVR's default)
-    SetGazeSource,     ///< gaze_source = kGazeSources[arg] (the Eye fit tab's "Gaze source" row, under "When put on"; 0-2)
+    SetGazeSource,     ///< gaze_source = kGazeSources[arg] (the Eye fit tab's "Gaze source" row, under "When put on";
+                       ///< 0 or 2: "pupil" is no longer offered)
     MeasureStart,      ///< the gaze error check: start (or "Again" on its result)
     MeasureStop,       ///< ...stop it while it runs
     MeasureClose,      ///< ...close its result
@@ -464,6 +466,20 @@ public:
      * @param page 0 = gaze, 1 = eyelids
      */
     void setFitDetailsPage(int page) { fitDetailsPage_ = page; }
+
+    /**
+     * Show the Eye fit tab's help page ("What each button does") in place of its content, or go back.
+     * @param open whether it is shown
+     */
+    void setFitHelp(bool open) { fitHelp_ = open; }
+
+    /** @return true while the Eye fit tab shows its help page */
+    bool fitHelp() const { return fitHelp_; }
+
+    /** @return where the help page's last box ended as last drawn, and which of its text sizes it took (0 = the
+     *  largest; a test sees that it fits the card) */
+    double fitHelpBottom() const { return fitHelpBottom_; }
+    int fitHelpSizeStep() const { return fitHelpSizeStep_; }
 
     /**
      * Whether "Get started" under what the eye cameras add was pressed (then their tab shows the setup checklist).
@@ -841,6 +857,9 @@ private:
     bool centerCleared_ = false;  ///< "Clear center correction" was the last thing done on the Eye fit tab
     bool setupBegun_ = false;  ///< "Get started" pressed: the eye cameras tab shows the setup checklist, not the intro
     int fitDetailsPage_ = 0;   ///< what "Fine-tune" shows: 0 = gaze, 1 = eyelids
+    bool fitHelp_ = false;     ///< the Eye fit tab shows its help page instead of its content
+    double fitHelpBottom_ = 0.0;  ///< (drawEyeFitHelp, for the tests)
+    int fitHelpSizeStep_ = -1;
     bool quitArmed_ = false;
     double quitArmedUntil_ = 0.0;
     bool resetArmed_ = false;
@@ -1295,13 +1314,38 @@ private:
     void drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& view, bool busy, double y);
 
     /**
-     * The Eye fit tab's box under "Fine-tune" while that is folded: how fitting works (each wear the middle dot, the
-     * whole fit at first and when something is off, no tilt any more). Left out when there is no room.
+     * The Eye fit tab's box under "Fine-tune" while that is folded: why fit (it works without; fitting makes the gaze
+     * and eyelids exact; each wear only the middle dot). Left out when there is no room.
      * @param pen drawing tools
      * @param t texts
      * @param y top
+     * @param bottom the lowest it may reach
      */
-    void drawEyeFitInfo(const Pen& pen, const UiText& t, double y);
+    void drawEyeFitInfo(const Pen& pen, const UiText& t, double y, double bottom);
+
+    /**
+     * The Eye fit tab's "? What each button does" (a small ringed "?" before the words), which opens its help page.
+     * @param pen drawing tools
+     * @param t texts
+     * @param x left
+     * @param y top
+     * @param h height
+     */
+    void drawFitHelpButton(const Pen& pen, const UiText& t, double x, double y, double h);
+
+    /**
+     * @param pen drawing tools
+     * @param t texts
+     * @return how wide drawFitHelpButton draws it
+     */
+    double fitHelpButtonW(const Pen& pen, const UiText& t) const;
+
+    /**
+     * The Eye fit tab's help page ("What each button does"): "Back" at the top left, then a box per button.
+     * @param pen where to draw
+     * @param t texts
+     */
+    void drawEyeFitHelp(const Pen& pen, const UiText& t);
 
     /**
      * "Fine-tune" on the Eye fit tab, eyelid page: each eye's four lid readings.

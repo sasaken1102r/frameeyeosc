@@ -44,15 +44,15 @@ std::string failureDetailText(const UiText& t, const gaze_fit::View& fit);
 std::string standInText(const UiText& t, const gaze_fit::View& fit);
 
 /**
- * The eyelid lines of the fit's result box: one per eye, its readings (fitLidFormat) for a fitted eye and "not fitted"
- * (fitLidNoneFormat) for the other (a first whole fit with an eye the eye camera stood in for writes only the other
- * eye's lid fit), or one "not fitted" line (fitLidsNone) with neither.
+ * The Eye fit tab's card after a fit: its one line under "Fitted", what is fitted (fitCardBoth, fitCardGazeOnly, the
+ * gaze and one eye's eyelid, the eyelids only, one eye's eyelid only; a first whole fit with an eye the eye camera
+ * stood in for writes only the other eye's lid fit). The values themselves are under "Fine-tune".
  * @param t texts
- * @param values the lid readings (those of a fitted eye are set)
- * @param fitted whether each eye's lid fit is all there (FitInConfig::lidsFitted)
- * @return the lines
+ * @param gaze the gaze is fitted (FitInConfig::gazeFitted)
+ * @param lids whether each eye's lid fit is all there (FitInConfig::lidsFitted)
+ * @return the line (nullptr with nothing fitted)
  */
-std::vector<std::string> lidFitLines(const UiText& t, const gaze_fit::Values& values, const bool fitted[2]);
+const char* fitCardLine(const UiText& t, bool gaze, const bool lids[2]);
 
 /**
  * Whether a fit was stopped rather than failed: "Stop", another tab or page, the dashboard opened. Nothing went

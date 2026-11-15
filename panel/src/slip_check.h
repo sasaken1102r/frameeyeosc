@@ -148,6 +148,7 @@ struct MoveScore {
 /** The test's result. */
 struct Result {
     bool mapped = false;               ///< a pupil map was there (the pupils scored)
+    bool eyeball = false;  ///< the camera gaze scored was the eyeball filter's (Session::start), not the pupils'
     StepScore steps[kStepCount];
     MoveScore pushes[kDirCount];       ///< Up, Down, Left, Right: the hold against the first still step
     MoveScore widen;
@@ -218,8 +219,10 @@ public:
      * Start (a test already going starts over).
      * @param now the panel's monotonic seconds
      * @param unixNow wall clock
+     * @param eyeball gaze_source is "eyeball" (or "pupil", which runs as it): the eyeball filter's gaze is scored in
+     *        the pupils' place (Result::eyeball)
      */
-    void start(double now, double unixNow);
+    void start(double now, double unixNow, bool eyeball = false);
 
     /**
      * Stop before the end ("Stop", leaving the page, the panel closing).
@@ -285,6 +288,7 @@ private:
     double shownAt_[kStepCount] = {};
     double shownUnix_[kStepCount] = {};
     bool ended_ = false;
+    bool eyeball_ = false;  ///< (start)
 
     void end(Phase phase, double unixNow);
 };

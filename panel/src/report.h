@@ -414,6 +414,13 @@ std::vector<std::string> folders(const std::string& dir);
 std::vector<Summary> list(const std::string& dir);
 
 /**
+ * When the newest whole eye fit that worked started (the Eye fit tab's card shows it after "Fitted").
+ * @param list the records, newest first (list)
+ * @return its start (Unix seconds), 0 if there is none
+ */
+double lastWholeFit(const std::vector<Summary>& list);
+
+/**
  * One record.
  * @param dir the records' folder
  * @param folder its folder name

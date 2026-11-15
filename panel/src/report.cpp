@@ -1066,6 +1066,13 @@ std::vector<Summary> list(const std::string& dir) {
     return out;
 }
 
+double lastWholeFit(const std::vector<Summary>& list) {
+    for (const Summary& s : list) {
+        if (s.kind == Kind::Fit && s.result == Result::Ok) return s.start;
+    }
+    return 0.0;
+}
+
 bool load(const std::string& dir, const std::string& folder, Summary& summary, std::vector<FileInfo>* files) {
     if (!isFolderName(folder)) return false;
     const std::string path = dir + "/" + folder;

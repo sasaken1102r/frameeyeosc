@@ -95,6 +95,7 @@ struct Options {
     int targetBench = 0;          ///< --target-bench N: time drawing the target N times
     bool fitDetails = false;      ///< --fit-details: "Fine-tune" open on the Eye fit tab
     int fitDetailsPage = 0;       ///< --fit-details lids: its eyelid page
+    bool fitHelp = false;         ///< --fit-help: the Eye fit tab's help page ("What each button does")
     std::string lidsPage;         ///< --lids-page (--lid-marks: fine): the Eyelids tab's sub-tab (look, blinks, fine,
                                   ///< brows)
     std::string gazePage;         ///< --gaze-page: the Gaze tab's sub-tab (motion, reach, glitch)
@@ -270,6 +271,7 @@ void printUsage() {
         "      --tab basic|output|gaze|eyefit|lids|advanced|eyecam  Draw this tab (eyecam: only while eyecam-rec runs,\n"
         "                        or with --fake-eyecam)\n"
         "      --fit-details [gaze|lids]  Open \"Fine-tune\" on the Eye fit tab (default: its gaze page)\n"
+        "      --fit-help        The Eye fit tab's help page (\"What each button does\")\n"
         "      --lids-page look|blinks|fine|brows  The Eyelids tab's sub-tab (default look)\n"
         "      --gaze-page motion|reach|glitch  The Gaze tab's sub-tab (default motion)\n"
         "      --output-page main|apps  The Output tab's sub-tab (default main)\n"
@@ -1003,6 +1005,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
             for (int k = 0; k < 5; ++k) options.reportMake.push_back(argv[++i]);
         } else if (arg == "--changelog-dir" && hasNext) {
             options.changelogDir = argv[++i];
+        } else if (arg == "--fit-help") {
+            options.fitHelp = true;
         } else if (arg == "--fit-details") {
             options.fitDetails = true;
             if (hasNext && (std::string(argv[i + 1]) == "gaze" || std::string(argv[i + 1]) == "lids")) {
@@ -2616,6 +2620,7 @@ bool parseLocalTime(const std::string& text, double& when) {
  */
 void loadRecords(PanelModel& model) {
     model.records.list = report::list(model.records.dir);
+    model.records.lastWholeFit = report::lastWholeFit(model.records.list);
 }
 
 /**
@@ -2761,6 +2766,9 @@ int runDumpPng(const Options& options) {
         // The records: made up, or the folder's
         model.records.dir = options.reportsDir;
         model.records.list = options.fakeRecords ? fakeRecordList() : report::list(model.records.dir);
+        model.records.lastWholeFit = report::lastWholeFit(model.records.list);
+        // A made-up fit in config.json: a made-up time for it on the Eye fit tab's card too
+        if (!options.fakeFit.empty()) parseLocalTime("2026-11-15 10:38:00", model.records.lastWholeFit);
         if (options.fakeSaved) {
             model.records.lastFit = "fit_2026-10-06_20-45-09";
             model.records.lastCalib = "calib-wear_2026-10-06_18-11-02";
@@ -2819,6 +2827,7 @@ int runDumpPng(const Options& options) {
         }
         panel.setFitDetails(options.fitDetails);
         panel.setFitDetailsPage(options.fitDetailsPage);
+        panel.setFitHelp(options.fitHelp);
         if (options.diag) panel.openDiag();
         panel.setAdvancedScroll(options.advScroll);
         if (options.history) {
@@ -3524,10 +3533,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             break;
         }
         case PanelAction::SetGazeSource: {
-            if (hit.arg < 0 || hit.arg > 2) return;
-            // "Pupil position" only with a pupil map (the row greys it out otherwise); "Eyeball" always (frameeyeosc
-            // fits its own map at the next whole fit)
-            if (hit.arg == 1 && !pupilMapInConfig(view)) return;
+            // "Valve" or "Eyeball" (always: frameeyeosc fits its own map at the next whole fit); "pupil" is no longer
+            // offered (frameeyeosc runs it as "eyeball")
+            if (hit.arg != 0 && hit.arg != 2) return;
             const std::string source = kGazeSources[hit.arg];
             std::fprintf(stderr, "[fit] gaze source: %s\n", source.c_str());
             change = [source](JsonValue& root) { root.set(key::kGazeSource, JsonValue::makeString(source)); };
@@ -3671,6 +3679,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         }
         case PanelAction::FitDetails:
         case PanelAction::FitDetailsPage:
+        case PanelAction::FitHelp:
         case PanelAction::PortEnter:
         case PanelAction::KeypadKey:
         case PanelAction::KeypadCancel:
@@ -4487,6 +4496,8 @@ int runOverlay(const Options& options) {
         panel.setGazeScaleLinked(pair, savedLinks[pair]);
     }
     model.records.dir = options.reportsDir;
+    // (the Eye fit tab's card says when the last whole fit was)
+    model.records.lastWholeFit = report::lastWholeFit(report::list(model.records.dir));
     AutostartWorker autostart;
     autostart.start();
     // "Get test versions", as left
@@ -4751,7 +4762,7 @@ int runOverlay(const Options& options) {
             std::fprintf(stderr, "[measure] %s\n", error.c_str());
             return;
         }
-        measure.start(nowSeconds(), unixNow(), nextMeasureOrder);
+        measure.start(nowSeconds(), unixNow(), nextMeasureOrder, eyeballGazeInConfig(SettingsView(model)));
         nextMeasureOrder = gaze_measure::nextOrder(nextMeasureOrder);
         measureRun.begin(report::Kind::Measure, unixNow());
         report::Summary& s = measureRun.summary();
@@ -4794,7 +4805,7 @@ int runOverlay(const Options& options) {
             std::fprintf(stderr, "[slip] %s\n", error.c_str());
             return;
         }
-        slip.start(nowSeconds(), unixNow());
+        slip.start(nowSeconds(), unixNow(), eyeballGazeInConfig(SettingsView(model)));
         slipRun.begin(report::Kind::Slip, unixNow());
         report::Summary& s = slipRun.summary();
         s.trigger = "panel";
@@ -4862,7 +4873,7 @@ int runOverlay(const Options& options) {
             std::fprintf(stderr, "[reseat] %s\n", error.c_str());
             return;
         }
-        reseat.start(nowSeconds(), unixNow());
+        reseat.start(nowSeconds(), unixNow(), eyeballGazeInConfig(SettingsView(model)));
         reseatRun.begin(report::Kind::Reseat, unixNow());
         report::Summary& s = reseatRun.summary();
         s.trigger = "panel";
@@ -5573,6 +5584,15 @@ int runOverlay(const Options& options) {
             const bool retry = recenter.willRetry(byItself, byDashboard);
             report::Pending pending = fitRun.finish(unixNow());
             fillFitResult(pending.summary, ended);
+            // An eye the eye camera stood in for (Valve's openness stuck at 0): no longer on the Eye fit tab's card,
+            // so said here and in the record's reason (fillFitResult)
+            if (ended.phase == gaze_fit::Phase::Done) {
+                for (int eye = 0; eye < 2; ++eye) {
+                    if (!ended.notes.standIn[eye]) continue;
+                    std::fprintf(stderr, "[fit] %s eye: Valve's openness stuck at 0, the eye camera checked it instead\n",
+                                 eye == 0 ? "left" : "right");
+                }
+            }
             if (retry) {
                 // Still "stopped" (grey, not a failure), and its reason says it is tried again
                 pending.summary.reason += std::string("。") + uiText(Language::Ja).fitRetryAfterDashboard;

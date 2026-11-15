@@ -195,6 +195,11 @@ const char* const kPupilCenterKeys[2][2] = {
     {key::kPupilCenterYawRight, key::kPupilCenterPitchRight},
 };
 
+bool eyeballGazeInConfig(const SettingsView& view) {
+    const std::string source = view.text(key::kGazeSource);
+    return source == kGazeSources[2] || source == kGazeSources[1];
+}
+
 bool pupilMapInConfig(const SettingsView& view) {
     for (const auto& eye : kPupilMapKeys) {
         for (const char* name : eye) {

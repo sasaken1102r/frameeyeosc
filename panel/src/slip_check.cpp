@@ -342,9 +342,11 @@ Result score(const std::vector<Row>& rows) {
     return result;
 }
 
-void Session::start(double now, double unixNow) {
+void Session::start(double now, double unixNow, bool eyeball) {
     view_ = View();
     view_.phase = Phase::Running;
+    view_.result.eyeball = eyeball;
+    eyeball_ = eyeball;
     view_.startUnix = unixNow;
     rows_.clear();
     rows_.reserve(13000);
@@ -359,6 +361,7 @@ void Session::end(Phase phase, double unixNow) {
     view_.phase = phase;
     view_.endUnix = unixNow;
     view_.result = score(rows_);
+    view_.result.eyeball = eyeball_;
     ended_ = true;
 }
 
@@ -615,7 +618,7 @@ std::string briefText(const UiText& t, const Result& result) {
     if (result.valveDirs > 0) out = fill(t.measureBriefValve, oneDecimal(result.valveMean));
     if (result.pupilDirs > 0) {
         if (!out.empty()) out += t.measureBriefAnd;
-        out += fill(t.measureBriefPupil, oneDecimal(result.pupilMean));
+        out += fill(gaze_measure::cameraWords(t, result.eyeball).brief, oneDecimal(result.pupilMean));
     }
     if (result.guardedDirs > 0) {
         if (!out.empty()) out += t.measureBriefAnd;

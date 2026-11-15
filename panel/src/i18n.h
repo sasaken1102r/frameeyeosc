@@ -245,23 +245,30 @@ struct UiText {
     const char* fitHowToCenter;      ///< (re-centering)
     const char* fitDone;             ///< right after a full fit
     const char* fitDoneCenter;       ///< right after re-centering
-    const char* fitFitted;           ///< a fit is in config.json
+    const char* fitDoneAtFormat;     ///< ...with the last whole fit's date and time ("Fitted (%s)", "11/15 10:38")
+    const char* fitCardBoth;         ///< the card's one muted line under it: gaze and both eyelids fitted...
+    const char* fitCardGazeOnly;     ///< ...the gaze only (the eyelids learned)...
+    const char* fitCardGazeLeftLid;  ///< ...the gaze and one eye's eyelid...
+    const char* fitCardGazeRightLid;
+    const char* fitCardLidsOnly;     ///< ...the eyelids only (no gaze fit)...
+    const char* fitCardLeftLidOnly;  ///< ...one eye's eyelid only
+    const char* fitCardRightLidOnly;
     const char* fitNotYet;           ///< the folded result line before any fit
     const char* fitGazeCenterFormat; ///< "Gaze center: L-R %s, U-D %s"
-    const char* fitGazeRangeFormat;  ///< "Gaze range: L-R %s, up %s, down %s"
-    const char* fitGazeNone;
-    const char* fitLidFormat;        ///< "Eyelid %s: open %s, closed %s, looking down %s"
-    const char* fitLidsNone;
-    const char* fitLidNoneFormat;    ///< "Eyelid %s: not fitted ...", for one eye while the other is fitted
     const char* fitStandInLeft;      ///< after a full fit: Valve read the left eye stuck at 0 and the eye camera saw it
                                      ///< open, so its gaze counted and its lid fit was kept (gaze_fit::Notes::standIn)
     const char* fitStandInRight;
     const char* fitStandInCenterLeft;   ///< the same after re-centering (no lid fit there)
     const char* fitStandInCenterRight;
-    const char* fitInfoTitle;       ///< the box under "Fine-tune" while it is folded: how fitting works...
-    const char* fitInfoRewear;       ///< ...each wear: the one dot in the middle, by itself...
-    const char* fitInfoFull;         ///< ...the whole fit: the first time, and when something is off...
-    const char* fitInfoNoTilt;       ///< ...and the tilt isn't used any more
+    const char* fitInfoTitle;        ///< the box under "Fine-tune" while it is folded: why fit...
+    const char* fitInfoWhy;          ///< ...it works without, fitting makes gaze and eyelids exact; each wear one dot
+    const char* fitHelpButton;       ///< the button under it: what each button does (opens the help page)
+    const char* fitHelpTitle;        ///< the help page: its title...
+    const char* fitHelpBack;         ///< ...its back button...
+    const char* fitHelpNames[7];     ///< ...and per entry (fit, re-center, clear center, reset, when put on, gaze
+                                     ///< source, fine-tune): its name...
+    const char* fitHelpTexts[7];     ///< ...what it does...
+    const char* fitHelpUses[7];      ///< ...and when to use it
     const char* fitFailed;
     const char* failCancelled;       ///< "Stop" pressed
     const char* fitUnchanged;        ///< under a stop (Cancelled, Left, DashboardOpened): "Nothing was changed"
@@ -320,10 +327,11 @@ struct UiText {
     const char* rowDownHold;         ///< holding the sideways gaze when looking far down
     const char* hintDownHold;
     const char* rowGazeSource;       ///< where the gaze comes from (gaze_source; a test)...
-    const char* hintGazeSource;      ///< ...its hint, under the row title...
-    const char* gazeSourceStandard;  ///< ...and its choices: the eye server's gaze...
-    const char* gazeSourcePupil;     ///< ...or the pupil position (needs the pupil map of a whole eye fit)...
+    const char* hintGazeSource;      ///< ...its hint, under the row title (the eyeball needs a whole fit first)...
+    const char* gazeSourceStandard;  ///< ...and its choices: Valve's gaze (the eye server's)...
     const char* gazeSourceEyeball;   ///< ...or the eyeball filter (frameeyeosc fits its own map at the next whole fit)
+    const char* fitGazeEyeballUnused;  ///< "Fine-tune"'s gaze page with the eyeball source: its gaze center and range
+                                       ///< are not used (the eyeball has its own map from the eye fit)
     const char* rowEyeLog;           ///< the eye log row (Advanced tab)
     const char* eyeLogRecord;        ///< its button: start...
     const char* eyeLogStopFormat;    ///< ...and stop, with the time so far ("Stop 1:23")
@@ -1065,6 +1073,7 @@ struct UiText {
     const char* gazeRingsNote;       ///< right of its switch: when the rings show
     const char* rowGazeCompare;      ///< the other gaze source's dot (gaze_debug_dots_compare), under the rings
     const char* hintGazeCompare;
+    const char* gazeCompareNeedsMap; ///< why its switch is grey: no pupil map yet (a whole eye fit makes it)
     const char* gazeCompareSent;     ///< its legend: the dot of the gaze being sent...
     const char* gazeCompareValve;    ///< ...and the extra dot: Valve's gaze (gaze_source "pupil")...
     const char* gazeComparePupil;    ///< ...or the pupils' (gaze_source "valve")
@@ -1079,11 +1088,14 @@ struct UiText {
     const char* measureResultTitle;  ///< the result
     const char* measureValve;
     const char* measurePupil;
+    const char* measureEyeball;      ///< (the camera gaze was the eyeball filter's: gaze_measure::cameraWords)
     const char* measureErrorFormat;  ///< median and mean error (two %s)
     const char* measureShiftFormat;  ///< the mean offset (%s: shiftText)
     const char* measureWorstFormat;  ///< the worst place (%s place, %s degrees)
     const char* measureShareFormat;  ///< the pupils' share (%s percent each: both, one eye, held, Valve)
+    const char* measureShareEyeballFormat;  ///< ...the eyeball's
     const char* measureNoPupilMap;
+    const char* measureNoEyeballMap;
     const char* measureTooFew;       ///< a source with no place counted
     const char* measureNote;         ///< under the result
     const char* measureStoppedTitle;
@@ -1093,6 +1105,7 @@ struct UiText {
     const char* measureNoDataEver;   ///< ...none ever came (frameeyeosc not running, or one before the check)
     const char* measureValveAllFormat;  ///< Valve on every counted sample (median, mean, places)
     const char* measureValveAllUsed;    ///< ...used as its main number: too few samples shared with the pupils
+    const char* measureValveAllUsedEyeball;  ///< ...with the eyeball
     const char* measureAgain;
     const char* measureClose;
     const char* measureLegendDot;    ///< the picture's legend: the dots
@@ -1110,6 +1123,7 @@ struct UiText {
     const char* measurePlaceCenter;
     const char* measureBriefValve;   ///< the record list's line
     const char* measureBriefPupil;
+    const char* measureBriefEyeball;
     const char* measureBriefGuarded;  ///< the guarded gaze (frameeyeosc's gaze_guard), only while it was there
     const char* measureBriefAnd;
     const char* kindMeasure;

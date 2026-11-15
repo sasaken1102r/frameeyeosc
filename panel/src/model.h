@@ -35,6 +35,8 @@ struct RecordsView {
     std::vector<report::FileInfo> files;  ///< ...its files with their sizes
     std::string lastFit;                  ///< the last eye fit's record, once written ("" = none since the start)
     std::string lastCalib;                ///< the last calibration's
+    double lastWholeFit = 0.0;            ///< when the newest whole eye fit that worked started (Unix seconds, from
+                                          ///< the records: report::lastWholeFit; 0 = none known)
 };
 
 /** The other Frame apps as the panel shows them (frame_apps::AppsManager, vendor/frame-apps). */
@@ -165,6 +167,15 @@ FitInConfig fitInConfig(const SettingsView& view);
  * @return true if both eyes' six values are set
  */
 bool pupilMapInConfig(const SettingsView& view);
+
+/**
+ * Whether the gaze comes from the eyeball filter: gaze_source "eyeball", or "pupil", which frameeyeosc runs as
+ * "eyeball" now (the panel no longer offers it). The "Gaze source" row shows either as "Eyeball", and the checks
+ * (gaze error, slip, re-seat) call their camera gaze the eyeball's.
+ * @param view the settings
+ * @return true for "eyeball" or "pupil"
+ */
+bool eyeballGazeInConfig(const SettingsView& view);
 
 /**
  * Whether a key the eye fit writes is set on frameeyeosc's command line (then the fit can't run).

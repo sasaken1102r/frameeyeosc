@@ -297,9 +297,11 @@ Result score(const std::vector<Row>& rows, const double* reseatSec, const double
     return result;
 }
 
-void Session::start(double now, double unixNow) {
+void Session::start(double now, double unixNow, bool eyeball) {
     view_ = View();
     view_.phase = Phase::Running;
+    view_.result.eyeball = eyeball;
+    eyeball_ = eyeball;
     view_.startUnix = unixNow;
     rows_.clear();
     rows_.reserve(40000);
@@ -329,6 +331,7 @@ void Session::end(Phase phase, double unixNow) {
     view_.endUnix = unixNow;
     view_.waiting = false;
     view_.result = score(rows_, reseatSec_, offSec_);
+    view_.result.eyeball = eyeball_;
     ended_ = true;
 }
 
@@ -622,7 +625,7 @@ std::string briefText(const UiText& t, const Result& result) {
     if (result.valve.counts()) out = fill(t.measureBriefValve, oneDecimal(result.valve.error));
     if (result.pupil.counts()) {
         if (!out.empty()) out += t.measureBriefAnd;
-        out += fill(t.measureBriefPupil, oneDecimal(result.pupil.error));
+        out += fill(gaze_measure::cameraWords(t, result.eyeball).brief, oneDecimal(result.pupil.error));
     }
     if (result.guarded.counts()) {
         if (!out.empty()) out += t.measureBriefAnd;
@@ -636,7 +639,7 @@ std::string spreadText(const UiText& t, const Result& result) {
     if (result.valve.counts()) out = fill(t.measureBriefValve, oneDecimal(result.valve.spread));
     if (result.pupil.counts()) {
         if (!out.empty()) out += t.measureBriefAnd;
-        out += fill(t.measureBriefPupil, oneDecimal(result.pupil.spread));
+        out += fill(gaze_measure::cameraWords(t, result.eyeball).brief, oneDecimal(result.pupil.spread));
     }
     if (result.guarded.counts()) {
         if (!out.empty()) out += t.measureBriefAnd;

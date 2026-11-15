@@ -156,6 +156,7 @@ struct Overall {
 /** The test's result. */
 struct Result {
     bool mapped = false;         ///< a pupil map was there (the pupils scored)
+    bool eyeball = false;  ///< the camera gaze scored was the eyeball filter's (Session::start), not the pupils'
     std::vector<StepScore> steps;  ///< kStepCount
     RoundScore rounds[kRounds];
     Overall valve;
@@ -226,8 +227,10 @@ public:
      * Start (a test already going starts over).
      * @param now the panel's monotonic seconds
      * @param unixNow wall clock
+     * @param eyeball gaze_source is "eyeball" (or "pupil", which runs as it): the eyeball filter's gaze is scored in
+     *        the pupils' place (Result::eyeball)
      */
-    void start(double now, double unixNow);
+    void start(double now, double unixNow, bool eyeball = false);
 
     /**
      * Stop before the end ("Stop", leaving the page, the panel closing).
@@ -303,6 +306,7 @@ private:
     double reseatSec_[kRounds] = {};
     double offSec_[kRounds] = {};
     bool ended_ = false;
+    bool eyeball_ = false;  ///< (start)
 
     void end(Phase phase, double unixNow);
     void show(int step, double now, double unixNow);

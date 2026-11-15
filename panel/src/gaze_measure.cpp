@@ -424,10 +424,12 @@ Result score(const std::vector<Row>& rows) {
     return result;
 }
 
-void Session::start(double now, double unixNow, Order order) {
+void Session::start(double now, double unixNow, Order order, bool eyeball) {
     view_ = View();
     view_.phase = Phase::Countdown;
     view_.order = order;
+    view_.result.eyeball = eyeball;
+    eyeball_ = eyeball;
     view_.startUnix = unixNow;
     rows_.clear();
     rows_.reserve(6000);
@@ -442,6 +444,7 @@ void Session::end(Phase phase, double unixNow) {
     view_.phase = phase;
     view_.endUnix = unixNow;
     view_.result = score(rows_);
+    view_.result.eyeball = eyeball_;
     ended_ = true;
 }
 
@@ -706,13 +709,21 @@ std::string positionText(const UiText& t, const Position& position) {
     return parts[0] + t.measurePlaceAnd + parts[1];
 }
 
+CameraWords cameraWords(const UiText& t, bool eyeball) {
+    if (eyeball) {
+        return {t.measureEyeball, t.measureBriefEyeball, t.measureShareEyeballFormat, t.measureNoEyeballMap,
+                t.measureValveAllUsedEyeball};
+    }
+    return {t.measurePupil, t.measureBriefPupil, t.measureShareFormat, t.measureNoPupilMap, t.measureValveAllUsed};
+}
+
 std::string briefText(const UiText& t, const Result& result) {
     std::string out;
     const Overall& valve = valveMain(result);
     if (valve.positions > 0) out = fill(t.measureBriefValve, oneDecimal(valve.error));
     if (result.pupil.positions > 0) {
         if (!out.empty()) out += t.measureBriefAnd;
-        out += fill(t.measureBriefPupil, oneDecimal(result.pupil.error));
+        out += fill(cameraWords(t, result.eyeball).brief, oneDecimal(result.pupil.error));
     }
     if (result.guarded.positions > 0) {
         if (!out.empty()) out += t.measureBriefAnd;

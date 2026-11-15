@@ -115,7 +115,7 @@ void testFitResetsScales() {
     applyFitValues(none, rightKept, gaze_fit::Mode::Full);
     for (const char* name : kLidFitKeys[1]) CHECK(none.get(name) == nullptr);
     CHECK(none.get(key::kLidScaleRight) == nullptr && std::fabs(numberIn(none, key::kLidFitClosedLeft) - 0.2) < 1e-9);
-    // So the Eye fit tab has the left eye's lid fit only (its line, "not fitted" for the right; see lidFitLines), and
+    // So the Eye fit tab has the left eye's lid fit only (its card says the gaze and the left eyelid; see fitCardLine), and
     // the left eye alone takes lid_widen
     PanelModel oneEye;
     oneEye.config.exists = true;

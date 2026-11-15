@@ -1121,6 +1121,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::Tab:
             setTab(static_cast<PanelTab>(hit.arg));
+            fitHelp_ = false;
             closeExtrasFlow();
             closeAppsList();
             closeContrib();
@@ -1326,6 +1327,9 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
             return {};
         case PanelAction::FitDetailsPage:
             fitDetailsPage_ = hit.arg;
+            return {};
+        case PanelAction::FitHelp:
+            fitHelp_ = hit.arg != 0;
             return {};
         case PanelAction::PortEnter:
             // The main output's port: the keypad, starting with the port now (not drawn while it is locked)
@@ -3866,10 +3870,17 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
     const double cy = (kRowH - kControlH) / 2;
     const bool anyLocked = fitKeysLocked(v);
     const bool busy = fitRunning(fit);
-    // While it runs, only "look at the dot" and "Stop": the dots show in front of this panel
+    // While it runs, only "look at the dot" and "Stop": the dots show in front of this panel (and the help page, if it
+    // was open, is closed: a re-wear fit can start by itself)
     if (busy) {
         centerCleared_ = false;
+        fitHelp_ = false;
         drawEyeFitRunning(pen, t, fit);
+        return;
+    }
+    // "What each button does": its page in place of the tab's content, until "Back" (or another tab)
+    if (fitHelp_) {
+        drawEyeFitHelp(pen, t);
         return;
     }
     // (not while the eye cameras calibrate: the user looks where its steps say, up and down too)
@@ -3898,38 +3909,9 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                    {PanelAction::FitCenterClear, nullptr, 0}, !centerKeys.empty(), false, 17);
         y += clearH + 8;
     }
-    // What runs by itself when the headset is put on again (auto_recenter): a setting, so a row of its own that
-    // stays put whether "Fine-tune" is open or not
-    {
-        const double h = 50;
-        const double controlH = 42;
-        drawRowLabel(pen, t, y, h, t.rowAutoRecenter, t.hintAutoRecenter, false);
-        drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH,
-                      {{t.autoRecenterOff, {PanelAction::SetAutoRecenter, key::kAutoRecenter, 0}},
-                       {t.autoRecenterCenter, {PanelAction::SetAutoRecenter, key::kAutoRecenter, 1}}},
-                      static_cast<int>(rewear), 18);
-        y += h + 6;
-    }
-    // Where the gaze comes from (a test): the eye server's, each eye's pupil position through the pupil map the whole
-    // eye fit makes ("Pupil position" grey until there is one), or frameeyeosc's eyeball filter (always there: its map
-    // is frameeyeosc's own, made at the next whole fit). A setting too, so it stays put like the row above
-    {
-        const double h = 50;
-        const double controlH = 42;
-        const bool mapped = pupilMapInConfig(v);
-        // "pupil" without a map sends the eye server's gaze (frameeyeosc needs both): shown as what it does
-        const std::string source = v.text(key::kGazeSource);
-        const int selected = source == kGazeSources[2] ? 2 : mapped && source == kGazeSources[1] ? 1 : 0;
-        drawRowLabel(pen, t, y, h, t.rowGazeSource, t.hintGazeSource, false);
-        std::vector<Option> options = {{t.gazeSourceStandard, {PanelAction::SetGazeSource, key::kGazeSource, 0}},
-                                       {t.gazeSourcePupil, {PanelAction::SetGazeSource, key::kGazeSource, 1}},
-                                       {t.gazeSourceEyeball, {PanelAction::SetGazeSource, key::kGazeSource, 2}}};
-        options[1].usable = mapped;
-        drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH, options, selected, 18);
-        y += h + 6;
-    }
-    // What is going on: how it works, the run, the result (with "Reset"), or why it stopped. As tall as its lines need
-    // (up to kFitCardMaxH, for a failure's longer text), so the "how it works" box under "Fine-tune" keeps its room
+    // What is going on, right under the buttons: how it works, the result (with "Reset"), or why it stopped. As tall as
+    // its lines need (up to kFitCardMaxH, for a failure's longer text). After a fit, one line under "Fitted": what is
+    // fitted (the values themselves are under "Fine-tune")
     {
         const bool compact = fitDetails_;
         const double x0 = kInnerX;
@@ -3940,7 +3922,6 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         bool check = false;
         bool reset = false;
         bool failed = false;  // it failed (not stopped): its record's bar under the box
-        char text[320];
         switch (fit.phase) {
             case Phase::Settling:
             case Phase::Capturing:
@@ -3967,57 +3948,34 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
             case Phase::Done:
                 if (centerCleared_ && std::fabs(saved.values.offsetX) < 1e-9 && std::fabs(saved.values.offsetY) < 1e-9) {
                     // "Clear center correction" was the last thing done: what it did, and (re-centering when put on,
-                    // which needs a gaze fit to go on) that it comes back then; the fit's lines after it
+                    // which needs a gaze fit to go on) that it comes back then
                     check = true;
                     reset = anyFitted;
                     title = t.fitCenterCleared;
                     if (rewear == AutoRecenter::Center && saved.gazeFitted) paragraphs.push_back(t.fitCenterClearedRewear);
-                    if (anyFitted && saved.gazeFitted) {
-                        std::snprintf(text, sizeof(text), t.fitGazeRangeFormat, twoDecimals(saved.values.gainX).c_str(),
-                                      twoDecimals(saved.values.gainUp).c_str(),
-                                      twoDecimals(saved.values.gainDown).c_str());
-                        paragraphs.push_back(text);
-                    }
-                    if (anyFitted) {
-                        for (const std::string& line : lidFitLines(t, saved.values, saved.lidsFitted)) {
-                            paragraphs.push_back(line);
-                        }
-                    }
                 } else if (anyFitted) {
                     check = true;
                     reset = true;
-                    title = fit.phase != Phase::Done ? t.fitFitted
-                                                     : (fit.mode == Mode::Center ? t.fitDoneCenter : t.fitDone);
-                    // First, so it shows whatever follows: an eye the eye camera stood in for, Valve's openness stuck
-                    // shut (its lid fit kept)
-                    const std::string standIn = standInText(t, fit);
-                    for (size_t start = 0; start < standIn.size();) {
-                        const size_t end = std::min(standIn.find('\n', start), standIn.size());
-                        paragraphs.push_back(standIn.substr(start, end - start));
-                        start = end + 1;
-                    }
-                    const gaze_fit::Values& r = saved.values;
-                    // One line each: the gaze center, the gaze range, and each eye's lid readings
-                    if (saved.gazeFitted) {
-                        std::snprintf(text, sizeof(text), t.fitGazeCenterFormat, offsetText(r.offsetX).c_str(),
-                                      offsetText(r.offsetY).c_str());
-                        paragraphs.push_back(text);
-                        std::snprintf(text, sizeof(text), t.fitGazeRangeFormat, twoDecimals(r.gainX).c_str(),
-                                      twoDecimals(r.gainUp).c_str(), twoDecimals(r.gainDown).c_str());
-                        paragraphs.push_back(text);
+                    // Right after re-centering, that; otherwise "Fitted", with when the last whole fit was (from the
+                    // records) once that is known. An eye the eye camera stood in for is told in the fit's log and
+                    // record (fillFitResult), not here
+                    if (fit.phase == Phase::Done && fit.mode == Mode::Center) {
+                        title = t.fitDoneCenter;
+                    } else if (m.records.lastWholeFit > 0) {
+                        const std::time_t when = static_cast<std::time_t>(std::floor(m.records.lastWholeFit));
+                        std::tm local {};
+                        localtime_r(&when, &local);
+                        char stamp[32];
+                        std::strftime(stamp, sizeof(stamp), "%m/%d %H:%M", &local);
+                        // (no leading zero on the month: "11/15", "1/05")
+                        title = formatText(t.fitDoneAtFormat, stamp[0] == '0' ? stamp + 1 : stamp);
                     } else {
-                        paragraphs.push_back(t.fitGazeNone);
+                        title = t.fitDone;
                     }
-                    // Per eye: a first whole fit with an eye the eye camera stood in for fits only the other one
-                    for (const std::string& line : lidFitLines(t, r, saved.lidsFitted)) paragraphs.push_back(line);
-                    if (r.hasLids) {
-                        // An eye that can't widen by itself follows the other one (lid_widen)
-                        const WidenState widen = widenState(v);
-                        if (widen.mode > 0 && widen.room[0] != widen.room[1]) {
-                            paragraphs.push_back(widen.room[1] ? t.widenFollowsLeft : t.widenFollowsRight);
-                        } else if (widen.mode > 0 && !widen.room[0] && !widen.room[1]) {
-                            paragraphs.push_back(t.widenNoRoom);
-                        }
+                    // What is fitted, in one line (the eyelids per eye: a first whole fit with an eye the eye camera
+                    // stood in for fits only the other one)
+                    if (const char* line = fitCardLine(t, saved.gazeFitted, saved.lidsFitted)) {
+                        paragraphs.push_back(line);
                     }
                 } else {
                     title = !m.status.running ? t.fitNeedsRunning : (anyLocked ? t.fitLocked : "");
@@ -4083,8 +4041,35 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
             y += drawRecordBar(pen, t, m.records.lastFit, false, kInnerX, kInnerRight, y) + 12;
         }
     }
+    // What runs by itself when the headset is put on again (auto_recenter): a setting, so a row of its own
+    {
+        const double h = 50;
+        const double controlH = 42;
+        drawRowLabel(pen, t, y, h, t.rowAutoRecenter, t.hintAutoRecenter, false);
+        drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH,
+                      {{t.autoRecenterOff, {PanelAction::SetAutoRecenter, key::kAutoRecenter, 0}},
+                       {t.autoRecenterCenter, {PanelAction::SetAutoRecenter, key::kAutoRecenter, 1}}},
+                      static_cast<int>(rewear), 18);
+        y += h + 6;
+    }
+    // Where the gaze comes from (a test): Valve's (the eye server's) or frameeyeosc's eyeball filter (always there: its
+    // map is frameeyeosc's own, made at the next whole fit). "pupil" (no longer offered) runs as "eyeball", so it shows
+    // as that. A setting too, so a row of its own
+    {
+        const double h = 50;
+        const double controlH = 42;
+        const int selected = eyeballGazeInConfig(v) ? 1 : 0;
+        drawRowLabel(pen, t, y, h, t.rowGazeSource, t.hintGazeSource, false);
+        drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH,
+                      {{t.gazeSourceStandard, {PanelAction::SetGazeSource, key::kGazeSource, 0}},
+                       {t.gazeSourceEyeball, {PanelAction::SetGazeSource, key::kGazeSource, 2}}},
+                      selected, 18);
+        y += h + 6;
+    }
     // "Fine-tune": the values by hand, folded away by default. Next to it the sounds switch, as wide as its longer
     // wording, and once it is open the page switch on the right
+    const double rowY = y;
+    double rowEnd = 0;  // where the row's buttons end (the help button can go after them when there is no room below)
     {
         const double gap = 10;
         const double detailsW = 150;
@@ -4107,6 +4092,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
             drawButton(pen, x, y, soundsW, 38, on ? t.fitSoundsOn : t.fitSoundsOff,
                        {PanelAction::SetBool, key::kFitSounds, on ? 0 : 1}, !locked, false);
         }
+        rowEnd = x + soundsW;
         // Once open: the gaze values, or the eyelid values
         if (fitDetails_) {
             drawSegmented(pen, kInnerRight - pagesW, y, pagesW, 38,
@@ -4117,7 +4103,18 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         y += 38 + 8;
     }
     if (!fitDetails_) {
-        drawEyeFitInfo(pen, t, y + 4);
+        // Under it: why fit (where it fits), then "What each button does" at the bottom; with no room under the row
+        // (a failure's tall card and its record bar), the button at the row's end
+        const double helpH = 40;
+        const double bottom = kContentY + kContentH - 20;
+        if (bottom - (y + 4) >= helpH) {
+            const double helpY = bottom - helpH;
+            drawEyeFitInfo(pen, t, y + 4, helpY - 10);
+            drawFitHelpButton(pen, t, kInnerX, helpY, helpH);
+        } else {
+            const double w = fitHelpButtonW(pen, t);
+            if (rowEnd + 10 + w <= kInnerRight) drawFitHelpButton(pen, t, kInnerRight - w, rowY, 38);
+        }
         return;
     }
     if (fitDetailsPage_ == 0) {
@@ -4179,6 +4176,8 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
     using gaze_measure::Phase;
     const gaze_measure::View& view = m.measure;
     const gaze_measure::Result& r = view.result;
+    // The camera gaze: the eyeball filter's when that was the source, the pupils' otherwise
+    const gaze_measure::CameraWords cam = gaze_measure::cameraWords(t, r.eyeball);
     const double x0 = kInnerX;
     const double x1 = kInnerRight;
     double y = kRowTop - 6;
@@ -4277,7 +4276,7 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
         if (r.mapped) {
             drawDot(cr, lx, ly - 4, 4, kMeasurePupil);
             lx += 9;
-            pen.text(lx, ly, t.measurePupil, size, kTextMuted);
+            pen.text(lx, ly, cam.name, size, kTextMuted);
         }
     }
     // Per source: its errors, its mean offset, its worst place
@@ -4295,7 +4294,7 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
         pen.text(textX + 18, baseline, name, 18, kText, true);
         baseline += 26;
         if (pupil && !r.mapped) {
-            paragraph(baseline, t.measureNoPupilMap, 15, kTextMuted, false, textX, textW, 2);
+            paragraph(baseline, cam.noMap, 15, kTextMuted, false, textX, textW, 2);
             return;
         }
         if (o.positions == 0) {
@@ -4308,7 +4307,7 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
         paragraph(baseline, text, 16, kText, false, textX, textW, 1);
         // Valve with a map: the line above is on the pupils' own samples, and on every counted one under it, muted;
         // or, with too few of those, on every counted one, said so
-        if (allUsed) paragraph(baseline, t.measureValveAllUsed, 14, kTextMuted, false, textX, textW, 1);
+        if (allUsed) paragraph(baseline, cam.valveAllUsed, 14, kTextMuted, false, textX, textW, 1);
         if (all != nullptr && all->positions > 0) {
             std::snprintf(text, sizeof(text), t.measureValveAllFormat, one(all->error).c_str(),
                           one(all->meanError).c_str(), std::to_string(all->positions).c_str());
@@ -4321,7 +4320,7 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
         paragraph(baseline, text, 15, kTextMuted, false, textX, textW, 2);
         if (pupil && r.window > 0) {
             const auto percent = [&](int count) { return std::to_string(std::lround(100.0 * count / r.window)); };
-            std::snprintf(text, sizeof(text), t.measureShareFormat, percent(r.states[1]).c_str(),
+            std::snprintf(text, sizeof(text), cam.share, percent(r.states[1]).c_str(),
                           percent(r.states[2] + r.states[3]).c_str(), percent(r.states[4]).c_str(),
                           percent(r.states[5]).c_str());
             paragraph(baseline, text, 14, kTextMuted, false, textX, textW, 2);
@@ -4333,7 +4332,7 @@ void EyePanel::drawMeasureResult(const Pen& pen, const UiText& t, const PanelMod
     source(t.measureValve, kDotOther, gaze_measure::valveMain(r), false, sameMain ? &r.valve : nullptr,
            r.mapped && !sameMain);
     baseline += 10;
-    source(t.measurePupil, kMeasurePupil, r.pupil, true, nullptr, false);
+    source(cam.name, kMeasurePupil, r.pupil, true, nullptr, false);
     // Under it all: which way the dot went this time, and that Valve's self-calibration may have used the dot
     double noteBaseline = picY + picH + 26;
     paragraph(noteBaseline, view.order == gaze_measure::Order::Reverse ? t.measureOrderReverse : t.measureOrderForward,
@@ -4392,6 +4391,8 @@ void EyePanel::drawSlipResult(const Pen& pen, const UiText& t, const PanelModel&
     using slip_check::Phase;
     const slip_check::View& view = m.slip;
     const slip_check::Result& r = view.result;
+    // The camera gaze: the eyeball filter's when that was the source, the pupils' otherwise
+    const gaze_measure::CameraWords cam = gaze_measure::cameraWords(t, r.eyeball);
     const double x0 = kInnerX;
     const double x1 = kInnerRight;
     double y = kRowTop - 6;
@@ -4457,7 +4458,7 @@ void EyePanel::drawSlipResult(const Pen& pen, const UiText& t, const PanelModel&
             x += 22;
             char v[32];
             std::snprintf(v, sizeof(v), "%.1f°", r.pupilMean);
-            pen.text(x, baseline, std::string(t.measurePupil) + " " + v, size, kText, true);
+            pen.text(x, baseline, std::string(cam.name) + " " + v, size, kText, true);
         }
         if (r.valveDirs == 0 && !(r.mapped && r.pupilDirs > 0)) pen.text(x0, baseline, t.measureTooFew, 20, kTextMuted);
         baseline += 20;
@@ -4467,11 +4468,11 @@ void EyePanel::drawSlipResult(const Pen& pen, const UiText& t, const PanelModel&
     const double colW = (x1 - x0 - labelW) / 2;
     baseline += 18;
     pen.text(x0 + labelW, baseline, t.measureValve, 15, kTextMuted, true);
-    pen.text(x0 + labelW + colW, baseline, t.measurePupil, 15, kTextMuted, true);
+    pen.text(x0 + labelW + colW, baseline, cam.name, 15, kTextMuted, true);
     baseline += 8;
     const char* labels[slip_check::kDirCount] = {t.slipPushedUp, t.slipPushedDown, t.slipPushedLeft, t.slipPushedRight};
     const auto cell = [&](const slip_check::Move& move, bool pupil) -> std::string {
-        if (pupil && !r.mapped) return t.measureNoPupilMap;
+        if (pupil && !r.mapped) return cam.noMap;
         if (!move.counts()) return t.slipTooFew;
         return gaze_measure::shiftText(t, move.dx, move.dy);
     };
@@ -4554,6 +4555,8 @@ void EyePanel::drawReseatResult(const Pen& pen, const UiText& t, const PanelMode
     using reseat_check::Phase;
     const reseat_check::View& view = m.reseat;
     const reseat_check::Result& r = view.result;
+    // The camera gaze: the eyeball filter's when that was the source, the pupils' otherwise
+    const gaze_measure::CameraWords cam = gaze_measure::cameraWords(t, r.eyeball);
     const double x0 = kInnerX;
     const double x1 = kInnerRight;
     double y = kRowTop - 6;
@@ -4623,7 +4626,7 @@ void EyePanel::drawReseatResult(const Pen& pen, const UiText& t, const PanelMode
             x += 22;
             char v[32];
             std::snprintf(v, sizeof(v), "%.1f°", r.pupil.error);
-            pen.text(x, baseline, std::string(t.measurePupil) + " " + v, size, kText, true);
+            pen.text(x, baseline, std::string(cam.name) + " " + v, size, kText, true);
         }
         if (!r.valve.counts() && !(r.mapped && r.pupil.counts())) pen.text(x0, baseline, t.measureTooFew, 20, kTextMuted);
         baseline += 12;
@@ -4635,10 +4638,10 @@ void EyePanel::drawReseatResult(const Pen& pen, const UiText& t, const PanelMode
     baseline += 18;
     pen.text(x0, baseline, t.reseatRoundLabel, 14, kTextMuted, true);
     pen.text(x0 + labelW, baseline, t.measureValve, 14, kTextMuted, true);
-    pen.text(x0 + labelW + colW, baseline, t.measurePupil, 14, kTextMuted, true);
+    pen.text(x0 + labelW + colW, baseline, cam.name, 14, kTextMuted, true);
     baseline += 4;
     const auto cell = [&](const reseat_check::RoundSource& s, bool pupil) -> std::string {
-        if (pupil && !r.mapped) return t.measureNoPupilMap;
+        if (pupil && !r.mapped) return cam.noMap;
         if (!s.counts()) return t.slipTooFew;
         char v[32];
         std::snprintf(v, sizeof(v), "%.1f°  ", s.error);
@@ -4676,6 +4679,11 @@ void EyePanel::drawReseatResult(const Pen& pen, const UiText& t, const PanelMode
 void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsView& v, bool busy, double y) {
     const char* offsetKeys[2] = {key::kGazeOffsetX, key::kGazeOffsetY};
     const char* gainKeys[3] = {key::kGazeGainX, key::kGazeGainUp, key::kGazeGainDown};
+    // With the eyeball source, nothing on this page moves the gaze sent: the eye server's gaze is corrected and held
+    // here (correct_gaze, the far-down hold) before the eyeball's direction, through its own map from the eye fit,
+    // takes the combined gaze's place. So the page is grey, with one line saying why (the gaze scale still works)
+    const bool eyeball = eyeballGazeInConfig(v);
+    const bool usable = !busy && !eyeball;
     // A little tighter than the other tabs' caption rows, so the page fits under the Eye fit tab's rows
     const double rowH = 72;
     const double rowStepperH = 46;
@@ -4690,7 +4698,7 @@ void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsVie
             const bool locked = v.locked(offsetKeys[i]);
             drawCaption(pen, x + 4, y + 15, captions[i], 0, locked);
             const double value = v.number(offsetKeys[i]);
-            drawStepper(pen, x, y + 24, w, rowStepperH, offsetKeys[i], value, offsetText(value), !busy, locked);
+            drawStepper(pen, x, y + 24, w, rowStepperH, offsetKeys[i], value, offsetText(value), usable, locked);
         }
     }
     y += rowH + kRowGap;
@@ -4705,7 +4713,7 @@ void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsVie
             const bool locked = v.locked(gainKeys[i]);
             drawCaption(pen, x + 4, y + 15, captions[i], 0, locked);
             const double value = v.number(gainKeys[i]);
-            drawStepper(pen, x, y + 24, w, rowStepperH, gainKeys[i], value, formatSetting(gainKeys[i], value), !busy,
+            drawStepper(pen, x, y + 24, w, rowStepperH, gainKeys[i], value, formatSetting(gainKeys[i], value), usable,
                         locked);
         }
     }
@@ -4718,50 +4726,159 @@ void EyePanel::drawEyeFitGaze(const Pen& pen, const UiText& t, const SettingsVie
         drawRowLabel(pen, t, y, h, t.rowDownHold, t.hintDownHold, locked);
         const std::string text = value > 0 ? formatText(t.downHoldFormat, formatSetting(key::kGazeDownHoldXDeg, value))
                                            : std::string(t.off);
-        drawStepper(pen, kControlX, y + (h - 42) / 2, 200, 42, key::kGazeDownHoldXDeg, value, text, !busy, locked);
+        drawStepper(pen, kControlX, y + (h - 42) / 2, 200, 42, key::kGazeDownHoldXDeg, value, text, usable, locked);
+        // (beside its stepper, the eyeball's line: why the page is grey)
+        if (eyeball) {
+            const double noteX = kControlX + 200 + 16;
+            const std::vector<std::string> lines =
+                wrapText(pen, t.fitGazeEyeballUnused, 14, false, kInnerRight - noteX, 2);
+            double baseline = y + h / 2 - (lines.size() - 1) * 9 + 5;
+            for (const std::string& line : lines) {
+                pen.text(noteX, baseline, line, 14, kTextMuted);
+                baseline += 18;
+            }
+        }
     }
 }
 
-void EyePanel::drawEyeFitInfo(const Pen& pen, const UiText& t, double y) {
-    // How fitting works now, in the room under "Fine-tune" while it is folded: each wear one dot, the whole fit only
-    // at first and when something is off, and no tilt any more
+void EyePanel::drawEyeFitInfo(const Pen& pen, const UiText& t, double y, double bottom) {
+    // Why fit, in the room under "Fine-tune" while it is folded: it works without, fitting makes the gaze and eyelids
+    // exact, each wear only the middle dot
     const double x0 = kInnerX;
     const double x1 = kInnerRight;
-    const double bottom = kContentY + kContentH - 20;
-    // Its title and first two lines need 96 px set close (after a fit that wrote the eyelids too, the status card
-    // above has two more lines), 120 as usual
-    if (bottom - y < 96) return;
-    const double h = std::min(bottom - y, 170.0);
-    const bool tight = h < 120;
-    strokeRounded(pen, x0, y, x1 - x0, h, 14, kDivider, 1.5);
     const double textX = x0 + 20;
     const double textW = x1 - 20 - textX;
-    const double step = tight ? 26 : 32;
-    double baseline = y + (tight ? 28 : 34);
+    const std::vector<std::string> lines = wrapText(pen, t.fitInfoWhy, 15, false, textW, 3);
+    const double need = 30 + 8 + lines.size() * 22 + 14;
+    // Its title and its lines, or nothing (a failure's tall card above takes the room)
+    if (bottom - y < need) return;
+    const double h = need;
+    strokeRounded(pen, x0, y, x1 - x0, h, 14, kDivider, 1.5);
+    double baseline = y + 30;
     pen.text(textX, baseline, t.fitInfoTitle, fitSize(pen, t.fitInfoTitle, 18, 14, textW, true), kText, true);
-    for (const char* line : {t.fitInfoRewear, t.fitInfoFull}) {
-        baseline += step;
-        pen.text(textX, baseline, line, fitSize(pen, line, 16, 12, textW, false), kText);
+    baseline += 8;
+    for (const std::string& line : lines) {
+        baseline += 22;
+        pen.text(textX, baseline, line, 15, kTextMuted);
     }
-    // (the last, muted line only where it fits: "Clear center correction" above takes some of the room)
-    baseline += step;
-    if (baseline + 14 > y + h) return;
-    pen.text(textX, baseline, t.fitInfoNoTilt, fitSize(pen, t.fitInfoNoTilt, 15, 11, textW, false), kTextMuted);
+}
+
+double EyePanel::fitHelpButtonW(const Pen& pen, const UiText& t) const {
+    return 16 + 20 + 10 + pen.measure(t.fitHelpButton, 17, true) + 20;
+}
+
+void EyePanel::drawFitHelpButton(const Pen& pen, const UiText& t, double x, double y, double h) {
+    const PanelHit hit {PanelAction::FitHelp, nullptr, 1};
+    const int pointer = pointerState(hit);
+    const double w = fitHelpButtonW(pen, t);
+    fillRounded(pen, x, y, w, h, h / 2, pointer > 0 ? kControlHover : kControl);
+    strokeRounded(pen, x, y, w, h, h / 2, kBorder, 2);
+    // A "?" in a small ring, then the words
+    const double cx = x + 16 + 10;
+    drawRing(pen.cr, cx, y + h / 2, 10, 1.5, kTextMuted);
+    textCentered(pen, cx, centerBaseline(y, h, 13), "?", 13, kTextMuted, true);
+    pen.text(cx + 10 + 10, centerBaseline(y, h, 17), t.fitHelpButton, 17, kText, true);
+    addButton(hit, x, y, w, h, true);
+}
+
+void EyePanel::drawEyeFitHelp(const Pen& pen, const UiText& t) {
+    // "Back" at the top left with the title beside it, then a box per button in two columns (read down the left one,
+    // then the right): its name, what it does, when to use it (muted). The largest sizes at which all of it fits the
+    // card, and the split between the columns that leaves the taller one shortest
+    const double top = kContentY + 18;
+    const double backH = 42;
+    const double backW = pen.measure(t.fitHelpBack, 16, true) + 40;
+    drawButton(pen, kInnerX, top, backW, backH, t.fitHelpBack, {PanelAction::FitHelp, nullptr, 0}, true, false, 16);
+    const double titleX = kInnerX + backW + 16;
+    pen.text(titleX, centerBaseline(top, backH, 20), t.fitHelpTitle,
+             fitSize(pen, t.fitHelpTitle, 20, 14, kInnerRight - titleX, true), kText, true);
+    const double y0 = top + backH + 12;
+    const double bottom = kContentY + kContentH - 14;
+    const double columnGap = 12;
+    const double colW = (kInnerRight - kInnerX - columnGap) / 2;
+    const double padX = 12;
+    const double padY = 8;
+    const double gap = 8;
+    const double textW = colW - padX * 2;
+    struct Sizes {
+        double name, text, use;
+    };
+    const Sizes choices[] = {{17, 15, 14}, {16, 15, 14}, {16, 14, 13}, {15, 14, 13}, {15, 14, 12}, {15, 13, 13},
+                             {15, 13, 12}, {14, 12, 12}};
+    constexpr int kEntries = 7;
+    struct Entry {
+        std::vector<std::string> name, text, use;
+        double h = 0;
+    };
+    Entry entries[kEntries];
+    Sizes sizes = choices[0];
+    int split = 4;  // entries before it in the left column
+    double tallest = 0;
+    fitHelpSizeStep_ = -1;
+    for (const Sizes& s : choices) {
+        sizes = s;
+        ++fitHelpSizeStep_;
+        for (int i = 0; i < kEntries; ++i) {
+            Entry& e = entries[i];
+            e.name = wrapText(pen, t.fitHelpNames[i], s.name, true, textW, 2);
+            e.text = wrapText(pen, t.fitHelpTexts[i], s.text, false, textW, 8);
+            e.use = wrapText(pen, t.fitHelpUses[i], s.use, false, textW, 5);
+            e.h = padY * 2 + e.name.size() * s.name * 1.3 + 2 + e.text.size() * s.text * 1.4 +
+                  e.use.size() * s.use * 1.4;
+        }
+        tallest = 1e9;
+        for (int k = 3; k <= 5; ++k) {
+            double column[2] = {0, 0};
+            for (int i = 0; i < kEntries; ++i) column[i < k ? 0 : 1] += entries[i].h + gap;
+            const double taller = std::max(column[0], column[1]) - gap;
+            if (taller < tallest) {
+                tallest = taller;
+                split = k;
+            }
+        }
+        if (y0 + tallest <= bottom) break;
+    }
+    double y = y0;
+    fitHelpBottom_ = 0;
+    for (int i = 0; i < kEntries; ++i) {
+        if (i == split) y = y0;
+        const Entry& e = entries[i];
+        const double x0 = i < split ? kInnerX : kInnerX + colW + columnGap;
+        fillRounded(pen, x0, y, colW, e.h, 12, kBg);
+        const double x = x0 + padX;
+        double baseline = y + padY;
+        for (const std::string& line : e.name) {
+            baseline += sizes.name * 1.3;
+            pen.text(x, baseline - sizes.name * 0.25, line, sizes.name, kText, true);
+        }
+        baseline += 2;
+        for (const std::string& line : e.text) {
+            baseline += sizes.text * 1.4;
+            pen.text(x, baseline - sizes.text * 0.3, line, sizes.text, kText);
+        }
+        for (const std::string& line : e.use) {
+            baseline += sizes.use * 1.4;
+            pen.text(x, baseline - sizes.use * 0.3, line, sizes.use, kTextMuted);
+        }
+        y += e.h;
+        fitHelpBottom_ = std::max(fitHelpBottom_, y);
+        y += gap;
+    }
 }
 
 void EyePanel::drawEyeFitLids(const Pen& pen, const UiText& t, const SettingsView& v, const FitInConfig& saved,
                               bool busy, double y) {
     // Each eye's lid readings, across the whole width: closed, up, straight ahead, down
+    const double labelW = 40;
+    const double stepperH = 44;
     {
         const double titleSize = 18;
         pen.text(kInnerX, y + 16, t.rowLidFit, titleSize, kText, true);
         const double titleW = pen.measure(t.rowLidFit, titleSize, true);
         pen.text(kInnerX + titleW + 12, y + 16, t.hintLidFit, 15, kTextMuted);
         const char* captions[4] = {t.capClosed, t.capUp, t.capAhead, t.capDown};
-        const double labelW = 40;
         const double gap = 10;
         const double w = (kInnerRight - kInnerX - labelW - gap * 3) / 4;
-        const double stepperH = 44;
         for (int i = 0; i < 4; ++i) {
             const double x = kInnerX + labelW + i * (w + gap);
             drawCaption(pen, x + 4, y + 40, captions[i], 0, v.locked(kLidFitKeys[0][i]) || v.locked(kLidFitKeys[1][i]));
@@ -4780,6 +4897,20 @@ void EyePanel::drawEyeFitLids(const Pen& pen, const UiText& t, const SettingsVie
                 drawStepper(pen, x, rowY, w, stepperH, name, value, formatSetting(name, value),
                             !busy && saved.lidsFitted[eye], v.locked(name), low, high);
             }
+        }
+    }
+    // Under them: an eye that can't widen by itself follows the other one (lid_widen), or neither widens
+    if (saved.values.hasLids) {
+        const WidenState widen = widenState(v);
+        const char* note = nullptr;
+        if (widen.mode > 0 && widen.room[0] != widen.room[1]) {
+            note = widen.room[1] ? t.widenFollowsLeft : t.widenFollowsRight;
+        } else if (widen.mode > 0 && !widen.room[0] && !widen.room[1]) {
+            note = t.widenNoRoom;
+        }
+        if (note != nullptr) {
+            const double baseline = y + 48 + 2 * (stepperH + 4) + 22;
+            pen.text(kInnerX, baseline, note, fitSize(pen, note, 15, 12, kInnerRight - kInnerX, false), kTextMuted);
         }
     }
 }
@@ -6289,7 +6420,7 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
                       compare && mapped ? 0 : 1, 20, !usable);
         const Color legendText = usable ? kTextMuted : kTextDisabled;
         if (!mapped) {
-            const std::vector<std::string> why = wrapText(pen, t.hintGazeSource, 14, false, right - noteX, 2);
+            const std::vector<std::string> why = wrapText(pen, t.gazeCompareNeedsMap, 14, false, right - noteX, 2);
             double line = y + h / 2 - (why.size() - 1) * 9 + 5;
             for (const std::string& text : why) {
                 pen.text(noteX, line, text, 14, legendText);

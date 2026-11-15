@@ -345,6 +345,7 @@ struct Overall {
 /** A run's result. */
 struct Result {
     bool mapped = false;              ///< a pupil map was there (pupil scored)
+    bool eyeball = false;             ///< the camera gaze scored was the eyeball filter's (Session::start), not the pupils'
     PositionScore positions[kPositionCount];
     Overall valve;                    ///< Valve on every counted sample
     Overall valveSame;                ///< Valve on the pupils' samples (its main number while there is a map)
@@ -414,8 +415,10 @@ public:
      * @param now the panel's monotonic seconds
      * @param unixNow wall clock
      * @param order which way through the places
+     * @param eyeball gaze_source is "eyeball" (or "pupil", which runs as it): frameeyeosc scores the eyeball filter's
+     *        gaze in the pupils' place (Result::eyeball)
      */
-    void start(double now, double unixNow, Order order = Order::Forward);
+    void start(double now, double unixNow, Order order = Order::Forward, bool eyeball = false);
 
     /**
      * Stop before the end ("Stop", leaving the page, the panel closing).
@@ -466,6 +469,7 @@ private:
     double shownAt_[kPositionCount] = {};
     bool ended_ = false;
     bool appeared_ = false;  ///< the dot has been shown (its first cue played)
+    bool eyeball_ = false;   ///< (start)
 
     void end(Phase phase, double unixNow);
 };
@@ -535,6 +539,22 @@ std::string positionText(const UiText& t, const Position& position);
  * @return the line ("" if no source counts)
  */
 std::string briefText(const UiText& t, const Result& result);
+
+/** The camera gaze's words in the three checks' results: the eyeball filter's ("眼球") or the pupils' ("瞳"). */
+struct CameraWords {
+    const char* name;          ///< measurePupil / measureEyeball
+    const char* brief;         ///< measureBriefPupil / measureBriefEyeball
+    const char* share;         ///< measureShareFormat / measureShareEyeballFormat
+    const char* noMap;         ///< measureNoPupilMap / measureNoEyeballMap
+    const char* valveAllUsed;  ///< measureValveAllUsed / measureValveAllUsedEyeball
+};
+
+/**
+ * @param t texts
+ * @param eyeball the camera gaze was the eyeball filter's (Result::eyeball)
+ * @return its words
+ */
+CameraWords cameraWords(const UiText& t, bool eyeball);
 
 /** The panel's end of the check's socket: bound only while a check runs (frameeyeosc sends while it is there). */
 class Receiver {

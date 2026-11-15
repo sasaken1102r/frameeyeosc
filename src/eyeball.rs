@@ -69,13 +69,19 @@ const ELL_GATE: f64 = 9.0;
 const ELL_REACQ: u32 = 20;
 const ELL_REACQ_MOVING: u32 = 6;
 const SACCADE_REACQ_S: f64 = 0.3;
-/// Refused this many frames in a row: the angles are taken afresh from the next ellipse (the centre kept).
+/// Refused this many frames in a row: the angles are taken afresh from the next ellipse (the centre kept). If that
+/// happens again within RESTART_S, or the angles sit at the limit (ANG_MAX_DEG), the centre kept is the wrong one: the
+/// filter starts over from the frame. On the headset (2026-11-15, the eye log at 14:51 and its eye video) an eye
+/// whose centre had gone 4-8 mm off was refused 20-41% of a minute with dozens of re-takes, each keeping that centre.
 const REACQUIRE: u32 = 30;
+const RESTART_S: f64 = 3.0;
 /// Plausible camera-to-centre distances (m), angles (degrees), and the pupil must face the camera at least this much
 /// (the cosine between the gaze and the ray to the pupil).
 const DEPTH_MIN: f64 = 0.012;
 const DEPTH_MAX: f64 = 0.060;
-const ANG_MAX_DEG: f64 = 50.0;
+/// (65 degrees since 2026-11-15: one wearer's right eye reads 10-20 degrees down looking ahead, so looking down 15
+/// degrees put it at the old 50 and every frame there was refused.)
+const ANG_MAX_DEG: f64 = 65.0;
 const FACING: f64 = -0.3;
 /// The angle rates fade over this long without measurements (s).
 const RATE_TAU: f64 = 0.15;
@@ -609,6 +615,7 @@ pub struct EyeFilter {
     pub saccade: bool,
     // When the last saccade frame was (the camera's time)
     saccade_at: Option<f64>,
+    reacquired_at: Option<f64>,
     // Holding still (HOLD_RADIUS): where the pupil came to rest and since when, whether it is still, the centre the
     // direction is given about meanwhile, the difference from the filter's own angles, the time of the last frame and
     // the direction given (radians)
@@ -781,12 +788,29 @@ impl EyeFilter {
         f[1][3] = RATE_TAU * (1.0 - fade);
         f[2][2] = fade;
         f[3][3] = fade;
+        // Refused for a while again soon after a re-take (RESTART_S), or at the angle limit: start over from this frame
+        if o.pos.is_some()
+            && o.ell.is_some()
+            && self.misses >= REACQUIRE
+            && !o.partial
+        {
+            let limit = (ANG_MAX_DEG - 1.0).to_radians();
+            let at_limit = x[0].abs() >= limit || x[1].abs() >= limit;
+            let again = self.reacquired_at.is_some_and(|at| o.time - at <= RESTART_S);
+            if at_limit || again {
+                self.x = None;
+                self.reacquired_at = None;
+                self.retakes += 1;
+                return self.filter(camera, o);
+            }
+        }
         // Refused for a while: the angles taken afresh from this frame's ellipse (the normal that puts the pupil on
         // the sphere about the centre kept), their uncertainty reset
         if let (Some(pos), Some(ell)) = (o.pos, o.ell)
             && self.misses >= REACQUIRE
             && !o.partial
         {
+            self.reacquired_at = Some(o.time);
             let g = normal_on_sphere(pos, ell, [x[4], x[5], x[6]]);
             (x[0], x[1]) = camera.angles_of(g);
             x[2] = 0.0;
@@ -2071,6 +2095,41 @@ pub mod tests {
             t += 1.0 / 90.0;
             assert_eq!(filter.retakes, retakes + u32::from(k + 1 == ELL_REACQ), "frame {k}");
         }
+    }
+
+    #[test]
+    fn refused_again_soon_or_at_the_angle_limit_the_filter_starts_over() {
+        let c = camera();
+        // At the angle limit: the next re-take is a fresh start from the frame
+        let mut filter = EyeFilter::default();
+        let t = settled_at(&mut filter, &c, 8.0, 4.0);
+        let mut x = filter.x.unwrap();
+        x[1] = -(ANG_MAX_DEG - 0.5).to_radians();
+        filter.x = Some(x);
+        filter.misses = REACQUIRE;
+        let retakes = filter.retakes;
+        let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 8.0, 4.0, t))).unwrap();
+        assert_eq!((e.update, filter.retakes), (Update::Start, retakes + 1));
+        // Refused for REACQUIRE frames right after a re-take: started over; the first re-take only re-takes the angles
+        let mut filter = EyeFilter::default();
+        let mut t = settled_at(&mut filter, &c, 8.0, 4.0);
+        filter.misses = REACQUIRE;
+        let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 8.0, 4.0, t))).unwrap();
+        assert_ne!(e.update, Update::Start);
+        t += 1.0 / 90.0;
+        filter.misses = REACQUIRE;
+        let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 8.0, 4.0, t))).unwrap();
+        assert_eq!(e.update, Update::Start);
+        // ...but not once RESTART_S has gone by
+        t += RESTART_S + 0.1;
+        run(&mut filter, &c, seen, t, 0.5, |_| (eye_at(&c), 8.0, 4.0));
+        t += 0.5;
+        filter.misses = REACQUIRE;
+        filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 8.0, 4.0, t)));
+        t += RESTART_S + 0.1;
+        filter.misses = REACQUIRE;
+        let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 8.0, 4.0, t))).unwrap();
+        assert_ne!(e.update, Update::Start);
     }
 
     #[test]

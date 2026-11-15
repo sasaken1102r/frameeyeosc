@@ -4888,6 +4888,21 @@ void testFitHelpPage(const FontSet& fonts) {
         std::printf("fit help page (%s): size step %d, bottom %.0f\n", lang.c_str(), panel.fitHelpSizeStep(),
                     panel.fitHelpBottom());
         if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/fithelp_" + lang + "_2026-11-15_12-50-00.png");
+        // (and, for a look, the eyeball source's whole fit at a corner: the tab as at any dot)
+        {
+            EyePanel running(fonts);
+            running.setTab(PanelTab::EyeFit);
+            PanelModel r = modelWith(Lids::Valve, false);
+            r.language = language;
+            r.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[2]));
+            r.fit.phase = gaze_fit::Phase::Capturing;
+            r.fit.count = gaze_fit::pointCount(gaze_fit::Mode::Full, true);
+            r.fit.index = 5;
+            r.fit.point = gaze_fit::Point::UpLeft;
+            running.render(r);
+            CHECK(hits(running, PanelAction::FitStop).size() == 1);
+            if (pngDir != nullptr) running.writePng(std::string(pngDir) + "/eyefit_running_corner_" + lang + "_2026-11-16_12-40-00.png");
+        }
         // Back: the tab again
         CHECK(pressArg(panel, PanelAction::FitHelp, 0).action == PanelAction::None);
         CHECK(!panel.fitHelp());

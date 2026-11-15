@@ -19,7 +19,6 @@ struct Pair {
     bool valid() const;
 };
 
-/** The latest gaze capture frameeyeosc reports (asked for by the panel's eye fit). */
 /** What the last whole eye fit did to the eyeball's maps (status.json "eyeball_map"; frameeyeosc's eyeball_map.rs). */
 struct EyeballMapStatus {
     bool known = false;       ///< the object was there (a whole fit with gaze_source "eyeball" since frameeyeosc started)
@@ -30,6 +29,7 @@ struct EyeballMapStatus {
     double misses[2] = {NAN, NAN};  ///< how far each eye's map missed its dots (degrees), where measured
 };
 
+/** The latest gaze capture frameeyeosc reports (asked for by the panel's eye fit). */
 struct GazeCaptureStatus {
     bool present = false;
     long long id = 0;

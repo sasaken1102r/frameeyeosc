@@ -478,6 +478,95 @@ void testFullSessionUpGains() {
     CHECK(s.view().count == 6 && s.view().mode == Mode::Full);
 }
 
+/**
+ * The eyeball source's whole fit: the four corners after the five dots, before the eyes shut, each as long as a dot,
+ * with frameeyeosc's names; what is written exactly as without them (only frameeyeosc's eyeball map uses the corners);
+ * a corner that stays unsteady is passed over, not a failure. Re-centering never shows them.
+ */
+void testCornerSession() {
+    CHECK(pointCount(Mode::Full) == 6 && pointCount(Mode::Full, true) == 10 && pointCount(Mode::Center, true) == 1);
+    const Point order[10] = {Point::Center, Point::Up, Point::Down, Point::Left, Point::Right, Point::UpLeft,
+                             Point::UpRight, Point::DownRight, Point::DownLeft, Point::Closed};
+    for (int i = 0; i < 10; ++i) CHECK(pointAt(Mode::Full, i, true) == order[i]);
+    CHECK(pointAt(Mode::Full, 5) == Point::Closed && pointAt(Mode::Center, 5, true) == Point::Center);
+    // Where frameeyeosc expects them (eyeball_map.rs DOTS), at the gaze error check's corners
+    const char* names[4] = {"up_left", "up_right", "down_right", "down_left"};
+    for (int i = 0; i < 4; ++i) {
+        const Target& t = target(order[5 + i]);
+        CHECK(std::string(t.name) == names[i] && isCorner(order[5 + i]));
+        CHECK(std::fabs(t.yawDeg) == kSideDeg && std::fabs(t.pitchDeg) == kUpDownDeg);
+    }
+    CHECK(target(Point::UpLeft).yawDeg < 0 && target(Point::UpLeft).pitchDeg > 0);
+    CHECK(target(Point::DownRight).yawDeg > 0 && target(Point::DownRight).pitchDeg < 0);
+    CHECK(!isCorner(Point::Right) && !isCorner(Point::Closed));
+
+    Measured points[kPointCount];
+    fivePoints(points);
+    // Without the corners, as always
+    Session plain;
+    plain.start(Mode::Full, Values(), 0.0);
+    const Actions without = runFull(plain, points);
+    // With them: the same five, then each corner (its own target, a dot's length), then the eyes shut
+    Session s;
+    s.start(Mode::Full, Values(), 0.0, {}, kDefaultIpdM, true);
+    CHECK(s.view().count == 10);
+    double now = 0.0;
+    long long id = 0;
+    for (int i = 0; i < 5; ++i) runStep(s, now, id, points[i]);
+    for (int i = 0; i < 4; ++i) {
+        CHECK(s.view().point == order[5 + i] && s.view().index == 5 + i);
+        s.tick(now, kClosed, runningWith(0, false, {}));
+        now += kSettleSec;
+        const Actions ask = s.tick(now, kClosed, runningWith(0, false, {}));
+        CHECK(ask.writeCapture && std::string(ask.target) == names[i] && near(ask.captureSec, kCaptureSec));
+        CHECK(near(ask.yawDeg, target(order[5 + i]).yawDeg) && near(ask.pitchDeg, target(order[5 + i]).pitchDeg));
+        s.captureSent(++id, now);
+        now += kCaptureSec + 0.2;
+        // The up-right corner unsteady three times: passed over after the last try, the fit goes on
+        const Measured answer = i == 1 ? Measured() : steady(target(order[5 + i]).yawDeg / kFullScaleDeg, 0.1);
+        Actions a = s.tick(now, kClosed, runningWith(id, true, answer));
+        for (int retry = 0; i == 1 && retry < 2; ++retry) {
+            CHECK(s.view().point == Point::UpRight && s.view().phase == Phase::Settling);
+            now += kSettleSec;
+            s.tick(now, kClosed, runningWith(0, false, {}));
+            s.captureSent(++id, now);
+            now += kCaptureSec + 0.2;
+            a = s.tick(now, kClosed, runningWith(id, true, answer));
+        }
+        if (i == 1) CHECK(a.log.find("up_right: passed over") != std::string::npos);
+        CHECK(s.active() && s.view().phase != Phase::Failed);
+    }
+    CHECK(s.view().point == Point::Closed);
+    runStep(s, now, id, points[static_cast<int>(Point::Closed)], kCloseSettleSec, false);
+    now += kReopenSec;
+    const Actions with = s.tick(now, kClosed, runningWith(0, false, {}));
+    CHECK(with.writeValues && s.view().phase == Phase::Done);
+    // Exactly what the fit without them writes
+    CHECK(with.values.offsetX == without.values.offsetX && with.values.offsetY == without.values.offsetY);
+    CHECK(with.values.gainUp == without.values.gainUp && with.values.gainX == without.values.gainX);
+    CHECK(with.values.gainDown == without.values.gainDown && with.values.hasLids == without.values.hasLids);
+    for (int eye = 0; eye < 2; ++eye) {
+        CHECK(with.values.lidOpen[eye] == without.values.lidOpen[eye] &&
+              with.values.lidClosed[eye] == without.values.lidClosed[eye]);
+    }
+    CHECK(with.values.hasPupilMap == without.values.hasPupilMap);
+    // A dot of the five that doesn't move fails before the corners are shown
+    Measured still[kPointCount];
+    fivePoints(still);
+    still[static_cast<int>(Point::Right)] = still[static_cast<int>(Point::Center)];
+    Session failing;
+    failing.start(Mode::Full, Values(), 0.0, {}, kDefaultIpdM, true);
+    now = 0.0;
+    id = 0;
+    for (int i = 0; i < 5; ++i) runStep(failing, now, id, still[i]);
+    CHECK(failing.view().phase == Phase::Failed && failing.view().failure == Failure::NoMovement);
+    CHECK(failing.view().point == Point::Right);
+    // Re-centering: the one dot
+    Session center;
+    center.start(Mode::Center, Values(), 0.0, {}, kDefaultIpdM, true);
+    CHECK(center.view().count == 1);
+}
+
 void testCenterSession() {
     Session s;
     double now = 0.0;
@@ -968,6 +1057,7 @@ int main() {
     testStandIn();
     testFullSession();
     testFullSessionUpGains();
+    testCornerSession();
     testCenterSession();
     testPupilMap();
     testFailures();

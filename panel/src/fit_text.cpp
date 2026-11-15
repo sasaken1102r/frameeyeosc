@@ -60,6 +60,10 @@ const char* pointName(const UiText& t, gaze_fit::Point point) {
         case gaze_fit::Point::Left: return t.pointLeft;
         case gaze_fit::Point::Right: return t.pointRight;
         case gaze_fit::Point::Closed: return t.pointClosed;
+        case gaze_fit::Point::UpLeft: return t.pointCorners[0];
+        case gaze_fit::Point::UpRight: return t.pointCorners[1];
+        case gaze_fit::Point::DownRight: return t.pointCorners[2];
+        case gaze_fit::Point::DownLeft: return t.pointCorners[3];
     }
     return "";
 }

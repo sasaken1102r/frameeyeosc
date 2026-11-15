@@ -362,7 +362,7 @@ void printUsage() {
         "      --update-beta     \"Get test versions\" on (with --dump-png; else as panel.json says)\n"
         "      --fake-update-notes both|en|long  With --fake-update available|manual, the new release's summary:\n"
         "                        English and Japanese, English only, or both cut at 300 characters\n"
-        "      --fake-fit running|running-center|running-closed|done|done-center|done-standin|\n"
+        "      --fake-fit running|running-center|running-closed|running-corner|done|done-center|done-standin|\n"
         "                 done-center-standin|fitted|fitted-gaze|\n"
         "                 failed-unsteady|failed-notclosed|failed-movement|failed-lidrange|failed-cancelled|\n"
         "                 failed-left|failed-opened|failed-opened-retry|failed-noresult\n"
@@ -1269,7 +1269,7 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--fake-fit" && hasNext) {
             options.fakeFit = argv[++i];
             static const char* const kFitStates[] = {
-                "running",         "running-center",   "running-closed",   "done",
+                "running",         "running-center",   "running-closed",   "running-corner", "done",
                 "done-center",     "done-standin",     "done-center-standin", "fitted",
                 "fitted-gaze",     "failed-unsteady",  "failed-notclosed", "failed-movement",
                 "failed-lidrange", "failed-cancelled", "failed-left",      "failed-opened",
@@ -2309,6 +2309,12 @@ PanelModel fakeModel(const Options& options) {
             fit.phase = Phase::Settling;
             fit.index = 5;
             fit.point = Point::Closed;
+        } else if (state == "running-corner") {
+            // The eyeball source's whole fit at its first corner
+            fit.count = gaze_fit::pointCount(fit.mode, true);
+            fit.phase = Phase::Capturing;
+            fit.index = 5;
+            fit.point = Point::UpLeft;
         } else if (state.rfind("done", 0) == 0) {
             fit.phase = Phase::Done;
             // The right eye stuck shut on Valve's side, seen open by the eye camera (2026-10-11)
@@ -3410,7 +3416,11 @@ void startFit(gaze_fit::Session& fit, gaze_fit::Mode mode, const SettingsView& v
     // The whole fit writes the mean up gain of the last few whole fits (panel.json keeps them)
     const std::vector<double> upGains =
         mode == gaze_fit::Mode::Full ? ui_state::readUpGains(ui_state::defaultPath()) : std::vector<double>();
-    fit.start(mode, fitInConfig(view).values, nowSeconds(), upGains, ipd);
+    // With the eyeball source (or "pupil", which runs as it) the whole fit also shows the four corners, for
+    // frameeyeosc's nine-dot eyeball map; nothing the panel writes uses them
+    const bool corners = mode == gaze_fit::Mode::Full && eyeballGazeInConfig(view);
+    if (corners) std::fprintf(stderr, "[fit] with the four corners (eyeball source)\n");
+    fit.start(mode, fitInConfig(view).values, nowSeconds(), upGains, ipd, corners);
 }
 
 /**

@@ -16,15 +16,16 @@
 
 namespace gaze_fit {
 
-/** The whole fit (five gaze points and the eyes-shut step), or re-centering the gaze only (one dot), for putting the
- *  headset back on. */
+/** The whole fit (five gaze points, with the eyeball source the four corners after them, and the eyes-shut step), or
+ *  re-centering the gaze only (one dot), for putting the headset back on. */
 enum class Mode { Full, Center };
 
-/** The steps, in the order the full fit shows them. */
-enum class Point { Center, Up, Down, Left, Right, Closed };
+/** The steps (the full fit shows them as pointAt orders them: the corners after Right, Closed last). The corners only
+ *  for frameeyeosc's eyeball map (its nine-dot form); the gaze, pupil and lid fits use only the first five and Closed. */
+enum class Point { Center, Up, Down, Left, Right, Closed, UpLeft, UpRight, DownRight, DownLeft };
 
 /** How many steps there are at most. */
-constexpr int kPointCount = 6;
+constexpr int kPointCount = 10;
 
 /** A step's target as seen from the head. */
 struct Target {
@@ -112,17 +113,25 @@ const Target& target(Point point);
 /**
  * How many steps a mode has.
  * @param mode the mode
- * @return 6 or 1
+ * @param corners the whole fit shows the four corners (gaze_source "eyeball")
+ * @return 6 (10 with the corners) or 1
  */
-int pointCount(Mode mode);
+int pointCount(Mode mode, bool corners = false);
 
 /**
  * The step shown at a position.
  * @param mode the mode
  * @param index 0-based step
+ * @param corners the whole fit shows the four corners (after Right, before Closed)
  * @return the step
  */
-Point pointAt(Mode mode, int index);
+Point pointAt(Mode mode, int index, bool corners = false);
+
+/**
+ * @param point a step
+ * @return true for the four corners
+ */
+bool isCorner(Point point);
 
 /** Fewest fresh pupil samples each eye needs at each dot for the pupil map (a capture takes about 150 at 90 Hz). */
 constexpr int kMinPupilFresh = 30;
@@ -467,9 +476,11 @@ public:
      * @param now monotonic seconds
      * @param upGains the previous whole fits' up gains, oldest first (the whole fit writes their mean with its own)
      * @param ipd the distance between the eyes (m), for each eye's direction to the targets (the pupil map)
+     * @param corners the whole fit also shows the four corners (gaze_source "eyeball": frameeyeosc fits its eyeball map on
+     *        nine dots); only frameeyeosc uses them, nothing this fit writes changes
      */
     void start(Mode mode, const Values& current, double now, const std::vector<double>& upGains = {},
-               double ipd = kDefaultIpdM);
+               double ipd = kDefaultIpdM, bool corners = false);
 
     /**
      * Stop.
@@ -505,6 +516,7 @@ public:
 private:
     Phase phase_ = Phase::Idle;
     Mode mode_ = Mode::Full;
+    bool corners_ = false;       ///< the whole fit shows the four corners
     Failure failure_ = Failure::None;
     Values current_;
     Values result_;
@@ -544,7 +556,7 @@ private:
     void finish(Actions& actions);
 
     /** @return the step shown now */
-    Point point() const { return pointAt(mode_, index_); }
+    Point point() const { return pointAt(mode_, index_, corners_); }
 
     /**
      * Stop because a point did not move far enough.

@@ -223,6 +223,7 @@ UiText makeJapanese() {
 
     t.rowFit = "目を合わせる";
     t.hintFit = "正面・上の幅・まぶた・約 20 秒";
+    t.hintFitEyeball = "正面・上の幅・まぶた・約 32 秒";
     t.fitStart = "目を合わせる";
     t.fitAgain = "もう一度合わせる";
     t.fitCenterOnly = "真ん中だけ合わせ直す";
@@ -267,8 +268,8 @@ UiText makeJapanese() {
     t.fitHelpTitle = "それぞれのボタンの説明";
     t.fitHelpBack = ICON_CHEVRON_LEFT " もどる";
     t.fitHelpNames[0] = "目を合わせる／もう一度合わせる";
-    t.fitHelpTexts[0] = "いくつかの点を目で追って、最後に 3 秒目を閉じる（約 20 秒）。視線の正面と幅、まぶたの開き・閉じを"
-                        "あなたの目に合わせるよ。";
+    t.fitHelpTexts[0] = "いくつかの点を目で追って、最後に 3 秒目を閉じる（約 20 秒。眼球のときは四隅も見て約 32 秒）。"
+                        "視線の正面と幅、まぶたの開き・閉じをあなたの目に合わせるよ。";
     t.fitHelpUses[0] = "使うとき：最初の 1 回。視線やまぶたがなんだか合わないとき。ほかの人に貸すとき。";
     t.fitHelpNames[1] = "真ん中だけ合わせ直す";
     t.fitHelpTexts[1] = "真ん中の点を 1 つ見るだけで、視線の正面だけ合わせ直すよ。幅とまぶたはそのまま。";
@@ -325,6 +326,10 @@ UiText makeJapanese() {
     t.pointLeft = "左";
     t.pointRight = "右";
     t.pointClosed = "目を閉じる";
+    t.pointCorners[0] = "左上";
+    t.pointCorners[1] = "右上";
+    t.pointCorners[2] = "右下";
+    t.pointCorners[3] = "左下";
     t.targetClose = "3 秒間\n目を閉じて";
     t.targetKeepClosed = "閉じたまま";
     t.targetOpen = "開けて OK";
@@ -1577,6 +1582,7 @@ UiText makeEnglish() {
 
     t.rowFit = "Fit your eyes";
     t.hintFit = "Center, up range, eyelids, ~20 s";
+    t.hintFitEyeball = "Center, up range, eyelids, ~32 s";
     t.fitStart = "Fit my eyes";
     t.fitAgain = "Fit again";
     t.fitCenterOnly = "Re-center only";
@@ -1622,8 +1628,9 @@ UiText makeEnglish() {
     t.fitHelpTitle = "What each button does";
     t.fitHelpBack = ICON_CHEVRON_LEFT " Back";
     t.fitHelpNames[0] = "Fit my eyes / Fit again";
-    t.fitHelpTexts[0] = "Follow a few dots with your eyes, then close them for 3 seconds (about 20 s). Fits the gaze "
-                        "center and range and the eyelids' open and closed readings to your eyes.";
+    t.fitHelpTexts[0] = "Follow a few dots with your eyes, then close them for 3 seconds (about 20 s; with Eyeball the "
+                        "four corners too, about 32 s). Fits the gaze center and range and the eyelids' open and closed "
+                        "readings to your eyes.";
     t.fitHelpUses[0] = "When: the first time; when the gaze or eyelids feel off; when lending the headset to someone.";
     t.fitHelpNames[1] = "Re-center only";
     t.fitHelpTexts[1] = "Look at one dot in the middle to fit only the gaze center again. Range and eyelids stay as "
@@ -1684,6 +1691,10 @@ UiText makeEnglish() {
     t.pointLeft = "left";
     t.pointRight = "right";
     t.pointClosed = "eyes closed";
+    t.pointCorners[0] = "up-left";
+    t.pointCorners[1] = "up-right";
+    t.pointCorners[2] = "down-right";
+    t.pointCorners[3] = "down-left";
     t.targetClose = "Close your eyes\nfor 3 s";
     t.targetKeepClosed = "Keep them closed";
     t.targetOpen = "Open them";

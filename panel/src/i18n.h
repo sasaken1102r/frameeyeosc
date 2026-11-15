@@ -232,6 +232,7 @@ struct UiText {
     // Eye fit tab
     const char* rowFit;
     const char* hintFit;
+    const char* hintFitEyeball;      ///< ...with the eyeball source (the four corners too: longer)
     const char* fitStart;            ///< the one big button before any fit
     const char* fitAgain;            ///< the same button once fitted
     const char* fitCenterOnly;       ///< small button: re-center the gaze only (the middle dot)
@@ -310,6 +311,7 @@ struct UiText {
     const char* pointLeft;
     const char* pointRight;
     const char* pointClosed;
+    const char* pointCorners[4];     ///< the eyeball source's corners: up-left, up-right, down-right, down-left
     const char* targetClose;         ///< on the target: "Close your eyes\nfor 3 s" (two lines)
     const char* targetKeepClosed;
     const char* targetOpen;

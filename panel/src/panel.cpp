@@ -3894,7 +3894,7 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
     // gaze centre passed on as it is), only while there is one
     const std::vector<std::string> centerKeys = centerCorrection(v);
     {
-        drawRowLabel(pen, t, y, kRowH, t.rowFit, t.hintFit, false);
+        drawRowLabel(pen, t, y, kRowH, t.rowFit, eyeballGazeInConfig(v) ? t.hintFitEyeball : t.hintFit, false);
         const double gap = 12;
         const double smallW = std::max({190.0, pen.measure(t.fitCenterOnly, 19, true) + 32,
                                         pen.measure(t.fitCenterClear, 17, true) + 32});

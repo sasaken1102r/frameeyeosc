@@ -17,7 +17,18 @@ constexpr Target kTargets[kPointCount] = {
     {Point::Right, "right", kSideDeg, 0.0},
     // The eyes-shut step shows its words straight ahead
     {Point::Closed, "closed", 0.0, 0.0},
+    // The corners (the gaze error check's), for frameeyeosc's eyeball map only; the names are its (eyeball_map.rs DOTS)
+    {Point::UpLeft, "up_left", -kSideDeg, kUpDownDeg},
+    {Point::UpRight, "up_right", kSideDeg, kUpDownDeg},
+    {Point::DownRight, "down_right", kSideDeg, -kUpDownDeg},
+    {Point::DownLeft, "down_left", -kSideDeg, -kUpDownDeg},
 };
+
+/** The full fit's steps in order: the five dots, the corners when shown, the eyes shut. */
+constexpr Point kFullOrder[kPointCount] = {Point::Center, Point::Up,      Point::Down,      Point::Left,
+                                           Point::Right,  Point::UpLeft,  Point::UpRight,   Point::DownRight,
+                                           Point::DownLeft, Point::Closed};
+constexpr Point kFullOrderNoCorners[6] = {Point::Center, Point::Up, Point::Down, Point::Left, Point::Right, Point::Closed};
 
 /**
  * Round to a number of decimals.
@@ -112,17 +123,21 @@ const Target& target(Point point) {
     return kTargets[static_cast<int>(point)];
 }
 
-int pointCount(Mode mode) {
+int pointCount(Mode mode, bool corners) {
     switch (mode) {
         case Mode::Center: return 1;
         case Mode::Full: break;
     }
-    return kPointCount;
+    return corners ? kPointCount : 6;
 }
 
-Point pointAt(Mode mode, int index) {
+Point pointAt(Mode mode, int index, bool corners) {
     if (mode == Mode::Center) return Point::Center;
-    return kTargets[std::clamp(index, 0, kPointCount - 1)].point;
+    return corners ? kFullOrder[std::clamp(index, 0, kPointCount - 1)] : kFullOrderNoCorners[std::clamp(index, 0, 5)];
+}
+
+bool isCorner(Point point) {
+    return point == Point::UpLeft || point == Point::UpRight || point == Point::DownRight || point == Point::DownLeft;
 }
 
 int samplesNeeded(const Measured& measured) {
@@ -486,9 +501,11 @@ bool fitLids(const Measured points[kPointCount], Values& out, FailureDetail* det
     return true;
 }
 
-void Session::start(Mode mode, const Values& current, double now, const std::vector<double>& upGains, double ipd) {
+void Session::start(Mode mode, const Values& current, double now, const std::vector<double>& upGains, double ipd,
+                    bool corners) {
     *this = Session();
     ipd_ = ipd;
+    corners_ = corners && mode == Mode::Full;
     // No waiting for the dashboard: the first dot shows right away (nearer than the dashboard, so over it)
     phase_ = Phase::Settling;
     phaseAt_ = now;
@@ -512,8 +529,8 @@ void Session::fail(Failure failure) {
 }
 
 void Session::failMovement(Point point) {
-    for (int i = 0; i < pointCount(mode_); ++i) {
-        if (pointAt(mode_, i) == point) index_ = i;
+    for (int i = 0; i < pointCount(mode_, corners_); ++i) {
+        if (pointAt(mode_, i, corners_) == point) index_ = i;
     }
     fail(Failure::NoMovement);
 }
@@ -540,12 +557,13 @@ void Session::next(double now, Actions& actions) {
     previousPoint_ = point();
     ++index_;
     attempt_ = 1;
-    if (index_ >= pointCount(mode_)) {
+    if (index_ >= pointCount(mode_, corners_)) {
         finish(actions);
         return;
     }
-    // Before asking to close the eyes, make sure the gaze part worked
-    if (point() == Point::Closed) {
+    // Once the five dots are done (before the corners, or before asking to close the eyes), make sure the gaze part
+    // worked
+    if (previousPoint_ == Point::Right) {
         Values gaze = current_;
         Point failed = Point::Center;
         if (!fitGaze(measured_, gaze, failed, &detail_)) {
@@ -709,6 +727,11 @@ Actions Session::tick(double now, const Dashboard& dashboard, const EyeStatus& s
             if (ok) {
                 measured_[static_cast<int>(point())] = measured;
                 next(now, actions);
+            } else if (last && isCorner(point())) {
+                // A corner that stays unsteady is passed over, not a failure: only frameeyeosc's eyeball map uses it
+                // (without enough corners it makes its five-dot map), and nothing this fit writes needs it
+                actions.log += "\n" + std::string(target(point()).name) + ": passed over (only the eyeball map uses it)";
+                next(now, actions);
             } else if (++attempt_ > kMaxAttempts) {
                 attempt_ = kMaxAttempts;
                 detail_.tries = kMaxAttempts;
@@ -779,7 +802,7 @@ View Session::view() const {
     view.phase = phase_;
     view.mode = mode_;
     view.index = index_;
-    view.count = pointCount(mode_);
+    view.count = pointCount(mode_, corners_);
     view.point = phase_ == Phase::Failed ? failedPoint_ : point();
     view.attempt = attempt_;
     view.failure = failure_;

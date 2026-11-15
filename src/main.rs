@@ -4076,7 +4076,8 @@ fn process(
             (Some(maps), _) => {
                 let open = eyes_open_for_pupil(data.openness, seen_open, settings);
                 let moving = smoother.eyeball.moving(data.sample_time);
-                let step = smoother.pupil.step_eyes(data.sample_time, &maps, eyeball_own, open, valve, moving);
+                let trusted = smoother.eyeball.trusted(data.sample_time);
+                let step = smoother.pupil.step_eyes(data.sample_time, &maps, eyeball_own, open, valve, moving, trusted);
                 gaze_in_use = Some(step.in_use);
                 gaze_blending = step.blending;
                 let used = matches!(step.in_use, pupil::InUse::Pupil | pupil::InUse::Left | pupil::InUse::Right);

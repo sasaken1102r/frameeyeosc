@@ -26,8 +26,12 @@ pub const TARGET_DISTANCE_M: f64 = 0.9;
 pub const IPD_M: f64 = 0.063;
 /// Each eye's median at a dot needs at least this many samples (as the panel's pupil map, gaze_fit.h kMinPupilFresh).
 pub const MIN_SAMPLES: u32 = 30;
-/// A map is taken only while it fits its dots within this (degrees, root mean square)...
-pub const MAX_RMS_DEG: f64 = 4.0;
+/// A map is taken only while it fits its dots within this (degrees, root mean square)... (3 since 2026-11-15: on the
+/// headset a fit while the right eye's filter was still settling missed its dots by 3.4 degrees and the gaze check's
+/// corners by 10-22; the fits before missed by 2.0-2.3 for that eye and 1.0-1.5 for the other. A rule on the centre's
+/// own movement between the dots was tried and would have refused nearly every fit: that eye's centre moves 1-5 mm
+/// between the dots, in depth too, in every fit.)
+pub const MAX_RMS_DEG: f64 = 3.0;
 /// ...and the eye's angles spread at least this much between the dots (degrees, the smaller spread of the two axes).
 pub const MIN_SPREAD_DEG: f64 = 2.0;
 /// A centre further than this (degrees, yaw or pitch) is not taken.
@@ -439,6 +443,17 @@ mod tests {
             store.capture_done(DOTS[dot].0, medians(still, dot, 120));
         }
         assert!(store.maps.is_none());
+        // One dot 6.8 off in the right eye's reading (as an eye still settling): the map misses by about 3.3 degrees,
+        // which the old limit of 4 let through and MAX_RMS_DEG refuses
+        let medians5 = |shift: f32| {
+            [0, 1, 2, 3, 4].map(|d| {
+                let r = reading(1, DOTS[d].1, DOTS[d].2);
+                if d == 0 { [r[0] + shift, r[1]] } else { r }
+            })
+        };
+        let err = fit_eye(&medians5(6.8), 1).unwrap_err();
+        assert!(err.contains("misses its dots by 3.3 deg (at most 3)"), "{err}");
+        assert!(fit_eye(&medians5(4.0), 1).is_ok());
         // A wild reading at one dot: misses by far more than MAX_RMS_DEG
         let wild = |eye: usize, yaw: f64, pitch: f64| {
             let r = reading(eye, yaw, pitch);

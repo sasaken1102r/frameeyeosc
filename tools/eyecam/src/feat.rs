@@ -101,6 +101,21 @@ const OUTLINE_FLOOR: f64 = 0.3;
 /// right of the second re-seat run in 60% of the frames, against 89% before and after). A dip looked for out to the
 /// floor's end of the ray instead (2 r0 + 6) came out a little worse (second re-seat run 3.00 against 2.95 degrees).
 const OUTLINE_DIP_TOP: f64 = 0.75;
+/// A ray that found no edge at all, where the pupil's fit reaches past OUTLINE_BAND_RHO of the blob's radius along it,
+/// is tried again for the outline with its outer band measured from the fit's rim (1.25-1.7 of the fit's radius along
+/// the ray) and the crossing looked for out to 1.9 of it. An elongated pupil (an eye turned well up or down, b/a
+/// 0.6) reaches 1.5 r0 at the ends of its long axis, where the band then lies on the rim's own transition and is too
+/// dark against the pupil: those rays found no edge, and the left eye at the re-seat runs' upper left read rim
+/// 0.86-0.88 with its ellipse right on the pupil, so the eyeball filter went by the pupil alone there (frames with rim
+/// 0.98 or more: 0% -> 49% / 22%; the right eye at the upper right 10% -> 87%, 8% -> 77%). Rays darker beyond the rim
+/// (lashes or a lid as dark as the pupil) still find no edge. Re-seat runs 2.95 -> 2.67 and 2.64 -> 2.66 degrees, a
+/// map fitted on one round scored on the next 4.55 -> 4.24 (2026-11-15). Only past 1.15 r0: every missed ray retried
+/// also took the round pupils at the lower left, where rays miss for other reasons (the right eye's next round 5.04
+/// against 4.52). Only a ray whose own band was lit above the pupil by OUTLINE_BAND_LIT of the step to the rays'
+/// usual level, as one straddling the rim is: lashes as dark as the pupil over its top pull its fit up over them, and
+/// measured from that fit's rim their band is the skin beyond, whose edge would then read as the rim.
+const OUTLINE_BAND_RHO: f64 = 1.15;
+const OUTLINE_BAND_LIT: f64 = 0.15;
 /// The outline's share (its `vis`) counts the rays that found the edge as the pupil's does, but a ray measured
 /// against the floor only where its point lies on the fitted outline: within OUTLINE_ON_RIM_SD robust standard
 /// deviations of the points' radial distances from it, and at least OUTLINE_ON_RIM_PX px. A floor point the robust fit
@@ -313,6 +328,23 @@ pub struct Pupil {
     /// The outline for the eye-camera gaze (OUTLINE_FLOOR): the ellipse and the share of rays that found its edge;
     /// None when it could not be fitted.
     pub outline: Option<(Ellipse, f64)>,
+}
+
+/// How far from `c` along the direction `th` (radians, y down) the ellipse's rim is (px; NaN when `c` is not inside).
+fn ray_to_ellipse(c: (f64, f64), th: f64, e: &Ellipse) -> f64 {
+    let (ha, hb, phi) = (e.a / 2.0, e.b / 2.0, e.angle_deg.to_radians());
+    let (px, py) = (c.0 - e.cx, c.1 - e.cy);
+    let (dx, dy) = (th.cos(), th.sin());
+    let rot = |x: f64, y: f64| (x * phi.cos() + y * phi.sin(), -x * phi.sin() + y * phi.cos());
+    let ((px, py), (dx, dy)) = (rot(px, py), rot(dx, dy));
+    let al = (dx / ha).powi(2) + (dy / hb).powi(2);
+    let be = 2.0 * (px * dx / (ha * ha) + py * dy / (hb * hb));
+    let ga = (px / ha).powi(2) + (py / hb).powi(2) - 1.0;
+    let disc = be * be - 4.0 * al * ga;
+    if ga >= 0.0 || disc < 0.0 {
+        return f64::NAN;
+    }
+    (-be + disc.sqrt()) / (2.0 * al)
 }
 
 /// One lid line: quadratic over the iris columns, its height at the pupil column, inlier share, edge strength, and
@@ -1096,6 +1128,7 @@ impl Extractor {
         let mut outline_pts: Vec<(f64, f64)> = Vec::with_capacity(NRAY);
         let mut floor_pts: Vec<(f64, f64)> = Vec::new();
         let mut raised = false;
+        let mut missed: Vec<usize> = Vec::new();
         let (mut left_n, mut left_ok) = (0usize, 0usize);
         for k in 0..NRAY {
             if last_x[k] < x_lo {
@@ -1113,6 +1146,9 @@ impl Extractor {
             let low = point.is_some() && floor.is_finite() && outers[k] < floor;
             let outline_point = if low { past_dip(k, floor, stop) } else { point.and_then(|_| past_dip(k, outers[k], 1.9 * r0)) };
             raised |= outline_point != point;
+            if point.is_none() {
+                missed.push(k);
+            }
             if let Some(p) = outline_point {
                 outline_pts.push(p);
                 if low {
@@ -1128,6 +1164,29 @@ impl Extractor {
         let (a, b) = (e.a.max(e.b) / 2.0, e.a.min(e.b) / 2.0);
         if !(5.0 < b && a < 60.0 && b / a > 0.35) {
             return None;
+        }
+        // A ray that found no edge where the pupil's fit reaches well past the blob's radius: its band measured out
+        // from the fit's rim instead (OUTLINE_BAND_RHO)
+        for &k in &missed {
+            let th = k as f64 * (std::f64::consts::TAU / NRAY as f64);
+            let rho = ray_to_ellipse(c, th, &e);
+            if !rho.is_finite() || rho < OUTLINE_BAND_RHO * r0 || !(outers[k] - inner >= OUTLINE_BAND_LIT * (usual - inner)) {
+                continue;
+            }
+            let mut band: Vec<f64> = rs
+                .iter()
+                .zip(&prof[k * nr..(k + 1) * nr])
+                .filter(|(r, _)| **r > 1.25 * rho && **r < 1.7 * rho)
+                .map(|(_, &v)| v as f64)
+                .collect();
+            if band.len() < 3 {
+                continue;
+            }
+            let outer = vision::median(&mut band);
+            if let Some(p) = crossing(k, outer, (1.9 * rho).min(stop)) {
+                outline_pts.push(p);
+                raised = true;
+            }
         }
         // (with no ray changed by the floor or a dip the outline is the pupil's own fit)
         let outline = if !raised {
@@ -1953,6 +2012,35 @@ mod tests {
         let (oa, ob) = (o.a.max(o.b) / 2.0, o.a.min(o.b) / 2.0);
         assert!((o.cx - 206.0).abs() < 1.0 && (oa - 20.0).abs() < 1.5 && ob / oa > 0.93, "{o:?}");
         assert!(share >= 0.95, "{share} {}", p.vis);
+    }
+
+    #[test]
+    fn an_elongated_pupil_s_far_ends_count_for_its_outline() {
+        // An upright ellipse 19 x 11 px (semi-axes) at (206, 200) (12) in a dim iris (40). The blob's radius is 12.5,
+        // so the band 1.25-1.7 r0 straddles the rim at the top and bottom, too dark there to give an edge: the pupil's
+        // own rays miss those ends. The outline measures them from the fit's rim and sees the whole rim.
+        let mut ex = Extractor { opf: vec![40; W * H], ..Extractor::default() };
+        for y in 0..H {
+            for x in 0..W {
+                let (fx, fy) = (x as f64 - 206.0, y as f64 - 200.0);
+                if (fx / 11.0).powi(2) + (fy / 19.0).powi(2) < 1.0 {
+                    ex.opf[y * W + x] = 12;
+                }
+            }
+        }
+        let (p, _) = ex.refine_pupil((206.0, 200.0), 12.5, 347.0).expect("pupil");
+        let (o, share) = p.outline.expect("outline");
+        assert!(p.vis < 0.95, "the pupil's rays miss the ends: {}", p.vis);
+        assert!(share >= 0.98 && share > p.vis, "{share} {}", p.vis);
+        assert!((o.cx - 206.0).abs() < 1.0 && (o.cy - 200.0).abs() < 1.0, "{o:?}");
+        // Lashes as dark as the pupil above it: the rays up still find no edge
+        for y in 150..181 {
+            for x in 190..222 {
+                ex.opf[y * W + x] = 12;
+            }
+        }
+        let (p, _) = ex.refine_pupil((206.0, 200.0), 12.5, 347.0).expect("pupil");
+        assert!(p.outline.expect("outline").1 < 0.95, "{:?}", p.outline);
     }
 
     #[test]

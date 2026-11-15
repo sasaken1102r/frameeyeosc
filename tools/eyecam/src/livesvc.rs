@@ -956,16 +956,16 @@ impl Worker {
             g.matches = slip.matches;
             g.since_good = slip.since_good;
             g.glints = slip.glints;
-            // The pupil's ellipse of the same frame (NaN without a pupil)
+            // The pupil's outline of the same frame (feat::Pupil::outline; NaN without a pupil or an outline)
             s.shape_version = liveshm::SHAPE_VERSION;
             s.flipped = (s.flipped & !(1 << eye)) | (u32::from(upside_down) << eye);
             let nan = f32::NAN;
             s.shape[eye] = match pupil {
                 Some(_) => liveshm::LiveShape {
-                    a: o.f.pupil_a as f32,
-                    b: o.f.pupil_b as f32,
-                    angle_deg: o.f.pupil_angle_deg.rem_euclid(180.0) as f32,
-                    vis: o.f.pupil_vis as f32,
+                    a: o.f.outline_a as f32,
+                    b: o.f.outline_b as f32,
+                    angle_deg: o.f.outline_angle_deg.rem_euclid(180.0) as f32,
+                    vis: o.f.outline_vis as f32,
                 },
                 None => liveshm::LiveShape { a: nan, b: nan, angle_deg: nan, vis: nan },
             };

@@ -18,8 +18,10 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"EYCM");
 pub const VERSION: u32 = 1;
 /// The glint part's version (`glint_version`; 0 = not written).
 pub const GLINT_VERSION: u32 = 1;
-/// The pupil shape part's version (`shape_version`; 0 = not written).
-pub const SHAPE_VERSION: u32 = 1;
+/// The pupil shape part's version (`shape_version`; 0 = not written). 2 since 2026-11-15: the ellipse is the pupil's
+/// outline for the eye-camera gaze (feat::Pupil::outline), the layout unchanged; 1 had the pupil's own fit, which a
+/// lighter part of the pupil (next to glints on its rim) could cut.
+pub const SHAPE_VERSION: u32 = 2;
 /// The file is one page; struct_size says how much of it is the struct.
 const FILE_SIZE: usize = 4096;
 
@@ -78,9 +80,10 @@ pub struct LiveGlint {
     pub _pad: u32,
 }
 
-/// Per eye, the pupil shape part (index 0 = left, 1 = right): the pupil ellipse of the same frame as the eye's values
-/// and glint part above (written with them), in the same picture as `LiveGlint::pupil_x` / `pupil_y`. Meaningful only
-/// with a pupil in this frame (glint flags bit 0); NaN without one (0 before the eye's first frame).
+/// Per eye, the pupil shape part (index 0 = left, 1 = right): the pupil's outline (feat::Pupil::outline) of the same
+/// frame as the eye's values and glint part above (written with them), in the same picture as `LiveGlint::pupil_x` /
+/// `pupil_y`. Meaningful only with a pupil in this frame (glint flags bit 0); NaN without one or without an outline
+/// (0 before the eye's first frame).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LiveShape {
@@ -89,7 +92,7 @@ pub struct LiveShape {
     pub b: f32,
     /// The direction of its long axis in the picture, degrees from +x towards +y, in [0, 180).
     pub angle_deg: f32,
-    /// The share of its rim that was seen (0..1; lids and lashes hide the rest).
+    /// The share of its rays that found its edge (0..1; lids and lashes hide the rest).
     pub vis: f32,
 }
 

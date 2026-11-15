@@ -77,6 +77,15 @@ const LID_EDGE_ROWS: usize = 1;
 /// reach its edge: a lid that low hides its upper half): the same wearer's left eye had its upper line at -0.25 r, under
 /// the centre, on more than half of its widen frames; the developer's recordings, 0.001% of such frames.
 const UPPER_WHOLE_VIS: f64 = 0.75;
+/// The pupil's outline for the eye-camera gaze (the live file's shape part, `Pupil::outline`): a ray whose own outer
+/// band is darker than the rays' usual level less OUTLINE_FLOOR of their step from the pupil (a part of the pupil
+/// lighter than its core, as next to glints on its rim, where the 9x9 opening leaves a grey plateau; or a dark lid or
+/// lashes) is measured against that floor instead, out to the end of the ray. On the developer's re-seat recordings
+/// (2026-11-14) glints on the rim had cut the fitted pupil to b/a 0.62-0.68 where it was round a round before, and the
+/// eyeball filter turned 30-46 degrees the wrong way at those corners; with the floor the corners were within 2.4-5.2
+/// degrees (0.2 and 0.5 flickered more from frame to frame). The pupil itself (its size, centre and the lids found
+/// from it) keeps the plain fit.
+const OUTLINE_FLOOR: f64 = 0.3;
 /// With the pupil seen whole, a line found lower than ABOVE_PUPIL_B of its minor semi-axis above its centre is searched
 /// for again above the pupil (rows from the band's top to ABOVE_PUPIL_PX px above the pupil), and the line found there
 /// replaces it if it is not pushed against that band's edge and its inlier share is at least the first one's: a
@@ -278,6 +287,9 @@ pub struct Pupil {
     pub ell: Ellipse,
     pub inner: f64,
     pub vis: f64,
+    /// The outline for the eye-camera gaze (OUTLINE_FLOOR): the ellipse and the share of rays that found its edge;
+    /// None when it could not be fitted.
+    pub outline: Option<(Ellipse, f64)>,
 }
 
 /// One lid line: quadratic over the iris columns, its height at the pupil column, inlier share, edge strength, and
@@ -332,6 +344,12 @@ pub struct Features {
     /// right, y down). Only recorded (the glint log, glintlog.rs); nothing is worked out from it.
     pub pupil_angle_deg: f64,
     pub pupil_vis: f64,
+    /// The pupil's outline for the eye-camera gaze (`Pupil::outline`, OUTLINE_FLOOR): semi-axes (a >= b), the long
+    /// axis (degrees as `pupil_angle_deg`) and the share of rays that found its edge; NaN without one.
+    pub outline_a: f64,
+    pub outline_b: f64,
+    pub outline_angle_deg: f64,
+    pub outline_vis: f64,
     pub iris_r: f64,
     pub iris_n: u32,
     pub upper_skin_y: f64,
@@ -366,6 +384,10 @@ impl Default for Features {
             pupil_b: n,
             pupil_angle_deg: n,
             pupil_vis: n,
+            outline_a: n,
+            outline_b: n,
+            outline_angle_deg: n,
+            outline_vis: n,
             iris_r: n,
             iris_n: 0,
             upper_skin_y: n,
@@ -790,6 +812,12 @@ impl Extractor {
         // (the fitted ellipse's `a` is its long axis along angle_deg; turned a quarter when it is the shorter one)
         f.pupil_angle_deg = if p.ell.a >= p.ell.b { p.ell.angle_deg } else { p.ell.angle_deg + 90.0 };
         f.pupil_vis = p.vis;
+        if let Some((o, share)) = p.outline {
+            f.outline_a = o.a.max(o.b) / 2.0;
+            f.outline_b = o.a.min(o.b) / 2.0;
+            f.outline_angle_deg = if o.a >= o.b { o.angle_deg } else { o.angle_deg + 90.0 };
+            f.outline_vis = share;
+        }
         let (r, n) = self.iris_fit(&p, xmax);
         f.iris_r = r;
         f.iris_n = n;
@@ -981,49 +1009,86 @@ impl Extractor {
             }
         }
         let inner = vision::median(&mut inner_v);
-        let mut pts: Vec<(f64, f64)> = Vec::with_capacity(NRAY);
-        let mut ok = 0usize;
-        let (mut left_n, mut left_ok) = (0usize, 0usize);
         let mut ov = Vec::with_capacity(nr);
         let x_lo = self.opf_x0 as f64;
+        // Each ray's outer band level (pupil to iris), and the rays' usual one (for the outline)
+        let mut outers = [f64::NAN; NRAY];
+        for k in 0..NRAY {
+            if last_x[k] < x_lo {
+                continue;
+            }
+            ov.clear();
+            ov.extend(rs.iter().zip(&prof[k * nr..(k + 1) * nr]).filter(|(r, _)| **r > 1.25 * r0 && **r < 1.7 * r0).map(|(_, &v)| v as f64));
+            outers[k] = vision::median(&mut ov);
+        }
+        let mut levels: Vec<f64> = outers.iter().copied().filter(|v| v.is_finite()).collect();
+        let usual = if levels.is_empty() { f64::NAN } else { vision::median(&mut levels) };
+        let floor = usual - OUTLINE_FLOOR * (usual - inner);
+        // The crossing of the middle level between the pupil and `outer` on ray k, at most `r_max` from the centre
+        let crossing = |k: usize, outer: f64, r_max: f64| -> Option<(f64, f64)> {
+            if outer - inner < self.levels.step(14.0) || outer.is_nan() || last_x[k] >= xmax {
+                return None;
+            }
+            let row = &prof[k * nr..(k + 1) * nr];
+            let th = inner + 0.5 * (outer - inner);
+            let j = row.iter().position(|&v| v as f64 > th)?;
+            if j == 0 {
+                return None;
+            }
+            let (p0, p1) = (row[j - 1] as f64, row[j] as f64);
+            let fr = (th - p0) / (p1 - p0).max(1e-3);
+            let r = rs[j - 1] + fr * (rs[j] - rs[j - 1]);
+            if r < 0.5 * r0 || r > r_max {
+                return None;
+            }
+            let ang = k as f64 * (std::f64::consts::TAU / NRAY as f64);
+            Some((cx + ang.cos() * r, cy + ang.sin() * r))
+        };
+        let mut pts: Vec<(f64, f64)> = Vec::with_capacity(NRAY);
+        let mut outline_pts: Vec<(f64, f64)> = Vec::with_capacity(NRAY);
+        let mut raised = false;
+        let (mut left_n, mut left_ok) = (0usize, 0usize);
         for k in 0..NRAY {
             if last_x[k] < x_lo {
                 continue;
             }
             let left = (k as f64 * (std::f64::consts::TAU / NRAY as f64)).cos() < -0.5;
             left_n += left as usize;
-            let row = &prof[k * nr..(k + 1) * nr];
-            ov.clear();
-            ov.extend(rs.iter().zip(row).filter(|(r, _)| **r > 1.25 * r0 && **r < 1.7 * r0).map(|(_, &v)| v as f64));
-            let outer = vision::median(&mut ov);
-            if outer - inner < self.levels.step(14.0) || outer.is_nan() || last_x[k] >= xmax {
-                continue;
+            let point = crossing(k, outers[k], 1.9 * r0);
+            if let Some(p) = point {
+                left_ok += left as usize;
+                pts.push(p);
             }
-            let th = inner + 0.5 * (outer - inner);
-            let Some(j) = row.iter().position(|&v| v as f64 > th) else { continue };
-            if j == 0 {
-                continue;
+            let low = floor.is_finite() && outers[k] < floor;
+            raised |= low;
+            if let Some(p) = if low { crossing(k, floor, stop) } else { point } {
+                outline_pts.push(p);
             }
-            let (p0, p1) = (row[j - 1] as f64, row[j] as f64);
-            let fr = (th - p0) / (p1 - p0).max(1e-3);
-            let r = rs[j - 1] + fr * (rs[j] - rs[j - 1]);
-            if r < 0.5 * r0 || r > 1.9 * r0 {
-                continue;
-            }
-            ok += 1;
-            left_ok += left as usize;
-            let ang = k as f64 * (std::f64::consts::TAU / NRAY as f64);
-            pts.push((cx + ang.cos() * r, cy + ang.sin() * r));
         }
         if pts.len() < 10 {
             return None;
         }
+        let vis = pts.len() as f64 / NRAY as f64;
         let e = fit_ellipse_robust(pts)?;
         let (a, b) = (e.a.max(e.b) / 2.0, e.a.min(e.b) / 2.0);
         if !(5.0 < b && a < 60.0 && b / a > 0.35) {
             return None;
         }
-        Some((Pupil { cx: e.cx, cy: e.cy, a, b, ell: e, inner, vis: ok as f64 / NRAY as f64 }, left_ok as f64 / left_n as f64))
+        // (with no ray below the floor the outline is the pupil's own fit)
+        let outline = if !raised {
+            Some((e, vis))
+        } else if outline_pts.len() < 10 {
+            None
+        } else {
+            let share = outline_pts.len() as f64 / NRAY as f64;
+            fit_ellipse_robust(outline_pts)
+                .filter(|o| {
+                    let (a, b) = (o.a.max(o.b) / 2.0, o.a.min(o.b) / 2.0);
+                    5.0 < b && a < 60.0 && b / a > 0.35
+                })
+                .map(|o| (o, share))
+        };
+        Some((Pupil { cx: e.cx, cy: e.cy, a, b, ell: e, inner, vis, outline }, left_ok as f64 / left_n as f64))
     }
 
     /// Iris radius from limbus crossings on rays to the left and right (top and bottom excluded), mapped into the
@@ -1713,6 +1778,42 @@ mod tests {
         let p = p.expect("pupil");
         assert!((p.cx - 275.0).abs() < 1.5 && (p.cy - 195.0).abs() < 1.5, "{p:?}");
         assert!(!f.diag.left_edge && f.diag.candidates >= 2, "{:?}", f.diag);
+    }
+
+    #[test]
+    fn a_lighter_part_of_the_pupil_cuts_its_fit_but_not_its_outline() {
+        // The pupil a disc of radius 22 at (206, 200) whose right part is a grey plateau (33; next to glints on the
+        // rim, the 9x9 opening leaves such a band), its dark core (12) a disc of 16 at (200, 200), the iris 90. The
+        // rays to the right see the plateau in their outer band and stop at the core's edge: the pupil's fit is cut on
+        // that side. The outline measures them against the other rays' level and finds the whole disc.
+        let mut ex = Extractor { opf: vec![90; W * H], ..Extractor::default() };
+        for y in 0..H {
+            for x in 0..W {
+                let (fx, fy) = (x as f64, y as f64);
+                if (fx - 206.0).hypot(fy - 200.0) < 22.0 {
+                    ex.opf[y * W + x] = if (fx - 200.0).hypot(fy - 200.0) < 16.0 { 12 } else { 33 };
+                }
+            }
+        }
+        let (p, _) = ex.refine_pupil((200.0, 200.0), 16.0, 347.0).expect("pupil");
+        let (o, share) = p.outline.expect("outline");
+        let (oa, ob) = (o.a.max(o.b) / 2.0, o.a.min(o.b) / 2.0);
+        assert!(p.cx < 203.5 && p.a - p.b > 1.5, "the plain fit is cut on the right: {p:?}");
+        assert!((o.cx - 206.0).abs() < 1.0 && (o.cy - 200.0).abs() < 1.0, "{o:?}");
+        assert!((oa - 22.0).abs() < 1.5 && ob / oa > 0.93, "{o:?}");
+        assert!(share >= p.vis, "{share} {}", p.vis);
+        // A pupil without such rays: the outline is its own fit
+        let mut ex = Extractor { opf: vec![90; W * H], ..Extractor::default() };
+        for y in 0..H {
+            for x in 0..W {
+                if (x as f64 - 205.0).hypot(y as f64 - 200.0) < 20.0 {
+                    ex.opf[y * W + x] = 12;
+                }
+            }
+        }
+        let (p, _) = ex.refine_pupil((205.0, 200.0), 20.0, 347.0).expect("pupil");
+        let (o, share) = p.outline.expect("outline");
+        assert_eq!((o.cx, o.cy, o.a, o.b, share), (p.ell.cx, p.ell.cy, p.ell.a, p.ell.b, p.vis));
     }
 
     #[test]

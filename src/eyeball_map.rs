@@ -32,6 +32,13 @@ pub const MAX_RMS_DEG: f64 = 4.0;
 pub const MIN_SPREAD_DEG: f64 = 2.0;
 /// A centre further than this (degrees, yaw or pitch) is not taken.
 pub const MAX_CENTER_DEG: f64 = 20.0;
+/// An eye whose centre moved more than this in depth (mm, along its camera's axis) since the fit's centre dot is not
+/// counted at a dot: its filter is still settling, and a map fitted on it misses the corners. On the headset
+/// (2026-11-15) the right eye's centre went 11.2 -> 14.1 mm (and 12.9 -> 18.0 mm in the next fit) across a fit while
+/// its filter read as settled; that map missed its dots by 3.4 degrees and the gaze check's corners by 10-22. The left
+/// eye moved at most 1.1 mm in the same fits. (Across the camera's axis the centre moves 1-5 mm between the dots in
+/// every fit, settled or not: the model's centre takes up part of each turn, so that is not checked.)
+pub const MAX_DEPTH_MOVE_MM: f64 = 1.5;
 /// The file's name next to the eyelid calibration.
 pub const FILE_NAME: &str = "eyeball_map";
 
@@ -185,6 +192,8 @@ pub struct MapStore {
     pub maps: Option<[EyeMap; 2]>,
     /// The dots of the set in progress (DOTS order): each eye's median.
     dots: [Option<[[f32; 2]; 2]>; 5],
+    /// Each eye's centre depth (mm) at the set's centre dot (MAX_DEPTH_MOVE_MM).
+    depths: [Option<f64>; 2],
 }
 
 impl MapStore {
@@ -199,7 +208,7 @@ impl MapStore {
             },
             Some((path, Err(_))) => (None, format!("Eyeball map: none yet ({}); the next whole eye fit makes one", path.display())),
         };
-        (Self { path, maps, dots: [None; 5] }, line)
+        (Self { path, maps, dots: [None; 5], depths: [None; 2] }, line)
     }
 
     /// Never write the file (a replay).
@@ -216,16 +225,34 @@ impl MapStore {
         })
     }
 
-    /// A gaze capture is done: its target and each eye's median filter angles with how many samples they are of (None
-    /// without any). Returns the lines to log (none for a capture that changes nothing).
-    pub fn capture_done(&mut self, target: &str, medians: [Option<([f32; 2], u32)>; 2]) -> Vec<String> {
+    /// A gaze capture is done: its target, each eye's median filter angles with how many samples they are of (None
+    /// without any) and each eye's centre depth (mm, None: not known). Returns the lines to log (none for a capture
+    /// that changes nothing).
+    pub fn capture_done(&mut self, target: &str, mut medians: [Option<([f32; 2], u32)>; 2], depths: [Option<f64>; 2]) -> Vec<String> {
         let Some(dot) = DOTS.iter().position(|(name, ..)| *name == target) else {
             return Vec::new();
         };
         let mut lines = Vec::new();
-        // A centre dot starts a new set
+        let mut gated = [false; 2];
+        // A centre dot starts a new set (and its depths are what the other dots are held to)
         if dot == 0 {
             self.dots = [None; 5];
+            self.depths = depths;
+        } else {
+            for eye in 0..2 {
+                if let (Some(at), Some(now), Some(_)) = (self.depths[eye], depths[eye], medians[eye]) {
+                    let moved = (now - at).abs();
+                    if moved > MAX_DEPTH_MOVE_MM {
+                        lines.push(format!(
+                            "Eyeball map: the {} eye's centre moved {moved:.1} mm in depth since the centre dot (more than \
+                             {MAX_DEPTH_MOVE_MM}): it is still settling and does not count at the {target} dot",
+                            ["left", "right"][eye]
+                        ));
+                        medians[eye] = None;
+                        gated[eye] = true;
+                    }
+                }
+            }
         }
         let usable = medians.map(|m| m.filter(|(_, n)| *n >= MIN_SAMPLES).map(|(angles, _)| angles));
         let [Some(left), Some(right)] = usable else {
@@ -243,11 +270,16 @@ impl MapStore {
             } else {
                 format!("this fit makes no eyeball map ({})", if self.maps.is_some() { "the old one stays" } else { "there is none yet" })
             };
-            lines.push(format!(
-                "Eyeball map: {eyes} at the {target} dot: {} and {} samples of a settled filter (L, R; needs \
-                 {MIN_SAMPLES}); {outcome}. Fit again once the journal's centre line says both eyes have settled",
-                counts[0], counts[1]
-            ));
+            let short = (0..2).any(|eye| usable[eye].is_none() && !gated[eye]);
+            lines.push(if short {
+                format!(
+                    "Eyeball map: {eyes} at the {target} dot: {} and {} samples of a settled filter (L, R; needs \
+                     {MIN_SAMPLES}); {outcome}. Fit again once the journal's centre line says both eyes have settled",
+                    counts[0], counts[1]
+                )
+            } else {
+                format!("Eyeball map: {outcome}. Fit again in a little while")
+            });
             self.dots[dot] = None;
             return lines;
         };
@@ -361,9 +393,9 @@ mod tests {
         // The five dots in the panel's order, then the eyes shut (not one of ours: nothing)
         let mut lines = Vec::new();
         for dot in 0..5 {
-            lines.extend(store.capture_done(DOTS[dot].0, medians(reading, dot, 120)));
+            lines.extend(store.capture_done(DOTS[dot].0, medians(reading, dot, 120), [None; 2]));
         }
-        assert!(store.capture_done("closed", [None; 2]).is_empty());
+        assert!(store.capture_done("closed", [None; 2], [None; 2]).is_empty());
         let maps = store.maps.expect("fitted");
         assert!(lines.iter().any(|l| l.starts_with("Eyeball map fitted: misses its dots by L 0.00")), "{lines:?}");
         assert!(lines.last().unwrap().starts_with("Eyeball map saved to"));
@@ -384,7 +416,7 @@ mod tests {
             let [y, p] = reading(eye, yaw, pitch);
             [y + 2.0, p]
         };
-        let lines = store.capture_done("center", medians(shifted, 0, 60));
+        let lines = store.capture_done("center", medians(shifted, 0, 60), [None; 2]);
         assert!(lines[0].starts_with("Eyeball map: centre L"), "{lines:?}");
         let recentred = store.maps.unwrap();
         for eye in 0..2 {
@@ -397,7 +429,7 @@ mod tests {
         // fits nothing, and its last dot says so
         let mut one = medians(reading, 1, 120);
         one[1] = Some((one[1].unwrap().0, 10));
-        let lines = store.capture_done("up", one);
+        let lines = store.capture_done("up", one, [None; 2]);
         assert_eq!(
             lines,
             vec![
@@ -409,13 +441,13 @@ mod tests {
         );
         assert_eq!(store.maps, Some(recentred));
         for dot in [2, 3] {
-            assert!(store.capture_done(DOTS[dot].0, medians(reading, dot, 120)).is_empty());
+            assert!(store.capture_done(DOTS[dot].0, medians(reading, dot, 120), [None; 2]).is_empty());
         }
-        let lines = store.capture_done("right", medians(reading, 4, 120));
+        let lines = store.capture_done("right", medians(reading, 4, 120), [None; 2]);
         assert_eq!(lines, vec!["Eyeball map kept as it was: no settled eyes at the up dot of this fit".to_owned()]);
         assert_eq!(store.maps, Some(recentred));
         // A centre dot without settled eyes keeps the centre
-        let lines = store.capture_done("center", [None; 2]);
+        let lines = store.capture_done("center", [None; 2], [None; 2]);
         assert!(lines[0].starts_with("Eyeball map: neither eye counted at the center dot"), "{lines:?}");
         assert!(lines[0].contains("0 and 0 samples") && lines[0].contains("the centre is kept as it was"), "{lines:?}");
         assert_eq!(store.maps, Some(recentred));
@@ -424,10 +456,34 @@ mod tests {
         let (store, _) = MapStore::load(Some(path.clone()));
         let mut store = store.read_only();
         for dot in 0..5 {
-            store.capture_done(DOTS[dot].0, medians(reading, dot, 120));
+            store.capture_done(DOTS[dot].0, medians(reading, dot, 120), [None; 2]);
         }
         assert!(store.maps.is_some() && !path.exists());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_eye_whose_centre_moved_in_depth_since_the_centre_dot_is_not_counted() {
+        // The right eye's centre 15.0 mm deep at the centre dot, 16.4 at the up dot (within MAX_DEPTH_MOVE_MM: counted)
+        // and 17.0 at the down dot: said, not counted, and the fit makes no map; the left eye stays put
+        let mut store = MapStore::default();
+        let depth = |right: f64| [Some(15.0), Some(right)];
+        assert!(store.capture_done("center", medians(reading, 0, 120), depth(15.0)).is_empty());
+        assert!(store.capture_done("up", medians(reading, 1, 120), depth(16.4)).is_empty());
+        let lines = store.capture_done("down", medians(reading, 2, 120), depth(17.0));
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("the right eye's centre moved 2.0 mm in depth since the centre dot") && lines[0].contains("down dot"), "{lines:?}");
+        assert!(lines[1].contains("this fit makes no eyeball map") && !lines[1].contains("samples"), "{lines:?}");
+        for dot in 3..5 {
+            store.capture_done(DOTS[dot].0, medians(reading, dot, 120), depth(15.2));
+        }
+        assert!(store.maps.is_none());
+        // Within it at every dot (or depths not known): the map is made
+        let mut store = MapStore::default();
+        for (dot, right) in [15.0, 16.0, 14.2, 15.5, 15.9].into_iter().enumerate() {
+            store.capture_done(DOTS[dot].0, medians(reading, dot, 120), depth(right));
+        }
+        assert!(store.maps.is_some());
     }
 
     #[test]
@@ -436,7 +492,7 @@ mod tests {
         // The eyes did not move between the dots
         let still = |_eye: usize, _yaw: f64, _pitch: f64| [1.0f32, 2.0];
         for dot in 0..5 {
-            store.capture_done(DOTS[dot].0, medians(still, dot, 120));
+            store.capture_done(DOTS[dot].0, medians(still, dot, 120), [None; 2]);
         }
         assert!(store.maps.is_none());
         // A wild reading at one dot: misses by far more than MAX_RMS_DEG
@@ -446,7 +502,7 @@ mod tests {
         };
         let mut lines = Vec::new();
         for dot in 0..5 {
-            lines.extend(store.capture_done(DOTS[dot].0, medians(wild, dot, 120)));
+            lines.extend(store.capture_done(DOTS[dot].0, medians(wild, dot, 120), [None; 2]));
         }
         assert!(store.maps.is_none() && lines.last().unwrap().contains("misses its dots"), "{lines:?}");
         // A centre too far is not taken

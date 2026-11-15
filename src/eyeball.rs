@@ -1023,8 +1023,9 @@ pub struct EyeballGaze {
     // server's time)
     frame_ns: [Option<u64>; 2],
     fresh: [Freshness; 2],
-    // When an eye's frame was last a saccade (the eye server's time)
+    // When an eye's frame was last a saccade, and when each eye's filter last used its ellipse (the eye server's time)
     saccade_at: Option<f64>,
+    ellipse_at: [Option<f64>; 2],
     last_time: Option<f64>,
     used: bool,
     /// Frames taken per eye, how they went (Update order), and the time they took (ns), for the journal.
@@ -1092,6 +1093,9 @@ impl EyeballGaze {
                 self.frames[eye] += 1;
                 if let Some(estimate) = estimate {
                     self.updates[eye][estimate.update as usize] += 1;
+                    if matches!(estimate.update, Update::Start | Update::Ellipse) {
+                        self.ellipse_at[eye] = Some(time);
+                    }
                 }
                 self.fresh[eye].note(time, &o, estimate.as_ref());
                 if self.filters[eye].saccade {
@@ -1110,6 +1114,18 @@ impl EyeballGaze {
     /// the eye server's difference is not learnt then (pupil.rs step_eyes).
     pub fn moving(&self, time: f64) -> bool {
         self.saccade_at.is_some_and(|at| time - at <= SACCADE_HOLD_S)
+    }
+
+    /// Whether each eye's filter used its ellipse within ACCEPTED_FRESH_S of `time` (the eye server's): an eye going by
+    /// its pupil alone (no usable ellipse) is not trusted for the two eyes' difference (pupil.rs step_eyes).
+    pub fn trusted(&self, time: f64) -> [bool; 2] {
+        self.ellipse_at.map(|at| at.is_some_and(|at| time - at <= ACCEPTED_FRESH_S))
+    }
+
+    /// Each eye's centre's depth along its camera's axis (mm), once its filter has started (the eye fit's depth check,
+    /// eyeball_map.rs).
+    pub fn depths_mm(&self) -> [Option<f64>; 2] {
+        self.filters.each_ref().map(|filter| filter.centre_mm().map(|(c, _)| c[2]))
     }
 
     /// Each filter's re-takes (for the journal).

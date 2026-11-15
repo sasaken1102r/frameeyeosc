@@ -4747,6 +4747,33 @@ void testGazeSourceRow(const FontSet& fonts) {
         CHECK(rowY(panel) == folded);
         order(panel, true);
         png(panel, "folded_eyeball");
+        // The last whole fit kept the eyeball's old map: the card's line says why and asks to fit again (it may take
+        // two lines); with Valve chosen, or the map fitted, the usual line. Everything inside the card either way
+        const double cardBottom = hits(panel, PanelAction::SetAutoRecenter)[0].y;
+        m.status.eyeballMap.known = true;
+        m.status.eyeballMap.result = "fitted";
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetAutoRecenter)[0].y == cardBottom);
+        png(panel, "card_map_fitted");
+        m.status.eyeballMap.result = "kept";
+        m.status.eyeballMap.reason = "misses";
+        m.status.eyeballMap.eye = "right";
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetAutoRecenter)[0].y >= cardBottom);
+        CHECK(hits(panel, PanelAction::FitReset).size() == 1 && hits(panel, PanelAction::FitHelp).size() == 1);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 676);
+        png(panel, "card_map_kept");
+        m.status.eyeballMap.reason = "not_settled";
+        m.status.eyeballMap.eye = "both";
+        panel.render(m);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 676);
+        png(panel, "card_map_kept_unsettled");
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[0]));
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetAutoRecenter)[0].y == cardBottom);
+        m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[2]));
+        m.status.eyeballMap = EyeballMapStatus();
+        panel.render(m);
         // ...waiting (no eyeball map until the next whole fit, or no eye cameras): its one line under the row, which
         // pushes the rest down; everything still inside the card, the help button and the "Why fit?" box there
         const double belowInUse = hits(panel, PanelAction::FitDetails)[0].y;

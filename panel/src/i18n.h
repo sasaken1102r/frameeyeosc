@@ -253,6 +253,13 @@ struct UiText {
     const char* fitCardLidsOnly;     ///< ...the eyelids only (no gaze fit)...
     const char* fitCardLeftLidOnly;  ///< ...one eye's eyelid only
     const char* fitCardRightLidOnly;
+    const char* fitEyeballKeptFormat;     ///< ...or, with the eyeball source, the last whole fit kept its old map (%s why;
+                                          ///< a line break before "fit again": the card starts a line there)
+    const char* fitEyeballNotMadeFormat;  ///< ...or made none (%s why)
+    const char* fitEyeballMisses;         ///< why: an eye's map missed the dots (%s the eye)...
+    const char* fitEyeballNotSettled;     ///< ...an eye's filter hadn't settled (%s the eye)...
+    const char* fitEyeballOther;          ///< ...anything else
+    const char* fitEyeballEyes[3];        ///< the eye: left, right, both
     const char* fitNotYet;           ///< the folded result line before any fit
     const char* fitGazeCenterFormat; ///< "Gaze center: L-R %s, U-D %s"
     const char* fitStandInLeft;      ///< after a full fit: Valve read the left eye stuck at 0 and the eye camera saw it

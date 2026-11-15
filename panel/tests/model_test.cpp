@@ -989,6 +989,17 @@ void testDominantEyeAndSaturation() {
     CHECK(parseStatus("{\"pid\": 1, \"eyeball\": \"no_map\"}", 0, false).eyeball == "no_map");
     CHECK(parseStatus("{\"pid\": 1, \"eyeball\": null}", 0, false).eyeball.empty());
     CHECK(parseStatus("{\"pid\": 1}", 0, false).eyeball.empty());
+    // "eyeball_map": what the last whole fit did to the eyeball's maps
+    const EyeballMapStatus map = parseStatus(
+        "{\"pid\": 1, \"eyeball_map\": {\"at\": 1794706680.5, \"result\": \"kept\", \"reason\": \"misses\", "
+        "\"eye\": \"right\", \"misses_deg\": [1.2, 3.4]}}", 0, false).eyeballMap;
+    CHECK(map.known && map.result == "kept" && map.reason == "misses" && map.eye == "right" && map.at == 1794706680.5);
+    CHECK(map.misses[0] == 1.2 && map.misses[1] == 3.4);
+    const EyeballMapStatus fitted = parseStatus(
+        "{\"pid\": 1, \"eyeball_map\": {\"at\": 1, \"result\": \"fitted\", \"reason\": null, \"eye\": null, "
+        "\"misses_deg\": [0.5, null]}}", 0, false).eyeballMap;
+    CHECK(fitted.known && fitted.reason.empty() && fitted.eye.empty() && std::isnan(fitted.misses[1]));
+    CHECK(!parseStatus("{\"pid\": 1, \"eyeball_map\": null}", 0, false).eyeballMap.known);
 }
 
 /** status.json's missed_rate, max_processing_ms and dropped_rate, and who was slow while the eye data rate is low. */

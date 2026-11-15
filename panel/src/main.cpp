@@ -5584,6 +5584,23 @@ int runOverlay(const Options& options) {
             const bool retry = recenter.willRetry(byItself, byDashboard);
             report::Pending pending = fitRun.finish(unixNow());
             fillFitResult(pending.summary, ended);
+            // A whole fit with the eyeball source chosen that kept the eyeball's old map (or made none): said in its
+            // record too (frameeyeosc set it at this fit's last dot, after the record began)
+            if (ended.phase == gaze_fit::Phase::Done && ended.mode == gaze_fit::Mode::Full &&
+                eyeballGazeInConfig(SettingsView(model)) && model.status.eyeballMap.known &&
+                model.status.eyeballMap.at >= pending.summary.start - 1.0) {
+                std::string ja = eyeballMapLine(uiText(Language::Ja), model.status.eyeballMap);
+                std::string en = eyeballMapLine(uiText(Language::En), model.status.eyeballMap);
+                for (std::string* text : {&ja, &en}) {
+                    for (char& c : *text) c = c == '\n' ? ' ' : c;
+                }
+                if (!ja.empty()) {
+                    pending.summary.reason += " " + ja;
+                    pending.summary.reasonEn += " " + en;
+                    std::fprintf(stderr, "[fit] eyeball map %s (%s, %s)\n", model.status.eyeballMap.result.c_str(),
+                                 model.status.eyeballMap.reason.c_str(), model.status.eyeballMap.eye.c_str());
+                }
+            }
             // An eye the eye camera stood in for (Valve's openness stuck at 0): no longer on the Eye fit tab's card,
             // so said here and in the record's reason (fillFitResult)
             if (ended.phase == gaze_fit::Phase::Done) {

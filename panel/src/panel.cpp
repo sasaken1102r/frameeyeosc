@@ -3974,7 +3974,18 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
                     }
                     // What is fitted, in one line (the eyelids per eye: a first whole fit with an eye the eye camera
                     // stood in for fits only the other one)
-                    if (const char* line = fitCardLine(t, saved.gazeFitted, saved.lidsFitted)) {
+                    // With the eyeball source chosen, a last whole fit that kept its old map (or made none) says so
+                    // instead: the eyeball's gaze is not fitted to this fit (frameeyeosc's journal has the numbers)
+                    const std::string kept = eyeballGazeInConfig(v) && m.status.running
+                                                 ? eyeballMapLine(t, m.status.eyeballMap)
+                                                 : std::string();
+                    if (!kept.empty()) {
+                        for (size_t start = 0; start < kept.size();) {
+                            const size_t end = std::min(kept.find('\n', start), kept.size());
+                            paragraphs.push_back(kept.substr(start, end - start));
+                            start = end + 1;
+                        }
+                    } else if (const char* line = fitCardLine(t, saved.gazeFitted, saved.lidsFitted)) {
                         paragraphs.push_back(line);
                     }
                 } else {

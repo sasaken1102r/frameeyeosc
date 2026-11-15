@@ -182,6 +182,19 @@ EyeStatus parseStatus(const std::string& text, double now, bool checkPid) {
     }
     status.dominantEye = readText(root, "dominant_eye");
     status.eyeball = readText(root, "eyeball");
+    if (const JsonValue* map = root.get("eyeball_map"); map != nullptr && map->isObject()) {
+        EyeballMapStatus& e = status.eyeballMap;
+        e.result = readText(*map, "result");
+        e.known = !e.result.empty();
+        e.at = readNumber(*map, "at", 0.0);
+        e.reason = readText(*map, "reason");
+        e.eye = readText(*map, "eye");
+        if (const JsonValue* misses = map->get("misses_deg"); misses != nullptr && misses->isArray()) {
+            for (size_t i = 0; i < 2 && i < misses->items.size(); ++i) {
+                if (misses->items[i].isNumber()) e.misses[i] = misses->items[i].number;
+            }
+        }
+    }
     status.pupilTarget = readText(root, "pupil_target");
     // Sending to other apps and lan_only (0.10 on; an older frameeyeosc has neither)
     if (const JsonValue* list = root.get("extras"); list != nullptr && list->isArray()) {

@@ -158,6 +158,20 @@ const char* fitCardLine(const UiText& t, bool gaze, const bool lids[2]) {
     return nullptr;
 }
 
+std::string eyeballMapLine(const UiText& t, const EyeballMapStatus& map) {
+    if (!map.known || (map.result != "kept" && map.result != "not_made")) return "";
+    const int eye = map.eye == "left" ? 0 : map.eye == "right" ? 1 : map.eye == "both" ? 2 : -1;
+    std::string why;
+    if (eye >= 0 && map.reason == "misses") {
+        why = format(t.fitEyeballMisses, t.fitEyeballEyes[eye]);
+    } else if (eye >= 0 && map.reason == "not_settled") {
+        why = format(t.fitEyeballNotSettled, t.fitEyeballEyes[eye]);
+    } else {
+        why = t.fitEyeballOther;
+    }
+    return format(map.result == "kept" ? t.fitEyeballKeptFormat : t.fitEyeballNotMadeFormat, why.c_str());
+}
+
 bool fitStopped(const gaze_fit::View& fit) {
     using gaze_fit::Failure;
     if (fit.phase != gaze_fit::Phase::Failed) return false;

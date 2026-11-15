@@ -20,6 +20,16 @@ struct Pair {
 };
 
 /** The latest gaze capture frameeyeosc reports (asked for by the panel's eye fit). */
+/** What the last whole eye fit did to the eyeball's maps (status.json "eyeball_map"; frameeyeosc's eyeball_map.rs). */
+struct EyeballMapStatus {
+    bool known = false;       ///< the object was there (a whole fit with gaze_source "eyeball" since frameeyeosc started)
+    double at = 0.0;          ///< when (Unix seconds)
+    std::string result;       ///< "fitted", "kept" (the old map stays) or "not_made" (there is none)
+    std::string reason;       ///< why not: "misses", "not_settled" or "other"; "" when fitted
+    std::string eye;          ///< the eye that is about: "left", "right", "both"; "" when not one eye's
+    double misses[2] = {NAN, NAN};  ///< how far each eye's map missed its dots (degrees), where measured
+};
+
 struct GazeCaptureStatus {
     bool present = false;
     long long id = 0;
@@ -129,6 +139,7 @@ struct EyeStatus {
     std::string configError;          ///< one line from frameeyeosc; empty if none
     std::string sourceError;          ///< why frameeyeosc can't read the eye tracker (it keeps trying); empty if it can
     std::string dominantEye;  ///< "left" / "right" while "Track Dominant Eye Only" is on; empty otherwise
+    EyeballMapStatus eyeballMap;  ///< what the last whole fit did to the eyeball's maps
     std::string eyeball;      ///< with gaze_source "eyeball": "in_use", or why the eye server's gaze is sent instead
                               ///< ("no_calibration", "no_camera", "no_map"); empty otherwise (or from an older one)
     bool opennessSaturated = false;  ///< a relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through

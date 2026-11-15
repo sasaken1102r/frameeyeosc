@@ -312,6 +312,37 @@ void testFitCardLine() {
     CHECK(fitCardLine(ja, false, neither) == nullptr);
 }
 
+/** The card's line when the last whole fit kept the eyeball's old map (or made none): why, with the eye. */
+void testEyeballMapLine() {
+    const UiText& ja = uiText(Language::Ja);
+    const UiText& en = uiText(Language::En);
+    EyeballMapStatus map;
+    CHECK(eyeballMapLine(ja, map).empty());
+    map.known = true;
+    map.result = "fitted";
+    CHECK(eyeballMapLine(ja, map).empty());
+    map.result = "kept";
+    map.reason = "misses";
+    map.eye = "right";
+    SAME(eyeballMapLine(ja, map), "眼球の写し方は前のままだよ（右目が点からずれてたので）。\nもう一度合わせてね");
+    SAME(eyeballMapLine(en, map), "The eyeball mapping stayed as before (the right eye missed the dots).\nPlease fit again");
+    map.reason = "not_settled";
+    map.eye = "left";
+    SAME(eyeballMapLine(ja, map), "眼球の写し方は前のままだよ（左目が落ち着いてなかったので）。\nもう一度合わせてね");
+    map.eye = "both";
+    SAME(eyeballMapLine(en, map), "The eyeball mapping stayed as before (the eyes hadn't settled).\nPlease fit again");
+    // Not one eye's, or another reason: in general words
+    map.reason = "other";
+    map.eye.clear();
+    SAME(eyeballMapLine(ja, map), "眼球の写し方は前のままだよ（うまく測れなかったので）。\nもう一度合わせてね");
+    map.reason = "misses";
+    SAME(eyeballMapLine(en, map), "The eyeball mapping stayed as before (it couldn't be measured).\nPlease fit again");
+    // None made (there was no map yet)
+    map.result = "not_made";
+    map.eye = "right";
+    SAME(eyeballMapLine(ja, map), "眼球の写し方はできなかったよ（右目が点からずれてたので）。\nもう一度合わせてね");
+}
+
 void testNoSymbolGlyphs() {
     static_assert(sizeof(UiText) % sizeof(const char*) == 0, "UiText holds only strings");
     const char* const glyphs[] = {"‹", "›", "▲", "▼", "△", "▽", "→", "←", "♪", "✓", "✗", "◯", "◎", "●", "▶", "▷"};
@@ -384,6 +415,7 @@ int main() {
     testFailureTexts();
     testFitRecord();
     testFitCardLine();
+    testEyeballMapLine();
     testNoSymbolGlyphs();
     testOutputMarks();
     if (gFailures == 0) std::printf("text-test: all passed\n");

@@ -5,6 +5,7 @@
 #include "gaze_fit.h"
 #include "i18n.h"
 #include "report.h"
+#include "status.h"
 
 #include <string>
 #include <vector>
@@ -53,6 +54,16 @@ std::string standInText(const UiText& t, const gaze_fit::View& fit);
  * @return the line (nullptr with nothing fitted)
  */
 const char* fitCardLine(const UiText& t, bool gaze, const bool lids[2]);
+
+/**
+ * The Eye fit tab's card line (and the fit record's words) when the last whole fit kept the eyeball's old map, or made
+ * none: why, with the eye ("眼球の写し方は前のままだよ（右目が点からずれてたので）。\nもう一度合わせてね": the card
+ * starts a line at the line break, the record has a space there).
+ * @param t texts
+ * @param map what the last whole fit did to the eyeball's maps (status.json "eyeball_map")
+ * @return the line ("" when it fitted one, or nothing is known)
+ */
+std::string eyeballMapLine(const UiText& t, const EyeballMapStatus& map);
 
 /**
  * Whether a fit was stopped rather than failed: "Stop", another tab or page, the dashboard opened. Nothing went

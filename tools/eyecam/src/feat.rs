@@ -78,14 +78,23 @@ const LID_EDGE_ROWS: usize = 1;
 /// the centre, on more than half of its widen frames; the developer's recordings, 0.001% of such frames.
 const UPPER_WHOLE_VIS: f64 = 0.75;
 /// The pupil's outline for the eye-camera gaze (the live file's shape part, `Pupil::outline`): a ray whose own outer
-/// band is darker than the rays' usual level less OUTLINE_FLOOR of their step from the pupil (a part of the pupil
-/// lighter than its core, as next to glints on its rim, where the 9x9 opening leaves a grey plateau; or a dark lid or
-/// lashes) is measured against that floor instead, out to the end of the ray. On the developer's re-seat recordings
-/// (2026-11-14) glints on the rim had cut the fitted pupil to b/a 0.62-0.68 where it was round a round before, and the
-/// eyeball filter turned 30-46 degrees the wrong way at those corners; with the floor the corners were within 2.4-5.2
-/// degrees (0.2 and 0.5 flickered more from frame to frame). The pupil itself (its size, centre and the lids found
-/// from it) keeps the plain fit.
+/// band is darker than the rays' usual level less OUTLINE_FLOOR of their step from the pupil, though light enough to
+/// give an edge against it (a part of the pupil lighter than its core, as next to glints on its rim, where the 9x9
+/// opening leaves a grey plateau), is measured against that floor instead, out to the end of the ray. Not a ray whose
+/// band is as dark as the pupil (lashes or a lid over the rim): its next step out is where they end, not the rim.
+/// On the developer's re-seat recordings (2026-11-14) glints on the rim had cut the fitted pupil to b/a 0.62-0.68 where
+/// it was round a round before, and the eyeball filter turned 30-46 degrees the wrong way at those corners; with the
+/// floor the corners came within a few degrees (0.2 and 0.5 flickered more from frame to frame). The pupil itself (its
+/// size, centre and the lids found from it) keeps the plain fit.
 const OUTLINE_FLOOR: f64 = 0.3;
+/// The outline's share (its `vis`) counts the rays that found the edge as the pupil's does, but a ray measured
+/// against the floor only where its point lies on the fitted outline: within OUTLINE_ON_RIM_SD robust standard
+/// deviations of the points' radial distances from it, and at least OUTLINE_ON_RIM_PX px. A floor point the robust fit
+/// leaves out is not rim, and counting it would let a cut pupil read as seen whole. (Checking every ray this way left
+/// out the rim's own scatter: a whole rim then read below 0.98 in 30-50% of the re-seat frames, against 11-14% for
+/// the pupil's own share.)
+const OUTLINE_ON_RIM_SD: f64 = 3.0;
+const OUTLINE_ON_RIM_PX: f64 = 1.5;
 /// With the pupil seen whole, a line found lower than ABOVE_PUPIL_B of its minor semi-axis above its centre is searched
 /// for again above the pupil (rows from the band's top to ABOVE_PUPIL_PX px above the pupil), and the line found there
 /// replaces it if it is not pushed against that band's edge and its inlier share is at least the first one's: a
@@ -1046,6 +1055,7 @@ impl Extractor {
         };
         let mut pts: Vec<(f64, f64)> = Vec::with_capacity(NRAY);
         let mut outline_pts: Vec<(f64, f64)> = Vec::with_capacity(NRAY);
+        let mut floor_pts: Vec<(f64, f64)> = Vec::new();
         let mut raised = false;
         let (mut left_n, mut left_ok) = (0usize, 0usize);
         for k in 0..NRAY {
@@ -1059,10 +1069,16 @@ impl Extractor {
                 left_ok += left as usize;
                 pts.push(p);
             }
-            let low = floor.is_finite() && outers[k] < floor;
-            raised |= low;
-            if let Some(p) = if low { crossing(k, floor, stop) } else { point } {
+            // (only a ray that found an edge against its own band: one whose band is as dark as the pupil, lashes or
+            // a lid over the rim, has no rim to find further out)
+            let low = point.is_some() && floor.is_finite() && outers[k] < floor;
+            let outline_point = if low { crossing(k, floor, stop) } else { point };
+            raised |= outline_point != point;
+            if let Some(p) = outline_point {
                 outline_pts.push(p);
+                if low {
+                    floor_pts.push(p);
+                }
             }
         }
         if pts.len() < 10 {
@@ -1074,19 +1090,25 @@ impl Extractor {
         if !(5.0 < b && a < 60.0 && b / a > 0.35) {
             return None;
         }
-        // (with no ray below the floor the outline is the pupil's own fit)
+        // (with no ray changed by the floor the outline is the pupil's own fit)
         let outline = if !raised {
             Some((e, vis))
         } else if outline_pts.len() < 10 {
             None
         } else {
-            let share = outline_pts.len() as f64 / NRAY as f64;
-            fit_ellipse_robust(outline_pts)
+            let plain = outline_pts.len() - floor_pts.len();
+            let mut dist: Vec<f64> = Vec::new();
+            fit_ellipse_robust(outline_pts.clone())
                 .filter(|o| {
                     let (a, b) = (o.a.max(o.b) / 2.0, o.a.min(o.b) / 2.0);
                     5.0 < b && a < 60.0 && b / a > 0.35
                 })
-                .map(|o| (o, share))
+                .map(|o| {
+                    dist.extend(outline_pts.iter().map(|&(x, y)| o.resid(x, y).abs()));
+                    let within = (OUTLINE_ON_RIM_SD * 1.4826 * vision::median(&mut dist)).max(OUTLINE_ON_RIM_PX);
+                    let on_rim = floor_pts.iter().filter(|&&(x, y)| o.resid(x, y).abs() <= within).count();
+                    (o, (plain + on_rim) as f64 / NRAY as f64)
+                })
         };
         Some((Pupil { cx: e.cx, cy: e.cy, a, b, ell: e, inner, vis, outline }, left_ok as f64 / left_n as f64))
     }
@@ -1802,6 +1824,20 @@ mod tests {
         assert!((o.cx - 206.0).abs() < 1.0 && (o.cy - 200.0).abs() < 1.0, "{o:?}");
         assert!((oa - 22.0).abs() < 1.5 && ob / oa > 0.93, "{o:?}");
         assert!(share >= p.vis, "{share} {}", p.vis);
+        // A darker band just outside the rim straight to the right (a shadow): there the floor's crossing lands past
+        // it, off the rim; the fit leaves those few points out and they do not count in the share
+        for y in 0..H {
+            for x in 0..W {
+                let (fx, fy) = (x as f64, y as f64);
+                if (fy - 200.0).abs() < 4.0 && (22.0..28.0).contains(&(fx - 206.0).hypot(fy - 200.0)) && fx > 214.0 {
+                    ex.opf[y * W + x] = 30;
+                }
+            }
+        }
+        let (p, _) = ex.refine_pupil((200.0, 200.0), 16.0, 347.0).expect("pupil");
+        let (o2, share2) = p.outline.expect("outline");
+        assert!((o2.cx - o.cx).abs() < 1.0 && (o2.a - o.a).abs() < 1.5, "{o2:?} {o:?}");
+        assert!(share2 <= share - 2.0 / NRAY as f64, "{share2} {share}");
         // A pupil without such rays: the outline is its own fit
         let mut ex = Extractor { opf: vec![90; W * H], ..Extractor::default() };
         for y in 0..H {
@@ -1813,7 +1849,22 @@ mod tests {
         }
         let (p, _) = ex.refine_pupil((205.0, 200.0), 20.0, 347.0).expect("pupil");
         let (o, share) = p.outline.expect("outline");
-        assert_eq!((o.cx, o.cy, o.a, o.b, share), (p.ell.cx, p.ell.cy, p.ell.a, p.ell.b, p.vis));
+        assert_eq!((o.cx, o.cy, o.a, o.b), (p.ell.cx, p.ell.cy, p.ell.a, p.ell.b));
+        assert!((share - p.vis).abs() < 0.02, "{share} {}", p.vis);
+        // Dark lashes over the pupil's top (as dark as the pupil, up to 35 px above its centre, skin above them): the
+        // rays up find no edge against their own outer band, and the floor is not tried on them (the next step out is
+        // where the lashes end, not the rim): the outline is the pupil's fit, and its share counts only the rays on it,
+        // so the pupil does not read as seen whole.
+        for y in 165..190 {
+            for x in 185..226 {
+                ex.opf[y * W + x] = 12;
+            }
+        }
+        let (p, _) = ex.refine_pupil((205.0, 200.0), 20.0, 347.0).expect("pupil");
+        let (o, share) = p.outline.expect("outline");
+        assert!(p.vis < 0.9, "{}", p.vis);
+        assert_eq!((o.cx, o.cy, o.a, o.b), (p.ell.cx, p.ell.cy, p.ell.a, p.ell.b));
+        assert!(share < 0.9 && share <= p.vis, "{share} {}", p.vis);
     }
 
     #[test]

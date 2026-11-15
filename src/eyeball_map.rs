@@ -79,11 +79,16 @@ fn solve3(mut a: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
 /// One eye's map from its five dots' medians (DOTS order; the filter's yaw / pitch, degrees) to where it looked, and
 /// how far it misses them (rms, degrees); Err says why there is none.
 pub fn fit_eye(medians: &[[f32; 2]; 5], eye: usize) -> Result<(EyeMap, f64), String> {
+    fit_eye_misses(medians, eye).map_err(|(why, _)| why)
+}
+
+/// fit_eye, with how far the map misses its dots on a refusal too (None when there was no map to measure).
+fn fit_eye_misses(medians: &[[f32; 2]; 5], eye: usize) -> Result<(EyeMap, f64), (String, Option<f64>)> {
     let name = ["left", "right"][eye];
     let u: Vec<f64> = medians.iter().map(|m| f64::from(m[0])).collect();
     let v: Vec<f64> = medians.iter().map(|m| f64::from(m[1])).collect();
     if !u.iter().chain(&v).all(|x| x.is_finite()) {
-        return Err(format!("the {name} eye's angles are not all numbers"));
+        return Err((format!("the {name} eye's angles are not all numbers"), None));
     }
     let wanted: Vec<[f64; 2]> = (0..5).map(|i| eye_direction(DOTS[i].1, DOTS[i].2, eye)).collect();
     let (mu, mv) = (u.iter().sum::<f64>() / 5.0, v.iter().sum::<f64>() / 5.0);
@@ -93,7 +98,10 @@ pub fn fit_eye(medians: &[[f32; 2]; 5], eye: usize) -> Result<(EyeMap, f64), Str
     let half = (suu + svv) / 2.0;
     let smaller = (half - (half * half - (suu * svv - suv * suv)).max(0.0).sqrt()).max(0.0).sqrt();
     if smaller < MIN_SPREAD_DEG {
-        return Err(format!("the {name} eye's angles hardly moved between the dots ({smaller:.1} deg, needs {MIN_SPREAD_DEG:.0})"));
+        return Err((
+            format!("the {name} eye's angles hardly moved between the dots ({smaller:.1} deg, needs {MIN_SPREAD_DEG:.0})"),
+            None,
+        ));
     }
     // Least squares about the mean, for a well-conditioned system: angle = c0 + c1 (u - mu) + c2 (v - mv)
     let mut coefficients = [[0.0; 3]; 2];
@@ -109,7 +117,7 @@ pub fn fit_eye(medians: &[[f32; 2]; 5], eye: usize) -> Result<(EyeMap, f64), Str
                 b[j] += row[j] * wanted[i][axis];
             }
         }
-        let c = solve3(a, b).ok_or_else(|| format!("the {name} eye's angles don't give a map"))?;
+        let c = solve3(a, b).ok_or_else(|| (format!("the {name} eye's angles don't give a map"), None))?;
         *out = [c[0] - c[1] * mu - c[2] * mv, c[1], c[2]];
     }
     let map = EyeMap {
@@ -126,7 +134,7 @@ pub fn fit_eye(medians: &[[f32; 2]; 5], eye: usize) -> Result<(EyeMap, f64), Str
         / 5.0)
         .sqrt();
     if !rms.is_finite() || rms > MAX_RMS_DEG {
-        return Err(format!("the {name} eye's map misses its dots by {rms:.1} deg (at most {MAX_RMS_DEG:.0})"));
+        return Err((format!("the {name} eye's map misses its dots by {rms:.1} deg (at most {MAX_RMS_DEG:.0})"), Some(rms)));
     }
     Ok((map, rms))
 }
@@ -181,6 +189,23 @@ pub fn parse_maps(text: &str) -> Option<[EyeMap; 2]> {
     Some([eye("left")?, eye("right")?])
 }
 
+/// What a whole fit did to the maps (MapStore::outcome; status.json "eyeball_map"), so the panel can say when a fit kept
+/// the old map.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FitOutcome {
+    /// A new map was taken.
+    pub fitted: bool,
+    /// Not taken: whether an older map stays (false: there is none).
+    pub kept: bool,
+    /// Why not: "misses" (an eye's map missed its dots by more than MAX_RMS_DEG), "not_settled" (an eye's filter had
+    /// not settled at some dot) or "other" (the eyes hardly moved, no map, a centre too far); None when fitted.
+    pub reason: Option<&'static str>,
+    /// The eye that reason is about: [left, right] (both true: both eyes; neither: not one eye's).
+    pub eyes: [bool; 2],
+    /// How far each eye's map missed its dots (degrees, rms), where there was one to measure.
+    pub misses_deg: [Option<f64>; 2],
+}
+
 /// The maps, the file they are kept in, and the dots of the fit in progress.
 #[derive(Clone, Debug, Default)]
 pub struct MapStore {
@@ -189,6 +214,10 @@ pub struct MapStore {
     pub maps: Option<[EyeMap; 2]>,
     /// The dots of the set in progress (DOTS order): each eye's median.
     dots: [Option<[[f32; 2]; 2]>; 5],
+    /// The eyes that did not count at some dot of the set in progress.
+    unsettled: [bool; 2],
+    /// What the last whole fit did (set at its last dot; taken by the caller).
+    pub outcome: Option<FitOutcome>,
 }
 
 impl MapStore {
@@ -203,7 +232,7 @@ impl MapStore {
             },
             Some((path, Err(_))) => (None, format!("Eyeball map: none yet ({}); the next whole eye fit makes one", path.display())),
         };
-        (Self { path, maps, dots: [None; 5] }, line)
+        (Self { path, maps, dots: [None; 5], unsettled: [false; 2], outcome: None }, line)
     }
 
     /// Never write the file (a replay).
@@ -220,6 +249,11 @@ impl MapStore {
         })
     }
 
+    /// A whole fit that took no map: the old one kept, or none made.
+    fn not_taken(&self, reason: &'static str, eyes: [bool; 2], misses_deg: [Option<f64>; 2]) -> FitOutcome {
+        FitOutcome { fitted: false, kept: self.maps.is_some(), reason: Some(reason), eyes, misses_deg }
+    }
+
     /// A gaze capture is done: its target and each eye's median filter angles with how many samples they are of (None
     /// without any). Returns the lines to log (none for a capture that changes nothing).
     pub fn capture_done(&mut self, target: &str, medians: [Option<([f32; 2], u32)>; 2]) -> Vec<String> {
@@ -230,7 +264,9 @@ impl MapStore {
         // A centre dot starts a new set
         if dot == 0 {
             self.dots = [None; 5];
+            self.unsettled = [false; 2];
         }
+        let last = dot == DOTS.len() - 1;
         let usable = medians.map(|m| m.filter(|(_, n)| *n >= MIN_SAMPLES).map(|(angles, _)| angles));
         let [Some(left), Some(right)] = usable else {
             // Said plainly: which eye did not count, and what that means for the centre or the whole fit
@@ -253,6 +289,13 @@ impl MapStore {
                 counts[0], counts[1]
             ));
             self.dots[dot] = None;
+            for (eye, unsettled) in self.unsettled.iter_mut().enumerate() {
+                *unsettled |= usable[eye].is_none();
+            }
+            // The whole fit's last dot: it makes no map
+            if last {
+                self.outcome = Some(self.not_taken("not_settled", self.unsettled, [None; 2]));
+            }
             return lines;
         };
         self.dots[dot] = Some([left, right]);
@@ -277,7 +320,18 @@ impl MapStore {
         } else if let [Some(c), Some(u), Some(d), Some(l), Some(r)] = self.dots {
             // The whole set: a new map, and the centre from its centre dot
             let set = [c, u, d, l, r];
-            let fitted = (0..2).map(|eye| fit_eye(&set.map(|dot| dot[eye]), eye)).collect::<Result<Vec<_>, _>>();
+            let tries = [0, 1].map(|eye| fit_eye_misses(&set.map(|dot| dot[eye]), eye));
+            let misses = tries.each_ref().map(|t| match t {
+                Ok((_, rms)) => Some(*rms),
+                Err((_, rms)) => *rms,
+            });
+            let fitted = match &tries {
+                [Ok(left), Ok(right)] => Ok(vec![*left, *right]),
+                [Err((why, _)), _] | [_, Err((why, _))] => Err(why.clone()),
+            };
+            // Which eye(s) failed, and whether because their maps missed the dots
+            let failed = tries.each_ref().map(Result::is_err);
+            let missed = tries.each_ref().map(|t| matches!(t, Err((_, Some(_)))));
             match fitted {
                 Ok(fits) => {
                     let maps = [fits[0].0, fits[1].0];
@@ -291,17 +345,35 @@ impl MapStore {
                                 fits[0].1, fits[1].1, centre[0][0], centre[0][1], centre[1][0], centre[1][1]
                             ));
                             changed = Some(new);
+                            self.outcome = Some(FitOutcome {
+                                fitted: true,
+                                kept: false,
+                                reason: None,
+                                eyes: [false; 2],
+                                misses_deg: misses,
+                            });
                         }
-                        Err(why) => lines.push(format!("Eyeball map not made: {why}")),
+                        Err(why) => {
+                            lines.push(format!("Eyeball map not made: {why}"));
+                            self.outcome = Some(self.not_taken("other", [false; 2], misses));
+                        }
                     }
                 }
-                Err(why) => lines.push(format!(
-                    "Eyeball map {}: {why}",
-                    if self.maps.is_some() { "kept as it was" } else { "not made" }
-                )),
+                Err(why) => {
+                    lines.push(format!(
+                        "Eyeball map {}: {why}",
+                        if self.maps.is_some() { "kept as it was" } else { "not made" }
+                    ));
+                    // The eyes whose maps missed their dots when that was why; else the eyes that failed otherwise
+                    self.outcome = Some(if missed.contains(&true) {
+                        self.not_taken("misses", missed, misses)
+                    } else {
+                        self.not_taken("other", failed, misses)
+                    });
+                }
             }
             self.dots = [None; 5];
-        } else if dot == DOTS.len() - 1 {
+        } else if last {
             // The whole fit's last dot, with some of its dots missing: said, so a fit that made no map is not taken for
             // one that did
             let missing: Vec<&str> = (0..DOTS.len()).filter(|&i| self.dots[i].is_none()).map(|i| DOTS[i].0).collect();
@@ -311,6 +383,7 @@ impl MapStore {
                 missing.join(", "),
                 if missing.len() == 1 { "" } else { "s" }
             ));
+            self.outcome = Some(self.not_taken("not_settled", self.unsettled, [None; 2]));
         }
         if let Some(maps) = changed {
             self.maps = Some(maps);
@@ -370,6 +443,8 @@ mod tests {
         assert!(store.capture_done("closed", [None; 2]).is_empty());
         let maps = store.maps.expect("fitted");
         assert!(lines.iter().any(|l| l.starts_with("Eyeball map fitted: misses its dots by L 0.00")), "{lines:?}");
+        let outcome = store.outcome.take().expect("an outcome");
+        assert!(outcome.fitted && outcome.reason.is_none() && outcome.misses_deg.iter().all(|m| m.is_some_and(|m| m < 0.01)));
         assert!(lines.last().unwrap().starts_with("Eyeball map saved to"));
         // The map puts each eye's readings where it looked, the centre included
         for eye in 0..2 {
@@ -417,6 +492,9 @@ mod tests {
         }
         let lines = store.capture_done("right", medians(reading, 4, 120));
         assert_eq!(lines, vec!["Eyeball map kept as it was: no settled eyes at the up dot of this fit".to_owned()]);
+        // ...and the outcome says so: kept, the right eye not settled
+        let kept = FitOutcome { fitted: false, kept: true, reason: Some("not_settled"), eyes: [false, true], misses_deg: [None; 2] };
+        assert_eq!(store.outcome.take(), Some(kept));
         assert_eq!(store.maps, Some(recentred));
         // A centre dot without settled eyes keeps the centre
         let lines = store.capture_done("center", [None; 2]);
@@ -464,6 +542,31 @@ mod tests {
             lines.extend(store.capture_done(DOTS[dot].0, medians(wild, dot, 120)));
         }
         assert!(store.maps.is_none() && lines.last().unwrap().contains("misses its dots"), "{lines:?}");
+        // Its outcome: not made (no old map), both eyes' maps missed their dots, by how much
+        let outcome = store.outcome.take().expect("an outcome");
+        assert!(!outcome.fitted && !outcome.kept && outcome.reason == Some("misses") && outcome.eyes == [true, true]);
+        assert!(outcome.misses_deg.iter().all(|m| m.is_some_and(|m| m > MAX_RMS_DEG)), "{outcome:?}");
+        // One eye only (the right one 6.8 off at the centre dot), with an old map: kept, the right eye, its misses
+        store.maps = Some([fit_eye(&[0, 1, 2, 3, 4].map(|d| reading(0, DOTS[d].1, DOTS[d].2)), 0).unwrap().0; 2]);
+        let off = |eye: usize, yaw: f64, pitch: f64| {
+            let r = reading(eye, yaw, pitch);
+            if eye == 1 && yaw == 0.0 && pitch == 0.0 { [r[0] + 6.8, r[1]] } else { r }
+        };
+        for dot in 0..5 {
+            store.capture_done(DOTS[dot].0, medians(off, dot, 120));
+        }
+        let outcome = store.outcome.take().expect("an outcome");
+        assert!(!outcome.fitted && outcome.kept && outcome.reason == Some("misses") && outcome.eyes == [false, true]);
+        assert!(outcome.misses_deg[0].is_some_and(|m| m < 0.01) && outcome.misses_deg[1].is_some_and(|m| m > 3.0));
+        // The last dot itself without a settled eye: not settled
+        for dot in 0..4 {
+            store.capture_done(DOTS[dot].0, medians(reading, dot, 120));
+        }
+        store.outcome = None;
+        let mut right = medians(reading, 4, 120);
+        right[0] = Some((right[0].unwrap().0, 5));
+        store.capture_done("right", right);
+        assert_eq!(store.outcome.map(|o| (o.reason, o.eyes, o.kept)), Some((Some("not_settled"), [true, false], true)));
         // A centre too far is not taken
         let maps = [fit_eye(&[0, 1, 2, 3, 4].map(|d| reading(0, DOTS[d].1, DOTS[d].2)), 0).unwrap().0; 2];
         assert!(centers(&maps, [[60.0, 0.0], [3.0, -2.0]]).unwrap_err().contains("left eye's centre"));

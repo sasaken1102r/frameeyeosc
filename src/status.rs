@@ -78,8 +78,49 @@ pub struct Status<'a> {
     /// With gaze_source "eyeball": whether the eyeball's gaze is sent ("in_use") or why the eye server's is sent
     /// instead ("no_calibration", "no_camera", "no_map"; eyeball.rs EyeballGaze::state); None with any other source.
     pub eyeball: Option<&'static str>,
+    /// What the last whole eye fit (with gaze_source "eyeball") did to the eyeball's maps; None before one in this run.
+    pub eyeball_map: Option<EyeballMapStatus>,
     /// The last problem frameeyeosc logged (see `log_error`), kept after it clears; None if there was none yet.
     pub last_error: Option<LastError>,
+}
+
+/// What a whole eye fit did to the eyeball's maps (eyeball_map.rs FitOutcome), so the panel can say when the old map
+/// stayed.
+#[derive(Debug, PartialEq, Serialize)]
+pub struct EyeballMapStatus {
+    /// When (Unix seconds).
+    pub at: f64,
+    /// "fitted" (a new map), "kept" (the old one stays) or "not_made" (there is none).
+    pub result: &'static str,
+    /// Why not: "misses", "not_settled" or "other"; None when fitted.
+    pub reason: Option<&'static str>,
+    /// The eye the reason is about: "left", "right" or "both"; None when fitted or not one eye's.
+    pub eye: Option<&'static str>,
+    /// How far each eye's map missed its dots (degrees, rms; left, right), where there was one to measure.
+    pub misses_deg: [Option<f64>; 2],
+}
+
+impl EyeballMapStatus {
+    pub fn of(at: f64, outcome: &crate::eyeball_map::FitOutcome) -> Self {
+        Self {
+            at: (at * 1000.0).round() / 1000.0,
+            result: if outcome.fitted {
+                "fitted"
+            } else if outcome.kept {
+                "kept"
+            } else {
+                "not_made"
+            },
+            reason: outcome.reason,
+            eye: match outcome.eyes {
+                [true, true] => Some("both"),
+                [true, false] => Some("left"),
+                [false, true] => Some("right"),
+                [false, false] => None,
+            },
+            misses_deg: outcome.misses_deg.map(|m| m.map(|m| (m * 100.0).round() / 100.0)),
+        }
+    }
 }
 
 /// One extra output as it is now.
@@ -282,4 +323,26 @@ fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // (a file left by an earlier version keeps its mode when written again)
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     file.write_all(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eyeball_map::FitOutcome;
+
+    #[test]
+    fn a_kept_eyeball_map_is_said_with_its_reason_eye_and_misses() {
+        let kept = FitOutcome { fitted: false, kept: true, reason: Some("misses"), eyes: [false, true], misses_deg: [Some(1.234), Some(3.456)] };
+        let json = serde_json::to_value(EyeballMapStatus::of(1_794_706_680.1234, &kept)).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"at": 1_794_706_680.123, "result": "kept", "reason": "misses", "eye": "right", "misses_deg": [1.23, 3.46]})
+        );
+        let fitted = FitOutcome { fitted: true, kept: false, reason: None, eyes: [false; 2], misses_deg: [Some(0.5), Some(0.7)] };
+        let json = serde_json::to_value(EyeballMapStatus::of(1.0, &fitted)).unwrap();
+        assert_eq!((json["result"].as_str(), json["reason"].is_null(), json["eye"].is_null()), (Some("fitted"), true, true));
+        let none = FitOutcome { fitted: false, kept: false, reason: Some("not_settled"), eyes: [true, true], misses_deg: [None; 2] };
+        let json = serde_json::to_value(EyeballMapStatus::of(1.0, &none)).unwrap();
+        assert_eq!((json["result"].as_str(), json["eye"].as_str()), (Some("not_made"), Some("both")));
+    }
 }

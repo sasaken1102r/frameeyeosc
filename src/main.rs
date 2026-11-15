@@ -4983,6 +4983,8 @@ struct EyeballSetup {
     read_only: bool,
     // Taken up (None until the source is first chosen)
     store: Option<eyeball_map::MapStore>,
+    // What the last whole fit did to the maps, and when (Unix seconds): status.json "eyeball_map"
+    map_outcome: Option<(f64, eyeball_map::FitOutcome)>,
     // When the calibration was last tried (while it can't be read, again every CALIBRATION_RETRY), and whether the
     // failure was said
     calibration_tried: Option<Instant>,
@@ -5004,6 +5006,7 @@ impl EyeballSetup {
             map_path,
             read_only: false,
             store: None,
+            map_outcome: None,
             calibration_tried: None,
             calibration_failure_said: false,
             last_log: None,
@@ -5064,6 +5067,10 @@ impl EyeballSetup {
         let mut lines = vec![smoother.eyeball.centre_line()];
         lines.extend(store.capture_done(target, medians));
         smoother.eyeball.maps = store.maps;
+        if let Some(outcome) = store.outcome.take() {
+            let now = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64());
+            self.map_outcome = Some((now, outcome));
+        }
         lines
     }
 
@@ -5671,6 +5678,7 @@ impl Bridge {
             gaze_capture: self.capture_result.as_ref(),
             gaze_in_use: self.latest.as_ref().and_then(|sample| sample.gaze_in_use).map(pupil::InUse::name),
             eyeball: (settings.gaze_source == config::GazeSource::Eyeball).then(|| self.smoother.eyeball.state()),
+            eyeball_map: self.eyeball.map_outcome.map(|(at, outcome)| status::EyeballMapStatus::of(at, &outcome)),
             last_error: status::ERRORS.last(),
         }
     }

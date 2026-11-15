@@ -680,16 +680,21 @@ impl EyeFilter {
         let retakes = self.retakes;
         let mut e = self.filter(camera, o)?;
         let x = self.x?;
-        if e.update != Update::Start {
-            if let Some(p) = o.pos {
-                match self.rest {
-                    Some((at, _)) if (p[0] - at[0]).hypot(p[1] - at[1]) <= HOLD_RADIUS && !self.saccade => {}
-                    _ => self.rest = Some((p, o.time)),
-                }
-            }
-            self.still = o.pos.is_some() && !self.saccade && self.rest.is_some_and(|(_, since)| o.time - since >= HOLD_AFTER_S);
-        }
         let restarted = e.update == Update::Start || self.retakes != retakes;
+        // Where the pupil came to rest: anew after a saccade frame, a move beyond HOLD_RADIUS, a frame without the pupil
+        // (after a blink the lids may still be clearing and the centre moving: the hold waits HOLD_AFTER_S again) and
+        // a start or re-take (the centre was just thrown)
+        match o.pos {
+            Some(p) if !restarted => match self.rest {
+                Some((at, _)) if (p[0] - at[0]).hypot(p[1] - at[1]) <= HOLD_RADIUS && !self.saccade => {}
+                _ => self.rest = Some((p, o.time)),
+            },
+            Some(p) => self.rest = Some((p, o.time)),
+            None => self.rest = None,
+        }
+        self.still = o.pos.is_some()
+            && !self.saccade
+            && self.rest.is_some_and(|(_, since)| o.time - since >= HOLD_AFTER_S);
         let dt = (o.time - self.held_time).clamp(0.0, DT_MAX);
         self.held_time = o.time;
         let centre = [x[4], x[5], x[6]];
@@ -709,6 +714,10 @@ impl EyeFilter {
             self.held_centre = None;
             let keep = if self.saccade || restarted { 0.0 } else { (-dt / HOLD_EASE_S).exp() };
             self.held = self.held.map(|d| d * keep);
+        }
+        // (a solve that went wrong gives nothing to hold; NaN times the ease would stay NaN)
+        if !self.held.iter().all(|d| d.is_finite()) {
+            self.held = [0.0; 2];
         }
         e.yaw = x[0] + self.held[0];
         e.pitch = x[1] + self.held[1];
@@ -1699,6 +1708,58 @@ pub mod tests {
         let keep = (-1.0 / 90.0 / HOLD_EASE_S).exp();
         assert!(!filter.still);
         assert!((e.yaw - x[0] - 0.01 * keep).abs() < 1e-12 && (e.pitch - x[1] + 0.01 * keep).abs() < 1e-12);
+    }
+
+    /// Learns, looks at (8, 4) for a second so the eye is held; returns the time of the next frame.
+    fn held_at(filter: &mut EyeFilter, c: &Camera) -> f64 {
+        let (t, _) = learn(filter, c, seen);
+        run(filter, c, seen, t, 1.0, |_| (eye_at(c), 8.0, 4.0));
+        assert!(filter.still);
+        t + 1.0
+    }
+
+    /// Frames at (8, 4) from `t` for `seconds`: from which frame on the eye is held again (None: not within them).
+    fn held_again(filter: &mut EyeFilter, c: &Camera, t: f64, seconds: f64) -> Option<usize> {
+        let n = (seconds * 90.0).round() as usize;
+        (0..n).find(|&k| {
+            filter.step(c, &observe(c, &seen(c, eye_at(c), 8.0, 4.0, t + k as f64 / 90.0)));
+            filter.still
+        })
+    }
+
+    #[test]
+    fn after_a_blink_or_a_re_take_the_hold_waits_again() {
+        let c = camera();
+        // A blink (the pupil lost for 0.1 s) and back at the same place: not held on the frame it is back, only
+        // HOLD_AFTER_S later (the lids may still be clearing, the centre still moving)
+        let mut filter = EyeFilter::default();
+        let mut t = held_at(&mut filter, &c);
+        for _ in 0..9 {
+            let mut lost = seen(&c, eye_at(&c), 8.0, 4.0, t);
+            lost.pupil = None;
+            filter.step(&c, &observe(&c, &lost));
+            assert!(!filter.still);
+            t += 1.0 / 90.0;
+        }
+        let again = held_again(&mut filter, &c, t, 1.0);
+        eprintln!("after a blink: held again from frame {again:?}");
+        assert_eq!(again, Some((HOLD_AFTER_S * 90.0).round() as usize));
+        // A re-take (frames refused REACQUIRE times in a row, the angles taken afresh): the same wait
+        let mut filter = EyeFilter::default();
+        let t = held_at(&mut filter, &c);
+        filter.misses = REACQUIRE;
+        let retakes = filter.retakes;
+        let again = held_again(&mut filter, &c, t, 1.0);
+        assert_eq!(filter.retakes, retakes + 1);
+        eprintln!("after a re-take: held again from frame {again:?}");
+        assert_eq!(again, Some((HOLD_AFTER_S * 90.0).round() as usize));
+        // Whatever the held difference was, it is dropped on the re-take, and a NaN one is never given
+        let mut filter = EyeFilter::default();
+        let t = held_at(&mut filter, &c);
+        filter.held = [f64::NAN, 0.0];
+        filter.rest = None;
+        let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 8.0, 4.0, t))).unwrap();
+        assert!(e.yaw.is_finite() && e.pitch.is_finite() && filter.held == [0.0; 2]);
     }
 
     #[test]

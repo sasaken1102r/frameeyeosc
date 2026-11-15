@@ -98,6 +98,31 @@ pub const SETTLED_CENTRE_SD: f64 = 0.0005;
 /// this (m, each axis) or what it was before, if more, so the next ellipse cannot throw the centre millimetres in one
 /// frame.
 pub const CENTRE_SD_CAP: f64 = 0.002;
+/// While an eye holds still, the direction given out is not the filter's own angles but the angles that put the pupil
+/// where the filter has it about a centre held from when the eye came to rest. With the pupil still, the filter keeps
+/// trading its centre against its angles on the ellipse alone, whose shape drifts with the pupil's size and the fit by
+/// more than its place does: on the headset (2026-11-15, the gaze check after 955deec) the given gaze wandered up to a
+/// degree or two over a dot's 3.5 s, 2-3 times Valve's spread on some dots, while the pupils stood within a few tenths
+/// of a pixel; on the replays each such wander is the centre moving with the angles against it (correlation -1). The
+/// filter itself is left alone (its centre and the hop latency are as before); the hold only changes what is given.
+/// "Still": the pupil within HOLD_RADIUS (normalised units, about 1.6 px) of where it came to rest, for HOLD_AFTER_S,
+/// without a saccade frame. Meanwhile the held centre follows the filter's with the time constant HOLD_CENTRE_TAU_S
+/// (so a slow slip still comes through), and once the eye moves on or the pupil is lost the difference from the
+/// filter's angles is eased out over HOLD_EASE_S, or dropped at once on a saccade frame. The held direction is never
+/// more than HOLD_MAX_DEG from the filter's own: the cost of the hold is that a landing whose centre is still settling
+/// is followed only at the hold's pace (on the model's own frames, where the filter ends exact, a turn to (-18, -10)
+/// would otherwise be given 2.2 degrees off at first and 0.6 after 3 s).
+/// Chosen on the replays (2026-11-15; slip tests 1-4 and both re-seat runs, all of them looked at): the spread of the
+/// two eyes' mean over still stretches -39% (median 0.50 -> 0.31 deg, p90 0.93 -> 0.80), the hop latency the same
+/// (median 0.067 s, p90 0.272 s behind the raw pupil), the slip and re-seat medians within about 0.1 degree (run 2
+/// 0.5 better, run 4 0.11 worse). Holding from 0.1 s cut the spread further but cost run 3 1.7 degrees (it holds a
+/// landing that is still settling); moving the filter's own centre less while still cut the spread a little less and
+/// cost a frame or two of latency (the tighter filter refuses the next ellipse).
+pub const HOLD_RADIUS: f64 = 0.006;
+pub const HOLD_AFTER_S: f64 = 0.3;
+pub const HOLD_CENTRE_TAU_S: f64 = 2.0;
+pub const HOLD_EASE_S: f64 = 0.1;
+pub const HOLD_MAX_DEG: f64 = 1.5;
 /// The pictures are this many rows high when the calibration does not say.
 const DEFAULT_ROWS: f64 = 400.0;
 
@@ -350,6 +375,32 @@ fn jacobian(x: &V7, camera: &Camera, ell: bool) -> ([f64; 4], [[f64; N]; 4], usi
     (z0, j, n)
 }
 
+/// The angles that put the pupil at `target` (normalised) for an eye whose centre is at `centre`, from `start`
+/// (radians; Newton's method on the prediction, three steps).
+fn angles_about(camera: &Camera, target: [f64; 4], start: [f64; 2], centre: V3) -> [f64; 2] {
+    let mut x = [start[0], start[1], 0.0, 0.0, centre[0], centre[1], centre[2]];
+    for _ in 0..3 {
+        let (z, _) = predict(&x, camera, false);
+        let mut j = [[0.0; 2]; 2];
+        for i in 0..2 {
+            let mut x2 = x;
+            x2[i] += 1e-5;
+            let (z2, _) = predict(&x2, camera, false);
+            for r in 0..2 {
+                j[r][i] = (z2[r] - z[r]) / 1e-5;
+            }
+        }
+        let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+        if det.abs() < 1e-12 {
+            break;
+        }
+        let (r0, r1) = (target[0] - z[0], target[1] - z[1]);
+        x[0] += (j[1][1] * r0 - j[0][1] * r1) / det;
+        x[1] += (-j[1][0] * r0 + j[0][0] * r1) / det;
+    }
+    [x[0], x[1]]
+}
+
 /// The two circle normals an ellipse allows at a pupil seen at `pos` (both facing the camera).
 fn normals(pos: [f64; 2], e: [f64; 2]) -> [V3; 2] {
     let tilt = (1.0 - e[0].hypot(e[1])).clamp(-1.0, 1.0).acos();
@@ -539,6 +590,15 @@ pub struct EyeFilter {
     last_pos: Option<([f64; 2], f64)>,
     /// The last frame taken was a saccade (its acceleration noise raised).
     pub saccade: bool,
+    // Holding still (HOLD_RADIUS): where the pupil came to rest and since when, whether it is still, the centre the
+    // direction is given about meanwhile, the difference from the filter's own angles, the time of the last frame and
+    // the direction given (radians)
+    rest: Option<([f64; 2], f64)>,
+    still: bool,
+    held_centre: Option<V3>,
+    held: [f64; 2],
+    held_time: f64,
+    given: Option<[f64; 2]>,
 }
 
 /// The centre's uncertainty while the ellipse is not used: no standard deviation above the larger of CENTRE_SD_CAP and
@@ -605,13 +665,61 @@ impl EyeFilter {
         self.x.is_some()
     }
 
+    /// The direction given out (yaw, pitch in radians: the filter's own angles, or while the eye holds still the held
+    /// ones, see HOLD_RADIUS); None until started.
+    pub fn direction(&self) -> Option<[f64; 2]> {
+        self.given
+    }
+
+    /// Take one frame; the state after it, its angles the direction given out (None until a frame with a pupil and its
+    /// ellipse starts it).
+    pub fn step(&mut self, camera: &Camera, o: &Obs) -> Option<Estimate> {
+        let retakes = self.retakes;
+        let mut e = self.filter(camera, o)?;
+        let x = self.x?;
+        if e.update != Update::Start {
+            if let Some(p) = o.pos {
+                match self.rest {
+                    Some((at, _)) if (p[0] - at[0]).hypot(p[1] - at[1]) <= HOLD_RADIUS && !self.saccade => {}
+                    _ => self.rest = Some((p, o.time)),
+                }
+            }
+            self.still = o.pos.is_some() && !self.saccade && self.rest.is_some_and(|(_, since)| o.time - since >= HOLD_AFTER_S);
+        }
+        let restarted = e.update == Update::Start || self.retakes != retakes;
+        let dt = (o.time - self.held_time).clamp(0.0, DT_MAX);
+        self.held_time = o.time;
+        let centre = [x[4], x[5], x[6]];
+        if self.still && !restarted {
+            let before = *self.held_centre.get_or_insert(centre);
+            let held = add(before, scale(sub(centre, before), 1.0 - (-dt / HOLD_CENTRE_TAU_S).exp()));
+            self.held_centre = Some(held);
+            let (target, _) = predict(&x, camera, false);
+            let [yaw, pitch] = angles_about(camera, target, [x[0], x[1]], held);
+            self.held = [yaw - x[0], pitch - x[1]];
+            let size = self.held[0].hypot(self.held[1]);
+            let most = HOLD_MAX_DEG.to_radians();
+            if size > most {
+                self.held = self.held.map(|d| d * most / size);
+            }
+        } else {
+            self.held_centre = None;
+            let keep = if self.saccade || restarted { 0.0 } else { (-dt / HOLD_EASE_S).exp() };
+            self.held = self.held.map(|d| d * keep);
+        }
+        e.yaw = x[0] + self.held[0];
+        e.pitch = x[1] + self.held[1];
+        self.given = Some([e.yaw, e.pitch]);
+        Some(e)
+    }
+
     fn estimate(&self, update: Update) -> Option<Estimate> {
         let x = self.x?;
         Some(Estimate { yaw: x[0], pitch: x[1], centre: [x[4], x[5], x[6]], update })
     }
 
-    /// Take one frame; the state after it (None until a frame with a pupil and its ellipse starts it).
-    pub fn step(&mut self, camera: &Camera, o: &Obs) -> Option<Estimate> {
+    /// The filter's own step: one frame; its state after it (None until a frame with a pupil and its ellipse starts it).
+    fn filter(&mut self, camera: &Camera, o: &Obs) -> Option<Estimate> {
         let deg = |d: f64| d.to_radians();
         let Some(mut x) = self.x else {
             // Started from the first frame with an ellipse: the gaze from its normal nearer straight ahead, the pupil
@@ -886,9 +994,9 @@ impl EyeballGaze {
     }
 
     /// Take a sample at `time` (the eye server's, s) with eyecam-rec's values as read for it: each eye's new frame
-    /// into its filter. Each eye's direction (yaw, pitch in degrees, the filter's own before the map) while it is fresh
-    /// (Freshness: its pupil seen within EYE_FRESH_S and a frame taken within ACCEPTED_FRESH_S); None for both without
-    /// the calibration.
+    /// into its filter. Each eye's direction (yaw, pitch in degrees, as its filter gives it, EyeFilter::direction,
+    /// before the map) while it is fresh (Freshness: its pupil seen within EYE_FRESH_S and a frame taken within
+    /// ACCEPTED_FRESH_S); None for both without the calibration.
     pub fn step(&mut self, time: f64, live: Option<&Live>) -> [Option<[f32; 2]>; 2] {
         if self.calibration.is_none() {
             return [None; 2];
@@ -920,8 +1028,8 @@ impl EyeballGaze {
                     self.saccade_at = Some(time);
                 }
             }
-            if self.fresh[eye].fresh(time) && let Some(x) = self.filters[eye].x {
-                out[eye] = Some([x[0].to_degrees() as f32, x[1].to_degrees() as f32]);
+            if self.fresh[eye].fresh(time) && let Some([yaw, pitch]) = self.filters[eye].direction() {
+                out[eye] = Some([yaw.to_degrees() as f32, pitch.to_degrees() as f32]);
             }
         }
         self.busy_ns += started.elapsed().as_nanos() as u64;
@@ -1230,8 +1338,14 @@ pub mod tests {
     /// What makes the frames: `seen` (the model's own) or `outline` (a camera's).
     type Frames = fn(&Camera, V3, f64, f64, f64) -> RawFrame;
 
+    /// The filter's own angles (degrees), without the still-eye hold (HOLD_RADIUS, tested on its own).
+    fn own(filter: &EyeFilter) -> (f64, f64) {
+        let x = filter.x.unwrap();
+        (x[0].to_degrees(), x[1].to_degrees())
+    }
+
     /// Runs `seconds` at 90 frames a second from `start` of an eye whose centre and direction are given per time;
-    /// returns the last estimate (degrees, and the centre in mm).
+    /// returns the filter's own last angles (degrees, see `own`) and its centre (mm).
     fn run(filter: &mut EyeFilter, c: &Camera, frames: Frames, from: f64, seconds: f64, at: impl Fn(f64) -> (V3, f64, f64)) -> (f64, f64, V3) {
         let mut last = None;
         let n = (seconds * 90.0).round() as usize;
@@ -1244,7 +1358,8 @@ pub mod tests {
             }
         }
         let e = last.unwrap();
-        (e.yaw.to_degrees(), e.pitch.to_degrees(), scale(e.centre, 1e3))
+        let (yaw, pitch) = own(filter);
+        (yaw, pitch, scale(e.centre, 1e3))
     }
 
     /// Looks around for a while so the centre is learnt: the eye fit's five dots (as the left eye sees them), two
@@ -1305,7 +1420,8 @@ pub mod tests {
                 frame.aperture = 1.0;
             }
             let e = filter.step(&c, &observe(&c, &frame)).unwrap();
-            let [y, p] = mapped(&map, e.yaw.to_degrees(), e.pitch.to_degrees());
+            let (yaw, pitch) = own(&filter);
+            let [y, p] = mapped(&map, yaw, pitch);
             worst = worst.max((y - y0).hypot(p - p0));
             last = ((y - y0).hypot(p - p0), sub(scale(e.centre, 1e3), c0));
         }
@@ -1501,6 +1617,96 @@ pub mod tests {
             let (_, blind, _) = shifted(seen, shift, false);
             assert!(blind > 5.0, "shift {shift:?} without the ellipse: {blind:.2} deg");
         }
+    }
+
+    /// The spread (degrees, the larger of yaw's and pitch's standard deviations) of a run of directions (radians).
+    fn spread(d: &[[f64; 2]]) -> f64 {
+        let sd = |i: usize| {
+            let mean = d.iter().map(|v| v[i]).sum::<f64>() / d.len() as f64;
+            (d.iter().map(|v| (v[i] - mean).powi(2)).sum::<f64>() / d.len() as f64).sqrt().to_degrees()
+        };
+        sd(0).max(sd(1))
+    }
+
+    #[test]
+    fn a_still_eye_is_held_while_its_ellipse_drifts_and_let_go_when_it_moves() {
+        // After the fit the eye looks at (8, 4) for 4 s, the pupil still, while the ellipse's flattening drifts by 5%
+        // over 2 s and back (as with the pupil's size): the filter's own angles wander with it (its centre against
+        // them), the direction given stays within a fraction of that
+        let c = camera();
+        let mut filter = EyeFilter::default();
+        let (mut t, _) = learn(&mut filter, &c, seen);
+        let (mut own, mut given) = (Vec::new(), Vec::new());
+        for k in 0..360 {
+            let mut frame = seen(&c, eye_at(&c), 8.0, 4.0, t);
+            let flat = 1.0 - frame.b / frame.a;
+            frame.b = frame.a * (1.0 - flat * (1.0 + 0.05 * (2.0 * PI * k as f64 / 360.0).sin()));
+            let e = filter.step(&c, &observe(&c, &frame)).unwrap();
+            assert_eq!(filter.direction(), Some([e.yaw, e.pitch]));
+            if k >= 45 {
+                let x = filter.x.unwrap();
+                own.push([x[0], x[1]]);
+                given.push([e.yaw, e.pitch]);
+            }
+            t += 1.0 / 90.0;
+        }
+        let (own, given) = (spread(&own), spread(&given));
+        eprintln!("still eye, drifting ellipse: the filter's own angles spread {own:.2} deg, the given {given:.2} deg");
+        assert!(own > 0.3 && given < own / 2.0, "own {own:.2}, given {given:.2}");
+        assert!(filter.still);
+        // A saccade lets go at once: on its first frame the filter's own angles are given
+        let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), -12.0, -6.0, t))).unwrap();
+        let x = filter.x.unwrap();
+        assert!(filter.saccade && !filter.still);
+        assert_eq!((e.yaw, e.pitch), (x[0], x[1]));
+        t += 1.0 / 90.0;
+        // Held again after HOLD_AFTER_S there; a lost pupil lets go over HOLD_EASE_S
+        run(&mut filter, &c, seen, t, 0.5, |_| (eye_at(&c), -12.0, -6.0));
+        t += 0.5;
+        assert!(filter.still);
+        filter.held = [0.01, -0.01];
+        let mut lost = seen(&c, eye_at(&c), -12.0, -6.0, t);
+        lost.pupil = None;
+        let e = filter.step(&c, &observe(&c, &lost)).unwrap();
+        let x = filter.x.unwrap();
+        let keep = (-1.0 / 90.0 / HOLD_EASE_S).exp();
+        assert!(!filter.still);
+        assert!((e.yaw - x[0] - 0.01 * keep).abs() < 1e-12 && (e.pitch - x[1] + 0.01 * keep).abs() < 1e-12);
+    }
+
+    #[test]
+    fn the_hold_follows_the_filters_settling_and_a_slow_slip_at_its_pace() {
+        // The cost of the hold: after a landing the filter's centre still settles, and the hold (from HOLD_AFTER_S)
+        // follows it only at HOLD_CENTRE_TAU_S. On the model's frames the filter's own angles end exact; the given
+        // direction is off by at most HOLD_MAX_DEG just after a turn and within 0.75 degree of them after 3 s
+        let c = camera();
+        let mut filter = EyeFilter::default();
+        let (mut t, _) = learn(&mut filter, &c, seen);
+        for (yaw, pitch) in [(15.0, 8.0), (-18.0, -10.0), (0.0, 0.0)] {
+            let (mut worst, mut last) = (0.0f64, 0.0);
+            for _ in 0..270 {
+                let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), yaw, pitch, t))).unwrap();
+                let (y, p) = own(&filter);
+                last = (e.yaw.to_degrees() - y).hypot(e.pitch.to_degrees() - p);
+                worst = worst.max(last);
+                t += 1.0 / 90.0;
+            }
+            eprintln!("hold after a turn to ({yaw}, {pitch}): at most {worst:.2} deg from the filter's own, {last:.2} after 3 s");
+            assert!(worst <= HOLD_MAX_DEG + 1e-9 && last < 0.75, "({yaw}, {pitch}): {worst:.2} / {last:.2}");
+        }
+        // The headset sliding 2 mm over 4 s with the eye still: the given direction never strays from the filter's own
+        // by more than a degree (the pupil leaves the hold's radius every second or so and the hold starts anew)
+        let mut worst = 0.0f64;
+        for k in 0..450 {
+            let share = (k as f64 / 360.0).min(1.0);
+            let centre = add(eye_at(&c), [0.0, 0.002 * share, 0.0]);
+            let e = filter.step(&c, &observe(&c, &seen(&c, centre, 0.0, 0.0, t))).unwrap();
+            let (y, p) = own(&filter);
+            worst = worst.max((e.yaw.to_degrees() - y).hypot(e.pitch.to_degrees() - p));
+            t += 1.0 / 90.0;
+        }
+        eprintln!("hold through a slow 2 mm slip: at most {worst:.2} deg from the filter's own");
+        assert!(worst < 1.0, "{worst:.2}");
     }
 
     #[test]

@@ -61,6 +61,11 @@ pub struct EyeMap {
     /// The quadratic terms of yaw (quad[0]) and pitch (quad[1]): the u * u, u * v and v * v coefficients; zero for an
     /// affine map (the pupil map, and the eyeball's five-dot map; eyeball_map.rs Q9 for the nine-dot one).
     pub quad: [[f32; 3]; 2],
+    /// Where a quadratic map was fitted: [[u_min, u_max], [v_min, v_max]] (its dots' range and a margin,
+    /// eyeball_map.rs BOX_MARGIN_DEG). Outside it the map goes on by its tangent at the nearest point of the box, so a
+    /// look further out than the dots never bends back. None: the map as it is everywhere (an affine map, or a Q9 map
+    /// from a file before the box).
+    pub bounds: Option<[[f32; 2]; 2]>,
 }
 
 /// No quadratic terms: an affine map.
@@ -69,11 +74,32 @@ pub const NO_QUAD: [[f32; 3]; 2] = [[0.0; 3]; 2];
 impl EyeMap {
     /// The eye's direction (yaw, pitch in degrees) for its pupil pair.
     pub fn apply(&self, [u, v]: [f32; 2]) -> [f32; 2] {
+        let [y, p] = match self.bounds.filter(|_| self.quad != NO_QUAD) {
+            // Outside the box: the map at the nearest point of the box, and on from there by its slopes there
+            Some([[u0, u1], [v0, v1]]) if u0 <= u1 && v0 <= v1 => {
+                let (pu, pv) = (u.clamp(u0, u1), v.clamp(v0, v1));
+                let [y, p] = self.raw(pu, pv);
+                let [[yu, yv], [pu_, pv_]] = self.slopes(pu, pv);
+                [y + yu * (u - pu) + yv * (v - pv), p + pu_ * (u - pu) + pv_ * (v - pv)]
+            }
+            _ => self.raw(u, v),
+        };
+        [y + self.center[0], p + self.center[1]]
+    }
+
+    /// The map's own polynomial at (u, v), without the centre and the box.
+    fn raw(&self, u: f32, v: f32) -> [f32; 2] {
         let quad = |q: [f32; 3]| q[0] * u * u + q[1] * u * v + q[2] * v * v;
         [
-            self.yaw[0] + self.yaw[1] * u + self.yaw[2] * v + quad(self.quad[0]) + self.center[0],
-            self.pitch[0] + self.pitch[1] * u + self.pitch[2] * v + quad(self.quad[1]) + self.center[1],
+            self.yaw[0] + self.yaw[1] * u + self.yaw[2] * v + quad(self.quad[0]),
+            self.pitch[0] + self.pitch[1] * u + self.pitch[2] * v + quad(self.quad[1]),
         ]
+    }
+
+    /// The map's slopes at (u, v): [[d yaw / d u, d yaw / d v], [d pitch / d u, d pitch / d v]].
+    pub fn slopes(&self, u: f32, v: f32) -> [[f32; 2]; 2] {
+        let row = |lin: [f32; 3], q: [f32; 3]| [lin[1] + 2.0 * q[0] * u + q[1] * v, lin[2] + q[1] * u + 2.0 * q[2] * v];
+        [row(self.yaw, self.quad[0]), row(self.pitch, self.quad[1])]
     }
 }
 
@@ -97,6 +123,7 @@ pub fn mapped(settings: &Settings) -> Option<[EyeMap; 2]> {
             pitch: [d?, e?, f?],
             center: centers[index].map(|center| center.unwrap_or(0.0)),
             quad: NO_QUAD,
+            bounds: None,
         })
     };
     Some([eye(0)?, eye(1)?])
@@ -551,6 +578,7 @@ mod tests {
             pitch: [20.0, 0.0, -200.0],
             center: [0.0, 0.0],
             quad: NO_QUAD,
+            bounds: None,
         }
     }
 
@@ -870,7 +898,7 @@ mod tests {
         // Each eye's own direction through its map (here 1 degree each, the right eye's centre 2 degrees right): both
         // eyes their mean, one eye plus their last difference, neither held and then the eye server's, every change
         // eased from where the gaze was
-        let identity = EyeMap { yaw: [0.0, 1.0, 0.0], pitch: [0.0, 0.0, 1.0], center: [0.0, 0.0], quad: [[0.0; 3]; 2] };
+        let identity = EyeMap { yaw: [0.0, 1.0, 0.0], pitch: [0.0, 0.0, 1.0], center: [0.0, 0.0], quad: [[0.0; 3]; 2], bounds: None };
         let maps = [identity, EyeMap { center: [2.0, 0.0], ..identity }];
         let mut gaze = PupilGaze::default();
         let mut steps = Vec::new();
@@ -1027,7 +1055,7 @@ mod tests {
     fn the_eyeball_source_learns_the_eye_servers_difference_only_from_trusted_eyes_and_never_an_old_eye_difference() {
         // (as above: the left eye 5, the right 1 + its centre 2; both trusted for 200 samples: the difference 2, the
         // eye server's difference -6 - 4 = -10)
-        let identity = EyeMap { yaw: [0.0, 1.0, 0.0], pitch: [0.0, 0.0, 1.0], center: [0.0, 0.0], quad: [[0.0; 3]; 2] };
+        let identity = EyeMap { yaw: [0.0, 1.0, 0.0], pitch: [0.0, 0.0, 1.0], center: [0.0, 0.0], quad: [[0.0; 3]; 2], bounds: None };
         let maps = [identity, EyeMap { center: [2.0, 0.0], ..identity }];
         let settled = || {
             let mut gaze = PupilGaze::default();

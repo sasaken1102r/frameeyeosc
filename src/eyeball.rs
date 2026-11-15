@@ -2057,7 +2057,7 @@ pub mod tests {
         live.shape = [Some(shape), None];
         gaze.step(0.1, Some(&live));
         assert_eq!(gaze.state(), "no_map");
-        let map = EyeMap { yaw: [0.0, 1.0, 0.0], pitch: [0.0, 0.0, 1.0], center: [0.0; 2], quad: [[0.0; 3]; 2] };
+        let map = EyeMap { yaw: [0.0, 1.0, 0.0], pitch: [0.0, 0.0, 1.0], center: [0.0; 2], quad: [[0.0; 3]; 2], bounds: None };
         gaze.maps = Some([map, map]);
         assert_eq!(gaze.state(), "in_use");
         // The shape gone (eyecam-rec stopped, or one without the shape part): in use for CAMERA_GONE_S, then no camera

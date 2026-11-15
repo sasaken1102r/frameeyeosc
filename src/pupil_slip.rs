@@ -332,7 +332,7 @@ mod tests {
     use super::*;
 
     fn maps(center: f32) -> [EyeMap; 2] {
-        [EyeMap { yaw: [0.0, 100.0, 0.0], pitch: [0.0, 0.0, 100.0], center: [center, 0.0], quad: [[0.0; 3]; 2] }; 2]
+        [EyeMap { yaw: [0.0, 100.0, 0.0], pitch: [0.0, 0.0, 100.0], center: [center, 0.0], quad: [[0.0; 3]; 2], bounds: None }; 2]
     }
 
     /// A camera frame for one eye: its time, pupil centre, slip offset (tracked or held) and template.

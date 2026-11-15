@@ -9,8 +9,9 @@
 //!     latest try of each), and at its eyes-shut step ("closed") each eye's map is fitted to where it looked at each dot
 //!     (as the panel's eye fit places them: TARGET_DISTANCE_M away, the eyes IPD_M apart), and the centre is set from the
 //!     centre dot with it. With the corners, each eye's map is quadratic (Q9: yaw and pitch each from 1, a, b, a², ab,
-//!     b² of the filter's angles a, b), fitted robustly (a dot far off the others' fit is left out, at most
-//!     Q9_MAX_DROPPED); without enough of them, affine on the five dots, as before.
+//!     b² of the filter's angles a, b) on 8 or 9 dots, fitted robustly (of nine, one dot far off the others' fit is
+//!     left out, never the centre), and goes on by its tangent outside its dots' box (EyeMap::bounds); with fewer
+//!     dots, or a quadratic that turns back within its box, affine on the five dots, as before.
 //! Each eye's median needs MIN_SAMPLES samples; a map that misses the dots it was fitted on by more than MAX_RMS_DEG
 //! (Q9_MAX_RMS_DEG for a Q9 map),
 //! or a centre further than MAX_CENTER_DEG, is not taken (the old one stays). The maps are kept in a file of their own (`eyeball_map` next to
@@ -37,19 +38,25 @@ pub const DOTS: [(&str, f64, f64); 9] = [
 pub const FIVE: usize = 5;
 /// The capture that ends a whole fit (the eyes-shut step, capture.rs CLOSED_TARGET): the maps are fitted then.
 pub const END_TARGET: &str = crate::capture::CLOSED_TARGET;
-/// A Q9 map needs at least this many dots (6 numbers per axis, and one more to say how well it fits)...
-pub const Q9_MIN_DOTS: usize = 7;
-/// ...and leaves out at most this many: the dot without which the others fit best, when their fit misses it by more
-/// than Q9_DROP_DEG and by Q9_DROP_RATIO times their own misses (rms; measured with it left out, so it can't pull the
-/// fit towards itself), is taken for a bad one (an eye frozen at a corner) and the fit is made again without it.
-/// (25 deg, 2026-11-16, on the recorded runs' medians: a good dot left out is missed by 5-21 deg, as its fit then
+/// A Q9 map needs at least this many dots (6 numbers per axis, and two more to say how well it fits), in its final fit
+/// and in each fit with one dot left out...
+pub const Q9_MIN_DOTS: usize = 8;
+/// ...so it leaves out at most one, and only of all nine, never the centre dot (the centre comes from it): the dot
+/// without which the others fit best, when their fit misses it by more than Q9_DROP_DEG and by Q9_DROP_RATIO times their
+/// own misses (rms; measured with it left out, so it can't pull the fit towards itself), is taken for a bad one (an eye
+/// frozen at a corner) and the fit is made again without it.
+/// (25 deg, 2026-11-15, on the recorded runs' medians: a good dot left out is missed by 5-21 deg, as its fit then
 /// reaches past the others; the eye frozen at a corner of the 14:51 run by 49 (its Q9 misses 12.8 -> 1.3 deg without it)
 /// and nothing else of the re-seat rounds scored was left out, so their next-round errors stay those of plain Q9.)
-pub const Q9_MAX_DROPPED: usize = 2;
+pub const Q9_MAX_DROPPED: usize = 1;
 pub const Q9_DROP_DEG: f64 = 25.0;
 pub const Q9_DROP_RATIO: f64 = 3.0;
 /// The filter's angles are scaled by this (degrees) in the Q9 fit, so its six columns are of a size.
 const Q9_SCALE: f64 = 20.0;
+/// A Q9 map's box (EyeMap::bounds): its dots' range of the filter's angles and this much more each way (degrees).
+/// Outside it the map goes on by its tangent, as a quadratic fitted only within about +-20 / +-15 deg would turn back
+/// further out.
+pub const BOX_MARGIN_DEG: f64 = 2.0;
 /// How far away the dots are (m), as the panel draws them (gaze_fit.h kTargetDistanceM)...
 pub const TARGET_DISTANCE_M: f64 = 0.9;
 /// ...and the eyes' distance taken for them (m; a typical adult's, as frameeyeosc doesn't know the wearer's: 5 mm off
@@ -64,7 +71,7 @@ pub const MIN_SAMPLES: u32 = 30;
 /// between the dots, in depth too, in every fit.)
 pub const MAX_RMS_DEG: f64 = 3.0;
 /// The same for a Q9 map, on its (up to nine) dots: the corners are harder to fit than the five, and its misses don't
-/// tell whether the map is worse than the one it would replace (2026-11-16, the recorded fits' medians, the code's Q9:
+/// tell whether the map is worse than the one it would replace (2026-11-15, the recorded fits' medians, the code's Q9:
 /// of the fits whose next round could be scored against the previous round's map, those that made it worse missed
 /// their dots by 1.4-3.7 deg, among the better ones. 3 deg refused 8 better fits to catch 1 worse; 5 refuses none of
 /// the recorded fits (the most was 4.5) and still catches the garbage case, the eye frozen at a corner, 12.8 deg
@@ -182,6 +189,7 @@ fn fit_eye_misses(medians: &[[f32; 2]; 5], eye: usize) -> Result<(EyeMap, f64), 
         pitch: coefficients[1].map(|c| c as f32),
         center: [0.0; 2],
         quad: crate::pupil::NO_QUAD,
+        bounds: None,
     };
     let dots: Vec<([f32; 2], [f64; 2])> = (0..5).map(|i| (medians[i], wanted[i])).collect();
     let rms = rms_of(&map, &dots);
@@ -224,6 +232,11 @@ fn q9_row(angles: [f32; 2]) -> [f64; 6] {
     [1.0, u, v, u * u, u * v, v * v]
 }
 
+/// Whether a dot's median counts for a map: there, and numbers.
+fn counts(median: &Option<[f32; 2]>) -> bool {
+    median.is_some_and(|m| m.iter().all(|x| x.is_finite()))
+}
+
 /// The least-squares Q9 map through these dots (angles, where the eye looked); None when they don't give one.
 fn q9_solve(dots: &[([f32; 2], [f64; 2])]) -> Option<EyeMap> {
     let mut c = [[0.0; 6]; 2];
@@ -252,6 +265,7 @@ fn q9_solve(dots: &[([f32; 2], [f64; 2])]) -> Option<EyeMap> {
             [(c[0][3] / s2) as f32, (c[0][4] / s2) as f32, (c[0][5] / s2) as f32],
             [(c[1][3] / s2) as f32, (c[1][4] / s2) as f32, (c[1][5] / s2) as f32],
         ],
+        bounds: None,
     };
     map.yaw.iter().chain(&map.pitch).chain(map.quad.iter().flatten()).all(|c| c.is_finite()).then_some(map)
 }
@@ -262,6 +276,18 @@ pub struct Q9Fit {
     pub map: EyeMap,
     pub rms: f64,
     pub dropped: Vec<usize>,
+    /// Yaw keeps rising with the filter's first angle and pitch with its second everywhere in the box (q9_one_way);
+    /// fit_eye_any takes the affine map instead otherwise.
+    pub one_way: bool,
+}
+
+/// Whether a map's yaw keeps rising with u and its pitch with v (or both keep falling) everywhere in its box: the slopes
+/// are linear in (u, v), so their signs at the box's corners say it. A map without a box: true.
+pub fn q9_one_way(map: &EyeMap) -> bool {
+    let Some([[u0, u1], [v0, v1]]) = map.bounds else { return true };
+    let corners = [[u0, v0], [u0, v1], [u1, v0], [u1, v1]].map(|[u, v]| map.slopes(u, v));
+    let one_sign = |values: [f32; 4]| values.iter().all(|x| *x > 0.0) || values.iter().all(|x| *x < 0.0);
+    one_sign(corners.map(|s| s[0][0])) && one_sign(corners.map(|s| s[1][1]))
 }
 
 /// One eye's Q9 map from the dots it has (DOTS order; None for a dot without a settled median), robustly: while more than
@@ -278,9 +304,7 @@ pub fn fit_eye_q9(medians: &[Option<[f32; 2]>; 9], eye: usize) -> Result<Q9Fit, 
 /// offline (the harness test below).
 fn q9_fit(medians: &[Option<[f32; 2]>; 9], eye: usize, checked: bool) -> Result<Q9Fit, (String, Option<f64>)> {
     let name = ["left", "right"][eye];
-    let mut kept: Vec<usize> = (0..DOTS.len())
-        .filter(|&i| medians[i].is_some_and(|m| m.iter().all(|x| x.is_finite())))
-        .collect();
+    let mut kept: Vec<usize> = (0..DOTS.len()).filter(|&i| counts(&medians[i])).collect();
     if kept.len() < Q9_MIN_DOTS {
         return Err((format!("the {name} eye has {} of the 9 dots (a quadratic map needs {Q9_MIN_DOTS})", kept.len()), None));
     }
@@ -292,10 +316,10 @@ fn q9_fit(medians: &[Option<[f32; 2]>; 9], eye: usize, checked: bool) -> Result<
     };
     let mut dropped = Vec::new();
     while dropped.len() < Q9_MAX_DROPPED && kept.len() > Q9_MIN_DOTS {
-        // The dot whose leaving out lets the others fit best, how far the others' fit then misses it, and how well they
-        // fit themselves
+        // The dot whose leaving out lets the others fit best (never the centre dot), how far the others' fit then misses
+        // it, and how well they fit themselves
         let mut best: Option<(usize, f64, f64)> = None;
-        for (at, &i) in kept.iter().enumerate() {
+        for (at, &i) in kept.iter().enumerate().filter(|(_, i)| **i != 0) {
             let others: Vec<_> = kept.iter().filter(|&&k| k != i).map(|&k| dot(k)).collect();
             let Some(map) = q9_solve(&others) else { continue };
             let rms = rms_of(&map, &others);
@@ -317,27 +341,44 @@ fn q9_fit(medians: &[Option<[f32; 2]>; 9], eye: usize, checked: bool) -> Result<
             None,
         ));
     }
-    let map = q9_solve(&dots).ok_or_else(|| (format!("the {name} eye's angles don't give a quadratic map"), None))?;
+    let mut map = q9_solve(&dots).ok_or_else(|| (format!("the {name} eye's angles don't give a quadratic map"), None))?;
     let rms = rms_of(&map, &dots);
     if checked && (!rms.is_finite() || rms > Q9_MAX_RMS_DEG) {
         return Err((format!("the {name} eye's map misses its dots by {rms:.1} deg (at most {Q9_MAX_RMS_DEG:.0})"), Some(rms)));
     }
-    Ok(Q9Fit { map, rms, dropped })
+    // Its box: the dots' range of each angle, and a margin
+    let range = |axis: usize| {
+        let values = dots.iter().map(|(a, _)| f64::from(a[axis]));
+        let (low, high) = values.fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), x| (l.min(x), h.max(x)));
+        [(low - BOX_MARGIN_DEG) as f32, (high + BOX_MARGIN_DEG) as f32]
+    };
+    map.bounds = Some([range(0), range(1)]);
+    let one_way = q9_one_way(&map);
+    Ok(Q9Fit { map, rms, dropped, one_way })
 }
 
 /// One eye's map for a whole fit: Q9 with enough dots, else affine on the five (None when one of those is missing).
 /// Ok: the map, its misses and how it was made ("q9", with the dots left out, or "affine"); Err: why, with the misses.
 pub fn fit_eye_any(medians: &[Option<[f32; 2]>; 9], eye: usize) -> Result<(EyeMap, f64, String), (String, Option<f64>)> {
-    // Not enough dots for Q9 (no corners: the Valve source's fit, or a panel from before them): the five dots' affine map
-    if medians.iter().filter(|m| m.is_some()).count() < Q9_MIN_DOTS {
+    // The five dots' affine map, said how it came to be used
+    let affine = |because: &str| {
         let five: Option<Vec<[f32; 2]>> = medians[..FIVE].iter().copied().collect();
         let Some(five) = five else {
             return Err((format!("the {} eye has not all of the five dots", ["left", "right"][eye]), None));
         };
         let five: [[f32; 2]; 5] = [five[0], five[1], five[2], five[3], five[4]];
-        return fit_eye_misses(&five, eye).map(|(map, rms)| (map, rms, "affine".to_owned()));
+        fit_eye_misses(&five, eye).map(|(map, rms)| (map, rms, format!("affine{because}")))
+    };
+    // Not enough dots for Q9 (no corners: the Valve source's fit, or a panel from before them; the same count q9_fit
+    // makes): the five dots' affine map
+    if medians.iter().filter(|m| counts(m)).count() < Q9_MIN_DOTS {
+        return affine("");
     }
     let fit = fit_eye_q9(medians, eye)?;
+    // A quadratic that turns back inside its own box (its yaw or pitch slope changes sign there): the affine map
+    if !fit.one_way {
+        return affine(" (the quadratic map turned back within its dots)");
+    }
     let form = if fit.dropped.is_empty() {
         "q9".to_owned()
     } else {
@@ -383,6 +424,9 @@ fn format_maps(maps: &[EyeMap; 2]) -> String {
             text += &format!("form_{name}=q9\n");
             text += &format!("quad_yaw_{name}={} {} {}\n", m.quad[0][0], m.quad[0][1], m.quad[0][2]);
             text += &format!("quad_pitch_{name}={} {} {}\n", m.quad[1][0], m.quad[1][1], m.quad[1][2]);
+            if let Some([[u0, u1], [v0, v1]]) = m.bounds {
+                text += &format!("box_{name}={u0} {u1} {v0} {v1}\n");
+            }
         }
     }
     text
@@ -410,11 +454,16 @@ pub fn parse_maps(text: &str) -> Option<[EyeMap; 2]> {
             }
             Some(_) => return None,
         };
+        // A Q9 map's box (none from a file before it: the map as it is everywhere, as then)
+        let bounds = value(&format!("box_{name}"))
+            .filter(|b| b.len() == 4 && b[0] <= b[1] && b[2] <= b[3] && quad != crate::pupil::NO_QUAD)
+            .map(|b| [[b[0], b[1]], [b[2], b[3]]]);
         Some(EyeMap {
             yaw: [yaw[0], yaw[1], yaw[2]],
             pitch: [pitch[0], pitch[1], pitch[2]],
             center: [center[0], center[1]],
             quad,
+            bounds,
         })
     };
     Some([eye("left")?, eye("right")?])
@@ -501,6 +550,8 @@ impl MapStore {
             self.started = true;
         }
         let usable = medians.map(|m| m.filter(|(_, n)| *n >= MIN_SAMPLES).map(|(angles, _)| angles));
+        // (a corner the panel passed over, its gaze unsteady three times, still counts here with each try's settled
+        // eyeball medians: passed over is not left out; only an eye without enough settled samples is)
         self.dots[dot] = usable;
         let [Some(left), Some(right)] = usable else {
             // Said plainly: which eye did not count, and what that means for the centre or the whole fit
@@ -515,7 +566,7 @@ impl MapStore {
             } else if dot == 0 {
                 "a whole fit started here makes no eyeball map".to_owned()
             } else if dot >= FIVE {
-                "a corner left out (a quadratic map needs 7 of the 9 dots, else the five dots' affine map)".to_owned()
+                "a corner left out (a quadratic map needs 8 of the 9 dots, else the five dots' affine map)".to_owned()
             } else {
                 format!("this fit makes no eyeball map ({})", if self.maps.is_some() { "the old one stays" } else { "there is none yet" })
             };
@@ -807,14 +858,17 @@ mod tests {
         let mut store = MapStore::default();
         let lines = whole_fit(&mut store, frozen, 9);
         assert!(lines[0].starts_with("Eyeball map fitted (L q9 without up_left, R q9)"), "{lines:?}");
-        // Two corners missing for an eye (not settled there): 7 dots, still Q9; three: the five dots' affine map
-        let mut seven = medians9(1, &bent);
-        seven[6] = None;
-        seven[7] = None;
-        assert!(fit_eye_any(&seven, 1).unwrap().2 == "q9");
-        seven[8] = None;
-        let (_, _, form) = fit_eye_any(&seven, 1).unwrap_or_else(|e| panic!("{e:?}"));
+        // One corner missing for an eye (not settled there): 8 dots, still Q9 (none left out then); two: the five dots'
+        // affine map; a corner that isn't a number counts as missing (the same count as q9_fit's)
+        let mut eight = medians9(1, &bent);
+        eight[6] = None;
+        let fit = fit_eye_q9(&eight, 1).unwrap();
+        assert!(fit.dropped.is_empty() && fit_eye_any(&eight, 1).unwrap().2 == "q9");
+        eight[7] = None;
+        let (_, _, form) = fit_eye_any(&eight, 1).unwrap_or_else(|e| panic!("{e:?}"));
         assert_eq!(form, "affine");
+        eight[7] = Some([f32::NAN, 1.0]);
+        assert_eq!(fit_eye_any(&eight, 1).unwrap().2, "affine");
         // A whole fit whose corners didn't count (one eye unsettled at three corners): affine for that eye
         let mut store = MapStore::default();
         for dot in 0..9 {
@@ -897,14 +951,14 @@ mod tests {
 
     #[test]
     fn a_q9_map_has_its_own_misses_limit() {
-        // Seven dots (two corners not counted: none can be left out then), each reading pushed by `scale` times a shape
+        // Eight dots (a corner not counted: none can be left out then), each reading pushed by `scale` times a shape
         // no quadratic map can take up (u²v² sideways, u v² up and down on the dots' -1, 0, 1 grid): how far the Q9 map
         // then misses its dots, and whether it is taken
         let pushed = |scale: f64| {
             DOTS.iter().enumerate().map(|(i, (_, y, p))| {
                 let r = bent(1, *y, *p);
                 let (u, v) = (y / 20.0, p / 15.0);
-                (i < 7).then_some([r[0] + (scale * u * u * v * v) as f32, r[1] + (scale * u * v * v) as f32])
+                (i < 8).then_some([r[0] + (scale * u * u * v * v) as f32, r[1] + (scale * u * v * v) as f32])
             }).collect::<Vec<_>>()
         };
         let medians = |scale: f64| -> [Option<[f32; 2]>; 9] { pushed(scale).try_into().unwrap() };
@@ -923,6 +977,97 @@ mod tests {
         assert!(taken.rms > MAX_RMS_DEG && Q9_MAX_RMS_DEG == 5.0);
         let (why, misses) = fit_eye_q9(&at(6.0), 1).unwrap_err();
         assert!(why.contains("misses its dots by 6.0 deg (at most 5)") && misses.is_some_and(|m| (m - 6.0).abs() < 0.01), "{why}");
+    }
+
+    #[test]
+    fn a_q9_map_goes_on_by_its_tangent_past_its_dots() {
+        let medians9 = DOTS.map(|(_, y, p)| Some(bent(1, y, p)));
+        let fit = fit_eye_q9(&medians9, 1).unwrap();
+        assert!(fit.one_way, "{fit:?}");
+        let map = fit.map;
+        let [[u0, u1], [v0, v1]] = map.bounds.expect("a box");
+        // The box: the dots' range of the filter's angles, and the margin
+        let reading = |yaw: f64, pitch: f64| bent(1, yaw, pitch);
+        assert!((f64::from(u1) - f64::from(reading(20.0, 15.0)[0].max(reading(20.0, -15.0)[0])) - BOX_MARGIN_DEG).abs() < 1e-3);
+        assert!(u0 < reading(-20.0, 0.0)[0] && v1 > reading(0.0, 15.0)[1]);
+        // Inside it, the quadratic as fitted
+        let inside = reading(10.0, 7.5);
+        assert_eq!(map.apply(inside), EyeMap { bounds: None, ..map }.apply(inside));
+        // Continuous at its edge, each way
+        for edge in [[u1, 0.0], [u0, 0.0], [0.0, v1], [0.0, v0], [u1, v1]] {
+            let a = map.apply([edge[0] - 0.001, edge[1] - 0.001]);
+            let b = map.apply([edge[0] + 0.001, edge[1] + 0.001]);
+            assert!((a[0] - b[0]).abs() < 0.01 && (a[1] - b[1]).abs() < 0.01, "{edge:?}: {a:?} {b:?}");
+        }
+        // Far looks (30-40 deg each way): the mapped gaze keeps going the same way, never back, and lands near the look
+        // (the made-up eye bends a little, so within a few degrees)
+        let mut last = [f32::NEG_INFINITY; 2];
+        for yaw in [20.0, 25.0, 30.0, 35.0, 40.0] {
+            let [y, _] = map.apply(reading(yaw, 0.0));
+            assert!(y > last[0], "{yaw}: {y} after {}", last[0]);
+            last[0] = y;
+        }
+        for pitch in [15.0, 20.0, 25.0, 30.0, 35.0] {
+            let [_, p] = map.apply(reading(0.0, pitch));
+            assert!(p > last[1], "{pitch}: {p} after {}", last[1]);
+            last[1] = p;
+        }
+        for (yaw, pitch) in [(40.0, 0.0), (-40.0, 0.0), (0.0, 30.0), (0.0, -30.0), (35.0, 30.0), (-35.0, -30.0)] {
+            let [y, p] = map.apply(reading(yaw, pitch));
+            let want = eye_direction(yaw, pitch, 1);
+            assert!((f64::from(y) - want[0]).abs() < 6.0 && (f64::from(p) - want[1]).abs() < 6.0, "{yaw} {pitch}: {y} {p}");
+        }
+        // Without the box the same quadratic would turn back far out (what the box is for), on a map whose yaw bends
+        // over: its slope falls with u
+        let over = EyeMap { quad: [[-0.02, 0.0, 0.0], [0.0; 3]], ..map };
+        let unboxed = EyeMap { bounds: None, ..over };
+        let far = |m: &EyeMap, u: f32| m.apply([u, 0.0])[0];
+        assert!(far(&unboxed, 70.0) < far(&unboxed, 50.0));
+        assert!(far(&over, 70.0) >= far(&over, 50.0) || !q9_one_way(&over));
+    }
+
+    #[test]
+    fn a_quadratic_that_turns_back_within_its_dots_gives_the_affine_map() {
+        // A made-up eye whose sideways reading peaks inside the dots (its yaw slope changes sign there)
+        let folded = |eye: usize, yaw: f64, pitch: f64| {
+            let [y, p] = eye_direction(yaw, pitch, eye);
+            [(0.8 * y - 0.05 * y * y + 3.0) as f32, (0.8 * p - 2.0) as f32]
+        };
+        let medians9 = DOTS.map(|(_, y, p)| Some(folded(0, y, p)));
+        let fit = fit_eye_q9(&medians9, 0).unwrap();
+        assert!(!fit.one_way && !q9_one_way(&fit.map));
+        let any = fit_eye_any(&medians9, 0);
+        assert!(any.as_ref().map_or_else(|e| e.0.contains("left eye"), |(_, _, form)| form.starts_with("affine (the quadratic")), "{any:?}");
+    }
+
+    #[test]
+    fn the_centre_dot_is_never_left_out() {
+        // The left eye frozen at the centre dot (its angles those of the up-left corner): a bad dot, but the centre;
+        // nothing is left out, and the fit says how far it misses
+        let frozen = |yaw: f64, pitch: f64| if yaw == 0.0 && pitch == 0.0 { bent(0, -20.0, 15.0) } else { bent(0, yaw, pitch) };
+        let medians9 = DOTS.map(|(_, y, p)| Some(frozen(y, p)));
+        let fit = q9_fit(&medians9, 0, false).unwrap();
+        assert!(!fit.dropped.contains(&0), "{fit:?}");
+        // A bad corner instead is left out, alone (at most one, from nine)
+        let corner = |yaw: f64, pitch: f64| if yaw < -10.0 && pitch > 10.0 { bent(0, 0.0, 0.0) } else { bent(0, yaw, pitch) };
+        let fit = fit_eye_q9(&DOTS.map(|(_, y, p)| Some(corner(y, p))), 0).unwrap();
+        assert_eq!(fit.dropped, vec![5]);
+        // With eight dots, none is left out
+        let mut eight = DOTS.map(|(_, y, p)| Some(corner(y, p)));
+        eight[8] = None;
+        assert!(q9_fit(&eight, 0, false).unwrap().dropped.is_empty());
+    }
+
+    #[test]
+    fn a_q9_maps_box_is_kept_in_the_file() {
+        let maps = [0, 1].map(|eye| fit_eye_q9(&DOTS.map(|(_, y, p)| Some(bent(eye, y, p))), eye).unwrap().map);
+        let text = format_maps(&maps);
+        assert!(text.contains("box_left=") && text.contains("box_right="), "{text}");
+        assert_eq!(parse_maps(&text), Some(maps));
+        // A Q9 file from before the box: read without one (the map as it is everywhere, as then)
+        let old: String = text.lines().filter(|l| !l.starts_with("box_")).map(|l| format!("{l}\n")).collect();
+        let read = parse_maps(&old).unwrap();
+        assert!(read.iter().all(|m| m.bounds.is_none() && m.quad != crate::pupil::NO_QUAD));
     }
 
     #[test]
@@ -991,7 +1136,15 @@ mod tests {
         };
         let robust: Form = |m, eye| {
             (m.iter().all(Option::is_some)).then_some(())?;
-            q9_fit(m, eye, false).ok().map(|fit| (fit.map, fit.rms, fit.dropped.len()))
+            let fit = q9_fit(m, eye, false).ok()?;
+            if !fit.one_way {
+                // (fit_eye_any takes the affine map then; counted as 10 + dropped, to see it in the output)
+                let five: Vec<[f32; 2]> = m[..FIVE].iter().map(|x| x.unwrap()).collect();
+                let dots: Vec<_> = (0..5).map(|i| (five[i], eye_direction(DOTS[i].1, DOTS[i].2, eye))).collect();
+                let map = q9_affine(&dots)?;
+                return Some((map, rms_of(&map, &dots), 10 + fit.dropped.len()));
+            }
+            Some((fit.map, fit.rms, fit.dropped.len()))
         };
         let forms: [(&str, Form); 3] = [("A", affine), ("Q9", plain), ("Q9code", robust)];
         for run in cases["live"].as_array().unwrap() {
@@ -1088,7 +1241,13 @@ mod tests {
             }
             out.copy_from_slice(&solve_n(a, b)?);
         }
-        Some(EyeMap { yaw: c[0].map(|x| x as f32), pitch: c[1].map(|x| x as f32), center: [0.0; 2], quad: crate::pupil::NO_QUAD })
+        Some(EyeMap {
+            yaw: c[0].map(|x| x as f32),
+            pitch: c[1].map(|x| x as f32),
+            center: [0.0; 2],
+            quad: crate::pupil::NO_QUAD,
+            bounds: None,
+        })
     }
 
 }

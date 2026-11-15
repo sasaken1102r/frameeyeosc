@@ -123,6 +123,7 @@ fn solve3(mut a: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
 
 /// One eye's map from its five dots' medians (DOTS order; the filter's yaw / pitch, degrees) to where it looked, and
 /// how far it misses them (rms, degrees); Err says why there is none.
+#[cfg(test)]
 pub fn fit_eye(medians: &[[f32; 2]; 5], eye: usize) -> Result<(EyeMap, f64), String> {
     fit_eye_misses(medians, eye).map_err(|(why, _)| why)
 }
@@ -390,23 +391,24 @@ pub fn fit_eye_any(medians: &[Option<[f32; 2]>; 9], eye: usize) -> Result<(EyeMa
 /// Each eye's centre: where it should look at the centre dot less where its map (without a centre) puts its median
 /// there; Err when either is further than MAX_CENTER_DEG.
 pub fn centers(maps: &[EyeMap; 2], medians: [[f32; 2]; 2]) -> Result<[[f32; 2]; 2], String> {
-    let mut out = [[0.0; 2]; 2];
-    for eye in 0..2 {
-        let map = EyeMap { center: [0.0; 2], ..maps[eye] };
-        let [y, p] = map.apply(medians[eye]);
-        let wanted = eye_direction(0.0, 0.0, eye);
-        let center = [(wanted[0] - f64::from(y)) as f32, (wanted[1] - f64::from(p)) as f32];
-        if !center.iter().all(|c| c.is_finite() && f64::from(c.abs()) <= MAX_CENTER_DEG) {
-            return Err(format!(
-                "the {} eye's centre {:+.1} {:+.1} deg is further than {MAX_CENTER_DEG:.0} deg",
-                ["left", "right"][eye],
-                center[0],
-                center[1]
-            ));
-        }
-        out[eye] = center;
+    Ok([center_of(&maps[0], medians[0], 0)?, center_of(&maps[1], medians[1], 1)?])
+}
+
+/// One eye's centre (centers).
+pub fn center_of(map: &EyeMap, median: [f32; 2], eye: usize) -> Result<[f32; 2], String> {
+    let map = EyeMap { center: [0.0; 2], ..*map };
+    let [y, p] = map.apply(median);
+    let wanted = eye_direction(0.0, 0.0, eye);
+    let center = [(wanted[0] - f64::from(y)) as f32, (wanted[1] - f64::from(p)) as f32];
+    if !center.iter().all(|c| c.is_finite() && f64::from(c.abs()) <= MAX_CENTER_DEG) {
+        return Err(format!(
+            "the {} eye's centre {:+.1} {:+.1} deg is further than {MAX_CENTER_DEG:.0} deg",
+            ["left", "right"][eye],
+            center[0],
+            center[1]
+        ));
     }
-    Ok(out)
+    Ok(center)
 }
 
 /// The file's text for both maps.
@@ -473,9 +475,9 @@ pub fn parse_maps(text: &str) -> Option<[EyeMap; 2]> {
 /// the old map.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FitOutcome {
-    /// A new map was taken.
+    /// A new map was taken (for both eyes, or with `kept` for one: the other eye kept its old map).
     pub fitted: bool,
-    /// Not taken: whether an older map stays (false: there is none).
+    /// Not taken (or for one eye, with `fitted`): whether an older map stays (false: there is none).
     pub kept: bool,
     /// Why not: "misses" (an eye's map missed its dots by more than MAX_RMS_DEG, Q9_MAX_RMS_DEG for Q9), "not_settled" (an eye's filter had
     /// not settled at some dot) or "other" (the eyes hardly moved, no map, a centre too far); None when fitted.
@@ -607,59 +609,114 @@ impl MapStore {
         }
         let dots = std::mem::replace(&mut self.dots, [[None; 2]; 9]);
         let state = if self.maps.is_some() { "kept as it was" } else { "not made" };
-        // One of the five missing for an eye: no map (said with the dots and the eyes)
-        let unsettled = [0, 1].map(|eye| dots[..FIVE].iter().any(|dot| dot[eye].is_none()));
-        if unsettled.contains(&true) {
-            let missing: Vec<&str> =
-                (0..FIVE).filter(|&i| dots[i].iter().any(Option::is_none)).map(|i| DOTS[i].0).collect();
-            self.outcome = Some(self.not_taken("not_settled", unsettled, [None; 2]));
-            return vec![format!(
-                "Eyeball map {state}: no settled eyes at the {} dot{} of this fit",
-                missing.join(", "),
-                if missing.len() == 1 { "" } else { "s" }
-            )];
-        }
-        let tries = [0, 1].map(|eye| fit_eye_any(&dots.map(|dot| dot[eye]), eye));
+        // Each eye on its own: its map (Q9 or affine), or why not ("not_settled": one of the five without a settled
+        // median; "misses"; "other"), with its misses
+        let missing = |eye: usize| -> Vec<&str> { (0..FIVE).filter(|&i| dots[i][eye].is_none()).map(|i| DOTS[i].0).collect() };
+        let tries: [Result<(EyeMap, f64, String), (&'static str, String, Option<f64>)>; 2] = [0, 1].map(|eye| {
+            let gone = missing(eye);
+            if !gone.is_empty() {
+                return Err(("not_settled", String::new(), None));
+            }
+            fit_eye_any(&dots.map(|dot| dot[eye]), eye)
+                .map_err(|(why, rms)| (if rms.is_some() { "misses" } else { "other" }, why, rms))
+        });
         let misses = tries.each_ref().map(|t| match t {
             Ok((_, rms, _)) => Some(*rms),
-            Err((_, rms)) => *rms,
+            Err((_, _, rms)) => *rms,
         });
-        if tries.iter().any(Result::is_err) {
-            // Every eye that failed, and why (the outcome names the eyes whose maps missed their dots when that was
-            // why; else the eyes that failed otherwise)
-            let whys: Vec<&str> = tries.iter().filter_map(|t| t.as_ref().err().map(|(why, _)| why.as_str())).collect();
-            let failed = tries.each_ref().map(Result::is_err);
-            let missed = tries.each_ref().map(|t| matches!(t, Err((_, Some(_)))));
-            self.outcome = Some(if missed.contains(&true) {
-                self.not_taken("misses", missed, misses)
-            } else {
-                self.not_taken("other", failed, misses)
-            });
+        let failed = tries.each_ref().map(Result::is_err);
+        // The reason the outcome gives, and its eyes: an eye without a settled filter at one of the five first, then a
+        // map that missed its dots, then anything else
+        let reason = ["not_settled", "misses", "other"]
+            .into_iter()
+            .find(|r| tries.iter().any(|t| matches!(t, Err((why, ..)) if why == r)))
+            .unwrap_or("other");
+        let eyes = tries.each_ref().map(|t| matches!(t, Err((why, ..)) if *why == reason));
+        // Every failing eye's words for the journal
+        let whys: Vec<String> = (0..2)
+            .filter_map(|eye| match &tries[eye] {
+                Err(("not_settled", ..)) => {
+                    let gone = missing(eye);
+                    Some(format!(
+                        "no settled {} eye at the {} dot{} of this fit",
+                        ["left", "right"][eye],
+                        gone.join(", "),
+                        if gone.len() == 1 { "" } else { "s" }
+                    ))
+                }
+                Err((_, why, _)) => Some(why.clone()),
+                Ok(_) => None,
+            })
+            .collect();
+        // Neither eye, or one without an old map for the other: nothing taken
+        let old = self.maps;
+        let one = failed.iter().filter(|f| **f).count() == 1 && old.is_some();
+        if failed.iter().all(|f| *f) || (failed.contains(&true) && !one) {
+            self.outcome = Some(self.not_taken(reason, eyes, misses));
             return vec![format!("Eyeball map {state}: {}", whys.join("; "))];
         }
-        let fits = tries.map(|t| t.unwrap_or_else(|_| unreachable!()));
-        let maps = [fits[0].0, fits[1].0];
-        let centre_dot = [dots[0][0].unwrap_or_default(), dots[0][1].unwrap_or_default()];
-        let mut lines = Vec::new();
-        match centers(&maps, centre_dot) {
-            Ok(centre) => {
-                let mut new = maps;
-                new[0].center = centre[0];
-                new[1].center = centre[1];
-                lines.push(format!(
-                    "Eyeball map fitted (L {}, R {}): misses its dots by L {:.2}, R {:.2} deg; centre L {:+.2} {:+.2}, \
-                     R {:+.2} {:+.2}",
-                    fits[0].2, fits[1].2, fits[0].1, fits[1].1, centre[0][0], centre[0][1], centre[1][0], centre[1][1]
-                ));
-                self.outcome = Some(FitOutcome { fitted: true, kept: false, reason: None, eyes: [false; 2], misses_deg: misses });
-                self.maps = Some(new);
-                lines.extend(self.save(&new));
-            }
-            Err(why) => {
-                lines.push(format!("Eyeball map {state}: {why}"));
-                self.outcome = Some(self.not_taken("other", [false; 2], misses));
+        // Each eye's centre from this fit's centre dot: with its new map, or (an eye that kept its map) with its old
+        // one, as a re-center would; an eye without a settled centre dot keeps its old centre
+        let mut new = old.unwrap_or([EyeMap::default(); 2]);
+        let mut forms = [String::new(), String::new()];
+        for eye in 0..2 {
+            if let Ok((map, _, form)) = &tries[eye] {
+                new[eye] = *map;
+                forms[eye] = form.clone();
+            } else {
+                forms[eye] = "kept".to_owned();
             }
         }
+        let mut lines = Vec::new();
+        let mut centre = [new[0].center, new[1].center];
+        for eye in 0..2 {
+            let Some(median) = dots[0][eye] else { continue };
+            match center_of(&new[eye], median, eye) {
+                Ok(c) => centre[eye] = c,
+                Err(why) if !failed[eye] => {
+                    lines.push(format!("Eyeball map {state}: {why}"));
+                    self.outcome = Some(self.not_taken("other", [false; 2], misses));
+                    return lines;
+                }
+                // (the kept map's own centre, as it was)
+                Err(_) => {}
+            }
+        }
+        new[0].center = centre[0];
+        new[1].center = centre[1];
+        let fmt = |eye: usize| misses[eye].map_or("-".to_owned(), |m| format!("{m:.2}"));
+        if one {
+            let kept = failed.iter().position(|f| *f).unwrap_or(0);
+            lines.push(format!(
+                "Eyeball map fitted for the {} eye only ({}, misses its dots by {} deg); the {} eye's map kept as it was: \
+                 {}; centre L {:+.2} {:+.2}, R {:+.2} {:+.2}",
+                ["left", "right"][1 - kept],
+                forms[1 - kept],
+                fmt(1 - kept),
+                ["left", "right"][kept],
+                whys.join("; "),
+                centre[0][0],
+                centre[0][1],
+                centre[1][0],
+                centre[1][1]
+            ));
+            self.outcome = Some(FitOutcome { fitted: true, kept: true, reason: Some(reason), eyes, misses_deg: misses });
+        } else {
+            lines.push(format!(
+                "Eyeball map fitted (L {}, R {}): misses its dots by L {}, R {} deg; centre L {:+.2} {:+.2}, R {:+.2} {:+.2}",
+                forms[0],
+                forms[1],
+                fmt(0),
+                fmt(1),
+                centre[0][0],
+                centre[0][1],
+                centre[1][0],
+                centre[1][1]
+            ));
+            self.outcome = Some(FitOutcome { fitted: true, kept: false, reason: None, eyes: [false; 2], misses_deg: misses });
+        }
+        self.maps = Some(new);
+        lines.extend(self.save(&new));
         lines
     }
 }
@@ -777,12 +834,31 @@ mod tests {
         for dot in [2, 3, 4] {
             assert!(store.capture_done(DOTS[dot].0, medians(reading, dot, 120)).is_empty());
         }
+        // ...for that eye: the left eye's new map is taken, the right eye keeps its own (with this fit's centre dot)
         let lines = store.capture_done(END_TARGET, [None; 2]);
-        assert_eq!(lines, vec!["Eyeball map kept as it was: no settled eyes at the up dot of this fit".to_owned()]);
-        assert_eq!(store.maps, Some(recentred));
-        // ...and the outcome says so: kept, the right eye not settled
-        let kept = FitOutcome { fitted: false, kept: true, reason: Some("not_settled"), eyes: [false, true], misses_deg: [None; 2] };
-        assert_eq!(store.outcome.take(), Some(kept));
+        assert!(lines[0].starts_with("Eyeball map fitted for the left eye only (affine,"), "{lines:?}");
+        assert!(lines[0].contains("the right eye's map kept as it was: no settled right eye at the up dot of this fit"), "{lines:?}");
+        let maps = store.maps.unwrap();
+        assert_eq!(maps[1], recentred[1]);
+        assert_ne!(maps[0], recentred[0]);
+        // ...and the outcome says so: fitted for one eye, the right eye kept, not settled
+        let outcome = store.outcome.take().unwrap();
+        assert!(outcome.fitted && outcome.kept && outcome.reason == Some("not_settled") && outcome.eyes == [false, true]);
+        assert!(outcome.misses_deg[0].is_some() && outcome.misses_deg[1].is_none());
+        // Without an old map, one eye's map alone is not taken (both eyes need one)
+        let mut first = MapStore::default();
+        for dot in 0..5 {
+            let mut m = medians(reading, dot, 120);
+            if dot == 1 {
+                m[1] = Some((m[1].unwrap().0, 10));
+            }
+            first.capture_done(DOTS[dot].0, m);
+        }
+        let lines = first.capture_done(END_TARGET, [None; 2]);
+        assert_eq!(lines, vec!["Eyeball map not made: no settled right eye at the up dot of this fit".to_owned()]);
+        let outcome = first.outcome.unwrap();
+        assert!(first.maps.is_none() && !outcome.fitted && !outcome.kept && outcome.eyes == [false, true]);
+        store.maps = Some(recentred);
         // A centre dot without settled eyes keeps the centre
         let lines = store.capture_done("center", [None; 2]);
         assert!(lines[0].starts_with("Eyeball map: neither eye counted at the center dot"), "{lines:?}");
@@ -921,12 +997,15 @@ mod tests {
             let r = reading(eye, yaw, pitch);
             if eye == 1 && yaw == 0.0 && pitch == 0.0 { [r[0] + 6.8, r[1]] } else { r }
         };
+        let before = store.maps.unwrap();
         let lines = whole_fit(&mut store, off, 5);
         let outcome = store.outcome.take().expect("an outcome");
-        assert!(!outcome.fitted && outcome.kept && outcome.reason == Some("misses") && outcome.eyes == [false, true]);
+        // (the left eye's new map taken, the right eye's old one kept: a fit for one eye)
+        assert!(outcome.fitted && outcome.kept && outcome.reason == Some("misses") && outcome.eyes == [false, true]);
         assert!(outcome.misses_deg[0].is_some_and(|m| m < 0.01) && outcome.misses_deg[1].is_some_and(|m| m > 3.0));
-        let last = lines.last().unwrap();
-        assert!(last.contains("the right eye's map misses") && !last.contains("left"), "{lines:?}");
+        let fitted = lines.iter().find(|l| l.starts_with("Eyeball map fitted")).unwrap();
+        assert!(fitted.starts_with("Eyeball map fitted for the left eye only") && fitted.contains("the right eye's map misses"), "{lines:?}");
+        assert_eq!((store.maps.unwrap()[1].yaw, store.maps.unwrap()[1].pitch), (before[1].yaw, before[1].pitch));
         // A mixed failure: the left eye's angles didn't move, the right eye's map missed: both said, the outcome is the
         // misses of the right eye
         let mixed = |eye: usize, yaw: f64, pitch: f64| if eye == 0 { [1.0, 2.0] } else { off(eye, yaw, pitch) };

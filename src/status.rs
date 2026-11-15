@@ -90,7 +90,8 @@ pub struct Status<'a> {
 pub struct EyeballMapStatus {
     /// When (Unix seconds).
     pub at: f64,
-    /// "fitted" (a new map), "kept" (the old one stays) or "not_made" (there is none).
+    /// "fitted" (a new map), "partial" (a new map for one eye, the other's old one stays: `reason` and `eye` say
+    /// which and why), "kept" (the old one stays) or "not_made" (there is none).
     pub result: &'static str,
     /// Why not: "misses", "not_settled" or "other"; None when fitted.
     pub reason: Option<&'static str>,
@@ -104,7 +105,9 @@ impl EyeballMapStatus {
     pub fn of(at: f64, outcome: &crate::eyeball_map::FitOutcome) -> Self {
         Self {
             at: (at * 1000.0).round() / 1000.0,
-            result: if outcome.fitted {
+            result: if outcome.fitted && outcome.kept {
+                "partial"
+            } else if outcome.fitted {
                 "fitted"
             } else if outcome.kept {
                 "kept"
@@ -341,6 +344,9 @@ mod tests {
         let fitted = FitOutcome { fitted: true, kept: false, reason: None, eyes: [false; 2], misses_deg: [Some(0.5), Some(0.7)] };
         let json = serde_json::to_value(EyeballMapStatus::of(1.0, &fitted)).unwrap();
         assert_eq!((json["result"].as_str(), json["reason"].is_null(), json["eye"].is_null()), (Some("fitted"), true, true));
+        let partial = FitOutcome { fitted: true, kept: true, reason: Some("misses"), eyes: [false, true], misses_deg: [Some(1.1), Some(6.1)] };
+        let json = serde_json::to_value(EyeballMapStatus::of(1.0, &partial)).unwrap();
+        assert_eq!((json["result"].as_str(), json["eye"].as_str()), (Some("partial"), Some("right")));
         let none = FitOutcome { fitted: false, kept: false, reason: Some("not_settled"), eyes: [true, true], misses_deg: [None; 2] };
         let json = serde_json::to_value(EyeballMapStatus::of(1.0, &none)).unwrap();
         assert_eq!((json["result"].as_str(), json["eye"].as_str()), (Some("not_made"), Some("both")));

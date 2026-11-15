@@ -23,7 +23,8 @@ struct Pair {
 struct EyeballMapStatus {
     bool known = false;       ///< the object was there (a whole fit with gaze_source "eyeball" since frameeyeosc started)
     double at = 0.0;          ///< when (Unix seconds)
-    std::string result;       ///< "fitted", "kept" (the old map stays) or "not_made" (there is none)
+    std::string result;       ///< "fitted", "partial" (one eye's new, the other's kept), "kept" (the old map
+                              ///< stays) or "not_made" (there is none)
     std::string reason;       ///< why not: "misses", "not_settled" or "other"; "" when fitted
     std::string eye;          ///< the eye that is about: "left", "right", "both"; "" when not one eye's
     double misses[2] = {NAN, NAN};  ///< how far each eye's map missed its dots (degrees), where measured

@@ -56,8 +56,8 @@ std::string standInText(const UiText& t, const gaze_fit::View& fit);
 const char* fitCardLine(const UiText& t, bool gaze, const bool lids[2]);
 
 /**
- * The Eye fit tab's card line (and the fit record's words) when the last whole fit kept the eyeball's old map, or made
- * none: why, with the eye ("眼球の写し方は前のままだよ（右目が点からずれてたので）。\nもう一度合わせてね": the card
+ * The Eye fit tab's card line (and the fit record's words) when the last whole fit kept the eyeball's old map, made
+ * none, or kept one eye's ("partial": "右目の眼球の写し方は前のままだよ（点からずれてたので）。..."): why, with the eye ("眼球の写し方は前のままだよ（右目が点からずれてたので）。\nもう一度合わせてね": the card
  * starts a line at the line break, the record has a space there).
  * @param t texts
  * @param map what the last whole fit did to the eyeball's maps (status.json "eyeball_map")

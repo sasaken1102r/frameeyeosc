@@ -4768,6 +4768,13 @@ void testGazeSourceRow(const FontSet& fonts) {
         panel.render(m);
         for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 676);
         png(panel, "card_map_kept_unsettled");
+        // A new map for the left eye, the right eye's kept
+        m.status.eyeballMap.result = "partial";
+        m.status.eyeballMap.reason = "misses";
+        m.status.eyeballMap.eye = "right";
+        panel.render(m);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 676);
+        png(panel, "card_map_partial");
         m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[0]));
         panel.render(m);
         CHECK(hits(panel, PanelAction::SetAutoRecenter)[0].y == cardBottom);

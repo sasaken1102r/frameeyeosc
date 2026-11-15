@@ -337,8 +337,19 @@ void testEyeballMapLine() {
     SAME(eyeballMapLine(ja, map), "眼球の写し方は前のままだよ（うまく測れなかったので）。\nもう一度合わせてね");
     map.reason = "misses";
     SAME(eyeballMapLine(en, map), "The eyeball mapping stayed as before (it couldn't be measured).\nPlease fit again");
+    // A new map for one eye, the other kept: that eye, and why in its words
+    map.result = "partial";
+    map.reason = "misses";
+    map.eye = "right";
+    SAME(eyeballMapLine(ja, map), "右目の眼球の写し方は前のままだよ（点からずれてたので）。\nもう一度合わせてね");
+    map.reason = "not_settled";
+    map.eye = "left";
+    SAME(eyeballMapLine(en, map), "The left eye's eyeball mapping stayed as before (it hadn't settled).\nPlease fit again");
+    map.eye = "both";
+    CHECK(eyeballMapLine(ja, map).empty());
     // None made (there was no map yet)
     map.result = "not_made";
+    map.reason = "misses";
     map.eye = "right";
     SAME(eyeballMapLine(ja, map), "眼球の写し方はできなかったよ（右目が点からずれてたので）。\nもう一度合わせてね");
 }

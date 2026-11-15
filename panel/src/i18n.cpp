@@ -253,6 +253,9 @@ UiText makeJapanese() {
     t.fitEyeballEyes[0] = "左目";
     t.fitEyeballEyes[1] = "右目";
     t.fitEyeballEyes[2] = "両目";
+    t.fitEyeballPartialFormat = "%sの眼球の写し方は前のままだよ（%s）。\nもう一度合わせてね";
+    t.fitEyeballWhyMisses = "点からずれてたので";
+    t.fitEyeballWhyNotSettled = "落ち着いてなかったので";
     t.fitNotYet = "まだ合わせていません";
     t.fitGazeCenterFormat = "視線の正面: 左右 %s・上下 %s";
     t.fitStandInLeft = "Valve の左目が 0 のまま止まってたので、左目はカメラで確かめたよ。まぶたは前の値のまま。"
@@ -1613,6 +1616,9 @@ UiText makeEnglish() {
     t.fitEyeballEyes[0] = "left eye";
     t.fitEyeballEyes[1] = "right eye";
     t.fitEyeballEyes[2] = "eyes";
+    t.fitEyeballPartialFormat = "The %s's eyeball mapping stayed as before (%s).\nPlease fit again";
+    t.fitEyeballWhyMisses = "it missed the dots";
+    t.fitEyeballWhyNotSettled = "it hadn't settled";
     t.fitNotYet = "Not fitted yet";
     t.fitGazeCenterFormat = "Gaze center: L-R %s, U-D %s";
     t.fitStandInLeft = "Valve's left eye was stuck at 0; the eye camera checked it instead (eyelid kept). A restart "

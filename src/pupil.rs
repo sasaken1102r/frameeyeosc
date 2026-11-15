@@ -52,7 +52,7 @@ pub const VALVE_MINUS_FREEZE_DEG: f32 = 3.0;
 pub const VALVE_MINUS_FREEZE_S: f64 = 0.5;
 
 /// One eye's map from its pupil pair to its direction (degrees), and its centre for this wear.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EyeMap {
     /// yaw = yaw[0] + yaw[1] * u + yaw[2] * v (+ quad[0] terms) (+ center[0]); pitch likewise.
     pub yaw: [f32; 3],

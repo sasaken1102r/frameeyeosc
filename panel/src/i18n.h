@@ -261,6 +261,9 @@ struct UiText {
     const char* fitEyeballNotSettled;     ///< ...an eye's filter hadn't settled (%s the eye)...
     const char* fitEyeballOther;          ///< ...anything else
     const char* fitEyeballEyes[3];        ///< the eye: left, right, both
+    const char* fitEyeballPartialFormat;  ///< ...or a new map for one eye, the other's kept (%s the eye, %s why)
+    const char* fitEyeballWhyMisses;      ///< why, said of that eye: its map missed the dots...
+    const char* fitEyeballWhyNotSettled;  ///< ...its filter hadn't settled
     const char* fitNotYet;           ///< the folded result line before any fit
     const char* fitGazeCenterFormat; ///< "Gaze center: L-R %s, U-D %s"
     const char* fitStandInLeft;      ///< after a full fit: Valve read the left eye stuck at 0 and the eye camera saw it

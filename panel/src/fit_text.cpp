@@ -163,8 +163,16 @@ const char* fitCardLine(const UiText& t, bool gaze, const bool lids[2]) {
 }
 
 std::string eyeballMapLine(const UiText& t, const EyeballMapStatus& map) {
-    if (!map.known || (map.result != "kept" && map.result != "not_made")) return "";
+    if (!map.known || (map.result != "kept" && map.result != "not_made" && map.result != "partial")) return "";
     const int eye = map.eye == "left" ? 0 : map.eye == "right" ? 1 : map.eye == "both" ? 2 : -1;
+    // A new map for one eye, the other's kept: that eye, and why
+    if (map.result == "partial" && (eye == 0 || eye == 1)) {
+        const char* why = map.reason == "misses"        ? t.fitEyeballWhyMisses
+                          : map.reason == "not_settled" ? t.fitEyeballWhyNotSettled
+                                                        : t.fitEyeballOther;
+        return format(t.fitEyeballPartialFormat, t.fitEyeballEyes[eye], why);
+    }
+    if (map.result == "partial") return "";
     std::string why;
     if (eye >= 0 && map.reason == "misses") {
         why = format(t.fitEyeballMisses, t.fitEyeballEyes[eye]);

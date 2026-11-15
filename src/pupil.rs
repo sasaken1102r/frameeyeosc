@@ -286,9 +286,10 @@ impl PupilGaze {
     /// corner one may be wrong), so the hold would only keep the gaze where it was before the hop: what was seen as the
     /// eyeball gaze "catching up a beat late" (2026-11-15); after APART_SAMPLES of them, so one eye's blip stays held.
     /// `moving`: an eye moves fast (eyeball.rs saccade): the eye server's difference is not learnt then. `trusted`:
-    /// each eye goes by its ellipse (EyeballGaze::trusted); the left - right difference is learnt only while both do.
-    /// `frozen`: an eye gone by its pupil alone for a while (EyeballGaze::frozen) is not used: the other with the
-    /// difference if that is fresh (DIFF_FRESH_S), else the eye server's, at once.
+    /// each eye goes by its ellipse (EyeballGaze::trusted); the left - right difference is learnt only while both do,
+    /// the eye server's only while every eye in use does. `frozen`: an eye gone by its pupil alone for a while
+    /// (EyeballGaze::frozen) is not used: the other with the difference if that is fresh (DIFF_FRESH_S), else the eye
+    /// server's, at once.
     pub fn step_eyes(
         &mut self,
         time: f64,
@@ -331,9 +332,10 @@ impl PupilGaze {
         let mut apart_now = false;
         // A frozen eye (the eyeball source: by its pupil alone for a while, eyeball.rs FROZEN_S) is not used: one left,
         // it with the difference if that was learnt lately (both eyes going by their ellipse), else the eye server's;
-        // none left, the eye server's at once (no hold at the frozen gaze)
+        // none left, the eye server's at once (no hold at the frozen gaze). The same when the frozen eye is missing
+        // anyway (shut, outside the fit's range, not fresh): the other one never takes a difference of any age.
         let mut to_valve = false;
-        if frozen.iter().zip(&eyes).any(|(f, e)| *f && e.is_some()) {
+        if frozen.iter().any(|f| *f) {
             for eye in 0..2 {
                 if frozen[eye] {
                     eyes[eye] = None;
@@ -377,20 +379,31 @@ impl PupilGaze {
         };
         if matches!(in_use, InUse::Pupil | InUse::Left | InUse::Right) {
             self.last_good = Some((time, target));
-            // (the eyeball source: not while an eye moves fast, nor for a while when the two differ much)
-            let learn = match (eyeball, self.valve_minus) {
-                (Some(moving), Some(learnt)) => {
-                    let off = sub(sub(valve, target), learnt);
-                    if (off[0] * off[0] + off[1] * off[1]).sqrt() > VALVE_MINUS_FREEZE_DEG {
-                        let since = *self.valve_doubt_since.get_or_insert(time);
-                        !moving && time - since > VALVE_MINUS_FREEZE_S
-                    } else {
-                        self.valve_doubt_since = None;
-                        !moving
-                    }
-                }
-                _ => true,
+            // (the eyeball source: not while an eye moves fast, nor for a while when the two differ much, nor while an
+            // eye in use is not trusted: one by its pupil alone sits near where it was until it counts as frozen
+            // (FROZEN_S counts its pupil-only frames only, and refused frames are common at the corners), and the eye
+            // server's difference from that stuck gaze is off by the whole hop, which the eye server's fallback would
+            // then carry)
+            let trusted_in_use = match in_use {
+                InUse::Pupil => trusted == [true; 2],
+                InUse::Left => trusted[0],
+                InUse::Right => trusted[1],
+                _ => false,
             };
+            let learn = trusted_in_use
+                && match (eyeball, self.valve_minus) {
+                    (Some(moving), Some(learnt)) => {
+                        let off = sub(sub(valve, target), learnt);
+                        if (off[0] * off[0] + off[1] * off[1]).sqrt() > VALVE_MINUS_FREEZE_DEG {
+                            let since = *self.valve_doubt_since.get_or_insert(time);
+                            !moving && time - since > VALVE_MINUS_FREEZE_S
+                        } else {
+                            self.valve_doubt_since = None;
+                            !moving
+                        }
+                    }
+                    _ => true,
+                };
             if learn {
                 ease(&mut self.valve_minus, sub(valve, target), by);
             }
@@ -999,6 +1012,70 @@ mod tests {
             assert_eq!(last.in_use, InUse::Left);
             assert!((last.gaze[0] - expected).abs() < 0.5, "trusted {trusted:?}: {:?}", last.gaze);
         }
+    }
+
+    #[test]
+    fn the_eyeball_source_learns_the_eye_servers_difference_only_from_trusted_eyes_and_never_an_old_eye_difference() {
+        // (as above: the left eye 5, the right 1 + its centre 2; both trusted for 200 samples: the difference 2, the
+        // eye server's difference -6 - 4 = -10)
+        let identity = EyeMap { yaw: [0.0, 1.0, 0.0], pitch: [0.0, 0.0, 1.0], center: [0.0, 0.0] };
+        let maps = [identity, EyeMap { center: [2.0, 0.0], ..identity }];
+        let settled = || {
+            let mut gaze = PupilGaze::default();
+            for i in 0..200 {
+                gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0], false, [true; 2], [false; 2]);
+            }
+            gaze
+        };
+        // The eyes hop 20 degrees right; the right eye's filter goes by its pupil alone and stays where it was, the
+        // left one too (both still in use, not yet frozen: refused frames do not count towards FROZEN_S) for 1 s while
+        // the eye server follows the hop (14); then both count as frozen: the eye server's gaze less the difference
+        // learnt before (14 + 10 = 24), not one learnt from the stuck eyes (14 - 4 = 10)
+        for trusted in [[true, false], [false, true], [false; 2]] {
+            let mut gaze = settled();
+            for i in 200..290 {
+                gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [14.0, 0.0], false, trusted, [false; 2]);
+            }
+            let mut last = None;
+            for i in 290..350 {
+                last = Some(gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [14.0, 0.0], false, trusted, [true; 2]));
+            }
+            let last = last.unwrap();
+            assert_eq!(last.in_use, InUse::Valve);
+            assert!(!last.blending && (last.gaze[0] - 24.0).abs() < 0.05, "trusted {trusted:?}: {last:?}");
+        }
+        // One eye in use and trusted: learnt as before (the eye server's lasting change taken in)
+        let mut gaze = settled();
+        for i in 200..600 {
+            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), None], [true; 2], [14.0, 0.0], false, [true, false], [false; 2]);
+        }
+        let mut last = None;
+        for i in 600..660 {
+            last = Some(gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), None], [true; 2], [14.0, 0.0], false, [true, false], [true, false]));
+        }
+        let last = last.unwrap();
+        assert_eq!(last.in_use, InUse::Valve);
+        assert!(last.gaze[0] < 10.0, "{last:?}");
+        // A frozen eye that is missing anyway (outside the fit's range, not fresh): the other one only with a fresh
+        // difference (DIFF_FRESH_S) too. The right eye gone for 1 s (the left alone with the difference, as ever), then
+        // back frozen but outside the range: the eye server's, not the left with the 1 s old difference
+        let mut gaze = settled();
+        for i in 200..290 {
+            gaze.step_eyes(i as f64 * DT, &maps, [Some([5.0, 1.0]), None], [true; 2], [-6.0, 0.0], false, [true, false], [false; 2]);
+        }
+        assert_eq!(gaze.step_eyes(290.0 * DT, &maps, [Some([5.0, 1.0]), None], [true; 2], [-6.0, 0.0], false, [true, false], [false; 2]).in_use, InUse::Left);
+        let far = [FIT_YAW_DEG + RANGE_MARGIN_DEG + 1.0, 0.0];
+        let missing = gaze.step_eyes(291.0 * DT, &maps, [Some([5.0, 1.0]), Some(far)], [true; 2], [-6.0, 0.0], false, [true, false], [false, true]);
+        assert_eq!(missing.in_use, InUse::Valve);
+        // ...while with a fresh difference the left eye goes on with it
+        let mut gaze = settled();
+        let fresh = gaze.step_eyes(200.0 * DT, &maps, [Some([5.0, 1.0]), Some(far)], [true; 2], [-6.0, 0.0], false, [true, false], [false, true]);
+        assert_eq!(fresh.in_use, InUse::Left);
+        // A reset forgets when the difference was learnt with the rest: one eye frozen right after it, the eye server's
+        let mut gaze = settled();
+        gaze.reset();
+        let after = gaze.step_eyes(200.0 * DT, &maps, [Some([5.0, 1.0]), Some([1.0, 1.0])], [true; 2], [-6.0, 0.0], false, [true; 2], [false, true]);
+        assert_eq!(after.in_use, InUse::Valve);
     }
 
     #[test]

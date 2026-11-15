@@ -422,7 +422,7 @@ impl DropPupil {
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
 closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held,pupil_cx,pupil_cy,pupil_a,pupil_b,x_min,search_x_min,ext,veto_p,vetoed,\
 box_ratio,box_rule_ratio,gated,small_kept,dropped,\
-glints,slip_x,slip_y,slip_tracked,slip_matches,slip_since,template_id,pupil_angle";
+glints,slip_x,slip_y,slip_tracked,slip_matches,slip_since,template_id,pupil_angle,outline_a,outline_b,outline_angle,outline_vis";
 
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
 pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, String> {
@@ -648,6 +648,11 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 slip.template_id.to_string(),
                 // The pupil ellipse's long axis, degrees in [0, 180) (only with a pupil in this frame)
                 f(if o.f.ok_pupil { o.f.pupil_angle_deg.rem_euclid(180.0) } else { f64::NAN }),
+                // The pupil's outline for the eye-camera gaze (the live file's shape part)
+                f(if o.f.ok_pupil { o.f.outline_a } else { f64::NAN }),
+                f(if o.f.ok_pupil { o.f.outline_b } else { f64::NAN }),
+                f(if o.f.ok_pupil { o.f.outline_angle_deg.rem_euclid(180.0) } else { f64::NAN }),
+                f(if o.f.ok_pupil { o.f.outline_vis } else { f64::NAN }),
             ];
             writeln!(w, "{}", row.join(",")).map_err(|e| e.to_string())?;
         }

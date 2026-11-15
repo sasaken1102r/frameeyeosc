@@ -107,6 +107,13 @@ pub const ACCEPTED_FRESH_S: f64 = 0.2;
 /// Without a pupil shape from eyecam-rec (either eye) for this long, the eyeball source counts as having no eye camera
 /// (EyeballGaze::state).
 pub const CAMERA_GONE_S: f64 = 2.0;
+/// An eye whose filter has gone by its pupil alone (no usable ellipse) for this long since its last ellipse update
+/// (time of pupil-only frames only: a blink neither adds nor clears) is frozen: by the pupil alone the angles move only a
+/// fraction of a turn, so it sits near the last place it had its ellipse. It is not used for the sent gaze
+/// (pupil.rs combine); the next ellipse frame releases it. On the headset (2026-11-15) both eyes froze together at the
+/// upper-left corner and went out 22-23 degrees off as "both eyes"; the eye log at 14:51 has pupil-only stretches of a
+/// median 3 frames (p90 18-21) away from the corners and 45-233+ frames at them.
+pub const FROZEN_S: f64 = 0.4;
 /// An eye's directions count for the eye fit's captures (the map and the centre, eyeball_map.rs) once its filter has
 /// updated with the ellipse this many frames since it started or last re-took its angles (about a second at 90 frames
 /// a second)...
@@ -628,6 +635,9 @@ pub struct EyeFilter {
     held: [f64; 2],
     held_time: f64,
     given: Option<[f64; 2]>,
+    // Pupil-only time since the last ellipse update (s), and the time of the last frame
+    pupil_only_s: f64,
+    frame_time: Option<f64>,
 }
 
 /// The centre's uncertainty while the ellipse is not used: no standard deviation above the larger of CENTRE_SD_CAP and
@@ -694,6 +704,11 @@ impl EyeFilter {
         self.x.is_some()
     }
 
+    /// Whether it has gone by its pupil alone for FROZEN_S since its last ellipse update.
+    pub fn frozen(&self) -> bool {
+        self.pupil_only_s >= FROZEN_S
+    }
+
     /// The direction given out (yaw, pitch in radians: the filter's own angles, or while the eye holds still the held
     /// ones, see HOLD_RADIUS); None until started.
     pub fn direction(&self) -> Option<[f64; 2]> {
@@ -748,6 +763,13 @@ impl EyeFilter {
         e.yaw = x[0] + self.held[0];
         e.pitch = x[1] + self.held[1];
         self.given = Some([e.yaw, e.pitch]);
+        let since = self.frame_time.map_or(0.0, |at| (o.time - at).clamp(0.0, DT_MAX));
+        self.frame_time = Some(o.time);
+        match e.update {
+            Update::Start | Update::Ellipse => self.pupil_only_s = 0.0,
+            Update::PupilOnly => self.pupil_only_s += since,
+            _ => {}
+        }
         Some(e)
     }
 
@@ -1147,6 +1169,11 @@ impl EyeballGaze {
     /// its pupil alone (no usable ellipse) is not trusted for the two eyes' difference (pupil.rs step_eyes).
     pub fn trusted(&self, time: f64) -> [bool; 2] {
         self.ellipse_at.map(|at| at.is_some_and(|at| time - at <= ACCEPTED_FRESH_S))
+    }
+
+    /// Whether each eye is frozen (EyeFilter::frozen): not to be used for the sent gaze (pupil.rs step_eyes).
+    pub fn frozen(&self) -> [bool; 2] {
+        self.filters.each_ref().map(EyeFilter::frozen)
     }
 
     /// Each filter's re-takes (for the journal).
@@ -2199,6 +2226,40 @@ pub mod tests {
         filter.misses = REACQUIRE;
         let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 8.0, 4.0, t))).unwrap();
         assert_ne!(e.update, Update::Start);
+    }
+
+    #[test]
+    fn an_eye_by_its_pupil_alone_for_a_while_is_frozen_until_its_next_ellipse() {
+        // Rim 85% seen (no usable ellipse): frozen after FROZEN_S of such frames; a blink (no pupil) in between neither
+        // adds nor clears; the first frame with its ellipse releases it
+        let c = camera();
+        let mut filter = EyeFilter::default();
+        let mut t = settled_at(&mut filter, &c, 8.0, 4.0);
+        let hidden = |filter: &mut EyeFilter, t: f64, pupil: bool| {
+            let mut frame = seen(&c, eye_at(&c), 8.0, 4.0, t);
+            frame.vis = 0.85;
+            if !pupil {
+                frame.pupil = None;
+            }
+            filter.step(&c, &observe(&c, &frame));
+        };
+        let n = (FROZEN_S * 90.0).ceil() as usize;
+        for k in 0..n {
+            hidden(&mut filter, t, true);
+            t += 1.0 / 90.0;
+            assert!(!filter.frozen() || k + 1 >= n - 1, "frame {k}");
+            if k == n / 2 {
+                for _ in 0..30 {
+                    hidden(&mut filter, t, false);
+                    t += 1.0 / 90.0;
+                }
+            }
+        }
+        hidden(&mut filter, t, true);
+        t += 1.0 / 90.0;
+        assert!(filter.frozen());
+        filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 8.0, 4.0, t)));
+        assert!(!filter.frozen());
     }
 
     #[test]

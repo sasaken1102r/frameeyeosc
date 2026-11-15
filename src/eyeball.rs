@@ -874,7 +874,7 @@ impl EyeFilter {
                 if !o.partial {
                     self.ell_off += 1;
                 }
-                if self.ell_off >= need {
+                if self.ell_off >= need && !o.partial {
                     let g_old = camera.to_camera(gaze_head(xp[0], xp[1]));
                     let pupil_old = add([xp[4], xp[5], xp[6]], scale(g_old, R_PUPIL));
                     let g = normal_ahead(pos, ell, camera);
@@ -2130,6 +2130,26 @@ pub mod tests {
             t += 1.0 / 90.0;
             assert_eq!(filter.retakes, retakes + u32::from(k + 1 == ELL_REACQ), "frame {k}");
         }
+    }
+
+    #[test]
+    fn a_partly_hidden_rim_never_re_takes_even_just_after_a_saccade() {
+        // Whole-rim frames had already disagreed ELL_REACQ_MOVING times (fewer than ELL_REACQ: no re-take yet); then
+        // the eye jumps to (-12, -6), where the rim is partly hidden and the ellipse disagrees: the saccade lowers the
+        // count needed, but a partly hidden ellipse still never makes the filter take its angles
+        let c = camera();
+        let mut filter = EyeFilter::default();
+        let mut t = settled_at(&mut filter, &c, 8.0, 4.0);
+        filter.ell_off = ELL_REACQ_MOVING;
+        let retakes = filter.retakes;
+        for k in 0..10 {
+            filter.step(&c, &observe(&c, &cut(&c, -12.0, -6.0, t, 0.9)));
+            if k == 0 {
+                assert!(filter.saccade);
+            }
+            t += 1.0 / 90.0;
+        }
+        assert_eq!(filter.retakes, retakes);
     }
 
     #[test]

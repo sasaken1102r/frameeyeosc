@@ -1535,6 +1535,17 @@ void testExtrasRead() {
     // enabled not a bool, a host with a space, port 0, a long name, not an object: written wrong
     for (int i : {4, 5, 8, 9, 10}) CHECK(e[static_cast<size_t>(i)].problem == Problem::Invalid);
     CHECK(e[9].name == "App 10" && e[10].name == "App 11");
+    // "EyeTrackingActive type" on the Output tab: VRChat directly always; LiveLink and FrameEyeOSC while an osc entry
+    // is there (here the second one, switched off: it still counts)
+    for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule}) CHECK(activeTypeRowShown(output, list));
+    // ...not with only feo1 entries, none, or an osc entry after the first three (never used)
+    const JsonValue feo1Only = rootOf(R"j({"extra_outputs": [{"format": "feo1", "host": "main", "port": 11113},
+        {"format": "feo1", "host": "main", "port": 11114}, {"format": "feo1", "host": "main", "port": 11115},
+        {"format": "osc", "host": "main", "port": 9015}]})j");
+    for (const extras::List& other : {extras::readList(feo1Only.get(key::kExtraOutputs)), extras::readList(nullptr)}) {
+        CHECK(activeTypeRowShown(kOutputVrchat, other));
+        CHECK(!activeTypeRowShown(kOutputLivelink, other) && !activeTypeRowShown(kOutputModule, other));
+    }
     // After the first three: not used (when nothing else is wrong)
     const JsonValue four = rootOf(R"j({"extra_outputs": [
         {"format": "feo1", "host": "main", "port": 1}, {"format": "feo1", "host": "main", "port": 2},

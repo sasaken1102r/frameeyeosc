@@ -263,8 +263,9 @@ avatar parameters, for apps that read those names. Each eye sample sends one set
   parameter prefix is, and it never has the main output's pupil bits (`PupilDilation1`, ...), Steam Link names
   (`LeftEyeX`, ...), Face Tracking blob or `LeftRightVec`. `EyeTrackingActive` goes out in the type
   `eye_tracking_active` sets, as the main VRChat output's; when that type changes, the next set has the new one
-  (with `"off"`, "not active" once in the type before). The squint, pupils and brows come only with that data, as in
-  the table.
+  (with `"off"`, "not active" once in the type before). When the receiver is VRChat, the type has to match the type
+  the avatar's parameter has (bool or float): with the other one the avatar's eyes may stop. `eye_tracking_active`
+  chooses it. The squint, pupils and brows come only with that data, as in the table.
 - It is sent with every eye sample (about 90 a second, up to ~136): 10 to 26 datagrams a sample.
 - When the eye data stops, when sending pauses, and when the destination changes (host, port or format) or is turned
   off: one final set for relaxed open eyes looking straight ahead, then nothing. The final set is `CenterVec` 0, 0, 1,

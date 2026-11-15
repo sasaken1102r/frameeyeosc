@@ -144,7 +144,7 @@ struct UiText {
     const char* cameraLineWiden;     ///< Eyelids, Look
     const char* cameraLineFloor;     ///< Eyelids, Blinks and narrowing
     const char* cameraLinePupils;    ///< Output
-    const char* rowActiveType;      ///< how EyeTrackingActive is sent
+    const char* rowActiveType;      ///< how EyeTrackingActive is sent (VRChat directly, osc extras)
     const char* hintActiveType;
     const char* activeOff;
     const char* rowSteamlink;       ///< also send the avatar parameters Steam Link's own OSC sends

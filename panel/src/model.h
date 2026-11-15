@@ -444,6 +444,18 @@ int portOfTarget(const std::string& target);
 extras::List extrasList(const PanelModel& model);
 
 /**
+ * Whether the Output tab shows "EyeTrackingActive type" (eye_tracking_active): for VRChat directly, and in the other
+ * modes while extra_outputs has an osc entry that frameeyeosc may use (one of the first three, switched on or off),
+ * since osc extras send EyeTrackingActive in that type too.
+ * @param output the "output" setting
+ * @param list extra_outputs as shown (extrasList)
+ * @return true to show it
+ * @example
+ * activeTypeRowShown(kOutputLivelink, list)  // true while list has an osc entry
+ */
+bool activeTypeRowShown(const std::string& output, const extras::List& list);
+
+/**
  * The destinations an extra output must not repeat, as far as the panel can tell: the main output's (as frameeyeosc
  * sends to it now, or as set), the Steam Link PC's and the pupils' (LiveLink).
  * @param model the model

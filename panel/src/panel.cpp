@@ -2710,13 +2710,17 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const bool livelink = output == kOutputLivelink;
     const bool module = output == kOutputModule;
     const bool direct = !livelink && !module;
-    // VRChat directly has the most rows: all of them shorter there (the other outputs' as on the other tabs)
-    const double rowH = direct ? 50 : kRowH;
-    const double controlH = direct ? 42 : kControlH;
+    // LiveLink and FrameEyeOSC send no EyeTrackingActive themselves, but an osc extra does: its type, while there is one
+    const bool activeRow = !direct && activeTypeRowShown(output, extrasList(m));
+    // VRChat directly has the most rows: all of them shorter there (the other outputs' as on the other tabs), and with
+    // the EyeTrackingActive row in the others too, so VRCFT's steps still fit under LiveLink's pupil rows
+    const bool compact = direct || activeRow;
+    const double rowH = compact ? 50 : kRowH;
+    const double controlH = compact ? 42 : kControlH;
     const double cy = (rowH - controlH) / 2;
     // ...and a line under a control (an example address, a hint) closer to it, the row with that line
-    const double lineDrop = direct ? 12 : 16;
-    const double lineRowH = rowH + (direct ? 16 : 24);
+    const double lineDrop = compact ? 12 : 16;
+    const double lineRowH = rowH + (compact ? 16 : 24);
     // The pupils come from the eye cameras: their rows only while those are in use (with the badge), else one line
     const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
 
@@ -2740,6 +2744,23 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         const char* hint = usable ? t.hintPupilBits : t.hintPupilBitsOff;
         pen.text(kControlX + 4, rowY + rowH + lineDrop, hint, fitSize(pen, hint, 15, 11, kControlW, false), kTextMuted);
         return rowY + lineRowH;
+    };
+
+    // How EyeTrackingActive goes out (eye_tracking_active): VRChat directly, and osc extras in every mode
+    const auto activeType = [&](double rowY) {
+        const bool locked = v.locked(key::kEyeTrackingActive);
+        const std::string type = v.text(key::kEyeTrackingActive);
+        int selected = -1;
+        for (int i = 0; i < 3; ++i) {
+            if (type == kActiveTypes[i]) selected = i;
+        }
+        drawRowLabel(pen, t, rowY, rowH, t.rowActiveType, t.hintActiveType, locked);
+        drawSegmented(pen, kControlX, rowY + cy, kControlW, controlH,
+                      {{"Bool", {PanelAction::SetActiveType, key::kEyeTrackingActive, 0}},
+                       {"Float", {PanelAction::SetActiveType, key::kEyeTrackingActive, 1}},
+                       {t.activeOff, {PanelAction::SetActiveType, key::kEyeTrackingActive, 2}}},
+                      selected, 19, locked);
+        return rowY + rowH + kRowGap;
     };
 
     // Target PC: automatic, fixed to the PC frameeyeosc sends to now, or typed on the keypad; any host set by hand
@@ -2803,21 +2824,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         }
         y += lineRowH;
         // ...and how EyeTrackingActive goes out
-        {
-            const bool locked = v.locked(key::kEyeTrackingActive);
-            const std::string type = v.text(key::kEyeTrackingActive);
-            int selected = -1;
-            for (int i = 0; i < 3; ++i) {
-                if (type == kActiveTypes[i]) selected = i;
-            }
-            drawRowLabel(pen, t, y, rowH, t.rowActiveType, t.hintActiveType, locked);
-            drawSegmented(pen, kControlX, y + cy, kControlW, controlH,
-                          {{"Bool", {PanelAction::SetActiveType, key::kEyeTrackingActive, 0}},
-                           {"Float", {PanelAction::SetActiveType, key::kEyeTrackingActive, 1}},
-                           {t.activeOff, {PanelAction::SetActiveType, key::kEyeTrackingActive, 2}}},
-                          selected, 19, locked);
-        }
-        y += rowH + kRowGap;
+        y = activeType(y);
         // ...and, for avatars made for Steam Link's own OSC, its names too (never with the prefix)
         {
             const bool locked = v.locked(key::kSteamlinkParams);
@@ -2866,6 +2873,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         return;
     }
 
+    if (activeRow) y = activeType(y);
     // LiveLink with the eye cameras: their pupils straight to VRChat (the LiveLink module has none). The hint and where
     // they go now under the control, like the VRChat rows' examples
     if (livelink && pupilsLineShown(output, camera)) y += drawCameraLine(pen, t.cameraLinePupils, y + 2) + 4;

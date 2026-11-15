@@ -1117,7 +1117,8 @@ private:
 
     /**
      * The Output tab: the target PC and port, then the VRChat-only rows (parameter prefix, EyeTrackingActive type, Steam Link's names, VRChat's own eye tracking),
-     * or what to set up in VRCFT for LiveLink and FrameEyeOSC.
+     * or what to set up in VRCFT for LiveLink and FrameEyeOSC (with the EyeTrackingActive type above it while an osc
+     * extra output is there: activeTypeRowShown).
      * @param pen drawing tools
      * @param t texts
      * @param model the model

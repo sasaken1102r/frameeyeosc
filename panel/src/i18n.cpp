@@ -135,7 +135,7 @@ UiText makeJapanese() {
     t.cameraLineFloor = "目のカメラを使うと「細めたときのまぶたの下限」も使えるよ";
     t.cameraLinePupils = "目のカメラを使うと、瞳孔の大きさも送れるよ";
     t.rowActiveType = "EyeTrackingActive の型";
-    t.hintActiveType = "アバターによっては Float が必要";
+    t.hintActiveType = "osc にも効く。Float が要るアバターも";
     t.activeOff = "送らない";
     t.rowSteamlink = "Steam Link の名前も送る";
     t.hintSteamlink = "Steam Link 向けのアバター用";
@@ -1338,7 +1338,7 @@ UiText makeEnglish() {
     t.cameraLineFloor = "With the eye cameras you also get \"Lowest eyelid when narrowed\"";
     t.cameraLinePupils = "With the eye cameras, pupil size goes out too";
     t.rowActiveType = "EyeTrackingActive type";
-    t.hintActiveType = "Some avatars need Float";
+    t.hintActiveType = "osc apps too; some need Float";
     t.activeOff = "Off";
     t.rowSteamlink = "Steam Link names too";
     t.hintSteamlink = "For Steam Link avatars";

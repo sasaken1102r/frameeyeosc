@@ -60,8 +60,15 @@ const SIG_CZ: f64 = 0.0003;
 const REJECT: f64 = 400.0;
 /// The ellipse is left out of a frame beyond this (its own squared Mahalanobis distance)...
 const ELL_GATE: f64 = 9.0;
-/// ...and once it has been left out this many frames in a row it is believed: the angles are taken from it again.
+/// ...and once it has been left out this many frames in a row it is believed: the angles are taken from it again;
+/// within SACCADE_REACQ_S of a saccade frame after ELL_REACQ_MOVING frames already. A landing whose first frames went by
+/// the pupil only (the ellipse blurred or gated as the eye stops) otherwise sat a fifth of a second on a pupil-only
+/// angle (the model's pupil-place gain is small: a 16 px hop reads as about 3 degrees) before the new ellipse was
+/// taken: on the re-seat replays with the outline (2026-11-15) the eyeball's lag behind the raw pupil to 90% of hops of
+/// 60 px or more, p90 0.18 s -> 0.06 s (3 frames: a re-seat run's right eye turned the wrong way at two corners).
 const ELL_REACQ: u32 = 20;
+const ELL_REACQ_MOVING: u32 = 6;
+const SACCADE_REACQ_S: f64 = 0.3;
 /// Refused this many frames in a row: the angles are taken afresh from the next ellipse (the centre kept).
 const REACQUIRE: u32 = 30;
 /// Plausible camera-to-centre distances (m), angles (degrees), and the pupil must face the camera at least this much
@@ -75,9 +82,15 @@ const RATE_TAU: f64 = 0.15;
 /// Time steps are taken as at most this long (s).
 const DT_MAX: f64 = 0.1;
 /// The ellipse is used only with the lids at least this far apart at the pupil (eyecam-rec's aperture, iris radii: a
-/// lid near the pupil cuts its outline) and with at least this share of its rim seen.
+/// lid near the pupil cuts its outline) and with at least PARTIAL_VIS_MIN of its rim seen. Below VIS_MIN its rim is
+/// partly hidden (lashes, the eye's corner, at the far corners of the view): such an ellipse updates the state like any
+/// other but never makes the filter take its angles from it (the re-takes), as a cut one can point the wrong way. Up to
+/// 2026-11-15 the ellipse needed VIS_MIN: at the corners one eye then went by the pupil only for whole dots and stayed
+/// near where it was (the re-seat replays: the left eye 17-21 degrees off at (-20, +15), on the headset the eyes then
+/// "apart" and the eye server's gaze for the whole dot). With 0.88 (0.85-0.9 tried) both re-seat runs' corners improved.
 const APERTURE_MIN: f64 = 1.3;
 const VIS_MIN: f64 = 0.98;
+const PARTIAL_VIS_MIN: f64 = 0.88;
 /// An eye's direction is given while its pupil was seen at most this long ago (s, the eye server's time)...
 pub const EYE_FRESH_S: f64 = 0.15;
 /// ...and the filter took a frame (an update with the pupil, with or without its ellipse) at most this long ago: one
@@ -314,31 +327,34 @@ pub struct Obs {
     pub time: f64,
     /// The pupil centre, undistorted normalised camera coordinates.
     pub pos: Option<[f64; 2]>,
-    /// The ellipse as (1 - b/a)(cos 2phi, sin 2phi), while it can be trusted.
+    /// The ellipse as (1 - b/a)(cos 2phi, sin 2phi), while it can be trusted...
     pub ell: Option<[f64; 2]>,
+    /// ...and whether its rim was partly hidden (below VIS_MIN: it never makes the filter re-take its angles).
+    pub partial: bool,
 }
 
 /// A frame in the sensor's picture, undistorted, with the ellipse kept only where the lids are clear of the pupil and
-/// its rim is seen (an unknown aperture or rim share does not stop it).
+/// enough of its rim is seen (an unknown aperture or rim share does not stop it).
 pub fn observe(camera: &Camera, frame: &RawFrame) -> Obs {
     // (a centre outside the picture is no pupil: the distortion can't be undone there, and the iteration would fold it
     // back to some point inside)
     let inside = |p: &[f64; 2]| (0.0..=camera.cols).contains(&p[0]) && (0.0..=camera.rows).contains(&p[1]);
     let Some([px, py]) = frame.pupil.filter(|p| p.iter().all(|v| v.is_finite()) && inside(p)) else {
-        return Obs { time: frame.time, pos: None, ell: None };
+        return Obs { time: frame.time, pos: None, ell: None, partial: false };
     };
     // A picture turned upright is flipped top to bottom back to the sensor's (and so is the ellipse's axis)
     let (py, angle) = if frame.flipped { (camera.rows - 1.0 - py, -frame.angle_deg) } else { (py, frame.angle_deg) };
     let pos = camera.undistort(px, py);
     let (a, b) = (frame.a.max(frame.b), frame.a.min(frame.b));
     let lids_clear = !frame.aperture.is_finite() || frame.aperture >= APERTURE_MIN;
-    let rim_seen = !frame.vis.is_finite() || frame.vis >= VIS_MIN;
+    let rim_seen = !frame.vis.is_finite() || frame.vis >= PARTIAL_VIS_MIN;
+    let partial = frame.vis.is_finite() && frame.vis < VIS_MIN;
     let ell = (angle.is_finite() && a > 0.0 && b.is_finite() && lids_clear && rim_seen).then(|| {
         let t = angle.to_radians();
         let flat = 1.0 - b / a;
         [flat * (2.0 * t).cos(), flat * (2.0 * t).sin()]
     });
-    Obs { time: frame.time, pos: Some(pos), ell }
+    Obs { time: frame.time, pos: Some(pos), ell, partial }
 }
 
 /// What the state expects to see: the pupil centre, and with `ell` the ellipse; the count of numbers.
@@ -590,6 +606,8 @@ pub struct EyeFilter {
     last_pos: Option<([f64; 2], f64)>,
     /// The last frame taken was a saccade (its acceleration noise raised).
     pub saccade: bool,
+    // When the last saccade frame was (the camera's time)
+    saccade_at: Option<f64>,
     // Holding still (HOLD_RADIUS): where the pupil came to rest and since when, whether it is still, the centre the
     // direction is given about meanwhile, the difference from the filter's own angles, the time of the last frame and
     // the direction given (radians)
@@ -758,6 +776,7 @@ impl EyeFilter {
         // the sphere about the centre kept), their uncertainty reset
         if let (Some(pos), Some(ell)) = (o.pos, o.ell)
             && self.misses >= REACQUIRE
+            && !o.partial
         {
             let g = normal_on_sphere(pos, ell, [x[4], x[5], x[6]]);
             (x[0], x[1]) = camera.angles_of(g);
@@ -794,6 +813,9 @@ impl EyeFilter {
         });
         let saccade = fast;
         self.saccade = saccade;
+        if saccade {
+            self.saccade_at = Some(o.time);
+        }
         if let Some(p) = o.pos {
             self.last_pos = Some((p, o.time));
         }
@@ -827,14 +849,15 @@ impl EyeFilter {
         let (mut zp, mut j, _) = jacobian(&xp, camera, with_ell);
         if let Some(ell) = o.ell {
             // The ellipse on its own against what is expected: left out when it disagrees, believed after it has
-            // disagreed for ELL_REACQ frames (the angles from its normal nearer straight ahead, the pupil kept on its
-            // seen ray at the distance it was)
+            // disagreed for ELL_REACQ frames (ELL_REACQ_MOVING just after a saccade; never a partly hidden one; the
+            // angles from its normal nearer straight ahead, the pupil kept on its seen ray at the distance it was)
             let se = innovation(&j, 2..4, &pp, &noise);
             let ye = [ell[0] - zp[2], ell[1] - zp[3], 0.0, 0.0];
             let far = inverse(&se, 2).is_none_or(|inv| distance(&ye, &inv, 2) > ELL_GATE);
             if far {
                 self.ell_off += 1;
-                if self.ell_off >= ELL_REACQ {
+                let moving = self.saccade_at.is_some_and(|at| o.time - at <= SACCADE_REACQ_S);
+                if self.ell_off >= if moving { ELL_REACQ_MOVING } else { ELL_REACQ } && !o.partial {
                     let g_old = camera.to_camera(gaze_head(xp[0], xp[1]));
                     let pupil_old = add([xp[4], xp[5], xp[6]], scale(g_old, R_PUPIL));
                     let g = normal_ahead(pos, ell, camera);
@@ -1100,7 +1123,7 @@ pub fn is_eyecam_replay(header: &str) -> bool {
 }
 
 /// The filter over an eyecam-rec replay output (its live CSV: eye, eye_index, t_cam, ok_pupil, aperture, pupil_vis,
-/// pupil_cx / _cy / _a / _b and pupil_angle), each eye on its own in camera-time order, the left eye's picture taken
+/// pupil_cx / _cy / _a / _b and pupil_angle, or outline_a / _b / _angle / _vis for the shape where present), each eye on its own in camera-time order, the left eye's picture taken
 /// as turned upright (as eyecam-rec turns it on the Frame). Writes one row per frame to `out` (eye, eye_index, t_cam,
 /// update, yaw_deg, pitch_deg, centre_x_mm / _y_mm / _z_mm, empty before the filter starts; fresh as the live source
 /// would use the eye (Freshness, on the camera's clock), settled for the eye fit, the centre's larger standard
@@ -1115,7 +1138,13 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
     ]
     .map(column);
     let (eye_c, index_c, t_c, ok_c, ap_c, vis_c) = (eye_c?, index_c?, t_c?, ok_c?, ap_c?, vis_c?);
-    let (cx_c, cy_c, a_c, b_c, ang_c) = (cx_c?, cy_c?, a_c?, b_c?, ang_c?);
+    let (cx_c, cy_c, mut a_c, mut b_c, mut ang_c) = (cx_c?, cy_c?, a_c?, b_c?, ang_c?);
+    // (the pupil's outline for this gaze, as the live file's shape part has it, where eyecam-rec writes it; older
+    // outputs have the pupil's own ellipse only)
+    let mut vis_c = vis_c;
+    if let [Ok(a), Ok(b), Ok(ang), Ok(vis)] = ["outline_a", "outline_b", "outline_angle", "outline_vis"].map(column) {
+        (a_c, b_c, ang_c, vis_c) = (a, b, ang, vis);
+    }
     // Per eye: (t_cam, eye_index text, the frame)
     let mut frames: [Vec<(f64, String, RawFrame)>; 2] = [Vec::new(), Vec::new()];
     for (number, line) in lines.enumerate() {
@@ -1518,7 +1547,10 @@ pub mod tests {
         }
         // A lid near the pupil or part of the rim hidden: the pupil only; unknown values don't stop it
         assert!(observe(&c, &RawFrame { aperture: 1.2, ..frame }).ell.is_none());
-        assert!(observe(&c, &RawFrame { vis: 0.9, ..frame }).ell.is_none());
+        assert!(observe(&c, &RawFrame { vis: 0.85, ..frame }).ell.is_none());
+        // ...a rim partly hidden (PARTIAL_VIS_MIN up to VIS_MIN): the ellipse, marked partial
+        let part = observe(&c, &RawFrame { vis: 0.9, ..frame });
+        assert!(part.ell.is_some() && part.partial && !plain.partial);
         assert!(observe(&c, &RawFrame { aperture: f64::NAN, vis: f64::NAN, ..frame }).ell.is_some());
         assert!(observe(&c, &RawFrame { angle_deg: f64::NAN, ..frame }).ell.is_none());
         // No pupil, or one outside the picture: nothing
@@ -1780,7 +1812,7 @@ pub mod tests {
         let e = filter.step(&c, &observe(&c, &seen(&c, eye_at(&c), 0.0, 0.0, 0.01))).unwrap();
         assert_eq!(e.update, Update::Start);
         // No pupil: the prediction
-        let none = Obs { time: 0.02, pos: None, ell: None };
+        let none = Obs { time: 0.02, pos: None, ell: None, partial: false };
         assert_eq!(filter.step(&c, &none).unwrap().update, Update::NoPupil);
         filter.reset();
         assert!(!filter.started());
@@ -1788,7 +1820,7 @@ pub mod tests {
 
     #[test]
     fn an_eye_is_fresh_only_while_its_pupil_is_seen_and_its_filter_takes_frames() {
-        let o = |pos: bool| Obs { time: 0.0, pos: pos.then_some([0.0, 0.0]), ell: None };
+        let o = |pos: bool| Obs { time: 0.0, pos: pos.then_some([0.0, 0.0]), ell: None, partial: false };
         let e = |update: Update| Estimate { yaw: 0.0, pitch: 0.0, centre: [0.0; 3], update };
         let mut fresh = Freshness::default();
         assert!(!fresh.fresh(0.0));
@@ -1968,5 +2000,88 @@ pub mod tests {
         let right: Vec<&str> = rows.lines().filter(|l| l.starts_with("R,")).last().unwrap().split(',').collect();
         assert_eq!(last[3..], right[3..]);
         assert!(replay_eyecam("eye,eye_index,t_cam\n", &cal, None).unwrap_err().contains("ok_pupil"));
+        // With eyecam-rec's outline columns the shape comes from them: the same frames with the pupil's own ellipse
+        // spoilt (cut flat) and the outline as it was give the same rows
+        let mut header = text.lines().next().unwrap().to_owned();
+        header += ",outline_a,outline_b,outline_angle,outline_vis";
+        let mut both = header + "\n";
+        for line in text.lines().skip(1) {
+            let cells: Vec<&str> = line.split(',').collect();
+            let spoilt = [&cells[..8], &["20.0", "11.0", "90.0"]].concat().join(",");
+            both += &format!("{spoilt},{},{},{},{}\n", cells[8], cells[9], cells[10], cells[5]);
+        }
+        let out2 = std::env::temp_dir().join(format!("frameeyeosc-eyeball-replay2-{}.csv", std::process::id()));
+        replay_eyecam(&both, &cal, Some(&out2)).unwrap();
+        let rows2 = std::fs::read_to_string(&out2).unwrap();
+        std::fs::remove_file(&out2).unwrap();
+        assert_eq!(rows2, rows);
+    }
+
+    /// Learns, then looks at (yaw, pitch) for a second; returns the time of the next frame.
+    fn settled_at(filter: &mut EyeFilter, c: &Camera, yaw: f64, pitch: f64) -> f64 {
+        let (t, _) = learn(filter, c, seen);
+        run(filter, c, seen, t, 1.0, |_| (eye_at(c), yaw, pitch));
+        t + 1.0
+    }
+
+    /// The model's frame at (yaw, pitch) with its ellipse turned a quarter and flattened (as a lid or glints cut it),
+    /// its rim share `vis`.
+    fn cut(c: &Camera, yaw: f64, pitch: f64, t: f64, vis: f64) -> RawFrame {
+        let f = seen(c, eye_at(c), yaw, pitch, t);
+        RawFrame { b: 0.6 * f.a, angle_deg: (f.angle_deg + 90.0) % 180.0, vis, ..f }
+    }
+
+    #[test]
+    fn a_partly_hidden_rim_is_used_but_never_makes_the_filter_take_its_angles() {
+        let c = camera();
+        // A rim 90% seen: its ellipse is used (an update with it)...
+        let mut filter = EyeFilter::default();
+        let mut t = settled_at(&mut filter, &c, 8.0, 4.0);
+        let mut frame = seen(&c, eye_at(&c), 8.0, 4.0, t);
+        frame.vis = 0.9;
+        assert_eq!(filter.step(&c, &observe(&c, &frame)).unwrap().update, Update::Ellipse);
+        t += 1.0 / 90.0;
+        // ...but one that disagrees, for a second, never re-takes the angles (the pupil keeps them)...
+        let retakes = filter.retakes;
+        for _ in 0..90 {
+            filter.step(&c, &observe(&c, &cut(&c, 8.0, 4.0, t, 0.9)));
+            t += 1.0 / 90.0;
+        }
+        assert_eq!(filter.retakes, retakes);
+        let (yaw, pitch) = own(&filter);
+        assert!((yaw - 8.0).abs() < 2.0 && (pitch - 4.0).abs() < 2.0, "{yaw} {pitch}");
+        // ...while a whole rim that disagrees is believed after ELL_REACQ frames (counted afresh after the ellipse
+        // agreed again)
+        run(&mut filter, &c, seen, t, 0.2, |_| (eye_at(&c), 8.0, 4.0));
+        t += 0.2;
+        for k in 0..ELL_REACQ {
+            filter.step(&c, &observe(&c, &cut(&c, 8.0, 4.0, t, 1.0)));
+            t += 1.0 / 90.0;
+            assert_eq!(filter.retakes, retakes + u32::from(k + 1 == ELL_REACQ), "frame {k}");
+        }
+    }
+
+    #[test]
+    fn just_after_a_saccade_a_disagreeing_ellipse_is_believed_sooner() {
+        let c = camera();
+        // Still: ELL_REACQ frames; within SACCADE_REACQ_S of a saccade frame (the jump to (-12, -6)): ELL_REACQ_MOVING
+        for (jump, need) in [(false, ELL_REACQ), (true, ELL_REACQ_MOVING)] {
+            let mut filter = EyeFilter::default();
+            let mut t = settled_at(&mut filter, &c, 8.0, 4.0);
+            let (yaw, pitch) = if jump { (-12.0, -6.0) } else { (8.0, 4.0) };
+            let retakes = filter.retakes;
+            let mut taken = None;
+            for k in 0..30u32 {
+                filter.step(&c, &observe(&c, &cut(&c, yaw, pitch, t, 1.0)));
+                if k == 0 {
+                    assert_eq!(filter.saccade, jump);
+                }
+                if taken.is_none() && filter.retakes > retakes {
+                    taken = Some(k + 1);
+                }
+                t += 1.0 / 90.0;
+            }
+            assert_eq!(taken, Some(need), "jump {jump}");
+        }
     }
 }

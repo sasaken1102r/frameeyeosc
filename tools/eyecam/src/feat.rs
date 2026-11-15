@@ -107,15 +107,21 @@ const OUTLINE_DIP_TOP: f64 = 0.75;
 /// 0.6) reaches 1.5 r0 at the ends of its long axis, where the band then lies on the rim's own transition and is too
 /// dark against the pupil: those rays found no edge, and the left eye at the re-seat runs' upper left read rim
 /// 0.86-0.88 with its ellipse right on the pupil, so the eyeball filter went by the pupil alone there (frames with rim
-/// 0.98 or more: 0% -> 49% / 22%; the right eye at the upper right 10% -> 87%, 8% -> 77%). Rays darker beyond the rim
-/// (lashes or a lid as dark as the pupil) still find no edge. Re-seat runs 2.95 -> 2.67 and 2.64 -> 2.66 degrees, a
-/// map fitted on one round scored on the next 4.55 -> 4.24 (2026-11-15). Only past 1.15 r0: every missed ray retried
+/// 0.98 or more: 0% -> 46% / 22%; the right eye at the upper right 10% -> 87%, 8% -> 77%). Rays darker beyond the rim
+/// (lashes or a lid as dark as the pupil) still find no edge. Re-seat runs 2.95 -> 2.69 and 2.64 -> 2.66 degrees, a
+/// map fitted on one round scored on the next 4.55 -> 4.21 (2026-11-15). Only past 1.15 r0: every missed ray retried
 /// also took the round pupils at the lower left, where rays miss for other reasons (the right eye's next round 5.04
 /// against 4.52). Only a ray whose own band was lit above the pupil by OUTLINE_BAND_LIT of the step to the rays'
 /// usual level, as one straddling the rim is: lashes as dark as the pupil over its top pull its fit up over them, and
-/// measured from that fit's rim their band is the skin beyond, whose edge would then read as the rim.
+/// measured from that fit's rim their band is the skin beyond, whose edge would then read as the rim. The crossing is
+/// taken only within OUTLINE_BAND_NEAR of the fit's radius, and such a point counts in the share only on the fitted
+/// outline, as a floor point does: lashes or a lid's shadow a little lighter than the pupil, or the plateau left by
+/// glints, give an edge off the rim (at the second re-seat run's lower left half the re-measured rays crossed at
+/// 0.4-0.9 of the fit's radius, on the glints' side). The ray itself ends at 2 r0 + 6: past about 1.4 r0 its band is
+/// cut short, and past about 1.6 r0 + 5 it is empty and the ray is not tried.
 const OUTLINE_BAND_RHO: f64 = 1.15;
 const OUTLINE_BAND_LIT: f64 = 0.15;
+const OUTLINE_BAND_NEAR: f64 = 0.2;
 /// The outline's share (its `vis`) counts the rays that found the edge as the pupil's does, but a ray measured
 /// against the floor only where its point lies on the fitted outline: within OUTLINE_ON_RIM_SD robust standard
 /// deviations of the points' radial distances from it, and at least OUTLINE_ON_RIM_PX px. A floor point the robust fit
@@ -1166,7 +1172,9 @@ impl Extractor {
             return None;
         }
         // A ray that found no edge where the pupil's fit reaches well past the blob's radius: its band measured out
-        // from the fit's rim instead (OUTLINE_BAND_RHO)
+        // from the fit's rim instead, its crossing taken only near that rim, and counted only where it lies on the
+        // outline (OUTLINE_BAND_RHO)
+        let mut band_pts: Vec<(f64, f64)> = Vec::new();
         for &k in &missed {
             let th = k as f64 * (std::f64::consts::TAU / NRAY as f64);
             let rho = ray_to_ellipse(c, th, &e);
@@ -1184,8 +1192,11 @@ impl Extractor {
             }
             let outer = vision::median(&mut band);
             if let Some(p) = crossing(k, outer, (1.9 * rho).min(stop)) {
-                outline_pts.push(p);
-                raised = true;
+                if ((p.0 - cx).hypot(p.1 - cy) - rho).abs() <= OUTLINE_BAND_NEAR * rho {
+                    outline_pts.push(p);
+                    band_pts.push(p);
+                    raised = true;
+                }
             }
         }
         // (with no ray changed by the floor or a dip the outline is the pupil's own fit)
@@ -1194,7 +1205,7 @@ impl Extractor {
         } else if outline_pts.len() < 10 {
             None
         } else {
-            let plain = outline_pts.len() - floor_pts.len();
+            let plain = outline_pts.len() - floor_pts.len() - band_pts.len();
             let mut dist: Vec<f64> = Vec::new();
             fit_ellipse_robust(outline_pts.clone())
                 .filter(|o| {
@@ -1204,7 +1215,7 @@ impl Extractor {
                 .map(|o| {
                     dist.extend(outline_pts.iter().map(|&(x, y)| o.resid(x, y).abs()));
                     let within = (OUTLINE_ON_RIM_SD * 1.4826 * vision::median(&mut dist)).max(OUTLINE_ON_RIM_PX);
-                    let on_rim = floor_pts.iter().filter(|&&(x, y)| o.resid(x, y).abs() <= within).count();
+                    let on_rim = floor_pts.iter().chain(&band_pts).filter(|&&(x, y)| o.resid(x, y).abs() <= within).count();
                     (o, (plain + on_rim) as f64 / NRAY as f64)
                 })
         };
@@ -2041,6 +2052,21 @@ mod tests {
         }
         let (p, _) = ex.refine_pupil((206.0, 200.0), 12.5, 347.0).expect("pupil");
         assert!(p.outline.expect("outline").1 < 0.95, "{:?}", p.outline);
+        // A shorter one (17 x 10) with lashes a little lighter than the pupil (22) in a strip just above it, the iris
+        // beyond: the rays up find no edge against the lashes, are re-measured from the fit's rim, and cross at the
+        // lashes' far edge, off the rim: neither taken nor counted
+        let mut ex = Extractor { opf: vec![40; W * H], ..Extractor::default() };
+        for y in 0..H {
+            for x in 0..W {
+                let (fx, fy) = (x as f64 - 206.0, y as f64 - 200.0);
+                let inside = (fx / 10.0).powi(2) + (fy / 17.0).powi(2) < 1.0;
+                ex.opf[y * W + x] = if inside { 12 } else if fx.abs() < 14.0 && (-23.0..-12.0).contains(&fy) { 22 } else { 40 };
+            }
+        }
+        let (p, _) = ex.refine_pupil((206.0, 200.0), 12.5, 347.0).expect("pupil");
+        let (o, share) = p.outline.expect("outline");
+        assert!(share < 0.95, "the lashes' edge counted as rim: {share} {o:?}");
+        assert!(o.cy - o.a.max(o.b) / 2.0 > 180.0, "the outline grew over the lashes: {o:?}");
     }
 
     #[test]

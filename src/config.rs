@@ -59,6 +59,10 @@ const ETVR_PORT: u64 = 8889;
 // which 0.10 removed. The key is still read, and ignored, so the files and command lines from before keep working.
 pub const V1_REMOVED: &str = "eye_behavior 1 (the eyes as up to 0.7.5) was removed in 0.10; the eyes move as with \
     eye_behavior 2, the only behaviour now";
+// What is logged, once, when config.json still asks for gaze_source "pupil": the panel no longer offers it, and it runs
+// as "eyeball" (GazeSource::Pupil and its pupil map stay: gaze_guard and the panel's checks still use the map).
+pub const PUPIL_AS_EYEBALL: &str = "gaze_source \"pupil\" is no longer offered; it runs as \"eyeball\" (the pupil map \
+    is kept for gaze_guard and the panel's checks)";
 /// The most extra outputs (extra_outputs entries, or --extra options) used; entries after these send nothing.
 pub const MAX_EXTRAS: usize = 3;
 // An extra output's name is only shown, so it is short printable ASCII.
@@ -133,7 +137,8 @@ pub enum GazeSource {
     /// the eye server's gaze, as always
     #[default]
     Valve,
-    /// the pupil map (pupil_*_left/right); without a whole map for both eyes, the same as valve
+    /// the pupil map (pupil_*_left/right); without a whole map for both eyes, the same as valve. Not read from
+    /// config.json any more: "pupil" there runs as Eyeball (parse, PUPIL_AS_EYEBALL)
     Pupil,
     /// the eyeball filter (eyeball.rs) and its own maps (eyeball_map.rs); without the factory eye-camera calibration,
     /// eyecam-rec's shape part or the maps, the same as valve
@@ -487,7 +492,8 @@ pub struct Settings {
     pub lid_fit_open_right: Option<f32>,
     pub lid_fit_down_left: Option<f32>,
     pub lid_fit_down_right: Option<f32>,
-    /// Where the sent gaze comes from: "valve" (the default) or "pupil" (a test; see GazeSource and pupil.rs).
+    /// Where the sent gaze comes from: "valve" (the default) or "eyeball" (a test; see GazeSource and eyeball.rs).
+    /// "pupil" in config.json runs as "eyeball" (parse; PUPIL_AS_EYEBALL); Pupil itself is still there for the code.
     pub gaze_source: GazeSource,
     /// Each eye's pupil map, written by the panel's eye fit: from the eye's pupil pair (u, v) as the eye server gives
     /// it (estimate_extra 0 and 1 for the left eye, 2 and 3 for the right: the pupil centre in the eye camera's picture,
@@ -948,6 +954,12 @@ fn parse(text: &str) -> Result<(Settings, Asked), String> {
     if written.get("eye_behavior").and_then(serde_json::Value::as_u64) == Some(1) {
         removed.push(V1_REMOVED);
     }
+    // gaze_source "pupil" (the pupil position, no longer offered by the panel) runs as "eyeball"; the pupil map is
+    // read as before
+    if settings.gaze_source == GazeSource::Pupil {
+        settings.gaze_source = GazeSource::Eyeball;
+        removed.push(PUPIL_AS_EYEBALL);
+    }
     let scaled = ["lid_scale_left", "lid_scale_right"]
         .iter()
         .any(|name| written.get(name).is_some_and(|value| !value.is_null()));
@@ -1392,7 +1404,10 @@ mod tests {
             "pupil_pitch_u_left": 0, "pupil_pitch_v_left": -200"#;
         let file = format!(r#"{{"gaze_source": "pupil", {map}, "pupil_center_yaw_left": 1.5}}"#);
         let (settings, locked) = merged(&file, &[]).unwrap();
-        assert!(settings.gaze_source == GazeSource::Pupil && locked.is_empty());
+        // ("pupil" runs as "eyeball" now, logged once; the map is read all the same)
+        assert!(settings.gaze_source == GazeSource::Eyeball && locked.is_empty());
+        assert_eq!(parse(&file).unwrap().1.removed, [PUPIL_AS_EYEBALL]);
+        assert!(parse(r#"{"gaze_source": "eyeball"}"#).unwrap().1.removed.is_empty());
         let left = [Some(-40.0), Some(200.0), Some(0.0), Some(20.0), Some(0.0), Some(-200.0)];
         assert_eq!(settings.pupil_map_values(), [left, [None; 6]]);
         assert_eq!(settings.pupil_centers(), [[Some(1.5), None], [None, None]]);

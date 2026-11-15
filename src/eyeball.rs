@@ -1122,12 +1122,6 @@ impl EyeballGaze {
         self.ellipse_at.map(|at| at.is_some_and(|at| time - at <= ACCEPTED_FRESH_S))
     }
 
-    /// Each eye's centre's depth along its camera's axis (mm), once its filter has started (the eye fit's depth check,
-    /// eyeball_map.rs).
-    pub fn depths_mm(&self) -> [Option<f64>; 2] {
-        self.filters.each_ref().map(|filter| filter.centre_mm().map(|(c, _)| c[2]))
-    }
-
     /// Each filter's re-takes (for the journal).
     pub fn retakes(&self) -> [u32; 2] {
         self.filters.each_ref().map(|filter| filter.retakes)

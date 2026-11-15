@@ -5061,7 +5061,7 @@ impl EyeballSetup {
         };
         // Where each eye's centre stood (and whether it counted), then what the capture did to the map
         let mut lines = vec![smoother.eyeball.centre_line()];
-        lines.extend(store.capture_done(target, medians, smoother.eyeball.depths_mm()));
+        lines.extend(store.capture_done(target, medians));
         smoother.eyeball.maps = store.maps;
         lines
     }

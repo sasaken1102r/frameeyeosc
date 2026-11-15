@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.4-beta.1 (2026-11-15)
+
+Other apps in the osc format now also get EyeTrackingActive, as the Output tab's "EyeTrackingActive type" says. If an avatar on the receiving end stops moving its eyes after this update, set that type to Float or Off.
+
+日本語: 「ほかのアプリ」の osc 形式にも、送り方タブの「EyeTrackingActive の型」のとおりに EyeTrackingActive を送るようになりました。更新したあと、受け取る側のアバターの目が止まったら、その型を［Float］か［送らない］にしてね。
+
+- New: `osc` destinations under Other apps send `/avatar/parameters/FT/EyeTrackingActive` with every sample, right after `EyesClosedAmount`, in the type `eye_tracking_active` says (true, or 1.0 with Float; nothing with Off). Their final set, when the eye data stops, sending pauses or the destination is stopped, changed or deleted, has it "not active" (false or 0.0) once. It is under `/FT` whatever `prefix` says, like the rest of the osc format. Some apps start an avatar's animation from it
+  - If you use an `osc` destination and the avatar there declares `EyeTrackingActive` as a float, its eyes can stop on a bool: choose Float, or Off to not send it
+- Panel: the Output tab shows "EyeTrackingActive type" in LiveLink and FrameEyeOSC modes too while Other apps has an `osc` destination (a stopped one too), since the setting now applies to it. Its hint says so
+
 ## 0.10.3 (2026-11-13)
 
 Only re-centering and eye fit change; nothing that is sent does. Right after the headset went on, re-centering could fail when SteamOS read an open eye stuck closed (#43). An eye whose pupil the eye camera sees now counts as open then, even while that camera is still getting ready.

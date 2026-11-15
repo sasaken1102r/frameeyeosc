@@ -11,7 +11,8 @@
 //!     centre dot with it. With the corners, each eye's map is quadratic (Q9: yaw and pitch each from 1, a, b, a², ab,
 //!     b² of the filter's angles a, b), fitted robustly (a dot far off the others' fit is left out, at most
 //!     Q9_MAX_DROPPED); without enough of them, affine on the five dots, as before.
-//! Each eye's median needs MIN_SAMPLES samples; a map that misses the dots it was fitted on by more than MAX_RMS_DEG,
+//! Each eye's median needs MIN_SAMPLES samples; a map that misses the dots it was fitted on by more than MAX_RMS_DEG
+//! (Q9_MAX_RMS_DEG for a Q9 map),
 //! or a centre further than MAX_CENTER_DEG, is not taken (the old one stays). The maps are kept in a file of their own (`eyeball_map` next to
 //! the eyelid calibration), never in config.json, which is the panel's: they last across restarts; the replay reads
 //! the file and never writes it.
@@ -62,6 +63,13 @@ pub const MIN_SAMPLES: u32 = 30;
 /// own movement between the dots was tried and would have refused nearly every fit: that eye's centre moves 1-5 mm
 /// between the dots, in depth too, in every fit.)
 pub const MAX_RMS_DEG: f64 = 3.0;
+/// The same for a Q9 map, on its (up to nine) dots: the corners are harder to fit than the five, and its misses don't
+/// tell whether the map is worse than the one it would replace (2026-11-16, the recorded fits' medians, the code's Q9:
+/// of the fits whose next round could be scored against the previous round's map, those that made it worse missed
+/// their dots by 1.4-3.7 deg, among the better ones. 3 deg refused 8 better fits to catch 1 worse; 5 refuses none of
+/// the recorded fits (the most was 4.5) and still catches the garbage case, the eye frozen at a corner, 12.8 deg
+/// before that dot is left out).
+pub const Q9_MAX_RMS_DEG: f64 = 5.0;
 /// ...and the eye's angles spread at least this much between the dots (degrees, the smaller spread of the two axes).
 pub const MIN_SPREAD_DEG: f64 = 2.0;
 /// A centre further than this (degrees, yaw or pitch) is not taken.
@@ -259,7 +267,8 @@ pub struct Q9Fit {
 /// One eye's Q9 map from the dots it has (DOTS order; None for a dot without a settled median), robustly: while more than
 /// Q9_MIN_DOTS are left, the dot without which the others fit best is left out when the others' fit misses it by more
 /// than Q9_DROP_DEG and by Q9_DROP_RATIO times their own misses (at most Q9_MAX_DROPPED). Err (with the misses when
-/// there was a map) when fewer than Q9_MIN_DOTS are there, the angles hardly moved, or the map misses its dots by more than MAX_RMS_DEG;
+/// there was a map) when fewer than Q9_MIN_DOTS are there, the angles hardly moved, or the map misses its dots by more
+/// than Q9_MAX_RMS_DEG;
 /// the first means: use the affine map instead.
 pub fn fit_eye_q9(medians: &[Option<[f32; 2]>; 9], eye: usize) -> Result<Q9Fit, (String, Option<f64>)> {
     q9_fit(medians, eye, true)
@@ -310,8 +319,8 @@ fn q9_fit(medians: &[Option<[f32; 2]>; 9], eye: usize, checked: bool) -> Result<
     }
     let map = q9_solve(&dots).ok_or_else(|| (format!("the {name} eye's angles don't give a quadratic map"), None))?;
     let rms = rms_of(&map, &dots);
-    if checked && (!rms.is_finite() || rms > MAX_RMS_DEG) {
-        return Err((format!("the {name} eye's map misses its dots by {rms:.1} deg (at most {MAX_RMS_DEG:.0})"), Some(rms)));
+    if checked && (!rms.is_finite() || rms > Q9_MAX_RMS_DEG) {
+        return Err((format!("the {name} eye's map misses its dots by {rms:.1} deg (at most {Q9_MAX_RMS_DEG:.0})"), Some(rms)));
     }
     Ok(Q9Fit { map, rms, dropped })
 }
@@ -419,7 +428,7 @@ pub struct FitOutcome {
     pub fitted: bool,
     /// Not taken: whether an older map stays (false: there is none).
     pub kept: bool,
-    /// Why not: "misses" (an eye's map missed its dots by more than MAX_RMS_DEG), "not_settled" (an eye's filter had
+    /// Why not: "misses" (an eye's map missed its dots by more than MAX_RMS_DEG, Q9_MAX_RMS_DEG for Q9), "not_settled" (an eye's filter had
     /// not settled at some dot) or "other" (the eyes hardly moved, no map, a centre too far); None when fitted.
     pub reason: Option<&'static str>,
     /// The eye that reason is about: [left, right] (both true: both eyes; neither: not one eye's).
@@ -884,6 +893,36 @@ mod tests {
         // A centre too far is not taken
         let maps = [fit_eye(&[0, 1, 2, 3, 4].map(|d| reading(0, DOTS[d].1, DOTS[d].2)), 0).unwrap().0; 2];
         assert!(centers(&maps, [[60.0, 0.0], [3.0, -2.0]]).unwrap_err().contains("left eye's centre"));
+    }
+
+    #[test]
+    fn a_q9_map_has_its_own_misses_limit() {
+        // Seven dots (two corners not counted: none can be left out then), each reading pushed by `scale` times a shape
+        // no quadratic map can take up (u²v² sideways, u v² up and down on the dots' -1, 0, 1 grid): how far the Q9 map
+        // then misses its dots, and whether it is taken
+        let pushed = |scale: f64| {
+            DOTS.iter().enumerate().map(|(i, (_, y, p))| {
+                let r = bent(1, *y, *p);
+                let (u, v) = (y / 20.0, p / 15.0);
+                (i < 7).then_some([r[0] + (scale * u * u * v * v) as f32, r[1] + (scale * u * v * v) as f32])
+            }).collect::<Vec<_>>()
+        };
+        let medians = |scale: f64| -> [Option<[f32; 2]>; 9] { pushed(scale).try_into().unwrap() };
+        // The push that makes it miss by `rms` (the misses grow with the push)
+        let at = |rms: f64| {
+            let (mut lo, mut hi) = (0.0, 40.0);
+            for _ in 0..60 {
+                let mid = (lo + hi) / 2.0;
+                if q9_fit(&medians(mid), 1, false).unwrap().rms < rms { lo = mid } else { hi = mid }
+            }
+            medians(lo)
+        };
+        // 4.5 deg: beyond the affine map's 3, taken for Q9 (none left out); 6: refused, with its misses
+        let taken = fit_eye_q9(&at(4.5), 1).unwrap();
+        assert!((taken.rms - 4.5).abs() < 0.01 && taken.dropped.is_empty(), "{taken:?}");
+        assert!(taken.rms > MAX_RMS_DEG && Q9_MAX_RMS_DEG == 5.0);
+        let (why, misses) = fit_eye_q9(&at(6.0), 1).unwrap_err();
+        assert!(why.contains("misses its dots by 6.0 deg (at most 5)") && misses.is_some_and(|m| (m - 6.0).abs() < 0.01), "{why}");
     }
 
     #[test]

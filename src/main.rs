@@ -616,8 +616,8 @@ struct Args {
     /// packets for VRCFaceTracking's FrameEyeOSC module
     #[arg(long, value_enum, default_value_t = OutputKind::Vrchat)]
     output: OutputKind,
-    /// How EyeTrackingActive is sent in VRChat mode: a bool, a float (1.0 / 0.0; some avatars
-    /// need it), or not at all
+    /// How EyeTrackingActive is sent in VRChat mode and to osc extra outputs: a bool, a float
+    /// (1.0 / 0.0; some avatars need it), or not at all
     #[arg(long, value_enum, default_value_t = ActiveType::Bool)]
     eye_tracking_active: ActiveType,
     /// In VRChat mode, also send the avatar parameters SteamVR's Steam Link OSC sends (LeftEyeX, RightEyeLid, ...;
@@ -4428,13 +4428,19 @@ fn steamlink_messages(gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, OscType)> 
     messages
 }
 
+/// `EyeTrackingActive`'s value in the type `kind` (a bool, a float, or nothing): for the main VRChat output and the
+/// osc extra format (extras.rs).
+fn active_value(kind: ActiveType, active: bool) -> Option<OscType> {
+    match kind {
+        ActiveType::Bool => Some(OscType::Bool(active)),
+        ActiveType::Float => Some(OscType::Float(if active { 1.0 } else { 0.0 })),
+        ActiveType::Off => None,
+    }
+}
+
 /// `EyeTrackingActive` as the settings want it sent (a bool, a float, or nothing).
 fn active_message(settings: &Settings, active: bool) -> Option<(String, OscType)> {
-    let value = match settings.eye_tracking_active {
-        ActiveType::Bool => OscType::Bool(active),
-        ActiveType::Float => OscType::Float(if active { 1.0 } else { 0.0 }),
-        ActiveType::Off => return None,
-    };
+    let value = active_value(settings.eye_tracking_active, active)?;
     Some((format!("/avatar/parameters{}/EyeTrackingActive", settings.prefix), value))
 }
 
@@ -11745,6 +11751,12 @@ mod tests {
             .collect()
     }
 
+    /// EyeTrackingActive as the osc format sends it in the type `kind`: under the fixed /FT, nothing with "off".
+    fn osc_active(kind: ActiveType, active: bool) -> Vec<(String, Vec<OscType>)> {
+        let addr = "/avatar/parameters/FT/EyeTrackingActive";
+        active_value(kind, active).map(|value| (addr.to_owned(), vec![value])).into_iter().collect()
+    }
+
     /// VRChat's eye tracking input as the osc format sends it: CenterVec for the combined gaze, EyesClosedAmount.
     fn osc_eyes(gaze: [f32; 2], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
         vec![
@@ -11771,7 +11783,13 @@ mod tests {
         let steps = [(both, Some([0.4, 0.1])), (left, Some([0.0, 0.3])), (none, None), (both, None), (none, None)];
         let variants = [
             settings(),
-            Settings { prefix: String::new(), steamlink_params: true, pupil_bits: 3, ..settings() },
+            Settings {
+                prefix: String::new(),
+                eye_tracking_active: ActiveType::Off,
+                steamlink_params: true,
+                pupil_bits: 3,
+                ..settings()
+            },
             Settings {
                 prefix: "/Custom".into(),
                 eye_tracking_active: ActiveType::Float,
@@ -11782,6 +11800,8 @@ mod tests {
             },
         ];
         for settings in variants {
+            let active = osc_active(settings.eye_tracking_active, true);
+            let n = active.len();
             let mut held = extras::Held::default();
             let (mut squint_out, mut brow_out, mut bits) = ([false; 2], false, PupilBits::default());
             for (index, (camera, brows)) in steps.into_iter().enumerate() {
@@ -11798,10 +11818,11 @@ mod tests {
                 main.extend(native_messages(&settings, gaze, sample.lids));
                 squint_out = camera.squint.map(|squint| squint.is_some());
                 brow_out = brows.is_some();
-                let osc = extras::osc_sample(&sample, &mut held);
+                let osc = extras::osc_sample(&sample, settings.eye_tracking_active, &mut held);
                 assert_eq!(osc[..2], osc_eyes([0.2, 0.1], sample.lids)[..], "{index}");
-                assert_eq!(osc[2..], main_v2_floats(&main, &settings.prefix)[..], "{index}");
-                assert!(osc[2..].iter().all(|(addr, _)| addr.starts_with("/avatar/parameters/FT/v2/")));
+                assert_eq!(osc[2..2 + n], active[..], "{index}");
+                assert_eq!(osc[2 + n..], main_v2_floats(&main, &settings.prefix)[..], "{index}");
+                assert!(osc[2 + n..].iter().all(|(addr, _)| addr.starts_with("/avatar/parameters/FT/v2/")));
             }
         }
     }
@@ -11811,11 +11832,20 @@ mod tests {
         let (main, main_port) = listener();
         let (osc, osc_port) = listener();
         let decode = |listener: &UdpSocket| -> Vec<_> { drain(listener).iter().map(|d| decode_osc(d)).collect() };
-        for (prefix, independent, brows) in [("/FT", false, false), ("", true, true), ("/Custom", true, false)] {
+        let variants = [
+            ("/FT", false, false, ActiveType::Bool),
+            ("", true, true, ActiveType::Float),
+            ("/Custom", true, false, ActiveType::Off),
+        ];
+        for (prefix, independent, brows, active) in variants {
+            // EyeTrackingActive in its type right after EyesClosedAmount (none with "off"), whatever the prefix
+            let n = osc_active(active, true).len();
+            let size = (if brows { 18 } else { 10 }) + n;
             let settings = Settings {
                 host: "127.0.0.1".into(),
                 port: Some(main_port),
                 prefix: prefix.into(),
+                eye_tracking_active: active,
                 independent_eyes: independent,
                 brow_from_widen: brows,
                 steamlink_params: true,
@@ -11837,23 +11867,26 @@ mod tests {
                 bridge.on_sample(data).unwrap();
                 let sample = bridge.latest.as_ref().unwrap();
                 let (at_main, at_osc) = (decode(&main), decode(&osc));
-                // Every sample: VRChat's eye input, then the main output's v2 floats under /FT, whatever its prefix
+                // Every sample: VRChat's eye input, "active", then the main output's v2 floats under /FT, whatever its
+                // prefix
                 assert_eq!(at_osc[..2], osc_eyes([sample.gaze[4], sample.gaze[5]], sample.lids)[..], "{index}");
-                assert_eq!(at_osc[2..], main_v2_floats(&at_main, prefix)[..], "{prefix} {index}");
-                assert_eq!(at_osc.len(), if brows { 18 } else { 10 });
+                assert_eq!(at_osc[2..2 + n], osc_active(active, true)[..], "{index}");
+                assert_eq!(at_osc[2 + n..], main_v2_floats(&at_main, prefix)[..], "{prefix} {index}");
+                assert_eq!(at_osc.len(), size);
             }
-            // Lost: relaxed open eyes looking ahead and the brows back to 0 (as the main output's), once
+            // Lost: relaxed open eyes looking ahead, "not active" and the brows back to 0 (as the main output's), once
             bridge.on_lost("test").unwrap();
             let (at_main, at_osc) = (decode(&main), decode(&osc));
             let mut neutral = osc_eyes([0.0; 2], [LID_RELAXED; 2]);
+            neutral.extend(osc_active(active, false));
             let gaze = ["EyeLeftX", "EyeLeftY", "EyeRightX", "EyeRightY"].map(|name| (name, 0.0));
             let rest = [("EyeLidLeft", LID_RELAXED), ("EyeLidRight", LID_RELAXED), ("EyeX", 0.0), ("EyeY", 0.0)];
             for (name, value) in gaze.into_iter().chain(rest) {
                 neutral.push((format!("/avatar/parameters/FT/v2/{name}"), vec![OscType::Float(value)]));
             }
-            assert_eq!(at_osc[..10], neutral[..]);
-            assert_eq!(at_osc[10..], main_v2_floats(&at_main, prefix)[..]);
-            assert_eq!(at_osc.len(), if brows { 18 } else { 10 });
+            assert_eq!(at_osc[..10 + n], neutral[..]);
+            assert_eq!(at_osc[10 + n..], main_v2_floats(&at_main, prefix)[..]);
+            assert_eq!(at_osc.len(), size);
             // Then nothing, not even while the other outputs are kept alive
             bridge.feo_idle = None;
             bridge.keep_feo_alive();
@@ -11863,7 +11896,7 @@ mod tests {
             bridge.on_sample(reading(20, [0.3, 0.2], [0.6, 0.5])).unwrap();
             drain(&osc);
             bridge.apply(reload(&Settings { sending: false, ..settings.clone() })).unwrap();
-            assert_eq!(decode(&osc)[..10], neutral[..]);
+            assert_eq!(decode(&osc)[..10 + n], neutral[..]);
             bridge.on_sample(reading(21, [0.3, 0.2], [0.6, 0.5])).unwrap();
             assert!(decode(&osc).is_empty());
             bridge.apply(reload(&settings)).unwrap();
@@ -11876,10 +11909,10 @@ mod tests {
                 Settings { extra_outputs: vec![extra(config::ExtraFormat::Osc, "127.0.0.1", moved_port)], ..settings };
             bridge.apply(reload(&elsewhere)).unwrap();
             bridge.refresh_extras();
-            assert_eq!(decode(&osc)[..10], neutral[..]);
+            assert_eq!(decode(&osc)[..10 + n], neutral[..]);
             bridge.on_sample(reading(23, [0.3, 0.2], [0.6, 0.5])).unwrap();
             assert!(decode(&osc).is_empty());
-            assert_eq!(decode(&moved).len(), if brows { 18 } else { 10 });
+            assert_eq!(decode(&moved).len(), size);
             bridge.on_lost("test").unwrap();
             drain(&moved);
             drain(&main);
@@ -11935,12 +11968,12 @@ mod tests {
             assert_eq!(at_bundled.len(), 1, "{index}");
             assert!(at_bundled[0].starts_with(b"#bundle\0") && at_bundled[0].len() <= osc::MAX_BUNDLE);
             assert_eq!(decode_osc_or_bundle(&at_bundled[0]), at_plain, "{index}");
-            assert_eq!(at_plain.len(), 18);
+            assert_eq!(at_plain.len(), 19);
             capped_messages.extend(drain(&capped).iter().flat_map(|d| decode_osc_or_bundle(d)));
         }
         // (each round waits about 150 ms for the listeners, so about 1.5 s: one or two samples, never all 10)
-        let capped_samples = capped_messages.len() / 18;
-        assert_eq!(capped_messages.len() % 18, 0);
+        let capped_samples = capped_messages.len() / 19;
+        assert_eq!(capped_messages.len() % 19, 0);
         assert!((1..=3).contains(&capped_samples), "{capped_samples}");
         assert!(bridge.extras.status(Instant::now())[2].rate <= 2.0);
         // Lost: the final set, bundled too, and to the capped one at once
@@ -11975,7 +12008,8 @@ mod tests {
         let at_main = drain(&main);
         assert_eq!((at_main.len(), &at_main[0][..4]), (1, &b"FEO1"[..]));
         let at_gaze = drain(&gaze);
-        assert_eq!(at_gaze.len(), 10);
+        // (EyeTrackingActive too, in FrameEyeOSC mode as well)
+        assert_eq!(at_gaze.len(), 11);
         assert_eq!(decode_osc(&at_gaze[0]).0, "/tracking/eye/CenterVec");
         let status = serde_json::to_value(bridge.status(None, None)).unwrap();
         let refused: Vec<_> = status["extras"].as_array().unwrap().iter().map(|extra| &extra["refused"]).collect();
@@ -11994,7 +12028,7 @@ mod tests {
         bridge.on_sample(reading(1, [0.3, 0.2], [1.0, 1.0])).unwrap();
         assert_eq!(drain(&moved).len(), 1);
         assert_eq!(decode_osc(&drain(&main)[0]).0, "/tracking/eye/CenterVec");
-        assert_eq!(drain(&gaze).len(), 10);
+        assert_eq!(drain(&gaze).len(), 11);
     }
 
     #[test]

@@ -239,13 +239,14 @@ Both repositories' tests run these through their receivers.
 An extra output in the `osc` format sends plain OSC 1.0 messages, one per UDP datagram (or, when its entry sets
 `bundle`, in OSC 1.0 bundles: time tag 1, "immediately", the messages in the order below, at most 1472 bytes a bundle,
 so one set can take two bundles; never nested; with `max_rate`, some samples' sets are skipped):
-VRChat's own eye tracking input, for apps that read it (a gaze tool, say), and VRCFT's v2 avatar parameters, for apps
-that read those names. Each eye sample sends one set, in this order:
+VRChat's own eye tracking input, for apps that read it (a gaze tool, say), and `EyeTrackingActive` and VRCFT's v2
+avatar parameters, for apps that read those names. Each eye sample sends one set, in this order:
 
 | Address | Tags | Value | Sent |
 |---|---|---|---|
 | `/tracking/eye/CenterVec` | `,fff` | A unit vector `normalize(tan(gaze_x·π/4), tan(gaze_y·π/4), 1)` for the combined gaze (see "Conventions"): Unity axes, +x right, +y up, +z forward | Always |
 | `/tracking/eye/EyesClosedAmount` | `,f` | `clamp(1 - (eyelid_left + eyelid_right) / 2 / 0.75, 0, 1)`: 0 open (relaxed or widened), 1 closed | Always |
+| `/avatar/parameters/FT/EyeTrackingActive` | `,T` / `,F`, or `,f` | "Active": true, or 1.0 when `eye_tracking_active` is `"float"`; "not active" (false, or 0.0) once in the final set (below) | Unless `eye_tracking_active` is `"off"` |
 | `/avatar/parameters/FT/v2/EyeLeftX`, `EyeLeftY`, `EyeRightX`, `EyeRightY` | `,f` | Each eye's gaze, -1..1 (see "Conventions"): its own with "move eyes separately", else the combined gaze | Always |
 | `/avatar/parameters/FT/v2/EyeLidLeft`, `EyeLidRight` | `,f` | Each eyelid on VRCFT's scale, 0..1: 0 closed, 0.75 relaxed open, 1 fully widened | Always |
 | `/avatar/parameters/FT/v2/EyeX`, `EyeY` | `,f` | The combined gaze, -1..1 | Always |
@@ -259,16 +260,18 @@ that read those names. Each eye sample sends one set, in this order:
 
 - The values are the ones the main VRChat output sends for the same sample, under the same names. The set does not
   depend on the main output or its settings: the prefix is always `/FT` (VRCFT's own), whatever frameeyeosc's
-  parameter prefix is, and it never has the main output's `EyeTrackingActive`, pupil bits (`PupilDilation1`, ...),
-  Steam Link names (`LeftEyeX`, ...), Face Tracking blob or `LeftRightVec`. The squint, pupils and brows come only
-  with that data, as in the table.
-- It is sent with every eye sample (about 90 a second, up to ~136): 10 to 25 datagrams a sample.
+  parameter prefix is, and it never has the main output's pupil bits (`PupilDilation1`, ...), Steam Link names
+  (`LeftEyeX`, ...), Face Tracking blob or `LeftRightVec`. `EyeTrackingActive` goes out in the type
+  `eye_tracking_active` sets, as the main VRChat output's; when that type changes, the next set has the new one
+  (with `"off"`, "not active" once in the type before). The squint, pupils and brows come only with that data, as in
+  the table.
+- It is sent with every eye sample (about 90 a second, up to ~136): 10 to 26 datagrams a sample.
 - When the eye data stops, when sending pauses, and when the destination changes (host, port or format) or is turned
   off: one final set for relaxed open eyes looking straight ahead, then nothing. The final set is `CenterVec` 0, 0, 1,
-  `EyesClosedAmount` 0, `EyeLeftX`, `EyeLeftY`, `EyeRightX`, `EyeRightY` 0, `EyeLidLeft`, `EyeLidRight` 0.75, `EyeX`,
-  `EyeY` 0, and 0 for each squint and brow address sent with the last sample. The pupils are left as they were, as
-  the main VRChat output leaves them. There is no keepalive: silence is this format's "no data" (VRChat falls back
-  after its own timeout). A frameeyeosc that is killed sends nothing more.
+  `EyesClosedAmount` 0, `EyeTrackingActive` "not active" (false, or 0.0) if "active" went out, `EyeLeftX`,
+  `EyeLeftY`, `EyeRightX`, `EyeRightY` 0, `EyeLidLeft`, `EyeLidRight` 0.75, `EyeX`, `EyeY` 0, and 0 for each squint
+  and brow address sent with the last sample. The pupils are left as they were, as the main VRChat output leaves
+  them. There is no keepalive: silence is this format's "no data" (VRChat falls back after its own timeout). A frameeyeosc that is killed sends nothing more.
 - **Contract:** an address in this set never changes its meaning, type or units. frameeyeosc may add addresses later;
   receivers MUST ignore addresses they don't know, and MUST NOT count on an address that the table sends only with
   its data. Receivers MUST accept both single messages and OSC bundles (the user chooses per entry with `bundle`).

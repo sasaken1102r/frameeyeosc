@@ -8,9 +8,11 @@
 //!   osc::MAX_BUNDLE bytes: one or two datagrams a sample), the same set for every receiver whatever the main output's
 //!   settings:
 //!   VRChat's own eye tracking input (/tracking/eye/CenterVec from the combined gaze as sent, always CenterVec, also
-//!   with independent_eyes, and EyesClosedAmount), then the main VRChat output's VRCFT v2 float parameters for the
-//!   same sample (see osc_set) under the fixed prefix /FT. When the eye data stops, one set for relaxed open eyes
-//!   looking ahead (with the squint and brows that went out set back to 0) and then nothing: silence is its "no data".
+//!   with independent_eyes, and EyesClosedAmount), then EyeTrackingActive "active" in the eye_tracking_active type
+//!   (none with "off") and the main VRChat output's VRCFT v2 float parameters for the same sample (see osc_set), both
+//!   under the fixed prefix /FT. When the eye data stops, one set for relaxed open eyes looking ahead (with
+//!   EyeTrackingActive "not active" and the squint and brows that went out set back to 0) and then nothing: silence
+//!   is its "no data".
 //!
 //! An osc extra's `max_rate` sends at most that many samples a second and skips the rest (its final set always goes).
 //!
@@ -19,12 +21,12 @@
 //! When what an extra sends or where changes, or it stops, its old destination gets its final message first (while
 //! the eye data runs; without it the last message was one already), as the main output's streams do.
 
-use crate::config::{ExtraFormat, ExtraOutput, Settings};
+use crate::config::{ActiveType, ExtraFormat, ExtraOutput, Settings};
 use crate::osc::Value as OscType;
 use crate::status::ExtraStatus;
 use crate::{
-    CameraValues, LID_RELAXED, Output, RATE_WINDOW, Sample, Target, brow_release_at, eyes_closed_amount, gaze_vector,
-    squint_release_at, status, v2_params,
+    CameraValues, LID_RELAXED, Output, RATE_WINDOW, Sample, Target, active_value, brow_release_at, eyes_closed_amount,
+    gaze_vector, squint_release_at, status, v2_params,
 };
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -43,11 +45,13 @@ struct Stream {
 }
 
 /// What an osc extra's receiver holds from the messages that went out: which eyes' squint and whether the brows, to
-/// set them back to 0 once they stop (as the main VRChat output does: squint_release, brow_release).
+/// set them back to 0 once they stop (as the main VRChat output does: squint_release, brow_release), and the type
+/// EyeTrackingActive "active" went out in, to send "not active" in it once that stops.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Held {
     pub squint: [bool; 2],
     pub brows: bool,
+    pub active: Option<ActiveType>,
 }
 
 /// What `extra` sends with these settings, if anything: nothing while it is off or can't be used, or sending is paused.
@@ -79,9 +83,11 @@ fn describe(extra: &ExtraOutput) -> String {
 /// The osc messages for a sample's gaze (left x/y, right x/y, combined x/y), VRCFT eyelids, eye-camera values and
 /// brows as sent, in this order:
 /// - CenterVec for the combined gaze (x, y in -1..1, 1 = 45°; see gaze_vector), and EyesClosedAmount for the eyelids;
+/// - /avatar/parameters/FT/EyeTrackingActive "active" in the type `active` (true, or 1.0 for a float), or with "off"
+///   nothing; but once "not active" (false, 0.0) in the type it went out in before (`held`), if it did;
 /// - the main VRChat output's VRCFT v2 float parameters for them (v2_params: the gaze per eye and combined, the
 ///   eyelids, the squint and pupils for the eyes they are used for, the brows with brow_from_widen) under
-///   /avatar/parameters/FT/v2/, never the main output's EyeTrackingActive, pupil bits or Steam Link names;
+///   /avatar/parameters/FT/v2/, never the main output's pupil bits or Steam Link names;
 /// - 0 for the squint and brows that went out before (`held`) and stop with these (squint_release, brow_release).
 ///
 /// `held` then holds what went out now.
@@ -90,6 +96,7 @@ pub fn osc_set(
     lids: [f32; 2],
     camera: &CameraValues,
     brows: Option<[f32; 2]>,
+    active: ActiveType,
     held: &mut Held,
 ) -> Vec<(String, Vec<OscType>)> {
     let floats = |values: &[f32]| -> Vec<OscType> { values.iter().copied().map(OscType::Float).collect() };
@@ -97,25 +104,33 @@ pub fn osc_set(
         (CENTER_VEC.to_owned(), floats(&gaze_vector([gaze[4], gaze[5]]))),
         (EYES_CLOSED.to_owned(), floats(&[eyes_closed_amount(lids)])),
     ];
+    // (a new type just replaces the old one's value: the address is the same)
+    let value = active_value(active, true).or_else(|| held.active.and_then(|was| active_value(was, false)));
+    messages.extend(value.map(|value| (format!("/avatar/parameters{PREFIX}/EyeTrackingActive"), vec![value])));
     let v2 = v2_params(gaze, lids, camera, brows).into_iter();
     messages.extend(v2.map(|(name, value)| (format!("/avatar/parameters{PREFIX}/v2/{name}"), floats(&[value]))));
     let released = squint_release_at(PREFIX, held.squint, camera.squint).into_iter();
     let released = released.chain(brow_release_at(PREFIX, held.brows, brows));
     messages.extend(released.map(|(addr, value)| (addr, vec![value])));
-    *held = Held { squint: camera.squint.map(|squint| squint.is_some()), brows: brows.is_some() };
+    *held = Held {
+        squint: camera.squint.map(|squint| squint.is_some()),
+        brows: brows.is_some(),
+        active: Some(active).filter(|active| *active != ActiveType::Off),
+    };
     messages
 }
 
-/// The osc set for one sample.
-pub fn osc_sample(sample: &Sample, held: &mut Held) -> Vec<(String, Vec<OscType>)> {
-    osc_set(sample.gaze, sample.lids, &sample.camera, sample.brows, held)
+/// The osc set for one sample, with EyeTrackingActive in the type `active`.
+pub fn osc_sample(sample: &Sample, active: ActiveType, held: &mut Held) -> Vec<(String, Vec<OscType>)> {
+    osc_set(sample.gaze, sample.lids, &sample.camera, sample.brows, active, held)
 }
 
 /// The osc format's final set: relaxed open eyes looking straight ahead, without squint, pupils or brows (CenterVec
-/// 0, 0, 1, EyesClosedAmount 0, the gaze 0 and the eyelids 0.75), and 0 for the squint and brows that went out. The
-/// pupils are left as they were, as the main VRChat output leaves them.
+/// 0, 0, 1, EyesClosedAmount 0, the gaze 0 and the eyelids 0.75), EyeTrackingActive "not active" in the type it went
+/// out in (if it did), and 0 for the squint and brows that went out. The pupils are left as they were, as the main
+/// VRChat output leaves them.
 pub fn osc_final(held: &mut Held) -> Vec<(String, Vec<OscType>)> {
-    osc_set([0.0; 6], [LID_RELAXED; 2], &CameraValues::default(), None, held)
+    osc_set([0.0; 6], [LID_RELAXED; 2], &CameraValues::default(), None, ActiveType::Off, held)
 }
 
 /// One extra output: its entry, its sender, and what it sends now.
@@ -190,18 +205,22 @@ impl Extra {
 /// Every extra output, in the order of extra_outputs.
 pub struct Extras {
     list: Vec<Extra>,
+    // The type osc extras send EyeTrackingActive in (eye_tracking_active, as the main VRChat output's).
+    active: ActiveType,
 }
 
 impl Extras {
     pub fn new(settings: &Settings) -> Self {
-        let mut extras = Self { list: Vec::new() };
+        let mut extras = Self { list: Vec::new(), active: settings.eye_tracking_active };
         extras.apply(settings, false, &mut Vec::new);
         extras
     }
 
     /// Take changed settings. While the eye data runs (`tracking`), an extra whose stream stops or changes first gets
     /// its final message where it went; `feo_idle` makes the packet without TRACKING for feo1 (once, if needed).
+    /// A new eye_tracking_active type goes out with the next sample (with "off" its "not active" in the old type).
     pub fn apply(&mut self, settings: &Settings, tracking: bool, feo_idle: &mut dyn FnMut() -> Vec<u8>) {
+        self.active = settings.eye_tracking_active;
         let mut idle: Option<Vec<u8>> = None;
         let mut idle_packet = |format: ExtraFormat| match format {
             ExtraFormat::Feo1 => idle.get_or_insert_with(&mut *feo_idle).clone(),
@@ -303,6 +322,7 @@ impl Extras {
 
     /// Send one sample: `feo` (this sample's FrameEyeOSC packet, if built) to feo1, and the sample's osc set to osc.
     pub fn send_sample(&mut self, now: Instant, feo: Option<&[u8]>, sample: &Sample) {
+        let active = self.active;
         for extra in self.list.iter_mut().filter(|extra| extra.sending()) {
             let Some(stream) = &extra.stream else { continue };
             match stream.format {
@@ -312,7 +332,7 @@ impl Extras {
                 },
                 ExtraFormat::Osc => {
                     if extra.due(now) {
-                        let messages = osc_sample(sample, &mut extra.held);
+                        let messages = osc_sample(sample, active, &mut extra.held);
                         extra.send_osc(&messages);
                     } else {
                         continue;
@@ -389,10 +409,13 @@ mod tests {
             .collect()
     }
 
-    /// The osc set for a gaze (left x/y, right x/y, combined x/y) and eyelids, without camera values or brows.
+    /// The osc set for a gaze (left x/y, right x/y, combined x/y) and eyelids, without camera values or brows, with
+    /// EyeTrackingActive a bool (the default).
     fn plain(gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
-        osc_set(gaze, lids, &CameraValues::default(), None, &mut Held::default())
+        osc_set(gaze, lids, &CameraValues::default(), None, ActiveType::Bool, &mut Held::default())
     }
+
+    const ACTIVE: &str = "/avatar/parameters/FT/EyeTrackingActive";
 
     fn addresses(messages: &[(String, Vec<OscType>)]) -> Vec<&str> {
         messages.iter().map(|(addr, _)| addr.as_str()).collect()
@@ -425,12 +448,14 @@ mod tests {
     fn every_sample_has_the_eyes_and_the_fixed_vrcft_names() {
         let messages = plain([0.1, 0.2, 0.3, 0.4, 0.2, 0.3], [0.375, 0.5]);
         let v2 = |name: &str| format!("/avatar/parameters/FT/v2/{name}");
-        let expected = [CENTER_VEC.to_owned(), EYES_CLOSED.to_owned()].into_iter().chain(
+        let expected = [CENTER_VEC.to_owned(), EYES_CLOSED.to_owned(), ACTIVE.to_owned()].into_iter().chain(
             ["EyeLeftX", "EyeLeftY", "EyeRightX", "EyeRightY", "EyeLidLeft", "EyeLidRight", "EyeX", "EyeY"].map(v2),
         );
         assert_eq!(addresses(&messages), expected.collect::<Vec<_>>());
-        // One float each (CenterVec three), as sent
-        let values: Vec<Vec<f32>> = messages.iter().map(|(_, args)| floats(args)).collect();
+        // EyeTrackingActive true, the rest one float each (CenterVec three), as sent
+        assert_eq!(messages[2].1, [OscType::Bool(true)]);
+        let rest = messages.iter().filter(|(addr, _)| addr != ACTIVE);
+        let values: Vec<Vec<f32>> = rest.map(|(_, args)| floats(args)).collect();
         assert_eq!(values[2..], [[0.1], [0.2], [0.3], [0.4], [0.375], [0.5], [0.2], [0.3]]);
         assert_eq!(values[1], [1.0 - 0.4375 / 0.75]);
         // EyesClosedAmount: 0 open (relaxed or widened) to 1 shut, both eyes as one
@@ -445,14 +470,14 @@ mod tests {
     fn squint_and_brows_go_back_to_0_once_they_stop_and_the_final_set_is_relaxed_eyes_ahead() {
         let camera = CameraValues { squint: [Some(0.4), Some(0.2)], ..CameraValues::default() };
         let mut held = Held::default();
-        let with = osc_set([0.0; 6], [0.75; 2], &camera, Some([0.5, 0.3]), &mut held);
-        assert_eq!(held, Held { squint: [true, true], brows: true });
+        let with = osc_set([0.0; 6], [0.75; 2], &camera, Some([0.5, 0.3]), ActiveType::Bool, &mut held);
+        assert_eq!(held, Held { squint: [true, true], brows: true, active: Some(ActiveType::Bool) });
         assert!(addresses(&with).contains(&"/avatar/parameters/FT/v2/EyeSquint"));
         assert!(addresses(&with).contains(&"/avatar/parameters/FT/v2/BrowUp"));
         // The left eye's squint stops: 0 for it, not yet for the combined one; the brows stop: 0 for all of them
         let left_gone = CameraValues { squint: [None, Some(0.2)], ..CameraValues::default() };
-        let next = osc_set([0.0; 6], [0.75; 2], &left_gone, None, &mut held);
-        let zeros: Vec<&str> = next[10..]
+        let next = osc_set([0.0; 6], [0.75; 2], &left_gone, None, ActiveType::Bool, &mut held);
+        let zeros: Vec<&str> = next[11..]
             .iter()
             .filter(|(_, args)| args == &[OscType::Float(0.0)])
             .map(|(addr, _)| addr.as_str())
@@ -460,11 +485,13 @@ mod tests {
         assert!(zeros.contains(&"/avatar/parameters/FT/v2/EyeSquintLeft"));
         assert!(!zeros.contains(&"/avatar/parameters/FT/v2/EyeSquint"));
         assert!(zeros.contains(&"/avatar/parameters/FT/v2/BrowExpression"));
-        assert_eq!(held, Held { squint: [false, true], brows: false });
-        // The final set: relaxed open eyes looking ahead, and 0 for the squint still out; then nothing more to release
+        assert_eq!(held, Held { squint: [false, true], brows: false, active: Some(ActiveType::Bool) });
+        // The final set: relaxed open eyes looking ahead, EyeTrackingActive false, and 0 for the squint still out; then
+        // nothing more to release or end
         let last = osc_final(&mut held);
         let ahead = [0.0, 0.0, 1.0].map(OscType::Float).to_vec();
         let mut expected = vec![(CENTER_VEC.to_owned(), ahead), (EYES_CLOSED.to_owned(), vec![OscType::Float(0.0)])];
+        expected.push((ACTIVE.to_owned(), vec![OscType::Bool(false)]));
         for (name, value) in [("EyeLeftX", 0.0), ("EyeLeftY", 0.0), ("EyeRightX", 0.0), ("EyeRightY", 0.0)]
             .into_iter()
             .chain([("EyeLidLeft", 0.75), ("EyeLidRight", 0.75), ("EyeX", 0.0), ("EyeY", 0.0)])
@@ -474,7 +501,45 @@ mod tests {
         }
         assert_eq!(last, expected);
         assert_eq!(held, Held::default());
-        assert_eq!(osc_final(&mut held), expected[..10]);
+        let again: Vec<_> = expected[..11].iter().filter(|(addr, _)| addr != ACTIVE).cloned().collect();
+        assert_eq!(osc_final(&mut held), again);
+    }
+
+    #[test]
+    fn eye_tracking_active_goes_out_in_its_type_and_not_active_once_when_it_stops() {
+        let active_in = |messages: Vec<(String, Vec<OscType>)>| -> Vec<OscType> {
+            let values: Vec<OscType> =
+                messages.iter().filter(|(addr, _)| addr == ACTIVE).flat_map(|(_, args)| args.clone()).collect();
+            // (always right after EyesClosedAmount)
+            if !values.is_empty() {
+                assert_eq!(messages[2].0, ACTIVE);
+            }
+            values
+        };
+        let sample = |active: ActiveType, held: &mut Held| {
+            active_in(osc_set([0.0; 6], [0.75; 2], &CameraValues::default(), None, active, held))
+        };
+        let last = |held: &mut Held| active_in(osc_final(held));
+        let none: [OscType; 0] = [];
+        // A bool: true with every sample, false once in the final set, then nothing
+        let mut held = Held::default();
+        assert_eq!(sample(ActiveType::Bool, &mut held), [OscType::Bool(true)]);
+        assert_eq!(sample(ActiveType::Bool, &mut held), [OscType::Bool(true)]);
+        assert_eq!(last(&mut held), [OscType::Bool(false)]);
+        assert_eq!(last(&mut held), none);
+        // A float: 1.0, and 0.0 once
+        assert_eq!(sample(ActiveType::Float, &mut held), [OscType::Float(1.0)]);
+        assert_eq!(last(&mut held), [OscType::Float(0.0)]);
+        assert_eq!(last(&mut held), none);
+        // Off: never, not in the final set either
+        assert_eq!(sample(ActiveType::Off, &mut held), none);
+        assert_eq!(last(&mut held), none);
+        // Changed while it runs: the new type at once; to off, "not active" once in the type that went out
+        assert_eq!(sample(ActiveType::Bool, &mut held), [OscType::Bool(true)]);
+        assert_eq!(sample(ActiveType::Float, &mut held), [OscType::Float(1.0)]);
+        assert_eq!(sample(ActiveType::Off, &mut held), [OscType::Float(0.0)]);
+        assert_eq!(sample(ActiveType::Off, &mut held), none);
+        assert_eq!(last(&mut held), none);
     }
 
     #[test]

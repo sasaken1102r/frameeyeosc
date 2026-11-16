@@ -150,7 +150,7 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --no-ext-search    with --replay: no pupil search past the window's (temporal) edge (the old rule; evaluation)
   --lid-veto         with --replay: the eyelid veto on (as settings.json's lid_veto true; off by default, as live)
   --no-lid-veto      with --replay: no eyelid veto (the default; kept for older evaluation scripts)
-  --lower-lid        with --replay: the lower-lid raise trial (adds lower_y .. lower_lid to the CSV)
+  --lower-lid        with --replay: the lower-lid raise trial (adds lower_y .. lower_line to the CSV)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
   --preview DIR      with --replay: also write the panel's eye preview (DIR/preview, as `preview on` does live), the

@@ -378,8 +378,9 @@ closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear
 
 /// The columns `write_live` adds with `Tune::lower_lid` on (the lower-lid trial): the lower and upper lid lines and the
 /// pupil centre they were searched from (px), whether the lower line found was left out (the last one used instead),
-/// the lower lid's raise (iris radii) and the 0..1 value (`live::Out::lower_raise`, `lower_lid`).
-pub const LOWER_LID_HEADER: &str = "lower_y,upper_y,ref_cy,lower_edge,lower_raise,lower_lid";
+/// the lower lid's raise (iris radii) and the 0..1 value (`live::Out::lower_raise`, `lower_lid`), the lid's margin as a
+/// dark line and the line the raise was measured on (px, `lower_ridge`, `lower_line`).
+pub const LOWER_LID_HEADER: &str = "lower_y,upper_y,ref_cy,lower_edge,lower_raise,lower_lid,lower_ridge,lower_line";
 
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
 pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, String> {
@@ -561,6 +562,8 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                     (o.f.lower_edge as u8).to_string(),
                     f(o.lower_raise),
                     f(o.lower_lid),
+                    f(o.lower_ridge),
+                    f(o.lower_line),
                 ]);
             }
             writeln!(w, "{}", row.join(",")).map_err(|e| e.to_string())?;

@@ -376,6 +376,11 @@ pub struct LiveOpts {
 pub const LIVE_HEADER: &str = "eye,eye_index,t_cam,label,step,ok_pupil,skin_up,aperture,lower,pupil_ratio,box_f,r,pitch,v_open,\
 closed,eye_wide,eye_squint,eye_lid,pupil_mm,pupil_dilation,confidence,valid,wear_cal,b_n,b_w,pupil_vis,upper_frac,lower_frac,ready,edge_held,pupil_cx,pupil_cy,pupil_a,pupil_b,x_min,search_x_min,ext,veto_p,vetoed";
 
+/// The columns `write_live` adds with `Tune::lower_lid` on (the lower-lid trial): the lower and upper lid lines and the
+/// pupil centre they were searched from (px), whether the lower line found was left out (the last one used instead),
+/// the lower lid's raise (iris radii) and the 0..1 value (`live::Out::lower_raise`, `lower_lid`).
+pub const LOWER_LID_HEADER: &str = "lower_y,upper_y,ref_cy,lower_edge,lower_raise,lower_lid";
+
 /// The live engine over a session, both eyes in step, causally. Returns ms per processed frame.
 pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, String> {
     use crate::live::{self, EyeEngine, Label, Params, Sample};
@@ -384,7 +389,11 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
         return Err(format!("--preview {}: not a folder on tmpfs (the eye pictures are only written to memory; use one under /dev/shm)", dir.display()));
     }
     let mut w = BufWriter::new(File::create(out).map_err(|e| format!("{}: {e}", out.display()))?);
-    writeln!(w, "{LIVE_HEADER}").map_err(|e| e.to_string())?;
+    if opts.tune.lower_lid {
+        writeln!(w, "{LIVE_HEADER},{LOWER_LID_HEADER}").map_err(|e| e.to_string())?;
+    } else {
+        writeln!(w, "{LIVE_HEADER}").map_err(|e| e.to_string())?;
+    }
     let mut engines = [EyeEngine::default(), EyeEngine::default()];
     let mut params = [Params { tune: opts.tune, ..Params::default() }; 2];
     if let Some(c) = &opts.calib {
@@ -488,7 +497,7 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                     all[e].push(smp);
                 }
             }
-            let row = [
+            let mut row = vec![
                 ["L", "R"][e].to_string(),
                 k.to_string(),
                 format!("{t:.6}"),
@@ -544,6 +553,16 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 f(o.veto.p_open),
                 (o.veto.on as u8).to_string(),
             ];
+            if params[e].tune.lower_lid {
+                row.extend([
+                    f(o.f.lower_y),
+                    f(o.f.upper_y),
+                    f(o.ref_cy),
+                    (o.f.lower_edge as u8).to_string(),
+                    f(o.lower_raise),
+                    f(o.lower_lid),
+                ]);
+            }
             writeln!(w, "{}", row.join(",")).map_err(|e| e.to_string())?;
         }
         if let Some(tb) = block_end

@@ -1,5 +1,9 @@
 # 更新履歴
 
+## Unreleased
+
+- 新しく（試験中、既定はオフ）: 笑顔や細めで頬に押し上げられた下まぶたを、目のカメラから VRCFT の `v2/CheekSquintLeft` / `CheekSquintRight` / `CheekSquint` として（VRChat と `osc` のほかの送り先に）、VRChat の Face Tracking 入力には `CheekSquint` として送れるようにしました。eyecam の `~/.config/eyecam/settings.json` に `"lower_lid": true`、frameeyeosc の config.json に `camera_cheek`（または `--camera-cheek`）を入れてね。校正はいりません。パネルにはまだありません
+
 ## 0.10.4-beta.2 (2026-11-16)
 
 目のカメラを使っていて、ユーザー校正をしていない人も、半目が出るようになりました。ユーザー校正をするまでは、まぶたは Valve の値で動き、カメラは閉じ・見開き・瞳孔を足します。Valve の値が開いた目を閉じたと読み続けるときは、カメラで開きます。目のカメラタブでユーザー校正をしてね（しないと、強く細めた目が開いて見えることがあります）。

@@ -784,6 +784,10 @@ struct Args {
     /// Don't use eyecam-rec's eye-camera values (widening and squint from relaxed open up, pupils)
     #[arg(long)]
     no_camera_lids: bool,
+    /// Also send eyecam-rec's lower-lid raise (its settings.json lower_lid, a trial) as VRCFT's CheekSquintLeft/Right
+    /// and CheekSquint, to VRChat and to osc extra outputs
+    #[arg(long)]
+    camera_cheek: bool,
     /// In LiveLink mode, don't send the eye camera's pupils straight to VRChat (port 9000 of the target's host)
     #[arg(long)]
     no_pupils_to_vrchat: bool,
@@ -1774,6 +1778,8 @@ fn median3(a: f32, b: f32, c: f32) -> f32 {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct CameraValues {
     squint: [Option<f32>; 2],
+    // Each eye's lower-lid raise as the cheek squint (camera_cheek), 0..1.
+    cheek: [Option<f32>; 2],
     pupil_dilation: [Option<f32>; 2],
     // In mm.
     pupil_diameter: [Option<f32>; 2],
@@ -2210,6 +2216,7 @@ enum LidFrom {
 #[derive(Clone, Copy, Default)]
 struct CameraSmoother {
     squint: [Option<f32>; 2],
+    cheek: [Option<f32>; 2],
     pupil_dilation: [Option<f32>; 2],
     pupil_diameter: [Option<f32>; 2],
 }
@@ -2231,6 +2238,8 @@ impl CameraSmoother {
         let lids_usable = camera.map_or([false; 2], Live::lids_usable);
         let measured = camera.is_some_and(Live::lids_measured);
         let pupil_usable = camera.map_or([false; 2], Live::pupil_usable);
+        // The lower-lid raise needs no calibration: fresh and written (eyecam-rec's switch on) is enough
+        let cheek = camera.filter(|_| settings.camera_cheek).map_or([None; 2], |camera| camera.lower_lid);
         let mut values = CameraValues::default();
         let mut lids = [None; 2];
         for eye in 0..2 {
@@ -2244,6 +2253,8 @@ impl CameraSmoother {
             });
             let squint = read.squint.clamp(0.0, 1.0);
             values.squint[eye] = smoothed(&mut self.squint[eye], lid_used, squint, CAMERA_SQUINT_ALPHA, smooth);
+            let raise = cheek[eye].unwrap_or(0.0).clamp(0.0, 1.0);
+            values.cheek[eye] = smoothed(&mut self.cheek[eye], cheek[eye].is_some(), raise, CAMERA_SQUINT_ALPHA, smooth);
             let dilation = read.pupil_dilation.clamp(0.0, 1.0);
             values.pupil_dilation[eye] =
                 smoothed(&mut self.pupil_dilation[eye], pupil_used, dilation, CAMERA_PUPIL_ALPHA, smooth);
@@ -4603,13 +4614,20 @@ fn v2_params(
 
 /// The eye camera's values as VRCFT v2 parameters: each eye's squint while the camera drives its eyelid, and the
 /// combined squint (the mean of those eyes); the pupil dilation and each eye's pupil diameter (in cm, 0..1) for the
-/// eyes whose pupil is used, and the combined diameter (the mean of those). Nothing for an eye the camera's values are
-/// not used for: see squint_release for the squint it leaves behind.
+/// eyes whose pupil is used, and the combined diameter (the mean of those); with camera_cheek, each eye's lower-lid
+/// raise as CheekSquintLeft / CheekSquintRight while it comes, and CheekSquint, the mean of the two as VRCFT works it
+/// out (VRCFaceTracking.Core/Params/Expressions/UnifiedExpressionsParameters.cs: `(CheekSquintLeft +
+/// CheekSquintRight) / 2`; the one that comes when only one does). Nothing for an eye the camera's values are not
+/// used for: see squint_release and cheek_release for what they leave behind.
 fn camera_params(camera: &CameraValues) -> Vec<(&'static str, f32)> {
     let mut params = per_eye_params(["EyeSquintLeft", "EyeSquintRight", "EyeSquint"], camera.squint);
     params.extend(pupil_params(camera));
+    params.extend(per_eye_params(CHEEK_PARAMS, camera.cheek));
     params
 }
+
+/// The VRCFT v2 cheek squint parameters: left, right, combined (camera_params).
+const CHEEK_PARAMS: [&str; 3] = ["CheekSquintLeft", "CheekSquintRight", "CheekSquint"];
 
 /// The VRCFT v2 brow parameters for brows raised with brow_from_widen (left, right; 0..1), as VRCFT works them out
 /// for these shapes (VRCFaceTracking.Core/Params/Expressions/UnifiedExpressionsParameters.cs and
@@ -4772,14 +4790,27 @@ fn squint_release(settings: &Settings, out: [bool; 2], squint: [Option<f32>; 2])
 
 /// squint_release under the parameter prefix `prefix` ("/FT", or "" for none).
 fn squint_release_at(prefix: &str, out: [bool; 2], squint: [Option<f32>; 2]) -> Vec<(String, OscType)> {
-    let stopped = [0, 1].map(|eye| out[eye] && squint[eye].is_none());
-    let names = [
-        ("EyeSquintLeft", stopped[0]),
-        ("EyeSquintRight", stopped[1]),
-        ("EyeSquint", out.contains(&true) && squint == [None; 2]),
-    ];
+    per_eye_release_at(prefix, ["EyeSquintLeft", "EyeSquintRight", "EyeSquint"], out, squint)
+}
+
+/// The cheek squint (camera_cheek) as squint_release does the squint: 0 for each eye's that went out (`out`) but does
+/// not with this sample (`cheek`), and for the combined one once no eye's does.
+fn cheek_release(settings: &Settings, out: [bool; 2], cheek: [Option<f32>; 2]) -> Vec<(String, OscType)> {
+    cheek_release_at(&settings.prefix, out, cheek)
+}
+
+/// cheek_release under the parameter prefix `prefix` ("/FT", or "" for none).
+fn cheek_release_at(prefix: &str, out: [bool; 2], cheek: [Option<f32>; 2]) -> Vec<(String, OscType)> {
+    per_eye_release_at(prefix, CHEEK_PARAMS, out, cheek)
+}
+
+/// 0 under `names` (left, right, combined) for each eye's value that went out (`out`) but does not now (`values`), and
+/// for the combined one once no eye's does.
+fn per_eye_release_at(prefix: &str, names: [&str; 3], out: [bool; 2], values: [Option<f32>; 2]) -> Vec<(String, OscType)> {
+    let stopped = [out[0] && values[0].is_none(), out[1] && values[1].is_none(), out.contains(&true) && values == [None; 2]];
     names
         .into_iter()
+        .zip(stopped)
         .filter(|(_, stopped)| *stopped)
         .map(|(name, _)| (format!("/avatar/parameters{prefix}/v2/{name}"), OscType::Float(0.0)))
         .collect()
@@ -4936,6 +4967,7 @@ fn face_blob(sample: &Sample) -> [u8; vrc_face::LEN] {
         squint: camera.squint[side],
         pupil_dilation: camera.pupil_dilation[side],
         brow: sample.brows.map(|brows| brows[side]),
+        cheek: camera.cheek[side],
     };
     vrc_face::blob([eye(0, [left_x, left_y]), eye(1, [right_x, right_y])])
 }
@@ -5252,6 +5284,8 @@ struct Bridge {
     camera_live: Option<Live>,
     // Which eyes' squint went out to VRChat with the last sample, so it can be set back to 0 when it stops.
     squint_out: [bool; 2],
+    // Which eyes' cheek squint (camera_cheek) went out to VRChat with the last sample, likewise.
+    cheek_out: [bool; 2],
     // Whether brows (brow_from_widen) went out to VRChat with the last sample, likewise.
     brow_out: bool,
     // In LiveLink mode, the eye camera's pupils straight to VRChat (see pupil_stream): a sender of its own, so the
@@ -5283,6 +5317,9 @@ impl Bridge {
         }
         if self.squint_out.contains(&true) && stream != vrchat_stream(&settings) {
             self.release_squint()?;
+        }
+        if self.cheek_out.contains(&true) && vrchat_stream(&self.settings) != vrchat_stream(&settings) {
+            self.release_cheek()?;
         }
         if self.brow_out && vrchat_stream(&self.settings) != vrchat_stream(&settings) {
             self.release_brows()?;
@@ -5408,6 +5445,10 @@ impl Bridge {
                     self.output.send(&addr, &[arg])?;
                 }
                 self.squint_out = sample.camera.squint.map(|squint| squint.is_some());
+                for (addr, arg) in cheek_release(&self.settings, self.cheek_out, sample.camera.cheek) {
+                    self.output.send(&addr, &[arg])?;
+                }
+                self.cheek_out = sample.camera.cheek.map(|cheek| cheek.is_some());
                 for (addr, arg) in brow_release(&self.settings, self.brow_out, sample.brows) {
                     self.output.send(&addr, &[arg])?;
                 }
@@ -5538,6 +5579,9 @@ impl Bridge {
         if self.squint_out.contains(&true) {
             self.release_squint()?;
         }
+        if self.cheek_out.contains(&true) {
+            self.release_cheek()?;
+        }
         if self.brow_out {
             self.release_brows()?;
         }
@@ -5577,6 +5621,15 @@ impl Bridge {
             self.output.send(&addr, &[arg])?;
         }
         self.squint_out = [false; 2];
+        Ok(())
+    }
+
+    /// Set the cheek squint that went out back to 0 (see cheek_release), where it went with the current settings.
+    fn release_cheek(&mut self) -> Result<(), Box<dyn Error>> {
+        for (addr, arg) in cheek_release(&self.settings, self.cheek_out, [None; 2]) {
+            self.output.send(&addr, &[arg])?;
+        }
+        self.cheek_out = [false; 2];
         Ok(())
     }
 
@@ -5916,6 +5969,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         camera: LiveReader::new(camera_path, Instant::now()),
         camera_live: None,
         squint_out: [false; 2],
+        cheek_out: [false; 2],
         brow_out: false,
         pupil_output,
         pupil_bits: PupilBits::default(),
@@ -8160,6 +8214,7 @@ mod tests {
             camera: LiveReader::new(PathBuf::from("/nonexistent"), Instant::now()),
             camera_live: None,
             squint_out: [false; 2],
+            cheek_out: [false; 2],
             brow_out: false,
             // Never VRChat's port on this machine in a test: a test that wants the pupils points it at its own listener
             pupil_output: Output::new(Target::Fixed { host: "192.0.2.1".into(), port: 9 }),
@@ -8919,6 +8974,7 @@ mod tests {
                 squint: [Some(0.2), None],
                 pupil_dilation: [Some(1.0), Some(0.0)],
                 pupil_diameter: [Some(8.0), Some(2.0)],
+                cheek: [Some(0.4), None],
             },
             brows: Some([0.5, 1.0]),
             ..sample()
@@ -8929,6 +8985,7 @@ mod tests {
         assert_eq!((blob[10], blob[12]), (0, 255), "right pupil constricted");
         assert_eq!((blob[23], blob[25]), (128, 128), "BrowInnerUpLeft / OuterUpLeft");
         assert_eq!((blob[22], blob[24]), (255, 255), "BrowInnerUpRight / OuterUpRight");
+        assert_eq!((blob[31], blob[30]), (102, 0), "CheekSquintLeft / Right");
         assert_eq!(blob[..10], plain[..10], "eyelids and gaze unchanged");
     }
 
@@ -9157,6 +9214,7 @@ mod tests {
             squint: [Some(0.2), None],
             pupil_dilation: [Some(0.5), Some(1.0)],
             pupil_diameter: [Some(4.0), Some(12.0)],
+            cheek: [Some(0.3), None],
         };
         let one = |list: Vec<(String, OscType)>| list.into_iter().map(|(addr, value)| (addr, vec![value]));
         let mut messages: Vec<(String, Vec<OscType>)> = Vec::new();
@@ -9177,6 +9235,7 @@ mod tests {
                 messages.extend(native_messages(&settings, sample.gaze, sample.lids));
             }
             messages.extend(one(squint_release(&settings, [true; 2], [None; 2])));
+            messages.extend(one(cheek_release(&settings, [true; 2], [None; 2])));
             messages.extend(one(active_message(&settings, false).into_iter().collect()));
         }
         messages.extend(one(steamlink_messages([0.0; 6], [LID_RELAXED; 2])));
@@ -10081,6 +10140,7 @@ mod tests {
             frame_ns: [0; 2],
             slip: [None; 2],
             shape: [None; 2],
+            lower_lid: [None; 2],
         }
     }
 
@@ -11987,6 +12047,7 @@ mod tests {
             squint: [Some(0.2), Some(0.4)],
             pupil_dilation: [Some(0.5), Some(0.7)],
             pupil_diameter: [Some(4.0), Some(12.0)],
+            cheek: [None; 2],
         };
         let messages = osc_messages(&settings(), &Sample { camera, ..sample() });
         let addrs: Vec<&str> = messages.iter().map(|(addr, _)| addr.as_str()).collect();
@@ -12023,6 +12084,7 @@ mod tests {
             squint: [None, Some(0.4)],
             pupil_dilation: [Some(0.5), None],
             pupil_diameter: [Some(4.0), None],
+            cheek: [None; 2],
         };
         let messages = osc_messages(&settings(), &Sample { camera: one_eye, ..sample() });
         let value = |name: &str| param(&messages, &format!("/avatar/parameters/FT/v2/{name}"));
@@ -12046,6 +12108,7 @@ mod tests {
             squint: [Some(0.3); 2],
             pupil_dilation: [Some(0.5), Some(0.7)],
             pupil_diameter: [Some(4.0), Some(12.0)],
+            cheek: [None; 2],
         };
         let livelink = Settings {
             output: OutputKind::LiveLink,
@@ -12169,6 +12232,7 @@ mod tests {
             squint: [Some(0.3), None],
             pupil_dilation: [Some(0.25), Some(0.75)],
             pupil_diameter: [Some(4.0), Some(3.0)],
+            cheek: [None; 2],
         };
         let seen = Sample { camera, ..sample() };
         let packet = feo_packet(&seen, 5, 41, 1_700_000_000_000_000);
@@ -12345,6 +12409,67 @@ mod tests {
         // The last one stops: the combined one too
         assert_eq!(squint_release(&settings, [false, true], [None; 2]), zero(&["EyeSquintRight", "EyeSquint"]));
         assert_eq!(squint_release(&settings, [true; 2], [None; 2]), zero(&["EyeSquintLeft", "EyeSquintRight", "EyeSquint"]));
+    }
+
+    #[test]
+    fn vrchat_gets_the_cheek_squint_after_the_other_camera_values_and_it_is_set_back_to_zero_once() {
+        let camera = CameraValues { cheek: [Some(0.2), Some(0.6)], ..CameraValues::default() };
+        let messages = osc_messages(&settings(), &Sample { camera, ..sample() });
+        let addrs: Vec<&str> = messages.iter().map(|(addr, _)| addr.as_str()).collect();
+        assert_eq!(messages[..9], sent(&settings())[..]);
+        assert_eq!(
+            addrs[9..],
+            [
+                "/avatar/parameters/FT/v2/CheekSquintLeft",
+                "/avatar/parameters/FT/v2/CheekSquintRight",
+                "/avatar/parameters/FT/v2/CheekSquint",
+            ]
+        );
+        let value = |messages: &[(String, OscType)], name: &str| param(messages, &format!("/avatar/parameters/FT/v2/{name}"));
+        // The combined one as VRCFT works it out: (left + right) / 2
+        assert_eq!(value(&messages, "CheekSquint"), Some(0.4));
+        // One eye's only: that one, and the combined one is it
+        let one = CameraValues { cheek: [None, Some(0.6)], ..CameraValues::default() };
+        let messages = osc_messages(&settings(), &Sample { camera: one, ..sample() });
+        assert_eq!((value(&messages, "CheekSquintLeft"), value(&messages, "CheekSquintRight")), (None, Some(0.6)));
+        assert_eq!(value(&messages, "CheekSquint"), Some(0.6));
+        // Without it nothing about the cheeks
+        assert!(osc_messages(&settings(), &sample()).iter().all(|(addr, _)| !addr.contains("Cheek")));
+        // Back to 0 once, as the squint
+        let zero = |names: &[&str]| -> Vec<(String, OscType)> {
+            names.iter().map(|name| (format!("/avatar/parameters/FT/v2/{name}"), OscType::Float(0.0))).collect()
+        };
+        let settings = settings();
+        assert!(cheek_release(&settings, [true; 2], [Some(0.3); 2]).is_empty());
+        assert_eq!(cheek_release(&settings, [true; 2], [None, Some(0.3)]), zero(&["CheekSquintLeft"]));
+        assert_eq!(cheek_release(&settings, [true; 2], [None; 2]), zero(&["CheekSquintLeft", "CheekSquintRight", "CheekSquint"]));
+        let none = Settings { prefix: String::new(), ..settings };
+        assert_eq!(cheek_release(&none, [false, true], [None; 2])[0].0, "/avatar/parameters/v2/CheekSquintRight");
+    }
+
+    #[test]
+    fn the_cheek_squint_comes_only_with_camera_cheek_needs_no_calibration_and_is_smoothed_as_the_squint() {
+        // No calibration at all (calib_state 0): no eyelid, no squint, but the lower-lid raise
+        let live = Live { calib_state: 0, lower_lid: [Some(0.5), None], ..camera(0.75, 0.0) };
+        let take = |settings: &Settings, smoother: &mut CameraSmoother, live: &Live, smooth: bool| {
+            smoother.take(settings, Some(live), smooth).1
+        };
+        let off = camera_settings();
+        assert_eq!(take(&off, &mut CameraSmoother::default(), &live, true).cheek, [None; 2]);
+        let on = Settings { camera_cheek: true, ..camera_settings() };
+        let mut smoother = CameraSmoother::default();
+        let values = take(&on, &mut smoother, &live, true);
+        assert_eq!((values.cheek, values.squint), ([Some(0.5), None], [None; 2]));
+        // Smoothed as the squint (CAMERA_SQUINT_ALPHA), but not with smoothing off (--raw)
+        let up = Live { lower_lid: [Some(1.0), None], ..live };
+        let next = take(&on, &mut smoother, &up, true).cheek[0].unwrap();
+        assert!((next - (0.5 + CAMERA_SQUINT_ALPHA * 0.5)).abs() < 1e-6, "{next}");
+        assert_eq!(take(&on, &mut CameraSmoother::default(), &up, false).cheek[0], Some(1.0));
+        // Gone, it starts over; and nothing with the eye-camera values off
+        assert_eq!(take(&on, &mut smoother, &Live { lower_lid: [None; 2], ..live }, true).cheek, [None; 2]);
+        assert_eq!(take(&on, &mut smoother, &up, true).cheek[0], Some(1.0));
+        let no_camera = Settings { camera_lids: false, ..on };
+        assert_eq!(take(&no_camera, &mut CameraSmoother::default(), &up, true).cheek, [None; 2]);
     }
 
     /// The OSC messages that arrive until none has for 100 ms.
@@ -13228,11 +13353,13 @@ mod tests {
             squint: [Some(0.2), Some(0.4)],
             pupil_dilation: [Some(0.5), Some(0.7)],
             pupil_diameter: [Some(4.0), Some(12.0)],
+            cheek: [None; 2],
         };
         let left = CameraValues {
             squint: [Some(0.3), None],
             pupil_dilation: [None, Some(0.6)],
             pupil_diameter: [None, Some(5.0)],
+            cheek: [None; 2],
         };
         let none = CameraValues::default();
         let steps = [(both, Some([0.4, 0.1])), (left, Some([0.0, 0.3])), (none, None), (both, None), (none, None)];

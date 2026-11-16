@@ -26,7 +26,7 @@ use crate::osc::Value as OscType;
 use crate::status::ExtraStatus;
 use crate::{
     CameraValues, LID_RELAXED, Output, RATE_WINDOW, Sample, Target, active_value, brow_release_at, eyes_closed_amount,
-    gaze_vector, squint_release_at, status, v2_params,
+    cheek_release_at, gaze_vector, squint_release_at, status, v2_params,
 };
 use std::collections::VecDeque;
 use std::net::SocketAddr;
@@ -50,6 +50,7 @@ struct Stream {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Held {
     pub squint: [bool; 2],
+    pub cheek: [bool; 2],
     pub brows: bool,
     pub active: Option<ActiveType>,
 }
@@ -110,10 +111,12 @@ pub fn osc_set(
     let v2 = v2_params(gaze, lids, camera, brows).into_iter();
     messages.extend(v2.map(|(name, value)| (format!("/avatar/parameters{PREFIX}/v2/{name}"), floats(&[value]))));
     let released = squint_release_at(PREFIX, held.squint, camera.squint).into_iter();
+    let released = released.chain(cheek_release_at(PREFIX, held.cheek, camera.cheek));
     let released = released.chain(brow_release_at(PREFIX, held.brows, brows));
     messages.extend(released.map(|(addr, value)| (addr, vec![value])));
     *held = Held {
         squint: camera.squint.map(|squint| squint.is_some()),
+        cheek: camera.cheek.map(|cheek| cheek.is_some()),
         brows: brows.is_some(),
         active: Some(active).filter(|active| *active != ActiveType::Off),
     };
@@ -471,7 +474,7 @@ mod tests {
         let camera = CameraValues { squint: [Some(0.4), Some(0.2)], ..CameraValues::default() };
         let mut held = Held::default();
         let with = osc_set([0.0; 6], [0.75; 2], &camera, Some([0.5, 0.3]), ActiveType::Bool, &mut held);
-        assert_eq!(held, Held { squint: [true, true], brows: true, active: Some(ActiveType::Bool) });
+        assert_eq!(held, Held { squint: [true, true], cheek: [false; 2], brows: true, active: Some(ActiveType::Bool) });
         assert!(addresses(&with).contains(&"/avatar/parameters/FT/v2/EyeSquint"));
         assert!(addresses(&with).contains(&"/avatar/parameters/FT/v2/BrowUp"));
         // The left eye's squint stops: 0 for it, not yet for the combined one; the brows stop: 0 for all of them
@@ -485,7 +488,16 @@ mod tests {
         assert!(zeros.contains(&"/avatar/parameters/FT/v2/EyeSquintLeft"));
         assert!(!zeros.contains(&"/avatar/parameters/FT/v2/EyeSquint"));
         assert!(zeros.contains(&"/avatar/parameters/FT/v2/BrowExpression"));
-        assert_eq!(held, Held { squint: [false, true], brows: false, active: Some(ActiveType::Bool) });
+        assert_eq!(held, Held { squint: [false, true], cheek: [false; 2], brows: false, active: Some(ActiveType::Bool) });
+        // The cheek squint likewise: out while it comes, 0 once when it stops
+        let cheek = CameraValues { cheek: [Some(0.5), Some(0.3)], ..left_gone };
+        let messages = osc_set([0.0; 6], [LID_RELAXED; 2], &cheek, None, ActiveType::Bool, &mut held);
+        assert!(messages.iter().any(|(addr, value)| addr == "/avatar/parameters/FT/v2/CheekSquint" && value == &[OscType::Float(0.4)]));
+        assert_eq!(held.cheek, [true; 2]);
+        let messages = osc_set([0.0; 6], [LID_RELAXED; 2], &left_gone, None, ActiveType::Bool, &mut held);
+        let zeros: Vec<&str> = messages.iter().filter(|(addr, _)| addr.contains("Cheek")).map(|(addr, _)| addr.as_str()).collect();
+        assert_eq!(zeros.len(), 3, "{zeros:?}");
+        assert_eq!(held.cheek, [false; 2]);
         // The final set: relaxed open eyes looking ahead, EyeTrackingActive false, and 0 for the squint still out; then
         // nothing more to release or end
         let last = osc_final(&mut held);

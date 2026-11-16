@@ -376,6 +376,11 @@ pub struct Settings {
     /// up (widening), where it sees the eye closed or open through a squint (see main.rs, Smoother::check_lids), and
     /// its squint, once the camera is calibrated for this wear; and its pupil. Blinks stay the eye server's.
     pub camera_lids: bool,
+    /// Also send each eye's lower-lid raise from eyecam-rec (its settings.json `lower_lid`, a trial; see eyecam_live) as
+    /// VRCFT's CheekSquintLeft / CheekSquintRight and the combined CheekSquint, to VRChat and to osc extra outputs (and
+    /// in VRChat's Face Tracking input), while the values come; with camera_lids. Off: nothing about the cheeks goes
+    /// out, exactly as before.
+    pub camera_cheek: bool,
     /// In LiveLink mode, also send the eye camera's pupils (only those) straight to VRChat over OSC, on port 9000 of
     /// the LiveLink target's host: VRCFT's LiveLink module has no pupils. Ignored by the other outputs.
     pub pupils_to_vrchat: bool,
@@ -548,6 +553,7 @@ impl Default for Settings {
             native_eyes: false,
             vrc_face_tracking: false,
             camera_lids: true,
+            camera_cheek: false,
             pupils_to_vrchat: true,
             camera_close_gate: true,
             camera_closed_doubt: true,
@@ -1109,7 +1115,7 @@ pub fn apply_args(settings: &mut Settings, args: &Args, given: &HashSet<String>)
         settings.widen = !args.no_widen;
         locked.push("widen");
     }
-    pin!(brow_from_widen, brow_strength);
+    pin!(brow_from_widen, brow_strength, camera_cheek);
     if given.contains("no_camera_lids") {
         settings.camera_lids = !args.no_camera_lids;
         locked.push("camera_lids");
@@ -1812,6 +1818,15 @@ mod tests {
         let (settings, locked) = merged(r#"{"native_eyes": false}"#, &["--native-eyes"]).unwrap();
         assert!(settings.native_eyes);
         assert_eq!(locked, ["native_eyes"]);
+    }
+
+    #[test]
+    fn camera_cheek_is_off_until_asked_for() {
+        assert!(!merged("{}", &[]).unwrap().0.camera_cheek);
+        assert!(merged(r#"{"camera_cheek": true}"#, &[]).unwrap().0.camera_cheek);
+        let (settings, locked) = merged(r#"{"camera_cheek": false}"#, &["--camera-cheek"]).unwrap();
+        assert!(settings.camera_cheek);
+        assert_eq!(locked, ["camera_cheek"]);
     }
 
     #[test]

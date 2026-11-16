@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- New, a trial and off by default: the eye cameras can send the lower lid pushed up by the cheek, as in a smile or a squint, as VRCFT's `v2/CheekSquintLeft` / `CheekSquintRight` / `CheekSquint` (to VRChat and to `osc` extra outputs) and as `CheekSquint` in VRChat's Face Tracking input. Turn on `"lower_lid": true` in eyecam's `~/.config/eyecam/settings.json` and `camera_cheek` in frameeyeosc's config.json (or `--camera-cheek`); no calibration needed. Not in the panel yet
+
 ## 0.10.4-beta.2 (2026-11-16)
 
 Eye-camera users without the user calibration now get half-shut eyelids: until it is done, the eyelid follows Valve's values; the cameras add closing, widening and pupils, and open an eye Valve keeps reading as shut (a hard squint can show open). Do the user calibration on the Eye cameras tab.

@@ -57,6 +57,7 @@ What goes out, per eye:
 - `EyeClosed` from the eyelid as sent (1 shut, 0 from relaxed open up), and `EyeWide` from the part above relaxed open.
 - `EyeLookOut` / `In` / `Up` / `Down` from the gaze as sent (each eye's own with "Move eyes separately", else the shared one), 1.0 = 45°: the same values as `v2/EyeLeftX` / `Y`.
 - With the eye cameras: `EyeSquint`, and the pupil as `EyeDilation` (wider than usual) or `EyeConstrict` (narrower).
+- With `camera_cheek` (a trial): `CheekSquint`, the lower lid pushed up by the cheek.
 - With `brow_from_widen`: `BrowInnerUp` and `BrowOuterUp`.
 
 Every other key goes out as 0. When tracking stops, sending is paused or the output changes, a blob with every key 0 (eyes relaxed open, looking ahead) is sent once.

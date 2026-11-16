@@ -1,7 +1,7 @@
 //! VRChat's Face Tracking input (`--vrc-face-tracking`): one OSC message to `/tracking/face/v1` with a single blob
 //! of 102 bytes, one per Unified Expressions tracking key, each the key's strength 0..1 as `round(value * 255)`. VRChat
 //! ignores a message whose blob has another size (creators.vrchat.com, avatars/face-tracking/osc; the beta docs of
-//! October 2026). Only the eye and brow keys are filled; everything else stays 0.
+//! October 2026). Only the eye, brow and cheek squint keys are filled; everything else stays 0.
 //!
 //! What VRChat does with it, tried by hand on an avatar with the descriptor's Face Tracking section (VRChat open beta
 //! 2026.4.1, SDK 3.10.6-beta.2; issue #42):
@@ -46,6 +46,8 @@ const BROW_INNER_UP_RIGHT: usize = 22;
 const BROW_INNER_UP_LEFT: usize = 23;
 const BROW_OUTER_UP_RIGHT: usize = 24;
 const BROW_OUTER_UP_LEFT: usize = 25;
+const CHEEK_SQUINT_RIGHT: usize = 30;
+const CHEEK_SQUINT_LEFT: usize = 31;
 
 /// The pupil dilation (0..1) of a pupil at its usual size: above it is EyeDilation, below it EyeConstrict.
 const PUPIL_USUAL: f32 = 0.5;
@@ -62,6 +64,8 @@ pub struct Eye {
     pub pupil_dilation: Option<f32>,
     /// The brow raised with widening (brow_from_widen), while that is on.
     pub brow: Option<f32>,
+    /// The lower-lid raise as the cheek squint (camera_cheek), while it comes for this eye.
+    pub cheek: Option<f32>,
 }
 
 /// The blob for the left and right eye. Brows are only ever raised (inner = outer, as in the FrameEyeOSC packet):
@@ -79,12 +83,13 @@ pub fn blob([left, right]: [Eye; 2]) -> [u8; LEN] {
     keys[EYE_LOOK_IN_LEFT] = x;
     keys[EYE_LOOK_UP_LEFT] = y;
     keys[EYE_LOOK_DOWN_LEFT] = -y;
-    for (eye, closed, squint, wide, dilation, constrict, inner, outer) in [
+    for (eye, closed, squint, wide, dilation, constrict, inner, outer, cheek) in [
         (&right, EYE_CLOSED_RIGHT, EYE_SQUINT_RIGHT, EYE_WIDE_RIGHT, EYE_DILATION_RIGHT, EYE_CONSTRICT_RIGHT,
-            BROW_INNER_UP_RIGHT, BROW_OUTER_UP_RIGHT),
+            BROW_INNER_UP_RIGHT, BROW_OUTER_UP_RIGHT, CHEEK_SQUINT_RIGHT),
         (&left, EYE_CLOSED_LEFT, EYE_SQUINT_LEFT, EYE_WIDE_LEFT, EYE_DILATION_LEFT, EYE_CONSTRICT_LEFT,
-            BROW_INNER_UP_LEFT, BROW_OUTER_UP_LEFT),
+            BROW_INNER_UP_LEFT, BROW_OUTER_UP_LEFT, CHEEK_SQUINT_LEFT),
     ] {
+        keys[cheek] = eye.cheek.unwrap_or(0.0);
         keys[closed] = livelink::blink(eye.lid);
         keys[wide] = livelink::wide(eye.lid);
         keys[squint] = eye.squint.unwrap_or(0.0);
@@ -126,6 +131,7 @@ mod tests {
             squint: None,
             pupil_dilation: None,
             brow: None,
+            cheek: None,
         }
     }
 
@@ -178,16 +184,28 @@ mod tests {
     }
 
     #[test]
-    fn only_eye_and_brow_keys_are_filled() {
+    fn the_cheek_squint_goes_to_its_keys_per_eye() {
+        // VRChat's list (creators.vrchat.com, avatars/face-tracking/osc): 30 CheekSquintRight, 31 CheekSquintLeft
+        let left = Eye { cheek: Some(0.4), ..eye(0.75, [0.0; 2]) };
+        let keys = blob([left, eye(0.75, [0.0; 2])]);
+        assert_eq!((keys[31], keys[30]), (102, 0));
+        let right = Eye { cheek: Some(1.0), ..eye(0.75, [0.0; 2]) };
+        assert_eq!(blob([eye(0.75, [0.0; 2]), right])[30], 255);
+    }
+
+    #[test]
+    fn only_eye_brow_and_cheek_squint_keys_are_filled() {
         let full = |lid| Eye {
             squint: Some(1.0),
             pupil_dilation: Some(1.0),
             brow: Some(1.0),
+            cheek: Some(1.0),
             ..eye(lid, [1.0, 1.0])
         };
         let keys = blob([full(0.0), full(0.0)]);
-        // Lowerer and pinch (18..21) and everything past the brows stay 0
-        assert!(keys[18..22].iter().chain(&keys[26..]).all(|&key| key == 0));
+        // Lowerer and pinch (18..21), the nose (26..29) and everything past the cheek squint stay 0
+        assert!(keys[18..22].iter().chain(&keys[26..30]).chain(&keys[32..]).all(|&key| key == 0));
+        assert_eq!((keys[30], keys[31]), (255, 255));
         assert_eq!(keys.len(), 102);
         assert_eq!(neutral(), [0; LEN]);
         assert_eq!(blob([eye(0.75, [0.0; 2]), eye(0.75, [0.0; 2])]), neutral());

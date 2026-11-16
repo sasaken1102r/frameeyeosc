@@ -29,6 +29,10 @@
 //! (flipped top to bottom from the sensor's), 312 the left eye's, 328 the right's (16 bytes each): f32 a, f32 b (the
 //! pupil ellipse's semi-axes, px), f32 its long axis (degrees from +x towards +y, in [0, 180)), f32 the share of its
 //! rim seen; NaN without a pupil. Read only for gaze_source "eyeball" (eyeball.rs).
+//! Since then also a lower-lid part after that (struct size LOWER_SIZE, still version 1, so a reader of 344 bytes goes
+//! on working): 344 u32 its version (LOWER_VERSION), 348 reserved, 352 f32 the left eye's lower-lid raise, 356 the
+//! right's (0 relaxed .. 1 raised, as when the cheek pushes the lower lid up in a smile; NaN while eyecam-rec's
+//! settings.json `lower_lid` is off). Read only for camera_cheek (main.rs, CameraSmoother::take).
 
 use memmap2::{Mmap, MmapOptions};
 use std::fs::{self, OpenOptions};
@@ -55,6 +59,11 @@ const SHAPE_VERSION_AT: usize = 304;
 const SHAPE_VERSION: u32 = 1;
 const SHAPE_FLIPPED_AT: usize = 308;
 const SHAPES: [usize; 2] = [312, 328];
+// With the lower-lid part after that too, and where that is. LOWER_SIZE is also the most this reads of the file.
+const LOWER_SIZE: usize = 360;
+const LOWER_VERSION_AT: usize = 344;
+const LOWER_VERSION: u32 = 1;
+const LOWERS: [usize; 2] = [352, 356];
 // Where each eye's lid aperture is (from the eye's start; a debug value of the version 1 struct).
 const APERTURE_AT: usize = 64;
 const SEQ: usize = 24;
@@ -153,6 +162,8 @@ struct Record {
     slip: [Option<CamSlip>; 2],
     // The pupil shape part, likewise
     shape: [Option<CamShape>; 2],
+    // The lower-lid part, likewise
+    lower_lid: [Option<f32>; 2],
 }
 
 fn u32_at(bytes: &[u8; STRUCT_SIZE], offset: usize) -> u32 {
@@ -188,6 +199,7 @@ fn parse(bytes: &[u8; STRUCT_SIZE]) -> Result<Record, String> {
         live: u32_at(bytes, 52) == 1,
         slip: [None; 2],
         shape: [None; 2],
+        lower_lid: [None; 2],
         eyes: EYES.map(|eye| Eye {
             time_ns: u64_at(bytes, eye),
             valid: u32_at(bytes, eye + 24) == 1,
@@ -202,9 +214,19 @@ fn parse(bytes: &[u8; STRUCT_SIZE]) -> Result<Record, String> {
     })
 }
 
-/// The pupil shape part of a copy of the file's first SHAPE_SIZE bytes (nothing in it when the struct is shorter or the
+/// The lower-lid part of a copy of the file's first LOWER_SIZE bytes: each eye's lower-lid raise, None when the struct
+/// is shorter, the part isn't written or the value is not a number (eyecam-rec's switch off).
+fn parse_lower(bytes: &[u8; LOWER_SIZE]) -> [Option<f32>; 2] {
+    let u32_ext = |offset: usize| u32::from_le_bytes(std::array::from_fn(|i| bytes[offset + i]));
+    if (u32_ext(8) as usize) < LOWER_SIZE || u32_ext(LOWER_VERSION_AT) < LOWER_VERSION {
+        return [None; 2];
+    }
+    LOWERS.map(|at| Some(f32::from_bits(u32_ext(at))).filter(|v| v.is_finite()))
+}
+
+/// The pupil shape part of a copy of the file's first LOWER_SIZE bytes (nothing in it when the struct is shorter or the
 /// part isn't written), with each eye's lid aperture.
-fn parse_shape(bytes: &[u8; SHAPE_SIZE]) -> [Option<CamShape>; 2] {
+fn parse_shape(bytes: &[u8; LOWER_SIZE]) -> [Option<CamShape>; 2] {
     let u32_ext = |offset: usize| u32::from_le_bytes(std::array::from_fn(|i| bytes[offset + i]));
     let f32_ext = |offset: usize| f32::from_bits(u32_ext(offset));
     if (u32_ext(8) as usize) < SHAPE_SIZE || u32_ext(SHAPE_VERSION_AT) < SHAPE_VERSION {
@@ -224,9 +246,9 @@ fn parse_shape(bytes: &[u8; SHAPE_SIZE]) -> [Option<CamShape>; 2] {
     })
 }
 
-/// The glint part of a copy of the file's first SHAPE_SIZE bytes (nothing in it when the struct is shorter or the part
+/// The glint part of a copy of the file's first LOWER_SIZE bytes (nothing in it when the struct is shorter or the part
 /// isn't written), with each eye's capture time.
-fn parse_slip(bytes: &[u8; SHAPE_SIZE], eyes: &[Eye; 2]) -> [Option<CamSlip>; 2] {
+fn parse_slip(bytes: &[u8; LOWER_SIZE], eyes: &[Eye; 2]) -> [Option<CamSlip>; 2] {
     let head: &[u8; STRUCT_SIZE] = bytes[..STRUCT_SIZE].try_into().unwrap();
     if (u32_at(head, 8) as usize) < EXT_SIZE {
         return [None; 2];
@@ -293,6 +315,9 @@ pub struct Live {
     pub slip: [Option<CamSlip>; 2],
     /// Each eye's pupil ellipse (eyeball.rs), while its values are fresh and eyecam-rec writes the shape part.
     pub shape: [Option<CamShape>; 2],
+    /// Each eye's lower-lid raise, 0..1 (camera_cheek), while its values are fresh and eyecam-rec writes the lower-lid
+    /// part with its switch on.
+    pub lower_lid: [Option<f32>; 2],
 }
 
 impl Live {
@@ -314,6 +339,7 @@ impl Live {
             frame_ns: [0; 2],
             slip: [0, 1].map(|e| record.slip[e].filter(|_| fresh[e])),
             shape: [0, 1].map(|e| record.shape[e].filter(|_| fresh[e])),
+            lower_lid: [0, 1].map(|e| record.lower_lid[e].filter(|_| fresh[e])),
         }
     }
 
@@ -394,8 +420,8 @@ impl FrameGaps {
 
 struct Mapped {
     map: Mmap,
-    // How much of the file is mapped: SHAPE_SIZE (the glint and shape parts too), or EXT_SIZE or STRUCT_SIZE of a
-    // shorter file
+    // How much of the file is mapped: LOWER_SIZE (the glint, shape and lower-lid parts too), or SHAPE_SIZE, EXT_SIZE or
+    // STRUCT_SIZE of a shorter file
     len: usize,
     inode: u64,
     // The writer it was opened with (pid and start time)
@@ -403,7 +429,7 @@ struct Mapped {
 }
 
 impl Mapped {
-    fn read(&self) -> Option<[u8; SHAPE_SIZE]> {
+    fn read(&self) -> Option<[u8; LOWER_SIZE]> {
         let base = self.map.as_ptr();
         // The mapping is page-aligned and at least STRUCT_SIZE long, so seq is aligned and inside it; it is only ever
         // loaded
@@ -412,9 +438,12 @@ impl Mapped {
         read_consistent(
             || seq.load(Ordering::Acquire),
             || {
-                let mut bytes = [0u8; SHAPE_SIZE];
-                if len >= SHAPE_SIZE {
-                    bytes = unsafe { ptr::read_volatile(base.cast::<[u8; SHAPE_SIZE]>()) };
+                let mut bytes = [0u8; LOWER_SIZE];
+                if len >= LOWER_SIZE {
+                    bytes = unsafe { ptr::read_volatile(base.cast::<[u8; LOWER_SIZE]>()) };
+                } else if len >= SHAPE_SIZE {
+                    let head = unsafe { ptr::read_volatile(base.cast::<[u8; SHAPE_SIZE]>()) };
+                    bytes[..SHAPE_SIZE].copy_from_slice(&head);
                 } else if len >= EXT_SIZE {
                     let head = unsafe { ptr::read_volatile(base.cast::<[u8; EXT_SIZE]>()) };
                     bytes[..EXT_SIZE].copy_from_slice(&head);
@@ -449,7 +478,9 @@ fn open(path: &Path) -> Result<(Mapped, Record), (bool, String)> {
     if metadata.len() < STRUCT_SIZE as u64 {
         return Err((true, format!("too small ({} bytes)", metadata.len())));
     }
-    let len = if metadata.len() >= SHAPE_SIZE as u64 {
+    let len = if metadata.len() >= LOWER_SIZE as u64 {
+        LOWER_SIZE
+    } else if metadata.len() >= SHAPE_SIZE as u64 {
         SHAPE_SIZE
     } else if metadata.len() >= EXT_SIZE as u64 {
         EXT_SIZE
@@ -564,6 +595,7 @@ impl LiveReader {
             Ok(mut record) => {
                 record.slip = parse_slip(&bytes, &record.eyes);
                 record.shape = parse_shape(&bytes);
+                record.lower_lid = parse_lower(&bytes);
                 if record.writer != mapped.writer {
                     // The same file, so the values still hold
                     self.reopen = true;
@@ -781,6 +813,41 @@ pub mod tests {
         file.write_all_at(&0u32.to_le_bytes(), 304).unwrap();
         let live = reader.read(NOW).unwrap();
         assert_eq!((live.shape, live.slip[0].is_some()), ([None, None], true));
+    }
+
+    #[test]
+    fn the_lower_lid_part_is_read_only_from_a_struct_that_has_it_with_its_switch_on() {
+        let dir = TempDir::new("lower");
+        let path = dir.0.join("live");
+        // The shape part only (struct size 344), with a lower-lid part after it that the size does not cover yet
+        let mut ext = [0u8; LOWER_SIZE];
+        ext[..STRUCT_SIZE].copy_from_slice(&live_bytes(7, 1, true, eyes(0.8)));
+        let mut put = |offset: usize, value: &[u8]| ext[offset..offset + value.len()].copy_from_slice(value);
+        put(8, &(SHAPE_SIZE as u32).to_le_bytes());
+        put(200, &GLINT_VERSION.to_le_bytes());
+        put(304, &SHAPE_VERSION.to_le_bytes());
+        put(344, &LOWER_VERSION.to_le_bytes());
+        put(352, &0.4f32.to_le_bytes());
+        put(356, &f32::NAN.to_le_bytes());
+        write_live(&path, ext[..STRUCT_SIZE].try_into().unwrap());
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.write_all_at(&ext, 0).unwrap();
+        let mut reader = LiveReader::new(path.clone(), Instant::now());
+        assert!(reader.check(Instant::now()).is_some());
+        let live = reader.read(NOW).unwrap();
+        assert!(live.slip[0].is_some() && live.shape[0].is_some());
+        assert_eq!(live.lower_lid, [None, None]);
+        // Struct size 360: the left eye's raise; the right's NaN (eyecam-rec's switch off) is none
+        file.write_all_at(&(LOWER_SIZE as u32).to_le_bytes(), 8).unwrap();
+        let live = reader.read(NOW).unwrap();
+        assert_eq!(live.lower_lid, [Some(0.4), None]);
+        assert!(live.slip[0].is_some() && live.shape[0].is_some());
+        // A stale eye has none
+        assert_eq!(reader.read(NOW + 2 * FRESH_NS).unwrap().lower_lid, [None, None]);
+        // Version 0 in the lower-lid part (not written): none, the other parts still read
+        file.write_all_at(&0u32.to_le_bytes(), 344).unwrap();
+        let live = reader.read(NOW).unwrap();
+        assert_eq!((live.lower_lid, live.shape[0].is_some()), ([None, None], true));
     }
 
     #[test]

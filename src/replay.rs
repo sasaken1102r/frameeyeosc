@@ -292,6 +292,8 @@ fn camera_from(cells: &[&str]) -> Result<Option<(Live, [f64; 2])>, ()> {
         // (the glint and shape parts come from their own columns, see parse)
         slip: [None; 2],
         shape: [None; 2],
+        // (the lower-lid raise is not in the log: camera_cheek replays without it)
+        lower_lid: [None; 2],
     };
     Ok(Some((live, [values[per_eye - 1], values[2 * per_eye - 1]])))
 }

@@ -57,6 +57,7 @@ frameeyeosc がこれを送るのは VRChat モードのときだけです。Liv
 - `EyeClosed`: 送っているまぶたから（1 で閉じる、普通に開いた目から上は 0）。`EyeWide`: 普通に開いた目を超えた分
 - `EyeLookOut` / `In` / `Up` / `Down`: 送っている視線から（「左右の目を別々に動かす」なら目ごとの、それ以外は共通の視線）。1.0 = 45° で、`v2/EyeLeftX` / `Y` と同じ値です
 - 目のカメラがあるとき: `EyeSquint`。瞳はいつもより大きければ `EyeDilation`、小さければ `EyeConstrict`
+- `camera_cheek`（試験中）のとき: `CheekSquint`（頬に押し上げられた下まぶた）
 - `brow_from_widen` のとき: `BrowInnerUp` と `BrowOuterUp`
 
 ほかのキーはすべて 0 です。目を見失ったとき、送信を止めたとき、送り先を変えたときは、すべてのキーが 0 の blob（普通に開いて正面を見ている目）を 1 回送ります。

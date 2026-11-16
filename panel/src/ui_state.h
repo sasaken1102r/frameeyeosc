@@ -193,7 +193,7 @@ bool readUpdateBeta(const std::string& path);
 bool writeUpdateBeta(const std::string& path, bool on, std::string& error);
 
 /**
- * Whether changing the output asks about its recommended settings ("output_prompt"; the prompt's "Don't show again"
+ * Whether changing the output asks about its recommended settings ("output_prompt"; the prompt's "Don't ask again"
  * turns it off, the Version page switches it).
  * @param path the file
  * @return it (true, asking, the first time or when the file is missing, broken or not a boolean)

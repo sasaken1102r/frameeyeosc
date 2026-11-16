@@ -1457,7 +1457,7 @@ void testPrompts(const FontSet& fonts) {
     for (const Language language : {Language::Ja, Language::En}) {
         PanelModel m = modelWith(Lids::Both);
         m.language = language;
-        // The recommendation after changing the output: Yes, No and "Don't show again", which closes it and turns the
+        // The recommendation after changing the output: Yes, No and "Don't ask again", which closes it and turns the
         // question off (the caller saves it to panel.json)
         for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule}) {
             EyePanel panel(fonts);

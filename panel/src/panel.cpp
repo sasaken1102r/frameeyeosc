@@ -5239,7 +5239,7 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
                       updateBeta_ ? 0 : 1, 16, false);
         ey += h + 14;
     }
-    // "Ask when changing output" (panel.json's output_prompt, as the recommendation prompt's "Don't show again" leaves
+    // "Ask when changing output" (panel.json's output_prompt, as the recommendation prompt's "Don't ask again" leaves
     // it): On / Off, laid out like "Get test versions"
     {
         const double h = 46;
@@ -6667,7 +6667,7 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
                      false);
     }
     const int arg = std::max(0, argOfOutput(promptOutput_));
-    // The recommendation's has a third, "Don't show again" (outputPrompt off), so its buttons are narrower
+    // The recommendation's has a third, "Don't ask again" (outputPrompt off), so its buttons are narrower
     const bool never = !update && !userCalib;
     const int count = never ? 3 : 2;
     const double bw = never ? 220 : 240;

@@ -3510,7 +3510,7 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
                 root.set(key::kOutput, JsonValue::makeString(output));
                 root.set(key::kPort, JsonValue::makeNull());
             };
-            // (unless its "Don't show again" was pressed, or the Version page's "Ask when changing output" is off)
+            // (unless its "Don't ask again" was pressed, or the Version page's "Ask when changing output" is off)
             if (panel.outputPrompt()) openPrompt = output;
             model.moduleLinkError.clear();  // (it was about the output before)
             break;
@@ -5460,7 +5460,7 @@ int runOverlay(const Options& options) {
             std::string error;
             if (!ui_state::writeUpdateBeta(uiStatePath, savedBeta, error)) std::fprintf(stderr, "[panel] %s\n", error.c_str());
         }
-        // ...and "Ask when changing output" (switched on the Version page, or off by the prompt's "Don't show again")
+        // ...and "Ask when changing output" (switched on the Version page, or off by the prompt's "Don't ask again")
         if (panel.outputPrompt() != savedOutputPrompt) {
             savedOutputPrompt = panel.outputPrompt();
             std::string error;

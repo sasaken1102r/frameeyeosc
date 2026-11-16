@@ -10,7 +10,7 @@ If you use the eye cameras and haven't done the user calibration yet, do it on t
   - Meanwhile an open eye that Valve's values keep reading as closed is not opened by the camera any more; do the user calibration
 - Panel: the "User calibration (once)" row on the Eye cameras tab now says "For half-shut & squint" and "Recommended". Before the user calibration, the left column's eyelid heading says "Valve's values + eye cameras", the Eyelids tab's "Eyelids now" "Valve + eye cameras (shut, widen)", and the "Reading Valve's values" page no longer stands by. Beside the user calibration row on the Eye cameras tab and at the right of "Eyelids now", the warning colour says "Do the user calibration to send half-shut eyes" and "Half-shut: user calibration", and "Lowest eyelid when narrowed" and ③'s "Camera eyes" value are faded (still to be set)
 - Panel: turning the eye cameras to "Use" on the Basic tab without the user calibration asks "Do the user calibration (18 s) to send half-shut eyes and squints": "Do it now" opens the Eye cameras tab, "Later" closes it. Once while the panel runs
-- Panel: the "Use the recommended settings" question after changing the output has "Don't show again". "Ask when changing output" (On / Off) on the Advanced tab's "Version" page turns it back on; it is kept in the panel's `panel.json` (`output_prompt`)
+- Panel: the "Use the recommended settings" question after changing the output has "Don't ask again". "Ask when changing output" (On / Off) on the Advanced tab's "Version" page turns it back on; it is kept in the panel's `panel.json` (`output_prompt`)
 
 ## 0.10.4-beta.1 (2026-11-15)
 

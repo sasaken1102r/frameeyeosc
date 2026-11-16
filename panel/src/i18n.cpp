@@ -1058,7 +1058,7 @@ UiText makeJapanese() {
     t.promptModuleDetail2 = "（FrameEyeOSC 側ではなめらかにしないため）";
     t.promptYes = "する";
     t.promptNo = "しない";
-    t.promptNever = "今後表示しない";
+    t.promptNever = "今後は聞かない";
     t.promptUserCalib = "半目と細めを送るには、ユーザー校正（18 秒）をしてね";
     t.promptUserCalibDetail1 = "目のカメラタブの「ユーザー校正（最初に 1 回）」から始められるよ";
     t.promptUserCalibDetail2 = "しないあいだ、半目は Valve の値で動きます";
@@ -1095,7 +1095,7 @@ UiText makeJapanese() {
     t.rowUpdateBeta = "テスト版も受け取る";
     t.hintUpdateBeta = "試してほしい人向けの版も届きます。ふつうはオフのままで大丈夫";
     t.rowOutputPrompt = "送り先を変えたときに聞く";
-    t.hintOutputPrompt = "その送り先のおすすめ設定にするかを聞きます";
+    t.hintOutputPrompt = "おすすめ設定にするか聞きます。オフだと、おすすめ設定は当たりません";
     t.hintUpdateBetaKeep = "オフにしても、今のテスト版はそのまま。次の本番の版が出たら届きます";
     t.updateTestAvailable = "テスト版あり";
     t.updateAvailableTestFormat = "新しいテスト版 %s があります";
@@ -2282,7 +2282,7 @@ UiText makeEnglish() {
     t.promptModuleDetail2 = "(the FrameEyeOSC module doesn't smooth anything)";
     t.promptYes = "Yes";
     t.promptNo = "No";
-    t.promptNever = "Don't show again";
+    t.promptNever = "Don't ask again";
     t.promptUserCalib = "Do the user calibration (18 s) to send half-shut eyes and squints";
     t.promptUserCalibDetail1 = "Start it from \"User calibration (once)\" on the Eye cameras tab";
     t.promptUserCalibDetail2 = "Until then, half-shut eyes follow Valve's values";
@@ -2319,7 +2319,7 @@ UiText makeEnglish() {
     t.rowUpdateBeta = "Get test versions";
     t.hintUpdateBeta = "Also offers versions made for testing. Leave it Off unless asked";
     t.rowOutputPrompt = "Ask when changing output";
-    t.hintOutputPrompt = "Offers the new output's recommended settings";
+    t.hintOutputPrompt = "Offers the new output's recommended settings. Off: they are never applied";
     t.hintUpdateBetaKeep = "Your test version stays; the next regular version will be offered";
     t.updateTestAvailable = "Test version available";
     t.updateAvailableTestFormat = "Test version %s is available";

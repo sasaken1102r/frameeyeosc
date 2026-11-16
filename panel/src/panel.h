@@ -177,7 +177,7 @@ enum class PanelAction {
                        ///< eyeTrackingRateMin 90 and tells eye_rate::pressed
     EyeRateChoose,     ///< "Having trouble"'s eye camera speed: arg = eye_rate::Choice (the caller writes 90, or removes
                        ///< the key for SteamVR's default)
-    PromptNever,       ///< the recommendation prompt's "Don't show again": it closes and outputPrompt goes off (handled
+    PromptNever,       ///< the recommendation prompt's "Don't ask again": it closes and outputPrompt goes off (handled
                        ///< inside; the caller saves it to panel.json)
     OutputPromptSet,   ///< the Version page's "Ask when changing output": arg 1 on, 0 off (the panel keeps it,
                        ///< outputPrompt; the caller saves it)

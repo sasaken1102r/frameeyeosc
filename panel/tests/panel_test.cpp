@@ -73,7 +73,8 @@ PanelModel modelWith(Lids lids, bool eyecam = true) {
     s.present = s.running = true;
     s.camera.known = true;
     s.camera.present = lids != Lids::Valve && lids != Lids::Saturated;
-    s.camera.calibState = 5;
+    // (calibrated for this wear and the user, the levels learnt: the cameras measure the eyelids, cameraHalfLids)
+    s.camera.calibState = 7;
     s.camera.used[0] = lids == Lids::Both || lids == Lids::Left;
     s.camera.used[1] = lids == Lids::Both;
     s.opennessSaturated = lids == Lids::Saturated;
@@ -1027,6 +1028,17 @@ void testLidsPages(const FontSet& fonts) {
                     }
                     const bool calibration = fine && !camerasBoth;
                     CHECK(hits(panel, PanelAction::SetBool, key::kLidCalibration).size() == (calibration ? 2u : 0u));
+                    // ...but without the user calibration (calib_state 5: no bit 1) Valve's values still move the
+                    // eyelids between closed and open, so the auto calibration shows with the cameras on both too
+                    if (fine && camerasBoth) {
+                        PanelModel unmeasured = m;
+                        unmeasured.status.camera.calibState = 5;
+                        EyePanel other(fonts);
+                        other.setTab(PanelTab::Lids);
+                        other.setLidsPage(page);
+                        other.render(unmeasured);
+                        CHECK(hits(other, PanelAction::SetBool, key::kLidCalibration).size() == 2u);
+                    }
                     // Every button besides the tab row (and the eye preview's in the left column): inside the card,
                     // from the sub-tabs down
                     for (const EyePanel::HitArea& area : panel.hitAreas()) {

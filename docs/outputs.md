@@ -16,7 +16,7 @@ SteamVR's Steam Link can send eye tracking over OSC by itself (`LeftEyeX`, `Left
 | Blinks and winks | Yes | Yes |
 | Widened eyes | Yes, with the eye cameras (SteamOS 0.4.3 too) | No |
 | Pupil size | Yes, with the eye cameras: smaller in bright places, bigger in the dark | No |
-| Squints | Yes, with the eye cameras after the optional user calibration | No |
+| Squints | Yes, with the eye cameras after the user calibration | No |
 | Brows | Optional since 0.8.0: raised when you widen your eyes | No |
 | Setup | Install on the Frame (the eye cameras usually need no sudo; if that fails, a one-time sudo step) | Nothing to install: a SteamVR setting and a VRCFaceTracking module |
 

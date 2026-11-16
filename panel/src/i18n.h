@@ -790,6 +790,7 @@ struct UiText {
     const char* lidsFromCamera;
     const char* lidsFromCameraLeft;
     const char* lidsFromCameraRight;
+    const char* lidsFromValveCamera;  ///< ...the cameras without the user calibration (closing, widening)
     const char* camRowState;  ///< the eye cameras page: rows (title, hint)
     const char* camRowStateHint;
     const char* camLearned;  ///< ...the baseline learned (green pill)
@@ -841,6 +842,7 @@ struct UiText {
     const char* lidsNowBoth;  ///< ...from both cameras
     const char* lidsNowLeft;  ///< ...the left camera, Valve for the right
     const char* lidsNowRight;  ///< ...the right camera, Valve for the left
+    const char* lidsNowValveCamera;  ///< ...the cameras without the user calibration (closing, widening)
     const char* lidsNowValve;  ///< ...Valve's values
     const char* lidsNowWaiting;  ///< ...the eye cameras in use, but neither eye on them yet
     const char* lidsNowSwitch;  ///< ...at its right, set up: where they are switched on and off

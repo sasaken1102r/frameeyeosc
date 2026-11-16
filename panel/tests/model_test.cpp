@@ -1164,6 +1164,20 @@ void testLidsFromCameras() {
     CHECK(!lidsFromCameras(parseStatus("{\"pid\": 1, \"time\": 0}", 0, false)));  // no camera (older)
 }
 
+/** The cameras measure how far open the eyes are only with the user calibration and this wear's levels. */
+void testCameraHalfLids() {
+    const auto calibrated = [](int calibState) {
+        return cameraHalfLids(parseStatus("{\"pid\": 1, \"time\": 0, \"camera\": {\"present\": true, \"calib_state\": " +
+                                          std::to_string(calibState) + ", \"used\": [true, true]}}", 0, false));
+    };
+    CHECK(calibrated(7));
+    CHECK(calibrated(6));
+    CHECK(!calibrated(5));  // no user calibration: Valve's eyelid, the cameras' closing and widening
+    CHECK(!calibrated(3));  // the levels not learnt yet
+    CHECK(!calibrated(0));
+    CHECK(!cameraHalfLids(parseStatus("{\"pid\": 1, \"time\": 0}", 0, false)));  // no camera (older)
+}
+
 void testCameraStatus() {
     // An older frameeyeosc, or none of it: unknown, nothing sent from the cameras
     {
@@ -1930,6 +1944,7 @@ int main() {
     testGazeDebugRings();
     testCameraStatus();
     testLidsFromCameras();
+    testCameraHalfLids();
     testWarmingShown();
     testCameraLine();
     testPupilsToVrchat();

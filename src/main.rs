@@ -1347,6 +1347,16 @@ impl Smoother {
                 return valve;
             };
             let closing = valve < line;
+            // Not measured (see CameraSmoother::take): closed where the camera sees it closed, the eye server's
+            // otherwise, and the doubt starts over, so none of it is left once the eyelid is measured
+            if !camera.measured {
+                *state = LidDoubt { diag: (valve, closing, false), ..LidDoubt::default() };
+                if camera.closed {
+                    from[eye] = if valve > 0.0 { LidFrom::CameraClosed } else { LidFrom::EyeServer };
+                    return 0.0;
+                }
+                return valve;
+            }
             let agree = if camera.closed {
                 closing
             } else {
@@ -1658,6 +1668,9 @@ struct CameraLid {
     closed: bool,
     // The camera's frame interval in seconds, 0 while it is not known.
     frame: f64,
+    // Whether `lid` measures how far open the eye is (Live::lids_measured: a user calibration and the wear's levels).
+    // Without, it is only closed (0) or relaxed open plus the widening (see CameraSmoother::take).
+    measured: bool,
 }
 
 /// One eye's camera eyelid across short gaps (see CAMERA_GAP_HOLD).
@@ -1918,7 +1931,8 @@ impl RaisePeak {
         std::array::from_fn(|eye| {
             let recent = &mut self.recent[eye];
             match camera[eye] {
-                Some(lid) if lid.closed || openness[eye] < CAMERA_RAISE_SHUT => recent.clear(),
+                // (an eyelid not measured raises nothing; see CameraSmoother::take)
+                Some(lid) if lid.closed || !lid.measured || openness[eye] < CAMERA_RAISE_SHUT => recent.clear(),
                 Some(lid) => recent.push_back((time, lid.lid)),
                 None => {}
             }
@@ -2084,9 +2098,19 @@ struct CameraSmoother {
 impl CameraSmoother {
     /// Each eye's camera eyelid while it may be used (see Live::lids_usable; None otherwise, and always without
     /// `camera_lids`), and the squint and pupils to send, smoothed unless `smooth` is false (--raw).
+    /// Without the user calibration (Live::lids_measured) eyecam-rec sends an eye that is not closed as relaxed open
+    /// (plus its widening), whatever its eyelid does: a stand-in, not a reading. Taken as one, it raised the eye
+    /// server's eyelid to relaxed open from the doubt line up (raised_to_camera) and replaced a closing one after the
+    /// grace (LidDoubt), so a slowly closing eye went out 0.75, then 0, and never half closed. Such an eyelid
+    /// (`measured` false) only closes the eye (and goes through the side check and the close gate as before) and
+    /// widens it; between closed and relaxed open the eyelid is the eye server's, eased and sloped as without the
+    /// camera (`zoned`), with no raise, no lowering at the ceiling, no taking over and no --camera-lid-floor
+    /// (Smoother::check_lids). The cost: an open eye the eye server reads shut (issue 46) goes out shut, as without
+    /// the camera, until the user calibration is done.
     fn take(&mut self, settings: &Settings, camera: Option<&Live>, smooth: bool) -> ([Option<CameraLid>; 2], CameraValues) {
         let camera = camera.filter(|_| settings.camera_lids);
         let lids_usable = camera.map_or([false; 2], Live::lids_usable);
+        let measured = camera.is_some_and(Live::lids_measured);
         let pupil_usable = camera.map_or([false; 2], Live::pupil_usable);
         let mut values = CameraValues::default();
         let mut lids = [None; 2];
@@ -2097,6 +2121,7 @@ impl CameraSmoother {
                 lid: read.lid,
                 closed: read.closed,
                 frame: camera.map_or(0.0, |camera| camera.frame_ns[eye] as f64 / 1e9),
+                measured,
             });
             let squint = read.squint.clamp(0.0, 1.0);
             values.squint[eye] = smoothed(&mut self.squint[eye], lid_used, squint, CAMERA_SQUINT_ALPHA, smooth);
@@ -3858,7 +3883,8 @@ fn process(
             unscaled_gaze
         };
         let gaze = scale_gaze(unscaled_gaze, settings);
-        let zoned = camera_lids.map(|camera| camera.is_none());
+        // (an eye whose camera eyelid is not measured as without it; see CameraSmoother::take)
+        let zoned = camera_lids.map(|camera| !camera.is_some_and(|camera| camera.measured));
         let fits = fits_at(settings, corrected[5], zoned);
         let openness_scaled = lid_inputs_with(data.openness, corrected[5], scales, settings, fits);
         let mapped = snapped_lids(data.openness, corrected[5], scales, settings, fits, zoned);
@@ -3870,7 +3896,8 @@ fn process(
         let floor = settings.camera_lid_floor;
         let line = doubt_line(settings);
         let floored = [0, 1].map(|eye| {
-            floor > 0.0 && camera_lids[eye].is_some_and(|camera| !camera.closed && mapped[eye] >= line)
+            floor > 0.0
+                && camera_lids[eye].is_some_and(|camera| camera.measured && !camera.closed && mapped[eye] >= line)
         });
         let mapped = [0, 1].map(|eye| match camera_lids[eye] {
             Some(camera) if camera.closed => {
@@ -3879,14 +3906,14 @@ fn process(
                 }
                 0.0
             }
-            Some(camera) => {
+            Some(camera) if camera.measured => {
                 let (lid, raised) = raised_to_camera(mapped[eye], camera.lid, line);
                 if raised {
                     lid_from[eye] = LidFrom::CameraRaised;
                 }
                 if floored[eye] { lid.max(floor) } else { lid }
             }
-            None => mapped[eye],
+            Some(_) | None => mapped[eye],
         });
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
         let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from);
@@ -3949,9 +3976,10 @@ fn process(
             _ => gaze[5],
         };
         smoother.lid_vertical = Some(vertical);
-        // For eyes without the camera's eyelid, eyelids near relaxed open count as open, and far down less is
-        // expected (see LID_OPEN_SNAP_RAMP)
-        let zoned = [0, 1].map(|eye| camera_lids[eye].is_none() && held[eye].is_none());
+        // For eyes without the camera's eyelid (or with one not measured, see CameraSmoother::take), eyelids near
+        // relaxed open count as open, and far down less is expected (see LID_OPEN_SNAP_RAMP)
+        let measured = |lid: Option<CameraLid>| lid.is_some_and(|lid| lid.measured);
+        let zoned = [0, 1].map(|eye| !measured(camera_lids[eye]) && !measured(held[eye]));
         let fits = fits_at(settings, vertical, zoned);
         let mapped = snapped_lids(openness, vertical, scales, settings, fits, zoned);
         let valve = mapped;
@@ -3974,7 +4002,7 @@ fn process(
         // Through a short gap in the camera's eyelid, the eye server's is still raised to the camera's last one (an eye
         // on the camera's eyelid has that already)
         let mapped = [0, 1].map(|eye| match held[eye] {
-            Some(camera) if lid_from[eye] != LidFrom::CameraOpen => {
+            Some(camera) if lid_from[eye] != LidFrom::CameraOpen && camera.measured => {
                 let (lid, raised) = raised_to_camera(mapped[eye], raise_to[eye].unwrap_or(camera.lid), doubt_line(settings));
                 if raised {
                     lid_from[eye] = LidFrom::CameraRaised;
@@ -5680,7 +5708,7 @@ mod tests {
 
     #[test]
     fn a_camera_eyelid_is_held_through_short_gaps() {
-        let lid = |lid: f32| Some(CameraLid { lid, closed: false, frame: 0.011 });
+        let lid = |lid: f32| Some(CameraLid { lid, closed: false, frame: 0.011, measured: true });
         let mut gap = CameraGap::default();
         // The first sample says which it is
         assert_eq!(gap.steady(0.0, lid(0.6)), (lid(0.6), None));
@@ -8797,7 +8825,8 @@ mod tests {
         assert_eq!(saturation.open, 700);
     }
 
-    /// eyecam-rec's values as read: both eyes fresh and calibrated for this wear, at eyelid `lid` with `squint`.
+    /// eyecam-rec's values as read: both eyes fresh, calibrated for this wear and this user and with the wear's levels
+    /// learnt (so the eyelids are measured, Live::lids_measured), at eyelid `lid` with `squint`.
     pub(crate) fn camera(lid: f32, squint: f32) -> Live {
         let eye = eyecam_live::Eye {
             valid: true,
@@ -8808,7 +8837,7 @@ mod tests {
             ..Default::default()
         };
         Live {
-            calib_state: 1,
+            calib_state: 1 | 2 | 4,
             recalib_suggested: false,
             live: true,
             eyes: [eye; 2],
@@ -9032,6 +9061,89 @@ mod tests {
         let last = sent.last().unwrap();
         assert!((last.lids[0] - 0.6).abs() < 1e-3 && (last.lids[1] - 0.75).abs() < 1e-3, "{:?}", last.lids);
         assert_eq!(last.lid_from, [LidFrom::EyeServer; 2]);
+    }
+
+    /// `live` as eyecam-rec sends it without the user calibration: calibrated for this wear, its levels learnt, but
+    /// the eyelids not measured (Live::lids_measured).
+    fn without_user_calibration(live: Live) -> Live {
+        Live { calib_state: 1 | 4, ..live }
+    }
+
+    #[test]
+    fn without_the_user_calibration_a_slowly_closing_eye_goes_out_as_the_eye_server_reads_it() {
+        // The eye server reads both eyes closing slowly (0.7 to 0 in 3 s, then shut for 1 s); the camera sees them
+        // open all along, which without the user calibration it sends as relaxed open (0.75)
+        let openness = |i: usize| [(0.7 - 0.7 * i as f32 / 270.0).max(0.0); 2];
+        for raw in [false, true] {
+            let settings = Settings { lid_sync: 0.0, raw, ..camera_settings() };
+            let run = |camera: Option<Live>| {
+                let mut smoother = Smoother::new(&settings);
+                camera_samples(&settings, &mut smoother, 100.0, 4.0, openness, |_| camera)
+            };
+            let off = run(None);
+            let unmeasured = run(Some(without_user_calibration(camera(0.75, 0.0))));
+            // As with the camera off (below relaxed open, where the camera only widens): no raise to relaxed open, no
+            // taking over, half closed on the way
+            for (i, (off, on)) in off.iter().zip(&unmeasured).enumerate() {
+                let (off, on) = (off.lids.map(|lid| lid.min(LID_RELAXED)), on.lids.map(|lid| lid.min(LID_RELAXED)));
+                assert!((0..2).all(|eye| (off[eye] - on[eye]).abs() < 1e-5), "{raw} {i}: {off:?} {on:?}");
+            }
+            assert!(unmeasured.iter().all(|sample| sample.lid_from == [LidFrom::EyeServer; 2]), "{raw}");
+            assert!(unmeasured.iter().any(|sample| (0.2..0.5).contains(&sample.lids[0])), "{raw}");
+            assert!(unmeasured[330..].iter().all(|sample| sample.lids[0] < 0.05), "{raw}: {:?}", unmeasured[330].lids);
+            // With it, as before: raised to the camera's relaxed open, and (with the timed stages) its eyelid once the
+            // eye server has read the eye closing for longer than a blink
+            let measured = run(Some(camera(0.75, 0.0)));
+            assert!(measured.iter().any(|sample| sample.lid_from[0] == LidFrom::CameraRaised), "{raw}");
+            if !raw {
+                let last = measured.last().unwrap();
+                assert_eq!(last.lid_from[0], LidFrom::CameraOpen);
+                assert!((last.lids[0] - LID_RELAXED).abs() < 0.01, "{:?}", last.lids);
+            }
+        }
+    }
+
+    #[test]
+    fn without_the_user_calibration_the_cameras_closed_still_closes_and_its_widening_still_widens() {
+        let settings = camera_settings();
+        // A blink in both eyes that only the camera sees (200 ms)
+        let mut smoother = Smoother::new(&settings);
+        let blink = |i: usize| (90..108).contains(&i);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 2.0, |_| [0.8; 2], |i| {
+            let closed = blink(i);
+            let lid = if closed { 0.0 } else { LID_RELAXED };
+            Some(without_user_calibration(camera_eyes([(lid, 0.0, closed); 2])))
+        });
+        assert!(sent[80..90].iter().all(|sample| sample.lids.iter().all(|lid| *lid > 0.5)), "{:?}", sent[89].lids);
+        assert!(sent[92..108].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", sent[100].lids);
+        assert_eq!(sent[95].lid_from, [LidFrom::CameraClosed; 2]);
+        // Widened, past the saturation cap as with the user calibration
+        let mut smoother = saturated_smoother(&settings);
+        let camera = without_user_calibration(camera(0.95, 0.0));
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 2.0, |_| [1.0; 2], |_| Some(camera));
+        let last = sent.last().unwrap().lids;
+        assert!(last.iter().all(|lid| (lid - 0.95).abs() < 0.005), "{last:?}");
+    }
+
+    #[test]
+    fn the_user_calibration_coming_and_going_switches_the_cameras_eyelid_cleanly() {
+        // The eye server reads the left eye shut all along, the camera sees it open: with the user calibration (the
+        // first and last 2 s) the eyelid is the camera's after the grace; without it (in between) the eye server's
+        let settings = camera_settings();
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 6.0, |_| [0.03, 0.8], |i| {
+            let live = camera(0.75, 0.0);
+            Some(if (180..360).contains(&i) { without_user_calibration(live) } else { live })
+        });
+        assert_eq!(sent[179].lid_from[0], LidFrom::CameraOpen);
+        assert!((sent[179].lids[0] - LID_RELAXED).abs() < 0.01, "{:?}", sent[179].lids);
+        // Gone: the eye server's at once, shut
+        assert!(sent[180..360].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
+        assert!(sent[200..360].iter().all(|sample| sample.lids[0] < 0.1), "{:?}", sent[200].lids);
+        // Back: the doubt starts over (nothing of it kept from before), so the grace goes by first
+        let from = |range: std::ops::Range<usize>| sent[range].iter().map(|sample| sample.lid_from[0]).collect::<Vec<_>>();
+        assert!(from(360..380).iter().all(|from| *from == LidFrom::EyeServer), "{:?}", from(360..380));
+        assert!(sent[400..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen), "{:?}", sent[400].lid_from);
     }
 
     #[test]
@@ -9832,7 +9944,7 @@ mod tests {
 
     #[test]
     fn the_side_check_takes_the_last_open_camera_eyelid() {
-        let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011 });
+        let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011, measured: true });
         let mut check = SideCheck::default();
         // (The eye server unsure of both eyes all along, so only looking to the side counts)
         // No open one yet: relaxed open
@@ -9867,8 +9979,8 @@ mod tests {
         let settings = Settings::default();
         let mut smoother = Smoother::new(&settings);
         let dt = 1.0 / 90.0;
-        let open = Some(CameraLid { lid: LID_RELAXED, closed: false, frame: 0.011 });
-        let shut = Some(CameraLid { lid: 0.0, closed: true, frame: 0.011 });
+        let open = Some(CameraLid { lid: LID_RELAXED, closed: false, frame: 0.011, measured: true });
+        let shut = Some(CameraLid { lid: 0.0, closed: true, frame: 0.011, measured: true });
         // A blink every 3 s: the eye server reads the eye shut for 14 samples, the camera from 4 samples later; between
         // them the eye server reads the open eye at 0.59, below the camera's relaxed open by more than CAMERA_AGREE_GAP,
         // so the two never agree. Each blink adds 4 samples of doubt, over CAMERA_DOUBT_GRACE in 7 blinks.
@@ -10091,7 +10203,7 @@ mod tests {
 
     #[test]
     fn the_raise_peak_keeps_the_cameras_highest_open_eyelid_of_the_last_0_3_s() {
-        let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011 });
+        let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011, measured: true });
         let mut peak = RaisePeak::default();
         assert_eq!(peak.step(1.0, [0.9; 2], [lid(0.7, false), None]), [Some(0.7), None]);
         assert_eq!(peak.step(1.1, [0.9; 2], [lid(0.4, false), None]), [Some(0.7), None]);

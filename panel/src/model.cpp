@@ -683,6 +683,10 @@ bool lidsFromCameras(const EyeStatus& status) {
     return status.running && status.camera.used[0] && status.camera.used[1];
 }
 
+bool cameraHalfLids(const EyeStatus& status) {
+    return (status.camera.calibState & (2 | 4)) == (2 | 4);
+}
+
 WidenSlider widenSlider(const SettingsView& view, const EyeStatus& status) {
     WidenSlider slider;
     const bool used[2] = {status.running && status.camera.used[0], status.running && status.camera.used[1]};

@@ -2107,12 +2107,14 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         pen.text(lx, 282 + dy, t.legendRaw, 14, kText);
         lx -= 26;
         fillRounded(pen, lx, 274 + dy, 20, 6, 2, kTextMuted);
-        // Where they come from, after the title: Valve's values, or the eye cameras (as frameeyeosc says)
+        // Where they come from, after the title: Valve's values, or the eye cameras (as frameeyeosc says); without the
+        // user calibration the cameras only close and widen them (cameraHalfLids)
         const char* from = nullptr;
+        const bool halfLids = cameraHalfLids(s);
         switch (cameraUse(s, SettingsView(m).flag(key::kCameraLids))) {
-            case CameraUse::Both: from = t.lidsFromCamera; break;
-            case CameraUse::Left: from = t.lidsFromCameraLeft; break;
-            case CameraUse::Right: from = t.lidsFromCameraRight; break;
+            case CameraUse::Both: from = halfLids ? t.lidsFromCamera : t.lidsFromValveCamera; break;
+            case CameraUse::Left: from = halfLids ? t.lidsFromCameraLeft : t.lidsFromValveCamera; break;
+            case CameraUse::Right: from = halfLids ? t.lidsFromCameraRight : t.lidsFromValveCamera; break;
             case CameraUse::Unknown: from = s.running ? t.lidsFromValve : nullptr; break;
             default: from = t.lidsFromValve; break;
         }
@@ -4286,7 +4288,9 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         } else {
             drawEyeIcon(pen, kInnerX + 30, y + h / 2, kTextMuted);
         }
+        // (without the user calibration the cameras only close and widen them: cameraHalfLids)
         const char* source = !camera                ? t.lidsNowValve
+                             : (used[0] || used[1]) && !cameraHalfLids(s) ? t.lidsNowValveCamera
                              : used[0] && used[1] ? t.lidsNowBoth
                              : used[0]            ? t.lidsNowLeft
                              : used[1]            ? t.lidsNowRight
@@ -4630,12 +4634,13 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     // calibration and the marks only matter for eyes without one
     const WidenState widen = widenState(v);
     const bool anyFitted = widen.fitted[0] || widen.fitted[1];
-    const bool fromCameras = lidsFromCameras(s);
+    // (without the user calibration Valve's values still move the eyelids between closed and open: cameraHalfLids)
+    const bool fromCameras = lidsFromCameras(s) && cameraHalfLids(s);
 
     // The page is how Valve's openness is read (the sent eyelid, with ③, is on "Blinks & squint"): its title, and beside
     // it what decides the marks now. While the cameras supply both eyes all of it only stands by for when they lose an
     // eye, so it says so and is drawn lighter, still to be changed
-    const bool standby = s.running && s.camera.used[0] && s.camera.used[1];
+    const bool standby = s.running && s.camera.used[0] && s.camera.used[1] && cameraHalfLids(s);
     {
         const char* note = t.marksTitle;
         bool notice = false;

@@ -774,6 +774,7 @@ UiText makeJapanese() {
     t.lidsFromCamera = "目のカメラ";
     t.lidsFromCameraLeft = "目のカメラ（左）";
     t.lidsFromCameraRight = "目のカメラ（右）";
+    t.lidsFromValveCamera = "Valve の値＋目のカメラ";
     t.camRowState = "いまの状態";
     t.camRowStateHint = "オン・オフは「基本」タブで";
     t.camLearned = "普段の目を覚えたよ";
@@ -784,10 +785,10 @@ UiText makeJapanese() {
     t.camCalibButton = "目のカメラの校正（18秒）";
     t.camCalibSide1 = "出てくる指示どおりに";
     t.camCalibSide2 = "目を動かしてね";
-    t.camRowUser = "細めも送るなら";
-    t.camRowUserHint = "やらなくても OK";
+    t.camRowUser = "半目と細めに要るよ";
+    t.camRowUserHint = "やるのがおすすめ";
     t.camUserButton = "ユーザー校正（最初に 1 回）";
-    t.camUserSide1 = "目を細めたのも";
+    t.camUserSide1 = "半目や細めた目も";
     t.camUserSide2 = "送れるようになるよ";
     t.camUserNeedsCalib = "先に目のカメラの校正をしてね";
     t.camLineBothVrchat = "カメラで両目を見て、見開きを VRChat に送ってるよ";
@@ -824,6 +825,7 @@ UiText makeJapanese() {
     t.lidsNowBoth = "目のカメラ（左・右）";
     t.lidsNowLeft = "目のカメラ（左）＋ Valve（右）";
     t.lidsNowRight = "目のカメラ（右）＋ Valve（左）";
+    t.lidsNowValveCamera = "Valve ＋目のカメラ（閉じ・見開き）";
     t.lidsNowValve = "Valve の値";
     t.lidsNowWaiting = "目のカメラ（待機中）";
     t.lidsNowSwitch = "オン・オフは「基本」タブで";
@@ -1981,6 +1983,7 @@ UiText makeEnglish() {
     t.lidsFromCamera = "eye cameras";
     t.lidsFromCameraLeft = "eye cameras (L)";
     t.lidsFromCameraRight = "eye cameras (R)";
+    t.lidsFromValveCamera = "Valve's values + eye cameras";
     t.camRowState = "Now";
     t.camRowStateHint = "On / off on the Basic tab";
     t.camLearned = "Learned your relaxed eyes";
@@ -1991,11 +1994,11 @@ UiText makeEnglish() {
     t.camCalibButton = "Calibrate the cameras (18 s)";
     t.camCalibSide1 = "Move your eyes as";
     t.camCalibSide2 = "the screen says";
-    t.camRowUser = "To send squints too";
-    t.camRowUserHint = "Optional";
+    t.camRowUser = "For half-shut & squint";
+    t.camRowUserHint = "Recommended";
     t.camUserButton = "User calibration (once)";
-    t.camUserSide1 = "Squinting gets";
-    t.camUserSide2 = "sent too";
+    t.camUserSide1 = "Half-shut eyes and";
+    t.camUserSide2 = "squints get sent too";
     t.camUserNeedsCalib = "Calibrate the cameras first";
     t.camLineBothVrchat = "The cameras watch both eyes and send widening to VRChat";
     t.camLineBoth = "The cameras watch both eyes and send widening";
@@ -2031,6 +2034,7 @@ UiText makeEnglish() {
     t.lidsNowBoth = "Eye cameras (left, right)";
     t.lidsNowLeft = "Eye camera (left) + Valve (right)";
     t.lidsNowRight = "Eye camera (right) + Valve (left)";
+    t.lidsNowValveCamera = "Valve + eye cameras (shut, widen)";
     t.lidsNowValve = "Valve's values";
     t.lidsNowWaiting = "Eye cameras (waiting)";
     t.lidsNowSwitch = "On / off on the Basic tab";

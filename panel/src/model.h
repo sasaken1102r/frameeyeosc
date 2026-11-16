@@ -638,6 +638,15 @@ CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool 
  */
 bool lidsFromCameras(const EyeStatus& status);
 
+/**
+ * Whether the eye cameras measure how far open the eyes are (frameeyeosc's Live::lids_measured): with the user
+ * calibration (calib_state bit 1) and this wear's levels (bit 2). Without it an eye on the cameras gets only their
+ * closing and widening; between closed and relaxed open its eyelid is Valve's.
+ * @param status frameeyeosc's status
+ * @return true while both bits are set
+ */
+bool cameraHalfLids(const EyeStatus& status);
+
 /** What the Eyelids tab's one widening slider ("見開きの出やすさ") drives. */
 enum class WidenControl {
     Camera,     ///< the cameras drive both eyelids: eyecam-rec's widen_sensitivity

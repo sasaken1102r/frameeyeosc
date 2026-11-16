@@ -264,6 +264,8 @@ pub struct Shared {
     pub veto_fired: AtomicU64,
     pub veto_us_mean: AtomicU32,
     pub veto_us_max: AtomicU32,
+    /// The lower-lid trial is on (settings.json `lower_lid`, followed while running).
+    pub lower_lid: AtomicBool,
 }
 
 impl Default for Shared {
@@ -297,6 +299,7 @@ impl Default for Shared {
             veto_fired: AtomicU64::new(0),
             veto_us_mean: AtomicU32::new(0),
             veto_us_max: AtomicU32::new(0),
+            lower_lid: AtomicBool::new(false),
         }
     }
 }
@@ -765,8 +768,10 @@ impl Worker {
             }
         }
         let veto_on = self.shared.lid_veto.load(Ordering::Relaxed);
+        let lower_on = self.shared.lower_lid.load(Ordering::Relaxed);
         for p in &mut self.params {
             p.tune.lid_veto = veto_on;
+            p.tune.lower_lid = lower_on;
         }
         let started = Instant::now();
         let mut o = self.engines[eye].process_open(img, pitch as f64, open as f64, t, &self.params[eye]);
@@ -844,6 +849,8 @@ impl Worker {
             v.confidence = o.confidence as f32;
             v.skin_up = o.skin_up as f32;
             v.aperture = o.aperture as f32;
+            // NaN with the switch off (Out::lower_lid is NaN then)
+            s.lower_lid[eye] = o.lower_lid as f32;
         });
         self.shared.frames.fetch_add(1, Ordering::Relaxed);
         self.shared.calib_state.store(state, Ordering::Relaxed);

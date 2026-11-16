@@ -542,9 +542,12 @@ impl StatusFile {
             if let Some(l) = &self.live {
                 // lid_veto may be edited by hand: the worker picks it up from here, on its next frame.
                 l.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
+                // lower_lid is only ever edited by hand: picked up the same way.
+                l.lower_lid.store(settings.lower_lid, Ordering::Relaxed);
             }
             drop(watch);
             s.dev = settings.dev;
+            s.lower_lid = settings.lower_lid;
             if let Some(l) = &self.live {
                 s.lid_veto = status::LidVeto {
                     on: settings.lid_veto,
@@ -878,6 +881,7 @@ fn serve(args: &Args) -> Result<()> {
         let settings = Settings::load(&settings::path());
         shared.set_widen_sensitivity(settings.widen_sensitivity);
         shared.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
+        shared.lower_lid.store(settings.lower_lid, Ordering::Relaxed);
         shared.driftlog.lock().unwrap().dir = args.out.join(driftlog::DIR_NAME);
     }
     let mut daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()), &args.out, args.fake)?;

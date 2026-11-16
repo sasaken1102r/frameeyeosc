@@ -66,6 +66,9 @@ pub struct LiveShm {
     /// 1 while live processing is on (fds held, `live on`); 0 when off or eyecam-rec stopped.
     pub live: u32,
     pub eyes: [LiveEye; 2],
+    /// Appended in version 1 (struct_size 208; readers that know 200 bytes read on as before): each eye's lower-lid
+    /// raise trial (`live::Out::lower_lid`), 0 relaxed .. 1 raised; NaN while settings.json `lower_lid` is off.
+    pub lower_lid: [f32; 2],
 }
 
 const _: () = {
@@ -81,7 +84,8 @@ const _: () = {
     assert!(offset_of!(LiveEye, valid) == 24);
     assert!(offset_of!(LiveEye, eye_lid) == 32);
     assert!(offset_of!(LiveEye, aperture) == 64);
-    assert!(size_of::<LiveShm>() == 200);
+    assert!(offset_of!(LiveShm, lower_lid) == 200);
+    assert!(size_of::<LiveShm>() == 208);
 };
 
 pub struct LiveWriter {
@@ -135,6 +139,7 @@ impl LiveWriter {
             s.writer_pid = std::process::id();
             s.writer_start_ns = start;
             s.magic = MAGIC;
+            s.lower_lid = [f32::NAN; 2];
         });
         std::fs::rename(&tmp, path).map_err(|e| format!("{} -> {}: {e}", tmp.display(), path.display()))?;
         Ok(w)
@@ -184,7 +189,8 @@ mod tests {
                 s.eyes[1].eye_wide = 0.5;
             });
             let r = w.read();
-            assert_eq!((r.magic, r.version, r.struct_size, r.live), (MAGIC, 1, 200, 1));
+            assert_eq!((r.magic, r.version, r.struct_size, r.live), (MAGIC, 1, 208, 1));
+            assert!(r.lower_lid.iter().all(|v| v.is_nan()), "{:?}", r.lower_lid);
             assert_eq!(r.seq % 2, 0);
             assert_eq!(r.eyes[1].eye_wide, 0.5);
         }

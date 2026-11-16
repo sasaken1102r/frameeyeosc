@@ -331,8 +331,9 @@ pub struct Tune {
     /// The eyelid veto (`veto`): the CNN may cancel a low EyeLid it is sure is an open eye (settings.json `lid_veto`,
     /// off by default: trained on one wearer's recordings only).
     pub lid_veto: bool,
-    /// The lower-lid raise (`Out::lower_lid`, `LowerLid`): a trial, off by default (replay's `--lower-lid`). Only
-    /// replay's CSV shows it; nothing is sent.
+    /// The lower-lid raise (`Out::lower_lid`, `LowerLid`): a trial, off by default (replay's `--lower-lid`, live's
+    /// settings.json `lower_lid`). Live publishes it in the live shared memory (liveshm::LiveShm::lower_lid); nothing
+    /// else uses it.
     pub lower_lid: bool,
 }
 
@@ -557,7 +558,8 @@ impl LongMedian {
 }
 
 /// The lower-lid trial (`Tune::lower_lid`): how far the lower lid sits above the wear's relaxed level, as when the
-/// cheek pushes it up in a smile or the eye squints, apart from the gaze. Nothing is sent: replay's CSV shows it.
+/// cheek pushes it up in a smile or the eye squints, apart from the gaze. Replay's CSV shows it, and live (with
+/// settings.json `lower_lid`) publishes the value in the live shared memory; nothing else uses it.
 /// The line: while the pupil is seen, the lid's margin as a thin dark line (`feat::Extractor::lower_ridge`) when it
 /// lies from LOWER_RIDGE_ABOVE r above the engine's lower lid line (`feat::Features::lower_y`, after LOWER_DROP_MAX)
 /// to LOWER_RIDGE_BELOW r below it; otherwise that lower lid line, moved up by how far it sits below the margin line

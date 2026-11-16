@@ -1,5 +1,5 @@
 //! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity`, `lid_veto` and `source` are changed
-//! from the panel (`set ...` on ctl.sock; `lid_veto` and `source` by hand too), `dev` only by hand.
+//! from the panel (`set ...` on ctl.sock; `lid_veto` and `source` by hand too), `dev` and `lower_lid` only by hand.
 
 use crate::dspsrc::Source;
 use crate::json::{self, Json};
@@ -19,11 +19,21 @@ pub struct Settings {
     /// set (`set source`, or by hand). Read when eyecam-rec starts (--source overrides it); written to the file only
     /// when it isn't the default.
     pub source: Source,
+    /// The lower-lid trial (`live::Tune::lower_lid`): computed live and published in the live shared memory
+    /// (liveshm::LiveShm::lower_lid) only when switched on here, by hand (followed while running). Written to the file
+    /// only when on.
+    pub lower_lid: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY, dev: false, lid_veto: false, source: Source::Auto }
+        Self {
+            widen_sensitivity: crate::live::DEFAULT_WIDEN_SENSITIVITY,
+            dev: false,
+            lid_veto: false,
+            source: Source::Auto,
+            lower_lid: false,
+        }
     }
 }
 
@@ -49,6 +59,9 @@ impl Settings {
                 if let Some(Json::Bool(v)) = j.get("lid_veto") {
                     s.lid_veto = *v;
                 }
+                if let Some(Json::Bool(v)) = j.get("lower_lid") {
+                    s.lower_lid = *v;
+                }
                 if let Some(v) = j.get("source") {
                     match v.str().and_then(Source::parse) {
                         Some(source) => s.source = source,
@@ -72,8 +85,10 @@ impl Settings {
             Source::Auto => String::new(),
             s => format!(",\n  \"source\": \"{}\"", s.label()),
         };
+        // `lower_lid` likewise only when on.
+        let lower_lid = if self.lower_lid { ",\n  \"lower_lid\": true" } else { "" };
         let text = format!(
-            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}{source}\n}}\n",
+            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}{source}{lower_lid}\n}}\n",
             json::num(self.widen_sensitivity),
             self.dev,
             self.lid_veto
@@ -230,11 +245,32 @@ mod tests {
         // `set source dsp` / `grab`: written, the other settings kept
         for source in [Source::Dsp, Source::Grab] {
             Settings::update(&p, |s| s.source = source).unwrap();
-            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, dev: true, lid_veto: true, source });
+            assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, dev: true, lid_veto: true, source, lower_lid: false });
             assert!(std::fs::read_to_string(&p).unwrap().contains(&format!("\"source\": \"{}\"", source.label())));
         }
         // `set source auto`: the key goes, and the file is the same as before it was set
         Settings::update(&p, |s| s.source = Source::Auto).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lower_lid_is_read_by_hand_kept_by_a_set_and_written_only_when_on() {
+        let dir = std::env::temp_dir().join(format!("eyecam-settings-lower-lid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+        Settings { widen_sensitivity: 0.3, ..Settings::default() }.save(&p).unwrap();
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert!(!before.contains("lower_lid") && !Settings::load(&p).lower_lid, "{before}");
+        // By hand
+        std::fs::write(&p, "{\"version\": 1, \"widen_sensitivity\": 0.3, \"lower_lid\": true}").unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, lower_lid: true, ..Settings::default() });
+        // A `set` from the panel keeps it
+        Settings::update(&p, |s| s.lid_veto = true).unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, lid_veto: true, lower_lid: true, ..Settings::default() });
+        // Off by hand: the key goes when the file is next written
+        std::fs::write(&p, "{\"widen_sensitivity\": 0.3, \"lower_lid\": false}").unwrap();
+        Settings::update(&p, |s| s.lid_veto = false).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
         std::fs::remove_dir_all(&dir).unwrap();
     }

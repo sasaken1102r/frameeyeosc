@@ -1644,6 +1644,11 @@ void testPagesFit(const FontSet& fonts) {
                     // Scrolled only a little (less than a third of the view), to the row
                     CHECK(panel.advancedMaxScroll() > 0.0 && panel.advancedMaxScroll() < 100.0);
                     CHECK(panel.wantsScroll() && !hits(panel, PanelAction::AdvancedScroll).empty());
+                    // (before scrolling too: what runs past the view can't be pressed)
+                    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                        if (area.hit.action == PanelAction::Tab || area.x < 400) continue;
+                        CHECK(area.y >= 110 && area.y + area.h <= 676);
+                    }
                     CHECK(panel.scroll(200));
                     panel.render(m);
                     CHECK(hits(panel, PanelAction::OutputPromptSet).size() == 2);

@@ -2,7 +2,7 @@
 
 ## 0.10.4-beta.2 (2026-11-16)
 
-Eye-camera users without the user calibration get half-shut eyelids again: until it is done, the cameras only add closing, widening and the pupils, and the eyelid follows Valve's values. Do the user calibration on the Eye cameras tab; the panel now asks for it.
+Eye-camera users without the user calibration now get half-shut eyelids: until it is done, the eyelid follows Valve's values and the cameras only add closing, widening and pupils, so an eye Valve reads as closed can stay shut. Do the user calibration on the Eye cameras tab; the panel asks for it.
 
 日本語: 目のカメラを使っていて、ユーザー校正をしていない人も、半目が出るようになりました。ユーザー校正をするまでは、カメラは閉じ・見開き・瞳孔だけを足し、まぶたは Valve の値で動きます。目のカメラタブでユーザー校正をしてね（しないと、Valve の値が開いた目を閉じたと読むとき、目が閉じたままになることがあります）。
 

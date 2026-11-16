@@ -806,6 +806,8 @@ struct UiText {
     const char* camUserButton;
     const char* camUserSide1;
     const char* camUserSide2;
+    const char* camUserWanted1;  ///< ...in place of camUserSide1/2 while it is not done yet (warning colour)
+    const char* camUserWanted2;
     const char* camUserNeedsCalib;  ///< ...instead while it can't be pressed
     // The sentence at the bottom of the eye cameras' page (cameraLine)
     const char* camLineBothVrchat;
@@ -846,6 +848,7 @@ struct UiText {
     const char* lidsNowValve;  ///< ...Valve's values
     const char* lidsNowWaiting;  ///< ...the eye cameras in use, but neither eye on them yet
     const char* lidsNowSwitch;  ///< ...at its right, set up: where they are switched on and off
+    const char* lidsNowUserWanted;  ///< ...in its place without the user calibration (warning colour)
     // The eye cameras tab before they are set up: what they add, and the way into the setup
     const char* camIntroTitle;
     const char* camIntro[3];      ///< the three things they add

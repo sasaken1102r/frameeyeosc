@@ -9126,6 +9126,24 @@ mod tests {
     }
 
     #[test]
+    fn without_the_user_calibration_an_eye_read_at_the_ceiling_goes_out_at_the_cameras_relaxed_open() {
+        // SteamOS 0.4.3: the eye server reads the open eyes 1.000 (saturated), the camera sends them relaxed open
+        // without the user calibration. From relaxed open up the eyelid is the camera's (mixed_lids): relaxed open, not
+        // capped below it nor widened, and as with the user calibration
+        let settings = camera_settings();
+        let run = |camera: Live| {
+            let mut smoother = saturated_smoother(&settings);
+            camera_samples(&settings, &mut smoother, 100.0, 2.0, |_| [1.0; 2], |_| Some(camera))
+        };
+        let unmeasured = run(without_user_calibration(camera(LID_RELAXED, 0.0)));
+        assert!(unmeasured[45..].iter().all(|sample| sample.lids.iter().all(|lid| (lid - LID_RELAXED).abs() < 0.005)));
+        assert!(unmeasured.iter().all(|sample| sample.lid_from == [LidFrom::EyeServer; 2]));
+        let measured = run(camera(LID_RELAXED, 0.0));
+        let (last, with) = (unmeasured.last().unwrap().lids, measured.last().unwrap().lids);
+        assert!((0..2).all(|eye| (last[eye] - with[eye]).abs() < 1e-4), "{last:?} {with:?}");
+    }
+
+    #[test]
     fn the_user_calibration_coming_and_going_switches_the_cameras_eyelid_cleanly() {
         // The eye server reads the left eye shut all along, the camera sees it open: with the user calibration (the
         // first and last 2 s) the eyelid is the camera's after the grace; without it (in between) the eye server's

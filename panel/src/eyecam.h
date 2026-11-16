@@ -702,6 +702,16 @@ bool setUp(const View& view);
 bool inUse(const View& view, bool cameraLids);
 
 /**
+ * Whether the eye cameras are in use (inUse) without the user calibration (calib_state kCalibUserBit): then they only
+ * close and widen the eyelids, and half-shut eyes go out on Valve's values (frameeyeosc's Live::lids_measured), so the
+ * panel asks for it. Not for a wear still learning its levels (kCalibAutoBit missing) while the user's is there.
+ * @param view eyecam-rec
+ * @param cameraLids the camera_lids setting
+ * @return true to ask for the user calibration
+ */
+bool userCalibWanted(const View& view, bool cameraLids);
+
+/**
  * Whether re-centering by itself waits for eyecam-rec's warm-up: the eye cameras in use (inUse; with them switched off
  * frameeyeosc never takes their eyelids, so there is nothing to wait for) and their eyelids waiting for it
  * (lidsAwaitWarmup).

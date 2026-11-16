@@ -538,6 +538,10 @@ bool inUse(const View& view, bool cameraLids) {
     return cameraLids && setUp(view);
 }
 
+bool userCalibWanted(const View& view, bool cameraLids) {
+    return inUse(view, cameraLids) && (view.status.calibState & kCalibUserBit) == 0;
+}
+
 bool recenterAwaitsWarmup(const View& view, bool cameraLids) {
     return inUse(view, cameraLids) && lidsAwaitWarmup(view.status);
 }

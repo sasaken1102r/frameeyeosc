@@ -2,9 +2,13 @@
 
 ## Unreleased
 
-- Fixed: with the eye cameras set up but without the "User calibration (once)", the eyelids only jumped between 0.75 and 0 and never showed half-shut. Before the user calibration the camera gives every eye that isn't closed as relaxed open, and that was taken as its eyelid: Valve's values were raised to relaxed open, and an eye they read closing was handed to the camera's value. Now, before the user calibration (and until the wear's levels are learnt), the cameras only add closing, widening and the pupils, and between closed and open the eyelid follows Valve's values, as without the cameras. With the user calibration nothing changes
+If you use the eye cameras and haven't done the user calibration yet, do it on the Eye cameras tab (without it, an eye can stay shut while Valve's values read the open eye as closed).
+
+日本語: 目のカメラを使っていて、ユーザー校正がまだの人は、目のカメラタブでユーザー校正をしてね（しないと、Valve の値が開いた目を閉じたと読むとき、目が閉じたままになることがあります）。
+
+- Fixed: with the eye cameras set up but without the "User calibration (once)", the eyelids only jumped between 0.75 and 0 and never showed half-shut. Before the user calibration the camera gives every eye that isn't closed as relaxed open, and that was taken as its eyelid: Valve's values were raised to relaxed open, and an eye they read closing was handed to the camera's value. Now, before the user calibration (and until the wear's levels are learnt), the cameras only add closing, widening and the pupils, and between closed and open the eyelid follows Valve's values, as without the cameras. With the user calibration, once the wear's levels are learnt (about 35 s after putting the headset on), nothing changes
   - Meanwhile an open eye that Valve's values keep reading as closed is not opened by the camera any more; do the user calibration
-- Panel: the "User calibration (once)" row on the Eye cameras tab now says "For half-shut & squint" and "Recommended". Before the user calibration, the left column's eyelid heading says "Valve's values + eye cameras", the Eyelids tab's "Eyelids now" "Valve + eye cameras (shut, widen)", and the "Reading Valve's values" page no longer stands by
+- Panel: the "User calibration (once)" row on the Eye cameras tab now says "For half-shut & squint" and "Recommended". Before the user calibration, the left column's eyelid heading says "Valve's values + eye cameras", the Eyelids tab's "Eyelids now" "Valve + eye cameras (shut, widen)", and the "Reading Valve's values" page no longer stands by. Beside the user calibration row on the Eye cameras tab and at the right of "Eyelids now", the warning colour says "Do the user calibration to send half-shut eyes" and "Half-shut: user calibration", and "Lowest eyelid when narrowed" and ③'s "Camera eyes" value are faded (still to be set)
 
 ## 0.10.4-beta.1 (2026-11-15)
 

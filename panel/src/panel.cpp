@@ -4295,10 +4295,15 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
                              : used[0]            ? t.lidsNowLeft
                              : used[1]            ? t.lidsNowRight
                                                   : t.lidsNowWaiting;
-        const char* note = eyecam::setUp(m.eyecam) ? t.lidsNowSwitch : "";
+        // (without the user calibration, in its place and in the warning colour: half-shut eyes wait for it)
+        const bool wanted = eyecam::userCalibWanted(m.eyecam, v.flag(key::kCameraLids));
+        const char* note = wanted ? t.lidsNowUserWanted : eyecam::setUp(m.eyecam) ? t.lidsNowSwitch : "";
         const double noteSize = 14;
-        const double noteW = note[0] == '\0' ? 0.0 : pen.measure(note, noteSize, false);
-        if (noteW > 0) pen.text(kInnerRight - 16, centerBaseline(y, h, noteSize), note, noteSize, kTextMuted, false, true);
+        const double noteW = note[0] == '\0' ? 0.0 : pen.measure(note, noteSize, wanted);
+        if (noteW > 0) {
+            pen.text(kInnerRight - 16, centerBaseline(y, h, noteSize), note, noteSize, wanted ? kWarning : kTextMuted,
+                     wanted, true);
+        }
         double x = kInnerX + 52;
         x += pen.text(x, centerBaseline(y, h, 15), t.lidsNowLabel, 15, kTextMuted) + 12;
         const double room = kInnerRight - 16 - noteW - 16 - x;
@@ -4456,6 +4461,10 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
     } else {
         const bool onCameras = s.running && (s.camera.used[0] || s.camera.used[1]);
         const bool locked = v.locked(key::kCameraLidFloor);
+        // Faded (still to be set) without the user calibration: the cameras don't measure how far open the eyes are
+        // then, and the floor does nothing (eyecam::userCalibWanted)
+        const bool unmeasured = eyecam::userCalibWanted(m.eyecam, v.flag(key::kCameraLids));
+        if (unmeasured) cairo_push_group(pen.cr);
         drawRowLabel(pen, t, y, kRowH, t.rowLidFloor, t.lidFloorHint, locked, 0, true);
         const double stepperW = 196;
         const double floor = v.number(key::kCameraLidFloor);
@@ -4471,6 +4480,7 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
                 baseline += 17;
             }
         }
+        if (unmeasured) fadeGroup(pen);
         y += kRowH;
         drawRowDivider(pen, y);
     }
@@ -4609,13 +4619,19 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
             const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
             const char* captions[2] = {t.capSnapValve, t.capSnapCamera};
             const double captionW = 84;
+            // The camera eyes' one faded (still to be set) without the user calibration: such eyes take Valve's
+            // (eyecam::userCalibWanted)
+            const bool unmeasured = eyecam::userCalibWanted(m.eyecam, v.flag(key::kCameraLids));
             for (int i = 0; i < 2; ++i) {
+                const bool faded = i == 1 && unmeasured;
+                if (faded) cairo_push_group(pen.cr);
                 const double x = kControlX + i * (captionW + stepperW + 12);
                 const double value = v.number(keys[i]);
                 const double size = fitSize(pen, captions[i], 15, 10, captionW - 6, true);
                 pen.text(x, centerBaseline(y, kRowH, size), captions[i], size, kText, true);
                 drawStepper(pen, x + captionW, y + cy, stepperW, kControlH, keys[i], value,
                             formatSetting(keys[i], value), true, v.locked(keys[i]), -1e9, 1e9, &kSnap);
+                if (faded) fadeGroup(pen);
             }
         }
         y += kRowH;
@@ -8007,10 +8023,14 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         const double sx = kControlX + bw + 16;
         const double sw = kInnerRight - sx;
         if (allowed) {
-            const char* first = user ? t.camUserSide1 : t.camCalibSide1;
-            const char* second = user ? t.camUserSide2 : t.camCalibSide2;
-            pen.text(sx, y + h / 2 - 3, first, fitSize(pen, first, 15, 11, sw, false), kTextMuted);
-            pen.text(sx, y + h / 2 + 17, second, fitSize(pen, second, 15, 11, sw, false), kTextMuted);
+            // The user's not done yet while the cameras are in use: half-shut eyes wait for it, so it asks, in the
+            // warning colour (eyecam::userCalibWanted)
+            const bool wanted = user && eyecam::userCalibWanted(view, lidsOn);
+            const char* first = wanted ? t.camUserWanted1 : user ? t.camUserSide1 : t.camCalibSide1;
+            const char* second = wanted ? t.camUserWanted2 : user ? t.camUserSide2 : t.camCalibSide2;
+            const Color color = wanted ? kWarning : kTextMuted;
+            pen.text(sx, y + h / 2 - 3, first, fitSize(pen, first, 15, 11, sw, wanted), color, wanted);
+            pen.text(sx, y + h / 2 + 17, second, fitSize(pen, second, 15, 11, sw, wanted), color, wanted);
         } else {
             // Why not, on up to two lines like the hints beside the buttons ("\n" where the text breaks them itself)
             const std::string why = !lidsOn ? t.camCalibNeedsLids : t.camUserNeedsCalib;

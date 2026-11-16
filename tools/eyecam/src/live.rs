@@ -572,18 +572,27 @@ impl LongMedian {
 /// Looking up moves the lower lid's margin with the eye, about LOWER_GAZE_UP x the pupil centre's move in the picture
 /// from the wear's usual height (a LongMedian of the centre over LOWER_REST_S s of open frames with the pupil seen),
 /// and looking down about LOWER_GAZE_DOWN x; so the level compared is line - that move - the usual height (the last
-/// pupil seen while it is hidden, as it mostly is in a squint), in iris radii, a LOWER_MEDIAN_N-frame median. One
+/// pupil seen while it is hidden, as it mostly is in a squint), in px, a LOWER_MEDIAN_N-frame median, and the raise is
+/// the relaxed level - that level over the frame's iris radius. In px, not iris radii, because the engine's radius
+/// drifts within a wear (the 2026-11-16 smile recording's left eye: 51 px, then 39-41 px after looking up), and a level
+/// some 0.8 r below the pupil kept in radii moves with it: the relaxed frames there read 0.2 r lowered and a smile
+/// about none (in a simulation on the 10 recordings below: the squint's AUROC 0.927 -> 0.951, over 0.3 58% -> 68%). One
 /// factor for both ways (0.7 up to the first trial) read a look up as a raise (over 0.3 on 8.4% of the look-up frames
-/// with the step line, 27% with the margin line) or, at 0.85-1.0, a look down (32-49%).
+/// with the step line, 27% with the margin line) or, at 0.85-1.0, a look down (32-49%). 0.6 down instead read one
+/// eye's far look down (the pupil 0.9 r lower, the lid 0.45 x that) as a raise on 64% of its frames.
 /// The relaxed level is a low quantile (LOWER_REST_Q) of that level over the last LOWER_REST_S s of open frames with
 /// the pupil seen: a lid raised far enough to matter mostly hides the pupil (the developer's squint steps, 2026-10-07
 /// to 11-02: the pupil seen on 0-21% of the frames on 10 of 12 eyes, 89-90% on the other two), so those frames hardly
-/// reach it. (The median, in a simulation: open frames over 0.3 on 3.6% instead of 2.5%.)
+/// reach it. (The median, in a simulation: open frames over 0.3 on 3.6% instead of 2.8%.)
 /// Replays of 10 of the developer's recordings (20 eyes), the frames not closed, against the first trial (the step
-/// line, one gaze factor 0.7): the squint steps against the open frames (the raise's AUROC) 0.856 -> 0.927; open
-/// frames over 0.3 4.7% -> 2.5% (the 2026-11-02 left eye 20.4% -> 1.4%); the squint steps over 0.3 56% -> 58%, the
-/// raise 0.19 r in the median both; the squint read as a raise on 13 of the 14 eyes with a squint step, the one eye
-/// recorded lying down (2026-10-12 10:02, right) about none: 0.01 r in the median (-0.61 r before).
+/// line, one gaze factor 0.7, levels in radii): the squint steps against the open frames (the raise's AUROC) 0.856 ->
+/// 0.947; open frames over 0.3 4.7% -> 2.2% (the 2026-11-02 left eye 20.4% -> 1.4%; looking up 8.4% -> 0%, down 3.3%
+/// -> 0.2%); the squint steps over 0.3 56% -> 65%, the raise 0.19 -> 0.20 r in the median; the squint read as a raise
+/// on all 14 eyes with a squint step (the one recorded lying down, 2026-10-12 10:02 right, -0.61 -> 0.37 r). The
+/// 2026-11-16 smile recording (normal, smile, normal, squint, look down, look up, 5 s each, 3 rounds; the first second of
+/// each step left out): smiles 0.11 / 0.14 r in the median (left / right), over 0.3 on 35% / 49% of the frames, the
+/// AUROC against the normal frames 0.95 / 0.98 (the third round's smile moved the lid about 0.1 r: 2-3% over 0.3);
+/// squints 0.21 / 0.39 r, 91% / 100%; the normal frames none over 0.3, looking up or down 0.05% / 0.5%.
 /// The raise maps to 0..1 from LOWER_RAISE_START to LOWER_RAISE_FULL iris radii. While the eye is closed and for the
 /// engine's hold after it, the last value is kept: the lower lid hardly moves in a blink, and its line then is where
 /// the closed lids meet.
@@ -600,7 +609,7 @@ struct LowerLid {
 
 /// See `LowerLid`.
 const LOWER_GAZE_UP: f64 = 1.0;
-const LOWER_GAZE_DOWN: f64 = 0.6;
+const LOWER_GAZE_DOWN: f64 = 0.5;
 const LOWER_MEDIAN_N: usize = 9;
 const LOWER_REST_S: f64 = 60.0;
 const LOWER_REST_Q: f64 = 30.0;
@@ -670,7 +679,7 @@ impl LowerLid {
         let c0 = self.cy_rest.value;
         let dv = l.cy - c0;
         let gaze = c0 + dv * if dv < 0.0 { LOWER_GAZE_UP } else { LOWER_GAZE_DOWN };
-        let x = if r_ok { (y - gaze) / r } else { f64::NAN };
+        let x = if r_ok { y - gaze } else { f64::NAN };
         // A held frame's line stays out of the median (a blink's lids meet lower down).
         let xm = self.win.push(if hold { f64::NAN } else { x }, med_n.max(LOWER_MEDIAN_N));
         if rest_ok && xm.is_finite() {
@@ -687,7 +696,7 @@ impl LowerLid {
                 self.rest_value = vision::percentile(&mut v, LOWER_REST_Q);
             }
         }
-        let raise = if self.rest.len() >= LOWER_REST_MIN { self.rest_value - xm } else { f64::NAN };
+        let raise = if self.rest.len() >= LOWER_REST_MIN { (self.rest_value - xm) / r } else { f64::NAN };
         if !hold {
             self.last = if raise.is_finite() {
                 clamp01((raise - LOWER_RAISE_START) / (LOWER_RAISE_FULL - LOWER_RAISE_START))
@@ -5099,10 +5108,10 @@ mod tests {
         // Relaxed for 2 s: no raise
         let (raise, v) = lower_steps(&mut l, 180, 255.0, 200.0, true, false);
         assert!(raise.abs() < 1e-9 && v == 0.0, "{raise} {v}");
-        // Looking down: the pupil 20 px lower, the lower lid 0.6 x that: still relaxed
-        let (raise, v) = lower_steps(&mut l, 20, 267.0, 220.0, true, false);
+        // Looking down: the pupil 20 px lower, the lower lid 0.5 x that: still relaxed
+        let (raise, v) = lower_steps(&mut l, 20, 265.0, 220.0, true, false);
         assert!(raise.abs() < 1e-9 && v == 0.0, "{raise} {v}");
-        // Looking up: the pupil 20 px higher, the lower lid as much: still relaxed (0.6 x would read a raise)
+        // Looking up: the pupil 20 px higher, the lower lid as much: still relaxed (0.5 x would read a raise)
         let (raise, v) = lower_steps(&mut l, 20, 235.0, 180.0, true, false);
         assert!(raise.abs() < 1e-9 && v == 0.0, "{raise} {v}");
         // The lid raised 0.35 R (19.25 px) with the pupil hidden (the last pupil's centre): fully raised once the
@@ -5117,6 +5126,26 @@ mod tests {
         // A lower line below the relaxed level is no raise either
         let (raise, v) = lower_steps(&mut l, 20, 255.0 + 10.0, 200.0, false, false);
         assert!(raise < 0.0 && v == 0.0, "{raise} {v}");
+    }
+
+    #[test]
+    fn the_lower_lid_raise_does_not_move_when_the_iris_radius_estimate_drifts() {
+        // Relaxed at R 50 (the line 40 px below the pupil), then the same picture with the radius read as 40 px: no
+        // raise; 10 px higher, 0.25 R at the new radius
+        let mut l = LowerLid::new();
+        let lines = |step: f64| LowerLines { step, ridge: f64::NAN, cy: 200.0, seen: true };
+        for k in 0..300 {
+            l.step(lines(240.0), 50.0, k % 2 == 0, false, false, 5, 45.0);
+        }
+        let mut last = (f64::NAN, f64::NAN, f64::NAN);
+        for _ in 0..20 {
+            last = l.step(lines(240.0), 40.0, false, false, false, 5, 45.0);
+        }
+        assert!(last.0.abs() < 1e-9 && last.1 == 0.0, "{last:?}");
+        for _ in 0..20 {
+            last = l.step(lines(230.0), 40.0, false, false, false, 5, 45.0);
+        }
+        assert!((last.0 - 0.25).abs() < 1e-9, "{last:?}");
     }
 
     #[test]

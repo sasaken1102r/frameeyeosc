@@ -192,4 +192,21 @@ bool readUpdateBeta(const std::string& path);
  */
 bool writeUpdateBeta(const std::string& path, bool on, std::string& error);
 
+/**
+ * Whether changing the output asks about its recommended settings ("output_prompt"; the prompt's "Don't show again"
+ * turns it off, the Version page switches it).
+ * @param path the file
+ * @return it (true, asking, the first time or when the file is missing, broken or not a boolean)
+ */
+bool readOutputPrompt(const std::string& path);
+
+/**
+ * Remember whether changing the output asks about its recommended settings (the file's other members are kept).
+ * @param path the file (its folder is made if missing)
+ * @param on whether it asks
+ * @param error why it failed
+ * @return true if written
+ */
+bool writeOutputPrompt(const std::string& path, bool on, std::string& error);
+
 }  // namespace ui_state

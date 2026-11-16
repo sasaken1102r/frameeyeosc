@@ -542,6 +542,10 @@ bool userCalibWanted(const View& view, bool cameraLids) {
     return inUse(view, cameraLids) && (view.status.calibState & kCalibUserBit) == 0;
 }
 
+bool askUserCalib(bool before, bool after, const View& view) {
+    return !before && after && userCalibWanted(view, true);
+}
+
 bool recenterAwaitsWarmup(const View& view, bool cameraLids) {
     return inUse(view, cameraLids) && lidsAwaitWarmup(view.status);
 }

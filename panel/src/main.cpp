@@ -345,7 +345,8 @@ void printUsage() {
         "      --fake-rings-off  The dots' rings off (gaze_debug_rings)\n"
         "      --fake-dominant-eye left|right  \"Track Dominant Eye Only\" is on with that eye\n"
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
-        "      --fake-prompt vrchat|livelink|frameeyeosc  The recommended-settings question\n"
+        "      --fake-prompt vrchat|livelink|frameeyeosc|usercal  The recommended-settings question (usercal: the one\n"
+        "                 asking for the user calibration)\n"
         "      --fake-autostart on|off|missing|unknown\n"
         "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed|\n"
         "                    test|testbadge|onbeta|back|backmanual\n"
@@ -1137,8 +1138,8 @@ bool parseOptions(int argc, char** argv, Options& options) {
         } else if (arg == "--fake-prompt" && hasNext) {
             options.fakePrompt = argv[++i];
             if (options.fakePrompt != kOutputVrchat && options.fakePrompt != kOutputLivelink &&
-                options.fakePrompt != kOutputModule) {
-                std::fprintf(stderr, "--fake-prompt must be vrchat, livelink or frameeyeosc: %s\n",
+                options.fakePrompt != kOutputModule && options.fakePrompt != "usercal") {
+                std::fprintf(stderr, "--fake-prompt must be vrchat, livelink, frameeyeosc or usercal: %s\n",
                              options.fakePrompt.c_str());
                 return false;
             }
@@ -2893,7 +2894,11 @@ int runDumpPng(const Options& options) {
         }
         if (options.previewQuit) panel.armQuitForPreview();
         if (options.previewReset) panel.armResetForPreview();
-        if (!options.fakePrompt.empty()) panel.showPrompt(options.fakePrompt);
+        if (options.fakePrompt == "usercal") {
+            panel.askUserCalib();
+        } else if (!options.fakePrompt.empty()) {
+            panel.showPrompt(options.fakePrompt);
+        }
         if (options.previewUpdatePrompt) panel.showUpdatePrompt(model.update.latest, model.update.backToStable);
         panel.setUpdateBeta(options.updateBeta);
         std::unique_ptr<frame_updater::UpdateChecker> updater;
@@ -3419,12 +3424,21 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
     const SettingsView view(model);
     std::function<void(JsonValue&)> change;
     std::string openPrompt;
+    // Turning the eye cameras on without the user calibration asks for it once written (eyecam::askUserCalib)
+    bool askUserCalib = false;
     bool reset = false;
     switch (hit.action) {
         case PanelAction::None:
         case PanelAction::Tab:
         case PanelAction::Quit: return;
         case PanelAction::PromptNo: std::fprintf(stderr, "[action] recommended settings: no\n"); return;
+        case PanelAction::PromptNever:
+        case PanelAction::OutputPromptSet:
+            // Switched in the panel; the loop saves it to panel.json
+            std::fprintf(stderr, "[action] ask when changing output: %s\n", panel.outputPrompt() ? "on" : "off");
+            return;
+        case PanelAction::UserCalibNow:
+        case PanelAction::UserCalibLater: return;
         case PanelAction::AutostartOn:
         case PanelAction::AutostartOff:
             std::fprintf(stderr, "[action] start with SteamVR: %s\n", hit.action == PanelAction::AutostartOn ? "on" : "off");
@@ -3434,6 +3448,8 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             const std::string name = hit.key;
             const bool value = hit.arg != 0;
             change = [name, value](JsonValue& root) { root.set(name, JsonValue::makeBool(value)); };
+            askUserCalib =
+                name == key::kCameraLids && eyecam::askUserCalib(view.flag(key::kCameraLids), value, model.eyecam);
             break;
         }
         case PanelAction::SetInteger: {
@@ -3494,7 +3510,8 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
                 root.set(key::kOutput, JsonValue::makeString(output));
                 root.set(key::kPort, JsonValue::makeNull());
             };
-            openPrompt = output;
+            // (unless its "Don't show again" was pressed, or the Version page's "Ask when changing output" is off)
+            if (panel.outputPrompt()) openPrompt = output;
             model.moduleLinkError.clear();  // (it was about the output before)
             break;
         }
@@ -4000,6 +4017,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
         model.panelError.clear();
         model.panelErrorBroken = false;
         if (!openPrompt.empty()) panel.showPrompt(openPrompt);
+        if (askUserCalib && panel.askUserCalib()) {
+            std::fprintf(stderr, "[action] eye cameras on: asking for the user calibration\n");
+        }
         // "Other apps": written, back to the list
         if (hit.action == PanelAction::ExtraSave || hit.action == PanelAction::ExtraDeleteConfirm ||
             hit.action == PanelAction::ExtraRowDeleteConfirm) {
@@ -4330,6 +4350,9 @@ int runOverlay(const Options& options) {
     // "Get test versions", as left
     bool savedBeta = ui_state::readUpdateBeta(uiStatePath);
     panel.setUpdateBeta(savedBeta);
+    // ...and whether changing the output asks about its recommendation
+    bool savedOutputPrompt = ui_state::readOutputPrompt(uiStatePath);
+    panel.setOutputPrompt(savedOutputPrompt);
     frame_updater::UpdateChecker updater(updaterConfig(savedBeta));
     std::fprintf(stderr, "[update] frameeyeosc-panel %s, checking %s, %s channel\n", FRAMEEYEOSC_VERSION,
                  model.config.flag(key::kUpdateCheck) ? "on" : "off", savedBeta ? "beta" : "stable");
@@ -5436,6 +5459,14 @@ int runOverlay(const Options& options) {
             savedBeta = panel.updateBeta();
             std::string error;
             if (!ui_state::writeUpdateBeta(uiStatePath, savedBeta, error)) std::fprintf(stderr, "[panel] %s\n", error.c_str());
+        }
+        // ...and "Ask when changing output" (switched on the Version page, or off by the prompt's "Don't show again")
+        if (panel.outputPrompt() != savedOutputPrompt) {
+            savedOutputPrompt = panel.outputPrompt();
+            std::string error;
+            if (!ui_state::writeOutputPrompt(uiStatePath, savedOutputPrompt, error)) {
+                std::fprintf(stderr, "[panel] %s\n", error.c_str());
+            }
         }
 
         // The diagnostics page: redrawn when anything on it changes (the tool's checksum is looked at again too, which

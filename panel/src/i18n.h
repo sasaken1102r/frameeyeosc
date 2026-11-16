@@ -1049,6 +1049,12 @@ struct UiText {
     const char* promptModuleDetail2;
     const char* promptYes;
     const char* promptNo;
+    const char* promptNever;  ///< ...the recommendation's third button: not asked again (panel.json's output_prompt)
+    const char* promptUserCalib;  ///< the prompt after turning the eye cameras on without the user calibration
+    const char* promptUserCalibDetail1;
+    const char* promptUserCalibDetail2;
+    const char* promptUserCalibNow;  ///< ...its buttons: to the eye cameras tab, or closed
+    const char* promptUserCalibLater;
 
     // Updates. The texts are vendor/frame-updater/strings.md word for word (same key names); rowVersion and
     // checkedFormat are this panel's own (the version section's title, and the version row's hint on the Advanced tab)
@@ -1082,6 +1088,8 @@ struct UiText {
     // Test versions (frame-updater's beta channel; strings.md's "テスト版" section)
     const char* rowUpdateBeta;              ///< "Get test versions" (panel.json's update_beta)
     const char* hintUpdateBeta;             ///< under it
+    const char* rowOutputPrompt;            ///< "Ask when changing output" (panel.json's output_prompt)
+    const char* hintOutputPrompt;           ///< under it
     const char* hintUpdateBetaKeep;         ///< under it instead, while it is off and a test version runs
     const char* updateTestAvailable;        ///< a small badge beside it: off, and a newer test version exists
     const char* updateAvailableTestFormat;  ///< Available, the new version a test version: "Test version %s is available"

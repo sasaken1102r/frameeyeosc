@@ -1446,6 +1446,31 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::PromptNo:
             promptOutput_.clear();
             return hit;
+        case PanelAction::PromptNever:
+            // Not applied, and not asked again (the caller saves it)
+            promptOutput_.clear();
+            outputPrompt_ = false;
+            return hit;
+        case PanelAction::OutputPromptSet:
+            // Switched here; the caller saves it
+            if (outputPrompt_ == (hit.arg != 0)) return {};
+            outputPrompt_ = hit.arg != 0;
+            return hit;
+        case PanelAction::UserCalibNow:
+            // To the eye cameras tab, where its button is (as a tab press would)
+            userCalibPromptOpen_ = false;
+            setTab(PanelTab::Eyecam);
+            closeExtrasFlow();
+            closeAppsList();
+            closeContrib();
+            historyOpen_ = false;
+            diagOpen_ = false;
+            recordOpen_.clear();
+            recordsAllOpen_ = false;
+            return {};
+        case PanelAction::UserCalibLater:
+            userCalibPromptOpen_ = false;
+            return {};
         case PanelAction::UpdateConfirm:
         case PanelAction::UpdateCancel:
             updatePromptVersion_.clear();
@@ -1505,6 +1530,15 @@ void EyePanel::showPrompt(const std::string& output) {
     promptOutput_ = output;
     hover_ = {};
     pressed_ = {};
+}
+
+bool EyePanel::askUserCalib() {
+    if (userCalibAsked_ || promptOpen()) return false;
+    userCalibAsked_ = true;
+    userCalibPromptOpen_ = true;
+    hover_ = {};
+    pressed_ = {};
+    return true;
 }
 
 void EyePanel::openHostEntry(const std::string& text) {
@@ -5205,6 +5239,22 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
                       updateBeta_ ? 0 : 1, 16, false);
         ey += h + 14;
     }
+    // "Ask when changing output" (panel.json's output_prompt, as the recommendation prompt's "Don't show again" leaves
+    // it): On / Off, laid out like "Get test versions"
+    {
+        const double h = 46;
+        const double segW = std::min(200.0, right - kInnerX - 300);
+        const double labelW = right - segW - 16 - kInnerX;
+        const double labelSize = fitSize(pen, t.rowOutputPrompt, 18, 13, labelW, true);
+        pen.text(kInnerX, ey + 20, t.rowOutputPrompt, labelSize, kText, true);
+        pen.text(kInnerX, ey + 40, t.hintOutputPrompt, fitSize(pen, t.hintOutputPrompt, 14, 10, labelW, false),
+                 kTextMuted);
+        drawSegmented(pen, right - segW, ey + 2, segW, 42,
+                      {{t.on, {PanelAction::OutputPromptSet, nullptr, 1}},
+                       {t.off, {PanelAction::OutputPromptSet, nullptr, 0}}},
+                      outputPrompt_ ? 0 : 1, 16, false);
+        ey += h + 14;
+    }
     // Last, the other Frame apps: at the bottom of the card while the page fits, else under the rest (scrolled to)
     if (!m.apps.entries.empty()) {
         const double viewH = kAdvViewBottom - kAdvPageTop;
@@ -6580,6 +6630,8 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     pen.roundedRect(0, 0, kWidth, kHeight, 24);
     cairo_fill(pen.cr);
     const bool update = !updatePromptVersion_.empty();
+    // (the user calibration's only while neither of the others is open: askUserCalib)
+    const bool userCalib = !update && promptOutput_.empty() && userCalibPromptOpen_;
     const bool livelink = promptOutput_ == kOutputLivelink;
     const bool module = promptOutput_ == kOutputModule;
     const double w = 760;
@@ -6589,15 +6641,18 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     drawCard(pen, x, y, w, h, 24, kCard, kAccent, 2);
     const std::string title = update ? formatText(updatePromptBack_ ? t.updateBackConfirmFormat : t.updateConfirmFormat,
                                                   updatePromptVersion_)
+                                     : userCalib  ? t.promptUserCalib
                                      : livelink   ? t.promptLivelink
                                      : module     ? t.promptModule
                                                   : t.promptVrchat;
     const double titleSize = fitSize(pen, title, 24, 16, w - 60, true);
     textCentered(pen, x + w / 2, y + 62, title, titleSize, kText, true);
-    std::string detail1 = livelink   ? t.promptLivelinkDetail1
+    std::string detail1 = userCalib  ? t.promptUserCalibDetail1
+                          : livelink ? t.promptLivelinkDetail1
                           : module   ? t.promptModuleDetail1
                                      : t.promptVrchatDetail1;
-    std::string detail2 = livelink   ? t.promptLivelinkDetail2
+    std::string detail2 = userCalib  ? t.promptUserCalibDetail2
+                          : livelink ? t.promptLivelinkDetail2
                           : module   ? t.promptModuleDetail2
                                      : t.promptVrchatDetail2;
     if (update) {
@@ -6612,16 +6667,26 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
                      false);
     }
     const int arg = std::max(0, argOfOutput(promptOutput_));
-    const double bw = 240;
+    // The recommendation's has a third, "Don't show again" (outputPrompt off), so its buttons are narrower
+    const bool never = !update && !userCalib;
+    const int count = never ? 3 : 2;
+    const double bw = never ? 220 : 240;
+    const double gap = never ? 20 : 24;
+    const double left = x + (w - count * bw - (count - 1) * gap) / 2;
     const double by = y + h - 32 - kControlH - 4;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < count; ++i) {
         const bool yes = i == 0;
         PanelHit hit {yes ? PanelAction::PromptYes : PanelAction::PromptNo, nullptr, arg};
+        if (i == 2) hit = {PanelAction::PromptNever, nullptr, arg};
         if (update) hit = {yes ? PanelAction::UpdateConfirm : PanelAction::UpdateCancel, nullptr, 0};
-        const double bx = yes ? x + w / 2 - bw - 12 : x + w / 2 + 12;
+        if (userCalib) hit = {yes ? PanelAction::UserCalibNow : PanelAction::UserCalibLater, nullptr, 0};
+        const double bx = left + i * (bw + gap);
         const int pointer = pointerState(hit);
         const char* updateYes = updatePromptBack_ ? t.updateBackConfirmYes : t.updateConfirmYes;
-        const std::string label = update ? (yes ? updateYes : t.updateConfirmNo) : (yes ? t.promptYes : t.promptNo);
+        const std::string label = update      ? (yes ? updateYes : t.updateConfirmNo)
+                                  : userCalib ? (yes ? t.promptUserCalibNow : t.promptUserCalibLater)
+                                  : i == 2    ? t.promptNever
+                                              : (yes ? t.promptYes : t.promptNo);
         if (yes) {
             fillRounded(pen, bx, by, bw, kControlH + 4, (kControlH + 4) / 2, pointer == 2 ? kAccentPressed : kAccent);
         } else {

@@ -581,9 +581,9 @@ impl LongMedian {
 /// reach it. (The median, in a simulation: open frames over 0.3 on 3.6% instead of 2.5%.)
 /// Replays of 10 of the developer's recordings (20 eyes), the frames not closed, against the first trial (the step
 /// line, one gaze factor 0.7): the squint steps against the open frames (the raise's AUROC) 0.856 -> 0.927; open
-/// frames over 0.3 4.7% -> 2.5% (the 2026-11-02 left eye 20.4% -> 1.6%); the squint steps over 0.3 56% -> 60%, the
-/// raise 0.19 r in the median both; the squint read as a raise on 13 of the 14 eyes with a squint step (the one eye
-/// recorded lying down, 2026-10-12 10:02 right, about none).
+/// frames over 0.3 4.7% -> 2.5% (the 2026-11-02 left eye 20.4% -> 1.4%); the squint steps over 0.3 56% -> 58%, the
+/// raise 0.19 r in the median both; the squint read as a raise on 13 of the 14 eyes with a squint step, the one eye
+/// recorded lying down (2026-10-12 10:02, right) about none: 0.01 r in the median (-0.61 r before).
 /// The raise maps to 0..1 from LOWER_RAISE_START to LOWER_RAISE_FULL iris radii. While the eye is closed and for the
 /// engine's hold after it, the last value is kept: the lower lid hardly moves in a blink, and its line then is where
 /// the closed lids meet.

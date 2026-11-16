@@ -453,10 +453,17 @@ const CLOSE_DOWN_HOLD_S: f64 = 0.15;
 const CAMERA_UNMEASURED_SHUT: f32 = CLOSE_DOWN_OPEN;
 // The grace for that, longer than CAMERA_DOUBT_GRACE with the user calibration: an eye closing slowly reads below
 // 0.25 a while before the camera calls it closed, and opening it then sends it 0 -> 0.75 -> 0. Replayed without the
-// user calibration (the developer's six recordings, 19 minutes; and three of issue 43's reporter), the episodes under
-// 1 s that went out at 0.7 or more, and for how long: 39 / 6.5 s at 0.3 s, 29 / 3.6 s at 0.6 s, 25 / 1.6 s at 1 s,
-// 21 / 1.0 s at 1.5 s; the time of the episodes of 2 s or more (stuck eyes) that went out open 67.6%, 67.2%, 66.5%,
-// 65.5% (the reporter's stuck left eye 87.6% -> 87.0% at 1 s).
+// user calibration (the developer's six recordings, 19 minutes; and three of issue 43's reporter), at a grace of 0.3 /
+// 0.6 / 1 / 1.5 s:
+// - Stretches under 1 s with the eye server below 0.25 and the camera (in use) seeing the eye not closed, 346 in the
+//   developer's: an eye not out open just before went out at 0.7 or more (a flick) in 19 / 11 / 8 / 5 of them, for
+//   4.8 / 2.2 / 0.8 / 0.5 s in all. (Another 20 / 18 / 17 / 16 were an eye already out open going on through a short
+//   stretch; starting the doubt over at each "closed" of the camera before the hand-over took 1 s to 7 flicks and
+//   0.6 s, so it is not done.)
+// - Stuck eyes, the share of such stretches' time out at 0.7 or more, from their start: those of 2 s or more 67.6 /
+//   67.2 / 66.5 / 65.5%, issue 43's reporter's left eye 87.6 / 87.3 / 87.0 / 86.5%. Counted only once the eye server
+//   has read below 0.25 for 0.3 s (replay_stats' way, the camera's "closed" not splitting a stretch), that eye's is
+//   89.1 / 85.6 / 80.4% (0.3 / 0.6 / 1 s): the longer grace costs the start of each stretch.
 const CAMERA_UNMEASURED_GRACE: f64 = 1.0;
 // The camera's own eyelid goes nearly to 0 in a hard squint (0.00-0.06 with its squint at 1.0 on 2026-10-07), which
 // looks closed on an avatar, so an eye the camera sees open is held at --camera-lid-floor (camera_lid_floor) and the

@@ -585,16 +585,24 @@ impl LongMedian {
 /// The relaxed level is a low quantile (LOWER_REST_Q) of that level over the last LOWER_REST_S s of open frames with
 /// the pupil seen: a lid raised far enough to matter mostly hides the pupil (the developer's squint steps, 2026-10-07
 /// to 11-02: the pupil seen on 0-21% of the frames on 10 of 12 eyes, 89-90% on the other two), so those frames hardly
-/// reach it. (The median, in a simulation: open frames over 0.3 on 3.6% instead of 2.8%.)
+/// reach it. (The median, in a simulation: open frames over 0.3 on 3.6% instead of 2.8%.) But a smile keeps the pupil
+/// in view (96-98% of the 2026-11-16 smile recording's smile frames), and once raised frames are more than about 30%
+/// of the window the quantile is among them: the relaxed level drifts up to the smile and the smile fades. So a frame
+/// reading over LOWER_LEARN_MAX r above the relaxed level does not teach it, unless such frames have been turned away
+/// for LOWER_STALL_S s of samples in a row: then they teach it again until one is not raised (a relaxed level learnt
+/// wrong, say from a wear that slipped, can't stay stuck). In the replays below: the smile recording's right eye's
+/// smile frames over 0.3 49% -> 71%, for 0.1-0.2 pt more open frames over 0.3 on 4 of the 22 eyes; nothing else lower
+/// (in a simulation, narrower gates, 0.05-0.20 r, read everything higher and separated worse). The guard never fired
+/// there.
 /// Replays of 10 of the developer's recordings (20 eyes), the frames not closed, against the first trial (the step
 /// line, one gaze factor 0.7, levels in radii): the squint steps against the open frames (the raise's AUROC) 0.856 ->
 /// 0.947; open frames over 0.3 4.7% -> 2.2% (the 2026-11-02 left eye 20.4% -> 1.4%; looking up 8.4% -> 0%, down 3.3%
 /// -> 0.2%); the squint steps over 0.3 56% -> 65%, the raise 0.19 -> 0.20 r in the median; the squint read as a raise
 /// on all 14 eyes with a squint step (the one recorded lying down, 2026-10-12 10:02 right, -0.61 -> 0.37 r). The
 /// 2026-11-16 smile recording (normal, smile, normal, squint, look down, look up, 5 s each, 3 rounds; the first second of
-/// each step left out): smiles 0.11 / 0.14 r in the median (left / right), over 0.3 on 35% / 49% of the frames, the
-/// AUROC against the normal frames 0.95 / 0.98 (the third round's smile moved the lid about 0.1 r: 2-3% over 0.3);
-/// squints 0.21 / 0.39 r, 91% / 100%; the normal frames none over 0.3, looking up or down 0.05% / 0.5%.
+/// each step left out): smiles 0.11 / 0.21 r in the median (left / right), over 0.3 on 35% / 71% of the frames, the
+/// AUROC against the normal frames 0.96 / 0.98 (the left eye's third-round smile moved the lid about 0.1 r: 3% over
+/// 0.3); squints 0.21 / 0.44 r, 92% / 100%; the normal frames none over 0.3, looking up or down 0.05% / 0.8%.
 /// The raise maps to 0..1 from LOWER_RAISE_START to LOWER_RAISE_FULL iris radii. While the eye is closed and for the
 /// engine's hold after it, the last value is kept: the lower lid hardly moves in a blink, and its line then is where
 /// the closed lids meet.
@@ -607,6 +615,8 @@ struct LowerLid {
     /// The pupil centre's usual height (px) and the step line's offset below the margin line (iris radii).
     cy_rest: LongMedian,
     offset: LongMedian,
+    /// Relaxed-level samples turned away in a row for being raised (LOWER_LEARN_MAX, LOWER_STALL_S).
+    turned_away: usize,
 }
 
 /// See `LowerLid`.
@@ -622,6 +632,8 @@ const LOWER_RAISE_FULL: f64 = 0.35;
 const LOWER_RIDGE_ABOVE: f64 = 0.6;
 const LOWER_RIDGE_BELOW: f64 = 0.05;
 const LOWER_OFFSET_NEAR: f64 = 0.10;
+const LOWER_LEARN_MAX: f64 = 0.30;
+const LOWER_STALL_S: f64 = 20.0;
 
 /// One frame of the lower-lid trial's lines (px): the engine's lower lid line, the margin line, the pupil centre the
 /// lids were searched from, and whether this frame's pupil was seen.
@@ -643,6 +655,7 @@ impl LowerLid {
             last: 0.0,
             cy_rest: LongMedian::new(LOWER_REST_S),
             offset: LongMedian::new(LOWER_REST_S),
+            turned_away: 0,
         }
     }
 
@@ -684,7 +697,18 @@ impl LowerLid {
         let x = if r_ok { y - gaze } else { f64::NAN };
         // A held frame's line stays out of the median (a blink's lids meet lower down).
         let xm = self.win.push(if hold { f64::NAN } else { x }, med_n.max(LOWER_MEDIAN_N));
-        if rest_ok && xm.is_finite() {
+        // A raised frame does not teach the relaxed level, unless raised frames have been turned away for too long.
+        let mut learn = rest_ok && xm.is_finite();
+        if learn && self.rest.len() >= LOWER_REST_MIN {
+            let raised = (self.rest_value - xm) / r > LOWER_LEARN_MAX;
+            if raised && self.turned_away < ((LOWER_STALL_S * long_hz).round() as usize).max(1) {
+                self.turned_away += 1;
+                learn = false;
+            } else if !raised {
+                self.turned_away = 0;
+            }
+        }
+        if learn {
             // As LongMedian, at the quantile: the last LOWER_REST_S s, recomputed once a second (each sample at first).
             let cap = ((LOWER_REST_S * long_hz).round() as usize).max(1);
             while self.rest.len() >= cap {
@@ -5148,6 +5172,38 @@ mod tests {
             last = l.step(lines(230.0), 40.0, false, false, false, 5, 45.0);
         }
         assert!((last.0 - 0.25).abs() < 1e-9, "{last:?}");
+    }
+
+    #[test]
+    fn a_long_raise_does_not_teach_the_relaxed_level_until_the_stall_guard_lets_it() {
+        // Relaxed at 255 for 20 s, then a raise of 0.4 R (pupil seen, as in a smile) for 30 s: it stays a raise through
+        // the first 20 s of samples (not learnt), then the guard lets the raised frames teach the level, and the
+        // raise shrinks as the window fills with them
+        let r = 55.0;
+        let mut l = LowerLid::new();
+        let lines = |step: f64| LowerLines { step, ridge: f64::NAN, cy: 200.0, seen: true };
+        for k in 0..1800 {
+            l.step(lines(255.0), r, k % 2 == 0, false, false, 5, 45.0);
+        }
+        let raised = 255.0 - 0.4 * r;
+        let mut at = Vec::new();
+        for k in 0..2700 {
+            at.push(l.step(lines(raised), r, k % 2 == 0, false, false, 5, 45.0).0);
+        }
+        // 900 samples (20 s at 45 a second) turned away: 1800 frames
+        assert!(at[100..1790].iter().all(|v| (v - 0.4).abs() < 1e-9), "{:?}", &at[1780..1790]);
+        // Once the level has come up to within LOWER_LEARN_MAX the raised frames are not turned away any more
+        assert!(at[2699] < 0.2 && l.turned_away == 0, "{} {}", at[2699], l.turned_away);
+        // Under LOWER_LEARN_MAX the frames teach it as before: 0.2 R for 60 s becomes the relaxed level's quantile
+        let mut m = LowerLid::new();
+        for k in 0..1800 {
+            m.step(lines(255.0), r, k % 2 == 0, false, false, 5, 45.0);
+        }
+        let mut last = f64::NAN;
+        for k in 0..5400 {
+            last = m.step(lines(255.0 - 0.2 * r), r, k % 2 == 0, false, false, 5, 45.0).0;
+        }
+        assert!(last.abs() < 1e-9 && m.turned_away == 0, "{last}");
     }
 
     #[test]

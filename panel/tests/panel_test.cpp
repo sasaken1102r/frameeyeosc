@@ -1504,15 +1504,20 @@ void testPrompts(const FontSet& fonts) {
             CHECK(press(panel, PanelAction::UserCalibNow).action == PanelAction::None);
             CHECK(!panel.promptOpen() && panel.tab() == PanelTab::Eyecam);
         }
-        // "Ask when changing output" on the Version page: On / Off, kept by the panel (the caller saves it); the page
-        // still fits without scrolling
+        // "Ask when changing output" on the "Having trouble" page (not on "Version"): On / Off, kept by the panel (the
+        // caller saves it), inside the card
         {
             EyePanel panel(fonts);
             panel.setTab(PanelTab::Advanced);
             panel.setAdvPage(AdvPage::Version);
             panel.render(m);
+            CHECK(hits(panel, PanelAction::OutputPromptSet).empty());
+            panel.setAdvPage(AdvPage::Trouble);
+            panel.render(m);
             CHECK(hits(panel, PanelAction::OutputPromptSet).size() == 2);
-            CHECK(panel.advancedMaxScroll() == 0.0 && !panel.wantsScroll());
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::OutputPromptSet)) {
+                CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676);
+            }
             const PanelHit off = pressArg(panel, PanelAction::OutputPromptSet, 0);
             CHECK(off.action == PanelAction::OutputPromptSet && !panel.outputPrompt());
             panel.render(m);
@@ -1610,7 +1615,8 @@ void testDiagFromEyecam(const FontSet& fonts) {
 
 void testPagesFit(const FontSet& fonts) {
     // Every sub-page fits its view (no ▲ / ▼, nothing cut), with eyecam-rec and without, in both languages, with
-    // records, an eye log that failed and keys locked by the command line
+    // records, an eye log that failed and keys locked by the command line. All but "Having trouble", whose last row,
+    // "Ask when changing output", is scrolled to with the eye camera speed and three records above it
     for (const bool eyecam : {true, false}) {
         for (const Language language : {Language::Ja, Language::En}) {
             for (const AdvPage page : {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files,
@@ -1634,10 +1640,19 @@ void testPagesFit(const FontSet& fonts) {
                 panel.setTab(PanelTab::Advanced);
                 panel.setAdvPage(page);
                 panel.render(m);
-                CHECK(panel.advancedMaxScroll() == 0.0);
-                CHECK(!panel.wantsScroll());
-                CHECK(hits(panel, PanelAction::AdvancedScroll).empty());
-                CHECK(!panel.scroll(40));
+                if (page == AdvPage::Trouble) {
+                    // Scrolled only a little (less than a third of the view), to the row
+                    CHECK(panel.advancedMaxScroll() > 0.0 && panel.advancedMaxScroll() < 100.0);
+                    CHECK(panel.wantsScroll() && !hits(panel, PanelAction::AdvancedScroll).empty());
+                    CHECK(panel.scroll(200));
+                    panel.render(m);
+                    CHECK(hits(panel, PanelAction::OutputPromptSet).size() == 2);
+                } else {
+                    CHECK(panel.advancedMaxScroll() == 0.0);
+                    CHECK(!panel.wantsScroll());
+                    CHECK(hits(panel, PanelAction::AdvancedScroll).empty());
+                    CHECK(!panel.scroll(40));
+                }
                 // Everything below the sub-tabs, inside the card
                 for (const EyePanel::HitArea& area : panel.hitAreas()) {
                     if (area.hit.action == PanelAction::Tab || area.x < 400) continue;
@@ -4554,7 +4569,8 @@ void testEyeRate(const FontSet& fonts) {
                     if (b.hit != a.hit) CHECK(!overlaps(a, b));
                 }
             }
-            CHECK(!panel.wantsScroll());
+            // (with the setting the page scrolls a little to its last row, "Ask when changing output")
+            CHECK(panel.wantsScroll() == exists);
             CHECK(pressArg(panel, PanelAction::EyeRateChoose, static_cast<int>(eye_rate::Choice::SteamVr)).action ==
                   (exists ? PanelAction::EyeRateChoose : PanelAction::None));
         }

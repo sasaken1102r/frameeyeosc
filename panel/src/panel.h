@@ -179,7 +179,7 @@ enum class PanelAction {
                        ///< the key for SteamVR's default)
     PromptNever,       ///< the recommendation prompt's "Don't ask again": it closes and outputPrompt goes off (handled
                        ///< inside; the caller saves it to panel.json)
-    OutputPromptSet,   ///< the Version page's "Ask when changing output": arg 1 on, 0 off (the panel keeps it,
+    OutputPromptSet,   ///< the "Having trouble" page's "Ask when changing output": arg 1 on, 0 off (the panel keeps it,
                        ///< outputPrompt; the caller saves it)
     UserCalibNow,      ///< the prompt asking for the user calibration: "Do it now" opens the eye cameras tab (handled
                        ///< inside)

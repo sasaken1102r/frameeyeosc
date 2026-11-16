@@ -5239,22 +5239,6 @@ double EyePanel::drawVersionPage(const Pen& pen, const UiText& t, const PanelMod
                       updateBeta_ ? 0 : 1, 16, false);
         ey += h + 14;
     }
-    // "Ask when changing output" (panel.json's output_prompt, as the recommendation prompt's "Don't ask again" leaves
-    // it): On / Off, laid out like "Get test versions"
-    {
-        const double h = 46;
-        const double segW = std::min(200.0, right - kInnerX - 300);
-        const double labelW = right - segW - 16 - kInnerX;
-        const double labelSize = fitSize(pen, t.rowOutputPrompt, 18, 13, labelW, true);
-        pen.text(kInnerX, ey + 20, t.rowOutputPrompt, labelSize, kText, true);
-        pen.text(kInnerX, ey + 40, t.hintOutputPrompt, fitSize(pen, t.hintOutputPrompt, 14, 10, labelW, false),
-                 kTextMuted);
-        drawSegmented(pen, right - segW, ey + 2, segW, 42,
-                      {{t.on, {PanelAction::OutputPromptSet, nullptr, 1}},
-                       {t.off, {PanelAction::OutputPromptSet, nullptr, 0}}},
-                      outputPrompt_ ? 0 : 1, 16, false);
-        ey += h + 14;
-    }
     // Last, the other Frame apps: at the bottom of the card while the page fits, else under the rest (scrolled to)
     if (!m.apps.entries.empty()) {
         const double viewH = kAdvViewBottom - kAdvPageTop;
@@ -5605,6 +5589,24 @@ double EyePanel::drawTroublePage(const Pen& pen, const UiText& t, const PanelMod
         drawButton(pen, right - w, y, w, h, all, {PanelAction::RecordsAll, nullptr, 0}, !records.empty(), false, 16);
         pen.text(kInnerX, centerBaseline(y, h, 14), ellipsize(pen, t.recordsSsh, 14, false, right - w - 16 - kInnerX, false),
                  14, kTextMuted);
+        y += h;
+    }
+    // Last, "Ask when changing output" (panel.json's output_prompt, as the recommendation prompt's "Don't ask again"
+    // leaves it): On / Off, laid out like the Version page's "Get test versions". With the eye camera speed and two or
+    // more records the page scrolls to it
+    {
+        y += 22;
+        const double h = 46;
+        const double segW = std::min(200.0, right - kInnerX - 300);
+        const double labelW = right - segW - 16 - kInnerX;
+        const double labelSize = fitSize(pen, t.rowOutputPrompt, 18, 13, labelW, true);
+        pen.text(kInnerX, y + 20, t.rowOutputPrompt, labelSize, kText, true);
+        pen.text(kInnerX, y + 40, t.hintOutputPrompt, fitSize(pen, t.hintOutputPrompt, 14, 10, labelW, false),
+                 kTextMuted);
+        drawSegmented(pen, right - segW, y + 2, segW, 42,
+                      {{t.on, {PanelAction::OutputPromptSet, nullptr, 1}},
+                       {t.off, {PanelAction::OutputPromptSet, nullptr, 0}}},
+                      outputPrompt_ ? 0 : 1, 16, false);
         y += h;
     }
     return y + 8 - top;

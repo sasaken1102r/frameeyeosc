@@ -858,8 +858,8 @@ pub struct EyeEngine {
     /// Kept for the shared memory / status.json; the baselines follow the wearer now, so it stays false.
     pub recalib_suggested: bool,
     veto: crate::veto::Veto,
-    /// The lower-lid raise trial (`Tune::lower_lid`).
-    lower_lid: LowerLid,
+    /// The lower-lid raise trial (`Tune::lower_lid`): None while its switch is off, so nothing of it is kept then.
+    lower_lid: Option<LowerLid>,
 }
 
 /// The per-wear open-eye levels (pixels): learnt from the first `WARMUP_S` of usable frames, then followed slowly.
@@ -1085,7 +1085,7 @@ impl Default for EyeEngine {
             gaze_hold_until: f64::NEG_INFINITY,
             recalib_suggested: false,
             veto: crate::veto::Veto::default(),
-            lower_lid: LowerLid::new(),
+            lower_lid: None,
         }
     }
 }
@@ -1630,10 +1630,11 @@ impl EyeEngine {
             let ridge = self.ex.lower_ridge(cx, cy, r, seen, self.x_min, self.xmax);
             let rest_ok = f.ok_pupil && !closed && sampled;
             let lines = LowerLines { step: f.lower_y, ridge, cy, seen: f.ok_pupil };
-            let (raise, v, line) = self.lower_lid.step(lines, r, rest_ok, closed, closed || hold, med_n, long_hz);
+            let lower = self.lower_lid.get_or_insert_with(LowerLid::new);
+            let (raise, v, line) = lower.step(lines, r, rest_ok, closed, closed || hold, med_n, long_hz);
             (raise, v, ridge, line)
         } else {
-            self.lower_lid = LowerLid::new();
+            self.lower_lid = None;
             (f64::NAN, f64::NAN, f64::NAN, f64::NAN)
         };
         let valid = r.is_finite() && (f.ok_pupil || closed || f.upper_skin_y.is_finite());
@@ -5529,7 +5530,7 @@ mod tests {
             let o = e.process(&open(270), f64::NAN, k as f64 / FPS, &p);
             assert!(o.lower_lid.is_nan() && o.lower_raise.is_nan());
         }
-        assert!(e.lower_lid.rest.is_empty());
+        assert!(e.lower_lid.is_none());
         // On: relaxed for 3 s, then the lower lid 20 px higher (the iris radius about 55 px: 0.36 R)
         let p = Params { tune: Tune { lower_lid: true, ..Tune::default() }, ..Params::default() };
         let mut e = EyeEngine::default();

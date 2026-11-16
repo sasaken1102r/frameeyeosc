@@ -1453,6 +1453,8 @@ impl Extractor {
     /// seen) and 8 px around it left out; the same path search and robust parabola as the lid lines; its height (px) at
     /// `cx`, or NaN. A squint's lower lid is a step, not a dark line (the slit above it is as dark): live::LowerLid
     /// takes this line only while the pupil is seen.
+    /// It overwrites `smf` (and `gauss`), the scratch buffers `extract` smoothed the lid band into: call it only after
+    /// everything that reads them for this frame (the lid lines are already in `gy`).
     pub fn lower_ridge(&mut self, cx: f64, cy: f64, r: f64, pupil: Option<&Pupil>, x_lo: f64, xmax: f64) -> f64 {
         if !(cx.is_finite() && cy.is_finite() && r.is_finite() && r > 0.0) {
             return f64::NAN;

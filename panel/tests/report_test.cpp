@@ -1113,6 +1113,18 @@ void testUiState() {
     CHECK(has(readText(path), "\"update_beta\": false") && ui_state::readGazePage(path) == GazePage::Reach);
     writeText(path, "{\"update_beta\": \"yes\"}");
     CHECK(!ui_state::readUpdateBeta(path));
+
+    // "Ask when changing output": on the first time, when missing, broken or not a boolean; kept beside the others
+    ::unlink(path.c_str());
+    CHECK(ui_state::readOutputPrompt(path));
+    CHECK(ui_state::writeUpdateBeta(path, true, error) && ui_state::readOutputPrompt(path));
+    CHECK(ui_state::writeOutputPrompt(path, false, error) && !ui_state::readOutputPrompt(path));
+    CHECK(has(readText(path), "\"output_prompt\": false") && ui_state::readUpdateBeta(path));
+    CHECK(ui_state::writeOutputPrompt(path, true, error) && ui_state::readOutputPrompt(path));
+    writeText(path, "{\"output_prompt\": 0}");
+    CHECK(ui_state::readOutputPrompt(path));
+    writeText(path, "not json");
+    CHECK(ui_state::readOutputPrompt(path));
     writeText(path, "{\"update_beta\": ");
     CHECK(!ui_state::readUpdateBeta(path));
     CHECK(ui_state::writeUpdateBeta(path, true, error) && ui_state::readUpdateBeta(path));

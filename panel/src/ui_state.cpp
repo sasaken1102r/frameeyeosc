@@ -30,6 +30,7 @@ constexpr const char* kGazeScaleLinkKeys[2] = {"gaze_scale_link_x", "gaze_scale_
 constexpr const char* kUpGainsKey = "fit_up_gains";
 /** "Get test versions" on the Version page (true / false; missing: off). */
 constexpr const char* kUpdateBetaKey = "update_beta";
+constexpr const char* kOutputPromptKey = "output_prompt";
 
 /**
  * Make a folder and the ones above it.
@@ -307,6 +308,16 @@ bool readUpdateBeta(const std::string& path) {
 
 bool writeUpdateBeta(const std::string& path, bool on, std::string& error) {
     return writeMembers(path, {{kUpdateBetaKey, JsonValue::makeBool(on)}}, error);
+}
+
+bool readOutputPrompt(const std::string& path) {
+    const JsonValue root = readObject(path);
+    const JsonValue* value = root.get(kOutputPromptKey);
+    return value == nullptr || !value->isBool() || value->boolean;
+}
+
+bool writeOutputPrompt(const std::string& path, bool on, std::string& error) {
+    return writeMembers(path, {{kOutputPromptKey, JsonValue::makeBool(on)}}, error);
 }
 
 }  // namespace ui_state

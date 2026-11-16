@@ -1996,6 +1996,100 @@ void testUpdateNotice(const FontSet& fonts) {
     }
 }
 
+/**
+ * The prompt's buttons as last drawn: inside its card (760 wide, centred on the 1200 wide panel), none overlapping.
+ * @param panel the panel (rendered with a prompt open)
+ * @return true if they are
+ */
+bool promptButtonsFit(const EyePanel& panel) {
+    const std::vector<EyePanel::HitArea>& areas = panel.hitAreas();
+    for (size_t i = 0; i < areas.size(); ++i) {
+        const EyePanel::HitArea& a = areas[i];
+        if (a.x < 220 || a.x + a.w > 980) return false;
+        for (size_t j = i + 1; j < areas.size(); ++j) {
+            const EyePanel::HitArea& b = areas[j];
+            if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) return false;
+        }
+    }
+    return !areas.empty();
+}
+
+void testPrompts(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        PanelModel m = modelWith(Lids::Both);
+        m.language = language;
+        // The recommendation after changing the output: Yes, No and "Don't ask again", which closes it and turns the
+        // question off (the caller saves it to panel.json)
+        for (const char* output : {kOutputVrchat, kOutputLivelink, kOutputModule}) {
+            EyePanel panel(fonts);
+            CHECK(panel.outputPrompt());
+            panel.showPrompt(output);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::PromptYes).size() == 1 && hits(panel, PanelAction::PromptNo).size() == 1);
+            CHECK(hits(panel, PanelAction::PromptNever).size() == 1 && panel.hitAreas().size() == 3);
+            CHECK(promptButtonsFit(panel));
+            const PanelHit never = press(panel, PanelAction::PromptNever);
+            CHECK(never.action == PanelAction::PromptNever && never.arg == argOfOutput(output));
+            CHECK(!panel.promptOpen() && !panel.outputPrompt());
+        }
+        // The update prompt keeps its two
+        {
+            EyePanel panel(fonts);
+            panel.showUpdatePrompt("0.11.0");
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::UpdateConfirm).size() == 1 && hits(panel, PanelAction::PromptNever).empty());
+            CHECK(panel.hitAreas().size() == 2 && promptButtonsFit(panel));
+        }
+        // The user calibration's (the eye cameras turned on without one): "Do it now" opens the eye cameras tab,
+        // "Later" closes it; asked at most once while the panel runs, and never over another prompt
+        {
+            EyePanel panel(fonts);
+            CHECK(panel.askUserCalib() && panel.promptOpen() && panel.userCalibPromptOpen());
+            CHECK(!panel.askUserCalib());
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::UserCalibNow).size() == 1);
+            CHECK(hits(panel, PanelAction::UserCalibLater).size() == 1);
+            CHECK(panel.hitAreas().size() == 2 && promptButtonsFit(panel));
+            CHECK(press(panel, PanelAction::UserCalibLater).action == PanelAction::None && !panel.promptOpen());
+            CHECK(!panel.askUserCalib() && !panel.promptOpen());
+        }
+        {
+            EyePanel panel(fonts);
+            panel.showPrompt(kOutputVrchat);
+            CHECK(!panel.askUserCalib() && !panel.userCalibPromptOpen());
+            panel.render(m);
+            CHECK(press(panel, PanelAction::PromptNo).action == PanelAction::PromptNo);
+            CHECK(panel.outputPrompt());  // (No leaves the question on)
+            CHECK(panel.askUserCalib());
+            panel.render(m);
+            CHECK(press(panel, PanelAction::UserCalibNow).action == PanelAction::None);
+            CHECK(!panel.promptOpen() && panel.tab() == PanelTab::Eyecam);
+        }
+        // "Ask when changing output" on the "Having trouble" page (not on "Version"): On / Off, kept by the panel (the
+        // caller saves it), inside the card
+        {
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::Advanced);
+            panel.setAdvPage(AdvPage::Version);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::OutputPromptSet).empty());
+            panel.setAdvPage(AdvPage::Trouble);
+            panel.render(m);
+            CHECK(hits(panel, PanelAction::OutputPromptSet).size() == 2);
+            for (const EyePanel::HitArea& area : hits(panel, PanelAction::OutputPromptSet)) {
+                CHECK(area.x >= 400 && area.y >= 110 && area.y + area.h <= 676);
+            }
+            const PanelHit off = pressArg(panel, PanelAction::OutputPromptSet, 0);
+            CHECK(off.action == PanelAction::OutputPromptSet && !panel.outputPrompt());
+            panel.render(m);
+            CHECK(pressArg(panel, PanelAction::OutputPromptSet, 0).action == PanelAction::None);
+            panel.render(m);
+            CHECK(pressArg(panel, PanelAction::OutputPromptSet, 1).action == PanelAction::OutputPromptSet);
+            CHECK(panel.outputPrompt());
+        }
+    }
+}
+
 void testUpdateBeta(const FontSet& fonts) {
     // "Get test versions" on the Version page: On / Off, kept by the panel (the caller saves it); the page fits with the
     // badge, the keep-hint and a test version on offer, in both languages and every update state
@@ -2082,7 +2176,8 @@ void testDiagFromEyecam(const FontSet& fonts) {
 
 void testPagesFit(const FontSet& fonts) {
     // Every sub-page fits its view (no ▲ / ▼, nothing cut), with eyecam-rec and without, in both languages, with
-    // records, an eye log that failed and keys locked by the command line
+    // records, an eye log that failed and keys locked by the command line. All but "Having trouble", whose last row,
+    // "Ask when changing output", is scrolled to with the eye camera speed and three records above it
     for (const bool eyecam : {true, false}) {
         for (const Language language : {Language::Ja, Language::En}) {
             for (const AdvPage page : {AdvPage::Version, AdvPage::Trouble, AdvPage::Tools, AdvPage::Files,
@@ -2106,10 +2201,24 @@ void testPagesFit(const FontSet& fonts) {
                 panel.setTab(PanelTab::Advanced);
                 panel.setAdvPage(page);
                 panel.render(m);
-                CHECK(panel.advancedMaxScroll() == 0.0);
-                CHECK(!panel.wantsScroll());
-                CHECK(hits(panel, PanelAction::AdvancedScroll).empty());
-                CHECK(!panel.scroll(40));
+                if (page == AdvPage::Trouble) {
+                    // Scrolled only a little (less than a third of the view), to the row
+                    CHECK(panel.advancedMaxScroll() > 0.0 && panel.advancedMaxScroll() < 100.0);
+                    CHECK(panel.wantsScroll() && !hits(panel, PanelAction::AdvancedScroll).empty());
+                    // (before scrolling too: what runs past the view can't be pressed)
+                    for (const EyePanel::HitArea& area : panel.hitAreas()) {
+                        if (area.hit.action == PanelAction::Tab || area.x < 400) continue;
+                        CHECK(area.y >= 110 && area.y + area.h <= 676);
+                    }
+                    CHECK(panel.scroll(200));
+                    panel.render(m);
+                    CHECK(hits(panel, PanelAction::OutputPromptSet).size() == 2);
+                } else {
+                    CHECK(panel.advancedMaxScroll() == 0.0);
+                    CHECK(!panel.wantsScroll());
+                    CHECK(hits(panel, PanelAction::AdvancedScroll).empty());
+                    CHECK(!panel.scroll(40));
+                }
                 // Everything below the sub-tabs, inside the card
                 for (const EyePanel::HitArea& area : panel.hitAreas()) {
                     if (area.hit.action == PanelAction::Tab || area.x < 400) continue;
@@ -5368,7 +5477,8 @@ void testEyeRate(const FontSet& fonts) {
                     if (b.hit != a.hit) CHECK(!overlaps(a, b));
                 }
             }
-            CHECK(!panel.wantsScroll());
+            // (with the setting the page scrolls a little to its last row, "Ask when changing output")
+            CHECK(panel.wantsScroll() == exists);
             CHECK(pressArg(panel, PanelAction::EyeRateChoose, static_cast<int>(eye_rate::Choice::SteamVr)).action ==
                   (exists ? PanelAction::EyeRateChoose : PanelAction::None));
         }
@@ -5416,6 +5526,7 @@ int main() {
     testTwentyRecords(fonts);
     testUpdateNotice(fonts);
     testUpdateBeta(fonts);
+    testPrompts(fonts);
     testDiagFromEyecam(fonts);
     testPagesFit(fonts);
     testRecords(fonts);

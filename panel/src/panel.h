@@ -191,6 +191,13 @@ enum class PanelAction {
     ReseatStart,       ///< the headset re-seat test: start (or "Again" on its result)
     ReseatStop,        ///< ...stop it while it runs
     ReseatClose,       ///< ...close its result
+    PromptNever,       ///< the recommendation prompt's "Don't ask again": it closes and outputPrompt goes off (handled
+                       ///< inside; the caller saves it to panel.json)
+    OutputPromptSet,   ///< the "Having trouble" page's "Ask when changing output": arg 1 on, 0 off (the panel keeps it,
+                       ///< outputPrompt; the caller saves it)
+    UserCalibNow,      ///< the prompt asking for the user calibration: "Do it now" opens the eye cameras tab (handled
+                       ///< inside)
+    UserCalibLater,    ///< ...its "Later" (handled inside)
 };
 
 /** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
@@ -300,8 +307,18 @@ public:
     /** @return true while the card would say the centre correction was cleared (if the zero point is still 0) */
     bool centerCleared() const { return centerCleared_; }
 
-    /** @return true while the recommendation or update prompt is open */
-    bool promptOpen() const { return !promptOutput_.empty() || !updatePromptVersion_.empty(); }
+    /** @return true while the recommendation, update or user calibration prompt is open */
+    bool promptOpen() const { return !promptOutput_.empty() || !updatePromptVersion_.empty() || userCalibPromptOpen_; }
+
+    /**
+     * Ask for the user calibration (the eye cameras were just turned on without one, eyecam::askUserCalib), with the
+     * recommendation prompt's look: at most once while the panel runs, and not over another prompt.
+     * @return true if it opened
+     */
+    bool askUserCalib();
+
+    /** @return true while the prompt asking for the user calibration is open */
+    bool userCalibPromptOpen() const { return userCalibPromptOpen_; }
 
     /**
      * Choose the tab.
@@ -436,6 +453,15 @@ public:
      * @param on whether it is on
      */
     void setUpdateBeta(bool on) { updateBeta_ = on; }
+
+    /** @return whether changing the output asks about its recommended settings (panel.json's output_prompt) */
+    bool outputPrompt() const { return outputPrompt_; }
+
+    /**
+     * Set whether changing the output asks about its recommended settings (at start: as panel.json remembers it).
+     * @param on whether it asks
+     */
+    void setOutputPrompt(bool on) { outputPrompt_ = on; }
 
     /**
      * Show a record on the Advanced tab ("Having trouble"), as its "View" does (for --record).
@@ -901,6 +927,10 @@ private:
     std::string extrasRowDeleteOriginal_;  ///< ...as config.json had it then (the delete checks it is still so)
     bool gazeScaleLinked_[2] = {true, true};  ///< the gaze scale's locks: left / right, up / down
     bool updateBeta_ = false;             ///< "Get test versions" (panel.json's update_beta)
+    bool outputPrompt_ = true;            ///< changing the output asks about its recommendation (panel.json's
+                                          ///< output_prompt)
+    bool userCalibPromptOpen_ = false;    ///< the prompt asking for the user calibration is open
+    bool userCalibAsked_ = false;         ///< ...it has been, while the panel runs (it never comes back then)
     SnapMark snapMark_;                   ///< mark ③ as last drawn
     std::string recordOpen_;            ///< the record shown on the Advanced tab ("" = none)
     bool recordsAllOpen_ = false;       ///< all records are listed on the Advanced tab (a record may be open over them)

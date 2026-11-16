@@ -1160,12 +1160,17 @@ void testSetupStep() {
             inUse.password = password;
             CHECK(eyecam::userCalibWanted(inUse, true) == ((bits & 2) == 0));
             CHECK(!eyecam::userCalibWanted(inUse, false));
+            // Turning the cameras on asks for it the same way; staying on or off, or turning them off, never
+            CHECK(eyecam::askUserCalib(false, true, inUse) == ((bits & 2) == 0));
+            CHECK(!eyecam::askUserCalib(true, true, inUse) && !eyecam::askUserCalib(true, false, inUse) &&
+                  !eyecam::askUserCalib(false, false, inUse));
         }
         eyecam::View notSetUp;
         notSetUp.visible = true;
         notSetUp.status = dsp;
         notSetUp.password = password;
         CHECK(!eyecam::userCalibWanted(notSetUp, true));
+        CHECK(!eyecam::askUserCalib(false, true, notSetUp));
         const SetupStep tool = password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
         for (const bool done : {false, true}) {
             const Status away = setupStatus("waiting_fds", std::string(", \"auto_grab\": \"dsp_unreachable\", \"setup_done\": ") +

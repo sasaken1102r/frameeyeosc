@@ -153,6 +153,11 @@ const ABOVE_PUPIL_B: f64 = 1.2;
 /// The calibration's second, higher search band for a widened upper lid (`Extractor::upper_high`): rows from
 /// cy - HIGH_BAND.0 r to cy - HIGH_BAND.1 r (the usual band is cy - 2.1 r .. cy + 0.45 r). See live::widen_fit.
 pub const HIGH_BAND: (f64, f64) = (3.2, 1.6);
+/// The lower lid's margin line (`Extractor::lower_ridge`): its rows (cy + .0 r .. cy + .1 r), columns (cx -/+ r x this)
+/// and the row offsets (px) a dark line's pixel is compared with above and below.
+const RIDGE_BAND: (f64, f64) = (0.3, 1.9);
+const RIDGE_COLS: f64 = 0.8;
+const RIDGE_SCALES: [usize; 3] = [3, 5, 7];
 
 /// What a pupil from the extended search must be like to be taken (the live engine fills it in from what it knows of
 /// the open eye; see live::EXT_MAX_PX). A pupil it refuses is not found: the lids and the box are measured where the
@@ -1435,6 +1440,62 @@ impl Extractor {
         self.grad_image(Rect { x0: xa, y0: rows.0, x1: xb, y1: rows.1 });
         let u = self.lid_line(p, (xa, xb), (ya, yb), rows, true)?;
         (!u.on_edge()).then_some((u.y_at, u.frac))
+    }
+
+    /// The lower-lid trial's margin line (live::LowerLid, only with its switch on), on the frame `extract` just ran on:
+    /// the lower lid's margin as the thin dark line it is (lashes and the lid's edge), not the strongest dark ->
+    /// bright step the lower lid line takes (`Features::lower_y`). Below the iris the lid's skin can brighten in two
+    /// steps, the margin's and a broader one about 0.4 r lower where the cheek takes the light, and that line then
+    /// flickers frame to frame between the two (the developer's 2026-11-02 recording, left eye). Over the columns cx -/+ RIDGE_COLS r
+    /// (not left of `x_lo`, as far as `xmax` - 3) and the rows cy + RIDGE_BAND.0 r .. RIDGE_BAND.1 r, each pixel's
+    /// darkness below both the pixels RIDGE_SCALES rows above and below (the largest of the scales; a plain step is
+    /// none, it is darker on one side only) in the opened image smoothed as the lid lines' is, the pupil (`pupil`, when
+    /// seen) and 8 px around it left out; the same path search and robust parabola as the lid lines; its height (px) at
+    /// `cx`, or NaN. A squint's lower lid is a step, not a dark line (the slit above it is as dark): live::LowerLid
+    /// takes this line only while the pupil is seen.
+    pub fn lower_ridge(&mut self, cx: f64, cy: f64, r: f64, pupil: Option<&Pupil>, x_lo: f64, xmax: f64) -> f64 {
+        if !(cx.is_finite() && cy.is_finite() && r.is_finite() && r > 0.0) {
+            return f64::NAN;
+        }
+        let s_max = RIDGE_SCALES[RIDGE_SCALES.len() - 1];
+        let ya = (cy + RIDGE_BAND.0 * r).max((s_max + 4) as f64).round();
+        let yb = (cy + RIDGE_BAND.1 * r).min((396 - s_max - 4) as f64).round();
+        let xa = (cx - RIDGE_COLS * r).max(x_lo).max(3.0).round();
+        let xb = (cx + RIDGE_COLS * r).min(xmax - 3.0).round();
+        if !(yb - ya >= 8.0 && xb - xa >= 12.0) {
+            return f64::NAN;
+        }
+        let (ya, yb, xa, xb) = (ya as usize, yb as usize, xa as usize, xb.min(W as f64) as usize);
+        let rows = Rect { x0: xa, y0: ya - s_max, x1: xb, y1: yb + s_max };
+        vision::gauss_u8(&self.op, W, H, &self.k15, rows, &mut self.gauss, &mut self.smf);
+        let (ny, nx) = (yb - ya, xb - xa);
+        let around = pupil.map(|p| (p.cx, p.cy, (p.a + 8.0) * (p.a + 8.0)));
+        let mut e = vec![0u8; ny * nx];
+        let mut hist = [0u32; 256];
+        for y in ya..yb {
+            for x in xa..xb {
+                let c = self.smf[y * W + x] as i32;
+                let mut v = RIDGE_SCALES
+                    .iter()
+                    .map(|&s| self.smf[(y - s) * W + x].min(self.smf[(y + s) * W + x]) as i32 - c)
+                    .max()
+                    .unwrap_or(0)
+                    .clamp(0, 255);
+                if let Some((px, py, rr)) = around
+                    && (x as f64 - px).powi(2) + (y as f64 - py).powi(2) < rr
+                {
+                    v = 0;
+                }
+                e[(y - ya) * nx + (x - xa)] = v as u8;
+                hist[v as usize] += 1;
+            }
+        }
+        let nrm = vision::percentile_hist(&hist, 99.0) + 1e-3;
+        let path = dp_path(&e, ny, nx, nrm);
+        let xs: Vec<f64> = (xa..xb).map(|x| x as f64).collect();
+        let ys: Vec<f64> = path.iter().map(|&y| (y + ya) as f64).collect();
+        let good: Vec<bool> = path.iter().enumerate().map(|(j, &y)| e[y * nx + j] as f64 > 0.2 * nrm).collect();
+        robust_parabola(&xs, &ys, good).map_or(f64::NAN, |(coef, _)| coef.at(cx))
     }
 
     /// The thin dark band below the skin line has a nearly constant width: measure where the eyeball step below it

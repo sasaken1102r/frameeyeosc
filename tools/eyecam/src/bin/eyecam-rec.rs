@@ -158,6 +158,7 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --no-small-pupil   with --replay: without it (the old rules; evaluation)
   --drop-pupil N,M[,LABEL]  with --replay: drop the pupil found on N frames in a row every M seconds, from 0.5 s into
                      each LABEL step (every step without LABEL; development)
+  --lower-lid        with --replay: the lower-lid raise trial (adds lower_y .. lower_line to the CSV)
   --wide-curve S,W   with --replay: EyeWide = (rise - S * step) / (W * step) (evaluation)
   --widen-sensitivity X  with --replay: the curve for widen sensitivity X in 0..1 (default 0.5, as live)
   --preview DIR      with --replay: also write the panel's eye preview (DIR/preview, as `preview on` does live), the
@@ -272,6 +273,7 @@ fn parse_args() -> Result<Args> {
                     eyecam::replay::DropPupil::parse(&value("--drop-pupil")?).ok_or("--drop-pupil needs N,M[,LABEL]")?,
                 )
             }
+            "--lower-lid" => args.tune.lower_lid = true,
             "--widen-sensitivity" => {
                 let v = number(value("--widen-sensitivity")?, "--widen-sensitivity")?;
                 (args.tune.wide_start, args.tune.wide_width) = eyecam::live::wide_curve(v);
@@ -564,9 +566,12 @@ impl StatusFile {
                 // frame.
                 l.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
                 l.small_pupil.store(settings.small_pupil, Ordering::Relaxed);
+                // lower_lid is only ever edited by hand: picked up the same way.
+                l.lower_lid.store(settings.lower_lid, Ordering::Relaxed);
             }
             drop(watch);
             s.dev = settings.dev;
+            s.lower_lid = settings.lower_lid;
             if let Some(l) = &self.live {
                 s.lid_veto = status::LidVeto {
                     on: settings.lid_veto,
@@ -908,6 +913,7 @@ fn serve(args: &Args) -> Result<()> {
         shared.set_widen_sensitivity(settings.widen_sensitivity);
         shared.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
         shared.small_pupil.store(settings.small_pupil, Ordering::Relaxed);
+        shared.lower_lid.store(settings.lower_lid, Ordering::Relaxed);
         shared.driftlog.lock().unwrap().dir = args.out.join(driftlog::DIR_NAME);
     }
     let mut daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()), &args.out, args.fake)?;

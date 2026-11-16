@@ -365,6 +365,10 @@ pub struct Tune {
     /// eye's recent box while the pupil is small (SMALL_BOX_S), and the open-eye check takes a pupil shrinking below
     /// 0.45 x its usual size (PUPIL_SMALL_MIN).
     pub small_pupil: bool,
+    /// The lower-lid raise (`Out::lower_lid`, `LowerLid`): a trial, off by default (replay's `--lower-lid`, live's
+    /// settings.json `lower_lid`). Live publishes it in the live shared memory (liveshm::LiveShm::lower_lid); nothing
+    /// else uses it.
+    pub lower_lid: bool,
 }
 
 impl Default for Tune {
@@ -379,6 +383,7 @@ impl Default for Tune {
             ext_search: true,
             lid_veto: false,
             small_pupil: true,
+            lower_lid: false,
         }
     }
 }
@@ -438,6 +443,18 @@ pub struct Out {
     pub dropped: bool,
     /// What the eyelid veto did (`closed`, `eye_lid` and `eye_squint` above are after it).
     pub veto: crate::veto::Step,
+    /// The pupil centre's height (px) the lids were searched from: this frame's pupil, else the last one seen (NaN
+    /// before the first).
+    pub ref_cy: f64,
+    /// The lower-lid trial (`Tune::lower_lid`; NaN with the switch off): the lower lid's raise above the wear's
+    /// relaxed level (iris radii, `LowerLid`; NaN until that level is known), and the value made from it, 0 relaxed ..
+    /// 1 raised.
+    pub lower_raise: f64,
+    pub lower_lid: f64,
+    /// The lower-lid trial's lines (px; NaN with the switch off): the lid's margin as a dark line
+    /// (`feat::Extractor::lower_ridge`, NaN when none), and the line `LowerLid` measured.
+    pub lower_ridge: f64,
+    pub lower_line: f64,
 }
 
 /// The widen step and open gap (iris radii) the engine uses, and the confidence factor that goes with them: the
@@ -583,6 +600,185 @@ impl LongMedian {
 
 }
 
+/// The lower-lid trial (`Tune::lower_lid`): how far the lower lid sits above the wear's relaxed level, as when the
+/// cheek pushes it up in a smile or the eye squints, apart from the gaze. Replay's CSV shows it, and live (with
+/// settings.json `lower_lid`) publishes the value in the live shared memory; nothing else uses it.
+/// The line: while the pupil is seen, the lid's margin as a thin dark line (`feat::Extractor::lower_ridge`) when it
+/// lies from LOWER_RIDGE_ABOVE r above the engine's lower lid line (`feat::Features::lower_y`, after LOWER_DROP_MAX)
+/// to LOWER_RIDGE_BELOW r below it; otherwise that lower lid line, moved up by how far it sits below the margin line
+/// on the wear's open frames (a LongMedian over LOWER_REST_S s of the frames where the two are within
+/// LOWER_OFFSET_NEAR r, 0 before LOWER_REST_MIN of them). The engine's line is the strongest dark -> bright step, and
+/// below the iris the lid's skin can brighten in two steps, the margin's and a broader one about 0.4 r lower where
+/// the cheek takes the light: on such a wear it flickers frame to frame between the two (the developer's 2026-11-02
+/// recording, left eye: 0.88 / 1.27 r below the pupil's centre, runs of 1-2 frames), and the lower step read as a
+/// raise of 0.3-0.7 on a wide-open eye. The dark line is not taken without the pupil: a squint's lower lid is a step
+/// under a slit as dark (the dark line there is the slit's middle), and an eye nearly shut has its dark line where
+/// the lids meet.
+/// Looking up moves the lower lid's margin with the eye, about LOWER_GAZE_UP x the pupil centre's move in the picture
+/// from the wear's usual height (a LongMedian of the centre over LOWER_REST_S s of open frames with the pupil seen),
+/// and looking down about LOWER_GAZE_DOWN x; so the level compared is line - that move - the usual height (the last
+/// pupil seen while it is hidden, as it mostly is in a squint), in px, a LOWER_MEDIAN_N-frame median, and the raise is
+/// the relaxed level - that level over the frame's iris radius. In px, not iris radii, because the engine's radius
+/// drifts within a wear (the 2026-11-16 smile recording's left eye: 51 px, then 39-41 px after looking up), and a level
+/// some 0.8 r below the pupil kept in radii moves with it: the relaxed frames there read 0.2 r lowered and a smile
+/// about none (in a simulation on the 10 recordings below: the squint's AUROC 0.927 -> 0.951, over 0.3 58% -> 68%). One
+/// factor for both ways (0.7 up to the first trial) read a look up as a raise (over 0.3 on 8.4% of the look-up frames
+/// with the step line, 27% with the margin line) or, at 0.85-1.0, a look down (32-49%). 0.6 down instead read one
+/// eye's far look down (the pupil 0.9 r lower, the lid 0.45 x that) as a raise on 64% of its frames.
+/// The relaxed level is a low quantile (LOWER_REST_Q) of that level over the last LOWER_REST_S s of open frames with
+/// the pupil seen: a lid raised far enough to matter mostly hides the pupil (the developer's squint steps, 2026-10-07
+/// to 11-02: the pupil seen on 0-21% of the frames on 10 of 12 eyes, 89-90% on the other two), so those frames hardly
+/// reach it. (The median, in a simulation: open frames over 0.3 on 3.6% instead of 2.8%.) But a smile keeps the pupil
+/// in view (96-98% of the 2026-11-16 smile recording's smile frames), and once raised frames are more than about 30%
+/// of the window the quantile is among them: the relaxed level drifts up to the smile and the smile fades. So a frame
+/// reading over LOWER_LEARN_MAX r above the relaxed level does not teach it, unless such frames have been turned away
+/// for LOWER_STALL_S s of samples in a row: then they teach it again until one is not raised (a relaxed level learnt
+/// wrong, say from a wear that slipped, can't stay stuck). In the replays below: the smile recording's right eye's
+/// smile frames over 0.3 49% -> 71%, for 0.1-0.2 pt more open frames over 0.3 on 4 of the 22 eyes; nothing else lower
+/// (in a simulation, narrower gates, 0.05-0.20 r, read everything higher and separated worse). The guard never fired
+/// there.
+/// Replays of 10 of the developer's recordings (20 eyes), the frames not closed, against the first trial (the step
+/// line, one gaze factor 0.7, levels in radii): the squint steps against the open frames (the raise's AUROC) 0.856 ->
+/// 0.947; open frames over 0.3 4.7% -> 2.2% (the 2026-11-02 left eye 20.4% -> 1.4%; looking up 8.4% -> 0%, down 3.3%
+/// -> 0.2%); the squint steps over 0.3 56% -> 65%, the raise 0.19 -> 0.20 r in the median; the squint read as a raise
+/// on all 14 eyes with a squint step (the one recorded lying down, 2026-10-12 10:02 right, -0.61 -> 0.37 r). The
+/// 2026-11-16 smile recording (normal, smile, normal, squint, look down, look up, 5 s each, 3 rounds; the first second of
+/// each step left out): smiles 0.11 / 0.21 r in the median (left / right), over 0.3 on 35% / 71% of the frames, the
+/// AUROC against the normal frames 0.96 / 0.98 (the left eye's third-round smile moved the lid about 0.1 r: 3% over
+/// 0.3); squints 0.21 / 0.44 r, 92% / 100%; the normal frames none over 0.3, looking up or down 0.05% / 0.8%.
+/// The raise maps to 0..1 from LOWER_RAISE_START to LOWER_RAISE_FULL iris radii. While the eye is closed and for the
+/// engine's hold after it, the last value is kept: the lower lid hardly moves in a blink, and its line then is where
+/// the closed lids meet.
+struct LowerLid {
+    win: Win,
+    rest: VecDeque<f64>,
+    since: usize,
+    rest_value: f64,
+    last: f64,
+    /// The pupil centre's usual height (px) and the step line's offset below the margin line (iris radii).
+    cy_rest: LongMedian,
+    offset: LongMedian,
+    /// Relaxed-level samples turned away in a row for being raised (LOWER_LEARN_MAX, LOWER_STALL_S).
+    turned_away: usize,
+}
+
+/// See `LowerLid`.
+const LOWER_GAZE_UP: f64 = 1.0;
+const LOWER_GAZE_DOWN: f64 = 0.5;
+const LOWER_MEDIAN_N: usize = 9;
+const LOWER_REST_S: f64 = 60.0;
+const LOWER_REST_Q: f64 = 30.0;
+/// Samples the relaxed level (and the offset) needs before it is used.
+const LOWER_REST_MIN: usize = 30;
+const LOWER_RAISE_START: f64 = 0.08;
+const LOWER_RAISE_FULL: f64 = 0.35;
+const LOWER_RIDGE_ABOVE: f64 = 0.6;
+const LOWER_RIDGE_BELOW: f64 = 0.05;
+const LOWER_OFFSET_NEAR: f64 = 0.10;
+const LOWER_LEARN_MAX: f64 = 0.30;
+const LOWER_STALL_S: f64 = 20.0;
+
+/// One frame of the lower-lid trial's lines (px): the engine's lower lid line, the margin line, the pupil centre the
+/// lids were searched from, and whether this frame's pupil was seen.
+#[derive(Clone, Copy, Debug)]
+struct LowerLines {
+    step: f64,
+    ridge: f64,
+    cy: f64,
+    seen: bool,
+}
+
+impl LowerLid {
+    fn new() -> Self {
+        Self {
+            win: Win::new(),
+            rest: VecDeque::new(),
+            since: 0,
+            rest_value: f64::NAN,
+            last: 0.0,
+            cy_rest: LongMedian::new(LOWER_REST_S),
+            offset: LongMedian::new(LOWER_REST_S),
+            turned_away: 0,
+        }
+    }
+
+    /// One frame: the lines `l`, the iris radius `r`, whether the frame may teach the relaxed level (`rest_ok`: open,
+    /// pupil seen, a long-run sample, `long_hz` a second), whether it is closed, and whether to hold (closed, or just
+    /// reopened). Returns (the raise in iris radii, NaN before the relaxed level is known; the value 0..1; the line
+    /// used, px).
+    #[allow(clippy::too_many_arguments)]
+    fn step(
+        &mut self,
+        l: LowerLines,
+        r: f64,
+        rest_ok: bool,
+        closed: bool,
+        hold: bool,
+        med_n: usize,
+        long_hz: f64,
+    ) -> (f64, f64, f64) {
+        let r_ok = r.is_finite() && r > 0.0;
+        let margin = l.seen
+            && r_ok
+            && l.ridge.is_finite()
+            && l.ridge >= l.step - LOWER_RIDGE_ABOVE * r
+            && l.ridge <= l.step + LOWER_RIDGE_BELOW * r;
+        if margin && rest_ok && !closed {
+            let d = (l.step - l.ridge) / r;
+            if d.abs() < LOWER_OFFSET_NEAR {
+                self.offset.push(d, long_hz);
+            }
+        }
+        let offset = if self.offset.len() >= LOWER_REST_MIN { self.offset.value } else { 0.0 };
+        let y = if margin { l.ridge } else { l.step - offset * r };
+        if rest_ok {
+            self.cy_rest.push(l.cy, long_hz);
+        }
+        let c0 = self.cy_rest.value;
+        let dv = l.cy - c0;
+        let gaze = c0 + dv * if dv < 0.0 { LOWER_GAZE_UP } else { LOWER_GAZE_DOWN };
+        let x = if r_ok { y - gaze } else { f64::NAN };
+        // A held frame's line stays out of the median (a blink's lids meet lower down).
+        let xm = self.win.push(if hold { f64::NAN } else { x }, med_n.max(LOWER_MEDIAN_N));
+        // A raised frame does not teach the relaxed level, unless raised frames have been turned away for too long.
+        let mut learn = rest_ok && xm.is_finite();
+        if learn && self.rest.len() >= LOWER_REST_MIN {
+            let raised = (self.rest_value - xm) / r > LOWER_LEARN_MAX;
+            if raised && self.turned_away < ((LOWER_STALL_S * long_hz).round() as usize).max(1) {
+                self.turned_away += 1;
+                learn = false;
+            } else if !raised {
+                self.turned_away = 0;
+            }
+        }
+        if learn {
+            // As LongMedian, at the quantile: the last LOWER_REST_S s, recomputed once a second (each sample at first).
+            let cap = ((LOWER_REST_S * long_hz).round() as usize).max(1);
+            while self.rest.len() >= cap {
+                self.rest.pop_front();
+            }
+            self.rest.push_back(xm);
+            self.since += 1;
+            if self.since >= (long_hz.round() as usize).max(1) || self.rest.len() < 64 {
+                self.since = 0;
+                let mut v: Vec<f64> = self.rest.iter().copied().collect();
+                self.rest_value = vision::percentile(&mut v, LOWER_REST_Q);
+            }
+        }
+        let raise = if self.rest.len() >= LOWER_REST_MIN { (self.rest_value - xm) / r } else { f64::NAN };
+        if !hold {
+            self.last = if raise.is_finite() {
+                clamp01((raise - LOWER_RAISE_START) / (LOWER_RAISE_FULL - LOWER_RAISE_START))
+            } else if self.rest.len() < LOWER_REST_MIN {
+                0.0
+            } else {
+                self.last
+            };
+        }
+        (raise, self.last, y)
+    }
+}
+
 /// The engine for one eye. Feed it upright frames in order; `reset` when a new wear starts.
 pub struct EyeEngine {
     ex: Extractor,
@@ -662,6 +858,8 @@ pub struct EyeEngine {
     /// Kept for the shared memory / status.json; the baselines follow the wearer now, so it stays false.
     pub recalib_suggested: bool,
     veto: crate::veto::Veto,
+    /// The lower-lid raise trial (`Tune::lower_lid`).
+    lower_lid: LowerLid,
 }
 
 /// The per-wear open-eye levels (pixels): learnt from the first `WARMUP_S` of usable frames, then followed slowly.
@@ -887,6 +1085,7 @@ impl Default for EyeEngine {
             gaze_hold_until: f64::NEG_INFINITY,
             recalib_suggested: false,
             veto: crate::veto::Veto::default(),
+            lower_lid: LowerLid::new(),
         }
     }
 }
@@ -1424,6 +1623,19 @@ impl EyeEngine {
         let lids = f.upper_skin_y.is_finite() as u8 as f64 * 0.25 + f.lower_y.is_finite() as u8 as f64 * 0.25;
         let seen = if f.ok_pupil { 0.5 * f.pupil_vis } else if closed { 0.5 } else { 0.0 };
         let confidence = clamp01((seen + lids) * cal_q * if r_ready { 1.0 } else { 0.5 });
+        // The lower-lid trial (`LowerLid`): only with its switch on, and without the switch nothing of it is kept.
+        let (lower_raise, lower_lid, lower_ridge, lower_line) = if params.tune.lower_lid {
+            let (cx, cy) = self.prev_p.map_or((f64::NAN, f64::NAN), |q| (q.cx, q.cy));
+            let seen = self.prev_p.as_ref().filter(|_| f.ok_pupil);
+            let ridge = self.ex.lower_ridge(cx, cy, r, seen, self.x_min, self.xmax);
+            let rest_ok = f.ok_pupil && !closed && sampled;
+            let lines = LowerLines { step: f.lower_y, ridge, cy, seen: f.ok_pupil };
+            let (raise, v, line) = self.lower_lid.step(lines, r, rest_ok, closed, closed || hold, med_n, long_hz);
+            (raise, v, ridge, line)
+        } else {
+            self.lower_lid = LowerLid::new();
+            (f64::NAN, f64::NAN, f64::NAN, f64::NAN)
+        };
         let valid = r.is_finite() && (f.ok_pupil || closed || f.upper_skin_y.is_finite());
         // The eyelid veto: it only changes what goes out, never the engine's state above (nor validity and confidence).
         let veto = if params.tune.lid_veto {
@@ -1463,6 +1675,11 @@ impl EyeEngine {
             small_kept: small_kept_out,
             dropped,
             veto,
+            ref_cy: self.prev_p.map_or(f64::NAN, |q| q.cy),
+            lower_raise,
+            lower_lid,
+            lower_ridge,
+            lower_line,
         }
     }
 
@@ -5162,5 +5379,183 @@ mod tests {
         assert!(!e.baseline_ready() && !e.relearning() && e.baseline_px().is_none());
         assert_eq!(e.warmup_remaining_s(), WARMUP_S);
         assert!(e.base.ramp.is_none() && e.base.b.is_nan() && e.base.seconds == 0.0);
+    }
+
+    /// `n` frames of the lower-lid trial at a lower line `y` and pupil centre `cy` (px, R 55, 90 fps: every second
+    /// frame teaches the relaxed level when `rest_ok`, the pupil seen then; no margin line); the last (raise, value).
+    fn lower_steps(l: &mut LowerLid, n: usize, y: f64, cy: f64, rest_ok: bool, hold: bool) -> (f64, f64) {
+        let mut out = (f64::NAN, f64::NAN);
+        for k in 0..n {
+            let lines = LowerLines { step: y, ridge: f64::NAN, cy, seen: rest_ok };
+            let (raise, v, _) = l.step(lines, 55.0, rest_ok && k % 2 == 0, false, hold, 5, 45.0);
+            out = (raise, v);
+        }
+        out
+    }
+
+    #[test]
+    fn the_lower_lid_trial_reads_a_raise_above_the_relaxed_level_apart_from_the_gaze() {
+        let mut l = LowerLid::new();
+        // Before the relaxed level is known: no raise, 0
+        let (raise, v) = lower_steps(&mut l, 20, 255.0, 200.0, true, false);
+        assert!(raise.is_nan() && v == 0.0, "{raise} {v}");
+        // Relaxed for 2 s: no raise
+        let (raise, v) = lower_steps(&mut l, 180, 255.0, 200.0, true, false);
+        assert!(raise.abs() < 1e-9 && v == 0.0, "{raise} {v}");
+        // Looking down: the pupil 20 px lower, the lower lid 0.5 x that: still relaxed
+        let (raise, v) = lower_steps(&mut l, 20, 265.0, 220.0, true, false);
+        assert!(raise.abs() < 1e-9 && v == 0.0, "{raise} {v}");
+        // Looking up: the pupil 20 px higher, the lower lid as much: still relaxed (0.5 x would read a raise)
+        let (raise, v) = lower_steps(&mut l, 20, 235.0, 180.0, true, false);
+        assert!(raise.abs() < 1e-9 && v == 0.0, "{raise} {v}");
+        // The lid raised 0.35 R (19.25 px) with the pupil hidden (the last pupil's centre): fully raised once the
+        // median has moved; half way at 0.215 R
+        let (raise, v) = lower_steps(&mut l, 20, 255.0 - 0.35 * 55.0, 200.0, false, false);
+        assert!((raise - 0.35).abs() < 1e-9 && (v - 1.0).abs() < 1e-9, "{raise} {v}");
+        let (raise, v) = lower_steps(&mut l, 20, 255.0 - 0.215 * 55.0, 200.0, false, false);
+        assert!((raise - 0.215).abs() < 1e-9 && (v - 0.5).abs() < 1e-9, "{raise} {v}");
+        // A blink (held): the closed lids' line far below is not read, the value stays
+        let (_, v) = lower_steps(&mut l, 30, 300.0, 200.0, false, true);
+        assert!((v - 0.5).abs() < 1e-9, "{v}");
+        // A lower line below the relaxed level is no raise either
+        let (raise, v) = lower_steps(&mut l, 20, 255.0 + 10.0, 200.0, false, false);
+        assert!(raise < 0.0 && v == 0.0, "{raise} {v}");
+    }
+
+    #[test]
+    fn the_lower_lid_raise_does_not_move_when_the_iris_radius_estimate_drifts() {
+        // Relaxed at R 50 (the line 40 px below the pupil), then the same picture with the radius read as 40 px: no
+        // raise; 10 px higher, 0.25 R at the new radius
+        let mut l = LowerLid::new();
+        let lines = |step: f64| LowerLines { step, ridge: f64::NAN, cy: 200.0, seen: true };
+        for k in 0..300 {
+            l.step(lines(240.0), 50.0, k % 2 == 0, false, false, 5, 45.0);
+        }
+        let mut last = (f64::NAN, f64::NAN, f64::NAN);
+        for _ in 0..20 {
+            last = l.step(lines(240.0), 40.0, false, false, false, 5, 45.0);
+        }
+        assert!(last.0.abs() < 1e-9 && last.1 == 0.0, "{last:?}");
+        for _ in 0..20 {
+            last = l.step(lines(230.0), 40.0, false, false, false, 5, 45.0);
+        }
+        assert!((last.0 - 0.25).abs() < 1e-9, "{last:?}");
+    }
+
+    #[test]
+    fn a_long_raise_does_not_teach_the_relaxed_level_until_the_stall_guard_lets_it() {
+        // Relaxed at 255 for 20 s, then a raise of 0.4 R (pupil seen, as in a smile) for 30 s: it stays a raise through
+        // the first 20 s of samples (not learnt), then the guard lets the raised frames teach the level, and the
+        // raise shrinks as the window fills with them
+        let r = 55.0;
+        let mut l = LowerLid::new();
+        let lines = |step: f64| LowerLines { step, ridge: f64::NAN, cy: 200.0, seen: true };
+        for k in 0..1800 {
+            l.step(lines(255.0), r, k % 2 == 0, false, false, 5, 45.0);
+        }
+        let raised = 255.0 - 0.4 * r;
+        let mut at = Vec::new();
+        for k in 0..2700 {
+            at.push(l.step(lines(raised), r, k % 2 == 0, false, false, 5, 45.0).0);
+        }
+        // 900 samples (20 s at 45 a second) turned away: 1800 frames
+        assert!(at[100..1790].iter().all(|v| (v - 0.4).abs() < 1e-9), "{:?}", &at[1780..1790]);
+        // Once the level has come up to within LOWER_LEARN_MAX the raised frames are not turned away any more
+        assert!(at[2699] < 0.2 && l.turned_away == 0, "{} {}", at[2699], l.turned_away);
+        // Under LOWER_LEARN_MAX the frames teach it as before: 0.2 R for 60 s becomes the relaxed level's quantile
+        let mut m = LowerLid::new();
+        for k in 0..1800 {
+            m.step(lines(255.0), r, k % 2 == 0, false, false, 5, 45.0);
+        }
+        let mut last = f64::NAN;
+        for k in 0..5400 {
+            last = m.step(lines(255.0 - 0.2 * r), r, k % 2 == 0, false, false, 5, 45.0).0;
+        }
+        assert!(last.abs() < 1e-9 && m.turned_away == 0, "{last}");
+    }
+
+    #[test]
+    fn the_relaxed_lower_lid_level_is_a_low_quantile_so_a_line_flickering_below_the_margin_is_no_raise() {
+        // The line on the lid margin (255) on 60% of the frames and 0.4 R lower on the rest, in runs of 2 frames
+        let mut l = LowerLid::new();
+        let mut vals = Vec::new();
+        for k in 0..900 {
+            let y = if (k / 2) % 5 < 3 { 255.0 } else { 255.0 + 0.4 * 55.0 };
+            let lines = LowerLines { step: y, ridge: f64::NAN, cy: 200.0, seen: true };
+            vals.push(l.step(lines, 55.0, k % 2 == 0, false, false, 5, 45.0).1);
+        }
+        assert!(vals[300..].iter().all(|&v| v == 0.0), "{:?}", &vals[300..320]);
+    }
+
+    #[test]
+    fn the_lower_lid_trial_measures_the_margin_line_while_the_pupil_is_seen_and_the_step_line_by_its_offset_without() {
+        let r = 55.0;
+        let mut l = LowerLid::new();
+        let lines = |step: f64, ridge: f64, seen: bool| LowerLines { step, ridge, cy: 200.0, seen };
+        // The pupil seen, the margin line at 252, the step line 3 px below it and 0.4 R lower in turn (runs of 2): the
+        // margin line is measured, no raise
+        for k in 0..900 {
+            let step = if (k / 2) % 2 == 0 { 255.0 } else { 255.0 + 0.4 * r };
+            let (raise, v, line) = l.step(lines(step, 252.0, true), r, k % 2 == 0, false, false, 5, 45.0);
+            if k >= 300 {
+                assert!(line == 252.0 && raise.abs() < 1e-9 && v == 0.0, "{k}: {raise} {v} {line}");
+            }
+        }
+        // Only the frames with the two lines near taught the offset (3 px): the pupil hidden, the step line at 255 is
+        // read as the margin at 252, no raise; 0.35 R higher, fully raised
+        let mut last = (f64::NAN, f64::NAN, f64::NAN);
+        for _ in 0..20 {
+            last = l.step(lines(255.0, f64::NAN, false), r, false, false, false, 5, 45.0);
+        }
+        assert!((last.2 - 252.0).abs() < 1e-9 && last.0.abs() < 1e-9 && last.1 == 0.0, "{last:?}");
+        for _ in 0..20 {
+            last = l.step(lines(255.0 - 0.35 * r, f64::NAN, false), r, false, false, false, 5, 45.0);
+        }
+        assert!((last.0 - 0.35).abs() < 1e-9 && (last.1 - 1.0).abs() < 1e-9, "{last:?}");
+        // Without the pupil a dark line is not taken (a squint's slit), nor one far above or below the step line
+        for (ridge, seen) in [(240.0, false), (255.0 - 0.7 * r, true), (255.0 + 0.1 * r, true)] {
+            let (_, _, line) = l.step(lines(255.0, ridge, seen), r, false, false, false, 5, 45.0);
+            assert!((line - 252.0).abs() < 1e-9, "{ridge} {seen}: {line}");
+        }
+    }
+
+    #[test]
+    fn the_lower_lid_trial_is_off_by_default_and_follows_the_lower_lid_with_the_switch() {
+        let open = |lower: usize| lid_frame_between(Some((250.0, 200.0)), 130..lower);
+        // Off (the default): nothing, and nothing kept
+        let p = Params::default();
+        let mut e = EyeEngine::default();
+        for k in 0..10 {
+            let o = e.process(&open(270), f64::NAN, k as f64 / FPS, &p);
+            assert!(o.lower_lid.is_nan() && o.lower_raise.is_nan());
+        }
+        assert!(e.lower_lid.rest.is_empty());
+        // On: relaxed for 3 s, then the lower lid 20 px higher (the iris radius about 55 px: 0.36 R)
+        let p = Params { tune: Tune { lower_lid: true, ..Tune::default() }, ..Params::default() };
+        let mut e = EyeEngine::default();
+        let mut t = 0.0;
+        let mut last = None;
+        for k in 0..270 {
+            t = k as f64 / FPS;
+            last = Some(e.process(&open(270), f64::NAN, t, &p));
+        }
+        let o = last.unwrap();
+        assert!(o.f.ok_pupil && (o.f.lower_y - 270.0).abs() < 3.0, "{o:?}");
+        assert!(o.lower_raise.abs() < 0.05 && o.lower_lid == 0.0, "{o:?}");
+        for k in 1..=30 {
+            last = Some(e.process(&open(250), f64::NAN, t + k as f64 / FPS, &p));
+        }
+        let o = last.unwrap();
+        assert!((o.f.lower_y - 250.0).abs() < 3.0 && o.lower_raise > 0.3 && o.lower_lid > 0.8, "{o:?}");
+        // The other outputs are the same with the switch on or off
+        let off = Params::default();
+        let (mut a, mut b) = (EyeEngine::default(), EyeEngine::default());
+        for k in 0..120 {
+            let img = open(if k < 90 { 270 } else { 250 });
+            let t = k as f64 / FPS;
+            let (x, y) = (a.process(&img, f64::NAN, t, &p), b.process(&img, f64::NAN, t, &off));
+            let outs = |o: &Out| (o.eye_lid, o.eye_wide, o.eye_squint, o.closed, o.aperture, o.f.lower_y);
+            assert_eq!(outs(&x), outs(&y));
+        }
     }
 }

@@ -4,7 +4,8 @@
 //! Additions go after it, found by `struct_size` (a reader of version 1 reads the first 200 bytes and checks only that
 //! struct_size is at least that): the glint part (`glint_version`, GLINT_VERSION) since 2026-11, then the pupil shape
 //! part (`shape_version`, SHAPE_VERSION; a reader of the glint part reads 304 bytes and checks only that struct_size is
-//! at least that).
+//! at least that), then the lower-lid part (`lower_version`, LOWER_VERSION; a reader of the shape part reads 344 bytes
+//! and checks only that struct_size is at least that).
 
 use std::fs::{File, OpenOptions};
 use std::mem::{offset_of, size_of};
@@ -22,6 +23,8 @@ pub const GLINT_VERSION: u32 = 1;
 /// outline for the eye-camera gaze (feat::Pupil::outline), the layout unchanged; 1 had the pupil's own fit, which a
 /// lighter part of the pupil (next to glints on its rim) could cut.
 pub const SHAPE_VERSION: u32 = 2;
+/// The lower-lid part's version (`lower_version`; 0 = not written).
+pub const LOWER_VERSION: u32 = 1;
 /// The file is one page; struct_size says how much of it is the struct.
 const FILE_SIZE: usize = 4096;
 
@@ -126,6 +129,12 @@ pub struct LiveShm {
     /// sensor's) before it was processed, so its pupil and ellipse are in the flipped picture.
     pub flipped: u32,
     pub shape: [LiveShape; 2],
+    /// LOWER_VERSION once the lower-lid part is written.
+    pub lower_version: u32,
+    pub _pad2: u32,
+    /// Each eye's lower-lid raise trial (`live::Out::lower_lid`), 0 relaxed .. 1 raised; NaN while settings.json
+    /// `lower_lid` is off.
+    pub lower_lid: [f32; 2],
 }
 
 const _: () = {
@@ -152,7 +161,9 @@ const _: () = {
     assert!(offset_of!(LiveShm, shape) == 312);
     assert!(size_of::<LiveShape>() == 16);
     assert!(offset_of!(LiveShape, angle_deg) == 8);
-    assert!(size_of::<LiveShm>() == 344);
+    assert!(offset_of!(LiveShm, lower_version) == 344);
+    assert!(offset_of!(LiveShm, lower_lid) == 352);
+    assert!(size_of::<LiveShm>() == 360);
 };
 
 pub struct LiveWriter {
@@ -205,9 +216,11 @@ impl LiveWriter {
             s.struct_size = size_of::<LiveShm>() as u32;
             s.glint_version = GLINT_VERSION;
             s.shape_version = SHAPE_VERSION;
+            s.lower_version = LOWER_VERSION;
             s.writer_pid = std::process::id();
             s.writer_start_ns = start;
             s.magic = MAGIC;
+            s.lower_lid = [f32::NAN; 2];
         });
         std::fs::rename(&tmp, path).map_err(|e| format!("{} -> {}: {e}", tmp.display(), path.display()))?;
         Ok(w)
@@ -257,9 +270,11 @@ mod tests {
                 s.eyes[1].eye_wide = 0.5;
             });
             let r = w.read();
-            assert_eq!((r.magic, r.version, r.struct_size, r.live), (MAGIC, 1, 344, 1));
+            assert_eq!((r.magic, r.version, r.struct_size, r.live), (MAGIC, 1, 360, 1));
             assert_eq!(r.glint_version, GLINT_VERSION);
             assert_eq!(r.shape_version, SHAPE_VERSION);
+            assert_eq!(r.lower_version, LOWER_VERSION);
+            assert!(r.lower_lid.iter().all(|v| v.is_nan()), "{:?}", r.lower_lid);
             assert_eq!(r.seq % 2, 0);
             assert_eq!(r.eyes[1].eye_wide, 0.5);
         }
@@ -267,11 +282,15 @@ mod tests {
         assert_eq!(&bytes[0..4], b"EYCM");
         assert_eq!(u32::from_le_bytes(bytes[52..56].try_into().unwrap()), 0, "live cleared on drop");
         assert_eq!(f32::from_le_bytes(bytes[128 + 36..128 + 40].try_into().unwrap()), 0.5);
-        // The version 1 struct is unchanged in its 200 bytes; the glint part comes after it, then the shape part
+        // The version 1 struct is unchanged in its 200 bytes; the glint part comes after it, then the shape part, then
+        // the lower-lid part (NaN while its switch is off)
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 1);
-        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 344);
+        assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 360);
         assert_eq!(u32::from_le_bytes(bytes[200..204].try_into().unwrap()), GLINT_VERSION);
         assert_eq!(u32::from_le_bytes(bytes[304..308].try_into().unwrap()), SHAPE_VERSION);
+        assert_eq!(u32::from_le_bytes(bytes[344..348].try_into().unwrap()), LOWER_VERSION);
+        assert!(f32::from_le_bytes(bytes[352..356].try_into().unwrap()).is_nan());
+        assert!(f32::from_le_bytes(bytes[356..360].try_into().unwrap()).is_nan());
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o644);
         std::fs::remove_file(&path).unwrap();
@@ -372,17 +391,24 @@ mod tests {
             shape_version: SHAPE_VERSION,
             flipped: 1,
             shape: [LiveShape { a: 21.0, b: 19.5, angle_deg: 33.0, vis: 1.0 }; 2],
+            lower_version: LOWER_VERSION,
+            _pad2: 0,
+            lower_lid: [0.25, 0.5],
         };
         let (old, new) = (bytes_of(&before), bytes_of(&now));
         // Only struct_size differs in the first 304 bytes
         assert_eq!(old[..8], new[..8]);
         assert_eq!(old[12..304], new[12..304]);
-        assert_eq!(u32::from_le_bytes(new[8..12].try_into().unwrap()), 344);
+        assert_eq!(u32::from_le_bytes(new[8..12].try_into().unwrap()), 360);
         // The shape part: its version, then each eye's a, b, angle and rim share
         assert_eq!(u32::from_le_bytes(new[304..308].try_into().unwrap()), SHAPE_VERSION);
         assert_eq!(u32::from_le_bytes(new[308..312].try_into().unwrap()), 1);
         assert_eq!(f32::from_le_bytes(new[312..316].try_into().unwrap()), 21.0);
         assert_eq!(f32::from_le_bytes(new[328 + 8..328 + 12].try_into().unwrap()), 33.0);
+        // The lower-lid part: its version, then each eye's value
+        assert_eq!(u32::from_le_bytes(new[344..348].try_into().unwrap()), LOWER_VERSION);
+        assert_eq!(f32::from_le_bytes(new[352..356].try_into().unwrap()), 0.25);
+        assert_eq!(f32::from_le_bytes(new[356..360].try_into().unwrap()), 0.5);
     }
 
     #[test]

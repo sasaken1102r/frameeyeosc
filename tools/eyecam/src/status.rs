@@ -245,6 +245,8 @@ pub struct Status {
     pub driftlog: crate::driftlog::DriftStatus,
     /// The eyelid veto (settings.json `lid_veto`) and what it has done.
     pub lid_veto: LidVeto,
+    /// The lower-lid trial is on (settings.json `lower_lid`; live::LowerLid, published in the live shared memory).
+    pub lower_lid: bool,
     /// When this eyecam-rec started (Unix seconds): a `headset_off_count` only compares within one run.
     pub started_unix: f64,
     /// The times the headset looked taken off and was worn again since it started (livesvc::OffCount).
@@ -327,6 +329,7 @@ impl Default for Status {
             last_error_unix: 0.0,
             driftlog: Default::default(),
             lid_veto: LidVeto::default(),
+            lower_lid: false,
             started_unix: 0.0,
             headset_off_count: 0,
             stored: Default::default(),
@@ -362,7 +365,7 @@ impl Status {
             "{{\"version\":1,\"state\":{},\"message\":{},\"message_en\":{},\"has_buffers\":{},\"auto_grab\":{},\"grab_outdated\":{},\"grab_state\":{},\"source\":{},\"source_setting\":{},\"locked\":{},\"fps_l\":{},\"fps_r\":{},\
 \"step_index\":{},\"step_count\":{},\"step_label\":{},\"step_remaining_s\":{},\"elapsed_s\":{},\"total_s\":{},\
 \"session_dir\":{},\"protocol\":{},\"prox\":{},\"search\":{},\"last_session_aborted\":{},\"calib_state\":{},\
-\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"user_look_down_default\":[{},{}],\"user_look_down_previous\":[{},{}],\"user_squint_default\":[{},{}],\"user_squint_previous\":[{},{}],\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"driftlog\":{},\"started_unix\":{},\"headset_off_count\":{},\"stored\":{},\"pid\":{pid},\"updated_unix\":{}}}",
+\"recalib_suggested\":{},\"baseline\":{},\"warmup_remaining_s\":{},\"calib_saved\":{},\"widen_sensitivity\":{},\"dev\":{},\"setup_done\":{},\"last_calib_widen\":{},\"calib_failed_eye\":{},\"user_look_down_default\":[{},{}],\"user_look_down_previous\":[{},{}],\"user_squint_default\":[{},{}],\"user_squint_previous\":[{},{}],\"live\":{},\"live_ms\":{},\"preview\":{},\"pupil_l\":{},\"pupil_r\":{},\"cam_fps\":[{},{}],\"prox_min\":{},\"search_detail\":{},\"last_calib\":{},\"last_error\":{},\"last_error_en\":{},\"last_error_unix\":{},\"lid_veto\":{},\"lower_lid\":{},\"driftlog\":{},\"started_unix\":{},\"headset_off_count\":{},\"stored\":{},\"pid\":{pid},\"updated_unix\":{}}}",
             json_str(self.state),
             json_str(&self.message),
             json_str(&crate::message_en::message_en(&self.message)),
@@ -418,6 +421,7 @@ impl Status {
             json_str(&crate::message_en::message_en(&self.last_error)),
             num(self.last_error_unix),
             self.lid_veto.to_json(),
+            self.lower_lid,
             self.driftlog.to_json(),
             num(self.started_unix),
             self.headset_off_count,
@@ -694,7 +698,9 @@ mod tests {
             json.contains(",\"driftlog\":{\"on\":false,\"path\":\"\",\"rows\":0,\"bytes\":0,\"full\":false,\"error\":\"\"},\"started_unix\":"),
             "{json}"
         );
-        assert!(json.contains(",\"lid_veto\":{\"on\":false,\"runs_per_s\":0.000,\"fired\":0,\"ms_mean\":0.000,\"ms_max\":0.000},\"driftlog\":"), "{json}");
+        assert!(json.contains(",\"lid_veto\":{\"on\":false,\"runs_per_s\":0.000,\"fired\":0,\"ms_mean\":0.000,\"ms_max\":0.000},\"lower_lid\":false,\"driftlog\":"), "{json}");
+        let lower = Status { lower_lid: true, ..Status::default() }.to_json(1.5, 7);
+        assert!(lower.contains("},\"lower_lid\":true,\"driftlog\":") && crate::json::parse(&lower).is_ok(), "{lower}");
         let veto = LidVeto { on: true, runs_per_s: 12.5, fired: 3, ms_mean: 0.31, ms_max: 1.2 };
         let on = Status { lid_veto: veto, ..Status::default() }.to_json(1.5, 7);
         assert!(on.contains("\"lid_veto\":{\"on\":true,\"runs_per_s\":12.500,\"fired\":3,\"ms_mean\":0.310,\"ms_max\":1.200}") && crate::json::parse(&on).is_ok(), "{on}");

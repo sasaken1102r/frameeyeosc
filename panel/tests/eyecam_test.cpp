@@ -751,17 +751,20 @@ void testCalibText() {
               t.setupDoneBody, t.setupDoneHelp, t.setupDoneHelp1, t.setupDoneHelp1Do, t.setupDoneHelp2,
               t.setupDoneHelp2Do, t.setupDoneButton, t.setupDoneNote, t.nextTitle, t.nextPass, t.nextWait,
               t.nextLearnFormat, t.nextFail, t.nextError, t.readyTitle, t.readyNote, t.lidsFromValve,
-              t.lidsFromCamera, t.lidsFromCameraLeft, t.lidsFromCameraRight, t.camRowState, t.camRowStateHint,
+              t.lidsFromCamera, t.lidsFromCameraLeft, t.lidsFromCameraRight, t.lidsFromValveCamera, t.camRowState,
+              t.camRowStateHint,
               t.camLearned, t.camRowCalib, t.camRowCalibHint,
               t.camCalibButton, t.camCalibSide1, t.camCalibSide2, t.camRowUser, t.camRowUserHint, t.camUserButton,
-              t.camUserSide1, t.camUserSide2, t.camUserNeedsCalib, t.camHelpTitle, t.camHelp1, t.camHelp1Do,
+              t.camUserSide1, t.camUserSide2, t.camUserWanted1, t.camUserWanted2, t.camUserNeedsCalib, t.camHelpTitle,
+              t.camHelp1, t.camHelp1Do,
               t.camHelp2, t.camHelp2Do, t.camHelp3, t.camHelp3Do, t.lidsCamButton,
               t.camLineBothVrchat, t.camLineBoth, t.camLineLeft, t.camLineRight,
               t.camLineWarmingFormat, t.camLineWarming, t.camLinePutOn, t.camLineOff, t.devTitle,
               t.devRecord, t.devRecordHint, t.tabEyecam, t.setupChipSquint, t.setupChipLookUp,
               t.setupChipLookDown, t.calibDonePill, t.calibDoneTitle, t.calibDoneBody, t.calibUserDoneTitle,
               t.calibUserDoneBody, t.calibDoneButton, t.lidsNowLabel, t.lidsNowBoth, t.lidsNowLeft,
-              t.lidsNowRight, t.lidsNowValve, t.lidsNowSwitch, t.lidsNowWaiting, t.rowWidenEase, t.widenHintCamera,
+              t.lidsNowRight, t.lidsNowValveCamera, t.lidsNowValve, t.lidsNowSwitch, t.lidsNowUserWanted,
+              t.lidsNowWaiting, t.rowWidenEase, t.widenHintCamera,
               t.widenHintMixed, t.widenHintValve, t.widenHintSaturated, t.widenNoteCamera, t.widenNoteValve,
               t.widenNoteUnfitted, t.widenSaturated, t.blinkHint, t.blinkHoldCaption,
               t.rowBlinkBoth, t.blinkBothHint, t.blinkBothNote, t.rowLidFloor, t.lidFloorHint, t.lidFloorNote, t.lidFloorNoteIdle,
@@ -1147,6 +1150,22 @@ void testSetupStep() {
         CHECK(eyecam::toolNotice(dsp, password) == ToolNotice::None);
         const Status dspSetUp = setupStatus("idle", ", \"auto_grab\": \"dsp\", \"setup_done\": true");
         CHECK(eyecam::setupStep(dspSetUp, password) == SetupStep::Done);
+        // In use without the user calibration (bit 1): asked for, also while the wear learns its levels (bit 2); with
+        // it, not even during that warm-up; nor with camera_lids off or before the setup is done
+        for (const int bits : {0, 1, 2, 3, 4, 5, 6, 7}) {
+            eyecam::View inUse;
+            inUse.visible = true;
+            inUse.status = setupStatus("idle", ", \"auto_grab\": \"dsp\", \"setup_done\": true, \"calib_state\": " +
+                                                   std::to_string(bits));
+            inUse.password = password;
+            CHECK(eyecam::userCalibWanted(inUse, true) == ((bits & 2) == 0));
+            CHECK(!eyecam::userCalibWanted(inUse, false));
+        }
+        eyecam::View notSetUp;
+        notSetUp.visible = true;
+        notSetUp.status = dsp;
+        notSetUp.password = password;
+        CHECK(!eyecam::userCalibWanted(notSetUp, true));
         const SetupStep tool = password == PasswordState::NotSet ? SetupStep::Password : SetupStep::Tool;
         for (const bool done : {false, true}) {
             const Status away = setupStatus("waiting_fds", std::string(", \"auto_grab\": \"dsp_unreachable\", \"setup_done\": ") +
@@ -1161,6 +1180,7 @@ void testSetupStep() {
             view.status = away;
             view.password = password;
             CHECK(eyecam::setUp(view) == done && eyecam::inUse(view, true) == done);
+            CHECK(eyecam::userCalibWanted(view, true) == done);  // (calib_state 0: no user calibration)
             CHECK(eyecam::setupScreen(view) == (done ? eyecam::SetupScreen::Camera
                                                      : password == PasswordState::NotSet ? eyecam::SetupScreen::Pass
                                                                                          : eyecam::SetupScreen::Check));

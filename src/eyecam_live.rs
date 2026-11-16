@@ -61,6 +61,9 @@ const SEQ: usize = 24;
 const EYES: [usize; 2] = [56, 128];
 // The calibration bits that give this wear a baseline: calibrated (`calib wear`), or learned by itself.
 const CALIB_BASELINE: u32 = 1 | 4;
+// The calibration bits with which eyecam-rec measures how far open an eye is: calibrated for this user (`calib user`)
+// and this wear's open-eye levels learnt (see Live::lids_measured).
+const CALIB_MEASURED: u32 = 2 | 4;
 // An eye's values are used while captured at most this long before they are read (9 frames at 90 Hz), and not more
 // than CLOCK_AHEAD_NS after (the two clocks are the same; this allows for rounding). When the eye cameras run slower
 // (Valve's eye tracker sets their rate, as low as 15 frames a second on some headsets, 67 ms apart), the limit is
@@ -332,6 +335,14 @@ impl Live {
     /// Whether this wear has a baseline: calibrated (calib_state bit 0) or learned by eyecam-rec (bit 2).
     pub fn baseline(&self) -> bool {
         self.calib_state & CALIB_BASELINE != 0
+    }
+
+    /// Whether the eyelids are measured between closed and open: with a user calibration (calib_state bit 1) and this
+    /// wear's open-eye levels (bit 2). Without them eyecam-rec does not trust the aperture (its live.rs, `user_cal`):
+    /// an eye's eyelid is 0 while closed and otherwise relaxed open (0.75) plus its widening, and its squint 0. Its
+    /// "closed" and widening are measured all the same. Every eyecam-rec frameeyeosc has shipped writes both bits.
+    pub fn lids_measured(&self) -> bool {
+        self.calib_state & CALIB_MEASURED == CALIB_MEASURED
     }
 
     /// Whether each eye's pupil can be used: fresh (no calibration needed).
@@ -928,6 +939,10 @@ pub mod tests {
             let values = live(calib_state, eyes(0.9));
             assert_eq!(values.lids_usable(), [lids; 2], "{calib_state}");
             assert_eq!(values.pupil_usable(), [true; 2], "{calib_state}");
+        }
+        // How far open: only with the user calibration and the wear's levels both
+        for (calib_state, measured) in [(0, false), (1, false), (3, false), (5, false), (6, true), (7, true)] {
+            assert_eq!(live(calib_state, eyes(0.9)).lids_measured(), measured, "{calib_state}");
         }
         // Each needs its own numbers
         let mut odd = eyes(f32::NAN);

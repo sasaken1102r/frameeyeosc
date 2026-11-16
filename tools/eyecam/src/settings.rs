@@ -1,5 +1,6 @@
 //! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity`, `lid_veto` and `source` are changed
-//! from the panel (`set ...` on ctl.sock; `lid_veto` and `source` by hand too), `dev` and `small_pupil` only by hand.
+//! from the panel (`set ...` on ctl.sock; `lid_veto` and `source` by hand too), `dev`, `small_pupil` and `lower_lid`
+//! only by hand.
 
 use crate::dspsrc::Source;
 use crate::json::{self, Json};
@@ -22,6 +23,10 @@ pub struct Settings {
     /// set (`set source`, or by hand). Read when eyecam-rec starts (--source overrides it); written to the file only
     /// when it isn't the default.
     pub source: Source,
+    /// The lower-lid trial (`live::Tune::lower_lid`): computed live and published in the live shared memory
+    /// (liveshm::LiveShm::lower_lid) only when switched on here, by hand (followed while running). Written to the file
+    /// only when on.
+    pub lower_lid: bool,
 }
 
 impl Default for Settings {
@@ -32,6 +37,7 @@ impl Default for Settings {
             lid_veto: false,
             small_pupil: true,
             source: Source::Auto,
+            lower_lid: false,
         }
     }
 }
@@ -61,6 +67,9 @@ impl Settings {
                 if let Some(Json::Bool(v)) = j.get("small_pupil") {
                     s.small_pupil = *v;
                 }
+                if let Some(Json::Bool(v)) = j.get("lower_lid") {
+                    s.lower_lid = *v;
+                }
                 if let Some(v) = j.get("source") {
                     match v.str().and_then(Source::parse) {
                         Some(source) => s.source = source,
@@ -86,8 +95,10 @@ impl Settings {
             s => format!(",\n  \"source\": \"{}\"", s.label()),
         };
         let small_pupil = if self.small_pupil { "" } else { ",\n  \"small_pupil\": false" };
+        // `lower_lid` likewise only when on.
+        let lower_lid = if self.lower_lid { ",\n  \"lower_lid\": true" } else { "" };
         let text = format!(
-            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}{small_pupil}{source}\n}}\n",
+            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}{small_pupil}{source}{lower_lid}\n}}\n",
             json::num(self.widen_sensitivity),
             self.dev,
             self.lid_veto
@@ -277,6 +288,32 @@ mod tests {
         Settings::update(&p, |s| s.source = Source::Dsp).unwrap();
         assert_eq!((Settings::load(&p).small_pupil, Settings::load(&p).source), (false, Source::Dsp));
         assert!(crate::json::parse(&std::fs::read_to_string(&p).unwrap()).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn lower_lid_is_read_by_hand_kept_by_a_set_and_written_only_when_on() {
+        let dir = std::env::temp_dir().join(format!("eyecam-settings-lower-lid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+        Settings { widen_sensitivity: 0.3, ..Settings::default() }.save(&p).unwrap();
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert!(!before.contains("lower_lid") && !Settings::load(&p).lower_lid, "{before}");
+        // By hand
+        std::fs::write(&p, "{\"version\": 1, \"widen_sensitivity\": 0.3, \"lower_lid\": true}").unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, lower_lid: true, ..Settings::default() });
+        // A `set` from the panel keeps it, and small_pupil switched off with it
+        Settings::update(&p, |s| s.lid_veto = true).unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, lid_veto: true, lower_lid: true, ..Settings::default() });
+        std::fs::write(&p, "{\"widen_sensitivity\": 0.3, \"lower_lid\": true, \"small_pupil\": false}").unwrap();
+        Settings::update(&p, |s| s.source = Source::Dsp).unwrap();
+        let s = Settings::load(&p);
+        assert_eq!((s.lower_lid, s.small_pupil, s.source), (true, false, Source::Dsp));
+        assert!(crate::json::parse(&std::fs::read_to_string(&p).unwrap()).is_ok());
+        // Off by hand: the key goes when the file is next written
+        std::fs::write(&p, "{\"widen_sensitivity\": 0.3, \"lower_lid\": false}").unwrap();
+        Settings::update(&p, |s| s.lid_veto = false).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

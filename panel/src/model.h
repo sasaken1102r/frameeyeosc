@@ -515,6 +515,18 @@ int portOfTarget(const std::string& target);
 extras::List extrasList(const PanelModel& model);
 
 /**
+ * Whether the Output tab shows "EyeTrackingActive type" (eye_tracking_active): for VRChat directly, and in the other
+ * modes while extra_outputs has an osc entry that frameeyeosc may use (one of the first three, switched on or off),
+ * since osc extras send EyeTrackingActive in that type too.
+ * @param output the "output" setting
+ * @param list extra_outputs as shown (extrasList)
+ * @return true to show it
+ * @example
+ * activeTypeRowShown(kOutputLivelink, list)  // true while list has an osc entry
+ */
+bool activeTypeRowShown(const std::string& output, const extras::List& list);
+
+/**
  * The destinations an extra output must not repeat, as far as the panel can tell: the main output's (as frameeyeosc
  * sends to it now, or as set), the Steam Link PC's and the pupils' (LiveLink).
  * @param model the model
@@ -696,6 +708,15 @@ CameraLine cameraLine(CameraUse use, bool warming, bool live, bool locked, bool 
  * @return true while it runs and both eyes are on the cameras
  */
 bool lidsFromCameras(const EyeStatus& status);
+
+/**
+ * Whether the eye cameras measure how far open the eyes are (frameeyeosc's Live::lids_measured): with the user
+ * calibration (calib_state bit 1) and this wear's levels (bit 2). Without it an eye on the cameras gets only their
+ * closing and widening; between closed and relaxed open its eyelid is Valve's.
+ * @param status frameeyeosc's status
+ * @return true while both bits are set
+ */
+bool cameraHalfLids(const EyeStatus& status);
 
 /** What the Eyelids tab's one widening slider ("見開きの出やすさ") drives. */
 enum class WidenControl {

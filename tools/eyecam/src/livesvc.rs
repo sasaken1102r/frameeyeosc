@@ -272,6 +272,8 @@ pub struct Shared {
     pub veto_fired: AtomicU64,
     pub veto_us_mean: AtomicU32,
     pub veto_us_max: AtomicU32,
+    /// The lower-lid trial is on (settings.json `lower_lid`, followed while running).
+    pub lower_lid: AtomicBool,
 }
 
 impl Default for Shared {
@@ -308,6 +310,7 @@ impl Default for Shared {
             veto_fired: AtomicU64::new(0),
             veto_us_mean: AtomicU32::new(0),
             veto_us_max: AtomicU32::new(0),
+            lower_lid: AtomicBool::new(false),
         }
     }
 }
@@ -805,9 +808,11 @@ impl Worker {
         }
         let veto_on = self.shared.lid_veto.load(Ordering::Relaxed);
         let small_pupil = self.shared.small_pupil.load(Ordering::Relaxed);
+        let lower_on = self.shared.lower_lid.load(Ordering::Relaxed);
         for p in &mut self.params {
             p.tune.lid_veto = veto_on;
             p.tune.small_pupil = small_pupil;
+            p.tune.lower_lid = lower_on;
         }
         let started = Instant::now();
         let mut o = self.engines[eye].process_open(img, pitch as f64, open as f64, t, &self.params[eye]);
@@ -969,6 +974,9 @@ impl Worker {
                 },
                 None => liveshm::LiveShape { a: nan, b: nan, angle_deg: nan, vis: nan },
             };
+            // The lower-lid trial: NaN with the switch off (Out::lower_lid is NaN then)
+            s.lower_version = liveshm::LOWER_VERSION;
+            s.lower_lid[eye] = o.lower_lid as f32;
         });
         self.shared.frames.fetch_add(1, Ordering::Relaxed);
         self.shared.calib_state.store(state, Ordering::Relaxed);
@@ -1554,8 +1562,11 @@ mod tests {
         // ellipse without a pupil (there is no eye in these frames)
         let live = std::fs::read(dir.join("live")).unwrap();
         let word = |at: usize| u32::from_le_bytes(live[at..at + 4].try_into().unwrap());
-        assert_eq!((word(8), word(304), word(308)), (344, liveshm::SHAPE_VERSION, 1));
+        assert_eq!((word(8), word(304), word(308)), (360, liveshm::SHAPE_VERSION, 1));
         assert!((0..8).all(|i| f32::from_bits(word(312 + 4 * i)).is_nan()));
+        // ...and the lower-lid part, NaN with its switch off (the default)
+        assert_eq!(word(344), liveshm::LOWER_VERSION);
+        assert!((0..2).all(|i| f32::from_bits(word(352 + 4 * i)).is_nan()));
         // Asked (as `preview on` does): both eyes' pictures, the left one turned upright like the engine's frame
         shared.set_preview(true, liveshm::clock_ns(libc::CLOCK_MONOTONIC));
         for k in 30..120 {

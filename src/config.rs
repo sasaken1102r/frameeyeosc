@@ -100,8 +100,8 @@ impl OutputKind {
     }
 }
 
-/// How `EyeTrackingActive` goes out in VRChat mode (VRCFaceTracking's templates use a bool; some
-/// avatars declare it as a float and stop on a bool).
+/// How `EyeTrackingActive` goes out in VRChat mode and to osc extra outputs (VRCFaceTracking's templates use a
+/// bool; some avatars declare it as a float and stop on a bool).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum ActiveType {
@@ -151,8 +151,8 @@ pub enum GazeSource {
 pub enum ExtraFormat {
     /// FrameEyeOSC packets (docs/protocol.md), byte for byte the ones the main output's FrameEyeOSC would send
     Feo1,
-    /// Plain OSC: VRChat's /tracking/eye/CenterVec and EyesClosedAmount, and VRCFT's v2 avatar parameters under /FT
-    /// (docs/protocol.md, "Other formats: osc")
+    /// Plain OSC: VRChat's /tracking/eye/CenterVec and EyesClosedAmount, and EyeTrackingActive and VRCFT's v2 avatar
+    /// parameters under /FT (docs/protocol.md, "Other formats: osc")
     Osc,
 }
 

@@ -147,7 +147,7 @@ struct UiText {
     const char* cameraLineWiden;     ///< Eyelids, Look
     const char* cameraLineFloor;     ///< Eyelids, Blinks and narrowing
     const char* cameraLinePupils;    ///< Output
-    const char* rowActiveType;      ///< how EyeTrackingActive is sent
+    const char* rowActiveType;      ///< how EyeTrackingActive is sent (VRChat directly, osc extras)
     const char* hintActiveType;
     const char* activeOff;
     const char* rowSteamlink;       ///< also send the avatar parameters Steam Link's own OSC sends
@@ -820,6 +820,7 @@ struct UiText {
     const char* lidsFromCamera;
     const char* lidsFromCameraLeft;
     const char* lidsFromCameraRight;
+    const char* lidsFromValveCamera;  ///< ...the cameras without the user calibration (closing, widening)
     const char* camRowState;  ///< the eye cameras page: rows (title, hint)
     const char* camRowStateHint;
     const char* camLearned;  ///< ...the baseline learned (green pill)
@@ -835,6 +836,8 @@ struct UiText {
     const char* camUserButton;
     const char* camUserSide1;
     const char* camUserSide2;
+    const char* camUserWanted1;  ///< ...in place of camUserSide1/2 while it is not done yet (warning colour)
+    const char* camUserWanted2;
     const char* camUserNeedsCalib;  ///< ...instead while it can't be pressed
     // The sentence at the bottom of the eye cameras' page (cameraLine)
     const char* camLineBothVrchat;
@@ -871,9 +874,11 @@ struct UiText {
     const char* lidsNowBoth;  ///< ...from both cameras
     const char* lidsNowLeft;  ///< ...the left camera, Valve for the right
     const char* lidsNowRight;  ///< ...the right camera, Valve for the left
+    const char* lidsNowValveCamera;  ///< ...the cameras without the user calibration (closing, widening)
     const char* lidsNowValve;  ///< ...Valve's values
     const char* lidsNowWaiting;  ///< ...the eye cameras in use, but neither eye on them yet
     const char* lidsNowSwitch;  ///< ...at its right, set up: where they are switched on and off
+    const char* lidsNowUserWanted;  ///< ...in its place without the user calibration (warning colour)
     // The eye cameras tab before they are set up: what they add, and the way into the setup
     const char* camIntroTitle;
     const char* camIntro[3];      ///< the three things they add

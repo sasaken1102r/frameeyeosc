@@ -1,28 +1,37 @@
 # Changelog
 
-## 0.10.3-beta.2 (2026-11-10)
+## Unreleased
 
-Again only re-centering and eye fit change; nothing that is sent does. In new logs for #43, an eye SteamOS read stuck closed still didn't count as open while its own eye camera was in its first 30 s of getting ready. Such an eye now counts once the camera sees its pupil, even then.
+If you use the eye cameras and haven't done the user calibration yet, do it on the Eye cameras tab (without it, an eye can stay shut while Valve's values read the open eye as closed).
 
-日本語: 今回も変わるのは再センタリングと目を合わせるときだけで、送る値は変わりません。#43 の新しいログで、SteamOS が閉じたまま読んでいる目は、その目のカメラが最初の 30 秒の準備中だと、まだ開いている扱いになっていませんでした（準備中のカメラは自信を低めに出すため）。その間も、カメラが瞳を見ていれば開いている扱いにします。
+日本語: 目のカメラを使っていて、ユーザー校正がまだの人は、目のカメラタブでユーザー校正をしてね（しないと、Valve の値が開いた目を閉じたと読むとき、目が閉じたままになることがあります）。
 
-- Fixed (#43): before the wear has its baseline, a gaze capture also counts an eye as open by its pupil when the camera finds the pupil while still getting ready, with the lower confidence the camera gives then. Once the baseline is there, it works as in beta.1
-  - An open eye whose pupil the camera doesn't find never counts this way
-  - In the reporter's two new recordings, the share of samples a re-center could use went from 67 % to 77 % and from 27 % to 46 %. In the second, the camera itself often reads the left eye as closed, which this doesn't change. In the developer's recordings nothing changes, and what is sent is the same byte for byte
-- Thanks to @koma-cute for the new logs (#43)
+- Fixed: with the eye cameras set up but without the "User calibration (once)", the eyelids only jumped between 0.75 and 0 and never showed half-shut. Before the user calibration the camera gives every eye that isn't closed as relaxed open, and that was taken as its eyelid: Valve's values were raised to relaxed open, and an eye they read closing was handed to the camera's value. Now, before the user calibration (and until the wear's levels are learnt), the cameras only add closing, widening and the pupils, and between closed and open the eyelid follows Valve's values, as without the cameras. With the user calibration, once the wear's levels are learnt (about 35 s after putting the headset on), nothing changes
+  - Meanwhile an open eye that Valve's values keep reading as closed is not opened by the camera any more; do the user calibration
+- Panel: the "User calibration (once)" row on the Eye cameras tab now says "For half-shut & squint" and "Recommended". Before the user calibration, the left column's eyelid heading says "Valve's values + eye cameras", the Eyelids tab's "Eyelids now" "Valve + eye cameras (shut, widen)", and the "Reading Valve's values" page no longer stands by. Beside the user calibration row on the Eye cameras tab and at the right of "Eyelids now", the warning colour says "Do the user calibration to send half-shut eyes" and "Half-shut: user calibration", and "Lowest eyelid when narrowed" and ③'s "Camera eyes" value are faded (still to be set)
 
-## 0.10.3-beta.1 (2026-11-08)
+## 0.10.4-beta.1 (2026-11-15)
 
-Only re-centering and eye fit change here; nothing that is sent does. Right after the headset went on, while the eye cameras were still getting ready, re-centering could fail when SteamOS read an open eye stuck closed (#43). An eye whose pupil the camera clearly sees now counts as open then.
+Other apps in the osc format now also get EyeTrackingActive, as the Output tab's "EyeTrackingActive type" says. If an avatar on the receiving end stops moving its eyes after this update, set that type to Float or Off.
 
-日本語: 今回変わるのは再センタリングと目を合わせるときだけで、送る値は変わりません。ヘッドセットをかぶってすぐ、目のカメラの準備ができる前に、SteamOS が開いている目を閉じたまま読んでいると、再センタリングが通らないことがありました（#43）。そのときも、カメラが瞳をはっきり見ている目は開いている扱いにします。
+日本語: 「ほかのアプリ」の osc 形式にも、送り方タブの「EyeTrackingActive の型」のとおりに EyeTrackingActive を送るようになりました。更新したあと、受け取る側のアバターの目が止まったら、その型を［Float］か［送らない］にしてね。
 
-- Fixed (#43): in a gaze capture (re-center and "Fit my eyes"), an eye SteamOS reads below 0.3 counts as open once the eye camera has clearly seen its pupil (not closed, confidence above 0.5) for longer than a blink, even before the wear has the baseline the camera's eyelid waits for (about 35 s after putting the headset on; 74 s in the reported recording). Before, such an eye only counted once the camera's eyelid was in use
+- New: `osc` destinations under Other apps send `/avatar/parameters/FT/EyeTrackingActive` with every sample, right after `EyesClosedAmount`, in the type `eye_tracking_active` says (true, or 1.0 with Float; nothing with Off). Their final set, when the eye data stops, sending pauses or the destination is stopped, changed or deleted, has it "not active" (false or 0.0) once. It is under `/FT` whatever `prefix` says, like the rest of the osc format. Some apps start an avatar's animation from it
+  - If you use an `osc` destination and the avatar there declares `EyeTrackingActive` as a float, its eyes can stop on a bool: choose Float, or Off to not send it
+- Panel: the Output tab shows "EyeTrackingActive type" in LiveLink and FrameEyeOSC modes too while Other apps has an `osc` destination (a stopped one too), since the setting now applies to it. Its hint says so
+
+## 0.10.3 (2026-11-13)
+
+Only re-centering and eye fit change; nothing that is sent does. Right after the headset went on, re-centering could fail when SteamOS read an open eye stuck closed (#43). An eye whose pupil the eye camera sees now counts as open then, even while that camera is still getting ready.
+
+日本語: 今回変わるのは再センタリングと目を合わせるときだけで、送る値は変わりません。ヘッドセットをかぶってすぐ、SteamOS が開いている目を閉じたまま読んでいると、再センタリングが通らないことがありました（#43）。そのときも、目のカメラが瞳を見ている目は、カメラがまだ準備中でも開いている扱いにします。
+
+- Fixed (#43): in a gaze capture (re-center and "Fit my eyes"), an eye SteamOS reads below 0.3 counts as open once the eye camera has clearly seen its pupil (not closed, confidence above 0.5) for longer than a blink, even before the wear has the baseline the camera's eyelid waits for (about 35 s after putting the headset on; 74 s in the first reported recording). Before, such an eye only counted once the camera's eyelid was in use
+  - Before that baseline, it also counts while the eye's own camera is still getting ready, with the lower confidence the camera gives then. An open eye whose pupil the camera doesn't find never counts this way
   - A reading of 0.3 or more for up to 0.2 s in between doesn't start the wait over, and a normal blink never counts
-  - In the reported recording, the share of samples a re-center could use went from 46 % to 94 %. In the developer's recordings nothing changes, and what is sent is the same byte for byte
-  - It doesn't help while the stuck eye's own camera is still in its first 30 s
+  - In the reporter's first recording, the share of samples a re-center could use went from 46 % to 94 %. In two later ones, counting during the camera's getting ready took it from 67 % to 77 % and from 27 % to 46 %; in the second, the camera itself often reads the left eye as closed, which this doesn't change. In the developer's recordings nothing changes, and what is sent is the same byte for byte
 - `frameeyeosc --replay` says how much of a recording a gaze capture could use, and how much of it only by the pupil
-- Thanks to @koma-cute for the logs (#43)
+- Thanks to @koma-cute for the logs and for checking the fix (#43)
 
 ## 0.10.2 (2026-11-08)
 

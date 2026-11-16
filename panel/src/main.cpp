@@ -2434,7 +2434,8 @@ PanelModel fakeModel(const Options& options) {
             CameraStatus& c = s.camera;
             c.known = true;
             c.present = camera != "absent";
-            c.calibState = camera == "uncalibrated" ? 0 : (camera == "error" ? 1 : 3);
+            // (calibrated for this wear and the user, the levels learnt: the cameras measure the eyelids)
+            c.calibState = camera == "uncalibrated" ? 0 : (camera == "error" ? 1 : 7);
             c.used[0] = camera == "both" || camera == "left";
             c.used[1] = camera == "both" || camera == "right";
             c.pupilUsed[0] = c.pupilUsed[1] = camera == "both";

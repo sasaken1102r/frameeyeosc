@@ -448,7 +448,16 @@ const CLOSE_DOWN_HOLD_S: f64 = 0.15;
 // 0.00-0.04). It is below the default closed mark (--lid-closed 0.30), so such an eye would otherwise go out fully
 // closed, and well below the doubt line (VRCFT 0.35, about 0.53 read through the default marks): a half-closed eye
 // (0.3-0.6) is never lifted. The cost: a hard squint the eye server reads below it goes out open after the grace.
+// It lets go once the eye server's eyelid is above its closed mark (VRCFT above 0); in between (0.25 to the mark) the
+// doubt neither grows nor goes, so an eye read shut that wobbles around 0.25 stays open.
 const CAMERA_UNMEASURED_SHUT: f32 = CLOSE_DOWN_OPEN;
+// The grace for that, longer than CAMERA_DOUBT_GRACE with the user calibration: an eye closing slowly reads below
+// 0.25 a while before the camera calls it closed, and opening it then sends it 0 -> 0.75 -> 0. Replayed without the
+// user calibration (the developer's six recordings, 19 minutes; and three of issue 43's reporter), the episodes under
+// 1 s that went out at 0.7 or more, and for how long: 39 / 6.5 s at 0.3 s, 29 / 3.6 s at 0.6 s, 25 / 1.6 s at 1 s,
+// 21 / 1.0 s at 1.5 s; the time of the episodes of 2 s or more (stuck eyes) that went out open 67.6%, 67.2%, 66.5%,
+// 65.5% (the reporter's stuck left eye 87.6% -> 87.0% at 1 s).
+const CAMERA_UNMEASURED_GRACE: f64 = 1.0;
 // The camera's own eyelid goes nearly to 0 in a hard squint (0.00-0.06 with its squint at 1.0 on 2026-10-07), which
 // looks closed on an avatar, so an eye the camera sees open is held at --camera-lid-floor (camera_lid_floor) and the
 // squint parameter carries the rest; see Smoother::check_lids for when.
@@ -1360,13 +1369,13 @@ impl Smoother {
             // Not measured (see CameraSmoother::take): closed where the camera sees it closed, the eye server's
             // otherwise, but for an eye the eye server reads shut (below CAMERA_UNMEASURED_SHUT) for longer than a
             // blink while the camera sees it not closed: that one takes the camera's eyelid, through the camera's own
-            // blinks, until the two agree on closed for CAMERA_AGREE_HOLD or the eye server reads it above the line.
-            // Above it nothing of the doubt is kept, so a half-closed eye is never lifted
+            // blinks, until the two agree on closed for CAMERA_AGREE_HOLD or the eye server's eyelid is above its
+            // closed mark. Then nothing of the doubt is kept, so a half-closed eye is never lifted
             if !camera.measured {
                 let shut = openness[eye] < CAMERA_UNMEASURED_SHUT;
                 state.diag = (valve, closing, false);
                 state.open_since = None;
-                if !shut {
+                if valve > 0.0 {
                     *state = LidDoubt { diag: state.diag, ..LidDoubt::default() };
                 } else if camera.closed {
                     let since = *state.agree_since.get_or_insert(time);
@@ -1374,11 +1383,13 @@ impl Smoother {
                         state.doubted = 0.0;
                         state.camera = false;
                     }
-                } else {
+                } else if shut {
                     state.doubted += f64::from(dt);
                     state.agree_since = None;
+                } else {
+                    state.agree_since = None;
                 }
-                if state.doubted >= CAMERA_DOUBT_GRACE.max(CAMERA_DOUBT_FRAMES * camera.frame) {
+                if state.doubted >= CAMERA_UNMEASURED_GRACE.max(CAMERA_DOUBT_FRAMES * camera.frame) {
                     state.camera = true;
                 }
                 if state.camera {
@@ -9146,8 +9157,8 @@ mod tests {
     #[test]
     fn without_the_user_calibration_an_eye_the_eye_server_reads_shut_still_opens_on_the_camera() {
         // Issue 46: the eye server reads the open left eye shut (0.03) all along. Without the user calibration too, once
-        // that has lasted longer than a blink (CAMERA_DOUBT_GRACE) while the camera sees the eye not closed, the eyelid
-        // is the camera's (relaxed open), as with it
+        // that has lasted CAMERA_UNMEASURED_GRACE (1 s; CAMERA_DOUBT_GRACE, 0.3 s, with it) while the camera sees the
+        // eye not closed, the eyelid is the camera's (relaxed open)
         let settings = camera_settings();
         let run = |camera: &dyn Fn(usize) -> Live, openness: &dyn Fn(usize) -> [f32; 2]| {
             let mut smoother = Smoother::new(&settings);
@@ -9156,32 +9167,58 @@ mod tests {
         let stuck = |_: usize| [0.03, 0.8];
         let unmeasured = run(&|_| without_user_calibration(camera(0.75, 0.0)), &stuck);
         let measured = run(&|_| camera(0.75, 0.0), &stuck);
-        for sent in [&unmeasured, &measured] {
-            assert!(sent[..20].iter().all(|sample| sample.lids[0] == 0.0 && sample.lid_from[0] == LidFrom::EyeServer));
-            assert!(sent[60..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen), "{:?}", sent[60].lid_from);
-            assert!(sent[90..].iter().all(|sample| (sample.lids[0] - LID_RELAXED).abs() < 0.01), "{:?}", sent[90].lids);
+        for (sent, grace) in [(&unmeasured, 90), (&measured, 27)] {
+            assert!(sent[..grace - 5].iter().all(|sample| sample.lids[0] == 0.0 && sample.lid_from[0] == LidFrom::EyeServer));
+            assert!(sent[grace + 5..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen));
+            assert!(sent[grace + 40..].iter().all(|sample| (sample.lids[0] - LID_RELAXED).abs() < 0.01));
         }
         // An eye really shut (the camera sees it closed too) stays shut
         let shut = run(&|_| without_user_calibration(camera_eyes([(0.0, 0.0, true), (0.75, 0.0, false)])), &stuck);
         assert!(shut.iter().all(|sample| sample.lids[0] == 0.0 && sample.lid_from[0] != LidFrom::CameraOpen));
-        // Once the eye server reads it above CAMERA_UNMEASURED_SHUT (half closed, 0.4) it is the eye server's at once,
-        // and nothing of the doubt is kept: shut again, the grace goes by first
-        let back = |i: usize| if (180..270).contains(&i) { [0.4, 0.8] } else { [0.03, 0.8] };
+        // Once the eye server's eyelid is above its closed mark (half closed, 0.4: VRCFT 0.15) it is the eye server's at
+        // once, and nothing of the doubt is kept: shut again, the grace goes by first
+        let back = |i: usize| if (120..200).contains(&i) { [0.4, 0.8] } else { [0.03, 0.8] };
         let sent = run(&|_| without_user_calibration(camera(0.75, 0.0)), &back);
-        assert_eq!(sent[179].lid_from[0], LidFrom::CameraOpen);
+        assert_eq!(sent[119].lid_from[0], LidFrom::CameraOpen);
         // (from the despike's second sample: it takes the median of three)
-        assert!(sent[182..270].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
-        assert!((sent[269].lids[0] - 0.15).abs() < 0.02, "{:?}", sent[269].lids);
-        assert!(sent[272..290].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
-        assert!(sent[310..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen));
+        assert!(sent[122..200].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
+        assert!((sent[199].lids[0] - 0.15).abs() < 0.02, "{:?}", sent[199].lids);
+        assert!(sent[202..285].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
+        assert!(sent[300..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen));
+        // Between 0.25 and the closed mark (0.30) the doubt neither grows nor goes: a stuck eye wobbling around 0.25
+        // (0.20 / 0.28, five samples each) opens once and stays open, but an eye that only ever reads 0.27 never opens
+        let wobble = run(&|_| without_user_calibration(camera(0.75, 0.0)), &|i| [if i / 5 % 2 == 0 { 0.2 } else { 0.28 }, 0.8]);
+        assert!(wobble[..150].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
+        assert!(wobble[200..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen), "{:?}", wobble[200].lid_from);
+        assert!(wobble[240..].iter().all(|sample| (sample.lids[0] - LID_RELAXED).abs() < 0.01));
+        let between = run(&|_| without_user_calibration(camera(0.75, 0.0)), &|_| [0.27, 0.8]);
+        assert!(between.iter().all(|sample| sample.lids[0] == 0.0 && sample.lid_from[0] == LidFrom::EyeServer));
         // The known cost: a hard squint the eye server reads below CAMERA_UNMEASURED_SHUT (0.1 in both eyes) while the
         // camera, without the user calibration, can't tell it from open: it goes out open after the grace, where with
         // the user calibration the camera's own (narrowed) eyelid would
         let squint = run(&|_| without_user_calibration(camera(0.75, 0.0)), &|_| [0.1; 2]);
-        assert!(squint[..20].iter().all(|sample| sample.lids == [0.0; 2]));
-        assert!(squint[90..].iter().all(|sample| sample.lids.iter().all(|lid| (lid - LID_RELAXED).abs() < 0.01)));
+        assert!(squint[..80].iter().all(|sample| sample.lids == [0.0; 2]));
+        assert!(squint[135..].iter().all(|sample| sample.lids.iter().all(|lid| (lid - LID_RELAXED).abs() < 0.01)));
         let narrowed = run(&|_| camera(0.3, 0.8), &|_| [0.1; 2]);
         assert!(narrowed[90..].iter().all(|sample| sample.lids.iter().all(|lid| (lid - 0.3).abs() < 0.01)));
+    }
+
+    #[test]
+    fn without_the_user_calibration_an_eye_closing_slowly_does_not_flick_open_before_the_camera_sees_it_shut() {
+        // The eye server reads both eyes closing from 0.7 to 0 in 3 s (below 0.25 from 1.93 s); the camera calls them
+        // closed only once it reads them below 0.1 (from 2.57 s), 0.64 s later. Inside CAMERA_UNMEASURED_GRACE: never
+        // sent open on the way (with the 0.3 s of the user calibration's grace it went 0 -> 0.75 -> 0)
+        let settings = camera_settings();
+        let mut smoother = Smoother::new(&settings);
+        let openness = |i: usize| (0.7 - 0.7 * i as f32 / 270.0).max(0.0);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, |i| [openness(i); 2], |i| {
+            let closed = openness(i) < 0.1;
+            let lid = if closed { 0.0 } else { LID_RELAXED };
+            Some(without_user_calibration(camera_eyes([(lid, 0.0, closed); 2])))
+        });
+        let open_s = sent[100..].iter().filter(|sample| sample.lids.iter().any(|lid| *lid >= 0.7)).count() as f64 / 90.0;
+        assert_eq!(open_s, 0.0);
+        assert!(sent[240..].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", sent[240].lids);
     }
 
     #[test]

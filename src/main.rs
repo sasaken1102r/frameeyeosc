@@ -5106,8 +5106,6 @@ struct EyeballSetup {
     store: Option<eyeball_map::MapStore>,
     // What the last whole fit did to the maps, and when (Unix seconds): status.json "eyeball_map"
     map_outcome: Option<(f64, eyeball_map::FitOutcome)>,
-    // The filters' epochs (eyeball.rs EyeballGaze::epochs) when the gaze capture in progress started
-    capture_epochs: Option<[u32; 2]>,
     // When the calibration was last tried (while it can't be read, again every CALIBRATION_RETRY), and whether the
     // failure was said
     calibration_tried: Option<Instant>,
@@ -5130,7 +5128,6 @@ impl EyeballSetup {
             read_only: false,
             store: None,
             map_outcome: None,
-            capture_epochs: None,
             calibration_tried: None,
             calibration_failure_said: false,
             last_log: None,
@@ -5182,20 +5179,19 @@ impl EyeballSetup {
         lines
     }
 
-    /// A gaze capture started: the filters' epochs then, to tell whether one started over during it.
-    fn capture_started(&mut self, smoother: &Smoother) {
-        self.capture_epochs = Some(smoother.eyeball.epochs());
-    }
-
-    /// A gaze capture finished (with gaze_source "eyeball"): its eyeball medians to the store, its maps to `smoother`.
-    fn capture_done(&mut self, target: &str, medians: [Option<([f32; 2], u32)>; 2], smoother: &mut Smoother) -> Vec<String> {
+    /// A gaze capture finished (with gaze_source "eyeball"): its eyeball medians, and each eye's filter's epoch over
+    /// the samples they are of (capture.rs Capture::eyeball_epochs; None: it started over or re-took its angles among
+    /// them), to the store; its maps to `smoother`.
+    fn capture_done(
+        &mut self,
+        target: &str,
+        medians: [Option<([f32; 2], u32)>; 2],
+        epochs: [Option<u32>; 2],
+        smoother: &mut Smoother,
+    ) -> Vec<String> {
         let Some(store) = &mut self.store else {
             return Vec::new();
         };
-        // Each eye's filter's epoch through the capture (None: it started over or re-took its angles during it)
-        let now = smoother.eyeball.epochs();
-        let started = self.capture_epochs.take().unwrap_or(now);
-        let epochs = [0, 1].map(|eye| (started[eye] == now[eye]).then_some(now[eye]));
         // Where each eye's centre stood (and whether it counted), then what the capture did to the map
         let mut lines = vec![smoother.eyeball.centre_line()];
         lines.extend(store.capture_done_in(target, medians, epochs));
@@ -5322,7 +5318,6 @@ impl Bridge {
             let capture = Capture::new(request);
             self.capture_result = Some(capture.result(CaptureState::Running));
             self.capture = Some(capture);
-            self.eyeball.capture_started(&self.smoother);
         }
         let stream = vrchat_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != vrchat_stream(&settings) {
@@ -5523,6 +5518,7 @@ impl Bridge {
             let usable = sample.capture_usable();
             let open = sample.camera_open();
             let eyes = sample.eyeball_eyes;
+            capture.note_epochs(self.smoother.eyeball.epochs());
             if capture.add_with_eyes(data.sample_time, gaze, eye_x, data.openness, open, usable, pupils, eyes) {
                 self.finish_capture();
             }
@@ -5576,7 +5572,8 @@ impl Bridge {
             eprintln!("{}", result.log_line());
             // gaze_source "eyeball": the eyes' filter medians for its own map (a re-center, or a whole fit's dots)
             if self.settings.gaze_source == config::GazeSource::Eyeball {
-                for line in self.eyeball.capture_done(capture.target(), capture.eyeball_medians(), &mut self.smoother) {
+                let (medians, epochs) = (capture.eyeball_medians(), capture.eyeball_epochs());
+                for line in self.eyeball.capture_done(capture.target(), medians, epochs, &mut self.smoother) {
                     eprintln!("{line}");
                 }
             }
@@ -8031,7 +8028,7 @@ mod tests {
         setup.calibration_tried = Some(Instant::now() - EyeballSetup::CALIBRATION_RETRY);
         assert!(setup.prepare(&eyeball, &mut smoother).is_empty());
         // A capture says where each eye's centre stood
-        let lines = setup.capture_done("center", [None; 2], &mut smoother);
+        let lines = setup.capture_done("center", [None; 2], [Some(0); 2], &mut smoother);
         assert_eq!(lines[0], "Eyeball centre: L not started; R not started");
         assert!(lines[1].starts_with("Eyeball map: neither eye counted at the center dot"), "{lines:?}");
         fs::remove_dir_all(&dir).unwrap();

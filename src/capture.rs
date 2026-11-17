@@ -96,6 +96,10 @@ pub struct Capture {
     pupils: [Vec<[f32; 2]>; 2],
     // ...and each eye's eyeball filter directions (gaze_source "eyeball").
     eyeball: [Vec<[f32; 2]>; 2],
+    // The eyeball filters' epochs (eyeball.rs EyeballGaze::epochs) as last noted, and per eye the epoch of its first
+    // counted direction and whether a later counted one had another (None: none counted yet)
+    epochs_now: Option<[u32; 2]>,
+    eyeball_epoch: [Option<(u32, bool)>; 2],
 }
 
 impl Capture {
@@ -116,7 +120,25 @@ impl Capture {
             samples: 0,
             pupils: [Vec::new(), Vec::new()],
             eyeball: [Vec::new(), Vec::new()],
+            epochs_now: None,
+            eyeball_epoch: [None; 2],
         }
+    }
+
+    /// The eyeball filters' epochs (eyeball.rs EyeballGaze::epochs) for the samples that follow, until noted again.
+    pub fn note_epochs(&mut self, epochs: [u32; 2]) {
+        self.epochs_now = Some(epochs);
+    }
+
+    /// Each eye's epoch over its counted eyeball directions (those its median is of): Some when they are all of one
+    /// (the first's), None when they are of two or more (its filter started over or re-took its angles among them);
+    /// with none counted, the epoch last noted (0 if none was).
+    pub fn eyeball_epochs(&self) -> [Option<u32>; 2] {
+        [0, 1].map(|eye| match self.eyeball_epoch[eye] {
+            Some((epoch, false)) => Some(epoch),
+            Some((_, true)) => None,
+            None => Some(self.epochs_now.map_or(0, |epochs| epochs[eye])),
+        })
     }
 
     /// The capture's target.
@@ -204,7 +226,12 @@ impl Capture {
                 for (pairs, pupil) in self.pupils.iter_mut().zip(pupils) {
                     pairs.extend(pupil);
                 }
-                for (angles, eye) in self.eyeball.iter_mut().zip(eyeball) {
+                for (k, (angles, eye)) in self.eyeball.iter_mut().zip(eyeball).enumerate() {
+                    if eye.is_some() {
+                        let epoch = self.epochs_now.map_or(0, |epochs| epochs[k]);
+                        let seen = self.eyeball_epoch[k].get_or_insert((epoch, false));
+                        seen.1 |= seen.0 != epoch;
+                    }
                     angles.extend(eye);
                 }
             }
@@ -415,6 +442,38 @@ mod tests {
         let shut = shut.result(CaptureState::Done);
         assert_eq!((shut.pupil_left, shut.pupil_fresh), (None, [0, 0]));
         assert!(median_pair(&[[1.0, 4.0], [3.0, 2.0]]) == Some([2.0, 3.0]) && median_pair(&[]).is_none());
+    }
+
+    #[test]
+    fn each_eyes_epoch_is_that_of_its_counted_directions() {
+        let request = |seconds: f64| GazeCapture {
+            id: 1,
+            target: "center".to_owned(),
+            seconds,
+            skip: 0.3,
+        };
+        // A filter that re-takes its angles in the skipped start (a landing): one epoch over the counted samples
+        let mut taken = Capture::new(request(2.0));
+        for i in 0..180 {
+            let time = 100.0 + f64::from(i) / 90.0;
+            taken.note_epochs([if time - 100.0 < 0.2 { 3 } else { 4 }, 7]);
+            let eyeball = [Some([1.0, 2.0]), Some([0.5, 0.5])];
+            if taken.add_with_eyes(time, [0.0; 2], [0.0; 2], [0.9; 2], [false; 2], true, [None; 2], eyeball) {
+                break;
+            }
+        }
+        assert_eq!(taken.eyeball_epochs(), [Some(4), Some(7)]);
+        // ...and one that does among them: None for that eye; an eye with no counted direction: the epoch last noted
+        let mut taken = Capture::new(request(2.0));
+        for i in 0..180 {
+            let time = 100.0 + f64::from(i) / 90.0;
+            taken.note_epochs([if time - 100.0 < 1.0 { 3 } else { 4 }, 8]);
+            let eyeball = [Some([1.0, 2.0]), None];
+            if taken.add_with_eyes(time, [0.0; 2], [0.0; 2], [0.9; 2], [false; 2], true, [None; 2], eyeball) {
+                break;
+            }
+        }
+        assert_eq!(taken.eyeball_epochs(), [None, Some(8)]);
     }
 
     #[test]

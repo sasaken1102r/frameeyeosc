@@ -5106,6 +5106,8 @@ struct EyeballSetup {
     store: Option<eyeball_map::MapStore>,
     // What the last whole fit did to the maps, and when (Unix seconds): status.json "eyeball_map"
     map_outcome: Option<(f64, eyeball_map::FitOutcome)>,
+    // The filters' epochs (eyeball.rs EyeballGaze::epochs) when the gaze capture in progress started
+    capture_epochs: Option<[u32; 2]>,
     // When the calibration was last tried (while it can't be read, again every CALIBRATION_RETRY), and whether the
     // failure was said
     calibration_tried: Option<Instant>,
@@ -5128,6 +5130,7 @@ impl EyeballSetup {
             read_only: false,
             store: None,
             map_outcome: None,
+            capture_epochs: None,
             calibration_tried: None,
             calibration_failure_said: false,
             last_log: None,
@@ -5179,14 +5182,23 @@ impl EyeballSetup {
         lines
     }
 
+    /// A gaze capture started: the filters' epochs then, to tell whether one started over during it.
+    fn capture_started(&mut self, smoother: &Smoother) {
+        self.capture_epochs = Some(smoother.eyeball.epochs());
+    }
+
     /// A gaze capture finished (with gaze_source "eyeball"): its eyeball medians to the store, its maps to `smoother`.
     fn capture_done(&mut self, target: &str, medians: [Option<([f32; 2], u32)>; 2], smoother: &mut Smoother) -> Vec<String> {
         let Some(store) = &mut self.store else {
             return Vec::new();
         };
+        // Each eye's filter's epoch through the capture (None: it started over or re-took its angles during it)
+        let now = smoother.eyeball.epochs();
+        let started = self.capture_epochs.take().unwrap_or(now);
+        let epochs = [0, 1].map(|eye| (started[eye] == now[eye]).then_some(now[eye]));
         // Where each eye's centre stood (and whether it counted), then what the capture did to the map
         let mut lines = vec![smoother.eyeball.centre_line()];
-        lines.extend(store.capture_done(target, medians));
+        lines.extend(store.capture_done_in(target, medians, epochs));
         smoother.eyeball.maps = store.maps;
         if let Some(outcome) = store.outcome.take() {
             let now = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |since| since.as_secs_f64());
@@ -5310,6 +5322,7 @@ impl Bridge {
             let capture = Capture::new(request);
             self.capture_result = Some(capture.result(CaptureState::Running));
             self.capture = Some(capture);
+            self.eyeball.capture_started(&self.smoother);
         }
         let stream = vrchat_stream(&self.settings);
         if self.active_since.is_some() && stream.is_some() && stream != vrchat_stream(&settings) {

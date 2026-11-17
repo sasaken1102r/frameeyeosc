@@ -1057,6 +1057,8 @@ pub struct EyeballGaze {
     // restart, for `state`
     shape_at: Option<f64>,
     now: Option<f64>,
+    // Each eye's filter's starts and re-takes so far, never reset (EyeballGaze::epochs)
+    epochs: [u32; 2],
     /// Frames taken per eye, how they went (Update order), and the time they took (ns), for the journal.
     pub frames: [u64; 2],
     pub updates: [[u64; 6]; 2],
@@ -1122,8 +1124,12 @@ impl EyeballGaze {
             {
                 self.frame_ns[eye] = Some(slip.time_ns);
                 let o = observe(camera, &raw_frame(&slip, &shape));
+                let retakes = self.filters[eye].retakes;
                 let estimate = self.filters[eye].step(camera, &o);
                 self.frames[eye] += 1;
+                if estimate.is_some_and(|e| e.update == Update::Start) || self.filters[eye].retakes != retakes {
+                    self.epochs[eye] = self.epochs[eye].wrapping_add(1);
+                }
                 if let Some(estimate) = estimate {
                     self.updates[eye][estimate.update as usize] += 1;
                     if matches!(estimate.update, Update::Start | Update::Ellipse) {
@@ -1174,6 +1180,17 @@ impl EyeballGaze {
     /// Whether each eye is frozen (EyeFilter::frozen): not to be used for the sent gaze (pupil.rs step_eyes).
     pub fn frozen(&self) -> [bool; 2] {
         self.filters.each_ref().map(EyeFilter::frozen)
+    }
+
+    /// Each eye's filter's starts and re-takes so far (counted over restarts too, never reset): the same number at two
+    /// times says its angles were taken the same way in between. A start or a re-take takes the angles afresh from one
+    /// frame's ellipse, and the filter's angles for the same eye can come out a different way after it: on the replays
+    /// of 2026-11-15/16/17 (the eye logs with the eye camera's values), 21-23 degrees across a re-take with the pupil
+    /// still (within 2 px), and on the headset on 2026-11-17 the left eye's angles at the centre dot (the re-centers
+    /// before and after) moved 3.3 degrees across a start mid-fit. The eye fit's dots must not mix them
+    /// (eyeball_map.rs MapStore::capture_done).
+    pub fn epochs(&self) -> [u32; 2] {
+        self.epochs
     }
 
     /// Each filter's re-takes (for the journal).
@@ -1976,6 +1993,9 @@ pub mod tests {
         assert!(out[199][0].is_some());
         let refused = gaze.updates[0][Update::Rejected as usize] + gaze.updates[0][Update::Implausible as usize];
         assert!(refused > 100, "{:?}", gaze.updates[0]);
+        // Its re-takes and starts over are counted in its epoch: the first start, then one for each
+        assert!(gaze.filters[0].retakes > 0);
+        assert_eq!(gaze.epochs()[0], 1 + gaze.filters[0].retakes);
         // ...so for stretches of it no direction: the one-eye / hold / eye server fallbacks take over in pupil.rs
         let none = out[200..].iter().filter(|eyes| eyes[0].is_none()).count();
         eprintln!("a jumping pupil: {refused} frames refused, no direction for {none} of 200 samples");
@@ -2069,6 +2089,32 @@ pub mod tests {
         // A restart (a gap in the samples) keeps it
         gaze.restart();
         assert_eq!(gaze.state(), "no_camera");
+    }
+
+    #[test]
+    fn an_eyes_epoch_counts_its_filters_starts_over_restarts_too() {
+        let c = camera();
+        let mut gaze = EyeballGaze::default();
+        gaze.set_calibration(Some(Calibration { eyes: [c.clone(), c.clone()] }));
+        let mut live = crate::tests::camera(0.75, 0.0);
+        assert_eq!(gaze.epochs(), [0, 0]);
+        let mut feed = |gaze: &mut EyeballGaze, from: u64| {
+            for k in from..from + 20 {
+                let (slip, shape) = live_frame(&c, 1_000_000_000 + k * 11_111_111, 5.0);
+                live.slip = [Some(slip), None];
+                live.shape = [Some(shape), None];
+                gaze.step(k as f64 / 90.0, Some(&live));
+            }
+        };
+        // The first start: 1; steady frames: still 1
+        feed(&mut gaze, 0);
+        assert_eq!(gaze.epochs(), [1, 0]);
+        // The source started over (a gap, the source turned off and on): the filters' own counts start again, the
+        // epoch goes on, so the angles before and after are never taken for one run of the filter
+        gaze.restart();
+        assert_eq!(gaze.filters[0].retakes, 0);
+        feed(&mut gaze, 100);
+        assert_eq!(gaze.epochs(), [2, 0]);
     }
 
     #[test]

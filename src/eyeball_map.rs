@@ -14,9 +14,14 @@
 //!     dots, or a quadratic that turns back within its box, affine on the five dots, as before.
 //! Each eye's median needs MIN_SAMPLES samples; a map that misses the dots it was fitted on by more than MAX_RMS_DEG
 //! (Q9_MAX_RMS_DEG for a Q9 map),
-//! or a centre further than MAX_CENTER_DEG, is not taken (the old one stays). The maps are kept in a file of their own (`eyeball_map` next to
-//! the eyelid calibration), never in config.json, which is the panel's: they last across restarts; the replay reads
-//! the file and never writes it.
+//! or a centre further than MAX_CENTER_DEG, is not taken (the old one stays). An eye whose filter started over or
+//! re-took its angles (eyeball.rs EyeballGaze::epochs) during a capture or since the set's centre dot has its later
+//! dots left out and no map nor centre from the set (the old ones stay, and the panel says to fit again): the filter
+//! can give the same eye's angles another way after that, and a map from dots of two runs fits neither (on the
+//! headset on 2026-11-17 the left eye started over at a corner mid-fit, and the fit's map and centre, from before,
+//! were 3 degrees off at the centre dot until the next re-center). The maps are kept in a file of their own
+//! (`eyeball_map` next to the eyelid calibration), never in config.json, which is the panel's: they last across
+//! restarts; the replay reads the file and never writes it.
 
 use crate::pupil::EyeMap;
 use std::path::{Path, PathBuf};
@@ -498,6 +503,12 @@ pub struct MapStore {
     dots: [[Option<[f32; 2]>; 2]; 9],
     /// A set is in progress (a centre dot started it; the eyes-shut step ends it).
     started: bool,
+    /// Each eye's filter's epoch (eyeball.rs EyeballGaze::epochs) at the set's centre dot (None: it changed during
+    /// that capture), and whether it has changed since: a filter that started over or re-took its angles can give
+    /// the same eye's angles another way, so its dots after that are not mixed with those before (they are left out,
+    /// and the eye's map is not made from the set).
+    centre_epochs: [Option<u32>; 2],
+    restarted: [bool; 2],
     /// What the last whole fit did (set at its eyes-shut step; taken by the caller).
     pub outcome: Option<FitOutcome>,
 }
@@ -514,7 +525,7 @@ impl MapStore {
             },
             Some((path, Err(_))) => (None, format!("Eyeball map: none yet ({}); the next whole eye fit makes one", path.display())),
         };
-        (Self { path, maps, dots: [[None; 2]; 9], started: false, outcome: None }, line)
+        (Self { path, maps, ..Self::default() }, line)
     }
 
     /// Never write the file (a replay).
@@ -536,11 +547,23 @@ impl MapStore {
         FitOutcome { fitted: false, kept: self.maps.is_some(), reason: Some(reason), eyes, misses_deg }
     }
 
-    /// A gaze capture is done: its target and each eye's median filter angles with how many samples they are of (None
-    /// without any). Returns the lines to log (none for a capture that changes nothing).
+    /// The same with both filters' epochs the same throughout (the tests).
+    #[cfg(test)]
     pub fn capture_done(&mut self, target: &str, medians: [Option<([f32; 2], u32)>; 2]) -> Vec<String> {
+        self.capture_done_in(target, medians, [Some(0); 2])
+    }
+
+    /// A gaze capture is done: its target, each eye's median filter angles with how many samples they are of (None
+    /// without any), and each eye's filter's epoch through it (EyeballGaze::epochs; None: it changed during the
+    /// capture). Returns the lines to log (none for a capture that changes nothing).
+    pub fn capture_done_in(
+        &mut self,
+        target: &str,
+        medians: [Option<([f32; 2], u32)>; 2],
+        epochs: [Option<u32>; 2],
+    ) -> Vec<String> {
         if target == END_TARGET {
-            return self.end_of_fit();
+            return self.end_of_fit(epochs);
         }
         let Some(dot) = DOTS.iter().position(|(name, ..)| *name == target) else {
             return Vec::new();
@@ -550,12 +573,43 @@ impl MapStore {
         if dot == 0 {
             self.dots = [[None; 2]; 9];
             self.started = true;
+            self.centre_epochs = epochs;
+            self.restarted = [false; 2];
         }
-        let usable = medians.map(|m| m.filter(|(_, n)| *n >= MIN_SAMPLES).map(|(angles, _)| angles));
+        let mut usable = medians.map(|m| m.filter(|(_, n)| *n >= MIN_SAMPLES).map(|(angles, _)| angles));
+        // An eye whose filter started over or re-took its angles during this capture or (a later dot of a set) since
+        // the set's centre dot: its median is from another run of the filter, and left out (said once a set)
+        let moved = [0, 1].map(|eye| {
+            epochs[eye].is_none() || (dot > 0 && self.started && epochs[eye] != self.centre_epochs[eye])
+        });
+        for eye in 0..2 {
+            if !moved[eye] {
+                continue;
+            }
+            usable[eye] = None;
+            if !self.restarted[eye] {
+                self.restarted[eye] = self.started;
+                lines.push(format!(
+                    "Eyeball map: the {} eye's filter started over or re-took its angles {} (its angles can come out \
+                     another way after that): {}. Fit again",
+                    ["left", "right"][eye],
+                    if dot > 0 { "since the centre dot" } else { "during this capture" },
+                    if dot > 0 {
+                        format!("its {target} dot and the rest of this fit left out for it")
+                    } else {
+                        "its centre dot left out".to_owned()
+                    }
+                ));
+            }
+        }
         // (a corner the panel passed over, its gaze unsteady three times, still counts here with each try's settled
         // eyeball medians: passed over is not left out; only an eye without enough settled samples is)
         self.dots[dot] = usable;
         let [Some(left), Some(right)] = usable else {
+            // (an eye left out for a restart is said above)
+            if (0..2).all(|eye| usable[eye].is_some() || moved[eye]) {
+                return lines;
+            }
             // Said plainly: which eye did not count, and what that means for the centre or the whole fit
             let counts = medians.map(|m| m.map_or(0, |(_, n)| n));
             let eyes = match usable {
@@ -603,16 +657,33 @@ impl MapStore {
 
     /// The whole fit's eyes-shut step: the maps from its dots (Q9 with the corners, else affine on the five), the centre
     /// from its centre dot, and what came of it (`outcome`).
-    fn end_of_fit(&mut self) -> Vec<String> {
+    fn end_of_fit(&mut self, epochs: [Option<u32>; 2]) -> Vec<String> {
         if !std::mem::take(&mut self.started) {
             return Vec::new();
         }
+        // (and a filter that started over after the last dot: the maps would be for its angles before)
+        for eye in 0..2 {
+            if epochs[eye].is_none() || epochs[eye] != self.centre_epochs[eye] {
+                self.restarted[eye] = true;
+            }
+        }
+        let restarted = std::mem::take(&mut self.restarted);
         let dots = std::mem::replace(&mut self.dots, [[None; 2]; 9]);
         let state = if self.maps.is_some() { "kept as it was" } else { "not made" };
         // Each eye on its own: its map (Q9 or affine), or why not ("not_settled": one of the five without a settled
         // median; "misses"; "other"), with its misses
         let missing = |eye: usize| -> Vec<&str> { (0..FIVE).filter(|&i| dots[i][eye].is_none()).map(|i| DOTS[i].0).collect() };
         let tries: [Result<(EyeMap, f64, String), (&'static str, String, Option<f64>)>; 2] = [0, 1].map(|eye| {
+            if restarted[eye] {
+                return Err((
+                    "not_settled",
+                    format!(
+                        "the {} eye's filter started over or re-took its angles during this fit",
+                        ["left", "right"][eye]
+                    ),
+                    None,
+                ));
+            }
             let gone = missing(eye);
             if !gone.is_empty() {
                 return Err(("not_settled", String::new(), None));
@@ -635,6 +706,7 @@ impl MapStore {
         // Every failing eye's words for the journal
         let whys: Vec<String> = (0..2)
             .filter_map(|eye| match &tries[eye] {
+                Err(("not_settled", why, _)) if !why.is_empty() => Some(why.clone()),
                 Err(("not_settled", ..)) => {
                     let gone = missing(eye);
                     Some(format!(
@@ -670,7 +742,8 @@ impl MapStore {
         let mut lines = Vec::new();
         let mut centre = [new[0].center, new[1].center];
         for eye in 0..2 {
-            let Some(median) = dots[0][eye] else { continue };
+            // (an eye whose filter started over keeps its old centre too: this fit's centre dot is in the other run)
+            let Some(median) = dots[0][eye].filter(|_| !restarted[eye]) else { continue };
             match center_of(&new[eye], median, eye) {
                 Ok(c) => centre[eye] = c,
                 Err(why) if !failed[eye] => {
@@ -764,6 +837,70 @@ mod tests {
         }
         lines.extend(store.capture_done(END_TARGET, [None; 2]));
         lines
+    }
+
+    #[test]
+    fn a_filter_that_starts_over_mid_fit_gives_no_map_from_its_dots_before_and_after() {
+        // A first fit on all nine dots (epochs 0 throughout): both maps
+        let mut store = MapStore::default();
+        let fit = |store: &mut MapStore, epochs: &dyn Fn(usize) -> [Option<u32>; 2], closed: [Option<u32>; 2]| {
+            let mut lines = Vec::new();
+            for dot in 0..9 {
+                lines.extend(store.capture_done_in(DOTS[dot].0, medians(reading, dot, 120), epochs(dot)));
+            }
+            lines.extend(store.capture_done_in(END_TARGET, [None; 2], closed));
+            lines
+        };
+        fit(&mut store, &|_| [Some(0); 2], [Some(0); 2]);
+        let first = store.maps.expect("fitted");
+        assert_eq!(store.outcome.take().map(|o| (o.fitted, o.kept)), Some((true, false)));
+        // The next fit: the left eye's filter re-takes its angles during the up_right corner (on the headset on
+        // 2026-11-17 at that corner) and reads 3 deg further right from then on: its later dots are left out, said
+        // once, and its map is not made from the dots of either run (the old one kept, the panel told to fit again);
+        // the right eye's map is made
+        let after = |eye: usize, yaw: f64, pitch: f64| {
+            let [y, p] = reading(eye, yaw, pitch);
+            [y + 3.0, p]
+        };
+        let mut lines = Vec::new();
+        for dot in 0..9 {
+            let (epochs, left) = match dot {
+                0..=5 => ([Some(4), Some(7)], reading(0, DOTS[dot].1, DOTS[dot].2)),
+                6 => ([None, Some(7)], after(0, DOTS[dot].1, DOTS[dot].2)),
+                _ => ([Some(5), Some(7)], after(0, DOTS[dot].1, DOTS[dot].2)),
+            };
+            let mut m = medians(reading, dot, 120);
+            m[0] = Some((left, 120));
+            lines.extend(store.capture_done_in(DOTS[dot].0, m, epochs));
+        }
+        let said: Vec<&String> = lines.iter().filter(|l| l.contains("started over")).collect();
+        assert_eq!(said.len(), 1, "{lines:?}");
+        let why = "the left eye's filter started over or re-took its angles since the centre dot";
+        assert!(said[0].contains(why), "{said:?}");
+        assert!(said[0].contains("its up_right dot and the rest of this fit left out for it"), "{said:?}");
+        // (no "not counted" lines for the dots it was left out of: said once above)
+        assert!(!lines.iter().any(|l| l.contains("not counted")), "{lines:?}");
+        let lines = store.capture_done_in(END_TARGET, [None; 2], [Some(5), Some(7)]);
+        let maps = store.maps.expect("maps");
+        assert_eq!(maps[0].yaw, first[0].yaw, "{lines:?}");
+        assert!(lines[0].contains("fitted for the right eye only"), "{lines:?}");
+        let why = "the left eye's filter started over or re-took its angles during this fit";
+        assert!(lines[0].contains(why), "{lines:?}");
+        let outcome = store.outcome.take().expect("an outcome");
+        assert!(outcome.fitted && outcome.kept, "{outcome:?}");
+        assert!(outcome.reason == Some("not_settled") && outcome.eyes == [true, false], "{outcome:?}");
+        // A filter that started over after the last dot (between it and the eyes-shut step) counts the same
+        fit(&mut store, &|_| [Some(5), Some(7)], [Some(5), Some(8)]);
+        let outcome = store.outcome.take().expect("an outcome");
+        assert!(outcome.reason == Some("not_settled") && outcome.eyes == [false, true], "{outcome:?}");
+        // ...and one that started over during the centre dot's capture: that eye's centre left out, so neither its
+        // map nor its centre are made from this fit
+        let during = |dot: usize| if dot == 0 { [Some(5), None] } else { [Some(5), Some(9)] };
+        let lines = fit(&mut store, &during, [Some(5), Some(9)]);
+        let why = "the right eye's filter started over or re-took its angles during this capture";
+        assert!(lines.iter().any(|l| l.contains(why)), "{lines:?}");
+        let outcome = store.outcome.take().expect("an outcome");
+        assert!(outcome.reason == Some("not_settled") && outcome.eyes == [false, true], "{outcome:?}");
     }
 
     #[test]

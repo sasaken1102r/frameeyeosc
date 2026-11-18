@@ -440,6 +440,31 @@ const CLOSE_WINK_OPEN: f32 = 0.5;
 const CLOSE_DOWN_DEG: f32 = 18.0;
 const CLOSE_DOWN_OPEN: f32 = 0.25;
 const CLOSE_DOWN_HOLD_S: f64 = 0.15;
+// Without the user calibration the camera's eyelid is not measured (see CameraSmoother::take) and never takes over a
+// closing eye, so a half-closed eye goes out as the eye server reads it. Only an eye the eye server reads shut
+// (openness, its own reading, below this) for longer than a blink while the camera sees it not closed still goes out
+// on the camera's eyelid (relaxed open plus its widening), as issue 46's left eye (the eye server read it 0.00-0.03
+// all along while it was open): its "reads an eye shut" line for the close gate (CLOSE_DOWN_OPEN: its blinks reach
+// 0.00-0.04). It is below the default closed mark (--lid-closed 0.30), so such an eye would otherwise go out fully
+// closed, and well below the doubt line (VRCFT 0.35, about 0.53 read through the default marks): a half-closed eye
+// (0.3-0.6) is never lifted. The cost: a hard squint the eye server reads below it goes out open after the grace.
+// It lets go once the eye server's eyelid is above its closed mark (VRCFT above 0); in between (0.25 to the mark) the
+// doubt neither grows nor goes, so an eye read shut that wobbles around 0.25 stays open.
+const CAMERA_UNMEASURED_SHUT: f32 = CLOSE_DOWN_OPEN;
+// The grace for that, longer than CAMERA_DOUBT_GRACE with the user calibration: an eye closing slowly reads below
+// 0.25 a while before the camera calls it closed, and opening it then sends it 0 -> 0.75 -> 0. Replayed without the
+// user calibration (the developer's six recordings, 19 minutes; and three of issue 43's reporter), at a grace of 0.3 /
+// 0.6 / 1 / 1.5 s:
+// - Stretches under 1 s with the eye server below 0.25 and the camera (in use) seeing the eye not closed, 346 in the
+//   developer's: an eye not out open just before went out at 0.7 or more (a flick) in 19 / 11 / 8 / 5 of them, for
+//   4.8 / 2.2 / 0.8 / 0.5 s in all. (Another 20 / 18 / 17 / 16 were an eye already out open going on through a short
+//   stretch; starting the doubt over at each "closed" of the camera before the hand-over took 1 s to 7 flicks and
+//   0.6 s, so it is not done.)
+// - Stuck eyes, the share of such stretches' time out at 0.7 or more, from their start: those of 2 s or more 67.6 /
+//   67.2 / 66.5 / 65.5%, issue 43's reporter's left eye 87.6 / 87.3 / 87.0 / 86.5%. Counted only once the eye server
+//   has read below 0.25 for 0.3 s (replay_stats' way, the camera's "closed" not splitting a stretch), that eye's is
+//   89.1 / 85.6 / 80.4% (0.3 / 0.6 / 1 s): the longer grace costs the start of each stretch.
+const CAMERA_UNMEASURED_GRACE: f64 = 1.0;
 // The camera's own eyelid goes nearly to 0 in a hard squint (0.00-0.06 with its squint at 1.0 on 2026-10-07), which
 // looks closed on an avatar, so an eye the camera sees open is held at --camera-lid-floor (camera_lid_floor) and the
 // squint parameter carries the rest; see Smoother::check_lids for when.
@@ -616,8 +641,8 @@ struct Args {
     /// packets for VRCFaceTracking's FrameEyeOSC module
     #[arg(long, value_enum, default_value_t = OutputKind::Vrchat)]
     output: OutputKind,
-    /// How EyeTrackingActive is sent in VRChat mode: a bool, a float (1.0 / 0.0; some avatars
-    /// need it), or not at all
+    /// How EyeTrackingActive is sent in VRChat mode and to osc extra outputs: a bool, a float
+    /// (1.0 / 0.0; some avatars need it), or not at all
     #[arg(long, value_enum, default_value_t = ActiveType::Bool)]
     eye_tracking_active: ActiveType,
     /// In VRChat mode, also send the avatar parameters SteamVR's Steam Link OSC sends (LeftEyeX, RightEyeLid, ...;
@@ -1307,6 +1332,7 @@ impl Smoother {
         time: f64,
         dt: f32,
         mapped: [f32; 2],
+        openness: [f32; 2],
         ceiling: [f32; 2],
         camera: [Option<CameraLid>; 2],
         held: [Option<CameraLid>; 2],
@@ -1347,6 +1373,47 @@ impl Smoother {
                 return valve;
             };
             let closing = valve < line;
+            // Not measured (see CameraSmoother::take): closed where the camera sees it closed, the eye server's
+            // otherwise, but for an eye the eye server reads shut (below CAMERA_UNMEASURED_SHUT) for longer than a
+            // blink while the camera sees it not closed: that one takes the camera's eyelid, through the camera's own
+            // blinks, until the two agree on closed for CAMERA_AGREE_HOLD or the eye server's eyelid is above its
+            // closed mark. Then nothing of the doubt is kept, so a half-closed eye is never lifted
+            if !camera.measured {
+                let shut = openness[eye] < CAMERA_UNMEASURED_SHUT;
+                state.diag = (valve, closing, false);
+                state.open_since = None;
+                if valve > 0.0 {
+                    *state = LidDoubt { diag: state.diag, ..LidDoubt::default() };
+                } else if camera.closed {
+                    let since = *state.agree_since.get_or_insert(time);
+                    if time - since >= CAMERA_AGREE_HOLD {
+                        state.doubted = 0.0;
+                        state.camera = false;
+                    }
+                } else if shut {
+                    state.doubted += f64::from(dt);
+                    state.agree_since = None;
+                } else {
+                    state.agree_since = None;
+                }
+                if state.doubted >= CAMERA_UNMEASURED_GRACE.max(CAMERA_DOUBT_FRAMES * camera.frame) {
+                    state.camera = true;
+                }
+                if state.camera {
+                    state.camera_since.get_or_insert(time);
+                } else {
+                    state.camera_since = None;
+                }
+                if camera.closed {
+                    from[eye] = if valve > 0.0 { LidFrom::CameraClosed } else { LidFrom::EyeServer };
+                    return 0.0;
+                }
+                if state.camera {
+                    from[eye] = LidFrom::CameraOpen;
+                    return camera.lid;
+                }
+                return valve;
+            }
             let agree = if camera.closed {
                 closing
             } else {
@@ -1658,6 +1725,9 @@ struct CameraLid {
     closed: bool,
     // The camera's frame interval in seconds, 0 while it is not known.
     frame: f64,
+    // Whether `lid` measures how far open the eye is (Live::lids_measured: a user calibration and the wear's levels).
+    // Without, it is only closed (0) or relaxed open plus the widening (see CameraSmoother::take).
+    measured: bool,
 }
 
 /// One eye's camera eyelid across short gaps (see CAMERA_GAP_HOLD).
@@ -1918,7 +1988,8 @@ impl RaisePeak {
         std::array::from_fn(|eye| {
             let recent = &mut self.recent[eye];
             match camera[eye] {
-                Some(lid) if lid.closed || openness[eye] < CAMERA_RAISE_SHUT => recent.clear(),
+                // (an eyelid not measured raises nothing; see CameraSmoother::take)
+                Some(lid) if lid.closed || !lid.measured || openness[eye] < CAMERA_RAISE_SHUT => recent.clear(),
                 Some(lid) => recent.push_back((time, lid.lid)),
                 None => {}
             }
@@ -2084,9 +2155,19 @@ struct CameraSmoother {
 impl CameraSmoother {
     /// Each eye's camera eyelid while it may be used (see Live::lids_usable; None otherwise, and always without
     /// `camera_lids`), and the squint and pupils to send, smoothed unless `smooth` is false (--raw).
+    /// Without the user calibration (Live::lids_measured) eyecam-rec sends an eye that is not closed as relaxed open
+    /// (plus its widening), whatever its eyelid does: a stand-in, not a reading. Taken as one, it raised the eye
+    /// server's eyelid to relaxed open from the doubt line up (raised_to_camera) and replaced a closing one after the
+    /// grace (LidDoubt), so a slowly closing eye went out 0.75, then 0, and never half closed. Such an eyelid
+    /// (`measured` false) only closes the eye (and goes through the side check and the close gate as before) and
+    /// widens it; between closed and relaxed open the eyelid is the eye server's, eased and sloped as without the
+    /// camera (`zoned`), with no raise, no lowering at the ceiling, no taking over and no --camera-lid-floor
+    /// (Smoother::check_lids), but for an eye the eye server reads shut for longer than a blink while the camera sees it
+    /// not closed (issue 46; see CAMERA_UNMEASURED_SHUT).
     fn take(&mut self, settings: &Settings, camera: Option<&Live>, smooth: bool) -> ([Option<CameraLid>; 2], CameraValues) {
         let camera = camera.filter(|_| settings.camera_lids);
         let lids_usable = camera.map_or([false; 2], Live::lids_usable);
+        let measured = camera.is_some_and(Live::lids_measured);
         let pupil_usable = camera.map_or([false; 2], Live::pupil_usable);
         let mut values = CameraValues::default();
         let mut lids = [None; 2];
@@ -2097,6 +2178,7 @@ impl CameraSmoother {
                 lid: read.lid,
                 closed: read.closed,
                 frame: camera.map_or(0.0, |camera| camera.frame_ns[eye] as f64 / 1e9),
+                measured,
             });
             let squint = read.squint.clamp(0.0, 1.0);
             values.squint[eye] = smoothed(&mut self.squint[eye], lid_used, squint, CAMERA_SQUINT_ALPHA, smooth);
@@ -3858,7 +3940,8 @@ fn process(
             unscaled_gaze
         };
         let gaze = scale_gaze(unscaled_gaze, settings);
-        let zoned = camera_lids.map(|camera| camera.is_none());
+        // (an eye whose camera eyelid is not measured as without it; see CameraSmoother::take)
+        let zoned = camera_lids.map(|camera| !camera.is_some_and(|camera| camera.measured));
         let fits = fits_at(settings, corrected[5], zoned);
         let openness_scaled = lid_inputs_with(data.openness, corrected[5], scales, settings, fits);
         let mapped = snapped_lids(data.openness, corrected[5], scales, settings, fits, zoned);
@@ -3870,7 +3953,8 @@ fn process(
         let floor = settings.camera_lid_floor;
         let line = doubt_line(settings);
         let floored = [0, 1].map(|eye| {
-            floor > 0.0 && camera_lids[eye].is_some_and(|camera| !camera.closed && mapped[eye] >= line)
+            floor > 0.0
+                && camera_lids[eye].is_some_and(|camera| camera.measured && !camera.closed && mapped[eye] >= line)
         });
         let mapped = [0, 1].map(|eye| match camera_lids[eye] {
             Some(camera) if camera.closed => {
@@ -3879,14 +3963,14 @@ fn process(
                 }
                 0.0
             }
-            Some(camera) => {
+            Some(camera) if camera.measured => {
                 let (lid, raised) = raised_to_camera(mapped[eye], camera.lid, line);
                 if raised {
                     lid_from[eye] = LidFrom::CameraRaised;
                 }
                 if floored[eye] { lid.max(floor) } else { lid }
             }
-            None => mapped[eye],
+            Some(_) | None => mapped[eye],
         });
         let camera_lid = camera_lids.map(|camera| camera.map(|camera| camera.lid));
         let mixed = mixed_lids(mapped, valve, camera_lid, &mut lid_from);
@@ -3949,9 +4033,10 @@ fn process(
             _ => gaze[5],
         };
         smoother.lid_vertical = Some(vertical);
-        // For eyes without the camera's eyelid, eyelids near relaxed open count as open, and far down less is
-        // expected (see LID_OPEN_SNAP_RAMP)
-        let zoned = [0, 1].map(|eye| camera_lids[eye].is_none() && held[eye].is_none());
+        // For eyes without the camera's eyelid (or with one not measured, see CameraSmoother::take), eyelids near
+        // relaxed open count as open, and far down less is expected (see LID_OPEN_SNAP_RAMP)
+        let measured = |lid: Option<CameraLid>| lid.is_some_and(|lid| lid.measured);
+        let zoned = [0, 1].map(|eye| !measured(camera_lids[eye]) && !measured(held[eye]));
         let fits = fits_at(settings, vertical, zoned);
         let mapped = snapped_lids(openness, vertical, scales, settings, fits, zoned);
         let valve = mapped;
@@ -3962,7 +4047,7 @@ fn process(
         let at_ceiling = ceiling_eyes(settings, saturated);
         let ceiling = [0, 1].map(|eye| if at_ceiling[eye] { ceiling_share(openness[eye]) } else { 0.0 });
         let (mapped, mut lid_from, floored) =
-            smoother.check_lids(data.sample_time, dt, mapped, ceiling, camera_lids, held, raise_to, settings);
+            smoother.check_lids(data.sample_time, dt, mapped, openness, ceiling, camera_lids, held, raise_to, settings);
         // Only once the camera has had the eyelid for longer than a wink: until then a blink the camera is a frame or
         // two late to see closed still holds the gaze from its start, as the eye server's reading says
         smoother.seen_open = [0, 1].map(|eye| {
@@ -3974,7 +4059,7 @@ fn process(
         // Through a short gap in the camera's eyelid, the eye server's is still raised to the camera's last one (an eye
         // on the camera's eyelid has that already)
         let mapped = [0, 1].map(|eye| match held[eye] {
-            Some(camera) if lid_from[eye] != LidFrom::CameraOpen => {
+            Some(camera) if lid_from[eye] != LidFrom::CameraOpen && camera.measured => {
                 let (lid, raised) = raised_to_camera(mapped[eye], raise_to[eye].unwrap_or(camera.lid), doubt_line(settings));
                 if raised {
                     lid_from[eye] = LidFrom::CameraRaised;
@@ -4428,13 +4513,19 @@ fn steamlink_messages(gaze: [f32; 6], lids: [f32; 2]) -> Vec<(String, OscType)> 
     messages
 }
 
+/// `EyeTrackingActive`'s value in the type `kind` (a bool, a float, or nothing): for the main VRChat output and the
+/// osc extra format (extras.rs).
+fn active_value(kind: ActiveType, active: bool) -> Option<OscType> {
+    match kind {
+        ActiveType::Bool => Some(OscType::Bool(active)),
+        ActiveType::Float => Some(OscType::Float(if active { 1.0 } else { 0.0 })),
+        ActiveType::Off => None,
+    }
+}
+
 /// `EyeTrackingActive` as the settings want it sent (a bool, a float, or nothing).
 fn active_message(settings: &Settings, active: bool) -> Option<(String, OscType)> {
-    let value = match settings.eye_tracking_active {
-        ActiveType::Bool => OscType::Bool(active),
-        ActiveType::Float => OscType::Float(if active { 1.0 } else { 0.0 }),
-        ActiveType::Off => return None,
-    };
+    let value = active_value(settings.eye_tracking_active, active)?;
     Some((format!("/avatar/parameters{}/EyeTrackingActive", settings.prefix), value))
 }
 
@@ -5674,7 +5765,7 @@ mod tests {
 
     #[test]
     fn a_camera_eyelid_is_held_through_short_gaps() {
-        let lid = |lid: f32| Some(CameraLid { lid, closed: false, frame: 0.011 });
+        let lid = |lid: f32| Some(CameraLid { lid, closed: false, frame: 0.011, measured: true });
         let mut gap = CameraGap::default();
         // The first sample says which it is
         assert_eq!(gap.steady(0.0, lid(0.6)), (lid(0.6), None));
@@ -8791,7 +8882,8 @@ mod tests {
         assert_eq!(saturation.open, 700);
     }
 
-    /// eyecam-rec's values as read: both eyes fresh and calibrated for this wear, at eyelid `lid` with `squint`.
+    /// eyecam-rec's values as read: both eyes fresh, calibrated for this wear and this user and with the wear's levels
+    /// learnt (so the eyelids are measured, Live::lids_measured), at eyelid `lid` with `squint`.
     pub(crate) fn camera(lid: f32, squint: f32) -> Live {
         let eye = eyecam_live::Eye {
             valid: true,
@@ -8802,7 +8894,7 @@ mod tests {
             ..Default::default()
         };
         Live {
-            calib_state: 1,
+            calib_state: 1 | 2 | 4,
             recalib_suggested: false,
             live: true,
             eyes: [eye; 2],
@@ -9026,6 +9118,176 @@ mod tests {
         let last = sent.last().unwrap();
         assert!((last.lids[0] - 0.6).abs() < 1e-3 && (last.lids[1] - 0.75).abs() < 1e-3, "{:?}", last.lids);
         assert_eq!(last.lid_from, [LidFrom::EyeServer; 2]);
+    }
+
+    /// `live` as eyecam-rec sends it without the user calibration: calibrated for this wear, its levels learnt, but
+    /// the eyelids not measured (Live::lids_measured).
+    fn without_user_calibration(live: Live) -> Live {
+        Live { calib_state: 1 | 4, ..live }
+    }
+
+    #[test]
+    fn without_the_user_calibration_a_slowly_closing_eye_goes_out_as_the_eye_server_reads_it() {
+        // The eye server reads both eyes closing slowly (0.7 to 0.3 in 3 s, then 0.3 for 1 s: VRCFT 0.6 to 0 through the
+        // default marks, never below CAMERA_UNMEASURED_SHUT); the camera sees them open all along, which without the
+        // user calibration it sends as relaxed open (0.75)
+        let openness = |i: usize| [(0.7 - 0.4 * i as f32 / 270.0).max(0.3); 2];
+        for raw in [false, true] {
+            let settings = Settings { lid_sync: 0.0, raw, ..camera_settings() };
+            let run = |camera: Option<Live>| {
+                let mut smoother = Smoother::new(&settings);
+                camera_samples(&settings, &mut smoother, 100.0, 4.0, openness, |_| camera)
+            };
+            let off = run(None);
+            let unmeasured = run(Some(without_user_calibration(camera(0.75, 0.0))));
+            // As with the camera off (below relaxed open, where the camera only widens): no raise to relaxed open, no
+            // taking over, half closed on the way
+            for (i, (off, on)) in off.iter().zip(&unmeasured).enumerate() {
+                let (off, on) = (off.lids.map(|lid| lid.min(LID_RELAXED)), on.lids.map(|lid| lid.min(LID_RELAXED)));
+                assert!((0..2).all(|eye| (off[eye] - on[eye]).abs() < 1e-5), "{raw} {i}: {off:?} {on:?}");
+            }
+            assert!(unmeasured.iter().all(|sample| sample.lid_from == [LidFrom::EyeServer; 2]), "{raw}");
+            assert!(unmeasured.iter().any(|sample| (0.2..0.5).contains(&sample.lids[0])), "{raw}");
+            assert!(unmeasured[330..].iter().all(|sample| sample.lids[0] < 0.05), "{raw}: {:?}", unmeasured[330].lids);
+            // With it, as before: raised to the camera's relaxed open, and (with the timed stages) its eyelid once the
+            // eye server has read the eye closing for longer than a blink
+            let measured = run(Some(camera(0.75, 0.0)));
+            assert!(measured.iter().any(|sample| sample.lid_from[0] == LidFrom::CameraRaised), "{raw}");
+            if !raw {
+                let last = measured.last().unwrap();
+                assert_eq!(last.lid_from[0], LidFrom::CameraOpen);
+                assert!((last.lids[0] - LID_RELAXED).abs() < 0.01, "{:?}", last.lids);
+            }
+        }
+    }
+
+    #[test]
+    fn without_the_user_calibration_an_eye_the_eye_server_reads_shut_still_opens_on_the_camera() {
+        // Issue 46: the eye server reads the open left eye shut (0.03) all along. Without the user calibration too, once
+        // that has lasted CAMERA_UNMEASURED_GRACE (1 s; CAMERA_DOUBT_GRACE, 0.3 s, with it) while the camera sees the
+        // eye not closed, the eyelid is the camera's (relaxed open)
+        let settings = camera_settings();
+        let run = |camera: &dyn Fn(usize) -> Live, openness: &dyn Fn(usize) -> [f32; 2]| {
+            let mut smoother = Smoother::new(&settings);
+            camera_samples(&settings, &mut smoother, 100.0, 4.0, |i| openness(i), |i| Some(camera(i)))
+        };
+        let stuck = |_: usize| [0.03, 0.8];
+        let unmeasured = run(&|_| without_user_calibration(camera(0.75, 0.0)), &stuck);
+        let measured = run(&|_| camera(0.75, 0.0), &stuck);
+        for (sent, grace) in [(&unmeasured, 90), (&measured, 27)] {
+            assert!(sent[..grace - 5].iter().all(|sample| sample.lids[0] == 0.0 && sample.lid_from[0] == LidFrom::EyeServer));
+            assert!(sent[grace + 5..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen));
+            assert!(sent[grace + 40..].iter().all(|sample| (sample.lids[0] - LID_RELAXED).abs() < 0.01));
+        }
+        // An eye really shut (the camera sees it closed too) stays shut
+        let shut = run(&|_| without_user_calibration(camera_eyes([(0.0, 0.0, true), (0.75, 0.0, false)])), &stuck);
+        assert!(shut.iter().all(|sample| sample.lids[0] == 0.0 && sample.lid_from[0] != LidFrom::CameraOpen));
+        // Once the eye server's eyelid is above its closed mark (half closed, 0.4: VRCFT 0.15) it is the eye server's at
+        // once, and nothing of the doubt is kept: shut again, the grace goes by first
+        let back = |i: usize| if (120..200).contains(&i) { [0.4, 0.8] } else { [0.03, 0.8] };
+        let sent = run(&|_| without_user_calibration(camera(0.75, 0.0)), &back);
+        assert_eq!(sent[119].lid_from[0], LidFrom::CameraOpen);
+        // (from the despike's second sample: it takes the median of three)
+        assert!(sent[122..200].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
+        assert!((sent[199].lids[0] - 0.15).abs() < 0.02, "{:?}", sent[199].lids);
+        assert!(sent[202..285].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
+        assert!(sent[300..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen));
+        // Between 0.25 and the closed mark (0.30) the doubt neither grows nor goes: a stuck eye wobbling around 0.25
+        // (0.20 / 0.28, five samples each) opens once and stays open, but an eye that only ever reads 0.27 never opens
+        let wobble = run(&|_| without_user_calibration(camera(0.75, 0.0)), &|i| [if i / 5 % 2 == 0 { 0.2 } else { 0.28 }, 0.8]);
+        assert!(wobble[..150].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
+        assert!(wobble[200..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen), "{:?}", wobble[200].lid_from);
+        assert!(wobble[240..].iter().all(|sample| (sample.lids[0] - LID_RELAXED).abs() < 0.01));
+        let between = run(&|_| without_user_calibration(camera(0.75, 0.0)), &|_| [0.27, 0.8]);
+        assert!(between.iter().all(|sample| sample.lids[0] == 0.0 && sample.lid_from[0] == LidFrom::EyeServer));
+        // The known cost: a hard squint the eye server reads below CAMERA_UNMEASURED_SHUT (0.1 in both eyes) while the
+        // camera, without the user calibration, can't tell it from open: it goes out open after the grace, where with
+        // the user calibration the camera's own (narrowed) eyelid would
+        let squint = run(&|_| without_user_calibration(camera(0.75, 0.0)), &|_| [0.1; 2]);
+        assert!(squint[..80].iter().all(|sample| sample.lids == [0.0; 2]));
+        assert!(squint[135..].iter().all(|sample| sample.lids.iter().all(|lid| (lid - LID_RELAXED).abs() < 0.01)));
+        let narrowed = run(&|_| camera(0.3, 0.8), &|_| [0.1; 2]);
+        assert!(narrowed[90..].iter().all(|sample| sample.lids.iter().all(|lid| (lid - 0.3).abs() < 0.01)));
+    }
+
+    #[test]
+    fn without_the_user_calibration_an_eye_closing_slowly_does_not_flick_open_before_the_camera_sees_it_shut() {
+        // The eye server reads both eyes closing from 0.7 to 0 in 3 s (below 0.25 from 1.93 s); the camera calls them
+        // closed only once it reads them below 0.1 (from 2.57 s), 0.64 s later. Inside CAMERA_UNMEASURED_GRACE: never
+        // sent open on the way (with the 0.3 s of the user calibration's grace it went 0 -> 0.75 -> 0)
+        let settings = camera_settings();
+        let mut smoother = Smoother::new(&settings);
+        let openness = |i: usize| (0.7 - 0.7 * i as f32 / 270.0).max(0.0);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, |i| [openness(i); 2], |i| {
+            let closed = openness(i) < 0.1;
+            let lid = if closed { 0.0 } else { LID_RELAXED };
+            Some(without_user_calibration(camera_eyes([(lid, 0.0, closed); 2])))
+        });
+        let open_s = sent[100..].iter().filter(|sample| sample.lids.iter().any(|lid| *lid >= 0.7)).count() as f64 / 90.0;
+        assert_eq!(open_s, 0.0);
+        assert!(sent[240..].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", sent[240].lids);
+    }
+
+    #[test]
+    fn without_the_user_calibration_the_cameras_closed_still_closes_and_its_widening_still_widens() {
+        let settings = camera_settings();
+        // A blink in both eyes that only the camera sees (200 ms)
+        let mut smoother = Smoother::new(&settings);
+        let blink = |i: usize| (90..108).contains(&i);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 2.0, |_| [0.8; 2], |i| {
+            let closed = blink(i);
+            let lid = if closed { 0.0 } else { LID_RELAXED };
+            Some(without_user_calibration(camera_eyes([(lid, 0.0, closed); 2])))
+        });
+        assert!(sent[80..90].iter().all(|sample| sample.lids.iter().all(|lid| *lid > 0.5)), "{:?}", sent[89].lids);
+        assert!(sent[92..108].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", sent[100].lids);
+        assert_eq!(sent[95].lid_from, [LidFrom::CameraClosed; 2]);
+        // Widened, past the saturation cap as with the user calibration
+        let mut smoother = saturated_smoother(&settings);
+        let camera = without_user_calibration(camera(0.95, 0.0));
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 2.0, |_| [1.0; 2], |_| Some(camera));
+        let last = sent.last().unwrap().lids;
+        assert!(last.iter().all(|lid| (lid - 0.95).abs() < 0.005), "{last:?}");
+    }
+
+    #[test]
+    fn without_the_user_calibration_an_eye_read_at_the_ceiling_goes_out_at_the_cameras_relaxed_open() {
+        // SteamOS 0.4.3: the eye server reads the open eyes 1.000 (saturated), the camera sends them relaxed open
+        // without the user calibration. From relaxed open up the eyelid is the camera's (mixed_lids): relaxed open, not
+        // capped below it nor widened, and as with the user calibration
+        let settings = camera_settings();
+        let run = |camera: Live| {
+            let mut smoother = saturated_smoother(&settings);
+            camera_samples(&settings, &mut smoother, 100.0, 2.0, |_| [1.0; 2], |_| Some(camera))
+        };
+        let unmeasured = run(without_user_calibration(camera(LID_RELAXED, 0.0)));
+        assert!(unmeasured[45..].iter().all(|sample| sample.lids.iter().all(|lid| (lid - LID_RELAXED).abs() < 0.005)));
+        assert!(unmeasured.iter().all(|sample| sample.lid_from == [LidFrom::EyeServer; 2]));
+        let measured = run(camera(LID_RELAXED, 0.0));
+        let (last, with) = (unmeasured.last().unwrap().lids, measured.last().unwrap().lids);
+        assert!((0..2).all(|eye| (last[eye] - with[eye]).abs() < 1e-4), "{last:?} {with:?}");
+    }
+
+    #[test]
+    fn the_user_calibration_coming_and_going_switches_the_cameras_eyelid_cleanly() {
+        // The eye server reads the left eye half closed all along (0.4: VRCFT 0.15, below the doubt line but above
+        // CAMERA_UNMEASURED_SHUT), the camera sees it open: with the user calibration (the first and last 2 s) the
+        // eyelid is the camera's after the grace; without it (in between) the eye server's
+        let settings = camera_settings();
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 6.0, |_| [0.4, 0.8], |i| {
+            let live = camera(0.75, 0.0);
+            Some(if (180..360).contains(&i) { without_user_calibration(live) } else { live })
+        });
+        assert_eq!(sent[179].lid_from[0], LidFrom::CameraOpen);
+        assert!((sent[179].lids[0] - LID_RELAXED).abs() < 0.01, "{:?}", sent[179].lids);
+        // Gone: the eye server's at once, half closed
+        assert!(sent[180..360].iter().all(|sample| sample.lid_from[0] == LidFrom::EyeServer));
+        assert!(sent[270..360].iter().all(|sample| (sample.lids[0] - 0.15).abs() < 0.02), "{:?}", sent[270].lids);
+        // Back: the doubt starts over (nothing of it kept from before), so the grace goes by first
+        let from = |range: std::ops::Range<usize>| sent[range].iter().map(|sample| sample.lid_from[0]).collect::<Vec<_>>();
+        assert!(from(360..380).iter().all(|from| *from == LidFrom::EyeServer), "{:?}", from(360..380));
+        assert!(sent[400..].iter().all(|sample| sample.lid_from[0] == LidFrom::CameraOpen), "{:?}", sent[400].lid_from);
     }
 
     #[test]
@@ -9826,7 +10088,7 @@ mod tests {
 
     #[test]
     fn the_side_check_takes_the_last_open_camera_eyelid() {
-        let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011 });
+        let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011, measured: true });
         let mut check = SideCheck::default();
         // (The eye server unsure of both eyes all along, so only looking to the side counts)
         // No open one yet: relaxed open
@@ -9861,8 +10123,8 @@ mod tests {
         let settings = Settings::default();
         let mut smoother = Smoother::new(&settings);
         let dt = 1.0 / 90.0;
-        let open = Some(CameraLid { lid: LID_RELAXED, closed: false, frame: 0.011 });
-        let shut = Some(CameraLid { lid: 0.0, closed: true, frame: 0.011 });
+        let open = Some(CameraLid { lid: LID_RELAXED, closed: false, frame: 0.011, measured: true });
+        let shut = Some(CameraLid { lid: 0.0, closed: true, frame: 0.011, measured: true });
         // A blink every 3 s: the eye server reads the eye shut for 14 samples, the camera from 4 samples later; between
         // them the eye server reads the open eye at 0.59, below the camera's relaxed open by more than CAMERA_AGREE_GAP,
         // so the two never agree. Each blink adds 4 samples of doubt, over CAMERA_DOUBT_GRACE in 7 blinks.
@@ -9872,7 +10134,7 @@ mod tests {
                 let valve = if i < 14 { 0.0 } else { 0.59 };
                 let camera = if (4..18).contains(&i) { shut } else { open };
                 let (_, from, _) =
-                    smoother.check_lids(time, dt as f32, [valve, 0.59], [0.0; 2], [camera, open], [None; 2], [None; 2], &settings);
+                    smoother.check_lids(time, dt as f32, [valve, 0.59], [1.0; 2], [0.0; 2], [camera, open], [None; 2], [None; 2], &settings);
                 assert_ne!(from[0], LidFrom::CameraOpen, "blink {blink}, sample {i}");
                 time += dt;
             }
@@ -9880,7 +10142,7 @@ mod tests {
         // One long closing the camera sees open still takes its eyelid
         let mut from = [LidFrom::EyeServer; 2];
         for _ in 0..40 {
-            (_, from, _) = smoother.check_lids(time, dt as f32, [0.0, 0.59], [0.0; 2], [open; 2], [None; 2], [None; 2], &settings);
+            (_, from, _) = smoother.check_lids(time, dt as f32, [0.0, 0.59], [1.0; 2], [0.0; 2], [open; 2], [None; 2], [None; 2], &settings);
             time += dt;
         }
         assert_eq!(from[0], LidFrom::CameraOpen);
@@ -10085,7 +10347,7 @@ mod tests {
 
     #[test]
     fn the_raise_peak_keeps_the_cameras_highest_open_eyelid_of_the_last_0_3_s() {
-        let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011 });
+        let lid = |lid: f32, closed: bool| Some(CameraLid { lid, closed, frame: 0.011, measured: true });
         let mut peak = RaisePeak::default();
         assert_eq!(peak.step(1.0, [0.9; 2], [lid(0.7, false), None]), [Some(0.7), None]);
         assert_eq!(peak.step(1.1, [0.9; 2], [lid(0.4, false), None]), [Some(0.7), None]);
@@ -11745,6 +12007,12 @@ mod tests {
             .collect()
     }
 
+    /// EyeTrackingActive as the osc format sends it in the type `kind`: under the fixed /FT, nothing with "off".
+    fn osc_active(kind: ActiveType, active: bool) -> Vec<(String, Vec<OscType>)> {
+        let addr = "/avatar/parameters/FT/EyeTrackingActive";
+        active_value(kind, active).map(|value| (addr.to_owned(), vec![value])).into_iter().collect()
+    }
+
     /// VRChat's eye tracking input as the osc format sends it: CenterVec for the combined gaze, EyesClosedAmount.
     fn osc_eyes(gaze: [f32; 2], lids: [f32; 2]) -> Vec<(String, Vec<OscType>)> {
         vec![
@@ -11771,7 +12039,13 @@ mod tests {
         let steps = [(both, Some([0.4, 0.1])), (left, Some([0.0, 0.3])), (none, None), (both, None), (none, None)];
         let variants = [
             settings(),
-            Settings { prefix: String::new(), steamlink_params: true, pupil_bits: 3, ..settings() },
+            Settings {
+                prefix: String::new(),
+                eye_tracking_active: ActiveType::Off,
+                steamlink_params: true,
+                pupil_bits: 3,
+                ..settings()
+            },
             Settings {
                 prefix: "/Custom".into(),
                 eye_tracking_active: ActiveType::Float,
@@ -11782,6 +12056,8 @@ mod tests {
             },
         ];
         for settings in variants {
+            let active = osc_active(settings.eye_tracking_active, true);
+            let n = active.len();
             let mut held = extras::Held::default();
             let (mut squint_out, mut brow_out, mut bits) = ([false; 2], false, PupilBits::default());
             for (index, (camera, brows)) in steps.into_iter().enumerate() {
@@ -11798,10 +12074,11 @@ mod tests {
                 main.extend(native_messages(&settings, gaze, sample.lids));
                 squint_out = camera.squint.map(|squint| squint.is_some());
                 brow_out = brows.is_some();
-                let osc = extras::osc_sample(&sample, &mut held);
+                let osc = extras::osc_sample(&sample, settings.eye_tracking_active, &mut held);
                 assert_eq!(osc[..2], osc_eyes([0.2, 0.1], sample.lids)[..], "{index}");
-                assert_eq!(osc[2..], main_v2_floats(&main, &settings.prefix)[..], "{index}");
-                assert!(osc[2..].iter().all(|(addr, _)| addr.starts_with("/avatar/parameters/FT/v2/")));
+                assert_eq!(osc[2..2 + n], active[..], "{index}");
+                assert_eq!(osc[2 + n..], main_v2_floats(&main, &settings.prefix)[..], "{index}");
+                assert!(osc[2 + n..].iter().all(|(addr, _)| addr.starts_with("/avatar/parameters/FT/v2/")));
             }
         }
     }
@@ -11811,11 +12088,20 @@ mod tests {
         let (main, main_port) = listener();
         let (osc, osc_port) = listener();
         let decode = |listener: &UdpSocket| -> Vec<_> { drain(listener).iter().map(|d| decode_osc(d)).collect() };
-        for (prefix, independent, brows) in [("/FT", false, false), ("", true, true), ("/Custom", true, false)] {
+        let variants = [
+            ("/FT", false, false, ActiveType::Bool),
+            ("", true, true, ActiveType::Float),
+            ("/Custom", true, false, ActiveType::Off),
+        ];
+        for (prefix, independent, brows, active) in variants {
+            // EyeTrackingActive in its type right after EyesClosedAmount (none with "off"), whatever the prefix
+            let n = osc_active(active, true).len();
+            let size = (if brows { 18 } else { 10 }) + n;
             let settings = Settings {
                 host: "127.0.0.1".into(),
                 port: Some(main_port),
                 prefix: prefix.into(),
+                eye_tracking_active: active,
                 independent_eyes: independent,
                 brow_from_widen: brows,
                 steamlink_params: true,
@@ -11837,23 +12123,26 @@ mod tests {
                 bridge.on_sample(data).unwrap();
                 let sample = bridge.latest.as_ref().unwrap();
                 let (at_main, at_osc) = (decode(&main), decode(&osc));
-                // Every sample: VRChat's eye input, then the main output's v2 floats under /FT, whatever its prefix
+                // Every sample: VRChat's eye input, "active", then the main output's v2 floats under /FT, whatever its
+                // prefix
                 assert_eq!(at_osc[..2], osc_eyes([sample.gaze[4], sample.gaze[5]], sample.lids)[..], "{index}");
-                assert_eq!(at_osc[2..], main_v2_floats(&at_main, prefix)[..], "{prefix} {index}");
-                assert_eq!(at_osc.len(), if brows { 18 } else { 10 });
+                assert_eq!(at_osc[2..2 + n], osc_active(active, true)[..], "{index}");
+                assert_eq!(at_osc[2 + n..], main_v2_floats(&at_main, prefix)[..], "{prefix} {index}");
+                assert_eq!(at_osc.len(), size);
             }
-            // Lost: relaxed open eyes looking ahead and the brows back to 0 (as the main output's), once
+            // Lost: relaxed open eyes looking ahead, "not active" and the brows back to 0 (as the main output's), once
             bridge.on_lost("test").unwrap();
             let (at_main, at_osc) = (decode(&main), decode(&osc));
             let mut neutral = osc_eyes([0.0; 2], [LID_RELAXED; 2]);
+            neutral.extend(osc_active(active, false));
             let gaze = ["EyeLeftX", "EyeLeftY", "EyeRightX", "EyeRightY"].map(|name| (name, 0.0));
             let rest = [("EyeLidLeft", LID_RELAXED), ("EyeLidRight", LID_RELAXED), ("EyeX", 0.0), ("EyeY", 0.0)];
             for (name, value) in gaze.into_iter().chain(rest) {
                 neutral.push((format!("/avatar/parameters/FT/v2/{name}"), vec![OscType::Float(value)]));
             }
-            assert_eq!(at_osc[..10], neutral[..]);
-            assert_eq!(at_osc[10..], main_v2_floats(&at_main, prefix)[..]);
-            assert_eq!(at_osc.len(), if brows { 18 } else { 10 });
+            assert_eq!(at_osc[..10 + n], neutral[..]);
+            assert_eq!(at_osc[10 + n..], main_v2_floats(&at_main, prefix)[..]);
+            assert_eq!(at_osc.len(), size);
             // Then nothing, not even while the other outputs are kept alive
             bridge.feo_idle = None;
             bridge.keep_feo_alive();
@@ -11863,7 +12152,7 @@ mod tests {
             bridge.on_sample(reading(20, [0.3, 0.2], [0.6, 0.5])).unwrap();
             drain(&osc);
             bridge.apply(reload(&Settings { sending: false, ..settings.clone() })).unwrap();
-            assert_eq!(decode(&osc)[..10], neutral[..]);
+            assert_eq!(decode(&osc)[..10 + n], neutral[..]);
             bridge.on_sample(reading(21, [0.3, 0.2], [0.6, 0.5])).unwrap();
             assert!(decode(&osc).is_empty());
             bridge.apply(reload(&settings)).unwrap();
@@ -11876,10 +12165,10 @@ mod tests {
                 Settings { extra_outputs: vec![extra(config::ExtraFormat::Osc, "127.0.0.1", moved_port)], ..settings };
             bridge.apply(reload(&elsewhere)).unwrap();
             bridge.refresh_extras();
-            assert_eq!(decode(&osc)[..10], neutral[..]);
+            assert_eq!(decode(&osc)[..10 + n], neutral[..]);
             bridge.on_sample(reading(23, [0.3, 0.2], [0.6, 0.5])).unwrap();
             assert!(decode(&osc).is_empty());
-            assert_eq!(decode(&moved).len(), if brows { 18 } else { 10 });
+            assert_eq!(decode(&moved).len(), size);
             bridge.on_lost("test").unwrap();
             drain(&moved);
             drain(&main);
@@ -11935,12 +12224,12 @@ mod tests {
             assert_eq!(at_bundled.len(), 1, "{index}");
             assert!(at_bundled[0].starts_with(b"#bundle\0") && at_bundled[0].len() <= osc::MAX_BUNDLE);
             assert_eq!(decode_osc_or_bundle(&at_bundled[0]), at_plain, "{index}");
-            assert_eq!(at_plain.len(), 18);
+            assert_eq!(at_plain.len(), 19);
             capped_messages.extend(drain(&capped).iter().flat_map(|d| decode_osc_or_bundle(d)));
         }
         // (each round waits about 150 ms for the listeners, so about 1.5 s: one or two samples, never all 10)
-        let capped_samples = capped_messages.len() / 18;
-        assert_eq!(capped_messages.len() % 18, 0);
+        let capped_samples = capped_messages.len() / 19;
+        assert_eq!(capped_messages.len() % 19, 0);
         assert!((1..=3).contains(&capped_samples), "{capped_samples}");
         assert!(bridge.extras.status(Instant::now())[2].rate <= 2.0);
         // Lost: the final set, bundled too, and to the capped one at once
@@ -11975,7 +12264,8 @@ mod tests {
         let at_main = drain(&main);
         assert_eq!((at_main.len(), &at_main[0][..4]), (1, &b"FEO1"[..]));
         let at_gaze = drain(&gaze);
-        assert_eq!(at_gaze.len(), 10);
+        // (EyeTrackingActive too, in FrameEyeOSC mode as well)
+        assert_eq!(at_gaze.len(), 11);
         assert_eq!(decode_osc(&at_gaze[0]).0, "/tracking/eye/CenterVec");
         let status = serde_json::to_value(bridge.status(None, None)).unwrap();
         let refused: Vec<_> = status["extras"].as_array().unwrap().iter().map(|extra| &extra["refused"]).collect();
@@ -11994,7 +12284,7 @@ mod tests {
         bridge.on_sample(reading(1, [0.3, 0.2], [1.0, 1.0])).unwrap();
         assert_eq!(drain(&moved).len(), 1);
         assert_eq!(decode_osc(&drain(&main)[0]).0, "/tracking/eye/CenterVec");
-        assert_eq!(drain(&gaze).len(), 10);
+        assert_eq!(drain(&gaze).len(), 11);
     }
 
     #[test]

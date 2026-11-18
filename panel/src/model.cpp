@@ -609,6 +609,15 @@ extras::List extrasList(const PanelModel& model) {
     return extras::readList(model.config.root.get(key::kExtraOutputs));
 }
 
+bool activeTypeRowShown(const std::string& output, const extras::List& list) {
+    // (VRChat directly: whatever isn't LiveLink or FrameEyeOSC, as the Output tab draws it)
+    if (output != kOutputLivelink && output != kOutputModule) return true;
+    for (const extras::Entry& entry : list.entries) {
+        if (entry.index < extras::kMax && entry.format == extras::kOsc) return true;
+    }
+    return false;
+}
+
 extras::Taken extrasTaken(const PanelModel& model) {
     const SettingsView view(model);
     const EyeStatus& s = model.status;
@@ -672,6 +681,10 @@ CameraUse cameraUse(const EyeStatus& status, bool cameraLids, bool warming) {
 
 bool lidsFromCameras(const EyeStatus& status) {
     return status.running && status.camera.used[0] && status.camera.used[1];
+}
+
+bool cameraHalfLids(const EyeStatus& status) {
+    return (status.camera.calibState & (2 | 4)) == (2 | 4);
 }
 
 WidenSlider widenSlider(const SettingsView& view, const EyeStatus& status) {

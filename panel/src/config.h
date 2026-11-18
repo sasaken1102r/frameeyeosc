@@ -176,7 +176,7 @@ constexpr const char* kOutputVrchat = "vrchat";
 constexpr const char* kOutputRemovedEtvr = "etvr";
 constexpr const char* kOutputLivelink = "livelink";  ///< Live Link Face packets for VRCFaceTracking's LiveLink module
 constexpr const char* kOutputModule = "frameeyeosc";  ///< FEO1 packets for VRCFaceTracking's FrameEyeOSC module
-/** eye_tracking_active values: how EyeTrackingActive is sent in VRChat mode */
+/** eye_tracking_active values: how EyeTrackingActive is sent in VRChat mode and to osc extra outputs */
 constexpr const char* kActiveTypes[3] = {"bool", "float", "off"};
 /** auto_recenter values, in the order the Eye fit tab's "When put on" row shows them: nothing, or one dot (the
  *  default) */

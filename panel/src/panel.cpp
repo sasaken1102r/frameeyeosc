@@ -1446,6 +1446,31 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::PromptNo:
             promptOutput_.clear();
             return hit;
+        case PanelAction::PromptNever:
+            // Not applied, and not asked again (the caller saves it)
+            promptOutput_.clear();
+            outputPrompt_ = false;
+            return hit;
+        case PanelAction::OutputPromptSet:
+            // Switched here; the caller saves it
+            if (outputPrompt_ == (hit.arg != 0)) return {};
+            outputPrompt_ = hit.arg != 0;
+            return hit;
+        case PanelAction::UserCalibNow:
+            // To the eye cameras tab, where its button is (as a tab press would)
+            userCalibPromptOpen_ = false;
+            setTab(PanelTab::Eyecam);
+            closeExtrasFlow();
+            closeAppsList();
+            closeContrib();
+            historyOpen_ = false;
+            diagOpen_ = false;
+            recordOpen_.clear();
+            recordsAllOpen_ = false;
+            return {};
+        case PanelAction::UserCalibLater:
+            userCalibPromptOpen_ = false;
+            return {};
         case PanelAction::UpdateConfirm:
         case PanelAction::UpdateCancel:
             updatePromptVersion_.clear();
@@ -1505,6 +1530,15 @@ void EyePanel::showPrompt(const std::string& output) {
     promptOutput_ = output;
     hover_ = {};
     pressed_ = {};
+}
+
+bool EyePanel::askUserCalib() {
+    if (userCalibAsked_ || promptOpen()) return false;
+    userCalibAsked_ = true;
+    userCalibPromptOpen_ = true;
+    hover_ = {};
+    pressed_ = {};
+    return true;
 }
 
 void EyePanel::openHostEntry(const std::string& text) {
@@ -2107,12 +2141,14 @@ void EyePanel::drawStatus(const Pen& pen, const UiText& t, const PanelModel& m) 
         pen.text(lx, 282 + dy, t.legendRaw, 14, kText);
         lx -= 26;
         fillRounded(pen, lx, 274 + dy, 20, 6, 2, kTextMuted);
-        // Where they come from, after the title: Valve's values, or the eye cameras (as frameeyeosc says)
+        // Where they come from, after the title: Valve's values, or the eye cameras (as frameeyeosc says); without the
+        // user calibration the cameras only close and widen them (cameraHalfLids)
         const char* from = nullptr;
+        const bool halfLids = cameraHalfLids(s);
         switch (cameraUse(s, SettingsView(m).flag(key::kCameraLids))) {
-            case CameraUse::Both: from = t.lidsFromCamera; break;
-            case CameraUse::Left: from = t.lidsFromCameraLeft; break;
-            case CameraUse::Right: from = t.lidsFromCameraRight; break;
+            case CameraUse::Both: from = halfLids ? t.lidsFromCamera : t.lidsFromValveCamera; break;
+            case CameraUse::Left: from = halfLids ? t.lidsFromCameraLeft : t.lidsFromValveCamera; break;
+            case CameraUse::Right: from = halfLids ? t.lidsFromCameraRight : t.lidsFromValveCamera; break;
             case CameraUse::Unknown: from = s.running ? t.lidsFromValve : nullptr; break;
             default: from = t.lidsFromValve; break;
         }
@@ -2710,13 +2746,17 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
     const bool livelink = output == kOutputLivelink;
     const bool module = output == kOutputModule;
     const bool direct = !livelink && !module;
-    // VRChat directly has the most rows: all of them shorter there (the other outputs' as on the other tabs)
-    const double rowH = direct ? 50 : kRowH;
-    const double controlH = direct ? 42 : kControlH;
+    // LiveLink and FrameEyeOSC send no EyeTrackingActive themselves, but an osc extra does: its type, while there is one
+    const bool activeRow = !direct && activeTypeRowShown(output, extrasList(m));
+    // VRChat directly has the most rows: all of them shorter there (the other outputs' as on the other tabs), and with
+    // the EyeTrackingActive row in the others too, so VRCFT's steps still fit under LiveLink's pupil rows
+    const bool compact = direct || activeRow;
+    const double rowH = compact ? 50 : kRowH;
+    const double controlH = compact ? 42 : kControlH;
     const double cy = (rowH - controlH) / 2;
     // ...and a line under a control (an example address, a hint) closer to it, the row with that line
-    const double lineDrop = direct ? 12 : 16;
-    const double lineRowH = rowH + (direct ? 16 : 24);
+    const double lineDrop = compact ? 12 : 16;
+    const double lineRowH = rowH + (compact ? 16 : 24);
     // The pupils come from the eye cameras: their rows only while those are in use (with the badge), else one line
     const bool camera = eyecam::inUse(m.eyecam, v.flag(key::kCameraLids));
 
@@ -2740,6 +2780,23 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         const char* hint = usable ? t.hintPupilBits : t.hintPupilBitsOff;
         pen.text(kControlX + 4, rowY + rowH + lineDrop, hint, fitSize(pen, hint, 15, 11, kControlW, false), kTextMuted);
         return rowY + lineRowH;
+    };
+
+    // How EyeTrackingActive goes out (eye_tracking_active): VRChat directly, and osc extras in every mode
+    const auto activeType = [&](double rowY) {
+        const bool locked = v.locked(key::kEyeTrackingActive);
+        const std::string type = v.text(key::kEyeTrackingActive);
+        int selected = -1;
+        for (int i = 0; i < 3; ++i) {
+            if (type == kActiveTypes[i]) selected = i;
+        }
+        drawRowLabel(pen, t, rowY, rowH, t.rowActiveType, t.hintActiveType, locked);
+        drawSegmented(pen, kControlX, rowY + cy, kControlW, controlH,
+                      {{"Bool", {PanelAction::SetActiveType, key::kEyeTrackingActive, 0}},
+                       {"Float", {PanelAction::SetActiveType, key::kEyeTrackingActive, 1}},
+                       {t.activeOff, {PanelAction::SetActiveType, key::kEyeTrackingActive, 2}}},
+                      selected, 19, locked);
+        return rowY + rowH + kRowGap;
     };
 
     // Target PC: automatic, fixed to the PC frameeyeosc sends to now, or typed on the keypad; any host set by hand
@@ -2803,21 +2860,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         }
         y += lineRowH;
         // ...and how EyeTrackingActive goes out
-        {
-            const bool locked = v.locked(key::kEyeTrackingActive);
-            const std::string type = v.text(key::kEyeTrackingActive);
-            int selected = -1;
-            for (int i = 0; i < 3; ++i) {
-                if (type == kActiveTypes[i]) selected = i;
-            }
-            drawRowLabel(pen, t, y, rowH, t.rowActiveType, t.hintActiveType, locked);
-            drawSegmented(pen, kControlX, y + cy, kControlW, controlH,
-                          {{"Bool", {PanelAction::SetActiveType, key::kEyeTrackingActive, 0}},
-                           {"Float", {PanelAction::SetActiveType, key::kEyeTrackingActive, 1}},
-                           {t.activeOff, {PanelAction::SetActiveType, key::kEyeTrackingActive, 2}}},
-                          selected, 19, locked);
-        }
-        y += rowH + kRowGap;
+        y = activeType(y);
         // ...and, for avatars made for Steam Link's own OSC, its names too (never with the prefix)
         {
             const bool locked = v.locked(key::kSteamlinkParams);
@@ -2866,6 +2909,7 @@ void EyePanel::drawOutput(const Pen& pen, const UiText& t, const PanelModel& m, 
         return;
     }
 
+    if (activeRow) y = activeType(y);
     // LiveLink with the eye cameras: their pupils straight to VRChat (the LiveLink module has none). The hint and where
     // they go now under the control, like the VRChat rows' examples
     if (livelink && pupilsLineShown(output, camera)) y += drawCameraLine(pen, t.cameraLinePupils, y + 2) + 4;
@@ -4278,15 +4322,22 @@ void EyePanel::drawLidsLook(const Pen& pen, const UiText& t, const PanelModel& m
         } else {
             drawEyeIcon(pen, kInnerX + 30, y + h / 2, kTextMuted);
         }
+        // (without the user calibration the cameras only close and widen them: cameraHalfLids)
         const char* source = !camera                ? t.lidsNowValve
+                             : (used[0] || used[1]) && !cameraHalfLids(s) ? t.lidsNowValveCamera
                              : used[0] && used[1] ? t.lidsNowBoth
                              : used[0]            ? t.lidsNowLeft
                              : used[1]            ? t.lidsNowRight
                                                   : t.lidsNowWaiting;
-        const char* note = eyecam::setUp(m.eyecam) ? t.lidsNowSwitch : "";
+        // (without the user calibration, in its place and in the warning colour: half-shut eyes wait for it)
+        const bool wanted = eyecam::userCalibWanted(m.eyecam, v.flag(key::kCameraLids));
+        const char* note = wanted ? t.lidsNowUserWanted : eyecam::setUp(m.eyecam) ? t.lidsNowSwitch : "";
         const double noteSize = 14;
-        const double noteW = note[0] == '\0' ? 0.0 : pen.measure(note, noteSize, false);
-        if (noteW > 0) pen.text(kInnerRight - 16, centerBaseline(y, h, noteSize), note, noteSize, kTextMuted, false, true);
+        const double noteW = note[0] == '\0' ? 0.0 : pen.measure(note, noteSize, wanted);
+        if (noteW > 0) {
+            pen.text(kInnerRight - 16, centerBaseline(y, h, noteSize), note, noteSize, wanted ? kWarning : kTextMuted,
+                     wanted, true);
+        }
         double x = kInnerX + 52;
         x += pen.text(x, centerBaseline(y, h, 15), t.lidsNowLabel, 15, kTextMuted) + 12;
         const double room = kInnerRight - 16 - noteW - 16 - x;
@@ -4444,6 +4495,10 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
     } else {
         const bool onCameras = s.running && (s.camera.used[0] || s.camera.used[1]);
         const bool locked = v.locked(key::kCameraLidFloor);
+        // Faded (still to be set) without the user calibration: the cameras don't measure how far open the eyes are
+        // then, and the floor does nothing (eyecam::userCalibWanted)
+        const bool unmeasured = eyecam::userCalibWanted(m.eyecam, v.flag(key::kCameraLids));
+        if (unmeasured) cairo_push_group(pen.cr);
         drawRowLabel(pen, t, y, kRowH, t.rowLidFloor, t.lidFloorHint, locked, 0, true);
         const double stepperW = 196;
         const double floor = v.number(key::kCameraLidFloor);
@@ -4459,6 +4514,7 @@ void EyePanel::drawLidsBlinks(const Pen& pen, const UiText& t, const PanelModel&
                 baseline += 17;
             }
         }
+        if (unmeasured) fadeGroup(pen);
         y += kRowH;
         drawRowDivider(pen, y);
     }
@@ -4597,13 +4653,19 @@ double EyePanel::drawSentLids(const Pen& pen, const UiText& t, const PanelModel&
             const char* keys[2] = {key::kLidOpenSnap, key::kCameraLidOpenSnap};
             const char* captions[2] = {t.capSnapValve, t.capSnapCamera};
             const double captionW = 84;
+            // The camera eyes' one faded (still to be set) without the user calibration: such eyes take Valve's
+            // (eyecam::userCalibWanted)
+            const bool unmeasured = eyecam::userCalibWanted(m.eyecam, v.flag(key::kCameraLids));
             for (int i = 0; i < 2; ++i) {
+                const bool faded = i == 1 && unmeasured;
+                if (faded) cairo_push_group(pen.cr);
                 const double x = kControlX + i * (captionW + stepperW + 12);
                 const double value = v.number(keys[i]);
                 const double size = fitSize(pen, captions[i], 15, 10, captionW - 6, true);
                 pen.text(x, centerBaseline(y, kRowH, size), captions[i], size, kText, true);
                 drawStepper(pen, x + captionW, y + cy, stepperW, kControlH, keys[i], value,
                             formatSetting(keys[i], value), true, v.locked(keys[i]), -1e9, 1e9, &kSnap);
+                if (faded) fadeGroup(pen);
             }
         }
         y += kRowH;
@@ -4622,12 +4684,13 @@ void EyePanel::drawLidsDetails(const Pen& pen, const UiText& t, const PanelModel
     // calibration and the marks only matter for eyes without one
     const WidenState widen = widenState(v);
     const bool anyFitted = widen.fitted[0] || widen.fitted[1];
-    const bool fromCameras = lidsFromCameras(s);
+    // (without the user calibration Valve's values still move the eyelids between closed and open: cameraHalfLids)
+    const bool fromCameras = lidsFromCameras(s) && cameraHalfLids(s);
 
     // The page is how Valve's openness is read (the sent eyelid, with ③, is on "Blinks & squint"): its title, and beside
     // it what decides the marks now. While the cameras supply both eyes all of it only stands by for when they lose an
     // eye, so it says so and is drawn lighter, still to be changed
-    const bool standby = s.running && s.camera.used[0] && s.camera.used[1];
+    const bool standby = s.running && s.camera.used[0] && s.camera.used[1] && cameraHalfLids(s);
     {
         const char* note = t.marksTitle;
         bool notice = false;
@@ -5526,6 +5589,24 @@ double EyePanel::drawTroublePage(const Pen& pen, const UiText& t, const PanelMod
         drawButton(pen, right - w, y, w, h, all, {PanelAction::RecordsAll, nullptr, 0}, !records.empty(), false, 16);
         pen.text(kInnerX, centerBaseline(y, h, 14), ellipsize(pen, t.recordsSsh, 14, false, right - w - 16 - kInnerX, false),
                  14, kTextMuted);
+        y += h;
+    }
+    // Last, "Ask when changing output" (panel.json's output_prompt, as the recommendation prompt's "Don't ask again"
+    // leaves it): On / Off, laid out like the Version page's "Get test versions". With the eye camera speed and two or
+    // more records the page scrolls to it
+    {
+        y += 22;
+        const double h = 46;
+        const double segW = std::min(200.0, right - kInnerX - 300);
+        const double labelW = right - segW - 16 - kInnerX;
+        const double labelSize = fitSize(pen, t.rowOutputPrompt, 18, 13, labelW, true);
+        pen.text(kInnerX, y + 20, t.rowOutputPrompt, labelSize, kText, true);
+        pen.text(kInnerX, y + 40, t.hintOutputPrompt, fitSize(pen, t.hintOutputPrompt, 14, 10, labelW, false),
+                 kTextMuted);
+        drawSegmented(pen, right - segW, y + 2, segW, 42,
+                      {{t.on, {PanelAction::OutputPromptSet, nullptr, 1}},
+                       {t.off, {PanelAction::OutputPromptSet, nullptr, 0}}},
+                      outputPrompt_ ? 0 : 1, 16, false);
         y += h;
     }
     return y + 8 - top;
@@ -6551,6 +6632,8 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     pen.roundedRect(0, 0, kWidth, kHeight, 24);
     cairo_fill(pen.cr);
     const bool update = !updatePromptVersion_.empty();
+    // (the user calibration's only while neither of the others is open: askUserCalib)
+    const bool userCalib = !update && promptOutput_.empty() && userCalibPromptOpen_;
     const bool livelink = promptOutput_ == kOutputLivelink;
     const bool module = promptOutput_ == kOutputModule;
     const double w = 760;
@@ -6560,15 +6643,18 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     drawCard(pen, x, y, w, h, 24, kCard, kAccent, 2);
     const std::string title = update ? formatText(updatePromptBack_ ? t.updateBackConfirmFormat : t.updateConfirmFormat,
                                                   updatePromptVersion_)
+                                     : userCalib  ? t.promptUserCalib
                                      : livelink   ? t.promptLivelink
                                      : module     ? t.promptModule
                                                   : t.promptVrchat;
     const double titleSize = fitSize(pen, title, 24, 16, w - 60, true);
     textCentered(pen, x + w / 2, y + 62, title, titleSize, kText, true);
-    std::string detail1 = livelink   ? t.promptLivelinkDetail1
+    std::string detail1 = userCalib  ? t.promptUserCalibDetail1
+                          : livelink ? t.promptLivelinkDetail1
                           : module   ? t.promptModuleDetail1
                                      : t.promptVrchatDetail1;
-    std::string detail2 = livelink   ? t.promptLivelinkDetail2
+    std::string detail2 = userCalib  ? t.promptUserCalibDetail2
+                          : livelink ? t.promptLivelinkDetail2
                           : module   ? t.promptModuleDetail2
                                      : t.promptVrchatDetail2;
     if (update) {
@@ -6583,16 +6669,26 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
                      false);
     }
     const int arg = std::max(0, argOfOutput(promptOutput_));
-    const double bw = 240;
+    // The recommendation's has a third, "Don't ask again" (outputPrompt off), so its buttons are narrower
+    const bool never = !update && !userCalib;
+    const int count = never ? 3 : 2;
+    const double bw = never ? 220 : 240;
+    const double gap = never ? 20 : 24;
+    const double left = x + (w - count * bw - (count - 1) * gap) / 2;
     const double by = y + h - 32 - kControlH - 4;
-    for (int i = 0; i < 2; ++i) {
+    for (int i = 0; i < count; ++i) {
         const bool yes = i == 0;
         PanelHit hit {yes ? PanelAction::PromptYes : PanelAction::PromptNo, nullptr, arg};
+        if (i == 2) hit = {PanelAction::PromptNever, nullptr, arg};
         if (update) hit = {yes ? PanelAction::UpdateConfirm : PanelAction::UpdateCancel, nullptr, 0};
-        const double bx = yes ? x + w / 2 - bw - 12 : x + w / 2 + 12;
+        if (userCalib) hit = {yes ? PanelAction::UserCalibNow : PanelAction::UserCalibLater, nullptr, 0};
+        const double bx = left + i * (bw + gap);
         const int pointer = pointerState(hit);
         const char* updateYes = updatePromptBack_ ? t.updateBackConfirmYes : t.updateConfirmYes;
-        const std::string label = update ? (yes ? updateYes : t.updateConfirmNo) : (yes ? t.promptYes : t.promptNo);
+        const std::string label = update      ? (yes ? updateYes : t.updateConfirmNo)
+                                  : userCalib ? (yes ? t.promptUserCalibNow : t.promptUserCalibLater)
+                                  : i == 2    ? t.promptNever
+                                              : (yes ? t.promptYes : t.promptNo);
         if (yes) {
             fillRounded(pen, bx, by, bw, kControlH + 4, (kControlH + 4) / 2, pointer == 2 ? kAccentPressed : kAccent);
         } else {
@@ -7994,10 +8090,14 @@ void EyePanel::drawCameraPage(const Pen& pen, const UiText& t, const PanelModel&
         const double sx = kControlX + bw + 16;
         const double sw = kInnerRight - sx;
         if (allowed) {
-            const char* first = user ? t.camUserSide1 : t.camCalibSide1;
-            const char* second = user ? t.camUserSide2 : t.camCalibSide2;
-            pen.text(sx, y + h / 2 - 3, first, fitSize(pen, first, 15, 11, sw, false), kTextMuted);
-            pen.text(sx, y + h / 2 + 17, second, fitSize(pen, second, 15, 11, sw, false), kTextMuted);
+            // The user's not done yet while the cameras are in use: half-shut eyes wait for it, so it asks, in the
+            // warning colour (eyecam::userCalibWanted)
+            const bool wanted = user && eyecam::userCalibWanted(view, lidsOn);
+            const char* first = wanted ? t.camUserWanted1 : user ? t.camUserSide1 : t.camCalibSide1;
+            const char* second = wanted ? t.camUserWanted2 : user ? t.camUserSide2 : t.camCalibSide2;
+            const Color color = wanted ? kWarning : kTextMuted;
+            pen.text(sx, y + h / 2 - 3, first, fitSize(pen, first, 15, 11, sw, wanted), color, wanted);
+            pen.text(sx, y + h / 2 + 17, second, fitSize(pen, second, 15, 11, sw, wanted), color, wanted);
         } else {
             // Why not, on up to two lines like the hints beside the buttons ("\n" where the text breaks them itself)
             const std::string why = !lidsOn ? t.camCalibNeedsLids : t.camUserNeedsCalib;

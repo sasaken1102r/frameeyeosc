@@ -1,10 +1,10 @@
 # Changelog
 
-## 0.10.4-beta.2 (2026-11-16)
+## 0.10.4 (2026-11-18)
 
-Eye-camera users without the user calibration now get half-shut eyelids: until it is done, the eyelid follows Valve's values; the cameras add closing, widening and pupils, and open an eye Valve keeps reading as shut (a hard squint can show open). Do the user calibration on the Eye cameras tab.
+Eye-camera users without the user calibration now get half-shut eyelids: until it is done, the eyelid follows Valve's values and the cameras add closing, widening and pupils. Other apps in osc format also get EyeTrackingActive; if an avatar there stops moving its eyes, set its type to Float or Off.
 
-日本語: 目のカメラを使っていて、ユーザー校正をしていない人も、半目が出るようになりました。ユーザー校正をするまでは、まぶたは Valve の値で動き、カメラは閉じ・見開き・瞳孔を足します。Valve の値が開いた目を閉じたと読み続けるときは、カメラで開きます。目のカメラタブでユーザー校正をしてね（しないと、強く細めた目が開いて見えることがあります）。
+日本語: 目のカメラを使っていて、ユーザー校正をしていない人も、半目が出るようになりました。ユーザー校正をするまでは、まぶたは Valve の値で動き、カメラは閉じ・見開き・瞳孔を足します（強く細めた目が開いて見えることがあるので、目のカメラタブでユーザー校正をしてね）。「ほかのアプリ」の osc 形式にも EyeTrackingActive を送るようになりました。受け取る側のアバターの目が止まったら、送り方タブの「EyeTrackingActive の型」を［Float］か［送らない］にしてね。
 
 - Fixed: with the eye cameras set up but without the "User calibration (once)", the eyelids only jumped between 0.75 and 0 and never showed half-shut. Before the user calibration the camera gives every eye that isn't closed as relaxed open, and that was taken as its eyelid: Valve's values were raised to relaxed open, and an eye they read closing was handed to the camera's value. Now, before the user calibration (and until the wear's levels are learnt), the cameras only add closing, widening and the pupils, and between closed and open the eyelid follows Valve's values, as without the cameras. With the user calibration, once the wear's levels are learnt (about 35 s after putting the headset on), nothing changes
   - Meanwhile an eye Valve's values keep reading as shut (below 0.25 for longer than 1 s, as with #46's open eye) while the camera sees it not closed still goes out open, as before, until Valve's values are above the closed mark; half-shut eyes above the mark are never lifted. A hard squint Valve reads that low goes out open too, so do the user calibration
@@ -12,15 +12,10 @@ Eye-camera users without the user calibration now get half-shut eyelids: until i
 - Panel: turning the eye cameras to "Use" on the Basic tab without the user calibration asks "Do the user calibration (18 s) to send half-shut eyes and squints": "Do it now" opens the Eye cameras tab, "Later" closes it. Once while the panel runs
 - Panel: the "Use the recommended settings" question after changing the output has "Don't ask again". "Ask when changing output" (On / Off) on the Advanced tab's "Having trouble" page turns it back on; it is kept in the panel's `panel.json` (`output_prompt`)
 
-## 0.10.4-beta.1 (2026-11-15)
-
-Other apps in the osc format now also get EyeTrackingActive, as the Output tab's "EyeTrackingActive type" says. If an avatar on the receiving end stops moving its eyes after this update, set that type to Float or Off.
-
-日本語: 「ほかのアプリ」の osc 形式にも、送り方タブの「EyeTrackingActive の型」のとおりに EyeTrackingActive を送るようになりました。更新したあと、受け取る側のアバターの目が止まったら、その型を［Float］か［送らない］にしてね。
-
 - New: `osc` destinations under Other apps send `/avatar/parameters/FT/EyeTrackingActive` with every sample, right after `EyesClosedAmount`, in the type `eye_tracking_active` says (true, or 1.0 with Float; nothing with Off). Their final set, when the eye data stops, sending pauses or the destination is stopped, changed or deleted, has it "not active" (false or 0.0) once. It is under `/FT` whatever `prefix` says, like the rest of the osc format. Some apps start an avatar's animation from it
   - If you use an `osc` destination and the avatar there declares `EyeTrackingActive` as a float, its eyes can stop on a bool: choose Float, or Off to not send it
 - Panel: the Output tab shows "EyeTrackingActive type" in LiveLink and FrameEyeOSC modes too while Other apps has an `osc` destination (a stopped one too), since the setting now applies to it. Its hint says so
+
 
 ## 0.10.3 (2026-11-13)
 

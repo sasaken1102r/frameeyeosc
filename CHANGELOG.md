@@ -2,7 +2,7 @@
 
 ## 0.10.4 (2026-11-18)
 
-Eye-camera users without the user calibration now get half-shut eyelids: until it is done, the eyelid follows Valve's values and the cameras add closing, widening and pupils. Other apps in osc format also get EyeTrackingActive; if an avatar there stops moving its eyes, set its type to Float or Off.
+Eye-camera users without the user calibration get half-shut eyelids (eyelid follows Valve's values; cameras add closing, widening, pupils). Do the user calibration on the Eye cameras tab. Other apps in osc format also get EyeTrackingActive (if an avatar's eyes stop, set its type to Float or Off).
 
 日本語: 目のカメラを使っていて、ユーザー校正をしていない人も、半目が出るようになりました。ユーザー校正をするまでは、まぶたは Valve の値で動き、カメラは閉じ・見開き・瞳孔を足します（強く細めた目が開いて見えることがあるので、目のカメラタブでユーザー校正をしてね）。「ほかのアプリ」の osc 形式にも EyeTrackingActive を送るようになりました。受け取る側のアバターの目が止まったら、送り方タブの「EyeTrackingActive の型」を［Float］か［送らない］にしてね。
 
@@ -15,7 +15,6 @@ Eye-camera users without the user calibration now get half-shut eyelids: until i
 - New: `osc` destinations under Other apps send `/avatar/parameters/FT/EyeTrackingActive` with every sample, right after `EyesClosedAmount`, in the type `eye_tracking_active` says (true, or 1.0 with Float; nothing with Off). Their final set, when the eye data stops, sending pauses or the destination is stopped, changed or deleted, has it "not active" (false or 0.0) once. It is under `/FT` whatever `prefix` says, like the rest of the osc format. Some apps start an avatar's animation from it
   - If you use an `osc` destination and the avatar there declares `EyeTrackingActive` as a float, its eyes can stop on a bool: choose Float, or Off to not send it
 - Panel: the Output tab shows "EyeTrackingActive type" in LiveLink and FrameEyeOSC modes too while Other apps has an `osc` destination (a stopped one too), since the setting now applies to it. Its hint says so
-
 
 ## 0.10.3 (2026-11-13)
 

@@ -26,6 +26,7 @@
 //! their own (`eyeball_map` next to the eyelid calibration), never in config.json, which is the panel's: they last
 //! across restarts; the replay reads the file and never writes it.
 
+use crate::config::EyeballInput;
 use crate::pupil::EyeMap;
 use std::path::{Path, PathBuf};
 
@@ -419,9 +420,13 @@ pub fn center_of(map: &EyeMap, median: [f32; 2], eye: usize) -> Result<[f32; 2],
     Ok(center)
 }
 
-/// The file's text for both maps.
-fn format_maps(maps: &[EyeMap; 2]) -> String {
+/// The file's text for both maps, fitted on `input` (an "input" line for "pupil"; none for "filter", as in a file
+/// from before).
+fn format_maps(maps: &[EyeMap; 2], input: EyeballInput) -> String {
     let mut text = String::from("# frameeyeosc's maps for gaze_source \"eyeball\" (fitted from the eye fit; degrees)\n");
+    if input != EyeballInput::Filter {
+        text += &format!("input={}\n", input.name());
+    }
     for (eye, name) in ["left", "right"].iter().enumerate() {
         let m = &maps[eye];
         text += &format!("yaw_{name}={} {} {}\n", m.yaw[0], m.yaw[1], m.yaw[2]);
@@ -440,6 +445,16 @@ fn format_maps(maps: &[EyeMap; 2]) -> String {
         }
     }
     text
+}
+
+/// What the file's maps were fitted on: its "input" line ("filter" without one, as in a file from before it); None
+/// for an input this version doesn't know.
+pub fn parse_input(text: &str) -> Option<EyeballInput> {
+    match text.lines().find_map(|line| line.trim().strip_prefix("input=")).map(str::trim) {
+        None | Some("filter") => Some(EyeballInput::Filter),
+        Some("pupil") => Some(EyeballInput::Pupil),
+        Some(_) => None,
+    }
 }
 
 /// Both maps from the file's text; None unless both eyes' yaw and pitch lines are there and are numbers (a missing
@@ -514,21 +529,59 @@ pub struct MapStore {
     restarted: [bool; 2],
     /// What the last whole fit did (set at its eyes-shut step; taken by the caller).
     pub outcome: Option<FitOutcome>,
+    /// What the maps were fitted on (eyeball_input), and what is asked for now: maps fitted on the other are kept
+    /// aside (`aside`, not used, and left in the file) until a whole fit makes new ones, or the input goes back.
+    input: EyeballInput,
+    now: EyeballInput,
+    aside: Option<[EyeMap; 2]>,
 }
 
 impl MapStore {
     /// The maps from `path` if it has them; the line to log.
     pub fn load(path: Option<PathBuf>) -> (Self, String) {
         let read = path.as_deref().map(|path| (path, std::fs::read_to_string(path)));
-        let (maps, line) = match read {
-            None => (None, "Eyeball map: no file".to_owned()),
-            Some((path, Ok(text))) => match parse_maps(&text) {
-                Some(maps) => (Some(maps), format!("Eyeball map read from {}", path.display())),
-                None => (None, format!("Eyeball map: {} has none; the next whole eye fit makes one", path.display())),
+        let (maps, input, line) = match read {
+            None => (None, EyeballInput::Filter, "Eyeball map: no file".to_owned()),
+            Some((path, Ok(text))) => match (parse_maps(&text), parse_input(&text)) {
+                (Some(maps), Some(input)) => {
+                    // (a filter map is said as before)
+                    let kind = if input == EyeballInput::Filter { String::new() } else { format!(" ({})", input.name()) };
+                    (Some(maps), input, format!("Eyeball map{kind} read from {}", path.display()))
+                }
+                _ => (None, EyeballInput::Filter, format!("Eyeball map: {} has none; the next whole eye fit makes one", path.display())),
             },
-            Some((path, Err(_))) => (None, format!("Eyeball map: none yet ({}); the next whole eye fit makes one", path.display())),
+            Some((path, Err(_))) => (
+                None,
+                EyeballInput::Filter,
+                format!("Eyeball map: none yet ({}); the next whole eye fit makes one", path.display()),
+            ),
         };
-        (Self { path, maps, ..Self::default() }, line)
+        // (read as for "filter", the default, until set_input says otherwise: a map for another input is put aside)
+        let (maps, aside) = if input == EyeballInput::Filter { (maps, None) } else { (None, maps) };
+        (Self { path, maps, input, now: EyeballInput::Filter, aside, ..Self::default() }, line)
+    }
+
+    /// eyeball_input is (now) `input`: maps fitted on another are put aside (none used until a whole fit), and ones put
+    /// aside for it come back. The line to log when that changed something.
+    pub fn set_input(&mut self, input: EyeballInput) -> Option<String> {
+        if input == self.now {
+            return None;
+        }
+        self.now = input;
+        // (a fit in progress was on the other input: it makes nothing)
+        self.started = false;
+        if self.input == input {
+            self.maps = self.maps.or(self.aside.take());
+            return self.maps.is_some().then(|| format!("Eyeball map ({}) used again", input.name()));
+        }
+        self.aside = self.maps.take().or(self.aside.take());
+        self.aside.map(|_| {
+            format!(
+                "Eyeball map: eyeball_input is \"{}\", the map is for \"{}\": none used until the next whole eye fit",
+                input.name(),
+                self.input.name()
+            )
+        })
     }
 
     /// Never write the file (a replay).
@@ -537,9 +590,12 @@ impl MapStore {
         self
     }
 
-    fn save(&self, maps: &[EyeMap; 2]) -> Option<String> {
+    /// New maps (fitted on the input asked for now) are saved: those put aside are gone.
+    fn save(&mut self, maps: &[EyeMap; 2]) -> Option<String> {
+        self.input = self.now;
+        self.aside = None;
         let path = self.path.as_deref()?;
-        Some(match write_atomically(path, &format_maps(maps)) {
+        Some(match write_atomically(path, &format_maps(maps, self.now)) {
             Ok(()) => format!("Eyeball map saved to {}", path.display()),
             Err(error) => format!("Could not save {}: {error}", path.display()),
         })
@@ -960,6 +1016,42 @@ mod tests {
     }
 
     #[test]
+    fn a_map_is_for_the_input_it_was_fitted_on() {
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-eyeball-input-{}", std::process::id()));
+        let path = dir.join(FILE_NAME);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A filter map (as every file from before: no input line)
+        let (mut store, _) = MapStore::load(Some(path.clone()));
+        whole_fit(&mut store, reading, 5);
+        let filter = store.maps.expect("fitted");
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("input="));
+        // Asked for "pupil": put aside (nothing used), and a re-center does nothing to it
+        let line = store.set_input(EyeballInput::Pupil).expect("said");
+        assert!(line.contains("\"pupil\", the map is for \"filter\""), "{line}");
+        assert!(store.maps.is_none());
+        assert!(store.capture_done("center", medians(reading, 0, 120)).is_empty());
+        // ...back to "filter": the same map again
+        assert!(store.set_input(EyeballInput::Filter).is_some_and(|l| l.contains("used again")));
+        assert_eq!(store.maps, Some(filter));
+        // A whole fit with "pupil": its map, saved with its input, and read back as one
+        store.set_input(EyeballInput::Pupil);
+        whole_fit(&mut store, reading, 5);
+        assert!(store.maps.is_some());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("input=pupil"), "{text}");
+        assert_eq!(parse_input(&text), Some(EyeballInput::Pupil));
+        let (mut again, line) = MapStore::load(Some(path.clone()));
+        assert!(line.starts_with("Eyeball map (pupil) read from"), "{line}");
+        // (read with the default "filter" asked for, until the setting says: then used)
+        assert!(again.set_input(EyeballInput::Pupil).is_some());
+        assert_eq!(again.maps, store.maps);
+        // An input this version doesn't know: no map
+        assert_eq!(parse_input("input=glint\n"), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_whole_fit_makes_the_maps_and_a_re_center_moves_only_the_centre() {
         let dir = std::env::temp_dir().join(format!("frameeyeosc-eyeball-map-{}", std::process::id()));
         let path = dir.join(FILE_NAME);
@@ -1103,7 +1195,7 @@ mod tests {
         });
         assert!(worse, "{lines:?}");
         // The file keeps the form and its terms, and reads back the same
-        let text = format_maps(&maps);
+        let text = format_maps(&maps, EyeballInput::Filter);
         assert!(text.contains("form_left=q9") && text.contains("quad_pitch_right="), "{text}");
         assert_eq!(parse_maps(&text), Some(maps));
     }
@@ -1333,7 +1425,7 @@ mod tests {
     #[test]
     fn a_q9_maps_box_is_kept_in_the_file() {
         let maps = [0, 1].map(|eye| fit_eye_q9(&DOTS.map(|(_, y, p)| Some(bent(eye, y, p))), eye).unwrap().map);
-        let text = format_maps(&maps);
+        let text = format_maps(&maps, EyeballInput::Filter);
         assert!(text.contains("box_left=") && text.contains("box_right="), "{text}");
         assert_eq!(parse_maps(&text), Some(maps));
         // A Q9 file from before the box: read without one (the map as it is everywhere, as then)
@@ -1352,7 +1444,7 @@ mod tests {
         assert!(parse_maps(&format!("{text}form_left=q9\n")).is_none());
         assert!(parse_maps(&format!("{text}form_left=cubic\n")).is_none());
         // What this writes for an affine map says so, and reads back
-        let written = format_maps(&maps);
+        let written = format_maps(&maps, EyeballInput::Filter);
         assert!(written.contains("form_left=affine") && !written.contains("quad_"));
         assert_eq!(parse_maps(&written), Some(maps));
     }

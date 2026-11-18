@@ -145,6 +145,28 @@ pub enum GazeSource {
     Eyeball,
 }
 
+/// What gaze_source "eyeball" maps to each eye's direction (eyeball_input): the eyeball filter's angles, or (a trial)
+/// the pupil centre's own place in the eye camera's picture, taken frame by frame (eyeball.rs pupil_ray).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EyeballInput {
+    /// the filter's angles (eyeball.rs EyeFilter), as before
+    #[default]
+    Filter,
+    /// the pupil's place (its ray from the camera, as head-frame angles), with no memory between frames
+    Pupil,
+}
+
+impl EyeballInput {
+    /// Its name in config.json (and in the eyeball map's file).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Filter => "filter",
+            Self::Pupil => "pupil",
+        }
+    }
+}
+
 /// What an extra output sends (its `format`; both names are permanent: a variant gets a new name).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -500,6 +522,10 @@ pub struct Settings {
     /// Where the sent gaze comes from: "valve" (the default) or "eyeball" (a test; see GazeSource and eyeball.rs).
     /// "pupil" in config.json runs as "eyeball" (parse; PUPIL_AS_EYEBALL); Pupil itself is still there for the code.
     pub gaze_source: GazeSource,
+    /// With gaze_source "eyeball": what each eye's map takes, "filter" (the default: the eyeball filter's angles) or
+    /// "pupil" (a trial: the pupil centre's place in the eye camera's picture, frame by frame; see EyeballInput). A map
+    /// is fitted for one of them (eyeball_map.rs); after a change, none is used until the next whole eye fit.
+    pub eyeball_input: EyeballInput,
     /// Each eye's pupil map, written by the panel's eye fit: from the eye's pupil pair (u, v) as the eye server gives
     /// it (estimate_extra 0 and 1 for the left eye, 2 and 3 for the right: the pupil centre in the eye camera's picture,
     /// in the eye server's own units, which its self-calibration does not move) to the direction that eye looks, in
@@ -616,6 +642,7 @@ impl Default for Settings {
             lid_fit_down_left: None,
             lid_fit_down_right: None,
             gaze_source: GazeSource::Valve,
+            eyeball_input: EyeballInput::Filter,
             pupil_yaw_left: None,
             pupil_yaw_u_left: None,
             pupil_yaw_v_left: None,
@@ -1818,6 +1845,14 @@ mod tests {
         let (settings, locked) = merged(r#"{"native_eyes": false}"#, &["--native-eyes"]).unwrap();
         assert!(settings.native_eyes);
         assert_eq!(locked, ["native_eyes"]);
+    }
+
+    #[test]
+    fn eyeball_input_is_the_filter_until_asked_for() {
+        assert_eq!(merged("{}", &[]).unwrap().0.eyeball_input, EyeballInput::Filter);
+        assert_eq!(merged(r#"{"eyeball_input": "pupil"}"#, &[]).unwrap().0.eyeball_input, EyeballInput::Pupil);
+        assert!(merged(r#"{"eyeball_input": "glint"}"#, &[]).is_err());
+        assert_eq!([EyeballInput::Filter.name(), EyeballInput::Pupil.name()], ["filter", "pupil"]);
     }
 
     #[test]

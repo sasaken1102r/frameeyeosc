@@ -23,6 +23,7 @@
 //! slip test 3: the noise levels, gates and the first pupil distance D0; tests 1, 2 and 4 and the re-seat tests were
 //! not used for any choice).
 
+use crate::config::EyeballInput;
 use crate::eyecam_live::{CamShape, CamSlip, Live};
 use crate::pupil::EyeMap;
 use std::f64::consts::PI;
@@ -187,6 +188,17 @@ fn unit(a: V3) -> V3 {
 
 fn cross(a: V3, b: V3) -> V3 {
     [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+/// The pupil's place as two angles (degrees, head frame): the direction from the pupil centre seen at `pos` (normalised
+/// camera coordinates) back to the camera, as yaw and pitch. What eyeball_input "pupil" maps: a function of the frame's
+/// pupil centre alone, with nothing kept from the frames before (both angles fall as the eye turns right and up).
+/// On the headset 2026-11-18 (eye video of a fit and two measures a minute apart, no re-center between) the pupil
+/// centre at the same dot came back within 0.2-1.2 px while the filter's mapped direction came back a median 1.8 / 2.3
+/// degrees off (left / right eye, p90 3.2 / 4.5, at most 16): the filter's answer depends on what it went through.
+pub fn pupil_ray(camera: &Camera, pos: [f64; 2]) -> [f64; 2] {
+    let (yaw, pitch) = camera.angles_of(scale(ray(pos), -1.0));
+    [yaw.to_degrees(), pitch.to_degrees()]
 }
 
 /// The unit ray through a point in normalised camera coordinates.
@@ -1059,6 +1071,9 @@ pub struct EyeballGaze {
     now: Option<f64>,
     // Each eye's filter's starts and re-takes so far, never reset (EyeballGaze::epochs)
     epochs: [u32; 2],
+    // What each eye's direction is (eyeball_input), and each eye's last pupil place (pupil_ray, degrees)
+    input: EyeballInput,
+    ray: [Option<[f64; 2]>; 2],
     /// Frames taken per eye, how they went (Update order), and the time they took (ns), for the journal.
     pub frames: [u64; 2],
     pub updates: [[u64; 6]; 2],
@@ -1074,6 +1089,11 @@ impl EyeballGaze {
 
     pub fn has_calibration(&self) -> bool {
         self.calibration.is_some()
+    }
+
+    /// What each eye's direction is from now on (eyeball_input).
+    pub fn set_input(&mut self, input: EyeballInput) {
+        self.input = input;
     }
 
     /// The filters start over (a gap in the samples, the source turned off).
@@ -1124,6 +1144,9 @@ impl EyeballGaze {
             {
                 self.frame_ns[eye] = Some(slip.time_ns);
                 let o = observe(camera, &raw_frame(&slip, &shape));
+                if let Some(pos) = o.pos {
+                    self.ray[eye] = Some(pupil_ray(camera, pos));
+                }
                 let retakes = self.filters[eye].retakes;
                 let estimate = self.filters[eye].step(camera, &o);
                 self.frames[eye] += 1;
@@ -1141,9 +1164,16 @@ impl EyeballGaze {
                     self.saccade_at = Some(time);
                 }
             }
-            if self.fresh[eye].fresh(time) && let Some([yaw, pitch]) = self.filters[eye].direction() {
-                out[eye] = Some([yaw.to_degrees() as f32, pitch.to_degrees() as f32]);
-            }
+            out[eye] = match self.input {
+                EyeballInput::Filter => self.filters[eye]
+                    .direction()
+                    .filter(|_| self.fresh[eye].fresh(time))
+                    .map(|[yaw, pitch]| [yaw.to_degrees() as f32, pitch.to_degrees() as f32]),
+                // (the pupil seen within EYE_FRESH_S: its place then, whatever the filter made of the frame)
+                EyeballInput::Pupil => self.ray[eye]
+                    .filter(|_| self.seen(eye, time))
+                    .map(|[yaw, pitch]| [yaw as f32, pitch as f32]),
+            };
         }
         self.busy_ns += started.elapsed().as_nanos() as u64;
         out
@@ -1172,14 +1202,27 @@ impl EyeballGaze {
     }
 
     /// Whether each eye's filter used its ellipse within ACCEPTED_FRESH_S of `time` (the eye server's): an eye going by
-    /// its pupil alone (no usable ellipse) is not trusted for the two eyes' difference (pupil.rs step_eyes).
+    /// its pupil alone (no usable ellipse) is not trusted for the two eyes' difference (pupil.rs step_eyes). With
+    /// eyeball_input "pupil" (nothing of the filter in the direction): its pupil seen within EYE_FRESH_S.
     pub fn trusted(&self, time: f64) -> [bool; 2] {
-        self.ellipse_at.map(|at| at.is_some_and(|at| time - at <= ACCEPTED_FRESH_S))
+        match self.input {
+            EyeballInput::Filter => self.ellipse_at.map(|at| at.is_some_and(|at| time - at <= ACCEPTED_FRESH_S)),
+            EyeballInput::Pupil => [0, 1].map(|eye| self.seen(eye, time)),
+        }
     }
 
-    /// Whether each eye is frozen (EyeFilter::frozen): not to be used for the sent gaze (pupil.rs step_eyes).
+    /// Whether an eye's pupil was seen within EYE_FRESH_S of `time`.
+    fn seen(&self, eye: usize, time: f64) -> bool {
+        self.fresh[eye].seen.is_some_and(|seen| time - seen <= EYE_FRESH_S)
+    }
+
+    /// Whether each eye is frozen (EyeFilter::frozen): not to be used for the sent gaze (pupil.rs step_eyes). Never with
+    /// eyeball_input "pupil": its place is the frame's own.
     pub fn frozen(&self) -> [bool; 2] {
-        self.filters.each_ref().map(EyeFilter::frozen)
+        match self.input {
+            EyeballInput::Filter => self.filters.each_ref().map(EyeFilter::frozen),
+            EyeballInput::Pupil => [false; 2],
+        }
     }
 
     /// Each eye's filter's starts and re-takes so far (counted over restarts too, never reset): the same number at two
@@ -1189,8 +1232,12 @@ impl EyeballGaze {
     /// still (within 2 px), and on the headset on 2026-11-17 the left eye's angles at the centre dot (the re-centers
     /// before and after) moved 3.3 degrees across a start mid-fit. The eye fit's dots must not mix them
     /// (eyeball_map.rs MapStore::capture_done).
+    /// With eyeball_input "pupil" always 0: the filter's runs don't come into the direction.
     pub fn epochs(&self) -> [u32; 2] {
-        self.epochs
+        match self.input {
+            EyeballInput::Filter => self.epochs,
+            EyeballInput::Pupil => [0; 2],
+        }
     }
 
     /// Each filter's re-takes (for the journal).
@@ -1200,8 +1247,12 @@ impl EyeballGaze {
 
     /// The directions `step` gave, kept only for eyes whose filter has settled (EyeFilter::settled): what the eye
     /// fit's captures may count.
+    /// With eyeball_input "pupil" every one: there is nothing to settle.
     pub fn settled_only(&self, eyes: [Option<[f32; 2]>; 2]) -> [Option<[f32; 2]>; 2] {
-        [0, 1].map(|eye| eyes[eye].filter(|_| self.filters[eye].settled()))
+        match self.input {
+            EyeballInput::Filter => [0, 1].map(|eye| eyes[eye].filter(|_| self.filters[eye].settled())),
+            EyeballInput::Pupil => eyes,
+        }
     }
 
     /// Each eye's centre now, for the journal: where it is (mm, camera frame), how sure (standard deviations, mm),
@@ -1304,7 +1355,12 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
     };
     use std::io::Write as _;
     if let Some(w) = writer.as_mut() {
-        writeln!(w, "eye,eye_index,t_cam,update,yaw_deg,pitch_deg,centre_x_mm,centre_y_mm,centre_z_mm,fresh,settled,centre_sd_mm,centre_sd_z_mm").map_err(|e| e.to_string())?;
+        writeln!(
+            w,
+            "eye,eye_index,t_cam,update,yaw_deg,pitch_deg,centre_x_mm,centre_y_mm,centre_z_mm,fresh,settled,centre_sd_mm,\
+             centre_sd_z_mm,ray_yaw_deg,ray_pitch_deg"
+        )
+        .map_err(|e| e.to_string())?;
     }
     let mut report = String::new();
     let mut total_ns = 0u128;
@@ -1331,17 +1387,19 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
             let now_fresh = fresh.fresh(*t);
             not_fresh += usize::from(estimate.is_some() && !now_fresh);
             let sd = filter.centre_mm().map_or([f64::NAN; 2], |(_, sd)| [sd[0].max(sd[1]), sd[2]]);
-            rows.push((*t, index, estimate, now_fresh, filter.settled(), sd));
+            let ray = o.pos.map(|pos| pupil_ray(camera, pos));
+            rows.push((*t, index, estimate, now_fresh, filter.settled(), sd, ray));
         }
         total_ns += started.elapsed().as_nanos();
         total += frames[eye].len();
         if let Some(w) = writer.as_mut() {
-            for (t, index, estimate, now_fresh, settled, sd) in rows {
+            for (t, index, estimate, now_fresh, settled, sd, ray) in rows {
                 let name = ["L", "R"][eye];
+                let ray = ray.map_or_else(|| ",".to_owned(), |[yaw, pitch]| format!("{yaw:.6},{pitch:.6}"));
                 match estimate {
                     Some(e) => writeln!(
                         w,
-                        "{name},{index},{t:.6},{},{:.6},{:.6},{:.4},{:.4},{:.4},{},{},{:.3},{:.3}",
+                        "{name},{index},{t:.6},{},{:.6},{:.6},{:.4},{:.4},{:.4},{},{},{:.3},{:.3},{ray}",
                         e.update.name(),
                         e.yaw.to_degrees(),
                         e.pitch.to_degrees(),
@@ -1353,7 +1411,7 @@ pub fn replay_eyecam(text: &str, calibration: &Calibration, out: Option<&Path>) 
                         sd[0],
                         sd[1]
                     ),
-                    None => writeln!(w, "{name},{index},{t:.6},,,,,,,0,0,,"),
+                    None => writeln!(w, "{name},{index},{t:.6},,,,,,,0,0,,,{ray}"),
                 }
                 .map_err(|e| e.to_string())?;
             }
@@ -2089,6 +2147,41 @@ pub mod tests {
         // A restart (a gap in the samples) keeps it
         gaze.restart();
         assert_eq!(gaze.state(), "no_camera");
+    }
+
+    #[test]
+    fn eyeball_input_pupil_gives_the_frames_pupil_place_with_nothing_kept() {
+        let c = camera();
+        let mut gaze = EyeballGaze::default();
+        gaze.set_calibration(Some(Calibration { eyes: [c.clone(), c.clone()] }));
+        gaze.set_input(EyeballInput::Pupil);
+        let mut live = crate::tests::camera(0.75, 0.0);
+        let mut out = [None; 2];
+        let mut last = None;
+        for k in 0..30u64 {
+            let (slip, shape) = live_frame(&c, 1_000_000_000 + k * 11_111_111, if k < 20 { 5.0 } else { -8.0 });
+            live.slip = [Some(slip), None];
+            live.shape = [Some(shape), None];
+            out = gaze.step(k as f64 / 90.0, Some(&live));
+            last = Some(slip);
+            // From the first frame on (nothing to settle), the frame's own place
+            assert!(out[0].is_some(), "frame {k}");
+        }
+        let pos = observe(&c, &raw_frame(&last.unwrap(), &live.shape[0].unwrap())).pos.unwrap();
+        let want = pupil_ray(&c, pos);
+        let [yaw, pitch] = out[0].unwrap();
+        assert!((f64::from(yaw) - want[0]).abs() < 1e-4 && (f64::from(pitch) - want[1]).abs() < 1e-4, "{out:?} {want:?}");
+        // Settled, never frozen, trusted while seen, and no filter run in the epochs
+        assert_eq!(gaze.settled_only(out), out);
+        assert_eq!(gaze.frozen(), [false; 2]);
+        assert_eq!(gaze.trusted(29.0 / 90.0), [true, false]);
+        assert_eq!(gaze.epochs(), [0, 0]);
+        // ...and the pupil gone for longer than EYE_FRESH_S: none
+        live.slip = [None; 2];
+        assert_eq!(gaze.step(29.0 / 90.0 + EYE_FRESH_S + 0.01, Some(&live))[0], None);
+        // Back to the filter: its angles (a turn of the eye seen as the filter reads it, not the ray)
+        gaze.set_input(EyeballInput::Filter);
+        assert!(gaze.epochs()[0] >= 1);
     }
 
     #[test]

@@ -5176,6 +5176,13 @@ impl EyeballSetup {
             smoother.eyeball.maps = store.maps;
             self.store = Some(store);
         }
+        // What each eye's map takes (eyeball_input): the filter's angles or the pupil's place; a map fitted on the other
+        // is put aside
+        smoother.eyeball.set_input(settings.eyeball_input);
+        if let Some(store) = &mut self.store {
+            lines.extend(store.set_input(settings.eyeball_input));
+            smoother.eyeball.maps = store.maps;
+        }
         lines
     }
 

@@ -5572,7 +5572,8 @@ impl Bridge {
             eprintln!("{}", result.log_line());
             // gaze_source "eyeball": the eyes' filter medians for its own map (a re-center, or a whole fit's dots)
             if self.settings.gaze_source == config::GazeSource::Eyeball {
-                let (medians, epochs) = (capture.eyeball_medians(), capture.eyeball_epochs());
+                let epochs = capture.eyeball_epochs(self.smoother.eyeball.epochs());
+                let medians = capture.eyeball_medians();
                 for line in self.eyeball.capture_done(capture.target(), medians, epochs, &mut self.smoother) {
                     eprintln!("{line}");
                 }

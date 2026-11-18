@@ -132,12 +132,13 @@ impl Capture {
 
     /// Each eye's epoch over its counted eyeball directions (those its median is of): Some when they are all of one
     /// (the first's), None when they are of two or more (its filter started over or re-took its angles among them);
-    /// with none counted, the epoch last noted (0 if none was).
-    pub fn eyeball_epochs(&self) -> [Option<u32>; 2] {
+    /// with none counted, `now` (the filters' epochs as the capture ends: a capture that had no sample at all has
+    /// noted none).
+    pub fn eyeball_epochs(&self, now: [u32; 2]) -> [Option<u32>; 2] {
         [0, 1].map(|eye| match self.eyeball_epoch[eye] {
             Some((epoch, false)) => Some(epoch),
             Some((_, true)) => None,
-            None => Some(self.epochs_now.map_or(0, |epochs| epochs[eye])),
+            None => Some(now[eye]),
         })
     }
 
@@ -462,8 +463,8 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(taken.eyeball_epochs(), [Some(4), Some(7)]);
-        // ...and one that does among them: None for that eye; an eye with no counted direction: the epoch last noted
+        assert_eq!(taken.eyeball_epochs([4, 7]), [Some(4), Some(7)]);
+        // ...and one that does among them: None for that eye; an eye with no counted direction: the epochs as it ends
         let mut taken = Capture::new(request(2.0));
         for i in 0..180 {
             let time = 100.0 + f64::from(i) / 90.0;
@@ -473,7 +474,9 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(taken.eyeball_epochs(), [None, Some(8)]);
+        assert_eq!(taken.eyeball_epochs([4, 9]), [None, Some(9)]);
+        // A capture without a single sample: the epochs as it ends, not 0
+        assert_eq!(Capture::new(request(2.0)).eyeball_epochs([5, 6]), [Some(5), Some(6)]);
     }
 
     #[test]

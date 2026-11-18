@@ -523,8 +523,8 @@ pub struct Settings {
     /// "pupil" in config.json runs as "eyeball" (parse; PUPIL_AS_EYEBALL); Pupil itself is still there for the code.
     pub gaze_source: GazeSource,
     /// With gaze_source "eyeball": what each eye's map takes, "filter" (the default: the eyeball filter's angles) or
-    /// "pupil" (a trial: the pupil centre's place in the eye camera's picture, frame by frame; see EyeballInput). A map
-    /// is fitted for one of them (eyeball_map.rs); after a change, none is used until the next whole eye fit.
+    /// "pupil" (a trial: the pupil centre's place in the eye camera's picture, frame by frame; see EyeballInput). Each has
+    /// its own map in a file of its own (eyeball_map.rs path_for), fitted by a whole eye fit with it chosen.
     pub eyeball_input: EyeballInput,
     /// Each eye's pupil map, written by the panel's eye fit: from the eye's pupil pair (u, v) as the eye server gives
     /// it (estimate_extra 0 and 1 for the left eye, 2 and 3 for the right: the pupil centre in the eye camera's picture,

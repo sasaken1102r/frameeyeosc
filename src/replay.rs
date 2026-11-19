@@ -1452,8 +1452,9 @@ mod tests {
         };
         let without = replay(&samples, &cameras, &off, calibration());
         let widened = sent.iter().filter(|sample| sample.lids[0] >= LID_WIDE).count();
-        // (the camera's eyelid taken once it has kept coming for CAMERA_GAP_HOLD, 18 samples)
-        assert!((400..432).contains(&widened), "{widened}");
+        // (the camera's eyelid taken once it has kept coming for CAMERA_GAP_HOLD, 18 samples, and its widening eased in
+        // over WIDEN_SMOOTH_S, about 10 more)
+        assert!((390..422).contains(&widened), "{widened}");
         let lines = camera_lines(&cameras, &samples, &sent, &without);
         assert!(lines.contains("values with 33.3% of the samples; fresh (L / R) 33.3% / 33.3%"), "{lines}");
         assert!(lines.contains("eyelid and squint from it (L / R)          33.3% / 33.3%"), "{lines}");

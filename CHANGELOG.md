@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.10.4 (2026-11-18)
+## Unreleased
+
+- Fixed: with the eye cameras and the user calibration, an eye squinted hard could go out closed. Where Valve's values read the narrowed eye just below the "closing" line for longer than a blink while the camera saw it open, the eyelid was handed to the camera's, which in a hard squint reads 0 (with its squint at full). Now the camera's eyelid takes over only while the camera sees the eye more open than Valve's values do; an eye stuck shut on Valve's values that the camera sees open is taken over as before, and so is a squint with `camera_lid_floor` set
+  - In a reporter's recording the squinted right eye went out closed for 0.7 s (the left for 0.2 s more than Valve's own misread). Now neither does; in the developer's recordings blinks, closes and half-open holds are as before, and a squint Valve's values read more open than the camera now goes out as Valve's values read it
+- Fixed: in the dark the eye cameras can read the eyes a little widened with short bursts of more, and those bursts went out as the eyes flicking wide (above 0.85 and back 4-5 times in 8 s in a reporter's recording without the user calibration). Any widening that goes out now eases in and out over 0.15 s; closing and blinks are as fast as before. In that recording the flicks are gone (two held widens are left); in the developer's, cued widens show a median 0.09 s later, and accidental widening outside them dropped by about a fifth
+
 
 Eye-camera users without the user calibration get half-shut eyelids (eyelid follows Valve's values; cameras add closing, widening, pupils). Do the user calibration on the Eye cameras tab. Other apps in osc format also get EyeTrackingActive (if an avatar's eyes stop, set its type to Float or Off).
 

@@ -240,8 +240,8 @@ const CAMERA_PUPIL_ALPHA: f32 = 0.1;
 // reads no more open neither adds to the doubt nor clears it. Replayed, that squint step's time sent below VRCFT 0.1
 // went from 10.2 / 15.1% to 6.2 / 6.4% (left / right; what is left is that misread), its time on the camera's eyelid
 // from 0.6 / 5.2 s to 0 / 4.5 s (a look down, the camera at relaxed open). Over the developer's 13 recordings (with the
-// user calibration) the time sent below 0.1 moved by -1.7 to +0.3 points, the squint steps pooled 33.8 / 23.4% -> 33.4
-// / 23.6% (a squint the eye server reads above the camera now goes out as the eye server reads it: up from about 0.1
+// user calibration) the time sent below 0.1 moved by -1.9 to +0.3 points, the squint steps pooled 33.8 / 23.4% -> 32.8
+// / 23.4% (a squint the eye server reads above the camera now goes out as the eye server reads it: up from about 0.1
 // to 0.2 in a smile, but down to 0 where the eye server dips there for less than the grace), blinks, closes and
 // half-open holds as before; issue 43's recordings, where the eye server read open eyes shut, by 0.2 points at most.
 // An eye already on the camera's eyelid whose camera eyelid then falls to the eye server's or below while the eye

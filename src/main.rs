@@ -180,6 +180,21 @@ const WIDEN_SUSTAIN: f64 = 0.25;
 // blink), so a blink's lead-in and its reopening count separately.
 const WIDEN_RELEASE: f64 = 0.1;
 const WIDEN_RESET_BELOW: f32 = 0.5;
+// After that, the widening that goes out (the eyelid above relaxed open) follows the eyelid with this time constant (a
+// one-pole filter, see Smoother::smooth_widen), up and down alike; at or below relaxed open nothing changes, so closing
+// and blinks are as fast as before. Once the sustain had passed (on the small widening of an eye that wanders above
+// relaxed open, too), a widening came through as it was, and the eye camera's can jump by 0.1-0.25 for 100-150 ms at a
+// time: in a reporter's dark step (2026-11-19, no user calibration, the eyes really a little wider) the eyelids went
+// above VRCFT 0.85 and back 4-5 times in 8 s. Replayed, that step's crossings of 0.85 (up and down) went from 8 / 10 to
+// 4 / 6 (left / right; what is left is two widens held for 0.6-1.2 s), the bright step before it from 6 / 10 to 2 / 6,
+// the reporter's cued widens shown 2.78 / 3.54 / 3.32 s -> 2.61 / 3.47 / 3.28 s of 5 s. Over the developer's 13
+// recordings (with and without the user calibration) the cued widens were shown 83.7 / 84.6 s -> 80.7 / 81.3 s, from a
+// median 0.09 s later (p90 0.18 s) and until 0.01 s later (p90 0.11 s), with 72 / 76 -> 60 / 58 crossings; elsewhere in
+// the "normal" steps 27.3 / 29.8 -> 21.8 / 23.0 s and 131 / 153 -> 87 / 97 crossings. At or below relaxed open the
+// widening starts over from none, so one eased out that lands there and wobbles across it doesn't pop back up. The
+// brows (brow_from_widen) go by the eyelids before this, with their own sustain, fall delay and BROW_SMOOTH_S: in the
+// reporter's dark step they still rise past 0.1 four times each, as before.
+const WIDEN_SMOOTH_S: f32 = 0.15;
 // brow_from_widen: the brows start to rise at this much widening (0 relaxed open, 1 fully widened; LiveLink's EyeWide),
 // so the small widening of an open eye wandering above relaxed leaves them still, and are fully up (times
 // brow_strength) at full widening.
@@ -221,6 +236,25 @@ const CAMERA_PUPIL_ALPHA: f32 = 0.1;
 // blink sync could pull shut) while the camera saw it open for CAMERA_DOUBT_GRACE in all, the eyelid is the camera's.
 // At least CAMERA_DOUBT_FRAMES of the camera's frame intervals, though: at 15 frames a second its closed flag comes
 // about 3 frames (200 ms) late and its eyelid is a 5-frame median, so a blink would otherwise go out open.
+// And only while the camera sees the eye more open than the eye server reads it (the camera's eyelid as it would go
+// out, from --camera-lid-floor up): in a hard squint the camera's own eyelid reads 0 (its squint at 1), and handing the
+// eye to it sent a narrowed eye closed. In a reporter's squint (2026-11-19, a provisional user calibration) the eye
+// server read the right eye at VRCFT 0.26-0.29 (just below the doubt line) and the camera both eyes at 0, squint 1.0,
+// not closed: after the grace the right eye went out 0.00 until the eye server read it above the line again, 0.7 s in
+// all, and the left eye 0.2 s longer than the eye server's own misread of both eyes at 0.00. A closing eye the camera
+// reads no more open neither adds to the doubt nor clears it. Replayed, that squint step's time sent below VRCFT 0.1
+// went from 10.2 / 15.1% to 6.2 / 6.4% (left / right; what is left is that misread), its time on the camera's eyelid
+// from 0.6 / 5.2 s to 0 / 4.5 s (a look down, the camera at relaxed open). Over the developer's 13 recordings (with the
+// user calibration) the time sent below 0.1 moved by -1.9 to +0.3 points, the squint steps pooled 33.8 / 23.4% -> 32.8
+// / 23.4% (a squint the eye server reads above the camera now goes out as the eye server reads it: up from about 0.1
+// to 0.2 in a smile, but down to 0 where the eye server dips there for less than the grace), blinks, closes and
+// half-open holds as before; issue 43's recordings, where the eye server read open eyes shut, by 0.2 points at most.
+// An eye already on the camera's eyelid whose camera eyelid then falls to the eye server's or below while the eye
+// server reads it closing (a squint that narrows further once taken over) goes out as the eye server reads it, the more
+// open of the two, and stays on the camera's eyelid. Over the developer's recordings that was 1175 samples (both eyes,
+// about 13 s in all; 29 in issue 43's, none in the reporter's) that went out at the camera's lower eyelid; the 11-19
+// half-open hold's left eye moves a little more for it (0.0092 -> 0.0118 a sample), since the eye server's reading
+// there jumps between 0 and about 0.3.
 const CAMERA_DOUBT_BELOW: f32 = 0.25;
 const CAMERA_DOUBT_GRACE: f64 = 0.3;
 const CAMERA_DOUBT_FRAMES: f64 = 8.0;
@@ -1117,6 +1151,8 @@ struct Smoother {
     down_hold_x: Option<[f32; 3]>,
     // Per eye: since when its eyelid has been above relaxed open (see sustain_widen), and when it last was.
     widen_sustain: WidenSustain,
+    // Per eye: the widening (how far above relaxed open) as it goes out after WIDEN_SMOOTH_S (see smooth_widen).
+    widen_smooth: [f32; 2],
     // Whether the openness is saturated, so nothing above relaxed open is widening. Not reset with the filters: it
     // belongs to the eye tracker, not to one stretch of tracking.
     saturation: Saturation,
@@ -1173,6 +1209,7 @@ impl Smoother {
             seen_open: [false; 2],
             down_hold_x: None,
             widen_sustain: WidenSustain::default(),
+            widen_smooth: [0.0; 2],
             saturation: Saturation::default(),
             camera: CameraSmoother::default(),
             cross_eye: CrossEye::default(),
@@ -1314,6 +1351,7 @@ impl Smoother {
         self.seen_open = [false; 2];
         self.down_hold_x = None;
         self.widen_sustain = WidenSustain::default();
+        self.widen_smooth = [0.0; 2];
         self.camera = CameraSmoother::default();
         self.cross_eye.restart();
         self.lid_doubt = [LidDoubt::default(); 2];
@@ -1378,9 +1416,9 @@ impl Smoother {
     /// The eye server's VRCFT eyelids (`mapped`) corrected by the eye camera's (`camera`, per eye while it may be used),
     /// and where each came from. An eye the camera sees closed is closed (the eye server misses one eye of many
     /// blinks). An eye the eye server has read closing (below CAMERA_DOUBT_BELOW or --blink-sync-below) while the camera
-    /// saw it open for longer than a blink (CAMERA_DOUBT_GRACE, at least CAMERA_DOUBT_FRAMES of the camera's frames,
-    /// added up) takes the camera's eyelid, until the two have agreed for CAMERA_AGREE_HOLD or the eye server has read
-    /// it open for CAMERA_DOUBT_CLEAR_OPEN. Before that the eye
+    /// saw it open, and more open than that, for longer than a blink (CAMERA_DOUBT_GRACE, at least CAMERA_DOUBT_FRAMES
+    /// of the camera's frames, added up) takes the camera's eyelid, until the two have agreed for CAMERA_AGREE_HOLD or
+    /// the eye server has read it open for CAMERA_DOUBT_CLEAR_OPEN. Before that the eye
     /// server's stands, so a blink the camera catches late (or not at all) still closes the eye, and the blink sync
     /// still closes an eye the eye server caught in one eye only. An eye without the camera's values is the eye
     /// server's, as before, and starts over; but through a short gap in them (`held`, the camera's last eyelid, see
@@ -1431,7 +1469,9 @@ impl Smoother {
                     Some(lid) if state.camera => {
                         from[eye] = LidFrom::CameraOpen;
                         floored[eye] = floor > 0.0;
-                        return if floored[eye] { lid.lid.max(floor) } else { lid.lid };
+                        let lid = if floored[eye] { lid.lid.max(floor) } else { lid.lid };
+                        // (a closing eye the camera last read no more open: the eye server's, as below)
+                        return if valve < line && lid <= valve { valve } else { lid };
                     }
                     Some(_) => {}
                     None => *state = LidDoubt::default(),
@@ -1485,6 +1525,10 @@ impl Smoother {
             } else {
                 !closing && valve >= camera.lid.min(LID_RELAXED) - CAMERA_AGREE_GAP
             };
+            // A closing eye the camera sees open but no more open than the eye server reads it (its eyelid as it would
+            // go out, from --camera-lid-floor up; a hard squint) neither adds to the doubt nor clears it: see
+            // CAMERA_DOUBT_BELOW
+            let more_open = camera.lid.max(floor) > valve;
             state.diag = (valve, closing, agree);
             if closing {
                 state.open_since = None;
@@ -1492,7 +1536,7 @@ impl Smoother {
                 state.doubted = 0.0;
                 state.camera = false;
             }
-            if closing && !camera.closed {
+            if closing && !camera.closed && more_open {
                 state.doubted += f64::from(dt);
                 state.agree_since = None;
             } else if agree {
@@ -1517,9 +1561,12 @@ impl Smoother {
                 return 0.0;
             }
             floored[eye] = floor > 0.0 && (state.camera || !closing);
+            // On the camera's eyelid, a closing eye the camera reads no more open than the eye server (a squint that
+            // narrows further once taken over: the camera's eyelid falls to 0) goes out as the eye server reads it, the
+            // more open of the two; it stays on the camera's eyelid for when the camera sees it more open again
             let lid = if state.camera {
                 from[eye] = LidFrom::CameraOpen;
-                camera.lid
+                if closing && !more_open { valve } else { camera.lid }
             } else {
                 let (lid, share) = lowered_at_ceiling(valve, ceiling[eye] * jump, raise_to[eye].unwrap_or(camera.lid));
                 if share >= 0.5 {
@@ -1554,6 +1601,24 @@ impl Smoother {
     /// as wide eyes, and a widen that is held shows WIDEN_SUSTAIN late. Below relaxed open nothing changes.
     fn sustain_widen(&mut self, time: f64, lids: [f32; 2]) -> [f32; 2] {
         self.widen_sustain.step(time, lids)
+    }
+
+    /// VRCFT eyelids with their widening (the part above relaxed open) eased in and out over WIDEN_SMOOTH_S, `dt`
+    /// seconds after the last sample. At or below relaxed open an eyelid goes out as it is, so closing and blinks are
+    /// not slowed, and its widening starts over from none: a widening eased out that lands on relaxed open and
+    /// wobbles across it (1.0, 0.74, 0.76) would otherwise go back up to where the easing had got (0.74, then 0.90).
+    fn smooth_widen(&mut self, dt: f32, lids: [f32; 2]) -> [f32; 2] {
+        let share = 1.0 - (-dt.max(0.0) / WIDEN_SMOOTH_S).exp();
+        std::array::from_fn(|eye| {
+            let lid = lids[eye];
+            let widened = &mut self.widen_smooth[eye];
+            if !(lid > LID_RELAXED) {
+                *widened = 0.0;
+                return lid;
+            }
+            *widened += share * (lid - LID_RELAXED - *widened);
+            LID_RELAXED + *widened
+        })
     }
 
     /// Below --gaze-down-hold-x-deg the Frame's sideways gaze jumps (by ~19° to the right when looking
@@ -4312,6 +4377,7 @@ fn process(
         let mut lids = [0, 1].map(|eye| if capped[eye] { mixed[eye].min(LID_RELAXED) } else { mixed[eye] });
         lids = smoother.sustain_widen(data.sample_time, lids);
         if smooth {
+            lids = smoother.smooth_widen(dt, lids);
             smoother.filter(dt, &mut gaze, &mut lids, hold);
         } else {
             smoother.hold_gaze(&mut gaze, hold);
@@ -7693,14 +7759,21 @@ mod tests {
         blink.extend(wide(70, 85));
         let sent = sent_lid_track(false, 120, &blink);
         assert!(sent.iter().all(relaxed), "{sent:?}");
-        // Held wide: relaxed open until it has lasted WIDEN_SUSTAIN (a sample later for the despike), then wide...
+        // Held wide: relaxed open until it has lasted WIDEN_SUSTAIN (a sample later for the despike), then wide, eased
+        // in over WIDEN_SMOOTH_S (visibly so, VRCFT 0.85, within 16 samples)...
         let mut held = wide(40, 140);
         // ...on through a 45 ms dip back to relaxed open...
         held.retain(|(i, _)| !(100..104).contains(i));
         let sent = sent_lid_track(false, 160, &held);
         assert!(sent[..40 + sustain].iter().all(relaxed), "{:?}", &sent[..40 + sustain]);
-        assert!(sent[40 + sustain + 12].iter().all(|lid| *lid > 0.95), "{:?}", sent[40 + sustain + 12]);
-        assert!(sent[110..140].iter().all(|lids| lids.iter().all(|lid| *lid > 0.9)), "{:?}", &sent[100..140]);
+        assert!(sent[40 + sustain + 16].iter().all(|lid| *lid > 0.85), "{:?}", sent[40 + sustain + 16]);
+        assert!(sent[40 + sustain + 34].iter().all(|lid| *lid > 0.95), "{:?}", sent[40 + sustain + 34]);
+        // (the sustain goes on, so it is widened again at once; the easing starts over from relaxed open, as after any
+        // dip to it, and is visibly widened again within 0.1 s)
+        let widened = |lids: &[f32; 2], above: f32| lids.iter().all(|lid| *lid > above);
+        assert!(sent[106..140].iter().all(|lids| widened(lids, LID_RELAXED + 0.01)), "{:?}", &sent[100..140]);
+        assert!(sent[115..140].iter().all(|lids| widened(lids, 0.85)), "{:?}", &sent[100..140]);
+        assert!(sent[122..140].iter().all(|lids| widened(lids, 0.9)), "{:?}", &sent[100..140]);
         // ...and starting over after a blink
         let mut again = wide(40, 100);
         again.extend((100..110).map(|i| (i, [0.1; 2])));
@@ -8726,10 +8799,12 @@ mod tests {
         bridge.keep_livelink_alive();
         assert!(receive(&listener).is_none());
         // Looking right and down (22.5°) with the left eye wide open: one packet per sample, as processed (the
-        // widening shows once it has lasted WIDEN_SUSTAIN)
+        // widening shows once it has lasted WIDEN_SUSTAIN, eased in over WIDEN_SMOOTH_S: with lid_sync pulling it
+        // toward the other eye it shows within a few samples of that)
         let look = [(std::f32::consts::PI / 8.0).tan(), -(std::f32::consts::PI / 8.0).tan()];
         let widened_from = (WIDEN_SUSTAIN / f64::from(NOMINAL_DT)).ceil() as usize;
-        for index in 0..widened_from + 3 {
+        let mut last_wide = 0.0;
+        for index in 0..widened_from + 6 {
             // (the rate limit is tested on its own below)
             bridge.livelink_throttle = Throttle::default();
             bridge.on_sample(reading(index, look, [1.0, 0.55])).unwrap();
@@ -8744,7 +8819,16 @@ mod tests {
                 assert_eq!([x, y], gaze);
             }
             assert!(right.0 < 1.0 && left.2 > 0.0 && left.3 < 0.0);
-            assert_eq!(left.1 > 0.0, index >= widened_from, "{index}");
+            // None before widened_from; from there it never falls, and shows by 5 samples on
+            if index < widened_from {
+                assert_eq!(left.1, 0.0, "{index}");
+            } else {
+                assert!(left.1 >= last_wide, "{index}: {} after {last_wide}", left.1);
+            }
+            if index >= widened_from + 5 {
+                assert!(left.1 > 0.0, "{index}");
+            }
+            last_wide = left.1;
         }
         // Tracking runs, so no neutral packets in between
         bridge.keep_livelink_alive();
@@ -10892,6 +10976,138 @@ mod tests {
         let mut smoother = Smoother::new(&settings);
         let sent = camera_samples(&settings, &mut smoother, 100.0, 3.0, |i| if squinting(i) { [0.2, 0.8] } else { [0.8; 2] }, |_| None);
         assert!(sent[91..180].iter().all(|sample| sample.lids[0] == 0.0));
+    }
+
+    #[test]
+    fn a_squint_both_read_narrow_is_not_handed_to_a_camera_that_reads_it_lower() {
+        // The reporter's squint (2026-11-19, a provisional user calibration): the camera reads both eyes narrowed right
+        // down (eyelid 0, squint 1, not closed), the eye server the right eye just below the doubt line (VRCFT 0.27)
+        // and the left just above it (0.40), and both at 0.00 for 0.2 s (a misread: the eyes stayed open). The right
+        // eye's eyelid became the camera's after CAMERA_DOUBT_GRACE and went out closed, 0.00, while the squint lasted
+        let settings = camera_settings();
+        let squint = |i: usize| (90..270).contains(&i);
+        let misread = |i: usize| (117..135).contains(&i);
+        let openness = |i: usize| {
+            if misread(i) {
+                [0.0; 2]
+            } else if squint(i) {
+                [0.567, 0.48]
+            } else {
+                [0.9; 2]
+            }
+        };
+        let narrowed = |i: usize| Some(if squint(i) { camera_eyes([(0.0, 1.0, false); 2]) } else { camera(0.75, 0.0) });
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, openness, narrowed);
+        assert!(sent.iter().all(|sample| !sample.lid_from.contains(&LidFrom::CameraOpen)));
+        // The misread goes out as the eye server reads it, as a blink would; before and after it, its eyelids
+        assert!(sent[122..135].iter().all(|sample| sample.lids == [0.0; 2]), "{:?}", sent[125].lids);
+        assert!(sent[95..117].iter().chain(&sent[145..270]).all(|sample| sample.lids[0] > 0.3 && sample.lids[1] > 0.2));
+        // Where the camera does see the eye more open than the eye server (the eye server reads it shut), the camera's
+        // eyelid takes over after the grace, as before
+        let shut = |i: usize| if squint(i) { [0.567, 0.0] } else { [0.9; 2] };
+        let open_right = |i: usize| {
+            Some(if squint(i) { camera_eyes([(0.0, 1.0, false), (0.6, 0.0, false)]) } else { camera(0.75, 0.0) })
+        };
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, shut, open_right);
+        assert_eq!(sent[150].lid_from, [LidFrom::EyeServer, LidFrom::CameraOpen]);
+        assert!(sent[150..270].iter().all(|sample| (sample.lids[1] - 0.6).abs() < 0.05), "{:?}", sent[150].lids);
+        // With --camera-lid-floor the camera's eyelid goes out at the floor or more, so it is more open than the eye
+        // server's 0.27 and takes over as before
+        let floor = Settings { camera_lid_floor: 0.3, ..settings.clone() };
+        let mut smoother = Smoother::new(&floor);
+        let sent = camera_samples(&floor, &mut smoother, 100.0, 4.0, openness, narrowed);
+        assert_eq!(sent[200].lid_from[1], LidFrom::CameraOpen);
+        assert!(sent[150..270].iter().all(|sample| sample.lids[1] >= 0.3 - 1e-6), "{:?}", sent[150].lids);
+    }
+
+    #[test]
+    fn an_eye_on_the_cameras_eyelid_that_squints_further_goes_out_as_the_eye_server_reads_it() {
+        // A squint's onset the camera reads more open than the eye server (the right eye: VRCFT 0.15 on the eye server,
+        // 0.5 on the camera) for longer than the grace hands the eye to the camera's eyelid; then the camera's eyelid
+        // falls to 0 (squint 1, not closed) while the eye server reads the eye at 0.27, closing. That neither adds to
+        // the doubt nor clears it, so the eye stays on the camera's eyelid, and it went out at 0 while that lasted
+        let settings = Settings { lid_sync: 0.0, ..camera_settings() };
+        let onset = |i: usize| (90..126).contains(&i);
+        let narrower = |i: usize| (126..270).contains(&i);
+        let reopened = |i: usize| (270..330).contains(&i);
+        let openness = |i: usize| {
+            if onset(i) {
+                [0.9, 0.4]
+            } else if narrower(i) || reopened(i) {
+                [0.9, 0.48]
+            } else {
+                [0.9; 2]
+            }
+        };
+        let right = |i: usize| {
+            if onset(i) {
+                (0.5, 0.3, false)
+            } else if narrower(i) {
+                (0.0, 1.0, false)
+            } else if reopened(i) {
+                (0.6, 0.0, false)
+            } else {
+                (0.75, 0.0, false)
+            }
+        };
+        let camera_at = |i: usize| Some(camera_eyes([(0.75, 0.0, false), right(i)]));
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 4.0, openness, camera_at);
+        assert_eq!(sent[124].lid_from[1], LidFrom::CameraOpen);
+        assert!((sent[124].lids[1] - 0.5).abs() < 0.05, "{:?}", sent[124].lids);
+        // Still on the camera's eyelid, but out as the eye server reads it (0.27), the more open of the two
+        assert!(sent[140..270].iter().all(|sample| sample.lid_from[1] == LidFrom::CameraOpen));
+        assert!(sent[140..270].iter().all(|sample| (sample.lids[1] - 0.27).abs() < 0.02), "{:?}", sent[140].lids);
+        // Where the camera sees it more open again, its eyelid
+        assert!(sent[290..330].iter().all(|sample| (sample.lids[1] - 0.6).abs() < 0.05), "{:?}", sent[290].lids);
+    }
+
+    #[test]
+    fn a_widening_eased_out_that_lands_on_relaxed_open_does_not_pop_back_up() {
+        // Held wide, then back to relaxed open and wobbling across it (1.0 for 0.67 s, 0.74, 0.76, 0.74, 0.76): the
+        // easing's widening would have gone back out at once (0.74, then about 0.90)
+        let mut smoother = Smoother::new(&settings());
+        for _ in 0..60 {
+            smoother.smooth_widen(NOMINAL_DT, [1.0; 2]);
+        }
+        assert!(smoother.smooth_widen(NOMINAL_DT, [1.0; 2]).iter().all(|lid| *lid > 0.98));
+        for (lid, most) in [(0.74, 0.74), (0.76, 0.751), (0.74, 0.74), (0.76, 0.751)] {
+            let out = smoother.smooth_widen(NOMINAL_DT, [lid; 2]);
+            assert!(out.iter().all(|out| (lid <= LID_RELAXED && *out == lid) || *out <= most), "{lid} -> {out:?}");
+        }
+        // Closing goes out at once
+        for _ in 0..60 {
+            smoother.smooth_widen(NOMINAL_DT, [1.0; 2]);
+        }
+        assert_eq!(smoother.smooth_widen(NOMINAL_DT, [0.3; 2]), [0.3; 2]);
+    }
+
+    #[test]
+    fn short_bursts_of_the_cameras_widening_do_not_flicker_the_eyes_wide() {
+        // The reporter's dark step (2026-11-19, no user calibration): the camera read the eyes a little widened, with
+        // bursts to 0.88-1.0 for 100-150 ms every 0.5-1 s. Once the widen sustain had passed on the small widening,
+        // each burst went out, and the eyelids crossed VRCFT 0.85 4-5 times in 8 s
+        let settings = Settings { lid_sync: 0.0, ..camera_settings() };
+        let burst = |i: usize| i % 60 >= 48;
+        let held = |i: usize| (300..500).contains(&i);
+        let blink = |i: usize| (500..515).contains(&i);
+        let lid = |i: usize| if held(i) { 1.0 } else if burst(i) { 0.9 } else { 0.77 };
+        let camera_at = |i: usize| {
+            Some(if blink(i) { camera_eyes([(0.0, 0.0, true); 2]) } else { camera(lid(i), 0.0) })
+        };
+        let openness = |i: usize| if blink(i) { [0.0; 2] } else { [0.9; 2] };
+        let mut smoother = Smoother::new(&settings);
+        let sent = camera_samples(&settings, &mut smoother, 100.0, 6.0, openness, camera_at);
+        // The bursts never go out visibly widened, while the small widening still goes out
+        assert!(sent[..300].iter().all(|sample| sample.lids.iter().all(|lid| *lid < 0.85)), "{:?}", sent[59].lids);
+        assert!(sent[40].lids.iter().all(|lid| *lid > LID_RELAXED), "{:?}", sent[40].lids);
+        // A held widen shows promptly (its sustain has long passed): visibly within 0.1 s, nearly all of it in 0.5 s
+        assert!(sent[309].lids.iter().all(|lid| *lid > 0.85), "{:?}", sent[309].lids);
+        assert!(sent[345..500].iter().all(|sample| sample.lids.iter().all(|lid| *lid > 0.97)), "{:?}", sent[345].lids);
+        // A blink from it closes as fast as without the easing: shut 3 samples in
+        assert!(sent[503].lids.iter().all(|lid| *lid < 0.1), "{:?}", sent[503].lids);
     }
 
     #[test]

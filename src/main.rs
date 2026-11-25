@@ -8134,6 +8134,55 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_fit_again_and_the_panels_reset_reach_the_live_eyeball_maps() {
+        // The eyeball source taken up with its maps' file in a folder of its own (no calibration needed for the maps)
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-eyeball-live-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(eyeball_map::FILE_NAME);
+        let eyeball = Settings { gaze_source: config::GazeSource::Eyeball, ..settings() };
+        let mut setup = EyeballSetup::new(dir.join("eyetracking.json"), Some(path.clone()));
+        let mut smoother = Smoother::new(&eyeball);
+        setup.prepare(&eyeball, &mut smoother);
+        assert!(smoother.eyeball.maps.is_none());
+        // A whole fit (its five dots, then the eyes-shut step), the filter's angles a made-up eye's (shifted by `shift`
+        // degrees sideways, as after the headset moved): its maps are used at once and saved
+        let fit = |setup: &mut EyeballSetup, smoother: &mut Smoother, shift: f64| {
+            for (name, yaw, pitch) in &eyeball_map::DOTS[..eyeball_map::FIVE] {
+                let medians = [0, 1].map(|eye| {
+                    let [y, p] = eyeball_map::eye_direction(*yaw, *pitch, eye);
+                    Some(([(0.8 * y + 1.0 + shift) as f32, (0.8 * p - 2.0) as f32], 120))
+                });
+                setup.capture_done(name, medians, [Some(0); 2], smoother);
+            }
+            setup.capture_done(eyeball_map::END_TARGET, [None; 2], [Some(0); 2], smoother);
+        };
+        fit(&mut setup, &mut smoother, 0.0);
+        let first = smoother.eyeball.maps.expect("the first fit's maps in use");
+        assert!(path.exists());
+        assert!(setup.map_outcome.is_some_and(|(_, outcome)| outcome.fitted));
+        // The fit taken again (no restart): its maps replace the first ones in use, and in the file
+        fit(&mut setup, &mut smoother, 4.0);
+        let second = smoother.eyeball.maps.expect("the second fit's maps in use");
+        assert_ne!(second, first);
+        let (saved, _) = eyeball_map::MapStore::load(Some(path.clone()));
+        assert_eq!(saved.maps, Some(second));
+        // config.json read again with the files there: nothing changes
+        assert!(setup.forget_removed(&mut smoother).is_empty());
+        assert_eq!(smoother.eyeball.maps, Some(second));
+        // The panel's "Reset" removed the file, then wrote config.json: read again, the maps are no longer used (the
+        // eye tracker's gaze) and status.json's outcome goes with them
+        fs::remove_file(&path).unwrap();
+        let lines = setup.forget_removed(&mut smoother);
+        assert!(lines.len() == 1 && lines[0].contains("was removed"), "{lines:?}");
+        assert!(smoother.eyeball.maps.is_none() && setup.map_outcome.is_none());
+        // ...until the next whole fit
+        fit(&mut setup, &mut smoother, 0.0);
+        assert!(smoother.eyeball.maps.is_some() && path.exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn lid_calibration_file_round_trips() {
         let dir = std::env::temp_dir().join(format!("frameeyeosc-test-{}", std::process::id()));
         let path = dir.join("calibration");

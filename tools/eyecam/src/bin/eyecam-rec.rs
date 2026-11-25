@@ -566,8 +566,10 @@ impl StatusFile {
                 // frame.
                 l.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
                 l.small_pupil.store(settings.small_pupil, Ordering::Relaxed);
-                // lower_lid is only ever edited by hand: picked up the same way.
+                // lower_lid and glints are only ever edited by hand: picked up the same way.
                 l.lower_lid.store(settings.lower_lid, Ordering::Relaxed);
+                l.glints.store(settings.glints, Ordering::Relaxed);
+                s.glints = livesvc::glints_on(l);
             }
             drop(watch);
             s.dev = settings.dev;
@@ -914,6 +916,7 @@ fn serve(args: &Args) -> Result<()> {
         shared.lid_veto.store(settings.lid_veto, Ordering::Relaxed);
         shared.small_pupil.store(settings.small_pupil, Ordering::Relaxed);
         shared.lower_lid.store(settings.lower_lid, Ordering::Relaxed);
+        shared.glints.store(settings.glints, Ordering::Relaxed);
         shared.driftlog.lock().unwrap().dir = args.out.join(driftlog::DIR_NAME);
     }
     let mut daemon = Daemon::start(&args.run_dir, (!args.fake).then(|| shared.clone()), &args.out, args.fake)?;
@@ -2831,9 +2834,10 @@ fn record(
     }
     eprintln!("{} into {}", if recording { "recording" } else { "calibrating" }, d.display());
     // A recording's glint log (glints.csv beside its other files: a row per eye per frame from the live worker), on
-    // for as long as the recording runs; closed however it ends (GlintLogOn's drop)
+    // for as long as the recording runs while the glint tracking is (livesvc::glints_on: off by default); closed
+    // however it ends (GlintLogOn's drop)
     let mut glint_log = None;
-    if recording && let Some(l) = live.as_deref() {
+    if recording && let Some(l) = live.as_deref().filter(|l| livesvc::glints_on(&l.shared)) {
         match glintlog::GlintLog::create(&d).and_then(glintlog::GlintLog::start) {
             Ok(log) => {
                 // (a log left on is closed first, once the lock is let go)

@@ -209,6 +209,14 @@ pub enum Msg {
     Shutdown,
 }
 
+/// Whether the glint tracking runs (and a recording writes its glint log): settings.json `glints`, or a `glint template`
+/// asked for since eyecam-rec started (frameeyeosc's panel sends one after an eye fit only with its pupil_slip_correction
+/// or gaze_guard trials on). Off by default: only those trials and the developer's checks use the slip, and it costs
+/// every frame with a pupil.
+pub fn glints_on(shared: &Shared) -> bool {
+    shared.glints.load(Ordering::Relaxed) || shared.glint_template.load(Ordering::Relaxed) > 0
+}
+
 /// What the main thread shows in status.json.
 pub struct Shared {
     /// The widen sensitivity (f64 bits), set from ctl.sock and read by the worker on every frame.
@@ -264,8 +272,12 @@ pub struct Shared {
     /// (both eyes) over the last second (f32 bits), vetoes fired, and the CNN's time per run (mean and max,
     /// microseconds), since the worker started.
     pub lid_veto: AtomicBool,
-    /// `glint template` asks so many times so far: each new one has the worker take new glint templates.
+    /// `glint template` asks so many times so far: each new one has the worker take new glint templates (and any turns
+    /// the glint tracking on until eyecam-rec stops, whatever `glints` says).
     pub glint_template: AtomicU32,
+    /// The glint tracking and a recording's glint log are on (settings.json `glints`, followed while running; off by
+    /// default: see glints_on).
+    pub glints: AtomicBool,
     /// A pupil shrunk in bright light kept from reading closed (settings.json `small_pupil`, followed while running).
     pub small_pupil: AtomicBool,
     pub veto_runs_per_s: AtomicU32,
@@ -305,6 +317,7 @@ impl Default for Shared {
             glintlog: Mutex::new(glintlog::Control::default()),
             lid_veto: AtomicBool::new(false),
             glint_template: AtomicU32::new(0),
+            glints: AtomicBool::new(false),
             small_pupil: AtomicBool::new(true),
             veto_runs_per_s: AtomicU32::new(0f32.to_bits()),
             veto_fired: AtomicU64::new(0),
@@ -868,7 +881,8 @@ impl Worker {
         }
         let t_mono = (t_cam_ns as i64 + self.mono_minus_raw).max(0) as u64;
         // The glints near the pupil and the headset's slip from them (only with a pupil: the opening is this frame's
-        // then); a `glint template` asked for meanwhile has both eyes take a new template
+        // then), while the glint tracking is on (glints_on; off, no slip: each eye's pupil centre still goes to the
+        // glint part); a `glint template` asked for meanwhile has both eyes take a new template
         let asked = self.shared.glint_template.load(Ordering::Relaxed);
         if asked != self.glint_asked {
             self.glint_asked = asked;
@@ -877,38 +891,45 @@ impl Worker {
                 t.want_template();
             }
         }
-        let started = Instant::now();
         let pupil = (o.f.ok_pupil && o.f.pupil_cx.is_finite()).then_some([o.f.pupil_cx as f32, o.f.pupil_cy as f32]);
-        let img: &[u8] = if upside_down { &self.flipped } else { data };
-        match pupil {
-            Some(p) => {
-                let (open, open_x0) = self.engines[eye].opening();
-                self.glint_find.find(img, open, open_x0, W, H, p, o.f.iris_r as f32, &mut self.glints);
+        let tracking = glints_on(&self.shared);
+        let slip = if tracking {
+            let started = Instant::now();
+            let img: &[u8] = if upside_down { &self.flipped } else { data };
+            match pupil {
+                Some(p) => {
+                    let (open, open_x0) = self.engines[eye].opening();
+                    self.glint_find.find(img, open, open_x0, W, H, p, o.f.iris_r as f32, &mut self.glints);
+                }
+                None => self.glints.clear(),
             }
-            None => self.glints.clear(),
-        }
-        let before = self.glint_track[eye].template_id_now();
-        let slip = self.glint_track[eye].frame(t, pupil, &self.glints);
-        if slip.template_id != before {
-            eprintln!(
-                "live: {} eye glint template {} ({} places)",
-                ["left", "right"][eye],
-                slip.template_id,
-                self.glint_track[eye].template().len()
-            );
-        }
-        let glint_time = started.elapsed();
-        self.busy += glint_time;
-        self.glint_us += glint_time.as_micros() as u64;
-        self.glint_max_us = self.glint_max_us.max(glint_time.as_micros() as u64);
-        self.glint_n += 1;
-        self.glint_tracked[eye] += slip.tracked as u64;
-        if slip.template_id != before {
-            self.glint_template_mono[eye] = ((slip.template_t * 1e9) as i64 + self.mono_minus_raw).max(0) as u64;
-        }
+            let before = self.glint_track[eye].template_id_now();
+            let slip = self.glint_track[eye].frame(t, pupil, &self.glints);
+            if slip.template_id != before {
+                eprintln!(
+                    "live: {} eye glint template {} ({} places)",
+                    ["left", "right"][eye],
+                    slip.template_id,
+                    self.glint_track[eye].template().len()
+                );
+            }
+            let glint_time = started.elapsed();
+            self.busy += glint_time;
+            self.glint_us += glint_time.as_micros() as u64;
+            self.glint_max_us = self.glint_max_us.max(glint_time.as_micros() as u64);
+            self.glint_n += 1;
+            self.glint_tracked[eye] += slip.tracked as u64;
+            if slip.template_id != before {
+                self.glint_template_mono[eye] = ((slip.template_t * 1e9) as i64 + self.mono_minus_raw).max(0) as u64;
+            }
+            slip
+        } else {
+            self.glints.clear();
+            glint::Slip::default()
+        };
         let template_mono = self.glint_template_mono[eye];
         let frames = self.frames[eye];
-        {
+        if tracking {
             // The glint log, while a recording runs: this frame's row handed to its thread (formatted and written
             // there; nothing at all while it is off)
             let mut log = self.shared.glintlog.lock().unwrap();
@@ -1676,7 +1697,17 @@ mod tests {
         sync();
         assert!(!path.exists());
         shared.glintlog.lock().unwrap().on(glintlog::GlintLog::create(&dir).unwrap().start().unwrap()).wait();
-        for k in 20..110 {
+        // The log on but the glint tracking off (the default, glints_on): no rows
+        assert!(!glints_on(&shared));
+        for k in 20..30 {
+            send(k);
+        }
+        sync();
+        assert_eq!(shared.glintlog.lock().unwrap().status().rows, 0);
+        // settings.json `glints` on: a row per eye per frame
+        shared.glints.store(true, Ordering::Relaxed);
+        assert!(glints_on(&shared));
+        for k in 30..120 {
             send(k);
         }
         sync();
@@ -1692,7 +1723,7 @@ mod tests {
         let head: Vec<&str> = head.split(',').collect();
         let col = |row: &str, name: &str| row.split(',').nth(head.iter().position(|h| *h == name).unwrap()).unwrap().to_string();
         let first = lines[1];
-        assert_eq!((col(first, "t_cam").as_str(), col(first, "eye").as_str(), col(first, "frame").as_str()), ("70.222222222", "L", "21"));
+        assert_eq!((col(first, "t_cam").as_str(), col(first, "eye").as_str(), col(first, "frame").as_str()), ("70.333333333", "L", "31"));
         let mono: u64 = col(first, "t_mono_ns").parse().unwrap();
         assert!(mono > 0, "{first}");
         for r in &lines[1..] {
@@ -1700,6 +1731,102 @@ mod tests {
             assert_eq!(col(r, "valve_open"), open, "{r}");
             assert_eq!((col(r, "ok_pupil").as_str(), col(r, "glints").as_str()), ("0", "0"), "{r}");
         }
+        // A `glint template` (frameeyeosc's panel with its slip trials) turns it on too, whatever settings.json says
+        let asked = Shared::default();
+        asked.glint_template.fetch_add(1, Ordering::Relaxed);
+        assert!(glints_on(&asked));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Not a check by itself (ignored): a recording (EYECAM_GLINT_REC, an eyecam-rec recording folder) through the live
+    /// worker with the glint tracking off (the default) and on, twice each: every value of the live shared memory but
+    /// the glint part's slip (the eyes' part, the glint part's pupil centre, the shape and lower-lid parts) must be the
+    /// same frame for frame, and the time the worker took per eye frame is printed.
+    /// `EYECAM_GLINT_REC=~/eyecam/rec_… cargo test --release glints_off_ -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn glints_off_leaves_every_other_live_value_as_it_was() {
+        let Some(rec) = std::env::var_os("EYECAM_GLINT_REC") else { return };
+        let session = crate::replay::Session::open(std::path::Path::new(&rec), false).unwrap();
+        let n = (0..2).map(|e| session.frames(e)).max().unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("eyecam-glints-ab-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut img = vec![0u8; W * H];
+        fn bytes_of<T: Copy>(value: &T) -> Vec<u8> {
+            unsafe { std::slice::from_raw_parts((value as *const T).cast::<u8>(), std::mem::size_of::<T>()) }.to_vec()
+        }
+        let run = |glints: bool, img: &mut Vec<u8>| -> (Vec<Vec<u8>>, f64, usize) {
+            let shared = Arc::new(Shared::default());
+            shared.glints.store(glints, Ordering::Relaxed);
+            let path = dir.join("calib.json");
+            let writer = LiveWriter::create(&dir.join(if glints { "live_on" } else { "live_off" })).unwrap();
+            let mut w = Worker::new(writer, shared, path.clone(), load_calib(&path), dir.join("preview"));
+            w.apply_calib();
+            w.live = true;
+            let mut rows = Vec::new();
+            let mut busy = Duration::ZERO;
+            let mut frames = 0usize;
+            for k in 0..n {
+                for e in 0..2 {
+                    if k >= session.frames(e) {
+                        continue;
+                    }
+                    session.read(e, k, img).unwrap();
+                    let t = session.t_cam[e].get(k).copied().unwrap_or(f64::NAN);
+                    if !t.is_finite() {
+                        continue;
+                    }
+                    let j = session.valve.nearest(t);
+                    let pitch = j.map_or(f32::NAN, |j| session.valve.pitch[e][j] as f32);
+                    let open = j.map_or(f32::NAN, |j| session.valve.open[e][j] as f32);
+                    let started = Instant::now();
+                    w.frame(e, false, (t * 1e9) as u64, pitch, open, img);
+                    busy += started.elapsed();
+                    frames += 1;
+                    let mut v = w.writer.read();
+                    // (the monotonic time is the camera's plus an offset measured as the run goes: it differs from
+                    // run to run whatever the glints)
+                    for eye in &mut v.eyes {
+                        eye.t_mono_ns = 0;
+                    }
+                    let mut row = bytes_of(&v.eyes);
+                    for g in &v.glint {
+                        row.extend((g.flags & 1).to_le_bytes());
+                        row.extend(g.pupil_x.to_bits().to_le_bytes());
+                        row.extend(g.pupil_y.to_bits().to_le_bytes());
+                    }
+                    row.extend(bytes_of(&v.shape));
+                    row.extend(v.flipped.to_le_bytes());
+                    row.extend(bytes_of(&v.lower_lid));
+                    rows.push(row);
+                }
+            }
+            (rows, busy.as_secs_f64() * 1e3 / frames.max(1) as f64, frames)
+        };
+        let mut ms = [Vec::new(), Vec::new()];
+        let mut first: Option<Vec<Vec<u8>>> = None;
+        for round in 0..4 {
+            let glints = round % 2 == 1;
+            let (rows, per, frames) = run(glints, &mut img);
+            ms[glints as usize].push(per);
+            match &first {
+                None => first = Some(rows),
+                Some(off) => {
+                    assert_eq!(off.len(), rows.len());
+                    let differ = off.iter().zip(&rows).filter(|(a, b)| a != b).count();
+                    assert_eq!(differ, 0, "{differ} of {frames} frames differ (glints {glints})");
+                }
+            }
+            eprintln!("glints {}: {frames} eye frames, {per:.4} ms per eye frame", if glints { "on " } else { "off" });
+        }
+        let mean = |v: &Vec<f64>| v.iter().sum::<f64>() / v.len() as f64;
+        eprintln!(
+            "same values in all 4 runs; per eye frame: off {:.4} ms, on {:.4} ms, saved {:.1} us",
+            mean(&ms[0]),
+            mean(&ms[1]),
+            (mean(&ms[1]) - mean(&ms[0])) * 1e3
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

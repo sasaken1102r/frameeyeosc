@@ -1,6 +1,6 @@
 //! User settings, kept in ~/.config/eyecam/settings.json: `widen_sensitivity`, `lid_veto` and `source` are changed
-//! from the panel (`set ...` on ctl.sock; `lid_veto` and `source` by hand too), `dev`, `small_pupil` and `lower_lid`
-//! only by hand.
+//! from the panel (`set ...` on ctl.sock; `lid_veto` and `source` by hand too), `dev`, `small_pupil`, `lower_lid` and
+//! `glints` only by hand.
 
 use crate::dspsrc::Source;
 use crate::json::{self, Json};
@@ -27,6 +27,13 @@ pub struct Settings {
     /// (liveshm::LiveShm::lower_lid) only when switched on here, by hand (followed while running). Written to the file
     /// only when on.
     pub lower_lid: bool,
+    /// The glint tracking (glint.rs: the eye-tracking LEDs' reflections near each pupil and the headset's slip from
+    /// them, in the live shared memory's glint part) and a recording's glint log (glints.csv): only for frameeyeosc's
+    /// pupil_slip_correction / gaze_guard trials and the developer's checks, so off unless switched on here, by hand
+    /// (followed while running), or by a `glint template` from ctl.sock (until eyecam-rec stops). Off, the glint part
+    /// still has each frame's pupil centre (frameeyeosc's eyeball gaze reads it), without a slip. Written to the file
+    /// only when on.
+    pub glints: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +45,7 @@ impl Default for Settings {
             small_pupil: true,
             source: Source::Auto,
             lower_lid: false,
+            glints: false,
         }
     }
 }
@@ -70,6 +78,9 @@ impl Settings {
                 if let Some(Json::Bool(v)) = j.get("lower_lid") {
                     s.lower_lid = *v;
                 }
+                if let Some(Json::Bool(v)) = j.get("glints") {
+                    s.glints = *v;
+                }
                 if let Some(v) = j.get("source") {
                     match v.str().and_then(Source::parse) {
                         Some(source) => s.source = source,
@@ -97,8 +108,10 @@ impl Settings {
         let small_pupil = if self.small_pupil { "" } else { ",\n  \"small_pupil\": false" };
         // `lower_lid` likewise only when on.
         let lower_lid = if self.lower_lid { ",\n  \"lower_lid\": true" } else { "" };
+        // `glints` likewise only when on.
+        let glints = if self.glints { ",\n  \"glints\": true" } else { "" };
         let text = format!(
-            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}{small_pupil}{source}{lower_lid}\n}}\n",
+            "{{\n  \"version\": 1,\n  \"widen_sensitivity\": {},\n  \"dev\": {},\n  \"lid_veto\": {}{small_pupil}{source}{lower_lid}{glints}\n}}\n",
             json::num(self.widen_sensitivity),
             self.dev,
             self.lid_veto
@@ -312,6 +325,29 @@ mod tests {
         assert!(crate::json::parse(&std::fs::read_to_string(&p).unwrap()).is_ok());
         // Off by hand: the key goes when the file is next written
         std::fs::write(&p, "{\"widen_sensitivity\": 0.3, \"lower_lid\": false}").unwrap();
+        Settings::update(&p, |s| s.lid_veto = false).unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn glints_are_off_by_default_read_by_hand_kept_by_a_set_and_written_only_when_on() {
+        let dir = std::env::temp_dir().join(format!("eyecam-settings-glints-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("settings.json");
+        assert!(!Settings::default().glints);
+        Settings { widen_sensitivity: 0.3, ..Settings::default() }.save(&p).unwrap();
+        let before = std::fs::read_to_string(&p).unwrap();
+        assert!(!before.contains("glints") && !Settings::load(&p).glints, "{before}");
+        // By hand, beside the other hand-edited keys; a `set` from the panel keeps it, and it is written as JSON
+        std::fs::write(&p, "{\"version\": 1, \"widen_sensitivity\": 0.3, \"glints\": true, \"lower_lid\": true}").unwrap();
+        assert_eq!(Settings::load(&p), Settings { widen_sensitivity: 0.3, glints: true, lower_lid: true, ..Settings::default() });
+        Settings::update(&p, |s| s.lid_veto = true).unwrap();
+        let s = Settings::load(&p);
+        assert!(s.glints && s.lower_lid && s.lid_veto);
+        assert!(crate::json::parse(&std::fs::read_to_string(&p).unwrap()).is_ok());
+        // Off by hand: the key goes when the file is next written
+        std::fs::write(&p, "{\"widen_sensitivity\": 0.3, \"glints\": false}").unwrap();
         Settings::update(&p, |s| s.lid_veto = false).unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), before);
         std::fs::remove_dir_all(&dir).unwrap();

@@ -141,6 +141,11 @@ constexpr const char* kGazeDebugDotsCompare = "gaze_debug_dots_compare";
 constexpr const char* kPupilSlipCorrection = "pupil_slip_correction";
 /** Valve's gaze guarded by the pupils (frameeyeosc's gaze_guard.rs; a test, edited by hand only). */
 constexpr const char* kGazeGuard = "gaze_guard";
+/** What gaze_source "eyeball"'s maps take: "filter" (the default) or "pupil" (a test, edited by hand only). Listed so
+ *  that "Reset all" puts it back. */
+constexpr const char* kEyeballInput = "eyeball_input";
+/** The eye cameras' lower lid sent as CheekSquint (a test, edited by hand only; listed so "Reset all" turns it off). */
+constexpr const char* kCameraCheek = "camera_cheek";
 /** The panel's own: play sound cues during the eye fit (frameeyeosc ignores it). */
 constexpr const char* kFitSounds = "fit_sounds";
 /** The panel's own: the fit run by itself when the headset is put on, "center" (the default) or "off" (see

@@ -325,6 +325,15 @@ void applyFitValues(JsonValue& root, const gaze_fit::Values& values, gaze_fit::M
 std::vector<std::string> fitResetKeys();
 
 /**
+ * gaze_source "eyeball"'s map files, which frameeyeosc keeps next to config.json (its eyeball_map.rs: the eyeball
+ * filter's `eyeball_map`, and eyeball_input "pupil"'s `eyeball_map_pupil`). "Reset" on the Eye fit tab and "Reset all"
+ * remove both before writing config.json; frameeyeosc stops using their maps when it reads config.json again.
+ * @param configPath config.json's path
+ * @return the two files' paths (empty when configPath has no folder)
+ */
+std::vector<std::string> eyeballMapFiles(const std::string& configPath);
+
+/**
  * What a re-center ("Re-center only", and the automatic one when the headset is put on) writes, and so what "Clear
  * center correction" puts back to the defaults: the gaze's zero point, gaze_offset_x and gaze_offset_y, and each eye's
  * pupil centre (applyFitValues with gaze_fit::Mode::Center; null: the pupil map as the whole fit made it). Not the

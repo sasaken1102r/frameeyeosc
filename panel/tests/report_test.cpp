@@ -1130,6 +1130,26 @@ void testUiState() {
     CHECK(ui_state::writeUpdateBeta(path, true, error) && ui_state::readUpdateBeta(path));
     CHECK(!exists(path + ".tmp"));
 
+    // The "what's new" intros seen: unknown the first time (no file, or no member, or not an array), kept as written
+    // beside the others, strings only
+    ::unlink(path.c_str());
+    bool known = true;
+    CHECK(!ui_state::exists(path));
+    CHECK(ui_state::readIntrosSeen(path, known).empty() && !known);
+    CHECK(ui_state::writeUpdateBeta(path, true, error) && ui_state::exists(path));
+    CHECK(ui_state::readIntrosSeen(path, known).empty() && !known);
+    CHECK(ui_state::writeIntrosSeen(path, {}, error));
+    CHECK(ui_state::readIntrosSeen(path, known).empty() && known);
+    CHECK(ui_state::writeIntrosSeen(path, {"eyeball_gaze", "later_one"}, error) && ui_state::readUpdateBeta(path));
+    CHECK((ui_state::readIntrosSeen(path, known) == std::vector<std::string> {"eyeball_gaze", "later_one"}) && known);
+    CHECK(has(readText(path), "\"intros_seen\": ["));
+    writeText(path, "{\"intros_seen\": [\"a\", 3, null, \"b\"]}");
+    CHECK((ui_state::readIntrosSeen(path, known) == std::vector<std::string> {"a", "b"}) && known);
+    writeText(path, "{\"intros_seen\": \"eyeball_gaze\"}");
+    CHECK(ui_state::readIntrosSeen(path, known).empty() && !known);
+    writeText(path, "not json");
+    CHECK(ui_state::readIntrosSeen(path, known).empty() && !known && ui_state::exists(path));
+
     // The gaze scale's locks: linked the first time (and when broken), each pair kept, the other members too
     ::unlink(path.c_str());
     bool linked[2] = {false, false};

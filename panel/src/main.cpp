@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -159,6 +160,7 @@ struct Options {
     std::string fakeDominantEye;  ///< --fake-dominant-eye: "left" / "right" ("Track Dominant Eye Only")
     bool fakeOpennessSaturated = false;  ///< --fake-openness-saturated: a relaxed open eye reads 1.0
     std::string fakePrompt;       ///< vrchat / livelink / frameeyeosc
+    std::string intro;            ///< --intro: a "what's new" intro's id, opened over its tab (intro.h)
     std::string fakeUpdate;       ///< a made-up update state (see printUsage)
     std::string fakeUpdateNotes;  ///< --fake-update-notes: the new release's summary ("both", "en" or "long")
     bool updateBeta = false;      ///< --update-beta: "Get test versions" on (instead of panel.json's)
@@ -352,6 +354,8 @@ void printUsage() {
         "      --fake-openness-saturated  A relaxed open eye reads 1.0 (SteamOS 0.4.3), so widening can't come through\n"
         "      --fake-prompt vrchat|livelink|frameeyeosc|usercal  The recommended-settings question (usercal: the one\n"
         "                 asking for the user calibration)\n"
+        "      --intro ID        A \"what's new\" intro (intro.cpp's ids, e.g. eyeball_gaze), opened over its tab (also\n"
+        "                 with the real files; --click can press its buttons)\n"
         "      --fake-autostart on|off|missing|unknown\n"
         "      --fake-update checking|uptodate|available|manual|installing|installed|checkfailed|installfailed|\n"
         "                    test|testbadge|onbeta|back|backmanual\n"
@@ -1149,6 +1153,12 @@ bool parseOptions(int argc, char** argv, Options& options) {
                 options.fakePrompt != kOutputModule && options.fakePrompt != "usercal") {
                 std::fprintf(stderr, "--fake-prompt must be vrchat, livelink, frameeyeosc or usercal: %s\n",
                              options.fakePrompt.c_str());
+                return false;
+            }
+        } else if (arg == "--intro" && hasNext) {
+            options.intro = argv[++i];
+            if (intro::find(options.intro) == nullptr) {
+                std::fprintf(stderr, "--intro: no such intro: %s\n", options.intro.c_str());
                 return false;
             }
         } else if (arg == "--fake-autostart" && hasNext) {
@@ -2919,6 +2929,7 @@ int runDumpPng(const Options& options) {
             panel.showPrompt(options.fakePrompt);
         }
         if (options.previewUpdatePrompt) panel.showUpdatePrompt(model.update.latest, model.update.backToStable);
+        if (!options.intro.empty()) panel.showIntro(options.intro);
         panel.setUpdateBeta(options.updateBeta);
         std::unique_ptr<frame_updater::UpdateChecker> updater;
         const bool updateCheck = model.config.flag(key::kUpdateCheck);
@@ -3297,6 +3308,22 @@ long long writeCaptureRequest(PanelModel& model, const char* target, double seco
  * migrateFitPolicy, migrateLidOpenSnap and migrateRemovedSettings), and read it again.
  * @param model the model (its config is re-read after a write)
  */
+/**
+ * Remove gaze_source "eyeball"'s map files (eyeballMapFiles), before config.json is written for "Reset" or "Reset all":
+ * frameeyeosc, reading config.json again, then stops using their maps (the eye tracker's gaze until the next whole eye
+ * fit with the eyeball). A file that isn't there is fine.
+ * @param configPath config.json's path
+ */
+void removeEyeballMaps(const std::string& configPath) {
+    for (const std::string& path : eyeballMapFiles(configPath)) {
+        if (std::remove(path.c_str()) == 0) {
+            std::fprintf(stderr, "[fit] removed %s\n", path.c_str());
+        } else if (errno != ENOENT) {
+            std::fprintf(stderr, "[fit] can't remove %s: %s\n", path.c_str(), std::strerror(errno));
+        }
+    }
+}
+
 void migrateConfig(PanelModel& model) {
     if (!model.config.exists || !model.config.error.empty() || !configNeedsMigration(model.config.root)) return;
     std::string lidLog;
@@ -3463,6 +3490,11 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             return;
         case PanelAction::UserCalibNow:
         case PanelAction::UserCalibLater: return;
+        case PanelAction::IntroClose:
+        case PanelAction::IntroTry:
+            // Closed in the panel; the loop saves it to panel.json
+            std::fprintf(stderr, "[intro] closed (%s)\n", hit.action == PanelAction::IntroTry ? "try it" : "got it");
+            return;
         case PanelAction::AutostartOn:
         case PanelAction::AutostartOff:
             std::fprintf(stderr, "[action] start with SteamVR: %s\n", hit.action == PanelAction::AutostartOn ? "on" : "off");
@@ -4039,6 +4071,8 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             for (const std::string& name : fitResetKeys()) {
                 if (!view.locked(name)) unlocked.push_back(name);
             }
+            // ...and the eyeball's maps (not in --dump-png)
+            if (fit != nullptr) removeEyeballMaps(model.configPath);
             change = [unlocked](JsonValue& root) {
                 for (const std::string& name : unlocked) root.set(name, defaultValue(*findSetting(name)));
             };
@@ -4061,6 +4095,8 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
     bool ok = false;
     if (reset) {
         std::fprintf(stderr, "[action] reset all settings\n");
+        // The eyeball's maps go too (not in --dump-png)
+        if (fit != nullptr) removeEyeballMaps(model.configPath);
         ok = resetConfigFile(model.configPath, error);
     } else {
         std::fprintf(stderr, "[action] %d %s %d\n", static_cast<int>(hit.action), hit.key != nullptr ? hit.key : "-",
@@ -4537,6 +4573,19 @@ int runOverlay(const Options& options) {
     // ...and whether changing the output asks about its recommendation
     bool savedOutputPrompt = ui_state::readOutputPrompt(uiStatePath);
     panel.setOutputPrompt(savedOutputPrompt);
+    // ...and the "what's new" intros shown (intro.h). A fresh install (nothing of frameeyeosc's yet) takes every intro
+    // of this version as seen, so a new user isn't greeted with them; an update from before the intros has no member
+    // yet and sees each on its tab
+    bool introsKnown = false;
+    std::vector<std::string> savedIntros = ui_state::readIntrosSeen(uiStatePath, introsKnown);
+    if (!introsKnown && intro::freshInstall(ui_state::exists(uiStatePath), model.config.exists,
+                                            !report::list(model.records.dir).empty())) {
+        savedIntros = intro::allIds();
+        std::string error;
+        if (!ui_state::writeIntrosSeen(uiStatePath, savedIntros, error)) std::fprintf(stderr, "[panel] %s\n", error.c_str());
+        std::fprintf(stderr, "[intro] a fresh install: the %zu intro(s) of this version taken as seen\n", savedIntros.size());
+    }
+    panel.setIntrosSeen(savedIntros);
     frame_updater::UpdateChecker updater(updaterConfig(savedBeta));
     std::fprintf(stderr, "[update] frameeyeosc-panel %s, checking %s, %s channel\n", FRAMEEYEOSC_VERSION,
                  model.config.flag(key::kUpdateCheck) ? "on" : "off", savedBeta ? "beta" : "stable");
@@ -6194,6 +6243,12 @@ int runOverlay(const Options& options) {
             if (!ui_state::writeOutputPrompt(uiStatePath, savedOutputPrompt, error)) {
                 std::fprintf(stderr, "[panel] %s\n", error.c_str());
             }
+        }
+        // ...and the "what's new" intros shown (closed with "Got it" or "Try it")
+        if (panel.introsSeen() != savedIntros) {
+            savedIntros = panel.introsSeen();
+            std::string error;
+            if (!ui_state::writeIntrosSeen(uiStatePath, savedIntros, error)) std::fprintf(stderr, "[panel] %s\n", error.c_str());
         }
 
         // The diagnostics page: redrawn when anything on it changes (the tool's checksum is looked at again too, which

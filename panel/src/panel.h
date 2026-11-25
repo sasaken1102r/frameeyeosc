@@ -3,6 +3,7 @@
 #pragma once
 
 #include "host_entry.h"
+#include "intro.h"
 #include "model.h"
 #include "ui_state.h"
 
@@ -198,6 +199,8 @@ enum class PanelAction {
     UserCalibNow,      ///< the prompt asking for the user calibration: "Do it now" opens the eye cameras tab (handled
                        ///< inside)
     UserCalibLater,    ///< ...its "Later" (handled inside)
+    IntroClose,        ///< a "what's new" intro's "Got it": it closes, seen (handled inside; the caller saves introsSeen)
+    IntroTry,          ///< ...its "Try it": it closes, seen, and the row it is about shows outlined (handled inside)
 };
 
 /** The steps of "Other apps"' add / change flow (List = no flow, the list shows). */
@@ -219,7 +222,7 @@ struct PanelHit {
 };
 
 /** The tabs. Eyecam (the eye cameras) only shows while eyecam-rec runs, before Advanced. */
-enum class PanelTab { Basic, Output, Gaze, EyeFit, Lids, Advanced, Eyecam };
+enum class PanelTab : int { Basic, Output, Gaze, EyeFit, Lids, Advanced, Eyecam };
 
 /** An icon before a button's label. */
 enum class ButtonIcon { None, Terminal, Play, Pause };
@@ -231,6 +234,8 @@ class EyePanel {
 public:
     /** Seconds the quit / reset buttons wait for the confirming second press. */
     static constexpr double kConfirmSec = 3.0;
+    /** Seconds the row an intro's "Try it" points to stays outlined. */
+    static constexpr double kRowFlashSec = 3.0;
     /** Seconds the sensitivity slider keeps its let-go value at most, waiting for status.json to have it. */
     static constexpr double kSensitivityHoldSec = 3.0;
 
@@ -308,7 +313,35 @@ public:
     bool centerCleared() const { return centerCleared_; }
 
     /** @return true while the recommendation, update or user calibration prompt is open */
-    bool promptOpen() const { return !promptOutput_.empty() || !updatePromptVersion_.empty() || userCalibPromptOpen_; }
+    bool promptOpen() const {
+        return !promptOutput_.empty() || !updatePromptVersion_.empty() || userCalibPromptOpen_ || introOpen_ != nullptr;
+    }
+
+    /**
+     * Start showing the "what's new" intros (intro.h): each one not in `seen` opens the first time its tab (and
+     * sub-tab) shows with nothing else open over it. Until this is called (the tests, --dump-png) none ever opens.
+     * @param seen the ids shown before (panel.json "intros_seen")
+     */
+    void setIntrosSeen(const std::vector<std::string>& seen) {
+        introsSeen_ = seen;
+        introsOn_ = true;
+    }
+
+    /** @return the ids shown so far (the caller saves them when they change) */
+    const std::vector<std::string>& introsSeen() const { return introsSeen_; }
+
+    /**
+     * Open an intro now, whatever was seen (--fake-intro, for screenshots); its tab is chosen too.
+     * @param id its id
+     * @return true if there is such an intro
+     */
+    bool showIntro(const std::string& id);
+
+    /** @return the intro open now, or nullptr */
+    const intro::Intro* introOpen() const { return introOpen_; }
+
+    /** @return the row an intro's "Try it" outlined, while it is (intro::Row::None otherwise) */
+    intro::Row rowFlash() const { return rowFlash_; }
 
     /**
      * Ask for the user calibration (the eye cameras were just turned on without one, eyecam::askUserCalib), with the
@@ -931,6 +964,11 @@ private:
                                           ///< output_prompt)
     bool userCalibPromptOpen_ = false;    ///< the prompt asking for the user calibration is open
     bool userCalibAsked_ = false;         ///< ...it has been, while the panel runs (it never comes back then)
+    bool introsOn_ = false;                ///< "what's new" intros open by themselves (setIntrosSeen was called)
+    std::vector<std::string> introsSeen_;  ///< ...the ids shown (panel.json "intros_seen")
+    const intro::Intro* introOpen_ = nullptr;  ///< the intro open now
+    intro::Row rowFlash_ = intro::Row::None;   ///< the row its "Try it" outlined...
+    double rowFlashUntil_ = 0.0;               ///< ...until then (tick's clock); 0: from the next tick on
     SnapMark snapMark_;                   ///< mark ③ as last drawn
     std::string recordOpen_;            ///< the record shown on the Advanced tab ("" = none)
     bool recordsAllOpen_ = false;       ///< all records are listed on the Advanced tab (a record may be open over them)
@@ -2044,6 +2082,27 @@ private:
      * @param t texts
      */
     void drawPrompt(const Pen& pen, const UiText& t);
+
+    /**
+     * Open the "what's new" intro due for the tab showing now, if any and nothing else is open or under way over it
+     * (intro::due): the prompts, the keypad, the eye preview, a sheet, an eye fit or a check running.
+     * @param model what is shown
+     */
+    void openIntroDue(const PanelModel& model);
+
+    /**
+     * The open "what's new" intro over everything, as the prompts (only its buttons stay usable): a "New" mark, its
+     * title, its paragraphs, "Got it" and, when it points to a row, "Try it".
+     * @param pen drawing tools
+     * @param t texts
+     * @param language the language its own text is shown in
+     */
+    void drawIntro(const Pen& pen, const UiText& t, Language language);
+
+    /**
+     * Close the open intro, seen (the caller saves introsSeen).
+     */
+    void closeIntro();
 
     /**
      * The keypad for the target PC over everything (only its buttons stay usable).

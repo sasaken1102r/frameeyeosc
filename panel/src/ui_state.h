@@ -209,4 +209,28 @@ bool readOutputPrompt(const std::string& path);
  */
 bool writeOutputPrompt(const std::string& path, bool on, std::string& error);
 
+/**
+ * @param path the file
+ * @return true if it is there (whatever it holds)
+ */
+bool exists(const std::string& path);
+
+/**
+ * The ids of the "what's new" intros already shown ("intros_seen", intro.h).
+ * @param path the file
+ * @param known set to whether the file has the member (false the first time, or when the file is missing or broken,
+ *              or the member isn't an array: the caller decides whether that is a fresh install)
+ * @return them (strings only)
+ */
+std::vector<std::string> readIntrosSeen(const std::string& path, bool& known);
+
+/**
+ * Remember the intros shown (the file's other members are kept).
+ * @param path the file (its folder is made if missing)
+ * @param ids their ids
+ * @param error why it failed
+ * @return true if written
+ */
+bool writeIntrosSeen(const std::string& path, const std::vector<std::string>& ids, std::string& error);
+
 }  // namespace ui_state

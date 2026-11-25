@@ -513,6 +513,13 @@ std::vector<std::string> fitResetKeys() {
     return names;
 }
 
+std::vector<std::string> eyeballMapFiles(const std::string& configPath) {
+    const size_t slash = configPath.find_last_of('/');
+    if (slash == std::string::npos) return {};
+    const std::string dir = configPath.substr(0, slash + 1);
+    return {dir + "eyeball_map", dir + "eyeball_map_pupil"};
+}
+
 std::vector<std::string> centerResetKeys() {
     std::vector<std::string> names = {key::kGazeOffsetX, key::kGazeOffsetY};
     for (const auto& eye : kPupilCenterKeys) names.insert(names.end(), std::begin(eye), std::end(eye));

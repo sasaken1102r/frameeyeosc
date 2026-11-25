@@ -1085,6 +1085,8 @@ struct UiText {
     const char* promptUserCalibDetail2;
     const char* promptUserCalibNow;  ///< ...its buttons: to the eye cameras tab, or closed
     const char* promptUserCalibLater;
+    const char* introGotIt;  ///< a "what's new" intro's close (intro.h; its own text is in intro.cpp)
+    const char* introTry;    ///< ...its "Try it": to the row it is about
 
     // Updates. The texts are vendor/frame-updater/strings.md word for word (same key names); rowVersion and
     // checkedFormat are this panel's own (the version section's title, and the version row's hint on the Advanced tab)

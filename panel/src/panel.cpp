@@ -1484,6 +1484,25 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::UserCalibLater:
             userCalibPromptOpen_ = false;
             return {};
+        case PanelAction::IntroClose:
+            // Seen; the caller saves it to panel.json
+            if (introOpen_ == nullptr) return {};
+            closeIntro();
+            return hit;
+        case PanelAction::IntroTry: {
+            // Seen too, and to its row: the tab with nothing over it, the row outlined for a moment
+            if (introOpen_ == nullptr) return {};
+            const intro::Intro* shown = introOpen_;
+            closeIntro();
+            setTab(shown->tab);
+            if (shown->tab == PanelTab::EyeFit) {
+                fitHelp_ = false;
+                fitDetails_ = false;
+            }
+            rowFlash_ = shown->row;
+            rowFlashUntil_ = now + kRowFlashSec;
+            return hit;
+        }
         case PanelAction::UpdateConfirm:
         case PanelAction::UpdateCancel:
             updatePromptVersion_.clear();
@@ -1534,6 +1553,10 @@ bool EyePanel::tick(double now) {
     }
     if (resetArmed_ && now > resetArmedUntil_) {
         resetArmed_ = false;
+        changed = true;
+    }
+    if (rowFlash_ != intro::Row::None && now > rowFlashUntil_) {
+        rowFlash_ = intro::Row::None;
         changed = true;
     }
     return changed;
@@ -4114,6 +4137,10 @@ void EyePanel::drawEyeFit(const Pen& pen, const UiText& t, const PanelModel& m, 
         const double h = 50;
         const double controlH = 42;
         const int selected = eyeballGazeInConfig(v) ? 1 : 0;
+        // Outlined for a moment after an intro's "Try it" pointed here
+        if (rowFlash_ == intro::Row::GazeSource) {
+            strokeRounded(pen, kInnerX - 10, y - 4, kInnerRight - kInnerX + 20, h + 8, 14, kAccent, 3);
+        }
         drawRowLabel(pen, t, y, h, t.rowGazeSource, t.hintGazeSource, false);
         drawSegmented(pen, kControlX, y + (h - controlH) / 2, kControlW, controlH,
                       {{t.gazeSourceStandard, {PanelAction::SetGazeSource, key::kGazeSource, 0}},
@@ -7547,6 +7574,123 @@ void EyePanel::drawPrompt(const Pen& pen, const UiText& t) {
     }
 }
 
+bool EyePanel::showIntro(const std::string& id) {
+    const intro::Intro* found = intro::find(id);
+    if (found == nullptr) return false;
+    setTab(found->tab);
+    introOpen_ = found;
+    hover_ = {};
+    pressed_ = {};
+    return true;
+}
+
+void EyePanel::closeIntro() {
+    if (introOpen_ == nullptr) return;
+    if (std::find(introsSeen_.begin(), introsSeen_.end(), introOpen_->id) == introsSeen_.end()) {
+        introsSeen_.emplace_back(introOpen_->id);
+    }
+    introOpen_ = nullptr;
+    hover_ = {};
+    pressed_ = {};
+}
+
+void EyePanel::openIntroDue(const PanelModel& model) {
+    if (!introsOn_ || introOpen_ != nullptr || promptOpen() || keypadOpen_ || previewOpen_) return;
+    // Nothing else on the tab's page over it, nor anything under way there
+    if (contribOpen_ || historyOpen_ || diagOpen_ || !recordOpen_.empty() || recordsAllOpen_ || eyecamConfirm_.isOpen()) {
+        return;
+    }
+    if (fitRunning(model.fit) || model.measure.phase == gaze_measure::Phase::Countdown ||
+        model.measure.phase == gaze_measure::Phase::Running || model.slip.phase == slip_check::Phase::Running ||
+        model.reseat.phase == reseat_check::Phase::Running) {
+        return;
+    }
+    int page = -1;
+    switch (tab_) {
+        case PanelTab::Advanced: page = static_cast<int>(advPage_); break;
+        case PanelTab::Lids: page = static_cast<int>(lidsPage_); break;
+        case PanelTab::Gaze: page = static_cast<int>(gazePage_); break;
+        case PanelTab::Output: page = static_cast<int>(outputPage_); break;
+        default: break;
+    }
+    const intro::Intro* due = intro::due(tab_, page, introsSeen_);
+    if (due == nullptr) return;
+    introOpen_ = due;
+    hover_ = {};
+    pressed_ = {};
+    std::fprintf(stderr, "[intro] %s shown\n", due->id);
+}
+
+void EyePanel::drawIntro(const Pen& pen, const UiText& t, Language language) {
+    if (introOpen_ == nullptr) return;
+    // Only the intro's buttons stay usable
+    buttons_.clear();
+    cairo_set_source_rgba(pen.cr, 0, 0, 0, 0.62);
+    pen.roundedRect(0, 0, kWidth, kHeight, 24);
+    cairo_fill(pen.cr);
+    const double w = 820;
+    const double pad = 40;
+    const double textW = w - 2 * pad;
+    // Its own text: the title on up to two lines, each paragraph wrapped (up to four lines), after a dot
+    const std::vector<std::string> titleLines = wrapText(pen, intro::title(*introOpen_, language), 24, true, textW, 2);
+    std::vector<std::vector<std::string>> paragraphs;
+    {
+        const std::string all = intro::body(*introOpen_, language);
+        size_t start = 0;
+        while (start <= all.size()) {
+            const size_t end = std::min(all.find('\n', start), all.size());
+            const std::string paragraph = all.substr(start, end - start);
+            if (!paragraph.empty()) paragraphs.push_back(wrapText(pen, paragraph, 17, false, textW - 18, 4));
+            start = end + 1;
+        }
+    }
+    double bodyH = 0;
+    for (const auto& lines : paragraphs) bodyH += lines.size() * 25.0 + 10;
+    const double buttonH = kControlH + 4;
+    const double h = std::min(kHeight - 40.0, 34 + titleLines.size() * 32.0 + 14 + bodyH + 18 + buttonH + 32);
+    const double x = (kWidth - w) / 2;
+    const double y = (kHeight - h) / 2;
+    drawCard(pen, x, y, w, h, 24, kCard, kAccent, 2);
+    double baseline = y + 34;
+    for (const std::string& line : titleLines) {
+        baseline += 28;
+        pen.text(x + pad, baseline, line, 24, kText, true);
+        baseline += 4;
+    }
+    baseline += 14;
+    for (const auto& lines : paragraphs) {
+        fillRounded(pen, x + pad + 2, baseline + 25 - 15, 7, 7, 3.5, kAccent);
+        for (const std::string& line : lines) {
+            baseline += 25;
+            pen.text(x + pad + 18, baseline - 4, line, 17, kTextMuted);
+        }
+        baseline += 10;
+    }
+    // "Got it" (filled), and "Try it" when it points to a row
+    const bool tryIt = introOpen_->row != intro::Row::None;
+    const int count = tryIt ? 2 : 1;
+    const double bw = 240;
+    const double gap = 24;
+    const double left = x + (w - count * bw - (count - 1) * gap) / 2;
+    const double by = y + h - 32 - buttonH;
+    for (int i = 0; i < count; ++i) {
+        const bool close = i == 0;
+        const PanelHit hit {close ? PanelAction::IntroClose : PanelAction::IntroTry, nullptr, 0};
+        const double bx = left + i * (bw + gap);
+        const int pointer = pointerState(hit);
+        const char* label = close ? t.introGotIt : t.introTry;
+        if (close) {
+            fillRounded(pen, bx, by, bw, buttonH, buttonH / 2, pointer == 2 ? kAccentPressed : kAccent);
+        } else {
+            fillRounded(pen, bx, by, bw, buttonH, buttonH / 2, pointer > 0 ? kControlHover : kControl);
+            strokeRounded(pen, bx, by, bw, buttonH, buttonH / 2, kBorder, 2);
+        }
+        const double size = fitSize(pen, label, 21, 14, bw - 24, true);
+        textCentered(pen, bx + bw / 2, centerBaseline(by, buttonH, size), label, size, close ? kOnAccent : kText, true);
+        addButton(hit, bx, by, bw, buttonH);
+    }
+}
+
 void EyePanel::drawKeypad(const Pen& pen, const UiText& t) {
     const bool host = keypadFor_ == KeypadFor::Host;
     // Only the keypad's buttons stay usable
@@ -10074,6 +10218,8 @@ void EyePanel::render(const PanelModel& model) {
     eyecamTab_ = model.eyecam.visible;
     if (!eyecamTab_ && tab_ == PanelTab::Eyecam) tab_ = PanelTab::Basic;
     syncEyecam(model.eyecam);
+    // A "what's new" intro due for the tab showing now opens over it
+    openIntroDue(model);
     // The Advanced tab's page starts at its top again once the tab is left (drawAdvanced sets these while it scrolls)
     if (tab_ != PanelTab::Advanced) advScroll_ = 0.0;
     advScrollable_ = false;
@@ -10144,7 +10290,13 @@ void EyePanel::render(const PanelModel& model) {
             if (b.hit.action != PanelAction::Tab && b.hit.action != PanelAction::ReseatStop) b.usable = false;
         }
     }
-    if (promptOpen()) drawPrompt(pen, t);
+    // (an intro opens only while no other prompt is; one that came anyway draws over it)
+    const bool otherPrompt = !promptOutput_.empty() || !updatePromptVersion_.empty() || userCalibPromptOpen_;
+    if (otherPrompt) {
+        drawPrompt(pen, t);
+    } else if (introOpen_ != nullptr) {
+        drawIntro(pen, t, model.language);
+    }
     if (keypadOpen_) drawKeypad(pen, t);
 
     // Forget hover on a button that is gone or can no longer be pressed

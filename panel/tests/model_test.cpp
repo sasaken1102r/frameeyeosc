@@ -175,6 +175,10 @@ void testResetClearsScales() {
         for (const char* name : eye) CHECK(has(name));
     }
     CHECK(!has(key::kGazeSource));
+    // The eyeball's maps are files of frameeyeosc's next to config.json, both inputs' (removed by the caller)
+    CHECK((eyeballMapFiles("/home/u/.config/frameeyeosc/config.json") ==
+           std::vector<std::string> {"/home/u/.config/frameeyeosc/eyeball_map", "/home/u/.config/frameeyeosc/eyeball_map_pupil"}));
+    CHECK(eyeballMapFiles("config.json").empty());
 }
 
 /** A made-up result with a pupil map and centres (synthetic numbers). */

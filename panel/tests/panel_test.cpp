@@ -5485,6 +5485,155 @@ void testEyeRate(const FontSet& fonts) {
     }
 }
 
+/**
+ * The "what's new" intros (intro.h): none opens until setIntrosSeen is called (the tests, --dump-png); then the eyeball
+ * gaze's opens the first time the Eye fit tab shows, not on another tab, not over another prompt nor a running fit, and
+ * only its buttons can be pressed; "Got it" closes it and it is seen; once seen it never opens again; "Try it" closes it
+ * seen too, on the Eye fit tab with the gaze source row outlined until kRowFlashSec has passed. Every intro's text fits
+ * its card in both languages, its id is unique and its version not newer than this one. With PANEL_TEST_PNG_DIR set, the
+ * intro and the outlined row are drawn to PNGs there too.
+ */
+void testIntros(const FontSet& fonts) {
+    const char* pngDir = std::getenv("PANEL_TEST_PNG_DIR");
+    cairo_surface_t* surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, 400, 80);
+    cairo_t* cr = cairo_create(surface);
+    const Pen pen {cr, &fonts};
+    // The table: unique ids, versions this one has, texts that fit (the card: 820 wide, 40 each side; a paragraph after
+    // its dot, 18 more)
+    std::vector<std::string> ids;
+    const auto numbers = [](const std::string& version) {
+        int major = 0, minor = 0, patch = 0;
+        std::sscanf(version.c_str(), "%d.%d.%d", &major, &minor, &patch);
+        return std::vector<int> {major, minor, patch};
+    };
+    for (const intro::Intro& entry : intro::all()) {
+        CHECK(std::find(ids.begin(), ids.end(), entry.id) == ids.end());
+        ids.emplace_back(entry.id);
+        CHECK(numbers(entry.since) <= numbers(FRAMEEYEOSC_VERSION));
+        CHECK(intro::find(entry.id) == &entry);
+        for (const Language language : {Language::Ja, Language::En}) {
+            CHECK(wrapText(pen, intro::title(entry, language), 24, true, 740, 20).size() <= 2);
+            const std::string body = intro::body(entry, language);
+            size_t start = 0;
+            int paragraphs = 0;
+            while (start <= body.size()) {
+                const size_t end = std::min(body.find('\n', start), body.size());
+                const std::string paragraph = body.substr(start, end - start);
+                if (!paragraph.empty()) {
+                    ++paragraphs;
+                    CHECK(wrapText(pen, paragraph, 17, false, 722, 20).size() <= 4);
+                }
+                start = end + 1;
+            }
+            CHECK(paragraphs >= 1 && paragraphs <= 5);
+        }
+    }
+    CHECK(intro::allIds() == ids);
+    CHECK(intro::find("no_such_intro") == nullptr);
+    // A fresh install only with nothing of frameeyeosc's yet
+    CHECK(intro::freshInstall(false, false, false));
+    CHECK(!intro::freshInstall(true, false, false) && !intro::freshInstall(false, true, false) &&
+          !intro::freshInstall(false, false, true));
+    cairo_destroy(cr);
+    cairo_surface_destroy(surface);
+
+    for (const Language language : {Language::Ja, Language::En}) {
+        const std::string lang = language == Language::Ja ? "ja" : "en";
+        const auto png = [&](const EyePanel& panel, const std::string& name) {
+            if (pngDir != nullptr) panel.writePng(std::string(pngDir) + "/intro_" + name + "_" + lang + "_2026-11-25_20-00-00.png");
+        };
+        PanelModel m = modelWith(Lids::Both);
+        m.language = language;
+        // Not until the seen ones are set
+        {
+            EyePanel panel(fonts);
+            panel.setTab(PanelTab::EyeFit);
+            panel.render(m);
+            CHECK(panel.introOpen() == nullptr && !panel.promptOpen());
+        }
+        EyePanel panel(fonts);
+        panel.setIntrosSeen({});
+        panel.setTab(PanelTab::Basic);
+        panel.render(m);
+        CHECK(panel.introOpen() == nullptr);
+        // The Eye fit tab: it opens over it, only its buttons usable, inside the panel
+        pressTab(panel, PanelTab::EyeFit);
+        panel.render(m);
+        CHECK(panel.introOpen() != nullptr && std::string(panel.introOpen()->id) == "eyeball_gaze");
+        CHECK(panel.promptOpen());
+        CHECK(hits(panel, PanelAction::IntroClose).size() == 1 && hits(panel, PanelAction::IntroTry).size() == 1);
+        CHECK(panel.hitAreas().size() == 2);
+        for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y > 40 && area.y + area.h < 660);
+        png(panel, "eyeball");
+        // "Got it": closed and seen; the tab's rows usable again
+        CHECK(press(panel, PanelAction::IntroClose).action == PanelAction::IntroClose);
+        CHECK(panel.introOpen() == nullptr && panel.introsSeen() == std::vector<std::string> {"eyeball_gaze"});
+        panel.render(m);
+        CHECK(hits(panel, PanelAction::SetGazeSource).size() == 2 && panel.rowFlash() == intro::Row::None);
+        // Never again
+        pressTab(panel, PanelTab::Basic);
+        panel.render(m);
+        pressTab(panel, PanelTab::EyeFit);
+        panel.render(m);
+        CHECK(panel.introOpen() == nullptr);
+        // Seen before (panel.json): never opens
+        EyePanel seen(fonts);
+        seen.setIntrosSeen(intro::allIds());
+        seen.setTab(PanelTab::EyeFit);
+        seen.render(m);
+        CHECK(seen.introOpen() == nullptr);
+        // "Try it": closed and seen, on the Eye fit tab (its help page closed) with the gaze source row outlined for a
+        // while
+        EyePanel trying(fonts);
+        trying.setIntrosSeen({"some_older_one"});
+        trying.setTab(PanelTab::EyeFit);
+        trying.setFitHelp(true);
+        trying.render(m);
+        CHECK(trying.introOpen() != nullptr);
+        const std::vector<EyePanel::HitArea> tryIt = hits(trying, PanelAction::IntroTry);
+        CHECK(tryIt.size() == 1);
+        if (!tryIt.empty()) {
+            const PanelHit hit = trying.pointerDown(tryIt[0].x + tryIt[0].w / 2, tryIt[0].y + tryIt[0].h / 2, 100.0);
+            trying.pointerUp();
+            CHECK(hit.action == PanelAction::IntroTry);
+        }
+        CHECK(trying.introOpen() == nullptr && trying.tab() == PanelTab::EyeFit && !trying.fitHelp());
+        CHECK((trying.introsSeen() == std::vector<std::string> {"some_older_one", "eyeball_gaze"}));
+        CHECK(trying.rowFlash() == intro::Row::GazeSource);
+        trying.render(m);
+        CHECK(hits(trying, PanelAction::SetGazeSource).size() == 2);
+        png(trying, "try");
+        CHECK(!trying.tick(100.0 + EyePanel::kRowFlashSec - 0.1) && trying.rowFlash() == intro::Row::GazeSource);
+        CHECK(trying.tick(100.0 + EyePanel::kRowFlashSec + 0.1) && trying.rowFlash() == intro::Row::None);
+        // Not over another prompt: after it
+        EyePanel prompted(fonts);
+        prompted.setIntrosSeen({});
+        CHECK(prompted.askUserCalib());
+        prompted.setTab(PanelTab::EyeFit);
+        prompted.render(m);
+        CHECK(prompted.introOpen() == nullptr && prompted.userCalibPromptOpen());
+        CHECK(press(prompted, PanelAction::UserCalibLater).action == PanelAction::None);
+        prompted.render(m);
+        CHECK(prompted.introOpen() != nullptr);
+        // Not while a fit runs on the tab: after it
+        PanelModel fitting = m;
+        fitting.fit.phase = gaze_fit::Phase::Capturing;
+        EyePanel busy(fonts);
+        busy.setIntrosSeen({});
+        busy.setTab(PanelTab::EyeFit);
+        busy.render(fitting);
+        CHECK(busy.introOpen() == nullptr);
+        busy.render(m);
+        CHECK(busy.introOpen() != nullptr);
+        // --intro (screenshots): opened whatever was seen, on its tab
+        EyePanel shown(fonts);
+        CHECK(!shown.showIntro("no_such_intro") && shown.introOpen() == nullptr);
+        CHECK(shown.showIntro("eyeball_gaze") && shown.tab() == PanelTab::EyeFit);
+        shown.render(m);
+        CHECK(hits(shown, PanelAction::IntroClose).size() == 1);
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -5496,6 +5645,7 @@ int main() {
     testSnapMark(fonts);
     testRemovedEyeBehavior(fonts);
     testLidsRemembered(fonts);
+    testIntros(fonts);
     testGazePages(fonts);
     testOwnEyeGazeRow(fonts);
     testGazeScaleLocks(fonts);

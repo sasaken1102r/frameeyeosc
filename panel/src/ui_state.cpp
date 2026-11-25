@@ -31,6 +31,8 @@ constexpr const char* kUpGainsKey = "fit_up_gains";
 /** "Get test versions" on the Version page (true / false; missing: off). */
 constexpr const char* kUpdateBetaKey = "update_beta";
 constexpr const char* kOutputPromptKey = "output_prompt";
+/** The "what's new" intros already shown: an array of their ids. */
+constexpr const char* kIntrosSeenKey = "intros_seen";
 
 /**
  * Make a folder and the ones above it.
@@ -318,6 +320,30 @@ bool readOutputPrompt(const std::string& path) {
 
 bool writeOutputPrompt(const std::string& path, bool on, std::string& error) {
     return writeMembers(path, {{kOutputPromptKey, JsonValue::makeBool(on)}}, error);
+}
+
+bool exists(const std::string& path) {
+    struct stat st {};
+    return ::stat(path.c_str(), &st) == 0;
+}
+
+std::vector<std::string> readIntrosSeen(const std::string& path, bool& known) {
+    const JsonValue root = readObject(path);
+    const JsonValue* value = root.get(kIntrosSeenKey);
+    known = value != nullptr && value->isArray();
+    std::vector<std::string> ids;
+    if (!known) return ids;
+    for (const JsonValue& item : value->items) {
+        if (item.isString()) ids.push_back(item.text);
+    }
+    return ids;
+}
+
+bool writeIntrosSeen(const std::string& path, const std::vector<std::string>& ids, std::string& error) {
+    JsonValue list;
+    list.type = JsonValue::Type::Array;
+    for (const std::string& id : ids) list.items.push_back(JsonValue::makeString(id));
+    return writeMembers(path, {{kIntrosSeenKey, list}}, error);
 }
 
 }  // namespace ui_state

@@ -57,6 +57,7 @@ add_executable(frameeyeosc-panel
   src/host_entry.cpp
   src/i18n.cpp
   src/icons.cpp
+  src/intro.cpp
   src/json.cpp
   src/model.cpp
   src/panel.cpp
@@ -204,6 +205,7 @@ add_executable(panel-test tests/panel_test.cpp
   src/host_entry.cpp
   src/i18n.cpp
   src/icons.cpp
+  src/intro.cpp
   src/json.cpp
   src/model.cpp
   src/panel.cpp

@@ -186,6 +186,8 @@ const std::vector<SettingSpec>& settingSpecs() {
         {key::kGazeDebugDotsCompare, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kPupilSlipCorrection, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kGazeGuard, SettingType::Bool, 0, "", 0, 1, 1, 0},
+        {key::kEyeballInput, SettingType::String, 0, "filter", 0, 0, 0, 0},
+        {key::kCameraCheek, SettingType::Bool, 0, "", 0, 1, 1, 0},
         {key::kFitSounds, SettingType::Bool, 1, "", 0, 1, 1, 0},
         {key::kAutoRecenter, SettingType::String, 0, "center", 0, 0, 0, 0},
         {key::kLidWiden, SettingType::String, 0, "normal", 0, 0, 0, 0},

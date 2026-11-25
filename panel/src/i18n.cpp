@@ -1120,6 +1120,8 @@ UiText makeJapanese() {
     t.promptUserCalibDetail2 = "しないあいだ、半目は Valve の値で動きます";
     t.promptUserCalibNow = "いまやる";
     t.promptUserCalibLater = "あとで";
+    t.introGotIt = "わかった";
+    t.introTry = "試してみる";
 
     t.rowVersion = "バージョン";
     t.checkedFormat = "%s に確認";
@@ -2508,6 +2510,8 @@ UiText makeEnglish() {
     t.promptUserCalibDetail2 = "Until then, half-shut eyes follow Valve's values";
     t.promptUserCalibNow = "Do it now";
     t.promptUserCalibLater = "Later";
+    t.introGotIt = "Got it";
+    t.introTry = "Try it";
 
     t.rowVersion = "Version";
     t.checkedFormat = "Checked %s";

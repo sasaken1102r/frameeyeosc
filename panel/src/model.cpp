@@ -513,6 +513,14 @@ std::vector<std::string> fitResetKeys() {
     return names;
 }
 
+void applyGazeSource(JsonValue& root, const std::string& source, bool devTools) {
+    root.set(key::kGazeSource, JsonValue::makeString(source));
+    const JsonValue* compare = root.get(key::kGazeDebugDotsCompare);
+    if (source == kGazeSources[0] && !devTools && compare != nullptr && compare->isBool() && compare->boolean) {
+        root.set(key::kGazeDebugDotsCompare, JsonValue::makeBool(false));
+    }
+}
+
 std::vector<std::string> eyeballMapFiles(const std::string& configPath) {
     const size_t slash = configPath.find_last_of('/');
     if (slash == std::string::npos) return {};

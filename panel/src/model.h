@@ -325,6 +325,16 @@ void applyFitValues(JsonValue& root, const gaze_fit::Values& values, gaze_fit::M
 std::vector<std::string> fitResetKeys();
 
 /**
+ * The "Gaze source" row's choice into config.json: gaze_source, and when it goes to "valve" while the developer's checks
+ * are hidden (EyePanel::devTools), gaze_debug_dots_compare off too. "Other gaze too" only shows with the eyeball then,
+ * and left on with Valve, frameeyeosc would go on working out the pupil position's gaze for a dot nobody can turn off.
+ * @param root config.json's object
+ * @param source the source chosen ("valve" or "eyeball")
+ * @param devTools the developer's checks are shown (then the switch stays as it is)
+ */
+void applyGazeSource(JsonValue& root, const std::string& source, bool devTools);
+
+/**
  * gaze_source "eyeball"'s map files, which frameeyeosc keeps next to config.json (its eyeball_map.rs: the eyeball
  * filter's `eyeball_map`, and eyeball_input "pupil"'s `eyeball_map_pupil`). "Reset" on the Eye fit tab and "Reset all"
  * remove both before writing config.json; frameeyeosc stops using their maps when it reads config.json again.

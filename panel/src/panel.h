@@ -331,7 +331,7 @@ public:
     const std::vector<std::string>& introsSeen() const { return introsSeen_; }
 
     /**
-     * Open an intro now, whatever was seen (--fake-intro, for screenshots); its tab is chosen too.
+     * Open an intro now, whatever was seen (--intro, for screenshots); its tab is chosen too.
      * @param id its id
      * @return true if there is such an intro
      */

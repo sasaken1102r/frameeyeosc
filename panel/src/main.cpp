@@ -3599,7 +3599,9 @@ void applyHit(const PanelHit& hit, PanelModel& model, EyePanel& panel, Autostart
             if (hit.arg != 0 && hit.arg != 2) return;
             const std::string source = kGazeSources[hit.arg];
             std::fprintf(stderr, "[fit] gaze source: %s\n", source.c_str());
-            change = [source](JsonValue& root) { root.set(key::kGazeSource, JsonValue::makeString(source)); };
+            // (back to Valve without the developer's checks: "Other gaze too" goes off with it, applyGazeSource)
+            const bool devTools = panel.devTools();
+            change = [source, devTools](JsonValue& root) { applyGazeSource(root, source, devTools); };
             break;
         }
         case PanelAction::SetAutoRecenter: {

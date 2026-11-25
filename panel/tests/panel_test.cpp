@@ -5650,6 +5650,29 @@ void testIntros(const FontSet& fonts) {
  * check, alone on its row. With them on (the tests' default) all three buttons, as before.
  */
 void testDevToolsHidden(const FontSet& fonts) {
+    // Back to Valve with the checks hidden: "Other gaze too" goes off with the source (no row would show to turn it off);
+    // to the eyeball, or with the checks shown, it stays as it is
+    {
+        const auto chosen = [](const char* source, bool compare, bool dev) {
+            JsonValue root;
+            root.type = JsonValue::Type::Object;
+            root.set(key::kGazeSource, JsonValue::makeString(std::string(source) == kGazeSources[0] ? kGazeSources[2] : kGazeSources[0]));
+            root.set(key::kGazeDebugDotsCompare, JsonValue::makeBool(compare));
+            applyGazeSource(root, source, dev);
+            const JsonValue* written = root.get(key::kGazeDebugDotsCompare);
+            CHECK(root.get(key::kGazeSource)->text == source);
+            return written != nullptr && written->isBool() && written->boolean;
+        };
+        CHECK(!chosen(kGazeSources[0], true, false));
+        CHECK(chosen(kGazeSources[0], true, true));
+        CHECK(chosen(kGazeSources[2], true, false));
+        CHECK(!chosen(kGazeSources[0], false, false));
+        // Without the key: none written
+        JsonValue root;
+        root.type = JsonValue::Type::Object;
+        applyGazeSource(root, kGazeSources[0], false);
+        CHECK(root.get(key::kGazeDebugDotsCompare) == nullptr);
+    }
     for (const Language language : {Language::Ja, Language::En}) {
         for (const bool eyeball : {false, true}) {
             for (const bool dev : {false, true}) {

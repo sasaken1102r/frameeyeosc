@@ -5634,6 +5634,42 @@ void testIntros(const FontSet& fonts) {
     }
 }
 
+/**
+ * Advanced › Debug tools without the developer's checks (panel.json "dev_tools" off, as for everyone): with Valve's
+ * gaze neither the other gaze's dot nor the gaze error check (they would compare it with the pupil position's), and
+ * never the slip and re-seat tests; with the eyeball as the source, the other gaze's dot (Valve's) and the gaze error
+ * check, alone on its row. With them on (the tests' default) all three buttons, as before.
+ */
+void testDevToolsHidden(const FontSet& fonts) {
+    for (const Language language : {Language::Ja, Language::En}) {
+        for (const bool eyeball : {false, true}) {
+            for (const bool dev : {false, true}) {
+                EyePanel panel(fonts);
+                panel.setDevTools(dev);
+                CHECK(panel.devTools() == dev);
+                PanelModel m = modelWith(Lids::Both, true);
+                m.language = language;
+                m.config.root.set(key::kGazeDebugDots, JsonValue::makeBool(true));
+                for (const auto& eye : kPupilMapKeys) {
+                    for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
+                }
+                if (eyeball) m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[2]));
+                panel.setTab(PanelTab::Advanced);
+                panel.setAdvPage(AdvPage::Tools);
+                panel.render(m);
+                const bool shown = dev || eyeball;
+                CHECK(hits(panel, PanelAction::SetBool, key::kGazeDebugDotsCompare).size() == (shown ? 2u : 0u));
+                CHECK(hits(panel, PanelAction::MeasureStart).size() == (shown ? 1u : 0u));
+                CHECK(hits(panel, PanelAction::SlipStart).size() == (dev ? 1u : 0u));
+                CHECK(hits(panel, PanelAction::ReseatStart).size() == (dev ? 1u : 0u));
+                // The rest of the page is still there
+                CHECK(hits(panel, PanelAction::SetBool, key::kGazeDebugRings).size() == 2);
+                for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
+            }
+        }
+    }
+}
+
 int main() {
     FontSet fonts;
     fonts.load(kFontPath, kBoldFontPath);
@@ -5646,6 +5682,7 @@ int main() {
     testRemovedEyeBehavior(fonts);
     testLidsRemembered(fonts);
     testIntros(fonts);
+    testDevToolsHidden(fonts);
     testGazePages(fonts);
     testOwnEyeGazeRow(fonts);
     testGazeScaleLocks(fonts);

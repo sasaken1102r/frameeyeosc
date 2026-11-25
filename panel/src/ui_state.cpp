@@ -33,6 +33,8 @@ constexpr const char* kUpdateBetaKey = "update_beta";
 constexpr const char* kOutputPromptKey = "output_prompt";
 /** The "what's new" intros already shown: an array of their ids. */
 constexpr const char* kIntrosSeenKey = "intros_seen";
+/** The developer's gaze checks on Debug tools (true / false; missing: hidden). Set by hand. */
+constexpr const char* kDevToolsKey = "dev_tools";
 
 /**
  * Make a folder and the ones above it.
@@ -320,6 +322,12 @@ bool readOutputPrompt(const std::string& path) {
 
 bool writeOutputPrompt(const std::string& path, bool on, std::string& error) {
     return writeMembers(path, {{kOutputPromptKey, JsonValue::makeBool(on)}}, error);
+}
+
+bool readDevTools(const std::string& path) {
+    const JsonValue root = readObject(path);
+    const JsonValue* value = root.get(kDevToolsKey);
+    return value != nullptr && value->isBool() && value->boolean;
 }
 
 bool exists(const std::string& path) {

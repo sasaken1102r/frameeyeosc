@@ -2930,6 +2930,7 @@ int runDumpPng(const Options& options) {
         }
         if (options.previewUpdatePrompt) panel.showUpdatePrompt(model.update.latest, model.update.backToStable);
         if (!options.intro.empty()) panel.showIntro(options.intro);
+        panel.setDevTools(ui_state::readDevTools(ui_state::defaultPath()));
         panel.setUpdateBeta(options.updateBeta);
         std::unique_ptr<frame_updater::UpdateChecker> updater;
         const bool updateCheck = model.config.flag(key::kUpdateCheck);
@@ -4586,6 +4587,8 @@ int runOverlay(const Options& options) {
         std::fprintf(stderr, "[intro] a fresh install: the %zu intro(s) of this version taken as seen\n", savedIntros.size());
     }
     panel.setIntrosSeen(savedIntros);
+    // The developer's gaze checks on Debug tools, when panel.json says so (set by hand)
+    panel.setDevTools(ui_state::readDevTools(uiStatePath));
     frame_updater::UpdateChecker updater(updaterConfig(savedBeta));
     std::fprintf(stderr, "[update] frameeyeosc-panel %s, checking %s, %s channel\n", FRAMEEYEOSC_VERSION,
                  model.config.flag(key::kUpdateCheck) ? "on" : "off", savedBeta ? "beta" : "stable");

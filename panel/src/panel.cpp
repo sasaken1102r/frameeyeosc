@@ -6537,60 +6537,64 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
         y += h + 2;
         // Under them: one more dot for the gaze source not in use (gaze_debug_dots_compare), to compare Valve's gaze
         // with the pupils' by eye; beside its switch, which dot is which. Only with a pupil map (the whole eye fit
-        // makes it): without one, why it can't be pressed instead
-        const bool mapped = pupilMapInConfig(v);
-        const bool compare = v.flag(key::kGazeDebugDotsCompare);
-        const bool usable = on && mapped;
-        drawRowLabel(pen, t, y, h, t.rowGazeCompare, t.hintGazeCompare, false);
-        drawSegmented(pen, kControlX, y + (h - kControlH) / 2, segW, kControlH,
-                      {{t.on, {PanelAction::SetBool, key::kGazeDebugDotsCompare, 1}, usable},
-                       {t.off, {PanelAction::SetBool, key::kGazeDebugDotsCompare, 0}, usable}},
-                      compare && mapped ? 0 : 1, 20, !usable);
-        const Color legendText = usable ? kTextMuted : kTextDisabled;
-        if (!mapped) {
-            const std::vector<std::string> why = wrapText(pen, t.gazeCompareNeedsMap, 14, false, right - noteX, 2);
-            double line = y + h / 2 - (why.size() - 1) * 9 + 5;
-            for (const std::string& text : why) {
-                pen.text(noteX, line, text, 14, legendText);
-                line += 18;
-            }
-        } else {
-            // The dot(s) of the gaze being sent (each eye's colours while each eye's own gaze is sent), then the
-            // extra one: a diamond, Valve's while the pupils' is sent, the pupils' otherwise
-            // (with "eyeball" too the extra dot is Valve's: frameeyeosc's other run is the eye server's then)
-            const bool pupilSent = v.text(key::kGazeSource) != kGazeSources[0];
-            const double size = std::min(fitSize(pen, t.gazeCompareSent, 14, 11, right - noteX - 34, false),
-                                         fitSize(pen, pupilSent ? t.gazeCompareValve : t.gazeComparePupil, 14, 11,
-                                                 right - noteX - 34, false));
-            const double top = y + h / 2 - 9 + 5;
-            double x = noteX + 6;
-            if (v.flag(key::kIndependentEyes)) {
-                drawDot(pen.cr, x, top - 5, 5, kDotLeft);
-                x += 12;
-                drawDot(pen.cr, x, top - 5, 5, kDotRight);
+        // makes it): without one, why it can't be pressed instead. Only while the eyeball is the source (Valve's is
+        // the other dot then), unless the developer's checks are shown (setDevTools)
+        if (devTools_ || eyeballGazeInConfig(v)) {
+            const bool mapped = pupilMapInConfig(v);
+            const bool compare = v.flag(key::kGazeDebugDotsCompare);
+            const bool usable = on && mapped;
+            drawRowLabel(pen, t, y, h, t.rowGazeCompare, t.hintGazeCompare, false);
+            drawSegmented(pen, kControlX, y + (h - kControlH) / 2, segW, kControlH,
+                          {{t.on, {PanelAction::SetBool, key::kGazeDebugDotsCompare, 1}, usable},
+                           {t.off, {PanelAction::SetBool, key::kGazeDebugDotsCompare, 0}, usable}},
+                          compare && mapped ? 0 : 1, 20, !usable);
+            const Color legendText = usable ? kTextMuted : kTextDisabled;
+            if (!mapped) {
+                const std::vector<std::string> why = wrapText(pen, t.gazeCompareNeedsMap, 14, false, right - noteX, 2);
+                double line = y + h / 2 - (why.size() - 1) * 9 + 5;
+                for (const std::string& text : why) {
+                    pen.text(noteX, line, text, 14, legendText);
+                    line += 18;
+                }
             } else {
-                drawDot(pen.cr, x, top - 5, 5, kDotBoth);
+                // The dot(s) of the gaze being sent (each eye's colours while each eye's own gaze is sent), then the
+                // extra one: a diamond, Valve's while the pupils' is sent, the pupils' otherwise
+                // (with "eyeball" too the extra dot is Valve's: frameeyeosc's other run is the eye server's then)
+                const bool pupilSent = v.text(key::kGazeSource) != kGazeSources[0];
+                const double size = std::min(fitSize(pen, t.gazeCompareSent, 14, 11, right - noteX - 34, false),
+                                             fitSize(pen, pupilSent ? t.gazeCompareValve : t.gazeComparePupil, 14, 11,
+                                                     right - noteX - 34, false));
+                const double top = y + h / 2 - 9 + 5;
+                double x = noteX + 6;
+                if (v.flag(key::kIndependentEyes)) {
+                    drawDot(pen.cr, x, top - 5, 5, kDotLeft);
+                    x += 12;
+                    drawDot(pen.cr, x, top - 5, 5, kDotRight);
+                } else {
+                    drawDot(pen.cr, x, top - 5, 5, kDotBoth);
+                }
+                pen.text(x + 12, top, t.gazeCompareSent, size, legendText);
+                const double cy = top + 18 - 5;
+                const double cx = noteX + 6;
+                cairo_move_to(pen.cr, cx, cy - 6);
+                cairo_line_to(pen.cr, cx + 6, cy);
+                cairo_line_to(pen.cr, cx, cy + 6);
+                cairo_line_to(pen.cr, cx - 6, cy);
+                cairo_close_path(pen.cr);
+                cairo_set_source_rgb(pen.cr, kDotOther.r, kDotOther.g, kDotOther.b);
+                cairo_fill(pen.cr);
+                pen.text(cx + 12, top + 18, pupilSent ? t.gazeCompareValve : t.gazeComparePupil, size, legendText);
             }
-            pen.text(x + 12, top, t.gazeCompareSent, size, legendText);
-            const double cy = top + 18 - 5;
-            const double cx = noteX + 6;
-            cairo_move_to(pen.cr, cx, cy - 6);
-            cairo_line_to(pen.cr, cx + 6, cy);
-            cairo_line_to(pen.cr, cx, cy + 6);
-            cairo_line_to(pen.cr, cx - 6, cy);
-            cairo_close_path(pen.cr);
-            cairo_set_source_rgb(pen.cr, kDotOther.r, kDotOther.g, kDotOther.b);
-            cairo_fill(pen.cr);
-            pen.text(cx + 12, top + 18, pupilSent ? t.gazeCompareValve : t.gazeComparePupil, size, legendText);
+            y += h + 10;
         }
-        y += h + 10;
     }
     // The gaze error check (gaze_measure.h): about a minute of a dot hopping, Valve's and the pupils' gaze scored (only
     // Valve's without a pupil map); beside it the headset slip test (slip_check.h): about three minutes of a still dot
     // while the headset is pushed by hand, with the eye video when eyecam-rec is idle; beside them the headset re-seat
     // test (reseat_check.h). Nothing is written by any of them. Only while frameeyeosc runs and no eye fit or another
-    // of them does
-    {
+    // of them does. Without the developer's checks (setDevTools) only the gaze error check, and only while the eyeball
+    // is the source
+    if (devTools_ || eyeballGazeInConfig(v)) {
         // (a little lower than the rows above, so the page still fits with the developer rows under it)
         const double h = 52;
         const bool measuring = m.measure.phase == gaze_measure::Phase::Countdown ||
@@ -6605,15 +6609,20 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
         const double room = right - kControlX - 12;
         const char* labels[3] = {t.measureStart, t.slipStart, t.reseatStart};
         const PanelAction actions[3] = {PanelAction::MeasureStart, PanelAction::SlipStart, PanelAction::ReseatStart};
+        const int shown = devTools_ ? 3 : 1;
         constexpr double kGap = 10;
         double size = 18;
         double pad = 36;
         const auto widthOf = [&](const char* label) { return std::max(110.0, pen.measure(label, size, true) + pad); };
-        const auto total = [&]() { return widthOf(labels[0]) + widthOf(labels[1]) + widthOf(labels[2]) + 2 * kGap; };
+        const auto total = [&]() {
+            double sum = (shown - 1) * kGap;
+            for (int i = 0; i < shown; ++i) sum += widthOf(labels[i]);
+            return sum;
+        };
         while (size > 13 && total() > room) size -= 1;
         while (pad > 20 && total() > room) pad -= 4;
         double x = kControlX;
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < shown; ++i) {
             const double w = widthOf(labels[i]);
             drawButton(pen, x, y + (h - 46) / 2, w, 46, labels[i], {actions[i], nullptr, 0}, canRun, false, size);
             x += w + kGap;

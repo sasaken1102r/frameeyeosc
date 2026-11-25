@@ -216,6 +216,13 @@ bool writeOutputPrompt(const std::string& path, bool on, std::string& error);
 bool exists(const std::string& path);
 
 /**
+ * Whether Advanced › Debug tools shows the developer's gaze checks ("dev_tools", set by hand; EyePanel::setDevTools).
+ * @param path the file
+ * @return it (false, hidden, when missing, broken or not a boolean)
+ */
+bool readDevTools(const std::string& path);
+
+/**
  * The ids of the "what's new" intros already shown ("intros_seen", intro.h).
  * @param path the file
  * @param known set to whether the file has the member (false the first time, or when the file is missing or broken,

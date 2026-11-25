@@ -344,6 +344,19 @@ public:
     intro::Row rowFlash() const { return rowFlash_; }
 
     /**
+     * Whether Advanced › Debug tools shows the developer's gaze checks to everyone (panel.json "dev_tools"; the tests
+     * leave it on): the other gaze's dot and the gaze error check also with Valve's gaze (they compare it with the
+     * pupil position's then), and the slip and re-seat tests (which record the eye video). Off, the other gaze's dot
+     * and the gaze error check show only while the gaze source is the eyeball (Valve against it), and the two tests
+     * not at all.
+     * @param on shown
+     */
+    void setDevTools(bool on) { devTools_ = on; }
+
+    /** @return whether the developer's gaze checks show (setDevTools) */
+    bool devTools() const { return devTools_; }
+
+    /**
      * Ask for the user calibration (the eye cameras were just turned on without one, eyecam::askUserCalib), with the
      * recommendation prompt's look: at most once while the panel runs, and not over another prompt.
      * @return true if it opened
@@ -965,6 +978,7 @@ private:
     bool userCalibPromptOpen_ = false;    ///< the prompt asking for the user calibration is open
     bool userCalibAsked_ = false;         ///< ...it has been, while the panel runs (it never comes back then)
     bool introsOn_ = false;                ///< "what's new" intros open by themselves (setIntrosSeen was called)
+    bool devTools_ = true;                 ///< the developer's gaze checks show on Debug tools (setDevTools)
     std::vector<std::string> introsSeen_;  ///< ...the ids shown (panel.json "intros_seen")
     const intro::Intro* introOpen_ = nullptr;  ///< the intro open now
     intro::Row rowFlash_ = intro::Row::None;   ///< the row its "Try it" outlined...

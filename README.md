@@ -17,6 +17,7 @@ The way the eye-camera tool finds the eye camera frames is ported from Curtis En
 - Eyelids calibrate themselves as you use it, and blinks and winks come through
 - Sends to VRChat directly or to VRCFaceTracking (the LiveLink module or the dedicated FrameEyeOSC module)
 - Optionally uses the Frame's eye cameras to send widened eyes, squints and pupil size too
+- Optionally (a test), a more accurate gaze from the eye cameras: the eyeball gaze (see [Eye fit › Eyeball gaze](docs/eye-fit.md#eyeball-gaze-test))
 - A panel on the SteamVR dashboard lets you change settings with the headset on
 
 For the details see [What it does, in detail](docs/features.md); for a comparison with Steam Link's own OSC see [Outputs](docs/outputs.md#compared-with-steam-links-own-osc).

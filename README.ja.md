@@ -17,6 +17,7 @@ https://github.com/user-attachments/assets/f8969485-161b-40d4-b9e4-689dee6d1955
 - まぶたは使っているうちに自動で調整され、まばたきとウインクも伝わります
 - 送り先は、VRChat に直接・VRCFaceTracking（LiveLink モジュールか、専用の FrameEyeOSC モジュール）から選べます
 - 使いたい人は、Frame の目のカメラで見開き・細め・瞳孔の大きさも送れます
+- 試験中の機能として、目のカメラから作る、より正確な視線（眼球の視線）も選べます（[目を合わせる › 眼球の視線](docs/eye-fit.ja.md#眼球の視線試験)）
 - SteamVR のダッシュボードのパネルで、かぶったまま設定を変えられます
 
 くわしくは [できることのくわしい説明](docs/features.ja.md) を、Steam Link 標準の OSC との比べは [送り先](docs/outputs.ja.md#steam-link-標準の-osc-との違い) を見てください。

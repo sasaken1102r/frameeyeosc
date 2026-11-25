@@ -20,6 +20,30 @@ What the fit sets:
 
 The dot is fixed to the headset 0.9 m ahead (the same size to the eye as when it was 2 m ahead). That is nearer than the dashboard (about 1.35 m), so it shows over the open dashboard too. Only the last 1.7 seconds of each dot are measured, so looking at the panel while the dot moves on doesn't count, but looking at the panel or the laser while a dot is measured can make that dot be measured again. How it works: the panel writes a `gaze_capture` request into `config.json`, frameeyeosc averages the tracker's gaze and each eye's openness for as long as the panel asks (2 seconds skipping the first 0.3 s for a dot, 3 seconds skipping the first 0.5 s with the eyes shut; samples with the eyes shut are skipped except in the last step) and reports the averages in the status file with how many samples came in and at what rate. An eye Valve reads shut while the eye camera has seen it open for longer than a blink counts as open (right after the headset goes on, before the camera's eyelid is ready, a pupil the camera sees for that long is enough, even while the camera itself is still getting ready), as long as Valve reads the other eye open (Valve's openness can stay stuck at 0 for one eye for a whole wear); the status file says which eye that was (`camera_open`), and the whole fit then keeps that eye's eyelid fit as it was. A dot counts when at least 60% of the samples that came in were usable (at least 12, and never more than 45 are needed), since the tracker's rate varies (90 to 136 a second while streaming, 15 has been seen), and its gaze spread is at most 2.7°. The panel turns them into the settings. Each measurement is logged (`journalctl --user -u frameeyeosc`). With the defaults nothing changes.
 
+## Eyeball gaze (test)
+
+The "Gaze source" row on the Eye fit tab chooses where the sent gaze comes from: "Valve" (the eye tracker's gaze, as always) or "Eyeball (test)" (`gaze_source` `"eyeball"`). The eyeball gaze works out each eye's direction from the eye cameras' picture of its pupil (the pupil's ellipse), and follows the eye's centre of rotation as it goes, so when the headset shifts on your face, the modelled eye moves rather than the gaze.
+
+Why try it: in the developer's own tests (one person's headset, so not a promise), with the headset worn normally Valve's gaze was 3.4-6.2° off and the eyeball 2.0-2.9°; with the headset slipped or pushed, the eyeball stayed 1.0-4.9° off.
+
+To turn it on:
+
+1. Set up the eye cameras (the Eye cameras tab; see [Eye cameras](eyecam.md#setting-it-up)).
+2. On the Eye fit tab, set "Gaze source" to "Eyeball (test)".
+3. Do a whole fit: "Fit my eyes" or "Fit again". With Eyeball, four corner dots follow the five, about 32 seconds in all. "Re-center only" and the re-center when you put the headset on only move the map's centre; they can't make the map.
+4. Check the result card. If the fit couldn't make or update the map, the card says so ("The eyeball mapping stayed as before (…). Please fit again" and the like): fit again.
+5. Until the map is there, Valve's gaze is sent, and a grey line under the row says why: "Eyeball starts after an eye fit", or "No eye cameras, so Valve's gaze is sent" (also shown without the headset's factory eye-camera calibration, `/persist/eyetracking.json`).
+
+While Eyeball is in use, Fine-tune's gaze page is greyed (not used); the eyelids and the gaze scale still work. To go back, choose "Valve". "Reset" on the tab (and "Reset all" on the Basic tab) also removes the eyeball map, and frameeyeosc stops using it at once; the next whole fit with Eyeball makes a new one. The technical details are under `gaze_source` in [Settings](settings.md#settings).
+
+Known limits:
+
+- It needs the eye cameras (eyecam) running.
+- A whole fit is needed after choosing it, and again whenever the result card says the map wasn't made or updated.
+- Now and then it can point far off (up to about 16°), because the tilt of the pupil's ellipse can be read two ways.
+- Fit again if the gaze drifts, or after putting the headset back on very differently.
+- It is a test and may change.
+
 ## Calibration
 
 Eyelid calibration is automatic. For the first 20 seconds after you put the headset on nothing is learned; after that each eye's relaxed openness is picked up within about 10 seconds and then follows slowly (the last ~10 minutes count most), so a short squint barely moves it. The result is saved every minute to `~/.config/frameeyeosc/calibration` and reused next time. To start over, press Reset in the panel (or increase `calibration_reset`).

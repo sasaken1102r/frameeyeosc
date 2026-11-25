@@ -255,10 +255,10 @@ avatar parameters, for apps that read those names. Each eye sample sends one set
 | `/avatar/parameters/FT/v2/PupilDilation` | `,f` | The eye camera's pupil dilation, 0..1, the mean of the eyes whose pupil is used | While either eye's pupil is used |
 | `/avatar/parameters/FT/v2/PupilDiameterLeft`, `PupilDiameterRight` | `,f` | That eye's pupil diameter in cm (mm / 10), at most 1 | While that eye's pupil is used |
 | `/avatar/parameters/FT/v2/PupilDiameter` | `,f` | The mean of the diameters that are sent | While either eye's pupil is used |
-| `/avatar/parameters/FT/v2/CheekSquintLeft`, `CheekSquintRight` | `,f` | The eye camera's lower-lid raise for that eye (the cheek pushing the lower lid up, as in a smile), 0..1 | With `camera_cheek`, while that eye's comes from eyecam-rec |
-| `/avatar/parameters/FT/v2/CheekSquint` | `,f` | The mean of the two (VRCFT's own `(CheekSquintLeft + CheekSquintRight) / 2`), or the one that is sent | While either eye's cheek squint is sent |
+| `/avatar/parameters/FT/v2/CheekSquintLeft`, `CheekSquintRight` | `,f` | The eye camera's lower-lid raise for that eye (the cheek pushing the lower lid up, as in a smile), 0..1 | A trial, off by default: with `camera_cheek`, while that eye's comes from eyecam-rec |
+| `/avatar/parameters/FT/v2/CheekSquint` | `,f` | The mean of the two (VRCFT's own `(CheekSquintLeft + CheekSquintRight) / 2`), or the one that is sent | A trial, off by default: with `camera_cheek`, while either eye's cheek squint is sent |
 | `/avatar/parameters/FT/v2/BrowExpressionLeft`, `BrowExpressionRight`, `BrowExpression`, `BrowUpLeft`, `BrowUpRight`, `BrowUp`, `BrowInnerUp`, `BrowOuterUp` | `,f` | How far each brow is raised with widening, 0..1 (left, right, and the mean for the others); never lowered | While "raise brows with widening" is on |
-| The squint, cheek squint and brow addresses above | `,f` | 0, once, for each one that was sent with the sample before and is not with this one (`EyeSquint` and `CheekSquint` once neither eye's is) | When they stop |
+| The squint, cheek squint and brow addresses above | `,f` | 0, once, for each one that was sent with the sample before and is not with this one (`EyeSquint` and `CheekSquint` once neither eye's is; the cheek squint only with the `camera_cheek` trial) | When they stop |
 
 - The values are the ones the main VRChat output sends for the same sample, under the same names. The set does not
   depend on the main output or its settings: the prefix is always `/FT` (VRCFT's own), whatever frameeyeosc's
@@ -267,7 +267,7 @@ avatar parameters, for apps that read those names. Each eye sample sends one set
   `eye_tracking_active` sets, as the main VRChat output's; when that type changes, the next set has the new one
   (with `"off"`, "not active" once in the type before). When the receiver is VRChat, the type has to match the type
   the avatar's parameter has (bool or float): with the other one the avatar's eyes may stop. `eye_tracking_active`
-  chooses it. The squint, pupils, cheek squint and brows come only with that data, as in the table.
+  chooses it. The squint, pupils, cheek squint (a trial, off by default: `camera_cheek`) and brows come only with that data, as in the table.
 - It is sent with every eye sample (about 90 a second, up to ~136): 10 to 29 datagrams a sample.
 - When the eye data stops, when sending pauses, and when the destination changes (host, port or format) or is turned
   off: one final set for relaxed open eyes looking straight ahead, then nothing. The final set is `CenterVec` 0, 0, 1,

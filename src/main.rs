@@ -5276,6 +5276,21 @@ impl EyeballSetup {
         lines
     }
 
+    /// config.json was read again: maps whose file the panel removed ("Reset", "Reset all") are no longer used, and
+    /// the last fit's outcome goes from status.json with them (eyeball_map.rs MapStore::forget_removed). The lines to
+    /// log.
+    fn forget_removed(&mut self, smoother: &mut Smoother) -> Vec<String> {
+        let Some(store) = &mut self.store else {
+            return Vec::new();
+        };
+        let lines = store.forget_removed();
+        if !lines.is_empty() {
+            smoother.eyeball.maps = store.maps;
+            self.map_outcome = None;
+        }
+        lines
+    }
+
     /// Once per LOG_S while the source runs: each eye's frames and how they went, the re-takes, the time per frame.
     fn log_line(&mut self, time: f64, settings: &Settings, smoother: &Smoother) -> Option<String> {
         let gaze = &smoother.eyeball;
@@ -5450,6 +5465,9 @@ impl Bridge {
         if reset_calibration {
             eprintln!("Starting eyelid calibration over");
             self.calibration.reset(settings.lid_open);
+        }
+        for line in self.eyeball.forget_removed(&mut self.smoother) {
+            eprintln!("{line}");
         }
         self.settings = settings;
         Ok(())

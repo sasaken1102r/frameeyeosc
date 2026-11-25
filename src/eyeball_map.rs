@@ -287,10 +287,19 @@ pub struct Q9Fit {
     pub map: EyeMap,
     pub rms: f64,
     pub dropped: Vec<usize>,
-    /// Yaw keeps rising with the filter's first angle and pitch with its second everywhere in the box (q9_one_way);
-    /// fit_eye_any takes the affine map instead otherwise.
+    /// Yaw keeps rising with the filter's first angle and pitch with its second everywhere in the box (q9_one_way)...
     pub one_way: bool,
+    /// ...and nowhere in it less steeply than Q9_MIN_SLOPE_SHARE of the box's middle (q9_steep): fit_eye_any takes the
+    /// affine map instead otherwise.
+    pub steep: bool,
 }
+
+/// A Q9 map's yaw slope (d yaw / d u) and pitch slope (d pitch / d v) at each corner of its box must be at least this
+/// share of theirs at the box's middle. Past its box the map goes on by its tangent at the edge, so a quadratic that
+/// flattens out towards an edge would hold the gaze nearly still for looks further out. (2026-11-25, the developer's
+/// last fitted maps on the headset: the corners' share was 0.36-1.64, for the pupil input's maps 0.39-1.61; 0.25
+/// takes all of them.)
+pub const Q9_MIN_SLOPE_SHARE: f32 = 0.25;
 
 /// Whether a map's yaw keeps rising with u and its pitch with v (or both keep falling) everywhere in its box: the slopes
 /// are linear in (u, v), so their signs at the box's corners say it. A map without a box: true.
@@ -299,6 +308,17 @@ pub fn q9_one_way(map: &EyeMap) -> bool {
     let corners = [[u0, v0], [u0, v1], [u1, v0], [u1, v1]].map(|[u, v]| map.slopes(u, v));
     let one_sign = |values: [f32; 4]| values.iter().all(|x| *x > 0.0) || values.iter().all(|x| *x < 0.0);
     one_sign(corners.map(|s| s[0][0])) && one_sign(corners.map(|s| s[1][1]))
+}
+
+/// Whether a map's yaw slope along u and pitch slope along v are, at each corner of its box, at least
+/// Q9_MIN_SLOPE_SHARE of theirs at its middle (and the same way): the slopes are linear in (u, v), so between the
+/// corners they are too. A map without a box: true.
+pub fn q9_steep(map: &EyeMap) -> bool {
+    let Some([[u0, u1], [v0, v1]]) = map.bounds else { return true };
+    let [[mid_yu, _], [_, mid_pv]] = map.slopes((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+    let corners = [[u0, v0], [u0, v1], [u1, v0], [u1, v1]].map(|[u, v]| map.slopes(u, v));
+    let steep = |mid: f32, values: [f32; 4]| mid != 0.0 && values.iter().all(|x| x / mid >= Q9_MIN_SLOPE_SHARE);
+    steep(mid_yu, corners.map(|s| s[0][0])) && steep(mid_pv, corners.map(|s| s[1][1]))
 }
 
 /// One eye's Q9 map from the dots it has (DOTS order; None for a dot without a settled median), robustly: while more than
@@ -364,8 +384,8 @@ fn q9_fit(medians: &[Option<[f32; 2]>; 9], eye: usize, checked: bool) -> Result<
         [(low - BOX_MARGIN_DEG) as f32, (high + BOX_MARGIN_DEG) as f32]
     };
     map.bounds = Some([range(0), range(1)]);
-    let one_way = q9_one_way(&map);
-    Ok(Q9Fit { map, rms, dropped, one_way })
+    let (one_way, steep) = (q9_one_way(&map), q9_steep(&map));
+    Ok(Q9Fit { map, rms, dropped, one_way, steep })
 }
 
 /// One eye's map for a whole fit: Q9 with enough dots, else affine on the five (None when one of those is missing).
@@ -389,6 +409,10 @@ pub fn fit_eye_any(medians: &[Option<[f32; 2]>; 9], eye: usize) -> Result<(EyeMa
     // A quadratic that turns back inside its own box (its yaw or pitch slope changes sign there): the affine map
     if !fit.one_way {
         return affine(" (the quadratic map turned back within its dots)");
+    }
+    // ...or flattens out towards an edge of it (its tangent past the box would then hardly move)
+    if !fit.steep {
+        return affine(" (the quadratic map flattened out within its dots)");
     }
     let form = if fit.dropped.is_empty() {
         "q9".to_owned()
@@ -533,6 +557,9 @@ pub struct MapStore {
     /// are saved (not in a replay).
     paths: [Option<PathBuf>; 2],
     write: bool,
+    /// Whether each input's maps (EyeballInput order) came from or were saved to its file: only those are taken out of
+    /// use when the file is removed (forget_removed).
+    on_disk: [bool; 2],
     /// The maps for the input asked for now (eyeball_input), used and re-centred...
     pub maps: Option<[EyeMap; 2]>,
     /// ...and the other input's, kept for when it is asked for again (its file untouched meanwhile).
@@ -583,7 +610,7 @@ impl MapStore {
     pub fn load(path: Option<PathBuf>) -> (Self, String) {
         let paths = [EyeballInput::Filter, EyeballInput::Pupil].map(|input| path.as_deref().map(|p| path_for(p, input)));
         let (maps, line) = Self::read(paths[0].as_deref(), EyeballInput::Filter);
-        (Self { paths, write: true, maps, ..Self::default() }, line)
+        (Self { paths, write: true, on_disk: [maps.is_some(), false], maps, ..Self::default() }, line)
     }
 
     /// eyeball_input is (now) `input`: its own maps (read from its file the first time) are used, the other's kept for
@@ -605,6 +632,7 @@ impl MapStore {
             format!("Eyeball map ({}) used again", input.name())
         } else {
             let (maps, line) = Self::read(path.as_deref(), input);
+            self.on_disk[index(input)] = maps.is_some();
             self.maps = maps;
             line
         };
@@ -619,11 +647,48 @@ impl MapStore {
 
     /// New maps (fitted on the input asked for now) are saved to its own file; the other input's file is left alone.
     fn save(&mut self, maps: &[EyeMap; 2]) -> Option<String> {
-        let path = self.paths[if self.now == EyeballInput::Filter { 0 } else { 1 }].as_deref().filter(|_| self.write)?;
+        let index = if self.now == EyeballInput::Filter { 0 } else { 1 };
+        let path = self.paths[index].as_deref().filter(|_| self.write)?;
         Some(match write_atomically(path, &format_maps(maps, self.now)) {
-            Ok(()) => format!("Eyeball map saved to {}", path.display()),
+            Ok(()) => {
+                self.on_disk[index] = true;
+                format!("Eyeball map saved to {}", path.display())
+            }
             Err(error) => format!("Could not save {}: {error}", path.display()),
         })
+    }
+
+    /// The panel's "Reset" (Eye fit tab) and "Reset all" remove both inputs' files (then write config.json, which is
+    /// read again): maps that came from or were saved to a file that is gone now are taken out of use at once (the
+    /// eye tracker's gaze until the next whole eye fit), not only at the next start, and a set of dots in progress is
+    /// dropped. Never in a replay. Returns the lines to log (none when nothing was removed).
+    pub fn forget_removed(&mut self) -> Vec<String> {
+        if !self.write {
+            return Vec::new();
+        }
+        let now = if self.now == EyeballInput::Filter { 0 } else { 1 };
+        let mut lines = Vec::new();
+        for index in 0..2 {
+            let Some(path) = self.paths[index].as_deref() else {
+                continue;
+            };
+            if !self.on_disk[index] || path.exists() {
+                continue;
+            }
+            self.on_disk[index] = false;
+            let maps = if index == now { &mut self.maps } else { &mut self.other };
+            if maps.take().is_some() {
+                let kind = if index == 0 { "" } else { " (pupil)" };
+                lines.push(format!(
+                    "Eyeball map{kind}: {} was removed; the eye tracker's gaze until the next whole eye fit",
+                    path.display()
+                ));
+            }
+            if index == now {
+                self.started = false;
+            }
+        }
+        lines
     }
 
     /// A whole fit that took no map: the old one kept, or none made.
@@ -1097,6 +1162,54 @@ mod tests {
     }
 
     #[test]
+    fn maps_whose_file_was_removed_are_taken_out_of_use() {
+        let dir = std::env::temp_dir().join(format!("frameeyeosc-eyeball-forget-{}", std::process::id()));
+        let path = dir.join(FILE_NAME);
+        let pupil = dir.join("eyeball_map_pupil");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // Both inputs fitted and saved, the filter's in use
+        let (mut store, _) = MapStore::load(Some(path.clone()));
+        whole_fit(&mut store, reading, 5);
+        store.set_input(EyeballInput::Pupil);
+        whole_fit(&mut store, reading, 5);
+        store.set_input(EyeballInput::Filter);
+        assert!(store.maps.is_some() && path.exists() && pupil.exists());
+        // Nothing removed: nothing changes
+        assert!(store.forget_removed().is_empty());
+        assert!(store.maps.is_some());
+        // The panel's Reset removes both files: both inputs' maps go, said once each
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_file(&pupil).unwrap();
+        let lines = store.forget_removed();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].starts_with("Eyeball map: ") && lines[0].contains("was removed"), "{lines:?}");
+        assert!(lines[1].starts_with("Eyeball map (pupil): "), "{lines:?}");
+        assert!(store.maps.is_none());
+        assert!(store.set_input(EyeballInput::Pupil).is_some_and(|line| line.contains("none yet")));
+        assert!(store.maps.is_none());
+        store.set_input(EyeballInput::Filter);
+        assert!(store.forget_removed().is_empty());
+        // A dot set in progress is dropped too: its eyes-shut step makes nothing
+        whole_fit(&mut store, reading, 5);
+        assert!(store.maps.is_some());
+        store.capture_done("center", medians(reading, 0, 120));
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(store.forget_removed().len(), 1);
+        assert!(store.capture_done(END_TARGET, [None, None]).is_empty());
+        assert!(store.maps.is_none());
+        // The next whole fit makes and saves new ones
+        whole_fit(&mut store, reading, 5);
+        assert!(store.maps.is_some() && path.exists());
+        // A replay never forgets (nor writes)
+        let (mut replay, _) = MapStore::load(Some(path.clone()));
+        replay = replay.read_only();
+        std::fs::remove_file(&path).unwrap();
+        assert!(replay.forget_removed().is_empty() && replay.maps.is_some());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_whole_fit_makes_the_maps_and_a_re_center_moves_only_the_centre() {
         let dir = std::env::temp_dir().join(format!("frameeyeosc-eyeball-map-{}", std::process::id()));
         let path = dir.join(FILE_NAME);
@@ -1447,6 +1560,40 @@ mod tests {
         assert!(!fit.one_way && !q9_one_way(&fit.map));
         let any = fit_eye_any(&medians9, 0);
         assert!(any.as_ref().map_or_else(|e| e.0.contains("left eye"), |(_, _, form)| form.starts_with("affine (the quadratic")), "{any:?}");
+    }
+
+    #[test]
+    fn a_quadratic_that_flattens_out_within_its_dots_is_not_steep() {
+        // The made-up bent eye of the tangent test: Q9, steep enough everywhere in its box
+        let bent9 = DOTS.map(|(_, y, p)| Some(bent(1, y, p)));
+        let fit = fit_eye_q9(&bent9, 1).unwrap();
+        assert!(fit.one_way && fit.steep, "{fit:?}");
+        assert!(fit_eye_any(&bent9, 1).is_ok_and(|(_, _, form)| form == "q9"));
+        // Its yaw bent so that it levels off towards one side of the box (the slope there a tenth of the middle's, still
+        // rising): one way, yet not steep, and its tangent past that edge would hardly move
+        let map = fit.map;
+        let [[u0, u1], [v0, v1]] = map.bounds.unwrap();
+        let (mid_u, mid_v) = ((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+        let [[yu, _], _] = EyeMap { quad: crate::pupil::NO_QUAD, ..map }.slopes(mid_u, mid_v);
+        // d yaw / d u = yu + 2 q (u - mid_u) once the linear term is moved to keep the middle's slope: q so that at u1
+        // it is 0.1 of yu
+        let q = (0.1 * yu - yu) / (2.0 * (u1 - mid_u));
+        let flat = EyeMap {
+            yaw: [map.yaw[0], yu - 2.0 * q * mid_u, 0.0],
+            quad: [[q, 0.0, 0.0], map.quad[1]],
+            ..map
+        };
+        assert!(q9_one_way(&flat), "{flat:?}");
+        assert!(!q9_steep(&flat), "{flat:?}");
+        let [[at_edge, _], _] = flat.slopes(u1, mid_v);
+        let [[at_mid, _], _] = flat.slopes(mid_u, mid_v);
+        assert!((at_edge / at_mid - 0.1).abs() < 1e-3, "{at_edge} {at_mid}");
+        // Half of the middle's at the edge is steep enough
+        let q = (0.5 * yu - yu) / (2.0 * (u1 - mid_u));
+        let half = EyeMap { yaw: [map.yaw[0], yu - 2.0 * q * mid_u, 0.0], quad: [[q, 0.0, 0.0], map.quad[1]], ..map };
+        assert!(q9_one_way(&half) && q9_steep(&half));
+        // Without a box: nothing to say
+        assert!(q9_steep(&EyeMap { bounds: None, ..flat }));
     }
 
     #[test]

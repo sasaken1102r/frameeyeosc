@@ -7608,6 +7608,12 @@ void EyePanel::closeIntro() {
 }
 
 void EyePanel::openIntroDue(const PanelModel& model) {
+    // An eye fit starting by itself (the re-center when the headset is put on) puts an open one away, not seen: its
+    // "Stop" must be there, and the intro comes back after it
+    if (introOpen_ != nullptr && (fitRunning(model.fit) || previewOpen_)) {
+        introOpen_ = nullptr;
+        return;
+    }
     if (!introsOn_ || introOpen_ != nullptr || promptOpen() || keypadOpen_ || previewOpen_) return;
     // Nothing else on the tab's page over it, nor anything under way there
     if (contribOpen_ || historyOpen_ || diagOpen_ || !recordOpen_.empty() || recordsAllOpen_ || eyecamConfirm_.isOpen()) {

@@ -5627,6 +5627,13 @@ void testIntros(const FontSet& fonts) {
         CHECK(busy.introOpen() == nullptr);
         busy.render(m);
         CHECK(busy.introOpen() != nullptr);
+        // ...and a fit starting by itself while it is open (the re-center when the headset goes on) puts it away, not
+        // seen, with the fit's "Stop" usable; it comes back after the fit
+        busy.render(fitting);
+        CHECK(busy.introOpen() == nullptr && busy.introsSeen().empty());
+        CHECK(hits(busy, PanelAction::FitStop).size() == 1);
+        busy.render(m);
+        CHECK(busy.introOpen() != nullptr);
         // --intro (screenshots): opened whatever was seen, on its tab
         EyePanel shown(fonts);
         CHECK(!shown.showIntro("no_such_intro") && shown.introOpen() == nullptr);

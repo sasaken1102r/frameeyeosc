@@ -1134,6 +1134,8 @@ UiText makeJapanese() {
     t.rowGazeCompare = "もう一方の視線も出す";
     t.hintGazeCompare = "Valve と瞳の位置を比べる";
     t.gazeCompareNeedsMap = "瞳の位置は先に目合わせが必要";
+    t.hintGazeCompareEyeball = "Valve と眼球を比べる";
+    t.gazeCompareNeedsEyeball = "眼球を送り始めてから比べられるよ";
     t.gazeCompareSent = "送っている視線";
     t.gazeCompareValve = "Valve の視線";
     t.gazeComparePupil = "瞳の位置の視線";
@@ -2524,6 +2526,8 @@ UiText makeEnglish() {
     t.rowGazeCompare = "Other gaze too";
     t.hintGazeCompare = "Compare Valve and pupil";
     t.gazeCompareNeedsMap = "Pupil needs an eye fit first";
+    t.hintGazeCompareEyeball = "Compare Valve and eyeball";
+    t.gazeCompareNeedsEyeball = "Once the eyeball's gaze is sent";
     t.gazeCompareSent = "Gaze being sent";
     t.gazeCompareValve = "Valve's gaze";
     t.gazeComparePupil = "Pupil-position gaze";

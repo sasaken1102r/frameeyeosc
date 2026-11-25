@@ -1101,6 +1101,8 @@ struct UiText {
     const char* rowGazeCompare;      ///< the other gaze source's dot (gaze_debug_dots_compare), under the rings
     const char* hintGazeCompare;
     const char* gazeCompareNeedsMap; ///< why its switch is grey: no pupil map yet (a whole eye fit makes it)
+    const char* hintGazeCompareEyeball;    ///< its hint with gaze_source "eyeball" (the other dot is Valve's)
+    const char* gazeCompareNeedsEyeball;   ///< ...why its switch is grey then: the eyeball isn't sent yet
     const char* gazeCompareSent;     ///< its legend: the dot of the gaze being sent...
     const char* gazeCompareValve;    ///< ...and the extra dot: Valve's gaze (gaze_source "pupil")...
     const char* gazeComparePupil;    ///< ...or the pupils' (gaze_source "valve")

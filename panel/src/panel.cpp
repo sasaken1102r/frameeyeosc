@@ -6540,17 +6540,21 @@ double EyePanel::drawToolsPage(const Pen& pen, const UiText& t, const PanelModel
         // makes it): without one, why it can't be pressed instead. Only while the eyeball is the source (Valve's is
         // the other dot then), unless the developer's checks are shown (setDevTools)
         if (devTools_ || eyeballGazeInConfig(v)) {
-            const bool mapped = pupilMapInConfig(v);
+            // (with the eyeball, frameeyeosc's other run is Valve's once the eyeball is sent: its map and the eye camera
+            // calibration there)
+            const bool eyeball = eyeballGazeInConfig(v);
+            const bool mapped = eyeball ? eyeballNow(v, m.status) == EyeballNow::InUse : pupilMapInConfig(v);
             const bool compare = v.flag(key::kGazeDebugDotsCompare);
             const bool usable = on && mapped;
-            drawRowLabel(pen, t, y, h, t.rowGazeCompare, t.hintGazeCompare, false);
+            drawRowLabel(pen, t, y, h, t.rowGazeCompare, eyeball ? t.hintGazeCompareEyeball : t.hintGazeCompare, false);
             drawSegmented(pen, kControlX, y + (h - kControlH) / 2, segW, kControlH,
                           {{t.on, {PanelAction::SetBool, key::kGazeDebugDotsCompare, 1}, usable},
                            {t.off, {PanelAction::SetBool, key::kGazeDebugDotsCompare, 0}, usable}},
                           compare && mapped ? 0 : 1, 20, !usable);
             const Color legendText = usable ? kTextMuted : kTextDisabled;
             if (!mapped) {
-                const std::vector<std::string> why = wrapText(pen, t.gazeCompareNeedsMap, 14, false, right - noteX, 2);
+                const char* needs = eyeball ? t.gazeCompareNeedsEyeball : t.gazeCompareNeedsMap;
+                const std::vector<std::string> why = wrapText(pen, needs, 14, false, right - noteX, 2);
                 double line = y + h / 2 - (why.size() - 1) * 9 + 5;
                 for (const std::string& text : why) {
                     pen.text(noteX, line, text, 14, legendText);

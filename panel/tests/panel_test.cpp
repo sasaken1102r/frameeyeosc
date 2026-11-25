@@ -1339,6 +1339,8 @@ void testGazeCompareRow(const FontSet& fonts) {
             if (setup == 2) {
                 m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[1]));
                 m.config.root.set(key::kIndependentEyes, JsonValue::makeBool(true));
+                // ("pupil" runs as the eyeball, whose other run is Valve's once the eyeball's gaze is sent)
+                m.status.eyeball = "in_use";
             }
             panel.setTab(PanelTab::Advanced);
             panel.setAdvPage(AdvPage::Tools);
@@ -5654,6 +5656,7 @@ void testDevToolsHidden(const FontSet& fonts) {
                     for (const char* name : eye) m.config.root.set(name, JsonValue::makeNumber(100.0));
                 }
                 if (eyeball) m.config.root.set(key::kGazeSource, JsonValue::makeString(kGazeSources[2]));
+                m.status.eyeball = eyeball ? "in_use" : "";
                 panel.setTab(PanelTab::Advanced);
                 panel.setAdvPage(AdvPage::Tools);
                 panel.render(m);
@@ -5664,6 +5667,13 @@ void testDevToolsHidden(const FontSet& fonts) {
                 CHECK(hits(panel, PanelAction::ReseatStart).size() == (dev ? 1u : 0u));
                 // The rest of the page is still there
                 CHECK(hits(panel, PanelAction::SetBool, key::kGazeDebugRings).size() == 2);
+                // With the eyeball chosen but not sent yet, its compare switch is grey (frameeyeosc has no other run)
+                if (eyeball) {
+                    m.status.eyeball = "no_map";
+                    panel.render(m);
+                    CHECK(hits(panel, PanelAction::SetBool, key::kGazeDebugDotsCompare).empty());
+                    CHECK(hits(panel, PanelAction::MeasureStart).size() == 1);
+                }
                 for (const EyePanel::HitArea& area : panel.hitAreas()) CHECK(area.y + area.h <= 680);
             }
         }

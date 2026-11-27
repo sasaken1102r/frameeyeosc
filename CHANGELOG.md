@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.11.0-beta.2 (2026-11-28)
+
+New in the panel: "Enlarge cameras" on the eye preview shows only the two eye cameras' pictures, large over the whole panel, for taking screenshots of them. Everything else is as in 0.11.0-beta.1.
+
+日本語: 目のプレビューに［カメラを拡大表示］を足しました。目のカメラ 2 つの映像だけをパネルいっぱいに大きく出すので、スクショを撮るのに使えます。ほかは 0.11.0-beta.1 と同じです。
 
 - Panel, eye preview: "Enlarge cameras" at the top of the sheet opens the eye cameras view, both eye cameras' pictures large over the whole panel with nothing else, for taking screenshots of them. A chip beside its title says "Live" while pictures come (else that it waits for them, or why there are none), and two switches at its bottom show the pupil (the green circle) and the eyelids (the light blue and pink dots); they are the sheet's own switches. The search area's frame, the camera's eyelid value and "Read as closed" aren't drawn there. "Close" goes back to the sheet. Like the sheet's pictures, they are only shown, never saved
 

@@ -191,8 +191,8 @@ const std::vector<ContrastPair>& contrastPairs() {
          ContrastKind::Ui},
         {"eye cameras view: the lower lid's dot on its switch (pill-colored)", kPreviewLidLower, kControl,
          ContrastKind::Ui},
-        {"eye preview: \"Cameras only\" with its icon (pill-colored)", kText, kControl, ContrastKind::Text},
-        {"eye preview: \"Cameras only\" while the cameras can't (pill-colored)", kTextDisabled, kControl,
+        {"eye preview: \"Enlarge cameras\" with its icon (pill-colored)", kText, kControl, ContrastKind::Text},
+        {"eye preview: \"Enlarge cameras\" while the cameras can't (pill-colored)", kTextDisabled, kControl,
          ContrastKind::Disabled},
     };
     return pairs;

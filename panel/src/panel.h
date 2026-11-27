@@ -141,8 +141,8 @@ enum class PanelAction {
     PreviewCamera,     ///< the eye cameras' pictures on / off (handled inside; the caller follows previewPictures)
     PreviewMark,       ///< one of the marks over the pictures on / off: arg = eye_preview::Mark (handled inside)
     PreviewFreeze,     ///< stop the drawing where it is, or let it move again (handled inside)
-    CameraViewOpen,    ///< the sheet's "Cameras only": the eye cameras view over the whole panel (handled inside; the
-                       ///< caller follows previewPictures)
+    CameraViewOpen,    ///< the sheet's "Enlarge cameras": the eye cameras view over the whole panel (handled inside;
+                       ///< the caller follows previewPictures)
     CameraViewClose,   ///< the view's "Close": back to the sheet (handled inside)
     ContribOpen,       ///< Debug tools' "Record for squint training": open its sheet, arg = contrib::Page (the panel
                        ///< opens it; the caller forgets the last recording's end and failure)
@@ -622,7 +622,7 @@ public:
     }
 
     /**
-     * Open the eye cameras view (目のカメラ) over the whole panel, as the sheet's "Cameras only" does: both pictures
+     * Open the eye cameras view (目のカメラ) over the whole panel, as the sheet's "Enlarge cameras" does: both pictures
      * large and nothing else but its title, the switches for the pupil's and the lids' marks (the sheet's) and "Close",
      * which goes back to the sheet. Opening it is asking for the pictures (it wants them while it shows, whatever the
      * sheet's switch says; the switch is left as it was for the sheet). The sheet opens first if it isn't open.

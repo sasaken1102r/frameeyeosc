@@ -3630,8 +3630,8 @@ bool overlaps(const EyePanel::HitArea& a, const EyePanel::HitArea& b) {
 }
 
 /**
- * The eye preview's own buttons (the cross, "Cameras only", the choices, the switches, freeze, the marks' switches) as
- * last drawn.
+ * The eye preview's own buttons (the cross, "Enlarge cameras", the choices, the switches, freeze, the marks'
+ * switches) as last drawn.
  * @param panel the panel
  * @return them
  */
@@ -3666,7 +3666,7 @@ void testPreview(const FontSet& fonts) {
         }
         CHECK(!panel.previewOpen());
 
-        // It opens the sheet over the tabs' content: its cross, "Cameras only", three choices, two switches and
+        // It opens the sheet over the tabs' content: its cross, "Enlarge cameras", three choices, two switches and
         // freeze, inside the card, apart from each other; the left column and every tab stay (none chosen: each closes
         // it)
         CHECK(press(panel, PanelAction::PreviewOpen).action == PanelAction::None);
@@ -3974,8 +3974,8 @@ std::vector<uint8_t> rowsOf(const std::vector<uint8_t>& rgba, int width, int fro
 }
 
 void testCameraView(const FontSet& fonts) {
-    // The eye cameras view (目のカメラ): opened from the sheet's "Cameras only", over the whole panel with nothing but
-    // "Close" and the marks' two switches to press; it asks for the pictures while it shows, its switches are the
+    // The eye cameras view (目のカメラ): opened from the sheet's "Enlarge cameras", over the whole panel with nothing
+    // but "Close" and the marks' two switches to press; it asks for the pictures while it shows, its switches are the
     // sheet's marks, the search window never shows on it, and "Close" goes back to the sheet as it was
     for (const Language language : {Language::Ja, Language::En}) {
         EyePanel panel(fonts);
@@ -3990,7 +3990,7 @@ void testCameraView(const FontSet& fonts) {
         panel.render(m);
         // (the sheet's pictures off, as it opens)
         CHECK(panel.previewOpen() && !panel.previewPictures() && !panel.cameraViewOpen());
-        // "Cameras only" at the right of the sheet's title row, left of its cross
+        // "Enlarge cameras" at the right of the sheet's title row, left of its cross
         const std::vector<EyePanel::HitArea> entry = hits(panel, PanelAction::CameraViewOpen);
         const std::vector<EyePanel::HitArea> cross = hits(panel, PanelAction::PreviewClose);
         CHECK(entry.size() == 1 && cross.size() == 1);

@@ -82,7 +82,7 @@ UiText makeJapanese() {
     t.previewCamNotInUse = "目のカメラを使っていません（「基本」タブ）";
     t.previewCamOld = "この eyecam-rec は映像を出せません（更新してね）";
     t.previewCamRefused = "目のカメラが映像を出せませんでした";
-    t.cameraViewButton = "カメラだけ大きく";
+    t.cameraViewButton = "カメラを拡大表示";
     t.cameraViewTitle = "目のカメラ";
     t.cameraViewLive = "映っているよ";
     t.cameraViewClose = "閉じる";
@@ -1467,7 +1467,7 @@ UiText makeEnglish() {
     t.previewCamNotInUse = "The eye cameras are off (Basic tab)";
     t.previewCamOld = "This eyecam-rec can't show the picture (update it)";
     t.previewCamRefused = "The eye cameras couldn't show the picture";
-    t.cameraViewButton = "Cameras only";
+    t.cameraViewButton = "Enlarge cameras";
     t.cameraViewTitle = "Eye cameras";
     t.cameraViewLive = "Live";
     t.cameraViewClose = "Close";

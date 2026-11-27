@@ -306,9 +306,9 @@ void printUsage() {
         "      --preview-sheet [SOURCE[:nomirror][:nocamera][:frozen][:nolids][:nopupil][:nowindow][:cameraview]]\n"
         "                        The eye preview open (SOURCE sent, raw or camera; default sent, in a mirror, with\n"
         "                        the camera pictures and all their marks; :no... leaves that mark out; :cameraview\n"
-        "                        with the eye cameras view over the whole panel, \"Cameras only\"). Its pictures are\n"
-        "                        read from eyecam-rec's preview file in --eyecam-dir when it is there (eyecam-rec\n"
-        "                        --replay --preview), else made up with --fake-preview\n"
+        "                        with the eye cameras view over the whole panel, \"Enlarge cameras\"). Its pictures\n"
+        "                        are read from eyecam-rec's preview file in --eyecam-dir when it is there\n"
+        "                        (eyecam-rec --replay --preview), else made up with --fake-preview\n"
         "      --fake-preview [ok|noeyecam|nopicture|closed|nodata]  Made-up preview values and grey pictures (not an\n"
         "                        eye), with the eye cameras set up: all there (ok), eyecam-rec not running, no picture\n"
         "                        yet, the left eye read closed, or no samples from frameeyeosc. Implies --fake\n"
@@ -482,7 +482,7 @@ void printUsage() {
  * @param camera with the eye cameras' pictures
  * @param frozen stopped
  * @param marks which marks are drawn over the pictures
- * @param cameraView the eye cameras view open over it ("Cameras only")
+ * @param cameraView the eye cameras view open over it ("Enlarge cameras")
  * @return false if something in it is unknown
  */
 bool parsePreviewSpec(const std::string& text, eye_preview::Source& source, bool& mirror, bool& camera, bool& frozen,

@@ -10105,7 +10105,7 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
     const double closeX = kInnerRight - closeS;
     const double headY = kContentY + 14;
     drawSheetClose(pen, {PanelAction::PreviewClose, nullptr, 0}, closeX, headY, closeS);
-    // "Cameras only", left of the cross: the eye cameras view (only while the cameras can give pictures)
+    // "Enlarge cameras", left of the cross: the eye cameras view (only while the cameras can give pictures)
     const double viewH = 40;
     const double viewW = pen.measure(t.cameraViewButton, 16, true) + 28 + 36;
     const double viewX = closeX - 12 - viewW;

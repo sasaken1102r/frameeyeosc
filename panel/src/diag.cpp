@@ -502,7 +502,8 @@ std::vector<Card> cards(const UiText& t, const PanelModel& m) {
                                                       : unknown,
                                  look.present && look.changedBlocks == 0});
             const std::string prox = proxText(e);
-            const std::string proxMin = std::isfinite(e.proxMin) ? format("%.0f", e.proxMin) : unknown;
+            // (%g: SteamVR's threshold is 7.2 with prox_far 9, an override is often whole like 20)
+            const std::string proxMin = std::isfinite(e.proxMin) ? format("%g", e.proxMin) : unknown;
             card.rows.push_back({t.diagRowProx, (prox.empty() ? std::string(t.diagUnreadable) : prox) + " / " + proxMin});
             card.rows.push_back({t.diagRowPupil, e.hasPupil ? format(t.diagEyesFormat, percent(e.pupil[0]).c_str(),
                                                                      percent(e.pupil[1]).c_str())

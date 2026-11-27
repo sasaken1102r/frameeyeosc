@@ -40,6 +40,22 @@ const LOST_AFTER: f64 = 2.0;
 const STALE_AFTER: f64 = 120.0;
 // The proximity reading has to stay above --prox-min this long before the headset counts as worn.
 const WORN_FOR: f64 = 1.0;
+// Without --prox-min the headset counts as worn above SteamVR's own threshold: PROX_FAR_SHARE x the headset's prox_far.
+// (Valve documents none of this; it comes from disassembling SteamVR's headset-side driver driver_cv.so: it reads
+// prox_far with `eeprom_console get prox_far` and compares in_proximity_raw against it every 0.5 s. SteamVR's eye
+// tracker log, ~/.local/share/Steam/logs/eyetracking.txt, has "HMD off" 0.6 to 2.4 s after the last reading above, 8
+// times out of 8 on 2026-11-24/25.) prox_far is 9 on the Frame all this was measured on, so 7.2. The old fixed 20 sat
+// inside the readings of a worn headset: with SteamVR saying worn without a break from 2026-11-24 23:37 to 11-25 09:34
+// (asleep in it; an external once-a-second log of in_proximity_raw read a median of 17.5, and below 20 in 68% of the
+// samples), the idle loop sent "worn again" 909 times (counted in eyecam-rec's journal, `journalctl --user -u eyecam`);
+// with the eyes shut 863 of them were taken as a new wear, and the wear had no open-eye levels (the automatic baseline)
+// for about 7 of the 10 h (they come back only from 30 s of open-eye frames). The longest run at 7.2 or below was
+// 5.3 s, under NEW_WEAR_OFF_S: none at 7.2. While awake the reading still dips below 20 for 1 to 5 s (20 times in a 2 h
+// back-to-back read of in_proximity_raw, about 9 per second, on 11-24); at 7.2 only the 4 real take-offs.
+// PROX_MIN_UNKNOWN when the EEPROM can't be read.
+const EEPROM_CONSOLE: &str = "/usr/lib/deckard-eeprom/eeprom_console";
+const PROX_FAR_SHARE: f64 = 0.8;
+const PROX_MIN_UNKNOWN: f64 = 20.0;
 // How often a search looks at the buffers: every second while the headset counts as worn (or the sensor can't be
 // read), less often while the proximity sensor says it is off. It looks either way, since the sensor reads low on
 // some faces: with the cameras off nothing changes in the buffers, and a look costs about 2.5 ms.
@@ -168,7 +184,8 @@ const USAGE: &str = "usage: eyecam-rec [options]
   --dsp-selftest N   connect to dsp_service, map its buffer read-only, count the eye camera frames for N seconds, look
                      for the ring once, print it all and exit (writes nothing; runs beside a running --serve)
   --wait-lock N      seconds to wait for eye frames each time they are searched for (default 300)
-  --prox-min V       proximity reading above which the headset counts as worn (default 20)
+  --prox-min V       proximity reading above which the headset counts as worn (default SteamVR's: 0.8 x the
+                     EEPROM's prox_far, 7.2 with prox_far 9; 20 if it can't be read)
   --allow-one-eye    record even if only one camera is streaming
   --full-width       keep the 512-byte rows (padding included) instead of 400-pixel rows
   --no-beep          log cues without playing them
@@ -203,7 +220,7 @@ fn parse_args() -> Result<Args> {
         tune: eyecam::live::Tune::default(),
         wait_grab: 600.0,
         wait_lock: 300.0,
-        prox_min: 20.0,
+        prox_min: PROX_MIN_UNKNOWN,
         allow_one_eye: false,
         full_width: false,
         beep: true,
@@ -212,6 +229,7 @@ fn parse_args() -> Result<Args> {
         dsp_selftest: None,
     };
     let mut it = std::env::args().skip(1);
+    let mut prox_min_given = false;
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         let number = |s: String, name: &str| -> Result<f64> {
@@ -300,7 +318,10 @@ fn parse_args() -> Result<Args> {
             "--source" => args.source = Some(Source::parse(&value("--source")?).ok_or("--source must be grab, dsp or auto")?),
             "--dsp-selftest" => args.dsp_selftest = Some(number(value("--dsp-selftest")?, "--dsp-selftest")?),
             "--wait-lock" => args.wait_lock = number(value("--wait-lock")?, "--wait-lock")?,
-            "--prox-min" => args.prox_min = number(value("--prox-min")?, "--prox-min")?,
+            "--prox-min" => {
+                args.prox_min = number(value("--prox-min")?, "--prox-min")?;
+                prox_min_given = true;
+            }
             "--allow-one-eye" => args.allow_one_eye = true,
             "--full-width" => args.full_width = true,
             "--no-beep" => args.beep = false,
@@ -314,6 +335,10 @@ fn parse_args() -> Result<Args> {
     }
     if args.serve && args.cues.is_some() {
         return Err("--cues is for one recording; with --serve the protocol comes with `start <name>`".into());
+    }
+    // Only where the sensor is read (not in a replay, the fake daemon or the DSP self-test).
+    if !prox_min_given && args.replay.is_none() && !args.fake && args.dsp_selftest.is_none() {
+        args.prox_min = steamvr_prox_min();
     }
     Ok(args)
 }
@@ -2437,6 +2462,35 @@ impl Proximity {
     }
 }
 
+/// SteamVR's threshold for "worn" (see PROX_FAR_SHARE), from the EEPROM's prox_far; PROX_MIN_UNKNOWN when it can't
+/// be read. Says which it is in the log.
+fn steamvr_prox_min() -> f64 {
+    let out = std::process::Command::new(EEPROM_CONSOLE)
+        .args(["get", "prox_far"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    let far = out.ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    match far.as_deref().and_then(prox_min_from_prox_far) {
+        Some(min) => {
+            eprintln!("proximity: worn above {min}, as SteamVR ({PROX_FAR_SHARE} x prox_far {})", far.unwrap().trim());
+            min
+        }
+        None => {
+            eprintln!("proximity: can't read prox_far with {EEPROM_CONSOLE}; worn above {PROX_MIN_UNKNOWN}");
+            PROX_MIN_UNKNOWN
+        }
+    }
+}
+
+/// `eeprom_console get prox_far`'s output (the number alone) as the threshold, to 0.01 so the log reads 9.6 and not
+/// 9.600000000000001 (the readings come in steps of 1/16); None unless it is a positive number (SteamVR doesn't use
+/// the sensor then either).
+fn prox_min_from_prox_far(out: &str) -> Option<f64> {
+    let far: f64 = out.trim().parse().ok()?;
+    (far.is_finite() && far > 0.0).then(|| (PROX_FAR_SHARE * far * 100.0).round() / 100.0)
+}
+
 /// Where a search runs, which decides what it shows and how it answers control requests.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ctx {
@@ -4074,6 +4128,17 @@ mod tests {
             "proximity 39.0, above 20 for only 0.4 s (worn after 1 s)"
         );
         assert_eq!(prox_at_look(Some(2.9), 20.0, None), "proximity 2.9, not above 20: the sensor says not worn");
+    }
+
+    #[test]
+    fn the_worn_threshold_is_steamvrs_from_prox_far() {
+        // A Frame with prox_far 9: "9" without a newline
+        assert_eq!(prox_min_from_prox_far("9"), Some(7.2));
+        assert_eq!(prox_min_from_prox_far("12\n"), Some(9.6));
+        // Nothing usable printed: the fallback
+        for out in ["", "prox_far: \n", "0", "-3", "nan"] {
+            assert_eq!(prox_min_from_prox_far(out), None, "{out:?}");
+        }
     }
 
     #[test]

@@ -39,6 +39,137 @@ const MAX_CANDIDATES: usize = 3;
 const EDGE_LEFT_SHARE: f64 = 0.4;
 /// The second search without the prior only looks at blobs at least this far (px) from it.
 const RETRY_MIN_JUMP: f64 = 40.0;
+/// The grey steps above the search window's dark level (its 0.5th percentile) the blobs are thresholded at, in turn, up
+/// to the first level whose best blob has a radius over 9 px.
+const BLOB_LEVELS: [f64; 3] = [14.0, 22.0, 32.0];
+/// Single levels tried one at a time when no pupil refined from those or only a partial one (`PARTIAL_PUPIL_VIS`,
+/// `SPARSE_PUPIL_VIS`), up to the first that gives a whole one (`Extractor::extract`): the level that gave the last
+/// frame's pupil first, the others in this order (`fallback_levels`). With the pupil turned toward the temple the iris
+/// beside it is shaded as dark as the pupil and the window's dark level falls below the pupil's inside: the levels
+/// above then give the pupil's darkest core alone (a radius under 9 px, so the ring of `refine_pupil`, 1.25 .. 1.7 r0,
+/// lies inside the pupil) or a blob merged with the shading (touching the window's top and bottom, or too big). 10 ..
+/// 18 fall between them and take the pupil whole. Six replays of 2026-11-23 (one wearer: dirty inserts, none, clean
+/// inserts; user calibration, pre-warmed, lid veto), with the levels 10 and 18: of the frames with the pupil turned
+/// toward the temple (Valve's yaw under -10 deg for the left eye, over +10 for the right) the pupil was found on 54% /
+/// 60% (left / right) in a free recording with dirty inserts and on 68% / 82% in one with clean inserts; with
+/// the fallback on 86% / 92% and 98% / 98% (also with the partial pupils: within 0.2 points of that). Without inserts
+/// (free use) the temporal side was found on 96% / 97% already, and the fallback changes that by under a point.
+///
+/// The recordings, named by their start time (folders `rec_<date>_<HH-MM-SS>`, all one wearer; `contrib`, `free` and
+/// `widen` are eyecam's cue protocols; the base is this code without the fallback): 2026-11-23 20:47 (`widen`) and
+/// 20:58 (`free`) with dirty (smudged) lens inserts, 21:16 (`contrib`) and 21:18 (`free`) without inserts, 21:27
+/// (`contrib`) and 21:29 (`free`) with clean inserts; 2026-11-24 01:05 (`contrib`) and 01:07 (`free`) at night, 10:40
+/// and 10:43 (`free`) and 10:46 (`contrib`) in the morning; 2026-11-25 20:24 and 20:26 (`contrib`), 20:28 and 20:32
+/// (`free`). A "2-cycle" is explained at `PARTIAL_PUPIL_VIS`.
+///
+/// Ten and 18 alone were not steady on the larger pupils of three replays of 2026-11-24 (10:40 and 10:43 free, 10:46
+/// contrib; the same wearer; semi-axis median of the right eye 24.5, 25.8 and 21.9 px, 18.4 .. 22.4 in the six of
+/// 2026-11-23): the right eyes' 2-cycles rose over the base's, 245 -> 346 frames (of 16326) and 126 -> 250 (of 11609),
+/// at 10 .. 20 deg toward the temple from 2.5% to 4.9% and from 2.3% to 4.7% of the frames there (found 62% and 61% ->
+/// 98% and 97%). Frames 9985 .. 9992 of 10:40 (right eye) alternate a whole fit with a partial one: semi-axis 26.9,
+/// 24.4, 26.9, 24.2, 27.4, 22.1, 24.8, 23.5 px, `vis` 0.92, 0.62, 0.91, 0.52, 0.89, 0.62, 0.88, 0.47. Trying the level
+/// that gave the last frame's pupil first, and 16 between 18 and 10, makes them 26.9, 26.8, 25.3, 24.3, 24.3, 24.4,
+/// 24.2, 24.1 px, `vis` 0.91 .. 0.95, and the right eyes' 2-cycles 170 and 92 frames (the left eyes 334 -> 68 -> 64 and
+/// 341 -> 124 -> 114: base -> 10, 18 -> this). Over the 22 eyes of the 11 replays (one wearer) the 2-cycle frames are
+/// 5278 (base) -> 1921 (10, 18) -> 1455, the huge fits (a semi-axis over 1.5 x the median of the found ones of the last
+/// 90 frames) 508 -> 219 -> 219, and the pupil is found at least as often as with 10 and 18 on every eye. Without the
+/// last level first: 1534 frames (those right eyes 179 and 137); 17 for 16: 1641 (265 and 171). A fourth level, 12 or
+/// 13 (the last level first too): 1326 and 1289 frames but 242 and 238 huge fits, as the left eye of 10:46, looking
+/// left, gets 14 px semi-axes (median 14.3 / 14.6) on 27 / 36 of the 49 frames 7364 .. 7412 where 18, 16, 10 have 7
+/// (median 15.3), and the whole fits after them, 21.8 .. 23.4 px, count as huge. All of this paragraph was measured
+/// with the fallback run for a usual pupil under a `vis` of 0.85 and no `STICKY_PUPIL_VIS`; with PARTIAL_PUPIL_VIS and
+/// STICKY_PUPIL_VIS as they are the 22 eyes give 1258 2-cycle frames and 220 huge fits (those right eyes 163 and 81).
+const FALLBACK_BLOB_LEVELS: [f64; 3] = [18.0, 16.0, 10.0];
+/// A ray finds the pupil's edge only where the ring outside it is this many grey steps brighter than the inside
+/// (`refine_pupil`).
+const RAY_STEP: f64 = 14.0;
+/// The ray step of the fallback levels. On the temporal side the iris is only 9 .. 12 steps brighter than the pupil (a
+/// right eye frame with clean inserts, 8 sectors: 27 inside, 37 .. 40 temporal, up and down, 60 .. 70 nasal), so at 14
+/// only the nasal rays passed, an arc of 70 .. 135 deg. The iris fit's limbus rays toward small x take 9 as well
+/// (`iris_fit`). At 9 instead of 14 the same frames, left / right: 79% / 81% -> 87% / 92% (dirty inserts, free), 88% /
+/// 91% -> 98% / 98% (clean inserts, free); at 7 within 1 pt of that.
+const FALLBACK_RAY_STEP: f64 = 9.0;
+/// A pupil of the usual levels is partial when under this share of its rays reached its edge (`Pupil::vis`): the
+/// ellipse is then extended from an arc. Such a fit is small and unsteady (a semi-axis of 14 .. 17 px at `vis` 0.2 ..
+/// 0.5 where the whole pupil is 19 .. 21 px), and on the next frame, whole, it is the larger: the circle pulses, its
+/// semi-axis alternating by over 8% up, down, up on three frames (a "2-cycle"). So on these frames the fallback levels
+/// run too (`Extractor::extract`), and a pupil of theirs that is whole (`WHOLE_PUPIL_VIS`) replaces it. Of the usual
+/// pupils under 0.5 the fallback finds a whole one for 85% (dirty inserts) / 94% (clean inserts) / 26% (none), a median
+/// 1.2 x the semi-axis; of those at 0.7 .. 0.85 for 59% / 76% / 13%, 1.04 .. 1.08 x. In the six replays of 2026-11-23
+/// it runs on 5% .. 49% of an eye's frames more than before and replaces the usual pupil on 0.3% .. 47% (0.3% .. 3%
+/// without inserts). Share of an eye's frames that are 2-cycles, left / right, base -> the fallback for frames without
+/// a pupil only -> with this: 0.026 / 0.016 -> 0.042 / 0.019 -> 0.011 / 0.012 (dirty inserts, widen), 0.068 / 0.093 ->
+/// 0.116 / 0.122 -> 0.027 / 0.013 (dirty, free), 0.036 / 0.078 -> 0.062 / 0.118 -> 0.007 / 0.012 (clean inserts,
+/// free); none of the 12 eyes is over the base (the most in frames: 7 against 5, no inserts, a contrib recording,
+/// right). At 0.9 the usual pupils of 56 or 57 of 64 rays (that eye's 21 px, stable) were replaced as well, by
+/// fallback pupils that alternate between 20 and 23 px: 15 frames against 5.
+/// Under `SPARSE_PUPIL_VIS` the fallback's pupil need not be whole to replace it.
+/// The shares above are from replays with the levels 10 and 18 alone, before 16 and the last level first
+/// (`FALLBACK_BLOB_LEVELS`), and with 0.85 as the limit. The bright-scene contrib recording of 2026-11-25 20:26 (small
+/// pupils, 14 .. 19 px) showed what 0.85 costs where the usual pupil is steady and only just partial (`vis` 0.7 ..
+/// 0.88 on most frames): the fallback won on 4948 of its 8491 right-eye frames, at level 18 with a semi-axis a median
+/// 2.7% larger (15% of the wins over 8% off), at level 10 (560 wins) 3.3% smaller (30% over 8% off, the centre up to
+/// 7 px away; on the look_left frames 7120 .. 7123 it fits the right half of the pupil only, 16.5 against 19.4 px), so
+/// the circle alternated between the two fits: the right eye's 2-cycle frames 34 (base) -> 117, the left eye's 298 ->
+/// 178. With 0.7 and `STICKY_PUPIL_VIS`: 50 and 80. Over the 15 replays (11 of 2026-11-23 .. 24, four of 2026-11-25)
+/// the 2-cycle frames are 7051 (base) -> 2610 (0.85) -> 2188; the found frames differ from 0.85's by at most 5 per eye
+/// (8 fewer over all 15: 247605 -> 247597) and per 10 deg bin toward the temple by at most 11 (the 226 found frames of
+/// that right eye gained over the base had no usual pupil at all, so the limit does not touch them). The cost: a usual
+/// pupil of 0.7 .. 0.85 is not always the whole one. The left eye of the free recording of 2026-11-24 10:40 (frames
+/// 141 .. 230: a pupil of 25 px, usual fits of 20 .. 22 px) goes from 64 to 122 2-cycle frames (base 334), the left
+/// eye of the free recording of 2026-11-23 20:58 from 126 to 134 (base 392). 0.7 alone (without `STICKY_PUPIL_VIS`) has
+/// 144 on the right eye of 2026-11-23 21:27 (62 at 0.85, base 136). With `STICKY_PUPIL_VIS` at 0.7 / 0.8 / 0.85 the
+/// bright right eye has 50 / 86 / 91 frames, the left eye of 10:40 122 / 83 / 60, and the 15 replays 2188 / 2142 /
+/// 2117.
+const PARTIAL_PUPIL_VIS: f64 = 0.7;
+/// After a frame whose pupil came from the fallback (`Extractor::fb_level`) the fallback also runs on a usual pupil
+/// under this `vis`, and a whole pupil of its own (`WHOLE_PUPIL_VIS`) replaces it as before. A scene whose usual pupil
+/// is just above `PARTIAL_PUPIL_VIS` gets the fallback's pupil on some frames and the usual one on the next, and the
+/// circle pulses. 2-cycle frames of the bright right / left eye of 20:26 (0.85: 117 / 178, base 34 / 298): 0.7 alone
+/// 57 / 231, `STICKY_PUPIL_VIS` alone 91 / 68, both 50 / 80. The right eye of 21:27 with 0.7: 144 alone, 60 with this
+/// (the left 94 -> 41). At 0.85, 0.92 in place of 0.97 gives 96 / 105 frames on the bright eyes (0.97: 91 / 68), 1.1
+/// (always after a win) 91 / 52.
+const STICKY_PUPIL_VIS: f64 = 0.97;
+/// A pupil of the fallback levels replaces a partial one of the usual levels only when this share of its rays reached
+/// its edge: a partial pupil is only ever replaced by a whole one, so no margin or size rule is needed on top. At 0.85
+/// the fallback pupils of `vis` 0.80 .. 0.86, themselves noisy, came in (the right eye of the no-inserts contrib
+/// recording at 0.007 against the base's 0.001), with 0.95 the eyes of the dirty-inserts free recording stayed at 0.049
+/// / 0.021, and taking the fallback's pupil wherever its `vis` is the higher (for usual pupils under 0.4 .. 0.7) left
+/// the dirty-inserts widen recording's right eye at 0.020 .. 0.027, over the base's 0.016.
+const WHOLE_PUPIL_VIS: f64 = 0.9;
+/// A pupil of the usual levels is sparse when under this share of its rays reached its edge: the arc of an ellipse that
+/// is not the pupil's. The right eye of the clean-inserts free recording of 2026-11-24 01:07 (pupils larger at night,
+/// frames 2462 .. 2467 and the stretch around them): the usual levels' blob (r0 15 .. 17 px) had the edge on 21 of the
+/// 64 rays (`vis` 0.33, the nasal ones; toward the temple the ring is 4 .. 13 steps over the inside, under the step of
+/// 14, the iris being a thin brighter band there and darker again beyond), and that arc's ellipse was 19 x 10.7 px,
+/// centred 7 .. 8 px nasal of the pupil. The fallback's step took 44 .. 49 rays (`vis` 0.69 .. 0.77): 24.8 x 17.4 px
+/// on the edge of the pupil, which the picture shows as about 37 x 50 px. `WHOLE_PUPIL_VIS` refused it, and the eye's
+/// circle alternated between the two fits (2-cycles on 18.7% of the frames at 0 .. +10 deg of Valve's yaw, 5.4% of the
+/// eye's). So when none of the fallback levels has a whole pupil, a sparse one is replaced by the best of theirs that
+/// reached this share too: that eye 5.4% -> 0.6% 2-cycles (18.7% -> 0.9% at 0 .. +10 deg), the p95 of the semi-axis's
+/// change from one frame to the next 25% -> 6% (42% -> 5% at 0 .. +10 deg); the left eye 1.4% -> 0.5%, the contrib
+/// recording's right 2.6% -> 1.3%; found 0.909 -> 0.914 and 0.933 -> 0.947 (free, right / left). In the six replays of
+/// 2026-11-23 the dirty-inserts free eyes went from 157 / 75 to 89 / 54 frames and the clean-inserts free eyes from
+/// 50 / 82 to 31 / 62; the other eight are within 2 frames of before (fewer), found within 0.001, the huge fits (a
+/// semi-axis over 1.5 x the last second's median) the same. For the usual pupils under 0.4 instead the right eyes of
+/// 2026-11-24 10:40 and 10:43 had 204 / 126 frames (107 / 61); under 0.6 the no-inserts contrib left eye 29 (23) and
+/// the clean-inserts free right eye 68 (62); under 0.7 the no-inserts contrib right eye 73 (7). As the least share for
+/// a fallback pupil, 0.6 is within 2 frames of 0.5.
+/// A floor that rises with the usual pupil's `vis` (its `vis` + 0.1 or + 0.2, from 0.5 up to 0.9) in place of the step
+/// at this share did not stop the 2-cycles of the right eyes of 2026-11-24 10:40 and 10:43 from rising over the base's
+/// (levels 10 and 18, in their order): 384 and 324 frames (+ 0.1), 339 and 258 (+ 0.2), against 346 and 250 with the
+/// step.
+const SPARSE_PUPIL_VIS: f64 = 0.5;
+/// The rays look for the pupil's edge up to this many blob radii out, and a fit whose major semi-axis is longer was not
+/// measured: with the rays passing on one side only (`vis` 0.15 .. 0.35: the iris shaded, or the lid dark, on the
+/// other) the ellipse is extrapolated from a short arc and comes out several times the pupil: the clean-inserts
+/// recording's right eye (2026-11-23 21:29, frames 1476 .. 5104) had single frames with a semi-axis of 31 .. 54 px
+/// against a median of 18, 2.2 .. 4.4 r0, centred on the iris's temporal half and the shading. The six replays have 193
+/// frames at 1.9 r0 or more, all with `vis` under 0.5, and 94% of those at 3 r0 or more were over 1.5 x the running
+/// median of the found ones; frames over 1.5 x the median (a 1 s running median), left / right, with this limit alone:
+/// 10 / 19 -> 0 / 0 (clean inserts, free), 21 / 7 -> 1 / 1 (dirty inserts, free). The prototype's rules
+/// (`Search::legacy`) keep no limit.
+const RAY_REACH: f64 = 1.9;
 /// The iris radius's rays toward large x take the strongest dark -> bright rise. Where something brighter than the
 /// sclera lies beyond it (a prescription insert's glare band that is not saturated, so `glare_columns` does not see
 /// it), that edge can be the stronger one and the radius comes out far too large: issue 38's right eye was calibrated
@@ -138,6 +269,16 @@ impl ExtCheck {
     }
 }
 
+/// A pupil that the fallback levels' check refused for a `vis` under its `min_vis` but that reached `floor` and passed
+/// the rest: the best of these (the larger `vis`, the first of equals) with its blob's `left` flag and the fallback
+/// level it came from (`level`, the one being searched), for when no level has a pupil that the check accepts
+/// (`SPARSE_PUPIL_VIS`).
+struct Spare {
+    floor: f64,
+    level: f64,
+    best: Option<(Pupil, bool, f64)>,
+}
+
 /// How the pupil is searched for.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Search {
@@ -235,6 +376,9 @@ pub struct Diag {
     pub dim: bool,
     /// ... or it found one its check refused.
     pub dim_refused: bool,
+    /// The pupil came from the fallback blob levels (`FALLBACK_BLOB_LEVELS`): the usual levels found none, or only a
+    /// partial one (`PARTIAL_PUPIL_VIS`), or a sparse one and the fallback's best was better (`SPARSE_PUPIL_VIS`).
+    pub fallback: bool,
 }
 
 impl Default for Diag {
@@ -255,6 +399,7 @@ impl Default for Diag {
             ext_refused: false,
             dim: false,
             dim_refused: false,
+            fallback: false,
         }
     }
 }
@@ -610,6 +755,16 @@ fn pint(v: f64) -> isize {
     v.trunc() as isize
 }
 
+/// `FALLBACK_BLOB_LEVELS` with `last` (the level that gave the last frame's pupil) first, the others in their order; as
+/// they are for a `last` that is none of them (NaN).
+fn fallback_levels(last: f64) -> [f64; FALLBACK_BLOB_LEVELS.len()] {
+    let mut levels = FALLBACK_BLOB_LEVELS;
+    if let Some(i) = levels.iter().position(|&l| l == last) {
+        levels[..=i].rotate_right(1);
+    }
+    levels
+}
+
 /// Reusable buffers and kernels; one per eye (or per thread).
 pub struct Extractor {
     op: Vec<u8>,
@@ -635,6 +790,9 @@ pub struct Extractor {
     /// The iris radius takes the first rise out of the iris toward large x, not the strongest (IRIS_FIRST_SHARE; live
     /// sets it for a wear whose radius is implausible for its pupil).
     pub iris_first: bool,
+    /// The level of `FALLBACK_BLOB_LEVELS` that gave the last frame's pupil, tried first on the next frame (NaN: that
+    /// pupil was not the fallback's).
+    fb_level: f64,
 }
 
 impl Default for Extractor {
@@ -646,6 +804,7 @@ impl Default for Extractor {
             lid_r: f64::NAN,
             iris_first: false,
             levels: Levels::AS_BUILT,
+            fb_level: f64::NAN,
             op: Vec::new(),
             opf: Vec::new(),
             smf: Vec::new(),
@@ -698,10 +857,52 @@ impl Extractor {
         let p = if search.legacy {
             self.find_pupil_blob(search.x_min, xmax, prev, &mut f.diag);
             let blob = self.cands.first().copied();
-            blob.and_then(|b| self.refine_pupil(b.c, b.r, xmax)).map(|x| x.0)
+            blob.and_then(|b| self.refine_pupil(b.c, b.r, xmax, RAY_STEP)).map(|x| x.0)
         } else {
             self.find_pupil_blob(search.x_min, xmax, prev, &mut f.diag);
-            let mut p = self.refine_candidates(xmax, None, None, &mut f.diag);
+            let mut p = self.refine_candidates(xmax, None, None, RAY_STEP, &mut f.diag, None);
+            // The fallback level that gave the last frame's pupil is tried first (`Extractor::fb_level`)
+            let last_level = std::mem::replace(&mut self.fb_level, f64::NAN);
+            if p.is_none_or(|u| u.vis < PARTIAL_PUPIL_VIS || (!last_level.is_nan() && u.vis < STICKY_PUPIL_VIS)) {
+                // Nothing at the usual levels, only a partial pupil (PARTIAL_PUPIL_VIS), or one under STICKY_PUPIL_VIS
+                // after a frame whose pupil came from here: once more at each of the
+                // fallback levels, with the ray step of a pupil whose iris is shaded on the temporal side, and only a
+                // pupil like the open eye's (the extended search's check without its roundness, and without its share
+                // of rays where nothing was found: the guard against a lash shadow on a closing eye is its size and
+                // darkness). A partial pupil is only replaced by a whole one (WHOLE_PUPIL_VIS). A sparse one
+                // (SPARSE_PUPIL_VIS) is too, or, when no level has a whole one, by the best of those that reached
+                // SPARSE_PUPIL_VIS of the rays. What this pass saw stays out of the diagnosis, as the extended search's
+                // does.
+                let (min_vis, floor) = match p {
+                    None => (0.0, 0.0),
+                    Some(u) if u.vis < SPARSE_PUPIL_VIS => (WHOLE_PUPIL_VIS, SPARSE_PUPIL_VIS),
+                    Some(_) => (WHOLE_PUPIL_VIS, WHOLE_PUPIL_VIS),
+                };
+                let check = ExtCheck { min_vis, min_ba: 0.0, ..search.ext };
+                let mut spare = Spare { floor, level: f64::NAN, best: None };
+                let mut d = Diag::default();
+                for level in fallback_levels(last_level) {
+                    self.find_pupil_blob_at(search.x_min, xmax, prev, &mut d, &[level]);
+                    // No edge zone (an infinite one): a pupil anywhere in the window.
+                    let zone = Some((f64::INFINITY, check));
+                    spare.level = level;
+                    let q = self.refine_candidates(xmax, None, zone, FALLBACK_RAY_STEP, &mut d, Some(&mut spare));
+                    if q.is_some() {
+                        p = q;
+                        f.diag.fallback = true;
+                        f.diag.left_edge = d.left_edge;
+                        spare.best = None;
+                        self.fb_level = level;
+                        break;
+                    }
+                }
+                if let Some((q, left_edge, level)) = spare.best {
+                    p = Some(q);
+                    f.diag.fallback = true;
+                    f.diag.left_edge = left_edge;
+                    self.fb_level = level;
+                }
+            }
             if p.is_none()
                 && let Some(pv) = prev
             {
@@ -710,7 +911,7 @@ impl Extractor {
                 // pupil, as in a squint, which the prototype does not count as a pupil either).
                 f.diag.retried = true;
                 self.find_pupil_blob(search.x_min, xmax, None, &mut f.diag);
-                p = self.refine_candidates(xmax, Some(pv), None, &mut f.diag);
+                p = self.refine_candidates(xmax, Some(pv), None, RAY_STEP, &mut f.diag, None);
             }
             if p.is_none() && ext && !search.ext.closing {
                 // Nothing inside x_min: once more from the extended edge, for a pupil the window's edge cuts (its
@@ -723,7 +924,8 @@ impl Extractor {
                 let x_hi = (search.x_min + EXT_EDGE_PX + 2.0 * search.ext.a.1.min(EXT_MAX_A) + 4.0).min(xmax);
                 let mut d = Diag::default();
                 self.find_pupil_blob(search.find_x_min, x_hi, prev, &mut d);
-                p = self.refine_candidates(xmax, None, Some((search.x_min + EXT_EDGE_PX, search.ext)), &mut d);
+                let zone = Some((search.x_min + EXT_EDGE_PX, search.ext));
+                p = self.refine_candidates(xmax, None, zone, RAY_STEP, &mut d, None);
                 f.diag.extended = p.is_some();
                 f.diag.ext_refused = d.ext_refused;
             }
@@ -741,7 +943,7 @@ impl Extractor {
                 let x_hi = (edge + 2.0 * d.check.a.1.min(EXT_MAX_A) + 4.0).min(xmax);
                 let mut dd = Diag::default();
                 self.find_pupil_blob(d.x0, x_hi, prev, &mut dd);
-                p = self.refine_candidates(xmax, None, Some((edge, d.check)), &mut dd);
+                p = self.refine_candidates(xmax, None, Some((edge, d.check)), RAY_STEP, &mut dd, None);
                 self.levels = levels;
                 f.diag.dim = p.is_some();
                 f.diag.dim_refused = dd.ext_refused;
@@ -801,6 +1003,11 @@ impl Extractor {
     /// prototype's rules keep only the best one and drop blobs that touch the window's left edge; the live ones keep up
     /// to MAX_CANDIDATES and keep blobs cut by the left edge (`refine_candidates` decides).
     fn find_pupil_blob(&mut self, xs: f64, xmax: f64, prev: Option<(f64, f64)>, diag: &mut Diag) {
+        self.find_pupil_blob_at(xs, xmax, prev, diag, &BLOB_LEVELS);
+    }
+
+    /// `find_pupil_blob` with the blob thresholds at these grey steps above the window's dark level instead.
+    fn find_pupil_blob_at(&mut self, xs: f64, xmax: f64, prev: Option<(f64, f64)>, diag: &mut Diag, levels: &[f64]) {
         let legacy = self.search.legacy;
         let (x0, y0, x1, y1) = (xs as usize, SEARCH_Y0, (pint(xmax).clamp(xs as isize + 1, W as isize)) as usize, SEARCH_Y1);
         let (sw, sh) = (x1 - x0, y1 - y0);
@@ -832,7 +1039,7 @@ impl Extractor {
         diag.p50 = vision::percentile_hist(&hist, 50.0);
         self.cands.clear();
         let mut best: Option<Cand> = None;
-        for dth in [14.0, 22.0, 32.0] {
+        for &dth in levels {
             let th = lo + self.levels.step(dth);
             self.mask.clear();
             self.mask.extend((0..sh).flat_map(|y| (0..sw).map(move |x| (y, x))).map(|(y, x)| (at(x, y) as f64) < th));
@@ -895,20 +1102,23 @@ impl Extractor {
     /// needs the pupil's edge on the rays pointing left (outside the window), and no pupil may be centred past the
     /// lens edge (an arc of dark lens band fitted as an ellipse). Blobs within RETRY_MIN_JUMP of `away_from` are
     /// skipped. With `edge_zone` (the extended search), only a pupil whose small-x edge is left of its x counts, and
-    /// only if its check accepts it.
+    /// only if its check accepts it. `ray_step`: the grey steps a ray's outside must be brighter than its inside.
+    /// `spare` collects what the check refused for its `vis` alone (see `Spare`).
     fn refine_candidates(
         &mut self,
         xmax: f64,
         away_from: Option<(f64, f64)>,
         edge_zone: Option<(f64, ExtCheck)>,
+        ray_step: f64,
         diag: &mut Diag,
+        mut spare: Option<&mut Spare>,
     ) -> Option<Pupil> {
         for i in 0..self.cands.len() {
             let c = self.cands[i];
             if away_from.is_some_and(|(x, y)| (c.c.0 - x).hypot(c.c.1 - y) < RETRY_MIN_JUMP) {
                 continue;
             }
-            let Some((p, left_share)) = self.refine_pupil(c.c, c.r, xmax) else { continue };
+            let Some((p, left_share)) = self.refine_pupil(c.c, c.r, xmax, ray_step) else { continue };
             let left_ok = !c.left || left_share >= EDGE_LEFT_SHARE;
             if !left_ok {
                 diag.left_refused = true;
@@ -922,6 +1132,12 @@ impl Extractor {
                 Some((z, _)) if p.cx - p.a >= z => continue,
                 Some((_, check)) if !check.accepts(&p) => {
                     diag.ext_refused = true;
+                    if let Some(s) = spare.as_deref_mut()
+                        && (ExtCheck { min_vis: s.floor, ..check }).accepts(&p)
+                        && s.best.is_none_or(|(b, _, _)| p.vis > b.vis)
+                    {
+                        s.best = Some((p, c.left, s.level));
+                    }
                     continue;
                 }
                 _ => {}
@@ -937,7 +1153,7 @@ impl Extractor {
     /// Also returns the share of the rays pointing left (more than 60 degrees from vertical) that found the edge.
     /// Rays that reach left of the columns computed for this frame (a tall blob cut by the window's left edge) are
     /// skipped and not counted among the left ones: those columns hold nothing of this frame.
-    fn refine_pupil(&self, c: (f64, f64), r0: f64, xmax: f64) -> Option<(Pupil, f64)> {
+    fn refine_pupil(&self, c: (f64, f64), r0: f64, xmax: f64, ray_step: f64) -> Option<(Pupil, f64)> {
         let (cx, cy) = c;
         let (start, stop) = (0.4 * r0, 2.0 * r0 + 6.0);
         let nr = ((stop - start) / 0.5).ceil().max(0.0) as usize;
@@ -980,7 +1196,7 @@ impl Extractor {
             ov.clear();
             ov.extend(rs.iter().zip(row).filter(|(r, _)| **r > 1.25 * r0 && **r < 1.7 * r0).map(|(_, &v)| v as f64));
             let outer = vision::median(&mut ov);
-            if outer - inner < self.levels.step(14.0) || outer.is_nan() || last_x[k] >= xmax {
+            if outer - inner < self.levels.step(ray_step) || outer.is_nan() || last_x[k] >= xmax {
                 continue;
             }
             let th = inner + 0.5 * (outer - inner);
@@ -991,7 +1207,7 @@ impl Extractor {
             let (p0, p1) = (row[j - 1] as f64, row[j] as f64);
             let fr = (th - p0) / (p1 - p0).max(1e-3);
             let r = rs[j - 1] + fr * (rs[j] - rs[j - 1]);
-            if r < 0.5 * r0 || r > 1.9 * r0 {
+            if r < 0.5 * r0 || r > RAY_REACH * r0 {
                 continue;
             }
             ok += 1;
@@ -1004,7 +1220,7 @@ impl Extractor {
         }
         let e = fit_ellipse_robust(pts)?;
         let (a, b) = (e.a.max(e.b) / 2.0, e.a.min(e.b) / 2.0);
-        if !(5.0 < b && a < 60.0 && b / a > 0.35) {
+        if !(5.0 < b && a < 60.0 && b / a > 0.35) || (!self.search.legacy && a > RAY_REACH * r0) {
             return None;
         }
         Some((Pupil { cx: e.cx, cy: e.cy, a, b, ell: e, inner, vis: ok as f64 / NRAY as f64 }, left_ok as f64 / left_n as f64))
@@ -1711,11 +1927,11 @@ mod tests {
                 }
             }
         }
-        let (p, left_share) = ex.refine_pupil((205.0, 200.0), 20.0, 347.0).expect("the other rays still fit it");
+        let (p, left_share) = ex.refine_pupil((205.0, 200.0), 20.0, 347.0, RAY_STEP).expect("the other rays still fit it");
         assert!((p.cy - 200.0).abs() < 1.5 && (p.a - 20.0).abs() < 2.0, "{p:?}");
         assert!(left_share.is_nan() || left_share < EDGE_LEFT_SHARE, "no left ray reached only this frame's columns: {left_share}");
         ex.opf_x0 = 0;
-        assert!(ex.refine_pupil((205.0, 200.0), 20.0, 347.0).is_some_and(|x| x.1 >= EDGE_LEFT_SHARE));
+        assert!(ex.refine_pupil((205.0, 200.0), 20.0, 347.0, RAY_STEP).is_some_and(|x| x.1 >= EDGE_LEFT_SHARE));
     }
 
     #[test]
@@ -1759,8 +1975,9 @@ mod tests {
     }
 
     /// Issue 52's picture: the eye at the small-x edge of the lit part, the pupil (9) in the dim part with its iris
-    /// there only 10 levels brighter (19), dark shading (8) further out, and the sclera and skin bright from x 230 on.
-    fn dim_side_eye(px: f64, py: f64, pr: f64) -> Vec<u8> {
+    /// there only 10 levels brighter (`iris` 19), dark shading (8) further out, and the sclera and skin bright from
+    /// x 230 on.
+    fn dim_side_eye(px: f64, py: f64, pr: f64, iris: u8) -> Vec<u8> {
         let mut img = vec![0u8; W * H];
         for y in 0..H {
             for x in 0..W {
@@ -1768,7 +1985,7 @@ mod tests {
                 let lit = x >= 230;
                 let mut v = if x < 150 { 8.0 } else if lit { 130.0 } else { 28.0 };
                 if d < 50.0 {
-                    v = if lit { 60.0 } else { 19.0 };
+                    v = if lit { 60.0 } else { f64::from(iris) };
                 }
                 if d < pr {
                     v = 9.0;
@@ -1784,7 +2001,9 @@ mod tests {
 
     #[test]
     fn the_dim_side_search_finds_a_pupil_in_the_dim_part_of_the_picture() {
-        let img = dim_side_eye(198.0, 200.0, 17.0);
+        // The iris 4 levels brighter than the pupil, not issue 52's 10 (below): neither the fallback levels' blob nor
+        // their ray step (9) separate the pupil from it, so only the dim side's levels find it
+        let img = dim_side_eye(198.0, 200.0, 17.0, 13);
         let cm = column_means(&img);
         let levels = Levels::for_profile(&cm);
         let dim = levels.dim_side(&cm, 162.0, 206.0).expect("the dim side is much dimmer than the picture");
@@ -1793,6 +2012,13 @@ mod tests {
         let mut ex = Extractor { search: Search::live_ext(186.0, 162.0, ExtCheck::ANY), ..Extractor::default() };
         let (f, p) = ex.extract(&img, 347.0, None, None, None);
         assert!(p.is_none() && f.diag.ext_tried && !f.diag.dim, "{:?}", f.diag);
+        // Issue 52's own picture (the iris 10 levels brighter): the fallback levels take the pupil off the iris and
+        // find its edge before the dim side's pass is asked
+        let mut ex19 = Extractor { search: Search::live_ext(186.0, 162.0, ExtCheck::ANY), ..Extractor::default() };
+        let (f, p) = ex19.extract(&dim_side_eye(198.0, 200.0, 17.0, 19), 347.0, None, None, None);
+        let p = p.expect("pupil");
+        assert!((p.cx - 198.0).abs() < 1.5 && (p.cy - 200.0).abs() < 1.5 && (p.a - 17.0).abs() < 1.5, "{p:?}");
+        assert!(f.diag.fallback && !f.diag.dim && !f.diag.ext_tried, "{:?}", f.diag);
         // With the dim side's levels: found, and only by that pass; the lids and the box still from x_min
         ex.search.dim = Some(DimSearch { x0: 162.0, levels: dim, check: ExtCheck::ANY });
         let (f, p) = ex.extract(&img, 347.0, None, None, None);
@@ -1821,6 +2047,275 @@ mod tests {
         let even = synthetic_eye(250.0, 200.0, 22.0);
         let cm = column_means(&even);
         assert_eq!(Levels::for_profile(&cm).dim_side(&cm, 162.0, 206.0), None);
+    }
+
+    /// The pupil (24) turned toward the temple: shading (8) from the window's edge to x 215, the iris (radius 45) 10
+    /// levels brighter than the pupil (34) on its small-x half and bright (90) on the other half, skin (150) beyond; a
+    /// dark channel (28) 9 px wide across the temporal half of the iris joins the pupil to the shading.
+    fn temple_eye(px: f64, py: f64, pr: f64) -> Vec<u8> {
+        let mut img = vec![0u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let d = (x as f64 - px).hypot(y as f64 - py);
+                let mut v = if x < 215 { 8.0 } else { 150.0 };
+                if d < 45.0 {
+                    v = if (x as f64) < px { 34.0 } else { 90.0 };
+                    if (y as f64 - py).abs() < 5.0 && (x as f64) < px {
+                        v = 28.0;
+                    }
+                }
+                if d < pr {
+                    v = 24.0;
+                }
+                if x >= 350 {
+                    v = 4.0;
+                }
+                img[y * W + x] = v as u8;
+            }
+        }
+        img
+    }
+
+    #[test]
+    fn the_fallback_levels_find_a_pupil_the_usual_ones_merge_with_the_shading() {
+        let img = temple_eye(250.0, 200.0, 20.0);
+        let mut ex = Extractor { search: Search::live(186.0), ..Extractor::default() };
+        // The usual levels (22, 30, 40 on this picture): the shading alone, then the shading joined by the channel and
+        // the pupil (a blob from the window's top to its bottom), then by the temporal iris as well; the fallback's 26
+        // is under the channel, and the temporal iris is 10 brighter than the pupil, enough for its ray step (9) but
+        // not for the usual one (14)
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        let p = p.expect("pupil");
+        assert!((p.cx - 250.0).abs() < 1.5 && (p.cy - 200.0).abs() < 1.5 && (p.a - 20.0).abs() < 2.0, "{p:?}");
+        assert!(p.vis > 0.8, "the temporal rays count: {p:?}");
+        assert!(f.ok_pupil && f.diag.fallback && !f.diag.extended && !f.diag.dim, "{:?}", f.diag);
+        assert!(f.diag.rejected & (REJ_TOP | REJ_BOTTOM) != 0 && f.diag.candidates == 0, "{:?}", f.diag);
+        // Refused by the extended search's check (too small for the open pupil: a lash shadow, a crease): not found
+        ex.search = Search::live_ext(186.0, 186.0, ExtCheck { a: (30.0, 40.0), ..ExtCheck::ANY });
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        assert!(p.is_none() && !f.ok_pupil && !f.diag.fallback, "{:?}", f.diag);
+        // Not on the prototype's rules either: they keep the usual levels
+        ex.search = Search::LEGACY;
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        assert!(p.is_none() && !f.diag.fallback, "{:?}", f.diag);
+        // A pupil the usual levels find is theirs, as before
+        ex.search = Search::live(186.0);
+        let (f, p) = ex.extract(&synthetic_eye(250.0, 200.0, 22.0), 347.0, None, None, None);
+        assert!(p.is_some() && !f.diag.fallback, "{:?}", f.diag);
+        // Nothing there (skin): no pupil from the fallback either
+        let (f, p) = ex.extract(&vec![120u8; W * H], 347.0, None, None, None);
+        assert!(p.is_none() && !f.diag.fallback, "{:?}", f.diag);
+    }
+
+    #[test]
+    fn the_fallback_ray_step_takes_the_rays_toward_an_iris_only_11_levels_brighter() {
+        // A pupil (24, radius 20) at (250, 200), its iris (radius 45) 35 on the small-x half and 90 on the other.
+        let mut ex = Extractor { opf: vec![150; W * H], opf_x0: 0, ..Extractor::default() };
+        for y in 0..H {
+            for x in 0..W {
+                let d = (x as f64 - 250.0).hypot(y as f64 - 200.0);
+                ex.opf[y * W + x] = if d < 20.0 { 24 } else if d < 45.0 { if x < 250 { 35 } else { 90 } } else { 150 };
+            }
+        }
+        let (usual, _) = ex.refine_pupil((250.0, 200.0), 20.0, 347.0, RAY_STEP).expect("the nasal rays");
+        let (fallback, _) = ex.refine_pupil((250.0, 200.0), 20.0, 347.0, FALLBACK_RAY_STEP).expect("all rays");
+        assert!(usual.vis < 0.6 && fallback.vis > 0.95, "{usual:?} {fallback:?}");
+        assert!((fallback.cx - 250.0).abs() < 1.0 && (fallback.cy - 200.0).abs() < 1.0, "{fallback:?}");
+        assert!((fallback.a - 20.0).abs() < 1.0 && (fallback.b - 20.0).abs() < 1.0, "{fallback:?}");
+    }
+
+    /// A pupil (grey `pupil`, radius `pr`) at (px, py) with a darker core (16, radius `core`) and an iris (radius
+    /// 2.25 `pr`) of grey `iris(phi, d)`: `phi` the angle in degrees from the x axis toward small x (the temporal
+    /// side), `d` the distance from the centre in pupil radii. Skin (150) outside the iris, the lens edge at x 350.
+    fn eye(px: f64, py: f64, pr: f64, (pupil, core): (u8, f64), iris: impl Fn(f64, f64) -> u8) -> Vec<u8> {
+        let mut img = vec![150u8; W * H];
+        for y in 0..H {
+            for x in 0..W {
+                let (dx, dy) = (x as f64 - px, y as f64 - py);
+                let d = dx.hypot(dy);
+                let mut v = 150;
+                if d < 2.25 * pr {
+                    v = iris(dy.abs().atan2(-dx).to_degrees(), d / pr);
+                }
+                if d < pr {
+                    v = if d < core { 16 } else { pupil };
+                }
+                if x >= 350 {
+                    v = 4;
+                }
+                img[y * W + x] = v;
+            }
+        }
+        img
+    }
+
+    /// `eye` with the pupil 24 (a core of radius 11, 16, keeps the window's dark level there when the pupil is 30 or
+    /// more: the rays' inside starts beyond it), the iris `iris` within `half` degrees of the x axis and 90 beyond.
+    fn core_eye(px: f64, py: f64, pr: f64, iris: u8, half: f64) -> Vec<u8> {
+        eye(px, py, pr, (24, 11.0), |phi, _| if phi < half { iris } else { 90 })
+    }
+
+    /// The pupil of the usual levels on a picture (`extract` fills the opened and smoothed one first).
+    fn usual(ex: &mut Extractor, img: &[u8]) -> Option<Pupil> {
+        ex.extract(img, 347.0, None, None, None);
+        let mut d = Diag::default();
+        ex.find_pupil_blob(186.0, 347.0, None, &mut d);
+        ex.refine_candidates(347.0, None, None, RAY_STEP, &mut d, None)
+    }
+
+    #[test]
+    fn a_partial_pupil_of_the_usual_levels_is_replaced_by_the_fallbacks_whole_one() {
+        // The window's dark level is the core's, so the usual levels' first threshold (core + 14) takes the pupil
+        // alone, but its temporal iris, 35, is only 11 brighter than it: the rays toward it stop at the usual step
+        // (14) and the fit is the nasal half's arc. The fallback's step (9) sees the whole circle, at each of its
+        // levels (core + 18, + 16, + 10: none of them reaches the iris).
+        let img = core_eye(250.0, 200.0, 30.0, 35, 90.0);
+        let mut ex = Extractor { search: Search::live(186.0), ..Extractor::default() };
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        let p = p.expect("pupil");
+        assert!(f.ok_pupil && f.diag.fallback, "{:?}", f.diag);
+        assert!(p.vis >= WHOLE_PUPIL_VIS, "{p:?}");
+        assert!((p.cx - 250.0).abs() < 1.0 && (p.cy - 200.0).abs() < 1.0 && (p.a - 30.0).abs() < 1.0, "{p:?}");
+        let u = usual(&mut ex, &img).expect("the nasal half");
+        assert!(u.vis < PARTIAL_PUPIL_VIS, "{u:?}");
+        // A whole one of the fallback levels that the extended search's check refuses (too small for the open pupil)
+        // leaves the partial one of the usual levels where it was, and so do the prototype's rules
+        ex.search = Search::live_ext(186.0, 186.0, ExtCheck { a: (40.0, 50.0), ..ExtCheck::ANY });
+        let (f, q) = ex.extract(&img, 347.0, None, None, None);
+        assert!(!f.diag.fallback && q.is_some_and(|q| q.vis < PARTIAL_PUPIL_VIS), "{:?}", f.diag);
+        ex.search = Search::LEGACY;
+        let (f, q) = ex.extract(&img, 347.0, None, None, None);
+        assert!(!f.diag.fallback && q.is_some_and(|q| q.vis < PARTIAL_PUPIL_VIS), "{:?}", f.diag);
+        // The shading only within 20 deg of the x axis: 7 of the 64 rays miss the edge, 0.89, not partial though not
+        // whole either. The fallback would find the whole circle (its step takes those rays), but does not run, unless
+        // the last frame's pupil was the fallback's (`STICKY_PUPIL_VIS`).
+        ex.search = Search::live(186.0);
+        let band = core_eye(250.0, 200.0, 30.0, 35, 20.0);
+        let u = usual(&mut ex, &band).expect("57 rays");
+        assert!((PARTIAL_PUPIL_VIS..WHOLE_PUPIL_VIS).contains(&u.vis), "{u:?}");
+        let (f, q) = ex.extract(&band, 347.0, None, None, None);
+        assert!(!f.diag.fallback && q.is_some_and(|q| q.vis == u.vis && q.a == u.a), "{:?} {q:?}", f.diag);
+        ex.fb_level = FALLBACK_BLOB_LEVELS[0];
+        let (f, q) = ex.extract(&band, 347.0, None, None, None);
+        assert!(f.diag.fallback && q.is_some_and(|q| q.vis >= WHOLE_PUPIL_VIS), "{:?} {q:?}", f.diag);
+        let (w, _) = ex.refine_pupil((250.0, 200.0), 30.0, 347.0, FALLBACK_RAY_STEP).expect("all rays");
+        assert!(w.vis >= WHOLE_PUPIL_VIS, "{w:?}");
+        // The same pupil with its iris 36 brighter on the temporal side is whole at the usual step: theirs, as before
+        let (f, p) = ex.extract(&core_eye(250.0, 200.0, 30.0, 60, 90.0), 347.0, None, None, None);
+        assert!(!f.diag.fallback && p.is_some_and(|p| p.vis >= WHOLE_PUPIL_VIS), "{:?}", f.diag);
+    }
+
+    #[test]
+    fn a_sparse_pupil_of_the_usual_levels_is_replaced_by_the_best_the_fallback_has() {
+        // A big pupil (24, radius 36; its core of radius 11 keeps the window's dark level at 16 and the usual levels'
+        // first threshold at 30) whose temporal iris is in three parts. Within 40 deg of the x axis a bright band 13 px
+        // wide (as thin as the 9 px opening lets through) and 31 beyond it, only 7 brighter than the pupil: the ring
+        // the rays compare with the pupil is mostly that dark, so no ray sees the edge at either step. From there to
+        // 110 deg 35, 11 brighter: the fallback's step (9) sees the edge, the usual (14) does not. Nasal of that 90.
+        // So the usual levels get the nasal arc (25 of the 64 rays, a fit 49 px long), the fallback levels that and the
+        // second part's (49 rays): a pupil that is not whole.
+        let wedge = |flat: f64, rim: f64| {
+            eye(270.0, 200.0, 36.0, (24, 11.0), move |phi, d| {
+                if phi < flat { if d < 1.36 { 60 } else { 31 } } else if phi < rim { 35 } else { 90 }
+            })
+        };
+        let img = wedge(40.0, 110.0);
+        let mut ex = Extractor { search: Search::live(186.0), ..Extractor::default() };
+        let u = usual(&mut ex, &img).expect("the nasal arc");
+        assert!(u.vis < SPARSE_PUPIL_VIS, "{u:?}");
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        let p = p.expect("pupil");
+        assert!(f.diag.fallback && (SPARSE_PUPIL_VIS..WHOLE_PUPIL_VIS).contains(&p.vis), "{:?} {p:?}", f.diag);
+        assert!((p.cx - 270.0).abs() < 2.0 && (p.cy - 200.0).abs() < 2.0 && (p.a - 36.0).abs() < 2.0, "{p:?}");
+        assert!(p.vis > u.vis && (p.a - 36.0).abs() < (u.a - 36.0).abs(), "{p:?} {u:?}");
+        // The spare keeps the fallback's best from its floor on only: 0.8 is above the 49 rays of 64 it has (at the
+        // level that gave it: the others merge with the bands, or reach fewer rays)
+        let mut d = Diag::default();
+        assert!(FALLBACK_BLOB_LEVELS.contains(&ex.fb_level), "{}", ex.fb_level);
+        ex.find_pupil_blob_at(186.0, 347.0, None, &mut d, &[ex.fb_level]);
+        let check = ExtCheck { min_vis: WHOLE_PUPIL_VIS, min_ba: 0.0, ..ExtCheck::ANY };
+        let zone = Some((f64::INFINITY, check));
+        let mut spare = Spare { floor: 0.8, level: ex.fb_level, best: None };
+        let q = ex.refine_candidates(347.0, None, zone, FALLBACK_RAY_STEP, &mut d, Some(&mut spare));
+        assert!(q.is_none() && spare.best.is_none(), "{q:?} {:?}", spare.best);
+        spare.floor = SPARSE_PUPIL_VIS;
+        let q = ex.refine_candidates(347.0, None, zone, FALLBACK_RAY_STEP, &mut d, Some(&mut spare));
+        let kept = spare.best.is_some_and(|(s, _, level)| s.vis == p.vis && s.a == p.a && level == ex.fb_level);
+        assert!(q.is_none() && kept, "{q:?} {:?}", spare.best);
+        // A usual pupil that reached SPARSE_PUPIL_VIS (a partial one: with the nasal part from 80 deg it has 0.58) is
+        // only replaced by a whole one, and the fallback's best is only a sparse one
+        let band = wedge(40.0, 80.0);
+        let u = usual(&mut ex, &band).expect("most of the nasal rays");
+        assert!((SPARSE_PUPIL_VIS..PARTIAL_PUPIL_VIS).contains(&u.vis), "{u:?}");
+        let (f, q) = ex.extract(&band, 347.0, None, None, None);
+        assert!(!f.diag.fallback && q.is_some_and(|q| q.vis == u.vis && q.a == u.a), "{:?} {q:?}", f.diag);
+        // A fallback pupil that the extended search's check refuses (too big for the open pupil) leaves the usual
+        // one, as does the prototype's rules
+        ex.search = Search::live_ext(186.0, 186.0, ExtCheck { a: (10.0, 20.0), ..ExtCheck::ANY });
+        let (f, q) = ex.extract(&img, 347.0, None, None, None);
+        assert!(!f.diag.fallback && q.is_some_and(|q| q.vis < SPARSE_PUPIL_VIS), "{:?}", f.diag);
+        ex.search = Search::LEGACY;
+        let (f, q) = ex.extract(&img, 347.0, None, None, None);
+        assert!(!f.diag.fallback && q.is_some_and(|q| q.vis < SPARSE_PUPIL_VIS), "{:?}", f.diag);
+    }
+
+    #[test]
+    fn the_fallback_level_that_gave_the_last_pupil_is_tried_first() {
+        // The last level first, the others as they are; none of the set's (a last pupil that was not the fallback's:
+        // NaN) leaves them as they are
+        assert_eq!(fallback_levels(f64::NAN), FALLBACK_BLOB_LEVELS);
+        assert_eq!(fallback_levels(1.0), FALLBACK_BLOB_LEVELS);
+        for (i, &last) in FALLBACK_BLOB_LEVELS.iter().enumerate() {
+            let rest = FALLBACK_BLOB_LEVELS.iter().enumerate().filter(|&(j, _)| j != i).map(|(_, &l)| l);
+            let order = fallback_levels(last);
+            assert!(order[0] == last && order[1..].iter().copied().eq(rest), "{last}: {order:?}");
+        }
+        // On a frame: a partial pupil of the usual levels is replaced by a whole one of the first fallback level, which
+        // the extractor keeps; started from each level in turn (they all have the whole pupil here) it keeps that one
+        let img = core_eye(250.0, 200.0, 30.0, 35, 90.0);
+        let mut ex = Extractor { search: Search::live(186.0), ..Extractor::default() };
+        let (f, p) = ex.extract(&img, 347.0, None, None, None);
+        assert!(p.is_some() && f.diag.fallback, "{:?}", f.diag);
+        assert_eq!(ex.fb_level, FALLBACK_BLOB_LEVELS[0]);
+        let mut kept = 0;
+        for last in FALLBACK_BLOB_LEVELS {
+            ex.fb_level = last;
+            let (f, p) = ex.extract(&img, 347.0, None, None, None);
+            assert!(p.is_some() && f.diag.fallback, "{:?}", f.diag);
+            kept += (ex.fb_level == last) as usize;
+        }
+        assert_eq!(kept, FALLBACK_BLOB_LEVELS.len());
+        // It forgets the level on a frame whose pupil is the usual levels', and on one without a pupil
+        let (f, p) = ex.extract(&core_eye(250.0, 200.0, 30.0, 60, 90.0), 347.0, None, None, None);
+        assert!(p.is_some() && !f.diag.fallback && ex.fb_level.is_nan(), "{:?} {}", f.diag, ex.fb_level);
+        ex.extract(&img, 347.0, None, None, None);
+        assert!(!ex.fb_level.is_nan());
+        let (_, p) = ex.extract(&vec![120u8; W * H], 347.0, None, None, None);
+        assert!(p.is_none() && ex.fb_level.is_nan(), "{}", ex.fb_level);
+    }
+
+    #[test]
+    fn a_fit_beyond_the_rays_reach_is_refused_by_the_live_rules() {
+        // A dark ellipse (12) of semi-axes 26 and 12, the long one along x, at (250, 200) on skin, and a blob of radius
+        // 10 in its middle: the rays toward the top and bottom reach its edge within 1.9 r0 = 19 px, those along the
+        // long axis do not.
+        let mut ex = Extractor { opf: vec![120; W * H], opf_x0: 0, search: Search::LEGACY, ..Extractor::default() };
+        for y in 0..H {
+            for x in 0..W {
+                if ((x as f64 - 250.0) / 26.0).powi(2) + ((y as f64 - 200.0) / 12.0).powi(2) < 1.0 {
+                    ex.opf[y * W + x] = 12;
+                }
+            }
+        }
+        // The prototype's rules take the ellipse the two arcs give (2.7 r0), the live ones refuse a semi-axis beyond
+        // 1.9 r0
+        let (p, _) = ex.refine_pupil((250.0, 200.0), 10.0, 347.0, RAY_STEP).expect("the prototype fits the arcs");
+        assert!(p.a > RAY_REACH * 10.0 && (p.a - 26.0).abs() < 2.0 && (p.b - 12.0).abs() < 1.5, "{p:?}");
+        ex.search = Search::live(186.0);
+        assert!(ex.refine_pupil((250.0, 200.0), 10.0, 347.0, RAY_STEP).is_none());
+        // A blob of the ellipse's own size (r0 = sqrt(26 * 12), 17.7): found, as before
+        let (p, _) = ex.refine_pupil((250.0, 200.0), 17.7, 347.0, RAY_STEP).expect("the whole ellipse");
+        assert!((p.a - 26.0).abs() < 1.5 && (p.b - 12.0).abs() < 1.5, "{p:?}");
     }
 
     #[test]
@@ -2021,7 +2516,7 @@ mod bench {
             let c = Instant::now();
             ex.find_pupil_blob(ex.search.x_min, 346.0, prev, &mut Diag::default());
             let d = Instant::now();
-            let p = ex.cands.first().copied().and_then(|b| ex.refine_pupil(b.c, b.r, 346.0));
+            let p = ex.cands.first().copied().and_then(|b| ex.refine_pupil(b.c, b.r, 346.0, RAY_STEP));
             let e = Instant::now();
             let (_, p2) = ex.extract(&img, 346.0, prev, Some(54.0), prev_p.as_ref());
             let f = Instant::now();

@@ -526,7 +526,8 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                 f(o.x_min),
                 f(o.search_x_min),
                 // 1: the pupil came from the extended search; 2: it found one the engine dropped; 3: the pupil came
-                // from the dim-side search; 4: that search found one its check refused or the engine dropped. The
+                // from the dim-side search; 4: that search found one its check refused or the engine dropped; 5: the
+                // pupil came from the fallback levels (those run before both, which only run without a pupil). The
                 // dim-side search runs last, so 4 wins over 2 when both searches found something and none was taken.
                 (if o.f.diag.extended && o.f.ok_pupil {
                     1
@@ -536,6 +537,8 @@ pub fn write_live(s: &Session, out: &Path, opts: &LiveOpts) -> Result<f64, Strin
                     4
                 } else if o.f.diag.extended || o.f.diag.ext_refused {
                     2
+                } else if o.f.diag.fallback && o.f.ok_pupil {
+                    5
                 } else {
                     0
                 })

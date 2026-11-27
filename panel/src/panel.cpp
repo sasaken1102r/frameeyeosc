@@ -10328,7 +10328,8 @@ void EyePanel::drawCameraView(const Pen& pen, const UiText& t, const PanelModel&
     // Always live (the sheet's freeze is the sheet's)
     const eye_preview::View& pv = m.preview;
     const CameraState camera = eye_preview::cameraState(m.eyecam, SettingsView(m).flag(key::kCameraLids), pv.refused);
-    // (the sheet's switch goes off as it does there; this view keeps wanting the pictures)
+    // (the sheet's switch goes off as it does there; this view keeps wanting the pictures.
+    //  The loop in main.cpp does the same; this one is for --dump-png / --preview-sheet, which draw without it)
     if (camera != CameraState::Available) stopPreviewPictures();
     const CameraViewState state = eye_preview::cameraViewState(camera, pv);
     // One card over the whole panel (nothing else of it shows: a clean picture to take)

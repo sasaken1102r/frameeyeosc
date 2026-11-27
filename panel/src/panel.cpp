@@ -9979,16 +9979,17 @@ void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, 
 
 void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
                                   double x, double y, double side, bool flip, bool smooth,
-                                  const eye_preview::Marks& marks, bool badges) {
+                                  const eye_preview::Marks& marks, bool badges, double markScale) {
     cairo_t* cr = pen.cr;
     const double r = 12;
     fillRounded(pen, x, y, side, side, r, kBg);
     const int n = picture.side;
     if (!fresh || n <= 0 || picture.pixels.size() != static_cast<size_t>(n) * n) {
-        const std::vector<std::string> lines = wrapText(pen, t.previewWaitingPicture, 14, false, side - 20, 2);
+        const double waitSize = 14 * markScale;
+        const std::vector<std::string> lines = wrapText(pen, t.previewWaitingPicture, waitSize, false, side - 20, 2);
         for (size_t i = 0; i < lines.size(); ++i) {
-            textCentered(pen, x + side / 2, y + side / 2 + 5 + (i - (lines.size() - 1) / 2.0) * 20, lines[i], 14,
-                         kTextMuted, false);
+            const double at = y + side / 2 + (5 + (i - (lines.size() - 1) / 2.0) * 20) * markScale;
+            textCentered(pen, x + side / 2, at, lines[i], waitSize, kTextMuted, false);
         }
         strokeRounded(pen, x, y, side, side, r, kBorder, 1.5);
         return;
@@ -10047,16 +10048,16 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
         const double dy = py(eye_preview::lidLineY(line, lx) + below);
         pen.color(kBg, 0.7);
         cairo_new_sub_path(cr);
-        cairo_arc(cr, dx, dy, 6.5, 0, 2 * M_PI);
+        cairo_arc(cr, dx, dy, 6.5 * markScale, 0, 2 * M_PI);
         cairo_fill(cr);
-        drawDot(cr, dx, dy, 4.5, color);
+        drawDot(cr, dx, dy, 4.5 * markScale, color);
     };
     if (marks.lids && picture.lids) {
         lidDot(lids.upper, std::isfinite(lids.margin) ? lids.margin : 0.0, kPreviewLidUpper);
         lidDot(lids.lower, 0.0, kPreviewLidLower);
     }
     if (marks.pupil && picture.pupil) {
-        drawRing(cr, px(picture.pupilX), py(picture.pupilY), picture.pupilR * scale, 2.5, kPreviewPupil);
+        drawRing(cr, px(picture.pupilX), py(picture.pupilY), picture.pupilR * scale, 2.5 * markScale, kPreviewPupil);
     }
     const auto badge = [&](double by, const char* text) {
         const double size = 13;
@@ -10384,10 +10385,12 @@ void EyePanel::drawCameraView(const Pen& pen, const UiText& t, const PanelModel&
     for (int at = 0; at < 2; ++at) {
         const int eye = eye_preview::drawnColumn(0, previewMirror_) == at ? 0 : 1;
         const eye_preview::Picture& picture = pv.pictures.eyes[eye];
-        const bool fresh = pv.hasPictures && eye_preview::pictureFresh(picture, pv.nowNs);
+        // (none while the cameras can't give them, as on the sheet, even if some are still held)
+        const bool fresh =
+            camera == CameraState::Available && pv.hasPictures && eye_preview::pictureFresh(picture, pv.nowNs);
         const double x = left + at * (side + gap);
         drawPreviewPicture(pen, t, picture, fresh, x, top, side, eye_preview::pictureFlipped(eye, previewMirror_), true,
-                           marks, false);
+                           marks, false, 1.4);
         const char* name = eye == 0 ? t.leftEye : t.rightEye;
         const double nameSize = 16;
         const double nameH = 32;

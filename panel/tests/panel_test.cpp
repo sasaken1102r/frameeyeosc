@@ -4087,6 +4087,13 @@ void testCameraView(const FontSet& fonts) {
             without.eyecam.visible = false;
             panel.render(without);
             CHECK(panel.cameraViewOpen() && panel.previewPictures() && panel.hitAreas().size() == 3);
+            // (the pictures still held aren't drawn: as with none)
+            const std::vector<uint8_t> gone = panel.toRgba();
+            PanelModel none = without;
+            none.preview.hasPictures = false;
+            panel.render(none);
+            CHECK(rowsOf(panel.toRgba(), panel.width(), picturesTop, picturesBottom) ==
+                  rowsOf(gone, panel.width(), picturesTop, picturesBottom));
             panel.render(m);
             CHECK(panel.previewPictures());
         }

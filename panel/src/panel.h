@@ -1176,10 +1176,11 @@ private:
      * @param smooth the lid lines and EyeLid smoothed over the pictures (else as read: Raw)
      * @param marks which marks to draw ("Read as closed" always is, with badges)
      * @param badges "Read as closed" and the EyeLid's value on it (off in the eye cameras view: only the marks)
+     * @param markScale how much larger the marks and "waiting" are drawn (the eye cameras view's large pictures)
      */
     void drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
                             double x, double y, double side, bool flip, bool smooth, const eye_preview::Marks& marks,
-                            bool badges = true);
+                            bool badges = true, double markScale = 1.0);
 
     /**
      * A switch as a pill: a check, bold and the accent while on.

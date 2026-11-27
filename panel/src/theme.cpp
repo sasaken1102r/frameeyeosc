@@ -172,6 +172,28 @@ const std::vector<ContrastPair>& contrastPairs() {
         {"eye preview: the upper lid's line (dark picture)", kPreviewLidUpper, kBg, ContrastKind::Ui},
         {"eye preview: the lower lid's line (dark picture)", kPreviewLidLower, kBg, ContrastKind::Ui},
         {"eye preview: \"Read as closed\" on a picture (dark badge)", kText, kBg, ContrastKind::Text},
+        // The eye cameras view (over the whole panel): its chip, the eyes' names on the pictures, "Close", the marks'
+        // switches
+        {"eye cameras view: \"Live\" chip and its dot (green tint)", kSuccess, kSuccessTint, ContrastKind::Text},
+        {"eye cameras view: \"Waiting\" / why-not chip and its dot (pill-colored)", kTextMuted, kControl,
+         ContrastKind::Text},
+        {"eye cameras view: an eye's name on its picture (dark badge)", kText, kBg, ContrastKind::Text},
+        {"eye cameras view: \"Close\" and its cross (pill-colored)", kText, kControl, ContrastKind::Text},
+        {"eye cameras view: \"Close\" under the pointer (hover)", kText, kControlHover, ContrastKind::Text},
+        {"eye cameras view: a switch's label (pill-colored)", kText, kControl, ContrastKind::Text},
+        {"eye cameras view: a switch's outline (card)", kBorder, kCard, ContrastKind::Ui},
+        {"eye cameras view: a switch's track while on (pill-colored)", kAccent, kControl, ContrastKind::Ui},
+        {"eye cameras view: a switch's knob while on (accent track)", kOnAccent, kAccent, ContrastKind::Ui},
+        {"eye cameras view: a switch's track outline while off (dark track)", kBorder, kBg, ContrastKind::Ui},
+        {"eye cameras view: a switch's knob while off (dark track)", kTextMuted, kBg, ContrastKind::Ui},
+        {"eye cameras view: the pupil's dot on its switch (pill-colored)", kPreviewPupil, kControl, ContrastKind::Ui},
+        {"eye cameras view: the upper lid's dot on its switch (pill-colored)", kPreviewLidUpper, kControl,
+         ContrastKind::Ui},
+        {"eye cameras view: the lower lid's dot on its switch (pill-colored)", kPreviewLidLower, kControl,
+         ContrastKind::Ui},
+        {"eye preview: \"Cameras only\" with its icon (pill-colored)", kText, kControl, ContrastKind::Text},
+        {"eye preview: \"Cameras only\" while the cameras can't (pill-colored)", kTextDisabled, kControl,
+         ContrastKind::Disabled},
     };
     return pairs;
 }

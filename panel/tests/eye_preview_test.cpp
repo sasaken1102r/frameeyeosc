@@ -552,6 +552,42 @@ void testCameraState() {
     CHECK(!cameraValuesAvailable(CameraState::NotRunning) && !cameraValuesAvailable(CameraState::NotSetUp));
 }
 
+void testCameraView() {
+    // The chip: "Live" while at least one eye's picture is fresh, "waiting" while the cameras can give them but none
+    // is, and why not while they can't (whatever pictures are still held)
+    View view;
+    fake(view, 5000000000ull);
+    view.hasPictures = true;
+    view.nowNs = 5000000000ull + 100000000ull;
+    CHECK(cameraViewState(CameraState::Available, view) == CameraViewState::Live);
+    for (const CameraState state : {CameraState::NotRunning, CameraState::NotSetUp, CameraState::NotInUse,
+                                    CameraState::Old, CameraState::Refused}) {
+        CHECK(cameraViewState(state, view) == CameraViewState::Unavailable);
+    }
+    // One eye's picture stale, the other fresh: still live
+    view.pictures.eyes[0].timeNs = 1000000000ull;
+    CHECK(cameraViewState(CameraState::Available, view) == CameraViewState::Live);
+    // Both stale (the cameras stopped, or the headset is off): waiting
+    view.pictures.eyes[1].timeNs = 1000000000ull;
+    CHECK(cameraViewState(CameraState::Available, view) == CameraViewState::Waiting);
+    // None read yet: waiting
+    View none;
+    CHECK(cameraViewState(CameraState::Available, none) == CameraViewState::Waiting);
+    view.pictures.eyes[1].timeNs = view.nowNs;
+    view.hasPictures = false;
+    CHECK(cameraViewState(CameraState::Available, view) == CameraViewState::Waiting);
+
+    // The marks: the sheet's pupil and lids as they are, never the search window
+    for (int bits = 0; bits < 8; ++bits) {
+        Marks marks;
+        marks.lids = (bits & 1) != 0;
+        marks.pupil = (bits & 2) != 0;
+        marks.window = (bits & 4) != 0;
+        const Marks shown = cameraViewMarks(marks);
+        CHECK(shown.lids == marks.lids && shown.pupil == marks.pupil && !shown.window);
+    }
+}
+
 void testAsker() {
     Asker asker;
     std::string command;
@@ -653,6 +689,7 @@ int main() {
     testReader();
     testFresh();
     testCameraState();
+    testCameraView();
     testAsker();
     testRefusal();
     testPacer();

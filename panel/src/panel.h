@@ -141,6 +141,9 @@ enum class PanelAction {
     PreviewCamera,     ///< the eye cameras' pictures on / off (handled inside; the caller follows previewPictures)
     PreviewMark,       ///< one of the marks over the pictures on / off: arg = eye_preview::Mark (handled inside)
     PreviewFreeze,     ///< stop the drawing where it is, or let it move again (handled inside)
+    CameraViewOpen,    ///< the sheet's "Cameras only": the eye cameras view over the whole panel (handled inside; the
+                       ///< caller follows previewPictures)
+    CameraViewClose,   ///< the view's "Close": back to the sheet (handled inside)
     ContribOpen,       ///< Debug tools' "Record for squint training": open its sheet, arg = contrib::Page (the panel
                        ///< opens it; the caller forgets the last recording's end and failure)
     ContribClose,      ///< its cross, "Cancel" or "Close" (handled inside)
@@ -225,7 +228,7 @@ struct PanelHit {
 enum class PanelTab : int { Basic, Output, Gaze, EyeFit, Lids, Advanced, Eyecam };
 
 /** An icon before a button's label. */
-enum class ButtonIcon { None, Terminal, Play, Pause };
+enum class ButtonIcon { None, Terminal, Play, Pause, Expand, Cross };
 
 /**
  * Draws the panel image and finds the button under the laser pointer.
@@ -612,8 +615,22 @@ public:
      */
     void openPreview();
 
-    /** Close the eye preview (the dashboard closed). */
-    void closePreview() { previewOpen_ = false; }
+    /** Close the eye preview, and the eye cameras view with it (the dashboard closed). */
+    void closePreview() {
+        previewOpen_ = false;
+        cameraView_ = false;
+    }
+
+    /**
+     * Open the eye cameras view (目のカメラ) over the whole panel, as the sheet's "Cameras only" does: both pictures
+     * large and nothing else but its title, the switches for the pupil's and the lids' marks (the sheet's) and "Close",
+     * which goes back to the sheet. Opening it is asking for the pictures (it wants them while it shows, whatever the
+     * sheet's switch says; the switch is left as it was for the sheet). The sheet opens first if it isn't open.
+     */
+    void openCameraView();
+
+    /** @return true while the eye cameras view shows (over the sheet, which stays open under it) */
+    bool cameraViewOpen() const { return previewOpen_ && cameraView_; }
 
     /** @return true while the eye preview is open */
     bool previewOpen() const { return previewOpen_; }
@@ -659,11 +676,22 @@ public:
     /** @return the kind whose delete is being confirmed (stored::Kind), -1 for none */
     int dataConfirm() const { return dataConfirm_; }
 
-    /** @return true while it wants the eye cameras' pictures (open, with its "Camera picture" on) */
-    bool previewPictures() const { return previewOpen_ && previewCamera_; }
+    /**
+     * @return true while it wants the eye cameras' pictures (open, with its "Camera picture" on, or the eye cameras
+     * view showing)
+     */
+    bool previewPictures() const { return previewOpen_ && (previewCamera_ || cameraView_); }
 
-    /** The eye cameras can't give pictures now: their switch goes off (pressed again once they can, not by itself). */
-    void stopPreviewPictures() { previewCamera_ = previewCameraKept_ = false; }
+    /**
+     * The eye cameras can't give pictures now: their switch goes off (pressed again once they can, not by itself). The
+     * eye cameras view still wants them (it shows why there are none, and they come back by themselves there).
+     * @return true if the switch was on (draw again)
+     */
+    bool stopPreviewPictures() {
+        const bool was = previewCamera_;
+        previewCamera_ = previewCameraKept_ = false;
+        return was;
+    }
 
     /**
      * For --preview-sheet: how the sheet is set.
@@ -1025,6 +1053,7 @@ private:
     bool previewCameraKept_ = false;    ///< ...the pictures' switch as last pressed, for the next time it opens (this
                                         ///< run of the panel only; the cameras going away turns it off too)
     eye_preview::Marks previewMarks_;   ///< ...which marks are drawn over them
+    bool cameraView_ = false;           ///< ...with the eye cameras view over the whole panel (cameraViewOpen)
     bool contribOpen_ = false;         ///< "Record for squint training" is shown on the Advanced tab
     contrib::Page contribPage_ = contrib::Page::Record;  ///< ...opened as "Record" or "Recordings"
     bool contribAgreed_ = false;        ///< ..."Agree and continue" pressed (the question about glasses)
@@ -1094,6 +1123,32 @@ private:
     void drawPreview(const Pen& pen, const UiText& t, const PanelModel& m);
 
     /**
+     * The eye cameras view (目のカメラ) over the whole panel: the title with its state chip and "Close", both pictures
+     * large (as the sheet orders and flips them), and the switches for the pupil's and the lids' marks; nothing else.
+     * @param pen drawing tools
+     * @param t texts
+     * @param m the model (its preview, eyecam-rec and camera_lids)
+     */
+    void drawCameraView(const Pen& pen, const UiText& t, const PanelModel& m);
+
+    /**
+     * A marks' switch of the eye cameras view: a pill with an on / off switch, the marks' colours as dots, and its
+     * label.
+     * @param pen drawing tools
+     * @param x left
+     * @param y top
+     * @param h height
+     * @param label its label
+     * @param dots the marks' colours shown before the label (one or two)
+     * @param hit what it does
+     * @param on on
+     * @param draw draw it (else only measured)
+     * @return its width
+     */
+    double drawMarkSwitch(const Pen& pen, double x, double y, double h, const std::string& label,
+                          const std::vector<Color>& dots, const PanelHit& hit, bool on, bool draw = true);
+
+    /**
      * One drawn eye: the almond, the white, the iris and pupil where the eye looks, the upper lid down to its eyelid
      * (raised for widening), the lower lid up for a squint; faded with no value.
      * @param pen drawing tools
@@ -1119,10 +1174,12 @@ private:
      * @param side its size (px)
      * @param flip mirrored left to right
      * @param smooth the lid lines and EyeLid smoothed over the pictures (else as read: Raw)
-     * @param marks which marks to draw ("Read as closed" always is)
+     * @param marks which marks to draw ("Read as closed" always is, with badges)
+     * @param badges "Read as closed" and the EyeLid's value on it (off in the eye cameras view: only the marks)
      */
     void drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
-                            double x, double y, double side, bool flip, bool smooth, const eye_preview::Marks& marks);
+                            double x, double y, double side, bool flip, bool smooth, const eye_preview::Marks& marks,
+                            bool badges = true);
 
     /**
      * A switch as a pill: a check, bold and the accent while on.

@@ -489,6 +489,22 @@ bool cameraValuesAvailable(CameraState state) {
     return state != CameraState::NotRunning && state != CameraState::NotSetUp && state != CameraState::NotInUse;
 }
 
+CameraViewState cameraViewState(CameraState camera, const View& view) {
+    if (camera != CameraState::Available) return CameraViewState::Unavailable;
+    if (view.hasPictures) {
+        for (const Picture& picture : view.pictures.eyes) {
+            if (pictureFresh(picture, view.nowNs)) return CameraViewState::Live;
+        }
+    }
+    return CameraViewState::Waiting;
+}
+
+Marks cameraViewMarks(const Marks& marks) {
+    Marks shown = marks;
+    shown.window = false;
+    return shown;
+}
+
 bool Asker::next(bool wanted, bool busy, double now, std::string& command) {
     if (busy) return false;
     if (wanted) {

@@ -2697,7 +2697,8 @@ void testFitRunning(const FontSet& fonts) {
             const PanelAction a = area.hit.action;
             CHECK(a == PanelAction::Tab || a == PanelAction::PreviewClose || a == PanelAction::PreviewSource ||
                   a == PanelAction::PreviewMirror || a == PanelAction::PreviewFreeze ||
-                  a == PanelAction::PreviewCamera || a == PanelAction::PreviewMark);
+                  a == PanelAction::PreviewCamera || a == PanelAction::PreviewMark ||
+                  a == PanelAction::CameraViewOpen);
             CHECK(a == PanelAction::Tab || area.x >= 416);
         }
         // Its own buttons still work (the fit goes on behind it)
@@ -3629,7 +3630,8 @@ bool overlaps(const EyePanel::HitArea& a, const EyePanel::HitArea& b) {
 }
 
 /**
- * The eye preview's own buttons (the cross, the choices, the switches, freeze, the marks' switches) as last drawn.
+ * The eye preview's own buttons (the cross, "Cameras only", the choices, the switches, freeze, the marks' switches) as
+ * last drawn.
  * @param panel the panel
  * @return them
  */
@@ -3638,7 +3640,8 @@ std::vector<EyePanel::HitArea> previewButtons(const EyePanel& panel) {
     for (const EyePanel::HitArea& area : panel.hitAreas()) {
         const PanelAction a = area.hit.action;
         if (a == PanelAction::PreviewClose || a == PanelAction::PreviewSource || a == PanelAction::PreviewMirror ||
-            a == PanelAction::PreviewCamera || a == PanelAction::PreviewMark || a == PanelAction::PreviewFreeze) {
+            a == PanelAction::PreviewCamera || a == PanelAction::PreviewMark || a == PanelAction::PreviewFreeze ||
+            a == PanelAction::CameraViewOpen) {
             found.push_back(area);
         }
     }
@@ -3663,15 +3666,17 @@ void testPreview(const FontSet& fonts) {
         }
         CHECK(!panel.previewOpen());
 
-        // It opens the sheet over the tabs' content: its cross, three choices, two switches and freeze, inside the
-        // card, apart from each other; the left column and every tab stay (none chosen: each closes it)
+        // It opens the sheet over the tabs' content: its cross, "Cameras only", three choices, two switches and
+        // freeze, inside the card, apart from each other; the left column and every tab stay (none chosen: each closes
+        // it)
         CHECK(press(panel, PanelAction::PreviewOpen).action == PanelAction::None);
         // The pictures start off, so an eye never shows by accident
         CHECK(panel.previewOpen() && !panel.previewPictures());
         panel.render(m);
         const std::vector<EyePanel::HitArea> own = previewButtons(panel);
-        CHECK(own.size() == 7);
+        CHECK(own.size() == 8);
         CHECK(hits(panel, PanelAction::PreviewClose).size() == 1 && hits(panel, PanelAction::PreviewSource).size() == 3);
+        CHECK(hits(panel, PanelAction::CameraViewOpen).size() == 1);
         CHECK(hits(panel, PanelAction::PreviewMirror).size() == 1 && hits(panel, PanelAction::PreviewCamera).size() == 1);
         CHECK(hits(panel, PanelAction::PreviewFreeze).size() == 1);
         for (size_t i = 0; i < own.size(); ++i) {
@@ -3688,7 +3693,8 @@ void testPreview(const FontSet& fonts) {
             const PanelAction a = area.hit.action;
             const bool ownButton = a == PanelAction::PreviewClose || a == PanelAction::PreviewSource ||
                                    a == PanelAction::PreviewMirror || a == PanelAction::PreviewCamera ||
-                                   a == PanelAction::PreviewMark || a == PanelAction::PreviewFreeze;
+                                   a == PanelAction::PreviewMark || a == PanelAction::PreviewFreeze ||
+                                   a == PanelAction::CameraViewOpen;
             if (sheet) CHECK(ownButton);
         }
         // The button stays, now closing it
@@ -3734,7 +3740,7 @@ void testPreview(const FontSet& fonts) {
                 CHECK(a.y >= 96 && a.y + a.h <= 676 - 36 - 22);
             }
             const std::vector<EyePanel::HitArea> all = previewButtons(panel);
-            CHECK(all.size() == 10);
+            CHECK(all.size() == 11);
             for (size_t i = 0; i < all.size(); ++i) {
                 for (size_t j = i + 1; j < all.size(); ++j) CHECK(!overlaps(all[i], all[j]));
             }
@@ -3779,7 +3785,7 @@ void testPreview(const FontSet& fonts) {
             // Without the pictures: no switches for them (and no room kept)
             press(panel, PanelAction::PreviewCamera);
             panel.render(m);
-            CHECK(hits(panel, PanelAction::PreviewMark).empty() && previewButtons(panel).size() == 7);
+            CHECK(hits(panel, PanelAction::PreviewMark).empty() && previewButtons(panel).size() == 8);
             press(panel, PanelAction::PreviewCamera);
             panel.render(m);
             pressArg(panel, PanelAction::PreviewMark, static_cast<int>(eye_preview::Mark::Pupil));
@@ -3867,7 +3873,7 @@ void testPreview(const FontSet& fonts) {
             if (why == 2) without.config.root.set(key::kCameraLids, JsonValue::makeBool(false));
             if (why == 3) without.eyecam.status.hasPreview = false;
             panel.render(without);
-            CHECK(hits(panel, PanelAction::PreviewCamera).empty());
+            CHECK(hits(panel, PanelAction::PreviewCamera).empty() && hits(panel, PanelAction::CameraViewOpen).empty());
             bool cameraValues = false;
             for (const EyePanel::HitArea& area : hits(panel, PanelAction::PreviewSource)) {
                 cameraValues |= area.hit.arg == static_cast<int>(eye_preview::Source::Camera);
@@ -3896,7 +3902,7 @@ void testPreview(const FontSet& fonts) {
         PanelModel empty = m;
         empty.preview = eye_preview::View();
         panel.render(empty);
-        CHECK(previewButtons(panel).size() == 7);
+        CHECK(previewButtons(panel).size() == 8);
 
         // Its cross closes it; so does its button pressed again, and any tab
         press(panel, PanelAction::PreviewClose);
@@ -3952,6 +3958,182 @@ size_t hitsArg(const EyePanel& panel, PanelAction action, int arg) {
     size_t count = 0;
     for (const EyePanel::HitArea& area : hits(panel, action)) count += area.hit.arg == arg ? 1 : 0;
     return count;
+}
+
+/**
+ * Rows of the panel's picture (all columns).
+ * @param rgba the picture (EyePanel::toRgba)
+ * @param width its width
+ * @param from the first row
+ * @param to past the last
+ * @return their bytes
+ */
+std::vector<uint8_t> rowsOf(const std::vector<uint8_t>& rgba, int width, int from, int to) {
+    const size_t stride = static_cast<size_t>(width) * 4;
+    return std::vector<uint8_t>(rgba.begin() + from * stride, rgba.begin() + to * stride);
+}
+
+void testCameraView(const FontSet& fonts) {
+    // The eye cameras view (目のカメラ): opened from the sheet's "Cameras only", over the whole panel with nothing but
+    // "Close" and the marks' two switches to press; it asks for the pictures while it shows, its switches are the
+    // sheet's marks, the search window never shows on it, and "Close" goes back to the sheet as it was
+    for (const Language language : {Language::Ja, Language::En}) {
+        EyePanel panel(fonts);
+        PanelModel m = modelWith(Lids::Both);
+        m.language = language;
+        m.update.state = frame_updater::UpdateState::UpToDate;
+        m.eyecam.status.hasPreview = true;
+        eye_preview::fake(m.preview, eye_preview::monotonicNs());
+        m.preview.hasPictures = true;
+        panel.render(m);
+        press(panel, PanelAction::PreviewOpen);
+        panel.render(m);
+        // (the sheet's pictures off, as it opens)
+        CHECK(panel.previewOpen() && !panel.previewPictures() && !panel.cameraViewOpen());
+        // "Cameras only" at the right of the sheet's title row, left of its cross
+        const std::vector<EyePanel::HitArea> entry = hits(panel, PanelAction::CameraViewOpen);
+        const std::vector<EyePanel::HitArea> cross = hits(panel, PanelAction::PreviewClose);
+        CHECK(entry.size() == 1 && cross.size() == 1);
+        if (entry.size() == 1 && cross.size() == 1) {
+            CHECK(entry[0].x + entry[0].w <= cross[0].x && entry[0].x >= 438 + 200);
+            CHECK(entry[0].y >= cross[0].y && entry[0].y + entry[0].h <= cross[0].y + cross[0].h);
+        }
+        CHECK(press(panel, PanelAction::CameraViewOpen).action == PanelAction::None);
+        CHECK(panel.cameraViewOpen() && panel.previewOpen());
+        // It wants the pictures (whatever the sheet's switch says)
+        CHECK(panel.previewPictures());
+        panel.pointerLeave();
+        panel.render(m);
+
+        // Only "Close" (top right) and the two switches (pupil, lids; no search window) at the bottom, apart, inside
+        // the panel: no tab, no left column, no sheet
+        {
+            const std::vector<EyePanel::HitArea> areas = panel.hitAreas();
+            CHECK(areas.size() == 3);
+            const std::vector<EyePanel::HitArea> close = hits(panel, PanelAction::CameraViewClose);
+            const std::vector<EyePanel::HitArea> marks = hits(panel, PanelAction::PreviewMark);
+            CHECK(close.size() == 1 && marks.size() == 2);
+            CHECK(hitsArg(panel, PanelAction::PreviewMark, static_cast<int>(eye_preview::Mark::Pupil)) == 1);
+            CHECK(hitsArg(panel, PanelAction::PreviewMark, static_cast<int>(eye_preview::Mark::Lids)) == 1);
+            if (close.size() == 1) CHECK(close[0].x + close[0].w >= 1100 && close[0].y + close[0].h <= 100);
+            for (const EyePanel::HitArea& a : marks) CHECK(a.y >= 560 && a.y + a.h <= 680);
+            for (size_t i = 0; i < areas.size(); ++i) {
+                const EyePanel::HitArea& a = areas[i];
+                CHECK(a.x >= 20 && a.x + a.w <= 1180 && a.y >= 20 && a.y + a.h <= 680);
+                for (size_t j = i + 1; j < areas.size(); ++j) CHECK(!overlaps(a, areas[j]));
+            }
+            // The pupil's switch first, at the left picture's left edge
+            if (marks.size() == 2) {
+                const EyePanel::HitArea& first = marks[0].x < marks[1].x ? marks[0] : marks[1];
+                CHECK(first.hit.arg == static_cast<int>(eye_preview::Mark::Pupil) && first.x >= 100 && first.x <= 120);
+            }
+        }
+
+        // Each switch takes its mark off both pictures and puts it back (the sheet's marks); the view stays
+        const int picturesTop = 110;
+        const int picturesBottom = 570;
+        panel.render(m);
+        const std::vector<uint8_t> every = panel.toRgba();
+        for (const eye_preview::Mark mark : {eye_preview::Mark::Pupil, eye_preview::Mark::Lids}) {
+            CHECK(pressArg(panel, PanelAction::PreviewMark, static_cast<int>(mark)).action == PanelAction::None);
+            CHECK(panel.cameraViewOpen() && panel.previewPictures());
+            CHECK(panel.previewMarks().pupil == (mark != eye_preview::Mark::Pupil));
+            CHECK(panel.previewMarks().lids == (mark != eye_preview::Mark::Lids));
+            panel.pointerLeave();
+            panel.render(m);
+            CHECK(rowsOf(panel.toRgba(), panel.width(), picturesTop, picturesBottom) !=
+                  rowsOf(every, panel.width(), picturesTop, picturesBottom));
+            pressArg(panel, PanelAction::PreviewMark, static_cast<int>(mark));
+            panel.pointerLeave();
+            panel.render(m);
+            CHECK(panel.toRgba() == every);
+        }
+        // The search window never shows (whatever the sheet's switch for it says)
+        {
+            eye_preview::Marks marks;
+            marks.window = false;
+            panel.setPreviewOptions(eye_preview::Source::Sent, true, false, false, marks);
+            panel.render(m);
+            CHECK(panel.toRgba() == every);
+            marks.window = true;
+            panel.setPreviewOptions(eye_preview::Source::Sent, true, false, false, marks);
+        }
+        // Always live: the pictures move in it
+        {
+            PanelModel moved = m;
+            for (eye_preview::Picture& picture : moved.preview.pictures.eyes) picture.pupilX += 15;
+            panel.render(moved);
+            CHECK(panel.toRgba() != every);
+        }
+        // Seen from the front ("Mirror" off on the sheet): the eyes change columns, as on the sheet
+        {
+            panel.setPreviewOptions(eye_preview::Source::Sent, false, false, false, eye_preview::Marks {});
+            panel.render(m);
+            CHECK(panel.toRgba() != every);
+            panel.setPreviewOptions(eye_preview::Source::Sent, true, false, false, eye_preview::Marks {});
+            panel.render(m);
+            CHECK(panel.toRgba() == every);
+        }
+        // No pictures yet, or stale: drawn all the same (waiting), the same buttons
+        {
+            PanelModel waiting = m;
+            waiting.preview.hasPictures = false;
+            panel.render(waiting);
+            CHECK(panel.hitAreas().size() == 3 && panel.toRgba() != every);
+        }
+        // The cameras going away: it stays, says why, and still wants the pictures (they come back by themselves)
+        {
+            PanelModel without = m;
+            without.eyecam.visible = false;
+            panel.render(without);
+            CHECK(panel.cameraViewOpen() && panel.previewPictures() && panel.hitAreas().size() == 3);
+            panel.render(m);
+            CHECK(panel.previewPictures());
+        }
+        // Over a running fit (an automatic re-center): nothing dimmed, its buttons can be pressed
+        {
+            PanelModel fitting = m;
+            fitting.fit.phase = gaze_fit::Phase::Capturing;
+            panel.setTab(PanelTab::EyeFit);
+            panel.render(fitting);
+            CHECK(panel.hitAreas().size() == 3 && panel.toRgba() == every);
+            panel.setTab(PanelTab::Basic);
+        }
+
+        // "Close": back to the sheet as it was (its pictures' switch off, so none wanted)
+        CHECK(press(panel, PanelAction::CameraViewClose).action == PanelAction::None);
+        CHECK(panel.previewOpen() && !panel.cameraViewOpen() && !panel.previewPictures());
+        panel.render(m);
+        CHECK(previewButtons(panel).size() == 8 && hits(panel, PanelAction::Tab).size() >= 7);
+        // With the sheet's switch on: still on after the view
+        press(panel, PanelAction::PreviewCamera);
+        panel.render(m);
+        press(panel, PanelAction::CameraViewOpen);
+        CHECK(panel.cameraViewOpen() && panel.previewPictures());
+        panel.render(m);
+        press(panel, PanelAction::CameraViewClose);
+        CHECK(!panel.cameraViewOpen() && panel.previewPictures());
+        panel.render(m);
+        // The dashboard closing closes both; the sheet opens again without the view
+        press(panel, PanelAction::CameraViewOpen);
+        CHECK(panel.cameraViewOpen());
+        panel.closePreview();
+        CHECK(!panel.previewOpen() && !panel.cameraViewOpen());
+        panel.render(m);
+        press(panel, PanelAction::PreviewOpen);
+        CHECK(panel.previewOpen() && !panel.cameraViewOpen());
+        panel.render(m);
+        // The sheet's cross with the view opened before: both closed, and the next opening is the sheet
+        press(panel, PanelAction::CameraViewOpen);
+        panel.render(m);
+        press(panel, PanelAction::CameraViewClose);
+        panel.render(m);
+        press(panel, PanelAction::PreviewClose);
+        CHECK(!panel.previewOpen() && !panel.cameraViewOpen() && !panel.previewPictures());
+        // openCameraView (--preview-sheet ...:cameraview) opens the sheet under it
+        panel.openCameraView();
+        CHECK(panel.previewOpen() && panel.cameraViewOpen() && panel.previewPictures());
+    }
 }
 
 void testContrib(const FontSet& fonts) {
@@ -5765,6 +5947,7 @@ int main() {
     testIconText(fonts);
     testApps(fonts);
     testPreview(fonts);
+    testCameraView(fonts);
     testExtraReasons();
     testExtrasPage(fonts);
     testExtrasFlow(fonts);

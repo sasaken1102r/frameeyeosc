@@ -90,6 +90,14 @@ struct UiText {
     const char* previewCamNotInUse;     ///< ...camera_lids is off
     const char* previewCamOld;          ///< why there are no pictures: an eyecam-rec without the preview
     const char* previewCamRefused;      ///< ...eyecam-rec refused "preview on"
+    // The eye cameras view (目のカメラ): both pictures large, opened from the sheet
+    const char* cameraViewButton;       ///< the sheet's button that opens it
+    const char* cameraViewTitle;        ///< its title
+    const char* cameraViewLive;         ///< the chip beside the title while pictures come (else previewWaitingPicture
+                                        ///< or why there are none, previewCam*)
+    const char* cameraViewClose;        ///< the button at its top right (back to the sheet)
+    const char* cameraViewPupil;        ///< the switch for the pupil's ring
+    const char* cameraViewLids;         ///< the switch for the lids' dots
 
     // Tabs
     const char* tabBasic;

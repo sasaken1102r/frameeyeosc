@@ -482,6 +482,31 @@ struct View {
 /** Without a sample for this long (s), the drawn eyes say there is no eye data. */
 constexpr double kPacketStaleSec = 1.0;
 
+// ---- The eye cameras view (目のカメラ): both pictures large, opened from the sheet ----
+
+/** What the view's chip beside its title says. */
+enum class CameraViewState {
+    Live,         ///< pictures are coming (at least one eye's is fresh): "Live"
+    Waiting,      ///< the cameras can give them, none fresh yet (or they stopped: the headset off)
+    Unavailable,  ///< the cameras can't give them (the chip says why, as the sheet does: cameraState)
+};
+
+/**
+ * What the eye cameras view's chip says.
+ * @param camera cameraState
+ * @param view the sheet's values (its pictures and nowNs)
+ * @return the state
+ */
+CameraViewState cameraViewState(CameraState camera, const View& view);
+
+/**
+ * The marks the eye cameras view draws: the pupil's ring and the lids' dots as the sheet has them (its two switches
+ * are the sheet's), never the search window (a tool for finding faults, not part of how the eye looks).
+ * @param marks the sheet's marks
+ * @return the view's
+ */
+Marks cameraViewMarks(const Marks& marks);
+
 /**
  * A refused "preview on" (an error, or no answer in time) shows why for this long (s); then the pictures' switch can be
  * pressed again (it went off) to ask once more.

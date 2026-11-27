@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Panel, eye preview: "Cameras only" at the top of the sheet opens the eye cameras view, both eye cameras' pictures large over the whole panel with nothing else, for taking screenshots of them. A chip beside its title says "Live" while pictures come (else that it waits for them, or why there are none), and two switches at its bottom show the pupil (the green circle) and the eyelids (the light blue and pink dots); they are the sheet's own switches. The search area's frame, the camera's eyelid value and "Read as closed" aren't drawn there. "Close" goes back to the sheet. Like the sheet's pictures, they are only shown, never saved
+
 ## 0.11.0-beta.1 (2026-11-25)
 
 A test, off by default: the eyeball gaze, from the eye cameras, more accurate than Valve's in the developer's tests and steady when the headset shifts. Choose it under Eye fit › Gaze source, then fit your eyes (32 s). Also fixed: hard squints sent closed, flickering wide eyes in the dark.

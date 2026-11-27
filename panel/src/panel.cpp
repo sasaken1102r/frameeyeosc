@@ -946,7 +946,27 @@ std::vector<std::string> sentenceLines(const Pen& pen, const std::string& text, 
 bool previewSheetAction(PanelAction action) {
     return action == PanelAction::PreviewClose || action == PanelAction::PreviewSource ||
            action == PanelAction::PreviewMirror || action == PanelAction::PreviewCamera ||
-           action == PanelAction::PreviewMark || action == PanelAction::PreviewFreeze;
+           action == PanelAction::PreviewMark || action == PanelAction::PreviewFreeze ||
+           action == PanelAction::CameraViewOpen || action == PanelAction::CameraViewClose;
+}
+
+/**
+ * Why the eye cameras' pictures can't show (the sheet's line under its switches, the eye cameras view's chip).
+ * @param t texts
+ * @param camera eye_preview::cameraState
+ * @return the text, or nullptr while they can
+ */
+const char* cameraWhyText(const UiText& t, eye_preview::CameraState camera) {
+    using eye_preview::CameraState;
+    switch (camera) {
+        case CameraState::Available: return nullptr;
+        case CameraState::NotRunning: return t.previewCamNotRunning;
+        case CameraState::NotSetUp: return t.previewCamNotSetUp;
+        case CameraState::NotInUse: return t.previewCamNotInUse;
+        case CameraState::Old: return t.previewCamOld;
+        case CameraState::Refused: return t.previewCamRefused;
+    }
+    return nullptr;
 }
 
 /**
@@ -1071,7 +1091,7 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
     if (hit.action != PanelAction::ResetAll) resetArmed_ = false;
     // ...and closes the eye preview (a tab, the left column's notices): only its own buttons keep it
     const bool previewButton = hit.action == PanelAction::PreviewOpen || previewSheetAction(hit.action);
-    if (hit.action != PanelAction::None && !previewButton) previewOpen_ = false;
+    if (hit.action != PanelAction::None && !previewButton) closePreview();
     // ...and "Other apps"' row asking whether to delete it: only its own two buttons keep it (another row's "Delete"
     // opens that one's instead); a write the list couldn't make is forgotten
     const bool rowDelete = hit.action == PanelAction::ExtraRowDelete ||
@@ -1088,13 +1108,20 @@ PanelHit EyePanel::pointerDown(double x, double y, double now) {
         case PanelAction::PreviewOpen:
             // (pressed again while it is open: it closes)
             if (previewOpen_) {
-                previewOpen_ = false;
+                closePreview();
             } else {
                 openPreview();
             }
             return {};
         case PanelAction::PreviewClose:
-            previewOpen_ = false;
+            closePreview();
+            return {};
+        case PanelAction::CameraViewOpen:
+            openCameraView();
+            return {};
+        case PanelAction::CameraViewClose:
+            // (back to the sheet, as it was)
+            cameraView_ = false;
             return {};
         case PanelAction::PreviewSource:
             if (hit.arg < 0 || hit.arg > static_cast<int>(eye_preview::Source::Camera)) return {};
@@ -1704,6 +1731,7 @@ void EyePanel::openAppsList() {
 
 void EyePanel::openPreview() {
     previewOpen_ = true;
+    cameraView_ = false;
     previewFrozen_ = false;
     // The eye pictures start off, so an eye never shows by accident (in a screenshot or a stream); once turned on, they
     // come back each time it opens until the panel restarts or they are turned off (also by the cameras going away)
@@ -1711,6 +1739,11 @@ void EyePanel::openPreview() {
     previewFreezePending_ = false;
     // (over whatever shows; the light warning before a recording doesn't stay behind it)
     eyecamConfirm_.close();
+}
+
+void EyePanel::openCameraView() {
+    if (!previewOpen_) openPreview();
+    cameraView_ = true;
 }
 
 void EyePanel::setPreviewOptions(eye_preview::Source source, bool mirror, bool camera, bool frozen,
@@ -8167,6 +8200,35 @@ void EyePanel::drawIconButton(const Pen& pen, double x, double y, double w, doub
         fillRounded(pen, left + 3, y + h / 2 - 7, 4, 14, 1, color);
         fillRounded(pen, left + 11, y + h / 2 - 7, 4, 14, 1, color);
     }
+    if (icon == ButtonIcon::Expand || icon == ButtonIcon::Cross) {
+        cairo_t* cr = pen.cr;
+        cairo_save(cr);
+        pen.color(color);
+        cairo_set_line_width(cr, 2.2);
+        cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND);
+        cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND);
+        const double cx = left + 9;
+        const double cy = y + h / 2;
+        if (icon == ButtonIcon::Cross) {
+            cairo_move_to(cr, cx - 7, cy - 7);
+            cairo_line_to(cr, cx + 7, cy + 7);
+            cairo_move_to(cr, cx + 7, cy - 7);
+            cairo_line_to(cr, cx - 7, cy + 7);
+        } else {
+            // (four corners, as "full screen")
+            const double e = 8;
+            const double c = 4.5;
+            for (const int sx : {-1, 1}) {
+                for (const int sy : {-1, 1}) {
+                    cairo_move_to(cr, cx + sx * e, cy + sy * (e - c));
+                    cairo_line_to(cr, cx + sx * e, cy + sy * e);
+                    cairo_line_to(cr, cx + sx * (e - c), cy + sy * e);
+                }
+            }
+        }
+        cairo_stroke(cr);
+        cairo_restore(cr);
+    }
     pen.text(left + iconW, centerBaseline(y, h, size), label, size, color, true);
     addButton(hit, x, y, w, h, usable);
 }
@@ -9917,7 +9979,7 @@ void EyePanel::drawPreviewEye(const Pen& pen, const eye_preview::EyeShown& eye, 
 
 void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_preview::Picture& picture, bool fresh,
                                   double x, double y, double side, bool flip, bool smooth,
-                                  const eye_preview::Marks& marks) {
+                                  const eye_preview::Marks& marks, bool badges) {
     cairo_t* cr = pen.cr;
     const double r = 12;
     fillRounded(pen, x, y, side, side, r, kBg);
@@ -10004,9 +10066,9 @@ void EyePanel::drawPreviewPicture(const Pen& pen, const UiText& t, const eye_pre
         cairo_fill(cr);
         pen.text(x + 17, centerBaseline(by, 24, size), text, size, kText, true);
     };
-    if (picture.closed) badge(y + 8, t.previewClosed);
+    if (badges && picture.closed) badge(y + 8, t.previewClosed);
     // The EyeLid eyecam-rec sent for this very frame, under its dots (and off with them)
-    if (marks.lids && picture.lids && std::isfinite(lids.eyeLid)) {
+    if (badges && marks.lids && picture.lids && std::isfinite(lids.eyeLid)) {
         char lid[64];
         std::snprintf(lid, sizeof(lid), t.previewPictureLidFormat, lids.eyeLid);
         badge(y + side - 32, lid);
@@ -10042,7 +10104,14 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
     const double closeX = kInnerRight - closeS;
     const double headY = kContentY + 14;
     drawSheetClose(pen, {PanelAction::PreviewClose, nullptr, 0}, closeX, headY, closeS);
-    pen.text(kInnerX, headY + 33, t.previewButton, fitSize(pen, t.previewButton, 24, 16, closeX - 16 - kInnerX, true),
+    // "Cameras only", left of the cross: the eye cameras view (only while the cameras can give pictures)
+    const double viewH = 40;
+    const double viewW = pen.measure(t.cameraViewButton, 16, true) + 28 + 36;
+    const double viewX = closeX - 12 - viewW;
+    drawIconButton(pen, viewX, headY + (closeS - viewH) / 2, viewW, viewH, t.cameraViewButton,
+                   {PanelAction::CameraViewOpen, nullptr, 0}, camera == CameraState::Available, false, 16,
+                   ButtonIcon::Expand);
+    pen.text(kInnerX, headY + 33, t.previewButton, fitSize(pen, t.previewButton, 24, 16, viewX - 16 - kInnerX, true),
              kText, true);
 
     // The controls: which values, the mirror, the pictures, freeze (one text size, the largest at which the switches
@@ -10080,15 +10149,7 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
                    {PanelAction::PreviewFreeze, nullptr, 0}, true, false, size,
                    previewFrozen_ ? ButtonIcon::Play : ButtonIcon::Pause);
     // Why the pictures (and the camera's values) can't show, under the switches
-    const char* why = nullptr;
-    switch (camera) {
-        case CameraState::Available: break;
-        case CameraState::NotRunning: why = t.previewCamNotRunning; break;
-        case CameraState::NotSetUp: why = t.previewCamNotSetUp; break;
-        case CameraState::NotInUse: why = t.previewCamNotInUse; break;
-        case CameraState::Old: why = t.previewCamOld; break;
-        case CameraState::Refused: why = t.previewCamRefused; break;
-    }
+    const char* why = cameraWhyText(t, camera);
     if (why != nullptr) {
         const double whySize = fitSize(pen, why, 14, 11, kInnerRight - kInnerX, false);
         pen.text(kInnerRight, rowY + rowH + 22, why, whySize, kTextMuted, false, true);
@@ -10219,6 +10280,132 @@ void EyePanel::drawPreview(const Pen& pen, const UiText& t, const PanelModel& m)
     pen.text(kInnerX, footer + 22, note, fitSize(pen, note, 14, 10, kInnerRight - kInnerX, false), kTextMuted);
 }
 
+double EyePanel::drawMarkSwitch(const Pen& pen, double x, double y, double h, const std::string& label,
+                                const std::vector<Color>& dots, const PanelHit& hit, bool on, bool draw) {
+    const double pad = 14;
+    const double trackW = 46;
+    const double trackH = 26;
+    const double dotR = 6;
+    const double dotStep = 9;  // (two dots overlap a little, as one mark of two colours)
+    const double size = 17;
+    const double dotsW = dots.empty() ? 0.0 : dotR * 2 + dotStep * (dots.size() - 1);
+    const double labelX = pad + trackW + 14 + dotsW + (dots.empty() ? 0.0 : 10);
+    const double w = labelX + pen.measure(label, size, true) + 20;
+    if (!draw) return w;
+    cairo_t* cr = pen.cr;
+    const int pointer = pointerState(hit);
+    fillRounded(pen, x, y, w, h, h / 2, pointer > 0 ? kControlHover : kControl);
+    strokeRounded(pen, x, y, w, h, h / 2, kBorder, 1.5);
+    // The switch: the accent track with the dark knob at the right while on; off, an outlined track with a grey knob at
+    // the left (where the knob is says it too, not the colour alone)
+    const double tx = x + pad;
+    const double ty = y + (h - trackH) / 2;
+    const double knobR = trackH / 2 - 4;
+    if (on) {
+        fillRounded(pen, tx, ty, trackW, trackH, trackH / 2, kAccent);
+        drawDot(cr, tx + trackW - trackH / 2, ty + trackH / 2, knobR, kOnAccent);
+    } else {
+        fillRounded(pen, tx, ty, trackW, trackH, trackH / 2, kBg);
+        strokeRounded(pen, tx, ty, trackW, trackH, trackH / 2, kBorder, 1.5);
+        drawDot(cr, tx + trackH / 2, ty + trackH / 2, knobR, kTextMuted);
+    }
+    // The marks' colours, as they are drawn on the pictures
+    double dx = tx + trackW + 14 + dotR;
+    for (const Color& c : dots) {
+        drawDot(cr, dx, y + h / 2, dotR, c);
+        dx += dotStep;
+    }
+    pen.text(x + labelX, centerBaseline(y, h, size), label, size, kText, true);
+    addButton(hit, x, y, w, h);
+    return w;
+}
+
+void EyePanel::drawCameraView(const Pen& pen, const UiText& t, const PanelModel& m) {
+    using eye_preview::CameraState;
+    using eye_preview::CameraViewState;
+    cairo_t* cr = pen.cr;
+    // Always live (the sheet's freeze is the sheet's)
+    const eye_preview::View& pv = m.preview;
+    const CameraState camera = eye_preview::cameraState(m.eyecam, SettingsView(m).flag(key::kCameraLids), pv.refused);
+    // (the sheet's switch goes off as it does there; this view keeps wanting the pictures)
+    if (camera != CameraState::Available) stopPreviewPictures();
+    const CameraViewState state = eye_preview::cameraViewState(camera, pv);
+    // One card over the whole panel (nothing else of it shows: a clean picture to take)
+    const double cardX = 20;
+    const double cardY = 20;
+    const double cardW = kWidth - 2 * cardX;
+    const double cardH = kHeight - 2 * cardY;
+    drawCard(pen, cardX, cardY, cardW, cardH, 20, kCard, kDivider, 1);
+
+    // The title row: the eye, the title, the chip; "Close" at the right
+    const double rowY = 41;
+    const double rowH = 46;
+    const double midY = rowY + rowH / 2;
+    const double closeSize = 17;
+    const double closeW = pen.measure(t.cameraViewClose, closeSize, true) + 28 + 40;
+    const double closeX = cardX + cardW - 20 - closeW;
+    drawIconButton(pen, closeX, rowY, closeW, rowH, t.cameraViewClose, {PanelAction::CameraViewClose, nullptr, 0},
+                   true, false, closeSize, ButtonIcon::Cross);
+    cairo_save(cr);
+    cairo_translate(cr, 62, midY);
+    cairo_scale(cr, 1.5, 1.5);
+    drawEyeIcon(pen, 0, 0, kAccent);
+    cairo_restore(cr);
+    const double titleX = 90;
+    const char* chipText = state == CameraViewState::Live      ? t.cameraViewLive
+                           : state == CameraViewState::Waiting ? t.previewWaitingPicture
+                                                               : cameraWhyText(t, camera);
+    if (chipText == nullptr) chipText = t.previewWaitingPicture;
+    const double chipSize = 16;
+    const double chipH = 36;
+    const double titleSize = 28;
+    const double titleW = pen.measure(t.cameraViewTitle, titleSize, true);
+    const double chipX = titleX + titleW + 18;
+    const double chipMaxW = closeX - 16 - chipX;
+    const double chipFit = fitSize(pen, chipText, chipSize, 11, chipMaxW - 48, true);
+    const double chipW = std::min(chipMaxW, pen.measure(chipText, chipFit, true) + 48);
+    pen.text(titleX, centerBaseline(rowY, rowH, titleSize), t.cameraViewTitle, titleSize, kText, true);
+    const bool live = state == CameraViewState::Live;
+    const double chipY = midY - chipH / 2;
+    fillRounded(pen, chipX, chipY, chipW, chipH, chipH / 2, live ? kSuccessTint : kControl);
+    drawDot(cr, chipX + 20, midY, 5, live ? kSuccess : kTextMuted);
+    pen.text(chipX + 32, centerBaseline(chipY, chipH, chipFit), chipText, chipFit, live ? kSuccess : kTextMuted, true);
+
+    // The marks' switches at the bottom, under the left picture's edge
+    const double switchH = 48;
+    const double switchY = cardY + cardH - 36 - switchH;
+    // Both pictures, as large as the room between the title row and the switches allows, side by side, centred; each
+    // in its column and flipped as the sheet has it, its name at its top left
+    const double gap = 40;
+    const double top = rowY + rowH + 19;
+    const double side = std::floor(switchY - 20 - top);
+    const double left = (kWidth - (side * 2 + gap)) / 2;
+    const eye_preview::Marks marks = eye_preview::cameraViewMarks(previewMarks_);
+    for (int at = 0; at < 2; ++at) {
+        const int eye = eye_preview::drawnColumn(0, previewMirror_) == at ? 0 : 1;
+        const eye_preview::Picture& picture = pv.pictures.eyes[eye];
+        const bool fresh = pv.hasPictures && eye_preview::pictureFresh(picture, pv.nowNs);
+        const double x = left + at * (side + gap);
+        drawPreviewPicture(pen, t, picture, fresh, x, top, side, eye_preview::pictureFlipped(eye, previewMirror_), true,
+                           marks, false);
+        const char* name = eye == 0 ? t.leftEye : t.rightEye;
+        const double nameSize = 16;
+        const double nameH = 32;
+        const double nameW = pen.measure(name, nameSize, true) + 28;
+        pen.color(kBg, 0.85);
+        pen.roundedRect(x + 14, top + 14, nameW, nameH, nameH / 2);
+        cairo_fill(cr);
+        pen.text(x + 28, centerBaseline(top + 14, nameH, nameSize), name, nameSize, kText, true);
+    }
+    double x = left;
+    x += drawMarkSwitch(pen, x, switchY, switchH, t.cameraViewPupil, {kPreviewPupil},
+                        {PanelAction::PreviewMark, nullptr, static_cast<int>(eye_preview::Mark::Pupil)},
+                        previewMarks_.pupil) +
+         14;
+    drawMarkSwitch(pen, x, switchY, switchH, t.cameraViewLids, {kPreviewLidUpper, kPreviewLidLower},
+                   {PanelAction::PreviewMark, nullptr, static_cast<int>(eye_preview::Mark::Lids)}, previewMarks_.lids);
+}
+
 void EyePanel::render(const PanelModel& model) {
     const Pen pen {cr_, &fonts_};
     const UiText& t = uiText(model.language);
@@ -10248,25 +10435,31 @@ void EyePanel::render(const PanelModel& model) {
     appsKeys_.clear();
     appsScrollable_ = false;
 
-    drawStatus(pen, t, model);
-    drawTabs(pen, t);
-    drawCard(pen, kRightX, kContentY, kRight - kRightX, kContentH, 20, kCard, kDivider, 1);
-    if (previewOpen_) {
-        drawPreview(pen, t, model);
+    // The eye cameras view: over the whole panel, nothing else drawn (nor dimmed under a fit or a check)
+    const bool cameraView = cameraViewOpen();
+    if (cameraView) {
+        drawCameraView(pen, t, model);
     } else {
-        switch (tab_) {
-            case PanelTab::Basic: drawBasic(pen, t, model, view); break;
-            case PanelTab::Output: drawOutputTab(pen, t, model, view); break;
-            case PanelTab::Gaze: drawGaze(pen, t, model, view); break;
-            case PanelTab::EyeFit: drawEyeFit(pen, t, model, view); break;
-            case PanelTab::Lids: drawLids(pen, t, model, view); break;
-            case PanelTab::Advanced: drawAdvanced(pen, t, model, view); break;
-            case PanelTab::Eyecam: drawEyecam(pen, t, model, view); break;
+        drawStatus(pen, t, model);
+        drawTabs(pen, t);
+        drawCard(pen, kRightX, kContentY, kRight - kRightX, kContentH, 20, kCard, kDivider, 1);
+        if (previewOpen_) {
+            drawPreview(pen, t, model);
+        } else {
+            switch (tab_) {
+                case PanelTab::Basic: drawBasic(pen, t, model, view); break;
+                case PanelTab::Output: drawOutputTab(pen, t, model, view); break;
+                case PanelTab::Gaze: drawGaze(pen, t, model, view); break;
+                case PanelTab::EyeFit: drawEyeFit(pen, t, model, view); break;
+                case PanelTab::Lids: drawLids(pen, t, model, view); break;
+                case PanelTab::Advanced: drawAdvanced(pen, t, model, view); break;
+                case PanelTab::Eyecam: drawEyecam(pen, t, model, view); break;
+            }
         }
     }
     // While a fit runs on its tab, the rest is dimmed and can't be pressed, except the tabs (leaving stops the fit);
     // also with the eye preview open over it (an automatic re-center starting), whose own buttons stay
-    if (tab_ == PanelTab::EyeFit && fitRunning(model.fit)) {
+    if (!cameraView && tab_ == PanelTab::EyeFit && fitRunning(model.fit)) {
         pen.color(kBg, 0.72);
         cairo_rectangle(pen.cr, kStatusX, kStatusY, kStatusW, kStatusH);
         cairo_fill(pen.cr);
@@ -10283,7 +10476,7 @@ void EyePanel::render(const PanelModel& model) {
     // While the gaze error check runs (its screen on the Advanced tab), only the tabs (leaving stops it) and "Stop"
     const bool measuring =
         model.measure.phase == gaze_measure::Phase::Countdown || model.measure.phase == gaze_measure::Phase::Running;
-    if (tab_ == PanelTab::Advanced && measuring) {
+    if (!cameraView && tab_ == PanelTab::Advanced && measuring) {
         pen.color(kBg, 0.72);
         cairo_rectangle(pen.cr, kStatusX, kStatusY, kStatusW, kStatusH);
         cairo_fill(pen.cr);
@@ -10292,7 +10485,7 @@ void EyePanel::render(const PanelModel& model) {
         }
     }
     // ...and while the headset slip test runs
-    if (tab_ == PanelTab::Advanced && model.slip.phase == slip_check::Phase::Running) {
+    if (!cameraView && tab_ == PanelTab::Advanced && model.slip.phase == slip_check::Phase::Running) {
         pen.color(kBg, 0.72);
         cairo_rectangle(pen.cr, kStatusX, kStatusY, kStatusW, kStatusH);
         cairo_fill(pen.cr);
@@ -10301,7 +10494,7 @@ void EyePanel::render(const PanelModel& model) {
         }
     }
     // ...and while the headset re-seat test runs
-    if (tab_ == PanelTab::Advanced && model.reseat.phase == reseat_check::Phase::Running) {
+    if (!cameraView && tab_ == PanelTab::Advanced && model.reseat.phase == reseat_check::Phase::Running) {
         pen.color(kBg, 0.72);
         cairo_rectangle(pen.cr, kStatusX, kStatusY, kStatusW, kStatusH);
         cairo_fill(pen.cr);

@@ -171,7 +171,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `elapsed_s`, `total_s` | number | 録画開始からの秒数 / 録画の長さ（プロトコルの長さ + 1.5 秒）。`total_s` は `searching` のときから入る |
 | `session_dir` | string | 録画中（と、そのあとの `idle`）のセッションディレクトリ。無ければ `""` |
 | `protocol` | string | 録画中（と、そのあと）のプロトコル名 |
-| `prox` | number | 近接センサーの値（読めなければ -1）。だいたい 20 を超えるとかぶっている（顔によっては、かぶっていても 20 に届かない） |
+| `prox` | number | 近接センサーの値（読めなければ -1）。`prox_min` を超えるとかぶっている（机の上ではだいたい 1） |
 | `search` | string | 映像を探していて `locked` が false のとき、見つからない理由: `not_worn`（近接センサーが「かぶっていない」と言っていて、Valve の視線トラッカーも新しいサンプルを出しておらず、映像も見つからない。`message` は `HMD をかぶってね（目の映像を待ってるよ）`）/ `no_video`（かぶっている〔近接センサーがそう言っている・センサーが読めない・センサーは「かぶっていない」でも Valve の視線トラッカーが新しいサンプルを出している（センサーが低く読む顔がある）のどれか〕のに、バッファに目の映像が流れていない。`message` は `目の映像がまだ流れていない（SteamVR の視線トラッキングはオン？）`）/ `one_eye`（片方のカメラの映像しか見つからない。`message` は `片目しか映っていない（ちゃんとかぶれてる？）`）。ロックしているとき・探していないとき（ライブ処理がオフなど）・探し始めて最初に見るまでは `""`。このフィールドがない古い eyecam-rec もある |
 | `last_session_aborted` | bool | 直前の録画が最後まで行かなかった（stop など）。その meta.txt は `aborted=1` |
 | `calib_state` | int | ビットの和: 1 このかぶりで `calib wear` した / 2 ユーザー校正済み（`calib user`）/ **4 自動の基準線ができた（校正しなくても `eye_wide` などが使える）**。かぶり直す（映像が 10 秒以上止まるなど）と 1 と 4 は落ちる。**4 は `setup_done` が true になるまで立たない**（最初の準備が済むまで frameeyeosc はカメラを使わない。基準線を覚える計算は裏で続けている） |
@@ -193,7 +193,7 @@ uid 1000（steamos）前提で `/run/user/1000` は固定（`XDG_RUNTIME_DIR` �
 | `preview` | bool | 目のプレビューの映像（下の「目のプレビュー」）をいま出している（`preview on` から 3 秒以内で、ファイルがある）。このフィールドがない古い eyecam-rec は映像を出せない |
 | `pupil_l`, `pupil_r` | number / null | 目ごとの、直近 2 秒のフレームのうち瞳が見つかった割合（0〜1）。校正が「瞳が見えたフレーム」を数えるのと同じ数え方（閉じたまぶたのしわを除いた後）。ライブ処理がオフのときと、その目の映像が止まったときは `null`。**`locked` は映像が流れているという意味だけ**なので、校正の前に瞳が見えているかはこちらで見る。ふだん（目を開けて前を見ている）は 0.95 前後、目を閉じると 0。`calib wear` は普段の段（約 5.4 秒）のうち約 1 秒ぶん（90 fps で 90 フレーム、約 18%）以上で瞳が要る。`--fake` では 0.97 / 0.95 |
 | `cam_fps` | [number / null, number / null] | 目ごと `[左, 右]` の、カメラが届けている毎秒の枚数（直近 2 秒のフレームの、カメラの時刻で数える）。ロックしていてライブ処理がオンのときだけ。そうでないときと、その目の映像が 0.5 秒止まったときは `null`。Valve のアイトラッカーがカメラの速さを決める（ログ `~/.local/share/Steam/logs/eyetracking*.txt` の `CStereoAdspCams: Set framerate`）ので、ふつうは 90 だが 72・80・120 もあり、**ヘッドセットによっては 15**。eyecam はどの速さでも動く（下の「遅いカメラ」）。`--fake` では `--fake-camfps` の値（既定 90） |
-| `prox_min` | number | `--prox-min`（近接センサーがこれを超えて 1 秒たつと「かぶっている」。既定 20）。パネルの診断が `prox` と並べて出す |
+| `prox_min` | number | `--prox-min`（近接センサーがこれを超えて 1 秒たつと「かぶっている」。既定は SteamVR と同じ、EEPROM の prox_far の 0.8 倍で、prox_far 9 なら 7.2。読めなければ 20）。パネルの診断が `prox` と並べて出す |
 | `search_detail` | object / null | 直近に目の映像を探したときに見えたもの（パネルの診断用）。探すたびに書き換え、ロックしたあとも残る。まだ一度も見ていなければ `null`。`candidates`（変化したメモリの中で絵に見えたフレームの数）、`refresh_hz`（そのうち選んだバッファの候補が 1 秒に何回書き換わったかの中央値。選んだバッファの候補が 2 つ未満なら 0）、`slots`（見つかったリングのスロット数。ふつう 8）、`both_eyes`（両目のスロットがそろった）、`stopped_at`（どこで止まったか: `""` 見つかった〔両目〕/ `no_candidates` 絵に見える候補が 2 つ未満 / `split_buffers` 候補は 2 つ以上あるが、いちばん多いバッファでも 2 つ未満（ほかのバッファに散らばっている）/ `not_refreshing` 1 秒に 3 回以上書き換わる候補が 2 つ未満 / `few_slots` リングのスロットが 2 つ未満か、両方のカメラのスロットはあるが 4 つずつそろっていない / `one_eye` 片目のスロットだけ）、`changed_blocks`（その前に変化した 64 KiB のブロックの数。0 ならバッファに何も書かれていない）、`unix`（見た時刻） |
 | `last_calib` | object / null | 直近の `calib wear`（この起動でしたもの、なければ `~/eyecam/calib_*/calib_result.json` のいちばん新しい wear のもの。どちらも無ければ `null`）。`time`（ローカル時刻 `YYYY-MM-DD HH:MM:SS`）、`ok`、`failed_eye`（`calib_failed_eye` と同じ。`failed_eye` の無い古い calib_result.json は、失敗なら `LR`）、`message` / `message_en`、目ごとの `[左, 右]` で `pupil_frames`（普段の段で瞳が見えたフレーム）・`normal_frames`（普段の段のフレーム）・`pupil_x` / `pupil_y`（普段の段の瞳の位置の中央値、px）・`window`（瞳を探した枠の左右 `[[左目の左, 左目の右], [右目の左, 右目の右]]`）・`fps`（その校正のときのカメラの毎秒の枚数）。無い値は `null`。途中で止めた校正もここに入る（`ok` false、`message` は `途中で止めた`） |
 | `last_error`, `last_error_en`, `last_error_unix` | string / string / number | 直近に `state` が `error` になったときの `message`（とその英語）と時刻（UNIX 秒）。`state` が戻っても残る。まだ無ければ `""` と 0 |
@@ -1200,7 +1200,8 @@ eye_L.raw と eye_R.raw を名前の付け替えで入れ替え、frames.csv の
 --swap             L と R の名前を入れ替える（上下反転はカメラについたまま。ふつうは要らない）
 --wait-grab N      eyecam-grab を待つ秒数（既定 600。--serve は無期限）
 --wait-lock N      映像が見つかるまで待つ秒数（既定 300、外して再探索するときも同じ）
---prox-min V       近接センサーがこの値を 1 秒続けて超えたら装着中とみなす（既定 20）。映像を探す間隔と、status.json の search に使う
+--prox-min V       近接センサーがこの値を 1 秒続けて超えたら装着中とみなす（既定は SteamVR と同じ、EEPROM の prox_far の 0.8 倍。
+                   prox_far 9 なら 7.2、読めなければ 20）。映像を探す間隔と、status.json の search に使う
 --allow-one-eye    片目しか流れていなくても録る（どちらの目かわからないので L と呼び、画は反転しない）
 --full-width       512 バイトの行のまま保存（パディング込み。枠合わせを疑うとき用）
 --no-beep / --volume V

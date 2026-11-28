@@ -124,6 +124,7 @@ PanelModel stuck() {
     e.locked = false;
     e.search = "not_worn";
     e.prox = 2.9;
+    e.proxMin = 7.2;  // (SteamVR's threshold with prox_far 9)
     e.pupil[0] = e.pupil[1] = NAN;
     e.camFps[0] = e.camFps[1] = NAN;
     e.searchDetail = {true, true, 0, 0.0, 0, false, "no_candidates", 0};
@@ -319,7 +320,7 @@ void testCards() {
         const diag::Row blocks = rowOf(cards, en.diagRowBlocks);
         SAME(blocks.value, "0");
         CHECK(blocks.bad);
-        SAME(rowOf(cards, en.diagRowProx).value, "2.9 / 20");
+        SAME(rowOf(cards, en.diagRowProx).value, "2.9 / 7.2");
         SAME(rowOf(cards, en.diagRowPupil).value, "L — · R —");
         SAME(rowOf(cards, en.diagRowResult).value, "right eye: previous values");
         SAME(rowOf(cards, en.diagRowPupilFrames).value, "L 470/486 · R 0/486");
